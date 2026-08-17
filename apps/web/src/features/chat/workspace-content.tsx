@@ -2513,6 +2513,7 @@ function TimelineItem({
         item={item}
         approvalError={approvalErrors[item.id] ?? null}
         isApproving={approvingToolId === item.id}
+        variant={isCommandToolName(item.name) ? "activity" : "card"}
         onChangeApproval={onChangeApproval}
       />
     );
@@ -2729,6 +2730,12 @@ function toolItemHasFailure(item: ConversationToolItem): boolean {
   return false;
 }
 
+function isCommandToolName(name: string): boolean {
+  return name === "run_command"
+    || name === "wait_for_commands"
+    || name === "stop_command";
+}
+
 function ToolBatchTimelineItem({
   item,
   approvalErrors,
@@ -2760,17 +2767,17 @@ function ToolBatchTimelineItem({
         <span className="tool-activity-batch__identity">
           <ToolTypeIcon name={representativeToolName(item.tools)} />
           <span>{label}</span>
+          <button
+            aria-expanded={isExpanded}
+            aria-label={toggleLabel}
+            className="tool-activity-batch__toggle"
+            title={toggleLabel}
+            type="button"
+            onClick={() => setIsExpanded((current) => !current)}
+          >
+            <ChevronDown aria-hidden="true" size={15} />
+          </button>
         </span>
-        <button
-          aria-expanded={isExpanded}
-          aria-label={toggleLabel}
-          className="tool-activity-batch__toggle"
-          title={toggleLabel}
-          type="button"
-          onClick={() => setIsExpanded((current) => !current)}
-        >
-          <ChevronDown aria-hidden="true" size={15} />
-        </button>
       </header>
       {isExpanded ? (
         <div className="tool-activity-batch__items">

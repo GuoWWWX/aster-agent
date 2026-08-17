@@ -510,6 +510,8 @@
 .tool-activity-batch__identity {
   display: inline-flex;
   min-width: 0;
+  max-width: 100%;
+  flex: 1 1 auto;
   align-items: center;
   gap: 7px;
   color: var(--app-foreground);
@@ -517,6 +519,8 @@
 }
 
 .tool-activity-batch__identity span {
+  min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -634,7 +638,7 @@
 
 .tool-timeline-item__identity span {
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
