@@ -8,8 +8,8 @@ import {
   CircleAlert,
   Check,
   Copy,
+  Eye,
   FileDiff,
-  FileCode2,
   FileSearch,
   FileText,
   Folder,
@@ -2436,30 +2436,36 @@ function formatConversationDateTime(createdAt: string): string {
 
 function groupToolBatches(timeline: ConversationTimelineItem[]): TimelineDisplayItem[] {
   const grouped: TimelineDisplayItem[] = [];
+  let tools: ConversationToolItem[] = [];
+
+  const flushTools = (): void => {
+    if (tools.length === 0) return;
+    const firstTool = tools[0];
+    if (firstTool === undefined) return;
+    if (tools.length === 1) {
+      grouped.push(firstTool);
+    } else {
+      grouped.push({
+        batchId: firstTool.batchId ?? firstTool.id,
+        id: `tool-batch:${firstTool.id}`,
+        kind: "tool_batch",
+        tools,
+      });
+    }
+    tools = [];
+  };
 
   for (const item of timeline) {
-    if (item.kind !== "tool" || item.batchId === null) {
-      grouped.push(item);
+    if (item.kind === "tool") {
+      tools.push(item);
       continue;
     }
-
-    const previous = grouped.at(-1);
-    if (previous?.kind === "tool_batch" && previous.batchId === item.batchId) {
-      previous.tools.push(item);
-      continue;
-    }
-
-    grouped.push({
-      batchId: item.batchId,
-      id: `tool-batch:${item.batchId}`,
-      kind: "tool_batch",
-      tools: [item],
-    });
+    flushTools();
+    grouped.push(item);
   }
 
-  return grouped.flatMap((item) =>
-    item.kind === "tool_batch" && item.tools.length === 1 ? item.tools : [item],
-  );
+  flushTools();
+  return grouped;
 }
 
 function TimelineItem({
@@ -2823,6 +2829,15 @@ function ToolTimelineItem({
           <ToolTypeIcon name={item.name} />
           <span>{toolActivityLabel(item)}</span>
           <button
+            aria-label="查看调用情况"
+            className="tool-timeline-item__raw-button"
+            title="查看调用情况"
+            type="button"
+            onClick={() => setIsRawCallOpen(true)}
+          >
+            <Eye aria-hidden="true" size={15} />
+          </button>
+          <button
             aria-expanded={isExpanded}
             aria-label={detailsLabel}
             className="tool-timeline-item__toggle"
@@ -2835,15 +2850,6 @@ function ToolTimelineItem({
         </span>
         <span className="tool-timeline-item__header-actions">
           <span>{toolStatusLabel(effectiveStatus)}</span>
-          <button
-            aria-label="查看原始调用"
-            className="tool-timeline-item__raw-button"
-            title="查看原始调用"
-            type="button"
-            onClick={() => setIsRawCallOpen(true)}
-          >
-            <FileCode2 aria-hidden="true" size={15} />
-          </button>
         </span>
       </header>
       {isExpanded ? (
@@ -3064,7 +3070,7 @@ function toolBatchLabel(tools: ConversationToolItem[]): string {
     tool.name === "wait_for_subagents"
   ).length;
   const labels = [
-    editCount > 0 ? `变更 ${editCount} 个文件` : null,
+    editCount > 0 ? `编辑 ${editCount} 个文件` : null,
     readCount > 0 ? `读取 ${readCount} 个文件` : null,
     searchCount > 0 ? `查询 ${searchCount} 项信息` : null,
     lifecycleCount > 0 ? `协调 ${lifecycleCount} 项项目操作` : null,

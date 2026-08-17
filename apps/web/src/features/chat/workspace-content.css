@@ -559,7 +559,7 @@
 
 .tool-activity-batch__items {
   display: grid;
-  gap: 1px;
+  gap: 0;
   margin: 2px 0 1px 8px;
   border-left: 1px solid var(--app-border);
   padding-left: 10px;
