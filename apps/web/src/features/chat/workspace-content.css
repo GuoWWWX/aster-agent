@@ -554,7 +554,7 @@
 }
 
 .tool-activity-batch__toggle[aria-expanded="true"] svg {
-  transform: rotate(180deg);
+  transform: rotate(90deg);
 }
 
 .tool-activity-batch__items {
@@ -689,7 +689,7 @@
 }
 
 .tool-timeline-item__toggle[aria-expanded="true"] svg {
-  transform: rotate(180deg);
+  transform: rotate(90deg);
 }
 
 .tool-timeline-item__payload {

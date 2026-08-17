@@ -2769,7 +2769,7 @@ function ToolBatchTimelineItem({
             type="button"
             onClick={() => setIsExpanded((current) => !current)}
           >
-            <ChevronDown aria-hidden="true" size={15} />
+            <ChevronRight aria-hidden="true" size={15} />
           </button>
         </span>
       </header>
@@ -2830,7 +2830,7 @@ function ToolTimelineItem({
             type="button"
             onClick={() => setIsExpanded((current) => !current)}
           >
-            <ChevronDown aria-hidden="true" size={15} />
+            <ChevronRight aria-hidden="true" size={15} />
           </button>
         </span>
         <span className="tool-timeline-item__header-actions">
