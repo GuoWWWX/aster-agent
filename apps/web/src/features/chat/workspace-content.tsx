@@ -2513,7 +2513,7 @@ function TimelineItem({
         item={item}
         approvalError={approvalErrors[item.id] ?? null}
         isApproving={approvingToolId === item.id}
-        variant={isCommandToolName(item.name) ? "activity" : "card"}
+        variant="activity"
         onChangeApproval={onChangeApproval}
       />
     );
@@ -2728,12 +2728,6 @@ function toolItemHasFailure(item: ConversationToolItem): boolean {
   }
 
   return false;
-}
-
-function isCommandToolName(name: string): boolean {
-  return name === "run_command"
-    || name === "wait_for_commands"
-    || name === "stop_command";
 }
 
 function ToolBatchTimelineItem({
