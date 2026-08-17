@@ -2821,6 +2821,16 @@ function ToolTimelineItem({
         <span className="tool-timeline-item__identity">
           <ToolTypeIcon name={item.name} />
           <span>{toolActivityLabel(item)}</span>
+          <button
+            aria-expanded={isExpanded}
+            aria-label={detailsLabel}
+            className="tool-timeline-item__toggle"
+            title={detailsLabel}
+            type="button"
+            onClick={() => setIsExpanded((current) => !current)}
+          >
+            <ChevronDown aria-hidden="true" size={15} />
+          </button>
         </span>
         <span className="tool-timeline-item__header-actions">
           <span>{toolStatusLabel(effectiveStatus)}</span>
@@ -2832,16 +2842,6 @@ function ToolTimelineItem({
             onClick={() => setIsRawCallOpen(true)}
           >
             <FileCode2 aria-hidden="true" size={15} />
-          </button>
-          <button
-            aria-expanded={isExpanded}
-            aria-label={detailsLabel}
-            className="tool-timeline-item__toggle"
-            title={detailsLabel}
-            type="button"
-            onClick={() => setIsExpanded((current) => !current)}
-          >
-            <ChevronDown aria-hidden="true" size={15} />
           </button>
         </span>
       </header>
@@ -3186,8 +3186,8 @@ function CommandTerminal({
   };
 
   return (
-    <section className="tool-command-terminal">
-      <p className="tool-command-terminal__label">
+    <section className="tool-timeline-item__payload tool-structured-result tool-command-terminal">
+      <p className="tool-timeline-item__payload-label">
         {terminal?.displayName ?? terminalShellDisplayName(terminalConfiguration.shell)}
         {" · "}
         {terminalOutputEncodingLabel(terminal?.outputEncoding ?? terminalConfiguration.outputEncoding)}
@@ -3196,12 +3196,14 @@ function CommandTerminal({
           ? null
           : ` · ID ${result.commandId}`}
       </p>
-      <pre style={terminalStyle}>
-        <code>
-          <span className="tool-command-terminal__prompt">$</span> {command}
-          {output.length === 0 ? null : `\n\n${output}`}
-        </code>
-      </pre>
+      <div className="tool-structured-result__content">
+        <pre style={terminalStyle}>
+          <code>
+            <span className="tool-command-terminal__prompt">$</span> {command}
+            {output.length === 0 ? null : `\n\n${output}`}
+          </code>
+        </pre>
+      </div>
     </section>
   );
 }
