@@ -1,0 +1,417 @@
+.configuration-file-workspace__backdrop {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 23, 42, 0.42);
+  padding: 24px;
+}
+
+.configuration-file-workspace {
+  display: grid;
+  width: min(1240px, 100%);
+  height: min(780px, calc(100vh - 48px));
+  min-height: 420px;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-panel);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.24);
+}
+
+.configuration-file-workspace__header {
+  display: flex;
+  min-width: 0;
+  min-height: 58px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--app-border);
+  padding: 8px 10px 8px 14px;
+}
+
+.configuration-file-workspace__heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+}
+
+.configuration-file-workspace__heading-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-muted);
+  color: #2563eb;
+}
+
+.configuration-file-workspace__heading > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.configuration-file-workspace__heading h2,
+.configuration-file-workspace__heading p {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.configuration-file-workspace__heading h2 {
+  color: var(--app-foreground);
+  font-size: var(--app-font-size-subtitle);
+  font-weight: 700;
+}
+
+.configuration-file-workspace__heading p {
+  color: var(--app-muted-foreground);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: var(--app-font-size-caption);
+}
+
+.configuration-file-workspace__body {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-columns: minmax(220px, 0.27fr) minmax(0, 1fr);
+}
+
+.configuration-file-workspace__tree,
+.configuration-file-workspace__editor {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+}
+
+.configuration-file-workspace__tree {
+  grid-template-rows: auto minmax(0, 1fr);
+  border-right: 1px solid var(--app-border);
+  background: var(--app-panel-subtle);
+}
+
+.configuration-file-workspace__tree-toolbar,
+.configuration-file-workspace__editor-toolbar {
+  display: flex;
+  min-width: 0;
+  min-height: 43px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--app-border);
+  padding: 6px 8px 6px 10px;
+}
+
+.configuration-file-workspace__tree-toolbar strong {
+  color: var(--app-foreground);
+  font-size: var(--app-font-size-control);
+}
+
+.configuration-file-workspace__tree-toolbar > div,
+.configuration-file-workspace__editor-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+}
+
+.configuration-file-workspace__icon-button {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: var(--app-radius-small);
+  outline: none;
+  background: transparent;
+  color: var(--app-muted-foreground);
+}
+
+.configuration-file-workspace__icon-button:not(:disabled) {
+  cursor: pointer;
+}
+
+.configuration-file-workspace__icon-button:not(:disabled):hover {
+  background: var(--app-hover);
+  color: var(--app-foreground);
+}
+
+.configuration-file-workspace__icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.configuration-file-workspace__icon-button--danger:not(:disabled):hover {
+  background: rgba(220, 38, 38, 0.1);
+  color: #b91c1c;
+}
+
+.configuration-file-workspace__icon-button:focus-visible,
+.configuration-file-workspace__tree-toggle:focus-visible,
+.configuration-file-workspace__tree-item:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: -1px;
+}
+
+.configuration-file-workspace__tree-content {
+  min-height: 0;
+  overflow: auto;
+  padding: 5px 0 14px;
+}
+
+.configuration-file-workspace__tree-row {
+  display: flex;
+  min-width: 0;
+  height: 27px;
+  align-items: center;
+  padding-right: 6px;
+}
+
+.configuration-file-workspace__tree-row:hover,
+.configuration-file-workspace__tree-row[data-selected="true"] {
+  background: var(--app-hover);
+}
+
+.configuration-file-workspace__tree-row[data-selected="true"] {
+  box-shadow: inset 2px 0 0 var(--app-accent);
+}
+
+.configuration-file-workspace__tree-toggle,
+.configuration-file-workspace__tree-spacer {
+  display: grid;
+  width: 19px;
+  height: 24px;
+  flex: 0 0 auto;
+  place-items: center;
+}
+
+.configuration-file-workspace__tree-toggle {
+  border: 0;
+  border-radius: var(--app-radius-small);
+  outline: none;
+  background: transparent;
+  color: var(--app-muted-foreground);
+  cursor: pointer;
+}
+
+.configuration-file-workspace__tree-toggle:hover {
+  color: var(--app-foreground);
+}
+
+.configuration-file-workspace__tree-item {
+  display: flex;
+  min-width: 0;
+  height: 25px;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: var(--app-radius-small);
+  outline: none;
+  background: transparent;
+  color: var(--app-foreground);
+  padding: 0;
+  text-align: left;
+}
+
+.configuration-file-workspace__tree-item:not(:disabled) {
+  cursor: pointer;
+}
+
+.configuration-file-workspace__tree-item > span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--app-font-size-control);
+}
+
+.configuration-file-workspace__tree-item > small {
+  flex: 0 0 auto;
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-caption);
+}
+
+.configuration-file-workspace__tree-empty {
+  color: var(--app-muted-foreground);
+  padding: 14px;
+  font-size: var(--app-font-size-control);
+}
+
+.configuration-file-workspace__editor {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  background: var(--app-panel);
+}
+
+.configuration-file-workspace__editor-toolbar {
+  padding-left: 14px;
+}
+
+.configuration-file-workspace__file-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-control);
+}
+
+.configuration-file-workspace__file-title > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.configuration-file-workspace__file-title > small {
+  flex: 0 0 auto;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-small);
+  color: var(--app-muted-foreground);
+  padding: 1px 4px;
+  font-size: var(--app-font-size-caption);
+}
+
+.configuration-file-workspace__error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  border-bottom: 1px solid rgba(220, 38, 38, 0.22);
+  background: rgba(220, 38, 38, 0.07);
+  color: #b91c1c;
+  padding: 7px 12px;
+  font-size: var(--app-font-size-caption);
+}
+
+.configuration-file-workspace__editor-content {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.configuration-file-workspace__editor-content > .document-code-editor,
+.configuration-file-workspace__read-only-editor {
+  height: 100%;
+}
+
+.configuration-file-workspace__state {
+  display: grid;
+  height: 100%;
+  min-height: 0;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  color: var(--app-muted-foreground);
+  padding: 20px;
+  font-size: var(--app-font-size-control);
+  text-align: center;
+}
+
+.configuration-file-workspace__state p {
+  margin: 0;
+}
+
+.configuration-file-workspace__markdown-preview {
+  height: 100%;
+  overflow: auto;
+  color: var(--app-foreground);
+  padding: 20px 24px 48px;
+  font-size: var(--app-font-size-control);
+  line-height: 1.65;
+}
+
+.configuration-file-workspace__markdown-preview .agent-markdown > :first-child { margin-top: 0; }
+.configuration-file-workspace__markdown-preview .agent-markdown > :last-child { margin-bottom: 0; }
+.configuration-file-workspace__markdown-preview .agent-markdown h1,
+.configuration-file-workspace__markdown-preview .agent-markdown h2,
+.configuration-file-workspace__markdown-preview .agent-markdown h3 {
+  color: var(--app-foreground);
+  letter-spacing: 0;
+}
+
+.configuration-file-workspace__markdown-preview .agent-markdown pre {
+  overflow: auto;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-muted);
+  padding: 10px 12px;
+}
+
+.configuration-file-workspace__footer {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid var(--app-border);
+  color: var(--app-muted-foreground);
+  padding: 6px 12px;
+  font-size: var(--app-font-size-caption);
+}
+
+.configuration-file-workspace__footer span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.configuration-file-workspace__spin {
+  animation: configuration-file-workspace-spin 0.9s linear infinite;
+}
+
+@keyframes configuration-file-workspace-spin {
+  to { transform: rotate(360deg); }
+}
+
+[data-theme="dark"] .configuration-file-workspace__backdrop {
+  background: rgba(2, 6, 23, 0.68);
+}
+
+[data-theme="dark"] .configuration-file-workspace__heading-icon {
+  color: #93c5fd;
+}
+
+[data-theme="dark"] .configuration-file-workspace__error {
+  background: rgba(127, 29, 29, 0.25);
+  color: #fca5a5;
+}
+
+[data-theme="dark"] .configuration-file-workspace__icon-button--danger:not(:disabled):hover {
+  color: #fca5a5;
+}
+
+@media (max-width: 760px) {
+  .configuration-file-workspace__backdrop { padding: 0; }
+
+  .configuration-file-workspace {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .configuration-file-workspace__body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(150px, 30vh) minmax(0, 1fr);
+  }
+
+  .configuration-file-workspace__tree {
+    border-right: 0;
+    border-bottom: 1px solid var(--app-border);
+  }
+
+  .configuration-file-workspace__heading h2 { font-size: var(--app-font-size-control); }
+  .configuration-file-workspace__heading p { max-width: 220px; }
+  .configuration-file-workspace__markdown-preview { padding: 16px 18px 40px; }
+}

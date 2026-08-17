@@ -1,0 +1,62 @@
+.application-error-boundary {
+  align-items: center;
+  background: var(--app-canvas);
+  color: var(--app-foreground);
+  display: flex;
+  min-height: 100vh;
+  justify-content: center;
+  padding: 24px;
+}
+
+.application-error-boundary__content {
+  align-items: flex-start;
+  background: var(--app-panel);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-large);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 440px;
+  padding: 22px;
+  width: 100%;
+}
+
+.application-error-boundary__content > svg {
+  color: var(--app-destructive);
+}
+
+.application-error-boundary__content h1,
+.application-error-boundary__content p {
+  margin: 0;
+}
+
+.application-error-boundary__content h1 {
+  font-size: var(--app-font-size-page-title);
+  font-weight: 650;
+}
+
+.application-error-boundary__content p,
+.application-error-boundary__content small {
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-control);
+}
+
+.application-error-boundary__content button {
+  align-items: center;
+  background: var(--app-accent);
+  border: 0;
+  border-radius: var(--app-radius);
+  color: var(--app-accent-foreground);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  gap: 7px;
+  margin-top: 4px;
+  min-height: 32px;
+  padding: 0 12px;
+}
+
+.application-error-boundary__content button:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: 2px;
+}

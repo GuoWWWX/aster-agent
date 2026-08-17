@@ -1,0 +1,219 @@
+.app-shell {
+  display: flex;
+  height: 100dvh;
+  min-height: 600px;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--app-canvas);
+}
+
+.app-titlebar {
+  display: flex;
+  height: 36px;
+  min-height: 36px;
+  align-items: center;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.82);
+  background: var(--app-titlebar);
+  color: var(--app-muted-foreground);
+  backdrop-filter: blur(18px);
+  user-select: none;
+}
+
+.app-titlebar__brand {
+  display: grid;
+  width: 48px;
+  height: 100%;
+  min-width: 48px;
+  place-items: center;
+  color: #64748b;
+}
+
+.app-titlebar__brand-icon {
+  color: #64748b;
+}
+
+.app-titlebar__context {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: #94a3b8;
+  font-size: var(--app-font-size-body);
+  line-height: 36px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-titlebar__panel-controls,
+.app-titlebar__window-controls {
+  display: flex;
+  height: 100%;
+  align-items: center;
+}
+
+.app-titlebar__panel-controls {
+  gap: 1px;
+  padding: 0 4px;
+}
+
+.app-titlebar__window-controls {
+  margin-left: 4px;
+  border-left: 1px solid rgba(226, 232, 240, 0.82);
+}
+
+[data-app-drag-region="true"] {
+  -webkit-app-region: drag;
+}
+
+[data-slot="icon-button"] {
+  -webkit-app-region: no-drag;
+}
+
+.workbench-grid {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  gap: 5px;
+  padding: 5px;
+}
+
+.activity-bar,
+.workbench-panel,
+.workbench-main {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-panel);
+  box-shadow: none;
+}
+
+.activity-bar {
+  display: flex;
+  width: 48px;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 4px;
+}
+
+.activity-bar__navigation,
+.activity-bar__footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.activity-bar__spacer {
+  min-height: 0;
+  flex: 1;
+}
+
+.activity-bar__footer {
+  width: 100%;
+  padding-top: 8px;
+  border-top: 1px solid rgba(226, 232, 240, 0.8);
+}
+
+.workbench-main {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex: 1 1 0;
+  flex-direction: column;
+}
+
+.workbench-grid[data-active-activity="settings"] > .workbench-main {
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.workbench-sidebar {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 0 0 auto;
+}
+
+.workbench-sidebar > .workbench-panel {
+  width: 100%;
+  height: 100%;
+}
+
+.panel-header {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid var(--app-border);
+}
+
+.panel-header h2,
+.panel-header h3,
+.panel-header p {
+  margin: 0;
+}
+
+.panel-header h2 {
+  color: var(--app-foreground);
+  font-size: var(--app-font-size-body);
+  font-weight: 650;
+}
+
+.panel-eyebrow {
+  margin: 0 0 2px;
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-control);
+  font-weight: 500;
+}
+
+.panel-count {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-control);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1180px) {
+  .workbench-grid > .workbench-resizable-divider--right,
+  .workbench-grid > .workbench-sidebar--right {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .workbench-grid[data-file-open][data-project-navigator-open] {
+    grid-template-columns: 48px minmax(0, 1fr);
+  }
+
+  .workbench-grid > .workbench-resizable-divider--left,
+  .workbench-grid > .workbench-sidebar--left,
+  .workbench-grid > .workbench-sidebar--right {
+    display: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .app-titlebar__context {
+    text-align: left;
+  }
+
+  .app-titlebar__panel-controls {
+    padding: 0;
+  }
+
+  .app-titlebar__window-controls {
+    margin-left: 0;
+  }
+}

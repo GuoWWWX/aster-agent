@@ -1,0 +1,27 @@
+.configuration-workspace-tree-panel {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.configuration-workspace-tree-panel__error {
+  flex: 0 0 auto;
+  margin: 0;
+  border-bottom: 1px solid rgba(220, 38, 38, 0.22);
+  background: rgba(220, 38, 38, 0.07);
+  color: #b91c1c;
+  padding: 6px 10px;
+  font-size: var(--app-font-size-caption);
+}
+
+.configuration-workspace-tree-panel__entry-badge {
+  flex: 0 0 auto;
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-caption);
+}
+
+[data-theme="dark"] .configuration-workspace-tree-panel__error {
+  background: rgba(127, 29, 29, 0.25);
+  color: #fca5a5;
+}

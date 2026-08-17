@@ -1,0 +1,38 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-width: 320px;
+  overflow: hidden;
+  background: var(--app-canvas);
+  color: var(--app-foreground);
+  font-family: "Geist Variable", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  font-size: var(--app-font-size-subtitle);
+  letter-spacing: 0;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+button:not(:disabled) {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+::selection {
+  background: var(--app-selection);
+  color: var(--app-selection-foreground);
+}

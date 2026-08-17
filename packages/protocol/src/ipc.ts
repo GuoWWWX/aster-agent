@@ -1,0 +1,223 @@
+import { z } from "zod";
+
+export { IPC_CHANNELS } from "./ipc-channels.js";
+export type { IpcChannel } from "./ipc-channels.js";
+
+import {
+  approveToolChangeInputSchema,
+  cancelRunInputSchema,
+  conversationContextUsageInputSchema,
+  conversationReferenceInputSchema,
+  forkConversationInputSchema,
+  pendingConversationMessageReferenceInputSchema,
+  reorderPendingConversationMessagesInputSchema,
+  removeConversationAttachmentInputSchema,
+  createConversationInputSchema,
+  discoverModelsInputSchema,
+  getModelApiKeyInputSchema,
+  testModelConnectionInputSchema,
+  reorderConversationsInputSchema,
+  renameConversationInputSchema,
+  replaceLatestConversationMessageInputSchema,
+  setConversationArchivedInputSchema,
+  setConversationProjectInputSchema,
+  setConversationPinnedInputSchema,
+  saveModelConfigurationInputSchema,
+  setDefaultModelInputSchema,
+  sendConversationMessageInputSchema,
+  updatePendingConversationMessageInputSchema
+} from "./conversation.js";
+import {
+  createProjectEntryInputSchema,
+  listProjectEntriesInputSchema,
+  projectReferenceInputSchema,
+  readProjectFileInputSchema,
+  reorderProjectsInputSchema,
+  renameProjectInputSchema,
+  setProjectPinnedInputSchema
+} from "./project.js";
+import { integrationConfigurationSchema } from "./integration.js";
+import { terminalConfigurationSchema } from "./terminal.js";
+import { contextCompressionConfigurationSchema } from "./context-compression.js";
+import { applicationSettingsSchema } from "./application-settings.js";
+import {
+  createConfigurationWorkspaceEntryInputSchema,
+  deleteConfigurationWorkspaceEntryInputSchema,
+  listConfigurationWorkspaceEntriesInputSchema,
+  readConfigurationWorkspaceFileInputSchema,
+  writeConfigurationWorkspaceFileInputSchema,
+} from "./configuration-workspace.js";
+import {
+  createSkillDocumentInputSchema,
+  skillDocumentReferenceInputSchema,
+  skillDocumentSaveInputSchema,
+} from "./skill-document.js";
+
+/**
+ * Bootstrap IPC methods deliberately accept no renderer-supplied arguments.
+ * Keep the schema shared so every host validates the same request boundary.
+ */
+export const emptyIpcArgumentsSchema = z.tuple([]);
+
+export const listProjectEntriesIpcArgumentsSchema = z.tuple([
+  listProjectEntriesInputSchema
+]);
+
+export const createProjectEntryIpcArgumentsSchema = z.tuple([
+  createProjectEntryInputSchema
+]);
+
+export const readProjectFileIpcArgumentsSchema = z.tuple([
+  readProjectFileInputSchema
+]);
+
+export const projectReferenceIpcArgumentsSchema = z.tuple([
+  projectReferenceInputSchema
+]);
+
+export const renameProjectIpcArgumentsSchema = z.tuple([
+  renameProjectInputSchema
+]);
+
+export const reorderProjectsIpcArgumentsSchema = z.tuple([
+  reorderProjectsInputSchema
+]);
+
+export const setProjectPinnedIpcArgumentsSchema = z.tuple([
+  setProjectPinnedInputSchema
+]);
+
+export const createConversationIpcArgumentsSchema = z.tuple([
+  createConversationInputSchema
+]);
+
+export const renameConversationIpcArgumentsSchema = z.tuple([
+  renameConversationInputSchema
+]);
+
+export const reorderConversationsIpcArgumentsSchema = z.tuple([
+  reorderConversationsInputSchema
+]);
+
+export const setConversationProjectIpcArgumentsSchema = z.tuple([
+  setConversationProjectInputSchema
+]);
+
+export const setConversationArchivedIpcArgumentsSchema = z.tuple([
+  setConversationArchivedInputSchema
+]);
+
+export const setConversationPinnedIpcArgumentsSchema = z.tuple([
+  setConversationPinnedInputSchema
+]);
+
+export const conversationReferenceIpcArgumentsSchema = z.tuple([
+  conversationReferenceInputSchema
+]);
+
+export const forkConversationIpcArgumentsSchema = z.tuple([
+  forkConversationInputSchema
+]);
+
+export const pendingConversationMessageReferenceIpcArgumentsSchema = z.tuple([
+  pendingConversationMessageReferenceInputSchema
+]);
+
+export const updatePendingConversationMessageIpcArgumentsSchema = z.tuple([
+  updatePendingConversationMessageInputSchema
+]);
+
+export const reorderPendingConversationMessagesIpcArgumentsSchema = z.tuple([
+  reorderPendingConversationMessagesInputSchema
+]);
+
+export const conversationContextUsageIpcArgumentsSchema = z.tuple([
+  conversationContextUsageInputSchema
+]);
+
+export const removeConversationAttachmentIpcArgumentsSchema = z.tuple([
+  removeConversationAttachmentInputSchema
+]);
+
+export const sendConversationMessageIpcArgumentsSchema = z.tuple([
+  sendConversationMessageInputSchema
+]);
+
+export const replaceLatestConversationMessageIpcArgumentsSchema = z.tuple([
+  replaceLatestConversationMessageInputSchema
+]);
+
+export const cancelRunIpcArgumentsSchema = z.tuple([cancelRunInputSchema]);
+export const approveToolChangeIpcArgumentsSchema = z.tuple([
+  approveToolChangeInputSchema
+]);
+
+export const discoverModelsIpcArgumentsSchema = z.tuple([
+  discoverModelsInputSchema
+]);
+
+export const getModelApiKeyIpcArgumentsSchema = z.tuple([
+  getModelApiKeyInputSchema
+]);
+
+export const testModelConnectionIpcArgumentsSchema = z.tuple([
+  testModelConnectionInputSchema
+]);
+
+export const saveModelConfigurationIpcArgumentsSchema = z.tuple([
+  saveModelConfigurationInputSchema
+]);
+
+export const setDefaultModelIpcArgumentsSchema = z.tuple([
+  setDefaultModelInputSchema
+]);
+
+export const contextCompressionConfigurationIpcArgumentsSchema = z.tuple([
+  contextCompressionConfigurationSchema
+]);
+
+export const applicationSettingsIpcArgumentsSchema = z.tuple([
+  applicationSettingsSchema,
+]);
+
+export const integrationConfigurationIpcArgumentsSchema = z.tuple([
+  integrationConfigurationSchema
+]);
+
+export const terminalConfigurationIpcArgumentsSchema = z.tuple([
+  terminalConfigurationSchema,
+]);
+
+export const skillDocumentReferenceIpcArgumentsSchema = z.tuple([
+  skillDocumentReferenceInputSchema,
+]);
+
+export const skillDocumentSaveIpcArgumentsSchema = z.tuple([
+  skillDocumentSaveInputSchema,
+]);
+
+export const createSkillDocumentIpcArgumentsSchema = z.tuple([
+  createSkillDocumentInputSchema.optional(),
+]);
+
+export const listConfigurationWorkspaceEntriesIpcArgumentsSchema = z.tuple([
+  listConfigurationWorkspaceEntriesInputSchema,
+]);
+
+export const readConfigurationWorkspaceFileIpcArgumentsSchema = z.tuple([
+  readConfigurationWorkspaceFileInputSchema,
+]);
+
+export const createConfigurationWorkspaceEntryIpcArgumentsSchema = z.tuple([
+  createConfigurationWorkspaceEntryInputSchema,
+]);
+
+export const writeConfigurationWorkspaceFileIpcArgumentsSchema = z.tuple([
+  writeConfigurationWorkspaceFileInputSchema,
+]);
+
+export const deleteConfigurationWorkspaceEntryIpcArgumentsSchema = z.tuple([
+  deleteConfigurationWorkspaceEntryInputSchema,
+]);
+
+export const voidIpcResponseSchema = z.void();

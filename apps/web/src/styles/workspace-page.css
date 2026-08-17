@@ -1,0 +1,101 @@
+.workspace-page-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px 14px;
+  border-bottom: 1px solid var(--app-border);
+}
+
+.workspace-page-header h1,
+.workspace-page-header p {
+  margin: 0;
+}
+
+.workspace-page-header h1 {
+  color: #334155;
+  font-size: var(--app-font-size-page-title);
+  font-weight: 700;
+}
+
+.workspace-page-eyebrow {
+  margin-bottom: 3px !important;
+  color: #64748b;
+  font-size: var(--app-font-size-control);
+  font-weight: 600;
+}
+
+.workspace-page-description {
+  max-width: 610px;
+  margin-top: 5px !important;
+  color: #64748b;
+  font-size: var(--app-font-size-control);
+  line-height: 1.55;
+}
+
+.workspace-page-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.workspace-mode-badge {
+  display: inline-flex;
+  height: 24px;
+  align-items: center;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  color: #64748b;
+  padding: 0 7px;
+  font-size: var(--app-font-size-control);
+  white-space: nowrap;
+}
+
+.workspace-outline-button {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  outline: none;
+  background: var(--app-panel);
+  color: #334155;
+  padding: 0 9px;
+  font-size: var(--app-font-size-control);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.workspace-outline-button:hover {
+  border-color: rgba(96, 165, 250, 0.72);
+  background: #f8fbff;
+  color: #1d4ed8;
+}
+
+.workspace-outline-button:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: -2px;
+}
+
+[data-theme="dark"] .workspace-page-header h1 {
+  color: #e5e7eb;
+}
+
+[data-theme="dark"] .workspace-outline-button {
+  background: #282828;
+  color: #d4d4d8;
+}
+
+[data-theme="dark"] .workspace-outline-button:hover {
+  background: rgba(82, 82, 82, 0.46);
+  color: #f4f4f5;
+}
+
+@media (max-width: 720px) {
+  .workspace-page-header {
+    flex-direction: column;
+  }
+}

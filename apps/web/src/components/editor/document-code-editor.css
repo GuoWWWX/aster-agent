@@ -1,0 +1,15 @@
+.document-code-editor {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.document-code-editor .cm-editor {
+  min-width: 0;
+  min-height: 0;
+}
+
+.document-code-editor .cm-scroller {
+  min-height: 0;
+}

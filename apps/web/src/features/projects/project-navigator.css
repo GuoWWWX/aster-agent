@@ -1,0 +1,760 @@
+.project-navigator {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.project-navigator__top {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--app-border);
+  padding: 8px 8px 6px;
+}
+
+.project-navigator__toolbar {
+  display: flex;
+  min-width: 0;
+  height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.project-navigator__toolbar-group {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 3px;
+}
+
+.project-navigator__tool-button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--app-border);
+  background: var(--app-panel);
+}
+
+.project-navigator__tool-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--app-muted-foreground) 42%, var(--app-border));
+}
+
+.project-navigator__sort-menu {
+  width: 220px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-panel);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+  color: var(--app-foreground);
+  padding: 5px;
+}
+
+.project-navigator__sort-menu p {
+  margin: 0;
+  color: var(--app-muted-foreground);
+  padding: 4px 7px 5px;
+  font-size: var(--app-font-size-control);
+}
+
+.project-navigator__sort-menu [role="menu"] {
+  display: grid;
+}
+
+.project-navigator__sort-menu button {
+  display: flex;
+  width: 100%;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  border: 0;
+  border-radius: var(--app-radius);
+  background: transparent;
+  color: inherit;
+  padding: 4px 7px;
+  font: inherit;
+  font-size: var(--app-font-size-control);
+  text-align: left;
+}
+
+.project-navigator__sort-menu button:hover,
+.project-navigator__sort-menu button:focus-visible {
+  outline: none;
+  background: var(--app-hover);
+}
+
+.project-navigator__sort-option {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-navigator__sort-option svg {
+  flex: 0 0 auto;
+  color: var(--app-muted-foreground);
+}
+
+.project-navigator__search {
+  margin-top: 4px;
+}
+
+.project-navigator__project-button:focus-visible,
+.project-navigator__project-toggle:focus-visible,
+.project-navigator__session-toggle:focus-visible,
+.project-navigator__session:focus-visible,
+.project-navigator__start-session:focus-visible,
+.project-navigator__notice button:focus-visible,
+.project-navigator__empty button:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: -2px;
+}
+
+.project-navigator__project-actions button:focus-visible,
+.project-navigator__session-actions button:focus-visible,
+.project-navigator__context-menu button:focus-visible,
+.project-navigator__dialog button:focus-visible,
+.project-navigator__dialog input:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: -2px;
+}
+
+.project-navigator__notice {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-block: 1px solid rgba(147, 197, 253, 0.35);
+  background: #eff6ff;
+  color: #1e40af;
+  font-size: var(--app-font-size-control);
+  padding: 5px 8px;
+}
+
+.project-navigator__notice button,
+.project-navigator__empty button {
+  border: 0;
+  border-radius: var(--app-radius);
+  outline: none;
+  background: transparent;
+  color: var(--app-accent);
+  padding: 2px 4px;
+}
+
+.project-navigator__notice button:hover,
+.project-navigator__empty button:hover {
+  background: var(--app-hover);
+}
+
+.project-navigator__body {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 2px 6px 8px;
+}
+
+.project-navigator__projects {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.project-navigator__project {
+  min-width: 0;
+}
+
+.project-navigator__project-row {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  border-radius: var(--app-radius);
+}
+
+.project-navigator__project-row[draggable="true"],
+.project-navigator__session-shell[draggable="true"] {
+  cursor: grab;
+}
+
+.project-navigator__project-row[data-dragging="true"],
+.project-navigator__session-shell[data-dragging="true"] {
+  opacity: 0.45;
+}
+
+.project-navigator__project-row[data-drop-position]::after,
+.project-navigator__session-shell[data-drop-position]::after {
+  position: absolute;
+  z-index: 4;
+  right: 4px;
+  left: 4px;
+  border-top: 1px dashed #94a3b8;
+  content: "";
+  pointer-events: none;
+}
+
+.project-navigator__project-row[data-drop-position="before"]::after,
+.project-navigator__session-shell[data-drop-position="before"]::after {
+  top: -1px;
+}
+
+.project-navigator__project-row[data-drop-position="after"]::after,
+.project-navigator__session-shell[data-drop-position="after"]::after {
+  bottom: -1px;
+}
+
+.project-navigator__drag-preview {
+  position: fixed !important;
+  z-index: 9999;
+  top: -10000px;
+  left: -10000px;
+  box-sizing: border-box;
+  border-radius: var(--app-radius);
+  background: var(--app-panel);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.14);
+  opacity: 0.68 !important;
+  pointer-events: none;
+}
+
+.project-navigator__project-row:hover,
+.project-navigator__project-row:focus-within {
+  background: rgba(226, 232, 240, 0.62);
+}
+
+.project-navigator__project-toggle {
+  display: grid;
+  width: 22px;
+  min-width: 22px;
+  min-height: 28px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--app-radius);
+  outline: none;
+  background: transparent;
+  color: #64748b;
+  padding: 0;
+}
+
+.project-navigator__project-toggle:hover {
+  background: rgba(226, 232, 240, 0.62);
+  color: #334155;
+}
+
+.project-navigator__project-toggle:disabled {
+  cursor: default;
+}
+
+.project-navigator__project-toggle:disabled:hover {
+  background: transparent;
+  color: #64748b;
+}
+
+.project-navigator__project-button,
+.project-navigator__session,
+.project-navigator__start-session {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: var(--app-radius);
+  outline: none;
+  background: transparent;
+  color: #334155;
+  padding: 4px 7px 4px 5px;
+  text-align: left;
+}
+
+.project-navigator__project-button {
+  flex: 1;
+}
+
+.project-navigator__group-chevron {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.project-navigator__project-row:hover .project-navigator__group-chevron,
+.project-navigator__project-row:focus-within .project-navigator__group-chevron {
+  opacity: 1;
+}
+
+.project-navigator__project-actions {
+  display: flex;
+  flex: 0 0 auto;
+  opacity: 0;
+  padding-right: 3px;
+  transition: opacity 120ms ease;
+}
+
+.project-navigator__project-row:hover .project-navigator__project-actions,
+.project-navigator__project-row:focus-within .project-navigator__project-actions {
+  opacity: 1;
+}
+
+.project-navigator__project-actions button {
+  display: grid;
+  width: 21px;
+  height: 21px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--app-radius);
+  background: transparent;
+  color: #64748b;
+  padding: 0;
+}
+
+.project-navigator__project-actions button:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.2);
+  color: #1e3a5f;
+}
+
+.project-navigator__project-actions button:disabled {
+  opacity: 0.4;
+}
+
+.project-navigator__session-shell {
+  position: relative;
+  min-width: 0;
+  flex: 1;
+}
+
+.project-navigator__session-branch {
+  display: grid;
+  min-width: 0;
+}
+
+.project-navigator__session-branch-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.project-navigator__session-toggle,
+.project-navigator__session-toggle-spacer {
+  width: 18px;
+  min-width: 18px;
+  height: 27px;
+  flex: 0 0 18px;
+}
+
+.project-navigator__session-toggle {
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--app-radius);
+  outline: none;
+  background: transparent;
+  color: var(--app-muted-foreground);
+  padding: 0;
+}
+
+.project-navigator__session-toggle:hover {
+  background: var(--app-hover);
+  color: var(--app-foreground);
+}
+
+.project-navigator__subagents {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+  margin-left: 18px;
+  border-left: 1px solid var(--app-border);
+  padding-left: 7px;
+}
+
+.project-navigator__session--subagent {
+  min-height: 26px;
+  color: var(--app-muted-foreground);
+}
+
+.project-navigator__subagent-count {
+  display: inline-flex;
+  height: 17px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-pill);
+  background: var(--app-panel-subtle);
+  color: var(--app-muted-foreground);
+  padding: 0 4px;
+  font-size: var(--app-font-size-caption);
+  line-height: 1;
+}
+
+.project-navigator__subagent-count[data-running="true"] {
+  border-color: color-mix(in srgb, var(--app-accent) 38%, var(--app-border));
+  color: var(--app-accent);
+}
+
+.project-navigator__session-actions {
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  display: flex;
+  border-radius: var(--app-radius);
+  background: color-mix(in srgb, #e2e8f0 62%, var(--app-panel));
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity 120ms ease;
+}
+
+.project-navigator__session[data-active="true"]
+  + .project-navigator__session-actions {
+  background: color-mix(in srgb, #bfdbfe 55%, var(--app-panel));
+}
+
+.project-navigator__session-shell:hover .project-navigator__session-actions,
+.project-navigator__session-shell:focus-within .project-navigator__session-actions {
+  opacity: 1;
+}
+
+.project-navigator__session-shell:hover .project-navigator__session-status,
+.project-navigator__session-shell:focus-within .project-navigator__session-status {
+  opacity: 0;
+}
+
+.project-navigator__session-actions button {
+  display: grid;
+  width: 21px;
+  height: 21px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--app-radius);
+  background: transparent;
+  color: #64748b;
+  padding: 0;
+}
+
+.project-navigator__session-actions button:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.2);
+  color: #1e3a5f;
+}
+
+.project-navigator__session-actions button:disabled {
+  opacity: 0.4;
+}
+
+.project-navigator__session:hover {
+  background: rgba(226, 232, 240, 0.62);
+}
+
+.project-navigator__session[data-active="true"] {
+  background: rgba(191, 219, 254, 0.55);
+  color: #16395f;
+}
+
+.project-navigator__project-button[data-located="true"],
+.project-navigator__session[data-located="true"]:not([data-active="true"]) {
+  background: rgba(219, 234, 254, 0.42);
+}
+
+.project-navigator__project-button svg,
+.project-navigator__session svg,
+.project-navigator__start-session svg {
+  flex: 0 0 auto;
+  color: #64748b;
+}
+
+.project-navigator__session[data-active="true"] > svg:not(
+  .project-navigator__session-status
+) {
+  color: currentcolor;
+}
+
+[data-theme="dark"] .project-navigator__project-button[data-located="true"],
+[data-theme="dark"]
+  .project-navigator__session[data-located="true"]:not([data-active="true"]) {
+  background: rgba(59, 130, 246, 0.14);
+}
+
+.project-navigator__project-button span,
+.project-navigator__session-title,
+.project-navigator__start-session span {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--app-font-size-control);
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-navigator__session-title {
+  flex: 1;
+}
+
+.project-navigator__session-status {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.project-navigator__session .project-navigator__session-status--running {
+  color: var(--app-accent);
+}
+
+.project-navigator__session .project-navigator__session-status--failed {
+  color: var(--app-destructive);
+}
+
+.project-navigator__session-status--completed {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #22c55e;
+}
+
+.project-navigator__project-button span {
+  font-weight: 600;
+}
+
+.project-navigator__sessions {
+  display: grid;
+  gap: 1px;
+  margin: 1px 0 5px;
+  padding-left: 22px;
+}
+
+.project-navigator__pinned {
+  position: relative;
+  margin: 0 0 7px;
+}
+
+.project-navigator__pinned .project-navigator__sessions,
+.project-navigator__temporary .project-navigator__sessions {
+  padding-left: 0;
+}
+
+.project-navigator__pinned--separated {
+  padding-bottom: 7px;
+}
+
+.project-navigator__pinned--separated::after {
+  position: absolute;
+  right: 7px;
+  bottom: 0;
+  left: 7px;
+  border-bottom: 1px solid var(--app-border);
+  content: "";
+}
+
+.project-navigator__temporary {
+  position: relative;
+  margin: 7px 0 0;
+}
+
+.project-navigator__temporary--separated {
+  padding-top: 7px;
+}
+
+.project-navigator__temporary--separated::before {
+  position: absolute;
+  top: 0;
+  right: 7px;
+  left: 7px;
+  border-top: 1px solid var(--app-border);
+  content: "";
+}
+
+.project-navigator__context-menu-backdrop {
+  position: fixed;
+  z-index: 90;
+  inset: 0;
+}
+
+.project-navigator__context-menu {
+  position: fixed;
+  z-index: 91;
+  display: grid;
+  width: 188px;
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-panel);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.18);
+  padding: 4px;
+}
+
+.project-navigator__context-menu button {
+  display: flex;
+  height: 30px;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-radius: var(--app-radius);
+  background: transparent;
+  color: var(--app-foreground);
+  padding: 0 8px;
+  font-size: var(--app-font-size-control);
+  text-align: left;
+}
+
+.project-navigator__context-menu button:hover:not(:disabled) {
+  background: var(--app-hover);
+}
+
+.project-navigator__context-menu button:disabled {
+  opacity: 0.45;
+}
+
+.project-navigator__context-menu .project-navigator__context-menu-danger {
+  color: var(--app-destructive);
+}
+
+.project-navigator__context-menu-separator {
+  height: 1px;
+  margin: 4px;
+  background: var(--app-border);
+}
+
+.project-navigator__dialog-backdrop {
+  position: fixed;
+  z-index: 100;
+  display: grid;
+  inset: 0;
+  place-items: center;
+  background: rgba(15, 23, 42, 0.28);
+  padding: 20px;
+}
+
+.project-navigator__dialog {
+  width: min(380px, 100%);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-large);
+  background: var(--app-panel);
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.24);
+  color: var(--app-foreground);
+  padding: 16px;
+}
+
+.project-navigator__dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.project-navigator__dialog-header h2 {
+  margin: 0;
+  font-size: var(--app-font-size-title);
+  font-weight: 600;
+}
+
+.project-navigator__dialog-header button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--app-radius);
+  background: transparent;
+  color: var(--app-muted-foreground);
+  padding: 0;
+}
+
+.project-navigator__dialog p {
+  margin: 14px 0 0;
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-control);
+  line-height: 1.6;
+}
+
+.project-navigator__dialog-field {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-control);
+}
+
+.project-navigator__dialog-field input {
+  width: 100%;
+  height: 32px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  outline: none;
+  background: var(--app-background);
+  color: var(--app-foreground);
+  padding: 0 9px;
+  font-size: var(--app-font-size-control);
+}
+
+.project-navigator__dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.project-navigator__dialog-actions button {
+  height: 30px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-panel);
+  color: var(--app-foreground);
+  padding: 0 12px;
+  font-size: var(--app-font-size-control);
+}
+
+.project-navigator__dialog-actions .project-navigator__dialog-primary {
+  border-color: var(--app-accent);
+  background: var(--app-accent);
+  color: white;
+}
+
+.project-navigator__dialog-actions .project-navigator__dialog-danger {
+  border-color: var(--app-destructive);
+  background: var(--app-destructive);
+  color: white;
+}
+
+.project-navigator__dialog-actions button:disabled {
+  opacity: 0.55;
+}
+
+.project-navigator__session,
+.project-navigator__start-session {
+  min-height: 27px;
+  color: var(--app-muted-foreground);
+}
+
+.project-navigator__empty {
+  display: grid;
+  min-height: 150px;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  color: #64748b;
+  padding: 24px;
+  text-align: center;
+}
+
+.project-navigator__empty[data-loading="true"] svg,
+.project-navigator__spin {
+  animation: project-navigator-spin 1s linear infinite;
+}
+
+.project-navigator__empty p {
+  max-width: 210px;
+  margin: 0;
+  font-size: var(--app-font-size-control);
+  line-height: 1.5;
+}
+
+@keyframes project-navigator-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+[data-theme="dark"] .project-navigator__notice {
+  border-color: rgba(96, 165, 250, 0.28);
+  background: rgba(30, 58, 138, 0.3);
+  color: #bfdbfe;
+}
+
+[data-theme="dark"] .project-navigator__context-menu,
+[data-theme="dark"] .project-navigator__dialog {
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42);
+}

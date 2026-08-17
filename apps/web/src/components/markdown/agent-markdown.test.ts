@@ -1,0 +1,30 @@
+import { describe, expect, it } from "vitest";
+
+import { renderAgentMarkdown } from "./agent-markdown.js";
+
+describe("AgentMarkdown", () => {
+  it("renders md-king-compatible Markdown elements without accepting raw HTML", () => {
+    const html = renderAgentMarkdown(
+      "# 结果\n\n- [ ] 待处理\n- [x] 已完成\n\n~~删除~~ [文档](https://example.com)\n\n```java\ninterface Assistant {}\n```\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n<script>alert(1)</script>"
+    );
+
+    expect(html).toContain('class="agent-markdown__task-item"');
+    expect(html).toContain('aria-label="未完成任务"');
+    expect(html).toContain('aria-label="已完成任务"');
+    expect(html).toContain(" checked");
+    expect(html).toContain("<s>删除</s>");
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noreferrer noopener"');
+    expect(html).toContain('class="agent-markdown__code-block"');
+    expect(html).toContain("data-language=\"java\"");
+    expect(html).toContain('class="hljs"');
+    expect(html).toContain('class="hljs-keyword"');
+    expect(html).toContain("<table>");
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).not.toContain("<script>");
+
+    const fencedHtml = renderAgentMarkdown("```html\n<script>alert(1)</script>\n```");
+    expect(fencedHtml).toContain("&lt;");
+    expect(fencedHtml).not.toContain("<script>");
+  });
+});

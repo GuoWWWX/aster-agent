@@ -1,0 +1,188 @@
+.context-usage-indicator__trigger {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: var(--app-radius);
+  outline: none;
+  background: transparent;
+  color: #16a34a;
+  padding: 0;
+}
+
+.context-usage-indicator__trigger:hover {
+  background: var(--app-hover);
+}
+
+.context-usage-indicator__trigger:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: -1px;
+}
+
+.context-usage-indicator__trigger[data-pressure="warning"],
+.context-usage-indicator__content [data-pressure="warning"] {
+  color: #d97706;
+}
+
+.context-usage-indicator__trigger[data-pressure="critical"],
+.context-usage-indicator__content [data-pressure="critical"] {
+  color: #dc2626;
+}
+
+.context-usage-indicator__trigger[data-pressure="unknown"],
+.context-usage-indicator__content [data-pressure="unknown"] {
+  color: #94a3b8;
+}
+
+.context-usage-indicator__ring {
+  position: relative;
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: conic-gradient(currentcolor var(--context-usage-progress), #dbe3ee 0);
+}
+
+.context-usage-indicator__ring::after {
+  position: absolute;
+  inset: 4px;
+  border-radius: inherit;
+  background: var(--app-panel);
+  content: "";
+}
+
+.context-usage-indicator__content {
+  width: min(306px, calc(100vw - 24px));
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-panel);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
+  color: var(--app-foreground);
+  padding: 11px;
+}
+
+.context-usage-indicator__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.context-usage-indicator__header p,
+.context-usage-indicator__header strong,
+.context-usage-indicator__status,
+.context-usage-indicator__truncation,
+.context-usage-indicator__loading {
+  margin: 0;
+}
+
+.context-usage-indicator__header p {
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-auxiliary);
+  font-weight: 600;
+}
+
+.context-usage-indicator__header strong {
+  display: block;
+  max-width: 210px;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--app-foreground);
+  font-size: var(--app-font-size-control);
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-usage-indicator__header > span {
+  flex: 0 0 auto;
+  font-size: var(--app-font-size-title);
+  font-weight: 700;
+  line-height: 20px;
+}
+
+.context-usage-indicator__meter {
+  height: 5px;
+  overflow: hidden;
+  margin: 10px 0 9px;
+  border-radius: var(--app-radius-pill);
+  background: #e2e8f0;
+  color: #16a34a;
+}
+
+.context-usage-indicator__meter > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: currentcolor;
+  transition: width 160ms ease;
+}
+
+.context-usage-indicator__details {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.context-usage-indicator__details > div {
+  display: flex;
+  min-height: 18px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-control);
+}
+
+.context-usage-indicator__details dt,
+.context-usage-indicator__details dd {
+  margin: 0;
+}
+
+.context-usage-indicator__details dd {
+  flex: 0 0 auto;
+  color: var(--app-foreground);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.context-usage-indicator__loading {
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-control);
+  line-height: 1.5;
+}
+
+.context-usage-indicator__status {
+  margin-top: 10px;
+  border-top: 1px solid var(--app-border);
+  color: #16a34a;
+  padding-top: 8px;
+  font-size: var(--app-font-size-control);
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.context-usage-indicator__truncation {
+  margin-top: 4px;
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-auxiliary);
+  line-height: 1.45;
+}
+
+[data-theme="dark"] .context-usage-indicator__ring {
+  background: conic-gradient(currentcolor var(--context-usage-progress), #475569 0);
+}
+
+[data-theme="dark"] .context-usage-indicator__ring::after {
+  background: #282828;
+}
+
+[data-theme="dark"] .context-usage-indicator__content {
+  background: #282828;
+}
+
+[data-theme="dark"] .context-usage-indicator__meter {
+  background: #475569;
+}

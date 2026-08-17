@@ -1,0 +1,62 @@
+.agent-profile-avatar {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  place-items: center;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-panel-subtle);
+  color: var(--app-muted-foreground);
+}
+
+.agent-profile-avatar[data-size="compact"] {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--app-radius);
+}
+
+.agent-profile-avatar[data-size="large"] {
+  width: 42px;
+  height: 42px;
+  border-radius: var(--app-radius);
+}
+
+.agent-profile-avatar svg {
+  width: 15px;
+  height: 15px;
+}
+
+.agent-profile-avatar[data-size="compact"] svg {
+  width: 12px;
+  height: 12px;
+}
+
+.agent-profile-avatar[data-size="large"] svg {
+  width: 20px;
+  height: 20px;
+}
+
+.agent-profile-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.agent-profile-avatar[data-status="running"] {
+  border-color: rgba(96, 165, 250, 0.62);
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.agent-profile-avatar[data-status="sleeping"] {
+  color: #94a3b8;
+}
+
+[data-theme="dark"] .agent-profile-avatar[data-status="running"] {
+  border-color: rgba(96, 165, 250, 0.48);
+  background: rgba(59, 130, 246, 0.2);
+  color: #bfdbfe;
+}
