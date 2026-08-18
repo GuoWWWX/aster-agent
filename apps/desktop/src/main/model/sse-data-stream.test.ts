@@ -49,4 +49,19 @@ describe("readSseDataStream", () => {
 
     expect(values).toEqual(["first", "second", "tail"]);
   });
+
+  it("keeps high-frequency SSE frames ordered without dropping data", async () => {
+    const frameCount = 2_000;
+    const values: string[] = [];
+    await readSseDataStream(
+      streamFromChunks(
+        utf8Chunks(Array.from({ length: frameCount }, (_, index) => `data: ${index}\n\n`)),
+      ),
+      (data) => values.push(data),
+    );
+
+    expect(values).toHaveLength(frameCount);
+    expect(values[0]).toBe("0");
+    expect(values.at(-1)).toBe(String(frameCount - 1));
+  });
 });
