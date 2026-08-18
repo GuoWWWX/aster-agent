@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { toolErrorContent } from "../errors/tool-error.js";
 import type { ModelToolDefinition } from "../model/model-contracts.js";
-import { parseToolArguments } from "../model/tool-arguments.js";
+import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
 import {
   AgentDatabase,
   type SubagentTask,
@@ -18,16 +18,22 @@ const toolNames = new Set([
 ]);
 
 const spawnArgumentsSchema = z.object({
-  agentId: z.string().trim().min(1).max(80).optional(),
-  task: z.string().trim().min(1).max(20_000),
-  title: z.string().trim().min(1).max(200).optional(),
+  agentId: z.string().trim().min(1).max(80).optional()
+    .describe("可选的已配置 Agent 或当前团队成员 ID。"),
+  task: z.string().trim().min(1).max(20_000)
+    .describe("交给 Subagent 的独立、有边界且可验收的任务。"),
+  title: z.string().trim().min(1).max(200).optional()
+    .describe("可选的简短任务标题。"),
 }).strict();
 const emptyArgumentsSchema = z.object({}).strict();
 const waitArgumentsSchema = z.object({
   taskIds: z.array(z.string().uuid()).min(1).max(32)
-    .refine((ids) => new Set(ids).size === ids.length, "Task identifiers must be unique."),
-  timeoutMs: z.number().int().min(1_000).max(600_000).default(30_000),
-  waitFor: z.enum(["any", "all"]).default("any"),
+    .refine((ids) => new Set(ids).size === ids.length, "Task identifiers must be unique.")
+    .describe("由 spawn_subagent 返回的唯一任务 UUID 列表。"),
+  timeoutMs: z.number().int().min(1_000).max(600_000).default(30_000)
+    .describe("本次等待的最长毫秒数；超时不会停止 Subagent。"),
+  waitFor: z.enum(["any", "all"]).default("any")
+    .describe("any 等待任意任务结束；all 等待全部任务结束。"),
 }).strict();
 
 type SubagentToolExecution = {
@@ -89,45 +95,17 @@ export class SubagentTool {
       {
         description: "Start an independent one-shot Subagent for one bounded task. Optionally select a configured Agent or team member with agentId. The tool returns immediately; use wait_for_subagents only when the current work depends on its result. The Subagent becomes read-only after completion. Its concise result is delivered automatically, while the full conversation remains available through read_agent_conversation.",
         name: SPAWN_SUBAGENT_TOOL_NAME,
-        parameters: {
-          additionalProperties: false,
-          properties: {
-            agentId: { minLength: 1, type: "string" },
-            task: { minLength: 1, type: "string" },
-            title: { minLength: 1, type: "string" },
-          },
-          required: ["task"],
-          type: "object",
-        },
+        parameters: modelToolParameters(spawnArgumentsSchema),
       },
       {
         description: "List Subagent tasks created by this conversation and inspect their current status and final result.",
         name: LIST_SUBAGENTS_TOOL_NAME,
-        parameters: { additionalProperties: false, properties: {}, type: "object" },
+        parameters: modelToolParameters(emptyArgumentsSchema),
       },
       {
         description: "Wait for any or all selected Subagent tasks. Use this only when their result blocks the current work. A timeout is not a failure; the Subagents continue in the background and completion will still reactivate this conversation.",
         name: WAIT_FOR_SUBAGENTS_TOOL_NAME,
-        parameters: {
-          additionalProperties: false,
-          properties: {
-            taskIds: {
-              items: { type: "string" },
-              maxItems: 32,
-              minItems: 1,
-              type: "array",
-            },
-            timeoutMs: {
-              default: 30000,
-              maximum: 600000,
-              minimum: 1000,
-              type: "integer",
-            },
-            waitFor: { default: "any", enum: ["any", "all"], type: "string" },
-          },
-          required: ["taskIds"],
-          type: "object",
-        },
+        parameters: modelToolParameters(waitArgumentsSchema),
       },
     ];
   }

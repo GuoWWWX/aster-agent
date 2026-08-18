@@ -32,6 +32,7 @@ export type ProjectSessionsController = {
 
 function toProjectSession(conversation: ConversationSummary): ProjectSession {
   return {
+    activeSubagentCount: conversation.activeSubagentCount,
     activeRunId: conversation.activeRunId,
     agentId: conversation.agentId,
     hasUnreadResult: conversation.hasUnreadResult,

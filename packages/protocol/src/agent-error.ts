@@ -56,8 +56,48 @@ export class AgentClientError extends Error {
   }
 }
 
+const ERROR_INSTANCE_ID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu;
+const ERROR_REQUEST_ID_PATTERN = /\b(?:request|trace|correlation|instance)[\s_-]*id\s*[:=]?\s*[A-Za-z0-9._-]+/giu;
+
+export function redactErrorIdentifiers(value: string): string {
+  return value
+    .replace(ERROR_REQUEST_ID_PATTERN, "")
+    .replace(ERROR_INSTANCE_ID_PATTERN, "")
+    .replace(/[ \t]*[,，;；:：][ \t]*(?=$|[。.!！?？])/gu, "")
+    .replace(/[ \t]{2,}/gu, " ")
+    .replace(/[ \t]+([,.;：])/gu, "$1")
+    .replace(/[ \t]+([。.!！?？])/gu, "$1")
+    .trim();
+}
+
 export function formatAgentError(error: AgentError): string {
-  return `${error.message}（错误编号：${error.id}）`;
+  const message = redactErrorIdentifiers(error.message);
+  const status = error.details?.status;
+  const providerMessage = typeof error.details?.providerMessage === "string"
+    ? redactErrorIdentifiers(error.details.providerMessage)
+    : error.details?.providerMessage;
+  const technicalMessage = typeof error.details?.technicalMessage === "string"
+    ? redactErrorIdentifiers(error.details.technicalMessage)
+    : error.details?.technicalMessage;
+  const providerDetail =
+    typeof status === "number" && Number.isInteger(status)
+      ? `HTTP ${status}${typeof providerMessage === "string" && providerMessage.length > 0
+        ? `：${providerMessage}`
+        : ""}`
+      : typeof providerMessage === "string" && providerMessage.length > 0
+        ? providerMessage
+        : null;
+  const technicalDetail = typeof technicalMessage === "string" && technicalMessage.length > 0
+    ? technicalMessage
+    : null;
+  const detail = providerDetail === null
+    ? technicalDetail === null
+      ? null
+      : error.code === "NETWORK_UNAVAILABLE"
+        ? `网络错误详情：${technicalDetail}`
+        : `内部错误详情：${technicalDetail}`
+    : `接口错误：${providerDetail}`;
+  return detail === null ? message : `${message} ${detail}`;
 }
 
 export function serializeAgentError(error: AgentError): string {

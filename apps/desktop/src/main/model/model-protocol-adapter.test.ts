@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import { ModelAdapterRegistry } from "./model-adapter-registry.js";
 import type { CompleteTurnInput } from "./model-contracts.js";
+import { modelToolParameters } from "./tool-arguments.js";
 
 function createStreamResponse(chunks: string[]): Response {
   const encoder = new TextEncoder();
@@ -46,7 +48,61 @@ function inputFor(
   };
 }
 
+const schemaSerializationCases: Array<{
+  apiFormat: CompleteTurnInput["configuration"]["apiFormat"];
+  chunks: string[];
+}> = [
+  {
+    apiFormat: "openai-chat-completions",
+    chunks: ["data: [DONE]\n\n"],
+  },
+  {
+    apiFormat: "openai-responses",
+    chunks: ['data: {"type":"response.completed"}\n\n'],
+  },
+  {
+    apiFormat: "anthropic-messages",
+    chunks: ['data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n'],
+  },
+  {
+    apiFormat: "google-gemini",
+    chunks: ['data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n'],
+  },
+];
+
 describe("ModelAdapterRegistry", () => {
+  it.each(schemaSerializationCases)(
+    "serializes the generated input Schema for $apiFormat",
+    async ({ apiFormat, chunks }) => {
+      const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse(chunks));
+      const toolParameters = modelToolParameters(z.object({
+        commandId: z.string().uuid(),
+        label: z.string().min(1).max(64),
+        limit: z.number().int().min(1).max(50).default(20),
+      }).strict());
+      const input = inputFor(apiFormat);
+      input.tools = [{
+        description: "Probe tool",
+        name: "schema_probe",
+        parameters: toolParameters,
+      }];
+
+      await new ModelAdapterRegistry(request).completeTurn(input);
+
+      const requestBody = request.mock.calls[0]?.[1]?.body;
+      expect(typeof requestBody).toBe("string");
+      if (typeof requestBody !== "string") {
+        throw new Error("The model request body was not serialized as JSON.");
+      }
+      const body = z.record(z.string(), z.unknown()).parse(JSON.parse(requestBody));
+      expect(body).toHaveProperty("tools");
+      expect(requestBody).toContain('"name":"schema_probe"');
+      expect(requestBody).toContain('"format":"uuid"');
+      expect(requestBody).toContain('"maxLength"');
+      expect(requestBody).not.toContain('"$schema"');
+    },
+  );
+
   it.each([
     {
       apiFormat: "openai-responses" as const,
@@ -345,6 +401,26 @@ describe("ModelAdapterRegistry", () => {
     ).rejects.toThrow(
       "Model request failed (502): Model provider returned an HTML gateway error: hththt.top | 502: Bad gateway"
     );
+  });
+
+  it("removes provider request ids from error details", async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: {
+            message: "Too Many Requests, request id: 6b8e86b3-4a7d-461b-85cf-b9d86b0aede4",
+          },
+        }),
+        { headers: { "Content-Type": "application/json" }, status: 429 },
+      ),
+    );
+
+    await expect(
+      new ModelAdapterRegistry(request).completeTurn(inputFor("openai-responses")),
+    ).rejects.toThrow("Model request failed (429): Too Many Requests");
+    await expect(
+      new ModelAdapterRegistry(request).completeTurn(inputFor("openai-responses")),
+    ).rejects.not.toThrow("6b8e86b3-4a7d-461b-85cf-b9d86b0aede4");
   });
 
   it("uses Anthropic headers and assembles tool use arguments", async () => {

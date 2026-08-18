@@ -91,6 +91,7 @@ describe("project session model", () => {
     );
 
     expect(temporarySession).toEqual({
+      activeSubagentCount: 0,
       activeRunId: null,
       agentId: null,
       hasUnreadResult: false,

@@ -3680,6 +3680,10 @@
   font-size: var(--app-font-size-control);
 }
 
+.settings-provider-fields .settings-secret-input input {
+  padding-right: 40px;
+}
+
 .settings-provider-fields input:focus-visible {
   outline: 2px solid var(--app-focus-ring);
   outline-offset: 1px;

@@ -1,15 +1,17 @@
 import { z } from "zod";
 
 import type { ModelToolDefinition } from "../model/model-contracts.js";
-import { parseToolArguments } from "../model/tool-arguments.js";
+import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
 import { toolErrorContent } from "../errors/tool-error.js";
 
 const readAttachmentInputSchema = z
   .object({
-    attachment_id: z.string().uuid(),
-    limit: z.number().int().min(1).max(50_000).default(20_000),
+    attachment_id: z.string().uuid().describe("Attachment UUID shown in the attachment context."),
+    limit: z.number().int().min(1).max(50_000).default(20_000)
+      .describe("Maximum number of extracted-text characters to return."),
     offset: z.number().int().nonnegative().default(0)
+      .describe("Zero-based character offset in the full extracted text.")
   })
   .strict();
 
@@ -21,29 +23,7 @@ export class ConversationAttachmentTool {
       description:
         "Read a character range from the full extracted text of a conversation attachment. Use this when an attachment preview says that its middle content was omitted.",
       name: "read_attachment",
-      parameters: {
-        additionalProperties: false,
-        properties: {
-          attachment_id: {
-            description: "Attachment UUID shown in the attachment context.",
-            format: "uuid",
-            type: "string"
-          },
-          limit: {
-            default: 20_000,
-            maximum: 50_000,
-            minimum: 1,
-            type: "integer"
-          },
-          offset: {
-            default: 0,
-            minimum: 0,
-            type: "integer"
-          }
-        },
-        required: ["attachment_id"],
-        type: "object"
-      }
+      parameters: modelToolParameters(readAttachmentInputSchema)
     }];
   }
 

@@ -371,6 +371,7 @@ export class MockAgentClient implements AgentClient {
     );
     const now = new Date().toISOString();
     const conversation: ConversationSummary = {
+      activeSubagentCount: 0,
       activeRunId: null,
       agentId: input.agent?.id ?? null,
       archivedAt: null,
@@ -441,6 +442,7 @@ export class MockAgentClient implements AgentClient {
     }, 0) + 1;
     const now = new Date().toISOString();
     const conversation: ConversationSummary = {
+      activeSubagentCount: 0,
       activeRunId: null,
       agentId: source.agentId,
       archivedAt: null,

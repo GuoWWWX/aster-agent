@@ -15,7 +15,7 @@ import { applyPatch, createTwoFilesPatch, parsePatch } from "diff";
 import { z } from "zod";
 
 import type { ModelToolDefinition } from "../model/model-contracts.js";
-import { parseToolArguments } from "../model/tool-arguments.js";
+import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
 import { toolErrorContent } from "../errors/tool-error.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
 import { findFilesWithRipgrep, searchTextWithRipgrep } from "./ripgrep-search.js";
@@ -49,46 +49,81 @@ const DEFAULT_TERMINAL_CONFIGURATION_PROVIDER: TerminalConfigurationProvider = {
 };
 
 const listDirectoryArgumentsSchema = z
-  .object({ path: relativeProjectPathSchema.default("") })
+  .object({
+    path: relativeProjectPathSchema.default("")
+      .describe("Project-relative POSIX directory path. Use an empty string for the root."),
+  })
   .strict();
 
 const readFileArgumentsSchema = z
   .object({
-    endLine: z.number().int().positive().optional(),
+    endLine: z.number().int().positive().optional()
+      .describe(`Optional inclusive end line; the selected range may contain at most ${MAX_READ_LINES} lines.`),
     path: relativeProjectPathSchema.refine((value) => value.length > 0, {
       message: "A file path is required."
-    }),
+    }).describe("Project-relative POSIX file path."),
     startLine: z.number().int().positive().default(1)
+      .describe("One-based first line to return.")
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.endLine === undefined || value.endLine >= value.startLine) {
+      if (
+        value.endLine !== undefined
+        && value.endLine - value.startLine + 1 > MAX_READ_LINES
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: `The selected line range cannot exceed ${MAX_READ_LINES} lines. Lower endLine or raise startLine.`,
+          path: ["endLine"],
+        });
+      }
+      return;
+    }
+    context.addIssue({
+      code: "custom",
+      message: "endLine must be greater than or equal to startLine.",
+      path: ["endLine"],
+    });
+  });
 
 const searchTextArgumentsSchema = z
   .object({
-    caseMode: z.enum(["smart", "sensitive", "insensitive"]).default("smart"),
-    excludeGlobs: z.array(z.string().trim().min(1).max(200)).max(20).default([]),
-    includeGlobs: z.array(z.string().trim().min(1).max(200)).max(20).default([]),
-    maxResults: z.number().int().min(1).max(100).default(50),
-    mode: z.enum(["literal", "regex"]).default("literal"),
-    path: relativeProjectPathSchema.default(""),
-    query: z.string().min(1).max(200)
+    caseMode: z.enum(["smart", "sensitive", "insensitive"]).default("smart")
+      .describe("Case handling: smart follows query casing; sensitive or insensitive forces the mode."),
+    excludeGlobs: z.array(z.string().trim().min(1).max(200)).max(20).default([])
+      .describe("Optional ripgrep exclude globs."),
+    includeGlobs: z.array(z.string().trim().min(1).max(200)).max(20).default([])
+      .describe("Optional ripgrep include globs."),
+    maxResults: z.number().int().min(1).max(100).default(50)
+      .describe("Maximum number of matching lines to return."),
+    mode: z.enum(["literal", "regex"]).default("literal")
+      .describe("literal searches exact text; regex interprets query as a regular expression."),
+    path: relativeProjectPathSchema.default("")
+      .describe("Optional project-relative POSIX directory path; empty means the project root."),
+    query: z.string().min(1).max(200).describe("Literal text or regular expression to search for.")
   })
   .strict();
 
 const findFilesArgumentsSchema = z
   .object({
-    maxResults: z.number().int().min(1).max(MAX_FIND_RESULTS).default(200),
-    path: relativeProjectPathSchema.default(""),
+    maxResults: z.number().int().min(1).max(MAX_FIND_RESULTS).default(200)
+      .describe("Maximum number of file paths to return."),
+    path: relativeProjectPathSchema.default("")
+      .describe("Optional project-relative POSIX directory path; empty means the project root."),
     pattern: z.string().min(1).max(200)
+      .describe("Ripgrep glob such as **/package.json or src/**/*.ts.")
   })
   .strict();
 
 const writeFileArgumentsSchema = z
   .object({
-    content: z.string().max(MAX_EDIT_FILE_BYTES),
-    overwrite: z.boolean().default(false),
+    content: z.string().max(MAX_EDIT_FILE_BYTES).describe("Complete UTF-8 contents for the file."),
+    overwrite: z.boolean().default(false)
+      .describe("Allow replacing an existing file; false rejects existing targets."),
     path: relativeProjectPathSchema.refine((value) => value.length > 0, {
       message: "A file path is required."
-    })
+    }).describe("Project-relative POSIX file path.")
   })
   .strict();
 
@@ -96,48 +131,61 @@ const deleteFileArgumentsSchema = z
   .object({
     path: relativeProjectPathSchema.refine((value) => value.length > 0, {
       message: "A file path is required."
-    })
+    }).describe("Project-relative POSIX file path.")
   })
   .strict();
 
 const replaceInFileArgumentsSchema = z
   .object({
-    expectedReplacements: z.number().int().min(1).max(100).default(1),
-    newText: z.string().max(MAX_EDIT_FILE_BYTES),
-    oldText: z.string().min(1).max(MAX_EDIT_FILE_BYTES),
+    expectedReplacements: z.number().int().min(1).max(100).default(1)
+      .describe("Exact number of oldText occurrences required before preparing the change."),
+    newText: z.string().max(MAX_EDIT_FILE_BYTES).describe("Replacement UTF-8 text."),
+    oldText: z.string().min(1).max(MAX_EDIT_FILE_BYTES)
+      .describe("Exact UTF-8 text expected in the current file."),
     path: relativeProjectPathSchema.refine((value) => value.length > 0, {
       message: "A file path is required."
-    })
+    }).describe("Project-relative POSIX file path.")
   })
   .strict();
 
 const applyPatchArgumentsSchema = z
-  .object({ patch: z.string().min(1).max(MAX_EDIT_FILE_BYTES) })
+  .object({
+    patch: z.string().min(1).max(MAX_EDIT_FILE_BYTES)
+      .describe("Standard unified diff with --- and +++ file headers for one existing file."),
+  })
   .strict();
 
 const runCommandArgumentsSchema = z
   .object({
-    command: z.string().trim().min(1).max(MAX_COMMAND_LENGTH),
-    parallel: z.boolean().default(false),
-    timeoutMs: z.number().int().min(1_000).max(MAX_COMMAND_TIMEOUT_MS).default(60_000),
-    yieldTimeMs: z.number().int().min(0).max(MAX_COMMAND_YIELD_MS).default(10_000),
+    command: z.string().trim().min(1).max(MAX_COMMAND_LENGTH)
+      .describe("One non-interactive command for the configured project shell."),
+    parallel: z.boolean().default(false)
+      .describe("Allow this command to run alongside another independent command in the same run."),
+    timeoutMs: z.number().int().min(1_000).max(MAX_COMMAND_TIMEOUT_MS).default(60_000)
+      .describe("Maximum execution time in milliseconds before the process is terminated."),
+    yieldTimeMs: z.number().int().min(0).max(MAX_COMMAND_YIELD_MS).default(10_000)
+      .describe("How long to wait for a quick result before returning a commandId."),
   })
   .strict();
 
 const waitForCommandsArgumentsSchema = z.object({
-  commandIds: z.array(z.string().uuid()).min(1).max(20),
-  timeoutMs: z.number().int().min(1_000).max(MAX_COMMAND_WAIT_MS).default(30_000),
-  waitFor: z.enum(["any", "all"]).default("all"),
+  commandIds: z.array(z.string().uuid()).min(1).max(20)
+    .describe("Command UUIDs returned by run_command."),
+  timeoutMs: z.number().int().min(1_000).max(MAX_COMMAND_WAIT_MS).default(30_000)
+    .describe("Maximum duration of this wait; it does not stop the commands."),
+  waitFor: z.enum(["any", "all"]).default("all")
+    .describe("any returns after one command finishes; all waits for every selected command."),
 }).strict();
 
 const stopCommandArgumentsSchema = z.object({
-  commandId: z.string().uuid(),
+  commandId: z.string().uuid().describe("Command UUID returned by run_command."),
 }).strict();
 
 const listProjectOperationsArgumentsSchema = z.object({}).strict();
 const waitForProjectOperationArgumentsSchema = z.object({
-  operationId: z.string().uuid(),
-  timeoutMs: z.number().int().min(1_000).max(MAX_COMMAND_TIMEOUT_MS).default(30_000),
+  operationId: z.string().uuid().describe("Operation UUID returned by a project conflict result."),
+  timeoutMs: z.number().int().min(1_000).max(MAX_COMMAND_TIMEOUT_MS).default(30_000)
+    .describe("Maximum duration of this wait; it does not cancel the conflicting operation."),
 }).strict();
 
 export type ToolExecutionResult = {
@@ -255,208 +303,78 @@ export class ProjectToolRegistry {
         description:
           "List project mutations currently owned by other Agent conversations. Use this after a PROJECT_OPERATION_CONFLICT result.",
         name: "list_project_operations",
-        parameters: {
-          additionalProperties: false,
-          properties: {},
-          type: "object"
-        }
+        parameters: modelToolParameters(listProjectOperationsArgumentsSchema)
       },
       {
         description:
           "Wait for one project operation to finish. Use its operationId from a conflict result; the wait is cancellable and bounded.",
         name: "wait_for_project_operation",
-        parameters: {
-          additionalProperties: false,
-          properties: {
-            operationId: { type: "string" },
-            timeoutMs: { default: 30000, maximum: MAX_COMMAND_TIMEOUT_MS, minimum: 1000, type: "integer" }
-          },
-          required: ["operationId"],
-          type: "object"
-        }
+        parameters: modelToolParameters(waitForProjectOperationArgumentsSchema)
       },
       {
         description:
-          "Wait for one or more background commands returned by run_command. waitFor=any returns when one finishes; waitFor=all waits for every command. A timeout ends only this wait and does not stop commands.",
+          "Wait for one or more background commands returned by run_command. waitFor=any returns when one finishes; waitFor=all waits for every command. timeoutMs only bounds this wait and does not stop commands.",
         name: "wait_for_commands",
-        parameters: {
-          additionalProperties: false,
-          properties: {
-            commandIds: {
-              items: { type: "string" },
-              maxItems: 20,
-              minItems: 1,
-              type: "array",
-            },
-            timeoutMs: { default: 30000, maximum: MAX_COMMAND_WAIT_MS, minimum: 1000, type: "integer" },
-            waitFor: { default: "all", enum: ["any", "all"], type: "string" },
-          },
-          required: ["commandIds"],
-          type: "object",
-        },
+        parameters: modelToolParameters(waitForCommandsArgumentsSchema),
       },
       {
         description: "Stop one running background command by the commandId returned from run_command.",
         name: "stop_command",
-        parameters: {
-          additionalProperties: false,
-          properties: { commandId: { type: "string" } },
-          required: ["commandId"],
-          type: "object",
-        },
+        parameters: modelToolParameters(stopCommandArgumentsSchema),
       },
       {
         description:
           "List one level of files and directories inside the current authorized workspace. Paths are workspace-relative POSIX paths.",
         name: "list_directory",
-        parameters: {
-          additionalProperties: false,
-          properties: {
-            path: {
-              description: "Project-relative directory path. Use an empty string for the root.",
-              type: "string"
-            }
-          },
-          type: "object"
-        }
+        parameters: modelToolParameters(listDirectoryArgumentsSchema)
       },
       {
         description:
           "Read a UTF-8 text file inside the current authorized workspace, optionally selecting a line range.",
         name: "read_file",
-        parameters: {
-          additionalProperties: false,
-          properties: {
-            endLine: { minimum: 1, type: "integer" },
-            path: { minLength: 1, type: "string" },
-            startLine: { default: 1, minimum: 1, type: "integer" }
-          },
-          required: ["path"],
-          type: "object"
-        }
+        parameters: modelToolParameters(readFileArgumentsSchema)
       },
       {
         description:
-          "Search text inside the current authorized workspace with bundled ripgrep. Supports literal or regex matching, smart/sensitive/insensitive case handling, and include/exclude globs. Returns bounded structured matches while respecting project ignore files. Use run_command with rg directly when exact CLI output, context lines, counts, several expressions, or shell pipelines are more suitable.",
+          "Search text inside the current authorized workspace with bundled ripgrep. Supports literal or regex matching, smart/sensitive/insensitive case handling, and include/exclude globs. maxResults bounds returned matches. Returns bounded structured matches while respecting project ignore files. Use run_command with rg directly when exact CLI output, context lines, counts, several expressions, or shell pipelines are more suitable.",
         name: "search_text",
-        parameters: {
-          additionalProperties: false,
-          properties: {
-            caseMode: {
-              default: "smart",
-              enum: ["smart", "sensitive", "insensitive"],
-              type: "string",
-            },
-            excludeGlobs: {
-              items: { minLength: 1, type: "string" },
-              maxItems: 20,
-              type: "array",
-            },
-            includeGlobs: {
-              items: { minLength: 1, type: "string" },
-              maxItems: 20,
-              type: "array",
-            },
-            maxResults: { default: 50, maximum: 100, minimum: 1, type: "integer" },
-            mode: { default: "literal", enum: ["literal", "regex"], type: "string" },
-            path: { type: "string" },
-            query: { minLength: 1, type: "string" }
-          },
-          required: ["query"],
-          type: "object"
-        }
+        parameters: modelToolParameters(searchTextArgumentsSchema)
       },
       {
         description:
-          "Find files with ripgrep by a glob pattern such as **/package.json or src/**/*.ts. Returns workspace-relative POSIX paths while respecting project ignore files.",
+          "Find files with ripgrep by a glob pattern such as **/package.json or src/**/*.ts. maxResults bounds returned paths. Returns workspace-relative POSIX paths while respecting project ignore files.",
         name: "find_files",
-        parameters: {
-          additionalProperties: false,
-          properties: {
-            maxResults: { default: 200, maximum: MAX_FIND_RESULTS, minimum: 1, type: "integer" },
-            path: { description: "Optional project-relative directory to search within.", type: "string" },
-            pattern: { minLength: 1, type: "string" }
-          },
-          required: ["pattern"],
-          type: "object"
-        }
+        parameters: modelToolParameters(findFilesArgumentsSchema)
       },
       {
         description:
-          "Use this tool, not apply_patch, to create any new UTF-8 text file. It can also replace all of an existing file after reading it. This produces a reviewable diff before writing.",
+          "Use this tool, not apply_patch, to create any new UTF-8 text file. It can replace an existing file only when overwrite=true; read it first when changing existing content. This produces a reviewable diff before writing.",
         name: "write_file",
-        parameters: {
-          additionalProperties: false,
-          properties: {
-            content: { type: "string" },
-            overwrite: { default: false, type: "boolean" },
-            path: { minLength: 1, type: "string" }
-          },
-          required: ["path", "content"],
-          type: "object"
-        }
+        parameters: modelToolParameters(writeFileArgumentsSchema)
       },
       {
         description:
           "Propose deleting one existing UTF-8 text file. Read it first so the deletion has a reviewable diff and requires the configured write approval.",
         name: "delete_file",
-        parameters: {
-          additionalProperties: false,
-          properties: {
-            path: { minLength: 1, type: "string" }
-          },
-          required: ["path"],
-          type: "object"
-        }
+        parameters: modelToolParameters(deleteFileArgumentsSchema)
       },
       {
         description:
-          "Propose an exact text replacement in a UTF-8 project file. The original text must match exactly the requested number of times, so use read_file first.",
+          "Propose an exact text replacement in a UTF-8 project file. The original text must match exactly expectedReplacements times, so use read_file first.",
         name: "replace_in_file",
-        parameters: {
-          additionalProperties: false,
-          properties: {
-            expectedReplacements: { default: 1, maximum: 100, minimum: 1, type: "integer" },
-            newText: { type: "string" },
-            oldText: { minLength: 1, type: "string" },
-            path: { minLength: 1, type: "string" }
-          },
-          required: ["path", "oldText", "newText"],
-          type: "object"
-        }
+        parameters: modelToolParameters(replaceInFileArgumentsSchema)
       },
       {
         description:
           "Modify exactly one existing UTF-8 file with a standard unified diff. The patch must start with --- a/path and +++ b/path headers and apply cleanly. Never use Codex-style *** Begin Patch, *** Add File, *** Update File, or *** End Patch markers. Use write_file for new files and delete_file for deletions.",
         name: "apply_patch",
-        parameters: {
-          additionalProperties: false,
-          properties: {
-            patch: {
-              description: "A standard unified diff with --- and +++ file headers; Codex patch markers are not supported.",
-              minLength: 1,
-              type: "string"
-            }
-          },
-          required: ["patch"],
-          type: "object"
-        }
+        parameters: modelToolParameters(applyPatchArgumentsSchema)
       },
       {
         description:
-          `Run one non-interactive ${commandEnvironment} command in the current authorized workspace root. The bundled rg command is always available. Short commands return normally; a command still running after yieldTimeMs returns a commandId for wait_for_commands. Set parallel=true only for independent commands intentionally started together. The command is subject to the conversation permission mode and may require user approval before execution.`,
+          `Run one non-interactive ${commandEnvironment} command in the current authorized workspace root. The bundled rg command is always available. Short commands return normally; a command still running after yieldTimeMs returns a commandId for wait_for_commands. timeoutMs is the command's execution limit; yieldTimeMs only controls when a still-running command is handed back. Set parallel=true only for independent commands intentionally started together. The command is subject to the conversation permission mode and may require user approval before execution.`,
         name: "run_command",
-        parameters: {
-          additionalProperties: false,
-          properties: {
-            command: { minLength: 1, type: "string" },
-            parallel: { default: false, type: "boolean" },
-            timeoutMs: { default: 60000, maximum: MAX_COMMAND_TIMEOUT_MS, minimum: 1000, type: "integer" },
-            yieldTimeMs: { default: 10000, maximum: MAX_COMMAND_YIELD_MS, minimum: 0, type: "integer" },
-          },
-          required: ["command"],
-          type: "object"
-        }
+        parameters: modelToolParameters(runCommandArgumentsSchema)
       }
     ];
   }
@@ -544,13 +462,6 @@ export class ProjectToolRegistry {
     signal: AbortSignal
   ): Promise<ToolExecutionResult> {
     const input = readFileArgumentsSchema.parse(rawArguments);
-    if (
-      input.endLine !== undefined &&
-      (input.endLine < input.startLine ||
-        input.endLine - input.startLine + 1 > MAX_READ_LINES)
-    ) {
-      throw new Error(`A read_file call can return at most ${MAX_READ_LINES} lines.`);
-    }
     const filePath = await this.projects.resolveProjectPath(projectId, input.path);
     const fileInfo = await stat(filePath);
     if (!fileInfo.isFile()) throw new Error("Requested path is not a file.");

@@ -5,6 +5,7 @@ import type {
 } from "@agent/protocol";
 
 export type ProjectSession = {
+  activeSubagentCount?: number;
   activeRunId: string | null;
   agentId: string | null;
   hasUnreadResult: boolean;
@@ -102,6 +103,7 @@ export function createProjectSession(
     ).length + 1;
 
   return {
+    activeSubagentCount: 0,
     activeRunId: null,
     agentId: null,
     hasUnreadResult: false,

@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { ConversationTaskList } from "@agent/protocol";
 
 import type { ModelToolDefinition } from "../model/model-contracts.js";
-import { parseToolArguments } from "../model/tool-arguments.js";
+import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
 import { AgentDatabase } from "../storage/agent-database.js";
 import { toolErrorContent } from "../errors/tool-error.js";
 
@@ -20,10 +20,11 @@ const taskListUpdateSchema = z
   .object({
     tasks: z.array(
       z.object({
-        status: z.enum(["pending", "running", "completed"]),
-        title: z.string().trim().min(1).max(300)
+        status: z.enum(["pending", "running", "completed"])
+          .describe("步骤状态；同一任务清单最多一个步骤为 running。"),
+        title: z.string().trim().min(1).max(300).describe("简短、可验证的步骤标题。")
       }).strict()
-    ).min(2).max(20)
+    ).min(2).max(20).describe("完整任务清单；每次更新都必须重新提交全部步骤。")
   })
   .strict()
   .superRefine((value, context) => {
@@ -61,27 +62,7 @@ export class TaskListTool {
   public constructor(private readonly database: AgentDatabase) {}
 
   public getDefinitions(): ModelToolDefinition[] {
-    const taskListParameters = {
-      additionalProperties: false,
-      properties: {
-        tasks: {
-          items: {
-            additionalProperties: false,
-            properties: {
-              status: { enum: ["pending", "running", "completed"], type: "string" },
-              title: { minLength: 1, type: "string" }
-            },
-            required: ["title", "status"],
-            type: "object"
-          },
-          maxItems: 20,
-          minItems: 2,
-          type: "array"
-        }
-      },
-      required: ["tasks"],
-      type: "object"
-    } as const;
+    const taskListParameters = modelToolParameters(taskListUpdateSchema);
 
     return [
       {
@@ -103,12 +84,7 @@ export class TaskListTool {
       {
         description: "Close and remove the active task list after every task is completed and before giving the final answer.",
         name: CLOSE_TASK_LIST_TOOL_NAME,
-        parameters: {
-          additionalProperties: false,
-          properties: {},
-          required: [],
-          type: "object"
-        }
+        parameters: modelToolParameters(closeTaskListSchema)
       }
     ];
   }

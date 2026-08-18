@@ -10,7 +10,10 @@ import {
 } from "../features/projects/project-navigator.js";
 import { useProjectSessions } from "../features/projects/use-project-sessions.js";
 import { useProjectTree } from "../features/projects/use-project-tree.js";
-import { RightSidebarWorkspace } from "../features/workspace/right-sidebar-workspace.js";
+import {
+  RightSidebarWorkspace,
+  type ProjectFileOpenRequest,
+} from "../features/workspace/right-sidebar-workspace.js";
 import { useWorkbenchUiStore } from "../stores/workbench-ui-store.js";
 import { useAgentDirectoryStore } from "../stores/agent-directory-store.js";
 import { useApplicationSettingsStore } from "../stores/application-settings-store.js";
@@ -55,6 +58,7 @@ export function App(): ReactElement {
   const setTerminalConfiguration = useWorkbenchUiStore(
     (state) => state.setTerminalConfiguration,
   );
+  const setFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
   const projectTree = useProjectTree(agentClient);
   const projectSessions = useProjectSessions(
     agentClient,
@@ -62,6 +66,11 @@ export function App(): ReactElement {
   );
   const [navigatorLocateRequest, setNavigatorLocateRequest] =
     useState<ProjectNavigatorLocateRequest | null>(null);
+  const [fileOpenRequest, setFileOpenRequest] = useState<ProjectFileOpenRequest | null>(null);
+  const requestOpenProjectFile = useCallback((projectId: string, path: string): void => {
+    setFileOpenRequest({ path, projectId });
+    setFilePanelOpen(true);
+  }, [setFilePanelOpen]);
   const applicationSettingsSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
@@ -158,9 +167,6 @@ export function App(): ReactElement {
 
   function selectProject(projectId: string): void {
     projectTree.selectProject(projectId);
-    if (projectSessions.activeSession?.projectId !== projectId) {
-      projectSessions.selectProject(projectId);
-    }
   }
 
   function selectSession(sessionId: string): void {
@@ -262,6 +268,7 @@ export function App(): ReactElement {
           onForkConversation={forkConversationFromMessage}
           onLocateProject={(projectId) => locateInProjectNavigator("project", projectId)}
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}
+          onOpenProjectFile={requestOpenProjectFile}
           onProjectSelected={(projectId) => projectTree.selectProject(projectId)}
           onSessionSelected={(sessionId) => {
             setNavigatorLocateRequest(null);
@@ -276,6 +283,7 @@ export function App(): ReactElement {
           activeProject={projectTree.activeProject}
           activeSession={projectSessions.activeSession}
           agentClient={agentClient}
+          fileOpenRequest={fileOpenRequest}
           onLocateProject={(projectId) => locateInProjectNavigator("project", projectId)}
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}
           onSessionUpdated={(conversation) => projectSessions.updateSession(conversation)}

@@ -13,6 +13,7 @@ function conversation(
   isArchived = true,
 ): ConversationSummary {
   return {
+    activeSubagentCount: 0,
     activeRunId: null,
     agentId: null,
     archivedAt,

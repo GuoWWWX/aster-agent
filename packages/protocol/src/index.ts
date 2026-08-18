@@ -6,6 +6,7 @@ export {
   agentErrorSchema,
   formatAgentError,
   parseSerializedAgentError,
+  redactErrorIdentifiers,
   serializeAgentError,
 } from "./agent-error.js";
 export type { AgentError, AgentErrorCode } from "./agent-error.js";

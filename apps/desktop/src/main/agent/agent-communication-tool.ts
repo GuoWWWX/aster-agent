@@ -4,7 +4,7 @@ import type { ConversationAgentMessageItem } from "@agent/protocol";
 
 import { toolErrorContent } from "../errors/tool-error.js";
 import type { ModelToolDefinition } from "../model/model-contracts.js";
-import { parseToolArguments } from "../model/tool-arguments.js";
+import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
 import { AgentDatabase } from "../storage/agent-database.js";
 import { buildConversationReferenceBundle } from "./conversation-reference.js";
 
@@ -21,17 +21,21 @@ const toolNames = new Set([
 
 const emptyArgumentsSchema = z.object({}).strict();
 const readConversationArgumentsSchema = z.object({
-  conversationId: z.string().uuid(),
-  maxTokens: z.number().int().min(256).max(8_192).default(4_096),
+  conversationId: z.string().uuid().describe("目标 Agent 对话的 UUID。不能填写当前对话。"),
+  maxTokens: z.number().int().min(256).max(8_192).default(4_096)
+    .describe("本次对话快照允许使用的最大估算 Token 数。"),
 }).strict();
 const sendMessageArgumentsSchema = z.object({
-  content: z.string().trim().min(1).max(20_000),
-  conversationId: z.string().uuid(),
-  expectReply: z.boolean().default(true),
+  content: z.string().trim().min(1).max(20_000).describe("发送给目标 Agent 的消息正文。"),
+  conversationId: z.string().uuid().describe("目标 Agent 对话的 UUID。"),
+  expectReply: z.boolean().default(true)
+    .describe("是否要求目标 Agent 完成处理后把最终结果自动返回当前对话。"),
 }).strict();
 const waitForMessageArgumentsSchema = z.object({
-  conversationId: z.string().uuid().optional(),
-  timeoutMs: z.number().int().min(1_000).max(120_000).default(30_000),
+  conversationId: z.string().uuid().optional()
+    .describe("可选的发送方 Agent 对话 UUID；省略表示接收任意 Agent 消息。"),
+  timeoutMs: z.number().int().min(1_000).max(120_000).default(30_000)
+    .describe("本次等待的最长毫秒数；超时不会取消发送方工作。"),
 }).strict();
 
 type CommunicationToolExecution = {
@@ -60,46 +64,22 @@ export class AgentCommunicationTool {
       {
         description: "List other active Agent conversations, their identifiers, roles, projects, and current run state.",
         name: LIST_AGENT_CONVERSATIONS_TOOL_NAME,
-        parameters: { additionalProperties: false, properties: {}, type: "object" },
+        parameters: modelToolParameters(emptyArgumentsSchema),
       },
       {
         description: "Read a bounded snapshot of another Agent conversation. It contains the latest compression checkpoint plus newer original messages and never exceeds maxTokens.",
         name: READ_AGENT_CONVERSATION_TOOL_NAME,
-        parameters: {
-          additionalProperties: false,
-          properties: {
-            conversationId: { type: "string" },
-            maxTokens: { default: 4096, maximum: 8192, minimum: 256, type: "integer" },
-          },
-          required: ["conversationId"],
-          type: "object",
-        },
+        parameters: modelToolParameters(readConversationArgumentsSchema),
       },
       {
         description: "Send a persistent message to another Agent conversation. A running recipient receives it before the next model turn; an idle recipient starts automatically. With expectReply=true, the recipient's final output is automatically returned to this conversation. Use expectReply=false for progress updates or notifications.",
         name: SEND_AGENT_MESSAGE_TOOL_NAME,
-        parameters: {
-          additionalProperties: false,
-          properties: {
-            content: { minLength: 1, type: "string" },
-            conversationId: { type: "string" },
-            expectReply: { default: true, type: "boolean" },
-          },
-          required: ["conversationId", "content"],
-          type: "object",
-        },
+        parameters: modelToolParameters(sendMessageArgumentsSchema),
       },
       {
         description: "Wait for the next Agent message, optionally from one conversation. The returned message includes senderConversationId and senderTitle; reply by passing senderConversationId as send_agent_message.conversationId. Use this after asking a conflicting Agent to notify you. The wait is cancellable and bounded by timeoutMs.",
         name: WAIT_FOR_AGENT_MESSAGE_TOOL_NAME,
-        parameters: {
-          additionalProperties: false,
-          properties: {
-            conversationId: { type: "string" },
-            timeoutMs: { default: 30000, maximum: 120000, minimum: 1000, type: "integer" },
-          },
-          type: "object",
-        },
+        parameters: modelToolParameters(waitForMessageArgumentsSchema),
       },
     ];
   }

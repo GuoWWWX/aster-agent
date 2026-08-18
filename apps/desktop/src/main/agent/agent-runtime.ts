@@ -227,6 +227,14 @@ function isRetryableModelError(error: unknown): boolean {
   return error instanceof TypeError && /fetch failed|network|socket|connect|connection|timed out|timeout|terminated|econn/iu.test(error.message);
 }
 
+function modelRetryReason(error: unknown, apiKey: string): string {
+  const agentError = toMainAgentError(error, {
+    operation: "model.retry",
+    redactValues: [apiKey],
+  });
+  return formatAgentError(agentError);
+}
+
 function modelRetryDelay(retryAttempt: number): number {
   return Math.min(
     MODEL_RETRY_INITIAL_DELAY_MS * 2 ** (retryAttempt - 1),
@@ -1591,7 +1599,7 @@ export class AgentRuntime {
       let receivedTextDelta = false;
 
       try {
-        return await this.model.completeTurn({
+        const result = await this.model.completeTurn({
           configuration: input.configuration,
           maxOutputTokens: input.maxOutputTokens,
           messages: input.messages,
@@ -1621,6 +1629,26 @@ export class AgentRuntime {
           signal: input.signal,
           tools: input.tools
         });
+        if (
+          !receivedTextDelta
+          && result.content.trim().length === 0
+          && result.toolCalls.length === 0
+          && reconnectAttempt < MAX_MODEL_RECONNECT_ATTEMPTS
+        ) {
+          reconnectAttempt += 1;
+          const retryInMs = modelRetryDelay(reconnectAttempt);
+          this.emit(input.emit, {
+            attempt: reconnectAttempt,
+            conversationId: input.conversationId,
+            reason: "模型未返回可显示内容。",
+            retryInMs,
+            runId: input.runId,
+            type: "model.request_retrying"
+          });
+          await this.waitForRetry(retryInMs, input.signal);
+          continue;
+        }
+        return result;
       } catch (error) {
         if (
           receivedTextDelta ||
@@ -1635,6 +1663,7 @@ export class AgentRuntime {
         this.emit(input.emit, {
           attempt: reconnectAttempt,
           conversationId: input.conversationId,
+          reason: modelRetryReason(error, input.configuration.apiKey),
           retryInMs,
           runId: input.runId,
           type: "model.request_retrying"

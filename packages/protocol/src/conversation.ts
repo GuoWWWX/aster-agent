@@ -86,6 +86,7 @@ export const removeConversationAttachmentInputSchema = z
 
 export const conversationSummarySchema = z
   .object({
+    activeSubagentCount: z.number().int().nonnegative().default(0),
     activeRunId: runIdSchema.nullable(),
     agentId: z.string().trim().min(1).max(200).nullable().default(null),
     archivedAt: isoTimestampSchema.nullable().default(null),
@@ -749,6 +750,7 @@ const modelRequestRetryingEventSchema = z
   .object({
     attempt: z.number().int().min(1).max(5),
     conversationId: conversationIdSchema,
+    reason: z.string().trim().min(1).max(1_000).optional(),
     retryInMs: z.number().int().positive().max(60_000),
     runId: runIdSchema,
     type: z.literal("model.request_retrying")

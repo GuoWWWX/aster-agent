@@ -10,8 +10,10 @@ import {
   PanelRightOpen,
   Plus,
   SquarePen,
+  SquareCheckBig,
   Terminal,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -97,8 +99,23 @@ type TabContextMenuState = {
   y: number;
 };
 
+type EmptyStateAction = {
+  disabled?: boolean;
+  icon: LucideIcon;
+  label: string;
+  onClick?: (() => void) | undefined;
+  shortcut: string;
+  title?: string | undefined;
+};
+
+export type ProjectFileOpenRequest = {
+  path: string;
+  projectId: string;
+};
+
 function toProjectSession(conversation: ConversationSummary): ProjectSession {
   return {
+    activeSubagentCount: conversation.activeSubagentCount,
     activeRunId: conversation.activeRunId,
     agentId: conversation.agentId,
     hasUnreadResult: conversation.hasUnreadResult,
@@ -187,6 +204,7 @@ export function RightSidebarWorkspace({
   activeProject,
   activeSession,
   agentClient,
+  fileOpenRequest,
   onLocateProject,
   onLocateSession,
   onSessionUpdated,
@@ -195,12 +213,14 @@ export function RightSidebarWorkspace({
   activeProject: ProjectSummary | null;
   activeSession: ProjectSession | null;
   agentClient: AgentClient;
+  fileOpenRequest: ProjectFileOpenRequest | null;
   onLocateProject: (projectId: string) => void;
   onLocateSession: (sessionId: string) => void;
   onSessionUpdated: (conversation: ConversationSummary) => void;
   tree: ProjectTreeController;
 }): ReactElement {
   const isDark = useWorkbenchUiStore((state) => state.themeMode === "dark");
+  const setFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
   const configurationWorkspaceTarget = useWorkbenchUiStore(
     (state) => state.configurationWorkspaceTarget,
   );
@@ -225,6 +245,7 @@ export function RightSidebarWorkspace({
   const configurationFilePreviewsRef = useRef(configurationFilePreviews);
   const configurationSaveQueuesRef = useRef(new Map<string, Promise<boolean>>());
   const fileLoadRequestIdsRef = useRef(new Map<string, number>());
+  const handledFileOpenRequestRef = useRef<ProjectFileOpenRequest | null>(null);
   const activeSessionId = activeSession?.id ?? null;
 
   useEffect(() => {
@@ -384,10 +405,11 @@ export function RightSidebarWorkspace({
         current.some((candidate) => candidate.id === tab.id) ? current : [...current, tab],
       );
       setActiveTabId(tab.id);
+      setFilePanelOpen(true);
       setIsFileBrowserOpen(false);
       void loadFile(tab);
     },
-    [activeProject, loadFile],
+    [activeProject, loadFile, setFilePanelOpen],
   );
 
   const loadConfigurationFile = useCallback(
@@ -596,6 +618,20 @@ export function RightSidebarWorkspace({
   const activeConfigurationPreview = activeConfigurationTab === null
     ? undefined
     : configurationFilePreviews[activeConfigurationTab.id];
+  const openProjectFilePath = useCallback(async (path: string): Promise<void> => {
+    if (
+      activeConfigurationTab !== null
+      && !await flushConfigurationFile(activeConfigurationTab)
+    ) {
+      return;
+    }
+    const entry: ProjectEntry = {
+      kind: "file",
+      name: path.replaceAll("\\", "/").split("/").at(-1) ?? path,
+      path,
+    };
+    openFile(entry);
+  }, [activeConfigurationTab, flushConfigurationFile, openFile]);
   const closedSideSessions = sideSessions.filter((session) => !openChatIds.has(session.id));
   const showFileWorkspace = activeTab?.kind === "file"
     || activeConfigurationTab !== null
@@ -651,6 +687,24 @@ export function RightSidebarWorkspace({
     }
     openFile(entry);
   }
+
+  function openFileBrowser(): void {
+    setActiveTabId(null);
+    setIsFileBrowserOpen(true);
+    setIsTreeCollapsed(false);
+  }
+
+  useEffect(() => {
+    if (
+      fileOpenRequest === null
+      || activeProject?.id !== fileOpenRequest.projectId
+      || handledFileOpenRequestRef.current === fileOpenRequest
+    ) {
+      return;
+    }
+    handledFileOpenRequestRef.current = fileOpenRequest;
+    void openProjectFilePath(fileOpenRequest.path);
+  }, [activeProject?.id, fileOpenRequest, openProjectFilePath]);
 
   async function openConfigurationPath(path: string): Promise<void> {
     const target = activeConfigurationTarget ?? configurationWorkspaceTarget;
@@ -796,9 +850,7 @@ export function RightSidebarWorkspace({
                       activeConfigurationTab !== null
                       && !await flushConfigurationFile(activeConfigurationTab)
                     ) return;
-                    setActiveTabId(null);
-                    setIsFileBrowserOpen(true);
-                    setIsTreeCollapsed(false);
+                    openFileBrowser();
                     setMenuOpen(false);
                   })();
                 }}
@@ -851,6 +903,7 @@ export function RightSidebarWorkspace({
               onLocateSession={() => {
                 if (activeSession !== null) onLocateSession(activeSession.id);
               }}
+              onOpenProjectFile={(path) => void openProjectFilePath(path)}
               project={activeTab.session.projectId === null ? null : activeProject}
               session={activeTab.session}
             />
@@ -897,7 +950,12 @@ export function RightSidebarWorkspace({
               onToggleTree={() => setIsTreeCollapsed((current) => !current)}
             />
           ) : (
-            <div className="right-sidebar-workspace__empty" aria-label="未打开内容" />
+            <RightSidebarEmptyState
+              canCreateSideChat={activeSession !== null}
+              isCreatingChat={isCreatingChat}
+              onCreateSideChat={() => void createSideChat()}
+              onOpenFiles={openFileBrowser}
+            />
           )}
         </div>
       </div>
@@ -963,6 +1021,81 @@ export function RightSidebarWorkspace({
         document.body,
       ) : null}
     </WorkbenchPanel>
+  );
+}
+
+function RightSidebarEmptyState({
+  canCreateSideChat,
+  isCreatingChat,
+  onCreateSideChat,
+  onOpenFiles,
+}: {
+  canCreateSideChat: boolean;
+  isCreatingChat: boolean;
+  onCreateSideChat: () => void;
+  onOpenFiles: () => void;
+}): ReactElement {
+  const actions: EmptyStateAction[] = [
+    {
+      disabled: true,
+      icon: SquareCheckBig,
+      label: "审阅",
+      shortcut: "Ctrl+Shift+G",
+      title: "当前运行环境未接入审阅",
+    },
+    {
+      disabled: true,
+      icon: Terminal,
+      label: "终端",
+      shortcut: "Ctrl+`",
+      title: "当前运行环境未接入终端",
+    },
+    {
+      disabled: true,
+      icon: Globe2,
+      label: "浏览器",
+      shortcut: "Ctrl+T",
+      title: "当前运行环境未接入浏览器",
+    },
+    {
+      icon: FolderOpen,
+      label: "文件",
+      onClick: onOpenFiles,
+      shortcut: "Ctrl+P",
+    },
+    {
+      disabled: !canCreateSideChat || isCreatingChat,
+      icon: MessageSquarePlus,
+      label: "侧边聊天",
+      onClick: onCreateSideChat,
+      shortcut: "Ctrl+Alt+S",
+      title: canCreateSideChat ? undefined : "请先打开一个主对话",
+    },
+  ];
+
+  return (
+    <div className="right-sidebar-workspace__empty" aria-label="打开工作区标签">
+      <div className="right-sidebar-workspace__empty-actions" role="group" aria-label="可打开的工作区标签">
+        {actions.map((action) => {
+          const Icon = action.icon;
+          return (
+            <button
+              aria-label={action.label}
+              className="right-sidebar-workspace__empty-action"
+              disabled={action.disabled}
+              key={action.label}
+              title={action.title}
+              type="button"
+              onClick={action.onClick}
+            >
+              <Icon aria-hidden="true" size={19} strokeWidth={1.7} />
+              <span>{action.label}</span>
+              <kbd aria-hidden="true">{action.shortcut}</kbd>
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

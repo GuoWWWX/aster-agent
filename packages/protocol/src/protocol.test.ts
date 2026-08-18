@@ -110,6 +110,7 @@ describe("protocol bootstrap contract", () => {
         updatedAt: "2026-08-15T00:00:00.000Z"
       })
     ).toMatchObject({
+      activeSubagentCount: 0,
       archivedAt: null,
       hasUnreadResult: false,
       threadKind: "agent",

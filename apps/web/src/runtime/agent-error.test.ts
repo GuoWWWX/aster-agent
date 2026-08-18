@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { getUserErrorMessage } from "./agent-error.js";
 
 describe("renderer error messages", () => {
-  it("shows structured errors with their correlation id", () => {
+  it("does not show the internal correlation id in user-facing errors", () => {
     const reason = new AgentClientError({
       code: "PERMISSION_DENIED",
       id: "123e4567-e89b-42d3-a456-426614174000",
@@ -12,9 +12,7 @@ describe("renderer error messages", () => {
       retryable: false,
     });
 
-    expect(getUserErrorMessage(reason, "操作失败")).toContain(
-      "123e4567-e89b-42d3-a456-426614174000",
-    );
+    expect(getUserErrorMessage(reason, "操作失败")).toBe("没有权限执行这项操作。");
   });
 
   it("does not expose undecorated Electron errors", () => {

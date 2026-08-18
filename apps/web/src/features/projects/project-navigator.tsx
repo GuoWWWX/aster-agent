@@ -486,11 +486,9 @@ export function ProjectNavigator({
     ? contextMenu.target.project.id
     : null;
   const contextMenuProjectHasRunningSession = contextMenuProjectId !== null &&
-    sessions.some((session) => session.projectId === contextMenuProjectId && (
-      session.activeRunId !== null ||
-      session.lastRunStatus === "queued" ||
-      session.lastRunStatus === "running"
-    ));
+    sessions.some((session) =>
+      session.projectId === contextMenuProjectId && isSessionRunning(session),
+    );
 
   function openContextMenu(
     event: MouseEvent,
@@ -1223,7 +1221,8 @@ type SessionButtonProps = {
 };
 
 function isSessionRunning(session: ProjectSession): boolean {
-  return session.activeRunId !== null
+  return (session.activeSubagentCount ?? 0) > 0
+    || session.activeRunId !== null
     || session.lastRunStatus === "queued"
     || session.lastRunStatus === "running";
 }
@@ -1477,9 +1476,7 @@ function NavigatorContextMenuView({
 }): ReactElement {
   const target = menu.target;
   const sessionIsRunning = target.kind === "session" && (
-    target.session.activeRunId !== null ||
-    target.session.lastRunStatus === "queued" ||
-    target.session.lastRunStatus === "running"
+    isSessionRunning(target.session)
   );
 
   return (

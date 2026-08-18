@@ -40,7 +40,6 @@ export class ApplicationErrorBoundary extends Component<
           <TriangleAlert aria-hidden="true" size={22} />
           <h1>页面暂时无法显示</h1>
           <p>重新加载后可以继续使用，未发送的输入可能需要重新填写。</p>
-          <small>错误编号：{this.state.errorId}</small>
           <button type="button" onClick={() => window.location.reload()}>
             <RefreshCw aria-hidden="true" size={15} />
             重新加载
