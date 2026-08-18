@@ -346,7 +346,7 @@ team_events
 6. 增加多项目注册、按任务绑定项目和跨项目拆分。
 7. 最后接入真实模型做自动扩容和路由评测。
 
-不直接引入 AutoGen、CrewAI 或 LangGraph 作为核心运行时。它们的调度思想可借鉴，但本产品需要 TypeScript、Electron、本地权限、SQLite 恢复和项目工作区隔离的统一控制；先在 `packages/agent-core` 内实现最小状态机，出现独立复用需求后再拆调度 package。
+历史基线曾决定不直接引入 LangGraph；该决定已由 2026-08-19 的技术选型更新取代。当前采用 LangGraph 作为 `AgentRuntime` 内部执行图，但本地权限、SQLite 业务事实、工作区隔离和事件合同仍由项目 façade 控制。AutoGen/CrewAI 仍不作为核心运行时。具体边界和迁移顺序见[LangChain 与 LangGraph 改造方案](./15-LangChain与LangGraph改造方案.md)。
 
 ## 13. 验收场景
 

@@ -181,8 +181,9 @@ SQLite + MCP + 受控本地工具
 | UI 设计系统 | shadcn/ui `radix-nova` + Radix + Tailwind CSS 4 + CVA + Lucide | 沿用 md-king 的视觉语言，以项目自有组件源码和语义 Token 维护 |
 | 包管理 | pnpm workspace | 管理桌面端、Agent Core、工具和公共协议包 |
 | 状态管理 | 继续使用 md-king 现有 Zustand Store 模式 | 管理 UI 级会话、面板和交互状态；持久数据不只存在 Store 中 |
-| Agent Runtime | Node.js + TypeScript | Team Lead、任务调度、Agent Loop、模型适配、上下文和工具调度 |
-| 模型层 | `OpenAiCompatibleAdapter` + `ModelProviderAdapter` | 当前使用原生 `fetch` 完成 OpenAI-compatible 流式、工具调用和模型发现；后续官方 SDK 仅作为新增协议 Adapter 的实现选择 |
+| Agent Runtime | Node.js + TypeScript + LangGraph | `AgentRuntime` 保留为应用 façade；LangGraph 接管内部执行图、循环、条件路由、中断恢复和图状态 Checkpoint |
+| 模型层 | LangChain Core/Provider + `ModelProviderAdapter` | 由 LangChain Provider 负责协议、流式和 Tool Calling；中立 Adapter 合同、上下文预算和业务事件仍由项目维护 |
+| 图状态存储 | LangGraph `BaseCheckpointSaver` + 项目 `node:sqlite` 适配器 | 使用现有 SQLite 能力保存可恢复图状态；不把 `better-sqlite3` 直接带入 Electron |
 | 数据校验 | Zod + JSON Schema | 工具入参、IPC 消息、配置和模型结构化输出校验 |
 | 工具扩展 | 官方 MCP TypeScript SDK | 接入外部工具；不赋予 MCP Server 隐式本机权限 |
 | 浏览器自动化 | Playwright / CDP | 页面导航、定位、交互、截图和下载；具体嵌入方式先做 PoC |
@@ -225,7 +226,7 @@ TypeScript 7 已发布，但当前稳定 `typescript-eslint` 尚未支持其编�
 
 - 不采用 Python 作为第一阶段 Agent 主运行时。需要 OCR、数据处理或本地模型时，可作为独立 MCP 工具接入。
 - 不采用 Rust 重写 Node 已能可靠完成的文件、Git 和命令能力。
-- 不直接使用 LangChain、LangGraph 等框架接管整个 Agent 生命周期。
+- 不使用 Vercel AI SDK 或 LangChain 高层 AgentExecutor 接管业务生命周期；本项目采用 LangGraph 图作为内部编排，并保留 AgentRuntime 的应用边界。详细决策见[LangChain 与 LangGraph 改造方案](./15-LangChain与LangGraph改造方案.md)。
 - 不让 Renderer 直接获得 Node、文件系统、Shell 或密钥权限。
 - 不在第一阶段设计“万物皆插件”的复杂架构。
 
