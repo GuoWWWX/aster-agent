@@ -1,4 +1,4 @@
-import type { ModelToolDefinition } from "../model/openai-compatible-adapter.js";
+import type { ModelToolDefinition } from "../model/model-contracts.js";
 import type { ToolExecution } from "./project-tool-registry.js";
 
 export type ToolAvailabilityContext = {

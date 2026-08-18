@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ConversationTaskList } from "@agent/protocol";
 
-import type { ModelToolDefinition } from "../model/openai-compatible-adapter.js";
+import type { ModelToolDefinition } from "../model/model-contracts.js";
 import { parseToolArguments } from "../model/tool-arguments.js";
 import { AgentDatabase } from "../storage/agent-database.js";
 import { toolErrorContent } from "../errors/tool-error.js";

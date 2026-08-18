@@ -10,7 +10,6 @@ import {
   modelRuntimeStatusSchema,
   type DiscoverModelsInput,
   type DiscoveredModel,
-  type ContextCompressionThreshold,
   type ModelApiFormat,
   type ModelConnectionStatus,
   type ModelProfile,
@@ -20,7 +19,9 @@ import {
   type SetDefaultModelInput
 } from "@agent/protocol";
 import { z } from "zod";
-import { ModelProtocolAdapter } from "./model-protocol-adapter.js";
+import { ModelAdapterRegistry } from "./model-adapter-registry.js";
+import type { ModelConfiguration } from "./model-contracts.js";
+export type { ModelConfiguration } from "./model-contracts.js";
 import {
   readJsonDocument,
   writeJsonDocument,
@@ -189,16 +190,6 @@ const storedConfigurationV5Schema = z
   });
 
 type StoredConfiguration = z.infer<typeof storedConfigurationV5Schema>;
-
-export type ModelConfiguration = {
-  apiKey: string;
-  apiFormat: ModelApiFormat;
-  baseUrl: string;
-  contextCompression?: ContextCompressionThreshold;
-  contextWindow?: number;
-  modelId: string;
-  reasoningOptions: ModelReasoningOption[];
-};
 
 function normalizeBaseUrl(value: string): string {
   return new URL(value.trim()).toString().replace(/\/$/, "");
@@ -446,7 +437,7 @@ export class ModelCredentialStore {
   ): Promise<{ content: string; modelId: string }> {
     try {
       const configuration = this.getConfiguration(providerId, modelId);
-      const result = await new ModelProtocolAdapter().completeTurn({
+      const result = await new ModelAdapterRegistry().completeTurn({
         configuration,
         maxOutputTokens: 64,
         messages: [{

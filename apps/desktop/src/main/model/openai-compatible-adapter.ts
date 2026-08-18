@@ -1,11 +1,12 @@
 import { z } from "zod";
-import type { ModelReasoningOption } from "@agent/protocol";
-
-import type { ModelConfiguration } from "./model-credential-store.js";
 import type {
+  CompleteTurnInput,
+  ModelConfiguration,
+  ModelMessage,
+  ModelProviderAdapter,
   ModelProviderState,
-  ModelToolCall
-} from "../storage/agent-database.js";
+  ModelTurnResult,
+} from "./model-contracts.js";
 import { createModelRequestError } from "./model-request-error.js";
 import { readSseDataStream } from "./sse-data-stream.js";
 
@@ -42,75 +43,20 @@ const completionChunkSchema = z
   })
   .passthrough();
 
-export type ModelMessage = {
-  attachments: ModelMessageAttachment[];
-  content: string;
-  providerState?: ModelProviderState;
-  role: "system" | "user" | "assistant" | "tool";
-  toolCallId: string | null;
-  toolCalls: ModelToolCall[];
-};
+import { modelImageAttachmentCaption } from "./model-contracts.js";
 
-export type ModelMessageAttachment = {
-  contextTokens: number;
-  id: string;
-  mimeType: string;
-  name: string;
-  projectPath: string | null;
-  readState: "full" | "metadata_only" | "preview";
-  source: "project" | "upload";
-  truncated: boolean;
-} & (
-  | { content: string; kind: "text" }
-  | { data: string | null; kind: "image" }
-);
-
-export function modelImageAttachmentCaption(
-  attachment: Pick<ModelMessageAttachment, "id" | "name" | "projectPath" | "source">
-): string {
-  const location = attachment.projectPath === null
-    ? "用户上传图片"
-    : `项目图片 ${attachment.projectPath}`;
-  return [
-    `[图片附件 ${attachment.name}]`,
-    `attachment_id: ${attachment.id}`,
-    `source: ${location}`
-  ].join("\n");
-}
-
-export type ModelToolDefinition = {
-  description: string;
-  name: string;
-  parameters: Record<string, unknown>;
-};
-
-export type ModelTurnResult = {
-  content: string;
-  finishReason: string | null;
-  providerState?: ModelProviderState;
-  toolCalls: ModelToolCall[];
-};
-
-export type ModelReasoningDelta = {
-  delta: string;
-  kind: "summary" | "content";
-  reset: boolean;
-};
-
-export type CompleteTurnInput = {
-  configuration: ModelConfiguration;
-  maxOutputTokens: number;
-  messages: ModelMessage[];
-  onReasoningDelta?(event: ModelReasoningDelta): void;
-  onTextDelta(delta: string): void;
-  reasoning: ModelReasoningOption | undefined;
-  signal: AbortSignal;
-  tools: ModelToolDefinition[];
-};
-
-export interface ModelProviderAdapter {
-  completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult>;
-}
+export type {
+  CompleteTurnInput,
+  ModelConfiguration,
+  ModelMessage,
+  ModelMessageAttachment,
+  ModelProviderAdapter,
+  ModelProviderState,
+  ModelToolCall,
+  ModelToolDefinition,
+  ModelTurnResult,
+} from "./model-contracts.js";
+export { modelImageAttachmentCaption } from "./model-contracts.js";
 
 type PendingToolCall = {
   arguments: string;
@@ -213,7 +159,7 @@ function createRequestBody(input: CompleteTurnInput): Record<string, unknown> {
   return body;
 }
 
-export class OpenAiCompatibleAdapter implements ModelProviderAdapter {
+export class OpenAiChatCompletionsAdapter implements ModelProviderAdapter {
   public constructor(
     private readonly request: typeof fetch = fetch
   ) {}
@@ -304,3 +250,6 @@ export class OpenAiCompatibleAdapter implements ModelProviderAdapter {
   }
 
 }
+
+/** @deprecated Use OpenAiChatCompletionsAdapter through ModelAdapterRegistry. */
+export const OpenAiCompatibleAdapter = OpenAiChatCompletionsAdapter;

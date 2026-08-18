@@ -9,12 +9,11 @@ import {
   type ModelToolDefinition,
   type ModelTurnResult,
   modelImageAttachmentCaption,
-  OpenAiCompatibleAdapter
-} from "./openai-compatible-adapter.js";
+  type ModelToolCall,
+} from "./model-contracts.js";
 import { createModelRequestError } from "./model-request-error.js";
 import { parseToolArguments } from "./tool-arguments.js";
 import { readSseDataStream } from "./sse-data-stream.js";
-import type { ModelToolCall } from "../storage/agent-database.js";
 
 type PendingToolCall = {
   arguments: string;
@@ -367,24 +366,11 @@ function geminiRequest(input: CompleteTurnInput): Record<string, unknown> {
   return body;
 }
 
-export class ModelProtocolAdapter implements ModelProviderAdapter {
-  private readonly openAiChat: OpenAiCompatibleAdapter;
-
-  public constructor(private readonly request: typeof fetch = fetch) {
-    this.openAiChat = new OpenAiCompatibleAdapter(request);
-  }
+export class OpenAiResponsesAdapter implements ModelProviderAdapter {
+  public constructor(private readonly request: typeof fetch = fetch) {}
 
   public async completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
-    switch (input.configuration.apiFormat) {
-      case "openai-chat-completions":
-        return this.openAiChat.completeTurn(input);
-      case "openai-responses":
-        return this.completeOpenAiResponses(input);
-      case "anthropic-messages":
-        return this.completeAnthropic(input);
-      case "google-gemini":
-        return this.completeGemini(input);
-    }
+    return this.completeOpenAiResponses(input);
   }
 
   private async completeOpenAiResponses(input: CompleteTurnInput): Promise<ModelTurnResult> {
@@ -604,6 +590,15 @@ export class ModelProtocolAdapter implements ModelProviderAdapter {
     };
   }
 
+}
+
+export class AnthropicMessagesAdapter implements ModelProviderAdapter {
+  public constructor(private readonly request: typeof fetch = fetch) {}
+
+  public async completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    return this.completeAnthropic(input);
+  }
+
   private async completeAnthropic(input: CompleteTurnInput): Promise<ModelTurnResult> {
     const response = await this.request(endpoint(input.configuration.baseUrl, "messages"), {
       body: JSON.stringify(anthropicRequest(input)),
@@ -730,6 +725,15 @@ export class ModelProtocolAdapter implements ModelProviderAdapter {
           }),
       toolCalls: [...toolCalls.values()]
     };
+  }
+
+}
+
+export class GoogleGeminiAdapter implements ModelProviderAdapter {
+  public constructor(private readonly request: typeof fetch = fetch) {}
+
+  public async completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    return this.completeGemini(input);
   }
 
   private async completeGemini(input: CompleteTurnInput): Promise<ModelTurnResult> {

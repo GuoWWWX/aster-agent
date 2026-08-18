@@ -14,7 +14,7 @@ import { rgPath } from "@vscode/ripgrep";
 import { applyPatch, createTwoFilesPatch, parsePatch } from "diff";
 import { z } from "zod";
 
-import type { ModelToolDefinition } from "../model/openai-compatible-adapter.js";
+import type { ModelToolDefinition } from "../model/model-contracts.js";
 import { parseToolArguments } from "../model/tool-arguments.js";
 import { toolErrorContent } from "../errors/tool-error.js";
 import { ProjectRegistry } from "../projects/project-registry.js";

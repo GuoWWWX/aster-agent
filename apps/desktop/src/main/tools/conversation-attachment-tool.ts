@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { ModelToolDefinition } from "../model/openai-compatible-adapter.js";
+import type { ModelToolDefinition } from "../model/model-contracts.js";
 import { parseToolArguments } from "../model/tool-arguments.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
 import { toolErrorContent } from "../errors/tool-error.js";

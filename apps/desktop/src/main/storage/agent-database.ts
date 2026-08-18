@@ -26,24 +26,13 @@ import {
   type ConversationTimelineItem,
   type ConversationToolItem,
   type CreateConversationInput,
-  type ModelApiFormat,
   type ProjectSummary,
   type RunAccepted,
   type SendConversationMessageInput
 } from "@agent/protocol";
+import type { ModelProviderState, ModelToolCall } from "../model/model-contracts.js";
 
-export type ModelToolCall = {
-  arguments: string;
-  id: string;
-  name: string;
-};
-
-export type ModelProviderState = {
-  apiFormat: ModelApiFormat;
-  baseUrl: string;
-  modelId: string;
-  payload: unknown;
-};
+export type { ModelProviderState, ModelToolCall } from "../model/model-contracts.js";
 
 export type StoredModelMessage = {
   attachmentIds: string[];

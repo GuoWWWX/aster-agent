@@ -33,14 +33,14 @@ import {
 } from "@agent/protocol";
 
 import { reportMainError, toMainAgentError } from "../errors/agent-error.js";
-import type { ModelConfiguration } from "../model/model-credential-store.js";
+import type { ModelConfiguration } from "../model/model-contracts.js";
 import {
   type CompleteTurnInput,
   type ModelMessage,
   type ModelProviderAdapter,
   type ModelTurnResult
-} from "../model/openai-compatible-adapter.js";
-import { ModelProtocolAdapter } from "../model/model-protocol-adapter.js";
+} from "../model/model-contracts.js";
+import { ModelAdapterRegistry } from "../model/model-adapter-registry.js";
 import { ModelRequestError } from "../model/model-request-error.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
 import {
@@ -389,7 +389,7 @@ export class AgentRuntime {
     private readonly credentials: ModelConfigurationProvider,
     private readonly projects: ProjectRegistry,
     private readonly tools: ProjectToolRegistry,
-    private readonly model: ModelProviderAdapter = new ModelProtocolAdapter(),
+    private readonly model: ModelProviderAdapter = new ModelAdapterRegistry(),
     private readonly waitForRetry: RetryWaiter = waitForRetryDelay,
     private readonly contextCompression: ContextCompressionConfigurationProvider =
       defaultContextCompressionConfigurationProvider,
