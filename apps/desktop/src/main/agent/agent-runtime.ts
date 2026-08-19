@@ -96,6 +96,7 @@ import {
 import { SubagentTool } from "./subagent-tool.js";
 import {
   ToolHandlerRegistry,
+  type ToolExecutionPolicy,
   type ToolHandler,
   type ToolHandlerExecutionContext,
 } from "../tools/tool-handler-registry.js";
@@ -193,6 +194,15 @@ type RuntimeToolContext = ToolHandlerExecutionContext & {
   permissionMode: ConversationPermissionMode;
   providerId: string | undefined;
   reasoning: ModelReasoningOption | undefined;
+};
+
+type GraphToolExecutionInput = Omit<RuntimeToolContext, "onTaskListChanged" | "signal"> & {
+  controller: AbortController;
+};
+
+type GraphToolCallInput = GraphToolExecutionInput & {
+  toolBatchId: string;
+  toolCall: ModelToolCall;
 };
 
 type RetryWaiter = (delayMs: number, signal: AbortSignal) => Promise<void>;
@@ -328,6 +338,23 @@ function hasToolNodeMessages(value: unknown): value is { messages: unknown[] } {
     && value !== null
     && "messages" in value
     && Array.isArray(value.messages);
+}
+
+function toolCallIdFromConfig(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null || !("toolCall" in value)) return undefined;
+  const toolCall = value.toolCall;
+  if (typeof toolCall !== "object" || toolCall === null || !("id" in toolCall)) return undefined;
+  return typeof toolCall.id === "string" ? toolCall.id : undefined;
+}
+
+function parseToolArgumentsOrEmpty(rawArguments: string): Record<string, unknown> {
+  try {
+    return parseToolArguments(rawArguments);
+  } catch {
+    // The project handler owns the structured malformed-JSON error. ToolNode
+    // still needs an object-shaped value to invoke that handler.
+    return {};
+  }
 }
 
 const langChainToolResultEnvelopeSchema = z
@@ -511,6 +538,12 @@ export class AgentRuntime {
   /** Completed calls are replayed as messages after an interrupt, never re-executed. */
   private readonly completedToolsByRunCall = new Map<string, CachedGraphToolResult>();
 
+  /** Prepared side effects survive an approval interrupt without taking a new file snapshot. */
+  private readonly preparedToolsByRunCall = new Map<string, ToolExecution>();
+
+  /** Keeps one UI batch identity while a multi-call ToolNode is resumed. */
+  private readonly toolBatchIdsByRunCalls = new Map<string, string>();
+
   private readonly pendingChangeApprovals = new Map<string, PendingChangeApproval>();
 
   /** Marks decisions that the replayed interrupt must consume without re-notifying the UI. */
@@ -590,6 +623,7 @@ export class AgentRuntime {
           toolName,
         }),
         getDefinitions: () => this.agentCommunicationTool.getDefinitions(),
+        getExecutionPolicy: ({ toolName }) => this.agentCommunicationTool.getExecutionPolicy(toolName),
         isAvailable: () => true,
       },
       {
@@ -613,6 +647,7 @@ export class AgentRuntime {
           toolName,
         }),
         getDefinitions: () => this.subagentTool.getDefinitions(),
+        getExecutionPolicy: ({ toolName }) => this.subagentTool.getExecutionPolicy(toolName),
         isAvailable: () => true,
       },
       {
@@ -630,6 +665,7 @@ export class AgentRuntime {
           });
         },
         getDefinitions: () => this.taskListTool.getDefinitions(),
+        getExecutionPolicy: ({ toolName }) => this.taskListTool.getExecutionPolicy(toolName),
         isAvailable: () => true,
       },
     ];
@@ -647,6 +683,10 @@ export class AgentRuntime {
           });
         },
         getDefinitions: () => this.attachmentTool?.getDefinitions() ?? [],
+        getExecutionPolicy: ({ toolName }) => {
+          if (this.attachmentTool === null) throw new Error("Attachment tool is unavailable.");
+          return this.attachmentTool.getExecutionPolicy(toolName);
+        },
         isAvailable: () => true,
       });
     }
@@ -676,6 +716,10 @@ export class AgentRuntime {
           });
         },
         getDefinitions: () => this.skillRuntime?.getDefinitions() ?? [],
+        getExecutionPolicy: ({ toolName }) => {
+          if (this.skillRuntime === null) throw new Error("Skill Runtime is unavailable.");
+          return this.skillRuntime.getExecutionPolicy(toolName);
+        },
         isAvailable: () => true,
       });
     }
@@ -693,6 +737,11 @@ export class AgentRuntime {
         );
       },
       getDefinitions: () => this.tools.getDefinitions(),
+      getExecutionPolicy: ({ context, rawArguments, toolName }) => this.tools.getExecutionPolicy(
+        toolName,
+        rawArguments,
+        context.permissionMode === "full_access",
+      ),
       isAvailable: ({ projectId }) => projectId !== undefined,
     });
     return new ToolHandlerRegistry(handlers);
@@ -1537,6 +1586,12 @@ export class AgentRuntime {
       for (const key of this.completedToolsByRunCall.keys()) {
         if (key.startsWith(`${runId}:`)) this.completedToolsByRunCall.delete(key);
       }
+      for (const key of this.preparedToolsByRunCall.keys()) {
+        if (key.startsWith(`${runId}:`)) this.preparedToolsByRunCall.delete(key);
+      }
+      for (const key of this.toolBatchIdsByRunCalls.keys()) {
+        if (key.startsWith(`${runId}:`)) this.toolBatchIdsByRunCalls.delete(key);
+      }
       if (this.graphCheckpointer !== null) {
         try {
           await this.graphCheckpointer.deleteThread(runId);
@@ -1954,56 +2009,157 @@ export class AgentRuntime {
     }
   }
 
-  private async executeGraphTools(input: {
-    configuration: ModelConfiguration;
-    contextCompressionConfiguration: ContextCompressionThreshold;
-    conversationId: string;
-    controller: AbortController;
-    emit: RunEventEmitter;
-    operationOwner: ProjectOperationOwner;
-    permissionMode: ConversationPermissionMode;
-    projectId: string | undefined;
-    providerId: string | undefined;
-    reasoning: ModelReasoningOption | undefined;
-    runId: string;
-    toolCalls: readonly ModelToolCall[];
-  }): Promise<{ activeSkills: SkillSnapshotRef[]; messages: ModelMessage[]; successful: boolean }> {
-    const messages: ModelMessage[] = [];
+  private async executeGraphTools(
+    input: GraphToolExecutionInput & { toolCalls: readonly ModelToolCall[] },
+  ): Promise<{ activeSkills: SkillSnapshotRef[]; messages: ModelMessage[]; successful: boolean }> {
+    const messages = Array<ModelMessage | undefined>(input.toolCalls.length);
+    const policies = new Map<number, ToolExecutionPolicy>();
     let hasSuccessfulToolExecution = false;
-    const toolBatchId = randomUUID();
-    for (const toolCall of input.toolCalls) {
+    const toolBatchKey = `${input.runId}:${input.toolCalls.map((toolCall) => toolCall.id).join(",")}`;
+    const toolBatchId = this.toolBatchIdsByRunCalls.get(toolBatchKey) ?? randomUUID();
+    this.toolBatchIdsByRunCalls.set(toolBatchKey, toolBatchId);
+
+    for (let index = 0; index < input.toolCalls.length; index += 1) {
       input.controller.signal.throwIfAborted();
+      const toolCall = input.toolCalls[index];
+      if (toolCall === undefined) continue;
       const callKey = `${input.runId}:${toolCall.id}`;
       const cached = this.completedToolsByRunCall.get(callKey);
       if (cached !== undefined) {
-        messages.push(cached.message);
+        messages[index] = cached.message;
         hasSuccessfulToolExecution ||= cached.envelope.successful;
         continue;
       }
-      // ToolNode owns name dispatch and StructuredTool input handling. Invoke
-      // one call at a time because project writes and approvals are ordered
-      // side effects, not freely parallelizable reads.
-      let argumentsValue: Record<string, unknown>;
-      try {
-        argumentsValue = parseToolArguments(toolCall.arguments);
-      } catch {
-        // Tool handlers return a structured validation result. ToolNode still
-        // needs an object-shaped input to enter the handler for malformed JSON.
-        argumentsValue = {};
+      policies.set(index, this.toolHandlers.getExecutionPolicy({
+        context: this.runtimeToolContext(input),
+        rawArguments: toolCall.arguments,
+        toolName: toolCall.name,
+      }));
+    }
+
+    // Prepare every file change from this model turn before applying the first
+    // one. A later call targeting the same file therefore keeps the original
+    // expectedContent and becomes FILE_CHANGED instead of being re-based.
+    for (let index = 0; index < input.toolCalls.length; index += 1) {
+      const toolCall = input.toolCalls[index];
+      const policy = policies.get(index);
+      if (
+        toolCall !== undefined
+        && policy?.kind === "serial"
+        && policy.prepareBeforeBatch === true
+      ) {
+        await this.prepareGraphToolCall({ ...input, toolBatchId, toolCall });
       }
-      const definition = this.toolHandlers
-        .getDefinitions({ projectId: input.projectId })
-        .find((candidate) => candidate.name === toolCall.name);
+    }
+
+    let index = 0;
+    while (index < input.toolCalls.length) {
+      input.controller.signal.throwIfAborted();
+      const toolCall = input.toolCalls[index];
+      if (toolCall === undefined) {
+        index += 1;
+        continue;
+      }
+      const callKey = `${input.runId}:${toolCall.id}`;
+      if (this.completedToolsByRunCall.has(callKey)) {
+        index += 1;
+        continue;
+      }
+      const policy = policies.get(index) ?? { kind: "serial" as const };
+      const group: ModelToolCall[] = [toolCall];
+      let nextIndex = index + 1;
+      if (policy.kind === "parallel") {
+        while (nextIndex < input.toolCalls.length) {
+          const nextCall = input.toolCalls[nextIndex];
+          const nextPolicy = policies.get(nextIndex);
+          if (
+            nextCall === undefined
+            || this.completedToolsByRunCall.has(`${input.runId}:${nextCall.id}`)
+            || nextPolicy?.kind !== "parallel"
+            || nextPolicy.group !== policy.group
+          ) {
+            break;
+          }
+          group.push(nextCall);
+          nextIndex += 1;
+        }
+      }
+
+      const envelopes = await this.invokeGraphToolNode({
+        ...input,
+        toolBatchId,
+        toolCalls: group,
+      });
+      for (const [offset, call] of group.entries()) {
+        const result = envelopes.get(call.id);
+        if (result === undefined) {
+          throw new Error(`ToolNode did not return a result for ${call.name}.`);
+        }
+        const resultIndex = index + offset;
+        const message: ModelMessage = {
+          attachments: [],
+          content: result.content,
+          role: "tool",
+          toolCallId: call.id,
+          toolCalls: [],
+        };
+        messages[resultIndex] = message;
+        hasSuccessfulToolExecution ||= result.successful;
+        this.completedToolsByRunCall.set(`${input.runId}:${call.id}`, { envelope: result, message });
+      }
+      index = nextIndex;
+    }
+
+    this.toolBatchIdsByRunCalls.delete(toolBatchKey);
+    return {
+      activeSkills: [...(this.activeSkillRefsByRun.get(input.runId)?.values() ?? [])],
+      messages: messages.filter((message): message is ModelMessage => message !== undefined),
+      successful: hasSuccessfulToolExecution,
+    };
+  }
+
+  private async prepareGraphToolCall(input: GraphToolCallInput): Promise<void> {
+    const key = `${input.runId}:${input.toolCall.id}`;
+    if (this.preparedToolsByRunCall.has(key)) return;
+    try {
+      const proposal = await this.toolHandlers.execute({
+        context: this.runtimeToolContext(input),
+        rawArguments: input.toolCall.arguments,
+        toolName: input.toolCall.name,
+      });
+      this.preparedToolsByRunCall.set(key, proposal);
+    } catch (error) {
+      if (input.controller.signal.aborted || isAbortError(error) || isGraphInterrupt(error)) {
+        throw error;
+      }
+      this.preparedToolsByRunCall.set(key, {
+        content: toolErrorContent(error, `tool:${input.toolCall.name}`),
+        isError: true,
+        kind: "completed",
+      });
+    }
+  }
+
+  private async invokeGraphToolNode(input: GraphToolExecutionInput & {
+    toolBatchId: string;
+    toolCalls: readonly ModelToolCall[];
+  }): Promise<Map<string, LangChainToolResultEnvelope>> {
+    const callsById = new Map(input.toolCalls.map((toolCall) => [toolCall.id, toolCall]));
+    const definitions = this.toolHandlers.getDefinitions({ projectId: input.projectId });
+    const toolsByName = new Map<string, DynamicStructuredTool>();
+    for (const toolCall of input.toolCalls) {
+      if (toolsByName.has(toolCall.name)) continue;
+      const definition = definitions.find((candidate) => candidate.name === toolCall.name);
       if (definition === undefined) throw new Error(`Unknown tool: ${toolCall.name}`);
-      const tool = new DynamicStructuredTool({
+      toolsByName.set(toolCall.name, new DynamicStructuredTool({
         description: definition.description,
-        func: async () => {
+        func: async (_arguments, _runManager, config) => {
+          const callId = toolCallIdFromConfig(config);
+          const call = callId === undefined ? undefined : callsById.get(callId);
+          if (call === undefined) throw new Error(`ToolNode lost the tool call identity for ${definition.name}.`);
           const execution = await this.executeGraphToolCall({
             ...input,
-            toolCall: {
-              ...toolCall,
-            },
-            toolBatchId,
+            toolCall: call,
           });
           return JSON.stringify({
             activeSkills: execution.activeSkills,
@@ -2016,60 +2172,70 @@ export class AgentRuntime {
         },
         name: definition.name,
         schema: z.record(z.string(), z.unknown()),
-      });
-      const toolNode = new ToolNode([tool], { handleToolErrors: false });
-      const output: unknown = await toolNode.invoke({
-        messages: [new AIMessage({
-          content: "",
-          tool_calls: [{
-            args: argumentsValue,
-            id: toolCall.id,
-            name: toolCall.name,
-            type: "tool_call",
-          }],
-        })],
-      });
-      if (!hasToolNodeMessages(output)) {
-        throw new Error(`ToolNode returned an invalid result for ${toolCall.name}.`);
-      }
-      const toolMessage = output.messages[0];
-      if (!(toolMessage instanceof ToolMessage)) {
-        throw new Error(`ToolNode did not return a ToolMessage for ${toolCall.name}.`);
-      }
-      const envelope = parseLangChainToolResult(toolMessage.content);
-      hasSuccessfulToolExecution ||= envelope.successful;
-      const message: ModelMessage = {
-        attachments: [],
-        content: envelope.content,
-        role: "tool",
-        toolCallId: toolCall.id,
-        toolCalls: []
-      };
-      messages.push(message);
-      this.completedToolsByRunCall.set(callKey, { envelope, message });
+      }));
     }
+
+    const output: unknown = await new ToolNode([...toolsByName.values()], {
+      handleToolErrors: false,
+    }).invoke({
+      messages: [new AIMessage({
+        content: "",
+        tool_calls: input.toolCalls.map((toolCall) => ({
+          args: parseToolArgumentsOrEmpty(toolCall.arguments),
+          id: toolCall.id,
+          name: toolCall.name,
+          type: "tool_call" as const,
+        })),
+      })],
+    }, { signal: input.controller.signal });
+    if (!hasToolNodeMessages(output)) {
+      throw new Error("ToolNode returned an invalid result.");
+    }
+    const results = new Map<string, LangChainToolResultEnvelope>();
+    for (const message of output.messages) {
+      if (!(message instanceof ToolMessage)) {
+        throw new Error("ToolNode did not return a ToolMessage.");
+      }
+      const callId = message.tool_call_id;
+      if (typeof callId !== "string" || !callsById.has(callId)) {
+        throw new Error("ToolNode returned a result for an unknown tool call.");
+      }
+      if (results.has(callId)) throw new Error(`ToolNode returned duplicate result for ${callId}.`);
+      results.set(callId, parseLangChainToolResult(message.content));
+    }
+    if (results.size !== input.toolCalls.length) {
+      throw new Error("ToolNode did not return one result for every tool call.");
+    }
+    return results;
+  }
+
+  private runtimeToolContext(input: GraphToolExecutionInput): RuntimeToolContext {
     return {
-      activeSkills: [...(this.activeSkillRefsByRun.get(input.runId)?.values() ?? [])],
-      messages,
-      successful: hasSuccessfulToolExecution,
+      configuration: input.configuration,
+      contextCompressionConfiguration: input.contextCompressionConfiguration,
+      conversationId: input.conversationId,
+      emit: input.emit,
+      onTaskListChanged: (taskList) => {
+        this.emit(input.emit, {
+          conversationId: input.conversationId,
+          runId: input.runId,
+          taskList,
+          type: "task_list.updated",
+        });
+      },
+      operationOwner: input.operationOwner,
+      permissionMode: input.permissionMode,
+      projectId: input.projectId,
+      providerId: input.providerId,
+      reasoning: input.reasoning,
+      runId: input.runId,
+      signal: input.controller.signal,
     };
   }
 
-  private async executeGraphToolCall(input: {
-    configuration: ModelConfiguration;
-    contextCompressionConfiguration: ContextCompressionThreshold;
-    conversationId: string;
-    controller: AbortController;
-    emit: RunEventEmitter;
-    operationOwner: ProjectOperationOwner;
-    permissionMode: ConversationPermissionMode;
-    projectId: string | undefined;
-    providerId: string | undefined;
-    reasoning: ModelReasoningOption | undefined;
-    runId: string;
-    toolBatchId: string;
-    toolCall: ModelToolCall;
-  }): Promise<LangChainToolResultEnvelope & { activeSkills: SkillSnapshotRef[] }> {
+  private async executeGraphToolCall(
+    input: GraphToolCallInput,
+  ): Promise<LangChainToolResultEnvelope & { activeSkills: SkillSnapshotRef[] }> {
     const key = `${input.runId}:${input.toolCall.id}`;
     const startedTool = this.startedToolsByRunCall.get(key)
       ?? conversationToolItemSchema.parse({
@@ -2096,34 +2262,19 @@ export class AgentRuntime {
       });
     }
 
-    let proposal: ToolExecution | undefined;
+    let proposal: ToolExecution | undefined = this.preparedToolsByRunCall.get(key);
     let execution: ToolExecutionResult;
     try {
-      proposal = await this.toolHandlers.execute({
-        context: {
-          configuration: input.configuration,
-          contextCompressionConfiguration: input.contextCompressionConfiguration,
-          conversationId: input.conversationId,
-          emit: input.emit,
-          onTaskListChanged: (taskList) => {
-            this.emit(input.emit, {
-              conversationId: input.conversationId,
-              runId: input.runId,
-              taskList,
-              type: "task_list.updated",
-            });
-          },
-          operationOwner: input.operationOwner,
-          permissionMode: input.permissionMode,
-          projectId: input.projectId,
-          providerId: input.providerId,
-          reasoning: input.reasoning,
-          runId: input.runId,
-          signal: input.controller.signal,
-        },
-        rawArguments: input.toolCall.arguments,
-        toolName: input.toolCall.name,
-      });
+      if (proposal === undefined) {
+        proposal = await this.toolHandlers.execute({
+          context: this.runtimeToolContext(input),
+          rawArguments: input.toolCall.arguments,
+          toolName: input.toolCall.name,
+        });
+        if (proposal.kind === "change" || proposal.kind === "command") {
+          this.preparedToolsByRunCall.set(key, proposal);
+        }
+      }
       execution = proposal.kind === "change"
         ? await this.resolveFileChange({
             change: proposal.change,
@@ -2177,6 +2328,7 @@ export class AgentRuntime {
       tool: completedTool,
     });
     this.startedToolsByRunCall.delete(key);
+    this.preparedToolsByRunCall.delete(key);
     this.emit(input.emit, {
       conversationId: input.conversationId,
       fileChange:
@@ -2405,8 +2557,9 @@ export class AgentRuntime {
             ? "当前是临时对话，没有关联项目或文件工具。"
             : "当前是临时对话，没有关联项目；仍可使用 read_attachment 读取本对话中的文本附件。"
           : `当前提供工作目录内读文件、搜索、受控文件变更和 ${this.tools.getCommandEnvironmentDescription()} 命令工具；命令与写入均受本轮权限策略控制。`,
+        "同一模型轮可以返回多个相互独立的只读 Tool Call（例如同时 read_file 多个文件、search_text、find_files 或 read_attachment），运行时会并发执行并按调用 ID 保持结果对应。文件变更、审批、Agent 消息和任务状态按顺序处理；同批同文件的旧变更会作废。只有 full_access 且明确设置 parallel=true 的独立 run_command 才会并行，命令可能修改工作区时不要标记为并行。wait_for_commands 和 wait_for_subagents 优先一次传入多个 ID。",
         "简单、结果需要保持有界的文本或文件查询优先调用 search_text 和 find_files。需要 ripgrep 的上下文行、计数、多表达式、复杂 glob、精确 CLI 输出或管道组合时，可以直接用 run_command 执行 rg；应用已提供内置 rg，不要求用户另行安装。",
-        "如果项目工具返回 PROJECT_OPERATION_CONFLICT，不要盲目重试。先查看冲突中的对话和 operationId，再选择 wait_for_project_operation 等待，或用 send_agent_message 联系对方；完成等待后重新读取文件并生成新 Diff。",
+        "如果文件变更工具返回 PROJECT_OPERATION_CONFLICT、FILE_CHANGED 或 recovery.action=reread_and_rebuild_change，本次文件变更请求已经作废；不要排队、重放或继续提交相同参数。必要时等待当前占用操作结束，然后必须重新调用 read_file 获取最新内容，再生成新的 Diff。run_command 的 PROJECT_OPERATION_CONFLICT 同样表示原命令已作废；等待后应重新评估最新工作区状态，只在仍适用时生成新命令。",
         `用户为本次任务选择的权限模式：${permissionModeLabel(permissionMode)}。`,
         ...(workspace === null
           ? []

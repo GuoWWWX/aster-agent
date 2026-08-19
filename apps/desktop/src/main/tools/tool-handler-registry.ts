@@ -1,5 +1,8 @@
 import type { ModelToolDefinition } from "../model/model-contracts.js";
 import type { ToolExecution } from "./project-tool-registry.js";
+import type { ToolExecutionPolicy } from "./tool-execution-policy.js";
+
+export type { ToolExecutionPolicy } from "./tool-execution-policy.js";
 
 export type ToolAvailabilityContext = {
   projectId: string | undefined;
@@ -12,12 +15,15 @@ export type ToolHandlerExecutionContext = {
   signal: AbortSignal;
 };
 
+export type ToolHandlerInput<TContext extends ToolHandlerExecutionContext> = {
+  context: TContext;
+  rawArguments: string;
+  toolName: string;
+};
+
 export type ToolHandler<TContext extends ToolHandlerExecutionContext> = {
-  execute(input: {
-    context: TContext;
-    rawArguments: string;
-    toolName: string;
-  }): Promise<ToolExecution>;
+  execute(input: ToolHandlerInput<TContext>): Promise<ToolExecution>;
+  getExecutionPolicy?(input: ToolHandlerInput<TContext>): ToolExecutionPolicy;
   getDefinitions(): readonly ModelToolDefinition[];
   isAvailable(context: ToolAvailabilityContext): boolean;
 };
@@ -44,6 +50,15 @@ export class ToolHandlerRegistry<TContext extends ToolHandlerExecutionContext> {
     rawArguments: string;
     toolName: string;
   }): Promise<ToolExecution> {
+    return this.findHandler(input).execute(input);
+  }
+
+  public getExecutionPolicy(input: ToolHandlerInput<TContext>): ToolExecutionPolicy {
+    const handler = this.findHandler(input);
+    return handler.getExecutionPolicy?.(input) ?? { kind: "serial" };
+  }
+
+  private findHandler(input: ToolHandlerInput<TContext>): ToolHandler<TContext> {
     const availableHandlers = this.handlers.filter((handler) =>
       handler.isAvailable(input.context),
     );
@@ -54,6 +69,6 @@ export class ToolHandlerRegistry<TContext extends ToolHandlerExecutionContext> {
     if (matches.length > 1) throw new Error(`Multiple handlers registered for: ${input.toolName}`);
     const [match] = matches;
     if (match === undefined) throw new Error(`Unknown tool: ${input.toolName}`);
-    return match.execute(input);
+    return match;
   }
 }

@@ -12,6 +12,19 @@ type ToolValidationIssue = {
   path: Array<string | number>;
 };
 
+type ToolRecovery = {
+  action: "fix_arguments" | "reread_and_rebuild_change";
+  instruction: string;
+  issues?: ToolValidationIssue[];
+  retryable: boolean;
+};
+
+type ToolErrorOptions = {
+  code?: string;
+  recovery?: ToolRecovery;
+  value?: unknown;
+};
+
 const MAX_ISSUE_CODE_LENGTH = 80;
 const MAX_ISSUE_PATH_PARTS = 16;
 const MAX_ISSUE_PATH_TEXT_LENGTH = 120;
@@ -58,25 +71,37 @@ function validationIssues(reason: unknown): ToolValidationIssue[] {
   }).slice(0, 8);
 }
 
-export function toolErrorContent(reason: unknown, operation: string): string {
+export function toolErrorContent(
+  reason: unknown,
+  operation: string,
+  options: ToolErrorOptions = {},
+): string {
   const agentError = toMainAgentError(reason, { operation });
   if (agentError.code === "INTERNAL_ERROR" || agentError.code === "STORAGE_FAILED") {
     reportMainError(agentError, reason);
   }
   const issues = validationIssues(reason);
+  const recovery = options.recovery
+    ?? (agentError.code === "VALIDATION_FAILED"
+      ? {
+          action: "fix_arguments" as const,
+          instruction: "根据 issues 修正本次工具参数后重试；不要重复提交相同参数。",
+          issues,
+          retryable: true,
+        }
+      : agentError.code === "FILE_CHANGED"
+        ? {
+            action: "reread_and_rebuild_change" as const,
+            instruction: "本次文件变更已作废，不能排队或重试相同参数。先调用 read_file 读取最新文件内容，再基于最新内容重新生成变更。",
+            retryable: true,
+          }
+        : undefined);
   return JSON.stringify({
     agentError,
+    ...(options.code === undefined ? {} : { code: options.code }),
     error: formatAgentError(agentError),
     ok: false,
-    ...(agentError.code === "VALIDATION_FAILED"
-      ? {
-          recovery: {
-            action: "fix_arguments",
-            instruction: "根据 issues 修正本次工具参数后重试；不要重复提交相同参数。",
-            issues,
-            retryable: true,
-          },
-        }
-      : {}),
+    ...(options.value === undefined ? {} : { value: options.value }),
+    ...(recovery === undefined ? {} : { recovery }),
   });
 }

@@ -5,6 +5,7 @@ import type { ModelToolDefinition } from "../model/model-contracts.js";
 import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
 import { AgentDatabase } from "../storage/agent-database.js";
 import { toolErrorContent } from "../errors/tool-error.js";
+import type { ToolExecutionPolicy } from "../tools/tool-execution-policy.js";
 
 export const CREATE_TASK_LIST_TOOL_NAME = "create_task_list";
 export const UPDATE_TASK_LIST_TOOL_NAME = "update_task_list";
@@ -87,6 +88,11 @@ export class TaskListTool {
         parameters: modelToolParameters(closeTaskListSchema)
       }
     ];
+  }
+
+  public getExecutionPolicy(toolName: string): ToolExecutionPolicy {
+    if (!taskListToolNames.has(toolName)) throw new Error(`Unknown task list tool: ${toolName}`);
+    return { kind: "serial" };
   }
 
   public execute(

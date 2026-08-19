@@ -376,7 +376,7 @@ src/pages/convert/convert-page.tsx
 | 简单任务被过度拆分 | 默认直接模式，只有独立支线或并行收益明确时才委派 |
 | 任务列表变成形式主义或重复状态 | 只拆可独立验收步骤；列表直接投影 tasks/依赖/事件，不另建 Todo Store |
 | 自动扩容失控 | 仅 Team Lead 可创建 Worker，限制委派深度、并发、实例数、时间和 Token |
-| 多 Agent 同时覆盖文件 | 写任务使用隔离 worktree 和文件所有权，冲突任务阻塞或重新排程 |
+| 多 Agent 同时覆盖文件 | 当前共享工作区使用文件路径互斥和 `expectedContent` 乐观并发检查；冲突请求作废，重新读取后生成新 Diff。Worktree 仅作为未来可选隔离方案 |
 | 多项目上下文或权限串扰 | 每个 Task 强制绑定一个 Project，工具调用携带并校验 projectId |
 
 ## 11. 开工前检查

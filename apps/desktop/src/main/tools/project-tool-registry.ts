@@ -19,6 +19,7 @@ import { modelToolParameters, parseToolArguments } from "../model/tool-arguments
 import { toolErrorContent } from "../errors/tool-error.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
 import { findFilesWithRipgrep, searchTextWithRipgrep } from "./ripgrep-search.js";
+import type { ToolExecutionPolicy } from "./tool-execution-policy.js";
 
 const MAX_READ_FILE_BYTES = 250_000;
 // A full replacement can contain both the old and new text in the persisted diff.
@@ -30,6 +31,21 @@ const MAX_COMMAND_OUTPUT_LENGTH = 200_000;
 const MAX_COMMAND_TIMEOUT_MS = 30 * 60_000;
 const MAX_COMMAND_WAIT_MS = 10 * 60_000;
 const MAX_COMMAND_YIELD_MS = 30_000;
+
+const PARALLEL_READ_TOOL_NAMES = new Set([
+  "list_project_operations",
+  "list_directory",
+  "read_file",
+  "search_text",
+  "find_files",
+]);
+
+const PREPARE_BEFORE_BATCH_TOOL_NAMES = new Set([
+  "write_file",
+  "delete_file",
+  "replace_in_file",
+  "apply_patch",
+]);
 
 type TerminalConfigurationProvider = {
   getConfiguration(): TerminalConfiguration;
@@ -252,12 +268,24 @@ type ProjectOperationRecord = ProjectOperationOwner & {
   scope: ProjectOperationScope;
   startedAt: string;
   status: "active" | "completed" | "failed";
+  workspaceKey: string;
 };
 
 class ProjectOperationConflictError extends Error {
+  public readonly code = "PROJECT_OPERATION_CONFLICT";
+
   public constructor(public readonly conflict: ProjectOperationRecord) {
     super(`Project operation conflicts with conversation ${conflict.conversationTitle}.`);
     this.name = "ProjectOperationConflictError";
+  }
+}
+
+class PreparedFileChangeStaleError extends Error {
+  public readonly code = "FILE_CHANGED";
+
+  public constructor(public readonly filePath: string, message = "The file changed after the diff was generated.") {
+    super(message);
+    this.name = "PreparedFileChangeStaleError";
   }
 }
 
@@ -301,13 +329,13 @@ export class ProjectToolRegistry {
     return [
       {
         description:
-          "List project mutations currently owned by other Agent conversations. Use this after a PROJECT_OPERATION_CONFLICT result.",
+          "List project mutations currently owned by other Agent conversations. Use this only to understand a PROJECT_OPERATION_CONFLICT; the conflicting request is already discarded and must not be replayed.",
         name: "list_project_operations",
         parameters: modelToolParameters(listProjectOperationsArgumentsSchema)
       },
       {
         description:
-          "Wait for one project operation to finish. Use its operationId from a conflict result; the wait is cancellable and bounded.",
+          "Wait for one project operation to finish. Use its operationId from a conflict result when useful, then re-read affected files or otherwise reassess project state before preparing a new request; waiting never revives the discarded request.",
         name: "wait_for_project_operation",
         parameters: modelToolParameters(waitForProjectOperationArgumentsSchema)
       },
@@ -377,6 +405,41 @@ export class ProjectToolRegistry {
         parameters: modelToolParameters(runCommandArgumentsSchema)
       }
     ];
+  }
+
+  public getExecutionPolicy(
+    toolName: string,
+    rawArguments: string,
+    allowParallelCommands: boolean,
+  ): ToolExecutionPolicy {
+    if (PARALLEL_READ_TOOL_NAMES.has(toolName)) {
+      return { group: "read", kind: "parallel" };
+    }
+    if (PREPARE_BEFORE_BATCH_TOOL_NAMES.has(toolName)) {
+      return { kind: "serial", prepareBeforeBatch: true };
+    }
+    if (toolName === "run_command" && allowParallelCommands) {
+      try {
+        const input = runCommandArgumentsSchema.parse(parseToolArguments(rawArguments));
+        if (input.parallel) return { group: "command", kind: "parallel" };
+      } catch {
+        // The handler will return the structured argument error during execution.
+      }
+    }
+    if (
+      toolName === "list_project_operations"
+      || toolName === "read_file"
+      || toolName === "search_text"
+      || toolName === "find_files"
+      || toolName === "run_command"
+      || toolName === "wait_for_commands"
+      || toolName === "stop_command"
+      || toolName === "wait_for_project_operation"
+      || PREPARE_BEFORE_BATCH_TOOL_NAMES.has(toolName)
+    ) {
+      return { kind: "serial" };
+    }
+    throw new Error(`Unknown project tool: ${toolName}`);
   }
 
   public getCommandEnvironmentDescription(): string {
@@ -557,45 +620,48 @@ export class ProjectToolRegistry {
         owner,
         signal,
         async () => {
-      const existing = await this.readEditableFile(filePath, true);
-      if (existing !== change.expectedContent) {
-        throw new Error(
-          "The file changed after the diff was generated. Read it again and prepare a new change."
-        );
-      }
-      if (change.expectedContent === null && existing !== null) {
-        throw new Error("The target file was created after the diff was generated.");
-      }
-      if (change.content === null) {
-        await unlink(filePath);
-        return this.success({
-          operation: change.operation,
-          path: change.path,
-          status: "applied"
-        });
-      }
-      const temporaryPath = path.join(
-        path.dirname(filePath),
-        `.${path.basename(filePath)}.agent-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`
-      );
-      try {
-        await writeFile(temporaryPath, change.content, "utf8");
-        throwIfAborted(signal);
-        await rename(temporaryPath, filePath);
-      } finally {
-        // `rename` removes the temporary name. A cancelled write may leave no file here.
-        await this.removeTemporaryFile(temporaryPath);
-      }
-      return this.success({
-        operation: change.operation,
-        path: change.path,
-        status: "applied"
-      });
+          const existing = await this.readEditableFile(filePath, true);
+          if (existing !== change.expectedContent) {
+            throw new PreparedFileChangeStaleError(
+              change.path,
+              change.expectedContent === null && existing !== null
+                ? "The target file was created after the diff was generated."
+                : "The file changed after the diff was generated. Read it again and prepare a new change.",
+            );
+          }
+          if (change.content === null) {
+            await unlink(filePath);
+            return this.success({
+              operation: change.operation,
+              path: change.path,
+              status: "applied"
+            });
+          }
+          const temporaryPath = path.join(
+            path.dirname(filePath),
+            `.${path.basename(filePath)}.agent-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`
+          );
+          try {
+            await writeFile(temporaryPath, change.content, "utf8");
+            throwIfAborted(signal);
+            await rename(temporaryPath, filePath);
+          } finally {
+            // `rename` removes the temporary name. A cancelled write may leave no file here.
+            await this.removeTemporaryFile(temporaryPath);
+          }
+          return this.success({
+            operation: change.operation,
+            path: change.path,
+            status: "applied"
+          });
         },
       );
     } catch (error) {
       if (error instanceof ProjectOperationConflictError) {
-        return this.operationConflict(error.conflict);
+        return this.operationConflict(error.conflict, "file");
+      }
+      if (error instanceof PreparedFileChangeStaleError) {
+        return this.staleFileChange(error);
       }
       throw error;
     }
@@ -655,7 +721,7 @@ export class ProjectToolRegistry {
       return this.commandExecutionResult(session);
     } catch (error) {
       if (error instanceof ProjectOperationConflictError) {
-        return this.operationConflict(error.conflict);
+        return this.operationConflict(error.conflict, "command");
       }
       throw error;
     }
@@ -1083,8 +1149,9 @@ export class ProjectToolRegistry {
     operation: (operationId: string) => Promise<T>,
   ): Promise<T> {
     throwIfAborted(signal);
+    const workspaceKey = projectOperationWorkspaceKey(this.projects.getProject(projectId).rootPath);
     const conflict = [...this.projectOperations.values()].find((candidate) =>
-      candidate.projectId === projectId
+      candidate.workspaceKey === workspaceKey
       && candidate.status === "active"
       && scopesConflict(candidate.scope, scope)
       && !commandsCanRunInParallel(candidate, scope, owner)
@@ -1104,6 +1171,7 @@ export class ProjectToolRegistry {
       scope,
       startedAt: new Date().toISOString(),
       status: "active",
+      workspaceKey,
     };
     this.projectOperations.set(record.operationId, record);
 
@@ -1126,9 +1194,10 @@ export class ProjectToolRegistry {
     projectId: string,
     owner: ProjectOperationOwner,
   ): unknown[] {
+    const workspaceKey = projectOperationWorkspaceKey(this.projects.getProject(projectId).rootPath);
     return [...this.projectOperations.values()]
       .filter((operation) =>
-        operation.projectId === projectId
+        operation.workspaceKey === workspaceKey
         && operation.status === "active"
         && operation.conversationId !== owner.conversationId
       )
@@ -1142,7 +1211,8 @@ export class ProjectToolRegistry {
     signal: AbortSignal,
   ): Promise<ToolExecutionResult> {
     const operation = this.projectOperations.get(operationId);
-    if (operation === undefined || operation.projectId !== projectId) {
+    const workspaceKey = projectOperationWorkspaceKey(this.projects.getProject(projectId).rootPath);
+    if (operation === undefined || operation.workspaceKey !== workspaceKey) {
       throw new Error("Project operation was not found or is no longer available.");
     }
     if (operation.status !== "active") {
@@ -1174,18 +1244,50 @@ export class ProjectToolRegistry {
     return this.success({ operation: publicProjectOperation(operation), waitStatus });
   }
 
-  private operationConflict(conflict: ProjectOperationRecord): ToolExecutionResult {
+  private operationConflict(
+    conflict: ProjectOperationRecord,
+    requestKind: ProjectOperationScope["kind"],
+  ): ToolExecutionResult {
+    const recovery = requestKind === "file"
+      ? {
+          action: "reread_and_rebuild_change" as const,
+          instruction: "本次文件变更请求已作废，不能排队或重试相同参数。必要时等待冲突操作结束，然后调用 read_file 读取最新内容，再重新生成变更。",
+          retryable: true,
+        }
+      : undefined;
     return {
-      content: JSON.stringify({
-        code: "PROJECT_OPERATION_CONFLICT",
-        error: `项目当前正由对话“${conflict.conversationTitle}”执行冲突操作。`,
-        ok: false,
+      content: toolErrorContent(
+        new ProjectOperationConflictError(conflict),
+        "tool:project_mutation",
+        {
+          code: "PROJECT_OPERATION_CONFLICT",
+          ...(recovery === undefined ? {} : { recovery }),
+          value: {
+            conflict: publicProjectOperation(conflict),
+            ...(requestKind === "command"
+              ? {
+                  nextActions: [
+                    "调用 wait_for_project_operation 等待占用操作完成",
+                    "重新评估最新工作区状态，仅在仍适用时生成新的命令",
+                  ],
+                }
+              : {}),
+            requestKind,
+            status: "discarded",
+          },
+        },
+      ),
+      isError: true,
+      kind: "completed",
+    };
+  }
+
+  private staleFileChange(error: PreparedFileChangeStaleError): ToolExecutionResult {
+    return {
+      content: toolErrorContent(error, "tool:file_change", {
         value: {
-          conflict: publicProjectOperation(conflict),
-          nextActions: [
-            "调用 wait_for_project_operation 等待操作完成",
-            "调用 send_agent_message 联系占用该操作的对话",
-          ],
+          path: error.filePath,
+          status: "discarded",
         },
       }),
       isError: true,
@@ -1271,7 +1373,17 @@ function waitForBoundedCompletion(
 function scopesConflict(left: ProjectOperationScope, right: ProjectOperationScope): boolean {
   return left.kind === "command"
     || right.kind === "command"
-    || left.path === right.path;
+    || normalizeOperationPath(left.path) === normalizeOperationPath(right.path);
+}
+
+function normalizeOperationPath(relativePath: string): string {
+  const normalized = path.posix.normalize(relativePath);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function projectOperationWorkspaceKey(rootPath: string): string {
+  const normalized = path.normalize(path.resolve(rootPath));
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 function commandsCanRunInParallel(

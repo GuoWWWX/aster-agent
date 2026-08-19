@@ -4,6 +4,7 @@ import type { ModelToolDefinition } from "../model/model-contracts.js";
 import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
 import { toolErrorContent } from "../errors/tool-error.js";
+import type { ToolExecutionPolicy } from "./tool-execution-policy.js";
 
 const readAttachmentInputSchema = z
   .object({
@@ -25,6 +26,11 @@ export class ConversationAttachmentTool {
       name: "read_attachment",
       parameters: modelToolParameters(readAttachmentInputSchema)
     }];
+  }
+
+  public getExecutionPolicy(toolName: string): ToolExecutionPolicy {
+    if (toolName !== "read_attachment") throw new Error(`Unknown attachment tool: ${toolName}`);
+    return { group: "read", kind: "parallel" };
   }
 
   public execute(

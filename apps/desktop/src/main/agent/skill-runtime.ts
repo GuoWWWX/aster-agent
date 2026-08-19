@@ -21,6 +21,7 @@ import { z } from "zod";
 import { toolErrorContent } from "../errors/tool-error.js";
 import type { ModelToolDefinition } from "../model/model-contracts.js";
 import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
+import type { ToolExecutionPolicy } from "../tools/tool-execution-policy.js";
 import { IntegrationConfigurationStore } from "../settings/integration-configuration-store.js";
 import { SkillDocumentStore } from "../settings/skill-document-store.js";
 
@@ -204,6 +205,17 @@ export class SkillRuntime {
         parameters: modelToolParameters(readSkillReferenceArgumentsSchema),
       },
     ];
+  }
+
+  public getExecutionPolicy(toolName: string): ToolExecutionPolicy {
+    switch (toolName) {
+      case LOAD_SKILL_TOOL_NAME:
+        return { kind: "serial" };
+      case READ_SKILL_REFERENCE_TOOL_NAME:
+        return { group: "read", kind: "parallel" };
+      default:
+        throw new Error(`Unknown Skill tool: ${toolName}`);
+    }
   }
 
   public getCatalog(context: SkillRuntimeContext = { projectId: undefined }): SkillCatalogEntry[] {

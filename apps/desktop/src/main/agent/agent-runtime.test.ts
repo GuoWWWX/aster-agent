@@ -242,6 +242,35 @@ class FileChangeFixtureModel implements ModelProviderAdapter {
   }
 }
 
+class OverwriteFileFixtureModel implements ModelProviderAdapter {
+  private turn = 0;
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.turn += 1;
+    if (this.turn === 1) {
+      return Promise.resolve({
+        content: "",
+        finishReason: "tool_calls",
+        toolCalls: [{
+          arguments: JSON.stringify({
+            content: "agent\n",
+            overwrite: true,
+            path: "target.txt",
+          }),
+          id: "call_overwrite",
+          name: "write_file",
+        }],
+      });
+    }
+    input.onTextDelta("已处理文件变化");
+    return Promise.resolve({
+      content: "已处理文件变化",
+      finishReason: "stop",
+      toolCalls: [],
+    });
+  }
+}
+
 class MultiChangeFixtureModel implements ModelProviderAdapter {
   private turn = 0;
 
@@ -267,6 +296,100 @@ class MultiChangeFixtureModel implements ModelProviderAdapter {
     }
     input.onTextDelta("两个文件已写入");
     return Promise.resolve({ content: "两个文件已写入", finishReason: "stop", toolCalls: [] });
+  }
+}
+
+class MultiReadFixtureModel implements ModelProviderAdapter {
+  private turn = 0;
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.turn += 1;
+    if (this.turn === 1) {
+      return Promise.resolve({
+        content: "",
+        finishReason: "tool_calls",
+        toolCalls: [
+          {
+            arguments: JSON.stringify({ path: "one.txt" }),
+            id: "call_read_one",
+            name: "read_file",
+          },
+          {
+            arguments: JSON.stringify({ path: "two.txt" }),
+            id: "call_read_two",
+            name: "read_file",
+          },
+        ],
+      });
+    }
+    input.onTextDelta("两个文件已读取");
+    return Promise.resolve({ content: "两个文件已读取", finishReason: "stop", toolCalls: [] });
+  }
+}
+
+class MultiCommandFixtureModel implements ModelProviderAdapter {
+  private turn = 0;
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.turn += 1;
+    if (this.turn === 1) {
+      return Promise.resolve({
+        content: "",
+        finishReason: "tool_calls",
+        toolCalls: [
+          {
+            arguments: JSON.stringify({ command: "first", parallel: true, yieldTimeMs: 0 }),
+            id: "call_command_one",
+            name: "run_command",
+          },
+          {
+            arguments: JSON.stringify({ command: "second", parallel: true, yieldTimeMs: 0 }),
+            id: "call_command_two",
+            name: "run_command",
+          },
+        ],
+      });
+    }
+    input.onTextDelta("两个命令已完成");
+    return Promise.resolve({ content: "两个命令已完成", finishReason: "stop", toolCalls: [] });
+  }
+}
+
+class SameFileChangeFixtureModel implements ModelProviderAdapter {
+  private turn = 0;
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.turn += 1;
+    if (this.turn === 1) {
+      return Promise.resolve({
+        content: "",
+        finishReason: "tool_calls",
+        toolCalls: [
+          {
+            arguments: JSON.stringify({
+              expectedReplacements: 1,
+              newText: "first\n",
+              oldText: "base\n",
+              path: "shared.txt",
+            }),
+            id: "call_change_first",
+            name: "replace_in_file",
+          },
+          {
+            arguments: JSON.stringify({
+              expectedReplacements: 1,
+              newText: "second\n",
+              oldText: "base\n",
+              path: "shared.txt",
+            }),
+            id: "call_change_second",
+            name: "replace_in_file",
+          },
+        ],
+      });
+    }
+    input.onTextDelta("同文件变更已处理");
+    return Promise.resolve({ content: "同文件变更已处理", finishReason: "stop", toolCalls: [] });
   }
 }
 
@@ -1145,6 +1268,9 @@ describe("AgentRuntime", () => {
     expect(model.requests[0]?.messages[0]?.content).toContain("当前没有可调用的 Skill Runtime");
     expect(model.requests[0]?.messages[0]?.content).toContain(
       "Git 是可通过 run_command 执行的命令行程序，不是 Skill"
+    );
+    expect(model.requests[0]?.messages[0]?.content).toContain(
+      "同一模型轮可以返回多个相互独立的只读 Tool Call"
     );
     database.close();
   });
@@ -3566,6 +3692,60 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
+  it("rejects an approved overwrite when the file changes while approval is pending", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-stale-approval-"));
+    temporaryDirectories.push(root);
+    const targetPath = path.join(root, "target.txt");
+    await writeFile(targetPath, "original\n", "utf8");
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      new OverwriteFileFixtureModel(),
+    );
+    const events: ConversationRunEvent[] = [];
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage(
+        {
+          content: "覆盖文件",
+          conversationId: conversation.id,
+          permissionMode: "ask_before_changes",
+        },
+        (event) => {
+          events.push(event);
+          if (event.type === "tool.approval_requested") {
+            writeFileSync(targetPath, "external\n", "utf8");
+            runtime.approveToolChange({ approved: true, runId: event.runId, toolId: event.tool.id });
+          }
+          if (event.type === "run.finished") resolve();
+        },
+      );
+    });
+
+    await expect(readFile(targetPath, "utf8")).resolves.toBe("external\n");
+    const completedTool = events.find(
+      (event) => event.type === "tool.completed" && event.tool.name === "write_file",
+    );
+    expect(completedTool?.type).toBe("tool.completed");
+    if (completedTool?.type !== "tool.completed") throw new Error("Expected a completed tool event.");
+    expect(completedTool.tool.status).toBe("failed");
+    expect(completedTool.tool.result).toContain("FILE_CHANGED");
+    database.close();
+  });
+
   it("does not replay completed side effects when a later ToolCall interrupts", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-multi-approval-"));
     temporaryDirectories.push(root);
@@ -3608,11 +3788,175 @@ describe("AgentRuntime", () => {
 
     expect(events.filter((event) => event.type === "tool.approval_requested")).toHaveLength(2);
     expect(events.filter((event) => event.type === "tool.completed")).toHaveLength(2);
-    expect(database.listTimeline(conversation.id).filter((item) => item.kind === "tool")).toHaveLength(2);
+    const tools = database.listTimeline(conversation.id).filter((item) => item.kind === "tool");
+    expect(tools).toHaveLength(2);
+    expect(tools[0]?.kind === "tool" ? tools[0].batchId : undefined)
+      .toBe(tools[1]?.kind === "tool" ? tools[1].batchId : undefined);
     await expect(readFile(path.join(root, "first.ts"), "utf8"))
       .resolves.toBe("export const first = true;\n");
     await expect(readFile(path.join(root, "second.ts"), "utf8"))
       .resolves.toBe("export const second = true;\n");
+    database.close();
+  });
+
+  it("runs independent read tool calls in parallel and preserves both results", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-parallel-read-"));
+    temporaryDirectories.push(root);
+    await writeFile(path.join(root, "one.txt"), "one\n", "utf8");
+    await writeFile(path.join(root, "two.txt"), "two\n", "utf8");
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const tools = new ProjectToolRegistry(projects);
+    const originalExecute = tools.execute.bind(tools);
+    let activeReads = 0;
+    let maximumActiveReads = 0;
+    vi.spyOn(tools, "execute").mockImplementation(async (...args) => {
+      if (args[0] === "read_file") {
+        activeReads += 1;
+        maximumActiveReads = Math.max(maximumActiveReads, activeReads);
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        try {
+          return await originalExecute(...args);
+        } finally {
+          activeReads -= 1;
+        }
+      }
+      return originalExecute(...args);
+    });
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      tools,
+      new MultiReadFixtureModel(),
+    );
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage({ content: "读取两个文件", conversationId: conversation.id }, (event) => {
+        if (event.type === "run.finished") resolve();
+      });
+    });
+
+    expect(maximumActiveReads).toBe(2);
+    expect(database.listTimeline(conversation.id).filter((item) => item.kind === "tool"))
+      .toHaveLength(2);
+    database.close();
+  });
+
+  it("runs explicitly parallel commands together in full-access mode", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-parallel-command-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const tools = new ProjectToolRegistry(projects);
+    let activeCommands = 0;
+    let maximumActiveCommands = 0;
+    vi.spyOn(tools, "executePreparedCommand").mockImplementation(async () => {
+      activeCommands += 1;
+      maximumActiveCommands = Math.max(maximumActiveCommands, activeCommands);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      activeCommands -= 1;
+      return {
+        content: JSON.stringify({ ok: true, value: { status: "completed" } }),
+        isError: false,
+        kind: "completed",
+      };
+    });
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      tools,
+      new MultiCommandFixtureModel(),
+    );
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage(
+        {
+          content: "执行两个独立命令",
+          conversationId: conversation.id,
+          permissionMode: "full_access",
+        },
+        (event) => {
+          if (event.type === "run.finished") resolve();
+        },
+      );
+    });
+
+    expect(maximumActiveCommands).toBe(2);
+    expect(database.listTimeline(conversation.id).filter((item) => item.kind === "tool"))
+      .toHaveLength(2);
+    database.close();
+  });
+
+  it("prepares same-file changes before the first write and discards the stale call", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-same-file-batch-"));
+    temporaryDirectories.push(root);
+    await writeFile(path.join(root, "shared.txt"), "base\n", "utf8");
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      new SameFileChangeFixtureModel(),
+    );
+    const events: ConversationRunEvent[] = [];
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage(
+        {
+          content: "同时修改同一个文件",
+          conversationId: conversation.id,
+          permissionMode: "ask_before_changes",
+        },
+        (event) => {
+          events.push(event);
+          if (event.type === "tool.approval_requested") {
+            runtime.approveToolChange({ approved: true, runId: event.runId, toolId: event.tool.id });
+          }
+          if (event.type === "run.finished") resolve();
+        },
+      );
+    });
+
+    await expect(readFile(path.join(root, "shared.txt"), "utf8")).resolves.toBe("first\n");
+    const completed = events.filter((event) => event.type === "tool.completed");
+    expect(completed).toHaveLength(2);
+    expect(completed[0]?.type === "tool.completed" ? completed[0].tool.status : undefined)
+      .toBe("completed");
+    expect(completed[1]?.type === "tool.completed" ? completed[1].tool.status : undefined)
+      .toBe("failed");
+    expect(completed[1]?.type === "tool.completed" ? completed[1].tool.result : "")
+      .toContain("FILE_CHANGED");
     database.close();
   });
 

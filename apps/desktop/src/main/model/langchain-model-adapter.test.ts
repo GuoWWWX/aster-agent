@@ -312,6 +312,44 @@ describe("LangChainModelAdapter", () => {
     }]);
   });
 
+  it("preserves multiple tool calls from one assistant turn", async () => {
+    const model = new FakeStreamingChatModel({
+      sleep: 0,
+      chunks: [new AIMessageChunk({
+        tool_calls: [
+          {
+            args: { path: "one.txt" },
+            id: "call-one",
+            name: "read_file",
+          },
+          {
+            args: { path: "two.txt" },
+            id: "call-two",
+            name: "read_file",
+          },
+        ],
+      })],
+    });
+    const adapter = new LangChainModelAdapter(
+      "openai-chat-completions",
+      fetch,
+      () => model,
+    );
+
+    const result = await adapter.completeTurn(inputFor("openai-chat-completions", {
+      tools: [{
+        description: "Read a file",
+        name: "read_file",
+        parameters: { type: "object", properties: { path: { type: "string" } } },
+      }],
+    }));
+
+    expect(result.toolCalls).toEqual([
+      { arguments: JSON.stringify({ path: "one.txt" }), id: "call-one", name: "read_file" },
+      { arguments: JSON.stringify({ path: "two.txt" }), id: "call-two", name: "read_file" },
+    ]);
+  });
+
   it("sends OpenAI Chat reasoning effort through the compatible request field", async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse([
       'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n',

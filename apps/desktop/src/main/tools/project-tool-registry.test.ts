@@ -23,7 +23,7 @@ async function createFixture() {
   await writeFile(path.join(root, "src", "index.ts"), "alpha\nbeta alpha\n", "utf8");
   const projects = new ProjectRegistry();
   const project = await projects.registerDirectory(root);
-  return { project, tools: new ProjectToolRegistry(projects) };
+  return { project, projects, tools: new ProjectToolRegistry(projects) };
 }
 
 async function createLargeFixture(fileCount = 400) {
@@ -59,6 +59,25 @@ describe("ProjectToolRegistry", () => {
     expect(decodeTerminalOutput(Buffer.concat([utf8Output, gbkOutput]), "auto")).toBe(
       "UTF-8: 中文\nGBK: 中文\r\n",
     );
+  });
+
+  it("declares safe read, file preparation, and explicit command policies", async () => {
+    const { tools } = await createFixture();
+
+    expect(tools.getExecutionPolicy("read_file", JSON.stringify({ path: "src/index.ts" }), false))
+      .toEqual({ group: "read", kind: "parallel" });
+    expect(tools.getExecutionPolicy("replace_in_file", "{}", false))
+      .toEqual({ kind: "serial", prepareBeforeBatch: true });
+    expect(tools.getExecutionPolicy(
+      "run_command",
+      JSON.stringify({ command: "first", parallel: true }),
+      true,
+    )).toEqual({ group: "command", kind: "parallel" });
+    expect(tools.getExecutionPolicy(
+      "run_command",
+      JSON.stringify({ command: "first", parallel: true }),
+      false,
+    )).toEqual({ kind: "serial" });
   });
 
   it("executes every advertised project tool inside an isolated project", async () => {
@@ -428,9 +447,26 @@ describe("ProjectToolRegistry", () => {
 
     if (proposal.kind !== "change") throw new Error(proposal.content);
     await writeFile(path.join(project.rootPath, "new.txt"), "external\n", "utf8");
-    await expect(
-      tools.applyPreparedChange(proposal.change, project.id, new AbortController().signal)
-    ).rejects.toThrow("changed after the diff was generated");
+    const result = await tools.applyPreparedChange(
+      proposal.change,
+      project.id,
+      new AbortController().signal,
+    );
+    const payload = JSON.parse(result.content) as {
+      agentError?: { code?: string; retryable?: boolean };
+      recovery?: { action?: string; instruction?: string; retryable?: boolean };
+      value?: { path?: string; status?: string };
+    };
+
+    expect(result.isError).toBe(true);
+    expect(payload.agentError).toMatchObject({ code: "FILE_CHANGED", retryable: true });
+    expect(payload.recovery).toMatchObject({
+      action: "reread_and_rebuild_change",
+      retryable: true,
+    });
+    expect(payload.recovery?.instruction).toContain("不能排队或重试相同参数");
+    expect(payload.value).toEqual({ path: "new.txt", status: "discarded" });
+    await expect(readFile(path.join(project.rootPath, "new.txt"), "utf8")).resolves.toBe("external\n");
   });
 
   it("previews and applies a file deletion after approval", async () => {
@@ -777,8 +813,100 @@ describe("ProjectToolRegistry", () => {
     expect(values.find((result) => result.isError)?.content).toContain(
       "PROJECT_OPERATION_CONFLICT",
     );
+    const conflictResult = values.find((result) => result.isError);
+    if (conflictResult === undefined) throw new Error("Expected a conflict result.");
+    const conflictPayload = JSON.parse(conflictResult.content) as {
+      agentError?: { code?: string; retryable?: boolean };
+      recovery?: { action?: string; instruction?: string; retryable?: boolean };
+      value?: { requestKind?: string; status?: string };
+    };
+    expect(conflictPayload.agentError).toMatchObject({ code: "CONFLICT", retryable: false });
+    expect(conflictPayload.recovery).toMatchObject({
+      action: "reread_and_rebuild_change",
+      retryable: true,
+    });
+    expect(conflictPayload.value).toMatchObject({ requestKind: "file", status: "discarded" });
     await expect(readFile(path.join(project.rootPath, "src", "index.ts"), "utf8")).resolves.toMatch(
       /^(?:first|second)\nbeta alpha\n$/,
+    );
+  });
+
+  it("treats Windows path casing as the same file operation", async () => {
+    if (process.platform !== "win32") return;
+
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const proposal = await tools.execute(
+      "replace_in_file",
+      JSON.stringify({
+        expectedReplacements: 1,
+        newText: "first",
+        oldText: "beta alpha",
+        path: "src/index.ts",
+      }),
+      project.id,
+      signal,
+    );
+    if (proposal.kind !== "change") throw new Error(proposal.content);
+    const firstChange = proposal.change;
+    const secondChange = {
+      ...proposal.change,
+      content: proposal.change.content?.replace("first", "second") ?? null,
+      path: "src/INDEX.ts",
+    };
+
+    const results = await Promise.all([
+      tools.applyPreparedChange(firstChange, project.id, signal),
+      tools.applyPreparedChange(secondChange, project.id, signal),
+    ]);
+    expect(results.filter((result) => !result.isError)).toHaveLength(1);
+    expect(results.filter((result) => result.isError)).toHaveLength(1);
+    const failed = results.find((result) => result.isError);
+    if (failed === undefined) throw new Error("Expected a conflicting result.");
+    expect(failed.content).toContain("reread_and_rebuild_change");
+  });
+
+  it("coordinates writes across conversations mounted to the same physical workspace", async () => {
+    const { project, projects, tools } = await createFixture();
+    const firstWorkspace = await projects.mountConversationWorkspace(
+      "00000000-0000-4000-8000-000000000001",
+      project.rootPath,
+    );
+    const secondWorkspace = await projects.mountConversationWorkspace(
+      "00000000-0000-4000-8000-000000000002",
+      project.rootPath,
+    );
+    const signal = new AbortController().signal;
+    const [firstProposal, secondProposal] = await Promise.all([
+      tools.execute(
+        "replace_in_file",
+        JSON.stringify({ newText: "first", oldText: "beta alpha", path: "src/index.ts" }),
+        firstWorkspace.id,
+        signal,
+      ),
+      tools.execute(
+        "replace_in_file",
+        JSON.stringify({ newText: "second", oldText: "beta alpha", path: "src/index.ts" }),
+        secondWorkspace.id,
+        signal,
+      ),
+    ]);
+    if (firstProposal.kind !== "change" || secondProposal.kind !== "change") {
+      throw new Error("Expected two file change proposals.");
+    }
+
+    const results = await Promise.all([
+      tools.applyPreparedChange(firstProposal.change, firstWorkspace.id, signal),
+      tools.applyPreparedChange(secondProposal.change, secondWorkspace.id, signal),
+    ]);
+
+    expect(results.filter((result) => !result.isError)).toHaveLength(1);
+    expect(results.filter((result) => result.isError)).toHaveLength(1);
+    expect(results.find((result) => result.isError)?.content).toContain(
+      "PROJECT_OPERATION_CONFLICT",
+    );
+    await expect(readFile(path.join(project.rootPath, "src", "index.ts"), "utf8")).resolves.toMatch(
+      /^alpha\n(?:first|second)\n$/,
     );
   });
 

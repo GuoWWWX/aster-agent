@@ -139,6 +139,8 @@ function classifyError(reason: unknown, message: string): ErrorClassification {
   if (nodeCode === "TOOL_ARGUMENTS_INVALID") {
     return classificationForCode("VALIDATION_FAILED");
   }
+  if (nodeCode === "FILE_CHANGED") return classificationForCode("FILE_CHANGED");
+  if (nodeCode === "PROJECT_OPERATION_CONFLICT") return classificationForCode("CONFLICT");
   if (name === "ZodError" || (reason !== null && typeof reason === "object" && "issues" in reason)) {
     return classificationForCode("VALIDATION_FAILED");
   }

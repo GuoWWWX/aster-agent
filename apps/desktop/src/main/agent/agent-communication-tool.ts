@@ -7,6 +7,7 @@ import type { ModelToolDefinition } from "../model/model-contracts.js";
 import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
 import { AgentDatabase } from "../storage/agent-database.js";
 import { buildConversationReferenceBundle } from "./conversation-reference.js";
+import type { ToolExecutionPolicy } from "../tools/tool-execution-policy.js";
 
 const LIST_AGENT_CONVERSATIONS_TOOL_NAME = "list_agent_conversations";
 const READ_AGENT_CONVERSATION_TOOL_NAME = "read_agent_conversation";
@@ -82,6 +83,19 @@ export class AgentCommunicationTool {
         parameters: modelToolParameters(waitForMessageArgumentsSchema),
       },
     ];
+  }
+
+  public getExecutionPolicy(toolName: string): ToolExecutionPolicy {
+    switch (toolName) {
+      case LIST_AGENT_CONVERSATIONS_TOOL_NAME:
+      case READ_AGENT_CONVERSATION_TOOL_NAME:
+        return { group: "read", kind: "parallel" };
+      case SEND_AGENT_MESSAGE_TOOL_NAME:
+      case WAIT_FOR_AGENT_MESSAGE_TOOL_NAME:
+        return { kind: "serial" };
+      default:
+        throw new Error(`Unknown Agent communication tool: ${toolName}`);
+    }
   }
 
   public async execute(input: {

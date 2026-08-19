@@ -7,6 +7,7 @@ import {
   AgentDatabase,
   type SubagentTask,
 } from "../storage/agent-database.js";
+import type { ToolExecutionPolicy } from "../tools/tool-execution-policy.js";
 
 const SPAWN_SUBAGENT_TOOL_NAME = "spawn_subagent";
 const LIST_SUBAGENTS_TOOL_NAME = "list_subagents";
@@ -108,6 +109,18 @@ export class SubagentTool {
         parameters: modelToolParameters(waitArgumentsSchema),
       },
     ];
+  }
+
+  public getExecutionPolicy(toolName: string): ToolExecutionPolicy {
+    switch (toolName) {
+      case LIST_SUBAGENTS_TOOL_NAME:
+        return { group: "read", kind: "parallel" };
+      case SPAWN_SUBAGENT_TOOL_NAME:
+      case WAIT_FOR_SUBAGENTS_TOOL_NAME:
+        return { kind: "serial" };
+      default:
+        throw new Error(`Unknown Subagent tool: ${toolName}`);
+    }
   }
 
   public async execute(input: {

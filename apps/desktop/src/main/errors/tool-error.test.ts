@@ -5,13 +5,13 @@ import { parseToolArguments } from "../model/tool-arguments.js";
 import { toolErrorContent } from "./tool-error.js";
 
 const toolRecoverySchema = z.object({
-  action: z.literal("fix_arguments"),
+  action: z.enum(["fix_arguments", "reread_and_rebuild_change"]),
   instruction: z.string(),
   issues: z.array(z.object({
     code: z.string(),
     message: z.string(),
     path: z.array(z.union([z.string(), z.number()])),
-  }).strict()),
+  }).strict()).optional(),
   retryable: z.boolean(),
 }).strict();
 
@@ -48,7 +48,7 @@ describe("tool errors", () => {
       expect.objectContaining({ path: ["commandIds", 0] }),
       expect.objectContaining({ path: ["timeoutMs"] }),
     ]));
-    expect(payload.recovery?.issues.length).toBe(2);
+    expect(payload.recovery?.issues).toHaveLength(2);
   });
 
   it("tells the model to correct malformed JSON arguments", () => {
@@ -92,5 +92,23 @@ describe("tool errors", () => {
     expect(issues[0]?.message.length).toBe(300);
     expect(issues[0]?.path).toHaveLength(16);
     expect(issues[0]?.path[0]).toHaveLength(120);
+  });
+
+  it("tells the model to discard a stale file change and read the latest content", () => {
+    const payload = toolErrorPayloadSchema.parse(
+      JSON.parse(toolErrorContent(
+        Object.assign(new Error("The file changed after the diff was generated."), {
+          code: "FILE_CHANGED",
+        }),
+        "tool:file_change",
+      )),
+    );
+
+    expect(payload.agentError).toMatchObject({ code: "FILE_CHANGED", retryable: true });
+    expect(payload.recovery).toMatchObject({
+      action: "reread_and_rebuild_change",
+      retryable: true,
+    });
+    expect(payload.recovery?.instruction).toContain("不能排队或重试相同参数");
   });
 });

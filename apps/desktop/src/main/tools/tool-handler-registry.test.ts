@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { ToolExecution } from "./project-tool-registry.js";
-import { ToolHandlerRegistry, type ToolHandler } from "./tool-handler-registry.js";
+import {
+  ToolHandlerRegistry,
+  type ToolExecutionPolicy,
+  type ToolHandler,
+} from "./tool-handler-registry.js";
 
 type FixtureContext = {
   conversationId: string;
@@ -17,9 +21,11 @@ function completed(content: string): ToolExecution {
 function handler(
   names: readonly string[],
   execute: (toolName: string) => Promise<ToolExecution>,
+  policy?: ToolExecutionPolicy,
 ): ToolHandler<FixtureContext> {
   return {
     execute: ({ toolName }) => execute(toolName),
+    ...(policy === undefined ? {} : { getExecutionPolicy: () => policy }),
     getDefinitions: () => names.map((name) => ({
       description: name,
       name,
@@ -72,5 +78,20 @@ describe("ToolHandlerRegistry", () => {
     ]);
     await expect(registry.execute({ context, rawArguments: "{}", toolName: "missing" }))
       .rejects.toThrow("Unknown tool: missing");
+  });
+
+  it("returns the handler-owned scheduling policy", () => {
+    const registry = new ToolHandlerRegistry([
+      handler(["read_file"], () => Promise.resolve(completed("read")), {
+        group: "read",
+        kind: "parallel",
+      }),
+    ]);
+
+    expect(registry.getExecutionPolicy({
+      context,
+      rawArguments: "{}",
+      toolName: "read_file",
+    })).toEqual({ group: "read", kind: "parallel" });
   });
 });
