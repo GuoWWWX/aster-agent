@@ -1,4 +1,12 @@
-import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
+import {
+  Annotation,
+  Command,
+  END,
+  isInterrupted,
+  MemorySaver,
+  START,
+  StateGraph,
+} from "@langchain/langgraph";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 
 import type {
@@ -95,8 +103,14 @@ export type LangGraphExecutorInput = {
   checkpointer?: BaseCheckpointSaver;
   initialMessages: readonly ModelMessage[];
   maxSteps: number;
+  onInterrupt?(interrupts: readonly LangGraphInterrupt[]): Promise<unknown>;
   signal: AbortSignal;
   threadId: string;
+};
+
+export type LangGraphInterrupt = {
+  id: string;
+  value: unknown;
 };
 
 function assistantMessage(result: ModelTurnResult): ModelMessage {
@@ -149,6 +163,11 @@ export class LangGraphExecutor {
     }
     input.signal.throwIfAborted();
 
+    // interrupt()/Command() requires a checkpointer. Tests and embedders that
+    // do not need durable recovery still get an in-memory saver when they opt
+    // into the approval callback; production passes the SQLite saver.
+    const checkpointer = input.checkpointer
+      ?? (input.onInterrupt === undefined ? undefined : new MemorySaver());
     const graph = new StateGraph(AgentGraphAnnotation)
       .addNode("model", async (state): Promise<AgentGraphUpdate> => {
         input.signal.throwIfAborted();
@@ -193,17 +212,36 @@ export class LangGraphExecutor {
         (state) => routeAfterModel(state, input.maxSteps),
         { model: "model", tools: "tools", [END]: END },
       )
-      .compile(input.checkpointer === undefined ? undefined : { checkpointer: input.checkpointer });
+      .compile(checkpointer === undefined ? undefined : { checkpointer });
 
-    const result = await graph.invoke(
-      {
-        messages: [...input.initialMessages],
-      },
-      {
-        configurable: { thread_id: input.threadId },
-        signal: input.signal,
-      },
-    );
-    return result;
+    const config = {
+      configurable: { thread_id: input.threadId },
+      signal: input.signal,
+    };
+    type GraphInput = Parameters<typeof graph.invoke>[0];
+    let graphInput: GraphInput = { messages: [...input.initialMessages] };
+    while (true) {
+      input.signal.throwIfAborted();
+      const result = await graph.invoke(graphInput, config);
+      if (!isInterrupted(result)) return result;
+      if (input.onInterrupt === undefined) {
+        throw new Error("LangGraph interrupted without an approval callback.");
+      }
+      const interrupts = result.__interrupt__.map((entry) => {
+        if (typeof entry.id !== "string") {
+          throw new Error("LangGraph returned an interrupt without an identifier.");
+        }
+        return { id: entry.id, value: entry.value };
+      });
+      const resume = await input.onInterrupt(interrupts);
+      input.signal.throwIfAborted();
+      const [interrupt] = interrupts;
+      if (interrupt === undefined) {
+        throw new Error("LangGraph returned an empty interrupt list.");
+      }
+      graphInput = new Command({
+        resume: { [interrupt.id]: resume },
+      });
+    }
   }
 }

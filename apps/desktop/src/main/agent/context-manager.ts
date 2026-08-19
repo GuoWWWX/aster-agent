@@ -61,6 +61,8 @@ type BuildManagedContextInput = {
   estimatedSystemTokens: number;
   estimatedToolDefinitionTokens: number;
   outputReserveTokens: number;
+  /** Capacity reserved for Skill正文 that may be injected after tool loading. */
+  reservedSkillTokens?: number;
   sourceMessages: readonly ManagedContextSourceMessage[];
 };
 
@@ -232,6 +234,8 @@ function calculateUsage(
   retained: readonly ManagedContextSourceMessage[],
   summaryMessage: ModelMessage | null
 ): ConversationContextUsage {
+  const reservedSkillTokens = Math.max(0, input.reservedSkillTokens ?? 0);
+  const estimatedSystemTokens = input.estimatedSystemTokens + reservedSkillTokens;
   let estimatedConversationTokens = summaryMessage === null
     ? 0
     : estimateMessageTokens(summaryMessage).contentTokens;
@@ -258,12 +262,12 @@ function calculateUsage(
     estimatedConversationTokens,
     estimatedReferenceTokens: 0,
     estimatedInputTokens:
-      input.estimatedSystemTokens +
+      estimatedSystemTokens +
       estimatedConversationTokens +
       estimatedAttachmentTokens +
       estimatedToolTokens +
       input.estimatedToolDefinitionTokens,
-    estimatedSystemTokens: input.estimatedSystemTokens,
+    estimatedSystemTokens,
     estimatedToolDefinitionTokens: input.estimatedToolDefinitionTokens,
     estimatedToolTokens,
     historyCharacters:
@@ -288,10 +292,12 @@ export function buildManagedContext(input: BuildManagedContextInput): ManagedCon
     (message) => message.sequence > coveredThroughSequence
   );
   const summaryMessage = checkpointMessage(input.checkpoint);
+  const reservedSkillTokens = Math.max(0, input.reservedSkillTokens ?? 0);
   const fixedTokens =
     input.estimatedSystemTokens +
     input.estimatedToolDefinitionTokens +
     input.outputReserveTokens +
+    reservedSkillTokens +
     (summaryMessage === null ? 0 : totalMessageTokens([summaryMessage]));
   const rawTokens = fixedTokens + totalMessageTokens(uncoveredMessages);
 

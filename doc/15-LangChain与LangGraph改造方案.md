@@ -1,6 +1,6 @@
 # LangChain 与 LangGraph 改造方案
 
-> 文档状态：技术选型与迁移决策；第九批已完成主链接入，审批/ToolNode 仍待后续批次
+> 文档状态：技术选型与迁移决策；第十批已完成主链、ToolNode、审批中断恢复和 Skill 预算接入
 > 决策日期：2026-08-19
 > 适用范围：`apps/desktop` 的 Agent Runtime、模型适配、工具循环、Skill 上下文和可恢复执行
 > 前置基线：`b009d52 checkpoint：LangGraph 改造前工作树`
@@ -11,7 +11,7 @@
 
 `AgentRuntime` 不删除。它继续是 Electron Main、IPC 和现有业务调用方看到的应用入口与兼容 façade，负责项目边界、权限、审批、SQLite 业务事实、事件合同、Queue/Steer、Subagent 和错误映射。LangGraph 接管 façade 内部的执行图、节点循环、条件路由、中断恢复和图状态 Checkpoint。
 
-当前代码已完成 `StateGraph(model -> tools -> model)` 主链和自定义 SQLite Checkpoint。审批仍由 Runtime 的既有等待器实现，工具节点仍由 Runtime callback wrapper 执行，以保证权限、审计、事件和项目操作锁不被第三方默认行为绕过；因此本批不宣称已经使用 LangGraph `interrupt/Command` 或官方 `ToolNode` 完成全部迁移。
+当前代码已完成 `StateGraph(model -> tools -> model)` 主链、自定义 SQLite Checkpoint、LangGraph `interrupt/Command` 审批恢复和 LangGraph `ToolNode` 调度。Runtime wrapper 仍保留参数边界、权限、审计、事件和项目操作锁；框架负责调用分发与恢复，项目负责副作用合同。
 
 这不是把所有业务搬进框架，也不是继续保留两套生产 Agent Loop：迁移完成后，旧的 `for` 循环和旧 Provider 协议解析从生产路径删除；Runtime 只保留应用边界适配。
 
@@ -76,17 +76,17 @@ Electron Bootstrap
 
 ```text
 START
-  -> prepare_context
-  -> load_or_restore_skills
-  -> model
-       ├─ 无 tool call 且无待处理输入 -> finalize -> END
+  -> model（首次调用前由 Runtime 预构建 Context；每次 beforeModel 注入 Queue/Steer、Agent 消息和激活 Skill）
        ├─ 有 tool call -> tools
-       ├─ 有 Steer/Agent 消息 -> prepare_context
+       ├─ 无 tool call 且有待处理输入 -> model
+       ├─ 无 tool call 且无待处理输入 -> END
        └─ 达到步骤上限 -> fail
-  -> model
+  -> tools
+       ├─ 普通结果 -> model
+       └─ 审批 interrupt -> Command({ resume }) 后从同一工具节点恢复
 ```
 
-图状态只保存可恢复执行所需的结构化值，不把完整业务数据库行复制进去。模型节点使用 LangChain `BaseChatModel.bindTools()`；工具节点使用 LangChain Tool 合同和 LangGraph `ToolNode` 的 dispatch 语义，外层 Runtime wrapper 为每个调用补充参数校验、审计、事件、权限和副作用处理。需要顺序执行或审批的调用不能绕过 wrapper。
+图状态只保存可恢复执行所需的结构化值，不把完整业务数据库行复制进去。模型节点通过 LangChain-backed `BaseChatModel.bindTools()` 适配器调用；工具回合内部使用 LangChain Tool 合同和 LangGraph `ToolNode` 的 dispatch 语义，外层 Runtime wrapper 为每个调用补充参数校验、审计、事件、权限和副作用处理。需要顺序执行或审批的调用不能绕过 wrapper。
 
 取消使用 Runtime 的 `AbortSignal` 传入 Graph/ChatModel/工具；取消不会重放已经开始的副作用。最大回合数由图状态和条件边共同限制，Runtime 不再维护第二个独立循环。
 
@@ -137,6 +137,8 @@ Agent `capabilityScope=custom` 时，`skillIds` 必须进入同一个 `SkillRunt
 
 模型不会因为看到了摘要就“自动知道详细说明”。`load_skill` 必须是一个真实工具，工具描述明确说明何时调用；加载失败以结构化 Tool 错误返回，允许模型在同一图中修正参数。压缩后由 `SkillContextProvider` 根据快照重新组装正文，不依赖旧消息仍留在上下文中。
 
+ContextManager 在每次历史裁剪前为 Skill Runtime 固定预留正文预算：`max(1024, min(12000, floor(effectiveContextWindow * 0.12)))`，无模型窗口时使用 48,000 Token 作为保守基准。预算计入 `estimatedSystemTokens` 和固定上下文开销，因此 Skill 激活不会把历史裁剪结果推过本轮阈值。
+
 Skill 正文、reference 和脚本都视为不可信输入：脚本不能直接获得 Node/Shell/网络权限，所有副作用仍经过统一 ToolRegistry、PermissionPolicy、审批、超时、取消和审计。
 
 ## 7. Checkpoint 与恢复
@@ -172,19 +174,20 @@ LangGraph 的 Checkpoint 只负责图恢复，不替代现有业务状态：
 - 用 fake ChatModel 与 fake Tools 验证多轮、并行/顺序、最大步骤和 AbortSignal。
 - 图测试不直接访问 Electron、SQLite 业务表或 Renderer。
 
-### 阶段 3：Runtime façade 接入（主链已完成）
+### 阶段 3：Runtime façade 接入（已完成）
 
 - 将 `executeRun` 的内部循环替换为 Graph invoke/stream。
 - 保持既有事件、消息、Tool 行、Queue/Steer、Subagent 和错误合同。
-- 逐次补审批 `interrupt/resume`、running Run 中断恢复和不可重放副作用测试；当前已完成 queued Run 重启恢复和 running Run 保守失败策略。
+- 使用 LangGraph `interrupt/Command` 承接逐次审批；恢复时按 interrupt namespace keyed resume，并缓存已完成 ToolCall 结果，避免节点重放副作用。running Run 仍按保守失败策略处理。
 
 ### 阶段 4：Skill 与 Checkpoint（主链已完成）
 
 - 接入 `SkillCatalog/Resolver/Loader/ContextProvider` 和 Run 快照。
 - 实现 `NodeSqliteCheckpointSaver`、迁移、清理和 queued Run 恢复；running Run 的自动恢复仍禁止，避免副作用重放。
 - 验证 Skill 正文不进入 Timeline，压缩/恢复后仍按 hash 重建上下文。
+- ContextManager 在历史裁剪前预留 Skill 正文预算，正文注入和上下文用量估算使用同一预算。
 
-### 阶段 5：收口
+### 阶段 5：收口（进行中）
 
 - 删除旧 `for` 循环、AI SDK 和手写 Provider 协议适配器。
 - 更新业务、接口和工具文档的“当前实现状态”，未完成 MCP/Skill 能力不提前标记为 true。
@@ -199,7 +202,7 @@ LangGraph 的 Checkpoint 只负责图恢复，不替代现有业务状态：
 1. AgentRuntime 公共入口和 IPC 合同未破坏，内部模型/工具循环由 LangGraph 图执行。
 2. 四种现有模型格式均由 LangChain Provider 适配并通过流式 Tool Calling 回归。
 3. 工具参数、权限、审批、冲突、取消、超时和副作用审计行为与基线一致。
-4. `interrupt/resume`、安全的应用重启恢复和 Checkpoint 清理有自动测试；当前只完成 queued Run 恢复，running Run 仍保守失败。
+4. `interrupt/resume`、多工具审批恢复、已完成副作用不重放、安全的应用重启恢复和 Checkpoint 清理有自动测试；当前只完成 queued Run 恢复，running Run 仍保守失败。
 5. Skill 按摘要 -> 正文 -> reference 渐进加载；正文不污染聊天历史，快照可复现。
 6. UI 可见消息、Run 终态、Subagent 结果仍按业务数据库原子事实提交。
 7. `@langchain/langgraph-checkpoint-sqlite`/`better-sqlite3` 不进入最终运行时依赖，除非完成 Electron ABI、打包和恢复的独立验收并重新记录决策。

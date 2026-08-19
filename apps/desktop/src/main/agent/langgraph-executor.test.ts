@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { interrupt } from "@langchain/langgraph";
 
 import type { ModelMessage, ModelTurnResult } from "../model/model-contracts.js";
 import { NodeSqliteCheckpointSaver } from "../storage/node-sqlite-checkpoint-saver.js";
@@ -153,5 +154,45 @@ describe("LangGraphExecutor", () => {
       reopened.close();
       await rm(directory, { force: true, recursive: true });
     }
+  });
+
+  it("resumes sequential interrupts in one tool node without replaying the approval callback", async () => {
+    let interruptCount = 0;
+    const callbacks = callbacksFor(
+      [
+        result("", [{ arguments: "{}", id: "call-approval", name: "write_file" }]),
+        result("approved"),
+      ],
+      (calls) => {
+        const first = interrupt<{ step: number }, boolean>({ step: 1 });
+        const second = interrupt<{ step: number }, boolean>({ step: 2 });
+        return Promise.resolve({
+          messages: calls.map((call) => ({
+            attachments: [],
+            content: `approved:${first && second}`,
+            role: "tool" as const,
+            toolCallId: call.id,
+            toolCalls: [],
+          })),
+          successful: first && second,
+        });
+      },
+    );
+
+    const state = await new LangGraphExecutor().invoke({
+      callbacks,
+      initialMessages: [userMessage],
+      maxSteps: 4,
+      onInterrupt: () => {
+        interruptCount += 1;
+        return Promise.resolve(true);
+      },
+      signal: new AbortController().signal,
+      threadId: "sequential-approval-run",
+    });
+
+    expect(interruptCount).toBe(2);
+    expect(state.hasSuccessfulToolExecution).toBe(true);
+    expect(state.messages.some((message) => message.content === "approved:true")).toBe(true);
   });
 });

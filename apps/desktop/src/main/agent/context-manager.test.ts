@@ -144,6 +144,37 @@ describe("context manager", () => {
     expect(plan.usage.omittedMessageCount).toBe(2);
   });
 
+  it("reserves Skill capacity before selecting historical turns", () => {
+    const source = [1, 2, 3].flatMap((turn) => [
+      message(turn * 10, "user", `第${turn}轮-${"x".repeat(2_000)}`),
+      message(turn * 10 + 1, "assistant", `第${turn}轮完成`),
+    ]);
+    const withoutSkillReservation = buildManagedContext({
+      checkpoint: null,
+      compressionMode: "tokens",
+      compressionThresholdTokens: 4_000,
+      estimatedSystemTokens: 100,
+      estimatedToolDefinitionTokens: 100,
+      outputReserveTokens: 500,
+      sourceMessages: source,
+    });
+    const withSkillReservation = buildManagedContext({
+      checkpoint: null,
+      compressionMode: "tokens",
+      compressionThresholdTokens: 4_000,
+      estimatedSystemTokens: 100,
+      estimatedToolDefinitionTokens: 100,
+      outputReserveTokens: 500,
+      reservedSkillTokens: 2_500,
+      sourceMessages: source,
+    });
+
+    expect(withSkillReservation.usage.estimatedSystemTokens)
+      .toBe(withoutSkillReservation.usage.estimatedSystemTokens + 2_500);
+    expect(withSkillReservation.messages.length)
+      .toBeLessThan(withoutSkillReservation.messages.length);
+  });
+
   it("accepts fenced structured summaries and rejects incomplete ones", () => {
     const complete = {
       artifactRefs: [],

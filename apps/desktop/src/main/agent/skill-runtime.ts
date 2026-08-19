@@ -29,12 +29,28 @@ const MAX_CATALOG_ENTRIES = 200;
 const MAX_CATALOG_CHARACTERS = 24_000;
 const MAX_SKILL_FILE_CHARACTERS = 200_000;
 const MAX_SKILL_FILE_BYTES = MAX_SKILL_FILE_CHARACTERS * 4;
-const MAX_ACTIVE_SKILL_TOKENS = 12_000;
+export const MAX_ACTIVE_SKILL_TOKENS = 12_000;
+export const MIN_ACTIVE_SKILL_TOKENS = 1_024;
+const DEFAULT_SKILL_CONTEXT_WINDOW_TOKENS = 48_000;
 const MAX_REFERENCE_FILE_CHARACTERS = 80_000;
 const MAX_REFERENCE_FILE_BYTES = MAX_REFERENCE_FILE_CHARACTERS * 4;
 const MAX_REFERENCE_ENTRIES = 100;
 const REFERENCE_ROOTS = ["references", "templates"] as const;
 const READ_SKILL_REFERENCE_TOOL_NAME = "read_skill_reference";
+
+/**
+ * Keeps a predictable slice of every model context available for Skills that
+ * may be activated after the initial history has been assembled.
+ */
+export function resolveActiveSkillContextBudget(contextWindowTokens: number): number {
+  const effectiveWindow = contextWindowTokens > 0
+    ? contextWindowTokens
+    : DEFAULT_SKILL_CONTEXT_WINDOW_TOKENS;
+  return Math.max(
+    MIN_ACTIVE_SKILL_TOKENS,
+    Math.min(MAX_ACTIVE_SKILL_TOKENS, Math.floor(effectiveWindow * 0.12)),
+  );
+}
 
 const loadSkillArgumentsSchema = z.object({
   skillId: z.string().trim().min(1).max(80)

@@ -1,4 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { AIMessage, ToolMessage } from "@langchain/core/messages";
+import { DynamicStructuredTool } from "@langchain/core/tools";
+import { interrupt, isGraphInterrupt } from "@langchain/langgraph";
+import { ToolNode } from "@langchain/langgraph/prebuilt";
+import { z } from "zod";
 import {
   approveToolChangeInputSchema,
   CONTEXT_MESSAGE_OVERHEAD_TOKENS,
@@ -25,6 +30,7 @@ import {
   type ConversationRunEvent,
   type ConversationSummary,
   type ConversationTaskList,
+  type ConversationToolItem,
   type ModelReasoningOption,
   replaceLatestConversationMessageInputSchema,
   type ReplaceLatestConversationMessageInput,
@@ -33,6 +39,7 @@ import {
 } from "@agent/protocol";
 
 import { reportMainError, toMainAgentError } from "../errors/agent-error.js";
+import { toolErrorContent } from "../errors/tool-error.js";
 import type { ModelConfiguration } from "../model/model-contracts.js";
 import {
   type CompleteTurnInput,
@@ -62,6 +69,7 @@ import {
   type PreparedCommand,
   type PreparedFileChange,
   type ProjectOperationOwner,
+  type ToolExecution,
   type ToolExecutionResult
 } from "../tools/project-tool-registry.js";
 import {
@@ -75,8 +83,12 @@ import {
   resolveConversationReferenceBudget,
 } from "./conversation-reference.js";
 import { AgentCommunicationTool } from "./agent-communication-tool.js";
-import { LangGraphExecutor } from "./langgraph-executor.js";
 import {
+  LangGraphExecutor,
+  type LangGraphInterrupt,
+} from "./langgraph-executor.js";
+import {
+  resolveActiveSkillContextBudget,
   SkillRuntime,
   type SkillRuntimeContext,
   type SkillSnapshotRef,
@@ -88,6 +100,7 @@ import {
   type ToolHandlerExecutionContext,
 } from "../tools/tool-handler-registry.js";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
+import { parseToolArguments } from "../model/tool-arguments.js";
 
 const MAX_AGENT_LOOPS = 8;
 const MAX_CONTEXT_COMPACTIONS_PER_RUN = 3;
@@ -193,8 +206,30 @@ type ModelTurnRequest = Omit<CompleteTurnInput, "onTextDelta"> & {
 };
 
 type PendingChangeApproval = {
+  promise: Promise<boolean>;
   resolve: (approved: boolean) => void;
   runId: string;
+};
+
+type ToolApprovalInterrupt = {
+  conversationId: string;
+  kind: "tool_approval";
+  runId: string;
+  toolId: string;
+};
+
+type LangChainToolResultEnvelope = {
+  activeSkills: SkillSnapshotRef[];
+  content: string;
+  isError: boolean;
+  marker: "agent-tool-result-v1";
+  status?: "rejected" | undefined;
+  successful: boolean;
+};
+
+type CachedGraphToolResult = {
+  envelope: LangChainToolResultEnvelope;
+  message: ModelMessage;
 };
 
 type ActiveRun = {
@@ -277,6 +312,42 @@ function isRetryableModelError(error: unknown): boolean {
   }
 
   return error instanceof TypeError && /fetch failed|network|socket|connect|connection|timed out|timeout|terminated|econn/iu.test(error.message);
+}
+
+function isToolApprovalInterrupt(value: unknown): value is ToolApprovalInterrupt {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return record.kind === "tool_approval"
+    && typeof record.conversationId === "string"
+    && typeof record.runId === "string"
+    && typeof record.toolId === "string";
+}
+
+function hasToolNodeMessages(value: unknown): value is { messages: unknown[] } {
+  return typeof value === "object"
+    && value !== null
+    && "messages" in value
+    && Array.isArray(value.messages);
+}
+
+const langChainToolResultEnvelopeSchema = z
+  .object({
+    activeSkills: z.array(z.object({
+      contentHash: z.string().min(1),
+      id: z.string().min(1),
+      version: z.string().min(1),
+    }).strict()),
+    content: z.string(),
+    isError: z.boolean(),
+    marker: z.literal("agent-tool-result-v1"),
+    status: z.literal("rejected").optional(),
+    successful: z.boolean(),
+  })
+  .strict();
+
+function parseLangChainToolResult(content: unknown): LangChainToolResultEnvelope {
+  const serialized = typeof content === "string" ? content : JSON.stringify(content);
+  return langChainToolResultEnvelopeSchema.parse(JSON.parse(serialized));
 }
 
 function modelRetryReason(error: unknown, apiKey: string): string {
@@ -434,7 +505,16 @@ export class AgentRuntime {
 
   private readonly activeSkillRefsByRun = new Map<string, Map<string, SkillSnapshotRef>>();
 
+  /** Reused when ToolNode re-enters a tool after an interrupt resume. */
+  private readonly startedToolsByRunCall = new Map<string, ConversationToolItem>();
+
+  /** Completed calls are replayed as messages after an interrupt, never re-executed. */
+  private readonly completedToolsByRunCall = new Map<string, CachedGraphToolResult>();
+
   private readonly pendingChangeApprovals = new Map<string, PendingChangeApproval>();
+
+  /** Marks decisions that the replayed interrupt must consume without re-notifying the UI. */
+  private readonly resumedApprovalDecisions = new Map<string, { approved: boolean; runId: string }>();
 
   private readonly taskListTool: TaskListTool;
 
@@ -1134,6 +1214,43 @@ export class AgentRuntime {
     pending.resolve(input.approved);
   }
 
+  private async resumeGraphInterrupts(
+    interrupts: readonly LangGraphInterrupt[],
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    if (interrupts.length !== 1) {
+      throw new Error("Agent approval graph returned an unsupported number of interrupts.");
+    }
+    const [entry] = interrupts;
+    if (entry === undefined || !isToolApprovalInterrupt(entry.value)) {
+      throw new Error("Agent graph returned an unknown interrupt payload.");
+    }
+    const pending = this.pendingChangeApprovals.get(entry.value.toolId);
+    if (pending === undefined || pending.runId !== entry.value.runId) {
+      throw new Error("This tool approval is no longer pending.");
+    }
+    signal.throwIfAborted();
+    try {
+      const approved = await pending.promise;
+      signal.throwIfAborted();
+      this.resumedApprovalDecisions.set(entry.value.toolId, {
+        approved,
+        runId: entry.value.runId,
+      });
+      return approved;
+    } finally {
+      this.pendingChangeApprovals.delete(entry.value.toolId);
+    }
+  }
+
+  private clearPendingChangeApprovals(runId: string): void {
+    for (const [toolId, pending] of this.pendingChangeApprovals) {
+      if (pending.runId !== runId) continue;
+      pending.resolve(false);
+      this.pendingChangeApprovals.delete(toolId);
+    }
+  }
+
   private async executeRun(
     runId: string,
     conversationId: string,
@@ -1201,7 +1318,7 @@ export class AgentRuntime {
             const activeSkillContext = this.skillRuntime?.buildActiveContext(
               state.activeSkills,
               this.skillRuntimeContext(conversation, workspace?.id),
-              Math.max(1_024, Math.min(12_000, Math.floor((configuration.contextWindow || 48_000) * 0.12))),
+              resolveActiveSkillContextBudget(configuration.contextWindow ?? 0),
             );
             return Promise.resolve({
               contextMessages: activeSkillContext === null || activeSkillContext === undefined
@@ -1301,6 +1418,10 @@ export class AgentRuntime {
         },
         initialMessages,
         maxSteps: MAX_AGENT_LOOPS,
+        onInterrupt: (interrupts) => this.resumeGraphInterrupts(
+          interrupts,
+          controller.signal,
+        ),
         signal: controller.signal,
         threadId: runId,
         ...(this.graphCheckpointer === null ? {} : { checkpointer: this.graphCheckpointer }),
@@ -1402,10 +1523,20 @@ export class AgentRuntime {
       });
     } finally {
       const activeRun = this.activeRuns.get(runId);
+      this.clearPendingChangeApprovals(runId);
+      for (const [toolId, decision] of this.resumedApprovalDecisions) {
+        if (decision.runId === runId) this.resumedApprovalDecisions.delete(toolId);
+      }
       this.activeRuns.delete(runId);
       this.agentMessageDepthByRun.delete(runId);
       this.agentMessagesToReplyByRun.delete(runId);
       this.activeSkillRefsByRun.delete(runId);
+      for (const key of this.startedToolsByRunCall.keys()) {
+        if (key.startsWith(`${runId}:`)) this.startedToolsByRunCall.delete(key);
+      }
+      for (const key of this.completedToolsByRunCall.keys()) {
+        if (key.startsWith(`${runId}:`)) this.completedToolsByRunCall.delete(key);
+      }
       if (this.graphCheckpointer !== null) {
         try {
           await this.graphCheckpointer.deleteThread(runId);
@@ -1842,27 +1973,133 @@ export class AgentRuntime {
     const toolBatchId = randomUUID();
     for (const toolCall of input.toolCalls) {
       input.controller.signal.throwIfAborted();
-      const startedTool = conversationToolItemSchema.parse({
-        arguments: toolCall.arguments,
-        batchId: toolBatchId,
+      const callKey = `${input.runId}:${toolCall.id}`;
+      const cached = this.completedToolsByRunCall.get(callKey);
+      if (cached !== undefined) {
+        messages.push(cached.message);
+        hasSuccessfulToolExecution ||= cached.envelope.successful;
+        continue;
+      }
+      // ToolNode owns name dispatch and StructuredTool input handling. Invoke
+      // one call at a time because project writes and approvals are ordered
+      // side effects, not freely parallelizable reads.
+      let argumentsValue: Record<string, unknown>;
+      try {
+        argumentsValue = parseToolArguments(toolCall.arguments);
+      } catch {
+        // Tool handlers return a structured validation result. ToolNode still
+        // needs an object-shaped input to enter the handler for malformed JSON.
+        argumentsValue = {};
+      }
+      const definition = this.toolHandlers
+        .getDefinitions({ projectId: input.projectId })
+        .find((candidate) => candidate.name === toolCall.name);
+      if (definition === undefined) throw new Error(`Unknown tool: ${toolCall.name}`);
+      const tool = new DynamicStructuredTool({
+        description: definition.description,
+        func: async () => {
+          const execution = await this.executeGraphToolCall({
+            ...input,
+            toolCall: {
+              ...toolCall,
+            },
+            toolBatchId,
+          });
+          return JSON.stringify({
+            activeSkills: execution.activeSkills,
+            content: execution.content,
+            isError: execution.isError,
+            marker: "agent-tool-result-v1",
+            ...(execution.status === undefined ? {} : { status: execution.status }),
+            successful: execution.successful,
+          } satisfies LangChainToolResultEnvelope);
+        },
+        name: definition.name,
+        schema: z.record(z.string(), z.unknown()),
+      });
+      const toolNode = new ToolNode([tool], { handleToolErrors: false });
+      const output: unknown = await toolNode.invoke({
+        messages: [new AIMessage({
+          content: "",
+          tool_calls: [{
+            args: argumentsValue,
+            id: toolCall.id,
+            name: toolCall.name,
+            type: "tool_call",
+          }],
+        })],
+      });
+      if (!hasToolNodeMessages(output)) {
+        throw new Error(`ToolNode returned an invalid result for ${toolCall.name}.`);
+      }
+      const toolMessage = output.messages[0];
+      if (!(toolMessage instanceof ToolMessage)) {
+        throw new Error(`ToolNode did not return a ToolMessage for ${toolCall.name}.`);
+      }
+      const envelope = parseLangChainToolResult(toolMessage.content);
+      hasSuccessfulToolExecution ||= envelope.successful;
+      const message: ModelMessage = {
+        attachments: [],
+        content: envelope.content,
+        role: "tool",
+        toolCallId: toolCall.id,
+        toolCalls: []
+      };
+      messages.push(message);
+      this.completedToolsByRunCall.set(callKey, { envelope, message });
+    }
+    return {
+      activeSkills: [...(this.activeSkillRefsByRun.get(input.runId)?.values() ?? [])],
+      messages,
+      successful: hasSuccessfulToolExecution,
+    };
+  }
+
+  private async executeGraphToolCall(input: {
+    configuration: ModelConfiguration;
+    contextCompressionConfiguration: ContextCompressionThreshold;
+    conversationId: string;
+    controller: AbortController;
+    emit: RunEventEmitter;
+    operationOwner: ProjectOperationOwner;
+    permissionMode: ConversationPermissionMode;
+    projectId: string | undefined;
+    providerId: string | undefined;
+    reasoning: ModelReasoningOption | undefined;
+    runId: string;
+    toolBatchId: string;
+    toolCall: ModelToolCall;
+  }): Promise<LangChainToolResultEnvelope & { activeSkills: SkillSnapshotRef[] }> {
+    const key = `${input.runId}:${input.toolCall.id}`;
+    const startedTool = this.startedToolsByRunCall.get(key)
+      ?? conversationToolItemSchema.parse({
+        arguments: input.toolCall.arguments,
+        batchId: input.toolBatchId,
         conversationId: input.conversationId,
         createdAt: new Date().toISOString(),
         id: randomUUID(),
         kind: "tool",
-        name: toolCall.name,
+        name: input.toolCall.name,
         result: null,
         runId: input.runId,
         status: "running",
-        diff: null
+        diff: null,
       });
+    if (!this.startedToolsByRunCall.has(key)) {
+      this.startedToolsByRunCall.set(key, startedTool);
       this.database.appendToolStarted(startedTool);
       this.emit(input.emit, {
         conversationId: input.conversationId,
         runId: input.runId,
         tool: startedTool,
-        type: "tool.started"
+        type: "tool.started",
       });
-      const proposal = await this.toolHandlers.execute({
+    }
+
+    let proposal: ToolExecution | undefined;
+    let execution: ToolExecutionResult;
+    try {
+      proposal = await this.toolHandlers.execute({
         context: {
           configuration: input.configuration,
           contextCompressionConfiguration: input.contextCompressionConfiguration,
@@ -1873,7 +2110,7 @@ export class AgentRuntime {
               conversationId: input.conversationId,
               runId: input.runId,
               taskList,
-              type: "task_list.updated"
+              type: "task_list.updated",
             });
           },
           operationOwner: input.operationOwner,
@@ -1884,79 +2121,116 @@ export class AgentRuntime {
           runId: input.runId,
           signal: input.controller.signal,
         },
-        rawArguments: toolCall.arguments,
-        toolName: toolCall.name,
+        rawArguments: input.toolCall.arguments,
+        toolName: input.toolCall.name,
       });
-      const toolDiff = proposal.kind === "change" ? proposal.change.diff : null;
-      const execution =
-        proposal.kind === "change"
-          ? await this.resolveFileChange({
-              change: proposal.change,
+      execution = proposal.kind === "change"
+        ? await this.resolveFileChange({
+            change: proposal.change,
+            controller: input.controller,
+            permissionMode: input.permissionMode,
+            projectId: input.projectId ?? (() => {
+              throw new Error("A project is required for file changes.");
+            })(),
+            runId: input.runId,
+            startedTool,
+            emit: input.emit,
+            operationOwner: input.operationOwner,
+          })
+        : proposal.kind === "command"
+          ? await this.resolveCommand({
+              command: proposal.command,
               controller: input.controller,
+              emit: input.emit,
               permissionMode: input.permissionMode,
               projectId: input.projectId ?? (() => {
-                throw new Error("A project is required for file changes.");
+                throw new Error("A project is required for command execution.");
               })(),
               runId: input.runId,
               startedTool,
-              emit: input.emit,
               operationOwner: input.operationOwner,
             })
-          : proposal.kind === "command"
-            ? await this.resolveCommand({
-                command: proposal.command,
-                controller: input.controller,
-                emit: input.emit,
-                permissionMode: input.permissionMode,
-                projectId: input.projectId ?? (() => {
-                  throw new Error("A project is required for command execution.");
-                })(),
-                runId: input.runId,
-                startedTool,
-                operationOwner: input.operationOwner,
-              })
-            : proposal;
-      const completedTool = conversationToolItemSchema.parse({
-        ...startedTool,
-        diff: toolDiff,
-        result: execution.content,
-        status: execution.status ?? (execution.isError ? "failed" : "completed")
-      });
-      this.database.completeTool({
-        providerCallId: toolCall.id,
-        result: execution.content,
-        tool: completedTool
-      });
-      if (completedTool.status === "completed") hasSuccessfulToolExecution = true;
-      this.emit(input.emit, {
-        conversationId: input.conversationId,
-        fileChange:
-          proposal.kind === "change"
-          && completedTool.status === "completed"
-          && input.projectId !== undefined
-            ? {
-                operation: proposal.change.operation,
-                path: proposal.change.path,
-                projectId: input.projectId
-              }
-            : null,
-        runId: input.runId,
-        tool: completedTool,
-        type: "tool.completed"
-      });
-      messages.push({
-        attachments: [],
-        content: execution.content,
-        role: "tool",
-        toolCallId: toolCall.id,
-        toolCalls: []
-      });
+          : proposal;
+    } catch (error) {
+      // Approval interrupts and cancellation must escape so LangGraph can
+      // suspend/resume or terminate the run. Other tool failures are turned
+      // into a bounded ToolMessage and persisted as a failed tool row.
+      if (input.controller.signal.aborted || isAbortError(error) || isGraphInterrupt(error)) {
+        throw error;
+      }
+      execution = {
+        content: toolErrorContent(error, `tool:${input.toolCall.name}`),
+        isError: true,
+        kind: "completed",
+      };
     }
+    const toolDiff = proposal?.kind === "change" ? proposal.change.diff : null;
+    const completedTool = conversationToolItemSchema.parse({
+      ...startedTool,
+      diff: toolDiff,
+      result: execution.content,
+      status: execution.status ?? (execution.isError ? "failed" : "completed"),
+    });
+    this.database.completeTool({
+      providerCallId: input.toolCall.id,
+      result: execution.content,
+      tool: completedTool,
+    });
+    this.startedToolsByRunCall.delete(key);
+    this.emit(input.emit, {
+      conversationId: input.conversationId,
+      fileChange:
+        proposal?.kind === "change"
+        && completedTool.status === "completed"
+        && input.projectId !== undefined
+          ? {
+              operation: proposal.change.operation,
+              path: proposal.change.path,
+              projectId: input.projectId,
+            }
+          : null,
+      runId: input.runId,
+      tool: completedTool,
+      type: "tool.completed",
+    });
     return {
       activeSkills: [...(this.activeSkillRefsByRun.get(input.runId)?.values() ?? [])],
-      messages,
-      successful: hasSuccessfulToolExecution,
+      content: execution.content,
+      isError: execution.isError,
+      marker: "agent-tool-result-v1",
+      ...(execution.status === undefined ? {} : { status: execution.status }),
+      successful: completedTool.status === "completed",
     };
+  }
+
+  private requestToolApproval(input: {
+    runId: string;
+    signal: AbortSignal;
+    tool: ReturnType<typeof conversationToolItemSchema.parse>;
+    emit: RunEventEmitter;
+  }): boolean {
+    const interruptValue: ToolApprovalInterrupt = {
+      conversationId: input.tool.conversationId,
+      kind: "tool_approval",
+      runId: input.runId,
+      toolId: input.tool.id,
+    };
+    const resumed = this.resumedApprovalDecisions.get(input.tool.id);
+    if (resumed !== undefined && resumed.runId === input.runId) {
+      const approved = interrupt<ToolApprovalInterrupt, boolean>(interruptValue);
+      this.resumedApprovalDecisions.delete(input.tool.id);
+      return approved;
+    }
+
+    this.database.updateTool(input.tool);
+    void this.createChangeApproval(input.tool.id, input.runId, input.signal);
+    this.emit(input.emit, {
+      conversationId: input.tool.conversationId,
+      runId: input.runId,
+      tool: input.tool,
+      type: "tool.approval_requested",
+    });
+    return interrupt<ToolApprovalInterrupt, boolean>(interruptValue);
   }
 
   private async resolveFileChange(input: {
@@ -1985,19 +2259,13 @@ export class AgentRuntime {
         diff: input.change.diff,
         status: "awaiting_approval"
       });
-      this.database.updateTool(awaitingTool);
-      const approval = this.waitForChangeApproval(
-        awaitingTool.id,
-        input.runId,
-        input.controller.signal
-      );
-      this.emit(input.emit, {
-        conversationId: awaitingTool.conversationId,
+      const approved = this.requestToolApproval({
+        emit: input.emit,
         runId: input.runId,
+        signal: input.controller.signal,
         tool: awaitingTool,
-        type: "tool.approval_requested"
       });
-      const approved = await approval;
+      this.pendingChangeApprovals.delete(awaitingTool.id);
       if (!approved) {
         return {
           content: JSON.stringify({
@@ -2044,19 +2312,13 @@ export class AgentRuntime {
         ...input.startedTool,
         status: "awaiting_approval"
       });
-      this.database.updateTool(awaitingTool);
-      const approval = this.waitForChangeApproval(
-        awaitingTool.id,
-        input.runId,
-        input.controller.signal
-      );
-      this.emit(input.emit, {
-        conversationId: awaitingTool.conversationId,
+      const approved = this.requestToolApproval({
+        emit: input.emit,
         runId: input.runId,
+        signal: input.controller.signal,
         tool: awaitingTool,
-        type: "tool.approval_requested"
       });
-      const approved = await approval;
+      this.pendingChangeApprovals.delete(awaitingTool.id);
       if (!approved) {
         return {
           content: JSON.stringify({
@@ -2078,30 +2340,40 @@ export class AgentRuntime {
     );
   }
 
-  private waitForChangeApproval(
+  private createChangeApproval(
     toolId: string,
     runId: string,
     signal: AbortSignal
   ): Promise<boolean> {
-    return new Promise<boolean>((resolve, reject) => {
-      const onAbort = (): void => {
-        this.pendingChangeApprovals.delete(toolId);
-        reject(
-          signal.reason instanceof Error
-            ? signal.reason
-            : new DOMException("The operation was aborted.", "AbortError")
-        );
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
-      this.pendingChangeApprovals.set(toolId, {
-        resolve: (approved) => {
-          signal.removeEventListener("abort", onAbort);
-          this.pendingChangeApprovals.delete(toolId);
-          resolve(approved);
-        },
-        runId
-      });
+    const existing = this.pendingChangeApprovals.get(toolId);
+    if (existing !== undefined && existing.runId === runId) return existing.promise;
+
+    let resolvePromise: (approved: boolean) => void = () => undefined;
+    const promise = new Promise<boolean>((resolve) => {
+      resolvePromise = resolve;
     });
+    const cleanup = (): void => {
+      signal.removeEventListener("abort", onAbort);
+      if (this.pendingChangeApprovals.get(toolId)?.runId === runId) {
+        this.pendingChangeApprovals.delete(toolId);
+      }
+    };
+    const onAbort = (): void => {
+      cleanup();
+      resolvePromise(false);
+    };
+    const pending: PendingChangeApproval = {
+      promise,
+      resolve: (approved) => {
+        signal.removeEventListener("abort", onAbort);
+        resolvePromise(approved);
+      },
+      runId,
+    };
+    this.pendingChangeApprovals.set(toolId, pending);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    return promise;
   }
 
   private buildContext(
@@ -2173,6 +2445,9 @@ export class AgentRuntime {
       contextCompressionConfiguration,
       contextWindowTokens
     );
+    const reservedSkillTokens = this.skillRuntime === null
+      ? 0
+      : resolveActiveSkillContextBudget(contextWindowTokens) + CONTEXT_MESSAGE_OVERHEAD_TOKENS;
     const managed = buildManagedContext({
       checkpoint: this.database.getContextCheckpoint(conversationId),
       compressionMode: contextCompressionConfiguration.mode,
@@ -2180,6 +2455,7 @@ export class AgentRuntime {
       estimatedSystemTokens,
       estimatedToolDefinitionTokens,
       outputReserveTokens: MAX_OUTPUT_TOKENS,
+      reservedSkillTokens,
       sourceMessages: storedMessages
     });
 

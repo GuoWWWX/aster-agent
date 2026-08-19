@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_AGENT_DIRECTORY_CONFIGURATION } from "@agent/protocol";
 import type { ConversationRunEvent, ConversationToolItem } from "@agent/protocol";
@@ -239,6 +239,34 @@ class FileChangeFixtureModel implements ModelProviderAdapter {
     }
     input.onTextDelta("文件已写入");
     return Promise.resolve({ content: "文件已写入", finishReason: "stop", toolCalls: [] });
+  }
+}
+
+class MultiChangeFixtureModel implements ModelProviderAdapter {
+  private turn = 0;
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.turn += 1;
+    if (this.turn === 1) {
+      return Promise.resolve({
+        content: "",
+        finishReason: "tool_calls",
+        toolCalls: [
+          {
+            arguments: JSON.stringify({ content: "export const first = true;\n", path: "first.ts" }),
+            id: "call_write_first",
+            name: "write_file",
+          },
+          {
+            arguments: JSON.stringify({ content: "export const second = true;\n", path: "second.ts" }),
+            id: "call_write_second",
+            name: "write_file",
+          },
+        ],
+      });
+    }
+    input.onTextDelta("两个文件已写入");
+    return Promise.resolve({ content: "两个文件已写入", finishReason: "stop", toolCalls: [] });
   }
 }
 
@@ -3535,6 +3563,95 @@ describe("AgentRuntime", () => {
     if (tool?.kind !== "tool") throw new Error("Expected a file tool timeline item.");
     expect(tool.status).toBe("completed");
     expect(tool.diff).toContain("feature.ts");
+    database.close();
+  });
+
+  it("does not replay completed side effects when a later ToolCall interrupts", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-multi-approval-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      new MultiChangeFixtureModel(),
+    );
+    const events: ConversationRunEvent[] = [];
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage(
+        {
+          content: "创建两个文件",
+          conversationId: conversation.id,
+          permissionMode: "ask_before_changes",
+        },
+        (event) => {
+          events.push(event);
+          if (event.type === "tool.approval_requested") {
+            runtime.approveToolChange({ approved: true, runId: event.runId, toolId: event.tool.id });
+          }
+          if (event.type === "run.finished") resolve();
+        },
+      );
+    });
+
+    expect(events.filter((event) => event.type === "tool.approval_requested")).toHaveLength(2);
+    expect(events.filter((event) => event.type === "tool.completed")).toHaveLength(2);
+    expect(database.listTimeline(conversation.id).filter((item) => item.kind === "tool")).toHaveLength(2);
+    await expect(readFile(path.join(root, "first.ts"), "utf8"))
+      .resolves.toBe("export const first = true;\n");
+    await expect(readFile(path.join(root, "second.ts"), "utf8"))
+      .resolves.toBe("export const second = true;\n");
+    database.close();
+  });
+
+  it("persists an unexpected tool adapter failure as a failed tool result", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-tool-failure-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const tools = new ProjectToolRegistry(projects);
+    vi.spyOn(tools, "execute").mockRejectedValue(new Error("fixture tool adapter failed"));
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      tools,
+      new FixtureModel(),
+    );
+    const events: ConversationRunEvent[] = [];
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage({ content: "读取项目", conversationId: conversation.id }, (event) => {
+        events.push(event);
+        if (event.type === "run.finished") resolve();
+      });
+    });
+
+    const tool = database.listTimeline(conversation.id).find((item) => item.kind === "tool");
+    expect(tool).toMatchObject({ name: "list_directory", status: "failed" });
+    expect(tool?.kind === "tool" ? tool.result : "").toContain("fixture tool adapter failed");
+    expect(events.filter((event) => event.type === "tool.completed")).toHaveLength(1);
     database.close();
   });
 });
