@@ -67,6 +67,60 @@ describe("ConversationDeletionService", () => {
     await expect(access(storedPath)).rejects.toThrow();
   });
 
+  it("removes Run checkpoint threads before completing the deletion task", async () => {
+    const fixture = await createFixture();
+    const conversation = fixture.database.createConversation(fixture.project.id);
+    const run = fixture.database.createRunWithUserMessage(
+      conversation.id,
+      "保留审计事实",
+      "test-model",
+    );
+    fixture.database.finishRun(run.runId, "completed", null);
+    const deletedThreads: string[][] = [];
+    const checkpoints = {
+      deleteThreads(threadIds: readonly string[]): Promise<void> {
+        deletedThreads.push([...threadIds]);
+        return Promise.resolve();
+      },
+    };
+    const service = new ConversationDeletionService(
+      fixture.database,
+      fixture.attachments,
+      fixture.projects,
+      checkpoints,
+    );
+
+    await expect(service.requestDeletion(conversation.id)).resolves.toBe("completed");
+    expect(deletedThreads).toEqual([[run.runId]]);
+  });
+
+  it("keeps checkpoint cleanup retryable when the saver is temporarily unavailable", async () => {
+    const fixture = await createFixture();
+    const conversation = fixture.database.createConversation(fixture.project.id);
+    let attempts = 0;
+    const checkpoints = {
+      deleteThreads(): Promise<void> {
+        attempts += 1;
+        return attempts === 1
+          ? Promise.reject(new Error("checkpoint database is locked"))
+          : Promise.resolve();
+      },
+    };
+    const service = new ConversationDeletionService(
+      fixture.database,
+      fixture.attachments,
+      fixture.projects,
+      checkpoints,
+    );
+
+    await expect(service.requestDeletion(conversation.id)).resolves.toBe("pending");
+    expect(fixture.database.listIncompleteConversationDeletionTasks()[0]?.lastError)
+      .toContain("checkpoint database is locked");
+    await expect(service.resumeIncompleteTasks()).resolves.toBeUndefined();
+    expect(fixture.database.listIncompleteConversationDeletionTasks()).toEqual([]);
+    expect(attempts).toBe(2);
+  });
+
   it("retains a shared snapshot until its final conversation reference is deleted", async () => {
     const fixture = await createFixture();
     const conversation = fixture.database.createConversation(fixture.project.id);

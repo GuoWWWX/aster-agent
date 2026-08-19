@@ -1,6 +1,6 @@
 # LangChain 与 LangGraph 改造方案
 
-> 文档状态：技术选型与迁移决策
+> 文档状态：技术选型与迁移决策；第九批已完成主链接入，审批/ToolNode 仍待后续批次
 > 决策日期：2026-08-19
 > 适用范围：`apps/desktop` 的 Agent Runtime、模型适配、工具循环、Skill 上下文和可恢复执行
 > 前置基线：`b009d52 checkpoint：LangGraph 改造前工作树`
@@ -10,6 +10,8 @@
 本项目采用 **LangChain Core/Provider + LangGraph**，替换当前 `AgentRuntime` 内部自研的模型/工具循环和状态流转。
 
 `AgentRuntime` 不删除。它继续是 Electron Main、IPC 和现有业务调用方看到的应用入口与兼容 façade，负责项目边界、权限、审批、SQLite 业务事实、事件合同、Queue/Steer、Subagent 和错误映射。LangGraph 接管 façade 内部的执行图、节点循环、条件路由、中断恢复和图状态 Checkpoint。
+
+当前代码已完成 `StateGraph(model -> tools -> model)` 主链和自定义 SQLite Checkpoint。审批仍由 Runtime 的既有等待器实现，工具节点仍由 Runtime callback wrapper 执行，以保证权限、审计、事件和项目操作锁不被第三方默认行为绕过；因此本批不宣称已经使用 LangGraph `interrupt/Command` 或官方 `ToolNode` 完成全部迁移。
 
 这不是把所有业务搬进框架，也不是继续保留两套生产 Agent Loop：迁移完成后，旧的 `for` 循环和旧 Provider 协议解析从生产路径删除；Runtime 只保留应用边界适配。
 
@@ -101,6 +103,8 @@ ModelConfiguration
       google-gemini            -> ChatGoogleGenerativeAI
 ```
 
+Anthropic 的配置 `baseUrl` 延续项目原有的版本化格式（例如 `https://api.anthropic.com/v1`）；Adapter 会在交给 SDK 前移除末尾的 `v1`，因为 Anthropic SDK 会固定追加 `/v1/messages`。Google 的配置 `baseUrl` 可以填写官方格式 `https://generativelanguage.googleapis.com/v1beta`，Adapter 会把末尾的 `v1`、`v1beta` 或 `v1alpha` 拆成 SDK 的 `apiVersion`，避免 Provider 再次拼接同一个版本路径。`@google/generative-ai@0.24.1` 的公开 `RequestOptions` 没有自定义 `fetch` 字段，因此 Google 请求使用 SDK 的全局 `fetch`；Adapter 的自定义请求注入仅对 OpenAI 和 Anthropic 生效，不能把 Google 的测试替换钩子当成生产网络代理能力。
+
 约束：
 
 1. `maxRetries` 由 Runtime 的可观测重试策略控制，Provider SDK 不得隐式重放带副作用的回合。
@@ -108,6 +112,7 @@ ModelConfiguration
 3. Provider-specific reasoning、附件和原始响应只在 adapter 内转换；业务 Runtime 不判断供应商字段。
 4. LangChain `AIMessage`/`ToolMessage` 只在图和 adapter 内使用；落库继续使用当前中立 `ModelMessage` 合同。
 5. 旧 `model-protocol-adapter.ts`、`openai-compatible-adapter.ts` 和 AI SDK adapter 在新 adapter 通过回归后删除，不保留生产双路回退。
+6. 新快照只写 LangChain 版本 2；迁移期只读转换 AI SDK 版本 1 的 Assistant Provider State。OpenAI Chat 的兼容端点字段 `reasoning_content` 由 Adapter 在序列化后的请求体中窄范围补回，其他 Provider 使用 LangChain 原生消息块。
 
 ## 6. Skill 生命周期与上下文
 
@@ -128,6 +133,8 @@ Level 3  需要时通过受控 reference 工具加载 references/templates 的�
 - `SkillContextProvider`：按 ContextManager 预算返回系统上下文片段；Skill 指令置于明确分隔符中，不能覆盖系统安全、权限和项目边界。
 - `SkillSnapshot`：写入 Graph State，并在 Run 快照/Checkpoint 中保存 `id/version/contentHash`。正文过大时保存到受控 Artifact，恢复时按哈希校验读取。
 
+Agent `capabilityScope=custom` 时，`skillIds` 必须进入同一个 `SkillRuntimeContext`，同时约束目录、`load_skill`、`read_skill_reference` 和压缩/恢复后的正文重建；`inherit_all` 不增加此 Agent 过滤。`project` 与 `team` 作用域分别要求当前 Project 和团队会话。Reference 必须在读取前检查文件大小，并用 fatal UTF-8 解码拒绝二进制或损坏文本。
+
 模型不会因为看到了摘要就“自动知道详细说明”。`load_skill` 必须是一个真实工具，工具描述明确说明何时调用；加载失败以结构化 Tool 错误返回，允许模型在同一图中修正参数。压缩后由 `SkillContextProvider` 根据快照重新组装正文，不依赖旧消息仍留在上下文中。
 
 Skill 正文、reference 和脚本都视为不可信输入：脚本不能直接获得 Node/Shell/网络权限，所有副作用仍经过统一 ToolRegistry、PermissionPolicy、审批、超时、取消和审计。
@@ -147,34 +154,34 @@ LangGraph 的 Checkpoint 只负责图恢复，不替代现有业务状态：
 
 ## 8. 迁移顺序与验证门槛
 
-### 阶段 0：本决策文档和 API Spike（当前）
+### 阶段 0：本决策文档和 API Spike（已完成）
 
 - 锁定包版本和边界。
 - 验证 StateGraph、`interrupt/Command`、Provider 构造和 SQLite 原生模块风险。
 - 不改生产 Agent Loop。
 
-### 阶段 1：LangChain 模型端口
+### 阶段 1：LangChain 模型端口（已完成）
 
 - 实现 LangChain-backed model registry 和中立消息转换。
 - 用固定请求快照覆盖四种 API 格式、Tool Call、流式增量、Reasoning、附件、错误和取消。
 - 通过后删除 AI SDK/手写 Provider 解析依赖。
 
-### 阶段 2：纯图执行器
+### 阶段 2：纯图执行器（已完成）
 
 - 建立 `AgentGraphState`、model/tools/finalize 节点和条件边。
 - 用 fake ChatModel 与 fake Tools 验证多轮、并行/顺序、最大步骤和 AbortSignal。
 - 图测试不直接访问 Electron、SQLite 业务表或 Renderer。
 
-### 阶段 3：Runtime façade 接入
+### 阶段 3：Runtime façade 接入（主链已完成）
 
 - 将 `executeRun` 的内部循环替换为 Graph invoke/stream。
 - 保持既有事件、消息、Tool 行、Queue/Steer、Subagent 和错误合同。
-- 逐次补审批 `interrupt/resume`、取消、应用重启恢复和不可重放副作用测试。
+- 逐次补审批 `interrupt/resume`、running Run 中断恢复和不可重放副作用测试；当前已完成 queued Run 重启恢复和 running Run 保守失败策略。
 
-### 阶段 4：Skill 与 Checkpoint
+### 阶段 4：Skill 与 Checkpoint（主链已完成）
 
 - 接入 `SkillCatalog/Resolver/Loader/ContextProvider` 和 Run 快照。
-- 实现 `NodeSqliteCheckpointSaver`、迁移、清理和旧会话恢复。
+- 实现 `NodeSqliteCheckpointSaver`、迁移、清理和 queued Run 恢复；running Run 的自动恢复仍禁止，避免副作用重放。
 - 验证 Skill 正文不进入 Timeline，压缩/恢复后仍按 hash 重建上下文。
 
 ### 阶段 5：收口
@@ -192,7 +199,7 @@ LangGraph 的 Checkpoint 只负责图恢复，不替代现有业务状态：
 1. AgentRuntime 公共入口和 IPC 合同未破坏，内部模型/工具循环由 LangGraph 图执行。
 2. 四种现有模型格式均由 LangChain Provider 适配并通过流式 Tool Calling 回归。
 3. 工具参数、权限、审批、冲突、取消、超时和副作用审计行为与基线一致。
-4. `interrupt/resume`、应用重启恢复和 Checkpoint 清理有自动测试。
+4. `interrupt/resume`、安全的应用重启恢复和 Checkpoint 清理有自动测试；当前只完成 queued Run 恢复，running Run 仍保守失败。
 5. Skill 按摘要 -> 正文 -> reference 渐进加载；正文不污染聊天历史，快照可复现。
 6. UI 可见消息、Run 终态、Subagent 结果仍按业务数据库原子事实提交。
 7. `@langchain/langgraph-checkpoint-sqlite`/`better-sqlite3` 不进入最终运行时依赖，除非完成 Electron ABI、打包和恢复的独立验收并重新记录决策。
@@ -200,4 +207,4 @@ LangGraph 的 Checkpoint 只负责图恢复，不替代现有业务状态：
 
 ## 10. 当前未宣称的能力
 
-本方案本身不表示 MCP Runtime、完整 Skill Runtime、完整长期团队 Supervisor、受管浏览器或远程 Agent Server 已实现。代码和 Capability 只有在对应测试与端到端证据齐备后才更新为已实现。
+本方案本身不表示 MCP Runtime、Skill 脚本执行、running Run 自动恢复、完整长期团队 Supervisor、受管浏览器或远程 Agent Server 已实现。代码和 Capability 只有在对应测试与端到端证据齐备后才更新为已实现。

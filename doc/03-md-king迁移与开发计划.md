@@ -1,7 +1,7 @@
 # md-king 迁移与开发计划
 
-> 文档状态：开工基线  
-> 更新时间：2026-08-15  
+> 文档状态：开工基线；模型/Agent 运行时技术决策以[LangChain 与 LangGraph 改造方案](./15-LangChain与LangGraph改造方案.md)为准
+> 更新时间：2026-08-19
 > 源项目：`D:\Code\Project\AI\md-king`  
 > 目标项目：`D:\Code\Project\202608\Agent`
 
@@ -70,12 +70,12 @@ Lucide React
 | Unit/Integration | 继续使用 Node `node:test`，不在迁移同时改写现有测试 |
 | E2E | Playwright |
 | Lint | ESLint，只检查目标项目，不批量格式化迁移源码 |
-| SQLite | better-sqlite3 + Drizzle |
+| SQLite | 现有 `node:sqlite` + `AgentDatabase`；图状态使用项目 `NodeSqliteCheckpointSaver` |
 | 密钥 | Electron `safeStorage` |
-| 模型 | Vercel AI SDK + `ModelProviderAdapter`；兼容协议和原生 Provider 均在 Adapter 内 |
+| 模型/Agent | LangChain Core/Provider + LangGraph；保留中立 `ModelProviderAdapter` 和 `AgentRuntime` façade |
 | 日志 | pino，统一敏感字段脱敏 |
 
-`better-sqlite3` 和未来的 `node-pty` 都包含原生模块。桌面构建必须配置 Electron ABI rebuild，并在最终安装包中做真实启动测试。第一阶段命令工具使用 Node `child_process.spawn`；交互式 PTY 后续再引入 `node-pty`。
+当前 SQLite 路径不引入 `better-sqlite3`，因此不增加额外 SQLite 原生 ABI 依赖；Electron 仍必须做真实启动/退出测试。第一阶段命令工具使用 Node `child_process.spawn`；交互式 PTY 后续再引入 `node-pty`。
 
 ## 5. 迁移内容分类
 
@@ -364,7 +364,7 @@ src/pages/convert/convert-page.tsx
 | --- | --- |
 | 迁移后 Markdown 效果退化 | 保留原测试和固定截图夹具，迁移期不升级主要依赖 |
 | Tauri 调用散落在组件中 | 统一收口到 AgentClient，禁止组件直接判断宿主 |
-| Electron 原生模块打包失败 | 尽早做 better-sqlite3 安装包冒烟，不等最终阶段首次打包 |
+| Electron 原生模块打包失败 | 对 `node:sqlite`、Electron 版本和最终安装包尽早做启动冒烟，不等最终阶段首次打包 |
 | 模型供应商 Tool Calling 差异 | ModelProviderAdapter 隔离；至少用两类真实 Provider 做合同测试，不靠供应商名称分支 |
 | 模型切换导致上下文或能力错误 | 每个 Run 固化模型快照，切换后按新模型能力重新构建上下文 |
 | Agent 数量耗尽系统线程 | Agent Thread 仅为逻辑对话；Run 使用异步调度和固定 Worker/进程池，空闲 Agent 不持有运行资源 |

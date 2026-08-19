@@ -4,7 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { AgentDatabase } from "./agent-database.js";
+import { AgentDatabase, type RunExecutionSnapshot } from "./agent-database.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -26,7 +26,9 @@ describe("AgentDatabase", () => {
 
     const firstMetadata = new DatabaseSync(databasePath);
     const firstRow = firstMetadata
-      .prepare("SELECT version, name, applied_at FROM schema_migrations")
+      .prepare(
+        "SELECT version, name, applied_at FROM schema_migrations ORDER BY version DESC LIMIT 1",
+      )
       .get() as Record<string, unknown>;
     firstMetadata.close();
 
@@ -35,17 +37,19 @@ describe("AgentDatabase", () => {
 
     const secondMetadata = new DatabaseSync(databasePath);
     const secondRow = secondMetadata
-      .prepare("SELECT version, name, applied_at FROM schema_migrations")
+      .prepare(
+        "SELECT version, name, applied_at FROM schema_migrations ORDER BY version DESC LIMIT 1",
+      )
       .get() as Record<string, unknown>;
     const migrationCount = secondMetadata
       .prepare("SELECT COUNT(*) AS count FROM schema_migrations")
       .get() as Record<string, unknown>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(1);
-    expect(firstRow.name).toBe("agent-database-initial");
+    expect(firstRow.version).toBe(2);
+    expect(firstRow.name).toBe("agent-run-execution-snapshot");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(1);
+    expect(migrationCount.count).toBe(2);
   });
 
   it("refuses to open a database from a newer schema version", async () => {
@@ -65,7 +69,7 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 1",
+      "newer than supported version 2",
     );
   });
 
@@ -176,8 +180,9 @@ describe("AgentDatabase", () => {
     database.close();
 
     const metadata = new DatabaseSync(databasePath);
-    expect(metadata.prepare("SELECT version FROM schema_migrations").all()).toEqual([
+    expect(metadata.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([
       { version: 1 },
+      { version: 2 },
     ]);
     metadata.close();
   });
@@ -889,6 +894,56 @@ describe("AgentDatabase", () => {
       "running conversations",
     );
     database.close();
+  });
+
+  it("keeps a queued user Run recoverable across restart but does not resume an in-flight Run", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-queued-recovery-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "agent.sqlite");
+    const first = new AgentDatabase(databasePath);
+    const conversation = first.createConversation(null);
+    const executionSnapshot: RunExecutionSnapshot = {
+      apiFormat: "openai-chat-completions",
+      baseUrl: "https://example.test/v1",
+      contextCompressionConfiguration: {
+        mode: "percentage",
+        percentageThreshold: 80,
+        tokenThreshold: 100_000,
+      },
+      contextWindow: null,
+      modelId: "test-model",
+      permissionMode: "ask_before_changes",
+      providerId: null,
+      reasoning: null,
+      reasoningOptions: [],
+    };
+    const queued = first.createRunWithUserMessage(
+      conversation.id,
+      "重启后继续",
+      "test-model",
+      [],
+      undefined,
+      executionSnapshot,
+    );
+    first.close();
+
+    const reopened = new AgentDatabase(databasePath);
+    expect(reopened.listQueuedRunRecoveries()).toEqual([{
+      attachmentIds: [],
+      content: "重启后继续",
+      conversationId: conversation.id,
+      executionSnapshot,
+      modelId: "test-model",
+      runId: queued.runId,
+    }]);
+    expect(reopened.getConversation(conversation.id).lastRunStatus).toBe("queued");
+    reopened.markRunRunning(queued.runId);
+    reopened.close();
+
+    const afterInFlight = new AgentDatabase(databasePath);
+    expect(afterInFlight.listQueuedRunRecoveries()).toEqual([]);
+    expect(afterInFlight.getConversation(conversation.id).lastRunStatus).toBe("failed");
+    afterInFlight.close();
   });
 
   it("persists a task list through creation and removes it when closed", async () => {

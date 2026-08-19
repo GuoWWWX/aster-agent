@@ -11,6 +11,10 @@ export type ConversationDeletionFileStore = {
   ): Promise<void>;
 };
 
+export type ConversationDeletionCheckpointStore = {
+  deleteThreads(threadIds: readonly string[]): Promise<void>;
+};
+
 export type ConversationDeletionOutcome = "completed" | "pending";
 
 function describeDeletionError(error: unknown): string {
@@ -26,6 +30,7 @@ export class ConversationDeletionService {
     private readonly database: AgentDatabase,
     private readonly files: ConversationDeletionFileStore,
     private readonly projects: Pick<ProjectRegistry, "unmountConversationWorkspace">,
+    private readonly checkpoints: ConversationDeletionCheckpointStore | null = null,
   ) {}
 
   public async requestDeletion(conversationId: string): Promise<ConversationDeletionOutcome> {
@@ -67,6 +72,11 @@ export class ConversationDeletionService {
         task.conversationIds,
         task.filePaths,
       );
+      if (this.checkpoints !== null) {
+        await this.checkpoints.deleteThreads(
+          this.database.listRunIdsForConversations(task.conversationIds),
+        );
+      }
       this.database.completeConversationDeletionTask(task.id);
       return "completed";
     } catch (error) {

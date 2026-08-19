@@ -38,6 +38,7 @@ import {
   type CompleteTurnInput,
   type ModelMessage,
   type ModelProviderAdapter,
+  type ModelToolCall,
   type ModelTurnResult
 } from "../model/model-contracts.js";
 import { ModelAdapterRegistry } from "../model/model-adapter-registry.js";
@@ -48,6 +49,8 @@ import {
   agentMessageModelContent,
   type CompleteRunInput,
   type LatestUserMessageReplacementSource,
+  type QueuedRunRecovery,
+  type RunExecutionSnapshot,
   type SubagentTask,
   type StoredModelMessage
 } from "../storage/agent-database.js";
@@ -72,12 +75,19 @@ import {
   resolveConversationReferenceBudget,
 } from "./conversation-reference.js";
 import { AgentCommunicationTool } from "./agent-communication-tool.js";
+import { LangGraphExecutor } from "./langgraph-executor.js";
+import {
+  SkillRuntime,
+  type SkillRuntimeContext,
+  type SkillSnapshotRef,
+} from "./skill-runtime.js";
 import { SubagentTool } from "./subagent-tool.js";
 import {
   ToolHandlerRegistry,
   type ToolHandler,
   type ToolHandlerExecutionContext,
 } from "../tools/tool-handler-registry.js";
+import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 
 const MAX_AGENT_LOOPS = 8;
 const MAX_CONTEXT_COMPACTIONS_PER_RUN = 3;
@@ -115,6 +125,48 @@ function resolveContextCompressionConfiguration(
   globalConfiguration: ContextCompressionConfiguration
 ): ContextCompressionThreshold {
   return modelConfiguration.contextCompression ?? globalConfiguration;
+}
+
+function createRunExecutionSnapshot(input: {
+  configuration: ModelConfiguration;
+  contextCompressionConfiguration: ContextCompressionThreshold;
+  permissionMode: ConversationPermissionMode;
+  providerId: string | undefined;
+  reasoning: ModelReasoningOption | undefined;
+}): RunExecutionSnapshot {
+  const { mode, percentageThreshold, tokenThreshold } = input.contextCompressionConfiguration;
+  return {
+    apiFormat: input.configuration.apiFormat,
+    baseUrl: input.configuration.baseUrl,
+    contextCompressionConfiguration: {
+      mode,
+      percentageThreshold,
+      tokenThreshold,
+    },
+    contextWindow: input.configuration.contextWindow ?? null,
+    modelId: input.configuration.modelId,
+    permissionMode: input.permissionMode,
+    providerId: input.providerId ?? null,
+    reasoning: input.reasoning === undefined ? null : structuredClone(input.reasoning),
+    reasoningOptions: structuredClone(input.configuration.reasoningOptions),
+  };
+}
+
+function assertRunConfigurationMatchesSnapshot(
+  configuration: ModelConfiguration,
+  snapshot: RunExecutionSnapshot,
+): void {
+  const sameReasoningOptions = JSON.stringify(configuration.reasoningOptions)
+    === JSON.stringify(snapshot.reasoningOptions);
+  if (
+    configuration.apiFormat !== snapshot.apiFormat
+    || configuration.baseUrl !== snapshot.baseUrl
+    || configuration.contextWindow !== (snapshot.contextWindow ?? undefined)
+    || configuration.modelId !== snapshot.modelId
+    || !sameReasoningOptions
+  ) {
+    throw new Error("Queued Run 的模型配置已变化，无法安全恢复；请重新发送该消息。");
+  }
 }
 
 type RunEventEmitter = (event: ConversationRunEvent) => void;
@@ -380,6 +432,8 @@ export class AgentRuntime {
 
   private readonly agentMessagesToReplyByRun = new Map<string, ConversationAgentMessageItem[]>();
 
+  private readonly activeSkillRefsByRun = new Map<string, Map<string, SkillSnapshotRef>>();
+
   private readonly pendingChangeApprovals = new Map<string, PendingChangeApproval>();
 
   private readonly taskListTool: TaskListTool;
@@ -403,7 +457,9 @@ export class AgentRuntime {
       defaultContextCompressionConfigurationProvider,
     private readonly contextCompactor: ContextCompactor | null = null,
     private readonly attachments: ConversationAttachmentStore | null = null,
-    private readonly agentDirectory: AgentDirectoryConfigurationProvider | null = null
+    private readonly agentDirectory: AgentDirectoryConfigurationProvider | null = null,
+    private readonly skillRuntime: SkillRuntime | null = null,
+    private readonly graphCheckpointer: BaseCheckpointSaver | null = null
   ) {
     this.taskListTool = new TaskListTool(database);
     this.agentCommunicationTool = new AgentCommunicationTool(database);
@@ -412,6 +468,34 @@ export class AgentRuntime {
       ? null
       : new ConversationAttachmentTool(attachments);
     this.toolHandlers = this.createToolHandlerRegistry();
+  }
+
+  private skillRuntimeContext(
+    conversation: ConversationSummary,
+    projectId: string | undefined,
+    activeSkillIds?: readonly string[],
+  ): SkillRuntimeContext {
+    // A temporary conversation may have its own workspace project record, but
+    // it is not a project-scoped conversation and must not unlock project
+    // Skills. The persisted conversation binding is the authoritative scope.
+    const scopedProjectId = conversation.projectId === null ? undefined : projectId;
+    let allowedSkillIds: readonly string[] | undefined;
+    if (conversation.agentId !== null) {
+      const agent = this.agentDirectory?.getConfiguration().agents.find(
+        (candidate) => candidate.id === conversation.agentId,
+      );
+      if (agent === undefined || !agent.enabled) {
+        allowedSkillIds = [];
+      } else if (agent.capabilityScope === "custom") {
+        allowedSkillIds = agent.skillIds;
+      }
+    }
+    return {
+      projectId: scopedProjectId,
+      ...(activeSkillIds === undefined ? {} : { activeSkillIds }),
+      ...(allowedSkillIds === undefined ? {} : { allowedSkillIds }),
+      ...(conversation.teamId === null ? {} : { teamId: conversation.teamId }),
+    };
   }
 
   private createToolHandlerRegistry(): ToolHandlerRegistry<RuntimeToolContext> {
@@ -483,6 +567,35 @@ export class AgentRuntime {
           });
         },
         getDefinitions: () => this.attachmentTool?.getDefinitions() ?? [],
+        isAvailable: () => true,
+      });
+    }
+    if (this.skillRuntime !== null) {
+      handlers.push({
+        execute: ({ context, rawArguments, toolName }) => {
+          const conversation = this.database.getConversation(context.conversationId);
+          const result = this.skillRuntime?.execute({
+            arguments: rawArguments,
+            context: this.skillRuntimeContext(
+              conversation,
+              context.projectId,
+              [...(this.activeSkillRefsByRun.get(context.runId)?.keys() ?? [])],
+            ),
+            toolName,
+          });
+          if (result?.snapshot !== undefined) {
+            const active = this.activeSkillRefsByRun.get(context.runId)
+              ?? new Map<string, SkillSnapshotRef>();
+            active.set(result.snapshot.id, result.snapshot);
+            this.activeSkillRefsByRun.set(context.runId, active);
+          }
+          return Promise.resolve({
+            content: result?.content ?? "Skill Runtime is unavailable.",
+            isError: result?.isError ?? true,
+            kind: "completed" as const,
+          });
+        },
+        getDefinitions: () => this.skillRuntime?.getDefinitions() ?? [],
         isAvailable: () => true,
       });
     }
@@ -598,6 +711,13 @@ export class AgentRuntime {
     const creation = this.database.replaceLatestUserMessage({
       content: input.content,
       conversationId: input.conversationId,
+      executionSnapshot: createRunExecutionSnapshot({
+        configuration: prepared.configuration,
+        contextCompressionConfiguration: prepared.contextCompressionConfiguration,
+        permissionMode: prepared.permissionMode,
+        providerId: prepared.input.providerId,
+        reasoning: prepared.reasoning,
+      }),
       messageId,
       modelContent: prepared.modelInputContent,
       modelId: prepared.configuration.modelId,
@@ -660,6 +780,24 @@ export class AgentRuntime {
   }
 
   public resumePendingMessages(emit: RunEventEmitter): void {
+    for (const recovery of this.database.listQueuedRunRecoveries()) {
+      try {
+        this.resumeQueuedRun(recovery, emit);
+      } catch (error) {
+        const agentError = toMainAgentError(error, {
+          operation: "agent.run.resume",
+        });
+        reportMainError(agentError, error);
+        try {
+          this.database.finishRun(recovery.runId, "failed", agentError.message);
+        } catch (finishError) {
+          reportMainError(
+            toMainAgentError(finishError, { operation: "agent.run.resume.finish" }),
+            finishError,
+          );
+        }
+      }
+    }
     for (const task of this.database.listUndeliveredSubagentTasks()) {
       const message = this.database.deliverSubagentTaskResult(task.id);
       if (message === null) continue;
@@ -672,6 +810,55 @@ export class AgentRuntime {
     for (const conversationId of this.database.listConversationIdsWithUnreadAgentMessages()) {
       this.startUnreadAgentMessageRun(conversationId, 0, emit);
     }
+  }
+
+  private resumeQueuedRun(recovery: QueuedRunRecovery, emit: RunEventEmitter): void {
+    const snapshot = recovery.executionSnapshot;
+    if (snapshot === null) {
+      throw new Error("Queued Run 缺少执行快照，无法安全恢复；请重新发送该消息。");
+    }
+    if (snapshot.modelId !== recovery.modelId) {
+      throw new Error("Queued Run 的模型快照与 Run 记录不一致，无法安全恢复。");
+    }
+    const currentConfiguration = this.credentials.getConfiguration(
+      snapshot.providerId ?? undefined,
+      snapshot.modelId,
+    );
+    assertRunConfigurationMatchesSnapshot(currentConfiguration, snapshot);
+    const configuration: ModelConfiguration = {
+      ...currentConfiguration,
+      apiFormat: snapshot.apiFormat,
+      baseUrl: snapshot.baseUrl,
+      contextCompression: structuredClone(snapshot.contextCompressionConfiguration),
+      modelId: snapshot.modelId,
+      reasoningOptions: structuredClone(snapshot.reasoningOptions),
+      ...(snapshot.contextWindow === null ? {} : { contextWindow: snapshot.contextWindow }),
+    };
+    const preparedInput: SendConversationMessageInput = {
+      attachmentIds: recovery.attachmentIds,
+      content: recovery.content,
+      conversationId: recovery.conversationId,
+      modelId: snapshot.modelId,
+      permissionMode: snapshot.permissionMode,
+      ...(snapshot.providerId === null ? {} : { providerId: snapshot.providerId }),
+      ...(snapshot.reasoning === null ? {} : { reasoning: structuredClone(snapshot.reasoning) }),
+    };
+    const prepared: PreparedConversationMessage = {
+      contextCompressionConfiguration: structuredClone(snapshot.contextCompressionConfiguration),
+      configuration,
+      input: preparedInput,
+      modelInputContent: recovery.content,
+      permissionMode: snapshot.permissionMode,
+      reasoning: snapshot.reasoning === null ? undefined : structuredClone(snapshot.reasoning),
+    };
+    this.assertAttachmentTurnFitsContext(
+      preparedInput,
+      configuration,
+      prepared.contextCompressionConfiguration,
+      prepared.permissionMode,
+      prepared.modelInputContent,
+    );
+    this.scheduleExistingRun(recovery.runId, recovery.conversationId, prepared, emit);
   }
 
   private prepareConversationMessage(
@@ -735,6 +922,13 @@ export class AgentRuntime {
     pendingMessageId?: string
   ): RunAccepted {
     const { configuration, input } = prepared;
+    const executionSnapshot = createRunExecutionSnapshot({
+      configuration,
+      contextCompressionConfiguration: prepared.contextCompressionConfiguration,
+      permissionMode: prepared.permissionMode,
+      providerId: input.providerId,
+      reasoning: prepared.reasoning,
+    });
     const creation = pendingMessageId === undefined
       ? this.database.createRunWithUserMessage(
           input.conversationId,
@@ -742,11 +936,13 @@ export class AgentRuntime {
           configuration.modelId,
           input.attachmentIds ?? [],
           prepared.modelInputContent,
+          executionSnapshot,
         )
       : this.database.createRunFromPendingMessage(
           pendingMessageId,
           configuration.modelId,
-          prepared.modelInputContent
+          prepared.modelInputContent,
+          executionSnapshot,
         );
     return this.schedulePreparedRun(creation, prepared, emit);
   }
@@ -756,20 +952,35 @@ export class AgentRuntime {
     prepared: PreparedConversationMessage,
     emit: RunEventEmitter,
   ): RunAccepted {
+    this.scheduleExistingRun(
+      creation.runId,
+      prepared.input.conversationId,
+      prepared,
+      emit,
+    );
+    return { runId: creation.runId, userMessage: creation.userMessage };
+  }
+
+  private scheduleExistingRun(
+    runId: string,
+    conversationId: string,
+    prepared: PreparedConversationMessage,
+    emit: RunEventEmitter,
+  ): void {
     const { configuration, contextCompressionConfiguration, input } = prepared;
     const controller = new AbortController();
-    this.registerActiveRun(creation.runId, controller);
-    this.agentMessageDepthByRun.set(creation.runId, 0);
-    if (!this.database.isConversationFork(input.conversationId)) {
+    this.registerActiveRun(runId, controller);
+    this.agentMessageDepthByRun.set(runId, 0);
+    if (!this.database.isConversationFork(conversationId)) {
       this.emit(emit, {
-        conversation: creation.conversation,
+        conversation: this.database.getConversation(conversationId),
         type: "conversation.updated"
       });
     }
     setImmediate(() => {
       void this.executeRun(
-        creation.runId,
-        input.conversationId,
+        runId,
+        conversationId,
         input.providerId,
         configuration,
         contextCompressionConfiguration,
@@ -779,7 +990,6 @@ export class AgentRuntime {
         emit
       );
     });
-    return { runId: creation.runId, userMessage: creation.userMessage };
   }
 
   private startNextPendingRun(conversationId: string, emit: RunEventEmitter): void {
@@ -938,6 +1148,7 @@ export class AgentRuntime {
     let activeAssistantContent = "";
     let activeAssistantContentPersisted = false;
     try {
+      this.activeSkillRefsByRun.set(runId, new Map());
       this.database.markRunRunning(runId);
       this.emit(emit, {
         conversationId,
@@ -952,9 +1163,7 @@ export class AgentRuntime {
         runId,
       };
       const workspace = this.resolveConversationWorkspace(conversation);
-      const initiallyUnreadAgentMessages = this.database.listUnreadAgentMessages(conversationId);
-      this.trackAgentMessagesForReply(runId, initiallyUnreadAgentMessages);
-      const messages = (await this.prepareContext(
+      const initialMessages = (await this.prepareContext(
         conversationId,
         workspace,
         permissionMode,
@@ -963,267 +1172,184 @@ export class AgentRuntime {
         configuration,
         controller.signal
       )).messages;
-      this.database.markAgentMessagesRead(
-        initiallyUnreadAgentMessages.map((message) => message.id),
-      );
       let hasSuccessfulToolExecution = false;
       let lastAssistantContent = "";
-
-      for (let loop = 0; loop < MAX_AGENT_LOOPS; loop += 1) {
-        controller.signal.throwIfAborted();
-        const incomingAgentMessages = this.database.listUnreadAgentMessages(conversationId);
-        if (incomingAgentMessages.length > 0) {
-          this.trackAgentMessagesForReply(runId, incomingAgentMessages);
-          messages.push(...incomingAgentMessages.map((message) => ({
-            attachments: [],
-            content: agentMessageModelContent(message),
-            role: "user" as const,
-            toolCallId: null,
-            toolCalls: [],
-          })));
-          this.database.markAgentMessagesRead(
-            incomingAgentMessages.map((message) => message.id),
-          );
-        }
-        this.consumePendingSteerMessages(conversationId, runId, messages, emit);
-        const messageId = randomUUID();
-        let result: ModelTurnResult;
-        activeAssistantContent = "";
-        activeAssistantContentPersisted = false;
-        try {
-          result = await this.completeModelTurnWithRetries({
-            configuration,
-            conversationId,
-            emit,
-            maxOutputTokens: MAX_OUTPUT_TOKENS,
-            messageId,
-            messages,
-            onTextDelta: (delta) => {
-              activeAssistantContent += delta;
-            },
-            reasoning,
-            signal: controller.signal,
-            runId,
-            tools: this.toolHandlers.getDefinitions({ projectId: workspace?.id })
-          });
-        } catch (error) {
-          if (!controller.signal.aborted && !isAbortError(error)) {
-            this.updateModelConnectionStatus(providerId, configuration.modelId, "error");
-          }
-          throw error;
-        }
-        if (result.content.length > 0) activeAssistantContent = result.content;
-        const toolCalls = result.toolCalls.map((toolCall) => ({
-          ...toolCall,
-          id: toolCall.id.trim(),
-          name: toolCall.name.trim()
-        }));
-        if (toolCalls.some((toolCall) => toolCall.id.length === 0 || toolCall.name.length === 0)) {
-          throw new Error("Model returned an incomplete tool call.");
-        }
-        const hasFollowUpInput = toolCalls.length === 0 && (
-          this.database.listUnreadAgentMessages(conversationId).length > 0
-          || this.database.listPendingMessageRecords(conversationId, "steer").length > 0
-        );
-        if (toolCalls.length === 0 && result.content.trim().length === 0) {
-          if (!hasSuccessfulToolExecution) {
-            this.updateModelConnectionStatus(providerId, configuration.modelId, "error");
-            throw new Error("模型未返回可显示内容，请稍后重试或切换模型。");
-          }
-        } else {
-          if (result.content.trim().length > 0) lastAssistantContent = result.content;
-          if (toolCalls.length > 0 || hasFollowUpInput) {
-            this.database.appendAssistantTurn({
-              content: result.content,
-              conversationId,
-              messageId,
-              modelId: configuration.modelId,
-              ...(result.providerState === undefined
-                ? {}
-                : { providerState: result.providerState }),
-              runId,
-              toolCalls
+      let lastAssistantMessageId = randomUUID();
+      let lastAssistantResult: ModelTurnResult | null = null;
+      let followUpInputForGraph = false;
+      const graphResult = await new LangGraphExecutor().invoke({
+        callbacks: {
+          beforeModel: (state) => {
+            const additions: ModelMessage[] = [];
+            const incomingAgentMessages = this.database.listUnreadAgentMessages(conversationId);
+            if (incomingAgentMessages.length > 0) {
+              this.trackAgentMessagesForReply(runId, incomingAgentMessages);
+              additions.push(...incomingAgentMessages.map((message) => ({
+                attachments: [],
+                content: agentMessageModelContent(message),
+                role: "user" as const,
+                toolCallId: null,
+                toolCalls: [],
+              })));
+              this.database.markAgentMessagesRead(
+                incomingAgentMessages.map((message) => message.id),
+              );
+            }
+            const steerMessages: ModelMessage[] = [];
+            this.consumePendingSteerMessages(conversationId, runId, steerMessages, emit);
+            additions.push(...steerMessages);
+            const activeSkillContext = this.skillRuntime?.buildActiveContext(
+              state.activeSkills,
+              this.skillRuntimeContext(conversation, workspace?.id),
+              Math.max(1_024, Math.min(12_000, Math.floor((configuration.contextWindow || 48_000) * 0.12))),
+            );
+            return Promise.resolve({
+              contextMessages: activeSkillContext === null || activeSkillContext === undefined
+                ? []
+                : [activeSkillContext],
+              hasFollowUpInput: false,
+              messages: additions,
             });
-            activeAssistantContentPersisted = true;
-          }
-          messages.push({
-            attachments: [],
-            content: result.content,
-            ...(result.providerState === undefined
-              ? {}
-              : { providerState: result.providerState }),
-            role: "assistant",
-            toolCallId: null,
-            toolCalls
-          });
-        }
-
-        if (toolCalls.length === 0) {
-          if (hasFollowUpInput) continue;
-          const completedTaskList = this.database.completeRunningTasks(conversationId);
-          if (completedTaskList !== null) {
-            this.emit(emit, {
-              conversationId,
-              runId,
-              taskList: completedTaskList,
-              type: "task_list.updated"
-            });
-          }
-          this.completeRunAndNotifySubagent({
-            assistant: {
-              content: result.content,
-              kind: "turn",
-              messageId,
-              modelId: configuration.modelId,
-              ...(result.providerState === undefined
-                ? {}
-                : { providerState: result.providerState }),
-            },
-            conversationId,
-            emit,
-            error: null,
-            result: lastAssistantContent,
-            runId,
-            status: "completed",
-          });
-          this.finishRunAndNotifyAgentSenders({
-            conversationId,
-            emit,
-            error: null,
-            result: lastAssistantContent,
-            runId,
-            status: "completed",
-          });
-          this.updateModelConnectionStatus(providerId, configuration.modelId, "healthy");
-          this.emit(emit, {
-            agentError: null,
-            conversationId,
-            error: null,
-            runId,
-            status: "completed",
-            type: "run.finished"
-          });
-          return;
-        }
-
-        const toolBatchId = randomUUID();
-        for (const toolCall of toolCalls) {
-          controller.signal.throwIfAborted();
-          const startedTool = conversationToolItemSchema.parse({
-            arguments: toolCall.arguments,
-            batchId: toolBatchId,
-            conversationId,
-            createdAt: new Date().toISOString(),
-            id: randomUUID(),
-            kind: "tool",
-            name: toolCall.name,
-            result: null,
-            runId,
-            status: "running",
-            diff: null
-          });
-          this.database.appendToolStarted(startedTool);
-          this.emit(emit, {
-            conversationId,
-            runId,
-            tool: startedTool,
-            type: "tool.started"
-          });
-          const projectId = workspace?.id;
-          const proposal = await this.toolHandlers.execute({
-            context: {
+          },
+          callModel: async (modelMessages) => {
+            controller.signal.throwIfAborted();
+            const messageId = randomUUID();
+            lastAssistantMessageId = messageId;
+            activeAssistantContent = "";
+            activeAssistantContentPersisted = false;
+            let result: ModelTurnResult;
+            try {
+              result = await this.completeModelTurnWithRetries({
+                configuration,
+                conversationId,
+                emit,
+                maxOutputTokens: MAX_OUTPUT_TOKENS,
+                messageId,
+                messages: [...modelMessages],
+                onTextDelta: (delta) => {
+                  activeAssistantContent += delta;
+                },
+                reasoning,
+                signal: controller.signal,
+                runId,
+                tools: this.toolHandlers.getDefinitions({ projectId: workspace?.id })
+              });
+            } catch (error) {
+              if (!controller.signal.aborted && !isAbortError(error)) {
+                this.updateModelConnectionStatus(providerId, configuration.modelId, "error");
+              }
+              throw error;
+            }
+            if (result.content.length > 0) activeAssistantContent = result.content;
+            const toolCalls = result.toolCalls.map((toolCall) => ({
+              ...toolCall,
+              id: toolCall.id.trim(),
+              name: toolCall.name.trim()
+            }));
+            if (toolCalls.some((toolCall) => toolCall.id.length === 0 || toolCall.name.length === 0)) {
+              throw new Error("Model returned an incomplete tool call.");
+            }
+            followUpInputForGraph = toolCalls.length === 0 && (
+              this.database.listUnreadAgentMessages(conversationId).length > 0
+              || this.database.listPendingMessageRecords(conversationId, "steer").length > 0
+            );
+            if (toolCalls.length === 0 && result.content.trim().length === 0) {
+              if (!hasSuccessfulToolExecution) {
+                this.updateModelConnectionStatus(providerId, configuration.modelId, "error");
+                throw new Error("模型未返回可显示内容，请稍后重试或切换模型。");
+              }
+            } else {
+              if (result.content.trim().length > 0) lastAssistantContent = result.content;
+              if (toolCalls.length > 0 || followUpInputForGraph) {
+                this.database.appendAssistantTurn({
+                  content: result.content,
+                  conversationId,
+                  messageId,
+                  modelId: configuration.modelId,
+                  ...(result.providerState === undefined
+                    ? {}
+                    : { providerState: result.providerState }),
+                  runId,
+                  toolCalls
+                });
+                activeAssistantContentPersisted = true;
+              }
+            }
+            const normalizedResult = { ...result, toolCalls };
+            lastAssistantResult = normalizedResult;
+            return normalizedResult;
+          },
+          executeTools: async (toolCalls) => {
+            const execution = await this.executeGraphTools({
               configuration,
               contextCompressionConfiguration,
               conversationId,
+              controller,
               emit,
-              onTaskListChanged: (taskList) => {
-                this.emit(emit, {
-                  conversationId,
-                  runId,
-                  taskList,
-                  type: "task_list.updated"
-                });
-              },
               operationOwner,
               permissionMode,
-              projectId,
+              projectId: workspace?.id,
               providerId,
               reasoning,
               runId,
-              signal: controller.signal,
-            },
-            rawArguments: toolCall.arguments,
-            toolName: toolCall.name,
-          });
-          const toolDiff = proposal.kind === "change" ? proposal.change.diff : null;
-          const execution =
-            proposal.kind === "change"
-              ? await this.resolveFileChange({
-                  change: proposal.change,
-                  controller,
-                  permissionMode,
-                  projectId: projectId ?? (() => {
-                    throw new Error("A project is required for file changes.");
-                  })(),
-                  runId,
-                  startedTool,
-                  emit,
-                  operationOwner,
-                })
-              : proposal.kind === "command"
-                ? await this.resolveCommand({
-                    command: proposal.command,
-                    controller,
-                    emit,
-                    permissionMode,
-                    projectId: projectId ?? (() => {
-                      throw new Error("A project is required for command execution.");
-                    })(),
-                    runId,
-                    startedTool,
-                    operationOwner,
-                  })
-              : proposal;
-          const completedTool = conversationToolItemSchema.parse({
-            ...startedTool,
-            diff: toolDiff,
-            result: execution.content,
-            status: execution.status ?? (execution.isError ? "failed" : "completed")
-          });
-          this.database.completeTool({
-            providerCallId: toolCall.id,
-            result: execution.content,
-            tool: completedTool
-          });
-          if (completedTool.status === "completed") {
-            hasSuccessfulToolExecution = true;
-          }
-          this.emit(emit, {
-            conversationId,
-            fileChange:
-              proposal.kind === "change"
-              && completedTool.status === "completed"
-              && projectId !== undefined
-                ? {
-                    operation: proposal.change.operation,
-                    path: proposal.change.path,
-                    projectId
-                  }
-                : null,
-            runId,
-            tool: completedTool,
-            type: "tool.completed"
-          });
-          messages.push({
-            attachments: [],
-            content: execution.content,
-            role: "tool",
-            toolCallId: toolCall.id,
-            toolCalls: []
-          });
-        }
+              toolCalls,
+            });
+            hasSuccessfulToolExecution ||= execution.successful;
+            return execution;
+          },
+          hasFollowUpInput: () => followUpInputForGraph,
+        },
+        initialMessages,
+        maxSteps: MAX_AGENT_LOOPS,
+        signal: controller.signal,
+        threadId: runId,
+        ...(this.graphCheckpointer === null ? {} : { checkpointer: this.graphCheckpointer }),
+      });
+      const result = lastAssistantResult ?? graphResult.lastResult;
+      if (result === null) throw new Error("Agent graph finished without a model result.");
+      const completedTaskList = this.database.completeRunningTasks(conversationId);
+      if (completedTaskList !== null) {
+        this.emit(emit, {
+          conversationId,
+          runId,
+          taskList: completedTaskList,
+          type: "task_list.updated"
+        });
       }
-      throw new Error(`Agent exceeded the ${MAX_AGENT_LOOPS}-turn tool loop limit.`);
+      this.completeRunAndNotifySubagent({
+        assistant: {
+          content: result.content,
+          kind: "turn",
+          messageId: lastAssistantMessageId,
+          modelId: configuration.modelId,
+          ...(result.providerState === undefined
+            ? {}
+            : { providerState: result.providerState }),
+        },
+        conversationId,
+        emit,
+        error: null,
+        result: lastAssistantContent,
+        runId,
+        status: "completed",
+      });
+      this.finishRunAndNotifyAgentSenders({
+        conversationId,
+        emit,
+        error: null,
+        result: lastAssistantContent,
+        runId,
+        status: "completed",
+      });
+      this.updateModelConnectionStatus(providerId, configuration.modelId, "healthy");
+      this.emit(emit, {
+        agentError: null,
+        conversationId,
+        error: null,
+        runId,
+        status: "completed",
+        type: "run.finished"
+      });
     } catch (error) {
       const cancelled = controller.signal.aborted || isAbortError(error);
       const status = cancelled ? "cancelled" : "failed";
@@ -1279,6 +1405,14 @@ export class AgentRuntime {
       this.activeRuns.delete(runId);
       this.agentMessageDepthByRun.delete(runId);
       this.agentMessagesToReplyByRun.delete(runId);
+      this.activeSkillRefsByRun.delete(runId);
+      if (this.graphCheckpointer !== null) {
+        try {
+          await this.graphCheckpointer.deleteThread(runId);
+        } catch (error) {
+          console.error("LangGraph checkpoint cleanup failed.", error);
+        }
+      }
       const isBeingReplaced = this.runsBeingReplaced.delete(runId);
       activeRun?.resolveFinished();
       if (!isBeingReplaced) {
@@ -1369,6 +1503,15 @@ export class AgentRuntime {
       child.id,
       input.task,
       input.configuration.modelId,
+      [],
+      input.task,
+      createRunExecutionSnapshot({
+        configuration: input.configuration,
+        contextCompressionConfiguration: input.contextCompressionConfiguration,
+        permissionMode: input.permissionMode,
+        providerId: input.providerId,
+        reasoning: input.reasoning,
+      }),
     );
     const title = input.title?.trim()
       || `${selectedAgent?.name ?? "Subagent"} · ${input.task.replace(/\s+/gu, " ").slice(0, 80)}`;
@@ -1545,6 +1688,13 @@ export class AgentRuntime {
       const creation = this.database.createRunForAgentMessage(
         conversationId,
         configuration.modelId,
+        createRunExecutionSnapshot({
+          configuration,
+          contextCompressionConfiguration,
+          permissionMode: DEFAULT_PERMISSION_MODE,
+          providerId: undefined,
+          reasoning: undefined,
+        }),
       );
       const controller = new AbortController();
       this.registerActiveRun(creation.runId, controller);
@@ -1671,6 +1821,142 @@ export class AgentRuntime {
         await this.waitForRetry(retryInMs, input.signal);
       }
     }
+  }
+
+  private async executeGraphTools(input: {
+    configuration: ModelConfiguration;
+    contextCompressionConfiguration: ContextCompressionThreshold;
+    conversationId: string;
+    controller: AbortController;
+    emit: RunEventEmitter;
+    operationOwner: ProjectOperationOwner;
+    permissionMode: ConversationPermissionMode;
+    projectId: string | undefined;
+    providerId: string | undefined;
+    reasoning: ModelReasoningOption | undefined;
+    runId: string;
+    toolCalls: readonly ModelToolCall[];
+  }): Promise<{ activeSkills: SkillSnapshotRef[]; messages: ModelMessage[]; successful: boolean }> {
+    const messages: ModelMessage[] = [];
+    let hasSuccessfulToolExecution = false;
+    const toolBatchId = randomUUID();
+    for (const toolCall of input.toolCalls) {
+      input.controller.signal.throwIfAborted();
+      const startedTool = conversationToolItemSchema.parse({
+        arguments: toolCall.arguments,
+        batchId: toolBatchId,
+        conversationId: input.conversationId,
+        createdAt: new Date().toISOString(),
+        id: randomUUID(),
+        kind: "tool",
+        name: toolCall.name,
+        result: null,
+        runId: input.runId,
+        status: "running",
+        diff: null
+      });
+      this.database.appendToolStarted(startedTool);
+      this.emit(input.emit, {
+        conversationId: input.conversationId,
+        runId: input.runId,
+        tool: startedTool,
+        type: "tool.started"
+      });
+      const proposal = await this.toolHandlers.execute({
+        context: {
+          configuration: input.configuration,
+          contextCompressionConfiguration: input.contextCompressionConfiguration,
+          conversationId: input.conversationId,
+          emit: input.emit,
+          onTaskListChanged: (taskList) => {
+            this.emit(input.emit, {
+              conversationId: input.conversationId,
+              runId: input.runId,
+              taskList,
+              type: "task_list.updated"
+            });
+          },
+          operationOwner: input.operationOwner,
+          permissionMode: input.permissionMode,
+          projectId: input.projectId,
+          providerId: input.providerId,
+          reasoning: input.reasoning,
+          runId: input.runId,
+          signal: input.controller.signal,
+        },
+        rawArguments: toolCall.arguments,
+        toolName: toolCall.name,
+      });
+      const toolDiff = proposal.kind === "change" ? proposal.change.diff : null;
+      const execution =
+        proposal.kind === "change"
+          ? await this.resolveFileChange({
+              change: proposal.change,
+              controller: input.controller,
+              permissionMode: input.permissionMode,
+              projectId: input.projectId ?? (() => {
+                throw new Error("A project is required for file changes.");
+              })(),
+              runId: input.runId,
+              startedTool,
+              emit: input.emit,
+              operationOwner: input.operationOwner,
+            })
+          : proposal.kind === "command"
+            ? await this.resolveCommand({
+                command: proposal.command,
+                controller: input.controller,
+                emit: input.emit,
+                permissionMode: input.permissionMode,
+                projectId: input.projectId ?? (() => {
+                  throw new Error("A project is required for command execution.");
+                })(),
+                runId: input.runId,
+                startedTool,
+                operationOwner: input.operationOwner,
+              })
+            : proposal;
+      const completedTool = conversationToolItemSchema.parse({
+        ...startedTool,
+        diff: toolDiff,
+        result: execution.content,
+        status: execution.status ?? (execution.isError ? "failed" : "completed")
+      });
+      this.database.completeTool({
+        providerCallId: toolCall.id,
+        result: execution.content,
+        tool: completedTool
+      });
+      if (completedTool.status === "completed") hasSuccessfulToolExecution = true;
+      this.emit(input.emit, {
+        conversationId: input.conversationId,
+        fileChange:
+          proposal.kind === "change"
+          && completedTool.status === "completed"
+          && input.projectId !== undefined
+            ? {
+                operation: proposal.change.operation,
+                path: proposal.change.path,
+                projectId: input.projectId
+              }
+            : null,
+        runId: input.runId,
+        tool: completedTool,
+        type: "tool.completed"
+      });
+      messages.push({
+        attachments: [],
+        content: execution.content,
+        role: "tool",
+        toolCallId: toolCall.id,
+        toolCalls: []
+      });
+    }
+    return {
+      activeSkills: [...(this.activeSkillRefsByRun.get(input.runId)?.values() ?? [])],
+      messages,
+      successful: hasSuccessfulToolExecution,
+    };
   }
 
   private async resolveFileChange(input: {
@@ -1837,7 +2123,9 @@ export class AgentRuntime {
         "你可以用 list_agent_conversations、read_agent_conversation、send_agent_message 和 wait_for_agent_message 与其他 Agent 对话协作。读取其他对话时必须控制预算。收到普通 Agent 协作消息后直接处理并给出本对话的最终答复，运行时会把最终结果自动关联回发送方并在需要时唤醒它；发送中间进度或无需对方回传结果的通知时调用 send_agent_message，并设置 expectReply=false。",
         "复杂任务可以用 spawn_subagent 启动独立的一次性 Subagent。只有当前工作依赖其结果时才调用 wait_for_subagents；否则继续当前工作，Subagent 完成后系统会持久化结果并自动唤醒本对话。可用 list_subagents 查看状态。主对话只会收到完成摘要；需要核对详细过程时，使用 read_agent_conversation 按预算读取子对话。Subagent 结束后只读，不要求其调用 send_agent_message，也不要继续向其发送任务。",
         "用户消息可以通过 @ 引用当前工作区文件。引用只提供相对路径；需要查看内容时先调用 read_file，不要根据文件名猜测内容。",
-        "Skill 特指通过 SKILL.md 注入的任务说明和能力组合，不等同于内置工具、Agent 职责或命令行程序。当前没有可调用的 Skill Runtime；如果用户询问可用 Skill，明确说明尚未接入，不要调用工具或把一般能力列成 Skill。Git 是可通过 run_command 执行的命令行程序，不是 Skill，也不是当前的专用 Git 工具；仅在任务确实需要且工作区是 Git 仓库时使用。",
+        this.skillRuntime === null
+          ? "Skill 特指通过 SKILL.md 注入的任务说明和能力组合；当前没有可调用的 Skill Runtime，不要把一般能力列成 Skill。Git 是可通过 run_command 执行的命令行程序，不是 Skill，也不是当前的专用 Git 工具；仅在任务确实需要且工作区是 Git 仓库时使用。"
+          : "Skill 特指通过 SKILL.md 注入的任务说明和能力组合，不等同于内置工具、Agent 职责或命令行程序。需要详细指令时先根据目录调用 load_skill；Skill 正文只进入本轮模型上下文，不写入聊天 Timeline。Skill 不能扩大工具权限或绕过审批。Git 是可通过 run_command 执行的命令行程序，不是 Skill，也不是当前的专用 Git 工具；仅在任务确实需要且工作区是 Git 仓库时使用。",
         "用户消息开头的内置命令语义：/plan 表示先分析并创建任务清单再执行；/review 表示审查相关实现、优先指出缺陷和风险；/test 表示运行与当前任务相关的测试并根据结果修复。命令后的文本是具体任务。",
         "对于包含两个或以上独立步骤的复杂任务，先用 create_task_list 建立完整任务清单；每完成一步就用 update_task_list 更新完整清单，并且同一时间只能有一个步骤为 running。简单问答或单步修改不要创建任务清单。全部步骤完成后调用 close_task_list 删除清单，再给出最终答复。",
         workspace === null
@@ -1857,6 +2145,11 @@ export class AgentRuntime {
             `授权根目录：${workspace.rootPath}`,
             "所有文件工具的 path 参数均使用相对于授权根目录的 POSIX 路径；空路径表示根目录。不要调用工具查询授权根目录。"
           ]),
+        ...(this.skillRuntime === null
+          ? []
+          : [this.skillRuntime.getCatalogPrompt(
+              this.skillRuntimeContext(conversation, workspace?.id),
+            ) ?? "当前没有满足范围和依赖条件的可用 Skill。"]),
         ...this.taskListContext(conversationId)
       ].join("\n"),
       role: "system",

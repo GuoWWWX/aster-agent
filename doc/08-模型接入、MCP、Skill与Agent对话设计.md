@@ -1,7 +1,7 @@
 # 模型接入、MCP、Skill 与 Agent 对话设计
 
-> 文档状态：开工基线  
-> 更新时间：2026-08-15  
+> 文档状态：开工基线；模型与 Skill Runtime 已按第九批主链落地，MCP Runtime 仍未实现
+> 更新时间：2026-08-19
 > 适用范围：模型配置、Agent 模型选择、MCP、Skill、Agent Thread 和相关 UI
 
 ## 1. 核心结论
@@ -131,15 +131,15 @@ interface ModelProviderAdapter {
 
 ### 3.2.1 当前实现边界
 
-当前代码首先落地 `OpenAI-compatible` Adapter，而不是在 UI 中伪装已经支持 Anthropic、Google 等不同协议：
+当前 Desktop 生产路径使用 LangChain Provider 实现四种 `ModelProviderAdapter` 格式；Agent Runtime 不按供应商分支，Skill 仍通过独立 Runtime 渐进注入：
 
-- 用户填写 Base URL 与 API Key 后，Desktop Main 向 `{Base URL}/models` 拉取模型目录；密钥不回传 Renderer。
-- 用户从目录中勾选需要的模型并填写上下文窗口，保存后形成可在会话输入框中选择的本地 Model Profile 列表。
-- API Key 仅经 Electron `safeStorage` 加密后写入独立凭据文件；SQLite、日志、IPC 状态和 UI 均不包含明文。
-- `/models` 的标准返回通常只包含模型 ID，不能据此臆测全部能力。当前仅对 `gpt-5` 与 `o1/o3/o4` 系列提供内置的标准 `reasoning_effort` 档位；未知模型保持“自动”，请求中不发送这个字段。
-- 用户可在对话中选择标准档位，或使用“自定义”直接填写 Provider 所需的 `reasoning_effort` 值。不同参数名、嵌套 Thinking 配置等非兼容协议能力，必须由后续 Adapter 处理。
+- `openai-chat-completions` 和 `openai-responses` 使用 `@langchain/openai`，`anthropic-messages` 使用 `@langchain/anthropic`，`google-gemini` 使用 `@langchain/google-genai`；项目保留中立消息、Tool、附件和 Provider State 合同。
+- 用户填写 Base URL 与 API Key 后，Desktop Main 按协议拉取模型目录；密钥不回传 Renderer，API Key 仍只经 Electron `safeStorage` 加密后写入独立凭据文件。
+- Provider SDK 的协议、流式、Tool Calling、Reasoning 和附件转换均封装在 LangChain-backed Adapter；Runtime 只负责可观测重试、上下文、权限、工具和业务事件。
+- `SkillRuntime` 先向模型提供当前作用域内的名称/描述目录，模型调用 `load_skill` 后才把 `SKILL.md` 正文注入下一轮上下文；正文不写入 Timeline，reference 只允许已激活 Skill 的 `references/` 与 `templates/` 有界读取。
+- 带 MCP 依赖的 Skill 在 MCP Runtime 尚未可用时不会进入目录；Skill 脚本执行、MCP Server 调用和真实 Provider 端点的 Electron 手工验收仍属于后续批次。
 
-这条实现链路的目的，是先验证“发现模型 -> 选择 -> 安全保存 -> 会话切换 -> 实际请求”的完整闭环。新增协议时只扩展 Adapter、配置表单和能力映射，Agent Loop 不增加厂商条件判断。
+完整技术选型、LangGraph 图边界、Checkpoint 和恢复策略见[LangChain 与 LangGraph 改造方案](./15-LangChain与LangGraph改造方案.md)；新增协议时只扩展 Adapter、配置表单和能力映射，Agent Loop 不增加厂商条件判断。
 
 ### 3.3 上下文窗口配置
 

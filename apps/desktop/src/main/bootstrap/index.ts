@@ -5,6 +5,7 @@ import path from "node:path";
 import { ARCHIVED_CONVERSATION_RETENTION_DAYS } from "@agent/protocol";
 
 import { AgentRuntime } from "../agent/agent-runtime.js";
+import { SkillRuntime } from "../agent/skill-runtime.js";
 import { reportMainError, toMainAgentError } from "../errors/agent-error.js";
 import { registerMainIpcHandlers } from "../ipc/register-main-ipc.js";
 import { ModelCatalogStore } from "../model/model-catalog-store.js";
@@ -17,6 +18,7 @@ import { ProjectRegistry } from "../projects/project-registry.js";
 import { AgentDatabase } from "../storage/agent-database.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
 import { ConversationDeletionService } from "../storage/conversation-deletion-service.js";
+import { NodeSqliteCheckpointSaver } from "../storage/node-sqlite-checkpoint-saver.js";
 import { IntegrationConfigurationStore } from "../settings/integration-configuration-store.js";
 import { ApplicationSettingsStore } from "../settings/application-settings-store.js";
 import { ContextCompressionConfigurationStore } from "../settings/context-compression-configuration-store.js";
@@ -36,8 +38,10 @@ type DesktopServices = {
   database: AgentDatabase;
   integrationConfiguration: IntegrationConfigurationStore;
   contextCompression: ContextCompressionConfigurationStore;
+  graphCheckpointer: NodeSqliteCheckpointSaver;
   configurationWorkspaces: ConfigurationWorkspaceStore;
   skillDocuments: SkillDocumentStore;
+  skillRuntime: SkillRuntime;
   terminalConfiguration: TerminalConfigurationStore;
   projectRegistry: ProjectRegistry;
 };
@@ -106,6 +110,9 @@ function loadLocalEnvironment(): void {
 async function initializeServices(): Promise<DesktopServices> {
   loadLocalEnvironment();
   const database = new AgentDatabase(path.join(app.getPath("userData"), "agent.sqlite"));
+  const graphCheckpointer = new NodeSqliteCheckpointSaver(
+    path.join(app.getPath("userData"), "langgraph-checkpoints.sqlite"),
+  );
   const credentials = new ModelCredentialStore(
     path.join(app.getPath("userData"), "model-credentials.json")
   );
@@ -124,6 +131,7 @@ async function initializeServices(): Promise<DesktopServices> {
     database,
     attachments,
     projectRegistry,
+    graphCheckpointer,
   );
   await conversationDeletion.resumeIncompleteTasks();
   await conversationDeletion.deleteExpiredArchivedConversations(
@@ -160,6 +168,7 @@ async function initializeServices(): Promise<DesktopServices> {
     path.join(app.getPath("userData"), "skills"),
   );
   skillDocuments.discoverDocuments();
+  const skillRuntime = new SkillRuntime(skillDocuments, integrationConfiguration);
   const configurationWorkspaces = new ConfigurationWorkspaceStore(
     integrationConfiguration,
     path.join(app.getPath("userData"), "mcp"),
@@ -185,19 +194,23 @@ async function initializeServices(): Promise<DesktopServices> {
       attachments,
       {
         getConfiguration: () => applicationSettings.getConfiguration().agentDirectory,
-      }
+      },
+      skillRuntime,
+      graphCheckpointer,
     ),
     applicationSettings,
     attachments,
     conversationDeletion,
     credentials,
     contextCompression,
+    graphCheckpointer,
     configurationWorkspaces,
     modelCatalog,
     database,
     integrationConfiguration,
     projectRegistry,
     skillDocuments,
+    skillRuntime,
     terminalConfiguration,
   };
 }
@@ -312,6 +325,7 @@ async function bootstrap(): Promise<void> {
       clearInterval(archivedConversationCleanupTimer);
       archivedConversationCleanupTimer = undefined;
     }
+    services?.graphCheckpointer.close();
     services?.database.close();
     services = undefined;
   });

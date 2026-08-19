@@ -9,6 +9,6 @@ export const DESKTOP_CAPABILITIES = capabilitySetSchema.parse({
   git: false,
   managedBrowser: false,
   mcp: false,
-  skills: false,
+  skills: true,
   docxConversion: false,
 });

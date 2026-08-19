@@ -1,12 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { DatabaseMigrationRunner } from "./database-migration-runner.js";
+import { z } from "zod";
 import {
+  contextCompressionThresholdSchema,
   conversationAgentBindingSchema,
   conversationAgentMessageItemSchema,
   conversationMessageItemSchema,
   conversationPendingMessageSchema,
+  conversationPermissionModeSchema,
   conversationRunStatusSchema,
+  modelApiFormatSchema,
+  modelReasoningOptionSchema,
+  providerIdSchema,
   sendConversationMessageInputSchema,
   conversationSummarySchema,
   conversationTaskListSchema,
@@ -192,6 +198,29 @@ export type CompletedRun = {
   subagentTask: SubagentTask | null;
 };
 
+const runExecutionSnapshotSchema = z.object({
+  apiFormat: modelApiFormatSchema,
+  baseUrl: z.string().url(),
+  contextCompressionConfiguration: contextCompressionThresholdSchema,
+  contextWindow: z.number().int().nonnegative().nullable(),
+  modelId: z.string().trim().min(1).max(200),
+  permissionMode: conversationPermissionModeSchema,
+  providerId: providerIdSchema.nullable(),
+  reasoning: modelReasoningOptionSchema.nullable(),
+  reasoningOptions: z.array(modelReasoningOptionSchema).max(16),
+}).strict();
+
+export type RunExecutionSnapshot = z.infer<typeof runExecutionSnapshotSchema>;
+
+export type QueuedRunRecovery = {
+  attachmentIds: string[];
+  content: string;
+  conversationId: string;
+  executionSnapshot: RunExecutionSnapshot | null;
+  modelId: string;
+  runId: string;
+};
+
 export type LatestUserMessageReplacementSource = {
   message: ConversationMessageItem;
   modelContent: string;
@@ -200,6 +229,7 @@ export type LatestUserMessageReplacementSource = {
 type ReplaceLatestUserMessageInput = {
   content: string;
   conversationId: string;
+  executionSnapshot?: RunExecutionSnapshot;
   messageId: string;
   modelContent: string;
   modelId: string;
@@ -291,6 +321,22 @@ function parseJson<T>(value: string, description: string): T {
   } catch {
     throw new Error(`Stored ${description} is invalid JSON.`);
   }
+}
+
+function serializeRunExecutionSnapshot(
+  snapshot: RunExecutionSnapshot | undefined,
+): string | null {
+  if (snapshot === undefined) return null;
+  return JSON.stringify(runExecutionSnapshotSchema.parse(snapshot));
+}
+
+function parseRunExecutionSnapshot(
+  value: string | null,
+): RunExecutionSnapshot | null {
+  if (value === null) return null;
+  return runExecutionSnapshotSchema.parse(
+    parseJson<unknown>(value, "Run execution snapshot"),
+  );
 }
 
 function parseStoredStringArray(value: string, description: string): string[] {
@@ -1478,6 +1524,48 @@ export class AgentDatabase {
     });
   }
 
+  public listRunIdsForConversations(conversationIds: readonly string[]): string[] {
+    if (conversationIds.length === 0) return [];
+    const placeholders = conversationIds.map(() => "?").join(", ");
+    const rows = this.database.prepare(
+      `SELECT id FROM runs WHERE conversation_id IN (${placeholders}) ORDER BY created_at ASC, rowid ASC`,
+    ).all(...conversationIds) as DatabaseRow[];
+    return rows.map((row) => asString(row, "id"));
+  }
+
+  public listQueuedRunRecoveries(): QueuedRunRecovery[] {
+    const rows = this.database.prepare(
+      `SELECT runs.id, runs.conversation_id, runs.model_id,
+              runs.execution_snapshot_json,
+              model_messages.content, model_messages.attachment_ids_json
+       FROM runs
+       JOIN model_messages
+         ON model_messages.run_id = runs.id
+        AND model_messages.role = 'user'
+       WHERE runs.status = 'queued'
+       ORDER BY runs.created_at ASC, runs.rowid ASC, model_messages.sequence ASC`,
+    ).all() as DatabaseRow[];
+    const seen = new Set<string>();
+    return rows.flatMap((row) => {
+      const runId = asString(row, "id");
+      if (seen.has(runId)) return [];
+      seen.add(runId);
+      return [{
+        attachmentIds: parseStoredStringArray(
+          asString(row, "attachment_ids_json"),
+          "queued Run attachment identifiers",
+        ),
+        content: asString(row, "content"),
+        conversationId: asString(row, "conversation_id"),
+        executionSnapshot: parseRunExecutionSnapshot(
+          asNullableString(row, "execution_snapshot_json"),
+        ),
+        modelId: asString(row, "model_id"),
+        runId,
+      }];
+    });
+  }
+
   public listIncompleteConversationDeletionTasks(): ConversationDeletionTask[] {
     const rows = this.database.prepare(
       `SELECT id, root_conversation_id, conversation_ids_json, file_paths_json,
@@ -2365,7 +2453,8 @@ export class AgentDatabase {
   public createRunFromPendingMessage(
     pendingMessageId: string,
     modelId: string,
-    modelContent: string
+    modelContent: string,
+    executionSnapshot?: RunExecutionSnapshot,
   ): RunCreation {
     const record = this.getPendingMessageRecord(pendingMessageId);
     const conversation = this.getConversation(record.message.conversationId);
@@ -2406,10 +2495,18 @@ export class AgentDatabase {
       this.database
         .prepare(
           `INSERT INTO runs
-             (id, conversation_id, model_id, status, error, created_at, updated_at)
-           VALUES (?, ?, ?, 'queued', NULL, ?, ?)`
+             (id, conversation_id, model_id, status, error, created_at, updated_at,
+              execution_snapshot_json)
+           VALUES (?, ?, ?, 'queued', NULL, ?, ?, ?)`
         )
-        .run(runId, record.message.conversationId, modelId, now, now);
+        .run(
+          runId,
+          record.message.conversationId,
+          modelId,
+          now,
+          now,
+          serializeRunExecutionSnapshot(executionSnapshot),
+        );
       this.consumePendingRecord(pendingMessageId);
       this.insertTimelineItem(message);
       this.bindPendingAttachmentsToMessage(pendingMessageId, message.id, message.attachments.length);
@@ -2438,6 +2535,7 @@ export class AgentDatabase {
   public createRunForAgentMessage(
     conversationId: string,
     modelId: string,
+    executionSnapshot?: RunExecutionSnapshot,
   ): AgentMessageRunCreation {
     this.getConversation(conversationId);
     this.assertNoActiveRun(conversationId);
@@ -2448,10 +2546,18 @@ export class AgentDatabase {
       this.database
         .prepare(
           `INSERT INTO runs
-             (id, conversation_id, model_id, status, error, created_at, updated_at)
-           VALUES (?, ?, ?, 'queued', NULL, ?, ?)`
+             (id, conversation_id, model_id, status, error, created_at, updated_at,
+              execution_snapshot_json)
+           VALUES (?, ?, ?, 'queued', NULL, ?, ?, ?)`
         )
-        .run(runId, conversationId, modelId, now, now);
+        .run(
+          runId,
+          conversationId,
+          modelId,
+          now,
+          now,
+          serializeRunExecutionSnapshot(executionSnapshot),
+        );
       this.database
         .prepare(
           "UPDATE conversations SET updated_at = ?, has_unread_result = 0 WHERE id = ?"
@@ -2471,6 +2577,7 @@ export class AgentDatabase {
     modelId: string,
     attachmentIds: readonly string[] = [],
     modelContent = content,
+    executionSnapshot?: RunExecutionSnapshot,
   ): RunCreation {
     const conversation = this.getConversation(conversationId);
     this.assertNoActiveRun(conversationId);
@@ -2517,10 +2624,18 @@ export class AgentDatabase {
       this.database
         .prepare(
           `INSERT INTO runs
-             (id, conversation_id, model_id, status, error, created_at, updated_at)
-           VALUES (?, ?, ?, 'queued', NULL, ?, ?)`
+             (id, conversation_id, model_id, status, error, created_at, updated_at,
+              execution_snapshot_json)
+           VALUES (?, ?, ?, 'queued', NULL, ?, ?, ?)`
         )
-        .run(runId, conversationId, modelId, now, now);
+        .run(
+          runId,
+          conversationId,
+          modelId,
+          now,
+          now,
+          serializeRunExecutionSnapshot(executionSnapshot),
+        );
       this.insertTimelineItem(message);
       if (attachmentIds.length > 0) {
         const placeholders = attachmentIds.map(() => "?").join(", ");
@@ -2659,9 +2774,17 @@ export class AgentDatabase {
       ).run(input.conversationId, modelRecord.sequence);
       this.database.prepare(
         `INSERT INTO runs
-           (id, conversation_id, model_id, status, error, created_at, updated_at)
-         VALUES (?, ?, ?, 'queued', NULL, ?, ?)`,
-      ).run(runId, input.conversationId, input.modelId, now, now);
+           (id, conversation_id, model_id, status, error, created_at, updated_at,
+            execution_snapshot_json)
+         VALUES (?, ?, ?, 'queued', NULL, ?, ?, ?)`,
+      ).run(
+        runId,
+        input.conversationId,
+        input.modelId,
+        now,
+        now,
+        serializeRunExecutionSnapshot(input.executionSnapshot),
+      );
       const nextTitle = this.countUserMessages(input.conversationId) === 1
         ? this.createTitleFromMessage(
             input.content || message.attachments[0]?.name || "新会话",
@@ -3038,6 +3161,20 @@ export class AgentDatabase {
         name: "agent-database-initial",
         up: () => this.migrateSchemaV1(),
         version: 1,
+      },
+      {
+        name: "agent-run-execution-snapshot",
+        up: (database) => {
+          const columns = database
+            .prepare("PRAGMA table_info(runs)")
+            .all() as DatabaseRow[];
+          if (!columns.some((column) => column.name === "execution_snapshot_json")) {
+            database.exec(
+              "ALTER TABLE runs ADD COLUMN execution_snapshot_json TEXT",
+            );
+          }
+        },
+        version: 2,
       },
     ]);
   }
@@ -3492,7 +3629,20 @@ export class AgentDatabase {
         .prepare(
           `UPDATE runs
            SET status = 'failed', error = 'Application stopped before the run finished.', updated_at = ?
-           WHERE status IN ('queued', 'running')`
+           WHERE status = 'running'
+              OR (
+                status = 'queued'
+                AND (
+                  NOT EXISTS (
+                    SELECT 1 FROM model_messages
+                    WHERE model_messages.run_id = runs.id
+                      AND model_messages.role = 'user'
+                  )
+                  OR id IN (
+                    SELECT target_run_id FROM subagent_tasks WHERE target_run_id IS NOT NULL
+                  )
+                )
+              )`
         )
         .run(now);
       this.database

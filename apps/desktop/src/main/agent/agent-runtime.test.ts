@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,6 +14,8 @@ import type {
 } from "../model/model-contracts.js";
 import { ModelRequestError } from "../model/model-request-error.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
+import { IntegrationConfigurationStore } from "../settings/integration-configuration-store.js";
+import { SkillDocumentStore } from "../settings/skill-document-store.js";
 import {
   AgentDatabase,
   agentMessageModelContent,
@@ -24,6 +27,7 @@ import {
   type ContextCompactionInput,
   type ContextCompactor
 } from "./agent-runtime.js";
+import { SkillRuntime } from "./skill-runtime.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -79,6 +83,140 @@ class FixtureModel implements ModelProviderAdapter {
       toolCalls: []
     });
   }
+}
+
+class SkillFixtureModel implements ModelProviderAdapter {
+  public readonly requests: CompleteTurnInput[] = [];
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.requests.push({ ...input, messages: [...input.messages] });
+    if (this.requests.length === 1) {
+      return Promise.resolve({
+        content: "",
+        finishReason: "tool_calls",
+        toolCalls: [{
+          arguments: JSON.stringify({ skillId: "review" }),
+          id: "call_load_skill",
+          name: "load_skill",
+        }],
+      });
+    }
+    const activeSkillMessage = input.messages.find((message) =>
+      message.role === "system" && message.content.includes("只在当前任务中使用证据。"),
+    );
+    if (activeSkillMessage === undefined) {
+      return Promise.reject(new Error("Active Skill instructions were not injected."));
+    }
+    input.onTextDelta("已按 Skill 完成审查");
+    return Promise.resolve({
+      content: "已按 Skill 完成审查",
+      finishReason: "stop",
+      toolCalls: [],
+    });
+  }
+}
+
+class RestrictedSkillFixtureModel implements ModelProviderAdapter {
+  public readonly requests: CompleteTurnInput[] = [];
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.requests.push({ ...input, messages: [...input.messages] });
+    if (this.requests.length === 1) {
+      return Promise.resolve({
+        content: "",
+        finishReason: "tool_calls",
+        toolCalls: [{
+          arguments: JSON.stringify({ skillId: "review" }),
+          id: "call_restricted_skill",
+          name: "load_skill",
+        }],
+      });
+    }
+    input.onTextDelta("未使用未授权 Skill");
+    return Promise.resolve({
+      content: "未使用未授权 Skill",
+      finishReason: "stop",
+      toolCalls: [],
+    });
+  }
+}
+
+class MutatingSkillRuntime extends SkillRuntime {
+  public constructor(
+    private readonly entryPath: string,
+    documents: SkillDocumentStore,
+    integrations: IntegrationConfigurationStore,
+  ) {
+    super(documents, integrations);
+  }
+
+  public override execute(input: Parameters<SkillRuntime["execute"]>[0]): ReturnType<SkillRuntime["execute"]> {
+    const result = super.execute(input);
+    if (!result.isError) {
+      writeFileSync(this.entryPath, [
+        "---",
+        "name: review",
+        "description: Review changed code.",
+        "---",
+        "",
+        "# Changed rules",
+        "",
+        "此内容已在 Run 期间变化。",
+        "",
+      ].join("\n"), "utf8");
+    }
+    return result;
+  }
+}
+
+async function createRuntimeSkillFixture(root: string): Promise<{
+  documents: SkillDocumentStore;
+  entryPath: string;
+  integrations: IntegrationConfigurationStore;
+  runtime: SkillRuntime;
+}> {
+  const skillDirectory = path.join(root, "skills", "review");
+  await mkdir(skillDirectory, { recursive: true });
+  const entryPath = path.join(skillDirectory, "SKILL.md");
+  await writeFile(entryPath, [
+    "---",
+    "name: review",
+    "description: Review changed code.",
+    "---",
+    "",
+    "# Review rules",
+    "",
+    "只在当前任务中使用证据。",
+    "",
+  ].join("\n"), "utf8");
+  const integrations = new IntegrationConfigurationStore(
+    path.join(root, "integration-settings.json"),
+  );
+  integrations.saveConfiguration({
+    mcpServers: [],
+    skillDirectories: [],
+    skills: [{
+      description: "Review changed code.",
+      enabled: true,
+      entryPath,
+      id: "review",
+      mcpDependencies: [],
+      name: "review",
+      scope: "user",
+      version: "1.0.0",
+    }],
+    version: 1,
+  });
+  const documents = new SkillDocumentStore(
+    integrations,
+    path.join(root, "managed-skills"),
+  );
+  return {
+    documents,
+    entryPath,
+    integrations,
+    runtime: new SkillRuntime(documents, integrations),
+  };
 }
 
 class FileChangeFixtureModel implements ModelProviderAdapter {
@@ -980,6 +1118,361 @@ describe("AgentRuntime", () => {
     expect(model.requests[0]?.messages[0]?.content).toContain(
       "Git 是可通过 run_command 执行的命令行程序，不是 Skill"
     );
+    database.close();
+  });
+
+  it("injects loaded Skill instructions into the next model turn without polluting the timeline", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-skill-"));
+    temporaryDirectories.push(root);
+    const { runtime: skillRuntime } = await createRuntimeSkillFixture(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const model = new SkillFixtureModel();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      skillRuntime,
+    );
+    const finished = new Promise<void>((resolve) => {
+      runtime.sendMessage(
+        { content: "按审查 Skill 检查变更", conversationId: conversation.id },
+        (event) => {
+          if (event.type === "run.finished") resolve();
+        },
+      );
+    });
+
+    await finished;
+
+    expect(model.requests).toHaveLength(2);
+    expect(model.requests[0]?.tools.map((tool) => tool.name)).toContain("load_skill");
+    expect(model.requests[0]?.messages[0]?.content).toContain("review | review");
+    expect(model.requests[1]?.messages.some((message) =>
+      message.role === "system" && message.content.includes("只在当前任务中使用证据。"),
+    )).toBe(true);
+    const timeline = database.listTimeline(conversation.id);
+    const persistedContent = timeline.flatMap((item) => {
+      if (item.kind === "message") return [item.content];
+      if (item.kind === "tool" && item.result !== null) return [item.result];
+      return [];
+    });
+    expect(persistedContent.every((content) => !content.includes("只在当前任务中使用证据。"))).toBe(true);
+    expect(persistedContent.some((content) => content.includes("contentHash"))).toBe(true);
+    database.close();
+  });
+
+  it("does not unlock project-scoped Skills for a temporary conversation workspace", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-skill-temporary-workspace-"));
+    temporaryDirectories.push(root);
+    const fixture = await createRuntimeSkillFixture(root);
+    const configuration = fixture.integrations.getConfiguration();
+    fixture.integrations.saveConfiguration({
+      ...configuration,
+      skills: configuration.skills.map((skill) => ({ ...skill, scope: "project" as const })),
+    });
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    await projects.mountConversationWorkspace(conversation.id, root);
+    database.setConversationWorkspaceRoot(conversation.id, root);
+    const model = new RestrictedSkillFixtureModel();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      fixture.runtime,
+    );
+    const finished = new Promise<void>((resolve) => {
+      runtime.sendMessage(
+        { content: "临时工作目录中尝试加载项目 Skill", conversationId: conversation.id },
+        (event) => {
+          if (event.type === "run.finished") resolve();
+        },
+      );
+    });
+
+    await finished;
+
+    expect(model.requests).toHaveLength(2);
+    expect(model.requests[0]?.messages[0]?.content).not.toContain("review | review");
+    const toolMessage = model.requests[1]?.messages.find((message) => message.role === "tool");
+    expect(toolMessage?.content).toContain("不适用于当前对话范围");
+    expect(model.requests[1]?.messages.some((message) =>
+      message.role === "system" && message.content.includes("只在当前任务中使用证据。"),
+    )).toBe(false);
+    database.close();
+  });
+
+  it("applies a custom Agent Skill scope to both discovery and direct load attempts", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-skill-scope-"));
+    temporaryDirectories.push(root);
+    const { runtime: skillRuntime } = await createRuntimeSkillFixture(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null, {
+      agent: {
+        id: "explorer",
+        instructions: "保持只读。",
+        isDefault: false,
+        name: "Explorer",
+        role: "搜索与事实核对",
+      },
+    });
+    const model = new RestrictedSkillFixtureModel();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { getConfiguration: () => DEFAULT_AGENT_DIRECTORY_CONFIGURATION },
+      skillRuntime,
+    );
+    const finished = new Promise<void>((resolve) => {
+      runtime.sendMessage(
+        { content: "尝试加载未授权 Skill", conversationId: conversation.id },
+        (event) => {
+          if (event.type === "run.finished") resolve();
+        },
+      );
+    });
+
+    await finished;
+
+    expect(model.requests).toHaveLength(2);
+    expect(model.requests[0]?.messages[0]?.content).not.toContain("review | review");
+    const toolMessage = model.requests[1]?.messages.find((message) => message.role === "tool");
+    expect(toolMessage?.content).toContain("未被当前 Agent 授权");
+    expect(model.requests[1]?.messages.some((message) =>
+      message.role === "system" && message.content.includes("只在当前任务中使用证据。"),
+    )).toBe(false);
+    database.close();
+  });
+
+  it("fails closed when a bound Agent has no directory provider", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-skill-no-directory-"));
+    temporaryDirectories.push(root);
+    const { runtime: skillRuntime } = await createRuntimeSkillFixture(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null, {
+      agent: {
+        id: "explorer",
+        instructions: "保持只读。",
+        isDefault: false,
+        name: "Explorer",
+        role: "搜索与事实核对",
+      },
+    });
+    const model = new RestrictedSkillFixtureModel();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      skillRuntime,
+    );
+    const finished = new Promise<void>((resolve) => {
+      runtime.sendMessage(
+        { content: "尝试加载未授权 Skill", conversationId: conversation.id },
+        (event) => {
+          if (event.type === "run.finished") resolve();
+        },
+      );
+    });
+
+    await finished;
+
+    expect(model.requests).toHaveLength(2);
+    expect(model.requests[0]?.messages[0]?.content).not.toContain("review | review");
+    const toolMessage = model.requests[1]?.messages.find((message) => message.role === "tool");
+    expect(toolMessage?.content).toContain("未被当前 Agent 授权");
+    expect(model.requests[1]?.messages.some((message) =>
+      message.role === "system" && message.content.includes("只在当前任务中使用证据。"),
+    )).toBe(false);
+    database.close();
+  });
+
+  it("does not allow Skills for a disabled bound Agent", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-skill-disabled-agent-"));
+    temporaryDirectories.push(root);
+    const fixture = await createRuntimeSkillFixture(root);
+    const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
+    const disabledAgent = directory.agents.find((agent) => agent.id === "explorer");
+    if (disabledAgent === undefined) throw new Error("Explorer fixture is missing.");
+    disabledAgent.enabled = false;
+    disabledAgent.skillIds = ["review"];
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null, {
+      agent: {
+        id: disabledAgent.id,
+        instructions: disabledAgent.instructions,
+        isDefault: disabledAgent.isDefault,
+        name: disabledAgent.name,
+        role: disabledAgent.role,
+      },
+    });
+    const model = new RestrictedSkillFixtureModel();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { getConfiguration: () => directory },
+      fixture.runtime,
+    );
+    const finished = new Promise<void>((resolve) => {
+      runtime.sendMessage(
+        { content: "尝试使用已禁用 Agent 的 Skill", conversationId: conversation.id },
+        (event) => {
+          if (event.type === "run.finished") resolve();
+        },
+      );
+    });
+
+    await finished;
+
+    expect(model.requests).toHaveLength(2);
+    expect(model.requests[0]?.messages[0]?.content).not.toContain("review | review");
+    const toolMessage = model.requests[1]?.messages.find((message) => message.role === "tool");
+    expect(toolMessage?.content).toContain("未被当前 Agent 授权");
+    expect(model.requests[1]?.messages.some((message) =>
+      message.role === "system" && message.content.includes("只在当前任务中使用证据。"),
+    )).toBe(false);
+    database.close();
+  });
+
+  it("fails a Skill-backed Run when the loaded document changes before the next graph turn", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-skill-change-"));
+    temporaryDirectories.push(root);
+    const fixture = await createRuntimeSkillFixture(root);
+    const skillRuntime = new MutatingSkillRuntime(
+      fixture.entryPath,
+      fixture.documents,
+      fixture.integrations,
+    );
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const model: ModelProviderAdapter = {
+      completeTurn() {
+        return Promise.resolve({
+          content: "",
+          finishReason: "tool_calls",
+          toolCalls: [{
+            arguments: JSON.stringify({ skillId: "review" }),
+            id: "call_load_skill_change",
+            name: "load_skill",
+          }],
+        });
+      },
+    };
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      skillRuntime,
+    );
+    const finished = new Promise<Extract<ConversationRunEvent, { type: "run.finished" }>>((resolve) => {
+      runtime.sendMessage(
+        { content: "加载 Skill 后继续", conversationId: conversation.id },
+        (event) => {
+          if (event.type === "run.finished") resolve(event);
+        },
+      );
+    });
+
+    await expect(finished).resolves.toMatchObject({ status: "failed" });
+    const lastMessage = database.listTimeline(conversation.id).findLast((item) => item.kind === "message");
+    expect(lastMessage?.kind === "message" ? lastMessage.content : "")
+      .toContain("无法静默恢复旧 Run");
     database.close();
   });
 
@@ -1887,6 +2380,71 @@ describe("AgentRuntime", () => {
     );
     expect(resumedUserMessage).toMatchObject({ content: "应用重启后继续发送" });
     expect(resumedUserMessage?.id).not.toBe(pending.id);
+    reopened.close();
+  });
+
+  it("resumes a queued Run after restart without creating a duplicate user message", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-run-resume-"));
+    temporaryDirectories.push(root);
+    const databasePath = path.join(root, "agent.sqlite");
+    const database = new AgentDatabase(databasePath);
+    const conversation = database.createConversation(null);
+    const executionSnapshot = {
+      apiFormat: "openai-chat-completions" as const,
+      baseUrl: "https://example.test/v1",
+      contextCompressionConfiguration: {
+        mode: "percentage" as const,
+        percentageThreshold: 80,
+        tokenThreshold: 100_000,
+      },
+      contextWindow: null,
+      modelId: "test-model",
+      permissionMode: "ask_before_changes" as const,
+      providerId: null,
+      reasoning: null,
+      reasoningOptions: [],
+    };
+    const creation = database.createRunWithUserMessage(
+      conversation.id,
+      "恢复尚未开始的 Run",
+      "test-model",
+      [],
+      "恢复尚未开始的 Run",
+      executionSnapshot,
+    );
+    database.close();
+
+    const reopened = new AgentDatabase(databasePath);
+    const projects = new ProjectRegistry(reopened);
+    const model = new ContinuousConversationFixtureModel();
+    const runtime = new AgentRuntime(
+      reopened,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+    );
+    const finished = new Promise<void>((resolve) => {
+      runtime.resumePendingMessages((event) => {
+        if (event.type === "run.finished" && event.runId === creation.runId) resolve();
+      });
+    });
+
+    await finished;
+
+    expect(model.requests).toHaveLength(1);
+    expect(reopened.listTimeline(conversation.id).filter((item) =>
+      item.kind === "message" && item.role === "user",
+    )).toHaveLength(1);
+    expect(reopened.getConversation(conversation.id).lastRunStatus).toBe("completed");
     reopened.close();
   });
 

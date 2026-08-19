@@ -6,8 +6,7 @@ const modelSources = [
   "model/model-adapter-registry.ts",
   "model/model-contracts.ts",
   "model/model-credential-store.ts",
-  "model/model-protocol-adapter.ts",
-  "model/openai-compatible-adapter.ts",
+  "model/langchain-model-adapter.ts",
 ];
 
 describe("desktop architecture contracts", () => {

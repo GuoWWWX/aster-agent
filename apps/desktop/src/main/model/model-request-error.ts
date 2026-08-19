@@ -26,6 +26,17 @@ function gatewayTitle(value: string): string | null {
   return compactTitle.length > 0 ? compactTitle : null;
 }
 
+export function summarizeModelErrorText(value: string): string {
+  const isHtml = /<\/?(?:html|head|body|title|!doctype)\b/iu.test(value);
+  if (isHtml) {
+    const title = gatewayTitle(value);
+    return title === null
+      ? "Model provider returned an HTML gateway error page."
+      : `Model provider returned an HTML gateway error: ${title}`;
+  }
+  return compact(value) || "The model provider did not return error details.";
+}
+
 function errorMessageFromJson(value: unknown): string | null {
   if (value === null || typeof value !== "object") return null;
   const error = (value as { error?: unknown }).error;
@@ -59,7 +70,7 @@ export async function readModelErrorBody(response: Response): Promise<string> {
     // Plain-text provider errors are handled below.
   }
 
-  return compact(body) || "The model provider did not return error details.";
+  return summarizeModelErrorText(body);
 }
 
 export async function createModelRequestError(response: Response): Promise<ModelRequestError> {
