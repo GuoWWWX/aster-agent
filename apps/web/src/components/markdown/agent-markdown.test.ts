@@ -19,6 +19,7 @@ describe("AgentMarkdown", () => {
     expect(html).toContain("data-language=\"java\"");
     expect(html).toContain('class="hljs"');
     expect(html).toContain('class="hljs-keyword"');
+    expect(html).toContain('class="agent-markdown__table-scroll"');
     expect(html).toContain("<table>");
     expect(html).toContain("&lt;script&gt;");
     expect(html).not.toContain("<script>");

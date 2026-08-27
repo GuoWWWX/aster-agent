@@ -1,3 +1,4 @@
+/* CSS trigger 2: table wrapper and cell selectors need structural selectors. */
 .agent-markdown {
   --agent-md-heading-strong: #0f172a;
   --agent-md-heading: #1e293b;
@@ -90,8 +91,7 @@
 .agent-markdown ul,
 .agent-markdown ol,
 .agent-markdown blockquote,
-.agent-markdown pre,
-.agent-markdown table {
+.agent-markdown pre {
   margin: 0 0 10px;
 }
 
@@ -301,11 +301,16 @@
   margin-bottom: 0;
 }
 
-.agent-markdown table {
-  display: block;
+.agent-markdown__table-scroll {
   max-width: 100%;
-  overflow: auto;
+  margin: 0 0 10px;
+  overflow-x: auto;
+}
+
+.agent-markdown table {
+  width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
   color: var(--agent-md-table-text);
   font-size: var(--app-font-size-control);
   line-height: 1.5;
@@ -313,10 +318,18 @@
 
 .agent-markdown th,
 .agent-markdown td {
-  min-width: 96px;
+  min-width: 0;
   padding: 6px 10px;
   border: 1px solid var(--agent-md-table-border);
+  overflow-wrap: anywhere;
   vertical-align: top;
+  word-break: break-word;
+}
+
+.agent-markdown th :not(pre) > code,
+.agent-markdown td :not(pre) > code {
+  overflow-wrap: anywhere;
+  white-space: break-spaces;
 }
 
 .agent-markdown th {

@@ -272,9 +272,11 @@ export const conversationMessageStatusSchema = z.enum([
 export const conversationMessageItemSchema = z
   .object({
     attachments: z.array(conversationAttachmentSchema).max(MAX_CONVERSATION_ATTACHMENTS).default([]),
+    completedAt: isoTimestampSchema.nullable().optional(),
     content: z.string().max(MAX_MESSAGE_LENGTH),
     conversationId: conversationIdSchema,
     createdAt: isoTimestampSchema,
+    durationMs: z.number().int().nonnegative().nullable().optional(),
     id: timelineItemIdSchema,
     kind: z.literal("message"),
     modelId: z.string().min(1).max(200).nullable(),
