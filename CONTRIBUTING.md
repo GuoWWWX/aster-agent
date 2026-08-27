@@ -62,7 +62,7 @@ docs: describe GitHub release process
 ## Pull Request 要求
 
 - 标题使用同一提交格式，正文说明目标、范围、验证结果和风险。
-- 所有必需 CI 必须通过；CI 失败时先修复或说明现有阻断项。
+- 当前不设置 PR 自动 CI 或远端必需检查；合并前由作者按改动范围完成本地验证。需要时维护者可在 Actions 页手动运行完整 CI。恢复自动 CI 后，所有必需检查必须通过。
 - 至少一位维护者审批后才能合并；涉及安全、SQLite Migration、Protocol、工具权限或发布时应由对应模块负责人复核。
 - 合并方式以仓库设置为准；默认使用 squash merge，让 `develop` 保持一项工作一个可读提交。
 
