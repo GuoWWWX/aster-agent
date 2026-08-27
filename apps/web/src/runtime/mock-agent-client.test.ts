@@ -757,8 +757,30 @@ describe("MockAgentClient", () => {
     await expect(client.createConversation({})).resolves.toMatchObject({
       modelSelection: selection,
     });
-    await expect(client.forkConversation({ conversationId: first.id })).resolves.toMatchObject({
-      modelSelection: selection,
+    const side = await client.forkConversation({ conversationId: first.id });
+    expect(side).toMatchObject({ modelSelection: selection });
+
+    const fallbackSelection = {
+      modelId: "fallback-model",
+      providerId: status.providerId,
+      reasoning: null,
+    };
+    await client.setConversationModelSelection({
+      conversationId: first.id,
+      modelSelection: fallbackSelection,
     });
+
+    await expect(client.listConversationForks({ conversationId: first.id })).resolves.toEqual([
+      expect.objectContaining({
+        id: side.id,
+        modelSelection: selection,
+      }),
+    ]);
+    await expect(client.listConversations()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: first.id,
+        modelSelection: fallbackSelection,
+      }),
+    ]));
   });
 });
