@@ -10,6 +10,7 @@ import {
   ConversationDeletionService,
   type ConversationDeletionFileStore,
 } from "./conversation-deletion-service.js";
+import { ThreadLog } from "./thread-log.js";
 
 const databases: AgentDatabase[] = [];
 const temporaryDirectories: string[] = [];
@@ -33,7 +34,17 @@ async function createFixture() {
   const projects = new ProjectRegistry(database);
   const project = await projects.registerDirectory(projectRoot);
   const attachments = new ConversationAttachmentStore(database, projects, managedRoot);
-  return { attachments, database, databasePath, managedRoot, project, projectRoot, projects };
+  const threadLog = new ThreadLog(path.join(directory, "conversations"));
+  return {
+    attachments,
+    database,
+    databasePath,
+    managedRoot,
+    project,
+    projectRoot,
+    projects,
+    threadLog,
+  };
 }
 
 async function importTextAttachment(
@@ -92,6 +103,34 @@ describe("ConversationDeletionService", () => {
 
     await expect(service.requestDeletion(conversation.id)).resolves.toBe("completed");
     expect(deletedThreads).toEqual([[run.runId]]);
+  });
+
+  it("removes temporary side-conversation ThreadLogs when the tab is closed", async () => {
+    const fixture = await createFixture();
+    const parent = fixture.database.createConversation(fixture.project.id);
+    const sideConversation = fixture.database.forkConversation(parent.id, "side");
+    fixture.threadLog.append(parent.id, {
+      payload: { conversation: parent },
+      type: "conversation_created",
+    });
+    fixture.threadLog.append(sideConversation.id, {
+      payload: { conversation: sideConversation },
+      type: "conversation_created",
+    });
+    expect(fixture.threadLog.readContext(sideConversation.id)).not.toBeNull();
+    const service = new ConversationDeletionService(
+      fixture.database,
+      fixture.attachments,
+      fixture.projects,
+      null,
+      fixture.threadLog,
+    );
+
+    await expect(service.requestDeletion(sideConversation.id)).resolves.toBe("completed");
+
+    expect(fixture.threadLog.hasConversation(parent.id)).toBe(true);
+    expect(fixture.threadLog.hasConversation(sideConversation.id)).toBe(false);
+    expect(fixture.threadLog.readContext(sideConversation.id)).toBeNull();
   });
 
   it("keeps checkpoint cleanup retryable when the saver is temporarily unavailable", async () => {

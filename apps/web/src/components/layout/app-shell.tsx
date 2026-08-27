@@ -18,6 +18,7 @@ const TITLEBAR_CONTEXT = {
 } as const;
 
 type AppShellProps = {
+  activeConversationId?: string | null;
   agentClient: AgentClient;
   filePanel: ReactNode;
   mainContent: ReactNode;
@@ -25,6 +26,7 @@ type AppShellProps = {
 };
 
 export function AppShell({
+  activeConversationId = null,
   agentClient,
   filePanel,
   mainContent,
@@ -39,11 +41,19 @@ export function AppShell({
     (state) => state.isProjectNavigatorOpen,
   );
   const filePanelWidth = useWorkbenchUiStore((state) => state.filePanelWidth);
+  const conversationFilePanelWidth = useWorkbenchUiStore((state) =>
+    activeConversationId === null
+      ? undefined
+      : state.filePanelWidthsByConversationId[activeConversationId],
+  );
   const projectNavigatorWidth = useWorkbenchUiStore(
     (state) => state.projectNavigatorWidth,
   );
   const setFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
   const setFilePanelWidth = useWorkbenchUiStore((state) => state.setFilePanelWidth);
+  const setFilePanelWidthForConversation = useWorkbenchUiStore(
+    (state) => state.setFilePanelWidthForConversation,
+  );
   const setProjectNavigatorOpen = useWorkbenchUiStore(
     (state) => state.setProjectNavigatorOpen,
   );
@@ -64,7 +74,10 @@ export function AppShell({
   const canShowFileWorkspace = isConversationWorkspace || (
     activeActivity === "settings" && configurationWorkspaceTarget !== null
   );
-  const filePanelStyle = { width: `${filePanelWidth}px` } as CSSProperties;
+  const activeFilePanelWidth = isConversationWorkspace && activeConversationId !== null
+    ? conversationFilePanelWidth ?? filePanelWidth
+    : filePanelWidth;
+  const filePanelStyle = { width: `${activeFilePanelWidth}px` } as CSSProperties;
   const projectNavigatorStyle = {
     width: `${projectNavigatorWidth}px`,
   } as CSSProperties;
@@ -119,19 +132,24 @@ export function AppShell({
           direction="from-end"
           max={FILE_PANEL_WIDTH_RANGE.max}
           min={FILE_PANEL_WIDTH_RANGE.min}
-          size={filePanelWidth}
+          size={activeFilePanelWidth}
           onCollapsedChange={(isCollapsed) => setFilePanelOpen(!isCollapsed)}
           onDraggingChange={setFilePanelResizing}
-          onResize={setFilePanelWidth}
+          onResize={(width) => {
+            if (isConversationWorkspace && activeConversationId !== null) {
+              setFilePanelWidthForConversation(activeConversationId, width);
+              return;
+            }
+            setFilePanelWidth(width);
+          }}
         /> : null}
-        {canShowFileWorkspace && isFilePanelOpen ? (
-          <div
-            className="workbench-sidebar workbench-sidebar--right"
-            style={filePanelStyle}
-          >
-            {filePanel}
-          </div>
-        ) : null}
+        <div
+          className="workbench-sidebar workbench-sidebar--right"
+          hidden={!canShowFileWorkspace || !isFilePanelOpen}
+          style={filePanelStyle}
+        >
+          {filePanel}
+        </div>
       </div>
     </div>
   );

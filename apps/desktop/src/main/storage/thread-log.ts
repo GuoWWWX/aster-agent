@@ -12,6 +12,7 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 
 import { z } from "zod";
@@ -180,6 +181,16 @@ export class ThreadLog {
 
   public hasConversation(conversationId: string): boolean {
     return existsSync(this.getPath(conversationId));
+  }
+
+  public async deleteConversations(conversationIds: readonly string[]): Promise<void> {
+    for (const conversationId of conversationIds) {
+      const parsedConversationId = z.string().uuid().parse(conversationId);
+      await rm(this.getPath(parsedConversationId), { force: true });
+      this.lastSequenceByConversation.delete(parsedConversationId);
+      this.contextReadCache.delete(parsedConversationId);
+      this.contextSnapshotCache.delete(parsedConversationId);
+    }
   }
 
   /**

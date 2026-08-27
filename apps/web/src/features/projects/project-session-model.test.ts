@@ -1,16 +1,86 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  aggregateSideConversationState,
   createProjectSession,
   getArchivedSessions,
   getPinnedSessions,
   getProjectSessions,
   getSubagentSessions,
   getTemporarySessions,
+  groupSubagentSessionsByParent,
+  getSessionFamilyResultIds,
+  updateSessionRunState,
   type ProjectSession,
 } from "./project-session-model.js";
 
 describe("project session model", () => {
+  it("aggregates side conversation running and unread state into its parent", () => {
+    const parent = createProjectSession("project-a", [], "parent");
+    const runningSide: ProjectSession = {
+      ...createProjectSession("project-a", [parent], "running-side"),
+      activeRunId: "run-side",
+      lastRunStatus: "running",
+      parentConversationId: parent.id,
+    };
+    const completedSide: ProjectSession = {
+      ...createProjectSession("project-a", [parent], "completed-side"),
+      hasUnreadResult: true,
+      lastRunStatus: "completed",
+      parentConversationId: parent.id,
+    };
+    const failedSide: ProjectSession = {
+      ...createProjectSession("project-a", [parent], "failed-side"),
+      hasUnreadResult: true,
+      lastRunStatus: "failed",
+      parentConversationId: parent.id,
+    };
+
+    expect(aggregateSideConversationState([parent, runningSide, completedSide, failedSide])[0])
+      .toMatchObject({
+        activeSideConversationCount: 1,
+        hasFailedUnreadSideConversationResult: true,
+        hasUnreadSideConversationResult: true,
+      });
+  });
+
+  it("marks a completed run unread even when its conversation remains selected", () => {
+    const session = createProjectSession("project-a", [], "session");
+    const [running] = updateSessionRunState([session], {
+      conversationId: session.id,
+      modelId: "model",
+      runId: "run-1",
+      type: "run.started",
+    });
+    const [finished] = updateSessionRunState([running!], {
+      agentError: null,
+      conversationId: session.id,
+      error: null,
+      runId: "run-1",
+      status: "completed",
+      type: "run.finished",
+    });
+
+    expect(running).toMatchObject({ activeRunId: "run-1", hasUnreadResult: false });
+    expect(finished).toMatchObject({ activeRunId: null, hasUnreadResult: true });
+  });
+
+  it("acknowledges the parent and ordinary side conversations as one result group", () => {
+    const parent = createProjectSession("project-a", [], "parent");
+    const side: ProjectSession = {
+      ...createProjectSession("project-a", [parent], "side"),
+      parentConversationId: parent.id,
+    };
+    const subagent: ProjectSession = {
+      ...createProjectSession("project-a", [parent], "subagent"),
+      parentConversationId: parent.id,
+      threadKind: "subagent",
+    };
+
+    expect(getSessionFamilyResultIds([parent, side, subagent], side.id))
+      .toEqual([parent.id, side.id]);
+  });
+
   it("keeps sessions scoped to their project", () => {
     const sessions: ProjectSession[] = [
       {
@@ -169,5 +239,8 @@ describe("project session model", () => {
     expect(getSubagentSessions([parent, sideConversation, subagent], parent.id)).toEqual([
       subagent,
     ]);
+    expect(groupSubagentSessionsByParent([parent, sideConversation, subagent])).toEqual(
+      new Map([[parent.id, [subagent]]]),
+    );
   });
 });

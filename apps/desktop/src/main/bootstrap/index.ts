@@ -143,11 +143,13 @@ async function initializeServices(): Promise<DesktopServices> {
     projectRegistry,
     agentHome.paths.conversationFilesPath,
   );
+  const threadLog = new ThreadLog(agentHome.paths.conversationsPath);
   const conversationDeletion = new ConversationDeletionService(
     database,
     attachments,
     projectRegistry,
     graphCheckpointer,
+    threadLog,
   );
   await conversationDeletion.resumeIncompleteTasks();
   await conversationDeletion.deleteExpiredArchivedConversations(
@@ -200,7 +202,6 @@ async function initializeServices(): Promise<DesktopServices> {
     agentHome.paths.terminalSettingsPath,
   );
   const tools = new ProjectToolRegistry(projectRegistry, terminalConfiguration);
-  const threadLog = new ThreadLog(agentHome.paths.conversationsPath);
   const eventProjector = new EventProjector(
     database,
     threadLog,

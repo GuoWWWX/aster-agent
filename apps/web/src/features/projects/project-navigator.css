@@ -495,14 +495,17 @@
 }
 
 .project-navigator__session .project-navigator__session-status--failed {
-  color: var(--app-destructive);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--app-destructive);
 }
 
 .project-navigator__session-status--completed {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #22c55e;
+  background: var(--app-accent);
 }
 
 .project-navigator__project-button span {
