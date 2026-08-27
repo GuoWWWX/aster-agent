@@ -154,6 +154,16 @@ function toProjectSession(conversation: ConversationSummary): ProjectSession {
   };
 }
 
+export function upsertSideSession(
+  sessions: ProjectSession[],
+  conversation: ConversationSummary,
+): ProjectSession[] {
+  const session = toProjectSession(conversation);
+  return sessions.some((candidate) => candidate.id === session.id)
+    ? sessions.map((candidate) => candidate.id === session.id ? session : candidate)
+    : [...sessions, session];
+}
+
 function fileTabId(projectId: string, path: string): string {
   return `file:${projectId}:${path}`;
 }
@@ -880,6 +890,11 @@ export function RightSidebarWorkspace({
     [queueConfigurationSave],
   );
 
+  const updateSideSession = useCallback((conversation: ConversationSummary): void => {
+    setSideSessions((current) => upsertSideSession(current, conversation));
+    onSessionUpdated(conversation);
+  }, [onSessionUpdated]);
+
   const createSideChat = useCallback(async (): Promise<void> => {
     if (activeSession === null || isCreatingChat) return;
     setIsCreatingChat(true);
@@ -889,8 +904,7 @@ export function RightSidebarWorkspace({
         conversationId: activeSession.id,
       });
       const session = toProjectSession(conversation);
-      setSideSessions((current) => [...current, session]);
-      onSessionUpdated(conversation);
+      updateSideSession(conversation);
       updateOpenChatIds((current) => new Set(current).add(session.id));
       setActiveTabForCurrentSession(`chat:${session.id}`);
       setIsFileBrowserOpen(false);
@@ -904,8 +918,8 @@ export function RightSidebarWorkspace({
     activeSession,
     agentClient,
     isCreatingChat,
-    onSessionUpdated,
     setActiveTabForCurrentSession,
+    updateSideSession,
     updateOpenChatIds,
   ]);
 
@@ -1269,6 +1283,7 @@ export function RightSidebarWorkspace({
               }}
               onOpenProjectFile={(path) => void openProjectFilePath(path)}
               onViewed={() => onSessionViewed(activeTab.session.id)}
+              onSessionUpdated={updateSideSession}
               project={activeTab.session.projectId === null ? null : activeProject}
               session={activeTab.session}
             />
