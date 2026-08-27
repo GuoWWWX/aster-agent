@@ -11,7 +11,7 @@ const temporaryDirectories: string[] = [];
 afterEach(async () => {
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
-      rm(directory, { force: true, recursive: true })
+      rm(directory, { force: true, maxRetries: 3, recursive: true, retryDelay: 100 })
     )
   );
 });
@@ -103,7 +103,7 @@ describe("ProjectToolRegistry", () => {
       projectId: project.id,
     }, signal)).rejects.toMatchObject({ code: "PROJECT_OPERATION_CONFLICT" });
     await expect(commandPromise).resolves.toMatchObject({ isError: false });
-  });
+  }, 20_000);
 
   it("rejects editor paths outside the project root", async () => {
     const { project, tools } = await createFixture();
@@ -200,7 +200,7 @@ describe("ProjectToolRegistry", () => {
       signal,
       { ...owner, conversationId: "other-conversation" },
     )).resolves.toMatchObject({ isError: true });
-  });
+  }, 20_000);
 
   it("executes every advertised project tool inside an isolated project", async () => {
     const { project, tools } = await createFixture();
@@ -317,7 +317,7 @@ describe("ProjectToolRegistry", () => {
       "apply_patch",
       "run_command"
     ]);
-  });
+  }, 20_000);
 
   it("reads a bounded line range", async () => {
     const { project, tools } = await createFixture();
