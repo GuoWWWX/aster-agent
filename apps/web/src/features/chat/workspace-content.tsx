@@ -105,6 +105,7 @@ import {
   SelectValue,
 } from "../../components/ui/select.js";
 import { getUserErrorMessage, type AgentClient } from "../../runtime/index.js";
+import { getCachedModelStatus, loadModelStatus } from "../../runtime/model-status-cache.js";
 import {
   useAgentDirectoryStore,
   type AgentProfile,
@@ -119,6 +120,7 @@ import { reasoningOptionDisplayName } from "../settings/model-reasoning-options.
 import { TaskWorkspace } from "../tasks/task-workspace.js";
 import { AgentAvatar } from "../team/agent-avatar.js";
 import { TeamWorkspace } from "../team/team-workspace.js";
+import { useConversationWorkspaceCache } from "./conversation-workspace-cache.js";
 import { formatConversationRunMarkdown } from "./conversation-copy.js";
 import { ContextUsageIndicator } from "./context-usage-indicator.js";
 import { isConversationScrolledToBottom } from "./conversation-scroll.js";
@@ -228,6 +230,7 @@ type SlashCommand = (typeof SLASH_COMMANDS)[number];
 
 type ConversationReasoningControlProps = {
   disabled: boolean;
+  fallbackOption?: ModelReasoningOption | null;
   onValueChange: (value: string) => void;
   options: readonly ModelReasoningOption[];
   selectedKey: string;
@@ -235,6 +238,7 @@ type ConversationReasoningControlProps = {
 
 function ConversationReasoningControl({
   disabled,
+  fallbackOption,
   onValueChange,
   options,
   selectedKey,
@@ -246,12 +250,19 @@ function ConversationReasoningControl({
   const selectedOption = options.find(
     (option) => modelReasoningOptionKey(option) === selectedKey,
   );
+  const fallbackSelectedOption = fallbackOption !== null
+    && fallbackOption !== undefined
+    && modelReasoningOptionKey(fallbackOption) === selectedKey
+    ? fallbackOption
+    : undefined;
   const selectedIndex = selectedOption === undefined
     ? 0
     : options.findIndex((option) => modelReasoningOptionKey(option) === selectedKey) + 1;
   const progress = options.length === 0 ? 0 : (selectedIndex / options.length) * 100;
   const displayName = selectedOption === undefined
-    ? "自动"
+    ? fallbackSelectedOption === undefined
+      ? "自动"
+      : reasoningOptionDisplayName(fallbackSelectedOption)
     : reasoningOptionDisplayName(selectedOption);
   const isDisabled = disabled || options.length === 0;
   const strengthWeight = Math.round(progress * 0.46);
@@ -437,6 +448,9 @@ export function WorkspaceContent({
   onSessionViewed,
 }: WorkspaceContentProps): ReactElement {
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
+  const retainedSessions = useConversationWorkspaceCache(
+    activeActivity === "conversations" ? activeSession : null,
+  );
 
   if (activeActivity === "team") {
     return <TeamWorkspace />;
@@ -461,34 +475,45 @@ export function WorkspaceContent({
     );
   }
 
-  const conversationProject = activeSession.projectId === null
-    ? null
-    : projects.find((project) => project.id === activeSession.projectId) ?? null;
-  const projectId = activeSession.projectId;
-
   return (
-    <ConversationWorkspace
-      key={activeSession.id}
-      agentClient={agentClient}
-      canAddProjects={canAddProjects}
-      isAddingProject={isAddingProject}
-      onLocateProject={onLocateProject}
-      onLocateSession={onLocateSession}
-      onOpenProjectFile={projectId === null || onOpenProjectFile === undefined
-        ? undefined
-        : (path) => {
-            onOpenProjectFile?.(projectId, path);
-          }}
-      onForkConversation={onForkConversation}
-      onAddProject={onAddProject}
-      onProjectSelected={onProjectSelected}
-      onSessionSelected={onSessionSelected}
-      onSessionUpdated={onSessionUpdated}
-      onViewed={() => onSessionViewed(activeSession.id)}
-      project={conversationProject}
-      projects={projects}
-      session={activeSession}
-    />
+    <div className="flex min-h-0 flex-1">
+      {retainedSessions.map((session) => {
+        const isActive = session.id === activeSession.id;
+        const conversationProject = session.projectId === null
+          ? null
+          : projects.find((project) => project.id === session.projectId) ?? null;
+        const projectId = session.projectId;
+        return (
+          <div
+            aria-hidden={!isActive}
+            className={isActive ? "flex min-h-0 flex-1" : "hidden"}
+            key={session.id}
+          >
+            <ConversationWorkspace
+              agentClient={agentClient}
+              canAddProjects={canAddProjects}
+              isAddingProject={isAddingProject}
+              onLocateProject={onLocateProject}
+              onLocateSession={onLocateSession}
+              onOpenProjectFile={projectId === null || onOpenProjectFile === undefined
+                ? undefined
+                : (path) => {
+                    onOpenProjectFile?.(projectId, path);
+                  }}
+              onForkConversation={onForkConversation}
+              onAddProject={onAddProject}
+              onProjectSelected={onProjectSelected}
+               onSessionSelected={onSessionSelected}
+               onSessionUpdated={onSessionUpdated}
+               onViewed={() => onSessionViewed(session.id)}
+               project={conversationProject}
+              projects={projects}
+              session={session}
+            />
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -584,7 +609,9 @@ export function ConversationWorkspace({
   const [isSending, setIsSending] = useState(false);
   const [liveToolOutputs, setLiveToolOutputs] = useState<Record<string, LiveToolOutput>>({});
   const [modelActivity, setModelActivity] = useState<ModelActivity | null>(null);
-  const [modelStatus, setModelStatus] = useState<ModelRuntimeStatus | null>(null);
+  const [modelStatus, setModelStatus] = useState<ModelRuntimeStatus | null>(() => (
+    getCachedModelStatus(agentClient)
+  ));
   const [runProgresses, setRunProgresses] = useState<RunProgress[]>(() =>
     createRestoredRunProgresses(session.activeRunId),
   );
@@ -597,8 +624,16 @@ export function ConversationWorkspace({
   const [editingPendingMessageId, setEditingPendingMessageId] = useState<string | null>(null);
   const [permissionMode, setPermissionMode] =
     useState<ConversationPermissionMode>(defaultPermissionMode);
-  const [selectedModelKey, setSelectedModelKey] = useState("");
-  const [selectedReasoningOptionKey, setSelectedReasoningOptionKey] = useState("auto");
+  const [selectedModelKey, setSelectedModelKey] = useState(() => (
+    session.modelSelection === null
+      ? ""
+      : modelKey(session.modelSelection)
+  ));
+  const [selectedReasoningOptionKey, setSelectedReasoningOptionKey] = useState(() => (
+    session.modelSelection?.reasoning === null || session.modelSelection?.reasoning === undefined
+      ? "auto"
+      : modelReasoningOptionKey(session.modelSelection.reasoning)
+  ));
   const [taskListAction, setTaskListAction] = useState<"closing" | null>(null);
   const [taskList, setTaskList] = useState<ConversationTaskList | null>(null);
   const [isTaskListExpanded, setIsTaskListExpanded] = useState(false);
@@ -652,8 +687,9 @@ export function ConversationWorkspace({
     (option) => modelReasoningOptionKey(option) === selectedReasoningOptionKey,
   );
   const effectiveReasoningOptionKey = selectedReasoningOption === undefined
-    ? "auto"
+    ? activeModel === undefined ? selectedReasoningOptionKey : "auto"
     : selectedReasoningOptionKey;
+  const modelDisplayName = activeModel?.displayName ?? session.modelSelection?.modelId ?? "未配置模型";
 
   useEffect(() => {
     const selection = session.modelSelection ?? modelStatus?.recentSelection ?? null;
@@ -917,7 +953,7 @@ export function ConversationWorkspace({
 
     void Promise.all([
       agentClient.getCapabilities(),
-      agentClient.getModelStatus(),
+      loadModelStatus(agentClient),
       agentClient.getContextCompressionConfiguration()
         .catch(() => DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION),
     ])
@@ -2257,10 +2293,10 @@ export function ConversationWorkspace({
                         aria-label="模型"
                         className="conversation-workspace__composer-select conversation-workspace__composer-select--model"
                         disabled={isFinishedSubagent || activeModelKey.length === 0}
-                        title={activeModel?.displayName ?? "未配置模型"}
+                        title={modelDisplayName}
                         type="button"
                       >
-                        <span>{activeModel?.displayName ?? "未配置模型"}</span>
+                        <span>{modelDisplayName}</span>
                       </button>
                     }
                     onSelect={selectModel}
@@ -2268,6 +2304,7 @@ export function ConversationWorkspace({
                   <span aria-hidden="true" className="conversation-workspace__model-divider">·</span>
                   <ConversationReasoningControl
                     disabled={isFinishedSubagent || activeModelKey.length === 0}
+                    fallbackOption={session.modelSelection?.reasoning ?? null}
                     options={activeReasoningOptions}
                     selectedKey={effectiveReasoningOptionKey}
                     onValueChange={selectReasoning}

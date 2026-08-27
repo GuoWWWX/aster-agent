@@ -52,6 +52,7 @@ import {
   useWorkbenchUiStore,
   type ConfigurationWorkspaceTarget,
 } from "../../stores/workbench-ui-store.js";
+import { useConversationWorkspaceCache } from "../chat/conversation-workspace-cache.js";
 import { ConversationWorkspace } from "../chat/workspace-content.js";
 import { ConfigurationWorkspaceTreePanel } from "./configuration-workspace-tree-panel.js";
 import { ProjectTreePanel } from "../projects/project-tree-panel.js";
@@ -938,6 +939,9 @@ export function RightSidebarWorkspace({
     [fileTabs, openChatIds, sideSessions],
   );
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
+  const retainedSideSessions = useConversationWorkspaceCache(
+    activeTab?.kind === "chat" ? activeTab.session : null,
+  );
   const activeConfigurationTab = activeTab?.kind === "configuration-file" ? activeTab : null;
   const activeConfigurationTarget = activeConfigurationTab === null
     ? null
@@ -1272,22 +1276,36 @@ export function RightSidebarWorkspace({
         ) : null}
 
         <div className="right-sidebar-workspace__content">
-          {activeTab?.kind === "chat" ? (
-            <ConversationWorkspace
-              compact
-              key={activeTab.session.id}
-              agentClient={agentClient}
-              onLocateProject={onLocateProject}
-              onLocateSession={() => {
-                if (activeSession !== null) onLocateSession(activeSession.id);
-              }}
-              onOpenProjectFile={(path) => void openProjectFilePath(path)}
-              onViewed={() => onSessionViewed(activeTab.session.id)}
-              onSessionUpdated={updateSideSession}
-              project={activeTab.session.projectId === null ? null : activeProject}
-              session={activeTab.session}
-            />
-          ) : activeTab?.kind === "file" ? (
+          {retainedSideSessions
+            .map((cachedSession) => (
+              sideSessions.find((session) => session.id === cachedSession.id) ?? cachedSession
+            ))
+            .filter((session) => openChatIds.has(session.id))
+            .map((session) => {
+              const isActive = activeTab?.kind === "chat" && activeTab.session.id === session.id;
+              return (
+                <div
+                  aria-hidden={!isActive}
+                  className={isActive ? "flex h-full min-h-0 flex-1" : "hidden"}
+                  key={session.id}
+                >
+                  <ConversationWorkspace
+                    compact
+                    agentClient={agentClient}
+                    onLocateProject={onLocateProject}
+                    onLocateSession={() => {
+                      if (activeSession !== null) onLocateSession(activeSession.id);
+                    }}
+                     onOpenProjectFile={(path) => void openProjectFilePath(path)}
+                     onSessionUpdated={updateSideSession}
+                     onViewed={() => onSessionViewed(session.id)}
+                     project={session.projectId === null ? null : activeProject}
+                    session={session}
+                  />
+                </div>
+              );
+            })}
+          {activeTab?.kind === "chat" ? null : activeTab?.kind === "file" ? (
             <FilePreview
               isDark={isDark}
               state={filePreviews[activeTab.id]}

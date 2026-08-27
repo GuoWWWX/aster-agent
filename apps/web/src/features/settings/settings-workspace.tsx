@@ -98,6 +98,7 @@ import {
   PopoverTrigger,
 } from "../../components/ui/popover.js";
 import { getUserErrorMessage, type AgentClient } from "../../runtime/index.js";
+import { loadModelStatus, rememberModelStatus } from "../../runtime/model-status-cache.js";
 import {
   useWorkbenchUiStore,
   type ThemeMode,
@@ -517,8 +518,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
 
   useEffect(() => {
     let disposed = false;
-    void agentClient
-      .getModelStatus()
+    void loadModelStatus(agentClient)
       .then((nextStatus) => {
         if (disposed) return;
         setStatus(nextStatus);
@@ -663,7 +663,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
         .catch(() => undefined)
         .then(async () => {
           const nextStatus = await agentClient.saveModelConfiguration(input);
-          setStatus(nextStatus);
+          setStatus(rememberModelStatus(agentClient, nextStatus));
           if (selectedProviderIdRef.current === null) {
             const savedProviderId = nextStatus.models.find((model) =>
               model.providerName === input.providerName &&
@@ -896,13 +896,13 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
         modelId,
         providerId: selectedProviderId,
       });
-      setStatus(await agentClient.getModelStatus());
+      setStatus(rememberModelStatus(agentClient, await agentClient.getModelStatus()));
       setModelTestResults((current) => ({
         ...current,
         [modelId]: { content: result.content, kind: "success" },
       }));
     } catch (reason) {
-      void agentClient.getModelStatus().then(setStatus).catch(() => undefined);
+      void loadModelStatus(agentClient).then(setStatus).catch(() => undefined);
       const message = getUserErrorMessage(reason, "模型没有返回有效回复");
       setModelTestResults((current) => ({
         ...current,
@@ -937,7 +937,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
       }));
     saveQueueRef.current = queuedSave.then(() => undefined, () => undefined);
     try {
-      setStatus(await queuedSave);
+      setStatus(rememberModelStatus(agentClient, await queuedSave));
     } catch {
       setOperationError("默认模型更新失败");
     } finally {
