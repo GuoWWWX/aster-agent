@@ -165,7 +165,7 @@ interface ModelProviderAdapter {
 
 | 范围 | 用途 |
 | --- | --- |
-| 应用 | 可用供应商、全局默认模型、通用别名 |
+| 应用 | 可用供应商、最终兜底模型、最近一次用户手动选择、通用别名和模型健康时间 |
 | Team | 团队允许模型、预算和默认策略 |
 | Agent Profile | 某类 Agent 的默认模型或候选集合 |
 | Agent Instance | 用户对这个具体 Agent 的持久覆盖 |
@@ -199,9 +199,12 @@ type AgentModelPolicy =
 4. Agent Profile 或 Team 中由用户配置的默认模型。
 5. `auto` 模式下 ModelRouter 的兼容模型选择。
 6. 创建该 Agent 的父对话当前生效模型。
-7. 没有父对话时使用应用全局默认模型。
+7. 没有父对话时先使用仍可解析的最近一次用户手动选择。
+8. 没有有效最近选择时使用应用全局默认模型。
 
 “当前对话模型”指创建 Agent 时根据父 Thread 当前策略解析出的有效 `ModelRef`：固定模式使用当前选中模型，自动模式优先沿用最近 Run 的实际模型并重新检查可用性。它不是 UI 中可能已经失效的显示名称。如果该模型已被禁用、凭据不可用或不满足任务能力，系统必须说明原因并让用户选择或按已配置的 `auto` 策略路由，不能静默使用未知模型。
+
+当前实现把配置目录、最近用户选择和健康时间保存在 Main 的模型配置文件中，把每个 Conversation 的当前选择保存在 SQLite。前端全局 Store 只保存可重建 UI 状态，不维护第二份可写模型目录。连接测试或真实 Run 成功时更新 `connectionStatusUpdatedAt` 与 `lastSuccessfulAt`；失败只更新当前状态时间并保留历史成功时间。Main Agent 通过 `list_models` 获取脱敏投影，并可在 `spawn_subagent` 中显式选择；目录按当前健康状态和最近成功时间优先展示，但不会静默覆盖用户锁定。
 
 ### 4.3 AI 自动选择
 
@@ -385,7 +388,7 @@ Run 快照至少记录：`providerId`、`modelId`、`protocolAdapterId`、请求
 ## 10. 验收场景
 
 1. 配置两个不同供应商、至少两种对话协议和三个模型，自定义请求地址与上下文窗口后分别完成连接测试并能在同一 Team 中选择。
-2. 未配置 Agent 默认模型时，新 Subagent 继承父对话实际模型。
+2. 未显式指定模型时，新 Subagent 继承父对话实际模型；显式指定时只接受 `list_models` 中仍已配置的 Provider、模型和思考选项。
 3. 用户创建 Agent 时指定模型，实际 Run 和 UI 模型标识一致。
 4. Team Lead 在 `auto` 模式选择兼容模型，UI 展示选择原因；用户随后将常驻 Agent 锁定到另一模型。
 5. Agent 流式输出期间修改模型，当前 Turn 不混用模型，下一 Turn 使用新模型且 Thread 历史完整。

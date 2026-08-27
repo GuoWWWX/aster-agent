@@ -1,4 +1,8 @@
-import type { CreateConversationInput, ConversationSummary } from "@agent/protocol";
+import type {
+  ConversationModelSelection,
+  CreateConversationInput,
+  ConversationSummary,
+} from "@agent/protocol";
 
 import { AgentDatabase } from "./agent-database.js";
 import { EventProjector } from "./event-projector.js";
@@ -13,13 +17,22 @@ export class ConversationLifecycleService {
     private readonly database: AgentDatabase,
     private readonly threadLog: ThreadLog,
     private readonly eventProjector: EventProjector,
+    private readonly modelSelectionProvider: {
+      getPreferredSelection(): ConversationModelSelection | null;
+    } | null = null,
   ) {}
 
   public createConversation(
     projectId: string | null,
     options: Omit<CreateConversationInput, "projectId"> = {},
   ): ConversationSummary {
-    const creation = this.database.prepareConversationCreation(projectId, options);
+    const preferredSelection = options.modelSelection
+      ?? this.modelSelectionProvider?.getPreferredSelection()
+      ?? undefined;
+    const creation = this.database.prepareConversationCreation(projectId, {
+      ...options,
+      ...(preferredSelection === undefined ? {} : { modelSelection: preferredSelection }),
+    });
     this.threadLog.append(creation.conversation.id, {
       payload: creation,
       type: "conversation_created",

@@ -47,10 +47,10 @@ describe("AgentDatabase", () => {
       .get() as Record<string, unknown>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(6);
-    expect(firstRow.name).toBe("agent-plugin-catalog");
+    expect(firstRow.version).toBe(7);
+    expect(firstRow.name).toBe("conversation-model-selection");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(6);
+    expect(migrationCount.count).toBe(7);
   });
 
   it("searches persisted conversation messages by bounded keyword matches", () => {
@@ -212,7 +212,7 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 6",
+      "newer than supported version 7",
     );
   });
 
@@ -399,6 +399,7 @@ describe("AgentDatabase", () => {
       { version: 4 },
       { version: 5 },
       { version: 6 },
+      { version: 7 },
     ]);
     metadata.close();
   });
@@ -482,6 +483,37 @@ describe("AgentDatabase", () => {
     expect(database.getConversation(conversation.id)).toMatchObject({
       activeRunId: null,
       lastRunStatus: "completed",
+    });
+    database.close();
+  });
+
+  it("persists a conversation model selection and copies it into forks", () => {
+    const database = new AgentDatabase(":memory:");
+    const providerId = crypto.randomUUID();
+    const parent = database.createConversation(null, {
+      modelSelection: {
+        modelId: "selected-model",
+        providerId,
+        reasoning: { kind: "effort", value: "high" },
+      },
+    });
+
+    expect(database.getConversation(parent.id).modelSelection).toEqual({
+      modelId: "selected-model",
+      providerId,
+      reasoning: { kind: "effort", value: "high" },
+    });
+    expect(database.forkConversation(parent.id, "side").modelSelection)
+      .toEqual(parent.modelSelection);
+
+    expect(database.setConversationModelSelection(parent.id, {
+      modelId: "next-model",
+      providerId,
+      reasoning: null,
+    }).modelSelection).toEqual({
+      modelId: "next-model",
+      providerId,
+      reasoning: null,
     });
     database.close();
   });

@@ -2,15 +2,19 @@ import { safeStorage } from "electron";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
+  conversationModelSelectionSchema,
   contextCompressionThresholdSchema,
+  isReasoningOptionEnabled,
   isReasoningOptionSupportedByApiFormat,
   modelApiFormatSchema,
   modelConnectionStatusSchema,
   modelProviderIconSchema,
   modelReasoningOptionSchema,
+  modelReasoningOptionKey,
   modelRuntimeStatusSchema,
   type DiscoverModelsInput,
   type DiscoveredModel,
+  type ConversationModelSelection,
   type ModelApiFormat,
   type ModelConnectionStatus,
   type ModelProfile,
@@ -48,6 +52,8 @@ const legacyStoredModelSchema = storedModelBaseSchema.extend({
 
 const storedModelSchema = storedModelBaseSchema.extend({
   connectionStatus: modelConnectionStatusSchema.optional(),
+  connectionStatusUpdatedAt: z.string().datetime().nullable().optional(),
+  lastSuccessfulAt: z.string().datetime().nullable().optional(),
   reasoningOptions: z.array(modelReasoningOptionSchema).max(16)
 }).strict();
 
@@ -194,7 +200,41 @@ const storedConfigurationV5Schema = z
     }
   });
 
-type StoredConfiguration = z.infer<typeof storedConfigurationV5Schema>;
+const storedRecentSelectionSchema = conversationModelSelectionSchema.extend({
+  updatedAt: z.string().datetime()
+}).strict();
+
+const storedConfigurationV6Schema = z
+  .object({
+    defaultModelId: z.string().min(1).max(200),
+    defaultProviderId: z.string().uuid(),
+    providers: z.array(storedProviderSchema).min(1).max(100),
+    recentSelection: storedRecentSelectionSchema.nullable(),
+    version: z.literal(6)
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const defaultProvider = value.providers.find(
+      (provider) => provider.id === value.defaultProviderId
+    );
+    if (defaultProvider === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "The default provider must be configured.",
+        path: ["defaultProviderId"]
+      });
+      return;
+    }
+    if (!defaultProvider.models.some((model) => model.modelId === value.defaultModelId)) {
+      context.addIssue({
+        code: "custom",
+        message: "The default model must belong to the default provider.",
+        path: ["defaultModelId"]
+      });
+    }
+  });
+
+type StoredConfiguration = z.infer<typeof storedConfigurationV6Schema>;
 type StoredProvider = z.infer<typeof storedProviderSchema>;
 type StoredModel = z.infer<typeof storedModelSchema>;
 
@@ -239,9 +279,11 @@ function modelProfile(
         ? {}
         : { contextCompression: model.contextCompression }),
       contextWindow: model.contextWindow,
-    connectionStatus: model.connectionStatus ?? "unknown",
+      connectionStatus: model.connectionStatus ?? "unknown",
+      connectionStatusUpdatedAt: model.connectionStatusUpdatedAt ?? null,
     displayName: model.displayName ?? model.modelId,
-    modelId: model.modelId,
+      modelId: model.modelId,
+      lastSuccessfulAt: model.lastSuccessfulAt ?? null,
     providerApiFormat: provider.apiFormat,
     providerBaseUrl: provider.baseUrl,
     providerId: provider.id,
@@ -355,7 +397,7 @@ export class ModelCredentialStore {
       throw new Error("Operating-system credential encryption is unavailable.");
     }
     const providerId = randomUUID();
-    const stored = storedConfigurationV5Schema.parse({
+    const stored = storedConfigurationV6Schema.parse({
       defaultModelId: modelId,
       defaultProviderId: providerId,
       providers: [{
@@ -371,7 +413,8 @@ export class ModelCredentialStore {
         }],
         name: "环境变量供应商"
       }],
-      version: 5
+      recentSelection: null,
+      version: 6
     });
     this.writeStoredConfiguration(stored);
   }
@@ -428,6 +471,44 @@ export class ModelCredentialStore {
         isReasoningOptionSupportedByApiFormat(provider.apiFormat, option, model.modelId)
       )
     };
+  }
+
+  public getPreferredSelection(): ConversationModelSelection | null {
+    if (!existsSync(this.configurationPath)) return null;
+    const stored = this.readStoredConfiguration();
+    return this.normalizeSelection(stored, stored.recentSelection ?? {
+      modelId: stored.defaultModelId,
+      providerId: stored.defaultProviderId,
+      reasoning: null,
+    }) ?? this.normalizeSelection(stored, {
+      modelId: stored.defaultModelId,
+      providerId: stored.defaultProviderId,
+      reasoning: null,
+    });
+  }
+
+  public setRecentSelection(selection: ConversationModelSelection): ModelRuntimeStatus {
+    const existing = this.readStoredConfiguration();
+    const normalized = this.normalizeSelection(existing, selection);
+    if (normalized === null) {
+      throw new Error("The selected model or reasoning option is not configured.");
+    }
+    this.writeStoredConfiguration(storedConfigurationV6Schema.parse({
+      ...existing,
+      recentSelection: {
+        ...normalized,
+        updatedAt: new Date().toISOString(),
+      },
+    }));
+    return this.getStatus();
+  }
+
+  public resolveSelection(selection: ConversationModelSelection): ConversationModelSelection {
+    const normalized = this.normalizeSelection(this.readStoredConfiguration(), selection);
+    if (normalized === null) {
+      throw new Error("The selected model or reasoning option is not configured.");
+    }
+    return normalized;
   }
 
   public getApiKey(providerId: string): string | null {
@@ -505,12 +586,18 @@ export class ModelCredentialStore {
     if (!provider.models.some((model) => model.modelId === modelId)) {
       throw new Error("The selected model is not configured.");
     }
-    this.writeStoredConfiguration(storedConfigurationV5Schema.parse({
+    const updatedAt = new Date().toISOString();
+    this.writeStoredConfiguration(storedConfigurationV6Schema.parse({
       ...existing,
       providers: existing.providers.map((current) => current.id !== provider.id ? current : {
         ...current,
         models: current.models.map((model) => model.modelId === modelId
-          ? { ...model, connectionStatus }
+          ? {
+              ...model,
+              connectionStatus,
+              connectionStatusUpdatedAt: updatedAt,
+              ...(connectionStatus === "healthy" ? { lastSuccessfulAt: updatedAt } : {}),
+            }
           : model)
       })
     }));
@@ -529,7 +616,11 @@ export class ModelCredentialStore {
     const existingProvider = existing?.providers.find((provider) => provider.id === providerId);
     const existingStatuses = new Map(existingProvider?.models.map((model) => [
       model.modelId,
-      model.connectionStatus,
+      {
+        connectionStatus: model.connectionStatus,
+        connectionStatusUpdatedAt: model.connectionStatusUpdatedAt,
+        lastSuccessfulAt: model.lastSuccessfulAt,
+      },
     ]));
     const provider = storedProviderSchema.parse({
       apiFormat: input.apiFormat,
@@ -541,7 +632,7 @@ export class ModelCredentialStore {
         ...model,
         ...(existingStatuses.get(model.modelId) === undefined
           ? {}
-          : { connectionStatus: existingStatuses.get(model.modelId) })
+          : existingStatuses.get(model.modelId))
       })),
       name: input.providerName,
       ...(input.providerNote === undefined ? {} : { note: input.providerNote }),
@@ -566,11 +657,23 @@ export class ModelCredentialStore {
     if (defaultProvider === undefined || defaultModelId === undefined) {
       throw new Error("The default provider must have a configured model.");
     }
-    const stored = storedConfigurationV5Schema.parse({
+    const candidateRecentSelection = existing?.recentSelection ?? null;
+    const storedWithoutRecentSelection = {
       defaultModelId,
       defaultProviderId,
       providers,
-      version: 5
+      recentSelection: null,
+      version: 6 as const,
+    };
+    const recentSelection = candidateRecentSelection === null
+      ? null
+      : this.normalizeSelection(storedWithoutRecentSelection, candidateRecentSelection);
+    const stored = storedConfigurationV6Schema.parse({
+      ...storedWithoutRecentSelection,
+      recentSelection: recentSelection === null ? null : {
+        ...recentSelection,
+        updatedAt: candidateRecentSelection?.updatedAt,
+      },
     });
     this.writeStoredConfiguration(stored);
     return this.getStatus();
@@ -582,7 +685,7 @@ export class ModelCredentialStore {
     if (!provider.models.some((model) => model.modelId === input.modelId)) {
       throw new Error("The default model must belong to the selected provider.");
     }
-    const stored = storedConfigurationV5Schema.parse({
+    const stored = storedConfigurationV6Schema.parse({
       ...existing,
       defaultModelId: input.modelId,
       defaultProviderId: input.providerId
@@ -599,6 +702,7 @@ export class ModelCredentialStore {
         modelId: null,
         models: [],
         providerId: null,
+        recentSelection: null,
         supportsStreaming: true,
         supportsTools: true
       });
@@ -613,6 +717,9 @@ export class ModelCredentialStore {
         provider.models.map((model) => modelProfile(provider, model))
       ),
       providerId: stored.defaultProviderId,
+      recentSelection: stored.recentSelection === null
+        ? null
+        : this.normalizeSelection(stored, stored.recentSelection),
       supportsStreaming: true,
       supportsTools: true
     });
@@ -623,8 +730,15 @@ export class ModelCredentialStore {
       throw new Error("No model provider is configured.");
     }
     const parsed = readJsonDocument(this.configurationPath);
-    const current = storedConfigurationV5Schema.safeParse(parsed);
+    const current = storedConfigurationV6Schema.safeParse(parsed);
     if (current.success) return current.data;
+
+    const previousV5 = storedConfigurationV5Schema.safeParse(parsed);
+    if (previousV5.success) return {
+      ...previousV5.data,
+      recentSelection: null,
+      version: 6,
+    };
 
     const previousV4 = storedConfigurationV4Schema.safeParse(parsed);
     if (previousV4.success) return this.migrateV4Configuration(previousV4.data);
@@ -677,7 +791,8 @@ export class ModelCredentialStore {
         models: models.map((model) => migrateLegacyModel(model, "openai-chat-completions")),
         name: "默认供应商"
       }],
-      version: 5
+      recentSelection: null,
+      version: 6
     };
   }
 
@@ -694,7 +809,8 @@ export class ModelCredentialStore {
           migrateLegacyModel(model, "openai-chat-completions")
         )
       })),
-      version: 5
+      recentSelection: null,
+      version: 6
     };
   }
 
@@ -708,7 +824,8 @@ export class ModelCredentialStore {
         ...provider,
         models: provider.models.map((model) => migrateLegacyModel(model, provider.apiFormat))
       })),
-      version: 5
+      recentSelection: null,
+      version: 6
     };
   }
 
@@ -720,6 +837,29 @@ export class ModelCredentialStore {
     const provider = stored.providers.find((candidate) => candidate.id === id);
     if (provider === undefined) throw new Error("The selected provider is not configured.");
     return provider;
+  }
+
+  private normalizeSelection(
+    stored: Pick<StoredConfiguration, "defaultModelId" | "defaultProviderId" | "providers">,
+    selection: ConversationModelSelection,
+  ): ConversationModelSelection | null {
+    const provider = stored.providers.find((candidate) => candidate.id === selection.providerId);
+    const model = provider?.models.find((candidate) => candidate.modelId === selection.modelId);
+    if (model === undefined) return null;
+    if (selection.reasoning === null) return {
+      modelId: selection.modelId,
+      providerId: selection.providerId,
+      reasoning: null,
+    };
+    const key = modelReasoningOptionKey(selection.reasoning);
+    const reasoning = model.reasoningOptions.find((candidate) =>
+      modelReasoningOptionKey(candidate) === key && isReasoningOptionEnabled(candidate)
+    );
+    return reasoning === undefined ? null : {
+      modelId: selection.modelId,
+      providerId: selection.providerId,
+      reasoning,
+    };
   }
 
   private writeStoredConfiguration(stored: StoredConfiguration): void {

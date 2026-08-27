@@ -30,6 +30,7 @@ import {
   type ConversationAgentMessageItem,
   type ConversationAttachment,
   type ConversationMessageSubmission,
+  type ConversationModelSelection,
   type ConversationPendingMessage,
   type ConversationContextUsage,
   sendConversationMessageInputSchema,
@@ -40,6 +41,7 @@ import {
   type ConversationToolExecutionMode,
   type ConversationToolItem,
   type ModelReasoningOption,
+  type ModelRuntimeStatus,
   replaceLatestConversationMessageInputSchema,
   type ReplaceLatestConversationMessageInput,
   type RunAccepted,
@@ -184,6 +186,7 @@ type ModelConfigurationProvider = {
     providerId?: string,
     modelId?: string,
   ) => ModelContextConfiguration;
+  getStatus?: () => ModelRuntimeStatus;
   setModelConnectionStatus?: (
     providerId: string,
     modelId: string,
@@ -601,8 +604,15 @@ function resolveReasoning(
   input: SendConversationMessageInput,
   configuration: ModelConfiguration
 ): ModelReasoningOption | undefined {
-  if (input.reasoning === undefined) return undefined;
-  const key = modelReasoningOptionKey(input.reasoning);
+  return resolveConfiguredReasoning(input.reasoning, configuration);
+}
+
+function resolveConfiguredReasoning(
+  reasoning: ModelReasoningOption | undefined,
+  configuration: ModelConfiguration,
+): ModelReasoningOption | undefined {
+  if (reasoning === undefined) return undefined;
+  const key = modelReasoningOptionKey(reasoning);
   const option = configuration.reasoningOptions.find(
     (candidate) => modelReasoningOptionKey(candidate) === key
   );
@@ -730,7 +740,11 @@ export class AgentRuntime {
     this.modelGateway = new ModelGateway(model);
     this.taskListTool = new TaskListTool(database);
     this.agentCommunicationTool = new AgentCommunicationTool(database);
-    this.subagentTool = new SubagentTool(database);
+    const getModelStatus = credentials.getStatus;
+    this.subagentTool = new SubagentTool(
+      database,
+      getModelStatus === undefined ? undefined : () => getModelStatus.call(credentials),
+    );
     this.webSearchTool = webSearchTool;
     this.attachmentTool = attachments === null
       ? null
@@ -841,7 +855,7 @@ export class AgentRuntime {
             messageIds,
           ),
           signal: context.signal,
-          spawn: (task, title, agentId) => this.spawnSubagent({
+          spawn: (task, title, agentId, modelSelection) => this.spawnSubagent({
             agentId,
             configuration: context.configuration,
             contextCompressionConfiguration: context.contextCompressionConfiguration,
@@ -851,6 +865,7 @@ export class AgentRuntime {
             permissionMode: context.permissionMode,
             providerId: context.providerId,
             reasoning: context.reasoning,
+            modelSelection,
             task,
             title,
           }),
@@ -2304,13 +2319,41 @@ export class AgentRuntime {
     permissionMode: ConversationPermissionMode;
     providerId: string | undefined;
     reasoning: ModelReasoningOption | undefined;
+    modelSelection: ConversationModelSelection | undefined;
     task: string;
     title: string | undefined;
   }): SubagentTask {
     const parent = this.database.getConversation(input.parentConversationId);
     if (parent.isArchived) throw new Error("An archived conversation cannot start a Subagent.");
 
+    const configuration = input.modelSelection === undefined
+      ? input.configuration
+      : this.credentials.getConfiguration(
+          input.modelSelection.providerId,
+          input.modelSelection.modelId,
+        );
+    const providerId = input.modelSelection?.providerId ?? input.providerId;
+    const reasoning = input.modelSelection?.reasoning === null
+      ? undefined
+      : resolveConfiguredReasoning(
+          input.modelSelection?.reasoning ?? input.reasoning,
+          configuration,
+        );
+    const contextCompressionConfiguration = input.modelSelection === undefined
+      ? input.contextCompressionConfiguration
+      : resolveContextCompressionConfiguration(
+          configuration,
+          this.contextCompression.getConfiguration(),
+        );
+
     const child = this.database.forkConversation(parent.id, "subagent");
+    if (providerId !== undefined) {
+      this.database.setConversationModelSelection(child.id, {
+        modelId: configuration.modelId,
+        providerId,
+        reasoning: reasoning ?? null,
+      });
+    }
     this.projects.inheritConversationWorkspace(parent.id, child.id);
     const selectedAgent = this.resolveSubagentAgent(parent, input.agentId);
     if (selectedAgent !== null) this.database.bindConversationAgent(child.id, selectedAgent);
@@ -2320,12 +2363,12 @@ export class AgentRuntime {
     this.threadLogLegacyImporter?.importConversationIfMissing(child.id);
 
     const executionSnapshot = createRunExecutionSnapshot({
-      configuration: input.configuration,
-      contextCompressionConfiguration: input.contextCompressionConfiguration,
+      configuration,
+      contextCompressionConfiguration,
       permissionMode: input.permissionMode,
       plugins: this.enabledPluginSnapshots(),
-      providerId: input.providerId,
-      reasoning: input.reasoning,
+      providerId,
+      reasoning,
       toolDefinitions: this.toolDefinitionsForConversation(child.id),
     });
     const useWriteAheadRun = this.threadLog !== null
@@ -2336,7 +2379,7 @@ export class AgentRuntime {
           const queued = this.database.prepareRunWithUserMessage(
             child.id,
             input.task,
-            input.configuration.modelId,
+            configuration.modelId,
             [],
             input.task,
             executionSnapshot,
@@ -2366,7 +2409,7 @@ export class AgentRuntime {
       : this.database.createRunWithUserMessage(
           child.id,
           input.task,
-          input.configuration.modelId,
+          configuration.modelId,
           [],
           input.task,
           executionSnapshot,
@@ -2387,7 +2430,7 @@ export class AgentRuntime {
         payload: {
           createdAt: creation.userMessage.createdAt,
           executionSnapshot,
-          modelId: input.configuration.modelId,
+          modelId: configuration.modelId,
           permissionMode: input.permissionMode,
           runId: creation.runId,
         },
@@ -2424,11 +2467,11 @@ export class AgentRuntime {
       await this.executeRun(
         creation.runId,
         child.id,
-        input.providerId,
-        input.configuration,
-        structuredClone(input.contextCompressionConfiguration),
+        providerId,
+        configuration,
+        structuredClone(contextCompressionConfiguration),
         input.permissionMode,
-        input.reasoning,
+        reasoning,
         controller,
         input.emit,
       );
@@ -3751,7 +3794,7 @@ export class AgentRuntime {
         ...conversationIdentityContext(conversation, agent),
         ...this.agentDelegationContext(conversation),
         "你可以用 list_agent_conversations、read_agent_conversation、send_agent_message 和 wait_for_agent_message 与其他 Agent 对话协作。读取其他对话时必须控制预算。收到普通 Agent 协作消息后直接处理并给出本对话的最终答复，运行时会把最终结果自动关联回发送方并在需要时唤醒它；发送中间进度或无需对方回传结果的通知时调用 send_agent_message，并设置 expectReply=false。",
-        "复杂任务可以用 spawn_subagent 启动独立的一次性 Subagent。只有当前工作依赖其结果时才调用 wait_for_subagents；否则继续当前工作，Subagent 完成后系统会持久化结果并自动唤醒本对话。可用 list_subagents 查看状态。主对话只会收到完成摘要；需要核对详细过程时，使用 read_agent_conversation 按预算读取子对话。Subagent 结束后只读，不要求其调用 send_agent_message，也不要继续向其发送任务。",
+        "复杂任务可以用 spawn_subagent 启动独立的一次性 Subagent。默认继承当前模型和推理选项；确有理由选择其他模型时，先调用 list_models 查看已配置模型、推理选项和最近健康状态，再向 spawn_subagent 同时传入 providerId 与 modelId。只有当前工作依赖其结果时才调用 wait_for_subagents；否则继续当前工作，Subagent 完成后系统会持久化结果并自动唤醒本对话。可用 list_subagents 查看状态。主对话只会收到完成摘要；需要核对详细过程时，使用 read_agent_conversation 按预算读取子对话。Subagent 结束后只读，不要求其调用 send_agent_message，也不要继续向其发送任务。",
         "用户消息可以通过 @ 引用当前工作区文件。引用只提供相对路径；需要查看内容时先调用 read_file，不要根据文件名猜测内容。",
         this.skillRuntime === null
           ? "Skill 特指通过 SKILL.md 注入的任务说明和能力组合；当前没有可调用的 Skill Runtime，不要把一般能力列成 Skill。Git 是可通过 run_command 执行的命令行程序，不是 Skill，也不是当前的专用 Git 工具；仅在任务确实需要且工作区是 Git 仓库时使用。"

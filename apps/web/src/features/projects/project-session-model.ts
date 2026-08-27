@@ -17,6 +17,7 @@ export type ProjectSession = {
   isArchived: boolean;
   isPinned: boolean;
   lastRunStatus: ConversationRunStatus | null;
+  modelSelection: ConversationSummary["modelSelection"];
   parentConversationId: string | null;
   pinOrder?: number | null;
   projectId: string | null;
@@ -209,6 +210,7 @@ export function createProjectSession(
     isArchived: false,
     isPinned: false,
     lastRunStatus: null,
+    modelSelection: null,
     parentConversationId: null,
     pinOrder: null,
     projectId,

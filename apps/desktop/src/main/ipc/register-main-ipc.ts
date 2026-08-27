@@ -80,6 +80,7 @@ import {
   testModelConnectionIpcArgumentsSchema,
   setDefaultModelIpcArgumentsSchema,
   setConversationArchivedIpcArgumentsSchema,
+  setConversationModelSelectionIpcArgumentsSchema,
   setConversationProjectIpcArgumentsSchema,
   setConversationPinnedIpcArgumentsSchema,
   setProjectPinnedIpcArgumentsSchema,
@@ -401,9 +402,13 @@ export function registerMainIpcHandlers(
   ipcMain.handle(IPC_CHANNELS.conversationCreate, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = createConversationIpcArgumentsSchema.parse(args);
+    const modelSelection = input.modelSelection === undefined
+      ? undefined
+      : credentials.resolveSelection(input.modelSelection);
     return conversationSummarySchema.parse(
       conversationLifecycle.createConversation(input.projectId ?? null, {
         ...(input.agent === undefined ? {} : { agent: input.agent }),
+        ...(modelSelection === undefined ? {} : { modelSelection }),
         ...(input.teamId === undefined ? {} : { teamId: input.teamId }),
         ...(input.threadKind === undefined ? {} : { threadKind: input.threadKind })
       })
@@ -504,6 +509,18 @@ export function registerMainIpcHandlers(
     );
     if (input.projectId !== null) {
       projectRegistry.unmountConversationWorkspace(input.conversationId);
+    }
+    return conversationSummarySchema.parse(conversation);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.conversationSetModelSelection, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = setConversationModelSelectionIpcArgumentsSchema.parse(args);
+    const selection = credentials.resolveSelection(input.modelSelection);
+    const current = database.getConversation(input.conversationId);
+    const conversation = database.setConversationModelSelection(input.conversationId, selection);
+    if (current.threadKind !== "subagent") {
+      credentials.setRecentSelection(selection);
     }
     return conversationSummarySchema.parse(conversation);
   });
