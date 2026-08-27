@@ -1,4 +1,10 @@
 import { z } from "zod";
+import {
+  isReasoningOptionEnabled,
+  modelReasoningOptionSchema,
+  type ConversationModelSelection,
+  type ModelRuntimeStatus,
+} from "@agent/protocol";
 
 import { toolErrorContent } from "../errors/tool-error.js";
 import type { ModelToolDefinition } from "../model/model-contracts.js";
@@ -10,10 +16,12 @@ import {
 import type { ToolExecutionPolicy } from "../tools/tool-execution-policy.js";
 
 const SPAWN_SUBAGENT_TOOL_NAME = "spawn_subagent";
+const LIST_MODELS_TOOL_NAME = "list_models";
 const LIST_SUBAGENTS_TOOL_NAME = "list_subagents";
 const WAIT_FOR_SUBAGENTS_TOOL_NAME = "wait_for_subagents";
 const toolNames = new Set([
   SPAWN_SUBAGENT_TOOL_NAME,
+  LIST_MODELS_TOOL_NAME,
   LIST_SUBAGENTS_TOOL_NAME,
   WAIT_FOR_SUBAGENTS_TOOL_NAME,
 ]);
@@ -21,11 +29,32 @@ const toolNames = new Set([
 const spawnArgumentsSchema = z.object({
   agentId: z.string().trim().min(1).max(80).optional()
     .describe("可选的已配置 Agent 或当前团队成员 ID。"),
+  modelId: z.string().trim().min(1).max(200).optional()
+    .describe("可选的已配置模型 ID；必须与 providerId 同时传入。"),
+  providerId: z.string().uuid().optional()
+    .describe("可选的模型供应商 UUID；必须与 modelId 同时传入。"),
+  reasoning: modelReasoningOptionSchema.optional()
+    .describe("可选的已启用推理选项；仅在显式选择 providerId 和 modelId 时使用。"),
   task: z.string().trim().min(1).max(20_000)
     .describe("交给 Subagent 的独立、有边界且可验收的任务。"),
   title: z.string().trim().min(1).max(200).optional()
     .describe("可选的简短任务标题。"),
-}).strict();
+}).strict().superRefine((value, context) => {
+  if ((value.providerId === undefined) !== (value.modelId === undefined)) {
+    context.addIssue({
+      code: "custom",
+      message: "providerId and modelId must be provided together.",
+      path: value.providerId === undefined ? ["providerId"] : ["modelId"],
+    });
+  }
+  if (value.reasoning !== undefined && value.modelId === undefined) {
+    context.addIssue({
+      code: "custom",
+      message: "reasoning requires an explicit providerId and modelId.",
+      path: ["reasoning"],
+    });
+  }
+});
 const emptyArgumentsSchema = z.object({}).strict();
 const waitArgumentsSchema = z.object({
   taskIds: z.array(z.string().uuid()).min(1).max(32)
@@ -90,7 +119,10 @@ export function isSubagentToolName(name: string): boolean {
 export class SubagentTool {
   private readonly waiters = new Set<TaskWaiter>();
 
-  public constructor(private readonly database: AgentDatabase) {}
+  public constructor(
+    private readonly database: AgentDatabase,
+    private readonly getModelStatus?: () => ModelRuntimeStatus,
+  ) {}
 
   public getDefinitions(): ModelToolDefinition[] {
     return [
@@ -98,6 +130,11 @@ export class SubagentTool {
         description: "Start an independent one-shot Subagent for one bounded task. Optionally select a configured Agent or team member with agentId. The tool returns immediately; use wait_for_subagents only when the current work depends on its result. The Subagent becomes read-only after completion. Its concise result is delivered automatically, while the full conversation remains available through read_agent_conversation.",
         name: SPAWN_SUBAGENT_TOOL_NAME,
         parameters: modelToolParameters(spawnArgumentsSchema),
+      },
+      {
+        description: "List configured model providers, models, enabled reasoning options, and recent health timestamps. Results prefer models that succeeded most recently. Use this before explicitly selecting a different model for spawn_subagent.",
+        name: LIST_MODELS_TOOL_NAME,
+        parameters: modelToolParameters(emptyArgumentsSchema),
       },
       {
         description: "List Subagent tasks created by this conversation and inspect their current status and final result.",
@@ -115,6 +152,7 @@ export class SubagentTool {
   public getExecutionPolicy(toolName: string): ToolExecutionPolicy {
     switch (toolName) {
       case LIST_SUBAGENTS_TOOL_NAME:
+      case LIST_MODELS_TOOL_NAME:
         return { group: "read", kind: "parallel" };
       case SPAWN_SUBAGENT_TOOL_NAME:
       case WAIT_FOR_SUBAGENTS_TOOL_NAME:
@@ -129,7 +167,12 @@ export class SubagentTool {
     conversationId: string;
     onResultMessagesRead?: (messageIds: readonly string[]) => void;
     signal: AbortSignal;
-    spawn: (task: string, title: string | undefined, agentId: string | undefined) => SubagentTask;
+    spawn: (
+      task: string,
+      title: string | undefined,
+      agentId: string | undefined,
+      modelSelection: ConversationModelSelection | undefined,
+    ) => SubagentTask;
     toolName: string;
   }): Promise<SubagentToolExecution> {
     try {
@@ -138,7 +181,46 @@ export class SubagentTool {
         case SPAWN_SUBAGENT_TOOL_NAME: {
           const parsed = spawnArgumentsSchema.parse(argumentsValue);
           return success({
-            task: toToolTask(input.spawn(parsed.task, parsed.title, parsed.agentId)),
+            task: toToolTask(input.spawn(
+              parsed.task,
+              parsed.title,
+              parsed.agentId,
+              parsed.providerId === undefined || parsed.modelId === undefined
+                ? undefined
+                : {
+                    modelId: parsed.modelId,
+                    providerId: parsed.providerId,
+                    reasoning: parsed.reasoning ?? null,
+                  },
+            )),
+          });
+        }
+        case LIST_MODELS_TOOL_NAME: {
+          emptyArgumentsSchema.parse(argumentsValue);
+          const status = this.getModelStatus?.();
+          if (status === undefined) throw new Error("The model catalog is unavailable.");
+          const models = [...status.models].sort((left, right) => {
+            const statusOrder = { healthy: 0, unknown: 1, error: 2 } as const;
+            const byStatus = statusOrder[left.connectionStatus] - statusOrder[right.connectionStatus];
+            if (byStatus !== 0) return byStatus;
+            return (right.lastSuccessfulAt ?? "").localeCompare(left.lastSuccessfulAt ?? "");
+          });
+          return success({
+            defaultSelection: status.providerId === null || status.modelId === null
+              ? null
+              : { modelId: status.modelId, providerId: status.providerId },
+            models: models.map((model) => ({
+              connectionStatus: model.connectionStatus,
+              connectionStatusUpdatedAt: model.connectionStatusUpdatedAt,
+              displayName: model.displayName,
+              lastSuccessfulAt: model.lastSuccessfulAt,
+              modelId: model.modelId,
+              providerApiFormat: model.providerApiFormat,
+              providerId: model.providerId,
+              providerName: model.providerName,
+              reasoningOptions: model.reasoningOptions.filter(isReasoningOptionEnabled),
+            })),
+            recentSelection: status.recentSelection,
           });
         }
         case LIST_SUBAGENTS_TOOL_NAME:

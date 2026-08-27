@@ -53,6 +53,7 @@ import type {
   SendConversationMessageInput,
   UpdatePendingConversationMessageInput,
   SetConversationArchivedInput,
+  SetConversationModelSelectionInput,
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SetProjectPinnedInput,
@@ -166,6 +167,9 @@ export interface AgentClient {
   renameProject(input: RenameProjectInput): Promise<ProjectSummary>;
   reorderProjects(input: ReorderProjectsInput): Promise<ProjectSummary[]>;
   setConversationArchived(input: SetConversationArchivedInput): Promise<ConversationSummary>;
+  setConversationModelSelection(
+    input: SetConversationModelSelectionInput
+  ): Promise<ConversationSummary>;
   setConversationProject(input: SetConversationProjectInput): Promise<ConversationSummary>;
   setConversationPinned(input: SetConversationPinnedInput): Promise<ConversationSummary>;
   setProjectPinned(input: SetProjectPinnedInput): Promise<ProjectSummary>;

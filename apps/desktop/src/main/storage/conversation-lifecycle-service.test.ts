@@ -24,10 +24,18 @@ describe("ConversationLifecycleService", () => {
     temporaryDirectories.push(directory);
     const database = new AgentDatabase(":memory:");
     const threadLog = new ThreadLog(path.join(directory, "conversations"));
+    const providerId = crypto.randomUUID();
     const service = new ConversationLifecycleService(
       database,
       threadLog,
       new EventProjector(database, threadLog),
+      {
+        getPreferredSelection: () => ({
+          modelId: "recent-model",
+          providerId,
+          reasoning: { kind: "effort", value: "high" },
+        }),
+      },
     );
 
     const conversation = service.createConversation(null, { teamId: "team-alpha" });
@@ -39,7 +47,15 @@ describe("ConversationLifecycleService", () => {
       sequence: 1,
       type: "conversation_created",
       payload: {
-        conversation: { id: conversation.id, teamId: "team-alpha" },
+        conversation: {
+          id: conversation.id,
+          modelSelection: {
+            modelId: "recent-model",
+            providerId,
+            reasoning: { kind: "effort", value: "high" },
+          },
+          teamId: "team-alpha",
+        },
       },
     });
     expect(database.getThreadLogProjectionCursor(conversation.id)?.lastSequence).toBe(1);

@@ -1116,6 +1116,11 @@ class SubagentLifecycleFixtureModel implements ModelProviderAdapter {
   public constructor(
     private readonly shouldWait: boolean,
     private readonly subagentAgentId?: string,
+    private readonly subagentModelSelection?: {
+      modelId: string;
+      providerId: string;
+      reasoning?: { kind: "effort"; value: "high" };
+    },
   ) {
     this.childRequestStarted = new Promise((resolve) => {
       this.resolveChildRequestStarted = resolve;
@@ -1146,6 +1151,7 @@ class SubagentLifecycleFixtureModel implements ModelProviderAdapter {
     if (this.parentTurn === 1) {
       const argumentsPayload = JSON.stringify({
         ...(this.subagentAgentId === undefined ? {} : { agentId: this.subagentAgentId }),
+        ...(this.subagentModelSelection ?? {}),
         task: "检查实现并报告结果",
         title: "实现检查",
       });
@@ -2162,6 +2168,7 @@ describe("AgentRuntime", () => {
       "close_task_list",
       "create_task_list",
       "list_agent_conversations",
+      "list_models",
       "list_subagents",
       "read_agent_conversation",
       "read_external_file",
@@ -3519,16 +3526,23 @@ describe("AgentRuntime", () => {
     const projects = new ProjectRegistry(database);
     const threadLog = new ThreadLog(path.join(root, "conversations"));
     const parent = database.createConversation(null);
-    const model = new SubagentLifecycleFixtureModel(true);
+    const providerId = crypto.randomUUID();
+    const model = new SubagentLifecycleFixtureModel(true, undefined, {
+      modelId: "alternate-model",
+      providerId,
+      reasoning: { kind: "effort", value: "high" },
+    });
     const runtime = new AgentRuntime(
       database,
       {
-        getConfiguration: () => ({
+        getConfiguration: (_selectedProviderId, selectedModelId) => ({
           apiKey: "secret",
           apiFormat: "openai-chat-completions",
           baseUrl: "https://example.test/v1",
-          modelId: "test-model",
-          reasoningOptions: [],
+          modelId: selectedModelId ?? "test-model",
+          reasoningOptions: selectedModelId === "alternate-model"
+            ? [{ kind: "effort", value: "high" }]
+            : [],
         }),
       },
       projects,
@@ -3559,6 +3573,7 @@ describe("AgentRuntime", () => {
       request.messages[0]?.content.includes("你是从父对话") === true
     );
     expect(childRequest).toBeDefined();
+    expect(childRequest?.configuration.modelId).toBe("alternate-model");
     expect(childRequest?.messages.some((message) =>
       JSON.stringify(message.providerState)?.includes("call_spawn_subagent") === true
     )).toBe(false);
@@ -3568,6 +3583,11 @@ describe("AgentRuntime", () => {
 
     const [task] = database.listSubagentTasks(parent.id);
     if (task === undefined) throw new Error("Subagent task was not created.");
+    expect(database.getConversation(task.childConversationId).modelSelection).toEqual({
+      modelId: "alternate-model",
+      providerId,
+      reasoning: { kind: "effort", value: "high" },
+    });
     expect(task).toMatchObject({
       result: "Subagent 已完成检查",
       status: "completed",

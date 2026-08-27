@@ -719,4 +719,68 @@ describe("MockAgentClient", () => {
       providerId: secondProviderId,
     });
   });
+
+  it("inherits the latest user model selection into new and side conversations", async () => {
+    const client = new MockAgentClient();
+    const status = await client.saveModelConfiguration({
+      apiKey: "test-key",
+      apiFormat: "openai-responses",
+      baseUrl: "https://example.test/v1",
+      models: [
+        {
+          contextWindow: 128000,
+          displayName: "默认模型",
+          modelId: "fallback-model",
+          reasoningOptions: [],
+        },
+        {
+          contextWindow: 128000,
+          displayName: "最近模型",
+          modelId: "recent-model",
+          reasoningOptions: [{ kind: "effort", value: "high" }],
+        },
+      ],
+      providerName: "测试供应商",
+    });
+    if (status.providerId === null) throw new Error("Expected a saved provider.");
+    const first = await client.createConversation({});
+    const selection = {
+      modelId: "recent-model",
+      providerId: status.providerId,
+      reasoning: { kind: "effort" as const, value: "high" as const },
+    };
+
+    await expect(client.setConversationModelSelection({
+      conversationId: first.id,
+      modelSelection: selection,
+    })).resolves.toMatchObject({ modelSelection: selection });
+    await expect(client.createConversation({})).resolves.toMatchObject({
+      modelSelection: selection,
+    });
+    const side = await client.forkConversation({ conversationId: first.id });
+    expect(side).toMatchObject({ modelSelection: selection });
+
+    const fallbackSelection = {
+      modelId: "fallback-model",
+      providerId: status.providerId,
+      reasoning: null,
+    };
+    await client.setConversationModelSelection({
+      conversationId: first.id,
+      modelSelection: fallbackSelection,
+    });
+
+    await expect(client.listConversationForks({ conversationId: first.id })).resolves.toEqual([
+      expect.objectContaining({
+        id: side.id,
+        modelSelection: selection,
+      }),
+    ]);
+    await expect(client.listConversations()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: first.id,
+        modelSelection: fallbackSelection,
+      }),
+    ]));
+  });
 });

@@ -26,6 +26,7 @@ import {
   replaceLatestConversationMessageInputSchema,
   saveModelConfigurationInputSchema,
   setDefaultModelInputSchema,
+  setConversationModelSelectionInputSchema,
   testModelConnectionInputSchema,
   setConversationProjectInputSchema,
   sendConversationMessageInputSchema
@@ -89,6 +90,22 @@ describe("protocol bootstrap contract", () => {
     expect(() => testModelConnectionInputSchema.parse({
       modelId: "",
       providerId: "invalid",
+    })).toThrow();
+  });
+
+  it("validates persisted conversation model selections", () => {
+    const selection = {
+      modelId: "gpt-5.6",
+      providerId: "00000000-0000-4000-8000-000000000001",
+      reasoning: { kind: "effort" as const, value: "high" as const },
+    };
+    expect(setConversationModelSelectionInputSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000002",
+      modelSelection: selection,
+    }).modelSelection).toEqual(selection);
+    expect(() => setConversationModelSelectionInputSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000002",
+      modelSelection: { ...selection, providerId: "invalid" },
     })).toThrow();
   });
 

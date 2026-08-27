@@ -109,9 +109,13 @@ describe("ModelCredentialStore", () => {
       content: "hello",
       modelId: "test-model",
     });
-    expect(store.getStatus().models).toEqual([
-      expect.objectContaining({ connectionStatus: "healthy", modelId: "test-model" }),
-    ]);
+    const healthyModel = store.getStatus().models[0];
+    expect(healthyModel).toMatchObject({
+      connectionStatus: "healthy",
+      modelId: "test-model",
+    });
+    expect(typeof healthyModel?.connectionStatusUpdatedAt).toBe("string");
+    expect(typeof healthyModel?.lastSuccessfulAt).toBe("string");
     const requestCall = request.mock.calls[0];
     expect(request).toHaveBeenCalledTimes(1);
     expect(requestCall?.[0]).toBe(expectedEndpoint);
@@ -205,7 +209,7 @@ describe("ModelCredentialStore", () => {
       providers: Array<{ apiFormat: string; name: string }>;
       version: number;
     };
-    expect(saved.version).toBe(5);
+    expect(saved.version).toBe(6);
     expect(saved.providers.map((provider) => provider.name)).toEqual([
       "默认供应商",
       "第二供应商"
@@ -333,6 +337,107 @@ describe("ModelCredentialStore", () => {
     });
   });
 
+  it("keeps the recent user selection separate from the default fallback", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-credentials-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "model-credentials.json");
+    const store = new ModelCredentialStore(configurationPath);
+    const status = store.saveConfiguration({
+      apiKey: "test-key",
+      apiFormat: "openai-responses",
+      baseUrl: "https://example.test/v1",
+      models: [
+        {
+          contextWindow: 128_000,
+          displayName: "默认模型",
+          modelId: "fallback-model",
+          reasoningOptions: [],
+        },
+        {
+          contextWindow: 128_000,
+          displayName: "最近模型",
+          modelId: "recent-model",
+          reasoningOptions: [{ kind: "effort", value: "high" }],
+        },
+      ],
+      providerName: "测试供应商",
+    });
+    const providerId = status.providerId;
+    if (providerId === null) throw new Error("Expected a configured provider.");
+
+    store.setRecentSelection({
+      modelId: "recent-model",
+      providerId,
+      reasoning: { kind: "effort", value: "high" },
+    });
+
+    expect(store.getStatus()).toMatchObject({
+      modelId: "fallback-model",
+      recentSelection: {
+        modelId: "recent-model",
+        providerId,
+        reasoning: { kind: "effort", value: "high" },
+      },
+    });
+    expect(new ModelCredentialStore(configurationPath).getPreferredSelection()).toEqual({
+      modelId: "recent-model",
+      providerId,
+      reasoning: { kind: "effort", value: "high" },
+    });
+
+    store.saveConfiguration({
+      apiKey: "test-key",
+      apiFormat: "openai-responses",
+      baseUrl: "https://example.test/v1",
+      models: [{
+        contextWindow: 128_000,
+        displayName: "默认模型",
+        modelId: "fallback-model",
+        reasoningOptions: [],
+      }],
+      providerId,
+      providerName: "测试供应商",
+    });
+
+    expect(store.getStatus().recentSelection).toBeNull();
+    expect(store.getPreferredSelection()).toEqual({
+      modelId: "fallback-model",
+      providerId,
+      reasoning: null,
+    });
+  });
+
+  it("keeps the last successful timestamp when a later health check fails", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-credentials-"));
+    temporaryDirectories.push(directory);
+    const store = new ModelCredentialStore(path.join(directory, "model-credentials.json"));
+    const status = store.saveConfiguration({
+      apiKey: "test-key",
+      apiFormat: "openai-responses",
+      baseUrl: "https://example.test/v1",
+      models: [{
+        contextWindow: 128_000,
+        displayName: "测试模型",
+        modelId: "test-model",
+        reasoningOptions: [],
+      }],
+      providerName: "测试供应商",
+    });
+    if (status.providerId === null) throw new Error("Expected a saved provider.");
+
+    store.setModelConnectionStatus(status.providerId, "test-model", "healthy");
+    const lastSuccessfulAt = store.getStatus().models[0]?.lastSuccessfulAt;
+    store.setModelConnectionStatus(status.providerId, "test-model", "error");
+
+    expect(typeof lastSuccessfulAt).toBe("string");
+    const failedModel = store.getStatus().models[0];
+    expect(failedModel).toMatchObject({
+      connectionStatus: "error",
+      lastSuccessfulAt,
+    });
+    expect(typeof failedModel?.connectionStatusUpdatedAt).toBe("string");
+  });
+
   it("persists a model-specific context compression threshold", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-credentials-"));
     temporaryDirectories.push(directory);
@@ -421,7 +526,7 @@ describe("ModelCredentialStore", () => {
     };
     expect(saved).toMatchObject({
       providers: [{ apiFormat: "openai-responses" }],
-      version: 5
+      version: 6
     });
   });
 
@@ -474,7 +579,7 @@ describe("ModelCredentialStore", () => {
       providerName: "已保存供应商"
     });
 
-    await expect(readFile(configurationPath, "utf8")).resolves.toContain('"version": 5');
+    await expect(readFile(configurationPath, "utf8")).resolves.toContain('"version": 6');
   });
 
   it("preserves a legacy GPT-5.6 reasoning choice that the provider can send", async () => {

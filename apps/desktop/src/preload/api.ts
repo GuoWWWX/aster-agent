@@ -49,6 +49,7 @@ import type {
   SetPluginEnabledInput,
   UpdatePendingConversationMessageInput,
   SetConversationArchivedInput,
+  SetConversationModelSelectionInput,
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SetProjectPinnedInput,
@@ -404,6 +405,12 @@ export function createDesktopBridge(): DesktopBridge {
     setConversationProject(input: SetConversationProjectInput) {
       return invoke<BridgeResult<"setConversationProject">>(
         IPC_CHANNELS.conversationSetProject,
+        input
+      );
+    },
+    setConversationModelSelection(input: SetConversationModelSelectionInput) {
+      return invoke<BridgeResult<"setConversationModelSelection">>(
+        IPC_CHANNELS.conversationSetModelSelection,
         input
       );
     },

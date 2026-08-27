@@ -6,6 +6,7 @@ import {
   agentDirectoryConfigurationSchema,
   contextCompressionThresholdSchema,
   conversationAgentBindingSchema,
+  conversationModelSelectionSchema,
   conversationAgentMessageItemSchema,
   conversationMessageItemSchema,
   conversationPendingMessageSchema,
@@ -25,6 +26,7 @@ import {
   type ConversationAttachment,
   type ConversationAgentMessageItem,
   type ConversationMessageItem,
+  type ConversationModelSelection,
   type ConversationPendingMessage,
   type ConversationRunStatus,
   type ConversationAgentBinding,
@@ -720,6 +722,9 @@ function toConversationDeletionTask(row: DatabaseRow): ConversationDeletionTask 
 }
 
 function toConversation(row: DatabaseRow): ConversationSummary {
+  const selectedProviderId = asNullableString(row, "selected_provider_id");
+  const selectedModelId = asNullableString(row, "selected_model_id");
+  const selectedReasoningJson = asNullableString(row, "selected_reasoning_json");
   return conversationSummarySchema.parse({
     activeSubagentCount: asNumber(row, "active_subagent_count"),
     activeRunId: asNullableString(row, "active_run_id"),
@@ -731,6 +736,15 @@ function toConversation(row: DatabaseRow): ConversationSummary {
     isArchived: asBoolean(row, "is_archived"),
     isPinned: asBoolean(row, "is_pinned"),
     lastRunStatus: asNullableString(row, "last_run_status"),
+    modelSelection: selectedProviderId === null || selectedModelId === null
+      ? null
+      : conversationModelSelectionSchema.parse({
+          modelId: selectedModelId,
+          providerId: selectedProviderId,
+          reasoning: selectedReasoningJson === null
+            ? null
+            : parseJson(selectedReasoningJson, "conversation model reasoning"),
+        }),
     parentConversationId: asNullableString(row, "parent_conversation_id"),
     pinOrder: asNullableNumber(row, "pin_order"),
     projectId: asNullableString(row, "project_id"),
@@ -953,6 +967,7 @@ export class AgentDatabase {
     const rows = this.database
       .prepare(
         `SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
+            selected_provider_id, selected_model_id, selected_reasoning_json,
             thread_kind, agent_id, team_id, title, created_at, conversations.updated_at,
             conversations.archived_at,
             conversations.has_unread_result, conversations.is_archived,
@@ -1000,6 +1015,7 @@ export class AgentDatabase {
     const row = this.database
       .prepare(
         `SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
+            selected_provider_id, selected_model_id, selected_reasoning_json,
             thread_kind, agent_id, team_id, title, created_at, conversations.updated_at,
             conversations.archived_at,
             conversations.has_unread_result, conversations.is_archived,
@@ -1244,6 +1260,7 @@ export class AgentDatabase {
       hasUnreadResult: false,
       id: randomUUID(),
       lastRunStatus: null,
+      modelSelection: options.modelSelection ?? null,
       parentConversationId: null,
       pinOrder: null,
       projectId,
@@ -1281,15 +1298,21 @@ export class AgentDatabase {
         .prepare(
           `INSERT INTO conversations
             (id, project_id, parent_conversation_id, workspace_root_path,
+             selected_provider_id, selected_model_id, selected_reasoning_json,
              thread_kind, agent_id, agent_name, agent_role, agent_is_default,
              agent_instructions, team_id, title, created_at, updated_at, sort_order)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`
         )
         .run(
           conversation.id,
           conversation.projectId,
           conversation.parentConversationId,
           conversation.workspaceRootPath,
+          conversation.modelSelection?.providerId ?? null,
+          conversation.modelSelection?.modelId ?? null,
+          conversation.modelSelection === null || conversation.modelSelection.reasoning === null
+            ? null
+            : JSON.stringify(conversation.modelSelection.reasoning),
           conversation.threadKind,
         conversation.agentId,
         agent?.name ?? null,
@@ -1399,6 +1422,29 @@ export class AgentDatabase {
     return this.getConversation(conversationId);
   }
 
+  public setConversationModelSelection(
+    conversationId: string,
+    rawSelection: ConversationModelSelection,
+  ): ConversationSummary {
+    const selection = conversationModelSelectionSchema.parse(rawSelection);
+    this.getConversation(conversationId);
+    this.database
+      .prepare(
+        `UPDATE conversations
+         SET selected_provider_id = ?, selected_model_id = ?, selected_reasoning_json = ?,
+             updated_at = ?
+         WHERE id = ? AND deletion_pending = 0`
+      )
+      .run(
+        selection.providerId,
+        selection.modelId,
+        selection.reasoning === null ? null : JSON.stringify(selection.reasoning),
+        new Date().toISOString(),
+        conversationId,
+      );
+    return this.getConversation(conversationId);
+  }
+
   public forkConversation(
     sourceConversationId: string,
     kind: "side" | "sibling" | "subagent" = "subagent",
@@ -1433,6 +1479,7 @@ export class AgentDatabase {
       hasUnreadResult: false,
       id: randomUUID(),
       lastRunStatus: null,
+      modelSelection: source.modelSelection,
       parentConversationId,
       pinOrder: null,
       projectId: source.projectId,
@@ -1451,15 +1498,21 @@ export class AgentDatabase {
         .prepare(
           `INSERT INTO conversations
              (id, project_id, parent_conversation_id, workspace_root_path,
+              selected_provider_id, selected_model_id, selected_reasoning_json,
               thread_kind, agent_id, agent_name, agent_role, agent_is_default,
               agent_instructions, team_id, title, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           conversation.id,
           conversation.projectId,
           parentConversationId,
           conversation.workspaceRootPath,
+          conversation.modelSelection?.providerId ?? null,
+          conversation.modelSelection?.modelId ?? null,
+          conversation.modelSelection === null || conversation.modelSelection.reasoning === null
+            ? null
+            : JSON.stringify(conversation.modelSelection.reasoning),
           conversation.threadKind,
           inheritedAgent?.id ?? null,
           inheritedAgent?.name ?? null,
@@ -1777,6 +1830,7 @@ export class AgentDatabase {
     const rows = this.database
       .prepare(
         `SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
+            selected_provider_id, selected_model_id, selected_reasoning_json,
             thread_kind, agent_id, team_id, title, created_at, conversations.updated_at,
             conversations.archived_at,
             conversations.has_unread_result, conversations.is_archived,
@@ -5629,6 +5683,25 @@ export class AgentDatabase {
         },
         version: 6,
       },
+      {
+        name: "conversation-model-selection",
+        up: (database) => {
+          const columns = database
+            .prepare("PRAGMA table_info(conversations)")
+            .all() as DatabaseRow[];
+          const columnNames = new Set(columns.map((column) => column.name));
+          if (!columnNames.has("selected_provider_id")) {
+            database.exec("ALTER TABLE conversations ADD COLUMN selected_provider_id TEXT");
+          }
+          if (!columnNames.has("selected_model_id")) {
+            database.exec("ALTER TABLE conversations ADD COLUMN selected_model_id TEXT");
+          }
+          if (!columnNames.has("selected_reasoning_json")) {
+            database.exec("ALTER TABLE conversations ADD COLUMN selected_reasoning_json TEXT");
+          }
+        },
+        version: 7,
+      },
     ]);
   }
 
@@ -5648,6 +5721,9 @@ export class AgentDatabase {
         project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
         parent_conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
         workspace_root_path TEXT,
+        selected_provider_id TEXT,
+        selected_model_id TEXT,
+        selected_reasoning_json TEXT,
         thread_kind TEXT NOT NULL DEFAULT 'agent',
         agent_id TEXT,
         agent_name TEXT,
