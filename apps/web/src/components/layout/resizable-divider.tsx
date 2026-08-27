@@ -51,14 +51,12 @@ type ResizableDividerProps = {
   max: number;
   min: number;
   onCollapsedChange: (isCollapsed: boolean) => void;
+  onDraggingChange?: (isDragging: boolean) => void;
   onResize: (width: number) => void;
   size: number;
 };
 
-/**
- * A zero-layout divider that sits over the existing 5px AppShell gap.
- * This keeps md-king's compact spacing while retaining a generous hit target.
- */
+/** A zero-layout divider with a full-height gap hit area and hover-only indicator. */
 export function ResizableDivider({
   ariaLabel,
   className,
@@ -68,6 +66,7 @@ export function ResizableDivider({
   max,
   min,
   onCollapsedChange,
+  onDraggingChange,
   onResize,
   size,
 }: ResizableDividerProps): ReactElement {
@@ -90,15 +89,19 @@ export function ResizableDivider({
 
     isDraggingRef.current = true;
     divider.setPointerCapture(event.pointerId);
+    divider.dataset.resizing = "true";
+    onDraggingChange?.(true);
     document.body.dataset.resizingPanel = "true";
 
     const stop = (): void => {
       isDraggingRef.current = false;
+      delete divider.dataset.resizing;
       delete document.body.dataset.resizingPanel;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
       window.removeEventListener("pointercancel", stop);
       cleanupRef.current = null;
+      onDraggingChange?.(false);
     };
 
     const move = (moveEvent: PointerEvent): void => {
@@ -180,7 +183,7 @@ export function ResizableDivider({
       onKeyDown={handleKeyDown}
       onPointerDown={handlePointerDown}
     >
-      <span aria-hidden="true" className="resizable-divider__indicator" />
+      <span aria-hidden="true" className="resizable-divider__grip" />
     </div>
   );
 }

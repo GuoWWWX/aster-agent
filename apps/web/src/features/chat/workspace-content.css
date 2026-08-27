@@ -21,7 +21,7 @@
 
 .conversation-workspace__header {
   display: flex;
-  min-height: 36px;
+  min-height: var(--app-workspace-header-height);
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -1714,12 +1714,15 @@ button.tool-file-change__path:hover {
 }
 
 .conversation-workspace__composer {
+  /* CSS trigger #2: keep the transparent form margins from covering the message scrollbar. */
+  pointer-events: none;
   padding: 8px 0 12px;
   border: 0;
   background: transparent;
 }
 
 .conversation-workspace__composer-surface {
+  pointer-events: auto;
   width: min(var(--conversation-content-max-width), calc(100% - 32px));
   margin: 0 auto;
   overflow: hidden;
