@@ -55,7 +55,10 @@ import {
 import { ConversationWorkspace } from "../chat/workspace-content.js";
 import { ConfigurationWorkspaceTreePanel } from "./configuration-workspace-tree-panel.js";
 import { ProjectTreePanel } from "../projects/project-tree-panel.js";
-import type { ProjectSession } from "../projects/project-session-model.js";
+import {
+  updateSessionRunState,
+  type ProjectSession,
+} from "../projects/project-session-model.js";
 import type { ProjectTreeController } from "../projects/use-project-tree.js";
 import "./right-sidebar-workspace.css";
 
@@ -243,6 +246,7 @@ export function RightSidebarWorkspace({
   fileOpenRequest,
   onLocateProject,
   onLocateSession,
+  onSessionViewed,
   onSessionUpdated,
   tree,
 }: {
@@ -252,6 +256,7 @@ export function RightSidebarWorkspace({
   fileOpenRequest: ProjectFileOpenRequest | null;
   onLocateProject: (projectId: string) => void;
   onLocateSession: (sessionId: string) => void;
+  onSessionViewed: (sessionId: string) => void;
   onSessionUpdated: (conversation: ConversationSummary) => void;
   tree: ProjectTreeController;
 }): ReactElement {
@@ -404,20 +409,10 @@ export function RightSidebarWorkspace({
             return toProjectSession(event.conversation);
           }
           if (event.type === "run.started") {
-            return {
-              ...session,
-              activeRunId: event.runId,
-              hasUnreadResult: false,
-              lastRunStatus: "running",
-            };
+            return updateSessionRunState([session], event)[0] ?? session;
           }
           if (event.type === "run.finished") {
-            return {
-              ...session,
-              activeRunId: null,
-              hasUnreadResult: event.status === "completed" || event.status === "failed",
-              lastRunStatus: event.status,
-            };
+            return updateSessionRunState([session], event)[0] ?? session;
           }
           return session;
         }),
@@ -1029,6 +1024,7 @@ export function RightSidebarWorkspace({
       && !await flushFileSave(activeFileTab)
     ) return;
     setActiveTabForCurrentSession(tab.id);
+    if (tab.kind === "chat") onSessionViewed(tab.session.id);
     setIsFileBrowserOpen(false);
   }
 
@@ -1271,6 +1267,7 @@ export function RightSidebarWorkspace({
                 if (activeSession !== null) onLocateSession(activeSession.id);
               }}
               onOpenProjectFile={(path) => void openProjectFilePath(path)}
+              onViewed={() => onSessionViewed(activeTab.session.id)}
               project={activeTab.session.projectId === null ? null : activeProject}
               session={activeTab.session}
             />

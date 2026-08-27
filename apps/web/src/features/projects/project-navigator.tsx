@@ -10,7 +10,6 @@ import {
   ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
-  CircleAlert,
   Clock3,
   Folder,
   FolderOpen,
@@ -49,6 +48,7 @@ import {
   PopoverTrigger,
 } from "../../components/ui/popover.js";
 import {
+  groupSubagentSessionsByParent,
   getProjectSessions,
   getPinnedSessions,
   getTemporarySessions,
@@ -400,16 +400,10 @@ export function ProjectNavigator({
       || (projectId === activeProjectId && !collapsedProjectIds.has(projectId));
   }
 
-  const subagentSessionsByParent = useMemo(() => {
-    const grouped = new Map<string, ProjectSession[]>();
-    for (const session of sessions) {
-      if (session.parentConversationId === null || session.isArchived) continue;
-      const subagents = grouped.get(session.parentConversationId) ?? [];
-      subagents.push(session);
-      grouped.set(session.parentConversationId, subagents);
-    }
-    return grouped;
-  }, [sessions]);
+  const subagentSessionsByParent = useMemo(
+    () => groupSubagentSessionsByParent(sessions),
+    [sessions],
+  );
 
   function toggleSessionExpansion(sessionId: string): void {
     setExpandedSessionIds((current) => {
@@ -1221,21 +1215,28 @@ type SessionButtonProps = {
 };
 
 function isSessionRunning(session: ProjectSession): boolean {
-  return (session.activeSubagentCount ?? 0) > 0
+  return (session.activeSideConversationCount ?? 0) > 0
+    || (session.activeSubagentCount ?? 0) > 0
     || session.activeRunId !== null
     || session.lastRunStatus === "queued"
     || session.lastRunStatus === "running";
 }
 
 function hasUnreadSessionResult(session: ProjectSession): boolean {
-  return session.hasUnreadResult
-    && (session.lastRunStatus === "completed" || session.lastRunStatus === "failed");
+  return session.hasUnreadSideConversationResult === true
+    || (session.hasUnreadResult
+      && (session.lastRunStatus === "completed" || session.lastRunStatus === "failed"));
+}
+
+function hasFailedUnreadSessionResult(session: ProjectSession): boolean {
+  return session.hasFailedUnreadSideConversationResult === true
+    || (session.hasUnreadResult && session.lastRunStatus === "failed");
 }
 
 function sessionStatusLabel(session: ProjectSession): string | null {
   if (isSessionRunning(session)) return "正在运行";
   if (!hasUnreadSessionResult(session)) return null;
-  return session.lastRunStatus === "failed" ? "上次运行失败" : "上次运行完成";
+  return hasFailedUnreadSessionResult(session) ? "上次运行失败" : "上次运行完成";
 }
 
 function SessionStatusIndicator({ session }: { session: ProjectSession }): ReactElement | null {
@@ -1248,16 +1249,16 @@ function SessionStatusIndicator({ session }: { session: ProjectSession }): React
       />
     );
   }
-  if (hasUnreadSessionResult(session) && session.lastRunStatus === "failed") {
+  if (hasFailedUnreadSessionResult(session)) {
     return (
-      <CircleAlert
+      <span
         aria-label="上次运行失败"
         className="project-navigator__session-status project-navigator__session-status--failed"
-        size={13}
+        role="img"
       />
     );
   }
-  if (hasUnreadSessionResult(session) && session.lastRunStatus === "completed") {
+  if (hasUnreadSessionResult(session)) {
     return (
       <span
         aria-label="上次运行完成"

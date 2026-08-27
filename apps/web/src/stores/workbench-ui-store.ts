@@ -38,6 +38,7 @@ type WorkbenchUiState = {
   configurationWorkspaceRevision: number;
   configurationWorkspaceTarget: ConfigurationWorkspaceTarget | null;
   filePanelWidth: number;
+  filePanelWidthsByConversationId: Record<string, number>;
   isFilePanelOpen: boolean;
   isProjectNavigatorOpen: boolean;
   notifyConfigurationWorkspaceChanged: () => void;
@@ -45,6 +46,7 @@ type WorkbenchUiState = {
   projectNavigatorWidth: number;
   setFilePanelOpen: (isOpen: boolean) => void;
   setFilePanelWidth: (width: number) => void;
+  setFilePanelWidthForConversation: (conversationId: string, width: number) => void;
   setActiveActivity: (activity: ActivityView) => void;
   hydrateAppearance: (appearance: ApplicationAppearanceConfiguration) => void;
   setProjectNavigatorOpen: (isOpen: boolean) => void;
@@ -68,6 +70,7 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
   configurationWorkspaceRevision: 0,
   configurationWorkspaceTarget: null,
   filePanelWidth: 520,
+  filePanelWidthsByConversationId: {},
   isFilePanelOpen: true,
   isProjectNavigatorOpen: true,
   notifyConfigurationWorkspaceChanged: () => set((state) => ({
@@ -86,6 +89,16 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
         FILE_PANEL_WIDTH_RANGE,
       ),
     }),
+  setFilePanelWidthForConversation: (conversationId, width) =>
+    set((state) => ({
+      filePanelWidthsByConversationId: {
+        ...state.filePanelWidthsByConversationId,
+        [conversationId]: clampWorkbenchPanelWidth(
+          width,
+          FILE_PANEL_WIDTH_RANGE,
+        ),
+      },
+    })),
   setActiveActivity: (activeActivity) => set({ activeActivity }),
   hydrateAppearance: (appearance) => set({
     filePanelWidth: clampWorkbenchPanelWidth(

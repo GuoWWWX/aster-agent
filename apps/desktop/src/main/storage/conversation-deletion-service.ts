@@ -15,6 +15,10 @@ export type ConversationDeletionCheckpointStore = {
   deleteThreads(threadIds: readonly string[]): Promise<void>;
 };
 
+export type ConversationDeletionThreadLogStore = {
+  deleteConversations(conversationIds: readonly string[]): Promise<void>;
+};
+
 export type ConversationDeletionOutcome = "completed" | "pending";
 
 function describeDeletionError(error: unknown): string {
@@ -31,6 +35,7 @@ export class ConversationDeletionService {
     private readonly files: ConversationDeletionFileStore,
     private readonly projects: Pick<ProjectRegistry, "unmountConversationWorkspace">,
     private readonly checkpoints: ConversationDeletionCheckpointStore | null = null,
+    private readonly threadLogs: ConversationDeletionThreadLogStore | null = null,
   ) {}
 
   public async requestDeletion(conversationId: string): Promise<ConversationDeletionOutcome> {
@@ -76,6 +81,9 @@ export class ConversationDeletionService {
         await this.checkpoints.deleteThreads(
           this.database.listRunIdsForConversations(task.conversationIds),
         );
+      }
+      if (this.threadLogs !== null) {
+        await this.threadLogs.deleteConversations(task.conversationIds);
       }
       this.database.completeConversationDeletionTask(task.id);
       return "completed";

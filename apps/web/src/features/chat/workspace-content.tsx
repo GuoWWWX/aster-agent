@@ -150,6 +150,7 @@ type WorkspaceContentProps = {
   onProjectSelected: (projectId: string) => void;
   onSessionSelected: (sessionId: string) => void;
   onSessionUpdated: (conversation: ConversationSummary) => void;
+  onSessionViewed: (sessionId: string) => void;
 };
 
 type TimelineDisplayItem = ConversationTimelineItem | {
@@ -184,6 +185,15 @@ type RunProgress = {
   runId: string | null;
   startedAt: number;
 };
+
+export function createRestoredRunProgresses(
+  runId: string | null,
+  startedAt = Date.now(),
+): RunProgress[] {
+  return runId === null
+    ? []
+    : [{ anchorTimelineItemId: null, outputStartedAt: null, runId, startedAt }];
+}
 
 type ConversationMention = Pick<
   ConversationSummary,
@@ -424,6 +434,7 @@ export function WorkspaceContent({
   onProjectSelected,
   onSessionSelected,
   onSessionUpdated,
+  onSessionViewed,
 }: WorkspaceContentProps): ReactElement {
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
 
@@ -473,6 +484,7 @@ export function WorkspaceContent({
       onProjectSelected={onProjectSelected}
       onSessionSelected={onSessionSelected}
       onSessionUpdated={onSessionUpdated}
+      onViewed={() => onSessionViewed(activeSession.id)}
       project={conversationProject}
       projects={projects}
       session={activeSession}
@@ -493,6 +505,7 @@ export function ConversationWorkspace({
   onProjectSelected,
   onSessionSelected,
   onSessionUpdated,
+  onViewed,
   project,
   projects = [],
   session,
@@ -509,6 +522,7 @@ export function ConversationWorkspace({
   onProjectSelected?: (projectId: string) => void;
   onSessionSelected?: (sessionId: string) => void;
   onSessionUpdated?: (conversation: ConversationSummary) => void;
+  onViewed?: () => void;
   project: ProjectSummary | null;
   projects?: readonly ProjectSummary[];
   session: ProjectSession;
@@ -571,7 +585,9 @@ export function ConversationWorkspace({
   const [liveToolOutputs, setLiveToolOutputs] = useState<Record<string, LiveToolOutput>>({});
   const [modelActivity, setModelActivity] = useState<ModelActivity | null>(null);
   const [modelStatus, setModelStatus] = useState<ModelRuntimeStatus | null>(null);
-  const [runProgresses, setRunProgresses] = useState<RunProgress[]>([]);
+  const [runProgresses, setRunProgresses] = useState<RunProgress[]>(() =>
+    createRestoredRunProgresses(session.activeRunId),
+  );
   const [removingAttachmentId, setRemovingAttachmentId] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [pendingMessages, setPendingMessages] = useState<ConversationPendingMessage[]>([]);
@@ -870,9 +886,9 @@ export function ConversationWorkspace({
   }, [timeline]);
 
   useEffect(() => {
-    setRunProgresses([]);
+    setRunProgresses(createRestoredRunProgresses(session.activeRunId));
     setLiveToolOutputs({});
-  }, [session.id]);
+  }, [session.activeRunId, session.id]);
 
   useEffect(() => {
     return agentClient.onConversationRunEvent((event) => {
@@ -1649,6 +1665,10 @@ export function ConversationWorkspace({
       className="conversation-workspace"
       aria-labelledby={headingId}
       data-compact={String(compact)}
+      onInputCapture={onViewed}
+      onKeyDownCapture={onViewed}
+      onPointerDownCapture={onViewed}
+      onWheelCapture={onViewed}
     >
       <header className="conversation-workspace__header">
         <div className="conversation-workspace__path" aria-label="对话路径">

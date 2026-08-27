@@ -222,8 +222,9 @@ export function App(): ReactElement {
   return (
     <>
       <AppShell
-      agentClient={agentClient}
-      projectNavigator={
+        activeConversationId={projectSessions.activeSessionId}
+        agentClient={agentClient}
+        projectNavigator={
         <ProjectNavigator
           activeSessionId={projectSessions.activeSessionId}
           isCreatingSession={projectSessions.isCreatingSession}
@@ -292,6 +293,7 @@ export function App(): ReactElement {
             selectSession(sessionId);
           }}
           onSessionUpdated={(conversation) => projectSessions.updateSession(conversation)}
+          onSessionViewed={(sessionId) => projectSessions.markSessionResultViewed(sessionId)}
         />
       }
       filePanel={
@@ -302,6 +304,7 @@ export function App(): ReactElement {
           fileOpenRequest={fileOpenRequest}
           onLocateProject={(projectId) => locateInProjectNavigator("project", projectId)}
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}
+          onSessionViewed={(sessionId) => projectSessions.markSessionResultViewed(sessionId)}
           onSessionUpdated={(conversation) => projectSessions.updateSession(conversation)}
           tree={projectTree}
         />
