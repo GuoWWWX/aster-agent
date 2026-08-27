@@ -1217,14 +1217,14 @@ describe("AgentDatabase", () => {
 
     const taskList = firstDatabase.createTaskList(conversation.id, [
       { status: "completed", title: "分析需求" },
-      { status: "running", title: "实现功能" },
+      { reason: "等待用户批准修改", status: "blocked", title: "实现功能" },
       { status: "pending", title: "验证结果" }
     ]);
     expect(taskList.status).toBe("active");
     expect(typeof taskList.createdAt).toBe("string");
     expect(taskList.tasks.map((task) => task.status)).toEqual([
       "completed",
-      "running",
+      "blocked",
       "pending"
     ]);
     expect(() => firstDatabase.createTaskList(conversation.id, [
@@ -1240,11 +1240,11 @@ describe("AgentDatabase", () => {
     const reopenedDatabase = new AgentDatabase(databasePath);
     expect(reopenedDatabase.getTaskList(conversation.id)?.tasks).toMatchObject([
       { status: "completed", title: "分析需求" },
-      { status: "running", title: "实现功能" },
+      { reason: "等待用户批准修改", status: "blocked", title: "实现功能" },
       { status: "pending", title: "验证结果" }
     ]);
     expect(reopenedDatabase.getTaskList(conversation.id)?.tasks.map((task) => task.status))
-      .toEqual(["completed", "running", "pending"]);
+      .toEqual(["completed", "blocked", "pending"]);
     reopenedDatabase.closeTaskList(conversation.id);
     expect(reopenedDatabase.getTaskList(conversation.id)).toBeNull();
     reopenedDatabase.close();

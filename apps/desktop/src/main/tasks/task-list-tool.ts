@@ -24,8 +24,11 @@ const taskListUpdateSchema = z
   .object({
     tasks: z.array(
       z.object({
+        reason: z.string().trim().min(1).max(600).nullable().optional().describe(
+          "步骤阻塞或失败时的简短原因；其他状态不要提供。"
+        ),
         status: conversationTaskStatusSchema
-          .describe("步骤状态；同一任务清单最多一个步骤为 running；需要外部输入时使用 blocked，无法继续时使用 failed。"),
+          .describe("步骤状态；同一任务清单最多一个步骤为 running；需要外部输入时使用 blocked 并说明原因，无法继续时使用 failed 并说明原因。"),
         title: z.string().trim().min(1).max(300).describe("简短、可验证的步骤标题。")
       }).strict()
     ).min(2).max(20).describe("完整任务清单；每次更新都必须重新提交全部步骤。")
@@ -39,6 +42,23 @@ const taskListUpdateSchema = z
         path: ["tasks"]
       });
     }
+    value.tasks.forEach((task, index) => {
+      const requiresReason = task.status === "blocked" || task.status === "failed";
+      if (requiresReason && task.reason == null) {
+        context.addIssue({
+          code: "custom",
+          message: "Blocked and failed tasks require a short reason.",
+          path: ["tasks", index, "reason"]
+        });
+      }
+      if (!requiresReason && task.reason != null) {
+        context.addIssue({
+          code: "custom",
+          message: "Only blocked and failed tasks may include a reason.",
+          path: ["tasks", index, "reason"]
+        });
+      }
+    });
   });
 
 const closeTaskListSchema = z.object({}).strict();
@@ -72,7 +92,7 @@ export class TaskListTool {
       {
         description: [
           "Create a task list for a complex, multi-step task before substantive work.",
-          "Use this only when no active task list exists. Provide the full list with exactly zero or one running task."
+          "Use this only when no active task list exists. Provide the full list with exactly zero or one running task. Blocked and failed tasks must include a short reason."
         ].join(" "),
         name: CREATE_TASK_LIST_TOOL_NAME,
         parameters: taskListParameters
@@ -80,7 +100,7 @@ export class TaskListTool {
       {
         description: [
           "Update the active task list, including task titles and statuses.",
-          "Send the full list on every update. Keep at most one task running, and mark a task completed before moving to the next one."
+          "Send the full list on every update. Keep at most one task running, and mark a task completed before moving to the next one. Blocked and failed tasks must include a short reason."
         ].join(" "),
         name: UPDATE_TASK_LIST_TOOL_NAME,
         parameters: taskListParameters

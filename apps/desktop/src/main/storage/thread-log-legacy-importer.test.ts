@@ -19,6 +19,22 @@ afterEach(async () => {
 });
 
 describe("ThreadLogLegacyImporter", () => {
+  it("does not create a JSONL file for an empty Conversation", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "thread-log-import-"));
+    temporaryDirectories.push(directory);
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const threadLog = new ThreadLog(path.join(directory, "conversations"));
+    const importer = new ThreadLogLegacyImporter(
+      database,
+      threadLog,
+      new EventProjector(database, threadLog),
+    );
+
+    expect(importer.importConversationIfMissing(conversation.id)).toBe(false);
+    expect(threadLog.hasConversation(conversation.id)).toBe(false);
+  });
+
   it("imports each SQLite-first Conversation once and preserves its context snapshot", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "thread-log-import-"));
     temporaryDirectories.push(directory);
