@@ -33,6 +33,8 @@ git push -u origin feature/short-description
 
 然后创建指向 `develop` 的 Pull Request。一个 PR 应解决一个可验证的目标；不要把无关重构、格式化或生成文件混入。
 
+每个新目标都必须从最新 `develop` 创建新的功能、修复或文档分支。已合并或已关闭 PR/MR 的分支不再继续使用，也不得作为下一项工作的基线，即使该分支尚未删除。
+
 ## 修改要求
 
 - 变更 Protocol、IPC、持久化数据、工具权限或设置语义时，同步更新对应 `doc/` 文档和测试。
