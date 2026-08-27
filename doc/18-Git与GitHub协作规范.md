@@ -2,7 +2,7 @@
 
 > 文档角色：本仓库的 Git Flow、GitHub Pull Request、发布标签与回滚约定。
 >
-> 状态：首个 GitHub 仓库创建前的执行规范；GitHub 分支保护和发布工作流配置后，应以平台实际配置为准。
+> 状态：仓库与 GitHub 远程已初始化；GitHub 分支保护和发布工作流配置后，应以平台实际配置为准。
 >
 > 参考：`E:\个人\学习\AI\ai\60-Git与工程协作` 的 Git Flow、公共历史、Tag 发布和回滚原则。
 
@@ -12,7 +12,7 @@
 
 以下规则优先级由高到低：GitHub 分支保护与必需检查、已发布版本的回滚安全、项目编码规范、本文件的默认流程、个人偏好。
 
-当前事实：仓库已有本地 `main`，尚未配置远程仓库、GitHub 环境、分支保护或发布工作流；产品名为 Aster。〔FACT｜`.git`、`git remote -v`、`package.json`，2026-08-27〕
+当前事实：仓库已配置 GitHub 远程 `origin`，`main` 与 `develop` 均已推送；GitHub 分支保护和发布工作流的配置状态应以平台实际设置为准；产品名为 Aster。〔FACT｜`.git`、`git remote -v`、`git branch -a`、`package.json`，2026-08-27〕
 
 ## 2. 分支模型
 
@@ -201,7 +201,7 @@ git switch -c hotfix/crash-on-startup
 
 仓库创建后按以下顺序执行：
 
-- [ ] 推送本地 `main` 到正确的 GitHub 组织/仓库，并创建 `develop`。
+- [x] 推送本地 `main` 到正确的 GitHub 组织/仓库，并创建 `develop`。
 - [ ] 配置本文件第 4 节的分支保护、安全扫描、Actions 权限与合并方式。
 - [ ] 在 Actions 页面确认 `CI` 能在一个文档 PR 上完整运行。
 - [ ] 选择并提交许可证；在 README 中写明。
