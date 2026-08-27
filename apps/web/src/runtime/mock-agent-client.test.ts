@@ -641,6 +641,7 @@ describe("MockAgentClient", () => {
         modelId: "gpt-5.6",
         reasoningOptions: [{ kind: "token_budget", value: 4_096 }]
       }],
+      providerIcon: "deepseek",
       providerName: "预览供应商",
     });
 
@@ -652,7 +653,11 @@ describe("MockAgentClient", () => {
       providerId: status.providerId,
     })).resolves.toMatchObject({ content: "Hi! gpt-5.6 连接正常。" });
     await expect(client.getModelStatus()).resolves.toMatchObject({
-      models: [expect.objectContaining({ connectionStatus: "healthy", modelId: "gpt-5.6" })],
+      models: [expect.objectContaining({
+        connectionStatus: "healthy",
+        modelId: "gpt-5.6",
+        providerIcon: "deepseek",
+      })],
     });
   });
 

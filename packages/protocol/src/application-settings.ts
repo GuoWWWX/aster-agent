@@ -37,6 +37,46 @@ export const agentModelStrategySchema = z.enum(["auto", "fixed", "inherit"]);
 export const agentCapabilityScopeSchema = z.enum(["custom", "inherit_all"]);
 export const agentStatusSchema = z.enum(["running", "sleeping", "standby"]);
 
+/** Tool surfaces that can create an Agent-scoped allow rule. */
+export const agentPermissionToolSchema = z.enum([
+  "apply_patch",
+  "delete_file",
+  "external_read",
+  "replace_in_file",
+  "run_command",
+  "write_file",
+]);
+
+export const agentPermissionRuleSchema = z
+  .object({
+    pattern: z.string().trim().min(1).max(4_000),
+    tool: agentPermissionToolSchema,
+  })
+  .strict()
+  .superRefine((rule, context) => {
+    const wildcardIndex = rule.pattern.indexOf("*");
+    if (wildcardIndex >= 0 && wildcardIndex !== rule.pattern.length - 1) {
+      context.addIssue({
+        code: "custom",
+        message: "通配符只能出现在规则末尾。",
+        path: ["pattern"],
+      });
+    }
+    if (wildcardIndex >= 0 && !rule.pattern.endsWith("*")) {
+      context.addIssue({
+        code: "custom",
+        message: "通配符只能作为末尾字符。",
+        path: ["pattern"],
+      });
+    }
+  });
+
+export const agentPermissionsSchema = z
+  .object({
+    allow: z.array(agentPermissionRuleSchema).max(200),
+  })
+  .strict();
+
 export const agentProfileSchema = z.object({
   avatar: agentAvatarSchema,
   capabilityScope: agentCapabilityScopeSchema,
@@ -49,6 +89,7 @@ export const agentProfileSchema = z.object({
   model: z.string().max(300),
   modelStrategy: agentModelStrategySchema,
   name: z.string().trim().min(1).max(120),
+  permissions: agentPermissionsSchema.default({ allow: [] }),
   role: z.string().max(300),
   skillIds: z.array(configurationIdSchema).max(100),
   status: agentStatusSchema,
@@ -170,6 +211,9 @@ export type AgentAvatar = z.infer<typeof agentAvatarSchema>;
 export type AgentModelStrategy = z.infer<typeof agentModelStrategySchema>;
 export type AgentCapabilityScope = z.infer<typeof agentCapabilityScopeSchema>;
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
+export type AgentPermissionTool = z.infer<typeof agentPermissionToolSchema>;
+export type AgentPermissionRule = z.infer<typeof agentPermissionRuleSchema>;
+export type AgentPermissions = z.infer<typeof agentPermissionsSchema>;
 export type AgentProfile = z.infer<typeof agentProfileSchema>;
 export type AgentTeamMemberConfiguration = z.infer<typeof agentTeamMemberConfigurationSchema>;
 export type AgentTeam = z.infer<typeof agentTeamSchema>;
@@ -195,6 +239,7 @@ export const DEFAULT_AGENT_DIRECTORY_CONFIGURATION: AgentDirectoryConfiguration 
       model: "当前对话模型",
       modelStrategy: "inherit",
       name: "默认 Agent",
+      permissions: { allow: [] },
       role: "通用执行",
       skillIds: [],
       status: "standby",
@@ -211,6 +256,7 @@ export const DEFAULT_AGENT_DIRECTORY_CONFIGURATION: AgentDirectoryConfiguration 
       model: "当前对话模型",
       modelStrategy: "inherit",
       name: "Team Lead",
+      permissions: { allow: [] },
       role: "接单、调度与汇总",
       skillIds: [],
       status: "running",
@@ -227,6 +273,7 @@ export const DEFAULT_AGENT_DIRECTORY_CONFIGURATION: AgentDirectoryConfiguration 
       model: "团队自动选择",
       modelStrategy: "auto",
       name: "Explorer",
+      permissions: { allow: [] },
       role: "搜索与事实核对",
       skillIds: ["code-review"],
       status: "standby",
@@ -243,6 +290,7 @@ export const DEFAULT_AGENT_DIRECTORY_CONFIGURATION: AgentDirectoryConfiguration 
       model: "当前对话模型",
       modelStrategy: "inherit",
       name: "Implementer",
+      permissions: { allow: [] },
       role: "实现与验证",
       skillIds: [],
       status: "sleeping",
@@ -259,6 +307,7 @@ export const DEFAULT_AGENT_DIRECTORY_CONFIGURATION: AgentDirectoryConfiguration 
       model: "团队自动选择",
       modelStrategy: "auto",
       name: "Reviewer",
+      permissions: { allow: [] },
       role: "风险与质量审查",
       skillIds: ["code-review", "browser"],
       status: "standby",

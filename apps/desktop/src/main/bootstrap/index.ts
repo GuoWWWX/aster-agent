@@ -15,10 +15,16 @@ import {
   loadRenderer
 } from "../security/renderer-policy.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
+import { PluginCatalog } from "../plugins/plugin-catalog.js";
 import { AgentDatabase } from "../storage/agent-database.js";
+import { initializeAgentHome } from "../storage/agent-home.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
 import { ConversationDeletionService } from "../storage/conversation-deletion-service.js";
+import { ConversationLifecycleService } from "../storage/conversation-lifecycle-service.js";
+import { EventProjector } from "../storage/event-projector.js";
 import { NodeSqliteCheckpointSaver } from "../storage/node-sqlite-checkpoint-saver.js";
+import { ThreadLog } from "../storage/thread-log.js";
+import { ThreadLogLegacyImporter } from "../storage/thread-log-legacy-importer.js";
 import { IntegrationConfigurationStore } from "../settings/integration-configuration-store.js";
 import { ApplicationSettingsStore } from "../settings/application-settings-store.js";
 import { ContextCompressionConfigurationStore } from "../settings/context-compression-configuration-store.js";
@@ -33,7 +39,9 @@ type DesktopServices = {
   applicationSettings: ApplicationSettingsStore;
   attachments: ConversationAttachmentStore;
   conversationDeletion: ConversationDeletionService;
+  conversationLifecycle: ConversationLifecycleService;
   modelCatalog: ModelCatalogStore;
+  pluginCatalog: PluginCatalog;
   credentials: ModelCredentialStore;
   database: AgentDatabase;
   integrationConfiguration: IntegrationConfigurationStore;
@@ -44,6 +52,8 @@ type DesktopServices = {
   skillRuntime: SkillRuntime;
   terminalConfiguration: TerminalConfigurationStore;
   projectRegistry: ProjectRegistry;
+  threadLogLegacyImporter: ThreadLogLegacyImporter;
+  tools: ProjectToolRegistry;
 };
 
 let mainWindow: BrowserWindow | undefined;
@@ -58,7 +68,8 @@ function parseLocalEnvironmentFile(contents: string): Map<string, string> {
   const names = new Set([
     "AGENT_MODEL_BASE_URL",
     "AGENT_MODEL_API_KEY",
-    "AGENT_MODEL_ID"
+    "AGENT_MODEL_ID",
+    "AGENT_HOME",
   ]);
 
   for (const line of contents.split(/\r?\n/)) {
@@ -109,23 +120,28 @@ function loadLocalEnvironment(): void {
 
 async function initializeServices(): Promise<DesktopServices> {
   loadLocalEnvironment();
-  const database = new AgentDatabase(path.join(app.getPath("userData"), "agent.sqlite"));
+  const agentHome = await initializeAgentHome({
+    legacyRootPath: app.getPath("userData"),
+  });
+  const database = new AgentDatabase(agentHome.paths.agentDatabasePath);
+  const pluginCatalog = new PluginCatalog(database, agentHome.paths.pluginsPath);
+  await pluginCatalog.synchronize();
   const graphCheckpointer = new NodeSqliteCheckpointSaver(
-    path.join(app.getPath("userData"), "langgraph-checkpoints.sqlite"),
+    agentHome.paths.graphCheckpointPath,
   );
   const credentials = new ModelCredentialStore(
-    path.join(app.getPath("userData"), "model-credentials.json")
+    agentHome.paths.credentialsPath,
   );
   credentials.importFromEnvironment();
   const modelCatalog = new ModelCatalogStore(
-    path.join(app.getPath("userData"), "model-catalog.json")
+    agentHome.paths.modelCatalogPath,
   );
   modelCatalog.ensureFile();
   const projectRegistry = new ProjectRegistry(database);
   const attachments = new ConversationAttachmentStore(
     database,
     projectRegistry,
-    path.join(app.getPath("userData"), "conversation-files")
+    agentHome.paths.conversationFilesPath,
   );
   const conversationDeletion = new ConversationDeletionService(
     database,
@@ -153,33 +169,70 @@ async function initializeServices(): Promise<DesktopServices> {
     }
   }
   const integrationConfiguration = new IntegrationConfigurationStore(
-    path.join(app.getPath("userData"), "integration-settings.json")
+    agentHome.paths.integrationSettingsPath,
   );
   const applicationSettings = new ApplicationSettingsStore(
-    path.join(app.getPath("userData"), "application-settings.json"),
+    agentHome.paths.applicationSettingsPath,
   );
   applicationSettings.ensureFile();
+  database.syncTeamDirectory(applicationSettings.getConfiguration().agentDirectory);
+  applicationSettings.onChanged((configuration) => {
+    database.syncTeamDirectory(configuration.agentDirectory);
+  });
   const contextCompression = new ContextCompressionConfigurationStore(
-    path.join(app.getPath("userData"), "context-compression-settings.json")
+    agentHome.paths.contextCompressionSettingsPath,
   );
   contextCompression.ensureFile();
   const skillDocuments = new SkillDocumentStore(
     integrationConfiguration,
-    path.join(app.getPath("userData"), "skills"),
+    agentHome.paths.skillsPath,
   );
   skillDocuments.discoverDocuments();
   const skillRuntime = new SkillRuntime(skillDocuments, integrationConfiguration);
   const configurationWorkspaces = new ConfigurationWorkspaceStore(
     integrationConfiguration,
-    path.join(app.getPath("userData"), "mcp"),
+    agentHome.paths.mcpPath,
   );
   await configurationWorkspaces.synchronizeMcpDocuments(
     integrationConfiguration.getConfiguration(),
   );
   const terminalConfiguration = new TerminalConfigurationStore(
-    path.join(app.getPath("userData"), "terminal-settings.json"),
+    agentHome.paths.terminalSettingsPath,
   );
   const tools = new ProjectToolRegistry(projectRegistry, terminalConfiguration);
+  const threadLog = new ThreadLog(agentHome.paths.conversationsPath);
+  const eventProjector = new EventProjector(
+    database,
+    threadLog,
+    (attachment) => attachments.resolveThreadLogPaths(attachment),
+  );
+  const conversationLifecycle = new ConversationLifecycleService(
+    database,
+    threadLog,
+    eventProjector,
+  );
+  const threadLogLegacyImporter = new ThreadLogLegacyImporter(
+    database,
+    threadLog,
+    eventProjector,
+  );
+  try {
+    threadLogLegacyImporter.recoverUnreadableConversationLogs();
+    threadLogLegacyImporter.importMissingConversationLogs();
+    eventProjector.projectAllConversationLogs();
+    database.interruptRecoveredThreadLogRuns();
+    const inconsistent = eventProjector
+      .verifyAllConversationLogs()
+      .find((result) => !result.isConsistent);
+    if (inconsistent !== undefined) {
+      throw new Error("ThreadLog event index is inconsistent with its JSONL source.");
+    }
+  } catch (error) {
+    reportMainError(
+      toMainAgentError(error, { operation: "thread_log.startup_projection" }),
+      error,
+    );
+  }
 
   return {
     agentRuntime: new AgentRuntime(
@@ -190,28 +243,38 @@ async function initializeServices(): Promise<DesktopServices> {
       undefined,
       undefined,
       contextCompression,
-      null,
-      attachments,
-      {
-        getConfiguration: () => applicationSettings.getConfiguration().agentDirectory,
-      },
-      skillRuntime,
-      graphCheckpointer,
-    ),
+        null,
+        attachments,
+        {
+          getConfiguration: () => applicationSettings.getConfiguration().agentDirectory,
+        },
+        skillRuntime,
+        graphCheckpointer,
+        undefined,
+      applicationSettings,
+       threadLog,
+       eventProjector,
+       threadLogLegacyImporter,
+       pluginCatalog,
+      ),
     applicationSettings,
     attachments,
     conversationDeletion,
+    conversationLifecycle,
     credentials,
     contextCompression,
     graphCheckpointer,
     configurationWorkspaces,
     modelCatalog,
+    pluginCatalog,
     database,
     integrationConfiguration,
     projectRegistry,
+    threadLogLegacyImporter,
     skillDocuments,
     skillRuntime,
     terminalConfiguration,
+    tools,
   };
 }
 

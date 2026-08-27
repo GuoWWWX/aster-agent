@@ -23,7 +23,9 @@
     "@vscode/ripgrep": "1.18.0",
     "diff": "9.0.0",
     "file-type": "^22.0.2",
+    "langchain": "1.5.9",
     "mammoth": "^1.12.1",
+    "parse5": "8.0.1",
     "unpdf": "^1.8.1",
     "zod": "^4.4.3"
   },

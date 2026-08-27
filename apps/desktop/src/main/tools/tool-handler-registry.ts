@@ -6,6 +6,7 @@ export type { ToolExecutionPolicy } from "./tool-execution-policy.js";
 
 export type ToolAvailabilityContext = {
   projectId: string | undefined;
+  toolName?: string;
 };
 
 export type ToolHandlerExecutionContext = {
@@ -42,7 +43,7 @@ export class ToolHandlerRegistry<TContext extends ToolHandlerExecutionContext> {
       }
       names.add(definition.name);
     }
-    return [...definitions];
+    return [...definitions].sort((left, right) => left.name.localeCompare(right.name));
   }
 
   public async execute(input: {
@@ -60,7 +61,7 @@ export class ToolHandlerRegistry<TContext extends ToolHandlerExecutionContext> {
 
   private findHandler(input: ToolHandlerInput<TContext>): ToolHandler<TContext> {
     const availableHandlers = this.handlers.filter((handler) =>
-      handler.isAvailable(input.context),
+      handler.isAvailable({ projectId: input.context.projectId, toolName: input.toolName }),
     );
     const matches = availableHandlers.filter((handler) =>
       handler.getDefinitions().some((definition) => definition.name === input.toolName),

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { DEFAULT_APPLICATION_SETTINGS } from "@agent/protocol";
+import { DEFAULT_APPLICATION_SETTINGS, type ApplicationSettings } from "@agent/protocol";
 
 import { ApplicationSettingsStore } from "./application-settings-store.js";
 
@@ -56,6 +56,24 @@ describe("ApplicationSettingsStore", () => {
     expect(store.saveConfiguration(configuration)).toEqual(configuration);
     expect(store.getConfiguration()).toEqual(configuration);
     expect(JSON.parse(await readFile(configurationPath, "utf8"))).toEqual(configuration);
+  });
+
+  it("notifies listeners after the persisted configuration is replaced", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-app-settings-"));
+    temporaryDirectories.push(directory);
+    const store = new ApplicationSettingsStore(path.join(directory, "application-settings.json"));
+    const received: ApplicationSettings[] = [];
+    const unsubscribe = store.onChanged((configuration) => received.push(configuration));
+
+    const saved = store.saveConfiguration(structuredClone(DEFAULT_APPLICATION_SETTINGS));
+
+    expect(received).toEqual([saved]);
+    unsubscribe();
+    store.saveConfiguration({
+      ...saved,
+      general: { ...saved.general, sendShortcut: "ctrl_enter" },
+    });
+    expect(received).toHaveLength(1);
   });
 
   it("adds the queue default when reading settings saved before general options existed", async () => {

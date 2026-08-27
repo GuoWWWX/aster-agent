@@ -21,18 +21,22 @@ import type {
   ReorderConversationsInput,
   ReplaceLatestConversationMessageInput,
   RunAccepted,
+  ImportConversationAttachmentBytesInput,
   RemoveConversationAttachmentInput,
   PendingConversationMessageReferenceInput,
   ReorderPendingConversationMessagesInput,
   SetConversationArchivedInput,
   SetConversationProjectInput,
   SetConversationPinnedInput,
+  SetTeamCoordinatorInput,
   SaveModelConfigurationInput,
   TestModelConnectionInput,
   SetDefaultModelInput,
   SendConversationMessageInput,
+  SendTeamMessageInput,
   UpdatePendingConversationMessageInput
 } from "./conversation.js";
+import type { PluginCatalogEntry, SetPluginEnabledInput } from "./plugin.js";
 import type { ContextCompressionConfiguration } from "./context-compression.js";
 import type { ApplicationSettings } from "./application-settings.js";
 import type { ModelCatalog } from "./model-catalog.js";
@@ -42,12 +46,15 @@ import type {
   ProjectDirectoryListing,
   ProjectEntry,
   ProjectFile,
+  ProjectPreviewImage,
   ProjectReferenceInput,
   ReadProjectFileInput,
+  ReadProjectPreviewImageInput,
   RenameProjectInput,
   ReorderProjectsInput,
   SetProjectPinnedInput,
-  ProjectSummary
+  ProjectSummary,
+  WriteProjectFileInput
 } from "./project.js";
 import type { RuntimeInfo } from "./runtime.js";
 import type { WindowState } from "./window.js";
@@ -95,10 +102,17 @@ export interface DesktopBridge {
   chooseConversationAttachments(
     input: ConversationReferenceInput
   ): Promise<ConversationAttachment[]>;
+  importConversationAttachmentBytes(
+    input: ImportConversationAttachmentBytesInput
+  ): Promise<ConversationAttachment[]>;
   listDraftConversationAttachments(
     input: ConversationReferenceInput
   ): Promise<ConversationAttachment[]>;
   removeConversationAttachment(input: RemoveConversationAttachmentInput): Promise<void>;
+  setTeamCoordinator(input: SetTeamCoordinatorInput): Promise<void>;
+  sendTeamMessage(input: SendTeamMessageInput): Promise<ConversationMessageSubmission>;
+  listPlugins(): Promise<PluginCatalogEntry[]>;
+  setPluginEnabled(input: SetPluginEnabledInput): Promise<PluginCatalogEntry>;
   getConversationTaskList(
     input: ConversationReferenceInput
   ): Promise<ConversationTaskList | null>;
@@ -138,14 +152,18 @@ export interface DesktopBridge {
     input: ConversationReferenceInput
   ): Promise<ConversationSummary>;
   readProjectFile(input: ReadProjectFileInput): Promise<ProjectFile>;
+  writeProjectFile(input: WriteProjectFileInput): Promise<ProjectFile>;
+  readProjectPreviewImage(input: ReadProjectPreviewImageInput): Promise<ProjectPreviewImage>;
   readConfigurationWorkspaceFile(
     input: ReadConfigurationWorkspaceFileInput
   ): Promise<ConfigurationWorkspaceFile>;
   removeProject(input: ProjectReferenceInput): Promise<void>;
   minimizeWindow(): Promise<void>;
   onConversationRunEvent(listener: (event: ConversationRunEvent) => void): () => void;
+  onApplicationSettingsChanged(listener: (settings: ApplicationSettings) => void): () => void;
   toggleMaximizeWindow(): Promise<void>;
   closeWindow(): Promise<void>;
+  writeClipboardText(text: string): Promise<void>;
   renameConversation(input: RenameConversationInput): Promise<ConversationSummary>;
   reorderConversations(input: ReorderConversationsInput): Promise<ConversationSummary[]>;
   renameProject(input: RenameProjectInput): Promise<ProjectSummary>;

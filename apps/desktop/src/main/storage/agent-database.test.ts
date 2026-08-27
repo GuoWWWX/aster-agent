@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
+import { DEFAULT_AGENT_DIRECTORY_CONFIGURATION } from "@agent/protocol";
 
 import { AgentDatabase, type RunExecutionSnapshot } from "./agent-database.js";
 
@@ -46,10 +47,152 @@ describe("AgentDatabase", () => {
       .get() as Record<string, unknown>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(2);
-    expect(firstRow.name).toBe("agent-run-execution-snapshot");
+    expect(firstRow.version).toBe(6);
+    expect(firstRow.name).toBe("agent-plugin-catalog");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(2);
+    expect(migrationCount.count).toBe(6);
+  });
+
+  it("searches persisted conversation messages by bounded keyword matches", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const first = database.createRunWithUserMessage(
+      conversation.id,
+      "实现登录页",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "登录页使用 src/login.tsx，需要补充表单校验。",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: first.runId,
+      toolCalls: [],
+    });
+    database.finishRun(first.runId, "completed", null);
+    const second = database.createRunWithUserMessage(
+      conversation.id,
+      "继续处理其他页面",
+      "test-model",
+    );
+    database.finishRun(second.runId, "completed", null);
+
+    const matches = database.searchContextMessages({
+      conversationId: conversation.id,
+      excludeSequences: [
+        database.listContextMessages(conversation.id).at(-1)?.sequence ?? 0,
+      ],
+      limit: 5,
+      query: "login.tsx 表单校验",
+    });
+
+    expect(matches.some((message) => message.content.includes("src/login.tsx"))).toBe(true);
+    expect(matches.some((message) => message.content === "继续处理其他页面")).toBe(false);
+    database.close();
+  });
+
+  it("keeps the context search index synchronized across restart, edit, and deletion", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-search-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "agent.sqlite");
+    const firstDatabase = new AgentDatabase(databasePath);
+    const conversation = firstDatabase.createConversation(null);
+    const firstRun = firstDatabase.createRunWithUserMessage(
+      conversation.id,
+      "初始查询",
+      "test-model",
+    );
+    firstDatabase.appendAssistantTurn({
+      content: "工具结果已保存到旧路径。",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: firstRun.runId,
+      toolCalls: [],
+    });
+    firstDatabase.finishRun(firstRun.runId, "completed", null);
+    expect(firstDatabase.searchContextMessages({
+      conversationId: conversation.id,
+      query: "旧路径",
+    })).toHaveLength(1);
+    firstDatabase.close();
+
+    const reopenedDatabase = new AgentDatabase(databasePath);
+    expect(reopenedDatabase.searchContextMessages({
+      conversationId: conversation.id,
+      query: "旧路径",
+    })).toHaveLength(1);
+
+    const editableRun = reopenedDatabase.createRunWithUserMessage(
+      conversation.id,
+      "旧词",
+      "test-model",
+    );
+    reopenedDatabase.finishRun(editableRun.runId, "completed", null);
+    const replacement = reopenedDatabase.replaceLatestUserMessage({
+      content: "新词",
+      conversationId: conversation.id,
+      messageId: editableRun.userMessage.id,
+      modelContent: "新词",
+      modelId: "test-model",
+    });
+    reopenedDatabase.finishRun(replacement.runId, "cancelled", null);
+    expect(reopenedDatabase.searchContextMessages({
+      conversationId: conversation.id,
+      query: "旧词",
+    })).toHaveLength(0);
+    expect(reopenedDatabase.searchContextMessages({
+      conversationId: conversation.id,
+      query: "新词",
+    })).toHaveLength(1);
+
+    const deletionTask = reopenedDatabase.createConversationDeletionTask(conversation.id);
+    reopenedDatabase.completeConversationDeletionTask(deletionTask.id);
+    reopenedDatabase.close();
+
+    const rawDatabase = new DatabaseSync(databasePath);
+    const indexRows = rawDatabase
+      .prepare("SELECT COUNT(*) AS count FROM model_message_search WHERE conversation_id = ?")
+      .get(conversation.id) as { count: number };
+    rawDatabase.close();
+    expect(indexRows.count).toBe(0);
+  });
+
+  it("searches Tool Call arguments and falls back for short or invalid queries", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const run = database.createRunWithUserMessage(
+      conversation.id,
+      "读取配置",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "开始读取文件。",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: run.runId,
+      toolCalls: [{
+        arguments: JSON.stringify({ path: "src/xy.ts" }),
+        id: "call-read-config",
+        name: "read_file",
+      }],
+    });
+    database.finishRun(run.runId, "completed", null);
+
+    expect(database.searchContextMessages({
+      conversationId: conversation.id,
+      query: "src/xy.ts",
+    })).toHaveLength(1);
+    expect(database.searchContextMessages({
+      conversationId: conversation.id,
+      query: "xy",
+    })).toHaveLength(1);
+    expect(database.searchContextMessages({
+      conversationId: conversation.id,
+      query: "!!! ---",
+    })).toEqual([]);
+    database.close();
   });
 
   it("refuses to open a database from a newer schema version", async () => {
@@ -69,8 +212,77 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 2",
+      "newer than supported version 6",
     );
+  });
+
+  it("stores Team membership as SQLite relationships and routes only a bound Team Lead", () => {
+    const database = new AgentDatabase(":memory:");
+    const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
+    database.syncTeamDirectory(directory);
+
+    expect(database.listTeams().map((team) => team.id)).toEqual([
+      "release-review-team",
+      "default-team",
+    ]);
+    expect(database.listTeamMembers("default-team")).toEqual([
+      expect.objectContaining({ agentId: "team-lead", role: "" }),
+      expect.objectContaining({ agentId: "explorer", role: "项目事实调查" }),
+      expect.objectContaining({ agentId: "implementer", role: "" }),
+      expect.objectContaining({ agentId: "reviewer", role: "独立质量复核" }),
+    ]);
+
+    const lead = directory.agents.find((agent) => agent.id === "team-lead");
+    if (lead === undefined) throw new Error("Team Lead fixture is unavailable.");
+    const coordinator = database.createConversation(null, {
+      agent: {
+        id: lead.id,
+        instructions: lead.instructions,
+        isDefault: lead.isDefault,
+        name: lead.name,
+        role: lead.role,
+      },
+      teamId: "default-team",
+      threadKind: "team_lead",
+    });
+    database.setTeamCoordinatorConversation("default-team", coordinator.id);
+
+    expect(database.getTeamCoordinatorConversationId("default-team")).toBe(coordinator.id);
+    database.syncTeamDirectory({ ...directory, teams: [directory.teams[0]!] });
+    expect(database.getTeamCoordinatorConversationId("default-team")).toBe(coordinator.id);
+    expect(() => database.getTeamCoordinatorConversationId("release-review-team"))
+      .toThrow("Team was not found");
+    database.close();
+  });
+
+  it("keeps Plugin discovery data queryable without resetting a user's enabled state", () => {
+    const database = new AgentDatabase(":memory:");
+    const record = {
+      contentHash: "a".repeat(64),
+      id: "example.plugin",
+      manifestJson: '{"version":1,"id":"example.plugin"}',
+      name: "Example Plugin",
+      rootPath: "C:\\Users\\example\\.agent\\plugins\\example",
+      version: "1.0.0",
+    };
+
+    database.syncPluginCatalog([record]);
+    expect(database.listPluginCatalog()).toEqual([
+      expect.objectContaining({ ...record, enabled: true }),
+    ]);
+
+    database.setPluginEnabled(record.id, false);
+    database.syncPluginCatalog([{ ...record, contentHash: "b".repeat(64) }]);
+    expect(database.listPluginCatalog()).toEqual([
+      expect.objectContaining({
+        ...record,
+        contentHash: "b".repeat(64),
+        enabled: false,
+      }),
+    ]);
+    database.syncPluginCatalog([]);
+    expect(database.listPluginCatalog()).toEqual([]);
+    database.close();
   });
 
   it("renames and removes registered projects without touching their root path", () => {
@@ -183,6 +395,10 @@ describe("AgentDatabase", () => {
     expect(metadata.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([
       { version: 1 },
       { version: 2 },
+      { version: 3 },
+      { version: 4 },
+      { version: 5 },
+      { version: 6 },
     ]);
     metadata.close();
   });
@@ -913,9 +1129,18 @@ describe("AgentDatabase", () => {
       contextWindow: null,
       modelId: "test-model",
       permissionMode: "ask_before_changes",
+      plugins: [{
+        contentHash: "a".repeat(64),
+        id: "example.plugin",
+        version: "1.0.0",
+      }],
       providerId: null,
       reasoning: null,
       reasoningOptions: [],
+      toolManifest: [{
+        contentHash: "b".repeat(64),
+        name: "read_file",
+      }],
     };
     const queued = first.createRunWithUserMessage(
       conversation.id,
@@ -981,8 +1206,8 @@ describe("AgentDatabase", () => {
       { status: "running", title: "实现功能" },
       { status: "pending", title: "验证结果" }
     ]);
-    expect(reopenedDatabase.completeRunningTasks(conversation.id)?.tasks.map((task) => task.status))
-      .toEqual(["completed", "completed", "pending"]);
+    expect(reopenedDatabase.getTaskList(conversation.id)?.tasks.map((task) => task.status))
+      .toEqual(["completed", "running", "pending"]);
     reopenedDatabase.closeTaskList(conversation.id);
     expect(reopenedDatabase.getTaskList(conversation.id)).toBeNull();
     reopenedDatabase.close();

@@ -44,6 +44,7 @@ type SubagentToolExecution = {
 };
 
 type TaskWaiter = {
+  onResultMessagesRead: ((messageIds: readonly string[]) => void) | undefined;
   parentConversationId: string;
   resolve: (value: { status: "ready" | "timeout"; tasks: SubagentTask[] }) => void;
   taskIds: string[];
@@ -126,6 +127,7 @@ export class SubagentTool {
   public async execute(input: {
     arguments: string;
     conversationId: string;
+    onResultMessagesRead?: (messageIds: readonly string[]) => void;
     signal: AbortSignal;
     spawn: (task: string, title: string | undefined, agentId: string | undefined) => SubagentTask;
     toolName: string;
@@ -148,6 +150,7 @@ export class SubagentTool {
           const parsed = waitArgumentsSchema.parse(argumentsValue);
           const result = await this.waitForTasks({
             ...parsed,
+            onResultMessagesRead: input.onResultMessagesRead,
             parentConversationId: input.conversationId,
             signal: input.signal,
           });
@@ -180,12 +183,13 @@ export class SubagentTool {
       const tasks = this.readTasks(waiter.parentConversationId, waiter.taskIds);
       if (!this.isReady(tasks, waiter.waitFor)) continue;
       this.waiters.delete(waiter);
-      this.markResultsRead(tasks);
+      this.markResultsRead(tasks, waiter.onResultMessagesRead);
       waiter.resolve({ status: "ready", tasks });
     }
   }
 
   private async waitForTasks(input: {
+    onResultMessagesRead: ((messageIds: readonly string[]) => void) | undefined;
     parentConversationId: string;
     signal: AbortSignal;
     taskIds: string[];
@@ -194,7 +198,7 @@ export class SubagentTool {
   }): Promise<{ status: "ready" | "timeout"; tasks: SubagentTask[] }> {
     const initial = this.readTasks(input.parentConversationId, input.taskIds);
     if (this.isReady(initial, input.waitFor)) {
-      this.markResultsRead(initial);
+      this.markResultsRead(initial, input.onResultMessagesRead);
       return { status: "ready", tasks: initial };
     }
     if (input.signal.aborted) throw this.abortError(input.signal);
@@ -214,6 +218,7 @@ export class SubagentTool {
         reject(this.abortError(input.signal));
       };
       const waiter: TaskWaiter = {
+        onResultMessagesRead: input.onResultMessagesRead,
         parentConversationId: input.parentConversationId,
         resolve: finish,
         taskIds: input.taskIds,
@@ -221,7 +226,7 @@ export class SubagentTool {
       };
       const timeout = setTimeout(() => {
         const tasks = this.readTasks(input.parentConversationId, input.taskIds);
-        this.markResultsRead(tasks);
+        this.markResultsRead(tasks, input.onResultMessagesRead);
         finish({ status: "timeout", tasks });
       }, input.timeoutMs);
       this.waiters.add(waiter);
@@ -243,10 +248,13 @@ export class SubagentTool {
     return waitFor === "all" ? tasks.every(isTerminal) : tasks.some(isTerminal);
   }
 
-  private markResultsRead(tasks: readonly SubagentTask[]): void {
-    this.database.markAgentMessagesRead(
-      tasks.flatMap((task) => task.resultMessageId === null ? [] : [task.resultMessageId]),
-    );
+  private markResultsRead(
+    tasks: readonly SubagentTask[],
+    onResultMessagesRead: ((messageIds: readonly string[]) => void) | undefined,
+  ): void {
+    const messageIds = tasks.flatMap((task) => task.resultMessageId === null ? [] : [task.resultMessageId]);
+    this.database.markAgentMessagesRead(messageIds);
+    if (messageIds.length > 0) onResultMessagesRead?.(messageIds);
   }
 
   private abortError(signal: AbortSignal): Error {

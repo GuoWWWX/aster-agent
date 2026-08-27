@@ -1,0 +1,346 @@
+/* Runtime-selected provider classes and the Radix picker need CSS selectors. */
+.provider-logo {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--app-border) 88%, transparent);
+  border-radius: var(--app-radius);
+  background: color-mix(in srgb, var(--app-panel-subtle) 82%, var(--app-panel));
+  color: var(--app-foreground);
+  font-weight: 750;
+  line-height: 1;
+  user-select: none;
+}
+
+.provider-logo--small {
+  width: 24px;
+  height: 24px;
+  font-size: 9px;
+}
+
+.provider-logo--compact {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--app-radius-small);
+  font-size: 7px;
+}
+
+.provider-logo--medium {
+  width: 28px;
+  height: 28px;
+  font-size: 10px;
+}
+
+.provider-logo > svg {
+  width: 72%;
+  height: 72%;
+}
+
+.provider-logo--auto {
+  border-color: color-mix(in srgb, var(--app-accent) 30%, var(--app-border));
+  background: color-mix(in srgb, var(--app-accent) 9%, var(--app-panel));
+  color: var(--app-accent);
+}
+
+.provider-logo--openai {
+  background: #111827;
+  color: #f8fafc;
+}
+
+.provider-logo--anthropic {
+  background: #f3e8d4;
+  color: #7c4a2d;
+}
+
+.provider-logo--google {
+  background: #e8f0fe;
+  color: #2563eb;
+}
+
+.provider-logo--xai {
+  background: #111827;
+  color: #f8fafc;
+}
+
+.provider-logo--deepseek {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.provider-logo--qwen {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.provider-logo--moonshot {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.provider-logo--minimax {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.provider-logo--baidu,
+.provider-logo--meta {
+  background: #dbeafe;
+  color: #2563eb;
+}
+
+.provider-logo--mistral {
+  background: #ffedd5;
+  color: #c2410c;
+}
+
+.provider-logo--huggingface {
+  background: #fef3c7;
+  color: #ca8a04;
+}
+
+.provider-logo--ollama {
+  background: #e5e7eb;
+  color: #111827;
+}
+
+.provider-logo--modelscope,
+.provider-logo--replicate {
+  background: #e0e7ff;
+  color: #4338ca;
+}
+
+.provider-logo--zhipu {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.provider-logo--siliconflow {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.provider-logo--openrouter {
+  background: #ffedd5;
+  color: #c2410c;
+}
+
+.provider-logo--cloudflare {
+  background: #ffedd5;
+  color: #ea580c;
+}
+
+.provider-logo--nvidia {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.provider-logo--aihubmix {
+  background: #fce7f3;
+  color: #be185d;
+}
+
+.provider-logo--new-api,
+.provider-logo--one-api {
+  background: #e0e7ff;
+  color: #4338ca;
+}
+
+[data-theme="dark"] .provider-logo--openai,
+[data-theme="dark"] .provider-logo--xai {
+  background: #f8fafc;
+  color: #111827;
+}
+
+[data-theme="dark"] .provider-logo--anthropic {
+  background: #5a3d2b;
+  color: #f7e7d0;
+}
+
+[data-theme="dark"] .provider-logo--google {
+  background: #1e3a8a;
+  color: #bfdbfe;
+}
+
+[data-theme="dark"] .provider-logo--deepseek,
+[data-theme="dark"] .provider-logo--zhipu {
+  background: #1e3a8a;
+  color: #bfdbfe;
+}
+
+[data-theme="dark"] .provider-logo--qwen {
+  background: #78350f;
+  color: #fde68a;
+}
+
+[data-theme="dark"] .provider-logo--moonshot {
+  background: #4c1d95;
+  color: #ddd6fe;
+}
+
+[data-theme="dark"] .provider-logo--minimax,
+[data-theme="dark"] .provider-logo--huggingface {
+  background: #78350f;
+  color: #fde68a;
+}
+
+[data-theme="dark"] .provider-logo--baidu,
+[data-theme="dark"] .provider-logo--meta {
+  background: #1e3a8a;
+  color: #bfdbfe;
+}
+
+[data-theme="dark"] .provider-logo--mistral,
+[data-theme="dark"] .provider-logo--cloudflare {
+  background: #7c2d12;
+  color: #fed7aa;
+}
+
+[data-theme="dark"] .provider-logo--ollama {
+  background: #e5e7eb;
+  color: #111827;
+}
+
+[data-theme="dark"] .provider-logo--modelscope,
+[data-theme="dark"] .provider-logo--replicate {
+  background: #312e81;
+  color: #c7d2fe;
+}
+
+[data-theme="dark"] .provider-logo--nvidia {
+  background: #14532d;
+  color: #bbf7d0;
+}
+
+.provider-icon-picker__trigger {
+  display: inline-flex;
+  width: 100%;
+  max-width: 100%;
+  height: 32px;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  outline: none;
+  background: var(--app-panel);
+  color: var(--app-foreground);
+  padding: 0 6px;
+  text-align: left;
+}
+
+.provider-icon-picker__trigger:hover,
+.provider-icon-picker__trigger[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--app-accent) 48%, var(--app-border));
+  background: color-mix(in srgb, var(--app-accent) 6%, var(--app-panel));
+}
+
+.provider-icon-picker__trigger:focus-visible,
+.provider-icon-picker__option:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: 1px;
+}
+
+.provider-icon-picker__trigger > span {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--app-font-size-control);
+  font-weight: 650;
+}
+
+.provider-icon-picker__trigger > svg {
+  flex: 0 0 auto;
+  color: var(--app-muted-foreground);
+}
+
+.provider-icon-picker__content {
+  width: min(408px, calc(100vw - 24px));
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-panel);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.16);
+  padding: 5px;
+}
+
+.provider-icon-picker__options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  max-height: min(312px, var(--radix-popover-content-available-height));
+  overflow-y: auto;
+  padding: 1px;
+}
+
+.provider-icon-picker__option {
+  display: flex;
+  min-width: 0;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: var(--app-radius);
+  outline: none;
+  background: transparent;
+  color: var(--app-foreground);
+  padding: 4px 6px;
+  text-align: left;
+}
+
+.provider-icon-picker__option:hover,
+.provider-icon-picker__option[data-selected="true"] {
+  background: var(--app-hover);
+}
+
+.provider-icon-picker__option[data-selected="true"] {
+  border-color: color-mix(in srgb, var(--app-accent) 38%, var(--app-border));
+}
+
+.provider-icon-picker__option > span:not(.provider-logo) {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--app-font-size-control);
+  font-weight: 600;
+}
+
+.provider-icon-picker__option > svg {
+  flex: 0 0 auto;
+  visibility: hidden;
+  color: var(--app-accent);
+}
+
+.provider-icon-picker__option[data-selected="true"] > svg {
+  visibility: visible;
+}
+
+@media (max-width: 460px) {
+  .provider-icon-picker__options {
+    grid-template-columns: 1fr;
+  }
+}
+
+[data-theme="dark"] .provider-logo--siliconflow {
+  background: #14532d;
+  color: #bbf7d0;
+}
+
+[data-theme="dark"] .provider-logo--openrouter {
+  background: #7c2d12;
+  color: #fed7aa;
+}
+
+[data-theme="dark"] .provider-logo--aihubmix {
+  background: #831843;
+  color: #fbcfe8;
+}
+
+[data-theme="dark"] .provider-logo--new-api,
+[data-theme="dark"] .provider-logo--one-api {
+  background: #312e81;
+  color: #c7d2fe;
+}

@@ -196,6 +196,46 @@ describe("ProjectRegistry", () => {
     ).rejects.toThrow();
   });
 
+  it("reads bounded Markdown preview images relative to the source file", async () => {
+    const rootPath = await createProjectFixture();
+    await mkdir(path.join(rootPath, "docs"), { recursive: true });
+    await writeFile(path.join(rootPath, "docs", "diagram.png"), Buffer.from([1, 2, 3, 4]));
+    const registry = new ProjectRegistry();
+    const project = await registry.registerDirectory(rootPath);
+
+    await expect(registry.readPreviewImage({
+      path: "./diagram.png?cache=1",
+      projectId: project.id,
+      sourcePath: "docs/README.md",
+    })).resolves.toEqual({
+      data: Buffer.from([1, 2, 3, 4]).toString("base64"),
+      mimeType: "image/png",
+    });
+    await expect(registry.readPreviewImage({
+      path: "https://example.com/diagram.png",
+      projectId: project.id,
+      sourcePath: "docs/README.md",
+    })).rejects.toThrow();
+    await expect(registry.readPreviewImage({
+      path: "../outside.png",
+      projectId: project.id,
+      sourcePath: "README.md",
+    })).rejects.toThrow();
+  });
+
+  it("rejects preview images larger than the IPC limit", async () => {
+    const rootPath = await createProjectFixture();
+    await writeFile(path.join(rootPath, "large.png"), Buffer.alloc(8 * 1024 * 1024 + 1));
+    const registry = new ProjectRegistry();
+    const project = await registry.registerDirectory(rootPath);
+
+    await expect(registry.readPreviewImage({
+      path: "large.png",
+      projectId: project.id,
+      sourcePath: "README.md",
+    })).rejects.toThrow(/size limit/i);
+  });
+
   it("creates files and directories without overwriting existing entries", async () => {
     const rootPath = await createProjectFixture();
     const registry = new ProjectRegistry();

@@ -44,11 +44,13 @@ export {
   conversationTimelineItemSchema,
   conversationTimelineResponseSchema,
   conversationToolItemSchema,
+  conversationToolExecutionModeSchema,
   conversationWorkspaceSelectionResponseSchema,
   createConversationInputSchema,
   discoverModelsInputSchema,
   discoveredModelSchema,
   getModelApiKeyInputSchema,
+  importConversationAttachmentBytesInputSchema,
   isGemini3ReasoningModel,
   isGpt56ReasoningModel,
   isReasoningOptionEnabled,
@@ -58,6 +60,7 @@ export {
   modelConnectionStatusSchema,
   modelConnectionTestResultSchema,
   modelProfileSchema,
+  modelProviderIconSchema,
   modelReasoningEffortSchema,
   modelReasoningOptionKey,
   modelReasoningOptionSchema,
@@ -79,6 +82,8 @@ export {
   setConversationProjectInputSchema,
   setConversationPinnedInputSchema,
   sendConversationMessageInputSchema,
+  sendTeamMessageInputSchema,
+  setTeamCoordinatorInputSchema,
   updatePendingConversationMessageInputSchema
 } from "./conversation.js";
 export type {
@@ -108,6 +113,7 @@ export type {
   ConversationTaskStatus,
   ConversationTimelineItem,
   ConversationToolItem,
+  ConversationToolExecutionMode,
   CreateConversationInput,
   DiscoverModelsInput,
   DiscoveredModel,
@@ -117,6 +123,7 @@ export type {
   ModelConnectionStatus,
   ModelConnectionTestResult,
   ModelRuntimeStatus,
+  ModelProviderIcon,
   ModelReasoningEffort,
   ModelReasoningOption,
   PendingConversationMessageReferenceInput,
@@ -126,6 +133,7 @@ export type {
   ReorderConversationsInput,
   RenameConversationInput,
   RemoveConversationAttachmentInput,
+  ImportConversationAttachmentBytesInput,
   RunAccepted,
   SaveModelConfigurationInput,
   TestModelConnectionInput,
@@ -134,6 +142,8 @@ export type {
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SendConversationMessageInput,
+  SendTeamMessageInput,
+  SetTeamCoordinatorInput,
   UpdatePendingConversationMessageInput
 } from "./conversation.js";
 export {
@@ -141,6 +151,13 @@ export {
   estimateContextTokens,
 } from "./context-token-estimator.js";
 export type { DesktopBridge } from "./desktop-bridge.js";
+export {
+  pluginCatalogEntrySchema,
+  pluginCatalogListSchema,
+  pluginIdSchema,
+  setPluginEnabledInputSchema,
+} from "./plugin.js";
+export type { PluginCatalogEntry, SetPluginEnabledInput } from "./plugin.js";
 export {
   DEFAULT_MODEL_CATALOG,
   modelCatalogPatternMatches,
@@ -167,6 +184,9 @@ export {
   agentAvatarSchema,
   agentCapabilityScopeSchema,
   agentDirectoryConfigurationSchema,
+  agentPermissionRuleSchema,
+  agentPermissionToolSchema,
+  agentPermissionsSchema,
   agentModelStrategySchema,
   agentProfileSchema,
   agentStatusSchema,
@@ -186,6 +206,9 @@ export type {
   AgentAvatarIcon,
   AgentCapabilityScope,
   AgentDirectoryConfiguration,
+  AgentPermissionRule,
+  AgentPermissionTool,
+  AgentPermissions,
   AgentModelStrategy,
   AgentProfile,
   AgentStatus,
@@ -275,6 +298,7 @@ export {
   approveToolChangeIpcArgumentsSchema,
   applicationSettingsIpcArgumentsSchema,
   cancelRunIpcArgumentsSchema,
+  clipboardWriteTextIpcArgumentsSchema,
   createSkillDocumentIpcArgumentsSchema,
   createConfigurationWorkspaceEntryIpcArgumentsSchema,
   contextCompressionConfigurationIpcArgumentsSchema,
@@ -292,11 +316,13 @@ export {
   emptyIpcArgumentsSchema,
   getModelApiKeyIpcArgumentsSchema,
   integrationConfigurationIpcArgumentsSchema,
+  importConversationAttachmentBytesIpcArgumentsSchema,
   IPC_CHANNELS,
   listProjectEntriesIpcArgumentsSchema,
   listConfigurationWorkspaceEntriesIpcArgumentsSchema,
   projectReferenceIpcArgumentsSchema,
   readProjectFileIpcArgumentsSchema,
+  readProjectPreviewImageIpcArgumentsSchema,
   readConfigurationWorkspaceFileIpcArgumentsSchema,
   reorderConversationsIpcArgumentsSchema,
   reorderProjectsIpcArgumentsSchema,
@@ -304,6 +330,9 @@ export {
   setProjectPinnedIpcArgumentsSchema,
   renameConversationIpcArgumentsSchema,
   saveModelConfigurationIpcArgumentsSchema,
+  sendTeamMessageIpcArgumentsSchema,
+  setTeamCoordinatorIpcArgumentsSchema,
+  setPluginEnabledIpcArgumentsSchema,
   testModelConnectionIpcArgumentsSchema,
   setDefaultModelIpcArgumentsSchema,
   setConversationArchivedIpcArgumentsSchema,
@@ -313,6 +342,7 @@ export {
   skillDocumentReferenceIpcArgumentsSchema,
   skillDocumentSaveIpcArgumentsSchema,
   writeConfigurationWorkspaceFileIpcArgumentsSchema,
+  writeProjectFileIpcArgumentsSchema,
   sendConversationMessageIpcArgumentsSchema,
   updatePendingConversationMessageIpcArgumentsSchema,
   voidIpcResponseSchema
@@ -328,14 +358,17 @@ export {
   projectEntrySchema,
   projectIdSchema,
   projectListResponseSchema,
+  projectPreviewImageSchema,
   projectReferenceInputSchema,
   projectFileSchema,
   readProjectFileInputSchema,
+  readProjectPreviewImageInputSchema,
   reorderProjectsInputSchema,
   renameProjectInputSchema,
   setProjectPinnedInputSchema,
   projectSummarySchema,
-  relativeProjectPathSchema
+  relativeProjectPathSchema,
+  writeProjectFileInputSchema
 } from "./project.js";
 export type {
   CreateProjectEntryInput,
@@ -345,8 +378,11 @@ export type {
   ProjectEntryKind,
   JavaDeclarationKind,
   ProjectFile,
+  ProjectPreviewImage,
   ProjectReferenceInput,
   ReadProjectFileInput,
+  ReadProjectPreviewImageInput,
+  WriteProjectFileInput,
   ReorderProjectsInput,
   RenameProjectInput,
   SetProjectPinnedInput,

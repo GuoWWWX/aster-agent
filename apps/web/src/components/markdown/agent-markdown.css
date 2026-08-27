@@ -316,7 +316,6 @@
   min-width: 96px;
   padding: 6px 10px;
   border: 1px solid var(--agent-md-table-border);
-  text-align: left;
   vertical-align: top;
 }
 
@@ -324,6 +323,11 @@
   background: var(--agent-md-table-heading-bg);
   color: var(--agent-md-table-heading-text);
   font-weight: 600;
+  text-align: center;
+}
+
+.agent-markdown td {
+  text-align: left;
 }
 
 .agent-markdown tbody tr:nth-child(even) {

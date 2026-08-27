@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ModelApiFormat } from "@agent/protocol";
 
 vi.mock("electron", () => ({
   safeStorage: {
@@ -12,8 +13,57 @@ vi.mock("electron", () => ({
 }));
 
 import { ModelCredentialStore } from "./model-credential-store.js";
+import { ModelResponseError } from "./model-request-error.js";
 
 const temporaryDirectories: string[] = [];
+
+type ConnectionTestCase = {
+  apiFormat: ModelApiFormat;
+  baseUrl: string;
+  expectedEndpoint: string;
+  expectedHeader: readonly [name: string, value: string];
+  requestBodyFragment: string;
+  responseBody: string;
+};
+
+const CONNECTION_TEST_CASES = [
+  {
+    apiFormat: "openai-chat-completions",
+    baseUrl: "https://example.test/v1",
+    expectedEndpoint: "https://example.test/v1/chat/completions",
+    expectedHeader: ["authorization", "Bearer test-key"],
+    requestBodyFragment: '"messages"',
+    responseBody: 'data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+  },
+  {
+    apiFormat: "openai-responses",
+    baseUrl: "https://example.test/v1",
+    expectedEndpoint: "https://example.test/v1/responses",
+    expectedHeader: ["authorization", "Bearer test-key"],
+    requestBodyFragment: '"input"',
+    responseBody: 'data: {"type":"response.output_text.delta","delta":"hello"}\n\ndata: {"type":"response.completed","response":{"id":"resp-1","model":"test-model","output":[{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n',
+  },
+  {
+    apiFormat: "anthropic-messages",
+    baseUrl: "https://example.test/v1",
+    expectedEndpoint: "https://example.test/v1/messages",
+    expectedHeader: ["x-api-key", "test-key"],
+    requestBodyFragment: '"messages"',
+    responseBody: 'event: message_start\ndata: {"type":"message_start","message":{"id":"msg-1","type":"message","role":"assistant","content":[],"model":"claude-test","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}\n\nevent: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hello"}}\n\nevent: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n',
+  },
+  {
+    apiFormat: "google-gemini",
+    baseUrl: "https://example.test/v1beta",
+    expectedEndpoint: "https://example.test/v1beta/models/test-model:streamGenerateContent?alt=sse",
+    expectedHeader: ["x-goog-api-key", "test-key"],
+    requestBodyFragment: '"contents"',
+    responseBody: 'data: {"candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}]}\n\n',
+  },
+] as const satisfies readonly ConnectionTestCase[];
+
+function requestHeader(init: RequestInit | undefined, name: string): string | null {
+  return new Headers(init?.headers).get(name);
+}
 
 afterEach(async () => {
   vi.unstubAllGlobals();
@@ -25,7 +75,52 @@ afterEach(async () => {
 });
 
 describe("ModelCredentialStore", () => {
-  it("sends hi to a configured model and returns its reply", async () => {
+  it.each(CONNECTION_TEST_CASES)("tests a configured $apiFormat model through its adapter", async ({
+    apiFormat,
+    baseUrl,
+    expectedEndpoint,
+    expectedHeader,
+    requestBodyFragment,
+    responseBody,
+  }) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-credentials-"));
+    temporaryDirectories.push(directory);
+    const store = new ModelCredentialStore(path.join(directory, "model-credentials.json"));
+    const status = store.saveConfiguration({
+      apiKey: "test-key",
+      apiFormat,
+      baseUrl,
+      models: [{
+        contextWindow: 128_000,
+        displayName: "测试模型",
+        modelId: "test-model",
+        reasoningOptions: [],
+      }],
+      providerName: "测试供应商",
+    });
+    const providerId = status.providerId;
+    if (providerId === null) throw new Error("Expected a saved provider.");
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(responseBody,
+      { headers: { "Content-Type": "text/event-stream" }, status: 200 },
+    ));
+    vi.stubGlobal("fetch", request);
+
+    await expect(store.testModelConnection(providerId, "test-model")).resolves.toEqual({
+      content: "hello",
+      modelId: "test-model",
+    });
+    expect(store.getStatus().models).toEqual([
+      expect.objectContaining({ connectionStatus: "healthy", modelId: "test-model" }),
+    ]);
+    const requestCall = request.mock.calls[0];
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(requestCall?.[0]).toBe(expectedEndpoint);
+    expect(requestCall?.[1]?.method).toBe("POST");
+    expect(requestHeader(requestCall?.[1], expectedHeader[0])).toBe(expectedHeader[1]);
+    expect(requestCall?.[1]?.body).toContain(requestBodyFragment);
+  });
+
+  it("marks an empty model reply as a model-response failure", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-credentials-"));
     temporaryDirectories.push(directory);
     const store = new ModelCredentialStore(path.join(directory, "model-credentials.json"));
@@ -43,23 +138,16 @@ describe("ModelCredentialStore", () => {
     });
     const providerId = status.providerId;
     if (providerId === null) throw new Error("Expected a saved provider.");
-    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(
-      'data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
       { headers: { "Content-Type": "text/event-stream" }, status: 200 },
-    ));
-    vi.stubGlobal("fetch", request);
+    )));
 
-    await expect(store.testModelConnection(providerId, "test-model")).resolves.toEqual({
-      content: "hello",
-      modelId: "test-model",
-    });
+    await expect(store.testModelConnection(providerId, "test-model"))
+      .rejects.toBeInstanceOf(ModelResponseError);
     expect(store.getStatus().models).toEqual([
-      expect.objectContaining({ connectionStatus: "healthy", modelId: "test-model" }),
+      expect.objectContaining({ connectionStatus: "error", modelId: "test-model" }),
     ]);
-    const requestCall = request.mock.calls[0];
-    expect(requestCall?.[0]).toBe("https://example.test/v1/chat/completions");
-    expect(requestCall?.[1]?.method).toBe("POST");
-    expect(requestCall?.[1]?.body).toContain('"content":"hi!"');
   });
 
   it("migrates an existing configuration and preserves it when another provider is saved", async () => {
@@ -141,6 +229,36 @@ describe("ModelCredentialStore", () => {
       modelId: "legacy-model",
       providerId: "00000000-0000-4000-8000-000000000001"
     });
+  });
+
+  it("persists a provider icon across a fresh credential-store instance", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-credentials-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "model-credentials.json");
+    const store = new ModelCredentialStore(configurationPath);
+
+    store.saveConfiguration({
+      apiKey: "test-key",
+      apiFormat: "openai-responses",
+      baseUrl: "https://example.test/v1",
+      models: [{
+        contextWindow: 128_000,
+        displayName: "测试模型",
+        modelId: "test-model",
+        reasoningOptions: [],
+      }],
+      providerIcon: "openrouter",
+      providerName: "测试供应商",
+    });
+
+    expect(store.getStatus().models).toEqual([
+      expect.objectContaining({ providerIcon: "openrouter" }),
+    ]);
+    const restored = new ModelCredentialStore(configurationPath);
+    expect(restored.getStatus().models).toEqual([
+      expect.objectContaining({ providerIcon: "openrouter" }),
+    ]);
+    await expect(readFile(configurationPath, "utf8")).resolves.toContain('"icon": "openrouter"');
   });
 
   it("changes the global default separately and falls back when its model is removed", async () => {

@@ -76,6 +76,27 @@ renderer.renderer.rules.link_open = (tokens, index, options, environment, self) 
     : defaultLinkOpen(tokens, index, options, environment, self);
 };
 
+// MarkdownIt derives inline alignment styles from the separator row. The chat
+// renderer uses a fixed table contract instead: centered headers and left body
+// cells, regardless of alignment markers in the source Markdown.
+const defaultTableHeaderOpen = renderer.renderer.rules.th_open;
+renderer.renderer.rules.th_open = (tokens, index, options, environment, self) => {
+  const token = tokens[index];
+  if (token?.attrs) token.attrs = token.attrs.filter(([name]) => name !== "style");
+  return defaultTableHeaderOpen === undefined
+    ? self.renderToken(tokens, index, options)
+    : defaultTableHeaderOpen(tokens, index, options, environment, self);
+};
+
+const defaultTableCellOpen = renderer.renderer.rules.td_open;
+renderer.renderer.rules.td_open = (tokens, index, options, environment, self) => {
+  const token = tokens[index];
+  if (token?.attrs) token.attrs = token.attrs.filter(([name]) => name !== "style");
+  return defaultTableCellOpen === undefined
+    ? self.renderToken(tokens, index, options)
+    : defaultTableCellOpen(tokens, index, options, environment, self);
+};
+
 renderer.renderer.rules.fence = (tokens, index) => {
   const token = tokens[index];
   const language = token?.info.trim().split(/\s+/)[0] || "text";

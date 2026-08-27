@@ -312,6 +312,22 @@ describe("LangChainModelAdapter", () => {
     }]);
   });
 
+  it.each([
+    "openai-chat-completions",
+    "openai-responses",
+  ] as ModelApiFormat[])("requests provider-side parallel tool calls for %s", async (apiFormat) => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse(successChunks(apiFormat)));
+    const adapter = new LangChainModelAdapter(apiFormat, request);
+    await adapter.completeTurn(inputFor(apiFormat, {
+      tools: [{
+        description: "Read a file",
+        name: "read_file",
+        parameters: { properties: { path: { type: "string" } }, type: "object" },
+      }],
+    }));
+    expect(recordBody(request).parallel_tool_calls).toBe(true);
+  });
+
   it("preserves multiple tool calls from one assistant turn", async () => {
     const model = new FakeStreamingChatModel({
       sleep: 0,
@@ -543,6 +559,24 @@ describe("LangChainModelAdapter", () => {
     await new LangChainModelAdapter("anthropic-messages", request).completeTurn(input);
 
     expect(request.mock.calls[0]?.[0]).toBe("https://example.test/gateway/v1/messages");
+  });
+
+  it("accepts Responses output_text parts without optional annotations", async () => {
+    const outputItemDone = 'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}}\n\n';
+    const completed = 'data: {"type":"response.completed","response":{"id":"resp-1","model":"test-model","output":[{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n';
+    const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse([
+      'data: {"type":"response.output_text.delta","delta":"ok"}\n\n',
+      outputItemDone.slice(0, 80),
+      outputItemDone.slice(80),
+      completed.slice(0, 80),
+      completed.slice(80),
+    ]));
+
+    const result = await new LangChainModelAdapter("openai-responses", request)
+      .completeTurn(inputFor("openai-responses"));
+
+    expect(result.content).toBe("ok");
+    expect(result.toolCalls).toEqual([]);
   });
 
   it("replays OpenAI Responses output items through LangChain metadata", async () => {

@@ -34,8 +34,10 @@ import type {
   ProjectDirectoryListing,
   ProjectEntry,
   ProjectFile,
+  ProjectPreviewImage,
   ProjectReferenceInput,
   ReadProjectFileInput,
+  ReadProjectPreviewImageInput,
   ReadConfigurationWorkspaceFileInput,
   ReorderConversationsInput,
   ReplaceLatestConversationMessageInput,
@@ -62,11 +64,13 @@ import type {
   SkillDocumentSaveInput,
   TerminalConfiguration,
   WriteConfigurationWorkspaceFileInput,
+  WriteProjectFileInput,
   WindowState,
 } from "@agent/protocol";
 
 export type WindowStateListener = (state: WindowState) => void;
 export type ConversationRunEventListener = (event: ConversationRunEvent) => void;
+export type ApplicationSettingsListener = (settings: ApplicationSettings) => void;
 
 /**
  * Renderer-facing runtime port. UI code talks only to this contract so the
@@ -81,6 +85,7 @@ export interface AgentClient {
   approveToolChange(input: ApproveToolChangeInput): Promise<void>;
   cancelRun(input: CancelRunInput): Promise<void>;
   closeWindow(): Promise<void>;
+  writeClipboardText(text: string): Promise<void>;
   createConversation(input: CreateConversationInput): Promise<ConversationSummary>;
   selectConversationWorkspace(
     input: ConversationReferenceInput,
@@ -143,12 +148,15 @@ export interface AgentClient {
   ): Promise<ConfigurationWorkspaceDirectoryListing>;
   listProjects(): Promise<ProjectSummary[]>;
   readProjectFile(input: ReadProjectFileInput): Promise<ProjectFile>;
+  writeProjectFile(input: WriteProjectFileInput): Promise<ProjectFile>;
+  readProjectPreviewImage(input: ReadProjectPreviewImageInput): Promise<ProjectPreviewImage>;
   readConfigurationWorkspaceFile(
     input: ReadConfigurationWorkspaceFileInput,
   ): Promise<ConfigurationWorkspaceFile>;
   removeProject(input: ProjectReferenceInput): Promise<void>;
   minimizeWindow(): Promise<void>;
   onConversationRunEvent(listener: ConversationRunEventListener): () => void;
+  onApplicationSettingsChanged(listener: ApplicationSettingsListener): () => void;
   onWindowStateChanged(listener: WindowStateListener): () => void;
   renameConversation(input: {
     conversationId: string;

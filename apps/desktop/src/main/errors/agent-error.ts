@@ -54,9 +54,36 @@ function errorStatus(reason: unknown): number | null {
 }
 
 function errorCode(reason: unknown): string | null {
-  if (reason === null || typeof reason !== "object") return null;
-  const code = (reason as { code?: unknown }).code;
-  return typeof code === "string" ? code : null;
+  const seen = new Set<object>();
+  let current: unknown = reason;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (current === null || typeof current !== "object") return null;
+    if (seen.has(current)) return null;
+    seen.add(current);
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+function isGraphRecursionLimit(reason: unknown): boolean {
+  const seen = new Set<object>();
+  let current: unknown = reason;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (current === null || typeof current !== "object" || seen.has(current)) return false;
+    seen.add(current);
+    const record = current as {
+      cause?: unknown;
+      lc_error_code?: unknown;
+      name?: unknown;
+    };
+    if (record.lc_error_code === "GRAPH_RECURSION_LIMIT" || record.name === "GraphRecursionError") {
+      return true;
+    }
+    current = record.cause;
+  }
+  return false;
 }
 
 function validationFailureMessage(reason: unknown): string | null {
@@ -128,7 +155,11 @@ function technicalErrorDetail(
   return detail.length === 0 ? null : detail.slice(0, 600);
 }
 
-function classifyError(reason: unknown, message: string): ErrorClassification {
+function classifyError(
+  reason: unknown,
+  message: string,
+  operation: string,
+): ErrorClassification {
   const status = errorStatus(reason);
   const name = reason instanceof Error ? reason.name : "";
   const nodeCode = errorCode(reason);
@@ -138,6 +169,17 @@ function classifyError(reason: unknown, message: string): ErrorClassification {
   }
   if (nodeCode === "TOOL_ARGUMENTS_INVALID") {
     return classificationForCode("VALIDATION_FAILED");
+  }
+  if (isGraphRecursionLimit(reason)) {
+    return classificationForCode("MODEL_RESPONSE_INVALID");
+  }
+  if (
+    nodeCode === "MODEL_RESPONSE_INVALID"
+    || nodeCode === "MODEL_CALL_LIMIT_EXCEEDED"
+    || nodeCode === "MODEL_TOOL_CALLS_INVALID"
+    || nodeCode === "TOOL_CALL_LIMIT_EXCEEDED"
+  ) {
+    return classificationForCode("MODEL_RESPONSE_INVALID");
   }
   if (nodeCode === "FILE_CHANGED") return classificationForCode("FILE_CHANGED");
   if (nodeCode === "PROJECT_OPERATION_CONFLICT") return classificationForCode("CONFLICT");
@@ -149,6 +191,13 @@ function classifyError(reason: unknown, message: string): ErrorClassification {
     if (status === 402 || status === 429) return classificationForCode("MODEL_RATE_LIMITED");
     if (status === 408 || status === 504) return classificationForCode("MODEL_TIMEOUT");
     if (status !== null && status >= 500) return classificationForCode("MODEL_PROVIDER_UNAVAILABLE");
+    return classificationForCode("MODEL_RESPONSE_INVALID");
+  }
+  if (
+    (operation === "agent.run" || operation.startsWith("ipc:model.") || operation.startsWith("model."))
+    && reason instanceof TypeError
+    && /cannot read properties of (?:undefined|null) \(reading '[^']+'\)/iu.test(message)
+  ) {
     return classificationForCode("MODEL_RESPONSE_INVALID");
   }
   if (reason instanceof TypeError && /fetch|network|socket|connect|econn/iu.test(message)) {
@@ -223,7 +272,7 @@ export function toMainAgentError(
     errorMessage(reason),
     context.redactValues,
   );
-  const classification = classifyError(reason, sanitizedMessage);
+  const classification = classifyError(reason, sanitizedMessage, context.operation);
   const status = errorStatus(reason);
   const providerMessage = providerErrorDetail(sanitizedMessage, status, classification.code);
   const technicalMessage = technicalErrorDetail(reason, sanitizedMessage, classification.code);

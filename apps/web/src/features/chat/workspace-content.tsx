@@ -18,6 +18,7 @@ import {
   GitFork,
   Image as ImageIcon,
   LoaderCircle,
+  List,
   ListEnd,
   ListTodo,
   MessageSquareText,
@@ -27,6 +28,7 @@ import {
   Send,
   SendHorizontal,
   ShieldCheck,
+  SlidersHorizontal,
   Square,
   SquarePen,
   Terminal,
@@ -57,6 +59,7 @@ import { createPortal } from "react-dom";
 
 import type {
   ContextCompressionConfiguration,
+  ApproveToolChangeInput,
   ConversationAttachment,
   ConversationMessageDeliveryMode,
   ConversationMessageItem,
@@ -68,6 +71,7 @@ import type {
   ConversationTaskList,
   ConversationTimelineItem,
   ConversationToolItem,
+  ModelReasoningOption,
   ModelProfile,
   ModelRuntimeStatus,
   ProjectEntry,
@@ -82,6 +86,17 @@ import {
 
 import { IconButton } from "../../components/ui/icon-button.js";
 import { AgentMarkdown } from "../../components/markdown/agent-markdown.js";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "../../components/ui/popover.js";
+import {
+  Slider,
+  SliderRange,
+  SliderThumb,
+  SliderTrack,
+} from "../../components/ui/slider.js";
 import {
   Select,
   SelectContent,
@@ -100,10 +115,11 @@ import type { ProjectSession } from "../projects/project-session-model.js";
 import { ConversationProjectPicker } from "../projects/conversation-project-picker.js";
 import { ModelProfilePicker } from "../settings/model-profile-picker.js";
 import { SettingsWorkspace } from "../settings/settings-workspace.js";
-import { reasoningOptionLabel } from "../settings/model-reasoning-options.js";
+import { reasoningOptionDisplayName } from "../settings/model-reasoning-options.js";
 import { TaskWorkspace } from "../tasks/task-workspace.js";
 import { AgentAvatar } from "../team/agent-avatar.js";
 import { TeamWorkspace } from "../team/team-workspace.js";
+import { formatConversationRunMarkdown } from "./conversation-copy.js";
 import { ContextUsageIndicator } from "./context-usage-indicator.js";
 import { isConversationScrolledToBottom } from "./conversation-scroll.js";
 import {
@@ -151,6 +167,15 @@ type ModelActivity = {
   retryInMs?: number;
   runId: string | null;
   status: "thinking" | "retrying";
+};
+
+type LiveToolOutput = {
+  exitCode: number | null;
+  stderr: string;
+  stdout: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  timedOut: boolean;
+  truncated: boolean;
 };
 
 type RunProgress = {
@@ -203,6 +228,161 @@ const SLASH_COMMANDS = [
 ] as const;
 
 type SlashCommand = (typeof SLASH_COMMANDS)[number];
+
+type ConversationReasoningControlProps = {
+  disabled: boolean;
+  onValueChange: (value: string) => void;
+  options: readonly ModelReasoningOption[];
+  selectedKey: string;
+};
+
+function ConversationReasoningControl({
+  disabled,
+  onValueChange,
+  options,
+  selectedKey,
+}: ConversationReasoningControlProps): ReactElement {
+  const [mode, setMode] = useState<"slider" | "list">("slider");
+  const [open, setOpen] = useState(false);
+  const selectedOption = options.find(
+    (option) => modelReasoningOptionKey(option) === selectedKey,
+  );
+  const selectedIndex = selectedOption === undefined
+    ? 0
+    : options.findIndex((option) => modelReasoningOptionKey(option) === selectedKey) + 1;
+  const progress = options.length === 0 ? 0 : (selectedIndex / options.length) * 100;
+  const displayName = selectedOption === undefined
+    ? "自动"
+    : reasoningOptionDisplayName(selectedOption);
+  const isDisabled = disabled || options.length === 0;
+  const sliderStyle = {
+    "--reasoning-fill": `color-mix(in srgb, var(--app-accent) ${100 - progress}%, var(--app-foreground) ${progress}%)`,
+  } as CSSProperties;
+  const labels = [
+    "自动",
+    ...options.map((option) => reasoningOptionDisplayName(option)),
+  ];
+
+  const selectSliderValue = (value: string): void => {
+    const index = Number(value);
+    const option = options[index - 1];
+    onValueChange(option === undefined ? "auto" : modelReasoningOptionKey(option));
+  };
+
+  const selectReasoningOption = (value: string): void => {
+    onValueChange(value);
+    setOpen(false);
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          aria-label={`思考程度：${displayName}`}
+          className="conversation-workspace__reasoning-trigger"
+          disabled={isDisabled}
+          title={`思考程度：${displayName}`}
+          type="button"
+        >
+          <span>{displayName}</span>
+          <ChevronDown aria-hidden="true" size={13} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        alignOffset={5}
+        className="conversation-workspace__reasoning-popover"
+        side="top"
+        sideOffset={8}
+      >
+        <header className="conversation-workspace__reasoning-popover-header">
+          <span>
+            <strong>思考程度</strong>
+            <small>{displayName}</small>
+          </span>
+          <IconButton
+            className="conversation-workspace__reasoning-mode-toggle"
+            label={mode === "slider" ? "切换为列表选择" : "切换为滑块选择"}
+            size="compact"
+            variant="quiet"
+            onClick={() => setMode((current) => current === "slider" ? "list" : "slider")}
+          >
+            {mode === "slider"
+              ? <List aria-hidden="true" size={14} />
+              : <SlidersHorizontal aria-hidden="true" size={14} />}
+          </IconButton>
+        </header>
+        {mode === "slider" ? (
+          <div className="conversation-workspace__reasoning-slider-panel">
+            <Slider
+              aria-label="思考程度"
+              className="conversation-workspace__reasoning-slider"
+              disabled={isDisabled}
+              max={Math.max(options.length, 1)}
+              min={0}
+              step={1}
+              style={sliderStyle}
+              value={[selectedIndex]}
+              onValueChange={(values) => selectSliderValue(String(values[0] ?? 0))}
+            >
+              <SliderTrack className="conversation-workspace__reasoning-track">
+                <SliderRange className="conversation-workspace__reasoning-range" />
+              </SliderTrack>
+              <SliderThumb
+                aria-label="思考程度"
+                aria-valuetext={displayName}
+                className="conversation-workspace__reasoning-thumb"
+              />
+            </Slider>
+            <div
+              className="conversation-workspace__reasoning-scale"
+              style={{ gridTemplateColumns: `repeat(${labels.length}, minmax(0, 1fr))` }}
+            >
+              {labels.map((label, index) => (
+                <span
+                  className={index === selectedIndex ? "is-selected" : undefined}
+                  key={`${label}-${index}`}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="conversation-workspace__reasoning-option-list" role="listbox" aria-label="思考程度选项">
+            <button
+              aria-selected={selectedOption === undefined}
+              className={selectedOption === undefined ? "is-selected" : undefined}
+              role="option"
+              type="button"
+              onClick={() => selectReasoningOption("auto")}
+            >
+              <span>自动</span>
+              {selectedOption === undefined ? <Check aria-hidden="true" size={14} /> : null}
+            </button>
+            {options.map((option) => {
+              const optionKey = modelReasoningOptionKey(option);
+              const isSelected = optionKey === selectedKey;
+              return (
+                <button
+                  aria-selected={isSelected}
+                  className={isSelected ? "is-selected" : undefined}
+                  key={optionKey}
+                  role="option"
+                  type="button"
+                  onClick={() => selectReasoningOption(optionKey)}
+                >
+                  <span>{reasoningOptionDisplayName(option)}</span>
+                  {isSelected ? <Check aria-hidden="true" size={14} /> : null}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 export function WorkspaceContent({
   activeProject,
@@ -366,6 +546,7 @@ export function ConversationWorkspace({
   const [isLoadingTimeline, setIsLoadingTimeline] = useState(true);
   const [isMockRuntime, setIsMockRuntime] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [liveToolOutputs, setLiveToolOutputs] = useState<Record<string, LiveToolOutput>>({});
   const [modelActivity, setModelActivity] = useState<ModelActivity | null>(null);
   const [modelStatus, setModelStatus] = useState<ModelRuntimeStatus | null>(null);
   const [runProgresses, setRunProgresses] = useState<RunProgress[]>([]);
@@ -375,6 +556,7 @@ export function ConversationWorkspace({
   const [pendingMessageActionId, setPendingMessageActionId] = useState<string | null>(null);
   const [approvingToolId, setApprovingToolId] = useState<string | null>(null);
   const [approvalErrors, setApprovalErrors] = useState<Record<string, string>>({});
+  const [editingPendingMessageId, setEditingPendingMessageId] = useState<string | null>(null);
   const [permissionMode, setPermissionMode] =
     useState<ConversationPermissionMode>(defaultPermissionMode);
   const [selectedModelKey, setSelectedModelKey] = useState("");
@@ -392,6 +574,7 @@ export function ConversationWorkspace({
   const isFinishedSubagent = session.subagentTaskStatus === "completed"
     || session.subagentTaskStatus === "failed"
     || session.subagentTaskStatus === "cancelled";
+  const isEditingComposerMessage = editingMessageId !== null || editingPendingMessageId !== null;
   const modelOptions: readonly ModelProfile[] =
     modelStatus?.models.length
       ? modelStatus.models
@@ -678,6 +861,7 @@ export function ConversationWorkspace({
 
   useEffect(() => {
     setRunProgresses([]);
+    setLiveToolOutputs({});
   }, [session.id]);
 
   useEffect(() => {
@@ -711,6 +895,7 @@ export function ConversationWorkspace({
         timelineRef,
         setModelActivity,
         setRunProgresses,
+        setLiveToolOutputs,
       );
       if (event.type === "run.started") {
         void loadTimeline();
@@ -747,7 +932,10 @@ export function ConversationWorkspace({
     message: ConversationMessageItem,
   ): Promise<void> => {
     try {
-      await navigator.clipboard.writeText(message.content);
+      await agentClient.writeClipboardText(formatConversationRunMarkdown(
+        timelineRef.current,
+        message,
+      ));
       if (copiedMessageTimeoutRef.current !== null) {
         window.clearTimeout(copiedMessageTimeoutRef.current);
       }
@@ -760,7 +948,7 @@ export function ConversationWorkspace({
       setCopiedMessageId(null);
       setOperationError("无法复制这条消息");
     }
-  }, []);
+  }, [agentClient]);
 
   const handleForkMessage = useCallback(async (
     message: ConversationMessageItem,
@@ -790,6 +978,7 @@ export function ConversationWorkspace({
 
   const handleEditMessage = useCallback((message: ConversationMessageItem): void => {
     if (message.id !== latestUserMessageId || isFinishedSubagent) return;
+    setEditingPendingMessageId(null);
     setEditingMessageId(message.id);
     setComposerValue(message.content);
     setMentionQuery(null);
@@ -807,6 +996,7 @@ export function ConversationWorkspace({
 
   const handleCancelEditing = useCallback((): void => {
     setEditingMessageId(null);
+    setEditingPendingMessageId(null);
     setComposerValue("");
     setMentionQuery(null);
     setSlashQuery(null);
@@ -815,21 +1005,73 @@ export function ConversationWorkspace({
     queueMicrotask(() => composerRef.current?.focus());
   }, []);
 
+  const handleEditPendingMessage = useCallback((message: ConversationPendingMessage): void => {
+    if (isFinishedSubagent) return;
+    setEditingMessageId(null);
+    setEditingPendingMessageId(message.id);
+    setComposerValue(message.content);
+    setMentionQuery(null);
+    setSlashQuery(null);
+    setSelectedConversationMentions([]);
+    setSelectedProjectFileMentions([]);
+    setOperationError(null);
+    queueMicrotask(() => {
+      const composer = composerRef.current;
+      if (composer === null) return;
+      composer.focus();
+      composer.setSelectionRange(composer.value.length, composer.value.length);
+    });
+  }, [isFinishedSubagent]);
+
+  const refocusComposer = (): void => {
+    window.setTimeout(() => {
+      const composer = composerRef.current;
+      if (composer === null || composer.disabled) return;
+      composer.focus();
+    }, 0);
+  };
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     const content = composerValue.trim();
+    const hasNoSubmitContent = isEditingComposerMessage
+      ? content.length === 0
+      : content.length === 0
+        && draftAttachments.length === 0
+        && activeProjectFileMentions.length === 0;
     if (
-      (editingMessageId === null
-        ? (
-          content.length === 0
-          && draftAttachments.length === 0
-          && activeProjectFileMentions.length === 0
-        )
-        : content.length === 0) ||
+      hasNoSubmitContent ||
+      pendingMessageActionId !== null ||
       isSending ||
       isFinishedSubagent ||
-      (!isMockRuntime && modelStatus?.configured === false)
+      (editingPendingMessageId === null
+        && !isMockRuntime
+        && modelStatus?.configured === false)
     ) {
+      return;
+    }
+
+    if (editingPendingMessageId !== null) {
+      setPendingMessageActionId(editingPendingMessageId);
+      setOperationError(null);
+      try {
+        const updatedMessages = await agentClient.updateConversationPendingMessage({
+          content,
+          pendingMessageId: editingPendingMessageId,
+        });
+        setPendingMessages((current) => mergePendingMessageUpdate(current, updatedMessages));
+        setEditingPendingMessageId(null);
+        setComposerValue("");
+        setMentionQuery(null);
+        setSlashQuery(null);
+        setSelectedConversationMentions([]);
+        setSelectedProjectFileMentions([]);
+      } catch (error) {
+        setOperationError(getUserErrorMessage(error, "无法修改排队消息"));
+      } finally {
+        setPendingMessageActionId(null);
+        refocusComposer();
+      }
       return;
     }
 
@@ -937,6 +1179,7 @@ export function ConversationWorkspace({
       setOperationError(getUserErrorMessage(error, "任务发送失败"));
     } finally {
       setIsSending(false);
+      refocusComposer();
     }
   };
 
@@ -1217,27 +1460,6 @@ export function ConversationWorkspace({
     }
   }, [agentClient, loadDraftAttachments, pendingMessageActionId]);
 
-  const handleUpdatePendingMessage = useCallback(async (
-    pendingMessageId: string,
-    content: string,
-  ): Promise<boolean> => {
-    if (pendingMessageActionId !== null) return false;
-    setPendingMessageActionId(pendingMessageId);
-    setOperationError(null);
-    try {
-      setPendingMessages(await agentClient.updateConversationPendingMessage({
-        content,
-        pendingMessageId,
-      }));
-      return true;
-    } catch (error) {
-      setOperationError(getUserErrorMessage(error, "无法修改排队消息"));
-      return false;
-    } finally {
-      setPendingMessageActionId(null);
-    }
-  }, [agentClient, pendingMessageActionId]);
-
   const handleMovePendingMessage = useCallback(async (
     pendingMessageId: string,
     direction: -1 | 1,
@@ -1267,7 +1489,11 @@ export function ConversationWorkspace({
   }, [agentClient, pendingMessageActionId, pendingMessages, session.id]);
 
   const handleChangeApproval = useCallback(
-    async (tool: ConversationToolItem, approved: boolean): Promise<void> => {
+    async (
+      tool: ConversationToolItem,
+      approved: boolean,
+      scope: ApproveToolChangeInput["scope"] = "once",
+    ): Promise<void> => {
       if (approvingToolId !== null || tool.status !== "awaiting_approval") return;
       setApprovingToolId(tool.id);
       setApprovalErrors((current) => {
@@ -1277,7 +1503,12 @@ export function ConversationWorkspace({
         return next;
       });
       try {
-        await agentClient.approveToolChange({ approved, runId: tool.runId, toolId: tool.id });
+        await agentClient.approveToolChange({
+          approved,
+          runId: tool.runId,
+          scope,
+          toolId: tool.id,
+        });
       } catch (error) {
         setApprovalErrors((current) => ({
           ...current,
@@ -1349,6 +1580,7 @@ export function ConversationWorkspace({
   const isModelUnavailable = !isMockRuntime && modelStatus?.configured === false;
   const hasActiveModelRun = activeRunId !== null;
   const isRunning = hasActiveModelRun || activeSubagentCount > 0;
+  const shouldShowStopButton = hasActiveModelRun && !isEditingComposerMessage;
   const displayTimeline = groupToolBatches(
     timeline,
     modelActivity?.anchorTimelineItemId ?? null,
@@ -1391,9 +1623,6 @@ export function ConversationWorkspace({
     && onSessionUpdated !== undefined;
   const canChangeAgent =
     !isLoadingTimeline
-    && displayTimeline.length === 0
-    && !isRunning
-    && !isSending
     && !isFinishedSubagent;
   const taskFileChanges = summarizeTaskFileChanges(
     timeline,
@@ -1500,6 +1729,7 @@ export function ConversationWorkspace({
                     onForkMessage={handleForkMessage}
                     onOpenProjectFile={onOpenProjectFile}
                     onSessionSelected={onSessionSelected}
+                    liveToolOutputs={liveToolOutputs}
                   />
                 </Fragment>
               ))}
@@ -1529,22 +1759,23 @@ export function ConversationWorkspace({
           {pendingMessages.length > 0 ? (
             <ConversationPendingMessageQueue
               actioningMessageId={pendingMessageActionId}
+              editingMessageId={editingPendingMessageId}
               messages={pendingMessages}
               onDelete={handleDeletePendingMessage}
+              onEdit={handleEditPendingMessage}
               onMove={handleMovePendingMessage}
               onPromote={handlePromotePendingMessage}
-              onUpdate={handleUpdatePendingMessage}
             />
           ) : null}
 
           <form className="conversation-workspace__composer" onSubmit={(event) => void handleSubmit(event)}>
           <div className="conversation-workspace__composer-surface">
-            {editingMessageId === null ? null : (
+            {isEditingComposerMessage ? (
               <div className="conversation-workspace__editing" role="status">
                 <Pencil aria-hidden="true" size={14} />
-                <span>正在编辑最新消息</span>
+                <span>{editingPendingMessageId === null ? "正在编辑最新消息" : "正在编辑排队消息"}</span>
                 <IconButton
-                  disabled={isSending}
+                  disabled={isSending || pendingMessageActionId !== null}
                   label="取消编辑"
                   size="compact"
                   type="button"
@@ -1554,7 +1785,7 @@ export function ConversationWorkspace({
                   <X aria-hidden="true" size={14} />
                 </IconButton>
               </div>
-            )}
+            ) : null}
             {isFinishedSubagent ? (
               <div className="conversation-workspace__readonly" role="status">
                 <Bot aria-hidden="true" size={14} />
@@ -1593,7 +1824,7 @@ export function ConversationWorkspace({
                 />
               </div>
             ) : null}
-            {editingMessageId === null && draftAttachments.length > 0 ? (
+            {!isEditingComposerMessage && draftAttachments.length > 0 ? (
               <div className="conversation-attachments conversation-attachments--draft">
                 {draftAttachments.map((attachment) => (
                   <AttachmentChip
@@ -1717,7 +1948,7 @@ export function ConversationWorkspace({
               <textarea
                 ref={composerRef}
                 aria-label="输入任务"
-                disabled={isSending || isModelUnavailable || isFinishedSubagent}
+                disabled={isSending || pendingMessageActionId !== null || isModelUnavailable || isFinishedSubagent}
                 placeholder={isFinishedSubagent
                   ? "Subagent 任务已结束，可查看完整过程"
                   : isModelUnavailable
@@ -1765,10 +1996,10 @@ export function ConversationWorkspace({
                     || isSending
                     || isFinishedSubagent
                     || isChoosingAttachments
-                    || editingMessageId !== null
+                    || isEditingComposerMessage
                     || draftAttachments.length >= 10
                   }
-                  label={editingMessageId !== null
+                  label={isEditingComposerMessage
                     ? "编辑消息时保留原附件"
                     : isChoosingAttachments
                       ? "正在添加附件"
@@ -1873,7 +2104,7 @@ export function ConversationWorkspace({
                   </Select>
                 )}
                 <Select
-                  disabled={isRunning || isSending || isFinishedSubagent}
+                  disabled={isFinishedSubagent}
                   value={permissionMode}
                   onValueChange={(value) =>
                     setPermissionMode(value as ConversationPermissionMode)
@@ -1909,7 +2140,7 @@ export function ConversationWorkspace({
                       <button
                         aria-label="模型"
                         className="conversation-workspace__composer-select conversation-workspace__composer-select--model"
-                        disabled={isRunning || isSending || isFinishedSubagent || activeModelKey.length === 0}
+                        disabled={isFinishedSubagent || activeModelKey.length === 0}
                         title={activeModel?.displayName ?? "未配置模型"}
                         type="button"
                       >
@@ -1919,35 +2150,12 @@ export function ConversationWorkspace({
                     onSelect={(model) => setSelectedModelKey(modelKey(model))}
                   />
                   <span aria-hidden="true" className="conversation-workspace__model-divider">·</span>
-                  <Select
-                    disabled={isRunning || isSending || isFinishedSubagent || activeModelKey.length === 0}
-                    value={effectiveReasoningOptionKey}
+                  <ConversationReasoningControl
+                    disabled={isFinishedSubagent || activeModelKey.length === 0}
+                    options={activeReasoningOptions}
+                    selectedKey={effectiveReasoningOptionKey}
                     onValueChange={setSelectedReasoningOptionKey}
-                  >
-                    <SelectTrigger
-                      aria-label="推理强度"
-                      className="conversation-workspace__composer-select conversation-workspace__composer-select--reasoning"
-                      title="仅显示当前模型在设置中启用的推理强度"
-                    >
-                      <SelectValue>
-                        {selectedReasoningOption === undefined
-                          ? "自动"
-                          : reasoningOptionLabel(selectedReasoningOption)}
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent
-                      align="start"
-                      className="conversation-workspace__reasoning-select-content"
-                      side="top"
-                    >
-                      <SelectItem value="auto">自动</SelectItem>
-                      {activeReasoningOptions.map((option) => (
-                        <SelectItem key={modelReasoningOptionKey(option)} value={modelReasoningOptionKey(option)}>
-                          {reasoningOptionLabel(option)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  />
                 </span>
               </div>
               <div className="conversation-workspace__composer-actions">
@@ -1959,54 +2167,51 @@ export function ConversationWorkspace({
                     usage={contextUsage}
                   />
                 ) : null}
-                {hasActiveModelRun ? (
-                  <IconButton
-                    disabled={isCancelling}
-                    label={isCancelling ? "正在停止任务" : "停止任务"}
-                    size="compact"
-                    variant="destructive"
-                    type="button"
-                    onClick={() => void handleCancel()}
-                  >
-                    {isCancelling ? (
-                      <LoaderCircle aria-hidden="true" className="conversation-workspace__spin" size={15} />
-                    ) : (
-                      <Square aria-hidden="true" size={14} />
-                    )}
-                  </IconButton>
-                ) : null}
                 <IconButton
+                  className="conversation-workspace__send-button"
                   disabled={
-                    (editingMessageId === null
-                      ? (
+                    shouldShowStopButton
+                      ? isCancelling
+                      : (
+                    (isEditingComposerMessage
+                      ? composerValue.trim().length === 0
+                      : (
                         composerValue.trim().length === 0
                         && draftAttachments.length === 0
                         && activeProjectFileMentions.length === 0
+                      ))
+                        || isSending
+                        || pendingMessageActionId !== null
+                        || isModelUnavailable
+                        || isFinishedSubagent
                       )
-                      : composerValue.trim().length === 0)
-                    || isSending
-                    || isModelUnavailable
-                    || isFinishedSubagent
                   }
-                  label={isFinishedSubagent
-                    ? "Subagent 任务已结束"
-                    : isSending
-                    ? editingMessageId === null ? "正在发送任务" : "正在重新生成"
-                    : editingMessageId !== null
-                      ? "保存并重新生成"
-                    : hasActiveModelRun && messageDeliveryMode === "queue"
-                      ? "加入待发送队列"
-                      : hasActiveModelRun
-                        ? "直接发送到当前任务"
-                        : "发送任务"}
+                  label={shouldShowStopButton
+                    ? isCancelling ? "正在停止任务" : "停止任务"
+                    : isFinishedSubagent
+                      ? "Subagent 任务已结束"
+                      : isSending
+                        ? isEditingComposerMessage ? "正在保存修改" : "正在发送任务"
+                        : editingMessageId !== null
+                          ? "保存并重新生成"
+                          : editingPendingMessageId !== null
+                            ? "保存排队消息"
+                          : "发送任务"}
                   size="compact"
-                  type="submit"
+                  type={shouldShowStopButton ? "button" : "submit"}
                   variant="active"
+                  onClick={shouldShowStopButton ? () => void handleCancel() : undefined}
                 >
-                  {isSending ? (
+                  {shouldShowStopButton ? (
+                    isCancelling ? (
+                      <LoaderCircle aria-hidden="true" className="conversation-workspace__spin" size={15} />
+                    ) : (
+                      <Square aria-hidden="true" size={14} />
+                    )
+                  ) : isSending ? (
                     <LoaderCircle aria-hidden="true" className="conversation-workspace__spin" size={15} />
                   ) : (
-                    <MessageSquareText aria-hidden="true" size={16} />
+                    <ArrowUp aria-hidden="true" size={17} strokeWidth={2.25} />
                   )}
                 </IconButton>
               </div>
@@ -2087,6 +2292,7 @@ function handleRunEvent(
   timelineRef: { current: ConversationTimelineItem[] },
   setModelActivity: Dispatch<SetStateAction<ModelActivity | null>>,
   setRunProgresses: Dispatch<SetStateAction<RunProgress[]>>,
+  setLiveToolOutputs: Dispatch<SetStateAction<Record<string, LiveToolOutput>>>,
 ): void {
   const updateTimeline = (
     updater: (current: ConversationTimelineItem[]) => ConversationTimelineItem[],
@@ -2170,6 +2376,38 @@ function handleRunEvent(
         completeStreamingAssistantMessages(current),
         event.tool,
       ));
+      if (event.type === "tool.completed" && event.tool.name === "run_command") {
+        const result = event.tool.result === null ? null : parseCommandResult(event.tool.result);
+        if (result?.status !== "running") {
+          setLiveToolOutputs((current) => {
+            if (!(event.tool.id in current)) return current;
+            const next = { ...current };
+            delete next[event.tool.id];
+            return next;
+          });
+        }
+      }
+      return;
+    case "tool.output_delta":
+      setLiveToolOutputs((current) => {
+        const previous = current[event.toolId] ?? {
+          exitCode: null,
+          stderr: "",
+          stdout: "",
+          status: event.status,
+          timedOut: false,
+          truncated: false,
+        };
+        const next = {
+          ...previous,
+          [event.stream]: `${previous[event.stream]}${event.delta}`,
+          exitCode: event.exitCode,
+          status: event.status,
+          timedOut: event.timedOut,
+          truncated: event.truncated,
+        };
+        return { ...current, [event.toolId]: next };
+      });
       return;
     case "tool.approval_requested":
       setModelActivity((current) => current?.runId === event.runId ? null : current);
@@ -2357,32 +2595,35 @@ export function formatRunDuration(startedAt: number, outputStartedAt: number): s
   return `${seconds}秒`;
 }
 
+function mergePendingMessageUpdate(
+  current: readonly ConversationPendingMessage[],
+  updated: readonly ConversationPendingMessage[],
+): ConversationPendingMessage[] {
+  const currentOrder = new Map(current.map((message, index) => [message.id, index]));
+  return [...updated].sort((left, right) => {
+    const leftIndex = currentOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER;
+    const rightIndex = currentOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER;
+    return leftIndex - rightIndex;
+  });
+}
+
 function ConversationPendingMessageQueue({
   actioningMessageId,
+  editingMessageId,
   messages,
   onDelete,
+  onEdit,
   onMove,
   onPromote,
-  onUpdate,
 }: {
   actioningMessageId: string | null;
+  editingMessageId: string | null;
   messages: readonly ConversationPendingMessage[];
   onDelete: (pendingMessageId: string) => Promise<void>;
+  onEdit: (message: ConversationPendingMessage) => void;
   onMove: (pendingMessageId: string, direction: -1 | 1) => Promise<void>;
   onPromote: (pendingMessageId: string) => Promise<void>;
-  onUpdate: (pendingMessageId: string, content: string) => Promise<boolean>;
 }): ReactElement {
-  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
-  const [editingContent, setEditingContent] = useState("");
-
-  const saveEdit = async (): Promise<void> => {
-    if (editingMessageId === null) return;
-    if (await onUpdate(editingMessageId, editingContent.trim())) {
-      setEditingMessageId(null);
-      setEditingContent("");
-    }
-  };
-
   return (
     <section className="conversation-pending-queue" aria-label="待发送消息">
       <header>
@@ -2403,55 +2644,19 @@ function ConversationPendingMessageQueue({
             <article
               className="conversation-pending-queue__item"
               data-delivery-mode={message.deliveryMode}
+              data-editing={String(isEditing)}
               key={message.id}
             >
               <span className="conversation-pending-queue__position">{index + 1}</span>
-              {isEditing ? (
-                <textarea
-                  aria-label="编辑排队消息"
-                  autoFocus
-                  rows={2}
-                  value={editingContent}
-                  onChange={(event) => setEditingContent(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") {
-                      setEditingMessageId(null);
-                      setEditingContent("");
-                    } else if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      void saveEdit();
-                    }
-                  }}
-                />
-              ) : (
-                <span className="conversation-pending-queue__content" title={message.content || fallback}>
-                  {message.content || fallback}
-                </span>
-              )}
+              <span className="conversation-pending-queue__content" title={message.content || fallback}>
+                {message.content || fallback}
+              </span>
               <span className="conversation-pending-queue__mode">
                 {message.deliveryMode === "steer" ? "等待介入" : "排队中"}
               </span>
               <span className="conversation-pending-queue__actions">
                 {isActioning ? (
                   <LoaderCircle aria-hidden="true" className="conversation-workspace__spin" size={14} />
-                ) : isEditing ? (
-                  <>
-                    <IconButton label="保存修改" size="compact" type="button" variant="quiet" onClick={() => void saveEdit()}>
-                      <Check aria-hidden="true" size={14} />
-                    </IconButton>
-                    <IconButton
-                      label="取消修改"
-                      size="compact"
-                      type="button"
-                      variant="quiet"
-                      onClick={() => {
-                        setEditingMessageId(null);
-                        setEditingContent("");
-                      }}
-                    >
-                      <X aria-hidden="true" size={14} />
-                    </IconButton>
-                  </>
                 ) : (
                   <>
                     <IconButton
@@ -2475,14 +2680,12 @@ function ConversationPendingMessageQueue({
                       <ArrowDown aria-hidden="true" size={14} />
                     </IconButton>
                     <IconButton
+                      disabled={isEditing}
                       label="编辑"
                       size="compact"
                       type="button"
                       variant="quiet"
-                      onClick={() => {
-                        setEditingMessageId(message.id);
-                        setEditingContent(message.content);
-                      }}
+                      onClick={() => onEdit(message)}
                     >
                       <Pencil aria-hidden="true" size={14} />
                     </IconButton>
@@ -2534,16 +2737,29 @@ function ConversationTaskListPanel({
 }): ReactElement {
   const [isChangesExpanded, setIsChangesExpanded] = useState(false);
   const runningIndex = taskList.tasks.findIndex((task) => task.status === "running");
+  const blockedIndex = taskList.tasks.findIndex((task) => task.status === "blocked");
+  const failedIndex = taskList.tasks.findIndex((task) => task.status === "failed");
   const completedCount = taskList.tasks.filter((task) => task.status === "completed").length;
+  const isCompleted = completedCount === taskList.tasks.length;
+  const summaryStatus = isCompleted
+    ? "completed"
+    : failedIndex >= 0
+      ? "failed"
+      : blockedIndex >= 0
+        ? "blocked"
+        : "active";
   const currentStep =
     runningIndex >= 0
       ? runningIndex + 1
+      : failedIndex >= 0
+        ? failedIndex + 1
+        : blockedIndex >= 0
+          ? blockedIndex + 1
       : completedCount === taskList.tasks.length
         ? taskList.tasks.length
         : Math.min(taskList.tasks.length, completedCount + 1);
   const summaryId = `conversation-task-list-${taskList.conversationId}`;
   const changesId = `${summaryId}-changes`;
-  const isCompleted = completedCount === taskList.tasks.length;
 
   const toggleTasks = (): void => {
     setIsChangesExpanded(false);
@@ -2559,7 +2775,7 @@ function ConversationTaskListPanel({
     <div
       className="conversation-task-list"
       data-expanded={String(expanded)}
-      data-status={isCompleted ? "completed" : "active"}
+      data-status={summaryStatus}
     >
       <div className="conversation-task-list__body">
         {expanded ? (
@@ -2572,6 +2788,10 @@ function ConversationTaskListPanel({
                       ? "已完成"
                       : task.status === "running"
                         ? "正在进行"
+                        : task.status === "blocked"
+                          ? "已阻塞"
+                          : task.status === "failed"
+                            ? "已失败"
                         : undefined
                   }
                   className="conversation-task-list__status"
@@ -2586,6 +2806,10 @@ function ConversationTaskListPanel({
                       size={15}
                       strokeWidth={2.2}
                     />
+                  ) : task.status === "blocked" ? (
+                    <CircleAlert aria-hidden="true" size={15} strokeWidth={2.2} />
+                  ) : task.status === "failed" ? (
+                    <X aria-hidden="true" size={15} strokeWidth={2.2} />
                   ) : null}
                 </span>
                 <span>{task.title}</span>
@@ -2621,6 +2845,10 @@ function ConversationTaskListPanel({
           >
             {isCompleted ? (
               <Check aria-hidden="true" className="conversation-task-list__summary-status" size={15} />
+            ) : summaryStatus === "failed" ? (
+              <X aria-hidden="true" className="conversation-task-list__summary-status" size={15} />
+            ) : summaryStatus === "blocked" ? (
+              <CircleAlert aria-hidden="true" className="conversation-task-list__summary-status" size={15} />
             ) : runningIndex >= 0 ? (
               <LoaderCircle
                 aria-hidden="true"
@@ -2634,7 +2862,15 @@ function ConversationTaskListPanel({
             {fileChanges.files.length === 0 ? (
               <>
                 <span className="conversation-task-list__summary-divider" aria-hidden="true">·</span>
-                <span>{isCompleted ? "任务已完成" : "任务清单"}</span>
+                <span>{
+                  isCompleted
+                    ? "任务已完成"
+                    : summaryStatus === "failed"
+                      ? "任务已失败"
+                      : summaryStatus === "blocked"
+                        ? "任务已阻塞"
+                        : "任务清单"
+                }</span>
               </>
             ) : null}
             <ChevronDown aria-hidden="true" className="conversation-task-list__chevron" size={15} />
@@ -2716,6 +2952,7 @@ function groupToolBatches(
 ): TimelineDisplayItem[] {
   const grouped: TimelineDisplayItem[] = [];
   let tools: ConversationToolItem[] = [];
+  let toolGroupKey: string | null = null;
 
   const flushTools = (): void => {
     if (tools.length === 0) return;
@@ -2732,11 +2969,15 @@ function groupToolBatches(
       });
     }
     tools = [];
+    toolGroupKey = null;
   };
 
   for (const item of timeline) {
     if (item.kind === "tool") {
+      const nextToolGroupKey = `${item.batchId ?? item.id}:${item.executionMode ?? "serial"}`;
+      if (toolGroupKey !== null && toolGroupKey !== nextToolGroupKey) flushTools();
       tools.push(item);
+      toolGroupKey = nextToolGroupKey;
       if (item.id === breakAfterTimelineItemId) flushTools();
       continue;
     }
@@ -2771,6 +3012,7 @@ function TimelineItem({
   onForkMessage,
   onOpenProjectFile,
   onSessionSelected,
+  liveToolOutputs,
 }: {
   item: TimelineDisplayItem;
   modelActivity: ModelActivity | null;
@@ -2782,12 +3024,17 @@ function TimelineItem({
   editingMessageId: string | null;
   forkingMessageId: string | null;
   latestUserMessageId: string | null;
-  onChangeApproval: (tool: ConversationToolItem, approved: boolean) => Promise<void>;
+  onChangeApproval: (
+    tool: ConversationToolItem,
+    approved: boolean,
+    scope?: ApproveToolChangeInput["scope"],
+  ) => Promise<void>;
   onCopyMessage: (message: ConversationMessageItem) => Promise<void>;
   onEditMessage: (message: ConversationMessageItem) => void;
   onForkMessage: (message: ConversationMessageItem) => Promise<void>;
   onOpenProjectFile: ((path: string) => void) | undefined;
   onSessionSelected: ((sessionId: string) => void) | undefined;
+  liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
 }): ReactElement | null {
   if (item.kind === "tool_batch") {
     const hasFailure = item.tools.some((tool) =>
@@ -2802,6 +3049,7 @@ function TimelineItem({
         approvingToolId={approvingToolId}
         onOpenProjectFile={onOpenProjectFile}
         onChangeApproval={onChangeApproval}
+        liveToolOutputs={liveToolOutputs}
       />
     );
   }
@@ -2816,6 +3064,7 @@ function TimelineItem({
         onOpenProjectFile={onOpenProjectFile}
         variant="activity"
         onChangeApproval={onChangeApproval}
+        liveOutput={liveToolOutputs[item.id]}
       />
     );
   }
@@ -2882,7 +3131,7 @@ function TimelineItem({
         {canCopyMessage ? (
           <IconButton
             disabled={item.content.length === 0}
-            label={copied ? "已复制消息" : "复制消息"}
+            label={copied ? "已复制完整回复" : "复制完整回复"}
             size="compact"
             type="button"
             variant="quiet"
@@ -3161,13 +3410,19 @@ function ToolBatchTimelineItem({
   approvingToolId,
   onOpenProjectFile,
   onChangeApproval,
+  liveToolOutputs,
 }: {
   item: Extract<TimelineDisplayItem, { kind: "tool_batch" }>;
   modelActivity: ModelActivity | null;
   approvalErrors: Readonly<Record<string, string>>;
   approvingToolId: string | null;
   onOpenProjectFile: ((path: string) => void) | undefined;
-  onChangeApproval: (tool: ConversationToolItem, approved: boolean) => Promise<void>;
+  onChangeApproval: (
+    tool: ConversationToolItem,
+    approved: boolean,
+    scope?: ApproveToolChangeInput["scope"],
+  ) => Promise<void>;
+  liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
 }): ReactElement {
   const [isExpanded, setIsExpanded] = useState(() =>
     item.tools.some((tool) =>
@@ -3179,6 +3434,8 @@ function ToolBatchTimelineItem({
   const hasFailure = item.tools.some((tool) =>
     toolItemHasFailure(tool) || approvalErrors[tool.id] !== undefined
   );
+  const executionMode = toolBatchExecutionMode(item.tools);
+  const hasRunningTool = item.tools.some((tool) => tool.status === "running");
   const label = modelActivity === null
     ? toolBatchLabel(item.tools)
     : modelActivityLabel(modelActivity) ?? toolBatchLabel(item.tools);
@@ -3190,6 +3447,11 @@ function ToolBatchTimelineItem({
         <span className="tool-activity-batch__identity">
           <ToolTypeIcon name={representativeToolName(item.tools)} />
           <span>{label}</span>
+          {executionMode === "parallel" ? (
+            <span className="tool-activity-batch__execution">
+              {hasRunningTool ? "并行执行中" : "并行执行"}
+            </span>
+          ) : null}
           {hasFailure ? <span className="tool-activity-batch__status">有失败项</span> : null}
           <button
             aria-expanded={isExpanded}
@@ -3214,6 +3476,7 @@ function ToolBatchTimelineItem({
               onOpenProjectFile={onOpenProjectFile}
               variant="activity"
               onChangeApproval={onChangeApproval}
+              liveOutput={liveToolOutputs[tool.id]}
             />
           ))}
         </div>
@@ -3229,15 +3492,22 @@ function ToolTimelineItem({
   variant = "card",
   onOpenProjectFile,
   onChangeApproval,
+  liveOutput,
 }: {
   item: ConversationToolItem;
   approvalError: string | null;
   isApproving: boolean;
   variant?: "activity" | "card";
   onOpenProjectFile: ((path: string) => void) | undefined;
-  onChangeApproval: (tool: ConversationToolItem, approved: boolean) => Promise<void>;
+  onChangeApproval: (
+    tool: ConversationToolItem,
+    approved: boolean,
+    scope?: ApproveToolChangeInput["scope"],
+  ) => Promise<void>;
+  liveOutput: LiveToolOutput | undefined;
 }): ReactElement {
   const isCommand = item.name === "run_command";
+  const isExternalRead = item.name === "read_external_file";
   const isFileDeletion = item.name === "delete_file";
   const effectiveStatus = approvalError === null && !toolItemHasFailure(item)
     ? item.status
@@ -3285,13 +3555,19 @@ function ToolTimelineItem({
         </span>
       </header>
       {isExpanded ? (
-        <ToolDetail item={item} onOpenProjectFile={onOpenProjectFile} />
+        <ToolDetail
+          item={item}
+          onOpenProjectFile={onOpenProjectFile}
+          {...(liveOutput === undefined ? {} : { liveOutput })}
+        />
       ) : null}
       {approvalError === null ? null : <ToolErrorNotice message={approvalError} />}
       {item.status === "awaiting_approval" ? (
         <footer className="tool-timeline-item__approval">
           <span>
-            {isCommand
+            {isExternalRead
+              ? "读取工作区外文件前需要确认"
+              : isCommand
               ? "等待确认后执行命令"
               : isFileDeletion
                 ? "等待确认后删除文件"
@@ -3314,12 +3590,30 @@ function ToolTimelineItem({
               <Check aria-hidden="true" size={14} />
               {isApproving
                 ? "提交中"
-                : isCommand
-                  ? "执行命令"
-                  : isFileDeletion
-                    ? "删除文件"
-                    : "接受变更"}
+                : "本次允许"}
             </button>
+            {isExternalRead ? null : (
+              <button
+                disabled={isApproving}
+                title="当前对话后续同类操作自动允许"
+                type="button"
+                onClick={() => void onChangeApproval(item, true, "session")}
+              >
+                <Check aria-hidden="true" size={14} />
+                本会话允许
+              </button>
+            )}
+            {isExternalRead ? null : (
+              <button
+                disabled={isApproving}
+                title="保存到当前 Agent 的权限规则"
+                type="button"
+                onClick={() => void onChangeApproval(item, true, "agent")}
+              >
+                <ShieldCheck aria-hidden="true" size={14} />
+                Agent 一直允许
+              </button>
+            )}
           </span>
         </footer>
       ) : null}
@@ -3367,6 +3661,7 @@ function ToolTypeIcon({ name }: { name: string }): ReactElement {
     case "stop_command":
       return <Square aria-hidden="true" size={15} />;
     case "read_file":
+    case "read_external_file":
     case "get_project_info":
       return <FileText aria-hidden="true" size={15} />;
     case "list_directory":
@@ -3374,6 +3669,7 @@ function ToolTypeIcon({ name }: { name: string }): ReactElement {
     case "list_project_operations":
       return <Wrench aria-hidden="true" size={15} />;
     case "search_text":
+    case "web_search":
       return <Search aria-hidden="true" size={15} />;
     case "find_files":
       return <FileSearch aria-hidden="true" size={15} />;
@@ -3454,6 +3750,10 @@ function toolActivityLabel(item: ConversationToolItem): string {
       return path === null
         ? (completed ? "已读取文件" : "读取文件")
         : `${completed ? "已读取" : "读取"} ${fileNameFromPath(path)}`;
+    case "read_external_file":
+      return path === null
+        ? (completed ? "已读取工作区外文件" : "读取工作区外文件")
+        : `${completed ? "已读取" : "读取"} ${path}`;
     case "read_attachment":
       return completed ? "已读取附件" : "读取附件";
     case "list_directory":
@@ -3461,6 +3761,10 @@ function toolActivityLabel(item: ConversationToolItem): string {
     case "search_text": {
       const query = typeof argumentsValue?.query === "string" ? argumentsValue.query : null;
       return query === null ? "搜索文本" : `搜索 “${query}”`;
+    }
+    case "web_search": {
+      const query = typeof argumentsValue?.query === "string" ? argumentsValue.query : null;
+      return query === null ? "搜索网页" : `搜索网页 “${query}”`;
     }
     case "find_files": {
       const pattern = typeof argumentsValue?.pattern === "string" ? argumentsValue.pattern : null;
@@ -3563,13 +3867,13 @@ const TOOL_BATCH_CATEGORIES: readonly ToolBatchCategory[] = [
   {
     iconToolName: "read_file",
     label: (count) => `读取 ${count} 个文件`,
-    names: ["read_file", "read_attachment"],
+    names: ["read_file", "read_external_file", "read_attachment"],
     priority: 80,
   },
   {
     iconToolName: "search_text",
     label: (count) => `查询 ${count} 项信息`,
-    names: ["list_directory", "search_text", "find_files", "get_project_info"],
+    names: ["list_directory", "search_text", "web_search", "find_files", "get_project_info"],
     priority: 70,
   },
   {
@@ -3627,15 +3931,35 @@ export function toolBatchLabel(tools: ConversationToolItem[]): string {
   return labels.length > 0 ? labels.join("，") : `调用了 ${tools.length} 个工具`;
 }
 
+/** Returns a mode only when the whole visible batch shares one scheduler mode. */
+export function toolBatchExecutionMode(
+  tools: readonly ConversationToolItem[],
+): "parallel" | "serial" | null {
+  if (tools.length < 2) return null;
+  const modes = new Set(tools.map((tool) => tool.executionMode ?? "serial"));
+  if (modes.size !== 1) return null;
+  const mode = [...modes][0];
+  return mode === "parallel" || mode === "serial" ? mode : null;
+}
+
 function ToolDetail({
   item,
+  liveOutput,
   onOpenProjectFile,
 }: {
   item: ConversationToolItem;
+  liveOutput?: LiveToolOutput;
   onOpenProjectFile: ((path: string) => void) | undefined;
 }): ReactElement {
   if (item.name === "run_command") {
-    return <CommandTerminal argumentsPayload={item.arguments} resultPayload={item.result} status={item.status} />;
+    return (
+      <CommandTerminal
+        argumentsPayload={item.arguments}
+        resultPayload={item.result}
+        status={item.status}
+        {...(liveOutput === undefined ? {} : { liveOutput })}
+      />
+    );
   }
 
   if (item.name === "wait_for_commands" || item.name === "stop_command") {
@@ -3670,12 +3994,20 @@ function ToolDetail({
     return <FileReadResult payload={item.result} status={item.status} />;
   }
 
+  if (item.name === "read_external_file") {
+    return <FileReadResult payload={item.result} status={item.status} />;
+  }
+
   if (item.name === "read_attachment") {
     return <AttachmentReadResult payload={item.result} status={item.status} />;
   }
 
   if (item.name === "search_text") {
     return <SearchTextResult payload={item.result} status={item.status} />;
+  }
+
+  if (item.name === "web_search") {
+    return <WebSearchResult payload={item.result} status={item.status} />;
   }
 
   if (item.name === "find_files") {
@@ -3729,10 +4061,12 @@ function ToolDetail({
 
 function CommandTerminal({
   argumentsPayload,
+  liveOutput,
   resultPayload,
   status,
 }: {
   argumentsPayload: string;
+  liveOutput?: LiveToolOutput;
   resultPayload: string | null;
   status: ConversationToolItem["status"];
 }): ReactElement {
@@ -3742,9 +4076,10 @@ function CommandTerminal({
   const invocation = parseCommandInvocation(argumentsPayload);
   const command = invocation?.command ?? "命令参数无法识别，请查看原始调用。";
   const result = resultPayload === null ? null : parseCommandResult(resultPayload);
-  const output = commandTerminalOutput(resultPayload, status);
+  const output = commandTerminalOutput(resultPayload, status, liveOutput);
   const terminal = result?.terminal;
-  const lifecycleLabel = result?.status == null ? null : commandSessionStatusLabel(result.status);
+  const lifecycleStatus = liveOutput?.status ?? result?.status;
+  const lifecycleLabel = lifecycleStatus == null ? null : commandSessionStatusLabel(lifecycleStatus);
   const terminalStyle: CSSProperties = {
     fontFamily: terminalConfiguration.fontFamily,
     fontSize: terminalConfiguration.fontSize,
@@ -3994,6 +4329,37 @@ function SearchTextResult({
         </ul>
       )}
       {result.truncated ? <p className="tool-directory-listing__notice">搜索结果已达到数量限制。</p> : null}
+    </StructuredToolResult>
+  );
+}
+
+function WebSearchResult({
+  payload,
+  status,
+}: {
+  payload: string | null;
+  status: ConversationToolItem["status"];
+}): ReactElement {
+  const result = payload === null ? null : parseWebSearchResult(payload);
+  if (result === null) return <ToolResultNotice result={payload} status={status} />;
+
+  return (
+    <StructuredToolResult summary={`网页搜索 · ${result.results.length} 项`}>
+      {result.results.length === 0 ? (
+        <p className="tool-directory-listing__empty">没有找到网页结果</p>
+      ) : (
+        <ul className="tool-search-results">
+          {result.results.map((item) => (
+            <li key={item.url}>
+              <a href={item.url} rel="noreferrer" target="_blank">{item.title || item.url}</a>
+              <span className="tool-search-results__path">{item.hostname}</span>
+              {item.description.length === 0 ? null : (
+                <span className="tool-search-results__excerpt">{item.description}</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </StructuredToolResult>
   );
 }
@@ -4644,6 +5010,31 @@ function parseSearchTextResult(payload: string): {
     : null;
 }
 
+function parseWebSearchResult(payload: string): {
+  results: Array<{ description: string; hostname: string; title: string; url: string }>;
+} | null {
+  const result = parseToolValue(payload);
+  if (!Array.isArray(result?.results)) return null;
+  const results = result.results.map((item) => {
+    if (item === null || typeof item !== "object") return null;
+    const value = item as Record<string, unknown>;
+    return typeof value.description === "string" &&
+      typeof value.hostname === "string" &&
+      typeof value.title === "string" &&
+      typeof value.url === "string"
+      ? {
+        description: value.description,
+        hostname: value.hostname,
+        title: value.title,
+        url: value.url,
+      }
+      : null;
+  });
+  return results.every((item) => item !== null)
+    ? { results: results.filter((item) => item !== null) }
+    : null;
+}
+
 function parseFindFilesResult(payload: string): {
   matches: string[];
   pattern: string;
@@ -5092,16 +5483,35 @@ function terminalOutputEncodingLabel(encoding: string): string {
 function commandTerminalOutput(
   resultPayload: string | null,
   status: ConversationToolItem["status"],
+  liveOutput?: LiveToolOutput,
 ): string {
+  const result = resultPayload === null ? null : parseCommandResult(resultPayload);
+  if (liveOutput !== undefined && result !== null) {
+    return commandTerminalOutputValue({
+      ...result,
+      exitCode: liveOutput.exitCode,
+      status: liveOutput.status,
+      stderr: liveOutput.stderr,
+      stdout: liveOutput.stdout,
+      timedOut: liveOutput.timedOut,
+      truncated: liveOutput.truncated,
+    });
+  }
+  if (liveOutput !== undefined) {
+    const liveLines = [liveOutput.stdout, liveOutput.stderr].filter((value) => value.length > 0);
+    return liveLines.length > 0 ? liveLines.join("\n") : "[命令正在执行]";
+  }
   if (resultPayload === null) {
     return status === "running" ? "正在执行..." : "等待命令结果...";
   }
-
-  const result = parseCommandResult(resultPayload);
   if (result === null) {
     return parseToolError(resultPayload) ?? "命令执行未返回可显示的终端输出。";
   }
 
+  return commandTerminalOutputValue(result);
+}
+
+function commandTerminalOutputValue(result: CommandResultPayload): string {
   const lines = [result.stdout, result.stderr].filter((value) => value.length > 0);
   if (result.status === "running" && lines.length === 0) lines.push("[命令正在后台运行]");
   if (result.status === "cancelled") lines.push("[命令已停止]");

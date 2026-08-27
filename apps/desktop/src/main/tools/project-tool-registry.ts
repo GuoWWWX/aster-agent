@@ -1,14 +1,18 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { TextDecoder } from "node:util";
 import {
   DEFAULT_TERMINAL_CONFIGURATION,
+  projectFileSchema,
   relativeProjectPathSchema,
+  type ProjectFile,
   type TerminalConfiguration,
   type TerminalOutputEncoding,
   type TerminalShell,
+  type WriteProjectFileInput,
 } from "@agent/protocol";
 import { rgPath } from "@vscode/ripgrep";
 import { applyPatch, createTwoFilesPatch, parsePatch } from "diff";
@@ -38,6 +42,12 @@ const PARALLEL_READ_TOOL_NAMES = new Set([
   "read_file",
   "search_text",
   "find_files",
+]);
+
+const COMMAND_TOOL_NAMES = new Set([
+  "run_command",
+  "wait_for_commands",
+  "stop_command",
 ]);
 
 const PREPARE_BEFORE_BATCH_TOOL_NAMES = new Set([
@@ -102,6 +112,16 @@ const readFileArgumentsSchema = z
       path: ["endLine"],
     });
   });
+
+const externalReadFileArgumentsSchema = z
+  .object({
+    path: z.string().trim().min(1).max(4_096)
+      .refine((value) => path.isAbsolute(value), {
+        message: "An absolute file path is required.",
+      })
+      .describe("Absolute UTF-8 text file path outside the authorized project."),
+  })
+  .strict();
 
 const searchTextArgumentsSchema = z
   .object({
@@ -175,8 +195,8 @@ const runCommandArgumentsSchema = z
   .object({
     command: z.string().trim().min(1).max(MAX_COMMAND_LENGTH)
       .describe("One non-interactive command for the configured project shell."),
-    parallel: z.boolean().default(false)
-      .describe("Allow this command to run alongside another independent command in the same run."),
+    parallel: z.boolean().default(true)
+      .describe("Run alongside other independent commands from the same model turn by default; set false when this command depends on another command or shared mutable state."),
     timeoutMs: z.number().int().min(1_000).max(MAX_COMMAND_TIMEOUT_MS).default(60_000)
       .describe("Maximum execution time in milliseconds before the process is terminated."),
     yieldTimeMs: z.number().int().min(0).max(MAX_COMMAND_YIELD_MS).default(10_000)
@@ -226,6 +246,12 @@ export type PreparedCommand = {
   yieldTimeMs: number;
 };
 
+export type PreparedExternalFileRead = {
+  canonicalPath: string;
+  path: string;
+  sizeBytes: number;
+};
+
 export type ProjectOperationOwner = {
   conversationId: string;
   conversationTitle: string;
@@ -238,6 +264,19 @@ type ProjectOperationScope =
 
 type CommandSessionStatus = "running" | "completed" | "failed" | "cancelled";
 
+export type CommandOutputEvent = {
+  commandId: string;
+  delta: string;
+  done: boolean;
+  exitCode: number | null;
+  status: CommandSessionStatus;
+  stream: "stderr" | "stdout";
+  timedOut: boolean;
+  truncated: boolean;
+};
+
+export type CommandOutputListener = (event: CommandOutputEvent) => void;
+
 type CommandSession = {
   command: string;
   commandId: string;
@@ -245,7 +284,8 @@ type CommandSession = {
   completion: Promise<void>;
   error: string | null;
   exitCode: number | null;
-  projectId: string;
+  conversationId: string;
+  projectId: string | undefined;
   outputEncoding: TerminalOutputEncoding;
   startedAt: string;
   status: CommandSessionStatus;
@@ -264,7 +304,7 @@ type ProjectOperationRecord = ProjectOperationOwner & {
   completedAt: string | null;
   completion: Promise<void>;
   operationId: string;
-  projectId: string;
+  projectId: string | undefined;
   scope: ProjectOperationScope;
   startedAt: string;
   status: "active" | "completed" | "failed";
@@ -302,6 +342,12 @@ export type ToolExecution =
       content: string;
       isError: false;
       kind: "command";
+    }
+  | {
+      content: string;
+      externalRead: PreparedExternalFileRead;
+      isError: false;
+      kind: "external_read";
     };
 
 function throwIfAborted(signal: AbortSignal): void {
@@ -316,6 +362,9 @@ export class ProjectToolRegistry {
   private readonly projectOperations = new Map<string, ProjectOperationRecord>();
 
   private readonly commandSessions = new Map<string, CommandSession>();
+
+  /** Temporary conversations use an isolated command directory instead of a user workspace. */
+  private readonly temporaryCommandRoots = new Map<string, Promise<string>>();
 
   public constructor(
     private readonly projects: ProjectRegistry,
@@ -364,6 +413,12 @@ export class ProjectToolRegistry {
       },
       {
         description:
+          "Prepare a read of one absolute UTF-8 text file outside the current workspace. This always requires explicit user approval; the file contents are not read before approval.",
+        name: "read_external_file",
+        parameters: modelToolParameters(externalReadFileArgumentsSchema)
+      },
+      {
+        description:
           "Search text inside the current authorized workspace with bundled ripgrep. Supports literal or regex matching, smart/sensitive/insensitive case handling, and include/exclude globs. maxResults bounds returned matches. Returns bounded structured matches while respecting project ignore files. Use run_command with rg directly when exact CLI output, context lines, counts, several expressions, or shell pipelines are more suitable.",
         name: "search_text",
         parameters: modelToolParameters(searchTextArgumentsSchema)
@@ -400,11 +455,23 @@ export class ProjectToolRegistry {
       },
       {
         description:
-          `Run one non-interactive ${commandEnvironment} command in the current authorized workspace root. The bundled rg command is always available. Short commands return normally; a command still running after yieldTimeMs returns a commandId for wait_for_commands. timeoutMs is the command's execution limit; yieldTimeMs only controls when a still-running command is handed back. Set parallel=true only for independent commands intentionally started together. The command is subject to the conversation permission mode and may require user approval before execution.`,
+          `Run one non-interactive ${commandEnvironment} command. Project conversations run it in the authorized workspace root; temporary conversations run it in an isolated temporary directory. The bundled rg command is always available. Short commands return normally; a command still running after yieldTimeMs returns a commandId for wait_for_commands. timeoutMs is the command's execution limit; yieldTimeMs only controls when a still-running command is handed back. Independent commands returned in the same model turn run in parallel by default whenever the permission mode allows commands; set parallel=false when this command depends on another command or shared mutable state. In ask-before-changes mode each command still requires its own approval, and approved independent commands can overlap.`,
         name: "run_command",
         parameters: modelToolParameters(runCommandArgumentsSchema)
       }
     ];
+  }
+
+  public getCommandDefinitions(): ModelToolDefinition[] {
+    return this.getDefinitions().filter((definition) => COMMAND_TOOL_NAMES.has(definition.name));
+  }
+
+  public getProjectDefinitions(): ModelToolDefinition[] {
+    return this.getDefinitions().filter((definition) => !COMMAND_TOOL_NAMES.has(definition.name));
+  }
+
+  public isCommandTool(toolName: string): boolean {
+    return COMMAND_TOOL_NAMES.has(toolName);
   }
 
   public getExecutionPolicy(
@@ -435,6 +502,7 @@ export class ProjectToolRegistry {
       || toolName === "wait_for_commands"
       || toolName === "stop_command"
       || toolName === "wait_for_project_operation"
+      || toolName === "read_external_file"
       || PREPARE_BEFORE_BATCH_TOOL_NAMES.has(toolName)
     ) {
       return { kind: "serial" };
@@ -453,7 +521,7 @@ export class ProjectToolRegistry {
   public async execute(
     name: string,
     rawArguments: string,
-    projectId: string,
+    projectId: string | undefined,
     signal: AbortSignal,
     owner: ProjectOperationOwner = unknownOperationOwner(),
   ): Promise<ToolExecution> {
@@ -461,22 +529,25 @@ export class ProjectToolRegistry {
       throwIfAborted(signal);
       const parsedArguments = parseToolArguments(rawArguments);
       if (name === "list_project_operations") {
+        if (projectId === undefined) throw new Error("A workspace is required for project operation inspection.");
         listProjectOperationsArgumentsSchema.parse(parsedArguments);
         return this.success({ operations: this.listActiveProjectOperations(projectId, owner) });
       }
       if (name === "wait_for_project_operation") {
+        if (projectId === undefined) throw new Error("A workspace is required for project operation inspection.");
         const input = waitForProjectOperationArgumentsSchema.parse(parsedArguments);
         return await this.waitForProjectOperation(input.operationId, projectId, input.timeoutMs, signal);
       }
       if (name === "wait_for_commands") {
         const input = waitForCommandsArgumentsSchema.parse(parsedArguments);
-        return await this.waitForCommands(input, projectId, signal);
+        return await this.waitForCommands(input, projectId, owner.conversationId, signal);
       }
       if (name === "stop_command") {
         const input = stopCommandArgumentsSchema.parse(parsedArguments);
-        return this.stopCommand(input.commandId, projectId);
+        return this.stopCommand(input.commandId, projectId, owner.conversationId);
       }
       if (name === "list_directory") {
+        if (projectId === undefined) throw new Error("A workspace is required for directory inspection.");
         const input = listDirectoryArgumentsSchema.parse(parsedArguments);
         const listing = await this.projects.listEntries({
           directoryPath: input.path,
@@ -485,24 +556,34 @@ export class ProjectToolRegistry {
         return this.success(listing);
       }
       if (name === "read_file") {
+        if (projectId === undefined) throw new Error("A workspace is required for file inspection.");
         return await this.readProjectFile(parsedArguments, projectId, signal);
       }
+      if (name === "read_external_file") {
+        return await this.prepareExternalFileRead(parsedArguments, signal);
+      }
       if (name === "search_text") {
+        if (projectId === undefined) throw new Error("A workspace is required for project search.");
         return await this.searchProject(parsedArguments, projectId, signal);
       }
       if (name === "find_files") {
+        if (projectId === undefined) throw new Error("A workspace is required for file search.");
         return await this.findProjectFiles(parsedArguments, projectId, signal);
       }
       if (name === "write_file") {
+        if (projectId === undefined) throw new Error("A workspace is required for file changes.");
         return await this.prepareWriteFile(parsedArguments, projectId, signal);
       }
       if (name === "delete_file") {
+        if (projectId === undefined) throw new Error("A workspace is required for file changes.");
         return await this.prepareDeleteFile(parsedArguments, projectId, signal);
       }
       if (name === "replace_in_file") {
+        if (projectId === undefined) throw new Error("A workspace is required for file changes.");
         return await this.prepareReplaceInFile(parsedArguments, projectId, signal);
       }
       if (name === "apply_patch") {
+        if (projectId === undefined) throw new Error("A workspace is required for file changes.");
         return await this.preparePatch(parsedArguments, projectId, signal);
       }
       if (name === "run_command") {
@@ -546,6 +627,62 @@ export class ProjectToolRegistry {
       path: input.path,
       startLine: input.startLine,
       totalLines: lines.length
+    });
+  }
+
+  private async prepareExternalFileRead(
+    rawArguments: unknown,
+    signal: AbortSignal,
+  ): Promise<ToolExecution> {
+    const input = externalReadFileArgumentsSchema.parse(rawArguments);
+    const canonicalPath = await realpath(input.path);
+    const fileInfo = await stat(canonicalPath);
+    if (!fileInfo.isFile()) throw new Error("Requested external path is not a file.");
+    if (fileInfo.size > MAX_READ_FILE_BYTES) {
+      throw new Error("Requested external file exceeds the read size limit.");
+    }
+    throwIfAborted(signal);
+    return {
+      content: JSON.stringify({
+        ok: true,
+        value: {
+          path: input.path,
+          sizeBytes: fileInfo.size,
+          status: "awaiting_approval",
+        },
+      }),
+      externalRead: {
+        canonicalPath,
+        path: input.path,
+        sizeBytes: fileInfo.size,
+      },
+      isError: false,
+      kind: "external_read",
+    };
+  }
+
+  public async executePreparedExternalFileRead(
+    prepared: PreparedExternalFileRead,
+    signal: AbortSignal,
+  ): Promise<ToolExecutionResult> {
+    const canonicalPath = await realpath(prepared.path);
+    if (canonicalPath !== prepared.canonicalPath) {
+      throw new Error("The external file path changed while approval was pending.");
+    }
+    const fileInfo = await stat(canonicalPath);
+    if (!fileInfo.isFile() || fileInfo.size !== prepared.sizeBytes) {
+      throw new Error("The external file changed while approval was pending.");
+    }
+    if (fileInfo.size > MAX_READ_FILE_BYTES) {
+      throw new Error("Requested external file exceeds the read size limit.");
+    }
+    throwIfAborted(signal);
+    const contents = await readFile(canonicalPath, "utf8");
+    if (contents.includes("\u0000")) throw new Error("Requested external file is not UTF-8 text.");
+    return this.success({
+      content: contents,
+      path: prepared.path,
+      sizeBytes: fileInfo.size,
     });
   }
 
@@ -667,31 +804,122 @@ export class ProjectToolRegistry {
     }
   }
 
+  /**
+   * Writes a project file from the desktop UI editor (not a model tool call).
+   *
+   * Participates in the same `runProjectMutation` lock as `applyPreparedChange`: a
+   * command occupies the whole project (`scopesConflict` treats any command as
+   * conflicting with any file), so a save issued while the Agent is mid-build must be
+   * rejected, not silently interleaved. Errors propagate as the typed
+   * `ProjectOperationConflictError`/`PreparedFileChangeStaleError` classes — already
+   * recognized by `classifyError` as `CONFLICT`/`FILE_CHANGED` — instead of the
+   * `ToolExecutionResult` JSON envelope `applyPreparedChange` uses for model consumption.
+   *
+   * The stale-check reads through `ProjectRegistry.readFile()` (2 MB preview boundary)
+   * rather than this class's own `readEditableFile()` (200 KB model-tool boundary):
+   * the UI already let the user open and edit files up to the larger boundary, so the
+   * write path must honor the same limit or a mid-sized file would open editable and
+   * then inexplicably fail to save.
+   */
+  public async writeUserFile(
+    input: WriteProjectFileInput,
+    signal: AbortSignal,
+  ): Promise<ProjectFile> {
+    const filePath = await this.projects.resolveWritableProjectPath(input.projectId, input.path);
+    return this.runProjectMutation(
+      input.projectId,
+      { kind: "file", path: input.path },
+      USER_EDITOR_OPERATION_OWNER,
+      signal,
+      async () => {
+        const current = await this.readCurrentFileForStaleCheck(input.projectId, input.path);
+        if (current !== input.expectedContent) {
+          throw new PreparedFileChangeStaleError(
+            input.path,
+            input.expectedContent === null && current !== null
+              ? "The target file was created after it was opened for editing."
+              : "The file changed after it was opened for editing. Reload it before saving again.",
+          );
+        }
+
+        const temporaryPath = path.join(
+          path.dirname(filePath),
+          `.${path.basename(filePath)}.user-edit-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`
+        );
+        try {
+          await writeFile(temporaryPath, input.content, "utf8");
+          throwIfAborted(signal);
+          await rename(temporaryPath, filePath);
+        } finally {
+          await this.removeTemporaryFile(temporaryPath);
+        }
+
+        return projectFileSchema.parse({
+          byteLength: Buffer.byteLength(input.content, "utf8"),
+          content: input.content,
+          isBinary: false,
+          name: path.basename(filePath),
+          path: input.path,
+          projectId: input.projectId,
+          truncated: false,
+        });
+      },
+    );
+  }
+
+  /** `null` return means the file does not exist yet, matching `PreparedFileChange.expectedContent` semantics. */
+  private async readCurrentFileForStaleCheck(
+    projectId: string,
+    relativePath: string,
+  ): Promise<string | null> {
+    let current: ProjectFile;
+    try {
+      current = await this.projects.readFile({ path: relativePath, projectId });
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
+      throw error;
+    }
+    if (current.isBinary || current.truncated) {
+      throw new PreparedFileChangeStaleError(
+        relativePath,
+        "The file is binary or too large to safely overwrite from the editor. Reload it before saving again.",
+      );
+    }
+    return current.content;
+  }
+
   public async executePreparedCommand(
     command: PreparedCommand,
-    projectId: string,
+    projectId: string | undefined,
     signal: AbortSignal,
     owner: ProjectOperationOwner = unknownOperationOwner(),
+    onOutput?: CommandOutputListener,
   ): Promise<ToolExecutionResult> {
     const configuration = this.terminalConfiguration.getConfiguration();
     const terminal = this.createTerminalLaunch(configuration, command.command);
     let session: CommandSession | undefined;
     try {
-      const operation = this.runProjectMutation(
+      const operation = this.runCommandMutation(
         projectId,
+        owner.conversationId,
         { command: command.command, kind: "command", parallel: command.parallel },
         owner,
         signal,
         async (commandId) => {
-          const project = this.projects.getProject(projectId);
+          const workingDirectory = await this.resolveCommandWorkingDirectory(
+            projectId,
+            owner.conversationId,
+          );
           session = this.startCommand(
             commandId,
             command,
-            project.id,
-            project.rootPath,
+            projectId,
+            owner.conversationId,
+            workingDirectory,
             signal,
             configuration.outputEncoding,
             terminal,
+            onOutput,
           );
           this.commandSessions.set(commandId, session);
           await session.completion;
@@ -902,11 +1130,13 @@ export class ProjectToolRegistry {
   private startCommand(
     commandId: string,
     command: PreparedCommand,
-    projectId: string,
+    projectId: string | undefined,
+    conversationId: string,
     workingDirectory: string,
     signal: AbortSignal,
     outputEncoding: TerminalOutputEncoding,
     terminal: TerminalLaunch,
+    onOutput: CommandOutputListener | undefined,
   ): CommandSession {
     let resolveCompletion: () => void = () => undefined;
     const completion = new Promise<void>((resolve) => {
@@ -927,6 +1157,7 @@ export class ProjectToolRegistry {
       commandId,
       completedAt: null,
       completion,
+      conversationId,
       error: null,
       exitCode: null,
       outputEncoding,
@@ -954,6 +1185,34 @@ export class ProjectToolRegistry {
       truncated: false,
       workingDirectory,
     };
+    const decoders = {
+      stderr: new StreamingTerminalOutputDecoder(outputEncoding),
+      stdout: new StreamingTerminalOutputDecoder(outputEncoding),
+    } satisfies Record<"stderr" | "stdout", StreamingTerminalOutputDecoder>;
+    let outputFinished = false;
+    const emitOutput = (
+      stream: "stderr" | "stdout",
+      delta: string,
+      done: boolean,
+      status: CommandSessionStatus,
+    ): void => {
+      if (onOutput === undefined || (!done && delta.length === 0)) return;
+      // Output is best-effort and must never interrupt the child process.
+      try {
+        onOutput({
+          commandId,
+          delta,
+          done,
+          exitCode: session.exitCode,
+          status,
+          stream,
+          timedOut: session.timedOut,
+          truncated: session.truncated,
+        });
+      } catch {
+        // The owning run will still receive the final command snapshot.
+      }
+    };
     const appendOutput = (target: "stderr" | "stdout", chunk: Buffer): void => {
       const byteLengthKey = target === "stderr" ? "stderrByteLength" : "stdoutByteLength";
       const chunks = target === "stderr" ? session.stderrChunks : session.stdoutChunks;
@@ -966,6 +1225,14 @@ export class ProjectToolRegistry {
       chunks.push(accepted);
       session[byteLengthKey] += accepted.length;
       if (accepted.length < chunk.length) session.truncated = true;
+      emitOutput(target, decoders[target].push(accepted), false, session.status);
+    };
+    const flushOutput = (): void => {
+      if (outputFinished) return;
+      outputFinished = true;
+      for (const stream of ["stdout", "stderr"] as const) {
+        emitOutput(stream, decoders[stream].flush(), true, session.status);
+      }
     };
     const cleanup = (): void => {
       clearTimeout(timer);
@@ -982,6 +1249,7 @@ export class ProjectToolRegistry {
       session.error = error;
       session.exitCode = exitCode;
       session.status = session.status === "cancelled" ? "cancelled" : status;
+      flushOutput();
       resolveCompletion();
     };
     const onAbort = (): void => session.terminate(true);
@@ -1043,14 +1311,15 @@ export class ProjectToolRegistry {
 
   private async waitForCommands(
     input: z.infer<typeof waitForCommandsArgumentsSchema>,
-    projectId: string,
+    projectId: string | undefined,
+    conversationId: string,
     signal: AbortSignal,
   ): Promise<ToolExecutionResult> {
     const commandIds = [...new Set(input.commandIds)];
     const sessions = commandIds.map((commandId) => {
       const session = this.commandSessions.get(commandId);
-      if (session === undefined || session.projectId !== projectId) {
-        throw new Error(`Command ${commandId} was not found in the current project.`);
+      if (session === undefined || !this.canAccessCommand(session, projectId, conversationId)) {
+        throw new Error("Command was not found in the current command scope.");
       }
       return session;
     });
@@ -1072,10 +1341,14 @@ export class ProjectToolRegistry {
     });
   }
 
-  private stopCommand(commandId: string, projectId: string): ToolExecutionResult {
+  private stopCommand(
+    commandId: string,
+    projectId: string | undefined,
+    conversationId: string,
+  ): ToolExecutionResult {
     const session = this.commandSessions.get(commandId);
-    if (session === undefined || session.projectId !== projectId) {
-      throw new Error("Command was not found in the current project.");
+    if (session === undefined || !this.canAccessCommand(session, projectId, conversationId)) {
+      throw new Error("Command was not found in the current command scope.");
     }
     session.terminate(true);
     return this.success({ command: this.commandSessionSnapshot(session) });
@@ -1150,6 +1423,39 @@ export class ProjectToolRegistry {
   ): Promise<T> {
     throwIfAborted(signal);
     const workspaceKey = projectOperationWorkspaceKey(this.projects.getProject(projectId).rootPath);
+    return this.runOperation(projectId, workspaceKey, scope, owner, signal, operation);
+  }
+
+  private async runCommandMutation<T>(
+    projectId: string | undefined,
+    conversationId: string,
+    scope: ProjectOperationScope,
+    owner: ProjectOperationOwner,
+    signal: AbortSignal,
+    operation: (operationId: string) => Promise<T>,
+  ): Promise<T> {
+    if (projectId !== undefined) {
+      return this.runProjectMutation(projectId, scope, owner, signal, operation);
+    }
+    return this.runOperation(
+      undefined,
+      `temporary-command:${conversationId}`,
+      scope,
+      owner,
+      signal,
+      operation,
+    );
+  }
+
+  private async runOperation<T>(
+    projectId: string | undefined,
+    workspaceKey: string,
+    scope: ProjectOperationScope,
+    owner: ProjectOperationOwner,
+    signal: AbortSignal,
+    operation: (operationId: string) => Promise<T>,
+  ): Promise<T> {
+    throwIfAborted(signal);
     const conflict = [...this.projectOperations.values()].find((candidate) =>
       candidate.workspaceKey === workspaceKey
       && candidate.status === "active"
@@ -1188,6 +1494,30 @@ export class ProjectToolRegistry {
       completeOperation?.();
       this.pruneCompletedOperations();
     }
+  }
+
+  private async resolveCommandWorkingDirectory(
+    projectId: string | undefined,
+    conversationId: string,
+  ): Promise<string> {
+    if (projectId !== undefined) return this.projects.getProject(projectId).rootPath;
+    const key = conversationId.length > 0 ? conversationId : "unknown";
+    let root = this.temporaryCommandRoots.get(key);
+    if (root === undefined) {
+      root = mkdtemp(path.join(os.tmpdir(), "agent-command-"));
+      this.temporaryCommandRoots.set(key, root);
+    }
+    return root;
+  }
+
+  private canAccessCommand(
+    session: CommandSession,
+    projectId: string | undefined,
+    conversationId: string,
+  ): boolean {
+    return projectId === undefined
+      ? session.projectId === undefined && session.conversationId === conversationId
+      : session.projectId === projectId;
   }
 
   private listActiveProjectOperations(
@@ -1419,6 +1749,17 @@ function unknownOperationOwner(): ProjectOperationOwner {
   };
 }
 
+/**
+ * Sentinel owner for saves issued directly from the desktop UI editor, outside any
+ * Agent conversation. Distinct from `unknownOperationOwner()` so operation listings
+ * can tell "a human is editing this file" apart from "an untracked caller".
+ */
+const USER_EDITOR_OPERATION_OWNER: ProjectOperationOwner = {
+  conversationId: "user-editor",
+  conversationTitle: "用户编辑器",
+  runId: "user-editor",
+};
+
 export function decodeTerminalOutput(
   output: Buffer,
   encoding: TerminalOutputEncoding,
@@ -1437,6 +1778,45 @@ export function decodeTerminalOutput(
   }
 
   return `${decoded}${decodeAutoTerminalLine(output.subarray(lineStart))}`;
+}
+
+class StreamingTerminalOutputDecoder {
+  private readonly decoder: TextDecoder | null;
+
+  private pendingAutoOutput = Buffer.alloc(0);
+
+  public constructor(encoding: TerminalOutputEncoding) {
+    this.decoder = encoding === "auto" ? null : new TextDecoder(encoding);
+  }
+
+  public push(output: Buffer): string {
+    if (output.length === 0) return "";
+    if (this.decoder !== null) return this.decoder.decode(output, { stream: true });
+
+    // Auto mode keeps the existing per-line UTF-8/GB18030 detection semantics.
+    this.pendingAutoOutput = Buffer.concat([this.pendingAutoOutput, output]);
+    let decoded = "";
+    let lineStart = 0;
+    for (let index = 0; index < this.pendingAutoOutput.length; index += 1) {
+      const byte = this.pendingAutoOutput[index];
+      if (byte !== 0x0a && byte !== 0x0d) continue;
+      const end = byte === 0x0d && this.pendingAutoOutput[index + 1] === 0x0a
+        ? index + 2
+        : index + 1;
+      decoded += decodeAutoTerminalLine(this.pendingAutoOutput.subarray(lineStart, end));
+      lineStart = end;
+      index = end - 1;
+    }
+    this.pendingAutoOutput = this.pendingAutoOutput.subarray(lineStart);
+    return decoded;
+  }
+
+  public flush(): string {
+    if (this.decoder !== null) return this.decoder.decode();
+    const pending = this.pendingAutoOutput;
+    this.pendingAutoOutput = Buffer.alloc(0);
+    return pending.length === 0 ? "" : decodeAutoTerminalLine(pending);
+  }
 }
 
 function decodeAutoTerminalLine(output: Buffer): string {

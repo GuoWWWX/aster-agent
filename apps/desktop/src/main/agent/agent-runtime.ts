@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { interrupt, isGraphInterrupt } from "@langchain/langgraph";
@@ -6,6 +6,7 @@ import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { z } from "zod";
 import {
   approveToolChangeInputSchema,
+  agentPermissionRuleSchema,
   CONTEXT_MESSAGE_OVERHEAD_TOKENS,
   DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
   conversationContextUsageInputSchema,
@@ -20,8 +21,14 @@ import {
   type ContextCompressionConfiguration,
   type ContextCompressionThreshold,
   type AgentDirectoryConfiguration,
+  type AgentPermissionRule,
+  type AgentPermissionTool,
+  type ApplicationPermissionPolicies,
+  type ApplicationSettings,
+  type PermissionPolicy,
   type ConversationAgentBinding,
   type ConversationAgentMessageItem,
+  type ConversationAttachment,
   type ConversationMessageSubmission,
   type ConversationPendingMessage,
   type ConversationContextUsage,
@@ -30,6 +37,7 @@ import {
   type ConversationRunEvent,
   type ConversationSummary,
   type ConversationTaskList,
+  type ConversationToolExecutionMode,
   type ConversationToolItem,
   type ModelReasoningOption,
   replaceLatestConversationMessageInputSchema,
@@ -46,6 +54,7 @@ import {
   type ModelMessage,
   type ModelProviderAdapter,
   type ModelToolCall,
+  type ModelToolDefinition,
   type ModelTurnResult
 } from "../model/model-contracts.js";
 import { ModelAdapterRegistry } from "../model/model-adapter-registry.js";
@@ -58,26 +67,38 @@ import {
   type LatestUserMessageReplacementSource,
   type QueuedRunRecovery,
   type RunExecutionSnapshot,
-  type SubagentTask,
-  type StoredModelMessage
+  type StoredPendingMessage,
+  type SubagentTask
 } from "../storage/agent-database.js";
+import type { PluginCatalogRecord } from "../storage/agent-database.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
+import { EventProjector } from "../storage/event-projector.js";
+import { ThreadLog, type ThreadLogEventInput } from "../storage/thread-log.js";
+import { ThreadLogLegacyImporter } from "../storage/thread-log-legacy-importer.js";
+import { RunCoordinator } from "./run-coordinator.js";
+import { ModelGateway } from "./model-gateway.js";
 import { TaskListTool } from "../tasks/task-list-tool.js";
 import { ConversationAttachmentTool } from "../tools/conversation-attachment-tool.js";
+import { WebSearchTool } from "../tools/web-search-tool.js";
 import {
   ProjectToolRegistry,
   type PreparedCommand,
+  type PreparedExternalFileRead,
   type PreparedFileChange,
   type ProjectOperationOwner,
   type ToolExecution,
   type ToolExecutionResult
 } from "../tools/project-tool-registry.js";
 import {
-  buildManagedContext,
   createContextCompactionMessages,
   type ManagedContextSourceMessage,
   parseContextSummary
 } from "./context-manager.js";
+import { ContextCompiler } from "./context-compiler.js";
+import {
+  activeTaskListContextMessage,
+  activeTaskListContextTokens,
+} from "./task-list-context.js";
 import {
   buildConversationReferenceBundle,
   resolveConversationReferenceBudget,
@@ -85,6 +106,8 @@ import {
 import { AgentCommunicationTool } from "./agent-communication-tool.js";
 import {
   LangGraphExecutor,
+  type AgentGraphModelCallHooks,
+  type AgentGraphModelRetry,
   type LangGraphInterrupt,
 } from "./langgraph-executor.js";
 import {
@@ -100,10 +123,15 @@ import {
   type ToolHandler,
   type ToolHandlerExecutionContext,
 } from "../tools/tool-handler-registry.js";
+import {
+  MAX_PARALLEL_COMMAND_TOOL_CALLS,
+  MAX_PARALLEL_READ_TOOL_CALLS,
+} from "../tools/tool-execution-policy.js";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { parseToolArguments } from "../model/tool-arguments.js";
 
 const MAX_AGENT_LOOPS = 8;
+const MAX_TOOL_CALLS_PER_MODEL_TURN = 32;
 const MAX_CONTEXT_COMPACTIONS_PER_RUN = 3;
 const MAX_MODEL_RECONNECT_ATTEMPTS = 5;
 const MAX_AGENT_MESSAGE_AUTO_DEPTH = 4;
@@ -112,6 +140,40 @@ const MAX_SUMMARY_OUTPUT_TOKENS = 4_096;
 const MODEL_RETRY_INITIAL_DELAY_MS = 1_000;
 const MODEL_RETRY_MAX_DELAY_MS = 16_000;
 const DEFAULT_PERMISSION_MODE: ConversationPermissionMode = "ask_before_changes";
+
+class ToolCallLimitError extends Error {
+  public readonly code = "TOOL_CALL_LIMIT_EXCEEDED";
+
+  public constructor(
+    count: number,
+    limit: number,
+  ) {
+    super(
+      `模型本轮返回了 ${count} 个工具调用，超过安全上限 ${limit}。请拆分为多个模型轮次后重试。`,
+    );
+    this.name = "ToolCallLimitError";
+  }
+}
+
+class ModelToolCallValidationError extends Error {
+  public readonly code = "MODEL_TOOL_CALLS_INVALID";
+
+  public constructor(message: string) {
+    super(message);
+    this.name = "ModelToolCallValidationError";
+  }
+}
+
+function chunkToolCalls(
+  toolCalls: readonly ModelToolCall[],
+  chunkSize: number,
+): ModelToolCall[][] {
+  const chunks: ModelToolCall[][] = [];
+  for (let start = 0; start < toolCalls.length; start += chunkSize) {
+    chunks.push([...toolCalls.slice(start, start + chunkSize)]);
+  }
+  return chunks;
+}
 
 type ModelConfigurationProvider = {
   getConfiguration(providerId?: string, modelId?: string): ModelConfiguration;
@@ -130,6 +192,15 @@ type AgentDirectoryConfigurationProvider = {
   getConfiguration(): AgentDirectoryConfiguration;
 };
 
+type ApplicationSettingsProvider = {
+  getConfiguration(): ApplicationSettings;
+  saveConfiguration(configuration: ApplicationSettings): ApplicationSettings;
+};
+
+type PluginCatalogProvider = {
+  list(): readonly PluginCatalogRecord[];
+};
+
 const defaultContextCompressionConfigurationProvider: ContextCompressionConfigurationProvider = {
   getConfiguration: () => DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION
 };
@@ -145,8 +216,10 @@ function createRunExecutionSnapshot(input: {
   configuration: ModelConfiguration;
   contextCompressionConfiguration: ContextCompressionThreshold;
   permissionMode: ConversationPermissionMode;
+  plugins: readonly { contentHash: string; id: string; version: string }[];
   providerId: string | undefined;
   reasoning: ModelReasoningOption | undefined;
+  toolDefinitions: readonly ModelToolDefinition[];
 }): RunExecutionSnapshot {
   const { mode, percentageThreshold, tokenThreshold } = input.contextCompressionConfiguration;
   return {
@@ -160,10 +233,51 @@ function createRunExecutionSnapshot(input: {
     contextWindow: input.configuration.contextWindow ?? null,
     modelId: input.configuration.modelId,
     permissionMode: input.permissionMode,
+    plugins: input.plugins.map((plugin) => ({
+      contentHash: plugin.contentHash,
+      id: plugin.id,
+      version: plugin.version,
+    })),
     providerId: input.providerId ?? null,
     reasoning: input.reasoning === undefined ? null : structuredClone(input.reasoning),
     reasoningOptions: structuredClone(input.configuration.reasoningOptions),
+    toolManifest: createToolManifestSnapshot(input.toolDefinitions),
   };
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => (
+    `${JSON.stringify(key)}:${stableJson(record[key])}`
+  )).join(",")}}`;
+}
+
+function createToolManifestSnapshot(definitions: readonly ModelToolDefinition[]): RunExecutionSnapshot["toolManifest"] {
+  return definitions
+    .map((definition) => ({
+      contentHash: createHash("sha256").update(stableJson({
+        description: definition.description,
+        name: definition.name,
+        parameters: definition.parameters,
+      }), "utf8").digest("hex"),
+      name: definition.name,
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function assertRunToolManifestMatchesSnapshot(
+  definitions: readonly ModelToolDefinition[],
+  snapshot: RunExecutionSnapshot,
+): void {
+  // Snapshots created before this field existed remain recoverable. New Runs
+  // always contain it, so a restart cannot silently change callable tools.
+  if (snapshot.toolManifest.length === 0) return;
+  const current = createToolManifestSnapshot(definitions);
+  if (JSON.stringify(current) !== JSON.stringify(snapshot.toolManifest)) {
+    throw new Error("Queued Run 的 Tool Manifest 已变化，无法安全恢复；请重新发送该消息。");
+  }
 }
 
 function assertRunConfigurationMatchesSnapshot(
@@ -201,6 +315,7 @@ type GraphToolExecutionInput = Omit<RuntimeToolContext, "onTaskListChanged" | "s
 };
 
 type GraphToolCallInput = GraphToolExecutionInput & {
+  executionMode: ConversationToolExecutionMode;
   toolBatchId: string;
   toolCall: ModelToolCall;
 };
@@ -216,6 +331,10 @@ type ModelTurnRequest = Omit<CompleteTurnInput, "onTextDelta"> & {
 };
 
 type PendingChangeApproval = {
+  agentId: string | null;
+  conversationId: string;
+  pattern: string;
+  permissionTool: AgentPermissionTool;
   promise: Promise<boolean>;
   resolve: (approved: boolean) => void;
   runId: string;
@@ -224,9 +343,58 @@ type PendingChangeApproval = {
 type ToolApprovalInterrupt = {
   conversationId: string;
   kind: "tool_approval";
+  pattern: string;
+  permissionTool: AgentPermissionTool;
   runId: string;
   toolId: string;
 };
+
+type PermissionDecision = "allow" | "ask" | "deny";
+
+const DEFAULT_APPLICATION_PERMISSION_POLICIES: ApplicationPermissionPolicies = {
+  "command-run": "ask",
+  "git-write": "unavailable",
+  "patch-write": "ask",
+  "workspace-read": "allow",
+  "workspace-search": "allow",
+};
+
+const PROJECT_READ_TOOL_NAMES = new Set([
+  "list_directory",
+  "read_file",
+]);
+
+const PROJECT_SEARCH_TOOL_NAMES = new Set([
+  "find_files",
+  "search_text",
+]);
+
+function normalizePermissionCandidate(
+  tool: AgentPermissionTool,
+  candidate: string,
+): string {
+  const trimmed = candidate.trim();
+  return tool === "run_command" || tool === "external_read"
+    ? trimmed
+    : trimmed.replaceAll("\\", "/").replace(/^\.\//u, "");
+}
+
+function permissionRuleMatches(
+  rule: AgentPermissionRule,
+  tool: AgentPermissionTool,
+  candidate: string,
+): boolean {
+  if (rule.tool !== tool) return false;
+  const normalizedCandidate = normalizePermissionCandidate(tool, candidate);
+  const pattern = normalizePermissionCandidate(tool, rule.pattern);
+  if (pattern === "*") return true;
+  if (!pattern.endsWith("*")) return pattern === normalizedCandidate;
+  const prefix = pattern.slice(0, -1).trimEnd();
+  if (tool !== "run_command" && (prefix.endsWith("/") || prefix.endsWith("\\"))) {
+    return normalizedCandidate.startsWith(prefix);
+  }
+  return normalizedCandidate === prefix || normalizedCandidate.startsWith(`${prefix} `);
+}
 
 type LangChainToolResultEnvelope = {
   activeSkills: SkillSnapshotRef[];
@@ -240,12 +408,6 @@ type LangChainToolResultEnvelope = {
 type CachedGraphToolResult = {
   envelope: LangChainToolResultEnvelope;
   message: ModelMessage;
-};
-
-type ActiveRun = {
-  controller: AbortController;
-  finished: Promise<void>;
-  resolveFinished: () => void;
 };
 
 type PreparedConversationMessage = {
@@ -329,8 +491,18 @@ function isToolApprovalInterrupt(value: unknown): value is ToolApprovalInterrupt
   const record = value as Record<string, unknown>;
   return record.kind === "tool_approval"
     && typeof record.conversationId === "string"
+    && typeof record.pattern === "string"
+    && typeof record.permissionTool === "string"
     && typeof record.runId === "string"
-    && typeof record.toolId === "string";
+    && typeof record.toolId === "string"
+    && [
+      "apply_patch",
+      "delete_file",
+      "external_read",
+      "replace_in_file",
+      "run_command",
+      "write_file",
+    ].includes(record.permissionTool);
 }
 
 function hasToolNodeMessages(value: unknown): value is { messages: unknown[] } {
@@ -436,60 +608,6 @@ function resolveReasoning(
   return option;
 }
 
-function sanitizeStoredModelMessages<T extends StoredModelMessage>(
-  messages: readonly T[]
-): T[] {
-  const validToolCallIds = new Set<string>();
-  for (const message of messages) {
-    if (message.role !== "assistant") continue;
-    for (const toolCall of message.toolCalls) {
-      const id = toolCall.id.trim();
-      const name = toolCall.name.trim();
-      if (id.length > 0 && name.length > 0) validToolCallIds.add(id);
-    }
-  }
-
-  const completedToolCallIds = new Set(
-    messages.flatMap((message) => {
-      if (message.role !== "tool" || message.toolCallId === null) return [];
-      const id = message.toolCallId.trim();
-      return id.length > 0 && validToolCallIds.has(id) ? [id] : [];
-    })
-  );
-
-  return messages.flatMap((message) => {
-    if (message.role === "assistant") {
-      const toolCalls = message.toolCalls.flatMap((toolCall) => {
-        const id = toolCall.id.trim();
-        const name = toolCall.name.trim();
-        if (
-          id.length === 0 ||
-          name.length === 0 ||
-          !completedToolCallIds.has(id)
-        ) {
-          return [];
-        }
-        return [{ ...toolCall, id, name }];
-      });
-      if (message.content.trim().length === 0 && toolCalls.length === 0) return [];
-      const sanitizedMessage = { ...message, toolCalls };
-      if (toolCalls.length !== message.toolCalls.length) {
-        delete sanitizedMessage.providerState;
-      }
-      return [sanitizedMessage];
-    }
-
-    if (message.role === "tool") {
-      const id = message.toolCallId?.trim() ?? "";
-      return id.length > 0 && completedToolCallIds.has(id)
-        ? [{ ...message, toolCallId: id }]
-        : [];
-    }
-
-    return [message];
-  });
-}
-
 function replaceStoredVisibleMessageContent(
   source: LatestUserMessageReplacementSource,
   content: string,
@@ -522,9 +640,13 @@ function agentResultContent(input: {
 }
 
 export class AgentRuntime {
-  private readonly activeRuns = new Map<string, ActiveRun>();
+  private readonly runCoordinator = new RunCoordinator();
 
-  private readonly runsBeingReplaced = new Set<string>();
+  private readonly graphExecutor = new LangGraphExecutor();
+
+  private readonly modelGateway: ModelGateway;
+
+  private readonly contextCompiler: ContextCompiler;
 
   private readonly agentMessageDepthByRun = new Map<string, number>();
 
@@ -538,13 +660,29 @@ export class AgentRuntime {
   /** Completed calls are replayed as messages after an interrupt, never re-executed. */
   private readonly completedToolsByRunCall = new Map<string, CachedGraphToolResult>();
 
+  /**
+   * A sibling approval interrupt can cause LangGraph's ToolNode to replay a
+   * batch while an already-approved command is still running. Reuse that
+   * promise instead of starting the side effect a second time.
+   */
+  private readonly inFlightToolsByRunCall = new Map<
+    string,
+    Promise<LangChainToolResultEnvelope & { activeSkills: SkillSnapshotRef[] }>
+  >();
+
   /** Prepared side effects survive an approval interrupt without taking a new file snapshot. */
   private readonly preparedToolsByRunCall = new Map<string, ToolExecution>();
+
+  /** One durable execution-intent event per Tool Call, including graph replays. */
+  private readonly preparedToolIntentKeys = new Set<string>();
 
   /** Keeps one UI batch identity while a multi-call ToolNode is resumed. */
   private readonly toolBatchIdsByRunCalls = new Map<string, string>();
 
   private readonly pendingChangeApprovals = new Map<string, PendingChangeApproval>();
+
+  /** Session grants intentionally survive Runs but disappear on app restart. */
+  private readonly sessionPermissionGrants = new Map<string, AgentPermissionRule[]>();
 
   /** Marks decisions that the replayed interrupt must consume without re-notifying the UI. */
   private readonly resumedApprovalDecisions = new Map<string, { approved: boolean; runId: string }>();
@@ -557,6 +695,8 @@ export class AgentRuntime {
 
   private readonly subagentTool: SubagentTool;
 
+  private readonly webSearchTool: WebSearchTool;
+
   private readonly toolHandlers: ToolHandlerRegistry<RuntimeToolContext>;
 
   public constructor(
@@ -564,7 +704,7 @@ export class AgentRuntime {
     private readonly credentials: ModelConfigurationProvider,
     private readonly projects: ProjectRegistry,
     private readonly tools: ProjectToolRegistry,
-    private readonly model: ModelProviderAdapter = new ModelAdapterRegistry(),
+    model: ModelProviderAdapter = new ModelAdapterRegistry(),
     private readonly waitForRetry: RetryWaiter = waitForRetryDelay,
     private readonly contextCompression: ContextCompressionConfigurationProvider =
       defaultContextCompressionConfigurationProvider,
@@ -572,15 +712,70 @@ export class AgentRuntime {
     private readonly attachments: ConversationAttachmentStore | null = null,
     private readonly agentDirectory: AgentDirectoryConfigurationProvider | null = null,
     private readonly skillRuntime: SkillRuntime | null = null,
-    private readonly graphCheckpointer: BaseCheckpointSaver | null = null
+    private readonly graphCheckpointer: BaseCheckpointSaver | null = null,
+    webSearchTool: WebSearchTool = new WebSearchTool(),
+    private readonly applicationSettings: ApplicationSettingsProvider | null = null,
+    private readonly threadLog: ThreadLog | null = null,
+    private readonly eventProjector: EventProjector | null = null,
+    private readonly threadLogLegacyImporter: ThreadLogLegacyImporter | null = null,
+    private readonly pluginCatalog: PluginCatalogProvider | null = null,
   ) {
+    this.modelGateway = new ModelGateway(model);
     this.taskListTool = new TaskListTool(database);
     this.agentCommunicationTool = new AgentCommunicationTool(database);
     this.subagentTool = new SubagentTool(database);
+    this.webSearchTool = webSearchTool;
     this.attachmentTool = attachments === null
       ? null
       : new ConversationAttachmentTool(attachments);
+    this.contextCompiler = new ContextCompiler(database, attachments, threadLog);
     this.toolHandlers = this.createToolHandlerRegistry();
+  }
+
+  private enabledPluginSnapshots(): { contentHash: string; id: string; version: string }[] {
+    if (this.pluginCatalog === null) return [];
+    return this.pluginCatalog.list()
+      .filter((plugin) => plugin.enabled)
+      .map((plugin) => ({
+        contentHash: plugin.contentHash,
+        id: plugin.id,
+        version: plugin.version,
+      }));
+  }
+
+  private appendShadowThreadLog(
+    conversationId: string,
+    event: ThreadLogEventInput,
+    uniquePayloadField?: string,
+  ): void {
+    if (this.threadLog === null) return;
+    try {
+      const appended = uniquePayloadField === undefined
+        ? this.threadLog.append(conversationId, event)
+        : this.threadLog.appendIfMissing(conversationId, event, uniquePayloadField);
+      if (appended === null) return;
+      this.eventProjector?.projectEvent(conversationId, appended);
+    } catch (error) {
+      const agentError = toMainAgentError(error, {
+        operation: "thread_log.shadow_append",
+      });
+      reportMainError(agentError, error);
+    }
+  }
+
+  /**
+   * The JSONL-first seam is deliberately strict: when this append fails, no
+   * SQLite business projection has been written yet. Shadow-log callers keep
+   * their compatibility behavior until their event contracts are migrated.
+   */
+  private appendWriteAheadThreadLog(
+    conversationId: string,
+    event: ThreadLogEventInput,
+  ): boolean {
+    if (this.threadLog === null || this.eventProjector === null) return false;
+    const appended = this.threadLog.append(conversationId, event);
+    this.eventProjector.projectBusinessEvent(conversationId, appended);
+    return true;
   }
 
   private skillRuntimeContext(
@@ -617,6 +812,10 @@ export class AgentRuntime {
         execute: ({ context, rawArguments, toolName }) => this.agentCommunicationTool.execute({
           arguments: rawArguments,
           conversationId: context.conversationId,
+          onMessagesRead: (messageIds) => this.appendAgentMessageReadThreadLog(
+            context.conversationId,
+            messageIds,
+          ),
           onMessageSent: (message) => this.handleAgentMessageSent(message, context.emit),
           runId: context.runId,
           signal: context.signal,
@@ -630,6 +829,10 @@ export class AgentRuntime {
         execute: ({ context, rawArguments, toolName }) => this.subagentTool.execute({
           arguments: rawArguments,
           conversationId: context.conversationId,
+          onResultMessagesRead: (messageIds) => this.appendAgentMessageReadThreadLog(
+            context.conversationId,
+            messageIds,
+          ),
           signal: context.signal,
           spawn: (task, title, agentId) => this.spawnSubagent({
             agentId,
@@ -724,9 +927,56 @@ export class AgentRuntime {
       });
     }
     handlers.push({
+      execute: ({ context, rawArguments }) => this.webSearchTool.execute(
+        rawArguments,
+        context.signal,
+      ),
+      getDefinitions: () => this.webSearchTool.getDefinitions(),
+      getExecutionPolicy: () => this.webSearchTool.getExecutionPolicy(),
+      isAvailable: () => true,
+    });
+    handlers.push({
+      execute: ({ context, rawArguments, toolName }) => {
+        return this.tools.execute(
+          toolName,
+          rawArguments,
+          context.projectId,
+          context.signal,
+          context.operationOwner,
+        );
+      },
+      getDefinitions: () => this.tools.getCommandDefinitions(),
+      getExecutionPolicy: ({ context, rawArguments, toolName }) => this.tools.getExecutionPolicy(
+        toolName,
+        rawArguments,
+        context.permissionMode !== "read_only",
+      ),
+      isAvailable: () => true,
+    });
+    handlers.push({
+      execute: ({ context, rawArguments, toolName }) => {
+        return this.tools.execute(
+          toolName,
+          rawArguments,
+          context.projectId,
+          context.signal,
+          context.operationOwner,
+        );
+      },
+      getDefinitions: () => this.tools.getProjectDefinitions().filter(
+        (definition) => definition.name === "read_external_file",
+      ),
+      getExecutionPolicy: ({ context, rawArguments, toolName }) => this.tools.getExecutionPolicy(
+        toolName,
+        rawArguments,
+        context.permissionMode !== "read_only",
+      ),
+      isAvailable: () => true,
+    });
+    handlers.push({
       execute: ({ context, rawArguments, toolName }) => {
         if (context.projectId === undefined) {
-          throw new Error("Temporary conversations cannot access project tools.");
+          throw new Error("A workspace is required for project tools.");
         }
         return this.tools.execute(
           toolName,
@@ -736,11 +986,13 @@ export class AgentRuntime {
           context.operationOwner,
         );
       },
-      getDefinitions: () => this.tools.getDefinitions(),
+      getDefinitions: () => this.tools.getProjectDefinitions().filter(
+        (definition) => definition.name !== "read_external_file",
+      ),
       getExecutionPolicy: ({ context, rawArguments, toolName }) => this.tools.getExecutionPolicy(
         toolName,
         rawArguments,
-        context.permissionMode === "full_access",
+        context.permissionMode !== "read_only",
       ),
       isAvailable: ({ projectId }) => projectId !== undefined,
     });
@@ -765,10 +1017,23 @@ export class AgentRuntime {
     }
     const prepared = this.prepareConversationMessage(input);
     if (conversation.activeRunId !== null) {
-      const pendingMessage = this.database.enqueuePendingMessage({
+      const pendingInput = {
         ...input,
-        deliveryMode: input.deliveryMode ?? "queue"
-      });
+        deliveryMode: input.deliveryMode ?? "queue" as const,
+      };
+      const pendingMessage = this.threadLog !== null && this.eventProjector !== null
+        ? (() => {
+            const preparedPending = this.database.preparePendingMessage(pendingInput);
+            this.appendWriteAheadPendingMessages(input.conversationId, [
+              ...this.database.listPendingMessageRecords(input.conversationId),
+              preparedPending,
+            ]);
+            return preparedPending.message;
+          })()
+        : this.database.enqueuePendingMessage(pendingInput);
+      if (this.threadLog === null || this.eventProjector === null) {
+        this.appendPendingMessagesThreadLog(input.conversationId);
+      }
       this.emitPendingMessages(input.conversationId, emit);
       return { kind: "pending", pendingMessage };
     }
@@ -805,9 +1070,9 @@ export class AgentRuntime {
     if (conversation.activeRunId !== null && conversation.activeRunId !== sourceRunId) {
       throw new Error("Another run is active; wait for it to finish before editing this message.");
     }
-    const activeRun = this.activeRuns.get(sourceRunId);
+    const activeRun = this.runCoordinator.get(sourceRunId);
     if (activeRun !== undefined) {
-      this.runsBeingReplaced.add(sourceRunId);
+      this.runCoordinator.markReplacing(sourceRunId);
       this.cancelRun(sourceRunId);
       await activeRun.finished;
       source = this.database.getLatestUserMessageReplacementSource(
@@ -837,20 +1102,88 @@ export class AgentRuntime {
       modelInputContent,
     );
     const prepared = { ...initialPrepared, modelInputContent };
-    const creation = this.database.replaceLatestUserMessage({
-      content: input.content,
-      conversationId: input.conversationId,
-      executionSnapshot: createRunExecutionSnapshot({
-        configuration: prepared.configuration,
-        contextCompressionConfiguration: prepared.contextCompressionConfiguration,
-        permissionMode: prepared.permissionMode,
-        providerId: prepared.input.providerId,
-        reasoning: prepared.reasoning,
-      }),
-      messageId,
-      modelContent: prepared.modelInputContent,
-      modelId: prepared.configuration.modelId,
+    const executionSnapshot = createRunExecutionSnapshot({
+      configuration: prepared.configuration,
+      contextCompressionConfiguration: prepared.contextCompressionConfiguration,
+      permissionMode: prepared.permissionMode,
+      plugins: this.enabledPluginSnapshots(),
+      providerId: prepared.input.providerId,
+      reasoning: prepared.reasoning,
+      toolDefinitions: this.toolDefinitionsForConversation(input.conversationId),
     });
+    const useWriteAheadRun = this.threadLog !== null && this.eventProjector !== null;
+    const creation = useWriteAheadRun
+      ? (() => {
+          const replacement = this.database.prepareLatestUserMessageReplacement({
+            content: input.content,
+            conversationId: input.conversationId,
+            executionSnapshot,
+            messageId,
+            modelContent: prepared.modelInputContent,
+            modelId: prepared.configuration.modelId,
+          });
+          this.appendWriteAheadThreadLog(input.conversationId, {
+            payload: {
+              attachmentIds: replacement.userMessage.attachments.map((attachment) => attachment.id),
+              content: replacement.userMessage.content,
+              createdAt: replacement.runCreatedAt,
+              executionSnapshot,
+              message: replacement.userMessage,
+              messageId: replacement.userMessage.id,
+              modelContent: replacement.modelContent,
+              modelId: replacement.modelId,
+              permissionMode: prepared.permissionMode,
+              previousRunId: replacement.previousRunId,
+              runId: replacement.runId,
+              title: replacement.nextTitle,
+            },
+            type: "run_replaced",
+          });
+          return {
+            conversation: this.database.getConversation(input.conversationId),
+            runId: replacement.runId,
+            userMessage: replacement.userMessage,
+          };
+        })()
+      : this.database.replaceLatestUserMessage({
+          content: input.content,
+          conversationId: input.conversationId,
+          executionSnapshot,
+          messageId,
+          modelContent: prepared.modelInputContent,
+          modelId: prepared.configuration.modelId,
+        });
+    if (!useWriteAheadRun) {
+      this.appendShadowThreadLog(input.conversationId, {
+        payload: {
+          replacementRunId: creation.runId,
+          runId: sourceRunId,
+        },
+        type: "run_superseded",
+      });
+      this.appendShadowThreadLog(input.conversationId, {
+        payload: {
+          attachmentIds: creation.userMessage.attachments.map((attachment) => attachment.id),
+          content: creation.userMessage.content,
+          messageId: creation.userMessage.id,
+          message: creation.userMessage,
+          modelContent: prepared.modelInputContent,
+          previousRunId: sourceRunId,
+          runId: creation.runId,
+        },
+        type: "user_message_replaced",
+      });
+      this.appendShadowThreadLog(input.conversationId, {
+        payload: {
+          createdAt: creation.userMessage.createdAt,
+          executionSnapshot,
+          modelId: prepared.configuration.modelId,
+          permissionMode: prepared.permissionMode,
+          runId: creation.runId,
+        },
+        type: "run_created",
+      });
+    }
     return this.schedulePreparedRun(creation, prepared, emit);
   }
 
@@ -862,10 +1195,22 @@ export class AgentRuntime {
     pendingMessageId: string,
     emit: RunEventEmitter
   ): ConversationPendingMessage[] {
-    const conversationId = this.database.getPendingMessageRecord(
-      pendingMessageId
-    ).message.conversationId;
-    this.database.promotePendingMessage(pendingMessageId);
+    const record = this.database.getPendingMessageRecord(pendingMessageId);
+    const conversationId = record.message.conversationId;
+    if (this.threadLog !== null && this.eventProjector !== null) {
+      const snapshot = this.database.listPendingMessageRecords(conversationId).map((candidate) =>
+        candidate.message.id !== pendingMessageId
+          ? candidate
+          : {
+              input: { ...candidate.input, deliveryMode: "steer" as const },
+              message: { ...candidate.message, deliveryMode: "steer" as const },
+            },
+      );
+      this.appendWriteAheadPendingMessages(conversationId, snapshot);
+    } else {
+      this.database.promotePendingMessage(pendingMessageId);
+      this.appendPendingMessagesThreadLog(conversationId);
+    }
     this.emitPendingMessages(conversationId, emit);
     if (this.database.getConversation(conversationId).activeRunId === null) {
       this.startNextPendingRun(conversationId, emit);
@@ -878,12 +1223,21 @@ export class AgentRuntime {
     content: string,
     emit: RunEventEmitter
   ): ConversationPendingMessage[] {
-    const conversationId = this.database.getPendingMessageRecord(
-      pendingMessageId
-    ).message.conversationId;
-    const messages = this.database.updatePendingMessage(pendingMessageId, content);
+    const record = this.database.getPendingMessageRecord(pendingMessageId);
+    const conversationId = record.message.conversationId;
+    if (this.threadLog !== null && this.eventProjector !== null) {
+      const snapshot = this.database.listPendingMessageRecords(conversationId).map((candidate) => {
+        if (candidate.message.id !== pendingMessageId) return candidate;
+        const input = sendConversationMessageInputSchema.parse({ ...candidate.input, content });
+        return { input, message: { ...candidate.message, content } };
+      });
+      this.appendWriteAheadPendingMessages(conversationId, snapshot);
+    } else {
+      this.database.updatePendingMessage(pendingMessageId, content);
+      this.appendPendingMessagesThreadLog(conversationId);
+    }
     this.emitPendingMessages(conversationId, emit);
-    return messages;
+    return this.database.listPendingMessages(conversationId);
   }
 
   public reorderPendingMessages(
@@ -891,9 +1245,28 @@ export class AgentRuntime {
     pendingMessageIds: readonly string[],
     emit: RunEventEmitter
   ) {
-    const messages = this.database.reorderPendingMessages(conversationId, pendingMessageIds);
+    if (this.threadLog !== null && this.eventProjector !== null) {
+      const current = this.database.listPendingMessageRecords(conversationId);
+      if (
+        current.length !== pendingMessageIds.length
+        || current.some((message) => !pendingMessageIds.includes(message.message.id))
+        || new Set(pendingMessageIds).size !== pendingMessageIds.length
+      ) {
+        throw new Error("Pending message reorder must include the complete queue.");
+      }
+      const byId = new Map(current.map((message) => [message.message.id, message]));
+      const snapshot = pendingMessageIds.map((id) => {
+        const message = byId.get(id);
+        if (message === undefined) throw new Error("Pending message reorder references an unknown message.");
+        return message;
+      });
+      this.appendWriteAheadPendingMessages(conversationId, snapshot);
+    } else {
+      this.database.reorderPendingMessages(conversationId, pendingMessageIds);
+      this.appendPendingMessagesThreadLog(conversationId);
+    }
     this.emitPendingMessages(conversationId, emit);
-    return messages;
+    return this.database.listPendingMessages(conversationId);
   }
 
   public deletePendingMessage(
@@ -903,9 +1276,17 @@ export class AgentRuntime {
     const conversationId = this.database.getPendingMessageRecord(
       pendingMessageId
     ).message.conversationId;
-    const messages = this.database.deletePendingMessage(pendingMessageId);
+    if (this.threadLog !== null && this.eventProjector !== null) {
+      this.appendWriteAheadThreadLog(conversationId, {
+        payload: { pendingMessageId, writeAhead: true },
+        type: "pending_message_cancelled",
+      });
+    } else {
+      this.database.deletePendingMessage(pendingMessageId);
+      this.appendPendingMessagesThreadLog(conversationId);
+    }
     this.emitPendingMessages(conversationId, emit);
-    return messages;
+    return this.database.listPendingMessages(conversationId);
   }
 
   public resumePendingMessages(emit: RunEventEmitter): void {
@@ -954,6 +1335,10 @@ export class AgentRuntime {
       snapshot.modelId,
     );
     assertRunConfigurationMatchesSnapshot(currentConfiguration, snapshot);
+    assertRunToolManifestMatchesSnapshot(
+      this.toolDefinitionsForConversation(recovery.conversationId),
+      snapshot,
+    );
     const configuration: ModelConfiguration = {
       ...currentConfiguration,
       apiFormat: snapshot.apiFormat,
@@ -1055,24 +1440,95 @@ export class AgentRuntime {
       configuration,
       contextCompressionConfiguration: prepared.contextCompressionConfiguration,
       permissionMode: prepared.permissionMode,
+      plugins: this.enabledPluginSnapshots(),
       providerId: input.providerId,
       reasoning: prepared.reasoning,
+      toolDefinitions: this.toolDefinitionsForConversation(input.conversationId),
     });
-    const creation = pendingMessageId === undefined
-      ? this.database.createRunWithUserMessage(
-          input.conversationId,
-          input.content,
-          configuration.modelId,
-          input.attachmentIds ?? [],
-          prepared.modelInputContent,
+    const creation = this.threadLog !== null
+      && this.eventProjector !== null
+      ? (() => {
+          const queued = pendingMessageId === undefined
+            ? this.database.prepareRunWithUserMessage(
+                input.conversationId,
+                input.content,
+                configuration.modelId,
+                input.attachmentIds ?? [],
+                prepared.modelInputContent,
+                executionSnapshot,
+              )
+            : this.database.prepareRunFromPendingMessage(
+                pendingMessageId,
+                configuration.modelId,
+                prepared.modelInputContent,
+                executionSnapshot,
+              );
+          this.appendWriteAheadThreadLog(input.conversationId, {
+            payload: {
+              attachmentIds: queued.userMessage.attachments.map((attachment) => attachment.id),
+              content: queued.userMessage.content,
+              createdAt: queued.runCreatedAt,
+              executionSnapshot,
+              message: queued.userMessage,
+              messageId: queued.userMessage.id,
+              modelContent: queued.modelContent,
+              modelId: queued.modelId,
+              permissionMode: prepared.permissionMode,
+              runId: queued.runId,
+              title: queued.nextTitle,
+              ...(queued.pendingMessageId === null
+                ? {}
+                : { pendingMessageId: queued.pendingMessageId }),
+            },
+            type: "run_queued",
+          });
+          return {
+            conversation: this.database.getConversation(input.conversationId),
+            runId: queued.runId,
+            userMessage: queued.userMessage,
+          };
+        })()
+      : pendingMessageId === undefined
+        ? this.database.createRunWithUserMessage(
+            input.conversationId,
+            input.content,
+            configuration.modelId,
+            input.attachmentIds ?? [],
+            prepared.modelInputContent,
+            executionSnapshot,
+          )
+        : this.database.createRunFromPendingMessage(
+            pendingMessageId,
+            configuration.modelId,
+            prepared.modelInputContent,
+            executionSnapshot,
+          );
+    if (pendingMessageId !== undefined) {
+      this.appendPendingMessagesThreadLog(creation.conversation.id);
+    }
+    if (this.threadLog === null || this.eventProjector === null) {
+      this.appendShadowThreadLog(creation.conversation.id, {
+        payload: {
+          attachmentIds: creation.userMessage.attachments.map((attachment) => attachment.id),
+          content: creation.userMessage.content,
+          messageId: creation.userMessage.id,
+          message: creation.userMessage,
+          modelContent: prepared.modelInputContent,
+          runId: creation.runId,
+        },
+        type: "user_message",
+      });
+      this.appendShadowThreadLog(creation.conversation.id, {
+        payload: {
+          createdAt: creation.userMessage.createdAt,
           executionSnapshot,
-        )
-      : this.database.createRunFromPendingMessage(
-          pendingMessageId,
-          configuration.modelId,
-          prepared.modelInputContent,
-          executionSnapshot,
-        );
+          modelId: configuration.modelId,
+          permissionMode: prepared.permissionMode,
+          runId: creation.runId,
+        },
+        type: "run_created",
+      });
+    }
     return this.schedulePreparedRun(creation, prepared, emit);
   }
 
@@ -1097,17 +1553,8 @@ export class AgentRuntime {
     emit: RunEventEmitter,
   ): void {
     const { configuration, contextCompressionConfiguration, input } = prepared;
-    const controller = new AbortController();
-    this.registerActiveRun(runId, controller);
-    this.agentMessageDepthByRun.set(runId, 0);
-    if (!this.database.isConversationFork(conversationId)) {
-      this.emit(emit, {
-        conversation: this.database.getConversation(conversationId),
-        type: "conversation.updated"
-      });
-    }
-    setImmediate(() => {
-      void this.executeRun(
+    this.runCoordinator.schedule(runId, conversationId, async (controller) => {
+      await this.executeRun(
         runId,
         conversationId,
         input.providerId,
@@ -1116,9 +1563,16 @@ export class AgentRuntime {
         prepared.permissionMode,
         prepared.reasoning,
         controller,
-        emit
+        emit,
       );
     });
+    this.agentMessageDepthByRun.set(runId, 0);
+    if (!this.database.isConversationFork(conversationId)) {
+      this.emit(emit, {
+        conversation: this.database.getConversation(conversationId),
+        type: "conversation.updated"
+      });
+    }
   }
 
   private startNextPendingRun(conversationId: string, emit: RunEventEmitter): void {
@@ -1150,11 +1604,46 @@ export class AgentRuntime {
     if (records.length === 0) return false;
     for (const record of records) {
       const prepared = this.prepareConversationMessage(record.input);
-      this.database.consumePendingMessageIntoRun(
-        record.message.id,
-        runId,
-        prepared.modelInputContent
-      );
+      const userMessage = this.threadLog !== null && this.eventProjector !== null
+        ? (() => {
+            const pendingConsumption = this.database.preparePendingMessageConsumption(
+              record.message.id,
+              runId,
+              prepared.modelInputContent,
+            );
+            this.appendWriteAheadThreadLog(conversationId, {
+              payload: {
+                attachmentIds: pendingConsumption.userMessage.attachments.map((attachment) => attachment.id),
+                content: pendingConsumption.userMessage.content,
+                message: pendingConsumption.userMessage,
+                messageId: pendingConsumption.userMessage.id,
+                modelContent: pendingConsumption.modelContent,
+                pendingMessageId: pendingConsumption.pendingMessageId,
+                runId,
+                writeAhead: true,
+              },
+              type: "user_message",
+            });
+            return pendingConsumption.userMessage;
+          })()
+        : this.database.consumePendingMessageIntoRun(
+            record.message.id,
+            runId,
+            prepared.modelInputContent,
+          );
+      if (this.threadLog === null || this.eventProjector === null) {
+        this.appendShadowThreadLog(conversationId, {
+          payload: {
+            attachmentIds: userMessage.attachments.map((attachment) => attachment.id),
+            content: userMessage.content,
+            message: userMessage,
+            messageId: userMessage.id,
+            modelContent: prepared.modelInputContent,
+            runId,
+          },
+          type: "user_message",
+        });
+      }
       messages.push({
         attachments: this.attachments?.toModelAttachments(
           conversationId,
@@ -1167,6 +1656,7 @@ export class AgentRuntime {
         toolCalls: []
       });
     }
+    this.appendPendingMessagesThreadLog(conversationId);
     this.emitPendingMessages(conversationId, emit);
     return true;
   }
@@ -1179,23 +1669,46 @@ export class AgentRuntime {
     });
   }
 
+  private appendPendingMessagesThreadLog(conversationId: string): void {
+    const pendingMessages = this.database.listPendingMessageRecords(conversationId);
+    this.appendShadowThreadLog(conversationId, {
+      payload: {
+        attachmentRefs: this.pendingMessageAttachmentReferences(conversationId, pendingMessages),
+        pendingMessages,
+      },
+      type: "pending_messages_updated",
+    });
+  }
+
+  private appendWriteAheadPendingMessages(
+    conversationId: string,
+    pendingMessages: readonly StoredPendingMessage[],
+  ): void {
+    this.appendWriteAheadThreadLog(conversationId, {
+      payload: {
+        attachmentRefs: this.pendingMessageAttachmentReferences(conversationId, pendingMessages),
+        pendingMessages,
+        writeAhead: true,
+      },
+      type: "pending_messages_updated",
+    });
+  }
+
+  private pendingMessageAttachmentReferences(
+    conversationId: string,
+    pendingMessages: readonly StoredPendingMessage[],
+  ): ConversationAttachment[] {
+    const attachmentIds = [...new Set(
+      pendingMessages.flatMap((pending) => pending.message.attachmentIds),
+    )];
+    return this.database.listThreadLogAttachmentReferences(conversationId, attachmentIds);
+  }
+
   public cancelRun(runId: string): void {
     for (const pending of this.pendingChangeApprovals.values()) {
       if (pending.runId === runId) pending.resolve(false);
     }
-    this.activeRuns
-      .get(runId)
-      ?.controller.abort(new DOMException("Run cancelled by the user.", "AbortError"));
-  }
-
-  private registerActiveRun(runId: string, controller: AbortController): ActiveRun {
-    let resolveFinished = (): void => undefined;
-    const finished = new Promise<void>((resolve) => {
-      resolveFinished = resolve;
-    });
-    const activeRun = { controller, finished, resolveFinished };
-    this.activeRuns.set(runId, activeRun);
-    return activeRun;
+    this.runCoordinator.cancel(runId);
   }
 
   public getContextUsage(rawInput: unknown): ConversationContextUsage {
@@ -1250,7 +1763,10 @@ export class AgentRuntime {
         + draftAttachmentTokens
         + references.estimatedTokens
         + projectFileReferenceTokens,
-      estimatedReferenceTokens: references.estimatedTokens + projectFileReferenceTokens,
+      estimatedReferenceTokens:
+        context.usage.estimatedReferenceTokens
+        + references.estimatedTokens
+        + projectFileReferenceTokens,
     });
   }
 
@@ -1260,6 +1776,16 @@ export class AgentRuntime {
     if (pending === undefined || pending.runId !== input.runId) {
       throw new Error("This file change is no longer awaiting approval.");
     }
+    this.appendShadowThreadLog(pending.conversationId, {
+      payload: {
+        approved: input.approved,
+        runId: input.runId,
+        scope: input.scope,
+        toolId: input.toolId,
+      },
+      type: "tool_approval_decided",
+    });
+    if (input.approved) this.grantPermission(pending, input.scope);
     pending.resolve(input.approved);
   }
 
@@ -1315,7 +1841,18 @@ export class AgentRuntime {
     let activeAssistantContentPersisted = false;
     try {
       this.activeSkillRefsByRun.set(runId, new Map());
-      this.database.markRunRunning(runId);
+      if (this.threadLog !== null && this.eventProjector !== null) {
+        this.appendWriteAheadThreadLog(conversationId, {
+          payload: { runId, writeAhead: true },
+          type: "run_started",
+        });
+      } else {
+        this.database.markRunRunning(runId);
+        this.appendShadowThreadLog(conversationId, {
+          payload: { runId },
+          type: "run_started",
+        });
+      }
       this.emit(emit, {
         conversationId,
         modelId: configuration.modelId,
@@ -1329,28 +1866,51 @@ export class AgentRuntime {
         runId,
       };
       const workspace = this.resolveConversationWorkspace(conversation);
-      const initialMessages = (await this.prepareContext(
-        conversationId,
-        workspace,
-        permissionMode,
-        configuration.contextWindow ?? 0,
-        contextCompressionConfiguration,
-        configuration,
-        controller.signal
-      )).messages;
       let hasSuccessfulToolExecution = false;
       let lastAssistantContent = "";
-      let lastAssistantMessageId = randomUUID();
+      let lastAssistantMessageId: string = randomUUID();
       let lastAssistantResult: ModelTurnResult | null = null;
       let followUpInputForGraph = false;
-      const graphResult = await new LangGraphExecutor().invoke({
+      const modelMessageIdsByTurn = new Map<number, string>();
+      const agentMessageIdsPreparedInInitialContext = new Set<string>();
+      const graphResult = await this.graphExecutor.invoke({
         callbacks: {
+          beforeAgent: async () => {
+            const unreadAgentMessages = this.database.listUnreadAgentMessages(conversationId);
+            const preparedContext = await this.prepareContext(
+              conversationId,
+              workspace,
+              permissionMode,
+              configuration.contextWindow ?? 0,
+              contextCompressionConfiguration,
+              configuration,
+              controller.signal,
+            );
+            const preparedUserMessageContents = new Map<string, number>();
+            for (const message of preparedContext.messages) {
+              if (message.role !== "user") continue;
+              preparedUserMessageContents.set(
+                message.content,
+                (preparedUserMessageContents.get(message.content) ?? 0) + 1,
+              );
+            }
+            for (const message of unreadAgentMessages) {
+              const content = agentMessageModelContent(message);
+              const count = preparedUserMessageContents.get(content) ?? 0;
+              if (count < 1) continue;
+              agentMessageIdsPreparedInInitialContext.add(message.id);
+              preparedUserMessageContents.set(content, count - 1);
+            }
+            return { messages: preparedContext.messages };
+          },
           beforeModel: (state) => {
             const additions: ModelMessage[] = [];
             const incomingAgentMessages = this.database.listUnreadAgentMessages(conversationId);
             if (incomingAgentMessages.length > 0) {
               this.trackAgentMessagesForReply(runId, incomingAgentMessages);
-              additions.push(...incomingAgentMessages.map((message) => ({
+              additions.push(...incomingAgentMessages
+                .filter((message) => !agentMessageIdsPreparedInInitialContext.delete(message.id))
+                .map((message) => ({
                 attachments: [],
                 content: agentMessageModelContent(message),
                 role: "user" as const,
@@ -1358,6 +1918,10 @@ export class AgentRuntime {
                 toolCalls: [],
               })));
               this.database.markAgentMessagesRead(
+                incomingAgentMessages.map((message) => message.id),
+              );
+              this.appendAgentMessageReadThreadLog(
+                conversationId,
                 incomingAgentMessages.map((message) => message.id),
               );
             }
@@ -1369,43 +1933,45 @@ export class AgentRuntime {
               this.skillRuntimeContext(conversation, workspace?.id),
               resolveActiveSkillContextBudget(configuration.contextWindow ?? 0),
             );
+            const taskListContext = activeTaskListContextMessage(
+              this.database.getTaskList(conversationId),
+            );
             return Promise.resolve({
-              contextMessages: activeSkillContext === null || activeSkillContext === undefined
-                ? []
-                : [activeSkillContext],
+              contextMessages: [
+                ...(activeSkillContext === null || activeSkillContext === undefined
+                  ? []
+                  : [activeSkillContext]),
+                ...(taskListContext === null ? [] : [taskListContext]),
+              ],
               hasFollowUpInput: false,
               messages: additions,
             });
           },
-          callModel: async (modelMessages) => {
+          callModel: async (modelMessages, turn, hooks?: AgentGraphModelCallHooks) => {
             controller.signal.throwIfAborted();
-            const messageId = randomUUID();
-            lastAssistantMessageId = messageId;
-            activeAssistantContent = "";
-            activeAssistantContentPersisted = false;
-            let result: ModelTurnResult;
-            try {
-              result = await this.completeModelTurnWithRetries({
-                configuration,
-                conversationId,
-                emit,
-                maxOutputTokens: MAX_OUTPUT_TOKENS,
-                messageId,
-                messages: [...modelMessages],
-                onTextDelta: (delta) => {
-                  activeAssistantContent += delta;
-                },
-                reasoning,
-                signal: controller.signal,
-                runId,
-                tools: this.toolHandlers.getDefinitions({ projectId: workspace?.id })
-              });
-            } catch (error) {
-              if (!controller.signal.aborted && !isAbortError(error)) {
-                this.updateModelConnectionStatus(providerId, configuration.modelId, "error");
-              }
-              throw error;
+            const messageId = modelMessageIdsByTurn.get(turn) ?? randomUUID();
+            if (!modelMessageIdsByTurn.has(turn)) {
+              modelMessageIdsByTurn.set(turn, messageId);
+              lastAssistantMessageId = messageId;
+              activeAssistantContent = "";
+              activeAssistantContentPersisted = false;
             }
+            const result = await this.completeModelTurn({
+              configuration,
+              conversationId,
+              emit,
+              maxOutputTokens: MAX_OUTPUT_TOKENS,
+              messageId,
+              messages: [...modelMessages],
+              onTextDelta: (delta) => {
+                hooks?.onTextDelta?.();
+                activeAssistantContent += delta;
+              },
+              reasoning,
+              signal: controller.signal,
+              runId,
+              tools: this.toolHandlers.getDefinitions({ projectId: workspace?.id })
+            });
             if (result.content.length > 0) activeAssistantContent = result.content;
             const toolCalls = result.toolCalls.map((toolCall) => ({
               ...toolCall,
@@ -1413,36 +1979,86 @@ export class AgentRuntime {
               name: toolCall.name.trim()
             }));
             if (toolCalls.some((toolCall) => toolCall.id.length === 0 || toolCall.name.length === 0)) {
-              throw new Error("Model returned an incomplete tool call.");
+              throw new ModelToolCallValidationError("模型返回了缺少 ID 或名称的工具调用，请重试。");
+            }
+            if (new Set(toolCalls.map((toolCall) => toolCall.id)).size !== toolCalls.length) {
+              throw new ModelToolCallValidationError("模型本轮返回了重复的工具调用 ID，请重试。");
+            }
+            const previousToolCallIds = new Set(
+              modelMessages.flatMap((message) =>
+                message.role === "assistant"
+                  ? message.toolCalls.map((toolCall) => toolCall.id)
+                  : []
+              ),
+            );
+            if (toolCalls.some((toolCall) => previousToolCallIds.has(toolCall.id))) {
+              throw new ModelToolCallValidationError(
+                "模型复用了当前上下文中已经存在的工具调用 ID，请使用新的 ID 后重试。",
+              );
+            }
+            if (toolCalls.length > MAX_TOOL_CALLS_PER_MODEL_TURN) {
+              throw new ToolCallLimitError(toolCalls.length, MAX_TOOL_CALLS_PER_MODEL_TURN);
             }
             followUpInputForGraph = toolCalls.length === 0 && (
               this.database.listUnreadAgentMessages(conversationId).length > 0
               || this.database.listPendingMessageRecords(conversationId, "steer").length > 0
             );
             if (toolCalls.length === 0 && result.content.trim().length === 0) {
-              if (!hasSuccessfulToolExecution) {
-                this.updateModelConnectionStatus(providerId, configuration.modelId, "error");
-                throw new Error("模型未返回可显示内容，请稍后重试或切换模型。");
-              }
+              // Empty responses are retried and, when necessary, rejected by
+              // the LangGraph model middleware after the retry policy runs.
             } else {
               if (result.content.trim().length > 0) lastAssistantContent = result.content;
               if (toolCalls.length > 0 || followUpInputForGraph) {
-                this.database.appendAssistantTurn({
-                  content: result.content,
-                  conversationId,
-                  messageId,
-                  modelId: configuration.modelId,
-                  ...(result.providerState === undefined
-                    ? {}
-                    : { providerState: result.providerState }),
-                  runId,
-                  toolCalls
-                });
+                if (this.threadLog !== null && this.eventProjector !== null) {
+                  this.appendWriteAheadThreadLog(conversationId, {
+                    payload: {
+                      content: result.content,
+                      messageId,
+                      modelId: configuration.modelId,
+                      ...(result.providerState === undefined
+                        ? {}
+                        : { providerState: result.providerState }),
+                      runId,
+                      toolCalls,
+                      writeAhead: true,
+                    },
+                    type: "assistant_message",
+                  });
+                } else {
+                  const assistantMessage = this.database.appendAssistantTurn({
+                    content: result.content,
+                    conversationId,
+                    messageId,
+                    modelId: configuration.modelId,
+                    ...(result.providerState === undefined
+                      ? {}
+                      : { providerState: result.providerState }),
+                    runId,
+                    toolCalls
+                  });
+                  this.appendShadowThreadLog(conversationId, {
+                    payload: {
+                      content: result.content,
+                      messageId,
+                      modelId: configuration.modelId,
+                      ...(result.providerState === undefined
+                        ? {}
+                        : { providerState: result.providerState }),
+                      runId,
+                      timelineMessage: assistantMessage,
+                      toolCalls,
+                    },
+                    type: "assistant_message",
+                  });
+                }
                 activeAssistantContentPersisted = true;
               }
             }
             const normalizedResult = { ...result, toolCalls };
             lastAssistantResult = normalizedResult;
+            if (toolCalls.length > 0 || result.content.trim().length > 0) {
+              modelMessageIdsByTurn.delete(turn);
+            }
             return normalizedResult;
           },
           executeTools: async (toolCalls) => {
@@ -1465,27 +2081,28 @@ export class AgentRuntime {
           },
           hasFollowUpInput: () => followUpInputForGraph,
         },
-        initialMessages,
+        initialMessages: [],
         maxSteps: MAX_AGENT_LOOPS,
+        modelRetry: this.createModelRetryPolicy({
+          configuration,
+          hasSuccessfulToolExecution: () => hasSuccessfulToolExecution,
+          providerId,
+          runId,
+          conversationId,
+          emit,
+          signal: controller.signal,
+        }),
         onInterrupt: (interrupts) => this.resumeGraphInterrupts(
           interrupts,
           controller.signal,
         ),
         signal: controller.signal,
         threadId: runId,
+        toolDefinitions: this.toolHandlers.getDefinitions({ projectId: workspace?.id }),
         ...(this.graphCheckpointer === null ? {} : { checkpointer: this.graphCheckpointer }),
       });
       const result = lastAssistantResult ?? graphResult.lastResult;
       if (result === null) throw new Error("Agent graph finished without a model result.");
-      const completedTaskList = this.database.completeRunningTasks(conversationId);
-      if (completedTaskList !== null) {
-        this.emit(emit, {
-          conversationId,
-          runId,
-          taskList: completedTaskList,
-          type: "task_list.updated"
-        });
-      }
       this.completeRunAndNotifySubagent({
         assistant: {
           content: result.content,
@@ -1571,12 +2188,10 @@ export class AgentRuntime {
         type: "run.finished"
       });
     } finally {
-      const activeRun = this.activeRuns.get(runId);
       this.clearPendingChangeApprovals(runId);
       for (const [toolId, decision] of this.resumedApprovalDecisions) {
         if (decision.runId === runId) this.resumedApprovalDecisions.delete(toolId);
       }
-      this.activeRuns.delete(runId);
       this.agentMessageDepthByRun.delete(runId);
       this.agentMessagesToReplyByRun.delete(runId);
       this.activeSkillRefsByRun.delete(runId);
@@ -1589,6 +2204,12 @@ export class AgentRuntime {
       for (const key of this.preparedToolsByRunCall.keys()) {
         if (key.startsWith(`${runId}:`)) this.preparedToolsByRunCall.delete(key);
       }
+      for (const key of this.preparedToolIntentKeys) {
+        if (key.startsWith(`${runId}:`)) this.preparedToolIntentKeys.delete(key);
+      }
+      for (const key of this.inFlightToolsByRunCall.keys()) {
+        if (key.startsWith(`${runId}:`)) this.inFlightToolsByRunCall.delete(key);
+      }
       for (const key of this.toolBatchIdsByRunCalls.keys()) {
         if (key.startsWith(`${runId}:`)) this.toolBatchIdsByRunCalls.delete(key);
       }
@@ -1599,9 +2220,8 @@ export class AgentRuntime {
           console.error("LangGraph checkpoint cleanup failed.", error);
         }
       }
-      const isBeingReplaced = this.runsBeingReplaced.delete(runId);
-      activeRun?.resolveFinished();
-      if (!isBeingReplaced) {
+      const { wasReplacing } = this.runCoordinator.complete(runId);
+      if (!wasReplacing) {
         this.startNextPendingRun(conversationId, emit);
         this.startUnreadAgentMessageRun(conversationId, 0, emit);
       }
@@ -1684,24 +2304,86 @@ export class AgentRuntime {
     this.projects.inheritConversationWorkspace(parent.id, child.id);
     const selectedAgent = this.resolveSubagentAgent(parent, input.agentId);
     if (selectedAgent !== null) this.database.bindConversationAgent(child.id, selectedAgent);
-
-    const creation = this.database.createRunWithUserMessage(
-      child.id,
-      input.task,
-      input.configuration.modelId,
-      [],
-      input.task,
-      createRunExecutionSnapshot({
-        configuration: input.configuration,
-        contextCompressionConfiguration: input.contextCompressionConfiguration,
-        permissionMode: input.permissionMode,
-        providerId: input.providerId,
-        reasoning: input.reasoning,
-      }),
-    );
     const title = input.title?.trim()
       || `${selectedAgent?.name ?? "Subagent"} · ${input.task.replace(/\s+/gu, " ").slice(0, 80)}`;
     const updatedChild = this.database.renameConversation(child.id, title);
+    this.threadLogLegacyImporter?.importConversationIfMissing(child.id);
+
+    const executionSnapshot = createRunExecutionSnapshot({
+      configuration: input.configuration,
+      contextCompressionConfiguration: input.contextCompressionConfiguration,
+      permissionMode: input.permissionMode,
+      plugins: this.enabledPluginSnapshots(),
+      providerId: input.providerId,
+      reasoning: input.reasoning,
+      toolDefinitions: this.toolDefinitionsForConversation(child.id),
+    });
+    const useWriteAheadRun = this.threadLog !== null
+      && this.eventProjector !== null
+      && this.threadLog.hasConversation(child.id);
+    const creation = useWriteAheadRun
+      ? (() => {
+          const queued = this.database.prepareRunWithUserMessage(
+            child.id,
+            input.task,
+            input.configuration.modelId,
+            [],
+            input.task,
+            executionSnapshot,
+          );
+          this.appendWriteAheadThreadLog(child.id, {
+            payload: {
+              attachmentIds: [],
+              content: queued.userMessage.content,
+              createdAt: queued.runCreatedAt,
+              executionSnapshot,
+              message: queued.userMessage,
+              messageId: queued.userMessage.id,
+              modelContent: queued.modelContent,
+              modelId: queued.modelId,
+              permissionMode: input.permissionMode,
+              runId: queued.runId,
+              title,
+            },
+            type: "run_queued",
+          });
+          return {
+            conversation: this.database.getConversation(child.id),
+            runId: queued.runId,
+            userMessage: queued.userMessage,
+          };
+        })()
+      : this.database.createRunWithUserMessage(
+          child.id,
+          input.task,
+          input.configuration.modelId,
+          [],
+          input.task,
+          executionSnapshot,
+        );
+    if (!useWriteAheadRun) {
+      this.appendShadowThreadLog(child.id, {
+        payload: {
+          attachmentIds: [],
+          content: input.task,
+          messageId: creation.userMessage.id,
+          message: creation.userMessage,
+          modelContent: input.task,
+          runId: creation.runId,
+        },
+        type: "user_message",
+      });
+      this.appendShadowThreadLog(child.id, {
+        payload: {
+          createdAt: creation.userMessage.createdAt,
+          executionSnapshot,
+          modelId: input.configuration.modelId,
+          permissionMode: input.permissionMode,
+          runId: creation.runId,
+        },
+        type: "run_created",
+      });
+    }
     const task = this.database.createSubagentTask({
       childConversationId: child.id,
       parentConversationId: parent.id,
@@ -1710,9 +2392,11 @@ export class AgentRuntime {
       title,
     });
     const startedTask = this.database.assignSubagentTaskRun(task.id, creation.runId);
-    const controller = new AbortController();
+    this.appendShadowThreadLog(parent.id, {
+      payload: { task: startedTask },
+      type: "subagent_task_created",
+    });
     const parentDepth = this.agentMessageDepthByRun.get(input.parentRunId) ?? 0;
-    this.registerActiveRun(creation.runId, controller);
     this.agentMessageDepthByRun.set(creation.runId, parentDepth + 1);
     this.emit(input.emit, {
       conversation: this.database.getConversation(parent.id),
@@ -1726,8 +2410,8 @@ export class AgentRuntime {
       },
       type: "conversation.updated",
     });
-    setImmediate(() => {
-      void this.executeRun(
+    this.runCoordinator.schedule(creation.runId, child.id, async (controller) => {
+      await this.executeRun(
         creation.runId,
         child.id,
         input.providerId,
@@ -1751,6 +2435,35 @@ export class AgentRuntime {
     runId: string;
     status: "completed" | "failed" | "cancelled";
   }): void {
+    const canWriteAheadTerminal = this.threadLog !== null
+      && this.eventProjector !== null
+      && !this.database.hasSubagentTaskForTargetRun(input.runId);
+    if (canWriteAheadTerminal) {
+      const assistant = input.assistant;
+      this.appendWriteAheadThreadLog(input.conversationId, {
+        payload: {
+          assistantKind: assistant?.kind ?? null,
+          content: assistant?.content ?? null,
+          error: input.error,
+          messageId: assistant?.messageId ?? null,
+          modelId: assistant?.modelId ?? null,
+          ...(assistant !== null
+            && assistant.kind !== "failure"
+            && assistant.providerState !== undefined
+            ? { providerState: assistant.providerState }
+            : {}),
+          result: input.result,
+          runId: input.runId,
+          status: input.status,
+        },
+        type: "run_terminal",
+      });
+      this.emit(input.emit, {
+        conversation: this.database.getConversation(input.conversationId),
+        type: "conversation.updated",
+      });
+      return;
+    }
     const completedRun = this.database.completeRun({
       assistant: input.assistant,
       conversationId: input.conversationId,
@@ -1759,11 +2472,47 @@ export class AgentRuntime {
       runId: input.runId,
       status: input.status,
     });
+    if (input.assistant !== null) {
+      this.appendShadowThreadLog(input.conversationId, {
+        payload: {
+          content: input.assistant.content,
+          messageId: input.assistant.messageId,
+          modelId: input.assistant.modelId,
+          ...(input.assistant.kind === "turn" && input.assistant.providerState !== undefined
+            ? { providerState: input.assistant.providerState }
+            : {}),
+          runId: input.runId,
+          status: input.status,
+          timelineMessage: completedRun.assistantMessage,
+          toolCalls: [],
+        },
+        type: "assistant_message",
+      });
+    }
+    this.appendShadowThreadLog(input.conversationId, {
+      payload: {
+        error: input.error,
+        result: input.result,
+        runId: input.runId,
+        status: input.status,
+      },
+      type: "run_finished",
+    });
     this.emit(input.emit, {
       conversation: this.database.getConversation(input.conversationId),
       type: "conversation.updated",
     });
     if (completedRun.subagentTask === null) return;
+    this.appendShadowThreadLog(completedRun.subagentTask.parentConversationId, {
+      payload: {
+        task: {
+          ...completedRun.subagentTask,
+          resultMessageId: completedRun.subagentResultMessage?.id
+            ?? completedRun.subagentTask.resultMessageId,
+        },
+      },
+      type: "subagent_task_completed",
+    });
     try {
       this.emit(input.emit, {
         conversation: this.database.getConversation(
@@ -1837,10 +2586,39 @@ export class AgentRuntime {
     message: ConversationAgentMessageItem,
     emit: RunEventEmitter,
   ): void {
+    this.appendAgentMessageThreadLog(message);
     const sourceDepth = message.runId === null
       ? 0
       : this.agentMessageDepthByRun.get(message.runId) ?? 0;
     this.startUnreadAgentMessageRun(message.conversationId, sourceDepth + 1, emit);
+  }
+
+  private appendAgentMessageThreadLog(message: ConversationAgentMessageItem): void {
+    this.appendShadowThreadLog(message.conversationId, {
+      payload: {
+        content: message.content,
+        message,
+        messageId: message.id,
+        messageType: message.messageType,
+        modelContent: agentMessageModelContent(message),
+        runId: message.runId,
+        senderConversationId: message.senderConversationId,
+        taskId: message.taskId,
+      },
+      type: "agent_message",
+    }, "messageId");
+  }
+
+  private appendAgentMessageReadThreadLog(
+    conversationId: string,
+    messageIds: readonly string[],
+  ): void {
+    for (const messageId of new Set(messageIds)) {
+      this.appendShadowThreadLog(conversationId, {
+        payload: { messageId },
+        type: "agent_message_read",
+      }, "messageId");
+    }
   }
 
   private startUnreadAgentMessageRun(
@@ -1850,6 +2628,9 @@ export class AgentRuntime {
   ): void {
     const unreadMessages = this.database.listUnreadAgentMessages(conversationId);
     if (unreadMessages.length === 0) return;
+    for (const message of unreadMessages) {
+      this.appendAgentMessageThreadLog(message);
+    }
     const targetConversation = this.database.getConversation(conversationId);
     if (targetConversation.isArchived) return;
     if (targetConversation.activeRunId !== null) {
@@ -1871,19 +2652,30 @@ export class AgentRuntime {
           this.contextCompression.getConfiguration(),
         ),
       );
+      const executionSnapshot = createRunExecutionSnapshot({
+        configuration,
+        contextCompressionConfiguration,
+        permissionMode: DEFAULT_PERMISSION_MODE,
+        plugins: this.enabledPluginSnapshots(),
+        providerId: undefined,
+        reasoning: undefined,
+        toolDefinitions: this.toolDefinitionsForConversation(conversationId),
+      });
       const creation = this.database.createRunForAgentMessage(
         conversationId,
         configuration.modelId,
-        createRunExecutionSnapshot({
-          configuration,
-          contextCompressionConfiguration,
-          permissionMode: DEFAULT_PERMISSION_MODE,
-          providerId: undefined,
-          reasoning: undefined,
-        }),
+        executionSnapshot,
       );
-      const controller = new AbortController();
-      this.registerActiveRun(creation.runId, controller);
+      this.appendShadowThreadLog(conversationId, {
+        payload: {
+          createdAt: new Date().toISOString(),
+          executionSnapshot,
+          modelId: configuration.modelId,
+          permissionMode: DEFAULT_PERMISSION_MODE,
+          runId: creation.runId,
+        },
+        type: "run_created",
+      });
       this.agentMessageDepthByRun.set(creation.runId, targetDepth);
       this.trackAgentMessagesForReply(creation.runId, unreadMessages);
       if (!this.database.isConversationFork(conversationId)) {
@@ -1892,8 +2684,8 @@ export class AgentRuntime {
           type: "conversation.updated",
         });
       }
-      setImmediate(() => {
-        void this.executeRun(
+      this.runCoordinator.schedule(creation.runId, conversationId, async (controller) => {
+        await this.executeRun(
           creation.runId,
           conversationId,
           undefined,
@@ -1922,91 +2714,78 @@ export class AgentRuntime {
     this.credentials.setModelConnectionStatus?.(providerId, modelId, status);
   }
 
-  private async completeModelTurnWithRetries(input: ModelTurnRequest): Promise<ModelTurnResult> {
-    let reconnectAttempt = 0;
-
-    while (true) {
-      input.signal.throwIfAborted();
-      this.emit(input.emit, {
-        conversationId: input.conversationId,
-        runId: input.runId,
-        type: "model.request_started"
-      });
-      let receivedTextDelta = false;
-
-      try {
-        const result = await this.model.completeTurn({
-          configuration: input.configuration,
-          maxOutputTokens: input.maxOutputTokens,
-          messages: input.messages,
-          onReasoningDelta: (event) => {
-            this.emit(input.emit, {
-              conversationId: input.conversationId,
-              delta: event.delta,
-              kind: event.kind,
-              reset: event.reset,
-              runId: input.runId,
-              type: "assistant.reasoning_delta"
-            });
-          },
-          onTextDelta: (delta) => {
-            receivedTextDelta = true;
-            input.onTextDelta?.(delta);
-            this.emit(input.emit, {
-              conversationId: input.conversationId,
-              delta,
-              messageId: input.messageId,
-              modelId: input.configuration.modelId,
-              runId: input.runId,
-              type: "assistant.delta"
-            });
-          },
-          reasoning: input.reasoning,
-          signal: input.signal,
-          tools: input.tools
-        });
-        if (
-          !receivedTextDelta
-          && result.content.trim().length === 0
-          && result.toolCalls.length === 0
-          && reconnectAttempt < MAX_MODEL_RECONNECT_ATTEMPTS
-        ) {
-          reconnectAttempt += 1;
-          const retryInMs = modelRetryDelay(reconnectAttempt);
-          this.emit(input.emit, {
-            attempt: reconnectAttempt,
-            conversationId: input.conversationId,
-            reason: "模型未返回可显示内容。",
-            retryInMs,
-            runId: input.runId,
-            type: "model.request_retrying"
-          });
-          await this.waitForRetry(retryInMs, input.signal);
-          continue;
+  private createModelRetryPolicy(input: {
+    configuration: ModelConfiguration;
+    conversationId: string;
+    emit: RunEventEmitter;
+    hasSuccessfulToolExecution: () => boolean;
+    providerId: string | undefined;
+    runId: string;
+    signal: AbortSignal;
+  }): AgentGraphModelRetry {
+    return {
+      createEmptyResponseError: () => new Error("模型未返回可显示内容，请稍后重试或切换模型。"),
+      getDelay: modelRetryDelay,
+      maxRetries: MAX_MODEL_RECONNECT_ATTEMPTS,
+      onFailure: (error) => {
+        if (!input.signal.aborted && !isAbortError(error)) {
+          this.updateModelConnectionStatus(input.providerId, input.configuration.modelId, "error");
         }
-        return result;
-      } catch (error) {
-        if (
-          receivedTextDelta ||
-          !isRetryableModelError(error) ||
-          reconnectAttempt >= MAX_MODEL_RECONNECT_ATTEMPTS
-        ) {
-          throw error;
-        }
-
-        reconnectAttempt += 1;
-        const retryInMs = modelRetryDelay(reconnectAttempt);
+      },
+      onRetry: ({ attempt, delayMs, error }) => {
         this.emit(input.emit, {
-          attempt: reconnectAttempt,
+          attempt,
           conversationId: input.conversationId,
-          reason: modelRetryReason(error, input.configuration.apiKey),
-          retryInMs,
+          reason: error === null
+            ? "模型未返回可显示内容。"
+            : modelRetryReason(error, input.configuration.apiKey),
+          retryInMs: delayMs,
           runId: input.runId,
           type: "model.request_retrying"
         });
-        await this.waitForRetry(retryInMs, input.signal);
-      }
-    }
+      },
+      shouldFailEmptyResponse: () => !input.hasSuccessfulToolExecution(),
+      shouldRetry: isRetryableModelError,
+      wait: this.waitForRetry,
+    };
+  }
+
+  private async completeModelTurn(input: ModelTurnRequest): Promise<ModelTurnResult> {
+    input.signal.throwIfAborted();
+    this.emit(input.emit, {
+      conversationId: input.conversationId,
+      runId: input.runId,
+      type: "model.request_started"
+    });
+    return this.modelGateway.completeTurn({
+      configuration: input.configuration,
+      maxOutputTokens: input.maxOutputTokens,
+      messages: input.messages,
+      onReasoningDelta: (event) => {
+        this.emit(input.emit, {
+          conversationId: input.conversationId,
+          delta: event.delta,
+          kind: event.kind,
+          reset: event.reset,
+          runId: input.runId,
+          type: "assistant.reasoning_delta"
+        });
+      },
+      onTextDelta: (delta) => {
+        input.onTextDelta?.(delta);
+        this.emit(input.emit, {
+          conversationId: input.conversationId,
+          delta,
+          messageId: input.messageId,
+          modelId: input.configuration.modelId,
+          runId: input.runId,
+          type: "assistant.delta"
+        });
+      },
+      reasoning: input.reasoning,
+      signal: input.signal,
+      tools: input.tools
+    });
   }
 
   private async executeGraphTools(
@@ -2030,11 +2809,23 @@ export class AgentRuntime {
         hasSuccessfulToolExecution ||= cached.envelope.successful;
         continue;
       }
-      policies.set(index, this.toolHandlers.getExecutionPolicy({
-        context: this.runtimeToolContext(input),
-        rawArguments: toolCall.arguments,
-        toolName: toolCall.name,
-      }));
+      try {
+        policies.set(index, this.toolHandlers.getExecutionPolicy({
+          context: this.runtimeToolContext(input),
+          rawArguments: toolCall.arguments,
+          toolName: toolCall.name,
+        }));
+      } catch (error) {
+        if (input.controller.signal.aborted || isAbortError(error) || isGraphInterrupt(error)) {
+          throw error;
+        }
+        this.preparedToolsByRunCall.set(callKey, {
+          content: toolErrorContent(error, `tool:${toolCall.name}`),
+          isError: true,
+          kind: "completed",
+        });
+        policies.set(index, { kind: "serial" });
+      }
     }
 
     // Prepare every file change from this model turn before applying the first
@@ -2048,7 +2839,12 @@ export class AgentRuntime {
         && policy?.kind === "serial"
         && policy.prepareBeforeBatch === true
       ) {
-        await this.prepareGraphToolCall({ ...input, toolBatchId, toolCall });
+        await this.prepareGraphToolCall({
+          ...input,
+          executionMode: "serial",
+          toolBatchId,
+          toolCall,
+        });
       }
     }
 
@@ -2085,11 +2881,21 @@ export class AgentRuntime {
         }
       }
 
-      const envelopes = await this.invokeGraphToolNode({
-        ...input,
-        toolBatchId,
-        toolCalls: group,
-      });
+      const maxConcurrency = policy.kind === "parallel"
+        ? policy.group === "read"
+          ? MAX_PARALLEL_READ_TOOL_CALLS
+          : MAX_PARALLEL_COMMAND_TOOL_CALLS
+        : 1;
+      const envelopes = new Map<string, LangChainToolResultEnvelope>();
+      for (const chunk of chunkToolCalls(group, maxConcurrency)) {
+        const chunkResults = await this.invokeGraphToolNode({
+          ...input,
+          executionMode: policy.kind === "parallel" ? "parallel" : "serial",
+          toolBatchId,
+          toolCalls: chunk,
+        });
+        for (const [callId, result] of chunkResults) envelopes.set(callId, result);
+      }
       for (const [offset, call] of group.entries()) {
         const result = envelopes.get(call.id);
         if (result === undefined) {
@@ -2141,6 +2947,7 @@ export class AgentRuntime {
   }
 
   private async invokeGraphToolNode(input: GraphToolExecutionInput & {
+    executionMode: ConversationToolExecutionMode;
     toolBatchId: string;
     toolCalls: readonly ModelToolCall[];
   }): Promise<Map<string, LangChainToolResultEnvelope>> {
@@ -2150,13 +2957,12 @@ export class AgentRuntime {
     for (const toolCall of input.toolCalls) {
       if (toolsByName.has(toolCall.name)) continue;
       const definition = definitions.find((candidate) => candidate.name === toolCall.name);
-      if (definition === undefined) throw new Error(`Unknown tool: ${toolCall.name}`);
       toolsByName.set(toolCall.name, new DynamicStructuredTool({
-        description: definition.description,
+        description: definition?.description ?? "Return a structured error for an unavailable tool.",
         func: async (_arguments, _runManager, config) => {
           const callId = toolCallIdFromConfig(config);
           const call = callId === undefined ? undefined : callsById.get(callId);
-          if (call === undefined) throw new Error(`ToolNode lost the tool call identity for ${definition.name}.`);
+          if (call === undefined) throw new Error(`ToolNode lost the tool call identity for ${toolCall.name}.`);
           const execution = await this.executeGraphToolCall({
             ...input,
             toolCall: call,
@@ -2170,7 +2976,7 @@ export class AgentRuntime {
             successful: execution.successful,
           } satisfies LangChainToolResultEnvelope);
         },
-        name: definition.name,
+        name: toolCall.name,
         schema: z.record(z.string(), z.unknown()),
       }));
     }
@@ -2216,6 +3022,10 @@ export class AgentRuntime {
       conversationId: input.conversationId,
       emit: input.emit,
       onTaskListChanged: (taskList) => {
+        this.appendShadowThreadLog(input.conversationId, {
+          payload: { taskList },
+          type: "task_list_updated",
+        });
         this.emit(input.emit, {
           conversationId: input.conversationId,
           runId: input.runId,
@@ -2233,7 +3043,27 @@ export class AgentRuntime {
     };
   }
 
-  private async executeGraphToolCall(
+  private executeGraphToolCall(
+    input: GraphToolCallInput,
+  ): Promise<LangChainToolResultEnvelope & { activeSkills: SkillSnapshotRef[] }> {
+    const key = `${input.runId}:${input.toolCall.id}`;
+    const completed = this.completedToolsByRunCall.get(key);
+    if (completed !== undefined) return Promise.resolve(completed.envelope);
+    const inFlight = this.inFlightToolsByRunCall.get(key);
+    if (inFlight !== undefined) return inFlight;
+
+    const execution = this.executeGraphToolCallOnce(input);
+    this.inFlightToolsByRunCall.set(key, execution);
+    const clearInFlight = (): void => {
+      if (this.inFlightToolsByRunCall.get(key) === execution) {
+        this.inFlightToolsByRunCall.delete(key);
+      }
+    };
+    void execution.then(clearInFlight, clearInFlight);
+    return execution;
+  }
+
+  private async executeGraphToolCallOnce(
     input: GraphToolCallInput,
   ): Promise<LangChainToolResultEnvelope & { activeSkills: SkillSnapshotRef[] }> {
     const key = `${input.runId}:${input.toolCall.id}`;
@@ -2243,6 +3073,7 @@ export class AgentRuntime {
         batchId: input.toolBatchId,
         conversationId: input.conversationId,
         createdAt: new Date().toISOString(),
+        executionMode: input.executionMode,
         id: randomUUID(),
         kind: "tool",
         name: input.toolCall.name,
@@ -2250,10 +3081,30 @@ export class AgentRuntime {
         runId: input.runId,
         status: "running",
         diff: null,
-      });
+    });
     if (!this.startedToolsByRunCall.has(key)) {
       this.startedToolsByRunCall.set(key, startedTool);
-      this.database.appendToolStarted(startedTool);
+      const event = {
+        payload: {
+          arguments: input.toolCall.arguments,
+          executionMode: startedTool.executionMode ?? "serial",
+          runId: input.runId,
+          tool: startedTool,
+          toolCallId: input.toolCall.id,
+          toolId: startedTool.id,
+          toolName: input.toolCall.name,
+        },
+        type: "tool_call_requested" as const,
+      };
+      if (this.threadLog !== null && this.eventProjector !== null) {
+        this.appendWriteAheadThreadLog(input.conversationId, {
+          ...event,
+          payload: { ...event.payload, writeAhead: true },
+        });
+      } else {
+        this.appendShadowThreadLog(input.conversationId, event);
+        this.database.appendToolStarted(startedTool);
+      }
       this.emit(input.emit, {
         conversationId: input.conversationId,
         runId: input.runId,
@@ -2263,45 +3114,73 @@ export class AgentRuntime {
     }
 
     let proposal: ToolExecution | undefined = this.preparedToolsByRunCall.get(key);
-    let execution: ToolExecutionResult;
+    let execution: ToolExecutionResult = {
+      content: "",
+      isError: true,
+      kind: "completed",
+    };
     try {
-      if (proposal === undefined) {
+      const unavailableReason = this.unavailableToolReason(input.toolCall.name);
+      if (unavailableReason !== null) {
+        execution = {
+          content: JSON.stringify({ error: unavailableReason, ok: false }),
+          isError: true,
+          kind: "completed",
+        };
+      } else if (proposal === undefined) {
         proposal = await this.toolHandlers.execute({
           context: this.runtimeToolContext(input),
           rawArguments: input.toolCall.arguments,
           toolName: input.toolCall.name,
         });
-        if (proposal.kind === "change" || proposal.kind === "command") {
+        if (
+          proposal.kind === "change"
+          || proposal.kind === "command"
+          || proposal.kind === "external_read"
+        ) {
           this.preparedToolsByRunCall.set(key, proposal);
         }
       }
-      execution = proposal.kind === "change"
+      if (unavailableReason !== null) {
+        // The policy rejection above is already the complete tool result.
+      } else {
+        if (proposal === undefined) throw new Error("Tool handler did not return an execution proposal.");
+        this.appendToolExecutionPrepared(input, startedTool, proposal);
+        execution = proposal.kind === "change"
         ? await this.resolveFileChange({
             change: proposal.change,
             controller: input.controller,
             permissionMode: input.permissionMode,
             projectId: input.projectId ?? (() => {
-              throw new Error("A project is required for file changes.");
+              throw new Error("A workspace is required for file changes.");
             })(),
             runId: input.runId,
             startedTool,
             emit: input.emit,
             operationOwner: input.operationOwner,
           })
-        : proposal.kind === "command"
+          : proposal.kind === "command"
           ? await this.resolveCommand({
               command: proposal.command,
               controller: input.controller,
               emit: input.emit,
               permissionMode: input.permissionMode,
-              projectId: input.projectId ?? (() => {
-                throw new Error("A project is required for command execution.");
-              })(),
+              projectId: input.projectId,
               runId: input.runId,
               startedTool,
               operationOwner: input.operationOwner,
             })
+          : proposal.kind === "external_read"
+            ? await this.resolveExternalFileRead({
+                prepared: proposal.externalRead,
+                controller: input.controller,
+                emit: input.emit,
+                permissionMode: input.permissionMode,
+                runId: input.runId,
+                startedTool,
+              })
           : proposal;
+      }
     } catch (error) {
       // Approval interrupts and cancellation must escape so LangGraph can
       // suspend/resume or terminate the run. Other tool failures are turned
@@ -2322,13 +3201,52 @@ export class AgentRuntime {
       result: execution.content,
       status: execution.status ?? (execution.isError ? "failed" : "completed"),
     });
-    this.database.completeTool({
-      providerCallId: input.toolCall.id,
-      result: execution.content,
-      tool: completedTool,
-    });
+    const resultEvent = {
+      payload: {
+        content: execution.content,
+        resultCharacters: execution.content.length,
+        runId: input.runId,
+        status: completedTool.status,
+        tool: completedTool,
+        toolCallId: input.toolCall.id,
+        toolId: completedTool.id,
+        toolName: completedTool.name,
+      },
+      type: "tool_result" as const,
+    };
+    if (this.threadLog !== null && this.eventProjector !== null) {
+      this.appendWriteAheadThreadLog(input.conversationId, {
+        ...resultEvent,
+        payload: { ...resultEvent.payload, writeAhead: true },
+      });
+    } else {
+      this.database.completeTool({
+        providerCallId: input.toolCall.id,
+        result: execution.content,
+        tool: completedTool,
+      });
+      this.appendShadowThreadLog(input.conversationId, resultEvent);
+    }
     this.startedToolsByRunCall.delete(key);
     this.preparedToolsByRunCall.delete(key);
+    const envelope = {
+      activeSkills: [...(this.activeSkillRefsByRun.get(input.runId)?.values() ?? [])],
+      content: execution.content,
+      isError: execution.isError,
+      marker: "agent-tool-result-v1" as const,
+      ...(execution.status === undefined ? {} : { status: execution.status }),
+      successful: completedTool.status === "completed",
+    } satisfies LangChainToolResultEnvelope & { activeSkills: SkillSnapshotRef[] };
+    const message: ModelMessage = {
+      attachments: [],
+      content: envelope.content,
+      role: "tool",
+      toolCallId: input.toolCall.id,
+      toolCalls: [],
+    };
+    // Persist the replay cache before notifying the renderer. A concurrent
+    // ToolNode replay must observe the completed side effect immediately.
+    this.completedToolsByRunCall.set(key, { envelope, message });
     this.emit(input.emit, {
       conversationId: input.conversationId,
       fileChange:
@@ -2345,14 +3263,169 @@ export class AgentRuntime {
       tool: completedTool,
       type: "tool.completed",
     });
-    return {
-      activeSkills: [...(this.activeSkillRefsByRun.get(input.runId)?.values() ?? [])],
-      content: execution.content,
-      isError: execution.isError,
-      marker: "agent-tool-result-v1",
-      ...(execution.status === undefined ? {} : { status: execution.status }),
-      successful: completedTool.status === "completed",
-    };
+    return envelope;
+  }
+
+  /**
+   * Records the immutable execution proposal once, before an approval may
+   * suspend the graph. The in-memory key prevents graph replay from creating
+   * a second intent for the same provider Tool Call.
+   */
+  private appendToolExecutionPrepared(
+    input: GraphToolCallInput,
+    tool: ConversationToolItem,
+    proposal: ToolExecution,
+  ): void {
+    const key = `${input.runId}:${input.toolCall.id}`;
+    if (this.preparedToolIntentKeys.has(key)) return;
+    this.appendShadowThreadLog(input.conversationId, {
+      payload: {
+        arguments: input.toolCall.arguments,
+        executionKind: proposal.kind,
+        runId: input.runId,
+        toolCallId: input.toolCall.id,
+        toolId: tool.id,
+        toolName: tool.name,
+      },
+      type: "tool_execution_prepared",
+    });
+    this.preparedToolIntentKeys.add(key);
+  }
+
+  private permissionPolicyFor(toolName: string): PermissionPolicy {
+    const policies = this.applicationSettings?.getConfiguration().permissionPolicies
+      ?? DEFAULT_APPLICATION_PERMISSION_POLICIES;
+    if (toolName === "run_command") return policies["command-run"];
+    if (
+      toolName === "write_file"
+      || toolName === "delete_file"
+      || toolName === "replace_in_file"
+      || toolName === "apply_patch"
+    ) {
+      return policies["patch-write"];
+    }
+    if (PROJECT_READ_TOOL_NAMES.has(toolName)) return policies["workspace-read"];
+    if (PROJECT_SEARCH_TOOL_NAMES.has(toolName)) return policies["workspace-search"];
+    return "allow";
+  }
+
+  private unavailableToolReason(toolName: string): string | null {
+    const policy = this.permissionPolicyFor(toolName);
+    if (policy !== "unavailable") return null;
+    if (PROJECT_READ_TOOL_NAMES.has(toolName)) return "工作区读取已在应用权限设置中禁用。";
+    if (PROJECT_SEARCH_TOOL_NAMES.has(toolName)) return "工作区搜索已在应用权限设置中禁用。";
+    if (toolName === "run_command") return "终端命令执行已在应用权限设置中禁用。";
+    if (
+      toolName === "write_file"
+      || toolName === "delete_file"
+      || toolName === "replace_in_file"
+      || toolName === "apply_patch"
+    ) {
+      return "文件变更已在应用权限设置中禁用。";
+    }
+    return "该工具已在应用权限设置中禁用。";
+  }
+
+  private agentForConversation(conversationId: string): {
+    id: string;
+    permissions: { allow: AgentPermissionRule[] };
+  } | null {
+    const conversation = this.database.getConversation(conversationId);
+    if (conversation.agentId === null || this.agentDirectory === null) return null;
+    const agent = this.agentDirectory.getConfiguration().agents.find(
+      (candidate) => candidate.id === conversation.agentId,
+    );
+    return agent === undefined
+      ? null
+      : { id: agent.id, permissions: agent.permissions ?? { allow: [] } };
+  }
+
+  private hasPermissionGrant(
+    conversationId: string,
+    tool: AgentPermissionTool,
+    candidate: string,
+  ): boolean {
+    const sessionRules = this.sessionPermissionGrants.get(conversationId) ?? [];
+    if (sessionRules.some((rule) => permissionRuleMatches(rule, tool, candidate))) return true;
+    const agent = this.agentForConversation(conversationId);
+    return agent?.permissions.allow.some((rule) => permissionRuleMatches(rule, tool, candidate)) ?? false;
+  }
+
+  private permissionDecision(input: {
+    conversationId: string;
+    permissionMode: ConversationPermissionMode;
+    permissionTool: AgentPermissionTool;
+    pattern: string;
+    toolId: string;
+    externalRead?: boolean;
+  }): PermissionDecision {
+    // A resumed interrupt must be consumed even when the selected scope has
+    // just created a matching session or Agent rule.
+    if (this.resumedApprovalDecisions.has(input.toolId)) return "ask";
+    if (input.externalRead !== true && input.permissionMode === "read_only") return "deny";
+    if (input.externalRead === true) return "ask";
+    if (this.permissionPolicyFor(input.permissionTool) === "unavailable") {
+      return "deny";
+    }
+    if (this.hasPermissionGrant(input.conversationId, input.permissionTool, input.pattern)) {
+      return "allow";
+    }
+    if (
+      input.permissionMode === "full_access"
+      || this.permissionPolicyFor(input.permissionTool) === "allow"
+    ) {
+      return "allow";
+    }
+    return "ask";
+  }
+
+  private grantPermission(
+    pending: PendingChangeApproval,
+    scope: "once" | "session" | "agent",
+  ): void {
+    if (scope === "once") return;
+    if (pending.permissionTool === "external_read") {
+      throw new Error("工作区外文件读取只能本次允许，不能保存为会话或 Agent 永久规则。");
+    }
+    const rule = agentPermissionRuleSchema.parse({
+      pattern: pending.pattern,
+      tool: pending.permissionTool,
+    });
+    if (scope === "session") {
+      const current = this.sessionPermissionGrants.get(pending.conversationId) ?? [];
+      if (!current.some((candidate) => candidate.tool === rule.tool && candidate.pattern === rule.pattern)) {
+        this.sessionPermissionGrants.set(pending.conversationId, [...current, rule]);
+      }
+      if (this.sessionPermissionGrants.size > 500) {
+        const oldest = this.sessionPermissionGrants.keys().next().value;
+        if (typeof oldest === "string") this.sessionPermissionGrants.delete(oldest);
+      }
+      return;
+    }
+    if (pending.agentId === null || this.applicationSettings === null) {
+      throw new Error("当前对话没有可保存权限的 Agent。请选择本次允许或本会话允许。");
+    }
+    const configuration = this.applicationSettings.getConfiguration();
+    const agent = configuration.agentDirectory.agents.find(
+      (candidate) => candidate.id === pending.agentId,
+    );
+    if (agent === undefined) throw new Error("当前 Agent 不存在，无法保存权限规则。");
+    const currentRules = agent.permissions?.allow ?? [];
+    if (currentRules.some((candidate) => candidate.tool === rule.tool && candidate.pattern === rule.pattern)) {
+      return;
+    }
+    this.applicationSettings.saveConfiguration({
+      ...configuration,
+      agentDirectory: {
+        ...configuration.agentDirectory,
+        agents: configuration.agentDirectory.agents.map((candidate) => candidate.id === agent.id
+          ? {
+              ...candidate,
+              permissions: { allow: [...currentRules, rule] },
+            }
+          : candidate),
+      },
+    });
   }
 
   private requestToolApproval(input: {
@@ -2360,10 +3433,14 @@ export class AgentRuntime {
     signal: AbortSignal;
     tool: ReturnType<typeof conversationToolItemSchema.parse>;
     emit: RunEventEmitter;
+    pattern: string;
+    permissionTool: AgentPermissionTool;
   }): boolean {
     const interruptValue: ToolApprovalInterrupt = {
       conversationId: input.tool.conversationId,
       kind: "tool_approval",
+      pattern: input.pattern,
+      permissionTool: input.permissionTool,
       runId: input.runId,
       toolId: input.tool.id,
     };
@@ -2374,8 +3451,25 @@ export class AgentRuntime {
       return approved;
     }
 
+    this.appendShadowThreadLog(input.tool.conversationId, {
+      payload: {
+        pattern: input.pattern,
+        permissionTool: input.permissionTool,
+        runId: input.runId,
+        toolId: input.tool.id,
+      },
+      type: "tool_approval_requested",
+    });
     this.database.updateTool(input.tool);
-    void this.createChangeApproval(input.tool.id, input.runId, input.signal);
+    void this.createChangeApproval({
+      agentId: this.agentForConversation(input.tool.conversationId)?.id ?? null,
+      conversationId: input.tool.conversationId,
+      pattern: input.pattern,
+      permissionTool: input.permissionTool,
+      runId: input.runId,
+      signal: input.signal,
+      toolId: input.tool.id,
+    });
     this.emit(input.emit, {
       conversationId: input.tool.conversationId,
       runId: input.runId,
@@ -2395,17 +3489,27 @@ export class AgentRuntime {
     startedTool: ReturnType<typeof conversationToolItemSchema.parse>;
     operationOwner: ProjectOperationOwner;
   }): Promise<ToolExecutionResult> {
-    if (input.permissionMode === "read_only") {
+    const decision = this.permissionDecision({
+      conversationId: input.startedTool.conversationId,
+      permissionMode: input.permissionMode,
+      permissionTool: input.change.operation,
+      pattern: input.change.path,
+      toolId: input.startedTool.id,
+    });
+    if (decision === "deny") {
+      const message = input.permissionMode === "read_only"
+        ? "File changes are blocked because this conversation is read-only."
+        : this.unavailableToolReason(input.change.operation) ?? "File changes are blocked by the current permission policy.";
       return {
         content: JSON.stringify({
-          error: "File changes are blocked because this conversation is read-only.",
+          error: message,
           ok: false
         }),
         isError: true,
         kind: "completed"
       };
     }
-    if (input.permissionMode === "ask_before_changes") {
+    if (decision === "ask") {
       const awaitingTool = conversationToolItemSchema.parse({
         ...input.startedTool,
         diff: input.change.diff,
@@ -2416,6 +3520,8 @@ export class AgentRuntime {
         runId: input.runId,
         signal: input.controller.signal,
         tool: awaitingTool,
+        pattern: input.change.path,
+        permissionTool: input.change.operation,
       });
       this.pendingChangeApprovals.delete(awaitingTool.id);
       if (!approved) {
@@ -2439,27 +3545,86 @@ export class AgentRuntime {
     );
   }
 
+  private async resolveExternalFileRead(input: {
+    controller: AbortController;
+    emit: RunEventEmitter;
+    permissionMode: ConversationPermissionMode;
+    prepared: PreparedExternalFileRead;
+    runId: string;
+    startedTool: ReturnType<typeof conversationToolItemSchema.parse>;
+  }): Promise<ToolExecutionResult> {
+    const decision = this.permissionDecision({
+      conversationId: input.startedTool.conversationId,
+      externalRead: true,
+      permissionMode: input.permissionMode,
+      pattern: input.prepared.path,
+      permissionTool: "external_read",
+      toolId: input.startedTool.id,
+    });
+    if (decision !== "allow") {
+      const awaitingTool = conversationToolItemSchema.parse({
+        ...input.startedTool,
+        status: "awaiting_approval",
+      });
+      const approved = this.requestToolApproval({
+        emit: input.emit,
+        pattern: input.prepared.path,
+        permissionTool: "external_read",
+        runId: input.runId,
+        signal: input.controller.signal,
+        tool: awaitingTool,
+      });
+      this.pendingChangeApprovals.delete(awaitingTool.id);
+      if (!approved) {
+        return {
+          content: JSON.stringify({
+            error: "The user rejected this external file read.",
+            ok: false,
+            value: { path: input.prepared.path, status: "rejected" },
+          }),
+          isError: true,
+          kind: "completed",
+          status: "rejected",
+        };
+      }
+    }
+    return this.tools.executePreparedExternalFileRead(
+      input.prepared,
+      input.controller.signal,
+    );
+  }
+
   private async resolveCommand(input: {
     command: PreparedCommand;
     controller: AbortController;
     emit: RunEventEmitter;
     permissionMode: ConversationPermissionMode;
-    projectId: string;
+    projectId: string | undefined;
     runId: string;
     startedTool: ReturnType<typeof conversationToolItemSchema.parse>;
     operationOwner: ProjectOperationOwner;
   }): Promise<ToolExecutionResult> {
-    if (input.permissionMode === "read_only") {
+    const decision = this.permissionDecision({
+      conversationId: input.startedTool.conversationId,
+      permissionMode: input.permissionMode,
+      permissionTool: "run_command",
+      pattern: input.command.command,
+      toolId: input.startedTool.id,
+    });
+    if (decision === "deny") {
+      const message = input.permissionMode === "read_only"
+        ? "Command execution is blocked because this conversation is read-only."
+        : this.unavailableToolReason("run_command") ?? "Command execution is blocked by the current permission policy.";
       return {
         content: JSON.stringify({
-          error: "Command execution is blocked because this conversation is read-only.",
+          error: message,
           ok: false
         }),
         isError: true,
         kind: "completed"
       };
     }
-    if (input.permissionMode === "ask_before_changes") {
+    if (decision === "ask") {
       const awaitingTool = conversationToolItemSchema.parse({
         ...input.startedTool,
         status: "awaiting_approval"
@@ -2469,6 +3634,8 @@ export class AgentRuntime {
         runId: input.runId,
         signal: input.controller.signal,
         tool: awaitingTool,
+        pattern: input.command.command,
+        permissionTool: "run_command",
       });
       this.pendingChangeApprovals.delete(awaitingTool.id);
       if (!approved) {
@@ -2489,25 +3656,45 @@ export class AgentRuntime {
       input.projectId,
       input.controller.signal,
       input.operationOwner,
+      (output) => {
+        this.emit(input.emit, {
+          commandId: output.commandId,
+          conversationId: input.startedTool.conversationId,
+          delta: output.delta,
+          done: output.done,
+          exitCode: output.exitCode,
+          runId: input.runId,
+          status: output.status,
+          stream: output.stream,
+          timedOut: output.timedOut,
+          toolId: input.startedTool.id,
+          type: "tool.output_delta",
+          truncated: output.truncated,
+        });
+      },
     );
   }
 
-  private createChangeApproval(
-    toolId: string,
-    runId: string,
-    signal: AbortSignal
-  ): Promise<boolean> {
-    const existing = this.pendingChangeApprovals.get(toolId);
-    if (existing !== undefined && existing.runId === runId) return existing.promise;
+  private createChangeApproval(input: {
+    agentId: string | null;
+    conversationId: string;
+    pattern: string;
+    permissionTool: AgentPermissionTool;
+    runId: string;
+    signal: AbortSignal;
+    toolId: string;
+  }): Promise<boolean> {
+    const existing = this.pendingChangeApprovals.get(input.toolId);
+    if (existing !== undefined && existing.runId === input.runId) return existing.promise;
 
     let resolvePromise: (approved: boolean) => void = () => undefined;
     const promise = new Promise<boolean>((resolve) => {
       resolvePromise = resolve;
     });
     const cleanup = (): void => {
-      signal.removeEventListener("abort", onAbort);
-      if (this.pendingChangeApprovals.get(toolId)?.runId === runId) {
-        this.pendingChangeApprovals.delete(toolId);
+      input.signal.removeEventListener("abort", onAbort);
+      if (this.pendingChangeApprovals.get(input.toolId)?.runId === input.runId) {
+        this.pendingChangeApprovals.delete(input.toolId);
       }
     };
     const onAbort = (): void => {
@@ -2515,16 +3702,20 @@ export class AgentRuntime {
       resolvePromise(false);
     };
     const pending: PendingChangeApproval = {
+      agentId: input.agentId,
+      conversationId: input.conversationId,
+      pattern: input.pattern,
+      permissionTool: input.permissionTool,
       promise,
       resolve: (approved) => {
-        signal.removeEventListener("abort", onAbort);
+        input.signal.removeEventListener("abort", onAbort);
         resolvePromise(approved);
       },
-      runId,
+      runId: input.runId,
     };
-    this.pendingChangeApprovals.set(toolId, pending);
-    if (signal.aborted) onAbort();
-    else signal.addEventListener("abort", onAbort, { once: true });
+    this.pendingChangeApprovals.set(input.toolId, pending);
+    if (input.signal.aborted) onAbort();
+    else input.signal.addEventListener("abort", onAbort, { once: true });
     return promise;
   }
 
@@ -2554,10 +3745,11 @@ export class AgentRuntime {
         "对于包含两个或以上独立步骤的复杂任务，先用 create_task_list 建立完整任务清单；每完成一步就用 update_task_list 更新完整清单，并且同一时间只能有一个步骤为 running。简单问答或单步修改不要创建任务清单。全部步骤完成后调用 close_task_list 删除清单，再给出最终答复。",
         workspace === null
           ? this.attachmentTool === null
-            ? "当前是临时对话，没有关联项目或文件工具。"
-            : "当前是临时对话，没有关联项目；仍可使用 read_attachment 读取本对话中的文本附件。"
-          : `当前提供工作目录内读文件、搜索、受控文件变更和 ${this.tools.getCommandEnvironmentDescription()} 命令工具；命令与写入均受本轮权限策略控制。`,
-        "同一模型轮可以返回多个相互独立的只读 Tool Call（例如同时 read_file 多个文件、search_text、find_files 或 read_attachment），运行时会并发执行并按调用 ID 保持结果对应。文件变更、审批、Agent 消息和任务状态按顺序处理；同批同文件的旧变更会作废。只有 full_access 且明确设置 parallel=true 的独立 run_command 才会并行，命令可能修改工作区时不要标记为并行。wait_for_commands 和 wait_for_subagents 优先一次传入多个 ID。",
+            ? `当前是临时对话，没有关联工作区；仍可使用 ${this.tools.getCommandEnvironmentDescription()} 命令工具、read_external_file、web_search 和 Agent/Subagent 协作工具。命令在隔离临时目录中执行；项目文件、目录和搜索工具需要先附加工作目录。工作区外文件读取仍需逐次审批。`
+            : `当前是临时对话，没有关联工作区；仍可使用 read_attachment、${this.tools.getCommandEnvironmentDescription()} 命令工具、read_external_file、web_search 和 Agent/Subagent 协作工具。命令在隔离临时目录中执行；项目文件、目录和搜索工具需要先附加工作目录。工作区外文件读取仍需逐次审批。`
+          : `当前提供工作目录内读文件、搜索、受控文件变更和 ${this.tools.getCommandEnvironmentDescription()} 命令工具，也可使用 web_search；命令与写入均受本轮权限策略控制。`,
+        "read_external_file 只接受绝对路径，读取工作区外文件前必须经过用户审批；只支持本次允许，不保存会话或 Agent 长期规则。",
+        `同一模型轮最多返回 ${MAX_TOOL_CALLS_PER_MODEL_TURN} 个 Tool Call，可以混合不同工具。相互独立的只读调用（例如同时 read_file 多个文件、search_text、find_files 或 read_attachment）会按每组最多 ${MAX_PARALLEL_READ_TOOL_CALLS} 个并发执行，并按调用 ID 保持结果对应。文件变更、审批、Agent 消息和任务状态按顺序处理；同批同文件的旧变更会作废。非 read_only 模式下，同一连续组中相互独立的 run_command 默认并行，每组最多 ${MAX_PARALLEL_COMMAND_TOOL_CALLS} 个；命令依赖前一条命令或共享可变状态时必须设置 parallel=false。ask_before_changes 仍为每条命令单独审批，但已批准的独立命令可以并行执行。超过单轮上限时本轮工具不会执行，请拆分为多个模型轮次。wait_for_commands 和 wait_for_subagents 优先一次传入多个 ID。`,
         "简单、结果需要保持有界的文本或文件查询优先调用 search_text 和 find_files。需要 ripgrep 的上下文行、计数、多表达式、复杂 glob、精确 CLI 输出或管道组合时，可以直接用 run_command 执行 rg；应用已提供内置 rg，不要求用户另行安装。",
         "如果文件变更工具返回 PROJECT_OPERATION_CONFLICT、FILE_CHANGED 或 recovery.action=reread_and_rebuild_change，本次文件变更请求已经作废；不要排队、重放或继续提交相同参数。必要时等待当前占用操作结束，然后必须重新调用 read_file 获取最新内容，再生成新的 Diff。run_command 的 PROJECT_OPERATION_CONFLICT 同样表示原命令已作废；等待后应重新评估最新工作区状态，只在仍适用时生成新命令。",
         `用户为本次任务选择的权限模式：${permissionModeLabel(permissionMode)}。`,
@@ -2574,48 +3766,34 @@ export class AgentRuntime {
           ? []
           : [this.skillRuntime.getCatalogPrompt(
               this.skillRuntimeContext(conversation, workspace?.id),
-            ) ?? "当前没有满足范围和依赖条件的可用 Skill。"]),
-        ...this.taskListContext(conversationId)
+            ) ?? "当前没有满足范围和依赖条件的可用 Skill。"])
       ].join("\n"),
       role: "system",
       toolCallId: null,
       toolCalls: []
     };
-    const sourceMessages = this.database.listContextMessages(conversationId);
-    const storedMessages = sanitizeStoredModelMessages(sourceMessages).map((message) => ({
-      ...message,
-      attachments: this.attachments?.toModelAttachments(
-        conversationId,
-        message.attachmentIds,
-        includeImageData
-      ) ?? []
-    }));
-    const estimatedSystemTokens = estimateModelMessageTokens(systemMessage).contentTokens;
-    const estimatedToolDefinitionTokens = estimateContextTokens(
-      JSON.stringify(this.toolHandlers.getDefinitions({ projectId: workspace?.id }))
-    );
-    const compressionThresholdTokens = resolveContextCompressionThresholdTokens(
-      contextCompressionConfiguration,
-      contextWindowTokens
-    );
     const reservedSkillTokens = this.skillRuntime === null
       ? 0
       : resolveActiveSkillContextBudget(contextWindowTokens) + CONTEXT_MESSAGE_OVERHEAD_TOKENS;
-    const managed = buildManagedContext({
-      checkpoint: this.database.getContextCheckpoint(conversationId),
-      compressionMode: contextCompressionConfiguration.mode,
-      compressionThresholdTokens,
-      estimatedSystemTokens,
-      estimatedToolDefinitionTokens,
+    const reservedTaskListTokens = activeTaskListContextTokens(
+      this.database.getTaskList(conversationId),
+    );
+    const compiled = this.contextCompiler.compile({
+      contextCompressionConfiguration,
+      contextWindowTokens,
+      conversationId,
+      includeImageData,
       outputReserveTokens: MAX_OUTPUT_TOKENS,
       reservedSkillTokens,
-      sourceMessages: storedMessages
+      reservedTaskListTokens,
+      systemMessage,
+      toolDefinitions: this.toolHandlers.getDefinitions({ projectId: workspace?.id }),
     });
 
     return {
-      compactionCandidates: managed.compactionCandidates,
-      messages: [systemMessage, ...managed.messages],
-      usage: conversationContextUsageSchema.parse(managed.usage)
+      compactionCandidates: compiled.compactionCandidates,
+      messages: compiled.messages,
+      usage: conversationContextUsageSchema.parse(compiled.usage)
     };
   }
 
@@ -2660,11 +3838,37 @@ export class AgentRuntime {
         const summary = parseContextSummary(rawSummary);
         const lastCandidate = context.compactionCandidates.at(-1);
         if (lastCandidate === undefined) break;
-        this.database.saveContextCheckpoint(
-          conversationId,
-          lastCandidate.sequence,
-          summary
-        );
+        const savedCheckpoint = this.threadLog !== null && this.eventProjector !== null
+          ? (() => {
+              const preparedCheckpoint = this.database.prepareContextCheckpoint(
+                conversationId,
+                lastCandidate.sequence,
+                summary,
+              );
+              this.appendWriteAheadThreadLog(conversationId, {
+                payload: { ...preparedCheckpoint, writeAhead: true },
+                type: "context_checkpoint",
+              });
+              return this.database.getContextCheckpoint(conversationId) ?? (() => {
+                throw new Error("Context checkpoint projection could not be persisted.");
+              })();
+            })()
+          : this.database.saveContextCheckpoint(
+              conversationId,
+              lastCandidate.sequence,
+              summary,
+            );
+        if (this.threadLog === null || this.eventProjector === null) {
+          this.appendShadowThreadLog(conversationId, {
+            payload: {
+              coveredThroughSequence: lastCandidate.sequence,
+              createdAt: savedCheckpoint.createdAt,
+              summary,
+              updatedAt: savedCheckpoint.updatedAt,
+            },
+            type: "context_checkpoint",
+          });
+        }
         context = this.buildContext(
           conversationId,
           workspace,
@@ -2687,7 +3891,7 @@ export class AgentRuntime {
       input.signal.throwIfAborted();
       let receivedTextDelta = false;
       try {
-        const result = await this.model.completeTurn({
+        const result = await this.modelGateway.completeTurn({
           configuration: input.configuration,
           maxOutputTokens: MAX_SUMMARY_OUTPUT_TOKENS,
           messages: createContextCompactionMessages(input.previousSummary, input.messages),
@@ -2714,20 +3918,6 @@ export class AgentRuntime {
         await this.waitForRetry(modelRetryDelay(reconnectAttempt), input.signal);
       }
     }
-  }
-
-  private taskListContext(conversationId: string): string[] {
-    const taskList = this.database.getTaskList(conversationId);
-    if (taskList === null) return [];
-    if (taskList.status === "closed") {
-      return [
-        "当前任务清单已关闭。不要调用 update_task_list；只有用户要求重新规划时才调用 create_task_list 创建新的清单。"
-      ];
-    }
-    return [
-      "当前任务清单：",
-      ...taskList.tasks.map((task, index) => `${index + 1}. [${task.status}] ${task.title}`)
-    ];
   }
 
   private assertAttachmentTurnFitsContext(
@@ -2803,6 +3993,12 @@ export class AgentRuntime {
       ...this.projects.getProject(conversation.id),
       kind: "conversation"
     };
+  }
+
+  private toolDefinitionsForConversation(conversationId: string): ModelToolDefinition[] {
+    const conversation = this.database.getConversation(conversationId);
+    const workspace = this.resolveConversationWorkspace(conversation);
+    return this.toolHandlers.getDefinitions({ projectId: workspace?.id });
   }
 
   private emit(emit: RunEventEmitter, event: ConversationRunEvent): void {

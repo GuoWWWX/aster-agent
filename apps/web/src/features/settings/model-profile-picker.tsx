@@ -1,7 +1,11 @@
-import { Bot, Check, ChevronRight, Search } from "lucide-react";
+import { Check, ChevronRight, Search } from "lucide-react";
 import { useMemo, useState, type ReactElement } from "react";
 
-import type { ContextCompressionThreshold, ModelProfile } from "@agent/protocol";
+import type {
+  ContextCompressionThreshold,
+  ModelProfile,
+  ModelProviderIcon,
+} from "@agent/protocol";
 
 import {
   Popover,
@@ -9,11 +13,13 @@ import {
   PopoverTrigger,
 } from "../../components/ui/popover.js";
 import { cn } from "../../lib/cn.js";
+import { ProviderLogo } from "./provider-logo.js";
 import "./model-profile-picker.css";
 
 type ProviderModelGroup = {
   baseUrl: string;
   id: string;
+  icon: ModelProviderIcon;
   models: ModelProfile[];
   name: string;
 };
@@ -56,6 +62,7 @@ export function ModelProfilePicker({
         groups.set(model.providerId, {
           baseUrl: model.providerBaseUrl,
           id: model.providerId,
+          icon: model.providerIcon ?? "auto",
           models: [model],
           name: model.providerName,
         });
@@ -127,7 +134,11 @@ export function ModelProfilePicker({
                   >
                     <span className="model-profile-picker__provider-name">
                       <ChevronRight aria-hidden="true" size={13} />
-                      <Bot aria-hidden="true" size={14} />
+                      <ProviderLogo
+                        icon={provider.icon}
+                        providerName={provider.name}
+                        size="compact"
+                      />
                       {provider.name}
                     </span>
                   </button>

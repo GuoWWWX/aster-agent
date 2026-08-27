@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import type { ApplicationSettings } from "@agent/protocol";
 
 import { AppShell } from "../components/layout/app-shell.js";
+import { MediaPreviewDialogHost } from "../components/media/image-viewer.js";
 import { WorkspaceContent } from "../features/chat/workspace-content.js";
 import {
   ProjectNavigator,
@@ -93,10 +94,28 @@ export function App(): ReactElement {
     let initialized = false;
     let saveTimer: number | undefined;
     let lastSavedSnapshot = "";
+    let applyingRemoteSettings = false;
     const unsubscribe: (() => void)[] = [];
 
+    function hydrateApplicationSettings(settings: ApplicationSettings): void {
+      applyingRemoteSettings = true;
+      try {
+        useWorkbenchUiStore.getState().hydrateAppearance(settings.appearance);
+        useAgentDirectoryStore.getState().hydrate(settings.agentDirectory);
+        useApplicationSettingsStore.getState().hydrateGeneralConfiguration(
+          settings.general,
+        );
+        useApplicationSettingsStore.getState().hydratePermissionPolicies(
+          settings.permissionPolicies,
+        );
+        lastSavedSnapshot = JSON.stringify(settings);
+      } finally {
+        applyingRemoteSettings = false;
+      }
+    }
+
     function scheduleSave(): void {
-      if (disposed || !initialized) return;
+      if (disposed || !initialized || applyingRemoteSettings) return;
       const snapshot = applicationSettingsSnapshot();
       if (JSON.stringify(snapshot) === lastSavedSnapshot) return;
       if (saveTimer !== undefined) window.clearTimeout(saveTimer);
@@ -124,18 +143,15 @@ export function App(): ReactElement {
       unsubscribe.push(useApplicationSettingsStore.subscribe(scheduleSave));
     }
 
+    unsubscribe.push(agentClient.onApplicationSettingsChanged((settings) => {
+      if (disposed) return;
+      hydrateApplicationSettings(settings);
+    }));
+
     void agentClient.getApplicationSettings().then(
       (settings) => {
         if (disposed) return;
-        lastSavedSnapshot = JSON.stringify(settings);
-        useWorkbenchUiStore.getState().hydrateAppearance(settings.appearance);
-        useAgentDirectoryStore.getState().hydrate(settings.agentDirectory);
-        useApplicationSettingsStore.getState().hydrateGeneralConfiguration(
-          settings.general,
-        );
-        useApplicationSettingsStore.getState().hydratePermissionPolicies(
-          settings.permissionPolicies,
-        );
+        hydrateApplicationSettings(settings);
         initialized = true;
         subscribeToApplicationSettings();
       },
@@ -204,7 +220,8 @@ export function App(): ReactElement {
   }, [agentClient, projectSessions, projectTree]);
 
   return (
-    <AppShell
+    <>
+      <AppShell
       agentClient={agentClient}
       projectNavigator={
         <ProjectNavigator
@@ -279,7 +296,6 @@ export function App(): ReactElement {
       }
       filePanel={
         <RightSidebarWorkspace
-          key={projectTree.activeProject?.id ?? "no-project"}
           activeProject={projectTree.activeProject}
           activeSession={projectSessions.activeSession}
           agentClient={agentClient}
@@ -290,6 +306,8 @@ export function App(): ReactElement {
           tree={projectTree}
         />
       }
-    />
+      />
+      <MediaPreviewDialogHost />
+    </>
   );
 }

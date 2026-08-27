@@ -9,13 +9,13 @@ import {
   writeFile
 } from "node:fs/promises";
 import path from "node:path";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 import {
   estimateContextTokens,
   type ConversationAttachment
 } from "@agent/protocol";
-import { fileTypeFromFile } from "file-type";
+import { fileTypeFromBuffer, fileTypeFromFile } from "file-type";
 import mammoth from "mammoth";
 import { extractText } from "unpdf";
 
@@ -118,6 +118,14 @@ const EXTENSION_MIME_TYPES: Readonly<Record<string, string>> = {
 
 type AttachmentSource = Pick<ConversationAttachment, "projectPath" | "source">;
 
+export type ConversationAttachmentBytesInput = {
+  bytes: Uint8Array;
+  /** A display name only; it is never treated as a filesystem path. */
+  name: string;
+  /** Browser/clipboard MIME metadata; detected bytes take precedence. */
+  mimeType?: string;
+};
+
 export class ConversationAttachmentStore {
   public constructor(
     private readonly database: AgentDatabase,
@@ -130,10 +138,7 @@ export class ConversationAttachmentStore {
     sourcePaths: readonly string[]
   ): Promise<ConversationAttachment[]> {
     if (sourcePaths.length === 0) return [];
-    const drafts = this.database.listDraftConversationAttachments(conversationId);
-    if (drafts.length + sourcePaths.length > MAX_ATTACHMENTS_PER_MESSAGE) {
-      throw new Error(`每条消息最多添加 ${MAX_ATTACHMENTS_PER_MESSAGE} 个附件。`);
-    }
+    this.assertCanAddDrafts(conversationId, sourcePaths.length);
 
     const imported: ConversationAttachment[] = [];
     try {
@@ -149,8 +154,70 @@ export class ConversationAttachmentStore {
     }
   }
 
+  /**
+   * Imports a clipboard or drag-and-drop Blob without requiring the renderer
+   * to materialize an unmanaged temporary path first.
+   */
+  public async importBytes(
+    conversationId: string,
+    input: ConversationAttachmentBytesInput,
+  ): Promise<ConversationAttachment> {
+    this.assertCanAddDrafts(conversationId, 1);
+    if (input.bytes.byteLength === 0) throw new Error("不能添加空附件。");
+    if (input.bytes.byteLength > MAX_ATTACHMENT_BYTES) {
+      throw new Error("单个附件不能超过 25 MB。");
+    }
+    const name = path.basename(input.name).trim().slice(0, 255);
+    if (name.length === 0 || name === "." || name === "..") {
+      throw new Error("附件名称无效。");
+    }
+    const extension = path.extname(name).toLowerCase();
+    const detectedType = await fileTypeFromBuffer(input.bytes);
+    const declaredMimeType = input.mimeType?.trim().toLowerCase();
+    const mimeType = detectedType?.mime
+      ?? (declaredMimeType?.includes("/") === true ? declaredMimeType : undefined)
+      ?? EXTENSION_MIME_TYPES[extension]
+      ?? (TEXT_EXTENSIONS.has(extension) ? "text/plain" : "application/octet-stream");
+    const id = randomUUID();
+    const directory = path.join(this.rootPath, conversationId);
+    await mkdir(directory, { recursive: true });
+    const storedPath = path.join(directory, `${id}${extension}`);
+    await writeFile(storedPath, input.bytes);
+    return this.completeImportedFile({
+      conversationId,
+      extension,
+      id,
+      mimeType,
+      name,
+      sizeBytes: input.bytes.byteLength,
+      source: { projectPath: null, source: "upload" },
+      storedPath,
+    });
+  }
+
   public listDrafts(conversationId: string): ConversationAttachment[] {
     return this.database.listDraftConversationAttachments(conversationId);
+  }
+
+  /**
+   * Derives managed paths from an immutable Attachment reference during
+   * ThreadLog recovery. Paths stay out of JSONL; the store layout is the
+   * only location that knows how to resolve them.
+   */
+  public resolveThreadLogPaths(attachment: ConversationAttachment): {
+    extractedTextPath: string | null;
+    storedPath: string;
+  } {
+    const directory = path.join(this.rootPath, attachment.conversationId);
+    const extension = path.extname(attachment.name).toLowerCase();
+    const storedPath = path.join(directory, `${attachment.id}${extension}`);
+    const extractedTextPath = path.join(directory, `${attachment.id}.extracted.txt`);
+    return {
+      extractedTextPath: attachment.kind === "file" && existsSync(extractedTextPath)
+        ? extractedTextPath
+        : null,
+      storedPath,
+    };
   }
 
   public async removeDraft(conversationId: string, attachmentId: string): Promise<void> {
@@ -268,55 +335,83 @@ export class ConversationAttachmentStore {
     const mimeType = detectedType?.mime
       ?? EXTENSION_MIME_TYPES[extension]
       ?? (TEXT_EXTENSIONS.has(extension) ? "text/plain" : "application/octet-stream");
-    const kind = MODEL_IMAGE_MIME_TYPES.has(mimeType) ? "image" : "file";
     const directory = path.join(this.rootPath, conversationId);
     await mkdir(directory, { recursive: true });
     const storedPath = path.join(directory, `${id}${extension}`);
-    const extractedTextPath = kind === "file"
-      ? path.join(directory, `${id}.extracted.txt`)
-      : null;
     await copyFile(absoluteSourcePath, storedPath);
 
+    return this.completeImportedFile({
+      conversationId,
+      extension,
+      id,
+      mimeType,
+      name,
+      sizeBytes: fileStat.size,
+      source: this.resolveSource(conversationId, absoluteSourcePath),
+      storedPath,
+    });
+  }
+
+  private async completeImportedFile(input: {
+    conversationId: string;
+    extension: string;
+    id: string;
+    mimeType: string;
+    name: string;
+    sizeBytes: number;
+    source: AttachmentSource;
+    storedPath: string;
+  }): Promise<ConversationAttachment> {
+    const kind = MODEL_IMAGE_MIME_TYPES.has(input.mimeType) ? "image" : "file";
+    const extractedTextPath = kind === "file"
+      ? path.join(path.dirname(input.storedPath), `${input.id}.extracted.txt`)
+      : null;
     try {
       const extractedText = extractedTextPath === null
         ? null
-        : await this.extractFileText(storedPath, mimeType, extension);
+        : await this.extractFileText(input.storedPath, input.mimeType, input.extension);
       const actualExtractedTextPath = extractedText === null ? null : extractedTextPath;
       if (actualExtractedTextPath !== null && extractedText !== null) {
         await writeFile(actualExtractedTextPath, extractedText, "utf8");
       }
-      const source = this.resolveSource(conversationId, absoluteSourcePath);
       const truncated = extractedText !== null && extractedText.length > INLINE_TEXT_CHARACTERS;
       const contextTokens = kind === "image"
-        ? this.estimateImageTokens(fileStat.size, { id, name, ...source })
+        ? this.estimateImageTokens(input.sizeBytes, { id: input.id, name: input.name, ...input.source })
         : estimateContextTokens(
             this.renderTextAttachment(
-              { id, mimeType, name, ...source },
+              { id: input.id, mimeType: input.mimeType, name: input.name, ...input.source },
               extractedText,
               truncated
             )
           );
       return this.database.createConversationAttachment({
         contextTokens,
-        conversationId,
+        conversationId: input.conversationId,
         createdAt: new Date().toISOString(),
         extractedTextPath: actualExtractedTextPath,
-        id,
+        id: input.id,
         kind,
         messageId: null,
         pendingMessageId: null,
-        mimeType,
-        name,
-        projectPath: source.projectPath,
-        sizeBytes: fileStat.size,
-        source: source.source,
-        storedPath,
+        mimeType: input.mimeType,
+        name: input.name,
+        projectPath: input.source.projectPath,
+        sizeBytes: input.sizeBytes,
+        source: input.source.source,
+        storedPath: input.storedPath,
         truncated
       });
     } catch (error) {
-      await this.removeFile(storedPath);
+      await this.removeFile(input.storedPath);
       if (extractedTextPath !== null) await this.removeFile(extractedTextPath);
       throw error;
+    }
+  }
+
+  private assertCanAddDrafts(conversationId: string, count: number): void {
+    const drafts = this.database.listDraftConversationAttachments(conversationId);
+    if (drafts.length + count > MAX_ATTACHMENTS_PER_MESSAGE) {
+      throw new Error(`每条消息最多添加 ${MAX_ATTACHMENTS_PER_MESSAGE} 个附件。`);
     }
   }
 

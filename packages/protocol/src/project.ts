@@ -106,6 +106,41 @@ export const readProjectFileInputSchema = z
   })
   .strict();
 
+export const writeProjectFileInputSchema = z
+  .object({
+    content: z.string().max(MAX_PROJECT_FILE_CONTENT_LENGTH),
+    /** Content read at open time; `null` asserts the file did not exist yet. */
+    expectedContent: z.string().max(MAX_PROJECT_FILE_CONTENT_LENGTH).nullable(),
+    path: relativeProjectPathSchema.refine((value) => value.length > 0, {
+      message: "A file path is required."
+    }),
+    projectId: projectIdSchema
+  })
+  .strict();
+
+/**
+ * `path` is the raw image reference authored inside the Markdown file — it can contain
+ * `../` segments or a leading `/` (project-root-relative), so it intentionally does not
+ * use `relativeProjectPathSchema`. The server resolves it against `sourcePath`'s directory
+ * and re-validates the result before touching the filesystem.
+ */
+export const readProjectPreviewImageInputSchema = z
+  .object({
+    path: z.string().trim().min(1).max(MAX_PROJECT_PATH_LENGTH),
+    projectId: projectIdSchema,
+    sourcePath: relativeProjectPathSchema.refine((value) => value.length > 0, {
+      message: "A source file path is required."
+    })
+  })
+  .strict();
+
+export const projectPreviewImageSchema = z
+  .object({
+    data: z.string(),
+    mimeType: z.string().trim().min(1)
+  })
+  .strict();
+
 export const createProjectEntryInputSchema = z
   .object({
     kind: z.enum(["directory", "file"]),
@@ -146,5 +181,8 @@ export type JavaDeclarationKind = z.infer<typeof javaDeclarationKindSchema>;
 export type ListProjectEntriesInput = z.infer<typeof listProjectEntriesInputSchema>;
 export type ProjectDirectoryListing = z.infer<typeof projectDirectoryListingSchema>;
 export type ReadProjectFileInput = z.infer<typeof readProjectFileInputSchema>;
+export type WriteProjectFileInput = z.infer<typeof writeProjectFileInputSchema>;
+export type ReadProjectPreviewImageInput = z.infer<typeof readProjectPreviewImageInputSchema>;
+export type ProjectPreviewImage = z.infer<typeof projectPreviewImageSchema>;
 export type CreateProjectEntryInput = z.infer<typeof createProjectEntryInputSchema>;
 export type ProjectFile = z.infer<typeof projectFileSchema>;

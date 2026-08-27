@@ -48,6 +48,74 @@ async function createLargeFixture(fileCount = 400) {
 }
 
 describe("ProjectToolRegistry", () => {
+  it("writes an editor file atomically and rejects stale content", async () => {
+    const { project, projects, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const opened = await projects.readFile({ projectId: project.id, path: "src/index.ts" });
+    if (opened.content === null) throw new Error("Expected a text fixture.");
+
+    await expect(tools.writeUserFile({
+      content: "saved by editor\n",
+      expectedContent: opened.content,
+      path: "src/index.ts",
+      projectId: project.id,
+    }, signal)).resolves.toMatchObject({
+      content: "saved by editor\n",
+      path: "src/index.ts",
+      truncated: false,
+    });
+    await expect(readFile(path.join(project.rootPath, "src", "index.ts"), "utf8"))
+      .resolves.toBe("saved by editor\n");
+
+    await writeFile(path.join(project.rootPath, "src", "index.ts"), "changed elsewhere\n", "utf8");
+    await expect(tools.writeUserFile({
+      content: "must not overwrite\n",
+      expectedContent: "saved by editor\n",
+      path: "src/index.ts",
+      projectId: project.id,
+    }, signal)).rejects.toMatchObject({ code: "FILE_CHANGED" });
+    await expect(readFile(path.join(project.rootPath, "src", "index.ts"), "utf8"))
+      .resolves.toBe("changed elsewhere\n");
+  });
+
+  it("rejects editor writes while a project command owns the workspace", async () => {
+    if (process.platform !== "win32") return;
+
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const command = await tools.execute(
+      "run_command",
+      JSON.stringify({ command: "Start-Sleep -Milliseconds 250", timeoutMs: 10_000 }),
+      project.id,
+      signal,
+    );
+    if (command.kind !== "command") throw new Error("Expected a command proposal.");
+    const commandPromise = tools.executePreparedCommand(command.command, project.id, signal, {
+      conversationId: "conversation-command",
+      conversationTitle: "终端 Agent",
+      runId: "run-command",
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 75));
+
+    await expect(tools.writeUserFile({
+      content: "editor\n",
+      expectedContent: null,
+      path: "editor.txt",
+      projectId: project.id,
+    }, signal)).rejects.toMatchObject({ code: "PROJECT_OPERATION_CONFLICT" });
+    await expect(commandPromise).resolves.toMatchObject({ isError: false });
+  });
+
+  it("rejects editor paths outside the project root", async () => {
+    const { project, tools } = await createFixture();
+    await expect(tools.writeUserFile({
+      content: "blocked",
+      expectedContent: null,
+      path: "../outside.txt",
+      projectId: project.id,
+    }, new AbortController().signal)).rejects.toThrow();
+  });
+
   it("automatically decodes UTF-8 and legacy Chinese terminal output", () => {
     const utf8Output = Buffer.from("UTF-8: 中文\n", "utf8");
     const gbkOutput = Buffer.concat([
@@ -61,7 +129,7 @@ describe("ProjectToolRegistry", () => {
     );
   });
 
-  it("declares safe read, file preparation, and explicit command policies", async () => {
+  it("declares safe read, file preparation, and command policies", async () => {
     const { tools } = await createFixture();
 
     expect(tools.getExecutionPolicy("read_file", JSON.stringify({ path: "src/index.ts" }), false))
@@ -75,9 +143,64 @@ describe("ProjectToolRegistry", () => {
     )).toEqual({ group: "command", kind: "parallel" });
     expect(tools.getExecutionPolicy(
       "run_command",
+      JSON.stringify({ command: "first" }),
+      true,
+    )).toEqual({ group: "command", kind: "parallel" });
+    expect(tools.getExecutionPolicy(
+      "run_command",
+      JSON.stringify({ command: "first", parallel: false }),
+      true,
+    )).toEqual({ kind: "serial" });
+    expect(tools.getExecutionPolicy(
+      "run_command",
       JSON.stringify({ command: "first", parallel: true }),
       false,
     )).toEqual({ kind: "serial" });
+  });
+
+  it("runs temporary conversation commands without exposing project tools", async () => {
+    const projects = new ProjectRegistry();
+    const tools = new ProjectToolRegistry(projects);
+    const signal = new AbortController().signal;
+    const owner = {
+      conversationId: "temporary-conversation",
+      conversationTitle: "临时对话",
+      runId: "temporary-run",
+    };
+
+    expect(tools.getCommandDefinitions().map((tool) => tool.name)).toEqual([
+      "wait_for_commands",
+      "stop_command",
+      "run_command",
+    ]);
+    expect(tools.getProjectDefinitions().map((tool) => tool.name)).not.toContain("run_command");
+
+    const proposal = await tools.execute(
+      "run_command",
+      JSON.stringify({ command: "node -e \"console.log('temporary-command-ok')\"", yieldTimeMs: 10_000 }),
+      undefined,
+      signal,
+      owner,
+    );
+    if (proposal.kind !== "command") throw new Error(proposal.content);
+    const result = await tools.executePreparedCommand(proposal.command, undefined, signal, owner);
+
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain("temporary-command-ok");
+    expect(result.content).toContain("agent-command-");
+
+    const commandValue = JSON.parse(result.content) as {
+      value?: { commandId?: string };
+    };
+    const commandId = commandValue.value?.commandId;
+    if (commandId === undefined) throw new Error("Expected a temporary command ID.");
+    await expect(tools.execute(
+      "wait_for_commands",
+      JSON.stringify({ commandIds: [commandId] }),
+      undefined,
+      signal,
+      { ...owner, conversationId: "other-conversation" },
+    )).resolves.toMatchObject({ isError: true });
   });
 
   it("executes every advertised project tool inside an isolated project", async () => {
@@ -186,6 +309,7 @@ describe("ProjectToolRegistry", () => {
       "stop_command",
       "list_directory",
       "read_file",
+      "read_external_file",
       "search_text",
       "find_files",
       "write_file",
@@ -207,6 +331,31 @@ describe("ProjectToolRegistry", () => {
 
     expect(result.isError).toBe(false);
     expect(result.content).toContain("beta alpha");
+  });
+
+  it("prepares an external read without exposing content before approval", async () => {
+    const { project, tools } = await createFixture();
+    const externalRoot = await mkdtemp(path.join(os.tmpdir(), "agent-tools-external-"));
+    temporaryDirectories.push(externalRoot);
+    const externalPath = path.join(externalRoot, "agent-external-read.txt");
+    await writeFile(externalPath, "outside content\n", "utf8");
+
+    const prepared = await tools.execute(
+      "read_external_file",
+      JSON.stringify({ path: externalPath }),
+      project.id,
+      new AbortController().signal,
+    );
+    expect(prepared.kind).toBe("external_read");
+    expect(prepared.content).not.toContain("outside content");
+    if (prepared.kind !== "external_read") throw new Error("Expected an external read proposal.");
+
+    const completed = await tools.executePreparedExternalFileRead(
+      prepared.externalRead,
+      new AbortController().signal,
+    );
+    expect(completed.isError).toBe(false);
+    expect(completed.content).toContain("outside content");
   });
 
   const invalidReadRanges: Array<{
@@ -572,6 +721,70 @@ describe("ProjectToolRegistry", () => {
       value: { workingDirectory: string };
     };
     expect(payload.value.workingDirectory).toBe(project.rootPath);
+  });
+
+  it("streams command output before the command completes", async () => {
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const owner = {
+      conversationId: "conversation-streaming-command",
+      conversationTitle: "流式命令",
+      runId: "run-streaming-command",
+    };
+    const proposal = await tools.execute(
+      "run_command",
+      JSON.stringify({
+        command: 'Write-Output "stream-first"; Start-Sleep -Milliseconds 1000; [Console]::Error.WriteLine("stream-error")',
+        timeoutMs: 10_000,
+        yieldTimeMs: 0,
+      }),
+      project.id,
+      signal,
+      owner,
+    );
+    if (proposal.kind !== "command") throw new Error(proposal.content);
+
+    const outputEvents: Array<{ delta: string; done: boolean; stream: string }> = [];
+    let resolveFirstOutput: (() => void) | undefined;
+    const firstOutput = new Promise<void>((resolve) => {
+      resolveFirstOutput = resolve;
+    });
+    const started = await tools.executePreparedCommand(
+      proposal.command,
+      project.id,
+      signal,
+      owner,
+      ({ delta, done, stream }) => {
+        outputEvents.push({ delta, done, stream });
+        if (stream === "stdout" && delta.includes("stream-first")) resolveFirstOutput?.();
+      },
+    );
+    const startedPayload = JSON.parse(started.content) as {
+      value?: { commandId?: unknown; status?: unknown };
+    };
+    expect(startedPayload.value?.status).toBe("running");
+    if (typeof startedPayload.value?.commandId !== "string") {
+      throw new Error("Expected a background command id.");
+    }
+    await Promise.race([
+      firstOutput,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Timed out waiting for output.")), 3_000)),
+    ]);
+    expect(outputEvents.some((event) => event.stream === "stdout" && event.delta.includes("stream-first")))
+      .toBe(true);
+    expect(outputEvents.some((event) => event.done)).toBe(false);
+
+    const waited = await tools.execute(
+      "wait_for_commands",
+      JSON.stringify({ commandIds: [startedPayload.value.commandId], timeoutMs: 10_000 }),
+      project.id,
+      signal,
+      owner,
+    );
+    expect(waited.content).toContain("stream-error");
+    expect(outputEvents.some((event) => event.stream === "stderr" && event.delta.includes("stream-error")))
+      .toBe(true);
+    expect(outputEvents.some((event) => event.done)).toBe(true);
   });
 
   it("makes the bundled ripgrep executable available to shell commands", async () => {

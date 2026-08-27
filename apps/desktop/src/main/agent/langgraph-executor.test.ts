@@ -72,6 +72,147 @@ describe("LangGraphExecutor", () => {
     ]);
   });
 
+  it("prepares the initial context once and keeps it across a queued follow-up", async () => {
+    let beforeAgentCount = 0;
+    let beforeModelCount = 0;
+    const callbacks = callbacksFor([result("first"), result("second")]);
+    callbacks.beforeAgent = () => {
+      beforeAgentCount += 1;
+      return Promise.resolve({ messages: [{ ...userMessage, content: "prepared context" }] });
+    };
+    callbacks.beforeModel = () => {
+      beforeModelCount += 1;
+      return Promise.resolve({
+        hasFollowUpInput: beforeModelCount === 1,
+        messages: [],
+      });
+    };
+
+    const state = await new LangGraphExecutor().invoke({
+      callbacks,
+      initialMessages: [],
+      maxSteps: 4,
+      signal: new AbortController().signal,
+      threadId: "before-agent-context-run",
+    });
+
+    expect(beforeAgentCount).toBe(1);
+    expect(beforeModelCount).toBe(2);
+    expect(state.contextPrepared).toBe(true);
+    expect(state.messages.map((message) => message.content)).toEqual([
+      "prepared context",
+      "first",
+      "second",
+    ]);
+  });
+
+  it("retries transient model failures inside middleware without consuming extra graph turns", async () => {
+    let calls = 0;
+    const retries: Array<{ attempt: number; delayMs: number }> = [];
+    const callbacks = callbacksFor([result("done")]);
+    callbacks.callModel = () => {
+      calls += 1;
+      if (calls < 3) return Promise.reject(new Error("transient"));
+      return Promise.resolve(result("done"));
+    };
+
+    const state = await new LangGraphExecutor().invoke({
+      callbacks,
+      initialMessages: [userMessage],
+      maxSteps: 4,
+      modelRetry: {
+        getDelay: (attempt) => attempt * 10,
+        maxRetries: 2,
+        onRetry: ({ attempt, delayMs }) => {
+          retries.push({ attempt, delayMs });
+        },
+        shouldRetry: (error) => error instanceof Error && error.message === "transient",
+        wait: () => Promise.resolve(),
+      },
+      signal: new AbortController().signal,
+      threadId: "middleware-retry-run",
+    });
+
+    expect(calls).toBe(3);
+    expect(retries).toEqual([
+      { attempt: 1, delayMs: 10 },
+      { attempt: 2, delayMs: 20 },
+    ]);
+    expect(state.turns).toBe(1);
+    expect(state.lastResult?.content).toBe("done");
+  });
+
+  it("does not retry a model failure after a streamed text delta", async () => {
+    let calls = 0;
+    let failures = 0;
+    const callbacks = callbacksFor([]);
+    callbacks.callModel = (_messages, _turn, hooks) => {
+      calls += 1;
+      hooks?.onTextDelta?.();
+      return Promise.reject(new Error("stream ended"));
+    };
+
+    await expect(new LangGraphExecutor().invoke({
+      callbacks,
+      initialMessages: [userMessage],
+      maxSteps: 4,
+      modelRetry: {
+        getDelay: () => 1,
+        maxRetries: 5,
+        onFailure: () => {
+          failures += 1;
+        },
+        onRetry: () => undefined,
+        shouldRetry: () => true,
+        wait: () => Promise.resolve(),
+      },
+      signal: new AbortController().signal,
+      threadId: "middleware-stream-failure-run",
+    })).rejects.toThrow("stream ended");
+
+    expect(calls).toBe(1);
+    expect(failures).toBe(1);
+  });
+
+  it("passes one model tool batch to the Runtime exactly once", async () => {
+    const executedBatches: string[][] = [];
+    const callbacks = callbacksFor(
+      [
+        result("", [
+          { arguments: "{}", id: "call-1", name: "read_file" },
+          { arguments: "{}", id: "call-2", name: "search_text" },
+          { arguments: "{}", id: "call-3", name: "run_command" },
+        ]),
+        result("done"),
+      ],
+      (calls) => {
+        executedBatches.push(calls.map((call) => call.id));
+        return Promise.resolve({
+          messages: calls.map((call) => ({
+            attachments: [],
+            content: `tool:${call.name}`,
+            role: "tool" as const,
+            toolCallId: call.id,
+            toolCalls: [],
+          })),
+          successful: true,
+        });
+      },
+    );
+
+    const state = await new LangGraphExecutor().invoke({
+      callbacks,
+      initialMessages: [userMessage],
+      maxSteps: 4,
+      signal: new AbortController().signal,
+      threadId: "batched-tools-run",
+    });
+
+    expect(executedBatches).toEqual([["call-1", "call-2", "call-3"]]);
+    expect(state.messages.filter((message) => message.role === "tool").map((message) => message.toolCallId))
+      .toEqual(["call-1", "call-2", "call-3"]);
+  });
+
   it("allows a callback to inject a queued follow-up before the next model turn", async () => {
     let preparationCount = 0;
     const callbacks = callbacksFor([result("first"), result("second")]);
@@ -115,6 +256,60 @@ describe("LangGraphExecutor", () => {
       signal: new AbortController().signal,
       threadId: "run-3",
     })).rejects.toThrow("Agent exceeded the 1-turn tool loop limit.");
+  });
+
+  it("keeps a multi-tool loop bounded by the model-turn limit", async () => {
+    let modelCalls = 0;
+    const callbacks = callbacksFor([]);
+    callbacks.callModel = () => {
+      modelCalls += 1;
+      return Promise.resolve(result("", [
+        { arguments: "{}", id: `call-${modelCalls}`, name: "read_file" },
+        { arguments: "{}", id: `call-${modelCalls}-search`, name: "search_text" },
+        { arguments: "{}", id: `call-${modelCalls}-command`, name: "run_command" },
+      ]));
+    };
+
+    await expect(new LangGraphExecutor().invoke({
+      callbacks,
+      initialMessages: [userMessage],
+      maxSteps: 8,
+      signal: new AbortController().signal,
+      threadId: "multi-tool-loop-limit-run",
+    })).rejects.toMatchObject({
+      code: "MODEL_CALL_LIMIT_EXCEEDED",
+    });
+    expect(modelCalls).toBe(8);
+  });
+
+  it("keeps a successful tool result in graph state after a later tool failure", async () => {
+    const callbacks = callbacksFor(
+      [
+        result("", [{ arguments: "{}", id: "call-1", name: "read_file" }]),
+        result("", [{ arguments: "{}", id: "call-2", name: "read_file" }]),
+        result("done"),
+      ],
+      (calls) => Promise.resolve({
+        messages: calls.map((call) => ({
+          attachments: [],
+          content: `tool:${call.name}`,
+          role: "tool" as const,
+          toolCallId: call.id,
+          toolCalls: [],
+        })),
+        successful: calls[0]?.id === "call-1",
+      }),
+    );
+
+    const state = await new LangGraphExecutor().invoke({
+      callbacks,
+      initialMessages: [userMessage],
+      maxSteps: 4,
+      signal: new AbortController().signal,
+      threadId: "successful-tool-state-run",
+    });
+
+    expect(state.hasSuccessfulToolExecution).toBe(true);
   });
 
   it("persists graph checkpoints with a parent chain that survives saver reopening", async () => {

@@ -6,6 +6,7 @@ type IpcMainHandlerAdapter<THandler> = {
 };
 
 const IPC_EVENT_CHANNELS: ReadonlySet<IpcChannel> = new Set([
+  IPC_CHANNELS.applicationSettingsChanged,
   IPC_CHANNELS.conversationRunEvent,
   IPC_CHANNELS.windowStateChanged,
 ]);

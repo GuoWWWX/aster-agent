@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   capabilitySetSchema,
+  agentPermissionRuleSchema,
+  approveToolChangeInputSchema,
+  clipboardWriteTextIpcArgumentsSchema,
   contextCompressionConfigurationSchema,
   contextCompressionThresholdSchema,
   conversationContextUsageInputSchema,
@@ -17,6 +20,7 @@ import {
   isReasoningOptionEnabled,
   isReasoningOptionSupportedByApiFormat,
   listProjectEntriesInputSchema,
+  pluginCatalogEntrySchema,
   runtimeInfoSchema,
   resolveContextCompressionThresholdTokens,
   replaceLatestConversationMessageInputSchema,
@@ -28,6 +32,55 @@ import {
 } from "./index.js";
 
 describe("protocol bootstrap contract", () => {
+  it("validates scoped approval and Agent allow rules", () => {
+    expect(approveToolChangeInputSchema.parse({
+      approved: true,
+      runId: "00000000-0000-4000-8000-000000000001",
+      toolId: "00000000-0000-4000-8000-000000000002",
+    }).scope).toBe("once");
+    expect(approveToolChangeInputSchema.parse({
+      approved: true,
+      runId: "00000000-0000-4000-8000-000000000001",
+      scope: "agent",
+      toolId: "00000000-0000-4000-8000-000000000002",
+    }).scope).toBe("agent");
+    expect(agentPermissionRuleSchema.parse({ tool: "run_command", pattern: "mvn package *" }))
+      .toEqual({ pattern: "mvn package *", tool: "run_command" });
+    expect(() => agentPermissionRuleSchema.parse({ tool: "run_command", pattern: "mvn * test" }))
+      .toThrow();
+    expect(() => approveToolChangeInputSchema.parse({
+      approved: true,
+      runId: "00000000-0000-4000-8000-000000000001",
+      scope: "global",
+      toolId: "00000000-0000-4000-8000-000000000002",
+    })).toThrow();
+  });
+
+  it("bounds clipboard text at the IPC boundary", () => {
+    expect(clipboardWriteTextIpcArgumentsSchema.parse(["# reply\n"])).toEqual(["# reply\n"]);
+    expect(() => clipboardWriteTextIpcArgumentsSchema.parse(["x".repeat(2_000_001)])).toThrow();
+  });
+
+  it("keeps Plugin catalog records declarative and redacts managed paths", () => {
+    expect(pluginCatalogEntrySchema.parse({
+      contentHash: "a".repeat(64),
+      enabled: true,
+      id: "example.plugin",
+      name: "Example Plugin",
+      updatedAt: "2026-08-27T00:00:00.000Z",
+      version: "1.0.0",
+    })).toMatchObject({ id: "example.plugin" });
+    expect(() => pluginCatalogEntrySchema.parse({
+      contentHash: "a".repeat(64),
+      enabled: true,
+      id: "example.plugin",
+      name: "Example Plugin",
+      rootPath: "C:\\Users\\example\\.agent\\plugins\\example",
+      updatedAt: "2026-08-27T00:00:00.000Z",
+      version: "1.0.0",
+    })).toThrow();
+  });
+
   it("validates a configured model connection test request", () => {
     expect(testModelConnectionInputSchema.parse({
       modelId: "gpt-5.6",
@@ -205,6 +258,19 @@ describe("protocol bootstrap contract", () => {
     expect(taskList.status).toBe("active");
   });
 
+  it("accepts blocked and failed task states for persisted task lists", () => {
+    const taskList = conversationTaskListSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      tasks: [
+        { id: "00000000-0000-4000-8000-000000000002", status: "blocked", title: "等待用户审批" },
+        { id: "00000000-0000-4000-8000-000000000003", status: "failed", title: "工具执行失败" },
+      ],
+      updatedAt: "2026-08-27T00:00:00.000Z",
+    });
+
+    expect(taskList.tasks.map((task) => task.status)).toEqual(["blocked", "failed"]);
+  });
+
   it("accepts per-run model, permission and reasoning settings", () => {
     expect(
       sendConversationMessageInputSchema.parse({
@@ -264,6 +330,7 @@ describe("protocol bootstrap contract", () => {
         conversationId: "00000000-0000-4000-8000-000000000001",
         createdAt: "2026-08-17T00:00:00.000Z",
         diff: "--- a/src/new-file.ts\n+++ b/src/new-file.ts",
+        executionMode: "parallel",
         id: "00000000-0000-4000-8000-000000000004",
         kind: "tool",
         name: "write_file",
@@ -280,6 +347,33 @@ describe("protocol bootstrap contract", () => {
       operation: "write_file",
       path: "src/new-file.ts",
       projectId: "00000000-0000-4000-8000-000000000002",
+    });
+    expect(event.tool.executionMode).toBe("parallel");
+  });
+
+  it("accepts a streamed command output event", () => {
+    expect(conversationRunEventSchema.parse({
+      commandId: "00000000-0000-4000-8000-000000000005",
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      delta: "正在输出\n",
+      done: false,
+      exitCode: null,
+      runId: "00000000-0000-4000-8000-000000000003",
+      status: "running",
+      stream: "stdout",
+      timedOut: false,
+      toolId: "00000000-0000-4000-8000-000000000004",
+      type: "tool.output_delta",
+      truncated: false,
+    })).toMatchObject({
+      delta: "正在输出\n",
+      done: false,
+      exitCode: null,
+      status: "running",
+      stream: "stdout",
+      timedOut: false,
+      type: "tool.output_delta",
+      truncated: false,
     });
   });
 
@@ -411,6 +505,28 @@ describe("protocol bootstrap contract", () => {
     })).toThrow();
   });
 
+  it("validates persisted provider icon identifiers", () => {
+    const configuration = {
+      apiKey: "key",
+      apiFormat: "openai-responses" as const,
+      baseUrl: "https://example.test/v1",
+      models: [{
+        contextWindow: 128_000,
+        displayName: "gpt-5.6",
+        modelId: "gpt-5.6",
+        reasoningOptions: [],
+      }],
+      providerIcon: "deepseek",
+      providerName: "测试供应商",
+    };
+
+    expect(saveModelConfigurationInputSchema.parse(configuration).providerIcon).toBe("deepseek");
+    expect(() => saveModelConfigurationInputSchema.parse({
+      ...configuration,
+      providerIcon: "unlisted-provider",
+    })).toThrow();
+  });
+
   it("validates reasoning options and configured models", () => {
     expect(() =>
       sendConversationMessageInputSchema.parse({
@@ -467,6 +583,47 @@ describe("protocol bootstrap contract", () => {
       { kind: "effort", value: "max" },
       { kind: "custom_effort", value: "provider-defined" },
     ]);
+
+    expect(() =>
+      saveModelConfigurationInputSchema.parse({
+        apiKey: "key",
+        apiFormat: "openai-responses",
+        baseUrl: "https://example.test/v1",
+        models: [{
+          contextWindow: 128000,
+          displayName: "兼容模型",
+          modelId: "compatible-model",
+          reasoningOptions: [
+            { kind: "effort", value: "high" },
+            { kind: "custom_effort", value: "high" },
+          ]
+        }],
+        providerName: "测试供应商"
+      })
+    ).not.toThrow();
+
+    expect(() =>
+      saveModelConfigurationInputSchema.parse({
+        apiKey: "key",
+        apiFormat: "openai-responses",
+        baseUrl: "https://example.test/v1",
+        models: [
+          {
+            contextWindow: 128000,
+            displayName: "重复模型 1",
+            modelId: "compatible-model",
+            reasoningOptions: []
+          },
+          {
+            contextWindow: 128000,
+            displayName: "重复模型 2",
+            modelId: "compatible-model",
+            reasoningOptions: []
+          }
+        ],
+        providerName: "测试供应商"
+      })
+    ).toThrow();
 
     expect(isReasoningOptionEnabled({ kind: "effort", value: "high" })).toBe(true);
     expect(isReasoningOptionEnabled({ enabled: false, kind: "effort", value: "high" })).toBe(false);

@@ -4,6 +4,7 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  CirclePlus,
   ImagePlus,
   Layers3,
   Plus,
@@ -16,6 +17,7 @@ import {
 } from "lucide-react";
 import { useState, type ChangeEvent, type ReactElement } from "react";
 
+import { IconButton } from "../../components/ui/icon-button.js";
 import {
   Select,
   SelectContent,
@@ -28,6 +30,8 @@ import {
   AVAILABLE_SKILLS,
   useAgentDirectoryStore,
   type AgentCapabilityScope,
+  type AgentPermissionRule,
+  type AgentPermissionTool,
   type AgentModelStrategy,
   type AgentProfile,
   type AgentTeam,
@@ -95,14 +99,13 @@ export function AgentTeamSettings(): ReactElement {
             </button>
           </div>
           {activeView === "agents" ? (
-            <button
-              className="team-primary-button"
-              type="button"
+            <IconButton
+              label="新建 Agent"
+              size="compact"
               onClick={() => setSelectedAgentId(addAgent())}
             >
-              <Plus aria-hidden="true" size={14} />
-              新建 Agent
-            </button>
+              <CirclePlus aria-hidden="true" size={18} />
+            </IconButton>
           ) : null}
         </div>
 
@@ -192,17 +195,16 @@ function TeamManagementView({
         <PaneHeading
           label="团队目录"
           action={(
-            <button
-              className="team-primary-button"
-              type="button"
+            <IconButton
+              label="创建团队"
+              size="compact"
               onClick={() => {
                 onCreateTeam();
                 setTeamPage(Math.floor(teams.length / DIRECTORY_PAGE_SIZE));
               }}
             >
-              <Plus aria-hidden="true" size={14} />
-              创建团队
-            </button>
+              <CirclePlus aria-hidden="true" size={18} />
+            </IconButton>
           )}
         />
         <div className="team-directory-list">
@@ -624,6 +626,8 @@ function AgentConfigurationPane({
 
           <CapabilityEditor agent={agent} onUpdate={(patch) => updateAgent(agent.id, patch)} />
 
+          <PermissionEditor agent={agent} onUpdate={(patch) => updateAgent(agent.id, patch)} />
+
           <section className="management-policy-section">
             <h3>所在团队</h3>
             <div className="management-tag-list">
@@ -822,6 +826,96 @@ function CapabilityGroup({
         </label>
       ))}
     </fieldset>
+  );
+}
+
+const PERMISSION_TOOL_OPTIONS: readonly { label: string; value: AgentPermissionTool }[] = [
+  { label: "执行命令", value: "run_command" },
+  { label: "写入文件", value: "write_file" },
+  { label: "删除文件", value: "delete_file" },
+  { label: "替换文件内容", value: "replace_in_file" },
+  { label: "应用 Patch", value: "apply_patch" },
+];
+
+function PermissionEditor({
+  agent,
+  onUpdate,
+}: {
+  agent: AgentProfile;
+  onUpdate: (patch: Partial<AgentProfile>) => void;
+}): ReactElement {
+  const rules = agent.permissions?.allow ?? [];
+
+  function updateRule(index: number, patch: Partial<AgentPermissionRule>): void {
+    onUpdate({
+      permissions: {
+        allow: rules.map((rule, ruleIndex) => ruleIndex === index ? { ...rule, ...patch } : rule),
+      },
+    });
+  }
+
+  function addRule(): void {
+    if (rules.length >= 200) return;
+    onUpdate({
+      permissions: {
+        allow: [...rules, { pattern: "*", tool: "run_command" }],
+      },
+    });
+  }
+
+  function removeRule(index: number): void {
+    onUpdate({ permissions: { allow: rules.filter((_rule, ruleIndex) => ruleIndex !== index) } });
+  }
+
+  return (
+    <section className="management-policy-section" aria-labelledby={`agent-permissions-${agent.id}`}>
+      <div className="management-policy-section__heading">
+        <div>
+          <h3 id={`agent-permissions-${agent.id}`}>权限规则</h3>
+          <p className="settings-section__description">
+            只保存明确允许的规则；未匹配的命令或敏感操作仍需审批。命令末尾可使用 * 做前缀匹配。
+          </p>
+        </div>
+        <button disabled={rules.length >= 200} type="button" onClick={addRule}>
+          <Plus aria-hidden="true" size={13} />
+          添加规则
+        </button>
+      </div>
+      {rules.length === 0 ? (
+        <p className="capability-inherited-note">当前 Agent 没有持久化允许规则。</p>
+      ) : (
+        <div className="agent-permission-rule-list">
+          {rules.map((rule, index) => (
+            <div className="agent-permission-rule" key={`${rule.tool}-${index}`}>
+              <select
+                aria-label="权限工具"
+                value={rule.tool}
+                onChange={(event) => updateRule(index, {
+                  tool: event.target.value as AgentPermissionTool,
+                })}
+              >
+                {PERMISSION_TOOL_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              <input
+                aria-label="权限匹配规则"
+                placeholder={rule.tool === "run_command" ? "例如：mvn package *" : "例如：src/* 或 *"}
+                value={rule.pattern}
+                onChange={(event) => updateRule(index, { pattern: event.target.value })}
+              />
+              <IconButton
+                label="删除权限规则"
+                size="compact"
+                onClick={() => removeRule(index)}
+              >
+                <Trash2 aria-hidden="true" size={14} />
+              </IconButton>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 

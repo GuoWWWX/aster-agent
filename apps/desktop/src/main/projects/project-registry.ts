@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, open, readdir, realpath, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   createProjectEntryInputSchema,
   listProjectEntriesInputSchema,
   projectEntrySchema,
   projectFileSchema,
+  projectPreviewImageSchema,
   readProjectFileInputSchema,
+  readProjectPreviewImageInputSchema,
   relativeProjectPathSchema,
   type CreateProjectEntryInput,
   type ListProjectEntriesInput,
@@ -14,7 +16,9 @@ import {
   type ProjectDirectoryListing,
   type ProjectEntry,
   type ProjectFile,
+  type ProjectPreviewImage,
   type ReadProjectFileInput,
+  type ReadProjectPreviewImageInput,
   type ProjectSummary
 } from "@agent/protocol";
 import {
@@ -28,6 +32,18 @@ import { readBoundedFilePreview } from "../storage/read-bounded-file-preview.js"
 const MAX_DIRECTORY_ENTRIES = 1_000;
 const MAX_FILE_PREVIEW_BYTES = 2 * 1024 * 1024;
 const MAX_JAVA_DECLARATION_BYTES = 128 * 1024;
+/** Generous for embedded document images; rejected outright above this — base64 cannot be safely truncated. */
+const MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024;
+const REMOTE_IMAGE_SOURCE_PATTERN = /^(?:https?:|data:|blob:)/i;
+const PREVIEW_IMAGE_MIME_TYPES: Readonly<Record<string, string>> = {
+  bmp: "image/bmp",
+  gif: "image/gif",
+  jpeg: "image/jpeg",
+  jpg: "image/jpeg",
+  png: "image/png",
+  svg: "image/svg+xml",
+  webp: "image/webp",
+};
 
 type RegisteredProject = ProjectSummary & {
   canonicalRoot: string;
@@ -502,6 +518,62 @@ export class ProjectRegistry {
       projectId: validatedInput.projectId,
       truncated: preview.truncated,
     });
+  }
+
+  /**
+   * Reads an image referenced from inside a Markdown file's body. `path` is the raw
+   * reference as authored (may contain `../`, a leading `/`, or be malformed) — it is
+   * resolved relative to `sourcePath`'s directory, then re-validated as a normal project
+   * path before any filesystem access. This mirrors md-king's Tauri `load_preview_image`
+   * command, which took the same two-argument shape for the same reason.
+   */
+  public async readPreviewImage(input: ReadProjectPreviewImageInput): Promise<ProjectPreviewImage> {
+    const validatedInput = readProjectPreviewImageInputSchema.parse(input);
+    if (REMOTE_IMAGE_SOURCE_PATTERN.test(validatedInput.path)) {
+      throw new Error("Remote and data image sources are not read through this channel.");
+    }
+
+    const project = this.getAuthorizedWorkspace(validatedInput.projectId);
+    if (project === undefined) {
+      throw new Error("Project is not registered for this application session.");
+    }
+
+    const rawReference = validatedInput.path.split(/[?#]/)[0] ?? validatedInput.path;
+    const resolvedReference = rawReference.startsWith("/")
+      ? rawReference.slice(1)
+      : path.posix.join(path.posix.dirname(validatedInput.sourcePath), rawReference);
+    const normalizedPath = path.posix.normalize(resolvedReference);
+
+    const validatedRelativePath = relativeProjectPathSchema
+      .refine((value) => value.length > 0, {
+        message: "Image reference resolves to an empty path."
+      })
+      .parse(normalizedPath);
+
+    const extension = normalizedPath.split(".").at(-1)?.toLocaleLowerCase("en-US");
+    const mimeType = extension === undefined ? undefined : PREVIEW_IMAGE_MIME_TYPES[extension];
+    if (mimeType === undefined) {
+      throw new Error("Unsupported preview image type.");
+    }
+
+    const filePath = await resolveExistingPathWithinRoot(
+      project.canonicalRoot,
+      validatedRelativePath,
+      {
+        outsideRoot: "Preview image path is outside the registered project root.",
+        resolvedOutsideRoot: "Preview image path resolves outside the registered project root.",
+        symbolicLink: "Symbolic links cannot be read as preview images.",
+      },
+    );
+
+    const fileInfo = await stat(filePath);
+    if (!fileInfo.isFile()) throw new Error("Preview image path is not a file.");
+    if (fileInfo.size > MAX_PREVIEW_IMAGE_BYTES) {
+      throw new Error("Preview image exceeds the size limit.");
+    }
+
+    const data = (await readFile(filePath)).toString("base64");
+    return projectPreviewImageSchema.parse({ data, mimeType });
   }
 
   private getAuthorizedWorkspace(workspaceId: string): RegisteredProject | undefined {

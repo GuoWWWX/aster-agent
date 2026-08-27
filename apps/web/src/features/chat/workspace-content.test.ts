@@ -10,6 +10,7 @@ import {
   representativeToolName,
   stripLegacyErrorInstanceId,
   toolBatchLabel,
+  toolBatchExecutionMode,
 } from "./workspace-content.js";
 
 function tool(
@@ -110,6 +111,26 @@ describe("conversation error display", () => {
 
     expect(presentation.category).toBe("timeout");
     expect(presentation.title).toBe("模型请求超时");
+  });
+});
+
+describe("tool batch execution mode", () => {
+  it("identifies a parallel batch from runtime metadata", () => {
+    const first = tool("run_command");
+    const second = { ...tool("run_command"), id: "00000000-0000-4000-8000-second000000" };
+    expect(toolBatchExecutionMode([
+      { ...first, executionMode: "parallel", batchId: "00000000-0000-4000-8000-batch000000" },
+      { ...second, executionMode: "parallel", batchId: "00000000-0000-4000-8000-batch000000" },
+    ])).toBe("parallel");
+  });
+
+  it("does not label a mixed batch as parallel", () => {
+    const first = tool("run_command");
+    const second = { ...tool("run_command"), id: "00000000-0000-4000-8000-second000000" };
+    expect(toolBatchExecutionMode([
+      { ...first, executionMode: "parallel" },
+      { ...second, executionMode: "serial" },
+    ])).toBeNull();
   });
 });
 

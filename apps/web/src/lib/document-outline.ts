@@ -1,0 +1,78 @@
+export type MarkdownOutlineItem = {
+  level: number;
+  text: string;
+  line: number;
+};
+
+export type MarkdownOutlineNode = MarkdownOutlineItem & {
+  children: MarkdownOutlineNode[];
+};
+
+export type MarkdownOutlineRevealTarget = {
+  tabId: string;
+  line: number;
+  /** 全局正文搜索命中的 UTF-16 列范围；目录跳转不传。 */
+  matchStart?: number;
+  matchEnd?: number;
+};
+
+export const markdownOutlineRevealEvent = "md-king:reveal-markdown-heading";
+
+/// 只识别正文中的 ATX 标题，围栏代码块内的 # 不应出现在目录中。
+export function parseMarkdownOutline(markdown: string): MarkdownOutlineItem[] {
+  const outline: MarkdownOutlineItem[] = [];
+  let fenceMarker: "`" | "~" | undefined;
+
+  for (const [index, line] of markdown.split(/\r?\n/).entries()) {
+    const fence = line.match(/^\s*(`{3,}|~{3,})/);
+    if (fence) {
+      const marker = (fence[1]?.[0] ?? "`") as "`" | "~";
+      if (!fenceMarker) fenceMarker = marker;
+      else if (fenceMarker === marker) fenceMarker = undefined;
+      continue;
+    }
+    if (fenceMarker) continue;
+
+    const heading = line.match(/^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*\s*$/);
+    if (!heading) continue;
+    const text = heading[2]?.trim() ?? "";
+    if (text) outline.push({ level: heading[1]?.length ?? 1, text, line: index + 1 });
+  }
+
+  return outline;
+}
+
+/// 收集所有「有子标题」的行号，供顶部的一键折叠/展开使用。
+/// 叶子节点没有折叠态，放进集合只会让「是否已全部折叠」永远判不成立。
+export function collectOutlineParentLines(items: MarkdownOutlineItem[]): number[] {
+  const lines: number[] = [];
+
+  const walk = (nodes: MarkdownOutlineNode[]) => {
+    for (const node of nodes) {
+      if (!node.children.length) continue;
+      lines.push(node.line);
+      walk(node.children);
+    }
+  };
+
+  walk(buildMarkdownOutlineTree(items));
+  return lines;
+}
+
+/// 把扁平标题列表折成树：层级跳跃（H1 直接跟 H3）时按栈里最近的更浅标题挂载，
+/// 不补虚拟节点，保证渲染出的缩进和原文标题顺序一致。
+export function buildMarkdownOutlineTree(items: MarkdownOutlineItem[]): MarkdownOutlineNode[] {
+  const roots: MarkdownOutlineNode[] = [];
+  const stack: MarkdownOutlineNode[] = [];
+
+  for (const item of items) {
+    const node: MarkdownOutlineNode = { ...item, children: [] };
+    while (stack.length && (stack[stack.length - 1]?.level ?? 0) >= node.level) stack.pop();
+    const parent = stack[stack.length - 1];
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+    stack.push(node);
+  }
+
+  return roots;
+}

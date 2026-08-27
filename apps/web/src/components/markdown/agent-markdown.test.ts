@@ -27,4 +27,15 @@ describe("AgentMarkdown", () => {
     expect(fencedHtml).toContain("&lt;");
     expect(fencedHtml).not.toContain("<script>");
   });
+
+  it("uses centered headers and left-aligned body cells for Markdown tables", () => {
+    const html = renderAgentMarkdown(
+      "| 次数 | 目标地址 | 发送/接收 |\n| ---: | :--- | ---: |\n| 1 | `198.18.0.8` | 4/4 |",
+    );
+
+    expect(html).toContain("<th>次数</th>");
+    expect(html).toContain("<td>1</td>");
+    expect(html).not.toContain('style="text-align:right"');
+    expect(html).not.toContain('style="text-align:left"');
+  });
 });

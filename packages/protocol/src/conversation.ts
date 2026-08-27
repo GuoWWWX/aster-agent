@@ -84,6 +84,26 @@ export const removeConversationAttachmentInputSchema = z
   })
   .strict();
 
+/**
+ * Renderer-safe envelope for a clipboard or drag-and-drop Blob. Binary data
+ * crosses IPC as bounded base64 and is immediately copied into managed storage
+ * by Main; no renderer-supplied filesystem path is accepted.
+ */
+export const importConversationAttachmentBytesInputSchema = z
+  .object({
+    base64: z.string()
+      .min(4)
+      .max(Math.ceil(MAX_ATTACHMENT_BYTES * 4 / 3) + 4)
+      .regex(/^[A-Za-z0-9+/]*={0,2}$/u)
+      .refine((value) => value.length % 4 === 0, {
+        message: "Attachment base64 must contain complete quartets.",
+      }),
+    conversationId: conversationIdSchema,
+    mimeType: z.string().trim().min(3).max(200).optional(),
+    name: z.string().trim().min(1).max(255),
+  })
+  .strict();
+
 export const conversationSummarySchema = z
   .object({
     activeSubagentCount: z.number().int().nonnegative().default(0),
@@ -120,7 +140,9 @@ export const conversationWorkspaceSelectionResponseSchema = conversationSummaryS
 export const conversationTaskStatusSchema = z.enum([
   "pending",
   "running",
-  "completed"
+  "completed",
+  "blocked",
+  "failed"
 ]);
 
 export const conversationTaskListStatusSchema = z.enum(["active", "closed"]);
@@ -203,6 +225,15 @@ export const conversationReferenceInputSchema = z
   .object({ conversationId: conversationIdSchema })
   .strict();
 
+const teamIdInputSchema = z.string().trim().min(1).max(200);
+
+export const setTeamCoordinatorInputSchema = z
+  .object({
+    conversationId: conversationIdSchema,
+    teamId: teamIdInputSchema,
+  })
+  .strict();
+
 export const forkConversationInputSchema = z
   .object({
     conversationId: conversationIdSchema,
@@ -261,6 +292,9 @@ export const conversationToolStatusSchema = z.enum([
   "rejected"
 ]);
 
+/** Scheduler decision recorded for observability; omitted on legacy tool rows. */
+export const conversationToolExecutionModeSchema = z.enum(["serial", "parallel"]);
+
 export const conversationToolItemSchema = z
   .object({
     arguments: z.string().max(MAX_TOOL_PAYLOAD_LENGTH),
@@ -273,7 +307,8 @@ export const conversationToolItemSchema = z
     name: z.string().min(1).max(120),
     result: z.string().max(MAX_TOOL_PAYLOAD_LENGTH).nullable(),
     runId: runIdSchema,
-    status: conversationToolStatusSchema
+    status: conversationToolStatusSchema,
+    executionMode: conversationToolExecutionModeSchema.optional(),
   })
   .strict();
 
@@ -392,6 +427,32 @@ export const conversationContextUsageSchema = z
 
 export const providerIdSchema = z.string().uuid();
 export const providerNameSchema = z.string().trim().min(1).max(100);
+export const modelProviderIconSchema = z.enum([
+  "aihubmix",
+  "anthropic",
+  "baidu",
+  "cloudflare",
+  "deepseek",
+  "google",
+  "huggingface",
+  "meta",
+  "minimax",
+  "mistral",
+  "modelscope",
+  "moonshot",
+  "new-api",
+  "nvidia",
+  "one-api",
+  "ollama",
+  "openai",
+  "openrouter",
+  "qwen",
+  "replicate",
+  "siliconflow",
+  "xai",
+  "zhipu",
+  "auto"
+]);
 export const modelApiFormatSchema = z.enum([
   "openai-chat-completions",
   "openai-responses",
@@ -486,9 +547,9 @@ export function isReasoningOptionEnabled(option: ModelReasoningOption): boolean 
 }
 
 export function modelReasoningOptionKey(option: ModelReasoningOption): string {
-  return option.kind === "token_budget"
-    ? `token_budget:${option.value}`
-    : `effort:${option.value}`;
+  if (option.kind === "token_budget") return `token_budget:${option.value}`;
+  if (option.kind === "custom_effort") return `custom_effort:${option.value}`;
+  return `effort:${option.value}`;
 }
 
 export const modelConnectionStatusSchema = z.enum(["unknown", "healthy", "error"]);
@@ -504,6 +565,7 @@ export const modelProfileSchema = z
     providerBaseUrl: z.string().url(),
     providerId: providerIdSchema,
     providerName: providerNameSchema,
+    providerIcon: modelProviderIconSchema.optional(),
     providerNote: z.string().trim().max(500).optional(),
     providerWebsiteUrl: z.string().url().optional(),
     reasoningOptions: z.array(modelReasoningOptionSchema).max(16)
@@ -557,13 +619,23 @@ export const saveModelConfigurationInputSchema = z
       .min(1)
       .max(100),
     providerId: providerIdSchema.optional(),
+    providerIcon: modelProviderIconSchema.optional(),
     providerName: providerNameSchema,
     providerNote: z.string().trim().max(500).optional(),
     providerWebsiteUrl: z.string().url().optional()
   })
   .strict()
   .superRefine((value, context) => {
+    const modelIds = new Set<string>();
     for (const [modelIndex, model] of value.models.entries()) {
+      if (modelIds.has(model.modelId)) {
+        context.addIssue({
+          code: "custom",
+          message: "A model ID can only be configured once per provider.",
+          path: ["models", modelIndex, "modelId"]
+        });
+      }
+      modelIds.add(model.modelId);
       const optionKeys = new Set<string>();
       for (const [optionIndex, option] of model.reasoningOptions.entries()) {
         const key = modelReasoningOptionKey(option);
@@ -642,6 +714,45 @@ export const sendConversationMessageInputSchema = z
     }
   });
 
+/** A Team delivery resolves to its coordinator Conversation before execution. */
+export const sendTeamMessageInputSchema = z
+  .object({
+    attachmentIds: z.array(z.string().uuid()).max(MAX_CONVERSATION_ATTACHMENTS).optional(),
+    content: z.string().trim().max(MAX_MESSAGE_LENGTH),
+    deliveryMode: conversationMessageDeliveryModeSchema.optional(),
+    modelId: z.string().trim().min(1).max(200).optional(),
+    permissionMode: conversationPermissionModeSchema.optional(),
+    providerId: providerIdSchema.optional(),
+    referencedProjectPaths: projectFileReferenceListSchema.optional(),
+    referencedConversationIds: z.array(conversationIdSchema).max(MAX_CONVERSATION_REFERENCES).optional(),
+    reasoning: modelReasoningOptionSchema.optional(),
+    teamId: teamIdInputSchema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.referencedConversationIds !== undefined
+      && new Set(value.referencedConversationIds).size !== value.referencedConversationIds.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Referenced conversations must be unique.",
+        path: ["referencedConversationIds"],
+      });
+    }
+    if (
+      value.content.length === 0
+      && (value.attachmentIds?.length ?? 0) === 0
+      && (value.referencedProjectPaths?.length ?? 0) === 0
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "A message must contain text, an attachment, or a project file reference.",
+        path: ["content"],
+      });
+    }
+  });
+
 export const replaceLatestConversationMessageInputSchema = z
   .object({
     content: z.string().trim().min(1).max(MAX_MESSAGE_LENGTH),
@@ -684,6 +795,7 @@ export const approveToolChangeInputSchema = z
   .object({
     approved: z.boolean(),
     runId: runIdSchema,
+    scope: z.enum(["once", "session", "agent"]).default("once"),
     toolId: timelineItemIdSchema
   })
   .strict();
@@ -805,6 +917,23 @@ const toolStartedEventSchema = z
   })
   .strict();
 
+const toolOutputDeltaEventSchema = z
+  .object({
+    commandId: z.string().uuid(),
+    conversationId: conversationIdSchema,
+    delta: z.string().max(MAX_MESSAGE_LENGTH),
+    done: z.boolean(),
+    exitCode: z.number().int().nullable(),
+    runId: runIdSchema,
+    status: z.enum(["running", "completed", "failed", "cancelled"]),
+    stream: z.enum(["stderr", "stdout"]),
+    timedOut: z.boolean(),
+    toolId: timelineItemIdSchema,
+    truncated: z.boolean(),
+    type: z.literal("tool.output_delta"),
+  })
+  .strict();
+
 const toolCompletedEventSchema = z
   .object({
     conversationId: conversationIdSchema,
@@ -859,6 +988,7 @@ export const conversationRunEventSchema = z.discriminatedUnion("type", [
   taskListUpdatedEventSchema,
   pendingMessagesUpdatedEventSchema,
   toolStartedEventSchema,
+  toolOutputDeltaEventSchema,
   toolApprovalRequestedEventSchema,
   toolCompletedEventSchema,
   conversationUpdatedEventSchema,
@@ -888,6 +1018,7 @@ export type SetConversationProjectInput = z.infer<
 export type ConversationReferenceInput = z.infer<
   typeof conversationReferenceInputSchema
 >;
+export type SetTeamCoordinatorInput = z.infer<typeof setTeamCoordinatorInputSchema>;
 export type ForkConversationInput = z.infer<typeof forkConversationInputSchema>;
 export type SetConversationArchivedInput = z.infer<
   typeof setConversationArchivedInputSchema
@@ -900,6 +1031,9 @@ export type ReorderConversationsInput = z.infer<
 >;
 export type RemoveConversationAttachmentInput = z.infer<
   typeof removeConversationAttachmentInputSchema
+>;
+export type ImportConversationAttachmentBytesInput = z.infer<
+  typeof importConversationAttachmentBytesInputSchema
 >;
 export type ConversationMessageItem = z.infer<
   typeof conversationMessageItemSchema
@@ -914,6 +1048,9 @@ export type ConversationAgentMessageType = z.infer<
   typeof conversationAgentMessageTypeSchema
 >;
 export type ConversationToolItem = z.infer<typeof conversationToolItemSchema>;
+export type ConversationToolExecutionMode = z.infer<
+  typeof conversationToolExecutionModeSchema
+>;
 export type ConversationTimelineItem = z.infer<
   typeof conversationTimelineItemSchema
 >;
@@ -941,6 +1078,7 @@ export type ConversationContextUsage = z.infer<
 >;
 export type ModelReasoningEffort = z.infer<typeof modelReasoningEffortSchema>;
 export type ModelApiFormat = z.infer<typeof modelApiFormatSchema>;
+export type ModelProviderIcon = z.infer<typeof modelProviderIconSchema>;
 export type ProviderId = z.infer<typeof providerIdSchema>;
 export type ModelProfile = z.infer<typeof modelProfileSchema>;
 export type ModelConnectionStatus = z.infer<typeof modelConnectionStatusSchema>;
@@ -956,6 +1094,7 @@ export type GetModelApiKeyInput = z.infer<typeof getModelApiKeyInputSchema>;
 export type SendConversationMessageInput = z.infer<
   typeof sendConversationMessageInputSchema
 >;
+export type SendTeamMessageInput = z.infer<typeof sendTeamMessageInputSchema>;
 export type ReplaceLatestConversationMessageInput = z.infer<
   typeof replaceLatestConversationMessageInputSchema
 >;

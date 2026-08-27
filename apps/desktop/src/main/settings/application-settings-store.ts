@@ -8,7 +8,14 @@ import {
 import { readJsonConfiguration, writeJsonConfiguration } from "./json-configuration-file.js";
 
 export class ApplicationSettingsStore {
+  private readonly listeners = new Set<(configuration: ApplicationSettings) => void>();
+
   public constructor(private readonly configurationPath: string) {}
+
+  public onChanged(listener: (configuration: ApplicationSettings) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
 
   public ensureFile(): void {
     if (!existsSync(this.configurationPath)) {
@@ -25,6 +32,14 @@ export class ApplicationSettingsStore {
   }
 
   public saveConfiguration(input: ApplicationSettings): ApplicationSettings {
-    return writeJsonConfiguration(this.configurationPath, applicationSettingsSchema, input);
+    const saved = writeJsonConfiguration(this.configurationPath, applicationSettingsSchema, input);
+    for (const listener of this.listeners) {
+      try {
+        listener(structuredClone(saved));
+      } catch (error) {
+        console.error("Application settings change listener failed.", error);
+      }
+    }
+    return saved;
   }
 }

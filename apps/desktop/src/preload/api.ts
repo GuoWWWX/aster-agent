@@ -1,8 +1,13 @@
 import { ipcRenderer, type IpcRendererEvent } from "electron";
 import { IPC_CHANNELS } from "../../../../packages/protocol/src/ipc-channels.js";
+// Import the narrow schema module directly. The protocol barrel also exports
+// Skill YAML parsing, which pulls a Node-only `yaml` dependency into the
+// sandboxed preload bundle and prevents Electron from loading the bridge.
+import { applicationSettingsSchema } from "../../../../packages/protocol/src/application-settings.js";
 import type {
   DesktopBridge,
   ConversationContextUsageInput,
+  ImportConversationAttachmentBytesInput,
   RemoveConversationAttachmentInput,
   CancelRunInput,
   ApproveToolChangeInput,
@@ -29,6 +34,7 @@ import type {
   RenameConversationInput,
   RenameProjectInput,
   ReadProjectFileInput,
+  ReadProjectPreviewImageInput,
   ReadConfigurationWorkspaceFileInput,
   ReorderConversationsInput,
   ReplaceLatestConversationMessageInput,
@@ -36,7 +42,11 @@ import type {
   SaveModelConfigurationInput,
   TestModelConnectionInput,
   SetDefaultModelInput,
+  SetTeamCoordinatorInput,
   SendConversationMessageInput,
+  SendTeamMessageInput,
+  PluginCatalogEntry,
+  SetPluginEnabledInput,
   UpdatePendingConversationMessageInput,
   SetConversationArchivedInput,
   SetConversationProjectInput,
@@ -47,6 +57,7 @@ import type {
   SkillDocumentSaveInput,
   TerminalConfiguration,
   WriteConfigurationWorkspaceFileInput,
+  WriteProjectFileInput,
   WindowState
 } from "@agent/protocol";
 
@@ -93,6 +104,9 @@ export function createDesktopBridge(): DesktopBridge {
     async closeWindow() {
       await invoke<void>(IPC_CHANNELS.windowClose);
     },
+    async writeClipboardText(text: string) {
+      await invoke<void>(IPC_CHANNELS.clipboardWriteText, text);
+    },
     createConversation(input: CreateConversationInput) {
       return invoke<BridgeResult<"createConversation">>(
         IPC_CHANNELS.conversationCreate,
@@ -129,6 +143,12 @@ export function createDesktopBridge(): DesktopBridge {
         input
       );
     },
+    importConversationAttachmentBytes(input: ImportConversationAttachmentBytesInput) {
+      return invoke<BridgeResult<"importConversationAttachmentBytes">>(
+        IPC_CHANNELS.conversationImportAttachmentBytes,
+        input,
+      );
+    },
     listDraftConversationAttachments(input: ConversationReferenceInput) {
       return invoke<BridgeResult<"listDraftConversationAttachments">>(
         IPC_CHANNELS.conversationListDraftAttachments,
@@ -137,6 +157,18 @@ export function createDesktopBridge(): DesktopBridge {
     },
     async removeConversationAttachment(input: RemoveConversationAttachmentInput) {
       await invoke<void>(IPC_CHANNELS.conversationRemoveAttachment, input);
+    },
+    async setTeamCoordinator(input: SetTeamCoordinatorInput) {
+      await invoke<void>(IPC_CHANNELS.teamSetCoordinator, input);
+    },
+    sendTeamMessage(input: SendTeamMessageInput) {
+      return invoke<BridgeResult<"sendTeamMessage">>(IPC_CHANNELS.teamSendMessage, input);
+    },
+    listPlugins() {
+      return invoke<PluginCatalogEntry[]>(IPC_CHANNELS.pluginList);
+    },
+    setPluginEnabled(input: SetPluginEnabledInput) {
+      return invoke<PluginCatalogEntry>(IPC_CHANNELS.pluginSetEnabled, input);
     },
     getConversationTaskList(input: ConversationReferenceInput) {
       return invoke<ConversationTaskList | null>(
@@ -240,6 +272,18 @@ export function createDesktopBridge(): DesktopBridge {
         input
       );
     },
+    writeProjectFile(input: WriteProjectFileInput) {
+      return invoke<BridgeResult<"writeProjectFile">>(
+        IPC_CHANNELS.projectWriteFile,
+        input
+      );
+    },
+    readProjectPreviewImage(input: ReadProjectPreviewImageInput) {
+      return invoke<BridgeResult<"readProjectPreviewImage">>(
+        IPC_CHANNELS.projectReadPreviewImage,
+        input
+      );
+    },
     readConfigurationWorkspaceFile(input: ReadConfigurationWorkspaceFileInput) {
       return invoke<ConfigurationWorkspaceFile>(
         IPC_CHANNELS.configurationWorkspaceReadFile,
@@ -293,6 +337,23 @@ export function createDesktopBridge(): DesktopBridge {
         ipcRenderer.removeListener(
           IPC_CHANNELS.conversationRunEvent,
           handleConversationRunEvent
+        );
+      };
+    },
+    onApplicationSettingsChanged(listener) {
+      const handleApplicationSettingsChanged = (
+        _event: IpcRendererEvent,
+        settings: unknown,
+      ): void => {
+        listener(applicationSettingsSchema.parse(settings));
+      };
+
+      ipcRenderer.on(IPC_CHANNELS.applicationSettingsChanged, handleApplicationSettingsChanged);
+
+      return () => {
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.applicationSettingsChanged,
+          handleApplicationSettingsChanged,
         );
       };
     },

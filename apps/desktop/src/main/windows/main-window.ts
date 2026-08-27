@@ -6,7 +6,6 @@ import {
 import path from "node:path";
 
 const WINDOW_BACKGROUND_COLOR = "#18181b";
-const WINDOW_ASPECT_RATIO = 4 / 3;
 const WINDOW_MIN_HEIGHT = 720;
 const WINDOW_MIN_WIDTH = 960;
 const WINDOW_START_HEIGHT = 1080;
@@ -52,7 +51,6 @@ export function createMainWindow(): BrowserWindow {
   }
 
   const window = new BrowserWindow(options);
-  window.setAspectRatio(WINDOW_ASPECT_RATIO);
 
   return window;
 }

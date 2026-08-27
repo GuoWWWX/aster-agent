@@ -34,13 +34,20 @@ import type {
   ProjectFile,
   ProjectSummary,
 } from "@agent/protocol";
+import { AgentClientError, parseSerializedAgentError } from "@agent/protocol";
 
 import { DocumentCodeEditor, type DocumentCodeLanguage } from "../../components/editor/document-code-editor.js";
+import {
+  LiveMarkdownEditor,
+  type LiveMarkdownEditorHandle,
+} from "../../components/editor/live-markdown-editor.js";
+import { setImageSourceResolver } from "../../components/editor/cm/image-source-resolver.js";
 import { WorkbenchPanel } from "../../components/layout/panel.js";
 import { FileTypeIcon } from "../../components/ui/file-type-icon.js";
 import { IconButton } from "../../components/ui/icon-button.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover.js";
 import { getUserErrorMessage, type AgentClient } from "../../runtime/index.js";
+import { resolveBrowserPreviewImage } from "../../lib/browser-preview-images.js";
 import {
   useWorkbenchUiStore,
   type ConfigurationWorkspaceTarget,
@@ -78,10 +85,19 @@ type SidebarTab =
   | { id: string; kind: "chat"; name: string; session: ProjectSession };
 
 type FilePreviewState = {
+  /** 仅在外部读取成功时递增，让实时预览替换同一标签中的旧文档。 */
+  contentRevision: number;
+  conflict: FileSaveConflict | null;
+  draft: string;
   error: string | null;
   file: ProjectFile | null;
+  isDirty: boolean;
   isLoading: boolean;
+  isSaving: boolean;
+  savedContent: string;
 };
+
+type FileSaveConflict = "locked" | "stale";
 
 type ConfigurationFilePreviewState = {
   draft: string;
@@ -200,6 +216,26 @@ function directoryLabelForFile(path: string): string {
   return directoryPathForFile(path) || "项目根目录";
 }
 
+function fileExtension(path: string): string {
+  return path.split(".").at(-1)?.toLocaleLowerCase("en-US") ?? "";
+}
+
+function isMarkdownFile(path: string): boolean {
+  const extension = fileExtension(path);
+  return extension === "md" || extension === "mdx";
+}
+
+function saveConflictFor(reason: unknown): FileSaveConflict | null {
+  const code = reason instanceof AgentClientError
+    ? reason.code
+    : parseSerializedAgentError(reason)?.code
+      ?? (reason !== null && typeof reason === "object" && "code" in reason
+        && typeof reason.code === "string" ? reason.code : undefined);
+  if (code === "CONFLICT" || code === "PROJECT_OPERATION_CONFLICT") return "locked";
+  if (code === "FILE_CHANGED") return "stale";
+  return null;
+}
+
 export function RightSidebarWorkspace({
   activeProject,
   activeSession,
@@ -244,13 +280,65 @@ export function RightSidebarWorkspace({
   const [isTreeCollapsed, setIsTreeCollapsed] = useState(false);
   const configurationFilePreviewsRef = useRef(configurationFilePreviews);
   const configurationSaveQueuesRef = useRef(new Map<string, Promise<boolean>>());
+  const filePreviewsRef = useRef(filePreviews);
+  const fileSaveQueuesRef = useRef(new Map<string, Promise<boolean>>());
   const fileLoadRequestIdsRef = useRef(new Map<string, number>());
   const handledFileOpenRequestRef = useRef<ProjectFileOpenRequest | null>(null);
+  const activeTabIdsBySessionRef = useRef(new Map<string, string | null>());
+  const activeTabOwnerRef = useRef<string | null>(activeSession?.id ?? null);
+  const openChatIdsBySessionRef = useRef(new Map<string, Set<string>>());
   const activeSessionId = activeSession?.id ?? null;
+
+  const updateOpenChatIds = useCallback(
+    (update: (current: Set<string>) => Set<string>): void => {
+      setOpenChatIds((current) => {
+        const next = update(current);
+        if (activeSessionId !== null) {
+          openChatIdsBySessionRef.current.set(activeSessionId, next);
+        }
+        return next;
+      });
+    },
+    [activeSessionId],
+  );
+  const setActiveTabForCurrentSession = useCallback(
+    (tabId: string | null): void => {
+      setActiveTabId(tabId);
+      if (activeSessionId !== null) {
+        activeTabIdsBySessionRef.current.set(activeSessionId, tabId);
+      }
+    },
+    [activeSessionId],
+  );
 
   useEffect(() => {
     configurationFilePreviewsRef.current = configurationFilePreviews;
   }, [configurationFilePreviews]);
+
+  useEffect(() => {
+    filePreviewsRef.current = filePreviews;
+  }, [filePreviews]);
+
+  useEffect(() => {
+    const projectId = activeProject?.id;
+    const resolver = async (source: string, sourcePath?: string): Promise<string | null | undefined> => {
+      if (/^(?:https?:|data:|blob:)/iu.test(source)) return source;
+      if (projectId === undefined || sourcePath === undefined) {
+        return resolveBrowserPreviewImage(source, sourcePath);
+      }
+      try {
+        const image = await agentClient.readProjectPreviewImage({
+          path: source,
+          projectId,
+          sourcePath,
+        });
+        return `data:${image.mimeType};base64,${image.data}`;
+      } catch {
+        return resolveBrowserPreviewImage(source, sourcePath);
+      }
+    };
+    return setImageSourceResolver(resolver);
+  }, [activeProject?.id, agentClient]);
 
   useEffect(() => {
     let disposed = false;
@@ -260,6 +348,7 @@ export function RightSidebarWorkspace({
       if (activeSessionId === null) {
         setSideSessions([]);
         setOpenChatIds(new Set());
+        setActiveTabId(null);
         return;
       }
 
@@ -272,7 +361,14 @@ export function RightSidebarWorkspace({
           .filter((conversation) => conversation.threadKind === "agent")
           .map(toProjectSession);
         setSideSessions(sessions);
-        setOpenChatIds(new Set(sessions.map((session) => session.id)));
+        const sessionIds = new Set(sessions.map((session) => session.id));
+        const savedOpenChatIds = openChatIdsBySessionRef.current.get(activeSessionId);
+        const nextOpenChatIds = savedOpenChatIds === undefined
+          ? sessionIds
+          : new Set([...savedOpenChatIds].filter((id) => sessionIds.has(id)));
+        openChatIdsBySessionRef.current.set(activeSessionId, nextOpenChatIds);
+        setOpenChatIds(nextOpenChatIds);
+        setActiveTabId(activeTabIdsBySessionRef.current.get(activeSessionId) ?? null);
       } catch {
         if (!disposed) setOperationError("无法加载侧边聊天");
       }
@@ -294,7 +390,7 @@ export function RightSidebarWorkspace({
         setSideSessions((current) => current.some((session) => session.id === nextSession.id)
           ? current.map((session) => session.id === nextSession.id ? nextSession : session)
           : [...current, nextSession]);
-        setOpenChatIds((current) => new Set(current).add(nextSession.id));
+        updateOpenChatIds((current) => new Set(current).add(nextSession.id));
         return;
       }
       const conversationId =
@@ -327,7 +423,16 @@ export function RightSidebarWorkspace({
         }),
       );
     });
-  }, [activeSessionId, agentClient]);
+  }, [activeSessionId, agentClient, updateOpenChatIds]);
+
+  useEffect(() => {
+    if (activeTabOwnerRef.current !== activeSessionId) {
+      activeTabOwnerRef.current = activeSessionId;
+      return;
+    }
+    if (activeSessionId === null) return;
+    activeTabIdsBySessionRef.current.set(activeSessionId, activeTabId);
+  }, [activeSessionId, activeTabId]);
 
   useEffect(() => {
     if (tabContextMenu === null) return;
@@ -344,7 +449,17 @@ export function RightSidebarWorkspace({
       fileLoadRequestIdsRef.current.set(tab.id, requestId);
       setFilePreviews((current) => ({
         ...current,
-        [tab.id]: { error: null, file: current[tab.id]?.file ?? null, isLoading: true },
+        [tab.id]: {
+          contentRevision: current[tab.id]?.contentRevision ?? 0,
+          conflict: current[tab.id]?.conflict ?? null,
+          draft: current[tab.id]?.draft ?? "",
+          error: null,
+          file: current[tab.id]?.file ?? null,
+          isDirty: current[tab.id]?.isDirty ?? false,
+          isLoading: true,
+          isSaving: current[tab.id]?.isSaving ?? false,
+          savedContent: current[tab.id]?.savedContent ?? "",
+        },
       }));
       try {
         const file = await agentClient.readProjectFile({
@@ -354,17 +469,219 @@ export function RightSidebarWorkspace({
         if (fileLoadRequestIdsRef.current.get(tab.id) !== requestId) return;
         setFilePreviews((current) => ({
           ...current,
-          [tab.id]: { error: null, file, isLoading: false },
+          [tab.id]: {
+            contentRevision: (current[tab.id]?.contentRevision ?? 0) + 1,
+            conflict: null,
+            draft: file.content ?? "",
+            error: null,
+            file,
+            isDirty: false,
+            isLoading: false,
+            isSaving: false,
+            savedContent: file.content ?? "",
+          },
         }));
       } catch {
         if (fileLoadRequestIdsRef.current.get(tab.id) !== requestId) return;
         setFilePreviews((current) => ({
           ...current,
-          [tab.id]: { error: "无法读取文件", file: null, isLoading: false },
+          [tab.id]: {
+            contentRevision: current[tab.id]?.contentRevision ?? 0,
+            conflict: null,
+            draft: "",
+            error: "无法读取文件",
+            file: null,
+            isDirty: false,
+            isLoading: false,
+            isSaving: false,
+            savedContent: "",
+          },
         }));
       }
     },
     [agentClient],
+  );
+
+  const refreshFileChangeTargets = useCallback(
+    (projectId: string, changedPath: string, savedFile?: ProjectFile): void => {
+      reloadProjectDirectory(directoryPathForFile(changedPath));
+      for (const tab of fileTabs) {
+        if (tab.kind !== "file" || tab.projectId !== projectId || tab.path !== changedPath) continue;
+        if (savedFile !== undefined) {
+          setFilePreviews((current) => {
+            const preview = current[tab.id];
+            if (preview === undefined) return current;
+            const savedContent = savedFile.content ?? "";
+            const isCurrentDraft = preview.draft === savedContent;
+            return {
+              ...current,
+              [tab.id]: {
+                ...preview,
+                conflict: null,
+                draft: isCurrentDraft ? savedContent : preview.draft,
+                error: null,
+                file: savedFile,
+                isDirty: !isCurrentDraft,
+                savedContent,
+              },
+            };
+          });
+          continue;
+        }
+
+        const preview = filePreviewsRef.current[tab.id];
+        if (preview?.isDirty === true) {
+          setFilePreviews((current) => {
+            const currentPreview = current[tab.id];
+            return currentPreview === undefined
+              ? current
+              : {
+                ...current,
+                [tab.id]: { ...currentPreview, conflict: "stale", error: null },
+              };
+          });
+        } else {
+          void loadFile(tab);
+        }
+      }
+    },
+    [fileTabs, loadFile, reloadProjectDirectory],
+  );
+
+  const queueFileSave = useCallback(
+    (tab: ProjectFileTab, content: string, expectedContentOverride?: string | null): Promise<boolean> => {
+      const preview = filePreviewsRef.current[tab.id];
+      if (
+        preview === undefined
+        || preview.file === null
+        || preview.file.content === null
+        || preview.file.isBinary
+        || preview.file.truncated
+      ) {
+        return Promise.resolve(true);
+      }
+
+      const existing = fileSaveQueuesRef.current.get(tab.id);
+      if (preview.isSaving && existing !== undefined) return existing;
+
+      setFilePreviews((current) => {
+        const currentPreview = current[tab.id];
+        return currentPreview === undefined
+          ? current
+          : { ...current, [tab.id]: { ...currentPreview, error: null, isSaving: true } };
+      });
+
+      const previous = existing ?? Promise.resolve(true);
+      const operation = previous
+        .catch(() => true)
+        .then(async () => {
+          try {
+            const currentPreview = filePreviewsRef.current[tab.id];
+            const expectedContent = expectedContentOverride
+              ?? currentPreview?.savedContent
+              ?? preview.savedContent;
+            const saved = await agentClient.writeProjectFile({
+              content,
+              expectedContent,
+              path: tab.path,
+              projectId: tab.projectId,
+            });
+            setFilePreviews((current) => {
+              const latest = current[tab.id];
+              if (latest === undefined) return current;
+              const isCurrentDraft = latest.draft === content;
+              const savedContent = saved.content ?? content;
+              return {
+                ...current,
+                [tab.id]: {
+                  ...latest,
+                  conflict: null,
+                  draft: isCurrentDraft ? savedContent : latest.draft,
+                  error: null,
+                  file: saved,
+                  isDirty: !isCurrentDraft,
+                  savedContent,
+                },
+              };
+            });
+            refreshFileChangeTargets(tab.projectId, tab.path, saved);
+            return true;
+          } catch (reason) {
+            const conflict = saveConflictFor(reason);
+            setFilePreviews((current) => {
+              const latest = current[tab.id];
+              if (latest === undefined) return current;
+              return {
+                ...current,
+                [tab.id]: {
+                  ...latest,
+                  conflict,
+                  error: conflict === null
+                    ? getUserErrorMessage(reason, "无法保存文件。")
+                    : null,
+                },
+              };
+            });
+            return false;
+          }
+        })
+        .finally(() => {
+          if (fileSaveQueuesRef.current.get(tab.id) !== operation) return;
+          setFilePreviews((current) => {
+            const latest = current[tab.id];
+            return latest === undefined
+              ? current
+              : { ...current, [tab.id]: { ...latest, isSaving: false } };
+          });
+        });
+      fileSaveQueuesRef.current.set(tab.id, operation);
+      return operation;
+    },
+    [agentClient, refreshFileChangeTargets],
+  );
+
+  const flushFileSave = useCallback(
+    async (
+      tab: ProjectFileTab,
+      expectedContentOverride?: string | null,
+      contentOverride?: string,
+    ): Promise<boolean> => {
+      let preview = filePreviewsRef.current[tab.id];
+      if (preview !== undefined && contentOverride !== undefined) {
+        const nextPreview: FilePreviewState = {
+          ...preview,
+          draft: contentOverride,
+          error: null,
+          isDirty: contentOverride !== preview.savedContent,
+        };
+        // Keep the ref current before queueFileSave reads it; React state updates are
+        // asynchronous and a fast Ctrl+S must not wait for a render to see the text.
+        filePreviewsRef.current = { ...filePreviewsRef.current, [tab.id]: nextPreview };
+        setFilePreviews((current) => {
+          const currentPreview = current[tab.id];
+          return currentPreview === undefined
+            ? current
+            : { ...current, [tab.id]: { ...currentPreview, draft: contentOverride, error: null, isDirty: contentOverride !== currentPreview.savedContent } };
+        });
+        preview = nextPreview;
+      }
+      const existing = fileSaveQueuesRef.current.get(tab.id);
+      if (preview?.isSaving === true && existing !== undefined) return existing;
+      const content = contentOverride ?? preview?.draft;
+      if (
+        preview === undefined
+        || preview.file === null
+        || preview.file.content === null
+        || preview.file.isBinary
+        || preview.file.truncated
+        || content === undefined
+        || content === preview.savedContent
+      ) {
+        return existing ?? true;
+      }
+      return queueFileSave(tab, content, expectedContentOverride);
+    },
+    [queueFileSave],
   );
 
   useEffect(() => {
@@ -377,18 +694,9 @@ export function RightSidebarWorkspace({
         return;
       }
 
-      reloadProjectDirectory(directoryPathForFile(event.fileChange.path));
-      for (const tab of fileTabs) {
-        if (
-          tab.kind === "file"
-          && tab.projectId === event.fileChange.projectId
-          && tab.path === event.fileChange.path
-        ) {
-          void loadFile(tab);
-        }
-      }
+      refreshFileChangeTargets(event.fileChange.projectId, event.fileChange.path);
     });
-  }, [activeProject?.id, agentClient, fileTabs, loadFile, reloadProjectDirectory]);
+  }, [activeProject?.id, agentClient, refreshFileChangeTargets]);
 
   const openFile = useCallback(
     (entry: ProjectEntry): void => {
@@ -401,15 +709,17 @@ export function RightSidebarWorkspace({
         path: entry.path,
         projectId: activeProject.id,
       };
+      const alreadyOpen = fileTabs.some((candidate) => candidate.id === tab.id);
       setFileTabs((current) =>
         current.some((candidate) => candidate.id === tab.id) ? current : [...current, tab],
       );
-      setActiveTabId(tab.id);
+      setActiveTabForCurrentSession(tab.id);
       setFilePanelOpen(true);
       setIsFileBrowserOpen(false);
-      void loadFile(tab);
+      // Re-clicking an already-open tab must not reload and discard its unsaved draft.
+      if (!alreadyOpen || filePreviewsRef.current[tab.id] === undefined) void loadFile(tab);
     },
-    [activeProject, loadFile, setFilePanelOpen],
+    [activeProject, fileTabs, loadFile, setActiveTabForCurrentSession, setFilePanelOpen],
   );
 
   const loadConfigurationFile = useCallback(
@@ -477,12 +787,12 @@ export function RightSidebarWorkspace({
       setFileTabs((current) => (
         current.some((candidate) => candidate.id === tab.id) ? current : [...current, tab]
       ));
-      setActiveTabId(tab.id);
+      setActiveTabForCurrentSession(tab.id);
       setIsFileBrowserOpen(false);
       setIsTreeCollapsed(false);
       void loadConfigurationFile(tab);
     },
-    [loadConfigurationFile],
+    [loadConfigurationFile, setActiveTabForCurrentSession],
   );
 
   const queueConfigurationSave = useCallback(
@@ -585,8 +895,8 @@ export function RightSidebarWorkspace({
       const session = toProjectSession(conversation);
       setSideSessions((current) => [...current, session]);
       onSessionUpdated(conversation);
-      setOpenChatIds((current) => new Set(current).add(session.id));
-      setActiveTabId(`chat:${session.id}`);
+      updateOpenChatIds((current) => new Set(current).add(session.id));
+      setActiveTabForCurrentSession(`chat:${session.id}`);
       setIsFileBrowserOpen(false);
       setMenuOpen(false);
     } catch {
@@ -594,7 +904,14 @@ export function RightSidebarWorkspace({
     } finally {
       setIsCreatingChat(false);
     }
-  }, [activeSession, agentClient, isCreatingChat, onSessionUpdated]);
+  }, [
+    activeSession,
+    agentClient,
+    isCreatingChat,
+    onSessionUpdated,
+    setActiveTabForCurrentSession,
+    updateOpenChatIds,
+  ]);
 
   const tabs = useMemo<SidebarTab[]>(
     () => [
@@ -618,6 +935,10 @@ export function RightSidebarWorkspace({
   const activeConfigurationPreview = activeConfigurationTab === null
     ? undefined
     : configurationFilePreviews[activeConfigurationTab.id];
+  const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
+  const activeFilePreview = activeFileTab === null
+    ? undefined
+    : filePreviews[activeFileTab.id];
   const openProjectFilePath = useCallback(async (path: string): Promise<void> => {
     if (
       activeConfigurationTab !== null
@@ -625,17 +946,46 @@ export function RightSidebarWorkspace({
     ) {
       return;
     }
+    if (activeFileTab !== null && !await flushFileSave(activeFileTab)) return;
     const entry: ProjectEntry = {
       kind: "file",
       name: path.replaceAll("\\", "/").split("/").at(-1) ?? path,
       path,
     };
     openFile(entry);
-  }, [activeConfigurationTab, flushConfigurationFile, openFile]);
+  }, [activeConfigurationTab, activeFileTab, flushConfigurationFile, flushFileSave, openFile]);
   const closedSideSessions = sideSessions.filter((session) => !openChatIds.has(session.id));
   const showFileWorkspace = activeTab?.kind === "file"
     || activeConfigurationTab !== null
     || isFileBrowserOpen;
+
+  useEffect(() => {
+    if (
+      activeFileTab === null
+      || activeFilePreview?.isDirty !== true
+      || activeFilePreview.file === null
+      || activeFilePreview.file.content === null
+      || activeFilePreview.file.isBinary
+      || activeFilePreview.file.truncated
+      || activeFilePreview.draft === activeFilePreview.savedContent
+      || (activeFilePreview.conflict !== null && activeFilePreview.conflict !== "locked")
+    ) {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      void flushFileSave(activeFileTab);
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [
+    activeFilePreview?.conflict,
+    activeFilePreview?.draft,
+    activeFilePreview?.file,
+    activeFilePreview?.isDirty,
+    activeFilePreview?.isSaving,
+    activeFilePreview?.savedContent,
+    activeFileTab,
+    flushFileSave,
+  ]);
 
   useEffect(() => {
     if (
@@ -674,7 +1024,12 @@ export function RightSidebarWorkspace({
     ) {
       return;
     }
-    setActiveTabId(tab.id);
+    if (
+      activeFileTab !== null
+      && activeFileTab.id !== tab.id
+      && !await flushFileSave(activeFileTab)
+    ) return;
+    setActiveTabForCurrentSession(tab.id);
     setIsFileBrowserOpen(false);
   }
 
@@ -685,11 +1040,21 @@ export function RightSidebarWorkspace({
     ) {
       return;
     }
+    if (activeFileTab !== null && !await flushFileSave(activeFileTab)) return;
     openFile(entry);
   }
 
   function openFileBrowser(): void {
-    setActiveTabId(null);
+    if (activeFileTab !== null) {
+      void flushFileSave(activeFileTab).then((saved) => {
+        if (!saved) return;
+        setActiveTabForCurrentSession(null);
+        setIsFileBrowserOpen(true);
+        setIsTreeCollapsed(false);
+      });
+      return;
+    }
+    setActiveTabForCurrentSession(null);
     setIsFileBrowserOpen(true);
     setIsTreeCollapsed(false);
   }
@@ -716,6 +1081,7 @@ export function RightSidebarWorkspace({
     ) {
       return;
     }
+    if (activeFileTab !== null && !await flushFileSave(activeFileTab)) return;
     openConfigurationFile(target, path);
   }
 
@@ -733,7 +1099,7 @@ export function RightSidebarWorkspace({
       Object.entries(current).filter(([tabId]) => !tabIds.has(tabId)),
     ));
     if (sessionIds.size > 0) {
-      setOpenChatIds((current) => {
+      updateOpenChatIds((current) => {
         const next = new Set(current);
         for (const sessionId of sessionIds) next.delete(sessionId);
         return next;
@@ -741,7 +1107,7 @@ export function RightSidebarWorkspace({
     }
 
     if (activeTabId !== null && tabIds.has(activeTabId)) {
-      setActiveTabId(null);
+      setActiveTabForCurrentSession(null);
       setIsFileBrowserOpen(false);
       setIsTreeCollapsed(false);
     }
@@ -751,6 +1117,7 @@ export function RightSidebarWorkspace({
   async function closeTabs(tabsToClose: SidebarTab[]): Promise<void> {
     for (const tab of tabsToClose) {
       if (tab.kind === "configuration-file" && !await flushConfigurationFile(tab)) return;
+      if (tab.kind === "file" && !await flushFileSave(tab)) return;
     }
     commitCloseTabs(tabsToClose);
   }
@@ -875,8 +1242,8 @@ export function RightSidebarWorkspace({
                   key={session.id}
                   type="button"
                   onClick={() => {
-                    setOpenChatIds((current) => new Set(current).add(session.id));
-                    setActiveTabId(`chat:${session.id}`);
+                    updateOpenChatIds((current) => new Set(current).add(session.id));
+                    setActiveTabForCurrentSession(`chat:${session.id}`);
                     setIsFileBrowserOpen(false);
                     setMenuOpen(false);
                   }}
@@ -921,7 +1288,110 @@ export function RightSidebarWorkspace({
                 setIsTreeCollapsed(false);
                 tree.locatePath(activeTab.path);
               }}
+              onChange={(value) => {
+                setFilePreviews((current) => {
+                  const preview = current[activeTab.id];
+                  if (preview === undefined) return current;
+                  return {
+                    ...current,
+                    [activeTab.id]: {
+                      ...preview,
+                      draft: value,
+                      error: null,
+                      isDirty: value !== preview.savedContent,
+                    },
+                  };
+                });
+              }}
+              onDirty={(content) => {
+                const currentPreview = filePreviewsRef.current[activeTab.id];
+                if (currentPreview === undefined) return;
+                const nextPreview: FilePreviewState = {
+                  ...currentPreview,
+                  draft: content,
+                  error: null,
+                  isDirty: content !== currentPreview.savedContent,
+                };
+                filePreviewsRef.current = {
+                  ...filePreviewsRef.current,
+                  [activeTab.id]: nextPreview,
+                };
+                setFilePreviews((current) => {
+                  const preview = current[activeTab.id];
+                  if (preview === undefined) return current;
+                  return {
+                    ...current,
+                    [activeTab.id]: {
+                      ...preview,
+                      draft: content,
+                      error: null,
+                      isDirty: content !== preview.savedContent,
+                    },
+                  };
+                });
+              }}
+              onOverwrite={async () => {
+                const preview = filePreviewsRef.current[activeTab.id];
+                if (preview?.file === null || preview?.file === undefined) return;
+                try {
+                  const latest = await agentClient.readProjectFile({
+                    path: activeTab.path,
+                    projectId: activeTab.projectId,
+                  });
+                  if (
+                    latest.content === null
+                    || latest.isBinary
+                    || latest.truncated
+                  ) {
+                    setFilePreviews((current) => {
+                      const currentPreview = current[activeTab.id];
+                      return currentPreview === undefined
+                        ? current
+                        : {
+                          ...current,
+                          [activeTab.id]: {
+                            ...currentPreview,
+                            conflict: "stale",
+                            error: "文件过大或不可安全覆盖，请重新加载。",
+                          },
+                        };
+                    });
+                    return;
+                  }
+                  setFilePreviews((current) => {
+                    const currentPreview = current[activeTab.id];
+                    return currentPreview === undefined
+                      ? current
+                      : {
+                        ...current,
+                        [activeTab.id]: {
+                          ...currentPreview,
+                          conflict: null,
+                          error: null,
+                          file: latest,
+                          savedContent: latest.content ?? "",
+                        },
+                      };
+                  });
+                  await flushFileSave(activeTab, latest.content);
+                } catch (reason) {
+                  setFilePreviews((current) => {
+                    const currentPreview = current[activeTab.id];
+                    return currentPreview === undefined
+                      ? current
+                      : {
+                        ...current,
+                        [activeTab.id]: {
+                          ...currentPreview,
+                          conflict: saveConflictFor(reason),
+                          error: getUserErrorMessage(reason, "无法读取最新文件。"),
+                        },
+                      };
+                  });
+                }
+              }}
               onReload={() => void loadFile(activeTab)}
+              onRequestSave={(content) => void flushFileSave(activeTab, undefined, content)}
               onToggleTree={() => setIsTreeCollapsed((current) => !current)}
             />
           ) : activeConfigurationTab !== null ? (
@@ -1104,21 +1574,40 @@ function FilePreview({
   isTreeCollapsed,
   state,
   tab,
+  onChange,
+  onDirty,
   onLocateDirectory,
   onLocateFile,
+  onOverwrite,
   onReload,
+  onRequestSave,
   onToggleTree,
 }: {
   isDark: boolean;
   isTreeCollapsed: boolean;
   state: FilePreviewState | undefined;
   tab: ProjectFileTab;
+  onChange: (value: string) => void;
+  onDirty: (content: string) => void;
   onLocateDirectory: () => void;
   onLocateFile: () => void;
+  onOverwrite: () => void | Promise<void>;
   onReload: () => void;
+   onRequestSave: (content?: string) => void;
   onToggleTree: () => void;
 }): ReactElement {
   const file = state?.file ?? null;
+  const editorRef = useRef<LiveMarkdownEditorHandle | null>(null);
+  const canEdit = file !== null
+    && file.content !== null
+    && !file.isBinary
+    && !file.truncated;
+  const draft = state?.draft ?? file?.content ?? "";
+
+  useEffect(() => {
+    editorRef.current?.requestMeasure();
+  }, [tab.id, isTreeCollapsed]);
+
   return (
     <section className="right-sidebar-file" aria-label={tab.name}>
       <header className="right-sidebar-file__header">
@@ -1163,6 +1652,15 @@ function FilePreview({
           </button>
         </div>
         <div className="right-sidebar-file__actions">
+          {state?.isSaving ? (
+            <span className="text-[var(--app-muted-foreground)] text-[var(--app-font-size-caption)]" role="status">
+              保存中
+            </span>
+          ) : state?.isDirty ? (
+            <span className="text-[var(--app-accent)] text-[var(--app-font-size-caption)]" role="status">
+              未保存
+            </span>
+          ) : null}
           <IconButton
             label={isTreeCollapsed ? "展开文件树" : "收起文件树"}
             size="compact"
@@ -1182,7 +1680,7 @@ function FilePreview({
           <LoaderCircle aria-hidden="true" className="right-sidebar-workspace__spin" size={17} />
           正在读取文件
         </div>
-      ) : state.error !== null ? (
+      ) : state.error !== null && file === null ? (
         <div className="right-sidebar-file__state">
           <p>{state.error}</p>
           <button type="button" onClick={onReload}>重试</button>
@@ -1192,17 +1690,49 @@ function FilePreview({
       ) : (
         <>
           {file.truncated ? (
-            <div className="right-sidebar-file__notice">文件较大，仅显示前 2 MB</div>
+            <div className="right-sidebar-file__notice">文件较大，仅显示前 2 MB，只读模式</div>
           ) : null}
-          <DocumentCodeEditor
-            readOnly
-            ariaLabel={`${tab.name} 文件内容`}
-            className="right-sidebar-file__editor"
-            isDark={isDark}
-            language={languageForPath(tab.path)}
-            value={file.content}
-            onChange={() => undefined}
-          />
+          {state.conflict === "locked" ? (
+            <div className="right-sidebar-file__notice" role="status">
+              Agent 正在修改，稍后自动重试保存
+            </div>
+          ) : null}
+          {state.conflict === "stale" ? (
+            <div className="right-sidebar-file__notice flex items-center gap-2" role="alert">
+              <span className="min-w-0 flex-1">文件已在别处更改，当前草稿尚未覆盖。</span>
+              <button className="shrink-0" type="button" onClick={onReload}>重新加载</button>
+              <button className="shrink-0" type="button" onClick={() => void onOverwrite()}>仍然覆盖</button>
+            </div>
+          ) : null}
+          {state.error !== null ? (
+            <div className="right-sidebar-file__notice" role="alert">{state.error}</div>
+          ) : null}
+          {isMarkdownFile(tab.path) ? (
+            <LiveMarkdownEditor
+              ref={editorRef}
+              className="right-sidebar-file__editor"
+              contentRevision={state?.contentRevision ?? 0}
+              documentKey={tab.id}
+              initialContent={draft}
+              isDark={isDark}
+              markdownSourcePath={tab.path}
+              onDocChanged={onChange}
+              onDirty={onDirty}
+              onRequestSave={onRequestSave}
+              readOnly={!canEdit}
+            />
+          ) : (
+            <DocumentCodeEditor
+              ariaLabel={`${tab.name} 文件内容`}
+              className="right-sidebar-file__editor"
+              isDark={isDark}
+              language={languageForPath(tab.path)}
+              value={draft}
+              readOnly={!canEdit}
+              onChange={onChange}
+              onSave={onRequestSave}
+            />
+          )}
         </>
       )}
     </section>

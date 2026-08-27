@@ -171,6 +171,54 @@ describe("ConversationAttachmentStore", () => {
     await expect(access(originalStoredPath)).rejects.toThrow();
   });
 
+  it("does not expose inherited side-fork attachments as drafts", async () => {
+    const { conversation, database, projectRoot, store } = await createFixture();
+    const imagePath = path.join(projectRoot, "context.png");
+    await writeFile(
+      imagePath,
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nksAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    );
+
+    const [attachment] = await store.importFiles(conversation.id, [imagePath]);
+    if (attachment === undefined) throw new Error("Attachment fixture is unavailable.");
+    const run = database.createRunWithUserMessage(
+      conversation.id,
+      "分析图片",
+      "test-model",
+      [attachment.id],
+    );
+    database.appendAssistantTurn({
+      content: "图片已分析",
+      conversationId: conversation.id,
+      messageId: "00000000-0000-4000-8000-000000000197",
+      modelId: "test-model",
+      runId: run.runId,
+      toolCalls: [],
+    });
+    database.finishRun(run.runId, "completed", null);
+
+    const sideConversation = database.forkConversation(conversation.id, "side");
+
+    expect(database.listDraftConversationAttachments(sideConversation.id)).toEqual([]);
+    const inheritedAttachmentIds = database.listContextMessages(sideConversation.id)
+      .flatMap((message) => message.attachmentIds);
+    expect(inheritedAttachmentIds).toHaveLength(1);
+    expect(inheritedAttachmentIds[0]).not.toBe(attachment.id);
+    expect(database.getConversationAttachment(
+      sideConversation.id,
+      inheritedAttachmentIds[0]!,
+    )).toMatchObject({ kind: "image" });
+
+    const [sideDraft] = await store.importFiles(sideConversation.id, [imagePath]);
+    if (sideDraft === undefined) throw new Error("Side draft fixture is unavailable.");
+    expect(database.listDraftConversationAttachments(sideConversation.id).map(
+      (candidate) => candidate.id,
+    )).toEqual([sideDraft.id]);
+  });
+
   it("removes draft files from both SQLite and managed storage", async () => {
     const { conversation, database, store } = await createFixture();
     const sourcePath = path.join(os.tmpdir(), `agent-upload-${conversation.id}.txt`);
@@ -207,5 +255,29 @@ describe("ConversationAttachmentStore", () => {
       .toContain("Hello PDF");
     expect(modelAttachments[1]?.kind === "text" && modelAttachments[1].content)
       .toContain("This XML has a byte order mark.");
+  });
+
+  it("imports clipboard bytes into the managed snapshot store without a source path", async () => {
+    const { conversation, database, store } = await createFixture();
+    const attachment = await store.importBytes(conversation.id, {
+      bytes: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nksAAAAASUVORK5CYII=",
+        "base64",
+      ),
+      mimeType: "image/png",
+      name: "clipboard-image.png",
+    });
+
+    expect(attachment).toMatchObject({
+      kind: "image",
+      name: "clipboard-image.png",
+      projectPath: null,
+      source: "upload",
+    });
+    const stored = database.getConversationAttachment(conversation.id, attachment.id);
+    await expect(access(stored.storedPath)).resolves.toBeUndefined();
+    const [modelAttachment] = store.toModelAttachments(conversation.id, [attachment.id], true);
+    expect(modelAttachment).toMatchObject({ kind: "image", mimeType: "image/png" });
+    expect(modelAttachment?.kind === "image" ? modelAttachment.data : null).toMatch(/^[A-Za-z0-9+/]+=*$/u);
   });
 });

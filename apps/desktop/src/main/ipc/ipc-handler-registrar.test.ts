@@ -6,7 +6,7 @@ import {
 } from "./ipc-handler-registrar.js";
 
 describe("IPC handler registrar", () => {
-  it("disposes the same 70 desktop channels that it registers", () => {
+  it("disposes the same desktop channels that it registers", () => {
     const handledChannels: string[] = [];
     const removedChannels: string[] = [];
     const registrar = createIpcHandlerRegistrar({
@@ -21,8 +21,8 @@ describe("IPC handler registrar", () => {
     registrar.dispose();
     registrar.dispose();
 
-    expect(DESKTOP_IPC_HANDLER_CHANNELS).toHaveLength(70);
-    expect(new Set(handledChannels).size).toBe(70);
+    expect(handledChannels).toHaveLength(DESKTOP_IPC_HANDLER_CHANNELS.length);
+    expect(new Set(handledChannels).size).toBe(DESKTOP_IPC_HANDLER_CHANNELS.length);
     expect(removedChannels).toEqual(handledChannels);
   });
 

@@ -144,6 +144,37 @@ describe("context manager", () => {
     expect(plan.usage.omittedMessageCount).toBe(2);
   });
 
+  it("appends keyword-retrieved history after the chronological context", () => {
+    const source = [
+      message(1, "user", "当前问题"),
+      message(2, "assistant", "当前回答"),
+    ];
+    const plan = buildManagedContext({
+      checkpoint: null,
+      compressionMode: "tokens",
+      compressionThresholdTokens: 10_000,
+      estimatedSystemTokens: 100,
+      estimatedToolDefinitionTokens: 100,
+      outputReserveTokens: 500,
+      relevantMessages: [
+        message(10, "user", "历史上讨论过登录页表单校验"),
+        message(11, "assistant", "当时决定复用现有校验组件"),
+      ],
+      sourceMessages: source,
+    });
+
+    expect(plan.messages.slice(0, 2).map((item) => item.content)).toEqual([
+      "当前问题",
+      "当前回答",
+    ]);
+    const related = plan.messages.at(-1);
+    expect(related?.role).toBe("system");
+    expect(related?.content).toContain("相关历史");
+    expect(related?.content).toContain("登录页表单校验");
+    expect(related?.content).toContain("复用现有校验组件");
+    expect(plan.usage.estimatedReferenceTokens).toBeGreaterThan(0);
+  });
+
   it("reserves Skill capacity before selecting historical turns", () => {
     const source = [1, 2, 3].flatMap((turn) => [
       message(turn * 10, "user", `第${turn}轮-${"x".repeat(2_000)}`),
@@ -173,6 +204,37 @@ describe("context manager", () => {
       .toBe(withoutSkillReservation.usage.estimatedSystemTokens + 2_500);
     expect(withSkillReservation.messages.length)
       .toBeLessThan(withoutSkillReservation.messages.length);
+  });
+
+  it("reserves mutable task-list capacity before selecting historical turns", () => {
+    const source = [1, 2, 3].flatMap((turn) => [
+      message(turn * 10, "user", `第${turn}轮-${"x".repeat(2_000)}`),
+      message(turn * 10 + 1, "assistant", `第${turn}轮完成`),
+    ]);
+    const withoutTaskListReservation = buildManagedContext({
+      checkpoint: null,
+      compressionMode: "tokens",
+      compressionThresholdTokens: 4_000,
+      estimatedSystemTokens: 100,
+      estimatedToolDefinitionTokens: 100,
+      outputReserveTokens: 500,
+      sourceMessages: source,
+    });
+    const withTaskListReservation = buildManagedContext({
+      checkpoint: null,
+      compressionMode: "tokens",
+      compressionThresholdTokens: 4_000,
+      estimatedSystemTokens: 100,
+      estimatedToolDefinitionTokens: 100,
+      outputReserveTokens: 500,
+      reservedTaskListTokens: 2_500,
+      sourceMessages: source,
+    });
+
+    expect(withTaskListReservation.usage.estimatedSystemTokens)
+      .toBe(withoutTaskListReservation.usage.estimatedSystemTokens + 2_500);
+    expect(withTaskListReservation.messages.length)
+      .toBeLessThan(withoutTaskListReservation.messages.length);
   });
 
   it("accepts fenced structured summaries and rejects incomplete ones", () => {

@@ -1,6 +1,6 @@
 # LangChain 与 LangGraph 改造方案
 
-> 文档状态：技术选型与迁移决策；第十批已完成主链、ToolNode、审批中断恢复和 Skill 预算接入
+> 文档状态：技术选型与迁移决策；生产主链已迁移到 `createAgent`，Desktop 与全仓 lint/typecheck/test/build 已通过，桌面端已重启加载最新构建；真实 Provider、审批和恢复场景仍需手工验收
 > 决策日期：2026-08-19
 > 适用范围：`apps/desktop` 的 Agent Runtime、模型适配、工具循环、Skill 上下文和可恢复执行
 > 前置基线：`b009d52 checkpoint：LangGraph 改造前工作树`
@@ -11,7 +11,7 @@
 
 `AgentRuntime` 不删除。它继续是 Electron Main、IPC 和现有业务调用方看到的应用入口与兼容 façade，负责项目边界、权限、审批、SQLite 业务事实、事件合同、Queue/Steer、Subagent 和错误映射。LangGraph 接管 façade 内部的执行图、节点循环、条件路由、中断恢复和图状态 Checkpoint。
 
-当前代码已完成 `StateGraph(model -> tools -> model)` 主链、自定义 SQLite Checkpoint、LangGraph `interrupt/Command` 审批恢复和 LangGraph `ToolNode` 调度。Runtime wrapper 仍保留参数边界、权限、审计、事件和项目操作锁；框架负责调用分发与恢复，项目负责副作用合同。
+当前代码使用 `langchain@1.5.9` 的 `createAgent + createMiddleware` 作为生产主链，已接入自定义 SQLite Checkpoint、LangGraph `interrupt/Command` 审批恢复、框架 `ToolNode` 调度、`modelCallLimitMiddleware`、`beforeAgent` 上下文初始化和自定义模型重试 Middleware。Runtime wrapper 仍保留参数边界、权限、审计、事件和项目操作锁；框架负责模型/工具循环、重试控制与图恢复，项目负责业务事实和副作用合同。
 
 这不是把所有业务搬进框架，也不是继续保留两套生产 Agent Loop：迁移完成后，旧的 `for` 循环和旧 Provider 协议解析从生产路径删除；Runtime 只保留应用边界适配。
 
@@ -21,7 +21,8 @@
 | --- | --- | --- |
 | 桌面容器 | Electron 43.4.x | Main、Preload、Renderer 生命周期和本机权限边界 |
 | 运行时 | Node.js 24.x + TypeScript 6.x | 应用编排、工具、持久化和模型请求 |
-| 图编排 | `@langchain/langgraph@1.4.10` | `StateGraph`、状态 reducer、条件边、循环、`interrupt`/`Command`、图级 Checkpoint |
+| Agent 主链 | `langchain@1.5.9` | `createAgent`、`createMiddleware`、内置模型调用次数限制和标准 `model -> tools -> model` 循环 |
+| 图运行时 | `@langchain/langgraph@1.4.10` | `ToolNode`、状态 reducer、`interrupt`/`Command`、图级 Checkpoint 和执行控制 |
 | LangChain 基础层 | `@langchain/core@1.2.8` | `BaseChatModel`、消息、Tool/StructuredTool、Runnable 和中立模型合同 |
 | OpenAI | `@langchain/openai@1.5.8` | Chat Completions 与 Responses 模型；OpenAI-compatible 端点使用 Chat Completions 配置 |
 | Anthropic | `@langchain/anthropic@1.5.6` | Messages 模型、Tool Calling、Thinking 参数映射 |
@@ -37,8 +38,8 @@
 ### 2.1 明确不采用
 
 - 不采用 Vercel AI SDK 作为 Agent Runtime 或最终模型适配层。
-- 不引入 `langchain` 元包、`@langchain/community` 或 AutoGen/CrewAI；只有出现明确的第二个真实消费者时才增加包。
-- 不使用 `createReactAgent` 或旧 `AgentExecutor` 作为顶层运行时。它们无法直接表达本项目的业务事件、审批、Queue/Steer、Subagent 和原子终态合同。
+- 不引入 `@langchain/community`、AutoGen 或 CrewAI；已有 LangChain/LangGraph 能力足够时不再并行引入第二套 Agent 框架。
+- 不使用已废弃的 `createReactAgent` 或旧 `AgentExecutor`。生产顶层运行时使用当前 LangChain `createAgent`，项目业务通过 Middleware 和 Runtime callback 接入。
 - 不把 LangChain Memory 当作聊天历史事实源；UI 历史和业务持久化仍由 `AgentDatabase` 管理。
 - 不把 `@langchain/langgraph-checkpoint-sqlite` 带入最终生产依赖。该包依赖 `better-sqlite3`，当前冒烟测试在 Node 24 中因缺少 native binding 直接失败，Electron ABI 还需要额外 rebuild；继续使用会引入与现有 `node:sqlite` 重复的驱动和打包风险。
 
@@ -66,29 +67,56 @@ Electron Bootstrap
 
 ### 3.2 LangGraph 负责的职责
 
-- 图状态及 reducer：消息、工具回合计数、最后结果、激活 Skill 快照、挂起原因。
-- `model -> tools -> model` 条件循环、完成边和最大步骤限制。
+- 图状态及 reducer：模型消息、模型调用计数、Runtime 回合数、上下文是否已初始化、成功工具标记和激活 Skill 快照。
+- `createAgent` 的 `model -> tools -> model` 条件循环和完成边；最大模型调用次数由 `modelCallLimitMiddleware` 按同一 `thread_id` 计数。
+- `createMiddleware.beforeAgent` 在 Run 图线程首次进入时调用 Runtime 的 Context Builder，写入本轮初始上下文；同一线程后续 Queue/Steer 或审批恢复不会重复追加上下文。
+- 自定义 `wrapModelCall` Middleware 执行可取消、可观测的模型重试；Runtime 只提供重试判定、退避、等待和事件/终态回调。
 - 通过 `interrupt()` 暂停等待审批；通过 `new Command({ resume })` 恢复同一 `thread_id`。
-- 在每个安全节点边界保存 Checkpoint，应用重启后从图状态继续。
+- 在每个安全节点边界保存 Checkpoint。当前应用重启只恢复尚未开始执行的 queued Run；已进入图的 running Run 保守标记失败，不跨进程重放副作用。
 - 为 Subagent/团队未来扩展保留子图和并行 `Send` 的能力，但本批不宣称完整团队 Supervisor 已实现。
 
 ## 4. LangGraph 图形状
 
 ```text
 START
-  -> model（首次调用前由 Runtime 预构建 Context；每次 beforeModel 注入 Queue/Steer、Agent 消息和激活 Skill）
+  -> createAgent.beforeAgent（Runtime Context Builder 初始化历史、附件、Checkpoint 和工具预算）
+  -> createAgent.beforeModel（注入 Queue/Steer、Agent 消息和激活 Skill 上下文）
+  -> createAgent.model（Runtime 的 CallbackChatModel 调用 LangChain Provider Adapter）
+       └─ wrapModelCall Middleware（无可见输出/可重试错误时按 Runtime 策略重试）
        ├─ 有 tool call -> tools
-       ├─ 无 tool call 且有待处理输入 -> model
+       ├─ 无 tool call 且有待处理输入 -> 同一 thread 再次 invoke，从 beforeModel 开始
        ├─ 无 tool call 且无待处理输入 -> END
        └─ 达到步骤上限 -> fail
-  -> tools
+  -> createAgent.tools
        ├─ 普通结果 -> model
        └─ 审批 interrupt -> Command({ resume }) 后从同一工具节点恢复
 ```
 
-图状态只保存可恢复执行所需的结构化值，不把完整业务数据库行复制进去。模型节点通过 LangChain-backed `BaseChatModel.bindTools()` 适配器调用；工具回合内部使用 LangChain Tool 合同和 LangGraph `ToolNode` 的 dispatch 语义，外层 Runtime wrapper 为每个调用补充参数校验、审计、事件、权限和副作用处理。需要顺序执行或审批的调用不能绕过 wrapper。
+图状态只保存可恢复执行所需的结构化值，不把完整业务数据库行复制进去。`CallbackChatModel` 把 `createAgent` 的模型节点接到项目中立 Model Port；真正的 Provider 调用仍由 LangChain-backed Adapter 完成，并保留流式事件、脱敏重试和模型快照合同。工具回合使用 `createAgent` 自带 ToolNode；Runtime batch coordinator 收到完整 Tool Call 批次后按业务调度策略分组，安全并发窗口再交给 LangGraph `ToolNode` 执行。所有调用仍经过 Registry 的参数、权限、审计、取消和副作用边界。
 
-取消使用 Runtime 的 `AbortSignal` 传入 Graph/ChatModel/工具；取消不会重放已经开始的副作用。最大回合数由图状态和条件边共同限制，Runtime 不再维护第二个独立循环。
+外层固定使用 `version: "v1"`，使一轮多个 Tool Call 进入同一个 ToolNode 批次；`v2` 会拆成独立 `Send`，Runtime 将无法在首个文件写入前统一准备整批 Diff 和 `expectedContent`。外层 ToolNode 的并发只调用同一个批次协调器，真正的只读/命令并发宽度与副作用顺序仍由 Runtime 决定。
+
+Queue/Steer 在模型已经返回无工具结果后到达时，Executor 会在同一 `thread_id` 上用空消息再次 `invoke`，并保留 `contextPrepared` 状态，确保只重新经过 `beforeModel` 注入持久化输入。不使用 `afterModel.jumpTo("model")`，因为该跳转会绕过 `beforeModel`，导致持久化输入无法被注入。
+
+取消使用 Runtime 的 `AbortSignal` 传入 Graph、ChatModel 和工具；取消不会重放已经开始的副作用。Runtime 只提供上限配置和错误映射，不再维护第二个 Agent 工具循环。
+
+模型调用上限和图递归上限是两层不同的保护：`modelCallLimitMiddleware` 按同一 `thread_id` 统计真实模型调用，项目的 `MAX_AGENT_LOOPS` 映射为该限制；LangGraph 的 `recursionLimit` 统计 `createAgent` 内部所有图节点步数（包括 Middleware、模型和 ToolNode），不能直接把它当成模型轮数。当前 Executor 为每个 Run 设置 `max(25, maxSteps * 8 + 8)` 的图预算，给每轮的框架节点留出空间，避免默认 25 步在多 Tool Call 场景下提前触发；任一保护触发都会转换为受控的模型运行限制错误，不把原始 `GraphRecursionError` 泄露为“软件内部错误”。
+
+### 4.1 框架能力采用矩阵
+
+| 能力 | 当前做法 | 结论 |
+| --- | --- | --- |
+| Agent Loop、路由、ToolNode | `createAgent` + `createMiddleware` | 使用框架 |
+| 模型调用次数限制 | `modelCallLimitMiddleware`，按 Run 的 `thread_id` 计数 | 使用框架 |
+| Provider 请求与 Tool Calling | LangChain Provider 包 + 项目中立 Adapter | 使用框架，保留业务端口 |
+| Checkpoint | LangGraph `BaseCheckpointSaver` 合同 + `NodeSqliteCheckpointSaver` | 使用框架合同，自有存储适配 |
+| 工具审批 | LangGraph `interrupt/Command` + Runtime 的 Diff/命令审批事实 | 使用框架执行控制；不使用通用 HITL Middleware |
+| 工具错误 | ToolNode 消息合同 + Runtime 持久化失败 Tool 行和事件 | 组合使用；通用错误 Middleware 不能替代审计事实 |
+| 模型重试 | LangGraph Executor 的自定义 `wrapModelCall` Middleware；Runtime 提供流式感知、重试判定、退避等待、UI 事件和终态回调 | 不使用 LangChain 内置重试；需要保留已有文本后禁止重放、空响应策略和脱敏合同 |
+| 上下文压缩 | 项目 ContextManager + LangChain 消息转换 | 不使用内置摘要；必须保留原始历史、增量摘要、相关历史、附件和 Skill 统一预算 |
+| Skill | SkillRuntime + Graph State 快照 + beforeAgent 初始上下文 / beforeModel 临时注入 | 框架保存恢复状态，正文解析和预算由项目实现 |
+| Subagent、跨 Agent 通信 | 每个执行 Run 仍使用 `createAgent`；对话、消息、队列和唤醒写业务 SQLite | 不使用短生命周期内存子 Agent 替代持久化业务对话 |
+| 单轮 Tool Call 总量和副作用调度 | Runtime 每轮 32、读 8、非只读模式下默认并行命令 4，文件/通信有序；询问模式逐条审批后进入并行窗口，`parallel=false` 可降级命令 | 框架累计 Tool 限制语义不同，保留项目策略 |
 
 ## 5. 模型适配方向
 
@@ -107,7 +135,7 @@ Anthropic 的配置 `baseUrl` 延续项目原有的版本化格式（例如 `htt
 
 约束：
 
-1. `maxRetries` 由 Runtime 的可观测重试策略控制，Provider SDK 不得隐式重放带副作用的回合。
+1. `maxRetries`、可重试错误和空响应规则由 Runtime 提供给 Graph Middleware；Provider SDK 不得隐式重放带副作用的回合。
 2. `AbortSignal` 必须贯穿 ChatModel stream；收到可见文本或 Tool Call 后不能自动重放该请求。
 3. Provider-specific reasoning、附件和原始响应只在 adapter 内转换；业务 Runtime 不判断供应商字段。
 4. LangChain `AIMessage`/`ToolMessage` 只在图和 adapter 内使用；落库继续使用当前中立 `ModelMessage` 合同。
@@ -139,6 +167,8 @@ Agent `capabilityScope=custom` 时，`skillIds` 必须进入同一个 `SkillRunt
 
 ContextManager 在每次历史裁剪前为 Skill Runtime 固定预留正文预算：`max(1024, min(12000, floor(effectiveContextWindow * 0.12)))`，无模型窗口时使用 48,000 Token 作为保守基准。预算计入 `estimatedSystemTokens` 和固定上下文开销，因此 Skill 激活不会把历史裁剪结果推过本轮阈值。
 
+一次 Graph Run 首次进入 `createAgent.beforeAgent` 时调用 Runtime 的 `prepareContext`，把系统规则、Checkpoint、未覆盖历史、相关历史、附件和工具预算形成初始消息状态。`contextPrepared` 随 Graph State 持久化；同一 Run 的 Queue/Steer 追加和审批 `Command({ resume })` 只重新经过 `beforeModel`，不会再次追加同一份历史。Skill 激活正文仍由 `beforeModel` 按快照和预算临时注入。
+
 Skill 正文、reference 和脚本都视为不可信输入：脚本不能直接获得 Node/Shell/网络权限，所有副作用仍经过统一 ToolRegistry、PermissionPolicy、审批、超时、取消和审计。
 
 ## 7. Checkpoint 与恢复
@@ -168,10 +198,10 @@ LangGraph 的 Checkpoint 只负责图恢复，不替代现有业务状态：
 - 用固定请求快照覆盖四种 API 格式、Tool Call、流式增量、Reasoning、附件、错误和取消。
 - 通过后删除 AI SDK/手写 Provider 解析依赖。
 
-### 阶段 2：纯图执行器（已完成）
+### 阶段 2：图执行器（已完成）
 
-- 建立 `AgentGraphState`、model/tools/finalize 节点和条件边。
-- 用 fake ChatModel 与 fake Tools 验证多轮、并行/顺序、最大步骤和 AbortSignal。
+- 使用 `createAgent + createMiddleware` 建立 Runtime bridge，不手写第二套 model/tools 条件循环。
+- 用 fake ChatModel 与 fake Tools 验证多轮、批次工具、最大模型调用次数、Checkpoint 和 AbortSignal。
 - 图测试不直接访问 Electron、SQLite 业务表或 Renderer。
 
 ### 阶段 3：Runtime façade 接入（已完成）
@@ -187,11 +217,11 @@ LangGraph 的 Checkpoint 只负责图恢复，不替代现有业务状态：
 - 验证 Skill 正文不进入 Timeline，压缩/恢复后仍按 hash 重建上下文。
 - ContextManager 在历史裁剪前预留 Skill 正文预算，正文注入和上下文用量估算使用同一预算。
 
-### 阶段 5：收口（进行中）
+### 阶段 5：收口（自动门禁已通过，手工验收进行中）
 
-- 删除旧 `for` 循环、AI SDK 和手写 Provider 协议适配器。
+- 删除旧 Agent `for` 循环、AI SDK 和手写 Provider 协议适配器；生产主链统一为 `createAgent`。
 - 更新业务、接口和工具文档的“当前实现状态”，未完成 MCP/Skill 能力不提前标记为 true。
-- 执行全仓库 lint、typecheck、test、build 和 Electron 打包冒烟。
+- Desktop lint、typecheck、test、build 与根 lint/typecheck/test/build 已通过；本轮桌面端已真启动并加载最新构建。强制退出恢复和真实 Provider/Skill 仍待手工验收。
 
 每个阶段先通过自动测试再进入下一阶段；不在生产中长期保留两套 Agent Loop。若阶段失败，回滚到本阶段前的 Git 提交，不用运行时 Feature Flag 掩盖两套语义差异。
 
@@ -199,7 +229,7 @@ LangGraph 的 Checkpoint 只负责图恢复，不替代现有业务状态：
 
 以下条件全部满足才称为“LangGraph 改造完成”：
 
-1. AgentRuntime 公共入口和 IPC 合同未破坏，内部模型/工具循环由 LangGraph 图执行。
+1. AgentRuntime 公共入口和 IPC 合同未破坏，内部模型/工具循环由 LangChain `createAgent`/LangGraph 图执行。
 2. 四种现有模型格式均由 LangChain Provider 适配并通过流式 Tool Calling 回归。
 3. 工具参数、权限、审批、冲突、取消、超时和副作用审计行为与基线一致。
 4. `interrupt/resume`、多工具审批恢复、已完成副作用不重放、安全的应用重启恢复和 Checkpoint 清理有自动测试；当前只完成 queued Run 恢复，running Run 仍保守失败。

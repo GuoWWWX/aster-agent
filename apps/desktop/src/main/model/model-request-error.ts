@@ -12,6 +12,15 @@ export class ModelRequestError extends Error {
   }
 }
 
+export class ModelResponseError extends Error {
+  public readonly code = "MODEL_RESPONSE_INVALID";
+
+  public constructor(message: string) {
+    super(message);
+    this.name = "ModelResponseError";
+  }
+}
+
 function compact(value: string): string {
   const normalized = redactErrorIdentifiers(value.replace(/\s+/g, " ").trim());
   return normalized.length <= MAX_ERROR_DETAIL_LENGTH

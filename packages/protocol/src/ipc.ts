@@ -8,6 +8,7 @@ import {
   cancelRunInputSchema,
   conversationContextUsageInputSchema,
   conversationReferenceInputSchema,
+  importConversationAttachmentBytesInputSchema,
   forkConversationInputSchema,
   pendingConversationMessageReferenceInputSchema,
   reorderPendingConversationMessagesInputSchema,
@@ -24,17 +25,22 @@ import {
   setConversationPinnedInputSchema,
   saveModelConfigurationInputSchema,
   setDefaultModelInputSchema,
+  setTeamCoordinatorInputSchema,
   sendConversationMessageInputSchema,
+  sendTeamMessageInputSchema,
   updatePendingConversationMessageInputSchema
 } from "./conversation.js";
+import { setPluginEnabledInputSchema } from "./plugin.js";
 import {
   createProjectEntryInputSchema,
   listProjectEntriesInputSchema,
   projectReferenceInputSchema,
   readProjectFileInputSchema,
+  readProjectPreviewImageInputSchema,
   reorderProjectsInputSchema,
   renameProjectInputSchema,
-  setProjectPinnedInputSchema
+  setProjectPinnedInputSchema,
+  writeProjectFileInputSchema
 } from "./project.js";
 import { integrationConfigurationSchema } from "./integration.js";
 import { terminalConfigurationSchema } from "./terminal.js";
@@ -69,6 +75,14 @@ export const createProjectEntryIpcArgumentsSchema = z.tuple([
 
 export const readProjectFileIpcArgumentsSchema = z.tuple([
   readProjectFileInputSchema
+]);
+
+export const writeProjectFileIpcArgumentsSchema = z.tuple([
+  writeProjectFileInputSchema
+]);
+
+export const readProjectPreviewImageIpcArgumentsSchema = z.tuple([
+  readProjectPreviewImageInputSchema
 ]);
 
 export const projectReferenceIpcArgumentsSchema = z.tuple([
@@ -139,8 +153,24 @@ export const removeConversationAttachmentIpcArgumentsSchema = z.tuple([
   removeConversationAttachmentInputSchema
 ]);
 
+export const importConversationAttachmentBytesIpcArgumentsSchema = z.tuple([
+  importConversationAttachmentBytesInputSchema,
+]);
+
 export const sendConversationMessageIpcArgumentsSchema = z.tuple([
   sendConversationMessageInputSchema
+]);
+
+export const setTeamCoordinatorIpcArgumentsSchema = z.tuple([
+  setTeamCoordinatorInputSchema,
+]);
+
+export const sendTeamMessageIpcArgumentsSchema = z.tuple([
+  sendTeamMessageInputSchema,
+]);
+
+export const setPluginEnabledIpcArgumentsSchema = z.tuple([
+  setPluginEnabledInputSchema,
 ]);
 
 export const replaceLatestConversationMessageIpcArgumentsSchema = z.tuple([
@@ -218,6 +248,12 @@ export const writeConfigurationWorkspaceFileIpcArgumentsSchema = z.tuple([
 
 export const deleteConfigurationWorkspaceEntryIpcArgumentsSchema = z.tuple([
   deleteConfigurationWorkspaceEntryInputSchema,
+]);
+
+const MAX_CLIPBOARD_TEXT_LENGTH = 2_000_000;
+
+export const clipboardWriteTextIpcArgumentsSchema = z.tuple([
+  z.string().max(MAX_CLIPBOARD_TEXT_LENGTH),
 ]);
 
 export const voidIpcResponseSchema = z.void();

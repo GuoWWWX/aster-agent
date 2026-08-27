@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain as electronIpcMain,
   type IpcMainInvokeEvent
@@ -11,6 +12,7 @@ import {
   applicationSettingsIpcArgumentsSchema,
   applicationSettingsSchema,
   cancelRunIpcArgumentsSchema,
+  clipboardWriteTextIpcArgumentsSchema,
   configurationWorkspaceDirectoryListingSchema,
   configurationWorkspaceEntrySchema,
   configurationWorkspaceFileSchema,
@@ -19,10 +21,13 @@ import {
   conversationContextUsageIpcArgumentsSchema,
   conversationContextUsageSchema,
   conversationAttachmentListSchema,
+  importConversationAttachmentBytesIpcArgumentsSchema,
   conversationListResponseSchema,
   conversationMessageSubmissionSchema,
   conversationPendingMessageListSchema,
   pendingConversationMessageReferenceIpcArgumentsSchema,
+  pluginCatalogEntrySchema,
+  pluginCatalogListSchema,
   conversationReferenceIpcArgumentsSchema,
   forkConversationIpcArgumentsSchema,
   conversationRunEventSchema,
@@ -52,9 +57,11 @@ import {
   projectEntrySchema,
   projectFileSchema,
   projectListResponseSchema,
+  projectPreviewImageSchema,
   projectReferenceIpcArgumentsSchema,
   projectSummarySchema,
   readProjectFileIpcArgumentsSchema,
+  readProjectPreviewImageIpcArgumentsSchema,
   readConfigurationWorkspaceFileIpcArgumentsSchema,
   reorderConversationsIpcArgumentsSchema,
   reorderPendingConversationMessagesIpcArgumentsSchema,
@@ -67,6 +74,9 @@ import {
   runtimePlatformSchema,
   runAcceptedSchema,
   saveModelConfigurationIpcArgumentsSchema,
+  sendTeamMessageIpcArgumentsSchema,
+  setTeamCoordinatorIpcArgumentsSchema,
+  setPluginEnabledIpcArgumentsSchema,
   testModelConnectionIpcArgumentsSchema,
   setDefaultModelIpcArgumentsSchema,
   setConversationArchivedIpcArgumentsSchema,
@@ -80,6 +90,7 @@ import {
   skillDiscoveryResultSchema,
   skillDocumentSchema,
   writeConfigurationWorkspaceFileIpcArgumentsSchema,
+  writeProjectFileIpcArgumentsSchema,
   sendConversationMessageIpcArgumentsSchema,
   updatePendingConversationMessageIpcArgumentsSchema,
   voidIpcResponseSchema,
@@ -90,9 +101,13 @@ import { AgentRuntime } from "../agent/agent-runtime.js";
 import { ModelCatalogStore } from "../model/model-catalog-store.js";
 import { ModelCredentialStore } from "../model/model-credential-store.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
+import { PluginCatalog } from "../plugins/plugin-catalog.js";
+import { ProjectToolRegistry } from "../tools/project-tool-registry.js";
 import { AgentDatabase } from "../storage/agent-database.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
+import { ConversationLifecycleService } from "../storage/conversation-lifecycle-service.js";
 import { ConversationDeletionService } from "../storage/conversation-deletion-service.js";
+import { ThreadLogLegacyImporter } from "../storage/thread-log-legacy-importer.js";
 import { IntegrationConfigurationStore } from "../settings/integration-configuration-store.js";
 import { ApplicationSettingsStore } from "../settings/application-settings-store.js";
 import { ContextCompressionConfigurationStore } from "../settings/context-compression-configuration-store.js";
@@ -170,15 +185,19 @@ type MainIpcDependencies = {
   applicationSettings: ApplicationSettingsStore;
   attachments: ConversationAttachmentStore;
   conversationDeletion: ConversationDeletionService;
+  conversationLifecycle: ConversationLifecycleService;
   credentials: ModelCredentialStore;
   contextCompression: ContextCompressionConfigurationStore;
   configurationWorkspaces: ConfigurationWorkspaceStore;
   modelCatalog: ModelCatalogStore;
+  pluginCatalog: PluginCatalog;
   database: AgentDatabase;
   integrationConfiguration: IntegrationConfigurationStore;
   projectRegistry: ProjectRegistry;
+  threadLogLegacyImporter: ThreadLogLegacyImporter;
   skillDocuments: SkillDocumentStore;
   terminalConfiguration: TerminalConfigurationStore;
+  tools: ProjectToolRegistry;
 };
 
 function sendConversationRunEvent(
@@ -200,15 +219,19 @@ export function registerMainIpcHandlers(
     applicationSettings,
     attachments,
     conversationDeletion,
+    conversationLifecycle,
     credentials,
     contextCompression,
     configurationWorkspaces,
     modelCatalog,
+    pluginCatalog,
     database,
     integrationConfiguration,
     projectRegistry,
+    threadLogLegacyImporter,
     skillDocuments,
     terminalConfiguration,
+    tools,
   }: MainIpcDependencies
 ): () => void {
   const ipcMain = createIpcHandlerRegistrar<IpcHandler>({
@@ -221,11 +244,46 @@ export function registerMainIpcHandlers(
       electronIpcMain.removeHandler(channel);
     },
   });
+  const disposeApplicationSettingsListener = applicationSettings.onChanged((settings) => {
+    const window = getMainWindow();
+    if (window === undefined || window.isDestroyed()) return;
+    window.webContents.send(
+      IPC_CHANNELS.applicationSettingsChanged,
+      applicationSettingsSchema.parse(settings),
+    );
+  });
 
   ipcMain.handle(IPC_CHANNELS.runtimeGetInfo, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     parseNoArguments(args);
     return getRuntimeInfo();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.pluginList, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    parseNoArguments(args);
+    return pluginCatalogListSchema.parse(pluginCatalog.list().map((plugin) => ({
+      contentHash: plugin.contentHash,
+      enabled: plugin.enabled,
+      id: plugin.id,
+      name: plugin.name,
+      updatedAt: plugin.updatedAt,
+      version: plugin.version,
+    })));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.pluginSetEnabled, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = setPluginEnabledIpcArgumentsSchema.parse(args);
+    const plugin = pluginCatalog.setEnabled(input.pluginId, input.enabled);
+    return pluginCatalogEntrySchema.parse({
+      contentHash: plugin.contentHash,
+      enabled: plugin.enabled,
+      id: plugin.id,
+      name: plugin.name,
+      updatedAt: plugin.updatedAt,
+      version: plugin.version,
+    });
   });
 
   ipcMain.handle(IPC_CHANNELS.projectList, (event, ...args: unknown[]) => {
@@ -306,6 +364,26 @@ export function registerMainIpcHandlers(
   );
 
   ipcMain.handle(
+    IPC_CHANNELS.projectWriteFile,
+    async (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = writeProjectFileIpcArgumentsSchema.parse(args);
+      return projectFileSchema.parse(
+        await tools.writeUserFile(input, new AbortController().signal)
+      );
+    }
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.projectReadPreviewImage,
+    async (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = readProjectPreviewImageIpcArgumentsSchema.parse(args);
+      return projectPreviewImageSchema.parse(await projectRegistry.readPreviewImage(input));
+    }
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.projectCreateEntry,
     async (event, ...args: unknown[]) => {
       getTrustedWindow(event, getMainWindow);
@@ -324,7 +402,7 @@ export function registerMainIpcHandlers(
     getTrustedWindow(event, getMainWindow);
     const [input] = createConversationIpcArgumentsSchema.parse(args);
     return conversationSummarySchema.parse(
-      database.createConversation(input.projectId ?? null, {
+      conversationLifecycle.createConversation(input.projectId ?? null, {
         ...(input.agent === undefined ? {} : { agent: input.agent }),
         ...(input.teamId === undefined ? {} : { teamId: input.teamId }),
         ...(input.threadKind === undefined ? {} : { threadKind: input.threadKind })
@@ -384,6 +462,7 @@ export function registerMainIpcHandlers(
       input.throughMessageId === undefined ? "side" : "sibling",
       input.throughMessageId,
     );
+    threadLogLegacyImporter.importConversationIfMissing(conversation.id);
     if (conversation.workspaceRootPath !== null) {
       projectRegistry.inheritConversationWorkspace(
         input.conversationId,
@@ -543,6 +622,22 @@ export function registerMainIpcHandlers(
   );
 
   ipcMain.handle(
+    IPC_CHANNELS.conversationImportAttachmentBytes,
+    async (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = importConversationAttachmentBytesIpcArgumentsSchema.parse(args);
+      await attachments.importBytes(input.conversationId, {
+        bytes: Buffer.from(input.base64, "base64"),
+        name: input.name,
+        ...(input.mimeType === undefined ? {} : { mimeType: input.mimeType }),
+      });
+      return conversationAttachmentListSchema.parse(
+        attachments.listDrafts(input.conversationId),
+      );
+    },
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.conversationListDraftAttachments,
     (event, ...args: unknown[]) => {
       getTrustedWindow(event, getMainWindow);
@@ -574,6 +669,35 @@ export function registerMainIpcHandlers(
         )
       );
     }
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamSetCoordinator,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = setTeamCoordinatorIpcArgumentsSchema.parse(args);
+      database.setTeamCoordinatorConversation(input.teamId, input.conversationId);
+      return voidIpcResponseSchema.parse(undefined);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamSendMessage,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = sendTeamMessageIpcArgumentsSchema.parse(args);
+      const { teamId, ...conversationInput } = input;
+      const coordinatorConversationId = database.getTeamCoordinatorConversationId(teamId);
+      if (coordinatorConversationId === null) {
+        throw new Error("Team has no coordinator Conversation. Create and bind a Team Lead conversation first.");
+      }
+      return conversationMessageSubmissionSchema.parse(
+        agentRuntime.sendMessage({
+          ...conversationInput,
+          conversationId: coordinatorConversationId,
+        }, (runEvent) => sendConversationRunEvent(getMainWindow, runEvent)),
+      );
+    },
   );
 
   ipcMain.handle(
@@ -950,9 +1074,17 @@ export function registerMainIpcHandlers(
     return voidIpcResponseSchema.parse(undefined);
   });
 
+  ipcMain.handle(IPC_CHANNELS.clipboardWriteText, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [text] = clipboardWriteTextIpcArgumentsSchema.parse(args);
+    clipboard.writeText(text);
+    return voidIpcResponseSchema.parse(undefined);
+  });
+
   try {
     ipcMain.assertRegisteredChannels(DESKTOP_IPC_HANDLER_CHANNELS);
   } catch (error) {
+    disposeApplicationSettingsListener();
     ipcMain.dispose();
     throw error;
   }
@@ -967,5 +1099,8 @@ export function registerMainIpcHandlers(
     );
   });
 
-  return ipcMain.dispose;
+  return () => {
+    disposeApplicationSettingsListener();
+    ipcMain.dispose();
+  };
 }

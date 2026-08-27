@@ -65,6 +65,19 @@ describe("ToolHandlerRegistry", () => {
       .toEqual(["task"]);
   });
 
+  it("sorts the model-visible manifest by name independently of registration order", () => {
+    const registry = new ToolHandlerRegistry([
+      handler(["write_file"], () => Promise.resolve(completed("write"))),
+      handler(["list_directory", "read_file"], () => Promise.resolve(completed("read"))),
+    ]);
+
+    expect(registry.getDefinitions({ projectId: undefined }).map((tool) => tool.name)).toEqual([
+      "list_directory",
+      "read_file",
+      "write_file",
+    ]);
+  });
+
   it("rejects duplicate definitions and unknown tools deterministically", async () => {
     const duplicate = new ToolHandlerRegistry([
       handler(["same"], () => Promise.resolve(completed("one"))),

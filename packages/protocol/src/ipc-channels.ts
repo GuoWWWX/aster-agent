@@ -13,6 +13,8 @@ export const IPC_CHANNELS = {
   projectListEntries: "project.list_entries",
   projectCreateEntry: "project.create_entry",
   projectReadFile: "project.read_file",
+  projectWriteFile: "project.write_file",
+  projectReadPreviewImage: "project.read_preview_image",
   conversationList: "conversation.list",
   conversationCreate: "conversation.create",
   conversationSelectWorkspace: "conversation.select_workspace",
@@ -32,6 +34,7 @@ export const IPC_CHANNELS = {
   conversationMarkResultViewed: "conversation.mark_result_viewed",
   conversationGetContextUsage: "conversation.get_context_usage",
   conversationChooseAttachments: "conversation.choose_attachments",
+  conversationImportAttachmentBytes: "conversation.import_attachment_bytes",
   conversationListDraftAttachments: "conversation.list_draft_attachments",
   conversationRemoveAttachment: "conversation.remove_attachment",
   conversationSendMessage: "conversation.send_message",
@@ -44,6 +47,11 @@ export const IPC_CHANNELS = {
   conversationCancelRun: "conversation.cancel_run",
   conversationApproveToolChange: "conversation.approve_tool_change",
   conversationRunEvent: "conversation.run_event",
+  teamSetCoordinator: "team.set_coordinator",
+  teamSendMessage: "team.send_message",
+  pluginList: "plugin.list",
+  pluginSetEnabled: "plugin.set_enabled",
+  applicationSettingsChanged: "application_settings.changed",
   modelGetApiKey: "model.get_api_key",
   modelGetCatalog: "model.get_catalog",
   modelGetStatus: "model.get_status",
@@ -74,7 +82,8 @@ export const IPC_CHANNELS = {
   windowMinimize: "window.minimize",
   windowToggleMaximize: "window.toggle_maximize",
   windowClose: "window.close",
-  windowStateChanged: "window.state_changed"
+  windowStateChanged: "window.state_changed",
+  clipboardWriteText: "clipboard.write_text"
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

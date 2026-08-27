@@ -6,6 +6,7 @@ import {
   isReasoningOptionSupportedByApiFormat,
   modelApiFormatSchema,
   modelConnectionStatusSchema,
+  modelProviderIconSchema,
   modelReasoningOptionSchema,
   modelRuntimeStatusSchema,
   type DiscoverModelsInput,
@@ -19,13 +20,16 @@ import {
   type SetDefaultModelInput
 } from "@agent/protocol";
 import { z } from "zod";
-import { ModelAdapterRegistry } from "./model-adapter-registry.js";
-import type { ModelConfiguration } from "./model-contracts.js";
-export type { ModelConfiguration } from "./model-contracts.js";
+
 import {
   readJsonDocument,
   writeJsonDocument,
 } from "../settings/json-configuration-file.js";
+import { ModelAdapterRegistry } from "./model-adapter-registry.js";
+import type { ModelConfiguration } from "./model-contracts.js";
+import { ModelResponseError } from "./model-request-error.js";
+
+export type { ModelConfiguration } from "./model-contracts.js";
 
 const storedModelBaseSchema = z
   .object({
@@ -68,6 +72,7 @@ const storedProviderSchema = z.object({
   baseUrl: z.string().url(),
   encryptedApiKey: z.string().min(1),
   id: z.string().uuid(),
+  icon: modelProviderIconSchema.optional(),
   models: z.array(storedModelSchema).min(1).max(100),
   name: z.string().min(1).max(100),
   note: z.string().max(500).optional(),
@@ -233,6 +238,7 @@ function modelProfile(
     providerBaseUrl: provider.baseUrl,
     providerId: provider.id,
     providerName: provider.name,
+    ...(provider.icon === undefined ? {} : { providerIcon: provider.icon }),
     ...(provider.note === undefined ? {} : { providerNote: provider.note }),
     ...(provider.websiteUrl === undefined
       ? {}
@@ -453,7 +459,9 @@ export class ModelCredentialStore {
         tools: [],
       });
       const content = result.content.trim();
-      if (content.length === 0) throw new Error("Model did not return a reply.");
+      if (content.length === 0) {
+        throw new ModelResponseError("Model did not return a reply.");
+      }
       this.setModelConnectionStatus(providerId, modelId, "healthy");
       return { content: content.slice(0, 2_000), modelId };
     } catch (error) {
@@ -503,6 +511,7 @@ export class ModelCredentialStore {
       baseUrl: normalizeBaseUrl(input.baseUrl),
       encryptedApiKey: safeStorage.encryptString(input.apiKey).toString("base64"),
       id: providerId,
+      ...(input.providerIcon === undefined ? {} : { icon: input.providerIcon }),
       models: input.models.map((model) => ({
         ...model,
         ...(existingStatuses.get(model.modelId) === undefined

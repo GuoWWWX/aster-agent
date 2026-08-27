@@ -25,7 +25,11 @@ import type {
   ModelTurnResult,
 } from "./model-contracts.js";
 import { modelImageAttachmentCaption } from "./model-contracts.js";
-import { ModelRequestError, summarizeModelErrorText } from "./model-request-error.js";
+import {
+  ModelRequestError,
+  ModelResponseError,
+  summarizeModelErrorText,
+} from "./model-request-error.js";
 import { parseToolArguments } from "./tool-arguments.js";
 
 const LANGCHAIN_PROVIDER_STATE_VERSION = 2;
@@ -449,6 +453,75 @@ function openAiChatCompatibilityFetch(
   };
 }
 
+function normalizeResponsesPayload(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeResponsesPayload);
+  if (!isRecord(value)) return value;
+
+  const normalized: JsonRecord = {};
+  for (const [key, entry] of Object.entries(value)) {
+    normalized[key] = normalizeResponsesPayload(entry);
+  }
+  if (normalized.type === "output_text" && !Array.isArray(normalized.annotations)) {
+    normalized.annotations = [];
+  }
+  return normalized;
+}
+
+// OpenAI-compatible Responses gateways may omit the optional annotations array;
+// LangChain's Responses converter currently assumes it is always present.
+function normalizeResponsesSseLine(line: string): string {
+  const match = /^(\s*data:\s*)(.*?)(\r?)$/u.exec(line);
+  if (match === null || match[2] === "[DONE]" || !match[2]?.trim().startsWith("{")) {
+    return line;
+  }
+  try {
+    const payload = JSON.parse(match[2]) as unknown;
+    return `${match[1]}${JSON.stringify(normalizeResponsesPayload(payload))}${match[3]}`;
+  } catch {
+    return line;
+  }
+}
+
+function openAiResponsesCompatibilityFetch(request: typeof fetch): typeof fetch {
+  return async (requestInfo, requestInit) => {
+    const response = await request(requestInfo, requestInit);
+    if (response.body === null) return response;
+
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    let pending = "";
+    const normalizePendingLines = (
+      controller: TransformStreamDefaultController<Uint8Array>,
+      flush: boolean,
+    ): void => {
+      if (flush) pending += decoder.decode();
+      const lines = pending.split("\n");
+      if (!flush) pending = lines.pop() ?? "";
+      else pending = "";
+      if (lines.length === 0) return;
+      const serialized = lines.map(normalizeResponsesSseLine).join("\n");
+      controller.enqueue(encoder.encode(`${serialized}${flush ? "" : "\n"}`));
+    };
+    const body = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        pending += decoder.decode(chunk, { stream: true });
+        normalizePendingLines(controller, false);
+      },
+      flush(controller) {
+        normalizePendingLines(controller, true);
+      },
+    }));
+    const headers = new Headers(response.headers);
+    headers.delete("content-length");
+    headers.delete("content-encoding");
+    return new Response(body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+  };
+}
+
 export function toolDefinitions(
   tools: readonly ModelToolDefinition[],
 ): Array<Record<string, unknown>> {
@@ -460,6 +533,20 @@ export function toolDefinitions(
       parameters: definition.parameters,
     },
   }));
+}
+
+function bindModelTools(model: LangChainModel, input: CompleteTurnInput) {
+  const definitions = toolDefinitions(input.tools);
+  if (model.bindTools === undefined) return model;
+  if (
+    input.configuration.apiFormat === "openai-chat-completions"
+    || input.configuration.apiFormat === "openai-responses"
+  ) {
+    // OpenAI-compatible providers otherwise may choose the single-call mode;
+    // keep the provider contract aligned with the Runtime's bounded batch.
+    return model.bindTools(definitions, { parallel_tool_calls: true } as never);
+  }
+  return model.bindTools(definitions);
 }
 
 function reasoningOptions(input: CompleteTurnInput): Record<string, unknown> {
@@ -555,7 +642,7 @@ function defaultFactory(input: CompleteTurnInput, request: typeof fetch): LangCh
     return new ChatOpenAI({
       ...common,
       apiKey,
-      configuration: { baseURL: baseUrl, fetch: request },
+      configuration: { baseURL: baseUrl, fetch: openAiResponsesCompatibilityFetch(request) },
       model: modelId,
       maxTokens: input.maxOutputTokens,
       useResponsesApi: true,
@@ -587,11 +674,11 @@ function toolCallArguments(value: unknown): string {
     ? parseToolArguments(value)
     : value;
   if (!isRecord(normalized)) {
-    throw new Error("Model returned tool arguments that are not a JSON object.");
+    throw new ModelResponseError("Model returned tool arguments that are not a JSON object.");
   }
   const serialized = JSON.stringify(normalized);
   if (typeof serialized !== "string") {
-    throw new Error("Model returned tool arguments that are not JSON serializable.");
+    throw new ModelResponseError("Model returned tool arguments that are not JSON serializable.");
   }
   return serialized;
 }
@@ -645,9 +732,11 @@ function assistantToolCalls(message: BaseMessage): unknown[] {
 }
 
 function normalizeToolCall(value: unknown): ModelToolCall {
-  if (!isRecord(value)) throw new Error("Model returned an invalid tool call.");
+  if (!isRecord(value)) throw new ModelResponseError("Model returned an invalid tool call.");
   const name = stringValue(value.name)?.trim() ?? "";
-  if (name.length === 0) throw new Error("Model returned a tool call without a name.");
+  if (name.length === 0) {
+    throw new ModelResponseError("Model returned a tool call without a name.");
+  }
   const id = stringValue(value.id)?.trim() ?? crypto.randomUUID();
   return {
     arguments: toolCallArguments(value.args),
@@ -695,7 +784,7 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
     const model = this.factory(input, this.request);
     const boundModel = input.tools.length === 0 || model.bindTools === undefined
       ? model
-      : model.bindTools(toolDefinitions(input.tools));
+      : bindModelTools(model, input);
     const messages = toLangChainMessages(input.messages, input);
     let content = "";
     let latest: LangChainAssistantMessage | null = null;
@@ -727,7 +816,7 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
         }
       }
       if (latest === null) {
-        throw new Error("LangChain model returned no response chunks.");
+        throw new ModelResponseError("LangChain model returned no response chunks.");
       }
       const toolCalls = assistantToolCalls(latest).map(normalizeToolCall);
       const savedProviderState = providerState(input, latest);

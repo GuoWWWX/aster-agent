@@ -1,0 +1,32 @@
+/*
+ * Markdown 编辑器令牌桥接层。
+ *
+ * md-king 的编辑器样式和 CodeMirror 主题引用 shadcn 语义变量
+ * （--foreground / --primary / --border ...），本项目的设计令牌是 --app-*。
+ * 逐条改写那 231 条规则会引入视觉漂移风险，因此改为在编辑器根容器上
+ * 补齐 md-king 期望的变量名，把它们指向本项目对应的 --app-* 令牌。
+ *
+ * 好处是 markdown-editor.css 可以保持与 md-king 逐字一致（重新同步时直接重跑脚本），
+ * 同时编辑器仍然跟随本项目的明暗主题。
+ *
+ * 作用域限定在 .mk-cm-host 内，不污染全局命名空间。
+ * CodeMirror 通过 EditorView.theme 注入到 document head 的规则也能解析这些变量，
+ * 因为 var() 在使用它的元素上求值，而 .cm-editor 是 .mk-cm-host 的后代。
+ */
+
+.mk-cm-host {
+  --foreground: var(--app-foreground);
+  --muted-foreground: var(--app-muted-foreground);
+  --border: var(--app-border);
+  --primary: var(--app-accent);
+  --primary-foreground: var(--app-accent-foreground);
+  --background: var(--app-panel);
+  --card: var(--app-panel);
+  --popover: var(--app-panel);
+  --muted: var(--app-muted);
+  --ring: var(--app-focus-ring);
+  --app-control-hover: var(--app-hover);
+
+  --font-sans: "Geist Variable", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --font-emoji: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji";
+}

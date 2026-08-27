@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-import { ModelRequestError } from "../model/model-request-error.js";
+import { ModelRequestError, ModelResponseError } from "../model/model-request-error.js";
 import { parseToolArguments } from "../model/tool-arguments.js";
 import {
   reportMainError,
@@ -66,6 +66,42 @@ describe("main agent errors", () => {
     expect(error.code).toBe("NETWORK_UNAVAILABLE");
     expect(error.details).toMatchObject({
       technicalMessage: "TypeError: fetch failed | ECONNRESET | socket closed",
+    });
+  });
+
+  it("classifies model response conversion TypeErrors as invalid model responses", () => {
+    const error = toMainAgentError(
+      new TypeError("Cannot read properties of undefined (reading 'map')"),
+      { operation: "ipc:model.test_connection" },
+    );
+
+    expect(error).toMatchObject({
+      code: "MODEL_RESPONSE_INVALID",
+      retryable: true,
+    });
+  });
+
+  it("classifies model adapters' empty replies as invalid model responses", () => {
+    expect(
+      toMainAgentError(
+        new ModelResponseError("Model did not return a reply."),
+        { operation: "ipc:model.test_connection" },
+      ),
+    ).toMatchObject({
+      code: "MODEL_RESPONSE_INVALID",
+      retryable: true,
+    });
+  });
+
+  it("classifies a LangGraph recursion limit as a controlled model run limit", () => {
+    const error = Object.assign(
+      new Error('Recursion limit of 25 reached without hitting a stop condition.'),
+      { lc_error_code: "GRAPH_RECURSION_LIMIT", name: "GraphRecursionError" },
+    );
+
+    expect(toMainAgentError(error, { operation: "agent.run" })).toMatchObject({
+      code: "MODEL_RESPONSE_INVALID",
+      retryable: true,
     });
   });
 

@@ -101,6 +101,7 @@ export class AgentCommunicationTool {
   public async execute(input: {
     arguments: string;
     conversationId: string;
+    onMessagesRead?: (messageIds: readonly string[]) => void;
     onMessageSent?: (message: ConversationAgentMessageItem) => void;
     runId: string;
     signal: AbortSignal;
@@ -158,6 +159,7 @@ export class AgentCommunicationTool {
           )[0];
           if (existing !== undefined) {
             this.database.markAgentMessagesRead([existing.id]);
+            input.onMessagesRead?.([existing.id]);
             return success({ message: existing, status: "received" });
           }
           const message = await this.waitForMessage({
@@ -168,6 +170,7 @@ export class AgentCommunicationTool {
           });
           if (message === null) return success({ message: null, status: "timeout" });
           this.database.markAgentMessagesRead([message.id]);
+          input.onMessagesRead?.([message.id]);
           return success({ message, status: "received" });
         }
         default:

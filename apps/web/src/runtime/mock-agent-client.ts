@@ -52,6 +52,7 @@ import {
   type ProjectDirectoryListing,
   type ProjectEntry,
   type ProjectFile,
+  type ProjectPreviewImage,
   type ProjectReferenceInput,
   type ReadProjectFileInput,
   type ReadConfigurationWorkspaceFileInput,
@@ -77,10 +78,12 @@ import {
   type RunAccepted,
   type WindowState,
   type WriteConfigurationWorkspaceFileInput,
+  type WriteProjectFileInput,
 } from "@agent/protocol";
 
 import type {
   AgentClient,
+  ApplicationSettingsListener,
   ConversationRunEventListener,
   WindowStateListener,
 } from "./agent-client.js";
@@ -215,6 +218,8 @@ export class MockAgentClient implements AgentClient {
   private readonly activeRuns = new Map<string, MockRun>();
 
   private readonly conversationListeners = new Set<ConversationRunEventListener>();
+
+  private readonly applicationSettingsListeners = new Set<ApplicationSettingsListener>();
 
   private readonly conversations: ConversationSummary[] = [];
 
@@ -356,6 +361,14 @@ export class MockAgentClient implements AgentClient {
 
   public closeWindow(): Promise<void> {
     return Promise.reject(new Error("Window control is unavailable in the mock host."));
+  }
+
+  public writeClipboardText(text: string): Promise<void> {
+    const clipboard = globalThis.navigator.clipboard;
+    if (clipboard === undefined) {
+      return Promise.reject(new Error("Clipboard access is unavailable in the browser preview."));
+    }
+    return clipboard.writeText(text);
   }
 
   public createConversation(
@@ -1040,6 +1053,32 @@ export class MockAgentClient implements AgentClient {
     });
   }
 
+  public writeProjectFile(input: WriteProjectFileInput): Promise<ProjectFile> {
+    if (input.projectId !== this.project?.id) {
+      return Promise.reject(new Error("The mock project is unavailable."));
+    }
+    const current = this.projectFileContents.get(input.path) ?? null;
+    if (current !== input.expectedContent) {
+      const error = new Error("The mock file changed after it was opened.");
+      Object.assign(error, { code: "FILE_CHANGED" });
+      return Promise.reject(error);
+    }
+    this.projectFileContents.set(input.path, input.content);
+    return Promise.resolve({
+      byteLength: new TextEncoder().encode(input.content).byteLength,
+      content: input.content,
+      isBinary: false,
+      name: input.path.split("/").at(-1) ?? input.path,
+      path: input.path,
+      projectId: input.projectId,
+      truncated: false,
+    });
+  }
+
+  public readProjectPreviewImage(): Promise<ProjectPreviewImage> {
+    return Promise.reject(new Error("Preview images are unavailable in the mock host."));
+  }
+
   public readConfigurationWorkspaceFile(
     input: ReadConfigurationWorkspaceFileInput,
   ): Promise<ConfigurationWorkspaceFile> {
@@ -1061,6 +1100,13 @@ export class MockAgentClient implements AgentClient {
   ): () => void {
     this.conversationListeners.add(listener);
     return () => this.conversationListeners.delete(listener);
+  }
+
+  public onApplicationSettingsChanged(
+    listener: ApplicationSettingsListener,
+  ): () => void {
+    this.applicationSettingsListeners.add(listener);
+    return () => this.applicationSettingsListeners.delete(listener);
   }
 
   public onWindowStateChanged(listener: WindowStateListener): () => void {
@@ -1508,10 +1554,11 @@ export class MockAgentClient implements AgentClient {
           current.providerId === providerId && current.modelId === model.modelId
         )?.connectionStatus ?? "unknown",
         providerApiFormat: input.apiFormat,
-        providerBaseUrl: input.baseUrl,
-        providerId,
-        providerName: input.providerName,
-        ...(input.providerNote === undefined ? {} : { providerNote: input.providerNote }),
+         providerBaseUrl: input.baseUrl,
+         providerId,
+         providerName: input.providerName,
+         ...(input.providerIcon === undefined ? {} : { providerIcon: input.providerIcon }),
+         ...(input.providerNote === undefined ? {} : { providerNote: input.providerNote }),
         ...(input.providerWebsiteUrl === undefined
           ? {}
           : { providerWebsiteUrl: input.providerWebsiteUrl }),
@@ -1568,7 +1615,11 @@ export class MockAgentClient implements AgentClient {
 
   public saveApplicationSettings(input: ApplicationSettings): Promise<ApplicationSettings> {
     this.applicationSettings = structuredClone(input);
-    return this.getApplicationSettings();
+    const saved = this.getApplicationSettings();
+    void saved.then((settings) => {
+      for (const listener of this.applicationSettingsListeners) listener(settings);
+    });
+    return saved;
   }
 
   public saveIntegrationConfiguration(

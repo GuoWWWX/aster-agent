@@ -34,8 +34,10 @@ import type {
   ProjectDirectoryListing,
   ProjectEntry,
   ProjectFile,
+  ProjectPreviewImage,
   ProjectReferenceInput,
   ReadProjectFileInput,
+  ReadProjectPreviewImageInput,
   ReadConfigurationWorkspaceFileInput,
   ReorderConversationsInput,
   ReplaceLatestConversationMessageInput,
@@ -63,6 +65,7 @@ import type {
   SkillDocumentSaveInput,
   TerminalConfiguration,
   WriteConfigurationWorkspaceFileInput,
+  WriteProjectFileInput,
   WindowState,
 } from "@agent/protocol";
 
@@ -103,6 +106,10 @@ export class DesktopAgentClientAdapter implements AgentClient {
 
   public closeWindow(): Promise<void> {
     return this.desktopBridge.closeWindow();
+  }
+
+  public writeClipboardText(text: string): Promise<void> {
+    return this.desktopBridge.writeClipboardText(text);
   }
 
   public createConversation(
@@ -293,6 +300,16 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.readProjectFile(input);
   }
 
+  public writeProjectFile(input: WriteProjectFileInput): Promise<ProjectFile> {
+    return this.desktopBridge.writeProjectFile(input);
+  }
+
+  public readProjectPreviewImage(
+    input: ReadProjectPreviewImageInput,
+  ): Promise<ProjectPreviewImage> {
+    return this.desktopBridge.readProjectPreviewImage(input);
+  }
+
   public readConfigurationWorkspaceFile(
     input: ReadConfigurationWorkspaceFileInput,
   ): Promise<ConfigurationWorkspaceFile> {
@@ -311,6 +328,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
     listener: ConversationRunEventListener,
   ): () => void {
     return this.desktopBridge.onConversationRunEvent(listener);
+  }
+
+  public onApplicationSettingsChanged(
+    listener: (settings: ApplicationSettings) => void,
+  ): () => void {
+    return this.desktopBridge.onApplicationSettingsChanged(listener);
   }
 
   public onWindowStateChanged(listener: WindowStateListener): () => void {

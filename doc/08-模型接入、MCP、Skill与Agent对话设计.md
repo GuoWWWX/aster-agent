@@ -1,7 +1,7 @@
 # 模型接入、MCP、Skill 与 Agent 对话设计
 
-> 文档状态：开工基线；模型与 Skill Runtime 已按第九批主链落地，MCP Runtime 仍未实现
-> 更新时间：2026-08-19
+> 文档状态：模型与 Skill Runtime 已落地；声明式 Plugin Catalog 已落地；MCP Runtime 仍未实现
+> 更新时间：2026-08-27
 > 适用范围：模型配置、Agent 模型选择、MCP、Skill、Agent Thread 和相关 UI
 
 ## 1. 核心结论
@@ -134,10 +134,19 @@ interface ModelProviderAdapter {
 当前 Desktop 生产路径使用 LangChain Provider 实现四种 `ModelProviderAdapter` 格式；Agent Runtime 不按供应商分支，Skill 仍通过独立 Runtime 渐进注入：
 
 - `openai-chat-completions` 和 `openai-responses` 使用 `@langchain/openai`，`anthropic-messages` 使用 `@langchain/anthropic`，`google-gemini` 使用 `@langchain/google-genai`；项目保留中立消息、Tool、附件和 Provider State 合同。
+- OpenAI-compatible Responses 端点若在 SSE 的 `output_text` 块中省略可选的 `annotations` 数组，Adapter 会在流式边界补为空数组后再交给 LangChain，保持流式输出和 Provider State 语义不变；这类兼容处理只在 Adapter 内完成，不下沉到 Runtime 或持久化消息。
+- 设置中的“测试模型”会按已选的四种协议分别走真实 Adapter、请求路径、鉴权头和流式解析；空响应或无法转换的模型响应归类为 `MODEL_RESPONSE_INVALID`，HTTP 认证、限流、超时和网关错误继续按状态映射，不能仅凭 `/models` 能列出模型就视为可用于 Agent 对话。
+- 同一供应商内的 `modelId` 必须唯一；标准 `effort`、供应商自定义 `custom_effort` 和 `token_budget` 分属独立的推理选项键空间，可配置同值但不同类型的选项。
 - 用户填写 Base URL 与 API Key 后，Desktop Main 按协议拉取模型目录；密钥不回传 Renderer，API Key 仍只经 Electron `safeStorage` 加密后写入独立凭据文件。
 - Provider SDK 的协议、流式、Tool Calling、Reasoning 和附件转换均封装在 LangChain-backed Adapter；Runtime 只负责可观测重试、上下文、权限、工具和业务事件。
 - `SkillRuntime` 先向模型提供当前作用域内的名称/描述目录，模型调用 `load_skill` 后才把 `SKILL.md` 正文注入下一轮上下文；正文不写入 Timeline，reference 只允许已激活 Skill 的 `references/` 与 `templates/` 有界读取。
 - 带 MCP 依赖的 Skill 在 MCP Runtime 尚未可用时不会进入目录；Skill 脚本执行、MCP Server 调用和真实 Provider 端点的 Electron 手工验收仍属于后续批次。
+
+### 3.2.2 声明式 Plugin Catalog 的当前边界
+
+`<AGENT_HOME>/plugins/<package>/plugin.json` 可以声明 `skills`、`mcp` 与 `templates` 目录。启动时 `PluginCatalog` 只校验 manifest、目录边界、符号链接、文件/总字节上限并计算内容哈希；有效包写入 SQLite `plugin_catalog`，启用状态通过 `plugin.list` / `plugin.set_enabled` IPC 查询和修改。新建 Run 会冻结已启用 Plugin 的 `id / version / contentHash`，运行中的 Run 不受之后启停影响。〔FACT｜`apps/desktop/src/main/plugins/plugin-catalog.ts`；`apps/desktop/src/main/storage/agent-database.ts`；`packages/protocol/src/plugin.ts`〕
+
+这不是第三方代码执行或 UI 注入机制：当前 Catalog 不执行 Plugin JavaScript，也不会直接把 Plugin 的 MCP/Skill 目录注册为可调用能力；贡献接入仍须分别走现有 Skill / MCP 配置和 `ToolRuntime` 权限链。MCP Runtime 尚未实现，因此 Plugin 的 MCP 声明不能被当作已连接服务。〔FACT｜`apps/desktop/src/main/plugins/plugin-catalog.ts`〕
 
 完整技术选型、LangGraph 图边界、Checkpoint 和恢复策略见[LangChain 与 LangGraph 改造方案](./15-LangChain与LangGraph改造方案.md)；新增协议时只扩展 Adapter、配置表单和能力映射，Agent Loop 不增加厂商条件判断。
 

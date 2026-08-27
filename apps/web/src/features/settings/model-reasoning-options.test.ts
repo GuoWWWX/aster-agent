@@ -16,7 +16,7 @@ describe("model reasoning option helpers", () => {
     ];
 
     expect(reasoningOptionLabel(options[2]!)).toBe("自定义 | deep");
-    expect(reorderReasoningOptions(options, "effort:deep", "effort:high")).toEqual([
+    expect(reorderReasoningOptions(options, "custom_effort:deep", "effort:high")).toEqual([
       options[2],
       options[0],
       options[1],

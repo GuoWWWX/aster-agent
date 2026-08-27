@@ -30,8 +30,10 @@ import {
   TestTube2,
   Trash2,
   UsersRound,
+  X,
   type LucideIcon,
 } from "lucide-react";
+
 import {
   useCallback,
   useEffect,
@@ -58,6 +60,7 @@ import {
   type McpServerConfiguration,
   type ModelApiFormat,
   type ModelCatalog,
+  type ModelProviderIcon,
   type ModelProfile,
   type ModelReasoningOption,
   type ModelRuntimeStatus,
@@ -79,6 +82,7 @@ import {
   terminalConfigurationSchema,
 } from "@agent/protocol";
 
+import { IconButton } from "../../components/ui/icon-button.js";
 import { DocumentCodeEditor } from "../../components/editor/document-code-editor.js";
 import {
   Select,
@@ -101,6 +105,7 @@ import {
 import { useApplicationSettingsStore } from "../../stores/application-settings-store.js";
 import { ModelReasoningOptionsEditor } from "./model-reasoning-options-editor.js";
 import { ModelProfilePicker } from "./model-profile-picker.js";
+import { ProviderIconPicker, ProviderLogo } from "./provider-logo.js";
 import {
   getArchivedConversationDaysRemaining,
   getArchivedConversations,
@@ -137,6 +142,7 @@ type ConfiguredProvider = {
   baseUrl: string;
   connectionStatus: ModelProfile["connectionStatus"];
   id: string;
+  icon: ModelProviderIcon;
   name: string;
   note: string;
   websiteUrl: string;
@@ -146,11 +152,10 @@ type ActiveProviderId = string | null | undefined;
 
 type ProviderSaveState = "idle" | "incomplete" | "pending" | "saving" | "saved";
 
-type ModelTestState =
-  | { kind: "idle" }
-  | { kind: "testing"; modelId: string }
-  | { content: string; kind: "success"; modelId: string }
-  | { kind: "failed"; message: string; modelId: string };
+type ModelTestResultState =
+  | { kind: "testing" }
+  | { content: string; kind: "success" }
+  | { kind: "failed"; message: string };
 
 type ConfiguredModelDraft = {
   contextCompression: ContextCompressionThreshold;
@@ -182,6 +187,7 @@ const SETTINGS_NAVIGATION: readonly SettingsNavItem[] = [
 const DEFAULT_MODEL_API_FORMAT: ModelApiFormat = "openai-chat-completions";
 const PROVIDERS_PER_PAGE = 8;
 const CONFIGURATIONS_PER_PAGE = 8;
+const MODEL_TEST_BATCH_SIZE = 10;
 
 const EMPTY_INTEGRATION_CONFIGURATION: IntegrationConfiguration = {
   mcpServers: [],
@@ -458,6 +464,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
     apiKey: "",
     apiFormat: DEFAULT_MODEL_API_FORMAT,
     baseUrl: "",
+    providerIcon: "auto" as ModelProviderIcon,
     providerName: "",
     providerNote: "",
     providerWebsiteUrl: "",
@@ -473,7 +480,9 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
   const [isGlobalContextCompressionLoaded, setIsGlobalContextCompressionLoaded] = useState(false);
   const [editingReasoningModelId, setEditingReasoningModelId] = useState<string | null>(null);
   const [isDefaultModelSaving, setIsDefaultModelSaving] = useState(false);
-  const [modelTestState, setModelTestState] = useState<ModelTestState>({ kind: "idle" });
+  const [isModelTestDialogOpen, setIsModelTestDialogOpen] = useState(false);
+  const [modelTestSelection, setModelTestSelection] = useState<string[]>([]);
+  const [modelTestResults, setModelTestResults] = useState<Record<string, ModelTestResultState>>({});
   const [operationError, setOperationError] = useState<string | null>(null);
   const [providerPage, setProviderPage] = useState(0);
   const [providerSaveState, setProviderSaveState] = useState<ProviderSaveState>("idle");
@@ -490,6 +499,15 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
   const newModelContextDefaultIdsRef = useRef(new Set<string>());
   const newModelReasoningDefaultIdsRef = useRef(new Set<string>());
   const globalContextCompressionRef = useRef(globalContextCompression);
+
+  useEffect(() => {
+    if (!isModelTestDialogOpen) return undefined;
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") setIsModelTestDialogOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [isModelTestDialogOpen]);
 
   const handleGlobalContextCompressionChange = useCallback((configuration: ContextCompressionConfiguration) => {
     globalContextCompressionRef.current = configuration;
@@ -567,6 +585,9 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
     normalizedModelIds.every((modelId) => modelId.length > 0) &&
     configuredModelDrafts.every((model) => model.displayName.trim().length > 0) &&
     new Set(normalizedModelIds).size === normalizedModelIds.length;
+  const testableModels = configuredModelDrafts.filter((model) => model.modelId.trim().length > 0);
+  const selectedTestableModelCount = testableModels.filter((model) => modelTestSelection.includes(model.id)).length;
+  const isAnyModelTesting = Object.values(modelTestResults).some((result) => result.kind === "testing");
 
   const autoSaveInput = useMemo<SaveModelConfigurationInput | null>(() => (
     draft.baseUrl.trim().length > 0 &&
@@ -589,6 +610,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
             reasoningOptions: model.reasoningOptions,
           })),
           ...(selectedProviderId === null ? {} : { providerId: selectedProviderId }),
+          providerIcon: draft.providerIcon,
           providerName: draft.providerName,
           ...(draft.providerNote.trim().length === 0
             ? {}
@@ -603,6 +625,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
     draft.apiFormat,
     draft.apiKey,
     draft.baseUrl,
+    draft.providerIcon,
     draft.providerName,
     draft.providerNote,
     draft.providerWebsiteUrl,
@@ -682,13 +705,14 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
       apiKey: "",
       apiFormat: provider.apiFormat,
       baseUrl: provider.baseUrl,
+      providerIcon: provider.icon,
       providerName: provider.name,
       providerNote: provider.note,
       providerWebsiteUrl: provider.websiteUrl,
     });
     setConfiguredModelDrafts(modelDrafts);
     setEditingReasoningModelId(null);
-    setModelTestState({ kind: "idle" });
+    setModelTestResults({});
 
     void agentClient
       .getModelApiKey(provider.id)
@@ -799,7 +823,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
   }
 
   function markProviderConfigurationChanged(): void {
-    setModelTestState({ kind: "idle" });
+    setModelTestResults({});
     latestSaveRevisionRef.current += 1;
     setSaveRevision(latestSaveRevisionRef.current);
     setProviderSaveState("pending");
@@ -815,13 +839,14 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
       apiKey: "",
       apiFormat: DEFAULT_MODEL_API_FORMAT,
       baseUrl: "",
+      providerIcon: "auto",
       providerName: "",
       providerNote: "",
       providerWebsiteUrl: "",
     });
     setConfiguredModelDrafts([]);
     setEditingReasoningModelId(null);
-    setModelTestState({ kind: "idle" });
+    setModelTestResults({});
     setOperationError(null);
     setProviderSaveState("idle");
   }
@@ -852,23 +877,52 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
     }
   }
 
+  function openModelTestDialog(): void {
+    setModelTestSelection(testableModels.map((model) => model.id));
+    setIsModelTestDialogOpen(true);
+  }
+
+  function toggleModelTestSelection(modelId: string): void {
+    setModelTestSelection((current) => current.includes(modelId)
+      ? current.filter((candidate) => candidate !== modelId)
+      : [...current, modelId]);
+  }
+
   async function testModelConnection(modelId: string): Promise<void> {
     if (selectedProviderId === null || modelId.trim().length === 0) return;
-    setModelTestState({ kind: "testing", modelId });
+    setModelTestResults((current) => ({ ...current, [modelId]: { kind: "testing" } }));
     try {
       const result = await agentClient.testModelConnection({
         modelId,
         providerId: selectedProviderId,
       });
       setStatus(await agentClient.getModelStatus());
-      setModelTestState({ content: result.content, kind: "success", modelId: result.modelId });
+      setModelTestResults((current) => ({
+        ...current,
+        [modelId]: { content: result.content, kind: "success" },
+      }));
     } catch (reason) {
       void agentClient.getModelStatus().then(setStatus).catch(() => undefined);
-      setModelTestState({
-        kind: "failed",
-        message: getUserErrorMessage(reason, "模型没有返回有效回复"),
-        modelId,
-      });
+      const message = getUserErrorMessage(reason, "模型没有返回有效回复");
+      setModelTestResults((current) => ({
+        ...current,
+        [modelId]: { kind: "failed", message },
+      }));
+    }
+  }
+
+  async function testSelectedModels(): Promise<void> {
+    if (selectedProviderId === null) return;
+    const selectedModels = testableModels.filter((model) => modelTestSelection.includes(model.id));
+    const firstModel = selectedModels.at(0);
+    if (firstModel === undefined) return;
+    setIsModelTestDialogOpen(false);
+    setModelTestResults(Object.fromEntries(
+      selectedModels.map((model) => [model.modelId, { kind: "testing" as const }]),
+    ));
+    for (let start = 0; start < selectedModels.length; start += MODEL_TEST_BATCH_SIZE) {
+      const batch = selectedModels.slice(start, start + MODEL_TEST_BATCH_SIZE);
+      await Promise.allSettled(batch.map((model) => testModelConnection(model.modelId)));
     }
   }
 
@@ -915,14 +969,14 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
         <aside className="settings-provider-list" aria-label="供应商列表">
           <header className="settings-provider-list__heading">
             <strong>供应商</strong>
-            <button
-              className="settings-primary-button settings-provider-list__add"
-              type="button"
+            <IconButton
+              className="settings-provider-list__add"
+              label="添加供应商"
+              size="compact"
               onClick={createProvider}
             >
-              <CirclePlus aria-hidden="true" size={15} />
-              添加供应商
-            </button>
+              <CirclePlus aria-hidden="true" size={18} />
+            </IconButton>
           </header>
 
           <div className="settings-provider-list__body">
@@ -959,7 +1013,11 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                     setOperationError(null);
                   }}
                 >
-                  <span className="settings-provider-list__icon"><Bot aria-hidden="true" size={16} /></span>
+                  <ProviderLogo
+                    icon={provider.icon}
+                    providerName={provider.name}
+                    size="medium"
+                  />
                   <span className="settings-provider-list__identity">
                     <strong>{provider.name}</strong>
                     <small>{provider.baseUrl}</small>
@@ -1008,27 +1066,40 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
 
         <div className="settings-provider-editor">
           <header className="settings-provider-editor__header">
-            <div>
+            <div className="settings-provider-editor__identity">
+              <ProviderLogo
+                icon={draft.providerIcon}
+                providerName={draft.providerName}
+                size="medium"
+              />
               <h3>{draft.providerName.trim() || "新供应商"}</h3>
             </div>
-            <span
-              className="settings-state-badge"
-              data-state={selectedProviderId === null ? "offline" : "ready"}
-            >
-              {selectedProviderId === null ? "未保存" : "已配置"}
-            </span>
           </header>
 
+          <div className="settings-provider-editor__body">
           <div className="settings-provider-fields">
-            <label>
-              供应商名称
-              <input
-                name="providerName"
-                placeholder="例如：OpenAI、DeepSeek"
-                value={draft.providerName}
-                onChange={updateDraft}
-              />
-            </label>
+            <div className="settings-provider-name-field">
+              <label>
+                供应商名称
+                <input
+                  name="providerName"
+                  placeholder="例如：OpenAI、DeepSeek"
+                  value={draft.providerName}
+                  onChange={updateDraft}
+                />
+              </label>
+              <div className="settings-provider-icon-field">
+                <span>供应商图标</span>
+                <ProviderIconPicker
+                  icon={draft.providerIcon}
+                  providerName={draft.providerName}
+                  onIconChange={(providerIcon) => {
+                    setDraft((current) => ({ ...current, providerIcon }));
+                    markProviderConfigurationChanged();
+                  }}
+                />
+              </div>
+            </div>
             <label>
               备注
               <input
@@ -1129,6 +1200,24 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                 </button>
                 <button
                   className="settings-secondary-button"
+                  disabled={
+                    testableModels.length === 0
+                    || selectedProviderId === null
+                    || !hasValidConfiguredModels
+                    || isAnyModelTesting
+                    || providerSaveState === "incomplete"
+                    || providerSaveState === "pending"
+                    || providerSaveState === "saving"
+                  }
+                  title={testableModels.length === 0 ? "请先配置模型 ID" : "选择要测试的模型"}
+                  type="button"
+                  onClick={openModelTestDialog}
+                >
+                  <TestTube2 aria-hidden="true" size={15} />
+                  测试模型
+                </button>
+                <button
+                  className="settings-secondary-button"
                   disabled={!isGlobalContextCompressionLoaded}
                   title={isGlobalContextCompressionLoaded ? undefined : "正在读取全局配置"}
                   type="button"
@@ -1144,10 +1233,15 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
               <div className="settings-model-list" role="list" aria-label="供应商模型">
                 {configuredModelDrafts.map((model) => {
                   const isEditingReasoning = editingReasoningModelId === model.id;
-                  const isTestingModel = modelTestState.kind === "testing" && modelTestState.modelId === model.modelId;
-                  const connectionStatus = savedProviderModels.find((candidate) =>
-                    candidate.modelId === model.modelId
-                  )?.connectionStatus ?? "unknown";
+                  const testResult = modelTestResults[model.modelId];
+                  const isTestingModel = testResult?.kind === "testing";
+                  const connectionStatus = testResult?.kind === "success"
+                      ? "healthy"
+                      : testResult?.kind === "failed"
+                        ? "error"
+                        : savedProviderModels.find((candidate) =>
+                          candidate.modelId === model.modelId
+                        )?.connectionStatus ?? "unknown";
                   const enabledReasoningOptions = model.reasoningOptions.filter(isReasoningOptionEnabled);
                   const reasoningSummary = enabledReasoningOptions.length === 0
                     ? "自动"
@@ -1159,12 +1253,21 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                       role="listitem"
                     >
                       <label className="settings-model-field settings-model-field--name">
-                        <span
-                          aria-label={connectionStatusLabel(connectionStatus)}
-                          className="settings-model-connection-status"
-                          data-state={connectionStatus}
-                          title={connectionStatusLabel(connectionStatus)}
-                        />
+                        {isTestingModel ? (
+                          <span
+                            aria-label="正在测试"
+                            className="settings-model-connection-status"
+                            data-state="testing"
+                            title="正在测试"
+                          />
+                        ) : (
+                          <span
+                            aria-label={connectionStatusLabel(connectionStatus)}
+                            className="settings-model-connection-status"
+                            data-state={connectionStatus}
+                            title={connectionStatusLabel(connectionStatus)}
+                          />
+                        )}
                         <input
                           aria-label={`${model.modelId || "模型"}的模型名称`}
                           placeholder="模型名称"
@@ -1249,7 +1352,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                             providerSaveState === "pending" ||
                             providerSaveState === "saving" ||
                             providerSaveState === "incomplete" ||
-                            modelTestState.kind === "testing"
+                            isAnyModelTesting
                           }
                           title="连通测试"
                           type="button"
@@ -1271,6 +1374,17 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                         </button>
                       </div>
 
+                      {testResult?.kind === "failed" ? (
+                        <p className="settings-model-test-feedback" data-state="failed" role="alert">
+                          测试失败：{testResult.message}
+                        </p>
+                      ) : testResult?.kind === "success" ? (
+                        <p className="settings-model-test-feedback" data-state="success" role="status">
+                          <Check aria-hidden="true" size={13} />
+                          连接正常：{testResult.content}
+                        </p>
+                      ) : null}
+
                     </div>
                   );
                 })}
@@ -1281,25 +1395,91 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
 
           </section>
 
-          {modelTestState.kind !== "idle" ? (
-            <p
-              className="settings-model-test-result"
-              data-state={modelTestState.kind}
-              role={modelTestState.kind === "failed" ? "alert" : "status"}
+          {isModelTestDialogOpen ? (
+            <div
+              className="settings-model-test-dialog-backdrop"
+              onClick={(event) => {
+                if (event.currentTarget === event.target) setIsModelTestDialogOpen(false);
+              }}
             >
-              {modelTestState.kind === "testing" ? (
-                <><LoaderCircle aria-hidden="true" className="settings-spin" size={14} />正在向 {modelTestState.modelId} 发送 hi! 测试请求</>
-              ) : null}
-              {modelTestState.kind === "success" ? (
-                <><Check aria-hidden="true" size={14} />{modelTestState.modelId} 连接正常：{modelTestState.content}</>
-              ) : null}
-              {modelTestState.kind === "failed" ? (
-                <>{modelTestState.modelId} 测试失败：{modelTestState.message}</>
-              ) : null}
-            </p>
+              <section
+                aria-labelledby="settings-model-test-dialog-title"
+                aria-modal="true"
+                className="settings-model-test-dialog"
+                role="dialog"
+              >
+                <header>
+                  <div>
+                    <h3 id="settings-model-test-dialog-title">测试模型</h3>
+                    <p>选择要测试的模型，测试会向每个模型发送一条最小请求。</p>
+                  </div>
+                  <button
+                    aria-label="关闭测试模型弹窗"
+                    className="settings-model-test-dialog__close"
+                    title="关闭"
+                    type="button"
+                    onClick={() => setIsModelTestDialogOpen(false)}
+                  >
+                    <X aria-hidden="true" size={16} />
+                  </button>
+                </header>
+                <div className="settings-model-test-dialog__body">
+                  <label className="settings-model-test-dialog__select-all">
+                    <input
+                      checked={testableModels.length > 0 && selectedTestableModelCount === testableModels.length}
+                      type="checkbox"
+                      onChange={(event) => setModelTestSelection(event.target.checked
+                        ? testableModels.map((model) => model.id)
+                        : [])}
+                    />
+                    <span>全选模型</span>
+                    <small>{selectedTestableModelCount} / {testableModels.length}</small>
+                  </label>
+                  <div className="settings-model-test-dialog__list" role="group" aria-label="可测试模型">
+                    {configuredModelDrafts.map((model) => {
+                      const modelId = model.modelId.trim();
+                      const isSelectable = modelId.length > 0;
+                      return (
+                        <label className="settings-model-test-dialog__option" key={model.id}>
+                          <input
+                            checked={isSelectable && modelTestSelection.includes(model.id)}
+                            disabled={!isSelectable}
+                            type="checkbox"
+                            onChange={() => toggleModelTestSelection(model.id)}
+                          />
+                          <span>
+                            <strong>{model.displayName || "未命名模型"}</strong>
+                            <small>{modelId || "请先填写模型 ID"}</small>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+                <footer>
+                  <button
+                    className="settings-secondary-button"
+                    type="button"
+                    onClick={() => setIsModelTestDialogOpen(false)}
+                  >
+                    取消
+                  </button>
+                  <button
+                    className="settings-primary-button"
+                    disabled={selectedTestableModelCount === 0 || isAnyModelTesting}
+                    type="button"
+                    onClick={() => void testSelectedModels()}
+                  >
+                    <TestTube2 aria-hidden="true" size={14} />
+                    测试 {selectedTestableModelCount} 个模型
+                  </button>
+                </footer>
+              </section>
+            </div>
           ) : null}
 
           {operationError !== null ? <p className="settings-operation-error" role="alert">{operationError}</p> : null}
+          </div>
 
           <footer className="settings-provider-editor__footer">
             <p>
@@ -1307,13 +1487,9 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                 ? "等待更新"
                 : providerSaveState === "saving"
                   ? "正在更新"
-                  : providerSaveState === "saved"
-                    ? "已更新"
-                    : providerSaveState === "incomplete"
-                      ? "请完成供应商和模型配置"
-                      : status?.configured
-                        ? `已配置 ${providers.length} 家供应商、${status.models.length} 个模型`
-                        : "填写供应商和模型配置"}
+                  : providerSaveState === "incomplete"
+                    ? "请完成供应商和模型配置"
+                    : null}
             </p>
           </footer>
         </div>
@@ -1455,6 +1631,7 @@ function getConfiguredProviders(models: readonly ModelProfile[]): ConfiguredProv
         baseUrl: model.providerBaseUrl,
         connectionStatus: model.connectionStatus,
         id: model.providerId,
+        icon: model.providerIcon ?? "auto",
         name: model.providerName,
         note: model.providerNote ?? "",
         websiteUrl: model.providerWebsiteUrl ?? "",
@@ -1687,7 +1864,15 @@ function GlobalDefaultModelPicker({
             title={selectedModel === undefined ? "请先配置供应商模型" : "选择默认模型"}
             type="button"
           >
-            <Bot aria-hidden="true" size={16} />
+            {selectedModel === undefined ? (
+              <Bot aria-hidden="true" size={16} />
+            ) : (
+              <ProviderLogo
+                icon={selectedModel.providerIcon}
+                providerName={selectedModel.providerName}
+                size="compact"
+              />
+            )}
             <span className="settings-global-model__selection">
               <strong>
                 {selectedModel === undefined
@@ -1856,11 +2041,9 @@ function ContextCompressionSettings({
         <span className="settings-context-compression__state" data-state={saveState}>
           {saveState === "saving" || saveState === "pending"
             ? "正在更新"
-            : saveState === "saved"
-              ? "已更新"
-              : saveState === "failed"
-                ? "更新失败"
-                : "自动保存"}
+            : saveState === "failed"
+              ? "更新失败"
+              : null}
         </span>
       </div>
     </div>
@@ -2087,6 +2270,7 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
     (current) => current.openConfigurationWorkspace,
   );
   const configuration = state.configuration;
+  const reload = state.reload;
   const updateConfiguration = state.update;
   const setConfigurationError = state.setError;
   const servers = configuration?.mcpServers ?? [];
@@ -2190,7 +2374,7 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
 
   useEffect(() => {
     if (configurationWorkspaceRevision === 0) return;
-    void state.reload().then((next) => {
+    void reload().then((next) => {
       if (next === null) return;
       appliedJsonRef.current = JSON.stringify(next.mcpServers);
       setJson(JSON.stringify(next.mcpServers, null, 2));
@@ -2200,7 +2384,7 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
           : next.mcpServers[0]?.id ?? null
       ));
     });
-  }, [configurationWorkspaceRevision, state.reload]);
+  }, [configurationWorkspaceRevision, reload]);
 
   useEffect(() => {
     if (mode !== "json" || configuration === null) return undefined;
@@ -2218,7 +2402,7 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
       }
     }, 450);
     return () => window.clearTimeout(timer);
-  }, [configuration, json, mode, setConfigurationError, updateConfiguration]);
+  }, [configuration, json, mode, setConfigurationError, setSelectedId, updateConfiguration]);
 
   return (
     <SettingsSectionHeader
@@ -2527,6 +2711,7 @@ function jsonLeafSummary(value: unknown): string {
 
 function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactElement {
   const state = useIntegrationConfiguration(agentClient);
+  const { reload, setError } = state;
   const [defaultDirectoryPath, setDefaultDirectoryPath] = useState<string | null>(null);
   const [isDiscovering, setIsDiscovering] = useState(false);
   const [newSkillDirectoryPath, setNewSkillDirectoryPath] = useState<string | null>(null);
@@ -2544,25 +2729,29 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
 
   const discoverSkills = useCallback(async (): Promise<void> => {
     setIsDiscovering(true);
-    state.setError(null);
+    setError(null);
     try {
       const result = await agentClient.discoverSkillDocuments();
       setDefaultDirectoryPath(result.defaultDirectoryPath);
       setNewSkillDirectoryPath((current) => current ?? result.defaultDirectoryPath);
-      await state.reload();
+      await reload();
     } catch (reason) {
-      state.setError(errorMessage(reason));
+      setError(errorMessage(reason));
     } finally {
       setIsDiscovering(false);
     }
-  }, [agentClient, state.reload, state.setError]);
+  }, [agentClient, reload, setError]);
 
+  // Initial discovery on mount
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Initial data fetch
     void discoverSkills();
   }, [discoverSkills]);
 
+  // Re-discover when configuration workspace changes
   useEffect(() => {
     if (configurationWorkspaceRevision === 0) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- React to external state change
     void discoverSkills();
   }, [configurationWorkspaceRevision, discoverSkills]);
 
@@ -2828,14 +3017,14 @@ function ConfigurationList({
     <aside className="settings-integration-list">
       <header className="settings-integration-list__heading">
         <strong>{headingLabel}</strong>
-        <button
-          className="settings-primary-button settings-integration-list__add"
-          type="button"
+        <IconButton
+          className="settings-integration-list__add"
+          label={actionLabel}
+          size="compact"
           onClick={onAdd}
         >
-          <CirclePlus aria-hidden="true" size={14} />
-          {actionLabel}
-        </button>
+          <CirclePlus aria-hidden="true" size={18} />
+        </IconButton>
       </header>
       <div className="settings-integration-list__items">
         {items.length === 0 ? <p>{emptyLabel}</p> : pagedItems.map((item) => (

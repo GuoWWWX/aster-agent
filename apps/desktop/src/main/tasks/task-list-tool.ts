@@ -1,5 +1,8 @@
 import { z } from "zod";
-import type { ConversationTaskList } from "@agent/protocol";
+import {
+  conversationTaskStatusSchema,
+  type ConversationTaskList,
+} from "@agent/protocol";
 
 import type { ModelToolDefinition } from "../model/model-contracts.js";
 import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
@@ -21,8 +24,8 @@ const taskListUpdateSchema = z
   .object({
     tasks: z.array(
       z.object({
-        status: z.enum(["pending", "running", "completed"])
-          .describe("步骤状态；同一任务清单最多一个步骤为 running。"),
+        status: conversationTaskStatusSchema
+          .describe("步骤状态；同一任务清单最多一个步骤为 running；需要外部输入时使用 blocked，无法继续时使用 failed。"),
         title: z.string().trim().min(1).max(300).describe("简短、可验证的步骤标题。")
       }).strict()
     ).min(2).max(20).describe("完整任务清单；每次更新都必须重新提交全部步骤。")

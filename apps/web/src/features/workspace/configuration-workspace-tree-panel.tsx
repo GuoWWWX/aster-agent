@@ -63,6 +63,7 @@ function entryPath(directoryPath: string, name: string): string {
 }
 
 function isSafeEntryName(name: string): boolean {
+  // eslint-disable-next-line no-control-regex
   return name.length > 0 && name !== "." && name !== ".." && !/[\\/\u0000]/.test(name);
 }
 
