@@ -9,31 +9,34 @@
   touch-action: none;
 }
 
+/* CSS trigger #2: pseudo-element hit area and interaction states cannot use utilities. */
 .resizable-divider::before {
   position: absolute;
-  z-index: 1;
   top: 0;
   bottom: 0;
-  left: 50%;
-  width: 14px;
+  left: 0;
+  width: 5px;
   content: "";
   cursor: col-resize;
-  transform: translateX(-50%);
 }
 
-.resizable-divider__indicator {
+.resizable-divider__grip {
   position: absolute;
-  z-index: 2;
-  top: 50%;
-  left: 50%;
-  display: block;
+  top: 0;
+  bottom: 0;
+  left: 2px;
   width: 1px;
-  height: 64px;
   border-radius: var(--app-radius-pill);
   pointer-events: none;
-  background: transparent;
-  transform: translate(-50%, -50%);
-  transition: height 120ms ease, background-color 120ms ease;
+  background: var(--app-accent);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.resizable-divider:hover .resizable-divider__grip,
+.resizable-divider:focus-visible .resizable-divider__grip,
+.resizable-divider[data-resizing="true"] .resizable-divider__grip {
+  opacity: 0.8;
 }
 
 .workbench-resizable-divider--left,
@@ -41,24 +44,7 @@
   margin-left: -5px;
 }
 
-.workbench-resizable-divider--right-collapsed {
-  margin-left: -10px;
-}
-
-.resizable-divider:hover .resizable-divider__indicator,
-.resizable-divider:focus-visible .resizable-divider__indicator,
-body[data-resizing-panel="true"] .resizable-divider__indicator {
-  height: 96px;
-  background: rgba(37, 99, 235, 0.55);
-}
-
 body[data-resizing-panel="true"] {
   cursor: col-resize;
   user-select: none;
-}
-
-[data-theme="dark"] .resizable-divider:hover .resizable-divider__indicator,
-[data-theme="dark"] .resizable-divider:focus-visible .resizable-divider__indicator,
-[data-theme="dark"] body[data-resizing-panel="true"] .resizable-divider__indicator {
-  background: rgba(96, 165, 250, 0.68);
 }

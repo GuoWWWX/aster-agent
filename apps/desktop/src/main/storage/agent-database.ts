@@ -2530,15 +2530,46 @@ export class AgentDatabase {
     this.getConversation(conversationId);
     const rows = this.database
       .prepare(
-        `SELECT payload_json FROM conversation_timeline
-         WHERE conversation_id = ? ORDER BY sequence ASC`
+        `SELECT conversation_timeline.payload_json,
+                runs.created_at AS run_created_at,
+                runs.status AS run_status,
+                runs.updated_at AS run_completed_at
+         FROM conversation_timeline
+         LEFT JOIN runs ON runs.id = conversation_timeline.run_id
+         WHERE conversation_timeline.conversation_id = ?
+         ORDER BY conversation_timeline.sequence ASC`
       )
       .all(conversationId) as DatabaseRow[];
-    return rows.map((row) =>
-      conversationTimelineItemSchema.parse(
+    return rows.map((row) => {
+      const item = conversationTimelineItemSchema.parse(
         parseJson(asString(row, "payload_json"), "timeline item")
-      )
-    );
+      );
+      if (item.kind !== "message" || item.role !== "assistant" || item.runId === null) {
+        return item;
+      }
+
+      const runStatus = asNullableString(row, "run_status");
+      const runCreatedAt = asNullableString(row, "run_created_at");
+      const runCompletedAt = asNullableString(row, "run_completed_at");
+      if (
+        runStatus === null
+        || runCreatedAt === null
+        || runCompletedAt === null
+        || (runStatus !== "completed" && runStatus !== "failed" && runStatus !== "cancelled")
+      ) {
+        return item;
+      }
+
+      const durationMs = Math.max(
+        0,
+        Date.parse(runCompletedAt) - Date.parse(runCreatedAt),
+      );
+      return conversationTimelineItemSchema.parse({
+        ...item,
+        completedAt: runCompletedAt,
+        durationMs,
+      });
+    });
   }
 
   public sendAgentMessage(input: SendAgentMessageInput): ConversationAgentMessageItem {

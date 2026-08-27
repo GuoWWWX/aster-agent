@@ -97,6 +97,12 @@ renderer.renderer.rules.td_open = (tokens, index, options, environment, self) =>
     : defaultTableCellOpen(tokens, index, options, environment, self);
 };
 
+renderer.renderer.rules.table_open = () => (
+  '<div class="agent-markdown__table-scroll" role="region" aria-label="Markdown 表格" tabindex="0"><table>'
+);
+
+renderer.renderer.rules.table_close = () => "</table></div>\n";
+
 renderer.renderer.rules.fence = (tokens, index) => {
   const token = tokens[index];
   const language = token?.info.trim().split(/\s+/)[0] || "text";
