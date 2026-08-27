@@ -74,4 +74,18 @@ describe("workspace path primitives", () => {
     await expect(resolveWritablePathWithinRoot(rootPath, "nested/new.txt"))
       .resolves.toBe(path.join(rootPath, "nested", "new.txt"));
   });
+
+  it("accepts a child when the workspace root resolves to a canonical path", async () => {
+    const rootPath = await mkdtemp(path.join(os.tmpdir(), "agent-path-"));
+    temporaryDirectories.push(rootPath);
+    const linkedRootPath = `${rootPath}-linked`;
+    temporaryDirectories.push(linkedRootPath);
+    await mkdir(path.join(rootPath, "nested"));
+    await symlink(rootPath, linkedRootPath, process.platform === "win32" ? "junction" : "dir");
+
+    await expect(resolveExistingPathWithinRoot(linkedRootPath, "nested"))
+      .resolves.toBe(path.join(rootPath, "nested"));
+    await expect(resolveWritablePathWithinRoot(linkedRootPath, "nested/new.txt"))
+      .resolves.toBe(path.join(linkedRootPath, "nested", "new.txt"));
+  });
 });

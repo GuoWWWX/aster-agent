@@ -3,6 +3,7 @@ import {
   copyFile,
   mkdir,
   readFile,
+  realpath,
   rmdir,
   stat,
   unlink,
@@ -347,7 +348,7 @@ export class ConversationAttachmentStore {
       mimeType,
       name,
       sizeBytes: fileStat.size,
-      source: this.resolveSource(conversationId, absoluteSourcePath),
+      source: await this.resolveSource(conversationId, absoluteSourcePath),
       storedPath,
     });
   }
@@ -440,7 +441,7 @@ export class ConversationAttachmentStore {
     return buffer.toString("utf8").replace(/^\uFEFF/u, "");
   }
 
-  private resolveSource(conversationId: string, sourcePath: string): AttachmentSource {
+  private async resolveSource(conversationId: string, sourcePath: string): Promise<AttachmentSource> {
     const conversation = this.database.getConversation(conversationId);
     const workspaceId = conversation.projectId ?? (
       conversation.workspaceRootPath === null ? null : conversation.id
@@ -448,7 +449,8 @@ export class ConversationAttachmentStore {
     if (workspaceId === null) return { projectPath: null, source: "upload" };
 
     const workspaceRoot = path.resolve(this.projects.getProject(workspaceId).rootPath);
-    const relativePath = path.relative(workspaceRoot, sourcePath);
+    const canonicalSourcePath = path.resolve(await realpath(sourcePath));
+    const relativePath = path.relative(workspaceRoot, canonicalSourcePath);
     if (
       relativePath.length === 0
       || relativePath.startsWith(`..${path.sep}`)

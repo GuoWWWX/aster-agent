@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -50,7 +50,7 @@ describe("PluginCatalog", () => {
         enabled: true,
         id: "example.plugin",
         name: "Example Plugin",
-        rootPath: path.resolve(pluginPath),
+        rootPath: path.resolve(await realpath(pluginPath)),
         version: "1.0.0",
       }),
     ]);

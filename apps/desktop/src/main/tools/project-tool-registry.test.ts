@@ -85,17 +85,21 @@ describe("ProjectToolRegistry", () => {
     const signal = new AbortController().signal;
     const command = await tools.execute(
       "run_command",
-      JSON.stringify({ command: "Start-Sleep -Milliseconds 250", timeoutMs: 10_000 }),
+      JSON.stringify({ command: "Write-Output command-started; Start-Sleep -Milliseconds 250", timeoutMs: 10_000 }),
       project.id,
       signal,
     );
     if (command.kind !== "command") throw new Error("Expected a command proposal.");
+    let commandStarted: (() => void) | undefined;
+    const commandStartedPromise = new Promise<void>((resolve) => {
+      commandStarted = resolve;
+    });
     const commandPromise = tools.executePreparedCommand(command.command, project.id, signal, {
       conversationId: "conversation-command",
       conversationTitle: "终端 Agent",
       runId: "run-command",
-    });
-    await new Promise<void>((resolve) => setTimeout(resolve, 75));
+    }, () => commandStarted?.());
+    await commandStartedPromise;
 
     await expect(tools.writeUserFile({
       content: "editor\n",
