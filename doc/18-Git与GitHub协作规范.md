@@ -53,12 +53,15 @@ gitGraph
 
 ```powershell
 git fetch --prune origin
-git switch develop
-git pull --ff-only origin develop
-git switch -c feature/task-list-export
+git worktree add ..\Aster-feature-task-list-export -b feature/task-list-export origin/develop
+Set-Location ..\Aster-feature-task-list-export
 ```
 
 每个分支只完成一个可验收目标。开始前在 PR 或 Issue 中写明目标、非目标和验证方法；执行中不顺手重构无关模块。
+
+所有需要修改仓库的用户需求必须在独立 Git worktree 中完成：一个活跃任务对应一个 worktree 和一个分支。不得通过切换共享工作目录的分支来并行处理不同任务；worktree 内可直接提交、推送并创建 PR/MR，无需先合并到其他本地分支。
+
+PR/MR 已合并或已关闭后，对应的 `feature/*`、`fix/*`、`docs/*`、`ci/*`、`chore/*` 分支即视为结束：不得继续提交或修改，也不得作为下一项工作的创建来源。即使该分支仍保留在本地或远程，新目标也必须从最新 `develop` 新建一个 worktree 和与目标对应的分支。
 
 ### 3.2 提交前检查
 
