@@ -202,6 +202,7 @@ describe("context manager", () => {
 
     expect(withSkillReservation.usage.estimatedSystemTokens)
       .toBe(withoutSkillReservation.usage.estimatedSystemTokens + 2_500);
+    expect(withSkillReservation.usage.skillReserveTokens).toBe(2_500);
     expect(withSkillReservation.messages.length)
       .toBeLessThan(withoutSkillReservation.messages.length);
   });
@@ -233,6 +234,7 @@ describe("context manager", () => {
 
     expect(withTaskListReservation.usage.estimatedSystemTokens)
       .toBe(withoutTaskListReservation.usage.estimatedSystemTokens + 2_500);
+    expect(withTaskListReservation.usage.estimatedTaskListTokens).toBe(2_500);
     expect(withTaskListReservation.messages.length)
       .toBeLessThan(withoutTaskListReservation.messages.length);
   });

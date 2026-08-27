@@ -46,6 +46,7 @@ describe("ContextCompiler", () => {
       contextWindowTokens: 20_000,
       conversationId: conversation.id,
       includeImageData: false,
+      estimatedSkillCatalogTokens: 0,
       outputReserveTokens: 1_000,
       reservedSkillTokens: 0,
       systemMessage: {
@@ -88,6 +89,7 @@ describe("ContextCompiler", () => {
       contextWindowTokens: 20_000,
       conversationId: conversation.id,
       includeImageData: false,
+      estimatedSkillCatalogTokens: 0,
       outputReserveTokens: 1_000,
       reservedSkillTokens: 0,
       systemMessage: {
@@ -126,6 +128,7 @@ describe("ContextCompiler", () => {
         contextWindowTokens: 20_000,
         conversationId: conversation.id,
         includeImageData: false,
+        estimatedSkillCatalogTokens: 0,
         outputReserveTokens: 1_000,
         reservedSkillTokens: 0,
         systemMessage: {

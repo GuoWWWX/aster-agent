@@ -426,13 +426,16 @@ export const conversationContextUsageSchema = z
     estimatedAttachmentTokens: z.number().int().nonnegative().default(0),
     estimatedReferenceTokens: z.number().int().nonnegative().default(0),
     estimatedInputTokens: z.number().int().nonnegative(),
+    estimatedSkillCatalogTokens: z.number().int().nonnegative().default(0),
     estimatedSystemTokens: z.number().int().nonnegative(),
+    estimatedTaskListTokens: z.number().int().nonnegative().default(0),
     estimatedToolDefinitionTokens: z.number().int().nonnegative(),
     estimatedToolTokens: z.number().int().nonnegative(),
     historyCharacters: z.number().int().nonnegative(),
     includedMessageCount: z.number().int().nonnegative(),
     omittedMessageCount: z.number().int().nonnegative(),
-    outputReserveTokens: z.number().int().nonnegative()
+    outputReserveTokens: z.number().int().nonnegative(),
+    skillReserveTokens: z.number().int().nonnegative().default(0)
   })
   .strict();
 

@@ -27,6 +27,9 @@ export type ModelConfiguration = {
   reasoningOptions: ModelReasoningOption[];
 };
 
+/** Model metadata safe to use without decrypting a provider credential. */
+export type ModelContextConfiguration = Omit<ModelConfiguration, "apiKey">;
+
 export type ModelMessage = {
   attachments: ModelMessageAttachment[];
   content: string;

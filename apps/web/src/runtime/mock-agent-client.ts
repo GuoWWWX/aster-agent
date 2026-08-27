@@ -642,7 +642,9 @@ export class MockAgentClient implements AgentClient {
         + estimatedConversationTokens
         + estimatedToolTokens
         + estimatedReferenceTokens,
+      estimatedSkillCatalogTokens: 0,
       estimatedSystemTokens,
+      estimatedTaskListTokens: 0,
       estimatedToolDefinitionTokens: 0,
       estimatedToolTokens,
       historyCharacters: contextTimeline.reduce(
@@ -658,6 +660,7 @@ export class MockAgentClient implements AgentClient {
       includedMessageCount: contextTimeline.length,
       omittedMessageCount: 0,
       outputReserveTokens: 8_192,
+      skillReserveTokens: 0,
     });
   }
 
