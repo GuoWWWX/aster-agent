@@ -6,7 +6,7 @@
   "type": "module",
   "main": "dist/main/index.cjs",
   "scripts": {
-    "dev": "pnpm run build && cross-env ELECTRON_RENDERER_URL=http://127.0.0.1:5173 electron .",
+    "dev": "pnpm run build && concurrently --kill-others-on-fail --success first --names build,electron --prefix-colors cyan,green \"tsup --watch\" \"node ../../scripts/electron-dev.mjs\"",
     "start": "electron .",
     "lint": "eslint src tsup.config.ts vitest.config.ts --max-warnings 0",
     "typecheck": "tsc --noEmit",
