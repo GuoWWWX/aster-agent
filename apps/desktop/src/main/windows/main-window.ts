@@ -41,7 +41,7 @@ export function createMainWindow(): BrowserWindow {
     minHeight: WINDOW_MIN_HEIGHT,
     minWidth: WINDOW_MIN_WIDTH,
     show: false,
-    title: "Agent Workbench",
+    title: "Aster",
     width: WINDOW_START_WIDTH,
     webPreferences
   };

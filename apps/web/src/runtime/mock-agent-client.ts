@@ -128,7 +128,7 @@ const MOCK_RESPONSE_DELAY_MS = 800;
 const MOCK_PROJECT: ProjectSummary = {
   id: "00000000-0000-4000-8000-000000000001",
   isPinned: false,
-  name: "Agent Workbench",
+  name: "Aster",
   rootPath: "D:\\Code\\Project\\202608\\Agent",
 };
 
@@ -167,7 +167,7 @@ const MOCK_ENTRIES_BY_DIRECTORY: Readonly<Record<string, readonly ProjectEntry[]
 
 const MOCK_FILE_CONTENTS: Readonly<Record<string, string>> = {
   ".editorconfig": "root = true\n\n[*]\ncharset = utf-8\nindent_style = space\n",
-  "package.json": '{\n  "name": "agent-workbench",\n  "private": true\n}\n',
+  "package.json": '{\n  "name": "aster",\n  "private": true\n}\n',
   "apps/web/vite.config.ts": 'import { defineConfig } from "vite";\n\nexport default defineConfig({});\n',
   "doc/00-AI-Agent产品与技术方案总览.md": "# AI Agent 产品与技术方案总览\n",
   "doc/01-第一阶段需求与验收标准.md": "# 第一阶段需求与验收标准\n"

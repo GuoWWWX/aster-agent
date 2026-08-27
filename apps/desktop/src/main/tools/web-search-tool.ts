@@ -61,7 +61,7 @@ async function searchDuckDuckGoLite(
   const response = await fetch(url, {
     headers: {
       accept: "text/html",
-      "user-agent": "Agent Workbench web_search/1.0",
+      "user-agent": "Aster web_search/1.0",
     },
     signal: requestSignal,
   });
