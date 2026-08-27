@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ConversationToolItem } from "@agent/protocol";
 
 import {
+  createRestoredRunProgresses,
   fileChangeSummary,
   formatToolPayload,
   formatConversationTime,
@@ -37,6 +38,16 @@ function tool(
 }
 
 describe("run progress duration", () => {
+  it("restores the running indicator when an active conversation is reopened", () => {
+    expect(createRestoredRunProgresses(null, 1_000)).toEqual([]);
+    expect(createRestoredRunProgresses("run-1", 1_000)).toEqual([{
+      anchorTimelineItemId: null,
+      outputStartedAt: null,
+      runId: "run-1",
+      startedAt: 1_000,
+    }]);
+  });
+
   it("uses the requested compact Chinese duration formats", () => {
     const startedAt = 0;
 

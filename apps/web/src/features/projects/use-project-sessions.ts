@@ -4,8 +4,11 @@ import type { ConversationSummary } from "@agent/protocol";
 
 import type { AgentClient } from "../../runtime/index.js";
 import {
+  aggregateSideConversationState,
+  getSessionFamilyResultIds,
   getProjectSessions,
   getTemporarySessions,
+  updateSessionRunState,
   type ProjectSession,
 } from "./project-session-model.js";
 
@@ -19,6 +22,7 @@ export type ProjectSessionsController = {
   isCreatingSession: boolean;
   isLoadingSessions: boolean;
   operationError: string | null;
+  markSessionResultViewed(sessionId: string): void;
   renameSession(sessionId: string, title: string): Promise<boolean>;
   reorderSessions(sessionIds: string[]): Promise<boolean>;
   sessions: ProjectSession[];
@@ -70,25 +74,32 @@ export function useProjectSessions(
   const [isLoadingSessions, setIsLoadingSessions] = useState(true);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<ProjectSession[]>([]);
+  const sessionsRef = useRef<ProjectSession[]>([]);
+  const sessionsWithSideConversationState = useMemo(
+    () => aggregateSideConversationState(sessions),
+    [sessions],
+  );
 
   const activeProjectSessions = useMemo(
     () =>
       activeProjectId === null
         ? []
-        : getProjectSessions(sessions, activeProjectId),
-    [activeProjectId, sessions],
+        : getProjectSessions(sessionsWithSideConversationState, activeProjectId),
+    [activeProjectId, sessionsWithSideConversationState],
   );
   const temporarySessions = useMemo(
-    () => getTemporarySessions(sessions),
-    [sessions],
+    () => getTemporarySessions(sessionsWithSideConversationState),
+    [sessionsWithSideConversationState],
   );
   const currentSessions = activeProjectId === null ? temporarySessions : activeProjectSessions;
   const activeSession = useMemo(
     () =>
-      sessions.find((session) => !session.isArchived && session.id === activeSessionId) ??
+      sessionsWithSideConversationState.find(
+        (session) => !session.isArchived && session.id === activeSessionId,
+      ) ??
       currentSessions[0] ??
       null,
-    [activeSessionId, currentSessions, sessions],
+    [activeSessionId, currentSessions, sessionsWithSideConversationState],
   );
   const activeSessionIdRef = useRef<string | null>(null);
 
@@ -96,21 +107,31 @@ export function useProjectSessions(
     activeSessionIdRef.current = activeSession?.id ?? null;
   }, [activeSession?.id]);
 
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
   const markSessionResultViewed = useCallback(
     async (sessionId: string): Promise<void> => {
-      try {
-        const conversation = await agentClient.markConversationResultViewed({
-          conversationId: sessionId,
-        });
-        const session = toProjectSession(conversation);
-        setSessions((current) =>
-          current.map((candidate) =>
-            candidate.id === session.id ? session : candidate,
-          ),
-        );
-      } catch {
-        // A failed acknowledgement is retried when the conversation is opened again.
-      }
+      const familyIds = getSessionFamilyResultIds(sessionsRef.current, sessionId);
+      const familyIdSet = new Set(familyIds);
+      if (!sessionsRef.current.some(
+        (session) => familyIdSet.has(session.id) && session.hasUnreadResult,
+      )) return;
+      const viewedSessions = (await Promise.all(familyIds.map(async (conversationId) => {
+        try {
+          return toProjectSession(await agentClient.markConversationResultViewed({
+            conversationId,
+          }));
+        } catch {
+          return null;
+        }
+      }))).filter((session): session is ProjectSession => session !== null);
+      if (viewedSessions.length === 0) return;
+      const viewedById = new Map(viewedSessions.map((session) => [session.id, session]));
+      setSessions((current) => current.map(
+        (candidate) => viewedById.get(candidate.id) ?? candidate,
+      ));
     },
     [agentClient],
   );
@@ -132,39 +153,11 @@ export function useProjectSessions(
   useEffect(() => {
     return agentClient.onConversationRunEvent((event) => {
       if (event.type === "run.started") {
-        setSessions((current) =>
-          current.map((session) =>
-            session.id === event.conversationId
-              ? {
-                  ...session,
-                  activeRunId: event.runId,
-                  hasUnreadResult: false,
-                  lastRunStatus: "running",
-                }
-              : session,
-          ),
-        );
+        setSessions((current) => updateSessionRunState(current, event));
         return;
       }
       if (event.type === "run.finished") {
-        const isVisible = activeSessionIdRef.current === event.conversationId;
-        setSessions((current) =>
-          current.map((session) =>
-            session.id === event.conversationId
-              ? {
-                  ...session,
-                  activeRunId: null,
-                  hasUnreadResult:
-                    !isVisible &&
-                    (event.status === "completed" || event.status === "failed"),
-                  lastRunStatus: event.status,
-                }
-              : session,
-          ),
-        );
-        if (isVisible) {
-          void markSessionResultViewed(event.conversationId);
-        }
+        setSessions((current) => updateSessionRunState(current, event));
         return;
       }
       if (event.type !== "conversation.updated") return;
@@ -185,28 +178,7 @@ export function useProjectSessions(
         );
       });
     });
-  }, [agentClient, markSessionResultViewed]);
-
-  const activeSessionResultId = activeSession?.id ?? null;
-  const activeSessionHasUnreadResult = activeSession?.hasUnreadResult ?? false;
-  const activeSessionLastRunStatus = activeSession?.lastRunStatus ?? null;
-
-  useEffect(() => {
-    if (
-      activeSessionResultId === null ||
-      !activeSessionHasUnreadResult ||
-      (activeSessionLastRunStatus !== "completed" &&
-        activeSessionLastRunStatus !== "failed")
-    ) {
-      return;
-    }
-    void Promise.resolve().then(() => markSessionResultViewed(activeSessionResultId));
-  }, [
-    activeSessionHasUnreadResult,
-    activeSessionLastRunStatus,
-    activeSessionResultId,
-    markSessionResultViewed,
-  ]);
+  }, [agentClient]);
 
   const createSession = useCallback(async (projectId: string | null): Promise<void> => {
     if (isCreatingSession) {
@@ -363,6 +335,7 @@ export function useProjectSessions(
     },
     isCreatingSession,
     isLoadingSessions,
+    markSessionResultViewed: (sessionId) => void markSessionResultViewed(sessionId),
     operationError,
     renameSession,
     reorderSessions,
@@ -370,7 +343,7 @@ export function useProjectSessions(
     selectSession,
     setSessionArchived,
     setSessionPinned,
-    sessions,
+    sessions: sessionsWithSideConversationState,
     updateSession,
   };
 }

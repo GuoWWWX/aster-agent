@@ -1472,7 +1472,8 @@ export class AgentDatabase {
           conversation.updatedAt
         );
 
-      const sourceMessages = this.database
+      const sourceCheckpoint = this.getContextCheckpoint(sourceConversationId);
+      const allSourceMessages = this.database
         .prepare(
           `SELECT sequence, run_id, role, content, tool_calls_json, tool_call_id,
                   attachment_ids_json, provider_state_json, created_at
@@ -1485,6 +1486,11 @@ export class AgentDatabase {
           sourceConversationId,
           ...(throughModelMessageSequence === null ? [] : [throughModelMessageSequence]),
         ) as DatabaseRow[];
+      const sourceMessages = kind === "side" && sourceCheckpoint !== null
+        ? allSourceMessages.filter(
+            (message) => asNumber(message, "sequence") >= sourceCheckpoint.coveredThroughSequence,
+          )
+        : allSourceMessages;
       const sourceTimelineItems = kind === "sibling" && forkBoundary !== null
         ? (this.database
             .prepare(
@@ -1647,7 +1653,6 @@ export class AgentDatabase {
         forkedMessageSequences.set(asNumber(message, "sequence"), forkedSequence);
       }
 
-      const sourceCheckpoint = this.getContextCheckpoint(sourceConversationId);
       if (
         sourceCheckpoint !== null
         && (

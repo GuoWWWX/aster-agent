@@ -1479,9 +1479,11 @@ describe("AgentDatabase", () => {
     expect(sideConversation.threadKind).toBe("agent");
     expect(sideConversation.agentId).toBe(parentAgent.id);
     expect(database.getConversationAgentBinding(sideConversation.id)).toEqual(parentAgent);
-    expect(database.listModelMessages(sideConversation.id)).toEqual(
-      database.listModelMessages(mainConversation.id)
-    );
+    expect(database.listModelMessages(sideConversation.id).map((message) => message.content)).toEqual([
+      "主对话已有回复",
+      "压缩之后的新消息",
+      "压缩之后的新回复",
+    ]);
     const sourceCheckpoint = database.getContextCheckpoint(mainConversation.id);
     const sideCheckpoint = database.getContextCheckpoint(sideConversation.id);
     expect(sideCheckpoint).toMatchObject({
@@ -1491,6 +1493,12 @@ describe("AgentDatabase", () => {
     expect(database.listContextMessages(sideConversation.id).find(
       (message) => message.sequence === sideCheckpoint?.coveredThroughSequence
     )?.content).toBe("主对话已有回复");
+    expect(database.listContextMessages(sideConversation.id)
+      .filter((message) => message.sequence > (sideCheckpoint?.coveredThroughSequence ?? 0))
+      .map((message) => message.content)).toEqual([
+        "压缩之后的新消息",
+        "压缩之后的新回复",
+      ]);
 
     const sideRun = database.createRunWithUserMessage(
       sideConversation.id,
@@ -1499,7 +1507,7 @@ describe("AgentDatabase", () => {
     );
     database.finishRun(sideRun.runId, "completed", null);
     expect(database.listModelMessages(mainConversation.id)).toHaveLength(4);
-    expect(database.listModelMessages(sideConversation.id)).toHaveLength(5);
+    expect(database.listModelMessages(sideConversation.id)).toHaveLength(4);
 
     const deletionTask = database.createConversationDeletionTask(mainConversation.id);
     database.completeConversationDeletionTask(deletionTask.id);
