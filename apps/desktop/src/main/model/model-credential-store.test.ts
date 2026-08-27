@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { safeStorage } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ModelApiFormat } from "@agent/protocol";
 
@@ -66,6 +67,7 @@ function requestHeader(init: RequestInit | undefined, name: string): string | nu
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
@@ -75,6 +77,35 @@ afterEach(async () => {
 });
 
 describe("ModelCredentialStore", () => {
+  it("reads context metadata without decrypting the provider credential", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-credentials-"));
+    temporaryDirectories.push(directory);
+    const store = new ModelCredentialStore(path.join(directory, "model-credentials.json"));
+    const status = store.saveConfiguration({
+      apiKey: "test-key",
+      apiFormat: "openai-responses",
+      baseUrl: "https://example.test/v1",
+      models: [{
+        contextWindow: 128_000,
+        displayName: "测试模型",
+        modelId: "test-model",
+        reasoningOptions: [],
+      }],
+      providerName: "测试供应商",
+    });
+    const providerId = status.providerId;
+    if (providerId === null) throw new Error("Expected a saved provider.");
+    const decrypt = vi.spyOn(safeStorage, "decryptString").mockImplementation(() => {
+      throw new Error("credential is unavailable");
+    });
+
+    expect(store.getContextConfiguration(providerId, "test-model")).toMatchObject({
+      contextWindow: 128_000,
+      modelId: "test-model",
+    });
+    expect(decrypt).not.toHaveBeenCalled();
+  });
+
   it.each(CONNECTION_TEST_CASES)("tests a configured $apiFormat model through its adapter", async ({
     apiFormat,
     baseUrl,

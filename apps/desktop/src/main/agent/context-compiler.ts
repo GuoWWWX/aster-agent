@@ -24,6 +24,7 @@ export type ContextCompilerInput = {
   conversationId: string;
   includeImageData: boolean;
   outputReserveTokens: number;
+  estimatedSkillCatalogTokens: number;
   /** Capacity reserved for the mutable task list that can appear mid-Run. */
   reservedTaskListTokens?: number;
   reservedSkillTokens: number;
@@ -96,6 +97,7 @@ export class ContextCompiler {
         input.contextWindowTokens,
       ),
       estimatedSystemTokens: estimateMessageTokens(input.systemMessage).contentTokens,
+      estimatedSkillCatalogTokens: input.estimatedSkillCatalogTokens,
       estimatedToolDefinitionTokens: estimateContextTokens(JSON.stringify(input.toolDefinitions)),
       outputReserveTokens: input.outputReserveTokens,
       relevantMessages,

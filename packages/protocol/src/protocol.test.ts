@@ -463,13 +463,16 @@ describe("protocol bootstrap contract", () => {
         compressionThresholdTokens: 64_000,
         estimatedConversationTokens: 120,
         estimatedInputTokens: 260,
+        estimatedSkillCatalogTokens: 10,
         estimatedSystemTokens: 40,
+        estimatedTaskListTokens: 0,
         estimatedToolDefinitionTokens: 60,
         estimatedToolTokens: 40,
         historyCharacters: 480,
         includedMessageCount: 3,
         omittedMessageCount: 0,
         outputReserveTokens: 8192,
+        skillReserveTokens: 20,
       }).estimatedInputTokens,
     ).toBe(260);
   });

@@ -1,8 +1,4 @@
-import {
-  CONTEXT_MESSAGE_OVERHEAD_TOKENS,
-  estimateContextTokens,
-  type ConversationContextUsage,
-} from "@agent/protocol";
+import { type ConversationContextUsage } from "@agent/protocol";
 import type { CSSProperties, ReactElement } from "react";
 
 import {
@@ -15,34 +11,48 @@ import "./context-usage-indicator.css";
 type ContextPressure = "normal" | "warning" | "critical" | "unknown";
 
 type ContextUsageIndicatorProps = {
-  composerValue: string;
   contextWindowTokens: number;
   modelName: string | null;
   usage: ConversationContextUsage | null;
 };
 
+type ContextUsageRow = {
+  level: 0 | 1;
+  label: string;
+  tokens: number;
+};
+
 export function ContextUsageIndicator({
-  composerValue,
   contextWindowTokens,
   modelName,
   usage,
 }: ContextUsageIndicatorProps): ReactElement {
-  const pendingInputTokens = estimatePendingInputTokens(composerValue);
-  const estimatedInputTokens = (usage?.estimatedInputTokens ?? 0) + pendingInputTokens;
+  const skillReserveTokens = usage?.skillReserveTokens ?? 0;
+  const usedInputTokens = Math.max((usage?.estimatedInputTokens ?? 0) - skillReserveTokens, 0);
   const outputReserveTokens = usage?.outputReserveTokens ?? 0;
-  const occupiedTokens = estimatedInputTokens + outputReserveTokens;
+  const reservedTokens = skillReserveTokens + outputReserveTokens;
+  const budgetedTokens = usedInputTokens + reservedTokens;
   const compressionThresholdTokens = usage?.compressionThresholdTokens ?? 0;
-  const percentage = contextWindowTokens > 0
-    ? Math.min(100, Math.round((occupiedTokens / contextWindowTokens) * 100))
+  const capacityTokens = contextWindowTokens > 0
+    ? contextWindowTokens
+    : compressionThresholdTokens;
+  const compressionLimitTokens = compressionThresholdTokens > 0
+    ? compressionThresholdTokens
+    : capacityTokens;
+  const percentage = capacityTokens > 0
+    ? Math.min(100, Math.round((usedInputTokens / capacityTokens) * 100))
     : 0;
   const pressure = usage === null
     ? "unknown"
-    : getContextPressure(compressionThresholdTokens, occupiedTokens);
-  const availableTokens = Math.max(contextWindowTokens - occupiedTokens, 0);
+    : getContextPressure(compressionThresholdTokens, budgetedTokens);
+  const remainingBeforeCompressionTokens = Math.max(compressionLimitTokens - budgetedTokens, 0);
+  const rows = usage === null
+    ? []
+    : getContextUsageRows(usage);
   const buttonLabel = contextButtonLabel({
     contextWindowTokens,
     compressionThresholdTokens,
-    occupiedTokens,
+    usedInputTokens,
     percentage,
     pressure,
     usage,
@@ -86,38 +96,41 @@ export function ContextUsageIndicator({
         {usage === null ? (
           <p className="context-usage-indicator__loading">正在统计上下文…</p>
         ) : (
-          <dl className="context-usage-indicator__details">
-            <UsageRow label="输入上下文（估算）" value={formatTokenCount(estimatedInputTokens)} />
-            {pendingInputTokens > 0 ? (
-              <UsageRow label="当前输入" value={formatTokenCount(pendingInputTokens)} />
-            ) : null}
-            <UsageRow label="回复预留" value={formatTokenCount(outputReserveTokens)} />
-            <UsageRow
-              label="模型窗口"
-              value={contextWindowTokens > 0 ? formatTokenCount(contextWindowTokens) : "未配置"}
-            />
-            {contextWindowTokens > 0 ? (
-              <UsageRow label="剩余可用" value={formatTokenCount(availableTokens)} />
-            ) : null}
-            <UsageRow
-              label="自动压缩阈值"
-              value={compressionThresholdLabel(usage)}
-            />
-            <UsageRow label="系统指令" value={formatTokenCount(usage.estimatedSystemTokens)} />
-            <UsageRow label="会话历史" value={formatTokenCount(usage.estimatedConversationTokens)} />
-            {usage.estimatedAttachmentTokens > 0 ? (
-              <UsageRow label="文件与图片" value={formatTokenCount(usage.estimatedAttachmentTokens)} />
-            ) : null}
-            {usage.estimatedReferenceTokens > 0 ? (
-              <UsageRow label="引用对话" value={formatTokenCount(usage.estimatedReferenceTokens)} />
-            ) : null}
-            {usage.estimatedToolTokens > 0 ? (
-              <UsageRow label="工具结果与调用" value={formatTokenCount(usage.estimatedToolTokens)} />
-            ) : null}
-            {usage.estimatedToolDefinitionTokens > 0 ? (
-              <UsageRow label="工具定义" value={formatTokenCount(usage.estimatedToolDefinitionTokens)} />
-            ) : null}
-          </dl>
+          <>
+            <section className="context-usage-indicator__budget" aria-label="当前上下文预算">
+              <div>
+                <p>{capacityTokens > 0 ? "已使用 / 总容量" : "已使用"}</p>
+                <strong>
+                  {capacityTokens > 0
+                    ? `${formatTokenCount(usedInputTokens)} / ${formatTokenCount(capacityTokens)}`
+                    : formatTokenCount(usedInputTokens)}
+                </strong>
+              </div>
+              {compressionLimitTokens > 0 ? (
+                <div>
+                  <p>{compressionThresholdTokens > 0 ? "距自动压缩" : "可用余量"}</p>
+                  <strong>{formatTokenCount(remainingBeforeCompressionTokens)}</strong>
+                </div>
+              ) : null}
+            </section>
+
+            <p className="context-usage-indicator__estimate-note">
+              Token 为本地估算，模型服务端的实际计量可能略有差异。
+            </p>
+
+            <section className="context-usage-indicator__section">
+              <dl className="context-usage-indicator__details">
+                {rows.map((row) => (
+                  <UsageRow
+                    key={row.label}
+                    label={row.label}
+                    level={row.level}
+                    value={formatTokenCount(row.tokens)}
+                  />
+                ))}
+              </dl>
+            </section>
+          </>
         )}
 
         <p className="context-usage-indicator__status" data-pressure={pressure}>
@@ -133,20 +146,110 @@ export function ContextUsageIndicator({
   );
 }
 
-function UsageRow({ label, value }: { label: string; value: string }): ReactElement {
+function UsageRow({
+  label,
+  level,
+  value,
+}: {
+  label: string;
+  level: 0 | 1;
+  value: string;
+}): ReactElement {
   return (
-    <div>
+    <div data-level={level}>
       <dt>{label}</dt>
       <dd>{value}</dd>
     </div>
   );
 }
 
-function estimatePendingInputTokens(content: string): number {
-  const trimmed = content.trim();
-  return trimmed.length === 0
-    ? 0
-    : estimateContextTokens(trimmed) + CONTEXT_MESSAGE_OVERHEAD_TOKENS;
+export function getContextUsageRows(
+  usage: ConversationContextUsage,
+): ContextUsageRow[] {
+  const systemMessageTokens = Math.max(
+    usage.estimatedSystemTokens - usage.skillReserveTokens - usage.estimatedTaskListTokens,
+    0,
+  );
+  const baseSystemTokens = Math.max(
+    systemMessageTokens - usage.estimatedSkillCatalogTokens,
+    0,
+  );
+  const systemContextTokens = systemMessageTokens
+    + usage.estimatedTaskListTokens
+    + usage.estimatedToolDefinitionTokens;
+  const currentConversationTokens = usage.estimatedConversationTokens
+    + usage.estimatedToolTokens
+    + usage.estimatedAttachmentTokens
+    + usage.estimatedReferenceTokens;
+  const reserveTokens = usage.outputReserveTokens + usage.skillReserveTokens;
+
+  return [
+    {
+      label: "系统上下文",
+      level: 0,
+      tokens: systemContextTokens,
+    },
+    {
+      label: "基础系统提示词",
+      level: 1,
+      tokens: baseSystemTokens,
+    },
+    {
+      label: "内置工具",
+      level: 1,
+      tokens: usage.estimatedToolDefinitionTokens,
+    },
+    {
+      label: "MCP 工具",
+      level: 1,
+      tokens: 0,
+    },
+    {
+      label: "Skill 目录",
+      level: 1,
+      tokens: usage.estimatedSkillCatalogTokens,
+    },
+    {
+      label: "当前任务清单",
+      level: 1,
+      tokens: usage.estimatedTaskListTokens,
+    },
+    {
+      label: "当前有效会话",
+      level: 0,
+      tokens: currentConversationTokens,
+    },
+    {
+      label: "对话文本与压缩摘要",
+      level: 1,
+      tokens: usage.estimatedConversationTokens,
+    },
+    {
+      label: "工具调用与结果",
+      level: 1,
+      tokens: usage.estimatedToolTokens,
+    },
+    {
+      label: "文件、图片与引用",
+      level: 1,
+      tokens: usage.estimatedAttachmentTokens + usage.estimatedReferenceTokens,
+    },
+    {
+      label: "预留容量",
+      level: 0,
+      tokens: reserveTokens,
+    },
+    {
+      label: "模型回复",
+      level: 1,
+      tokens: usage.outputReserveTokens,
+    },
+    {
+      label: "Skill 加载",
+      level: 1,
+      tokens: usage.skillReserveTokens,
+    },
+  ];
 }
 
 function getContextPressure(
@@ -169,14 +272,14 @@ function getContextPressure(
 function contextButtonLabel({
   contextWindowTokens,
   compressionThresholdTokens,
-  occupiedTokens,
+  usedInputTokens,
   percentage,
   pressure,
   usage,
 }: {
   contextWindowTokens: number;
   compressionThresholdTokens: number;
-  occupiedTokens: number;
+  usedInputTokens: number;
   percentage: number;
   pressure: ContextPressure;
   usage: ConversationContextUsage | null;
@@ -189,10 +292,13 @@ function contextButtonLabel({
     : pressure === "warning"
       ? "接近压缩阈值"
       : "上下文充足";
-  const windowLabel = contextWindowTokens > 0
-    ? `${formatTokenCount(occupiedTokens)} / ${formatTokenCount(contextWindowTokens)}（${percentage}%）`
-    : formatTokenCount(occupiedTokens);
-  return `${status}：${windowLabel}，阈值 ${formatTokenCount(compressionThresholdTokens)}，点击查看明细`;
+  const capacityTokens = contextWindowTokens > 0
+    ? contextWindowTokens
+    : compressionThresholdTokens;
+  const windowLabel = capacityTokens > 0
+    ? `${formatTokenCount(usedInputTokens)} / ${formatTokenCount(capacityTokens)}（${percentage}%）`
+    : formatTokenCount(usedInputTokens);
+  return `${status}：已使用 ${windowLabel}，点击查看明细`;
 }
 
 function contextStatusMessage(
@@ -216,11 +322,6 @@ function contextStatusMessage(
     return "上下文充足；较早历史已不再纳入本轮请求。";
   }
   return "上下文充足。";
-}
-
-function compressionThresholdLabel(usage: ConversationContextUsage): string {
-  const mode = usage.compressionMode === "percentage" ? "百分比" : "Token";
-  return `${mode} · ${formatTokenCount(usage.compressionThresholdTokens)}`;
 }
 
 function formatTokenCount(value: number): string {

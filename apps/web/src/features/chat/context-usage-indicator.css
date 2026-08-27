@@ -1,3 +1,4 @@
+/* CSS trigger #2: component state is exposed through data attributes and the ring uses a pseudo-element. */
 .context-usage-indicator__trigger {
   display: grid;
   width: 28px;
@@ -54,7 +55,7 @@
 }
 
 .context-usage-indicator__content {
-  width: min(306px, calc(100vw - 24px));
+  width: min(390px, calc(100vw - 24px));
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
   background: var(--app-panel);
@@ -126,14 +127,80 @@
   margin: 0;
 }
 
+.context-usage-indicator__budget {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  margin: 0 0 8px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-small);
+  background: var(--app-panel-subtle);
+  padding: 7px 8px;
+}
+
+.context-usage-indicator__budget > div {
+  min-width: 0;
+}
+
+.context-usage-indicator__budget > div > p,
+.context-usage-indicator__budget > div > strong,
+.context-usage-indicator__estimate-note {
+  margin: 0;
+}
+
+.context-usage-indicator__budget > div > p,
+.context-usage-indicator__estimate-note {
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-auxiliary);
+  line-height: 1.4;
+}
+
+.context-usage-indicator__budget > div > strong {
+  display: block;
+  color: var(--app-foreground);
+  font-size: var(--app-font-size-subtitle);
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+}
+
+.context-usage-indicator__estimate-note {
+  margin: 0 0 9px;
+}
+
+.context-usage-indicator__section {
+  border-top: 1px solid var(--app-border);
+  padding-top: 7px;
+}
+
 .context-usage-indicator__details > div {
   display: flex;
   min-height: 18px;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   color: var(--app-muted-foreground);
   font-size: var(--app-font-size-control);
+  line-height: 16px;
+}
+
+.context-usage-indicator__details > div[data-level="0"] {
+  color: var(--app-foreground);
+  font-weight: 600;
+}
+
+.context-usage-indicator__details > div[data-level="0"]:not(:first-child) {
+  margin-top: 4px;
+  border-top: 1px solid var(--app-border);
+  padding-top: 7px;
+}
+
+.context-usage-indicator__details > div[data-level="1"] dt {
+  padding-left: 14px;
+}
+
+.context-usage-indicator__details > div[data-level="1"] dd {
+  color: var(--app-muted-foreground);
+  font-weight: 500;
 }
 
 .context-usage-indicator__details dt,
@@ -146,6 +213,10 @@
   color: var(--app-foreground);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
+}
+
+.context-usage-indicator__details dt {
+  min-width: 0;
 }
 
 .context-usage-indicator__loading {

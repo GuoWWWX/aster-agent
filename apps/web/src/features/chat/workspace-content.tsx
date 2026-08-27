@@ -2178,7 +2178,6 @@ export function ConversationWorkspace({
               <div className="conversation-workspace__composer-actions">
                 {showContextUsage ? (
                   <ContextUsageIndicator
-                    composerValue={composerValue}
                     contextWindowTokens={activeModel?.contextWindow ?? 0}
                     modelName={activeModel?.displayName ?? null}
                     usage={contextUsage}

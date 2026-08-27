@@ -60,6 +60,7 @@ type BuildManagedContextInput = {
   checkpoint: ConversationContextCheckpoint | null;
   compressionMode: ConversationContextUsage["compressionMode"];
   compressionThresholdTokens: number;
+  estimatedSkillCatalogTokens?: number;
   estimatedSystemTokens: number;
   estimatedToolDefinitionTokens: number;
   outputReserveTokens: number;
@@ -329,7 +330,9 @@ function calculateUsage(
       estimatedAttachmentTokens +
       estimatedToolTokens +
       input.estimatedToolDefinitionTokens,
+    estimatedSkillCatalogTokens: Math.max(0, input.estimatedSkillCatalogTokens ?? 0),
     estimatedSystemTokens,
+    estimatedTaskListTokens: reservedTaskListTokens,
     estimatedToolDefinitionTokens: input.estimatedToolDefinitionTokens,
     estimatedToolTokens,
     historyCharacters:
@@ -345,7 +348,8 @@ function calculateUsage(
       (relevantMessage === null ? 0 : messageCharacters(relevantMessage)),
     includedMessageCount: retained.length + (relevantMessage === null ? 0 : 1),
     omittedMessageCount: input.sourceMessages.length - retained.length,
-    outputReserveTokens: input.outputReserveTokens
+    outputReserveTokens: input.outputReserveTokens,
+    skillReserveTokens: reservedSkillTokens
   };
 }
 

@@ -4014,6 +4014,35 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
+  it("calculates context usage without reading the provider API key", () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => {
+          throw new Error("API key decryption must not run for context usage.");
+        },
+        getContextConfiguration: () => ({
+          apiFormat: "openai-responses",
+          baseUrl: "https://example.test/v1",
+          contextWindow: 100_000,
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+    );
+
+    expect(runtime.getContextUsage({
+      conversationId: conversation.id,
+      permissionMode: "ask_before_changes",
+    }).compressionThresholdTokens).toBe(80_000);
+    database.close();
+  });
+
   it("prefers the selected model compression threshold over the global default", () => {
     const database = new AgentDatabase(":memory:");
     const projects = new ProjectRegistry(database);

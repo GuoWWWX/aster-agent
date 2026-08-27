@@ -48,7 +48,10 @@ import {
 
 import { reportMainError, toMainAgentError } from "../errors/agent-error.js";
 import { toolErrorContent } from "../errors/tool-error.js";
-import type { ModelConfiguration } from "../model/model-contracts.js";
+import type {
+  ModelConfiguration,
+  ModelContextConfiguration,
+} from "../model/model-contracts.js";
 import {
   type CompleteTurnInput,
   type ModelMessage,
@@ -177,6 +180,10 @@ function chunkToolCalls(
 
 type ModelConfigurationProvider = {
   getConfiguration(providerId?: string, modelId?: string): ModelConfiguration;
+  getContextConfiguration?: (
+    providerId?: string,
+    modelId?: string,
+  ) => ModelContextConfiguration;
   setModelConnectionStatus?: (
     providerId: string,
     modelId: string,
@@ -206,7 +213,7 @@ const defaultContextCompressionConfigurationProvider: ContextCompressionConfigur
 };
 
 function resolveContextCompressionConfiguration(
-  modelConfiguration: ModelConfiguration,
+  modelConfiguration: Pick<ModelConfiguration, "contextCompression">,
   globalConfiguration: ContextCompressionConfiguration
 ): ContextCompressionThreshold {
   return modelConfiguration.contextCompression ?? globalConfiguration;
@@ -1715,7 +1722,10 @@ export class AgentRuntime {
     const input = conversationContextUsageInputSchema.parse(rawInput);
     const conversation = this.database.getConversation(input.conversationId);
     const workspace = this.resolveConversationWorkspace(conversation);
-    const configuration = this.credentials.getConfiguration(input.providerId, input.modelId);
+    const configuration = this.credentials.getContextConfiguration?.(
+      input.providerId,
+      input.modelId,
+    ) ?? this.credentials.getConfiguration(input.providerId, input.modelId);
 
     const context = this.buildContext(
       input.conversationId,
@@ -3729,6 +3739,11 @@ export class AgentRuntime {
   ): BuiltContext {
     const conversation = this.database.getConversation(conversationId);
     const agent = this.database.getConversationAgentBinding(conversationId);
+    const skillCatalogPrompt = this.skillRuntime === null
+      ? null
+      : this.skillRuntime.getCatalogPrompt(
+          this.skillRuntimeContext(conversation, workspace?.id),
+        ) ?? "当前没有满足范围和依赖条件的可用 Skill。";
     const systemMessage: ModelMessage = {
       attachments: [],
       content: [
@@ -3762,11 +3777,7 @@ export class AgentRuntime {
             `授权根目录：${workspace.rootPath}`,
             "所有文件工具的 path 参数均使用相对于授权根目录的 POSIX 路径；空路径表示根目录。不要调用工具查询授权根目录。"
           ]),
-        ...(this.skillRuntime === null
-          ? []
-          : [this.skillRuntime.getCatalogPrompt(
-              this.skillRuntimeContext(conversation, workspace?.id),
-            ) ?? "当前没有满足范围和依赖条件的可用 Skill。"])
+        ...(skillCatalogPrompt === null ? [] : [skillCatalogPrompt])
       ].join("\n"),
       role: "system",
       toolCallId: null,
@@ -3784,6 +3795,9 @@ export class AgentRuntime {
       conversationId,
       includeImageData,
       outputReserveTokens: MAX_OUTPUT_TOKENS,
+      estimatedSkillCatalogTokens: skillCatalogPrompt === null
+        ? 0
+        : estimateContextTokens(skillCatalogPrompt),
       reservedSkillTokens,
       reservedTaskListTokens,
       systemMessage,

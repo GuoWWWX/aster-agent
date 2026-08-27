@@ -26,10 +26,10 @@ import {
   writeJsonDocument,
 } from "../settings/json-configuration-file.js";
 import { ModelAdapterRegistry } from "./model-adapter-registry.js";
-import type { ModelConfiguration } from "./model-contracts.js";
+import type { ModelConfiguration, ModelContextConfiguration } from "./model-contracts.js";
 import { ModelResponseError } from "./model-request-error.js";
 
-export type { ModelConfiguration } from "./model-contracts.js";
+export type { ModelConfiguration, ModelContextConfiguration } from "./model-contracts.js";
 
 const storedModelBaseSchema = z
   .object({
@@ -195,6 +195,14 @@ const storedConfigurationV5Schema = z
   });
 
 type StoredConfiguration = z.infer<typeof storedConfigurationV5Schema>;
+type StoredProvider = z.infer<typeof storedProviderSchema>;
+type StoredModel = z.infer<typeof storedModelSchema>;
+
+type SelectedStoredModel = {
+  model: StoredModel;
+  modelId: string;
+  provider: StoredProvider;
+};
 
 function normalizeBaseUrl(value: string): string {
   return new URL(value.trim()).toString().replace(/\/$/, "");
@@ -369,38 +377,55 @@ export class ModelCredentialStore {
   }
 
   public getConfiguration(providerId?: string, modelId?: string): ModelConfiguration {
-    const stored = this.readStoredConfiguration();
+    const selected = this.getSelectedModel(providerId, modelId);
     if (!safeStorage.isEncryptionAvailable()) {
       throw new Error("Operating-system credential decryption is unavailable.");
     }
-    const selectedProvider = this.getProvider(stored, providerId);
+    return {
+      ...this.toContextConfiguration(selected),
+      apiKey: safeStorage.decryptString(
+        Buffer.from(selected.provider.encryptedApiKey, "base64")
+      ),
+    };
+  }
+
+  public getContextConfiguration(
+    providerId?: string,
+    modelId?: string,
+  ): ModelContextConfiguration {
+    return this.toContextConfiguration(this.getSelectedModel(providerId, modelId));
+  }
+
+  private getSelectedModel(providerId?: string, modelId?: string): SelectedStoredModel {
+    const stored = this.readStoredConfiguration();
+    const provider = this.getProvider(stored, providerId);
     const selectedModelId = modelId ?? (
-      selectedProvider.id === stored.defaultProviderId
+      provider.id === stored.defaultProviderId
         ? stored.defaultModelId
-        : selectedProvider.models[0]?.modelId
+        : provider.models[0]?.modelId
     );
     if (selectedModelId === undefined) {
       throw new Error("The selected provider has no configured models.");
     }
-    const selectedModel = selectedProvider.models.find(
-      (model) => model.modelId === selectedModelId
-    );
-    if (selectedModel === undefined) {
+    const model = provider.models.find((candidate) => candidate.modelId === selectedModelId);
+    if (model === undefined) {
       throw new Error("The selected model is not configured.");
     }
+    return { model, modelId: selectedModelId, provider };
+  }
+
+  private toContextConfiguration(selected: SelectedStoredModel): ModelContextConfiguration {
+    const { model, modelId, provider } = selected;
     return {
-      apiKey: safeStorage.decryptString(
-        Buffer.from(selectedProvider.encryptedApiKey, "base64")
-      ),
-      apiFormat: selectedProvider.apiFormat,
-      baseUrl: selectedProvider.baseUrl,
-      ...(selectedModel.contextCompression === undefined
+      apiFormat: provider.apiFormat,
+      baseUrl: provider.baseUrl,
+      ...(model.contextCompression === undefined
         ? {}
-        : { contextCompression: selectedModel.contextCompression }),
-      contextWindow: selectedModel.contextWindow,
-      modelId: selectedModelId,
-      reasoningOptions: selectedModel.reasoningOptions.filter((option) =>
-        isReasoningOptionSupportedByApiFormat(selectedProvider.apiFormat, option, selectedModel.modelId)
+        : { contextCompression: model.contextCompression }),
+      contextWindow: model.contextWindow,
+      modelId,
+      reasoningOptions: model.reasoningOptions.filter((option) =>
+        isReasoningOptionSupportedByApiFormat(provider.apiFormat, option, model.modelId)
       )
     };
   }
