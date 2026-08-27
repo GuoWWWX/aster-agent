@@ -1662,17 +1662,6 @@ button.tool-file-change__path:hover {
   display: block;
 }
 
-.conversation-task-list__task-reason {
-  color: #64748b;
-  font-size: var(--app-font-size-caption);
-}
-
-.conversation-task-list__summary-reason {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .conversation-task-list__status {
   display: inline-flex;
   width: 16px;
@@ -2726,10 +2715,6 @@ button.tool-file-change__path:hover {
 [data-theme="dark"] .conversation-task-list__task,
 [data-theme="dark"] .conversation-task-list__file {
   color: #cbd5e1;
-}
-
-[data-theme="dark"] .conversation-task-list__task-reason {
-  color: #94a3b8;
 }
 
 @media (max-width: 720px) {
