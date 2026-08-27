@@ -4,6 +4,101 @@ import { AgentDatabase, type SubagentTask } from "../storage/agent-database.js";
 import { SubagentTool } from "./subagent-tool.js";
 
 describe("SubagentTool", () => {
+  it("lists recently healthy models and forwards an explicit Subagent selection", async () => {
+    const database = new AgentDatabase(":memory:");
+    const parent = database.createConversation(null);
+    const providerId = crypto.randomUUID();
+    const tool = new SubagentTool(database, () => ({
+      baseUrl: "https://example.test/v1",
+      configured: true,
+      modelId: "older-model",
+      models: [
+        {
+          connectionStatus: "healthy",
+          connectionStatusUpdatedAt: "2026-08-26T00:00:00.000Z",
+          contextWindow: 128_000,
+          displayName: "较早可用",
+          lastSuccessfulAt: "2026-08-26T00:00:00.000Z",
+          modelId: "older-model",
+          providerApiFormat: "openai-responses",
+          providerBaseUrl: "https://example.test/v1",
+          providerId,
+          providerName: "测试供应商",
+          reasoningOptions: [],
+        },
+        {
+          connectionStatus: "healthy",
+          connectionStatusUpdatedAt: "2026-08-27T00:00:00.000Z",
+          contextWindow: 128_000,
+          displayName: "最近可用",
+          lastSuccessfulAt: "2026-08-27T00:00:00.000Z",
+          modelId: "recent-model",
+          providerApiFormat: "openai-responses",
+          providerBaseUrl: "https://example.test/v1",
+          providerId,
+          providerName: "测试供应商",
+          reasoningOptions: [{ kind: "effort", value: "high" }],
+        },
+      ],
+      providerId,
+      recentSelection: null,
+      supportsStreaming: true,
+      supportsTools: true,
+    }));
+    const listResult = await tool.execute({
+      arguments: "{}",
+      conversationId: parent.id,
+      signal: new AbortController().signal,
+      spawn: () => {
+        throw new Error("Spawn is not used while listing models.");
+      },
+      toolName: "list_models",
+    });
+    expect(JSON.parse(listResult.content)).toMatchObject({
+      value: {
+        models: [
+          { modelId: "recent-model" },
+          { modelId: "older-model" },
+        ],
+      },
+    });
+
+    let selectedModelId: string | undefined;
+    const spawnResult = await tool.execute({
+      arguments: JSON.stringify({
+        modelId: "recent-model",
+        providerId,
+        reasoning: { kind: "effort", value: "high" },
+        task: "检查实现",
+      }),
+      conversationId: parent.id,
+      signal: new AbortController().signal,
+      spawn: (_task, _title, _agentId, selection) => {
+        selectedModelId = selection?.modelId;
+        return {
+          childConversationId: crypto.randomUUID(),
+          completedAt: null,
+          createdAt: "2026-08-27T00:00:00.000Z",
+          error: null,
+          id: crypto.randomUUID(),
+          parentConversationId: parent.id,
+          result: null,
+          resultMessageId: null,
+          sourceRunId: crypto.randomUUID(),
+          status: "queued",
+          targetRunId: null,
+          task: "检查实现",
+          title: "检查实现",
+          updatedAt: "2026-08-27T00:00:00.000Z",
+        };
+      },
+      toolName: "spawn_subagent",
+    });
+    expect(spawnResult.isError).toBe(false);
+    expect(selectedModelId).toBe("recent-model");
+    database.close();
+  });
+
   it("accepts empty JSON arguments for list_subagents", async () => {
     const database = new AgentDatabase(":memory:");
     const conversation = database.createConversation(null);

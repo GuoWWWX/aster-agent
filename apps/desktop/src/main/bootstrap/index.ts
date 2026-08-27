@@ -210,6 +210,7 @@ async function initializeServices(): Promise<DesktopServices> {
     database,
     threadLog,
     eventProjector,
+    credentials,
   );
   const threadLogLegacyImporter = new ThreadLogLegacyImporter(
     database,

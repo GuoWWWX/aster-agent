@@ -6,6 +6,8 @@ import {
   DEFAULT_MODEL_CATALOG,
   DEFAULT_TERMINAL_CONFIGURATION,
   estimateContextTokens,
+  isReasoningOptionEnabled,
+  modelReasoningOptionKey,
   mcpServerConfigurationSchema,
   parseSkillMarkdown,
   resolveContextCompressionThresholdTokens,
@@ -71,6 +73,7 @@ import {
   type SendConversationMessageInput,
   type UpdatePendingConversationMessageInput,
   type SetConversationArchivedInput,
+  type SetConversationModelSelectionInput,
   type SetConversationProjectInput,
   type SetConversationPinnedInput,
   type SetProjectPinnedInput,
@@ -119,6 +122,7 @@ const MOCK_MODEL_STATUS: ModelRuntimeStatus = {
   modelId: null,
   models: [],
   providerId: null,
+  recentSelection: null,
   supportsStreaming: false,
   supportsTools: false,
 };
@@ -394,6 +398,7 @@ export class MockAgentClient implements AgentClient {
       isArchived: false,
       isPinned: false,
       lastRunStatus: null,
+      modelSelection: input.modelSelection ?? this.modelStatus.recentSelection,
       parentConversationId: null,
       pinOrder: null,
       projectId,
@@ -465,6 +470,7 @@ export class MockAgentClient implements AgentClient {
       isArchived: false,
       isPinned: false,
       lastRunStatus: null,
+      modelSelection: source.modelSelection,
       parentConversationId: isSiblingFork ? null : source.id,
       pinOrder: null,
       projectId: source.projectId,
@@ -1159,6 +1165,38 @@ export class MockAgentClient implements AgentClient {
     return Promise.resolve({ ...conversation });
   }
 
+  public setConversationModelSelection(
+    input: SetConversationModelSelectionInput,
+  ): Promise<ConversationSummary> {
+    const conversation = this.conversations.find(
+      (candidate) => candidate.id === input.conversationId,
+    );
+    if (conversation === undefined) {
+      return Promise.reject(new Error("Conversation was not found."));
+    }
+    const model = this.modelStatus.models.find((candidate) =>
+      candidate.providerId === input.modelSelection.providerId
+      && candidate.modelId === input.modelSelection.modelId
+    );
+    if (model === undefined) {
+      return Promise.reject(new Error("The selected model is not configured."));
+    }
+    if (input.modelSelection.reasoning !== null) {
+      const reasoningKey = modelReasoningOptionKey(input.modelSelection.reasoning);
+      if (!model.reasoningOptions.some((option) =>
+        modelReasoningOptionKey(option) === reasoningKey && isReasoningOptionEnabled(option)
+      )) {
+        return Promise.reject(new Error("The selected reasoning option is not configured."));
+      }
+    }
+    conversation.modelSelection = structuredClone(input.modelSelection);
+    if (conversation.threadKind !== "subagent") {
+      this.modelStatus.recentSelection = structuredClone(input.modelSelection);
+    }
+    conversation.updatedAt = new Date().toISOString();
+    return Promise.resolve({ ...conversation });
+  }
+
   public renameProject(input: RenameProjectInput): Promise<ProjectSummary> {
     if (this.project?.id !== input.projectId) {
       return Promise.reject(new Error("The mock project is unavailable."));
@@ -1553,6 +1591,12 @@ export class MockAgentClient implements AgentClient {
         connectionStatus: this.modelStatus.models.find((current) =>
           current.providerId === providerId && current.modelId === model.modelId
         )?.connectionStatus ?? "unknown",
+        connectionStatusUpdatedAt: this.modelStatus.models.find((current) =>
+          current.providerId === providerId && current.modelId === model.modelId
+        )?.connectionStatusUpdatedAt ?? null,
+        lastSuccessfulAt: this.modelStatus.models.find((current) =>
+          current.providerId === providerId && current.modelId === model.modelId
+        )?.lastSuccessfulAt ?? null,
         providerApiFormat: input.apiFormat,
          providerBaseUrl: input.baseUrl,
          providerId,
@@ -1584,6 +1628,7 @@ export class MockAgentClient implements AgentClient {
       modelId: defaultModel.modelId,
       models,
       providerId: defaultModel.providerId,
+      recentSelection: this.modelStatus.recentSelection,
       supportsStreaming: true,
       supportsTools: true
     };
@@ -1736,11 +1781,17 @@ export class MockAgentClient implements AgentClient {
     modelId: string,
     connectionStatus: ModelProfile["connectionStatus"],
   ): void {
+    const updatedAt = new Date().toISOString();
     this.modelStatus = {
       ...this.modelStatus,
       models: this.modelStatus.models.map((model) => (
         model.providerId === providerId && model.modelId === modelId
-          ? { ...model, connectionStatus }
+          ? {
+              ...model,
+              connectionStatus,
+              connectionStatusUpdatedAt: updatedAt,
+              ...(connectionStatus === "healthy" ? { lastSuccessfulAt: updatedAt } : {}),
+            }
           : model
       )),
     };

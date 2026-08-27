@@ -139,6 +139,7 @@ function toProjectSession(conversation: ConversationSummary): ProjectSession {
     isArchived: conversation.isArchived,
     isPinned: conversation.isPinned,
     lastRunStatus: conversation.lastRunStatus,
+    modelSelection: conversation.modelSelection,
     parentConversationId: conversation.parentConversationId,
     pinOrder: conversation.pinOrder ?? null,
     projectId: conversation.projectId,

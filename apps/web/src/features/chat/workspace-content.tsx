@@ -603,9 +603,11 @@ export function ConversationWorkspace({
       : isMockRuntime
         ? [{
           connectionStatus: "unknown",
+          connectionStatusUpdatedAt: null,
           contextWindow: 0,
           displayName: "mock-agent",
           modelId: "mock-agent",
+          lastSuccessfulAt: null,
           providerApiFormat: "openai-chat-completions",
           providerBaseUrl: "https://mock.invalid/v1",
           providerId: "00000000-0000-4000-8000-000000000000",
@@ -617,7 +619,11 @@ export function ConversationWorkspace({
   const selectedAgent = enabledAgentProfiles.find((agent) => agent.id === selectedAgentId)
     ?? defaultAgent
     ?? enabledAgentProfiles[0];
+  const inheritedSelection = session.modelSelection ?? modelStatus?.recentSelection ?? null;
   const defaultModel = modelOptions.find(
+    (model) => model.providerId === inheritedSelection?.providerId
+      && model.modelId === inheritedSelection.modelId,
+  ) ?? modelOptions.find(
     (model) => model.providerId === modelStatus?.providerId && model.modelId === modelStatus.modelId,
   ) ?? (isMockRuntime ? modelOptions[0] : undefined);
   const activeModel = modelOptions.find(
@@ -632,6 +638,60 @@ export function ConversationWorkspace({
   const effectiveReasoningOptionKey = selectedReasoningOption === undefined
     ? "auto"
     : selectedReasoningOptionKey;
+
+  useEffect(() => {
+    const selection = session.modelSelection ?? modelStatus?.recentSelection ?? null;
+    setSelectedModelKey(selection === null
+      ? ""
+      : modelKey({ modelId: selection.modelId, providerId: selection.providerId }));
+    setSelectedReasoningOptionKey(selection?.reasoning === null || selection?.reasoning === undefined
+      ? "auto"
+      : modelReasoningOptionKey(selection.reasoning));
+  }, [
+    modelStatus?.recentSelection,
+    session.id,
+    session.modelSelection,
+  ]);
+
+  const persistModelSelection = useCallback(async (
+    model: ModelProfile,
+    reasoning: ModelReasoningOption | null,
+  ): Promise<void> => {
+    try {
+      const conversation = await agentClient.setConversationModelSelection({
+        conversationId: session.id,
+        modelSelection: {
+          modelId: model.modelId,
+          providerId: model.providerId,
+          reasoning,
+        },
+      });
+      onSessionUpdated?.(conversation);
+      setModelStatus((current) => current === null || conversation.threadKind === "subagent"
+        ? current
+        : {
+            ...current,
+            recentSelection: conversation.modelSelection,
+          });
+    } catch (error) {
+      setOperationError(getUserErrorMessage(error, "无法保存对话模型选择"));
+    }
+  }, [agentClient, onSessionUpdated, session.id]);
+
+  const selectModel = useCallback((model: ModelProfile): void => {
+    setSelectedModelKey(modelKey(model));
+    setSelectedReasoningOptionKey("auto");
+    void persistModelSelection(model, null);
+  }, [persistModelSelection]);
+
+  const selectReasoning = useCallback((key: string): void => {
+    setSelectedReasoningOptionKey(key);
+    if (activeModel === undefined) return;
+    const reasoning = key === "auto"
+      ? null
+      : activeReasoningOptions.find((option) => modelReasoningOptionKey(option) === key) ?? null;
+    void persistModelSelection(activeModel, reasoning);
+  }, [activeModel, activeReasoningOptions, persistModelSelection]);
   const referenceWorkspaceId = project?.id
     ?? (session.workspaceRootPath === null ? null : session.id);
   const activeProjectFileMentions = useMemo(
@@ -2184,14 +2244,14 @@ export function ConversationWorkspace({
                         <span>{activeModel?.displayName ?? "未配置模型"}</span>
                       </button>
                     }
-                    onSelect={(model) => setSelectedModelKey(modelKey(model))}
+                    onSelect={selectModel}
                   />
                   <span aria-hidden="true" className="conversation-workspace__model-divider">·</span>
                   <ConversationReasoningControl
                     disabled={isFinishedSubagent || activeModelKey.length === 0}
                     options={activeReasoningOptions}
                     selectedKey={effectiveReasoningOptionKey}
-                    onValueChange={setSelectedReasoningOptionKey}
+                    onValueChange={selectReasoning}
                   />
                 </span>
                 <IconButton

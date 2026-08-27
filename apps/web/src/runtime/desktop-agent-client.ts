@@ -54,6 +54,7 @@ import type {
   SendConversationMessageInput,
   UpdatePendingConversationMessageInput,
   SetConversationArchivedInput,
+  SetConversationModelSelectionInput,
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SetProjectPinnedInput,
@@ -350,6 +351,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
     input: SetConversationProjectInput,
   ): Promise<ConversationSummary> {
     return this.desktopBridge.setConversationProject(input);
+  }
+
+  public setConversationModelSelection(
+    input: SetConversationModelSelectionInput,
+  ): Promise<ConversationSummary> {
+    return this.desktopBridge.setConversationModelSelection(input);
   }
 
   public renameProject(input: RenameProjectInput): Promise<ProjectSummary> {

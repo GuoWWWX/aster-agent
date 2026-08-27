@@ -34,6 +34,47 @@ export const conversationIdSchema = z.string().uuid();
 export const runIdSchema = z.string().uuid();
 export const timelineItemIdSchema = z.string().uuid();
 export const isoTimestampSchema = z.string().datetime({ offset: true });
+export const providerIdSchema = z.string().uuid();
+
+export const modelReasoningEffortSchema = z.enum([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max"
+]);
+
+const modelReasoningOptionMetadataSchema = {
+  displayName: z.string().trim().min(1).max(64).optional(),
+  enabled: z.boolean().optional()
+};
+
+export const modelReasoningOptionSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("effort"),
+    value: modelReasoningEffortSchema,
+    ...modelReasoningOptionMetadataSchema
+  }).strict(),
+  z.object({
+    kind: z.literal("custom_effort"),
+    value: z.string().trim().min(1).max(64),
+    ...modelReasoningOptionMetadataSchema
+  }).strict(),
+  z.object({
+    kind: z.literal("token_budget"),
+    value: z.number().int().min(-1).max(1_000_000),
+    ...modelReasoningOptionMetadataSchema
+  }).strict()
+]);
+
+export const conversationModelSelectionSchema = z.object({
+  modelId: z.string().trim().min(1).max(200),
+  providerId: providerIdSchema,
+  reasoning: modelReasoningOptionSchema.nullable().default(null)
+}).strict();
+
 export const conversationRunStatusSchema = z.enum([
   "queued",
   "running",
@@ -116,6 +157,7 @@ export const conversationSummarySchema = z
     isArchived: z.boolean().default(false),
     isPinned: z.boolean().default(false),
     lastRunStatus: conversationRunStatusSchema.nullable(),
+    modelSelection: conversationModelSelectionSchema.nullable().default(null),
     parentConversationId: conversationIdSchema.nullable().default(null),
     pinOrder: z.number().int().positive().nullable().optional(),
     projectId: projectIdSchema.nullable(),
@@ -194,6 +236,7 @@ export const conversationTaskListResponseSchema = conversationTaskListSchema.nul
 export const createConversationInputSchema = z
   .object({
     agent: conversationAgentBindingSchema.optional(),
+    modelSelection: conversationModelSelectionSchema.optional(),
     projectId: projectIdSchema.nullable().optional(),
     teamId: z.string().trim().min(1).max(200).nullable().optional(),
     threadKind: z.enum(["agent", "team_lead"]).optional()
@@ -227,6 +270,13 @@ export const setConversationProjectInputSchema = z
   .object({
     conversationId: conversationIdSchema,
     projectId: projectIdSchema.nullable()
+  })
+  .strict();
+
+export const setConversationModelSelectionInputSchema = z
+  .object({
+    conversationId: conversationIdSchema,
+    modelSelection: conversationModelSelectionSchema
   })
   .strict();
 
@@ -436,7 +486,6 @@ export const conversationContextUsageSchema = z
   })
   .strict();
 
-export const providerIdSchema = z.string().uuid();
 export const providerNameSchema = z.string().trim().min(1).max(100);
 export const modelProviderIconSchema = z.enum([
   "aihubmix",
@@ -471,16 +520,6 @@ export const modelApiFormatSchema = z.enum([
   "google-gemini"
 ]);
 
-export const modelReasoningEffortSchema = z.enum([
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max"
-]);
-
 const OPENAI_CHAT_REASONING_EFFORTS = new Set(["low", "medium", "high"]);
 const GPT_5_6_REASONING_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
 const GEMINI_3_THINKING_LEVELS = new Set(["minimal", "low", "medium", "high"]);
@@ -495,29 +534,6 @@ export function isGemini3ReasoningModel(modelId: string): boolean {
   return normalizedModelId === "gemini-3" || normalizedModelId.startsWith("gemini-3.")
     || normalizedModelId.startsWith("gemini-3-");
 }
-
-const modelReasoningOptionMetadataSchema = {
-  displayName: z.string().trim().min(1).max(64).optional(),
-  enabled: z.boolean().optional()
-};
-
-export const modelReasoningOptionSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("effort"),
-    value: modelReasoningEffortSchema,
-    ...modelReasoningOptionMetadataSchema
-  }).strict(),
-  z.object({
-    kind: z.literal("custom_effort"),
-    value: z.string().trim().min(1).max(64),
-    ...modelReasoningOptionMetadataSchema
-  }).strict(),
-  z.object({
-    kind: z.literal("token_budget"),
-    value: z.number().int().min(-1).max(1_000_000),
-    ...modelReasoningOptionMetadataSchema
-  }).strict()
-]);
 
 export type ModelReasoningOption = z.infer<typeof modelReasoningOptionSchema>;
 
@@ -568,10 +584,12 @@ export const modelConnectionStatusSchema = z.enum(["unknown", "healthy", "error"
 export const modelProfileSchema = z
   .object({
     connectionStatus: modelConnectionStatusSchema.default("unknown"),
+    connectionStatusUpdatedAt: isoTimestampSchema.nullable().default(null),
     contextCompression: contextCompressionThresholdSchema.optional(),
     contextWindow: z.number().int().min(0).max(10_000_000),
     displayName: z.string().trim().min(1).max(200),
     modelId: z.string().trim().min(1).max(200),
+    lastSuccessfulAt: isoTimestampSchema.nullable().default(null),
     providerApiFormat: modelApiFormatSchema,
     providerBaseUrl: z.string().url(),
     providerId: providerIdSchema,
@@ -841,6 +859,7 @@ export const modelRuntimeStatusSchema = z
     modelId: z.string().min(1).max(200).nullable(),
     models: z.array(modelProfileSchema).max(100),
     providerId: providerIdSchema.nullable(),
+    recentSelection: conversationModelSelectionSchema.nullable().default(null),
     supportsStreaming: z.boolean(),
     supportsTools: z.boolean()
   })
@@ -1007,6 +1026,7 @@ export const conversationRunEventSchema = z.discriminatedUnion("type", [
 ]);
 
 export type ConversationSummary = z.infer<typeof conversationSummarySchema>;
+export type ConversationModelSelection = z.infer<typeof conversationModelSelectionSchema>;
 export type ConversationAttachment = z.infer<typeof conversationAttachmentSchema>;
 export type ConversationThreadKind = z.infer<typeof conversationThreadKindSchema>;
 export type ConversationAgentBinding = z.infer<typeof conversationAgentBindingSchema>;
@@ -1025,6 +1045,9 @@ export type RenameConversationInput = z.infer<
 >;
 export type SetConversationProjectInput = z.infer<
   typeof setConversationProjectInputSchema
+>;
+export type SetConversationModelSelectionInput = z.infer<
+  typeof setConversationModelSelectionInputSchema
 >;
 export type ConversationReferenceInput = z.infer<
   typeof conversationReferenceInputSchema

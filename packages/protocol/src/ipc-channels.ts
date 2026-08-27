@@ -24,6 +24,7 @@ export const IPC_CHANNELS = {
   conversationRename: "conversation.rename",
   conversationReorder: "conversation.reorder",
   conversationSetProject: "conversation.set_project",
+  conversationSetModelSelection: "conversation.set_model_selection",
   conversationSetArchived: "conversation.set_archived",
   conversationSetPinned: "conversation.set_pinned",
   conversationDelete: "conversation.delete",
