@@ -1,4 +1,4 @@
-import { AgentDatabase } from "./agent-database.js";
+import { AgentDatabase, type ThreadLogLegacySnapshot } from "./agent-database.js";
 import { EventProjector } from "./event-projector.js";
 import { ThreadLog } from "./thread-log.js";
 
@@ -10,6 +10,13 @@ export type ThreadLogLegacyImportResult = {
 export type ThreadLogCorruptionRecoveryResult = {
   quarantinedConversationIds: string[];
 };
+
+function hasPersistedConversationHistory(snapshot: ThreadLogLegacySnapshot): boolean {
+  return snapshot.checkpoint !== null
+    || snapshot.modelMessages.length > 0
+    || snapshot.runs.length > 0
+    || snapshot.timeline.length > 0;
+}
 
 /**
  * One-time bridge for SQLite-first conversations. A presence check makes the
@@ -26,8 +33,9 @@ export class ThreadLogLegacyImporter {
   public importMissingConversationLogs(): ThreadLogLegacyImportResult {
     const importedConversationIds: string[] = [];
     const skippedConversationIds: string[] = [];
+    const relationConversationIds = this.relationshipConversationIds();
     for (const conversationId of this.database.listAllConversationIds()) {
-      if (!this.importConversationIfMissing(conversationId)) {
+      if (!this.importConversationIfMissing(conversationId, relationConversationIds.has(conversationId))) {
         skippedConversationIds.push(conversationId);
         continue;
       }
@@ -43,22 +51,24 @@ export class ThreadLogLegacyImporter {
    */
   public recoverUnreadableConversationLogs(): ThreadLogCorruptionRecoveryResult {
     const quarantinedConversationIds: string[] = [];
+    const relationConversationIds = this.relationshipConversationIds();
     for (const conversationId of this.database.listAllConversationIds()) {
       try {
         this.threadLog.read(conversationId);
       } catch {
         this.threadLog.quarantine(conversationId);
         this.database.resetThreadLogProjection(conversationId);
-        this.importConversationIfMissing(conversationId);
+        this.importConversationIfMissing(conversationId, relationConversationIds.has(conversationId));
         quarantinedConversationIds.push(conversationId);
       }
     }
     return { quarantinedConversationIds };
   }
 
-  public importConversationIfMissing(conversationId: string): boolean {
+  public importConversationIfMissing(conversationId: string, preserveChildRelation = false): boolean {
     if (this.threadLog.hasConversation(conversationId)) return false;
     const snapshot = this.database.exportThreadLogLegacySnapshot(conversationId);
+    if (!preserveChildRelation && !hasPersistedConversationHistory(snapshot)) return false;
     this.threadLog.append(conversationId, {
       payload: {
         agent: snapshot.agent,
@@ -78,5 +88,16 @@ export class ThreadLogLegacyImporter {
     });
     this.eventProjector.projectConversation(conversationId);
     return true;
+  }
+
+  private relationshipConversationIds(): ReadonlySet<string> {
+    const relationshipConversationIds = new Set<string>();
+    for (const conversationId of this.database.listAllConversationIds()) {
+      const parentConversationId = this.database.getConversation(conversationId).parentConversationId;
+      if (parentConversationId === null) continue;
+      relationshipConversationIds.add(conversationId);
+      relationshipConversationIds.add(parentConversationId);
+    }
+    return relationshipConversationIds;
   }
 }
