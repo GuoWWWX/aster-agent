@@ -13,9 +13,8 @@
 
 ```powershell
 git fetch --prune origin
-git switch develop
-git pull --ff-only origin develop
-git switch -c feature/short-description
+git worktree add ..\Aster-feature-short-description -b feature/short-description origin/develop
+Set-Location ..\Aster-feature-short-description
 
 pnpm install
 # 修改、测试
@@ -33,7 +32,7 @@ git push -u origin feature/short-description
 
 然后创建指向 `develop` 的 Pull Request。一个 PR 应解决一个可验证的目标；不要把无关重构、格式化或生成文件混入。
 
-每个新目标都必须从最新 `develop` 创建新的功能、修复或文档分支。已合并或已关闭 PR/MR 的分支不再继续使用，也不得作为下一项工作的基线，即使该分支尚未删除。
+每个需要修改仓库的新目标都必须在独立 Git worktree 中完成，并从最新 `develop` 创建新的功能、修复或文档分支。worktree 内可以直接提交、推送和创建 PR/MR；已合并或已关闭 PR/MR 的分支不再继续提交或修改，也不得作为下一项工作的基线，即使该分支尚未删除。
 
 ## 修改要求
 
