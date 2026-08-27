@@ -407,6 +407,9 @@ type AgentMessageRunCreation = {
 };
 
 type DatabaseRow = Record<string, unknown>;
+type TaskListTaskInput = Pick<ConversationTask, "status" | "title"> & {
+  reason?: ConversationTask["reason"] | undefined;
+};
 
 const RUNNING_STATUSES = ["queued", "running"] as const;
 const RUN_STATUS_TRANSITIONS: Readonly<Record<
@@ -2736,7 +2739,7 @@ export class AgentDatabase {
 
   public createTaskList(
     conversationId: string,
-    tasks: ReadonlyArray<Pick<ConversationTask, "status" | "title">>
+    tasks: ReadonlyArray<TaskListTaskInput>
   ): ConversationTaskList {
     this.getConversation(conversationId);
     const previous = this.getTaskList(conversationId);
@@ -2748,7 +2751,7 @@ export class AgentDatabase {
 
   public updateTaskList(
     conversationId: string,
-    tasks: ReadonlyArray<Pick<ConversationTask, "status" | "title">>
+    tasks: ReadonlyArray<TaskListTaskInput>
   ): ConversationTaskList {
     this.getConversation(conversationId);
     const previous = this.getTaskList(conversationId);
@@ -2781,7 +2784,7 @@ export class AgentDatabase {
 
   private saveActiveTaskList(
     conversationId: string,
-    tasks: ReadonlyArray<Pick<ConversationTask, "status" | "title">>,
+    tasks: ReadonlyArray<TaskListTaskInput>,
     previous: ConversationTaskList | null
   ): ConversationTaskList {
     const now = new Date().toISOString();
@@ -2795,6 +2798,7 @@ export class AgentDatabase {
           previous?.tasks[index]?.title === task.title
             ? previous.tasks[index].id
             : randomUUID(),
+        reason: task.reason ?? null,
         status: task.status,
         title: task.title
       })),

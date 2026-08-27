@@ -1279,6 +1279,7 @@ describe("AgentRuntime", () => {
       null,
       threadLog,
     );
+    expect(threadLog.hasConversation(conversation.id)).toBe(false);
     const finished = new Promise<Extract<ConversationRunEvent, { type: "run.finished" }>>(
       (resolve) => {
         const accepted = runtime.sendMessage({
@@ -1292,6 +1293,7 @@ describe("AgentRuntime", () => {
     );
 
     await expect(finished).resolves.toMatchObject({ status: "completed" });
+    expect(threadLog.hasConversation(conversation.id)).toBe(true);
     expect(threadLog.read(conversation.id)?.events.map((event) => event.type)).toEqual([
       "user_message",
       "run_created",

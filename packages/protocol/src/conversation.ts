@@ -150,10 +150,19 @@ export const conversationTaskListStatusSchema = z.enum(["active", "closed"]);
 export const conversationTaskSchema = z
   .object({
     id: timelineItemIdSchema,
+    reason: z.string().trim().min(1).max(600).nullable().default(null),
     status: conversationTaskStatusSchema,
     title: z.string().trim().min(1).max(300)
   })
-  .strict();
+  .strict()
+  .superRefine((task, context) => {
+    if ((task.status === "blocked" || task.status === "failed") || task.reason === null) return;
+    context.addIssue({
+      code: "custom",
+      message: "Only blocked and failed tasks may include a reason.",
+      path: ["reason"]
+    });
+  });
 
 const conversationTaskCollectionSchema = z
   .array(conversationTaskSchema)

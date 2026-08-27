@@ -14,7 +14,8 @@ describe("task-list context", () => {
       status: "active",
       tasks: [{
         id: "00000000-0000-4000-8000-000000000002",
-        status: "running",
+        reason: "等待用户确认后继续执行".repeat(20),
+        status: "blocked",
         title: "完成任务状态注入".repeat(20),
       }],
       updatedAt: "2026-08-27T00:01:00.000Z",
@@ -22,7 +23,8 @@ describe("task-list context", () => {
 
     expect(context).toMatchObject({ role: "system", toolCalls: [] });
     expect(context?.content).toContain("[当前任务清单｜动态运行状态]");
-    expect(context?.content).toContain("[running]");
+    expect(context?.content).toContain("[blocked]");
+    expect(context?.content).toContain("原因：");
     expect(context?.content).toContain("…");
     expect(context?.content).not.toContain("00000000-0000-4000-8000-000000000001");
     expect(context?.content).not.toContain("2026-08-27T00:01:00.000Z");
@@ -32,6 +34,7 @@ describe("task-list context", () => {
       status: "active",
       tasks: [{
         id: "00000000-0000-4000-8000-000000000002",
+        reason: null,
         status: "running",
         title: "完成任务状态注入".repeat(20),
       }],
@@ -48,6 +51,7 @@ describe("task-list context", () => {
       status: "closed",
       tasks: [{
         id: "00000000-0000-4000-8000-000000000002",
+        reason: null,
         status: "completed",
         title: "已完成",
       }],

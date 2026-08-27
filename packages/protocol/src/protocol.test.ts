@@ -262,13 +262,34 @@ describe("protocol bootstrap contract", () => {
     const taskList = conversationTaskListSchema.parse({
       conversationId: "00000000-0000-4000-8000-000000000001",
       tasks: [
-        { id: "00000000-0000-4000-8000-000000000002", status: "blocked", title: "等待用户审批" },
-        { id: "00000000-0000-4000-8000-000000000003", status: "failed", title: "工具执行失败" },
+        { id: "00000000-0000-4000-8000-000000000002", reason: "等待用户确认写入", status: "blocked", title: "等待用户审批" },
+        { id: "00000000-0000-4000-8000-000000000003", reason: "构建命令退出", status: "failed", title: "工具执行失败" },
       ],
       updatedAt: "2026-08-27T00:00:00.000Z",
     });
 
     expect(taskList.tasks.map((task) => task.status)).toEqual(["blocked", "failed"]);
+    expect(taskList.tasks.map((task) => task.reason)).toEqual(["等待用户确认写入", "构建命令退出"]);
+  });
+
+  it("keeps task lists saved before task reasons compatible", () => {
+    const taskList = conversationTaskListSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      tasks: [{ id: "00000000-0000-4000-8000-000000000002", status: "blocked", title: "等待输入" }],
+      updatedAt: "2026-08-27T00:00:00.000Z",
+    });
+
+    expect(taskList.tasks[0]?.reason).toBeNull();
+    expect(() => conversationTaskListSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      tasks: [{
+        id: "00000000-0000-4000-8000-000000000002",
+        reason: "不应保留",
+        status: "running",
+        title: "执行中",
+      }],
+      updatedAt: "2026-08-27T00:00:00.000Z",
+    })).toThrow("Only blocked and failed tasks may include a reason.");
   });
 
   it("accepts per-run model, permission and reasoning settings", () => {

@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AgentDatabase } from "../storage/agent-database.js";
-import { CREATE_TASK_LIST_TOOL_NAME, TaskListTool } from "./task-list-tool.js";
+import {
+  CREATE_TASK_LIST_TOOL_NAME,
+  TaskListTool,
+  UPDATE_TASK_LIST_TOOL_NAME,
+} from "./task-list-tool.js";
 
 const databases: AgentDatabase[] = [];
 
@@ -39,5 +43,39 @@ describe("TaskListTool", () => {
     if (taskList === null) throw new Error("Expected an active task list.");
     expect(taskList.status).toBe("active");
     expect(taskList.tasks).toHaveLength(2);
+  });
+
+  it("requires a reason only when a task becomes blocked or failed", () => {
+    const database = new AgentDatabase(":memory:");
+    databases.push(database);
+    const conversation = database.createConversation(null);
+    const tool = new TaskListTool(database);
+    const created = tool.execute(CREATE_TASK_LIST_TOOL_NAME, JSON.stringify({
+      tasks: [
+        { status: "running", title: "执行" },
+        { status: "pending", title: "验证" },
+      ],
+    }), conversation.id);
+
+    expect(created.isError).toBe(false);
+    const missingReason = tool.execute(UPDATE_TASK_LIST_TOOL_NAME, JSON.stringify({
+      tasks: [
+        { status: "blocked", title: "执行" },
+        { status: "pending", title: "验证" },
+      ],
+    }), conversation.id);
+    expect(missingReason.isError).toBe(true);
+
+    const updated = tool.execute(UPDATE_TASK_LIST_TOOL_NAME, JSON.stringify({
+      tasks: [
+        { reason: "等待用户批准文件修改", status: "blocked", title: "执行" },
+        { status: "pending", title: "验证" },
+      ],
+    }), conversation.id);
+    expect(updated.isError).toBe(false);
+    expect(database.getTaskList(conversation.id)?.tasks[0]).toMatchObject({
+      reason: "等待用户批准文件修改",
+      status: "blocked",
+    });
   });
 });
