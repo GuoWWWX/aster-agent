@@ -954,7 +954,6 @@ export function RightSidebarWorkspace({
     };
     openFile(entry);
   }, [activeConfigurationTab, activeFileTab, flushConfigurationFile, flushFileSave, openFile]);
-  const closedSideSessions = sideSessions.filter((session) => !openChatIds.has(session.id));
   const showFileWorkspace = activeTab?.kind === "file"
     || activeConfigurationTab !== null
     || isFileBrowserOpen;
@@ -1099,6 +1098,7 @@ export function RightSidebarWorkspace({
       Object.entries(current).filter(([tabId]) => !tabIds.has(tabId)),
     ));
     if (sessionIds.size > 0) {
+      setSideSessions((current) => current.filter((session) => !sessionIds.has(session.id)));
       updateOpenChatIds((current) => {
         const next = new Set(current);
         for (const sessionId of sessionIds) next.delete(sessionId);
@@ -1115,11 +1115,26 @@ export function RightSidebarWorkspace({
   }
 
   async function closeTabs(tabsToClose: SidebarTab[]): Promise<void> {
+    setOperationError(null);
     for (const tab of tabsToClose) {
       if (tab.kind === "configuration-file" && !await flushConfigurationFile(tab)) return;
       if (tab.kind === "file" && !await flushFileSave(tab)) return;
     }
-    commitCloseTabs(tabsToClose);
+
+    const closedTabs: SidebarTab[] = [];
+    for (const tab of tabsToClose) {
+      if (tab.kind !== "chat") {
+        closedTabs.push(tab);
+        continue;
+      }
+      try {
+        await agentClient.deleteConversation({ conversationId: tab.session.id });
+        closedTabs.push(tab);
+      } catch (reason) {
+        setOperationError(getUserErrorMessage(reason, "无法删除侧边聊天"));
+      }
+    }
+    commitCloseTabs(closedTabs);
   }
 
   function removeDeletedConfigurationEntry(
@@ -1237,21 +1252,6 @@ export function RightSidebarWorkspace({
                 )}
                 侧边聊天
               </button>
-              {closedSideSessions.map((session) => (
-                <button
-                  key={session.id}
-                  type="button"
-                  onClick={() => {
-                    updateOpenChatIds((current) => new Set(current).add(session.id));
-                    setActiveTabForCurrentSession(`chat:${session.id}`);
-                    setIsFileBrowserOpen(false);
-                    setMenuOpen(false);
-                  }}
-                >
-                  <MessageSquarePlus aria-hidden="true" size={15} />
-                  重新打开 {session.title}
-                </button>
-              ))}
             </PopoverContent>
           </Popover>
         </div>
