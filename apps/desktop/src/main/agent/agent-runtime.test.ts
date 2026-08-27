@@ -4464,7 +4464,7 @@ describe("AgentRuntime", () => {
       },
     });
     const settings = createPermissionSettingsProvider(profile.id, [
-      { pattern: "mvn package *", tool: "run_command" },
+      { pattern: "Write-Output *", tool: "run_command" },
     ]);
     const runtime = new AgentRuntime(
       database,
@@ -4479,7 +4479,7 @@ describe("AgentRuntime", () => {
       },
       projects,
       new ProjectToolRegistry(projects),
-      new SingleCommandFixtureModel("mvn package -DskipTests"),
+      new SingleCommandFixtureModel("Write-Output agent-command-ok"),
       undefined,
       undefined,
       null,
@@ -4525,7 +4525,7 @@ describe("AgentRuntime", () => {
       },
       projects,
       new ProjectToolRegistry(projects),
-      new SingleCommandFixtureModel("mvnx package -DskipTests"),
+      new SingleCommandFixtureModel("Write-Outputx agent-command-ok"),
       undefined,
       undefined,
       null,
@@ -4545,14 +4545,13 @@ describe("AgentRuntime", () => {
       }, (event) => {
         rejectedBoundaryEvents.push(event);
         if (event.type === "tool.approval_requested") {
-          runtime.approveToolChange({ approved: false, runId: event.runId, toolId: event.tool.id });
+          nonMatchingRuntime.approveToolChange({ approved: false, runId: event.runId, toolId: event.tool.id });
         }
         if (event.type === "run.finished") resolve();
       });
     });
-    // A command with the same prefix token boundary is allowed; a different
-    // command is still presented for approval. This second run uses a model
-    // with a distinct command to make the boundary observable.
+    // A matching prefix is allowed; a different command is still presented
+    // for approval. Keep the command local and deterministic for CI.
     expect(rejectedBoundaryEvents.filter((event) => event.type === "tool.approval_requested")).toHaveLength(1);
     database.close();
   });
