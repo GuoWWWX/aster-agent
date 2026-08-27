@@ -90,16 +90,11 @@ describe("ProjectToolRegistry", () => {
       signal,
     );
     if (command.kind !== "command") throw new Error("Expected a command proposal.");
-    let commandStarted: (() => void) | undefined;
-    const commandStartedPromise = new Promise<void>((resolve) => {
-      commandStarted = resolve;
-    });
     const commandPromise = tools.executePreparedCommand(command.command, project.id, signal, {
       conversationId: "conversation-command",
       conversationTitle: "终端 Agent",
       runId: "run-command",
-    }, () => commandStarted?.());
-    await commandStartedPromise;
+    });
 
     await expect(tools.writeUserFile({
       content: "editor\n",

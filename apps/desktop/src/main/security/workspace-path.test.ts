@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -64,13 +64,13 @@ describe("workspace path primitives", () => {
       .rejects.toThrow(/symbolic link/i);
   });
 
-  it("allows a normal writable child and preserves its unresolved target path", async () => {
+  it("allows a normal writable child while resolving existing paths canonically", async () => {
     const rootPath = await mkdtemp(path.join(os.tmpdir(), "agent-path-"));
     temporaryDirectories.push(rootPath);
     await mkdir(path.join(rootPath, "nested"));
 
     await expect(resolveExistingPathWithinRoot(rootPath, "nested"))
-      .resolves.toBe(path.join(rootPath, "nested"));
+      .resolves.toBe(path.resolve(await realpath(path.join(rootPath, "nested"))));
     await expect(resolveWritablePathWithinRoot(rootPath, "nested/new.txt"))
       .resolves.toBe(path.join(rootPath, "nested", "new.txt"));
   });
@@ -84,7 +84,7 @@ describe("workspace path primitives", () => {
     await symlink(rootPath, linkedRootPath, process.platform === "win32" ? "junction" : "dir");
 
     await expect(resolveExistingPathWithinRoot(linkedRootPath, "nested"))
-      .resolves.toBe(path.join(rootPath, "nested"));
+      .resolves.toBe(path.resolve(await realpath(path.join(rootPath, "nested"))));
     await expect(resolveWritablePathWithinRoot(linkedRootPath, "nested/new.txt"))
       .resolves.toBe(path.join(linkedRootPath, "nested", "new.txt"));
   });
