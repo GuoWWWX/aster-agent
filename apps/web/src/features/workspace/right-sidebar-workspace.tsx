@@ -924,11 +924,14 @@ export function RightSidebarWorkspace({
     updateOpenChatIds,
   ]);
 
+  const openSideSessions = useMemo(
+    () => sideSessions.filter((session) => openChatIds.has(session.id)),
+    [openChatIds, sideSessions],
+  );
   const tabs = useMemo<SidebarTab[]>(
     () => [
       ...fileTabs,
-      ...sideSessions
-        .filter((session) => openChatIds.has(session.id))
+      ...openSideSessions
         .map((session): SidebarTab => ({
           id: `chat:${session.id}`,
           kind: "chat",
@@ -936,11 +939,12 @@ export function RightSidebarWorkspace({
           session,
         })),
     ],
-    [fileTabs, openChatIds, sideSessions],
+    [fileTabs, openSideSessions],
   );
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
   const retainedSideSessions = useConversationWorkspaceCache(
     activeTab?.kind === "chat" ? activeTab.session : null,
+    openSideSessions,
   );
   const activeConfigurationTab = activeTab?.kind === "configuration-file" ? activeTab : null;
   const activeConfigurationTarget = activeConfigurationTab === null
@@ -1278,9 +1282,8 @@ export function RightSidebarWorkspace({
         <div className="right-sidebar-workspace__content">
           {retainedSideSessions
             .map((cachedSession) => (
-              sideSessions.find((session) => session.id === cachedSession.id) ?? cachedSession
+              openSideSessions.find((session) => session.id === cachedSession.id) ?? cachedSession
             ))
-            .filter((session) => openChatIds.has(session.id))
             .map((session) => {
               const isActive = activeTab?.kind === "chat" && activeTab.session.id === session.id;
               return (

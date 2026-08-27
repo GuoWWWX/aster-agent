@@ -62,6 +62,7 @@ import type {
   ApproveToolChangeInput,
   ConversationAttachment,
   ConversationMessageDeliveryMode,
+  ConversationModelSelection,
   ConversationMessageItem,
   ConversationPendingMessage,
   ConversationContextUsage,
@@ -105,7 +106,11 @@ import {
   SelectValue,
 } from "../../components/ui/select.js";
 import { getUserErrorMessage, type AgentClient } from "../../runtime/index.js";
-import { getCachedModelStatus, loadModelStatus } from "../../runtime/model-status-cache.js";
+import {
+  getCachedModelStatus,
+  loadModelStatus,
+  rememberModelStatus,
+} from "../../runtime/model-status-cache.js";
 import {
   useAgentDirectoryStore,
   type AgentProfile,
@@ -142,6 +147,7 @@ type WorkspaceContentProps = {
   isAddingProject: boolean;
   isCreatingSession: boolean;
   projects: readonly ProjectSummary[];
+  sessions: readonly ProjectSession[];
   onAddProject: () => Promise<ProjectSummary | null>;
   onCreateProjectSession: (projectId: string) => void;
   onCreateTemporarySession: () => void;
@@ -446,10 +452,12 @@ export function WorkspaceContent({
   onSessionSelected,
   onSessionUpdated,
   onSessionViewed,
+  sessions,
 }: WorkspaceContentProps): ReactElement {
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
   const retainedSessions = useConversationWorkspaceCache(
     activeActivity === "conversations" ? activeSession : null,
+    sessions,
   );
 
   if (activeActivity === "team") {
@@ -609,9 +617,12 @@ export function ConversationWorkspace({
   const [isSending, setIsSending] = useState(false);
   const [liveToolOutputs, setLiveToolOutputs] = useState<Record<string, LiveToolOutput>>({});
   const [modelActivity, setModelActivity] = useState<ModelActivity | null>(null);
-  const [modelStatus, setModelStatus] = useState<ModelRuntimeStatus | null>(() => (
-    getCachedModelStatus(agentClient)
-  ));
+  const initialModelStatus = getCachedModelStatus(agentClient);
+  const initialModelSelection = resolveInitialConversationModelSelection(
+    session.modelSelection,
+    initialModelStatus,
+  );
+  const [modelStatus, setModelStatus] = useState<ModelRuntimeStatus | null>(initialModelStatus);
   const [runProgresses, setRunProgresses] = useState<RunProgress[]>(() =>
     createRestoredRunProgresses(session.activeRunId),
   );
@@ -625,14 +636,14 @@ export function ConversationWorkspace({
   const [permissionMode, setPermissionMode] =
     useState<ConversationPermissionMode>(defaultPermissionMode);
   const [selectedModelKey, setSelectedModelKey] = useState(() => (
-    session.modelSelection === null
+    initialModelSelection === null
       ? ""
-      : modelKey(session.modelSelection)
+      : modelKey(initialModelSelection)
   ));
   const [selectedReasoningOptionKey, setSelectedReasoningOptionKey] = useState(() => (
-    session.modelSelection?.reasoning === null || session.modelSelection?.reasoning === undefined
+    initialModelSelection?.reasoning === null || initialModelSelection?.reasoning === undefined
       ? "auto"
-      : modelReasoningOptionKey(session.modelSelection.reasoning)
+      : modelReasoningOptionKey(initialModelSelection.reasoning)
   ));
   const [taskListAction, setTaskListAction] = useState<"closing" | null>(null);
   const [taskList, setTaskList] = useState<ConversationTaskList | null>(null);
@@ -719,12 +730,14 @@ export function ConversationWorkspace({
         },
       });
       onSessionUpdated?.(conversation);
-      setModelStatus((current) => current === null || conversation.threadKind === "subagent"
-        ? current
-        : {
-            ...current,
-            recentSelection: conversation.modelSelection,
-          });
+      const currentStatus = getCachedModelStatus(agentClient);
+      if (currentStatus !== null && conversation.threadKind !== "subagent") {
+        const nextStatus = rememberModelStatus(agentClient, {
+          ...currentStatus,
+          recentSelection: conversation.modelSelection,
+        });
+        setModelStatus(nextStatus);
+      }
     } catch (error) {
       setOperationError(getUserErrorMessage(error, "无法保存对话模型选择"));
     }
@@ -2369,6 +2382,13 @@ export function ConversationWorkspace({
 
 function modelKey(model: Pick<ModelProfile, "modelId" | "providerId">): string {
   return `${model.providerId}:${encodeURIComponent(model.modelId)}`;
+}
+
+export function resolveInitialConversationModelSelection(
+  sessionSelection: ConversationModelSelection | null,
+  status: ModelRuntimeStatus | null,
+): ConversationModelSelection | null {
+  return sessionSelection ?? status?.recentSelection ?? null;
 }
 
 function findMentionQuery(value: string, cursor: number): MentionQuery | null {

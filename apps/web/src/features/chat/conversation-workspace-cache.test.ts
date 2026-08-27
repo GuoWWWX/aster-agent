@@ -37,6 +37,21 @@ describe("conversation workspace cache", () => {
     expect(sessions.map((item) => item.id)).toEqual(["selected", "previous"]);
   });
 
+  it("does not render a cached conversation that is no longer available", () => {
+    const sessions = conversationWorkspaceSessions([
+      { lastAccessedAt: 20, session: session("available") },
+      { lastAccessedAt: 10, session: session("deleted") },
+    ], null, new Set(["available"]));
+
+    expect(sessions.map((item) => item.id)).toEqual(["available"]);
+  });
+
+  it("does not render an active conversation that is no longer available", () => {
+    const sessions = conversationWorkspaceSessions([], session("deleted"), new Set());
+
+    expect(sessions).toEqual([]);
+  });
+
   it("keeps a revisited conversation instance at the front with current metadata", () => {
     const entries: ConversationWorkspaceCacheEntry[] = [
       { lastAccessedAt: 10, session: session("first", "旧标题") },

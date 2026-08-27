@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import type { ConversationToolItem } from "@agent/protocol";
+import type {
+  ConversationModelSelection,
+  ConversationToolItem,
+  ModelRuntimeStatus,
+} from "@agent/protocol";
 
 import {
   createRestoredRunProgresses,
@@ -13,10 +17,35 @@ import {
   groupToolBatches,
   describeConversationError,
   representativeToolName,
+  resolveInitialConversationModelSelection,
   stripLegacyErrorInstanceId,
   toolBatchLabel,
   toolBatchExecutionMode,
 } from "./workspace-content.js";
+
+describe("initial conversation model selection", () => {
+  const recentSelection = {
+    modelId: "recent-model",
+    providerId: "00000000-0000-4000-8000-000000000001",
+    reasoning: { kind: "effort", value: "high" },
+  } satisfies ConversationModelSelection;
+  const status = { recentSelection } as ModelRuntimeStatus;
+
+  it("uses the shared recent model and reasoning for a legacy conversation without a snapshot", () => {
+    expect(resolveInitialConversationModelSelection(null, status)).toBe(recentSelection);
+  });
+
+  it("keeps a conversation snapshot ahead of the shared recent selection", () => {
+    const sessionSelection = {
+      ...recentSelection,
+      modelId: "conversation-model",
+      reasoning: { kind: "effort", value: "low" },
+    } satisfies ConversationModelSelection;
+
+    expect(resolveInitialConversationModelSelection(sessionSelection, status))
+      .toBe(sessionSelection);
+  });
+});
 
 function tool(
   name: string,

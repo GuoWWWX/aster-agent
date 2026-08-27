@@ -33,38 +33,67 @@ export function retainConversationWorkspace(
 export function conversationWorkspaceSessions(
   entries: readonly ConversationWorkspaceCacheEntry[],
   activeSession: ProjectSession | null,
+  availableSessionIds: ReadonlySet<string> | null = null,
 ): readonly ProjectSession[] {
+  const availableActiveSession = activeSession !== null
+    && (availableSessionIds?.has(activeSession.id) ?? true)
+    ? activeSession
+    : null;
   const cachedSessions = entries
-    .filter((entry) => entry.session.id !== activeSession?.id)
+    .filter((entry) => entry.session.id !== availableActiveSession?.id)
+    .filter((entry) => availableSessionIds?.has(entry.session.id) ?? true)
     .map((entry) => entry.session);
-  return activeSession === null
+  return availableActiveSession === null
     ? cachedSessions
-    : [activeSession, ...cachedSessions];
+    : [availableActiveSession, ...cachedSessions];
 }
 
 export function useConversationWorkspaceCache(
   activeSession: ProjectSession | null,
+  availableSessions?: readonly ProjectSession[],
 ): readonly ProjectSession[] {
+  const availableSessionIds = useMemo(
+    () => availableSessions === undefined
+      ? null
+      : new Set(
+          availableSessions
+            .filter((session) => !session.isArchived)
+            .map((session) => session.id),
+        ),
+    [availableSessions],
+  );
+  const availableActiveSession = activeSession !== null
+    && (availableSessionIds?.has(activeSession.id) ?? true)
+    ? activeSession
+    : null;
   const [entries, setEntries] = useState<ConversationWorkspaceCacheEntry[]>(() =>
-    retainConversationWorkspace([], activeSession, Date.now())
+    retainConversationWorkspace([], availableActiveSession, Date.now())
   );
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
-      setEntries((current) => retainConversationWorkspace(current, activeSession, Date.now()));
+      setEntries((current) => retainConversationWorkspace(
+        current.filter((entry) => availableSessionIds?.has(entry.session.id) ?? true),
+        availableActiveSession,
+        Date.now(),
+      ));
     });
     return () => window.clearTimeout(timeout);
-  }, [activeSession]);
+  }, [availableActiveSession, availableSessionIds]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
-      setEntries((current) => retainConversationWorkspace(current, activeSession, Date.now()));
+      setEntries((current) => retainConversationWorkspace(
+        current.filter((entry) => availableSessionIds?.has(entry.session.id) ?? true),
+        availableActiveSession,
+        Date.now(),
+      ));
     }, 60_000);
     return () => window.clearInterval(interval);
-  }, [activeSession]);
+  }, [availableActiveSession, availableSessionIds]);
 
   return useMemo(
-    () => conversationWorkspaceSessions(entries, activeSession),
-    [activeSession, entries],
+    () => conversationWorkspaceSessions(entries, availableActiveSession, availableSessionIds),
+    [availableActiveSession, availableSessionIds, entries],
   );
 }
