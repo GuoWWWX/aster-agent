@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_AGENT_DIRECTORY_CONFIGURATION } from "@agent/protocol";
 
 import { AgentDatabase, type RunExecutionSnapshot } from "./agent-database.js";
@@ -546,6 +546,43 @@ describe("AgentDatabase", () => {
       completed.subagentResultMessage,
     ]);
     database.close();
+  });
+
+  it("derives an Assistant reply completion time and total Run duration for the timeline", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-27T08:00:00.000Z"));
+      const database = new AgentDatabase(":memory:");
+      const conversation = database.createConversation(null);
+      const run = database.createRunWithUserMessage(conversation.id, "检查耗时", "test-model");
+      database.markRunRunning(run.runId);
+
+      vi.setSystemTime(new Date("2026-08-27T08:01:17.000Z"));
+      database.completeRun({
+        assistant: {
+          content: "回答完成。",
+          kind: "turn",
+          messageId: crypto.randomUUID(),
+          modelId: "test-model",
+        },
+        conversationId: conversation.id,
+        error: null,
+        result: "回答完成。",
+        runId: run.runId,
+        status: "completed",
+      });
+
+      const assistant = database.listTimeline(conversation.id).find((item) =>
+        item.kind === "message" && item.role === "assistant",
+      );
+      expect(assistant).toMatchObject({
+        completedAt: "2026-08-27T08:01:17.000Z",
+        durationMs: 77_000,
+      });
+      database.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rolls back every final Run write when one terminal write fails", async () => {

@@ -38,9 +38,11 @@ export function appendAssistantDelta(
       ...finalizedTimeline,
       {
         attachments: [],
+        completedAt: null,
         content: event.delta,
         conversationId: event.conversationId,
         createdAt: new Date().toISOString(),
+        durationMs: null,
         id: event.messageId,
         kind: "message",
         modelId: event.modelId,

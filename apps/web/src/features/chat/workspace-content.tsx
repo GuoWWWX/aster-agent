@@ -207,19 +207,6 @@ type MentionQuery = {
 
 const MAX_SELECTED_CONVERSATION_MENTIONS = 5;
 const MAX_SELECTED_PROJECT_FILE_MENTIONS = 10;
-const CONVERSATION_TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
-  hour: "2-digit",
-  hour12: false,
-  minute: "2-digit",
-});
-const CONVERSATION_DATE_TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
-  day: "2-digit",
-  hour: "2-digit",
-  hour12: false,
-  minute: "2-digit",
-  month: "2-digit",
-  year: "numeric",
-});
 
 const SLASH_COMMANDS = [
   { description: "先拆分步骤并创建任务清单", name: "plan", title: "规划任务" },
@@ -244,6 +231,8 @@ function ConversationReasoningControl({
 }: ConversationReasoningControlProps): ReactElement {
   const [mode, setMode] = useState<"slider" | "list">("slider");
   const [open, setOpen] = useState(false);
+  const [isMaxEffectActive, setIsMaxEffectActive] = useState(false);
+  const maxEffectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectedOption = options.find(
     (option) => modelReasoningOptionKey(option) === selectedKey,
   );
@@ -255,21 +244,54 @@ function ConversationReasoningControl({
     ? "自动"
     : reasoningOptionDisplayName(selectedOption);
   const isDisabled = disabled || options.length === 0;
+  const strengthWeight = Math.round(progress * 0.46);
+  const isMaximumStrength = options.length > 0 && selectedIndex === options.length;
+  const maximumOptionKey = options.length > 0
+    ? modelReasoningOptionKey(options[options.length - 1]!)
+    : null;
   const sliderStyle = {
-    "--reasoning-fill": `color-mix(in srgb, var(--app-accent) ${100 - progress}%, var(--app-foreground) ${progress}%)`,
+    "--reasoning-fill": selectedIndex === 0
+      ? "color-mix(in srgb, var(--app-muted-foreground) 58%, var(--app-accent))"
+      : isMaximumStrength
+        ? "var(--reasoning-maximum)"
+      : `color-mix(in srgb, var(--app-accent) ${100 - strengthWeight}%, var(--reasoning-strong) ${strengthWeight}%)`,
+    "--reasoning-progress": `${progress}%`,
   } as CSSProperties;
   const labels = [
     "自动",
     ...options.map((option) => reasoningOptionDisplayName(option)),
   ];
 
+  useEffect(() => () => {
+    if (maxEffectTimerRef.current !== null) {
+      clearTimeout(maxEffectTimerRef.current);
+    }
+  }, []);
+
+  const updateMaxEffect = (isMaximum: boolean): void => {
+    if (maxEffectTimerRef.current !== null) {
+      clearTimeout(maxEffectTimerRef.current);
+      maxEffectTimerRef.current = null;
+    }
+
+    setIsMaxEffectActive(isMaximum);
+    if (isMaximum) {
+      maxEffectTimerRef.current = setTimeout(() => {
+        setIsMaxEffectActive(false);
+        maxEffectTimerRef.current = null;
+      }, 900);
+    }
+  };
+
   const selectSliderValue = (value: string): void => {
     const index = Number(value);
     const option = options[index - 1];
+    updateMaxEffect(option !== undefined && index === options.length);
     onValueChange(option === undefined ? "auto" : modelReasoningOptionKey(option));
   };
 
   const selectReasoningOption = (value: string): void => {
+    updateMaxEffect(value === maximumOptionKey);
     onValueChange(value);
     setOpen(false);
   };
@@ -278,10 +300,10 @@ function ConversationReasoningControl({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
-          aria-label={`思考程度：${displayName}`}
+          aria-label={`推理强度：${displayName}`}
           className="conversation-workspace__reasoning-trigger"
           disabled={isDisabled}
-          title={`思考程度：${displayName}`}
+          title={`推理强度：${displayName}`}
           type="button"
         >
           <span>{displayName}</span>
@@ -297,8 +319,7 @@ function ConversationReasoningControl({
       >
         <header className="conversation-workspace__reasoning-popover-header">
           <span>
-            <strong>思考程度</strong>
-            <small>{displayName}</small>
+            <strong>推理强度</strong>
           </span>
           <IconButton
             className="conversation-workspace__reasoning-mode-toggle"
@@ -315,8 +336,9 @@ function ConversationReasoningControl({
         {mode === "slider" ? (
           <div className="conversation-workspace__reasoning-slider-panel">
             <Slider
-              aria-label="思考程度"
+              aria-label="推理强度"
               className="conversation-workspace__reasoning-slider"
+              data-max-effect={isMaxEffectActive ? "active" : undefined}
               disabled={isDisabled}
               max={Math.max(options.length, 1)}
               min={0}
@@ -329,7 +351,7 @@ function ConversationReasoningControl({
                 <SliderRange className="conversation-workspace__reasoning-range" />
               </SliderTrack>
               <SliderThumb
-                aria-label="思考程度"
+                aria-label="推理强度"
                 aria-valuetext={displayName}
                 className="conversation-workspace__reasoning-thumb"
               />
@@ -349,7 +371,7 @@ function ConversationReasoningControl({
             </div>
           </div>
         ) : (
-          <div className="conversation-workspace__reasoning-option-list" role="listbox" aria-label="思考程度选项">
+          <div className="conversation-workspace__reasoning-option-list" role="listbox" aria-label="推理强度选项">
             <button
               aria-selected={selectedOption === undefined}
               className={selectedOption === undefined ? "is-selected" : undefined}
@@ -621,22 +643,10 @@ export function ConversationWorkspace({
   const latestUserMessageId = useMemo(() =>
     timeline.findLast((item) => item.kind === "message" && item.role === "user")?.id ?? null,
   [timeline]);
-  const forkableAssistantMessageIds = useMemo(() => new Set(
-    timeline.flatMap((item, index) => {
-      if (
-        item.kind !== "message"
-        || item.role !== "assistant"
-        || item.status !== "completed"
-        || item.runId === null
-      ) {
-        return [];
-      }
-      const hasLaterItemInRun = timeline
-        .slice(index + 1)
-        .some((candidate) => candidate.runId === item.runId);
-      return hasLaterItemInRun ? [] : [item.id];
-    }),
-  ), [timeline]);
+  const forkableAssistantMessageIds = useMemo(
+    () => getFinalCompletedAssistantMessageIds(timeline),
+    [timeline],
+  );
   const projectMentionLocation = useMemo(
     () => mentionQuery === null || mentionQuery.query.length === 0
       ? null
@@ -932,10 +942,11 @@ export function ConversationWorkspace({
     message: ConversationMessageItem,
   ): Promise<void> => {
     try {
-      await agentClient.writeClipboardText(formatConversationRunMarkdown(
-        timelineRef.current,
-        message,
-      ));
+      await agentClient.writeClipboardText(
+        message.role === "user"
+          ? message.content
+          : formatConversationRunMarkdown(timelineRef.current, message),
+      );
       if (copiedMessageTimeoutRef.current !== null) {
         window.clearTimeout(copiedMessageTimeoutRef.current);
       }
@@ -1585,6 +1596,10 @@ export function ConversationWorkspace({
     timeline,
     modelActivity?.anchorTimelineItemId ?? null,
   );
+  const runDurationsByInsertIndex = useMemo(
+    () => getConversationRunDurationInsertIndexes(displayTimeline),
+    [displayTimeline],
+  );
   const modelActivityInsertIndex = modelActivity === null
     ? -1
     : (() => {
@@ -1695,6 +1710,14 @@ export function ConversationWorkspace({
             <>
               {displayTimeline.map((item, index) => (
                 <Fragment key={item.id}>
+                  {(runDurationsByInsertIndex.get(index) ?? []).map((durationMs, durationIndex) => (
+                    <div
+                      className="conversation-run-duration"
+                      key={`${item.id}:duration:${durationIndex}`}
+                    >
+                      <span>用时 {formatRunDuration(0, durationMs)}</span>
+                    </div>
+                  ))}
                   {(runProgressesByInsertIndex.get(index) ?? []).map((progress) => (
                     <RunProgressIndicator key={progress.runId ?? "pending"} progress={progress} />
                   ))}
@@ -1719,9 +1742,13 @@ export function ConversationWorkspace({
                       && forkableAssistantMessageIds.has(item.id)
                       && onForkConversation !== undefined
                       && !isFinishedSubagent}
-                    canCopyMessage={item.kind === "message"
-                      && item.role === "assistant"
+                    canShowCompletionTime={item.kind === "message"
                       && forkableAssistantMessageIds.has(item.id)}
+                    canCopyMessage={item.kind === "message" && (
+                      item.role === "user"
+                        ? item.content.length > 0
+                        : forkableAssistantMessageIds.has(item.id)
+                    )}
                     latestUserMessageId={latestUserMessageId}
                     onChangeApproval={handleChangeApproval}
                     onCopyMessage={handleCopyMessage}
@@ -2127,6 +2154,16 @@ export function ConversationWorkspace({
                     <SelectItem value="full_access">完全访问</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+              <div className="conversation-workspace__composer-actions">
+                {showContextUsage ? (
+                  <ContextUsageIndicator
+                    composerValue={composerValue}
+                    contextWindowTokens={activeModel?.contextWindow ?? 0}
+                    modelName={activeModel?.displayName ?? null}
+                    usage={contextUsage}
+                  />
+                ) : null}
                 <span className="conversation-workspace__model-controls">
                   <ModelProfilePicker
                     ariaLabel="对话模型列表"
@@ -2157,16 +2194,6 @@ export function ConversationWorkspace({
                     onValueChange={setSelectedReasoningOptionKey}
                   />
                 </span>
-              </div>
-              <div className="conversation-workspace__composer-actions">
-                {showContextUsage ? (
-                  <ContextUsageIndicator
-                    composerValue={composerValue}
-                    contextWindowTokens={activeModel?.contextWindow ?? 0}
-                    modelName={activeModel?.displayName ?? null}
-                    usage={contextUsage}
-                  />
-                ) : null}
                 <IconButton
                   className="conversation-workspace__send-button"
                   disabled={
@@ -2358,7 +2385,7 @@ function handleRunEvent(
       setActiveRunId((current) => (current === event.runId ? null : current));
       setIsCancelling(false);
       setModelActivity((current) => current?.runId === event.runId ? null : current);
-      removeUnansweredRunProgress(setRunProgresses, event.runId);
+      removeRunProgress(setRunProgresses, event.runId);
       return;
     case "run.started":
       updateTimeline(completeStreamingAssistantMessages);
@@ -2486,9 +2513,7 @@ function RetryActivityIndicator({
 function RunProgressIndicator({ progress }: { progress: RunProgress }): ReactElement {
   const outputStartedAt = progress.outputStartedAt;
   const hasOutput = outputStartedAt !== null;
-  const label = hasOutput
-    ? `已处理 ${formatRunDuration(progress.startedAt, outputStartedAt)}`
-    : "正在思考";
+  const label = hasOutput ? "正在回答" : "正在思考";
 
   return (
     <div
@@ -2571,13 +2596,11 @@ function markRunOutputStarted(
   ));
 }
 
-function removeUnansweredRunProgress(
+function removeRunProgress(
   setRunProgresses: Dispatch<SetStateAction<RunProgress[]>>,
   runId: string,
 ): void {
-  setRunProgresses((current) => current.filter((progress) =>
-    progress.runId !== runId || progress.outputStartedAt !== null,
-  ));
+  setRunProgresses((current) => current.filter((progress) => progress.runId !== runId));
 }
 
 export function formatRunDuration(startedAt: number, outputStartedAt: number): string {
@@ -2812,7 +2835,9 @@ function ConversationTaskListPanel({
                     <X aria-hidden="true" size={15} strokeWidth={2.2} />
                   ) : null}
                 </span>
-                <span>{task.title}</span>
+                <div className="conversation-task-list__task-content">
+                  <span>{task.title}</span>
+                </div>
               </div>
             ))}
           </div>
@@ -2867,7 +2892,7 @@ function ConversationTaskListPanel({
                     ? "任务已完成"
                     : summaryStatus === "failed"
                       ? "任务已失败"
-                      : summaryStatus === "blocked"
+                    : summaryStatus === "blocked"
                         ? "任务已阻塞"
                         : "任务清单"
                 }</span>
@@ -2938,21 +2963,44 @@ function replaceTimelineFromMessage(
   });
 }
 
-function formatConversationTime(createdAt: string): string {
-  return CONVERSATION_TIME_FORMATTER.format(new Date(createdAt));
+export function formatConversationTime(createdAt: string, now = new Date()): string {
+  const timestamp = new Date(createdAt);
+  if (Number.isNaN(timestamp.getTime())) return "";
+
+  const isSameDay = timestamp.getFullYear() === now.getFullYear()
+    && timestamp.getMonth() === now.getMonth()
+    && timestamp.getDate() === now.getDate();
+  if (isSameDay) return formatLocalClock(timestamp);
+
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const isYesterday = timestamp.getFullYear() === yesterday.getFullYear()
+    && timestamp.getMonth() === yesterday.getMonth()
+    && timestamp.getDate() === yesterday.getDate();
+  if (isYesterday) return `昨天 ${formatLocalClock(timestamp)}`;
+
+  if (timestamp.getFullYear() === now.getFullYear()) {
+    return `${timestamp.getMonth() + 1}月${timestamp.getDate()}日 ${formatLocalClock(timestamp)}`;
+  }
+  return `${timestamp.getFullYear()}年${timestamp.getMonth() + 1}月${timestamp.getDate()}日 ${formatLocalClock(timestamp)}`;
 }
 
 function formatConversationDateTime(createdAt: string): string {
-  return CONVERSATION_DATE_TIME_FORMATTER.format(new Date(createdAt));
+  const timestamp = new Date(createdAt);
+  if (Number.isNaN(timestamp.getTime())) return "";
+  return `${timestamp.getFullYear()}年${timestamp.getMonth() + 1}月${timestamp.getDate()}日 ${formatLocalClock(timestamp)}`;
 }
 
-function groupToolBatches(
+function formatLocalClock(timestamp: Date): string {
+  return `${String(timestamp.getHours()).padStart(2, "0")}:${String(timestamp.getMinutes()).padStart(2, "0")}`;
+}
+
+export function groupToolBatches(
   timeline: ConversationTimelineItem[],
   breakAfterTimelineItemId: string | null = null,
 ): TimelineDisplayItem[] {
   const grouped: TimelineDisplayItem[] = [];
   let tools: ConversationToolItem[] = [];
-  let toolGroupKey: string | null = null;
 
   const flushTools = (): void => {
     if (tools.length === 0) return;
@@ -2969,15 +3017,11 @@ function groupToolBatches(
       });
     }
     tools = [];
-    toolGroupKey = null;
   };
 
   for (const item of timeline) {
     if (item.kind === "tool") {
-      const nextToolGroupKey = `${item.batchId ?? item.id}:${item.executionMode ?? "serial"}`;
-      if (toolGroupKey !== null && toolGroupKey !== nextToolGroupKey) flushTools();
       tools.push(item);
-      toolGroupKey = nextToolGroupKey;
       if (item.id === breakAfterTimelineItemId) flushTools();
       continue;
     }
@@ -2987,6 +3031,62 @@ function groupToolBatches(
 
   flushTools();
   return grouped;
+}
+
+export function getConversationRunDurationInsertIndexes(
+  timeline: readonly {
+    durationMs?: number | null | undefined;
+    kind: string;
+    role?: string | undefined;
+    runId?: string | null | undefined;
+  }[],
+): ReadonlyMap<number, readonly number[]> {
+  const durationsByInsertIndex = new Map<number, number[]>();
+  const completedRunIds = new Set<string>();
+  let runStartIndex = 0;
+
+  for (const [index, item] of timeline.entries()) {
+    if (item.kind === "message" && item.role === "user") {
+      runStartIndex = index + 1;
+      continue;
+    }
+    if (item.kind !== "message" || item.role !== "assistant" || item.durationMs == null) {
+      continue;
+    }
+    const runId = item.runId ?? `legacy-turn:${runStartIndex}`;
+    if (completedRunIds.has(runId)) continue;
+    completedRunIds.add(runId);
+    const durations = durationsByInsertIndex.get(runStartIndex) ?? [];
+    durations.push(item.durationMs);
+    durationsByInsertIndex.set(runStartIndex, durations);
+  }
+
+  return durationsByInsertIndex;
+}
+
+export function getFinalCompletedAssistantMessageIds(
+  timeline: readonly {
+    id: string;
+    kind: string;
+    role?: string | undefined;
+    runId?: string | null | undefined;
+    status?: string | undefined;
+  }[],
+): ReadonlySet<string> {
+  return new Set(timeline.flatMap((item, index) => {
+    if (
+      item.kind !== "message"
+      || item.role !== "assistant"
+      || item.status !== "completed"
+      || item.runId == null
+    ) {
+      return [];
+    }
+    const hasLaterItemInRun = timeline
+      .slice(index + 1)
+      .some((candidate) => candidate.runId === item.runId);
+    return hasLaterItemInRun ? [] : [item.id];
+  }));
 }
 
 function timelineDisplayItemContains(item: TimelineDisplayItem, timelineItemId: string): boolean {
@@ -3002,6 +3102,7 @@ function TimelineItem({
   approvingToolId,
   canCopyMessage,
   canForkMessage,
+  canShowCompletionTime,
   copiedMessageId,
   editingMessageId,
   forkingMessageId,
@@ -3020,6 +3121,7 @@ function TimelineItem({
   approvingToolId: string | null;
   canCopyMessage: boolean;
   canForkMessage: boolean;
+  canShowCompletionTime: boolean;
   copiedMessageId: string | null;
   editingMessageId: string | null;
   forkingMessageId: string | null;
@@ -3100,7 +3202,11 @@ function TimelineItem({
   const editing = editingMessageId === item.id;
   const isForking = forkingMessageId === item.id;
   const canEdit = item.role === "user" && item.id === latestUserMessageId;
-  const showMessageMeta = item.role === "user" || canCopyMessage || canForkMessage || canEdit;
+  const showMessageMeta = item.role === "user"
+    || canShowCompletionTime
+    || canCopyMessage
+    || canForkMessage
+    || canEdit;
 
   return (
     <div className="chat-message-group" data-role={item.role}>
@@ -3131,7 +3237,9 @@ function TimelineItem({
         {canCopyMessage ? (
           <IconButton
             disabled={item.content.length === 0}
-            label={copied ? "已复制完整回复" : "复制完整回复"}
+            label={copied
+              ? item.role === "user" ? "已复制消息" : "已复制完整回复"
+              : item.role === "user" ? "复制消息" : "复制完整回复"}
             size="compact"
             type="button"
             variant="quiet"
@@ -3176,6 +3284,11 @@ function TimelineItem({
           >
             <Pencil aria-hidden="true" size={14} />
           </IconButton>
+        ) : null}
+        {item.role === "assistant" && canShowCompletionTime && item.completedAt != null ? (
+          <time dateTime={item.completedAt} title={formatConversationDateTime(item.completedAt)}>
+            {formatConversationTime(item.completedAt)}
+          </time>
         ) : null}
       </div> : null}
     </div>

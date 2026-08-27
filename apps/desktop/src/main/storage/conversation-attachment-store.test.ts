@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -169,6 +169,20 @@ describe("ConversationAttachmentStore", () => {
     await expect(access(originalStoredPath)).resolves.toBeUndefined();
     await deletion.requestDeletion(conversation.id);
     await expect(access(originalStoredPath)).rejects.toThrow();
+  });
+
+  it("keeps project source metadata when a selected file resolves through a workspace link", async () => {
+    const { conversation, projectRoot, store } = await createFixture();
+    const linkedProjectRoot = `${projectRoot}-linked`;
+    temporaryDirectories.push(linkedProjectRoot);
+    await writeFile(path.join(projectRoot, "notes.md"), "# Notes", "utf8");
+    await symlink(projectRoot, linkedProjectRoot, process.platform === "win32" ? "junction" : "dir");
+
+    const [attachment] = await store.importFiles(conversation.id, [
+      path.join(linkedProjectRoot, "notes.md"),
+    ]);
+
+    expect(attachment).toMatchObject({ projectPath: "notes.md", source: "project" });
   });
 
   it("does not expose inherited side-fork attachments as drafts", async () => {

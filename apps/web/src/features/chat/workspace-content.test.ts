@@ -5,7 +5,11 @@ import type { ConversationToolItem } from "@agent/protocol";
 import {
   fileChangeSummary,
   formatToolPayload,
+  formatConversationTime,
   formatRunDuration,
+  getConversationRunDurationInsertIndexes,
+  getFinalCompletedAssistantMessageIds,
+  groupToolBatches,
   describeConversationError,
   representativeToolName,
   stripLegacyErrorInstanceId,
@@ -40,6 +44,58 @@ describe("run progress duration", () => {
     expect(formatRunDuration(startedAt, 61_000)).toBe("1分 1秒");
     expect(formatRunDuration(startedAt, 3_661_000)).toBe("1小时 1分 1秒");
     expect(formatRunDuration(startedAt, 90_061_000)).toBe("1天 1小时 1分 1秒");
+  });
+
+  it("inserts a completed run duration before its tool calls", () => {
+    const indexes = getConversationRunDurationInsertIndexes([
+      { kind: "message", role: "user" },
+      { kind: "tool_batch" },
+      { durationMs: 21_000, kind: "message", role: "assistant" },
+    ]);
+
+    expect([...indexes.entries()]).toEqual([[1, [21_000]]]);
+  });
+
+  it("shows one duration when a completed run contains multiple assistant messages", () => {
+    const indexes = getConversationRunDurationInsertIndexes([
+      { kind: "message", role: "user" },
+      { durationMs: 40_000, kind: "message", role: "assistant", runId: "run-1" },
+      { durationMs: 40_000, kind: "message", role: "assistant", runId: "run-1" },
+    ]);
+
+    expect([...indexes.entries()]).toEqual([[1, [40_000]]]);
+  });
+
+  it("keeps legacy messages without a run id to one duration per user turn", () => {
+    const indexes = getConversationRunDurationInsertIndexes([
+      { kind: "message", role: "user" },
+      { durationMs: 40_000, kind: "message", role: "assistant" },
+      { durationMs: 40_000, kind: "message", role: "assistant" },
+    ]);
+
+    expect([...indexes.entries()]).toEqual([[1, [40_000]]]);
+  });
+
+  it("shows the completion time only on the final message of a run", () => {
+    const ids = getFinalCompletedAssistantMessageIds([
+      { id: "intermediate", kind: "message", role: "assistant", runId: "run-1", status: "completed" },
+      { id: "command", kind: "tool", runId: "run-1" },
+      { id: "final", kind: "message", role: "assistant", runId: "run-1", status: "completed" },
+    ]);
+
+    expect([...ids]).toEqual(["final"]);
+  });
+});
+
+describe("conversation message time", () => {
+  const now = new Date(2026, 7, 27, 16, 30);
+
+  it("uses a contextual local timestamp for recent and historical messages", () => {
+    expect(formatConversationTime(new Date(2026, 7, 27, 9, 5).toISOString(), now)).toBe("09:05");
+    expect(formatConversationTime(new Date(2026, 7, 26, 9, 5).toISOString(), now)).toBe("昨天 09:05");
+    expect(formatConversationTime(new Date(2026, 6, 3, 9, 5).toISOString(), now)).toBe("7月3日 09:05");
+    expect(formatConversationTime(new Date(2025, 11, 3, 9, 5).toISOString(), now))
+      .toBe("2025年12月3日 09:05");
   });
 });
 
@@ -115,6 +171,17 @@ describe("conversation error display", () => {
 });
 
 describe("tool batch execution mode", () => {
+  it("groups consecutive tools into one collapsible batch", () => {
+    const first = tool("run_command");
+    const second = {
+      ...tool("run_command"),
+      batchId: "00000000-0000-4000-8000-000000000003",
+      id: "00000000-0000-4000-8000-second000000",
+    };
+
+    expect(groupToolBatches([first, second])).toHaveLength(1);
+  });
+
   it("identifies a parallel batch from runtime metadata", () => {
     const first = tool("run_command");
     const second = { ...tool("run_command"), id: "00000000-0000-4000-8000-second000000" };

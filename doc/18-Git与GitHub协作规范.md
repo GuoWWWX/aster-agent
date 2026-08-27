@@ -2,7 +2,7 @@
 
 > 文档角色：本仓库的 Git Flow、GitHub Pull Request、发布标签与回滚约定。
 >
-> 状态：首个 GitHub 仓库创建前的执行规范；GitHub 分支保护和发布工作流配置后，应以平台实际配置为准。
+> 状态：仓库与 GitHub 远程已初始化；GitHub 分支保护和发布工作流配置后，应以平台实际配置为准。
 >
 > 参考：`E:\个人\学习\AI\ai\60-Git与工程协作` 的 Git Flow、公共历史、Tag 发布和回滚原则。
 
@@ -12,7 +12,7 @@
 
 以下规则优先级由高到低：GitHub 分支保护与必需检查、已发布版本的回滚安全、项目编码规范、本文件的默认流程、个人偏好。
 
-当前事实：仓库已有本地 `main`，尚未配置远程仓库、GitHub 环境、分支保护或发布工作流；产品名为 Aster。〔FACT｜`.git`、`git remote -v`、`package.json`，2026-08-27〕
+当前事实：仓库已配置 GitHub 远程 `origin`，`main` 与 `develop` 均已推送；GitHub 分支保护和发布工作流的配置状态应以平台实际设置为准；产品名为 Aster。〔FACT｜`.git`、`git remote -v`、`git branch -a`、`package.json`，2026-08-27〕
 
 ## 2. 分支模型
 
@@ -131,7 +131,7 @@ PR 默认目标为 `develop`，并应包含：
 | 合并方式 | 启用 squash merge；保留 merge commit 仅用于发布/热修复分支。 |
 | 安全 | 启用 Dependabot alerts、Secret scanning、Push protection（可用时）。 |
 
-本仓库的 [CI 工作流](../.github/workflows/ci.yml) 对 PR 与 `main`/`develop` 推送运行 `lint`、`typecheck`、`test`、`build`。在仓库状态已经通过这些门禁前，不要把它们设为强制检查以外的“绿色装饰”。
+当前早期单人迭代阶段， [CI 工作流](../.github/workflows/ci.yml) 仅由维护者在 Actions 页手动触发，运行 `lint`、`typecheck`、`test`、`build`；PR 与 `main`/`develop` 推送不会自动运行。远端 Windows Runner 与本地环境差异仍在收敛中，因此暂不设置必需状态检查。恢复自动 CI 前，先确认这些门禁已能稳定复现本地结果。
 
 ## 5. 发布流程
 
@@ -201,7 +201,7 @@ git switch -c hotfix/crash-on-startup
 
 仓库创建后按以下顺序执行：
 
-- [ ] 推送本地 `main` 到正确的 GitHub 组织/仓库，并创建 `develop`。
+- [x] 推送本地 `main` 到正确的 GitHub 组织/仓库，并创建 `develop`。
 - [ ] 配置本文件第 4 节的分支保护、安全扫描、Actions 权限与合并方式。
 - [ ] 在 Actions 页面确认 `CI` 能在一个文档 PR 上完整运行。
 - [ ] 选择并提交许可证；在 README 中写明。

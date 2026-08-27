@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactElement, ReactNode } from "react";
+import { useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
 
 import type { AgentClient } from "../../runtime/index.js";
 import {
@@ -30,6 +30,7 @@ export function AppShell({
   mainContent,
   projectNavigator,
 }: AppShellProps): ReactElement {
+  const [isFilePanelResizing, setFilePanelResizing] = useState(false);
   const isFilePanelOpen = useWorkbenchUiStore(
     (state) => state.isFilePanelOpen,
   );
@@ -112,19 +113,15 @@ export function AppShell({
         <main className="workbench-main" aria-label="主要工作区">
           {mainContent}
         </main>
-        {canShowFileWorkspace ? <ResizableDivider
-          ariaLabel={isFilePanelOpen ? "调整右侧工作区宽度" : "拖动展开右侧工作区"}
-          className={
-            isFilePanelOpen
-              ? "workbench-resizable-divider--right"
-              : "workbench-resizable-divider--right workbench-resizable-divider--right-collapsed"
-          }
-          collapsed={!isFilePanelOpen}
+        {canShowFileWorkspace && (isFilePanelOpen || isFilePanelResizing) ? <ResizableDivider
+          ariaLabel="调整右侧工作区宽度"
+          className="workbench-resizable-divider--right"
           direction="from-end"
           max={FILE_PANEL_WIDTH_RANGE.max}
           min={FILE_PANEL_WIDTH_RANGE.min}
           size={filePanelWidth}
           onCollapsedChange={(isCollapsed) => setFilePanelOpen(!isCollapsed)}
+          onDraggingChange={setFilePanelResizing}
           onResize={setFilePanelWidth}
         /> : null}
         {canShowFileWorkspace && isFilePanelOpen ? (
