@@ -447,6 +447,18 @@ describe("MockAgentClient", () => {
     ).toEqual(sourceTimeline);
   });
 
+  it("removes a deleted side chat from its parent fork list", async () => {
+    const client = new MockAgentClient();
+    const conversation = await client.createConversation({});
+    const sideChat = await client.forkConversation({ conversationId: conversation.id });
+
+    await client.deleteConversation({ conversationId: sideChat.id });
+
+    await expect(
+      client.listConversationForks({ conversationId: conversation.id }),
+    ).resolves.toEqual([]);
+  });
+
   it("creates a numbered mock sibling conversation through the selected reply", async () => {
     vi.useFakeTimers();
     const client = new MockAgentClient();

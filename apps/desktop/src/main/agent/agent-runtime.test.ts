@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -2476,7 +2476,7 @@ describe("AgentRuntime", () => {
     expect(model.requests[0]?.tools.map((tool) => tool.name)).toContain("list_directory");
     expect(model.requests[0]?.tools.map((tool) => tool.name)).toContain("find_files");
     expect(model.requests[0]?.tools.map((tool) => tool.name)).not.toContain("get_project_info");
-    expect(model.requests[0]?.messages[0]?.content).toContain(`授权根目录：${root}`);
+    expect(model.requests[0]?.messages[0]?.content).toContain(`授权根目录：${path.resolve(await realpath(root))}`);
     expect(model.requests[0]?.messages[0]?.content).toContain("不要调用工具查询授权根目录");
     database.close();
   });
@@ -3707,7 +3707,7 @@ describe("AgentRuntime", () => {
     let compressionConfiguration = {
       mode: "tokens" as const,
       percentageThreshold: 80,
-      tokenThreshold: 10_000,
+      tokenThreshold: 2_000,
       version: 1 as const,
     };
     const runtime = new AgentRuntime(
@@ -3733,12 +3733,12 @@ describe("AgentRuntime", () => {
         if (event.type === "run.finished") resolve();
       });
     });
-    const previousMarker = `上一轮上下文标记-${"a".repeat(20_000)}`;
+    const previousMarker = `上一轮上下文标记-${"a".repeat(4_000)}`;
     await sendAndWait(previousMarker);
 
     const completion = new Promise<void>((resolve) => {
       runtime.sendMessage(
-        { content: `当前轮上下文标记-${"b".repeat(20_000)}`, conversationId: conversation.id },
+        { content: `当前轮上下文标记-${"b".repeat(4_000)}`, conversationId: conversation.id },
         (event) => {
           if (event.type === "run.finished") resolve();
         }
@@ -3760,7 +3760,7 @@ describe("AgentRuntime", () => {
     for (let turn = 1; turn <= 3; turn += 1) {
       const run = database.createRunWithUserMessage(
         conversation.id,
-        `旧轮次-${turn}-${"x".repeat(20_000)}`,
+        `旧轮次-${turn}-${"x".repeat(12_000)}`,
         "test-model"
       );
       database.appendAssistantTurn({
@@ -3795,7 +3795,7 @@ describe("AgentRuntime", () => {
         getConfiguration: () => ({
           mode: "tokens",
           percentageThreshold: 80,
-          tokenThreshold: 24_000,
+          tokenThreshold: 6_000,
           version: 1
         })
       },
@@ -3804,7 +3804,7 @@ describe("AgentRuntime", () => {
 
     await new Promise<void>((resolve) => {
       runtime.sendMessage(
-        { content: `当前轮次-4-${"y".repeat(20_000)}`, conversationId: conversation.id },
+        { content: `当前轮次-4-${"y".repeat(12_000)}`, conversationId: conversation.id },
         (event) => {
           if (event.type === "run.finished") resolve();
         }
@@ -4464,7 +4464,7 @@ describe("AgentRuntime", () => {
       },
     });
     const settings = createPermissionSettingsProvider(profile.id, [
-      { pattern: "mvn package *", tool: "run_command" },
+      { pattern: "Write-Output *", tool: "run_command" },
     ]);
     const runtime = new AgentRuntime(
       database,
@@ -4479,7 +4479,7 @@ describe("AgentRuntime", () => {
       },
       projects,
       new ProjectToolRegistry(projects),
-      new SingleCommandFixtureModel("mvn package -DskipTests"),
+      new SingleCommandFixtureModel("Write-Output agent-command-ok"),
       undefined,
       undefined,
       null,
@@ -4525,7 +4525,7 @@ describe("AgentRuntime", () => {
       },
       projects,
       new ProjectToolRegistry(projects),
-      new SingleCommandFixtureModel("mvnx package -DskipTests"),
+      new SingleCommandFixtureModel("Write-Outputx agent-command-ok"),
       undefined,
       undefined,
       null,
@@ -4545,14 +4545,13 @@ describe("AgentRuntime", () => {
       }, (event) => {
         rejectedBoundaryEvents.push(event);
         if (event.type === "tool.approval_requested") {
-          runtime.approveToolChange({ approved: false, runId: event.runId, toolId: event.tool.id });
+          nonMatchingRuntime.approveToolChange({ approved: false, runId: event.runId, toolId: event.tool.id });
         }
         if (event.type === "run.finished") resolve();
       });
     });
-    // A command with the same prefix token boundary is allowed; a different
-    // command is still presented for approval. This second run uses a model
-    // with a distinct command to make the boundary observable.
+    // A matching prefix is allowed; a different command is still presented
+    // for approval. Keep the command local and deterministic for CI.
     expect(rejectedBoundaryEvents.filter((event) => event.type === "tool.approval_requested")).toHaveLength(1);
     database.close();
   });

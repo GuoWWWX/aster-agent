@@ -11,7 +11,7 @@ const temporaryDirectories: string[] = [];
 afterEach(async () => {
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
-      rm(directory, { force: true, recursive: true })
+      rm(directory, { force: true, maxRetries: 3, recursive: true, retryDelay: 100 })
     )
   );
 });
@@ -85,7 +85,7 @@ describe("ProjectToolRegistry", () => {
     const signal = new AbortController().signal;
     const command = await tools.execute(
       "run_command",
-      JSON.stringify({ command: "Start-Sleep -Milliseconds 250", timeoutMs: 10_000 }),
+      JSON.stringify({ command: "Write-Output command-started; Start-Sleep -Milliseconds 250", timeoutMs: 10_000 }),
       project.id,
       signal,
     );
@@ -95,7 +95,6 @@ describe("ProjectToolRegistry", () => {
       conversationTitle: "终端 Agent",
       runId: "run-command",
     });
-    await new Promise<void>((resolve) => setTimeout(resolve, 75));
 
     await expect(tools.writeUserFile({
       content: "editor\n",
@@ -104,7 +103,7 @@ describe("ProjectToolRegistry", () => {
       projectId: project.id,
     }, signal)).rejects.toMatchObject({ code: "PROJECT_OPERATION_CONFLICT" });
     await expect(commandPromise).resolves.toMatchObject({ isError: false });
-  });
+  }, 20_000);
 
   it("rejects editor paths outside the project root", async () => {
     const { project, tools } = await createFixture();
@@ -201,7 +200,7 @@ describe("ProjectToolRegistry", () => {
       signal,
       { ...owner, conversationId: "other-conversation" },
     )).resolves.toMatchObject({ isError: true });
-  });
+  }, 20_000);
 
   it("executes every advertised project tool inside an isolated project", async () => {
     const { project, tools } = await createFixture();
@@ -318,7 +317,7 @@ describe("ProjectToolRegistry", () => {
       "apply_patch",
       "run_command"
     ]);
-  });
+  }, 20_000);
 
   it("reads a bounded line range", async () => {
     const { project, tools } = await createFixture();

@@ -2771,11 +2771,6 @@ function ConversationTaskListPanel({
       : blockedIndex >= 0
         ? "blocked"
         : "active";
-  const summaryReason = summaryStatus === "failed"
-    ? taskList.tasks[failedIndex]?.reason ?? null
-    : summaryStatus === "blocked"
-      ? taskList.tasks[blockedIndex]?.reason ?? null
-      : null;
   const currentStep =
     runningIndex >= 0
       ? runningIndex + 1
@@ -2842,9 +2837,6 @@ function ConversationTaskListPanel({
                 </span>
                 <div className="conversation-task-list__task-content">
                   <span>{task.title}</span>
-                  {(task.status === "blocked" || task.status === "failed") && task.reason !== null ? (
-                    <span className="conversation-task-list__task-reason">{task.reason}</span>
-                  ) : null}
                 </div>
               </div>
             ))}
@@ -2892,7 +2884,7 @@ function ConversationTaskListPanel({
               <ListTodo aria-hidden="true" size={15} strokeWidth={1.9} />
             )}
             <span>{`第 ${currentStep}/${taskList.tasks.length} 步`}</span>
-            {fileChanges.files.length === 0 || summaryReason !== null ? (
+            {fileChanges.files.length === 0 ? (
               <>
                 <span className="conversation-task-list__summary-divider" aria-hidden="true">·</span>
                 <span>{
@@ -2904,14 +2896,6 @@ function ConversationTaskListPanel({
                         ? "任务已阻塞"
                         : "任务清单"
                 }</span>
-                {summaryReason !== null ? (
-                  <>
-                    <span className="conversation-task-list__summary-divider" aria-hidden="true">·</span>
-                    <span className="conversation-task-list__summary-reason" title={summaryReason}>
-                      {summaryReason}
-                    </span>
-                  </>
-                ) : null}
               </>
             ) : null}
             <ChevronDown aria-hidden="true" className="conversation-task-list__chevron" size={15} />

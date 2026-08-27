@@ -45,8 +45,9 @@ export async function resolveExistingPathWithinRoot(
 ): Promise<string> {
   const resolvedMessages = messages(errorMessages);
   const targetPath = resolvePathWithinRoot(rootPath, relativePath, resolvedMessages);
+  const canonicalRootPath = path.resolve(await realpath(rootPath));
   const canonicalPath = path.resolve(await realpath(targetPath));
-  if (!isPathInsideRoot(rootPath, canonicalPath)) {
+  if (!isPathInsideRoot(canonicalRootPath, canonicalPath)) {
     throw new Error(resolvedMessages.resolvedOutsideRoot);
   }
   return canonicalPath;
@@ -59,8 +60,9 @@ export async function resolveWritablePathWithinRoot(
 ): Promise<string> {
   const resolvedMessages = messages(errorMessages);
   const targetPath = resolvePathWithinRoot(rootPath, relativePath, resolvedMessages);
+  const canonicalRootPath = path.resolve(await realpath(rootPath));
   const canonicalParentPath = path.resolve(await realpath(path.dirname(targetPath)));
-  if (!isPathInsideRoot(rootPath, canonicalParentPath)) {
+  if (!isPathInsideRoot(canonicalRootPath, canonicalParentPath)) {
     throw new Error(resolvedMessages.resolvedOutsideRoot);
   }
   try {

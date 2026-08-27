@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -99,7 +99,7 @@ describe("ProjectRegistry", () => {
       projectId: workspace.id
     });
 
-    expect(workspace).toMatchObject({ id: conversationId, rootPath });
+    expect(workspace).toMatchObject({ id: conversationId, rootPath: path.resolve(await realpath(rootPath)) });
     expect(registry.listProjects()).toEqual([]);
     expect(listing.entries).toContainEqual(expect.objectContaining({
       kind: "file",
@@ -125,7 +125,7 @@ describe("ProjectRegistry", () => {
     });
     expect(registry.getProject(targetConversationId)).toMatchObject({
       id: targetConversationId,
-      rootPath
+      rootPath: path.resolve(await realpath(rootPath))
     });
     expect(listing.entries).toContainEqual(expect.objectContaining({
       kind: "file",
