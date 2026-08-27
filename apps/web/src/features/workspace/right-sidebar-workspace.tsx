@@ -52,6 +52,7 @@ import {
   useWorkbenchUiStore,
   type ConfigurationWorkspaceTarget,
 } from "../../stores/workbench-ui-store.js";
+import { useConversationWorkspaceCache } from "../chat/conversation-workspace-cache.js";
 import { ConversationWorkspace } from "../chat/workspace-content.js";
 import { ConfigurationWorkspaceTreePanel } from "./configuration-workspace-tree-panel.js";
 import { ProjectTreePanel } from "../projects/project-tree-panel.js";
@@ -142,6 +143,7 @@ function toProjectSession(conversation: ConversationSummary): ProjectSession {
     isArchived: conversation.isArchived,
     isPinned: conversation.isPinned,
     lastRunStatus: conversation.lastRunStatus,
+    modelSelection: conversation.modelSelection,
     parentConversationId: conversation.parentConversationId,
     pinOrder: conversation.pinOrder ?? null,
     projectId: conversation.projectId,
@@ -151,6 +153,16 @@ function toProjectSession(conversation: ConversationSummary): ProjectSession {
     title: conversation.title,
     workspaceRootPath: conversation.workspaceRootPath,
   };
+}
+
+export function upsertSideSession(
+  sessions: ProjectSession[],
+  conversation: ConversationSummary,
+): ProjectSession[] {
+  const session = toProjectSession(conversation);
+  return sessions.some((candidate) => candidate.id === session.id)
+    ? sessions.map((candidate) => candidate.id === session.id ? session : candidate)
+    : [...sessions, session];
 }
 
 function fileTabId(projectId: string, path: string): string {
@@ -879,6 +891,11 @@ export function RightSidebarWorkspace({
     [queueConfigurationSave],
   );
 
+  const updateSideSession = useCallback((conversation: ConversationSummary): void => {
+    setSideSessions((current) => upsertSideSession(current, conversation));
+    onSessionUpdated(conversation);
+  }, [onSessionUpdated]);
+
   const createSideChat = useCallback(async (): Promise<void> => {
     if (activeSession === null || isCreatingChat) return;
     setIsCreatingChat(true);
@@ -888,8 +905,7 @@ export function RightSidebarWorkspace({
         conversationId: activeSession.id,
       });
       const session = toProjectSession(conversation);
-      setSideSessions((current) => [...current, session]);
-      onSessionUpdated(conversation);
+      updateSideSession(conversation);
       updateOpenChatIds((current) => new Set(current).add(session.id));
       setActiveTabForCurrentSession(`chat:${session.id}`);
       setIsFileBrowserOpen(false);
@@ -903,16 +919,19 @@ export function RightSidebarWorkspace({
     activeSession,
     agentClient,
     isCreatingChat,
-    onSessionUpdated,
     setActiveTabForCurrentSession,
+    updateSideSession,
     updateOpenChatIds,
   ]);
 
+  const openSideSessions = useMemo(
+    () => sideSessions.filter((session) => openChatIds.has(session.id)),
+    [openChatIds, sideSessions],
+  );
   const tabs = useMemo<SidebarTab[]>(
     () => [
       ...fileTabs,
-      ...sideSessions
-        .filter((session) => openChatIds.has(session.id))
+      ...openSideSessions
         .map((session): SidebarTab => ({
           id: `chat:${session.id}`,
           kind: "chat",
@@ -920,9 +939,13 @@ export function RightSidebarWorkspace({
           session,
         })),
     ],
-    [fileTabs, openChatIds, sideSessions],
+    [fileTabs, openSideSessions],
   );
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
+  const retainedSideSessions = useConversationWorkspaceCache(
+    activeTab?.kind === "chat" ? activeTab.session : null,
+    openSideSessions,
+  );
   const activeConfigurationTab = activeTab?.kind === "configuration-file" ? activeTab : null;
   const activeConfigurationTarget = activeConfigurationTab === null
     ? null
@@ -1257,21 +1280,35 @@ export function RightSidebarWorkspace({
         ) : null}
 
         <div className="right-sidebar-workspace__content">
-          {activeTab?.kind === "chat" ? (
-            <ConversationWorkspace
-              compact
-              key={activeTab.session.id}
-              agentClient={agentClient}
-              onLocateProject={onLocateProject}
-              onLocateSession={() => {
-                if (activeSession !== null) onLocateSession(activeSession.id);
-              }}
-              onOpenProjectFile={(path) => void openProjectFilePath(path)}
-              onViewed={() => onSessionViewed(activeTab.session.id)}
-              project={activeTab.session.projectId === null ? null : activeProject}
-              session={activeTab.session}
-            />
-          ) : activeTab?.kind === "file" ? (
+          {retainedSideSessions
+            .map((cachedSession) => (
+              openSideSessions.find((session) => session.id === cachedSession.id) ?? cachedSession
+            ))
+            .map((session) => {
+              const isActive = activeTab?.kind === "chat" && activeTab.session.id === session.id;
+              return (
+                <div
+                  aria-hidden={!isActive}
+                  className={isActive ? "flex h-full min-h-0 flex-1" : "hidden"}
+                  key={session.id}
+                >
+                  <ConversationWorkspace
+                    compact
+                    agentClient={agentClient}
+                    onLocateProject={onLocateProject}
+                    onLocateSession={() => {
+                      if (activeSession !== null) onLocateSession(activeSession.id);
+                    }}
+                     onOpenProjectFile={(path) => void openProjectFilePath(path)}
+                     onSessionUpdated={updateSideSession}
+                     onViewed={() => onSessionViewed(session.id)}
+                     project={session.projectId === null ? null : activeProject}
+                    session={session}
+                  />
+                </div>
+              );
+            })}
+          {activeTab?.kind === "chat" ? null : activeTab?.kind === "file" ? (
             <FilePreview
               isDark={isDark}
               state={filePreviews[activeTab.id]}

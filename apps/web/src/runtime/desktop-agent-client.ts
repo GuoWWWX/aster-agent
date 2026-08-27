@@ -54,6 +54,7 @@ import type {
   SendConversationMessageInput,
   UpdatePendingConversationMessageInput,
   SetConversationArchivedInput,
+  SetConversationModelSelectionInput,
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SetProjectPinnedInput,
@@ -80,6 +81,9 @@ import type {
  * dependency and keeps host-specific globals outside UI components.
  */
 export class DesktopAgentClientAdapter implements AgentClient {
+  private readonly conversationRunEventListeners = new Set<ConversationRunEventListener>();
+  private disposeConversationRunEventBridge: (() => void) | null = null;
+
   public constructor(private readonly desktopBridge: DesktopBridge) {}
 
   public addProject(): Promise<ProjectSummary | null> {
@@ -327,7 +331,23 @@ export class DesktopAgentClientAdapter implements AgentClient {
   public onConversationRunEvent(
     listener: ConversationRunEventListener,
   ): () => void {
-    return this.desktopBridge.onConversationRunEvent(listener);
+    this.conversationRunEventListeners.add(listener);
+    this.disposeConversationRunEventBridge ??= this.desktopBridge.onConversationRunEvent((event) => {
+      for (const currentListener of [...this.conversationRunEventListeners]) {
+        currentListener(event);
+      }
+    });
+
+    let disposed = false;
+    return () => {
+      if (disposed) return;
+      disposed = true;
+      this.conversationRunEventListeners.delete(listener);
+      if (this.conversationRunEventListeners.size === 0) {
+        this.disposeConversationRunEventBridge?.();
+        this.disposeConversationRunEventBridge = null;
+      }
+    };
   }
 
   public onApplicationSettingsChanged(
@@ -350,6 +370,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
     input: SetConversationProjectInput,
   ): Promise<ConversationSummary> {
     return this.desktopBridge.setConversationProject(input);
+  }
+
+  public setConversationModelSelection(
+    input: SetConversationModelSelectionInput,
+  ): Promise<ConversationSummary> {
+    return this.desktopBridge.setConversationModelSelection(input);
   }
 
   public renameProject(input: RenameProjectInput): Promise<ProjectSummary> {

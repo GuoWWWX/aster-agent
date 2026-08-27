@@ -23,6 +23,7 @@ function conversation(
     isArchived,
     isPinned: false,
     lastRunStatus: null,
+    modelSelection: null,
     parentConversationId: null,
     pinOrder: null,
     projectId: null,

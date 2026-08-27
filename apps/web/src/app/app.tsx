@@ -276,6 +276,7 @@ export function App(): ReactElement {
           isAddingProject={projectTree.isAddingProject}
           isCreatingSession={projectSessions.isCreatingSession}
           projects={projectTree.projects}
+          sessions={projectSessions.sessions}
           onAddProject={() => projectTree.addProject()}
           onCreateProjectSession={(projectId) => {
             setNavigatorLocateRequest(null);

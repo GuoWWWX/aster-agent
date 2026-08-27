@@ -26,6 +26,7 @@ import type {
   PendingConversationMessageReferenceInput,
   ReorderPendingConversationMessagesInput,
   SetConversationArchivedInput,
+  SetConversationModelSelectionInput,
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SetTeamCoordinatorInput,
@@ -170,6 +171,9 @@ export interface DesktopBridge {
   reorderProjects(input: ReorderProjectsInput): Promise<ProjectSummary[]>;
   setProjectPinned(input: SetProjectPinnedInput): Promise<ProjectSummary>;
   setConversationArchived(input: SetConversationArchivedInput): Promise<ConversationSummary>;
+  setConversationModelSelection(
+    input: SetConversationModelSelectionInput
+  ): Promise<ConversationSummary>;
   setConversationProject(input: SetConversationProjectInput): Promise<ConversationSummary>;
   setConversationPinned(input: SetConversationPinnedInput): Promise<ConversationSummary>;
   sendConversationMessage(input: SendConversationMessageInput): Promise<ConversationMessageSubmission>;
