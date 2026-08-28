@@ -25,13 +25,13 @@ const taskListUpdateSchema = z
     tasks: z.array(
       z.object({
         reason: z.string().trim().min(1).max(600).nullable().optional().describe(
-          "步骤阻塞或失败时的简短原因；其他状态不要提供。"
+          "Short reason when the step is blocked or failed. Omit it for other statuses."
         ),
         status: conversationTaskStatusSchema
-          .describe("步骤状态；同一任务清单最多一个步骤为 running；需要外部输入时使用 blocked 并说明原因，无法继续时使用 failed 并说明原因。"),
-        title: z.string().trim().min(1).max(300).describe("简短、可验证的步骤标题。")
+          .describe("Step status. At most one step may be running. Use blocked with a reason when external input is required, or failed with a reason when work cannot continue."),
+        title: z.string().trim().min(1).max(300).describe("Short, verifiable step title.")
       }).strict()
-    ).min(2).max(20).describe("完整任务清单；每次更新都必须重新提交全部步骤。")
+    ).min(2).max(20).describe("Complete task list. Resubmit every step on each update.")
   })
   .strict()
   .superRefine((value, context) => {

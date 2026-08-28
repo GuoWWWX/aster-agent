@@ -122,6 +122,7 @@ import {
   type SkillSnapshotRef,
 } from "./skill-runtime.js";
 import { SubagentTool } from "./subagent-tool.js";
+import { BASE_SYSTEM_PROMPT } from "./prompts/prompt-assets.js";
 import {
   ToolHandlerRegistry,
   type ToolExecutionPolicy,
@@ -460,23 +461,23 @@ function conversationIdentityContext(
   const identity = (() => {
     switch (conversation.threadKind) {
       case "team_lead":
-        return `你是团队 ${conversation.teamId ?? "未绑定"} 的 Team Lead，负责接单、判断是否委派并汇总最终结果。`;
+        return `You are the Team Lead for team ${conversation.teamId ?? "unbound"}. Accept work, decide whether to delegate, and consolidate the final result.`;
       case "agent":
         if (conversation.parentConversationId !== null) {
-          return `你是从父对话 ${conversation.parentConversationId} 创建的侧边分支。你已继承创建时的上下文快照；继承历史由系统直接注入模型上下文，但不会在侧边对话界面重复显示。不要为了了解创建时的父对话内容再次调用 read_agent_conversation。创建后的父对话新消息不会自动同步到本分支。`;
+          return `You are a side branch created from parent conversation ${conversation.parentConversationId}. Its context snapshot is already injected but is not repeated in the side-chat UI. Do not call read_agent_conversation merely to retrieve that inherited snapshot. Later parent messages do not sync into this branch.`;
         }
         return conversation.teamId === null
-          ? "你是一个独立 Agent。"
-          : `你是团队 ${conversation.teamId} 中的常驻 Agent。`;
+          ? "You are an independent Agent."
+          : `You are a standing Agent in team ${conversation.teamId}.`;
       case "subagent":
-        return `你是从父对话 ${conversation.parentConversationId ?? "未知"} 派生的临时 Subagent；创建时的父对话上下文快照已作为本对话历史注入，不要为获得同一批历史重复读取父对话。只处理当前支线任务并返回可验证结果，不递归创建团队。`;
+        return `You are a temporary Subagent derived from parent conversation ${conversation.parentConversationId ?? "unknown"}. The parent snapshot at creation is already injected as this conversation's history; do not reread the parent for the same content. Handle only the assigned branch task, return verifiable results, and do not recursively create teams.`;
     }
   })();
   if (agent === null) return [identity];
   return [
     identity,
-    `当前 Agent：${agent.name}（${agent.id}）。${agent.role.length === 0 ? "" : `职责：${agent.role}。`}`,
-    ...(agent.instructions.length === 0 ? [] : [`Agent 指令：${agent.instructions}`])
+    `Current Agent: ${agent.name} (${agent.id}).${agent.role.length === 0 ? "" : ` Role: ${agent.role}.`}`,
+    ...(agent.instructions.length === 0 ? [] : [`Agent-specific instructions: ${agent.instructions}`])
   ];
 }
 
@@ -2303,10 +2304,10 @@ export class AgentRuntime {
       .map((agentId) => directory.agents.find((agent) => agent.id === agentId && agent.enabled))
       .filter((agent) => agent !== undefined)
       .slice(0, 32)
-      .map((agent) => `${agent.id}=${agent.name}（${agent.role || "未配置职责"}）`);
+      .map((agent) => `${agent.id}=${agent.name} (${agent.role || "role not configured"})`);
     return members.length === 0
       ? []
-      : [`可通过 spawn_subagent 的 agentId 委派团队成员：${members.join("；")}`];
+      : [`Delegate to a team member by passing its agentId to spawn_subagent: ${members.join("; ")}`];
   }
 
   private spawnSubagent(input: {
@@ -3786,39 +3787,31 @@ export class AgentRuntime {
       ? null
       : this.skillRuntime.getCatalogPrompt(
           this.skillRuntimeContext(conversation, workspace?.id),
-        ) ?? "当前没有满足范围和依赖条件的可用 Skill。";
+        ) ?? "No enabled Skill currently satisfies the scope and dependency requirements.";
     const systemMessage: ModelMessage = {
       attachments: [],
       content: [
-        "你是本地编码 Agent。回答要直接、可验证，并优先使用工具核对项目事实。",
+        BASE_SYSTEM_PROMPT,
         ...conversationIdentityContext(conversation, agent),
         ...this.agentDelegationContext(conversation),
-        "你可以用 list_agent_conversations、read_agent_conversation、send_agent_message 和 wait_for_agent_message 与其他 Agent 对话协作。读取其他对话时必须控制预算。收到普通 Agent 协作消息后直接处理并给出本对话的最终答复，运行时会把最终结果自动关联回发送方并在需要时唤醒它；发送中间进度或无需对方回传结果的通知时调用 send_agent_message，并设置 expectReply=false。",
-        "复杂任务可以用 spawn_subagent 启动独立的一次性 Subagent。默认继承当前模型和推理选项；确有理由选择其他模型时，先调用 list_models 查看已配置模型、推理选项和最近健康状态，再向 spawn_subagent 同时传入 providerId 与 modelId。只有当前工作依赖其结果时才调用 wait_for_subagents；否则继续当前工作，Subagent 完成后系统会持久化结果并自动唤醒本对话。可用 list_subagents 查看状态。主对话只会收到完成摘要；需要核对详细过程时，使用 read_agent_conversation 按预算读取子对话。Subagent 结束后只读，不要求其调用 send_agent_message，也不要继续向其发送任务。",
-        "用户消息可以通过 @ 引用当前工作区文件。引用只提供相对路径；需要查看内容时先调用 read_file，不要根据文件名猜测内容。",
         this.skillRuntime === null
-          ? "Skill 特指通过 SKILL.md 注入的任务说明和能力组合；当前没有可调用的 Skill Runtime，不要把一般能力列成 Skill。Git 是可通过 run_command 执行的命令行程序，不是 Skill，也不是当前的专用 Git 工具；仅在任务确实需要且工作区是 Git 仓库时使用。"
-          : "Skill 特指通过 SKILL.md 注入的任务说明和能力组合，不等同于内置工具、Agent 职责或命令行程序。需要详细指令时先根据目录调用 load_skill；Skill 正文只进入本轮模型上下文，不写入聊天 Timeline。Skill 不能扩大工具权限或绕过审批。Git 是可通过 run_command 执行的命令行程序，不是 Skill，也不是当前的专用 Git 工具；仅在任务确实需要且工作区是 Git 仓库时使用。",
-        "用户消息开头的内置命令语义：/plan 表示先分析并创建任务清单再执行；/review 表示审查相关实现、优先指出缺陷和风险；/test 表示运行与当前任务相关的测试并根据结果修复。命令后的文本是具体任务。",
-        "对于包含两个或以上独立步骤的复杂任务，先用 create_task_list 建立完整任务清单；每完成一步就用 update_task_list 更新完整清单，并且同一时间只能有一个步骤为 running。简单问答或单步修改不要创建任务清单。全部步骤完成后调用 close_task_list 删除清单，再给出最终答复。",
+          ? "A Skill is a task instruction and capability bundle injected from SKILL.md. No Skill Runtime is currently available, so do not label general abilities as Skills. Git is a command-line program available through run_command, not a Skill or dedicated Git tool; use it only when the task requires it and the workspace is a Git repository."
+          : "A Skill is a task instruction and capability bundle injected from SKILL.md, not a built-in tool, Agent role, or command-line program. Use load_skill when catalog details match the task. Skill bodies enter only the current model context, never the chat Timeline, and cannot expand permissions or bypass approval. Git is available through run_command, not as a Skill or dedicated Git tool; use it only when needed in a Git workspace.",
         workspace === null
           ? this.attachmentTool === null
-            ? `当前是临时对话，没有关联工作区；仍可使用 ${this.tools.getCommandEnvironmentDescription()} 命令工具、read_external_file、web_search 和 Agent/Subagent 协作工具。命令在隔离临时目录中执行；项目文件、目录和搜索工具需要先附加工作目录。工作区外文件读取仍需逐次审批。`
-            : `当前是临时对话，没有关联工作区；仍可使用 read_attachment、${this.tools.getCommandEnvironmentDescription()} 命令工具、read_external_file、web_search 和 Agent/Subagent 协作工具。命令在隔离临时目录中执行；项目文件、目录和搜索工具需要先附加工作目录。工作区外文件读取仍需逐次审批。`
-          : `当前提供工作目录内读文件、搜索、受控文件变更和 ${this.tools.getCommandEnvironmentDescription()} 命令工具，也可使用 web_search；命令与写入均受本轮权限策略控制。`,
-        "read_external_file 只接受绝对路径，读取工作区外文件前必须经过用户审批；只支持本次允许，不保存会话或 Agent 长期规则。",
-        `同一模型轮最多返回 ${MAX_TOOL_CALLS_PER_MODEL_TURN} 个 Tool Call，可以混合不同工具。相互独立的只读调用（例如同时 read_file 多个文件、search_text、find_files 或 read_attachment）会按每组最多 ${MAX_PARALLEL_READ_TOOL_CALLS} 个并发执行，并按调用 ID 保持结果对应。文件变更、审批、Agent 消息和任务状态按顺序处理；同批同文件的旧变更会作废。非 read_only 模式下，同一连续组中相互独立的 run_command 默认并行，每组最多 ${MAX_PARALLEL_COMMAND_TOOL_CALLS} 个；命令依赖前一条命令或共享可变状态时必须设置 parallel=false。ask_before_changes 仍为每条命令单独审批，但已批准的独立命令可以并行执行。超过单轮上限时本轮工具不会执行，请拆分为多个模型轮次。wait_for_commands 和 wait_for_subagents 优先一次传入多个 ID。`,
-        "简单、结果需要保持有界的文本或文件查询优先调用 search_text 和 find_files。需要 ripgrep 的上下文行、计数、多表达式、复杂 glob、精确 CLI 输出或管道组合时，可以直接用 run_command 执行 rg；应用已提供内置 rg，不要求用户另行安装。",
-        "如果文件变更工具返回 PROJECT_OPERATION_CONFLICT、FILE_CHANGED 或 recovery.action=reread_and_rebuild_change，本次文件变更请求已经作废；不要排队、重放或继续提交相同参数。必要时等待当前占用操作结束，然后必须重新调用 read_file 获取最新内容，再生成新的 Diff。run_command 的 PROJECT_OPERATION_CONFLICT 同样表示原命令已作废；等待后应重新评估最新工作区状态，只在仍适用时生成新命令。",
-        `用户为本次任务选择的权限模式：${permissionModeLabel(permissionMode)}。`,
+            ? `This temporary conversation has no workspace. It may still use the ${this.tools.getCommandEnvironmentDescription()} command tool, read_external_file, web_search, and Agent/Subagent collaboration tools. Commands run in an isolated temporary directory. Project file, directory, and search tools require an attached working directory. Every external file read still requires approval.`
+            : `This temporary conversation has no workspace. It may still use read_attachment, the ${this.tools.getCommandEnvironmentDescription()} command tool, read_external_file, web_search, and Agent/Subagent collaboration tools. Commands run in an isolated temporary directory. Project file, directory, and search tools require an attached working directory. Every external file read still requires approval.`
+          : `The current workspace supports file reads, search, controlled file changes, the ${this.tools.getCommandEnvironmentDescription()} command tool, and web_search. Commands and writes remain subject to this run's permission policy.`,
+        `One model turn may return at most ${MAX_TOOL_CALLS_PER_MODEL_TURN} mixed Tool Calls. Independent reads such as read_file, search_text, find_files, and read_attachment run concurrently in groups of up to ${MAX_PARALLEL_READ_TOOL_CALLS}, with results matched by call ID. File changes, approvals, Agent messages, and task state remain ordered; stale same-file changes in one batch are rejected. Outside read_only mode, consecutive independent run_command calls run in parallel by default in groups of up to ${MAX_PARALLEL_COMMAND_TOOL_CALLS}; set parallel=false for dependencies or shared mutable state. ask_before_changes still approves each command separately, after which independent commands may overlap. If a turn exceeds the limit, none of its tools run; split the work across turns. Prefer passing multiple IDs at once to wait_for_commands and wait_for_subagents.`,
+        `Permission mode selected for this task: ${permissionModeLabel(permissionMode)}.`,
         ...(workspace === null
           ? []
           : [
             workspace.kind === "project"
-              ? `当前项目：${workspace.name}`
-              : `当前对话工作目录：${workspace.name}`,
-            `授权根目录：${workspace.rootPath}`,
-            "所有文件工具的 path 参数均使用相对于授权根目录的 POSIX 路径；空路径表示根目录。不要调用工具查询授权根目录。"
+              ? `Current project: ${workspace.name}`
+              : `Current conversation working directory: ${workspace.name}`,
+            `Authorized root: ${workspace.rootPath}`,
+            "Every file-tool path is a POSIX path relative to the authorized root; an empty path means the root. Do not call a tool merely to discover the authorized root."
           ]),
         ...(skillCatalogPrompt === null ? [] : [skillCatalogPrompt])
       ].join("\n"),
@@ -4028,8 +4021,8 @@ export class AgentRuntime {
       throw new Error("Project files can only be referenced from a conversation with a workspace.");
     }
     return [
-      "[引用项目文件]",
-      "以下路径相对于当前授权根目录。需要内容时先使用 read_file 读取：",
+      "[Referenced project files]",
+      "The following paths are relative to the current authorized root. Call read_file before using their contents:",
       ...referencedProjectPaths.map((filePath) => `- ${filePath}`),
     ].join("\n");
   }
@@ -4093,10 +4086,10 @@ function estimateModelMessageTokens(
 function permissionModeLabel(mode: ConversationPermissionMode): string {
   switch (mode) {
     case "read_only":
-      return "只读";
+      return "read_only";
     case "ask_before_changes":
-      return "修改前询问";
+      return "ask_before_changes";
     case "full_access":
-      return "完全访问";
+      return "full_access";
   }
 }

@@ -28,6 +28,7 @@ describe("SkillDocumentStore", () => {
     const document = documents.createManagedDocument();
 
     expect(path.basename(document.entryPath)).toBe("SKILL.md");
+    expect(path.basename(path.dirname(document.entryPath))).toBe(document.metadata.name);
     expect(document.metadata.name).toBe("new-skill");
     expect(await readFile(document.entryPath, "utf8")).toBe(document.content);
     await expect(readdir(path.dirname(document.entryPath))).resolves.toEqual(
@@ -59,6 +60,26 @@ describe("SkillDocumentStore", () => {
     expect(await readFile(document.entryPath, "utf8")).toBe(updated);
   });
 
+  it("rejects a mismatched directory name without overwriting the registered document", async () => {
+    const { documents } = await createStores();
+    const document = documents.createManagedDocument();
+    const invalid = document.content.replace("name: new-skill", "name: renamed-skill");
+
+    expect(() => documents.saveDocument({ content: invalid, entryPath: document.entryPath }))
+      .toThrow(/name 必须与父目录名一致/);
+    expect(await readFile(document.entryPath, "utf8")).toBe(document.content);
+  });
+
+  it("rejects an imported SKILL.md whose name differs from its parent directory", async () => {
+    const { directory, documents, integrations } = await createStores();
+    const entryPath = path.join(directory, "review-folder", "SKILL.md");
+    await mkdir(path.dirname(entryPath), { recursive: true });
+    await writeFile(entryPath, "---\nname: review\ndescription: Review code changes.\n---\n\n# Workflow\n");
+
+    expect(() => documents.importDocument(entryPath)).toThrow(/name 必须与父目录名一致/);
+    expect(integrations.getConfiguration().skills).toEqual([]);
+  });
+
   it("discovers default and registered external Skill directories", async () => {
     const { directory, documents, integrations } = await createStores();
     const managedEntryPath = path.join(directory, "managed", "nested", "SKILL.md");
@@ -68,7 +89,7 @@ describe("SkillDocumentStore", () => {
     await mkdir(path.dirname(managedEntryPath), { recursive: true });
     await mkdir(path.dirname(ignoredEntryPath), { recursive: true });
     await mkdir(path.dirname(externalEntryPath), { recursive: true });
-    await writeFile(managedEntryPath, "---\nname: managed\ndescription: Managed skill.\n---\n\n# Workflow\n");
+    await writeFile(managedEntryPath, "---\nname: nested\ndescription: Managed skill.\n---\n\n# Workflow\n");
     await writeFile(ignoredEntryPath, "---\nname: ignored\ndescription: Ignored skill.\n---\n\n# Workflow\n");
     await writeFile(externalEntryPath, "---\nname: review\ndescription: Review code changes.\n---\n\n# Workflow\n");
 
@@ -76,12 +97,12 @@ describe("SkillDocumentStore", () => {
 
     expect(result.defaultDirectoryPath).toBe(path.join(directory, "managed"));
     expect(result.documents.map((document) => document.metadata.name)).toEqual(
-      expect.arrayContaining(["managed", "review"]),
+      expect.arrayContaining(["nested", "review"]),
     );
     const configuration = integrations.getConfiguration();
     expect(configuration.skillDirectories).toEqual([externalDirectory]);
     expect(configuration.skills).toEqual(expect.arrayContaining([
-        expect.objectContaining({ entryPath: managedEntryPath, name: "managed" }),
+        expect.objectContaining({ entryPath: managedEntryPath, name: "nested" }),
         expect.objectContaining({ entryPath: externalEntryPath, name: "review" }),
     ]));
   });
@@ -95,5 +116,23 @@ describe("SkillDocumentStore", () => {
     const document = documents.createManagedDocument({ directoryPath: externalDirectory });
 
     expect(document.entryPath).toBe(path.join(externalDirectory, "new-skill", "SKILL.md"));
+  });
+
+  it("assigns distinct stable IDs to same-named Skills from different roots", async () => {
+    const { directory, documents, integrations } = await createStores();
+    const roots = [path.join(directory, "external-a"), path.join(directory, "external-b")];
+    for (const root of roots) {
+      const entryPath = path.join(root, "review", "SKILL.md");
+      await mkdir(path.dirname(entryPath), { recursive: true });
+      await writeFile(entryPath, "---\nname: review\ndescription: Review code changes.\n---\n\n# Workflow\n");
+      documents.chooseDirectory(root);
+    }
+
+    expect(integrations.getConfiguration().skills.map((skill) => skill.id).sort())
+      .toEqual(["review", "review-2"]);
+
+    documents.discoverDocuments();
+    expect(integrations.getConfiguration().skills.map((skill) => skill.id).sort())
+      .toEqual(["review", "review-2"]);
   });
 });

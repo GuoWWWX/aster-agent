@@ -90,7 +90,7 @@ describe("context manager", () => {
 
     expect(toolCall?.toolCalls[0]?.id).toBe("call-old");
     expect(toolResult?.toolCallId).toBe("call-old");
-    expect(toolResult?.content).toContain("工具输出已裁剪");
+    expect(toolResult?.content).toContain("Tool output pruned");
     expect(toolResult?.content).toContain("ERROR failed build");
     expect(toolResult?.content.length).toBeLessThan(largeOutput.length);
     expect(plan.compactionCandidates).toEqual([]);
@@ -169,7 +169,7 @@ describe("context manager", () => {
     ]);
     const related = plan.messages.at(-1);
     expect(related?.role).toBe("system");
-    expect(related?.content).toContain("相关历史");
+    expect(related?.content).toContain("Relevant history");
     expect(related?.content).toContain("登录页表单校验");
     expect(related?.content).toContain("复用现有校验组件");
     expect(plan.usage.estimatedReferenceTokens).toBeGreaterThan(0);

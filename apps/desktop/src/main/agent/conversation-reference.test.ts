@@ -77,7 +77,7 @@ describe("conversation references", () => {
     expect(reference.estimatedTokens).toBeLessThanOrEqual(700);
     expect(reference.content).toContain("问题-8-");
     expect(reference.content).not.toContain("问题-1-");
-    expect(reference.content).toContain("省略更早");
+    expect(reference.content).toContain("Reference budget omitted");
     database.close();
   });
 

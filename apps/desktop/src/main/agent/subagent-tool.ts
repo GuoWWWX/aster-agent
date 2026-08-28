@@ -28,17 +28,17 @@ const toolNames = new Set([
 
 const spawnArgumentsSchema = z.object({
   agentId: z.string().trim().min(1).max(80).optional()
-    .describe("可选的已配置 Agent 或当前团队成员 ID。"),
+    .describe("Optional configured Agent or current team-member ID."),
   modelId: z.string().trim().min(1).max(200).optional()
-    .describe("可选的已配置模型 ID；必须与 providerId 同时传入。"),
+    .describe("Optional configured model ID. It must be supplied together with providerId."),
   providerId: z.string().uuid().optional()
-    .describe("可选的模型供应商 UUID；必须与 modelId 同时传入。"),
+    .describe("Optional model-provider UUID. It must be supplied together with modelId."),
   reasoning: modelReasoningOptionSchema.optional()
-    .describe("可选的已启用推理选项；仅在显式选择 providerId 和 modelId 时使用。"),
+    .describe("Optional enabled reasoning option. Use it only when providerId and modelId are selected explicitly."),
   task: z.string().trim().min(1).max(20_000)
-    .describe("交给 Subagent 的独立、有边界且可验收的任务。"),
+    .describe("Independent, bounded, and verifiable task for the Subagent."),
   title: z.string().trim().min(1).max(200).optional()
-    .describe("可选的简短任务标题。"),
+    .describe("Optional short task title."),
 }).strict().superRefine((value, context) => {
   if ((value.providerId === undefined) !== (value.modelId === undefined)) {
     context.addIssue({
@@ -59,11 +59,11 @@ const emptyArgumentsSchema = z.object({}).strict();
 const waitArgumentsSchema = z.object({
   taskIds: z.array(z.string().uuid()).min(1).max(32)
     .refine((ids) => new Set(ids).size === ids.length, "Task identifiers must be unique.")
-    .describe("由 spawn_subagent 返回的唯一任务 UUID 列表。"),
+    .describe("Unique task UUIDs returned by spawn_subagent."),
   timeoutMs: z.number().int().min(1_000).max(600_000).default(30_000)
-    .describe("本次等待的最长毫秒数；超时不会停止 Subagent。"),
+    .describe("Maximum wait in milliseconds. A timeout does not stop the Subagent."),
   waitFor: z.enum(["any", "all"]).default("any")
-    .describe("any 等待任意任务结束；all 等待全部任务结束。"),
+    .describe("Use any to wait for one task to finish, or all to wait for every task."),
 }).strict();
 
 type SubagentToolExecution = {
@@ -94,7 +94,7 @@ function success(value: unknown): SubagentToolExecution {
 
 function boundedText(value: string | null, limit: number): string | null {
   if (value === null || value.length <= limit) return value;
-  return `${value.slice(0, limit - 16)}\n[内容已截断]`;
+  return `${value.slice(0, limit - 16)}\n[Content truncated]`;
 }
 
 function toToolTask(task: SubagentTask): Record<string, unknown> {

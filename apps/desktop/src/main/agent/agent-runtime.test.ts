@@ -993,7 +993,7 @@ class ReplyingAgentMessageFixtureModel implements ModelProviderAdapter {
   public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
     this.turn += 1;
     if (this.turn === 1) {
-      const senderPrefix = "发送方 conversationId：";
+      const senderPrefix = "Sender conversationId: ";
       const senderLine = input.messages
         .flatMap((message) => message.content.split("\n"))
         .find((line) => line.startsWith(senderPrefix));
@@ -1042,7 +1042,7 @@ class DeferredAgentResultFixtureModel implements ModelProviderAdapter {
   public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
     const isAgentResultRun = input.messages.some((message) =>
       message.role === "user"
-      && message.content.includes("[Agent 处理结果]")
+      && message.content.includes("[Agent result]")
     );
     if (isAgentResultRun) {
       input.onTextDelta("已收到 B 的自动回传结果");
@@ -1054,7 +1054,7 @@ class DeferredAgentResultFixtureModel implements ModelProviderAdapter {
     }
     const isRecipientRun = input.messages.some((message) =>
       message.role === "user"
-      && message.content.includes("[Agent 协作消息]")
+      && message.content.includes("[Agent collaboration request]")
       && message.content.includes("工具已完成，无需额外回复。")
     );
     if (isRecipientRun) {
@@ -1132,7 +1132,7 @@ class SubagentLifecycleFixtureModel implements ModelProviderAdapter {
 
   public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
     this.requests.push({ ...input, messages: [...input.messages] });
-    const isSubagent = input.messages[0]?.content.includes("你是从父对话") === true;
+    const isSubagent = input.messages[0]?.content.includes("You are a temporary Subagent derived from parent conversation") === true;
     if (isSubagent) {
       this.resolveChildRequestStarted();
       return new Promise((resolve) => {
@@ -1751,19 +1751,23 @@ describe("AgentRuntime", () => {
       ["00000000-0000-4000-8000-000000000010", "selected-model"]
     ]);
     expect(model.requests[0]?.reasoning).toEqual({ kind: "effort", value: "high" });
-    expect(model.requests[0]?.messages[0]?.content).toContain("权限模式：只读");
-    expect(model.requests[0]?.messages[0]?.content).toContain("你是一个独立 Agent");
-    expect(model.requests[0]?.messages[0]?.content).toContain(`当前项目：${project.name}`);
-    expect(model.requests[0]?.messages[0]?.content).toContain(`授权根目录：${project.rootPath}`);
-    expect(model.requests[0]?.messages[0]?.content).toContain("当前没有可调用的 Skill Runtime");
+    expect(model.requests[0]?.messages[0]?.content).toContain("Permission mode selected for this task: read_only.");
+    expect(model.requests[0]?.messages[0]?.content).toContain("You are an independent Agent.");
+    expect(model.requests[0]?.messages[0]?.content).toContain(`Current project: ${project.name}`);
+    expect(model.requests[0]?.messages[0]?.content).toContain(`Authorized root: ${project.rootPath}`);
+    expect(model.requests[0]?.messages[0]?.content).toContain("No Skill Runtime is currently available");
     expect(model.requests[0]?.messages[0]?.content).toContain(
-      "Git 是可通过 run_command 执行的命令行程序，不是 Skill"
+      "Git is a command-line program available through run_command, not a Skill"
     );
     expect(model.requests[0]?.messages[0]?.content).toContain(
-      "同一模型轮最多返回 32 个 Tool Call，可以混合不同工具"
+      "One model turn may return at most 32 mixed Tool Calls"
     );
-    expect(model.requests[0]?.messages[0]?.content).toContain("每组最多 8 个并发执行");
-    expect(model.requests[0]?.messages[0]?.content).toContain("每组最多 4 个");
+    expect(model.requests[0]?.messages[0]?.content).toContain("groups of up to 8");
+    expect(model.requests[0]?.messages[0]?.content).toContain("groups of up to 4");
+    expect(model.requests[0]?.messages[0]?.content).toContain(
+      "The application language is Simplified Chinese (zh-CN). Reply in Simplified Chinese unless the user explicitly requests another language."
+    );
+    expect(JSON.stringify(model.requests[0]?.tools)).not.toMatch(/\p{Script=Han}/u);
     database.close();
   });
 
@@ -2183,8 +2187,8 @@ describe("AgentRuntime", () => {
       "web_search"
     ]);
     expect(requests[0]?.reasoning).toBeUndefined();
-    expect(requests[0]?.messages[0]?.content).toContain("你是一个独立 Agent");
-    expect(requests[0]?.messages[0]?.content).toContain("没有关联工作区");
+    expect(requests[0]?.messages[0]?.content).toContain("You are an independent Agent.");
+    expect(requests[0]?.messages[0]?.content).toContain("This temporary conversation has no workspace.");
     database.close();
   });
 
@@ -2270,9 +2274,9 @@ describe("AgentRuntime", () => {
     await finished;
 
     const request = requests[0];
-    expect(request?.messages[0]?.content).toContain("侧边分支");
-    expect(request?.messages[0]?.content).toContain("已继承创建时的上下文快照");
-    expect(request?.messages[0]?.content).toContain("当前 Agent：Reviewer");
+    expect(request?.messages[0]?.content).toContain("You are a side branch created from parent conversation");
+    expect(request?.messages[0]?.content).toContain("Its context snapshot is already injected");
+    expect(request?.messages[0]?.content).toContain("Current Agent: Reviewer");
     expect(request?.messages[0]?.content).toContain("延续父对话的审查标准");
     expect(request?.messages[0]?.content).not.toContain("临时 Subagent");
     expect(request?.messages.some((message) =>
@@ -2352,14 +2356,14 @@ describe("AgentRuntime", () => {
     await sendAndWait(subagent.id, workerAgent);
 
     expect(model.requests[0]?.messages[0]?.content).toContain(
-      "你是团队 default-team 的 Team Lead",
+      "You are the Team Lead for team default-team",
     );
     expect(model.requests[0]?.messages[0]?.content).toContain(leadAgent.instructions);
     expect(model.requests[1]?.messages[0]?.content).toContain(
-      "团队 default-team 中的常驻 Agent",
+      "You are a standing Agent in team default-team",
     );
     expect(model.requests[2]?.messages[0]?.content).toContain(
-      `从父对话 ${lead.id} 派生的临时 Subagent`,
+      `temporary Subagent derived from parent conversation ${lead.id}`,
     );
     expect(database.getConversation(subagent.id)).toMatchObject({
       agentId: "explorer",
@@ -2433,10 +2437,10 @@ describe("AgentRuntime", () => {
       threadKind: "subagent",
     });
     const parentRequest = model.requests.find((request) =>
-      request.messages[0]?.content.includes("你是团队 default-team 的 Team Lead") === true
+      request.messages[0]?.content.includes("You are the Team Lead for team default-team") === true
     );
     const childRequest = model.requests.find((request) =>
-      request.messages[0]?.content.includes(`从父对话 ${lead.id} 派生的临时 Subagent`) === true
+      request.messages[0]?.content.includes(`temporary Subagent derived from parent conversation ${lead.id}`) === true
     );
     expect(parentRequest?.messages[0]?.content).toContain("explorer=Explorer");
     expect(childRequest?.messages[0]?.content).toContain("保持只读；优先搜索和定向读取");
@@ -2485,8 +2489,8 @@ describe("AgentRuntime", () => {
     expect(model.requests[0]?.tools.map((tool) => tool.name)).toContain("list_directory");
     expect(model.requests[0]?.tools.map((tool) => tool.name)).toContain("find_files");
     expect(model.requests[0]?.tools.map((tool) => tool.name)).not.toContain("get_project_info");
-    expect(model.requests[0]?.messages[0]?.content).toContain(`授权根目录：${path.resolve(await realpath(root))}`);
-    expect(model.requests[0]?.messages[0]?.content).toContain("不要调用工具查询授权根目录");
+    expect(model.requests[0]?.messages[0]?.content).toContain(`Authorized root: ${path.resolve(await realpath(root))}`);
+    expect(model.requests[0]?.messages[0]?.content).toContain("Do not call a tool merely to discover the authorized root");
     database.close();
   });
 
@@ -2661,7 +2665,7 @@ describe("AgentRuntime", () => {
     ]);
     expect(database.getTaskList(conversation.id)).toBeNull();
     const taskContext = (requestIndex: number): string[] => (model.requests[requestIndex]?.messages ?? [])
-      .filter((message) => message.content.includes("[当前任务清单｜动态运行状态]"))
+      .filter((message) => message.content.includes("[Current task list | live state]"))
       .map((message) => message.content);
     // Task state is loaded before every model call, rather than being frozen
     // into the first system prompt or accumulated in graph message state.
@@ -2800,10 +2804,10 @@ describe("AgentRuntime", () => {
     });
 
     const requestMessages = model.requests[0]?.messages ?? [];
-    expect(requestMessages.at(-1)?.content).toContain("[引用项目文件]");
+    expect(requestMessages.at(-1)?.content).toContain("[Referenced project files]");
     expect(requestMessages.at(-1)?.content).toContain("src/feature.ts");
     expect(requestMessages.at(-1)?.content).toContain("read_file");
-    expect(requestMessages[0]?.content).toContain("/review 表示审查相关实现");
+    expect(requestMessages[0]?.content).toContain("`/review` means review the relevant implementation");
     expect(referencedUsage.estimatedReferenceTokens).toBeGreaterThan(
       baseUsage.estimatedReferenceTokens,
     );
@@ -2937,18 +2941,18 @@ describe("AgentRuntime", () => {
       }),
     );
     const deliveredMessage = model.requests[1]?.messages.find((candidate) =>
-      candidate.content.includes("[Agent 协作消息]"),
+      candidate.content.includes("[Agent collaboration request]"),
     );
     expect(model.requests[1]?.messages.filter((candidate) =>
       candidate.content === agentMessageModelContent(message),
     )).toHaveLength(1);
-    expect(deliveredMessage?.content).toContain("发送方对话：协作 Agent");
-    expect(deliveredMessage?.content).toContain(`发送方 conversationId：${sender.id}`);
+    expect(deliveredMessage?.content).toContain("Sender conversation: 协作 Agent");
+    expect(deliveredMessage?.content).toContain(`Sender conversationId: ${sender.id}`);
     expect(deliveredMessage?.content).toContain(
-      "运行时会自动把最终结果关联回发送方",
+      "runtime automatically links that final result back to the sender",
     );
     expect(model.requests[1]?.messages[0]?.content).toContain(
-      "运行时会把最终结果自动关联回发送方",
+      "runtime links final results back to the sender",
     );
     expect(database.listUnreadAgentMessages(target.id)).toEqual([]);
     expect(database.listTimeline(sender.id)).toEqual(expect.arrayContaining([
@@ -3570,7 +3574,7 @@ describe("AgentRuntime", () => {
 
     await Promise.all([model.childRequestStarted, model.waitRequested]);
     const childRequest = model.requests.find((request) =>
-      request.messages[0]?.content.includes("你是从父对话") === true
+      request.messages[0]?.content.includes("You are a temporary Subagent derived from parent conversation") === true
     );
     expect(childRequest).toBeDefined();
     expect(childRequest?.configuration.modelId).toBe("alternate-model");
@@ -3842,7 +3846,7 @@ describe("AgentRuntime", () => {
     expect(requestMessages.some((message) => message.content.includes("旧轮次-3-"))).toBe(true);
     expect(requestMessages.some((message) => message.content.includes("当前轮次-4-"))).toBe(true);
     expect(requestMessages.some((message) =>
-      message.role === "system" && message.content.includes("结构化压缩检查点")
+      message.role === "system" && message.content.includes("structured compression checkpoint")
     )).toBe(true);
     expect(database.getContextCheckpoint(conversation.id)?.summary).toContain("继续当前任务");
     expect(database.listModelMessages(conversation.id)).toHaveLength(8);
@@ -3904,7 +3908,7 @@ describe("AgentRuntime", () => {
 
     const requestMessages = model.requests[0]?.messages ?? [];
     const related = requestMessages.find((message) =>
-      message.role === "system" && message.content.includes("相关历史检索结果"),
+      message.role === "system" && message.content.includes("Relevant history retrieval"),
     );
     expect(related?.content).toContain("旧问题：登录页校验规则");
     expect(related?.content).toContain("旧回答：沿用登录页校验组件");

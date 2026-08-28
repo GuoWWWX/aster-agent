@@ -9,6 +9,9 @@ export default defineConfig({
   dts: false,
   external: ["electron", "node:sqlite"],
   format: ["cjs"],
+  loader: {
+    ".md": "text"
+  },
   minify: false,
   noExternal: ["@agent/protocol", "zod"],
   outDir: "dist",
