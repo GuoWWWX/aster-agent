@@ -47,10 +47,10 @@ describe("AgentDatabase", () => {
       .get() as Record<string, unknown>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(7);
-    expect(firstRow.name).toBe("conversation-model-selection");
+    expect(firstRow.version).toBe(8);
+    expect(firstRow.name).toBe("conversation-avatar-icon");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(7);
+    expect(migrationCount.count).toBe(8);
   });
 
   it("searches persisted conversation messages by bounded keyword matches", () => {
@@ -212,7 +212,7 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 7",
+      "newer than supported version 8",
     );
   });
 
@@ -400,6 +400,7 @@ describe("AgentDatabase", () => {
       { version: 5 },
       { version: 6 },
       { version: 7 },
+      { version: 8 },
     ]);
     metadata.close();
   });
@@ -578,6 +579,22 @@ describe("AgentDatabase", () => {
       completed.subagentResultMessage,
     ]);
     database.close();
+  });
+
+  it("persists only catalog-backed Conversation avatar icons", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-avatar-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "agent.sqlite");
+    const database = new AgentDatabase(databasePath);
+    const conversation = database.createConversation(null);
+
+    expect(database.setConversationAvatarIcon(conversation.id, "bug").avatarIcon).toBe("bug");
+    expect(() => database.setConversationAvatarIcon(conversation.id, "<svg />")).toThrow();
+    database.close();
+
+    const reopened = new AgentDatabase(databasePath);
+    expect(reopened.getConversation(conversation.id).avatarIcon).toBe("bug");
+    reopened.close();
   });
 
   it("derives an Assistant reply completion time and total Run duration for the timeline", () => {

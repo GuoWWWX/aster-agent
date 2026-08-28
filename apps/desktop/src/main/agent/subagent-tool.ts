@@ -1,7 +1,9 @@
 import { z } from "zod";
 import {
+  agentAvatarIconSchema,
   isReasoningOptionEnabled,
   modelReasoningOptionSchema,
+  type AgentAvatarIcon,
   type ConversationModelSelection,
   type ModelRuntimeStatus,
 } from "@agent/protocol";
@@ -29,16 +31,18 @@ const toolNames = new Set([
 const spawnArgumentsSchema = z.object({
   agentId: z.string().trim().min(1).max(80).optional()
     .describe("Optional configured Agent or current team-member ID."),
+  icon: agentAvatarIconSchema.optional()
+    .describe("Optional dedicated avatar icon. Use only a stable icon ID declared by this schema."),
   modelId: z.string().trim().min(1).max(200).optional()
     .describe("Optional configured model ID. It must be supplied together with providerId."),
+  name: z.string().trim().min(1).max(80).optional()
+    .describe("Optional short Subagent name shown in the conversation tree and tool results."),
   providerId: z.string().uuid().optional()
     .describe("Optional model-provider UUID. It must be supplied together with modelId."),
   reasoning: modelReasoningOptionSchema.optional()
     .describe("Optional enabled reasoning option. Use it only when providerId and modelId are selected explicitly."),
   task: z.string().trim().min(1).max(20_000)
     .describe("Independent, bounded, and verifiable task for the Subagent."),
-  title: z.string().trim().min(1).max(200).optional()
-    .describe("Optional short task title."),
 }).strict().superRefine((value, context) => {
   if ((value.providerId === undefined) !== (value.modelId === undefined)) {
     context.addIssue({
@@ -97,13 +101,15 @@ function boundedText(value: string | null, limit: number): string | null {
   return `${value.slice(0, limit - 16)}\n[Content truncated]`;
 }
 
-function toToolTask(task: SubagentTask): Record<string, unknown> {
+function toToolTask(database: AgentDatabase, task: SubagentTask): Record<string, unknown> {
   return {
+    avatarIcon: database.getConversation(task.childConversationId).avatarIcon ?? null,
     childConversationId: task.childConversationId,
     completedAt: task.completedAt,
     createdAt: task.createdAt,
     error: boundedText(task.error, 4_000),
     id: task.id,
+    name: task.title,
     result: boundedText(task.result, 8_000),
     status: task.status,
     task: boundedText(task.task, 2_000),
@@ -127,7 +133,7 @@ export class SubagentTool {
   public getDefinitions(): ModelToolDefinition[] {
     return [
       {
-        description: "Start an independent one-shot Subagent for one bounded task. Optionally select a configured Agent or team member with agentId. The tool returns immediately; use wait_for_subagents only when the current work depends on its result. The Subagent becomes read-only after completion. Its concise result is delivered automatically, while the full conversation remains available through read_agent_conversation.",
+        description: "Start an independent one-shot Subagent for one bounded task. Give it a short name and optionally choose a dedicated icon from the declared enum. You may also select a configured Agent or team member with agentId. The tool returns immediately; use wait_for_subagents only when the current work depends on its result. The Subagent becomes read-only after completion. Its concise result is delivered automatically, while the full conversation remains available through read_agent_conversation.",
         name: SPAWN_SUBAGENT_TOOL_NAME,
         parameters: modelToolParameters(spawnArgumentsSchema),
       },
@@ -169,7 +175,8 @@ export class SubagentTool {
     signal: AbortSignal;
     spawn: (
       task: string,
-      title: string | undefined,
+      name: string | undefined,
+      icon: AgentAvatarIcon | undefined,
       agentId: string | undefined,
       modelSelection: ConversationModelSelection | undefined,
     ) => SubagentTask;
@@ -181,9 +188,10 @@ export class SubagentTool {
         case SPAWN_SUBAGENT_TOOL_NAME: {
           const parsed = spawnArgumentsSchema.parse(argumentsValue);
           return success({
-            task: toToolTask(input.spawn(
+            task: toToolTask(this.database, input.spawn(
               parsed.task,
-              parsed.title,
+              parsed.name,
+              parsed.icon,
               parsed.agentId,
               parsed.providerId === undefined || parsed.modelId === undefined
                 ? undefined
@@ -226,7 +234,8 @@ export class SubagentTool {
         case LIST_SUBAGENTS_TOOL_NAME:
           emptyArgumentsSchema.parse(argumentsValue);
           return success({
-            tasks: this.database.listSubagentTasks(input.conversationId).slice(-50).map(toToolTask),
+            tasks: this.database.listSubagentTasks(input.conversationId).slice(-50)
+              .map((task) => toToolTask(this.database, task)),
           });
         case WAIT_FOR_SUBAGENTS_TOOL_NAME: {
           const parsed = waitArgumentsSchema.parse(argumentsValue);
@@ -238,7 +247,7 @@ export class SubagentTool {
           });
           return success({
             status: result.status,
-            tasks: result.tasks.map(toToolTask),
+            tasks: result.tasks.map((task) => toToolTask(this.database, task)),
           });
         }
         default:

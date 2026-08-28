@@ -167,6 +167,7 @@ describe("project session model", () => {
       activeSubagentCount: 0,
       activeRunId: null,
       agentId: null,
+      avatarIcon: null,
       hasUnreadResult: false,
       id: "temporary-session",
       isArchived: false,

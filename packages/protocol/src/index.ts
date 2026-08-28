@@ -11,6 +11,12 @@ export {
 } from "./agent-error.js";
 export type { AgentError, AgentErrorCode } from "./agent-error.js";
 export {
+  AGENT_AVATAR_ICONS,
+  agentAvatarIconSchema,
+  agentAvatarSchema,
+} from "./agent-avatar.js";
+export type { AgentAvatar, AgentAvatarIcon } from "./agent-avatar.js";
+export {
   ARCHIVED_CONVERSATION_RETENTION_DAYS,
   approveToolChangeInputSchema,
   conversationAgentMessageItemSchema,
@@ -184,8 +190,6 @@ export type {
   ContextCompressionThreshold,
 } from "./context-compression.js";
 export {
-  agentAvatarIconSchema,
-  agentAvatarSchema,
   agentCapabilityScopeSchema,
   agentDirectoryConfigurationSchema,
   agentPermissionRuleSchema,
@@ -206,8 +210,6 @@ export {
   permissionPolicySchema,
 } from "./application-settings.js";
 export type {
-  AgentAvatar,
-  AgentAvatarIcon,
   AgentCapabilityScope,
   AgentDirectoryConfiguration,
   AgentPermissionRule,

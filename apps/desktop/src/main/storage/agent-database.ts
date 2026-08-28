@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { DatabaseMigrationRunner } from "./database-migration-runner.js";
 import { z } from "zod";
 import {
+  agentAvatarIconSchema,
   agentDirectoryConfigurationSchema,
   contextCompressionThresholdSchema,
   conversationAgentBindingSchema,
@@ -730,6 +731,7 @@ function toConversation(row: DatabaseRow): ConversationSummary {
     activeRunId: asNullableString(row, "active_run_id"),
     agentId: asNullableString(row, "agent_id"),
     archivedAt: asNullableString(row, "archived_at"),
+    avatarIcon: asNullableString(row, "avatar_icon"),
     createdAt: asString(row, "created_at"),
     hasUnreadResult: asBoolean(row, "has_unread_result"),
     id: asString(row, "id"),
@@ -968,7 +970,7 @@ export class AgentDatabase {
       .prepare(
         `SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
             selected_provider_id, selected_model_id, selected_reasoning_json,
-            thread_kind, agent_id, team_id, title, created_at, conversations.updated_at,
+            thread_kind, agent_id, avatar_icon, team_id, title, created_at, conversations.updated_at,
             conversations.archived_at,
             conversations.has_unread_result, conversations.is_archived,
             conversations.is_pinned, conversations.pin_order,
@@ -1016,7 +1018,7 @@ export class AgentDatabase {
       .prepare(
         `SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
             selected_provider_id, selected_model_id, selected_reasoning_json,
-            thread_kind, agent_id, team_id, title, created_at, conversations.updated_at,
+            thread_kind, agent_id, avatar_icon, team_id, title, created_at, conversations.updated_at,
             conversations.archived_at,
             conversations.has_unread_result, conversations.is_archived,
             conversations.is_pinned, conversations.pin_order,
@@ -1256,6 +1258,7 @@ export class AgentDatabase {
       activeRunId: null,
       agentId: agent?.id ?? null,
       archivedAt: null,
+      avatarIcon: agent?.avatarIcon ?? null,
       createdAt: now,
       hasUnreadResult: false,
       id: randomUUID(),
@@ -1299,9 +1302,9 @@ export class AgentDatabase {
           `INSERT INTO conversations
             (id, project_id, parent_conversation_id, workspace_root_path,
              selected_provider_id, selected_model_id, selected_reasoning_json,
-             thread_kind, agent_id, agent_name, agent_role, agent_is_default,
+             thread_kind, agent_id, avatar_icon, agent_name, agent_role, agent_is_default,
              agent_instructions, team_id, title, created_at, updated_at, sort_order)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`
         )
         .run(
           conversation.id,
@@ -1314,16 +1317,17 @@ export class AgentDatabase {
             ? null
             : JSON.stringify(conversation.modelSelection.reasoning),
           conversation.threadKind,
-        conversation.agentId,
-        agent?.name ?? null,
-        agent?.role ?? null,
-        Number(agent?.isDefault ?? false),
-        agent?.instructions ?? null,
-        conversation.teamId,
-        conversation.title,
-        conversation.createdAt,
-        conversation.updatedAt
-      );
+          conversation.agentId,
+          conversation.avatarIcon ?? null,
+          agent?.name ?? null,
+          agent?.role ?? null,
+          Number(agent?.isDefault ?? false),
+          agent?.instructions ?? null,
+          conversation.teamId,
+          conversation.title,
+          conversation.createdAt,
+          conversation.updatedAt
+        );
     return conversation;
   }
 
@@ -1343,13 +1347,14 @@ export class AgentDatabase {
     this.database
       .prepare(
         `UPDATE conversations
-         SET thread_kind = ?, agent_id = ?, agent_name = ?, agent_role = ?,
+         SET thread_kind = ?, agent_id = ?, avatar_icon = ?, agent_name = ?, agent_role = ?,
              agent_is_default = ?, agent_instructions = ?, updated_at = ?
          WHERE id = ?`
       )
       .run(
         conversation.threadKind,
         agent.id,
+        agent.avatarIcon ?? null,
         agent.name,
         agent.role,
         Number(agent.isDefault),
@@ -1365,7 +1370,7 @@ export class AgentDatabase {
   ): ConversationAgentBinding | null {
     const row = this.database
       .prepare(
-        `SELECT agent_id, agent_name, agent_role, agent_is_default, agent_instructions
+        `SELECT agent_id, avatar_icon, agent_name, agent_role, agent_is_default, agent_instructions
          FROM conversations WHERE id = ? AND deletion_pending = 0`
       )
       .get(conversationId) as DatabaseRow | undefined;
@@ -1374,13 +1379,27 @@ export class AgentDatabase {
     }
     const id = asNullableString(row, "agent_id");
     if (id === null) return null;
+    const avatarIcon = asNullableString(row, "avatar_icon");
     return conversationAgentBindingSchema.parse({
+      ...(avatarIcon === null ? {} : { avatarIcon }),
       id,
       instructions: asNullableString(row, "agent_instructions") ?? "",
       isDefault: asBoolean(row, "agent_is_default"),
       name: asNullableString(row, "agent_name") ?? id,
       role: asNullableString(row, "agent_role") ?? ""
     });
+  }
+
+  public setConversationAvatarIcon(
+    conversationId: string,
+    rawAvatarIcon: unknown,
+  ): ConversationSummary {
+    const avatarIcon = agentAvatarIconSchema.parse(rawAvatarIcon);
+    this.getConversation(conversationId);
+    this.database
+      .prepare("UPDATE conversations SET avatar_icon = ?, updated_at = ? WHERE id = ?")
+      .run(avatarIcon, new Date().toISOString(), conversationId);
+    return this.getConversation(conversationId);
   }
 
   public listConversationWorkspaces(): Array<{
@@ -1475,6 +1494,7 @@ export class AgentDatabase {
       activeRunId: null,
       agentId: inheritedAgent?.id ?? null,
       archivedAt: null,
+      avatarIcon: inheritedAgent?.avatarIcon ?? null,
       createdAt: now,
       hasUnreadResult: false,
       id: randomUUID(),
@@ -1499,9 +1519,9 @@ export class AgentDatabase {
           `INSERT INTO conversations
              (id, project_id, parent_conversation_id, workspace_root_path,
               selected_provider_id, selected_model_id, selected_reasoning_json,
-              thread_kind, agent_id, agent_name, agent_role, agent_is_default,
+              thread_kind, agent_id, avatar_icon, agent_name, agent_role, agent_is_default,
               agent_instructions, team_id, title, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           conversation.id,
@@ -1515,6 +1535,7 @@ export class AgentDatabase {
             : JSON.stringify(conversation.modelSelection.reasoning),
           conversation.threadKind,
           inheritedAgent?.id ?? null,
+          inheritedAgent?.avatarIcon ?? null,
           inheritedAgent?.name ?? null,
           inheritedAgent?.role ?? null,
           Number(inheritedAgent?.isDefault ?? false),
@@ -1836,7 +1857,7 @@ export class AgentDatabase {
       .prepare(
         `SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
             selected_provider_id, selected_model_id, selected_reasoning_json,
-            thread_kind, agent_id, team_id, title, created_at, conversations.updated_at,
+            thread_kind, agent_id, avatar_icon, team_id, title, created_at, conversations.updated_at,
             conversations.archived_at,
             conversations.has_unread_result, conversations.is_archived,
             conversations.is_pinned, conversations.pin_order,
@@ -5707,6 +5728,18 @@ export class AgentDatabase {
         },
         version: 7,
       },
+      {
+        name: "conversation-avatar-icon",
+        up: (database) => {
+          const columns = database
+            .prepare("PRAGMA table_info(conversations)")
+            .all() as DatabaseRow[];
+          if (!columns.some((column) => column.name === "avatar_icon")) {
+            database.exec("ALTER TABLE conversations ADD COLUMN avatar_icon TEXT");
+          }
+        },
+        version: 8,
+      },
     ]);
   }
 
@@ -5731,6 +5764,7 @@ export class AgentDatabase {
         selected_reasoning_json TEXT,
         thread_kind TEXT NOT NULL DEFAULT 'agent',
         agent_id TEXT,
+        avatar_icon TEXT,
         agent_name TEXT,
         agent_role TEXT,
         agent_is_default INTEGER NOT NULL DEFAULT 0,

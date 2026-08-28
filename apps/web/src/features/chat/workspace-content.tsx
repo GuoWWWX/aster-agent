@@ -58,6 +58,7 @@ import {
 import { createPortal } from "react-dom";
 
 import type {
+  AgentAvatarIcon,
   ContextCompressionConfiguration,
   ApproveToolChangeInput,
   ConversationAttachment,
@@ -79,6 +80,7 @@ import type {
   ProjectSummary,
 } from "@agent/protocol";
 import {
+  agentAvatarIconSchema,
   DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
   isReasoningOptionEnabled,
   modelReasoningOptionKey,
@@ -194,6 +196,28 @@ type RunProgress = {
   startedAt: number;
 };
 
+export type SubagentPendingApproval = {
+  childConversationId: string;
+  childTitle: string;
+  tool: ConversationToolItem;
+};
+
+export function collectSubagentPendingApprovals(
+  subagents: readonly Pick<ProjectSession, "activeRunId" | "id" | "title">[],
+  timelines: ReadonlyMap<string, readonly ConversationTimelineItem[]>,
+): SubagentPendingApproval[] {
+  return subagents.flatMap((subagent) => {
+    if (subagent.activeRunId === null) return [];
+    return (timelines.get(subagent.id) ?? []).flatMap((item) =>
+      item.kind === "tool"
+      && item.runId === subagent.activeRunId
+      && item.status === "awaiting_approval"
+        ? [{ childConversationId: subagent.id, childTitle: subagent.title, tool: item }]
+        : []
+    );
+  });
+}
+
 export function createRestoredRunProgresses(
   runId: string | null,
   startedAt = Date.now(),
@@ -225,6 +249,7 @@ type MentionQuery = {
 
 const MAX_SELECTED_CONVERSATION_MENTIONS = 5;
 const MAX_SELECTED_PROJECT_FILE_MENTIONS = 10;
+const EMPTY_PROJECT_SESSIONS: readonly ProjectSession[] = [];
 
 const SLASH_COMMANDS = [
   { description: "先拆分步骤并创建任务清单", name: "plan", title: "规划任务" },
@@ -516,6 +541,7 @@ export function WorkspaceContent({
                onViewed={() => onSessionViewed(session.id)}
                project={conversationProject}
               projects={projects}
+              relatedSessions={sessions}
               session={session}
             />
           </div>
@@ -541,6 +567,7 @@ export function ConversationWorkspace({
   onViewed,
   project,
   projects = [],
+  relatedSessions = EMPTY_PROJECT_SESSIONS,
   session,
 }: {
   agentClient: AgentClient;
@@ -558,6 +585,7 @@ export function ConversationWorkspace({
   onViewed?: () => void;
   project: ProjectSummary | null;
   projects?: readonly ProjectSummary[];
+  relatedSessions?: readonly ProjectSession[];
   session: ProjectSession;
 }): ReactElement {
   const headingId = useId();
@@ -650,6 +678,14 @@ export function ConversationWorkspace({
   const [isTaskListExpanded, setIsTaskListExpanded] = useState(false);
   const [timeline, setTimeline] = useState<ConversationTimelineItem[]>([]);
   const timelineRef = useRef<ConversationTimelineItem[]>([]);
+  const [subagentApprovals, setSubagentApprovals] = useState<SubagentPendingApproval[]>([]);
+  const subagentSessions = useMemo(
+    () => relatedSessions.filter((candidate) =>
+      candidate.parentConversationId === session.id
+      && candidate.threadKind === "subagent"
+    ),
+    [relatedSessions, session.id],
+  );
   const contextUsageRequestRef = useRef(0);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const shouldStickToBottomRef = useRef(true);
@@ -834,6 +870,38 @@ export function ConversationWorkspace({
     }
   }, [agentClient, session.id]);
 
+  useEffect(() => {
+    let disposed = false;
+    const activeSubagents = subagentSessions.filter((subagent) => subagent.activeRunId !== null);
+    if (activeSubagents.length === 0) {
+      setSubagentApprovals([]);
+      return () => {
+        disposed = true;
+      };
+    }
+
+    void Promise.all(activeSubagents.map(async (subagent) => {
+      try {
+        const childTimeline = await agentClient.listConversationTimeline({
+          conversationId: subagent.id,
+        });
+        return [subagent.id, childTimeline] as const;
+      } catch {
+        return [subagent.id, [] as ConversationTimelineItem[]] as const;
+      }
+    })).then((entries) => {
+      if (disposed) return;
+      setSubagentApprovals(collectSubagentPendingApprovals(
+        activeSubagents,
+        new Map(entries),
+      ));
+    });
+
+    return () => {
+      disposed = true;
+    };
+  }, [agentClient, subagentSessions]);
+
   const loadTaskList = useCallback(async (): Promise<void> => {
     try {
       setTaskList(await agentClient.getConversationTaskList({ conversationId: session.id }));
@@ -880,9 +948,12 @@ export function ConversationWorkspace({
 
   useEffect(() => {
     const awaitingApprovalToolIds = new Set(
-      timeline.flatMap((item) =>
-        item.kind === "tool" && item.status === "awaiting_approval" ? [item.id] : []
-      ),
+      [
+        ...timeline.flatMap((item) =>
+          item.kind === "tool" && item.status === "awaiting_approval" ? [item.id] : []
+        ),
+        ...subagentApprovals.map((approval) => approval.tool.id),
+      ],
     );
     setApprovalErrors((current) => {
       const next = Object.fromEntries(
@@ -890,7 +961,7 @@ export function ConversationWorkspace({
       );
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     });
-  }, [timeline]);
+  }, [subagentApprovals, timeline]);
 
   useEffect(() => {
     void Promise.resolve().then(loadContextUsage);
@@ -1001,6 +1072,30 @@ export function ConversationWorkspace({
 
   useEffect(() => {
     return agentClient.onConversationRunEvent((event) => {
+      const sourceSubagent = "conversationId" in event
+        ? subagentSessions.find((candidate) => candidate.id === event.conversationId)
+        : undefined;
+      if (event.type === "tool.approval_requested" && sourceSubagent !== undefined) {
+        setSubagentApprovals((current) => [
+          ...current.filter((approval) => approval.tool.id !== event.tool.id),
+          {
+            childConversationId: sourceSubagent.id,
+            childTitle: sourceSubagent.title,
+            tool: event.tool,
+          },
+        ]);
+      }
+      if (event.type === "tool.completed" && sourceSubagent !== undefined) {
+        setSubagentApprovals((current) =>
+          current.filter((approval) => approval.tool.id !== event.tool.id)
+        );
+      }
+      if (event.type === "run.finished" && sourceSubagent !== undefined) {
+        setSubagentApprovals((current) => current.filter((approval) =>
+          approval.childConversationId !== sourceSubagent.id
+          || approval.tool.runId !== event.runId
+        ));
+      }
       if (event.type === "task_list.updated" && event.conversationId === session.id) {
         setTaskList(event.taskList);
         if (event.taskList === null) setIsTaskListExpanded(false);
@@ -1043,7 +1138,14 @@ export function ConversationWorkspace({
         void loadContextUsage();
       }
     });
-  }, [agentClient, loadContextUsage, loadTaskList, loadTimeline, session.id]);
+  }, [
+    agentClient,
+    loadContextUsage,
+    loadTaskList,
+    loadTimeline,
+    session.id,
+    subagentSessions,
+  ]);
 
   const handleMessagesScroll = useCallback((): void => {
     const messages = messagesRef.current;
@@ -1821,6 +1923,7 @@ export function ConversationWorkspace({
         className="conversation-workspace__surface"
         data-has-task-list={String(taskList !== null)}
         data-has-pending-messages={String(pendingMessages.length > 0)}
+        data-has-subagent-approvals={String(subagentApprovals.length > 0)}
       >
         <div
           ref={messagesRef}
@@ -1921,6 +2024,18 @@ export function ConversationWorkspace({
               onEdit={handleEditPendingMessage}
               onMove={handleMovePendingMessage}
               onPromote={handlePromotePendingMessage}
+            />
+          ) : null}
+
+          {subagentApprovals.length > 0 ? (
+            <SubagentApprovalQueue
+              approvalErrors={approvalErrors}
+              approvals={subagentApprovals}
+              approvingToolId={approvingToolId}
+              onChangeApproval={handleChangeApproval}
+              {...(onSessionSelected === undefined
+                ? {}
+                : { onOpenSubagent: onSessionSelected })}
             />
           ) : null}
 
@@ -2875,6 +2990,113 @@ function ConversationPendingMessageQueue({
           );
         })}
       </div>
+    </section>
+  );
+}
+
+function SubagentApprovalQueue({
+  approvalErrors,
+  approvals,
+  approvingToolId,
+  onChangeApproval,
+  onOpenSubagent,
+}: {
+  approvalErrors: Readonly<Record<string, string>>;
+  approvals: readonly SubagentPendingApproval[];
+  approvingToolId: string | null;
+  onChangeApproval: (
+    tool: ConversationToolItem,
+    approved: boolean,
+    scope?: ApproveToolChangeInput["scope"],
+  ) => Promise<void>;
+  onOpenSubagent?: (sessionId: string) => void;
+}): ReactElement {
+  return (
+    <section
+      aria-label="Subagent 待审批操作"
+      aria-live="polite"
+      className="mx-auto mb-[5px] max-h-48 w-[min(var(--conversation-content-max-width),calc(100%-32px))] overflow-y-auto rounded-[var(--app-radius-large)] border border-[var(--app-border)] bg-[var(--app-panel)] text-[length:var(--app-font-size-control)] text-[var(--app-foreground)] shadow-sm"
+    >
+      <header className="flex min-h-8 items-center gap-[5px] bg-[var(--app-panel-subtle)] px-2.5 py-1.5 font-semibold">
+        <CircleAlert aria-hidden="true" className="shrink-0 text-[var(--app-accent)]" size={15} />
+        <span className="min-w-0 flex-1">Subagent 等待审批</span>
+        <span className="text-[var(--app-muted-foreground)]">{approvals.length} 项</span>
+      </header>
+      {approvals.map((approval) => {
+        const isApproving = approvingToolId === approval.tool.id;
+        const isExternalRead = approval.tool.name === "read_external_file";
+        const approvalError = approvalErrors[approval.tool.id];
+        return (
+          <article
+            className="border-t border-[var(--app-border)] px-2.5 py-2"
+            key={approval.tool.id}
+          >
+            <div className="flex min-w-0 items-center gap-[5px]">
+              <button
+                className="flex min-w-0 items-center gap-[5px] rounded-[var(--app-radius-small)] px-1 py-0.5 text-left hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] disabled:cursor-default disabled:hover:bg-transparent"
+                disabled={onOpenSubagent === undefined}
+                title={`打开 Subagent：${approval.childTitle}`}
+                type="button"
+                onClick={() => onOpenSubagent?.(approval.childConversationId)}
+              >
+                <Bot aria-hidden="true" className="shrink-0 text-[var(--app-muted-foreground)]" size={14} />
+                <span className="truncate font-medium">{approval.childTitle}</span>
+                <ChevronRight aria-hidden="true" className="shrink-0 text-[var(--app-muted-foreground)]" size={13} />
+              </button>
+              <span className="min-w-0 flex-1 truncate text-[var(--app-muted-foreground)]">
+                {toolActivityLabel(approval.tool)}
+              </span>
+            </div>
+            {approvalError === undefined ? null : (
+              <p className="mt-[5px] text-[var(--app-destructive)]">{approvalError}</p>
+            )}
+            <div className="mt-[5px] flex flex-wrap justify-end gap-[5px]">
+              <button
+                className="inline-flex min-h-7 items-center gap-1 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-transparent px-2 text-[var(--app-foreground)] hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={isApproving}
+                type="button"
+                onClick={() => void onChangeApproval(approval.tool, false)}
+              >
+                <X aria-hidden="true" size={13} />
+                拒绝
+              </button>
+              <button
+                className="inline-flex min-h-7 items-center gap-1 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-transparent px-2 text-[var(--app-foreground)] hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={isApproving}
+                type="button"
+                onClick={() => void onChangeApproval(approval.tool, true)}
+              >
+                <Check aria-hidden="true" size={13} />
+                {isApproving ? "提交中" : "仅本次允许"}
+              </button>
+              {isExternalRead ? null : (
+                <button
+                  className="inline-flex min-h-7 items-center gap-1 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-transparent px-2 text-[var(--app-foreground)] hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={isApproving}
+                  title="仅允许该 Subagent 对话后续同类操作"
+                  type="button"
+                  onClick={() => void onChangeApproval(approval.tool, true, "session")}
+                >
+                  <Check aria-hidden="true" size={13} />
+                  允许该 Subagent 会话
+                </button>
+              )}
+              {isExternalRead ? null : (
+                <button
+                  className="inline-flex min-h-7 items-center gap-1 rounded-[var(--app-radius)] bg-[var(--app-accent)] px-2 text-[var(--app-accent-foreground)] hover:opacity-90 focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={isApproving}
+                  title="保存到该 Subagent 当前绑定 Agent 的权限规则"
+                  type="button"
+                  onClick={() => void onChangeApproval(approval.tool, true, "agent")}
+                >
+                  <ShieldCheck aria-hidden="true" size={13} />
+                  Agent 一直允许
+                </button>
+              )}
+            </div>
+          </article>
+        );
+      })}
     </section>
   );
 }
@@ -4749,7 +4971,12 @@ function SubagentToolResult({
       <ul className="tool-search-results">
         {result.tasks.map((task) => (
           <li key={task.id}>
-            <span className="tool-search-results__path">{task.title}</span>
+            <span className="tool-subagent-result__identity">
+              {task.avatarIcon === null ? null : (
+                <AgentAvatar avatar={{ icon: task.avatarIcon, kind: "icon" }} size="compact" />
+              )}
+              <span className="tool-search-results__path">{task.name}</span>
+            </span>
             <span className="tool-search-results__excerpt">
               {subagentTaskStatusLabel(task.status)} · {task.childConversationId}
             </span>
@@ -5368,9 +5595,11 @@ function parseAgentMessageToolResult(payload: string): {
 }
 
 type SubagentToolTaskPayload = {
+  avatarIcon: AgentAvatarIcon | null;
   childConversationId: string;
   error: string | null;
   id: string;
+  name: string;
   result: string | null;
   status: string;
   title: string;
@@ -5391,16 +5620,22 @@ function parseSubagentToolResult(payload: string): {
   const tasks = rawTasks.map((rawTask) => {
     if (rawTask === null || typeof rawTask !== "object") return null;
     const task = rawTask as Record<string, unknown>;
+    const avatarIcon = task.avatarIcon === null || task.avatarIcon === undefined
+      ? null
+      : agentAvatarIconSchema.safeParse(task.avatarIcon);
     return typeof task.childConversationId === "string"
       && typeof task.id === "string"
       && typeof task.status === "string"
       && typeof task.title === "string"
+      && (avatarIcon === null || avatarIcon.success)
       && (task.result === null || typeof task.result === "string")
       && (task.error === null || typeof task.error === "string")
       ? {
+        avatarIcon: avatarIcon === null ? null : avatarIcon.data,
         childConversationId: task.childConversationId,
         error: task.error,
         id: task.id,
+        name: typeof task.name === "string" ? task.name : task.title,
         result: task.result,
         status: task.status,
         title: task.title,
@@ -5779,6 +6014,7 @@ const CONVERSATION_AGENT_STORAGE_PREFIX = "agent-workbench.conversation-agent.";
 
 function toConversationAgentBinding(agent: AgentProfile) {
   return {
+    avatarIcon: agent.avatar.kind === "icon" ? agent.avatar.icon : null,
     id: agent.id,
     instructions: agent.instructions,
     isDefault: agent.isDefault,

@@ -392,6 +392,7 @@ export class MockAgentClient implements AgentClient {
       activeRunId: null,
       agentId: input.agent?.id ?? null,
       archivedAt: null,
+      avatarIcon: input.agent?.avatarIcon ?? null,
       createdAt: now,
       hasUnreadResult: false,
       id: this.createIdentifier(),
@@ -464,6 +465,7 @@ export class MockAgentClient implements AgentClient {
       activeRunId: null,
       agentId: source.agentId,
       archivedAt: null,
+      avatarIcon: source.avatarIcon ?? null,
       createdAt: now,
       hasUnreadResult: false,
       id: this.createIdentifier(),
@@ -1358,6 +1360,7 @@ export class MockAgentClient implements AgentClient {
         return Promise.reject(new Error("This conversation is already bound to another Agent."));
       }
       conversation.agentId = input.agent.id;
+      conversation.avatarIcon = input.agent.avatarIcon ?? null;
     }
 
     const now = new Date().toISOString();

@@ -39,6 +39,7 @@ function toProjectSession(conversation: ConversationSummary): ProjectSession {
     activeSubagentCount: conversation.activeSubagentCount,
     activeRunId: conversation.activeRunId,
     agentId: conversation.agentId,
+    avatarIcon: conversation.avatarIcon ?? null,
     hasUnreadResult: conversation.hasUnreadResult,
     id: conversation.id,
     isArchived: conversation.isArchived,

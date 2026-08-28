@@ -8,6 +8,7 @@ import type {
 
 import {
   createRestoredRunProgresses,
+  collectSubagentPendingApprovals,
   fileChangeSummary,
   formatToolPayload,
   formatConversationTime,
@@ -22,6 +23,30 @@ import {
   toolBatchLabel,
   toolBatchExecutionMode,
 } from "./workspace-content.js";
+
+describe("Subagent approvals", () => {
+  it("restores only approvals that belong to each Subagent's active run", () => {
+    const activeTool = {
+      ...tool("run_command", { arguments: '{"command":"ping github.com"}' }),
+      status: "awaiting_approval" as const,
+    };
+    const staleTool = {
+      ...activeTool,
+      id: "00000000-0000-4000-8000-000000000099",
+      runId: "00000000-0000-4000-8000-000000000098",
+    };
+    const approvals = collectSubagentPendingApprovals(
+      [{ activeRunId: activeTool.runId, id: activeTool.conversationId, title: "Ping GitHub" }],
+      new Map([[activeTool.conversationId, [activeTool, staleTool]]]),
+    );
+
+    expect(approvals).toEqual([{
+      childConversationId: activeTool.conversationId,
+      childTitle: "Ping GitHub",
+      tool: activeTool,
+    }]);
+  });
+});
 
 describe("initial conversation model selection", () => {
   const recentSelection = {

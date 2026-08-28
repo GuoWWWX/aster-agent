@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { agentErrorSchema } from "./agent-error.js";
+import { agentAvatarIconSchema } from "./agent-avatar.js";
 
 import {
   contextCompressionModeSchema,
@@ -91,6 +92,7 @@ export const conversationThreadKindSchema = z.enum([
 
 export const conversationAgentBindingSchema = z
   .object({
+    avatarIcon: agentAvatarIconSchema.nullable().optional(),
     id: z.string().trim().min(1).max(200),
     instructions: z.string().trim().max(MAX_AGENT_INSTRUCTIONS_LENGTH),
     isDefault: z.boolean(),
@@ -151,6 +153,7 @@ export const conversationSummarySchema = z
     activeRunId: runIdSchema.nullable(),
     agentId: z.string().trim().min(1).max(200).nullable().default(null),
     archivedAt: isoTimestampSchema.nullable().default(null),
+    avatarIcon: agentAvatarIconSchema.nullable().optional(),
     createdAt: isoTimestampSchema,
     hasUnreadResult: z.boolean().default(false),
     id: conversationIdSchema,

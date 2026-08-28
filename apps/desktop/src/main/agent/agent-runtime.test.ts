@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  AGENT_AVATAR_ICONS,
   DEFAULT_AGENT_DIRECTORY_CONFIGURATION,
   DEFAULT_APPLICATION_SETTINGS,
 } from "@agent/protocol";
@@ -1121,6 +1122,7 @@ class SubagentLifecycleFixtureModel implements ModelProviderAdapter {
       providerId: string;
       reasoning?: { kind: "effort"; value: "high" };
     },
+    private readonly subagentIcon: "bug" | null = "bug",
   ) {
     this.childRequestStarted = new Promise((resolve) => {
       this.resolveChildRequestStarted = resolve;
@@ -1152,8 +1154,9 @@ class SubagentLifecycleFixtureModel implements ModelProviderAdapter {
       const argumentsPayload = JSON.stringify({
         ...(this.subagentAgentId === undefined ? {} : { agentId: this.subagentAgentId }),
         ...(this.subagentModelSelection ?? {}),
+        ...(this.subagentIcon === null ? {} : { icon: this.subagentIcon }),
+        name: "实现检查",
         task: "检查实现并报告结果",
-        title: "实现检查",
       });
       return Promise.resolve({
         content: "",
@@ -2384,7 +2387,7 @@ describe("AgentRuntime", () => {
       teamId: "default-team",
       threadKind: "team_lead",
     });
-    const model = new SubagentLifecycleFixtureModel(false, "explorer");
+    const model = new SubagentLifecycleFixtureModel(false, "explorer", undefined, null);
     const runtime = new AgentRuntime(
       database,
       {
@@ -2432,6 +2435,7 @@ describe("AgentRuntime", () => {
     if (task === undefined) throw new Error("Subagent task was not created.");
     expect(database.getConversation(task.childConversationId)).toMatchObject({
       agentId: "explorer",
+      avatarIcon: "compass",
       parentConversationId: lead.id,
       teamId: "default-team",
       threadKind: "subagent",
@@ -3597,6 +3601,7 @@ describe("AgentRuntime", () => {
       status: "completed",
       title: "实现检查",
     });
+    expect(database.getConversation(task.childConversationId).avatarIcon).toBe("bug");
     expect(threadLog.readContext(task.childConversationId)?.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({
         content: "检查实现并报告结果",
@@ -3636,7 +3641,7 @@ describe("AgentRuntime", () => {
     const database = new AgentDatabase(":memory:");
     const projects = new ProjectRegistry(database);
     const parent = database.createConversation(null);
-    const model = new SubagentLifecycleFixtureModel(false);
+    const model = new SubagentLifecycleFixtureModel(false, undefined, undefined, null);
     const runtime = new AgentRuntime(
       database,
       {
@@ -3700,7 +3705,11 @@ describe("AgentRuntime", () => {
 
     expect(parentFinishedCount).toBe(2);
     const task = database.listSubagentTasks(parent.id)[0];
-    expect(task?.status).toBe("completed");
+    if (task === undefined) throw new Error("Subagent task was not created.");
+    expect(task.status).toBe("completed");
+    expect(AGENT_AVATAR_ICONS).toContain(
+      database.getConversation(task.childConversationId).avatarIcon,
+    );
     expect(database.getConversation(parent.id).activeSubagentCount).toBe(0);
     expect(parentConversationUpdates).toContainEqual({
       activeRunId: null,

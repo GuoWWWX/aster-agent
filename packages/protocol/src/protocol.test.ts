@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  AGENT_AVATAR_ICONS,
   capabilitySetSchema,
+  agentAvatarIconSchema,
   agentPermissionRuleSchema,
   approveToolChangeInputSchema,
   clipboardWriteTextIpcArgumentsSchema,
@@ -33,6 +35,13 @@ import {
 } from "./index.js";
 
 describe("protocol bootstrap contract", () => {
+  it("keeps Agent and Subagent avatar icons in one bounded catalog", () => {
+    expect(AGENT_AVATAR_ICONS).toHaveLength(18);
+    expect(new Set(AGENT_AVATAR_ICONS).size).toBe(AGENT_AVATAR_ICONS.length);
+    expect(agentAvatarIconSchema.parse("brain")).toBe("brain");
+    expect(() => agentAvatarIconSchema.parse("arbitrary-svg")).toThrow();
+  });
+
   it("validates scoped approval and Agent allow rules", () => {
     expect(approveToolChangeInputSchema.parse({
       approved: true,
@@ -200,6 +209,7 @@ describe("protocol bootstrap contract", () => {
 
   it("validates Agent thread identity at the protocol boundary", () => {
     const agent = {
+      avatarIcon: "sparkles" as const,
       id: "team-lead",
       instructions: "负责拆分和汇总任务。",
       isDefault: false,
@@ -212,6 +222,9 @@ describe("protocol bootstrap contract", () => {
       teamId: "default-team",
       threadKind: "team_lead",
     })).toMatchObject({ agent, teamId: "default-team", threadKind: "team_lead" });
+    expect(() => createConversationInputSchema.parse({
+      agent: { ...agent, avatarIcon: "arbitrary-svg" },
+    })).toThrow();
     expect(() => createConversationInputSchema.parse({
       agent,
       threadKind: "team_lead",

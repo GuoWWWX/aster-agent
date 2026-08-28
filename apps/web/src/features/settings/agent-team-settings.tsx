@@ -704,6 +704,7 @@ function AvatarEditor({
                 key={option.id}
                 aria-label={option.label}
                 aria-pressed={selected}
+                data-tone={option.tone}
                 title={option.label}
                 type="button"
                 onClick={() => {

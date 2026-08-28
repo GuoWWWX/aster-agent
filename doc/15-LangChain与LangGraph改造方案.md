@@ -71,7 +71,7 @@ Electron Bootstrap
 - `createAgent` 的 `model -> tools -> model` 条件循环和完成边；最大模型调用次数由 `modelCallLimitMiddleware` 按同一 `thread_id` 计数。
 - `createMiddleware.beforeAgent` 在 Run 图线程首次进入时调用 Runtime 的 Context Builder，写入本轮初始上下文；同一线程后续 Queue/Steer 或审批恢复不会重复追加上下文。
 - 自定义 `wrapModelCall` Middleware 执行可取消、可观测的模型重试；Runtime 只提供重试判定、退避、等待和事件/终态回调。
-- 通过 `interrupt()` 暂停等待审批；通过 `new Command({ resume })` 恢复同一 `thread_id`。
+- 通过 `interrupt()` 暂停等待审批；通过 `new Command({ resume })` 恢复同一 `thread_id`。图执行边界同时接受 `invoke()` 返回的 `__interrupt__` 和上游直接抛出的顶层 `GraphInterrupt`，两者归一到相同的 `onInterrupt` 回调。
 - 在每个安全节点边界保存 Checkpoint。当前应用重启只恢复尚未开始执行的 queued Run；已进入图的 running Run 保守标记失败，不跨进程重放副作用。
 - 为 Subagent/团队未来扩展保留子图和并行 `Send` 的能力，但本批不宣称完整团队 Supervisor 已实现。
 
@@ -208,7 +208,7 @@ LangGraph 的 Checkpoint 只负责图恢复，不替代现有业务状态：
 
 - 将 `executeRun` 的内部循环替换为 Graph invoke/stream。
 - 保持既有事件、消息、Tool 行、Queue/Steer、Subagent 和错误合同。
-- 使用 LangGraph `interrupt/Command` 承接逐次审批；恢复时按 interrupt namespace keyed resume，并缓存已完成 ToolCall 结果，避免节点重放副作用。running Run 仍按保守失败策略处理。
+- 使用 LangGraph `interrupt/Command` 承接逐次审批；恢复时按 interrupt namespace keyed resume，并缓存已完成 ToolCall 结果，避免节点重放副作用。返回式和异常式顶层 interrupt 使用同一恢复路径；running Run 仍按保守失败策略处理。
 
 ### 阶段 4：Skill 与 Checkpoint（主链已完成）
 

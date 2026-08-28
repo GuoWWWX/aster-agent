@@ -131,6 +131,8 @@ AI Team（长期存在）
 
 Agent 模型默认继承创建它的父对话当前模型，也可以由 Profile、创建请求、ModelRouter 或用户指定。当前 Main Agent 可先调用 `list_models` 获取不含凭据的已配置模型目录、已启用思考选项和带时间的健康状态，再向 `spawn_subagent` 显式传入 `providerId`、`modelId` 和可选思考选项；未传时保持继承。Subagent 的选择不反向更新“最近一次用户选择”。用户通过对话或模型选择器的明确设置具有最高优先级；自动路由不能解除用户锁定。完整规则见[模型接入、MCP、Skill 与 Agent 对话设计](./08-模型接入、MCP、Skill与Agent对话设计.md)。
 
+`spawn_subagent` 还接受独立于任务正文的简短 `name` 和可选 `icon`。`icon` 只能使用 Agent Profile 共用的稳定枚举；未提供时优先使用所选 Agent 的预设图标，否则按子 Conversation ID 选择稳定回退。名称和图标进入子对话身份投影，便于在父对话树和工具结果中区分并行 Subagent。
+
 ## 4. 任务分级与是否组队
 
 团队负责人先把请求分类，不能默认拆分。

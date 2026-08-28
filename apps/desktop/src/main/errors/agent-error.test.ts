@@ -105,6 +105,23 @@ describe("main agent errors", () => {
     });
   });
 
+  it("keeps an expired approval separate from a stale file change", () => {
+    const expired = Object.assign(new Error("This tool approval is no longer pending."), {
+      code: "APPROVAL_EXPIRED",
+    });
+
+    expect(toMainAgentError(expired, { operation: "conversation.approve_tool_change" }))
+      .toMatchObject({
+        code: "APPROVAL_EXPIRED",
+        message: "该审批已失效，请查看工具的最新状态。",
+        retryable: false,
+      });
+    expect(toMainAgentError(
+      Object.assign(new Error("The file was changed."), { code: "FILE_CHANGED" }),
+      { operation: "tool:write_file" },
+    ).code).toBe("FILE_CHANGED");
+  });
+
   it("includes a safe field path for schema validation failures", () => {
     const parsed = z.object({
       tasks: z.array(z.object({ title: z.string().min(1) }))

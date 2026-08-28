@@ -162,6 +162,18 @@
   padding-bottom: 300px;
 }
 
+/* CSS trigger #2: the absolute composer overlay needs space based on its approval descendants. */
+.conversation-workspace__surface[data-has-subagent-approvals="true"] .conversation-workspace__messages {
+  padding-bottom: 340px;
+}
+
+.conversation-workspace__surface[data-has-subagent-approvals="true"][data-has-pending-messages="true"]
+  .conversation-workspace__messages,
+.conversation-workspace__surface[data-has-subagent-approvals="true"][data-has-task-list="true"]
+  .conversation-workspace__messages {
+  padding-bottom: 520px;
+}
+
 .conversation-workspace__loading,
 .conversation-workspace__blank {
   display: inline-flex;
@@ -1026,6 +1038,17 @@ button.tool-file-change__path:focus-visible {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: var(--app-font-size-control);
   font-weight: 600;
+}
+
+.tool-subagent-result__identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.tool-subagent-result__identity .tool-search-results__path {
+  min-width: 0;
 }
 
 .tool-search-results__excerpt {
