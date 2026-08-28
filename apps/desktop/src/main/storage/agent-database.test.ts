@@ -1379,9 +1379,9 @@ describe("AgentDatabase", () => {
     expect(database.listUnreadAgentMessages(target.id)).toEqual([message]);
     expect(database.listTimeline(target.id)).toContainEqual(message);
     const modelContent = database.listModelMessages(target.id).at(-1)?.content;
-    expect(modelContent).toContain("发送方对话：负责人");
-    expect(modelContent).toContain(`发送方 conversationId：${sender.id}`);
-    expect(modelContent).toContain("调用 send_agent_message");
+    expect(modelContent).toContain("Sender conversation: 负责人");
+    expect(modelContent).toContain(`Sender conversationId: ${sender.id}`);
+    expect(modelContent).toContain("Call send_agent_message");
     expect(database.getConversation(target.id).hasUnreadResult).toBe(true);
 
     database.markAgentMessagesRead([message.id]);
@@ -1826,7 +1826,7 @@ describe("AgentDatabase", () => {
     expect(database.getConversation(child.id).subagentTaskStatus).toBe("completed");
     expect(database.getConversation(parent.id).activeSubagentCount).toBe(0);
     expect(database.listContextMessages(parent.id).at(-1)?.content).toContain(
-      "[Subagent 任务结果]",
+      "[Subagent task result]",
     );
     expect(database.listTimeline(parent.id).some((item) =>
       item.kind === "agent_message" && item.messageType === "task_result"

@@ -10,9 +10,9 @@ const MAX_CONTEXT_TASK_TITLE_CHARACTERS = 120;
 const MAX_CONTEXT_TASK_REASON_CHARACTERS = 240;
 
 const TASK_LIST_CONTEXT_HEADER = [
-  "[当前任务清单｜动态运行状态]",
-  "这是本对话当前唯一的权威任务状态；它会在每次模型调用前刷新。不要以旧的工具结果、聊天记录或压缩摘要中的任务状态替代它。",
-  "需要调整时调用 update_task_list 并提交完整清单；同一时刻最多一个步骤为 running。blocked 或 failed 步骤必须提供简短原因。清单不存在时才能 create_task_list；所有步骤完成后调用 close_task_list。",
+  "[Current task list | live state]",
+  "This is the only authoritative task state for this conversation and is refreshed before every model call. Do not replace it with task state from older tool results, chat history, or compression summaries.",
+  "To change it, call update_task_list with the complete list. At most one step may be running. A blocked or failed step requires a short reason. Call create_task_list only when no list exists, and close_task_list after all steps finish.",
 ].join("\n");
 
 function contextTaskTitle(title: string): string {
@@ -32,7 +32,7 @@ function taskListContextContent(taskList: ConversationTaskList): string {
       `${index + 1}. [${task.status}] ${contextTaskTitle(task.title)}`,
       task.status !== "blocked" && task.status !== "failed"
         ? null
-        : task.reason === null ? null : `   原因：${contextTaskReason(task.reason)}`,
+        : task.reason === null ? null : `   Reason: ${contextTaskReason(task.reason)}`,
     ].filter((line): line is string => line !== null).join("\n")),
   ].join("\n");
 }

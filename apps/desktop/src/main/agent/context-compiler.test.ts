@@ -61,7 +61,7 @@ describe("ContextCompiler", () => {
 
     expect(context.messages[0]).toMatchObject({ role: "system", content: "系统指令" });
     expect(context.messages.map((message) => message.content)).toContain("继续检查登录页的表单校验");
-    expect(context.messages.some((message) => message.content.includes("结构化压缩检查点"))).toBe(true);
+    expect(context.messages.some((message) => message.content.includes("structured compression checkpoint"))).toBe(true);
     expect(context.messages.some((message) => message.content === "登录页需要补充表单校验")).toBe(false);
     expect(context.usage.omittedMessageCount).toBe(2);
     database.close();

@@ -150,7 +150,7 @@ export class SkillDocumentStore {
     const parsedInput = skillDocumentSaveInputSchema.parse(input);
     this.assertRegistered(parsedInput.entryPath);
     this.assertSkillEntryPath(parsedInput.entryPath);
-    parseSkillMarkdown(parsedInput.content);
+    const document = this.toDocument(parsedInput.entryPath, parsedInput.content);
 
     const temporaryPath = `${parsedInput.entryPath}.${process.pid}.${randomUUID()}.tmp`;
     try {
@@ -159,7 +159,6 @@ export class SkillDocumentStore {
     } finally {
       if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
     }
-    const document = this.toDocument(parsedInput.entryPath, parsedInput.content);
     this.synchronizeDocuments([document]);
     return document;
   }
@@ -305,6 +304,12 @@ export class SkillDocumentStore {
 
   private toDocument(entryPath: string, content: string): SkillDocument {
     const { metadata } = parseSkillMarkdown(content);
+    const directoryName = path.basename(path.dirname(entryPath));
+    if (metadata.name !== directoryName) {
+      throw new Error(
+        `SKILL.md 的 name 必须与父目录名一致：期望 ${directoryName}，实际 ${metadata.name}。`,
+      );
+    }
     return skillDocumentSchema.parse({ content, entryPath: path.resolve(entryPath), metadata });
   }
 }

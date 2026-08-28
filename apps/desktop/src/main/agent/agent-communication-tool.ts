@@ -22,21 +22,21 @@ const toolNames = new Set([
 
 const emptyArgumentsSchema = z.object({}).strict();
 const readConversationArgumentsSchema = z.object({
-  conversationId: z.string().uuid().describe("目标 Agent 对话的 UUID。不能填写当前对话。"),
+  conversationId: z.string().uuid().describe("Target Agent conversation UUID. It must not be the current conversation."),
   maxTokens: z.number().int().min(256).max(8_192).default(4_096)
-    .describe("本次对话快照允许使用的最大估算 Token 数。"),
+    .describe("Maximum estimated tokens allowed for this conversation snapshot."),
 }).strict();
 const sendMessageArgumentsSchema = z.object({
-  content: z.string().trim().min(1).max(20_000).describe("发送给目标 Agent 的消息正文。"),
-  conversationId: z.string().uuid().describe("目标 Agent 对话的 UUID。"),
+  content: z.string().trim().min(1).max(20_000).describe("Message body to send to the target Agent."),
+  conversationId: z.string().uuid().describe("Target Agent conversation UUID."),
   expectReply: z.boolean().default(true)
-    .describe("是否要求目标 Agent 完成处理后把最终结果自动返回当前对话。"),
+    .describe("Whether the target Agent should automatically return its final result to this conversation."),
 }).strict();
 const waitForMessageArgumentsSchema = z.object({
   conversationId: z.string().uuid().optional()
-    .describe("可选的发送方 Agent 对话 UUID；省略表示接收任意 Agent 消息。"),
+    .describe("Optional sender Agent conversation UUID. Omit it to accept a message from any Agent."),
   timeoutMs: z.number().int().min(1_000).max(120_000).default(30_000)
-    .describe("本次等待的最长毫秒数；超时不会取消发送方工作。"),
+    .describe("Maximum wait in milliseconds. A timeout does not cancel the sender's work."),
 }).strict();
 
 type CommunicationToolExecution = {

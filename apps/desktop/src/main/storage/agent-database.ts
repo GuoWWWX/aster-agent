@@ -190,42 +190,42 @@ export type SendAgentMessageInput = {
 export function agentMessageModelContent(message: ConversationAgentMessageItem): string {
   if (message.messageType === "task_result") {
     return [
-      "[Subagent 任务结果]",
-      `Subagent 对话：${message.senderTitle}`,
-      `Subagent conversationId：${message.senderConversationId}`,
-      ...(message.taskId === null ? [] : [`任务 ID：${message.taskId}`]),
-      "这是一次性 Subagent 的完成摘要。完整过程保存在独立子对话中；需要更多细节时，使用 read_agent_conversation 按预算读取，不要要求 Subagent 继续对话。",
-      "结果摘要：",
+      "[Subagent task result]",
+      `Subagent conversation: ${message.senderTitle}`,
+      `Subagent conversationId: ${message.senderConversationId}`,
+      ...(message.taskId === null ? [] : [`Task ID: ${message.taskId}`]),
+      "This is the completion summary from a one-shot Subagent. The full process remains in its separate conversation; use read_agent_conversation within budget for details, and do not ask the completed Subagent to continue.",
+      "Result summary:",
       message.content
     ].join("\n");
   }
   if (message.messageType === "agent_result") {
     return [
-      "[Agent 处理结果]",
-      `执行对话：${message.senderTitle}`,
-      `执行方 conversationId：${message.senderConversationId}`,
-      ...(message.taskId === null ? [] : [`原协作消息 ID：${message.taskId}`]),
-      "这是接收方完成本次协作消息后由运行时自动回传的最终结果，不需要再次回复。",
-      "结果内容：",
+      "[Agent result]",
+      `Executor conversation: ${message.senderTitle}`,
+      `Executor conversationId: ${message.senderConversationId}`,
+      ...(message.taskId === null ? [] : [`Original collaboration message ID: ${message.taskId}`]),
+      "This final result was returned automatically after the recipient completed the collaboration request. Do not reply again.",
+      "Result:",
       message.content,
     ].join("\n");
   }
   if (message.messageType === "notification") {
     return [
-      "[Agent 协作通知]",
-      `发送方对话：${message.senderTitle}`,
-      `发送方 conversationId：${message.senderConversationId}`,
-      "这是一条不要求自动回传结果的进度或通知消息；根据内容继续当前工作即可。",
-      "消息内容：",
+      "[Agent collaboration notification]",
+      `Sender conversation: ${message.senderTitle}`,
+      `Sender conversationId: ${message.senderConversationId}`,
+      "This progress or notification message does not request an automatic result. Continue the current work as appropriate.",
+      "Message:",
       message.content,
     ].join("\n");
   }
   return [
-    "[Agent 协作消息]",
-    `发送方对话：${message.senderTitle}`,
-    `发送方 conversationId：${message.senderConversationId}`,
-    "处理方式：直接完成消息中的工作并给出最终答复；运行时会自动把最终结果关联回发送方。只有中间进度、追问或额外主动消息才需要调用 send_agent_message。",
-    "消息内容：",
+    "[Agent collaboration request]",
+    `Sender conversation: ${message.senderTitle}`,
+    `Sender conversationId: ${message.senderConversationId}`,
+    "Complete the requested work and provide the final answer directly. The runtime automatically links that final result back to the sender. Call send_agent_message only for progress, clarification, or another proactive message.",
+    "Message:",
     message.content
   ].join("\n");
 }

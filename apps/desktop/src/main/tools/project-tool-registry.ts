@@ -513,9 +513,9 @@ export class ProjectToolRegistry {
   public getCommandEnvironmentDescription(): string {
     const configuration = this.terminalConfiguration.getConfiguration();
     const terminal = this.createTerminalLaunch(configuration, "");
-    return `${terminal.displayName}（输出解码：${terminalOutputEncodingLabel(
+    return `${terminal.displayName} (output decoding: ${terminalOutputEncodingLabel(
       configuration.outputEncoding,
-    )}）`;
+    )})`;
   }
 
   public async execute(
@@ -1105,7 +1105,7 @@ export class ProjectToolRegistry {
         }
         return {
           args: ["/d", "/s", "/c", command],
-          displayName: "命令提示符",
+          displayName: "Command Prompt",
           executable: "cmd.exe",
           shell,
         };
@@ -1830,7 +1830,7 @@ function decodeAutoTerminalLine(output: Buffer): string {
 function terminalOutputEncodingLabel(encoding: TerminalOutputEncoding): string {
   switch (encoding) {
     case "auto":
-      return "自动（UTF-8/GB18030）";
+      return "auto (UTF-8/GB18030)";
     case "utf-8":
       return "UTF-8";
     case "gbk":
