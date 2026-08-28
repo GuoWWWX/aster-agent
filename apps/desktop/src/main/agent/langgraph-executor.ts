@@ -10,7 +10,7 @@ import {
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { ChatGeneration, ChatResult } from "@langchain/core/outputs";
 import { DynamicStructuredTool } from "@langchain/core/tools";
-import { Command, isInterrupted, MemorySaver } from "@langchain/langgraph";
+import { Command, isGraphInterrupt, isInterrupted, MemorySaver } from "@langchain/langgraph";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import {
   MIDDLEWARE_BRAND,
@@ -137,6 +137,15 @@ type RuntimeToolBatch = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeInterrupts(entries: readonly unknown[]): LangGraphInterrupt[] {
+  return entries.map((entry) => {
+    if (!isRecord(entry) || typeof entry.id !== "string") {
+      throw new Error("LangGraph returned an interrupt without an identifier.");
+    }
+    return { id: entry.id, value: entry.value };
+  });
 }
 
 function isModelToolCall(value: unknown): value is ModelToolCall {
@@ -696,43 +705,42 @@ export class LangGraphExecutor {
       lastResult = null;
       contextMessages = [];
       let result: unknown;
+      let interrupts: readonly LangGraphInterrupt[] | null = null;
       try {
         result = await agent.invoke(graphInput, config);
       } catch (error) {
         if (isFrameworkModelCallLimitError(error) || isFrameworkGraphRecursionError(error)) {
           throw new AgentModelCallLimitError(input.maxSteps, error);
         }
-        throw error;
+        if (!isGraphInterrupt(error)) throw error;
+        interrupts = normalizeInterrupts(error.interrupts);
       }
-      if (!isInterrupted(result)) {
-        const state = asAgentState(result);
-        const modelResult: ModelTurnResult | null = lastResult;
-        const shouldContinue = continueAfterModel
-          && toolCallsOf(modelResult).length === 0;
-        if (shouldContinue) {
-          graphInput = { contextPrepared: true, messages: [] };
-          continue;
+      if (interrupts === null) {
+        if (!isInterrupted(result)) {
+          const state = asAgentState(result);
+          const modelResult: ModelTurnResult | null = lastResult;
+          const shouldContinue = continueAfterModel
+            && toolCallsOf(modelResult).length === 0;
+          if (shouldContinue) {
+            graphInput = { contextPrepared: true, messages: [] };
+            continue;
+          }
+          return {
+            activeSkills: state.activeSkills,
+            contextPrepared: state.contextPrepared,
+            hasFollowUpInput: state.hasFollowUpInput,
+            hasSuccessfulToolExecution: state.hasSuccessfulToolExecution,
+            lastResult: modelResult,
+            messages: modelMessagesFromState(state.messages),
+            pendingToolCalls: toolCallsOf(modelResult),
+            turns: state.turns,
+          };
         }
-        return {
-          activeSkills: state.activeSkills,
-          contextPrepared: state.contextPrepared,
-          hasFollowUpInput: state.hasFollowUpInput,
-          hasSuccessfulToolExecution: state.hasSuccessfulToolExecution,
-          lastResult: modelResult,
-          messages: modelMessagesFromState(state.messages),
-          pendingToolCalls: toolCallsOf(modelResult),
-          turns: state.turns,
-        };
+        interrupts = normalizeInterrupts(result.__interrupt__);
       }
       if (input.onInterrupt === undefined) {
         throw new Error("LangGraph interrupted without an approval callback.");
       }
-      const interrupts = result.__interrupt__.map((entry) => {
-        if (typeof entry.id !== "string") {
-          throw new Error("LangGraph returned an interrupt without an identifier.");
-        }
-        return { id: entry.id, value: entry.value };
-      });
       const resume = await input.onInterrupt(interrupts);
       input.signal.throwIfAborted();
       const [interrupt] = interrupts;

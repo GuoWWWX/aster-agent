@@ -18,6 +18,7 @@ type ErrorClassification = {
 };
 
 const DEFAULT_ERRORS: Record<AgentErrorCode, Omit<ErrorClassification, "code">> = {
+  APPROVAL_EXPIRED: { message: "该审批已失效，请查看工具的最新状态。", retryable: false },
   APPROVAL_REJECTED: { message: "操作未获批准。", retryable: false },
   ARTIFACT_NOT_FOUND: { message: "请求的文件或记录不存在。", retryable: false },
   CAPABILITY_UNAVAILABLE: { message: "当前环境不支持这项能力。", retryable: false },
@@ -182,6 +183,7 @@ function classifyError(
     return classificationForCode("MODEL_RESPONSE_INVALID");
   }
   if (nodeCode === "FILE_CHANGED") return classificationForCode("FILE_CHANGED");
+  if (nodeCode === "APPROVAL_EXPIRED") return classificationForCode("APPROVAL_EXPIRED");
   if (nodeCode === "PROJECT_OPERATION_CONFLICT") return classificationForCode("CONFLICT");
   if (name === "ZodError" || (reason !== null && typeof reason === "object" && "issues" in reason)) {
     return classificationForCode("VALIDATION_FAILED");
@@ -225,7 +227,7 @@ function classifyError(
   if (/workspace|required for (?:file changes|command execution)|temporary conversations cannot access project tools/iu.test(message)) {
     return classificationForCode("WORKSPACE_REQUIRED");
   }
-  if (/file (?:was |has )?(?:changed|created after)|no longer awaiting approval/iu.test(message)) {
+  if (/file (?:was |has )?(?:changed|created after)/iu.test(message)) {
     return classificationForCode("FILE_CHANGED");
   }
   if (/approval.+reject/iu.test(message)) return classificationForCode("APPROVAL_REJECTED");

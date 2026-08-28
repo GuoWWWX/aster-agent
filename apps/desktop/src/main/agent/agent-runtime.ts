@@ -180,6 +180,15 @@ class ModelToolCallValidationError extends Error {
   }
 }
 
+class ToolApprovalExpiredError extends Error {
+  public readonly code = "APPROVAL_EXPIRED";
+
+  public constructor() {
+    super("This tool approval is no longer pending.");
+    this.name = "ToolApprovalExpiredError";
+  }
+}
+
 function chunkToolCalls(
   toolCalls: readonly ModelToolCall[],
   chunkSize: number,
@@ -1811,7 +1820,7 @@ export class AgentRuntime {
     const input = approveToolChangeInputSchema.parse(rawInput);
     const pending = this.pendingChangeApprovals.get(input.toolId);
     if (pending === undefined || pending.runId !== input.runId) {
-      throw new Error("This file change is no longer awaiting approval.");
+      throw new ToolApprovalExpiredError();
     }
     this.appendShadowThreadLog(pending.conversationId, {
       payload: {
@@ -1839,7 +1848,7 @@ export class AgentRuntime {
     }
     const pending = this.pendingChangeApprovals.get(entry.value.toolId);
     if (pending === undefined || pending.runId !== entry.value.runId) {
-      throw new Error("This tool approval is no longer pending.");
+      throw new ToolApprovalExpiredError();
     }
     signal.throwIfAborted();
     try {
