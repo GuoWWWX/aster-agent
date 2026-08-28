@@ -5,6 +5,7 @@ import { interrupt, isGraphInterrupt } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { z } from "zod";
 import {
+  AGENT_AVATAR_ICONS,
   approveToolChangeInputSchema,
   agentPermissionRuleSchema,
   CONTEXT_MESSAGE_OVERHEAD_TOKENS,
@@ -21,6 +22,7 @@ import {
   type ContextCompressionConfiguration,
   type ContextCompressionThreshold,
   type AgentDirectoryConfiguration,
+  type AgentAvatarIcon,
   type AgentPermissionRule,
   type AgentPermissionTool,
   type ApplicationPermissionPolicies,
@@ -146,6 +148,14 @@ const MAX_SUMMARY_OUTPUT_TOKENS = 4_096;
 const MODEL_RETRY_INITIAL_DELAY_MS = 1_000;
 const MODEL_RETRY_MAX_DELAY_MS = 16_000;
 const DEFAULT_PERMISSION_MODE: ConversationPermissionMode = "ask_before_changes";
+
+function fallbackSubagentAvatarIcon(seed: string): AgentAvatarIcon {
+  let hash = 0;
+  for (const character of seed) {
+    hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
+  }
+  return AGENT_AVATAR_ICONS[Math.abs(hash) % AGENT_AVATAR_ICONS.length] ?? "bot";
+}
 
 class ToolCallLimitError extends Error {
   public readonly code = "TOOL_CALL_LIMIT_EXCEEDED";
@@ -856,11 +866,13 @@ export class AgentRuntime {
             messageIds,
           ),
           signal: context.signal,
-          spawn: (task, title, agentId, modelSelection) => this.spawnSubagent({
+          spawn: (task, name, icon, agentId, modelSelection) => this.spawnSubagent({
             agentId,
             configuration: context.configuration,
             contextCompressionConfiguration: context.contextCompressionConfiguration,
             emit: context.emit,
+            icon,
+            name,
             parentConversationId: context.conversationId,
             parentRunId: context.runId,
             permissionMode: context.permissionMode,
@@ -868,7 +880,6 @@ export class AgentRuntime {
             reasoning: context.reasoning,
             modelSelection,
             task,
-            title,
           }),
           toolName,
         }),
@@ -2285,6 +2296,7 @@ export class AgentRuntime {
       .join("\n\n")
       .slice(0, 20_000);
     return {
+      avatarIcon: agent.avatar.kind === "icon" ? agent.avatar.icon : null,
       id: agent.id,
       instructions,
       isDefault: agent.isDefault,
@@ -2315,6 +2327,8 @@ export class AgentRuntime {
     configuration: ModelConfiguration;
     contextCompressionConfiguration: ContextCompressionThreshold;
     emit: RunEventEmitter;
+    icon: AgentAvatarIcon | undefined;
+    name: string | undefined;
     parentConversationId: string;
     parentRunId: string;
     permissionMode: ConversationPermissionMode;
@@ -2322,7 +2336,6 @@ export class AgentRuntime {
     reasoning: ModelReasoningOption | undefined;
     modelSelection: ConversationModelSelection | undefined;
     task: string;
-    title: string | undefined;
   }): SubagentTask {
     const parent = this.database.getConversation(input.parentConversationId);
     if (parent.isArchived) throw new Error("An archived conversation cannot start a Subagent.");
@@ -2358,7 +2371,11 @@ export class AgentRuntime {
     this.projects.inheritConversationWorkspace(parent.id, child.id);
     const selectedAgent = this.resolveSubagentAgent(parent, input.agentId);
     if (selectedAgent !== null) this.database.bindConversationAgent(child.id, selectedAgent);
-    const title = input.title?.trim()
+    const avatarIcon = input.icon
+      ?? (input.agentId === undefined ? undefined : selectedAgent?.avatarIcon)
+      ?? fallbackSubagentAvatarIcon(child.id);
+    this.database.setConversationAvatarIcon(child.id, avatarIcon);
+    const title = input.name?.trim()
       || `${selectedAgent?.name ?? "Subagent"} · ${input.task.replace(/\s+/gu, " ").slice(0, 80)}`;
     const updatedChild = this.database.renameConversation(child.id, title);
     this.threadLogLegacyImporter?.importConversationIfMissing(child.id);

@@ -10,6 +10,7 @@ export type ProjectSession = {
   activeSubagentCount?: number;
   activeRunId: string | null;
   agentId: string | null;
+  avatarIcon?: ConversationSummary["avatarIcon"];
   hasFailedUnreadSideConversationResult?: boolean;
   hasUnreadResult: boolean;
   hasUnreadSideConversationResult?: boolean;
@@ -205,6 +206,7 @@ export function createProjectSession(
     activeSubagentCount: 0,
     activeRunId: null,
     agentId: null,
+    avatarIcon: null,
     hasUnreadResult: false,
     id,
     isArchived: false,

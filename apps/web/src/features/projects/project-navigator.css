@@ -458,6 +458,10 @@
   color: #64748b;
 }
 
+.project-navigator__session .agent-profile-avatar svg {
+  color: currentcolor;
+}
+
 .project-navigator__session[data-active="true"] > svg:not(
   .project-navigator__session-status
 ) {

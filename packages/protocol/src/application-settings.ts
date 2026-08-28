@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { agentAvatarSchema } from "./agent-avatar.js";
+import type { AgentAvatar, AgentAvatarIcon } from "./agent-avatar.js";
 import {
   conversationMessageDeliveryModeSchema,
   conversationPermissionModeSchema,
@@ -11,27 +13,6 @@ const configurationIdSchema = z
   .min(1)
   .max(80)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
-
-export const agentAvatarIconSchema = z.enum([
-  "bot",
-  "code",
-  "compass",
-  "hammer",
-  "shield",
-  "sparkles",
-]);
-
-export const agentAvatarSchema = z.discriminatedUnion("kind", [
-  z.object({
-    icon: agentAvatarIconSchema,
-    kind: z.literal("icon"),
-  }).strict(),
-  z.object({
-    dataUrl: z.string().max(3_000_000),
-    fileName: z.string().trim().min(1).max(300),
-    kind: z.literal("image"),
-  }).strict(),
-]);
 
 export const agentModelStrategySchema = z.enum(["auto", "fixed", "inherit"]);
 export const agentCapabilityScopeSchema = z.enum(["custom", "inherit_all"]);
@@ -206,8 +187,7 @@ export const applicationSettingsSchema = z.object({
   version: z.literal(1),
 }).strict();
 
-export type AgentAvatarIcon = z.infer<typeof agentAvatarIconSchema>;
-export type AgentAvatar = z.infer<typeof agentAvatarSchema>;
+export type { AgentAvatar, AgentAvatarIcon };
 export type AgentModelStrategy = z.infer<typeof agentModelStrategySchema>;
 export type AgentCapabilityScope = z.infer<typeof agentCapabilityScopeSchema>;
 export type AgentStatus = z.infer<typeof agentStatusSchema>;

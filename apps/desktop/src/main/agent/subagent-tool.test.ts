@@ -64,19 +64,27 @@ describe("SubagentTool", () => {
     });
 
     let selectedModelId: string | undefined;
+    let selectedName: string | undefined;
+    let selectedIcon: string | undefined;
+    const child = database.forkConversation(parent.id);
+    database.setConversationAvatarIcon(child.id, "bug");
     const spawnResult = await tool.execute({
       arguments: JSON.stringify({
+        icon: "bug",
         modelId: "recent-model",
+        name: "缺陷侦探",
         providerId,
         reasoning: { kind: "effort", value: "high" },
         task: "检查实现",
       }),
       conversationId: parent.id,
       signal: new AbortController().signal,
-      spawn: (_task, _title, _agentId, selection) => {
+      spawn: (_task, name, icon, _agentId, selection) => {
         selectedModelId = selection?.modelId;
+        selectedName = name;
+        selectedIcon = icon;
         return {
-          childConversationId: crypto.randomUUID(),
+          childConversationId: child.id,
           completedAt: null,
           createdAt: "2026-08-27T00:00:00.000Z",
           error: null,
@@ -88,7 +96,7 @@ describe("SubagentTool", () => {
           status: "queued",
           targetRunId: null,
           task: "检查实现",
-          title: "检查实现",
+          title: name ?? "检查实现",
           updatedAt: "2026-08-27T00:00:00.000Z",
         };
       },
@@ -96,6 +104,11 @@ describe("SubagentTool", () => {
     });
     expect(spawnResult.isError).toBe(false);
     expect(selectedModelId).toBe("recent-model");
+    expect(selectedName).toBe("缺陷侦探");
+    expect(selectedIcon).toBe("bug");
+    expect(JSON.parse(spawnResult.content)).toMatchObject({
+      value: { task: { avatarIcon: "bug", name: "缺陷侦探" } },
+    });
     database.close();
   });
 

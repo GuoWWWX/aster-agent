@@ -100,6 +100,14 @@ describe("model tool definitions", () => {
     expect(property(definitions, "spawn_subagent", "task")).toMatchObject({
       maxLength: 20_000,
     });
+    expect(property(definitions, "spawn_subagent", "name")).toMatchObject({
+      maxLength: 80,
+    });
+    const avatarIcons = property(definitions, "spawn_subagent", "icon").enum;
+    if (!Array.isArray(avatarIcons) || !avatarIcons.every((value) => typeof value === "string")) {
+      throw new Error("Missing spawn_subagent.icon enum.");
+    }
+    expect(avatarIcons).toEqual(expect.arrayContaining(["bot", "brain", "bug", "rocket"]));
     expect(property(definitions, "run_command", "command")).toMatchObject({
       maxLength: 4_000,
     });

@@ -55,6 +55,7 @@ import {
   type ProjectSession,
 } from "./project-session-model.js";
 import type { ProjectTreeController } from "./use-project-tree.js";
+import { AgentAvatar } from "../team/agent-avatar.js";
 import "./project-navigator.css";
 
 type ProjectNavigatorProps = {
@@ -1353,7 +1354,15 @@ function SubagentSessionButton({
       type="button"
       onClick={() => onSelect(session.id)}
     >
-      <Bot aria-hidden="true" size={14} />
+      {session.avatarIcon === null || session.avatarIcon === undefined ? (
+        <Bot aria-hidden="true" size={14} />
+      ) : (
+        <AgentAvatar
+          avatar={{ icon: session.avatarIcon, kind: "icon" }}
+          size="compact"
+          status={isSessionRunning(session) ? "running" : "standby"}
+        />
+      )}
       <span className="project-navigator__session-title">{session.title}</span>
       <SessionStatusIndicator session={session} />
     </button>

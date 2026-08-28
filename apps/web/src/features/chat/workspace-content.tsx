@@ -58,6 +58,7 @@ import {
 import { createPortal } from "react-dom";
 
 import type {
+  AgentAvatarIcon,
   ContextCompressionConfiguration,
   ApproveToolChangeInput,
   ConversationAttachment,
@@ -79,6 +80,7 @@ import type {
   ProjectSummary,
 } from "@agent/protocol";
 import {
+  agentAvatarIconSchema,
   DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
   isReasoningOptionEnabled,
   modelReasoningOptionKey,
@@ -4749,7 +4751,12 @@ function SubagentToolResult({
       <ul className="tool-search-results">
         {result.tasks.map((task) => (
           <li key={task.id}>
-            <span className="tool-search-results__path">{task.title}</span>
+            <span className="tool-subagent-result__identity">
+              {task.avatarIcon === null ? null : (
+                <AgentAvatar avatar={{ icon: task.avatarIcon, kind: "icon" }} size="compact" />
+              )}
+              <span className="tool-search-results__path">{task.name}</span>
+            </span>
             <span className="tool-search-results__excerpt">
               {subagentTaskStatusLabel(task.status)} · {task.childConversationId}
             </span>
@@ -5368,9 +5375,11 @@ function parseAgentMessageToolResult(payload: string): {
 }
 
 type SubagentToolTaskPayload = {
+  avatarIcon: AgentAvatarIcon | null;
   childConversationId: string;
   error: string | null;
   id: string;
+  name: string;
   result: string | null;
   status: string;
   title: string;
@@ -5391,16 +5400,22 @@ function parseSubagentToolResult(payload: string): {
   const tasks = rawTasks.map((rawTask) => {
     if (rawTask === null || typeof rawTask !== "object") return null;
     const task = rawTask as Record<string, unknown>;
+    const avatarIcon = task.avatarIcon === null || task.avatarIcon === undefined
+      ? null
+      : agentAvatarIconSchema.safeParse(task.avatarIcon);
     return typeof task.childConversationId === "string"
       && typeof task.id === "string"
       && typeof task.status === "string"
       && typeof task.title === "string"
+      && (avatarIcon === null || avatarIcon.success)
       && (task.result === null || typeof task.result === "string")
       && (task.error === null || typeof task.error === "string")
       ? {
+        avatarIcon: avatarIcon === null ? null : avatarIcon.data,
         childConversationId: task.childConversationId,
         error: task.error,
         id: task.id,
+        name: typeof task.name === "string" ? task.name : task.title,
         result: task.result,
         status: task.status,
         title: task.title,
@@ -5779,6 +5794,7 @@ const CONVERSATION_AGENT_STORAGE_PREFIX = "agent-workbench.conversation-agent.";
 
 function toConversationAgentBinding(agent: AgentProfile) {
   return {
+    avatarIcon: agent.avatar.kind === "icon" ? agent.avatar.icon : null,
     id: agent.id,
     instructions: agent.instructions,
     isDefault: agent.isDefault,

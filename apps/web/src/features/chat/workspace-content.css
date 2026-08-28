@@ -1028,6 +1028,17 @@ button.tool-file-change__path:focus-visible {
   font-weight: 600;
 }
 
+.tool-subagent-result__identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.tool-subagent-result__identity .tool-search-results__path {
+  min-width: 0;
+}
+
 .tool-search-results__excerpt {
   overflow-wrap: anywhere;
   color: var(--app-muted-foreground);
