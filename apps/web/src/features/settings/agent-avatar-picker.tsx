@@ -3,9 +3,10 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  FolderOpen,
   Search,
 } from "lucide-react";
-import { useState, type ReactElement } from "react";
+import { useRef, useState, type ChangeEvent, type ReactElement } from "react";
 
 import { IconButton } from "../../components/ui/icon-button.js";
 import {
@@ -50,15 +51,20 @@ export function paginateAgentAvatarIconOptions(
 export function AgentAvatarPicker({
   avatar,
   onIconChange,
+  onFileChange,
   status,
+  uploadError,
 }: {
   avatar: AgentAvatarValue;
   onIconChange: (icon: AgentAvatarIcon) => void;
+  onFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   status?: AgentStatus;
+  uploadError: string | null;
 }): ReactElement {
   const [isOpen, setIsOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const filteredOptions = filterAgentAvatarIconOptions(query);
   const pageData = paginateAgentAvatarIconOptions(filteredOptions, page);
   const selectedIcon = avatar.kind === "icon" ? avatar.icon : null;
@@ -107,20 +113,42 @@ export function AgentAvatarPicker({
         sideOffset={5}
       >
         <div className="border-b border-[var(--app-border)] p-2">
-          <label className="app-search-field flex h-8 items-center gap-1.5">
-            <Search aria-hidden="true" className="shrink-0 text-[var(--app-muted-foreground)]" size={14} />
+          <div className="flex min-w-0 items-center gap-[5px]">
+            <label className="app-search-field flex h-8 min-w-0 flex-1 items-center gap-1.5">
+              <Search aria-hidden="true" className="shrink-0 text-[var(--app-muted-foreground)]" size={14} />
+              <input
+                aria-label="搜索 Agent 图标"
+                autoFocus
+                className="min-w-0 flex-1 bg-transparent text-[length:var(--app-font-size-control)] outline-none placeholder:text-[var(--app-muted-foreground)]"
+                placeholder="搜索名称或 ID"
+                value={query}
+                onChange={(event) => {
+                  setPage(1);
+                  setQuery(event.target.value);
+                }}
+              />
+            </label>
             <input
-              aria-label="搜索 Agent 图标"
-              autoFocus
-              className="min-w-0 flex-1 bg-transparent text-[length:var(--app-font-size-control)] outline-none placeholder:text-[var(--app-muted-foreground)]"
-              placeholder="搜索名称或 ID"
-              value={query}
-              onChange={(event) => {
-                setPage(1);
-                setQuery(event.target.value);
-              }}
+              ref={fileInputRef}
+              accept="image/svg+xml,image/png,image/jpeg,image/webp,.svg,.png,.jpg,.jpeg,.webp"
+              className="sr-only"
+              type="file"
+              onChange={onFileChange}
             />
-          </label>
+            <IconButton
+              label="选择 SVG 或图片"
+              size="compact"
+              variant="quiet"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <FolderOpen aria-hidden="true" size={15} />
+            </IconButton>
+          </div>
+          {uploadError === null ? null : (
+            <p className="m-0 mt-[5px] text-[length:var(--app-font-size-auxiliary)] text-[var(--app-destructive)]" role="alert">
+              {uploadError}
+            </p>
+          )}
         </div>
 
         <div className="flex min-h-8 items-center justify-between px-2.5 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">

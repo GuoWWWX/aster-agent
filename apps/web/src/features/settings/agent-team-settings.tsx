@@ -6,7 +6,6 @@ import {
   ChevronRight,
   CirclePlus,
   Eye,
-  ImagePlus,
   Layers3,
   Plus,
   RotateCcw,
@@ -720,22 +719,15 @@ function AvatarEditor({
       <AgentAvatarPicker
         avatar={agent.avatar}
         status={agent.status}
+        uploadError={error}
         onIconChange={(icon) => {
           setError(null);
           onUpdate({ avatar: { icon, kind: "icon" } });
         }}
+        onFileChange={handleFileChange}
       />
-      <div className="agent-avatar-actions">
-        <label className="agent-avatar-upload">
-          <ImagePlus aria-hidden="true" size={14} />
-          选择 SVG 或图片
-          <input
-            accept="image/svg+xml,image/png,image/jpeg,image/webp,.svg,.png,.jpg,.jpeg,.webp"
-            type="file"
-            onChange={handleFileChange}
-          />
-        </label>
-        {agent.avatar.kind === "image" ? (
+      {agent.avatar.kind === "image" ? (
+        <div className="agent-avatar-actions">
           <button
             className="agent-avatar-reset"
             type="button"
@@ -744,9 +736,8 @@ function AvatarEditor({
             <RotateCcw aria-hidden="true" size={13} />
             恢复图标
           </button>
-        ) : null}
-      </div>
-      {error === null ? null : <p className="agent-avatar-error" role="alert">{error}</p>}
+        </div>
+      ) : null}
     </section>
   );
 }

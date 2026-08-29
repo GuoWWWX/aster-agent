@@ -817,7 +817,6 @@
   margin-bottom: 9px;
 }
 
-.agent-avatar-upload:focus-within,
 .agent-avatar-reset:focus-visible {
   outline: 2px solid var(--app-focus-ring);
   outline-offset: -2px;
@@ -831,7 +830,6 @@
   margin-top: 9px;
 }
 
-.agent-avatar-upload,
 .agent-avatar-reset {
   display: inline-flex;
   min-height: 28px;
@@ -847,7 +845,6 @@
   font-weight: 600;
 }
 
-.agent-avatar-upload:hover,
 .agent-avatar-reset:hover {
   border-color: #93c5fd;
   color: var(--app-foreground);
