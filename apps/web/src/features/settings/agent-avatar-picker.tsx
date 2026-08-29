@@ -113,7 +113,7 @@ export function AgentAvatarPicker({
         sideOffset={5}
       >
         <div className="border-b border-[var(--app-border)] p-2">
-          <div className="flex min-w-0 items-center">
+          <div className="flex w-full min-w-0 items-center">
             <label className="app-search-field flex h-8 min-w-0 flex-1 items-center gap-1.5">
               <Search aria-hidden="true" className="shrink-0 text-[var(--app-muted-foreground)]" size={14} />
               <input
@@ -135,15 +135,17 @@ export function AgentAvatarPicker({
               type="file"
               onChange={onFileChange}
             />
-            <span aria-hidden="true" className="mx-[5px] h-5 w-px shrink-0 bg-[var(--app-border)]" />
-            <IconButton
-              label="选择 SVG 或图片"
-              size="compact"
-              variant="quiet"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <FolderOpen aria-hidden="true" size={15} />
-            </IconButton>
+            <div className="ml-[5px] flex shrink-0 items-center gap-[5px]">
+              <span aria-hidden="true" className="h-5 w-px bg-[var(--app-border)]" />
+              <IconButton
+                label="选择 SVG 或图片"
+                size="compact"
+                variant="quiet"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <FolderOpen aria-hidden="true" size={15} />
+              </IconButton>
+            </div>
           </div>
           {uploadError === null ? null : (
             <p className="m-0 mt-[5px] text-[length:var(--app-font-size-auxiliary)] text-[var(--app-destructive)]" role="alert">
