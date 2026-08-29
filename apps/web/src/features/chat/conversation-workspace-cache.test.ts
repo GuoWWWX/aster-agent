@@ -46,10 +46,10 @@ describe("conversation workspace cache", () => {
     expect(sessions.map((item) => item.id)).toEqual(["available"]);
   });
 
-  it("does not render an active conversation that is no longer available", () => {
+  it("keeps the active conversation visible while the available-session snapshot catches up", () => {
     const sessions = conversationWorkspaceSessions([], session("deleted"), new Set());
 
-    expect(sessions).toEqual([]);
+    expect(sessions.map((item) => item.id)).toEqual(["deleted"]);
   });
 
   it("keeps a revisited conversation instance at the front with current metadata", () => {

@@ -23,6 +23,7 @@ import {
   PinOff,
   Plus,
   Search,
+  Scale,
   SquarePen,
   Trash2,
   X,
@@ -341,7 +342,9 @@ export function ProjectNavigator({
 
     const targetKey = `${locateRequest.kind}:${locateRequest.id}`;
     let secondFrame = 0;
-    const firstFrame = window.requestAnimationFrame(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
       if (locatedSession?.isPinned === true) {
         setIsPinnedGroupExpanded(true);
       } else if (locatedSession?.projectId === null) {
@@ -360,7 +363,13 @@ export function ProjectNavigator({
         setExpandedSessionIds((current) =>
           new Set(current).add(locatedParentId),
         );
+      } else if (locatedSession?.threadKind === "team_lead") {
+        setExpandedSessionIds((current) =>
+          new Set(current).add(locatedSession.id),
+        );
       }
+    });
+    const firstFrame = window.requestAnimationFrame(() => {
       secondFrame = window.requestAnimationFrame(() => {
         const target = Array.from(
           bodyRef.current?.querySelectorAll<HTMLElement>("[data-navigator-key]") ?? [],
@@ -370,6 +379,7 @@ export function ProjectNavigator({
     });
 
     return () => {
+      cancelled = true;
       window.cancelAnimationFrame(firstFrame);
       window.cancelAnimationFrame(secondFrame);
     };
@@ -1292,9 +1302,9 @@ function SessionTreeItem({
         {subagents.length > 0 ? (
           <button
             aria-expanded={subagentsExpanded}
-            aria-label={`${subagentsExpanded ? "收起" : "展开"} ${buttonProps.session.title} 的 Subagent`}
+            aria-label={`${subagentsExpanded ? "收起" : "展开"} ${buttonProps.session.title} 的协作成员`}
             className="project-navigator__session-toggle"
-            title={`${subagents.length} 个 Subagent${runningSubagentCount > 0 ? `，${runningSubagentCount} 个正在运行` : ""}`}
+            title={`${subagents.length} 个协作成员${runningSubagentCount > 0 ? `，${runningSubagentCount} 个正在运行` : ""}`}
             type="button"
             onClick={onToggleSubagents}
           >
@@ -1314,7 +1324,7 @@ function SessionTreeItem({
         />
       </div>
       {subagentsExpanded && subagents.length > 0 ? (
-        <div className="project-navigator__subagents" role="group" aria-label="Subagent 对话">
+        <div className="project-navigator__subagents" role="group" aria-label="协作成员对话">
           {subagents.map((subagent) => (
             <SubagentSessionButton
               active={subagent.id === activeSessionId}
@@ -1354,7 +1364,9 @@ function SubagentSessionButton({
       type="button"
       onClick={() => onSelect(session.id)}
     >
-      {session.avatarIcon === null || session.avatarIcon === undefined ? (
+      {session.threadKind === "team_lead" ? (
+        <Scale aria-label="Team Lead 对话" size={14} />
+      ) : session.avatarIcon === null || session.avatarIcon === undefined ? (
         <Bot aria-hidden="true" size={14} />
       ) : (
         <AgentAvatar
@@ -1392,6 +1404,8 @@ function SessionButton({
   subagentCount: number;
 }): ReactElement {
   const isRunning = isSessionRunning(session);
+  const isManagedTeamWorkItemConversation = session.teamWorkItemId !== null
+    && session.teamWorkItemId !== undefined;
   const statusLabel = sessionStatusLabel(session);
 
   return (
@@ -1418,13 +1432,17 @@ function SessionButton({
         onClick={() => onSelect(session.id)}
         onContextMenu={onContextMenu}
       >
-        <MessageSquareText aria-hidden="true" size={14} />
+        {session.threadKind === "team_lead" ? (
+          <Scale aria-label="Team Lead 对话" size={14} />
+        ) : (
+          <MessageSquareText aria-hidden="true" size={14} />
+        )}
         <span className="project-navigator__session-title">{session.title}</span>
         {subagentCount > 0 ? (
           <span
             className="project-navigator__subagent-count"
             data-running={runningSubagentCount > 0}
-            title={`${subagentCount} 个 Subagent`}
+            title={`${subagentCount} 个协作成员`}
           >
             <Bot aria-hidden="true" size={11} />
             {subagentCount}
@@ -1447,8 +1465,10 @@ function SessionButton({
         </button>
         <button
           aria-label={`${archived ? "取消归档" : "归档"} ${session.title}`}
-          disabled={isRunning}
-          title={isRunning ? "运行中的对话不能归档" : archived ? "取消归档" : "归档"}
+          disabled={isRunning || (isManagedTeamWorkItemConversation && !archived)}
+          title={isManagedTeamWorkItemConversation && !archived
+            ? "团队执行对话由 WorkItem 生命周期保留"
+            : isRunning ? "运行中的对话不能归档" : archived ? "取消归档" : "归档"}
           type="button"
           onClick={() => onArchive(!archived)}
         >
@@ -1488,6 +1508,10 @@ function NavigatorContextMenuView({
   const sessionIsRunning = target.kind === "session" && (
     isSessionRunning(target.session)
   );
+  const sessionIsManagedTeamWorkItem = target.kind === "session"
+    && target.session.teamWorkItemId !== null
+    && target.session.teamWorkItemId !== undefined
+    && !target.session.isArchived;
 
   return (
     <>
@@ -1520,9 +1544,11 @@ function NavigatorContextMenuView({
               {target.session.isPinned ? "取消置顶" : "置顶"}
             </button>
             <button
-              disabled={sessionIsRunning}
+              disabled={sessionIsRunning || sessionIsManagedTeamWorkItem}
               role="menuitem"
-              title={sessionIsRunning ? "运行中的对话不能归档" : undefined}
+              title={sessionIsManagedTeamWorkItem
+                ? "团队执行对话由 WorkItem 生命周期保留"
+                : sessionIsRunning ? "运行中的对话不能归档" : undefined}
               type="button"
               onClick={() =>
                 onSetArchived(target.session, !target.session.isArchived)
@@ -1538,9 +1564,11 @@ function NavigatorContextMenuView({
             <div className="project-navigator__context-menu-separator" role="separator" />
             <button
               className="project-navigator__context-menu-danger"
-              disabled={sessionIsRunning}
+              disabled={sessionIsRunning || sessionIsManagedTeamWorkItem}
               role="menuitem"
-              title={sessionIsRunning ? "运行中的对话不能删除" : undefined}
+              title={sessionIsManagedTeamWorkItem
+                ? "团队执行对话由 WorkItem 生命周期保留"
+                : sessionIsRunning ? "运行中的对话不能删除" : undefined}
               type="button"
               onClick={() => onDeleteSession(target.session)}
             >

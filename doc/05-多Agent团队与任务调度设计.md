@@ -59,7 +59,7 @@ Claude Code 官方文档指出，多 Agent 的 Token 成本随活跃成员增长
 
 ```text
 AI Team（长期存在）
-├─ Team Lead（唯一负责人，长期会话）
+├─ Team Lead（唯一负责人；同一来源主对话与 Team 复用一个持久执行对话）
 ├─ Team Inbox（持续接收用户任务）
 ├─ Project Registry（团队可服务的项目）
 ├─ Agent Profiles（可复用能力定义）
@@ -67,13 +67,13 @@ AI Team（长期存在）
 └─ Work Items
    └─ Tasks / Task DAG
       ├─ Direct execution
-      ├─ Ephemeral Subagent
-      └─ Coordinated Workers
+      ├─ Ephemeral Subagent（仅普通 Agent 的一次性支线）
+      └─ Coordinated Workers（持久 Agent 对话与消息协作）
 ```
 
 ### 3.1 Team Lead
 
-团队只有一个主负责人。它长期存在并保存团队级对话、用户偏好、当前优先级和任务总览。它可以执行简单任务，但在有 Worker 运行时主要负责：
+团队只有一个主负责人身份。它保存团队级配置、用户偏好、当前优先级和任务总览；同一来源主对话调用同一 Team 时复用一个 Team Lead 根执行对话及其成员对话。WorkItem 仍是独立的调度、审计和验收单元，并在该根对话上串行执行，避免两个工作项混淆当前运行策略。它可以执行简单任务，但在有 Worker 运行时主要负责：
 
 - 任务澄清和项目绑定。
 - 拆分任务并定义验收标准。
@@ -125,7 +125,7 @@ AI Team（长期存在）
 
 ### 3.6 Agent 逻辑对话与模型
 
-每个 Team Lead、常驻 Agent 和临时 Subagent 都有独立的逻辑对话 Thread。它是 SQLite 中的对话与事件归属，不是独占的 OS 线程、Node `worker_threads` 或进程。用户可以从团队面板打开任何 Agent 的对话，查看来源任务、实际模型、消息、工具、审批、Artifact 和结果。临时 Agent 完成后 Thread 仍可查看；用户继续对话时创建新 Run，不修改历史 Run。
+每个 Team Lead、持久团队成员和临时 Subagent 都有独立的逻辑对话 Thread。它是 SQLite 中的对话与事件归属，不是独占的 OS 线程、Node `worker_threads` 或进程。每个来源主对话与 Team 的组合建立一个 `team_lead` 根 Thread，并建立该 Team 配置成员的持久 `agent` Thread；后续 WorkItem 复用这些 Thread。Team Lead 通过 `send_agent_message` 与 `wait_for_agent_message` 分派、等待和汇总，成员消息与任务分派记录共同构成可审计事实；团队内禁止把成员创建为 `subagent_tasks`。团队面板只读取这些持久关系和消息分派，不嵌入或复制成员 Timeline。用户从团队面板点击成员时，主对话保持可用，成员消息、工具、审批、Artifact 和结果在右侧侧边 Tab 查看；该 Tab 与普通对话保留相同的输入、排队、停止、任务清单关闭、模型/思考、权限和审批入口。运行中的输入只可作为同一 Run 的 `steer`，不能更换 Agent 或开启一个独立 Run；用户修改模型、思考或权限时，以原子方式更新 WorkItem 的后续 Run 策略及当前 Conversation 的展示选择，而当前 Run 的模型/权限快照和已经出现的审批不追溯变化。没有运行的成员要继续工作时使用 WorkItem 的返工/验收流程。左侧导航则把同一执行谱系显示为来源主对话下的协作层级。临时 Subagent 完成后 Thread 仍可查看；用户继续对话时创建新 Run，不修改历史 Run。〔FACT｜`apps/desktop/src/main/teams/team-work-item-runtime.ts`；`apps/desktop/src/main/agent/agent-runtime.ts`；`apps/web/src/features/workspace/right-sidebar-workspace.tsx`〕
 
 空闲 Agent 不占用模型连接、执行线程或子进程。任务到来时才创建 Run，由共享异步调度器和受限 Worker/进程池执行；Agent 数量因此不直接受 CPU 线程数限制，活动 Run 数量则受内存、供应商限流、工具进程和用户预算共同约束。
 
@@ -178,7 +178,7 @@ Team Lead 或单个执行 Agent 可以根据任务复杂度主动把一个 `Work
 
 ## 5. 持续任务收件箱
 
-用户可以在团队执行旧任务时继续投递新想法。每次投递先形成 `WorkItem`，不会直接打断正在运行的 Agent。
+用户在项目普通对话中以 `@团队` 指明目标团队后，当前模型可调用 `submit_team_work_item` 交办需求；没有选择团队的直投控件。每次投递先形成独立 `WorkItem`，持久化来源 Conversation ID、项目、模型快照和权限模式，不会直接打断正在运行的 Agent；开始执行后，它才建立自己的 Team Lead 执行对话和其下的成员对话树。团队看板只展示和编辑已入箱 WorkItem，不提供第二个需求发送入口。
 
 ```text
 inbox
@@ -192,8 +192,10 @@ inbox
 规则：
 
 - 用户可标记优先级、截止时间和目标项目。
+- 用户可在 Team Lead 领取前编辑 `queued` WorkItem 的标题和需求；保存必须与状态检查原子进行并追加审计事件，领取后只能通过返工/验收流程继续。
 - 未指定项目时，负责人只能依据明确线索推荐项目；存在歧义必须询问。
 - 新任务默认进入队列，不抢占已运行任务；用户明确设为紧急时才触发重新排程。
+- 已启用团队在提交后立即自动分发：有可用容量时，为该 WorkItem 创建独立的 Team Lead 执行实例；容量已满时保持 `queued`，在任一执行实例完成后再按优先级和入队顺序分发。团队暂停时仍可接收并保留 WorkItem，但不创建 Run；恢复启用后重新触发队列调度。
 - 负责人接受任务后必须返回“已接收、绑定项目、当前状态、下一步”，不能静默排队。
 - 应用重启后，收件箱、队列、任务依赖和 Agent 状态必须恢复。
 
@@ -324,6 +326,7 @@ team_events
 - 正在执行的 Agent Instance 标记为 `interrupted`。
 - 无副作用的只读任务可以由用户或负责人选择重试。
 - 写入、命令和网页提交不得自动重放。
+- 已保留执行根的 Team WorkItem 以及任何未完整绑定任务关系的 `subagent` queued Run 都标记失败；对应 WorkItem 进入阻塞，必须由用户明确处理，不能因为它们在崩溃时仍是 `queued` 而恢复。
 - 常驻 Agent 恢复历史摘要和任务记录，但不假装原进程仍在运行。
 
 ## 11. UI 信息架构
@@ -333,9 +336,10 @@ team_events
 - **团队收件箱**：持续输入任务，显示已接收、待澄清和排队状态。
 - **任务板**：按项目和状态查看 WorkItem、Task、依赖和优先级。
 - **对话内任务列表**：AI 主动拆解后在相关消息处显示可折叠的实时列表、当前项、依赖和修订理由。
-- **团队面板**：Team Lead、常驻成员、临时 Agent、状态、负载和当前任务。
-- **Agent 对话**：打开任意成员的独立 Thread，显示模型来源、Run 分界、消息、工具、审批和 Artifact，并允许修改后续模型。
-- **任务详情**：分解依据、分配理由、Agent 消息、Artifact、Diff 和验证结果。
+- **团队面板**：按选中 WorkItem 显示需求、阶段、Task、验收/返工动作、团队状态和真实成员状态，而不是把团队配置成员伪装成正在工作。它不嵌入成员聊天或维护第二份对话缓存；执行成员的来源只能是 WorkItem 根执行 Conversation 与持久化 `subagent_tasks` 谱系，普通侧边对话不进入此视图。
+- **项目对话树**：每个开始执行的 WorkItem 显示为来源主对话下的 Team Lead 与成员协作层级；从团队面板或成员行点击 Team Lead 或成员时保持该来源主对话，并在右侧打开成员 Tab。原生对话页显示模型来源、Run 分界、消息、工具、审批和 Artifact。
+- **受管执行会话**：Team Lead 根及由持久化委派关系确认的成员 Conversation 由 WorkItem 生命周期保留，不能直接归档、删除、改项目或改 Agent。右侧 Tab 与普通对话一致，保留输入、队列、停止、模型/思考、权限、审批和任务清单关闭入口；模型/思考和权限选择器更新 WorkItem 的后续 Run 策略，模型/思考同时更新当前 Tab 的展示快照，但不能追溯改变当前 Run 或已经出现的审批。运行中输入被路由为当前 Run 的 `steer`，不生成脱离 WorkItem 的新 Run；Run 终止后遗留审批显示为已失效；普通侧边对话不受 WorkItem 生命周期限制。
+- **任务详情**：在团队面板中显示分解依据、分配理由、状态、Artifact、Diff、验证结果和用户验收；完整 Agent 消息不在任务详情中重复展示。
 - **统一审批中心**：显示任务、项目、Agent、真实路径、命令和副作用，不让多 Agent 审批淹没主对话。
 
 简单任务仍在主对话中完成，不强迫用户进入任务板查看额外流程。

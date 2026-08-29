@@ -13,3 +13,4 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+.runtime-test/

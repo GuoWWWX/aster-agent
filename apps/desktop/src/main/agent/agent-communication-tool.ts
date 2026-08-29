@@ -140,6 +140,14 @@ export class AgentCommunicationTool {
         }
         case SEND_AGENT_MESSAGE_TOOL_NAME: {
           const parsed = sendMessageArgumentsSchema.parse(argumentsValue);
+          const teamExecutionConversationId = this.database
+            .getTeamExecutionConversationIdForParticipant(input.conversationId);
+          if (
+            teamExecutionConversationId !== null
+            && !this.database.areTeamExecutionParticipants(input.conversationId, parsed.conversationId)
+          ) {
+            throw new Error("A Team participant may send messages only to members of the same persistent Team.");
+          }
           const message = this.database.sendAgentMessage({
             content: parsed.content,
             messageType: parsed.expectReply ? "message" : "notification",

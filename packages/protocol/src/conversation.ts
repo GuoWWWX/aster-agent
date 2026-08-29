@@ -172,6 +172,7 @@ export const conversationSummarySchema = z
       "cancelled"
     ]).nullable().optional(),
     teamId: z.string().trim().min(1).max(200).nullable().default(null),
+    teamWorkItemId: z.string().uuid().nullable().default(null),
     threadKind: conversationThreadKindSchema.default("agent"),
     title: z.string().trim().min(1).max(MAX_TITLE_LENGTH),
     updatedAt: isoTimestampSchema,
@@ -240,6 +241,7 @@ export const createConversationInputSchema = z
   .object({
     agent: conversationAgentBindingSchema.optional(),
     modelSelection: conversationModelSelectionSchema.optional(),
+    parentConversationId: conversationIdSchema.optional(),
     projectId: projectIdSchema.nullable().optional(),
     teamId: z.string().trim().min(1).max(200).nullable().optional(),
     threadKind: z.enum(["agent", "team_lead"]).optional()
@@ -258,6 +260,13 @@ export const createConversationInputSchema = z
         code: "custom",
         message: "A team conversation must identify its Agent profile.",
         path: ["agent"]
+      });
+    }
+    if (value.parentConversationId !== undefined && value.threadKind !== "team_lead") {
+      context.addIssue({
+        code: "custom",
+        message: "Only Team Lead execution conversations may declare a parent conversation.",
+        path: ["parentConversationId"],
       });
     }
   });
@@ -353,7 +362,8 @@ export const conversationToolStatusSchema = z.enum([
   "awaiting_approval",
   "completed",
   "failed",
-  "rejected"
+  "rejected",
+  "cancelled"
 ]);
 
 /** Scheduler decision recorded for observability; omitted on legacy tool rows. */

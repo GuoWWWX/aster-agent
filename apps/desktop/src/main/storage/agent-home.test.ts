@@ -69,4 +69,22 @@ describe("Agent home", () => {
     expect(result.migratedEntries).toEqual([]);
     await expect(readFile(paths.modelCatalogPath, "utf8")).resolves.toBe("current");
   });
+
+  it("can initialize an explicitly isolated Agent home without copying legacy state", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-home-isolated-"));
+    temporaryDirectories.push(root);
+    const legacyRootPath = path.join(root, "legacy");
+    const configuredHomePath = path.join(root, "configured");
+    await mkdir(legacyRootPath, { recursive: true });
+    await writeFile(path.join(legacyRootPath, "model-credentials.json"), "legacy", "utf8");
+
+    const result = await initializeAgentHome({
+      environment: { AGENT_HOME: configuredHomePath },
+      legacyRootPath,
+      migrateLegacy: false,
+    });
+
+    expect(result.migratedEntries).toEqual([]);
+    await expect(readFile(result.paths.credentialsPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });

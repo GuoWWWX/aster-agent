@@ -2,7 +2,11 @@ import { app, BrowserWindow } from "electron";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-import { ARCHIVED_CONVERSATION_RETENTION_DAYS } from "@agent/protocol";
+import {
+  ARCHIVED_CONVERSATION_RETENTION_DAYS,
+  conversationRunEventSchema,
+  IPC_CHANNELS,
+} from "@agent/protocol";
 
 import { AgentRuntime } from "../agent/agent-runtime.js";
 import { SkillRuntime } from "../agent/skill-runtime.js";
@@ -31,6 +35,7 @@ import { ContextCompressionConfigurationStore } from "../settings/context-compre
 import { SkillDocumentStore } from "../settings/skill-document-store.js";
 import { ConfigurationWorkspaceStore } from "../settings/configuration-workspace-store.js";
 import { TerminalConfigurationStore } from "../settings/terminal-configuration-store.js";
+import { TeamWorkItemRuntime } from "../teams/team-work-item-runtime.js";
 import { ProjectToolRegistry } from "../tools/project-tool-registry.js";
 import { createMainWindow } from "../windows/main-window.js";
 
@@ -51,6 +56,7 @@ type DesktopServices = {
   skillDocuments: SkillDocumentStore;
   skillRuntime: SkillRuntime;
   terminalConfiguration: TerminalConfigurationStore;
+  teamWorkItems: TeamWorkItemRuntime;
   projectRegistry: ProjectRegistry;
   threadLogLegacyImporter: ThreadLogLegacyImporter;
   tools: ProjectToolRegistry;
@@ -121,7 +127,9 @@ function loadLocalEnvironment(): void {
 async function initializeServices(): Promise<DesktopServices> {
   loadLocalEnvironment();
   const agentHome = await initializeAgentHome({
+    environment: process.env,
     legacyRootPath: app.getPath("userData"),
+    migrateLegacy: process.env.AGENT_HOME_SKIP_LEGACY_MIGRATION !== "1",
   });
   const database = new AgentDatabase(agentHome.paths.agentDatabasePath);
   const pluginCatalog = new PluginCatalog(database, agentHome.paths.pluginsPath);
@@ -236,8 +244,7 @@ async function initializeServices(): Promise<DesktopServices> {
     );
   }
 
-  return {
-    agentRuntime: new AgentRuntime(
+  const agentRuntime = new AgentRuntime(
       database,
       credentials,
       projectRegistry,
@@ -258,7 +265,23 @@ async function initializeServices(): Promise<DesktopServices> {
        eventProjector,
        threadLogLegacyImporter,
        pluginCatalog,
-      ),
+      );
+  const teamWorkItems = new TeamWorkItemRuntime(
+    database,
+    conversationLifecycle,
+    agentRuntime,
+    credentials,
+    projectRegistry,
+    { getConfiguration: () => applicationSettings.getConfiguration().agentDirectory },
+  );
+  agentRuntime.setTeamWorkItemDispatcher(teamWorkItems);
+  applicationSettings.onChanged(() => {
+    teamWorkItems.resumeQueued(sendConversationRunEvent);
+  });
+  database.blockInterruptedTeamWorkItems();
+
+  return {
+    agentRuntime,
     applicationSettings,
     attachments,
     conversationDeletion,
@@ -276,6 +299,7 @@ async function initializeServices(): Promise<DesktopServices> {
     skillDocuments,
     skillRuntime,
     terminalConfiguration,
+    teamWorkItems,
     tools,
   };
 }
@@ -285,6 +309,15 @@ function getServices(): DesktopServices {
     throw new Error("Desktop services were not initialized.");
   }
   return services;
+}
+
+function sendConversationRunEvent(event: unknown): void {
+  const window = mainWindow;
+  if (window === undefined || window.isDestroyed()) return;
+  window.webContents.send(
+    IPC_CHANNELS.conversationRunEvent,
+    conversationRunEventSchema.parse(event),
+  );
 }
 
 async function openMainWindow(): Promise<void> {
@@ -330,6 +363,9 @@ async function openMainWindow(): Promise<void> {
   });
 
   window.once("ready-to-show", () => window.show());
+  window.webContents.once("did-finish-load", () => {
+    services?.teamWorkItems.resumeQueued(sendConversationRunEvent);
+  });
   await loadRenderer(window, rendererTarget);
 }
 

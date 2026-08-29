@@ -192,6 +192,7 @@ describe("protocol bootstrap contract", () => {
       activeSubagentCount: 0,
       archivedAt: null,
       hasUnreadResult: false,
+      teamWorkItemId: null,
       threadKind: "agent",
     });
     expect(
@@ -222,6 +223,12 @@ describe("protocol bootstrap contract", () => {
       teamId: "default-team",
       threadKind: "team_lead",
     })).toMatchObject({ agent, teamId: "default-team", threadKind: "team_lead" });
+    expect(createConversationInputSchema.parse({
+      agent,
+      parentConversationId: "00000000-0000-4000-8000-000000000009",
+      teamId: "default-team",
+      threadKind: "team_lead",
+    })).toMatchObject({ parentConversationId: "00000000-0000-4000-8000-000000000009" });
     expect(() => createConversationInputSchema.parse({
       agent: { ...agent, avatarIcon: "arbitrary-svg" },
     })).toThrow();
@@ -236,6 +243,10 @@ describe("protocol bootstrap contract", () => {
       teamId: "default-team",
       threadKind: "agent",
     })).toThrow("must identify its Agent profile");
+    expect(() => createConversationInputSchema.parse({
+      parentConversationId: "00000000-0000-4000-8000-000000000009",
+      threadKind: "agent",
+    })).toThrow("Only Team Lead execution conversations");
     expect(() => createConversationInputSchema.parse({
       threadKind: "subagent",
     })).toThrow();

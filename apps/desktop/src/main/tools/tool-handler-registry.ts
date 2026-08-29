@@ -5,6 +5,7 @@ import type { ToolExecutionPolicy } from "./tool-execution-policy.js";
 export type { ToolExecutionPolicy } from "./tool-execution-policy.js";
 
 export type ToolAvailabilityContext = {
+  conversationId?: string;
   projectId: string | undefined;
   toolName?: string;
 };
@@ -61,7 +62,11 @@ export class ToolHandlerRegistry<TContext extends ToolHandlerExecutionContext> {
 
   private findHandler(input: ToolHandlerInput<TContext>): ToolHandler<TContext> {
     const availableHandlers = this.handlers.filter((handler) =>
-      handler.isAvailable({ projectId: input.context.projectId, toolName: input.toolName }),
+      handler.isAvailable({
+        conversationId: input.context.conversationId,
+        projectId: input.context.projectId,
+        toolName: input.toolName,
+      }),
     );
     const matches = availableHandlers.filter((handler) =>
       handler.getDefinitions().some((definition) => definition.name === input.toolName),

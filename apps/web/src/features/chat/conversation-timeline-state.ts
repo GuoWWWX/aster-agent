@@ -4,6 +4,15 @@ import type {
   ConversationTimelineItem,
 } from "@agent/protocol";
 
+export function shouldApplyTimelineLoad(
+  requestId: number,
+  latestRequestId: number,
+  requestRevision: number,
+  latestRevision: number,
+): boolean {
+  return requestId === latestRequestId && requestRevision === latestRevision;
+}
+
 export function completeStreamingAssistantMessages(
   timeline: ConversationTimelineItem[],
   exceptMessageId?: string,

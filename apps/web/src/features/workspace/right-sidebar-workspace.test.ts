@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { ConversationSummary, ModelReasoningOption } from "@agent/protocol";
 
-import { upsertSideSession } from "./right-sidebar-workspace.js";
+import {
+  shouldDeleteSidebarChat,
+  upsertSideSession,
+} from "./right-sidebar-workspace.js";
 
 const PROVIDER_ID = "00000000-0000-4000-8000-000000000001";
 const PARENT_ID = "00000000-0000-4000-8000-000000000002";
@@ -33,6 +36,7 @@ function sideConversation(
     pinOrder: null,
     projectId: null,
     teamId: null,
+    teamWorkItemId: null,
     threadKind: "agent",
     title: "侧边聊天",
     updatedAt: now,
@@ -41,6 +45,23 @@ function sideConversation(
 }
 
 describe("right sidebar side session state", () => {
+  it("only hides a managed team member when its side tab closes", () => {
+    const managedMember = {
+      ...sideConversation("00000000-0000-4000-8000-000000000005", "model-a", {
+        kind: "effort",
+        value: "medium",
+      }),
+      teamWorkItemId: "00000000-0000-4000-8000-000000000006",
+      threadKind: "subagent" as const,
+    };
+
+    expect(shouldDeleteSidebarChat(managedMember)).toBe(false);
+    expect(shouldDeleteSidebarChat(sideConversation("00000000-0000-4000-8000-000000000007", "model-a", {
+      kind: "effort",
+      value: "medium",
+    }))).toBe(true);
+  });
+
   it("keeps each side conversation model selection after another session changes", () => {
     const firstId = "00000000-0000-4000-8000-000000000003";
     const secondId = "00000000-0000-4000-8000-000000000004";

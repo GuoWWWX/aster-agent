@@ -78,6 +78,17 @@ import type {
   SkillDocumentReferenceInput,
   SkillDocumentSaveInput,
 } from "./skill-document.js";
+import type {
+  GetTeamWorkItemExecutionInput,
+  ListTeamWorkItemsInput,
+  RequestTeamWorkItemReworkInput,
+  SubmitTeamWorkItemInput,
+  UpdateTeamWorkItemInput,
+  UpdateTeamWorkItemPermissionInput,
+  AcceptTeamWorkItemInput,
+  TeamWorkItemExecutionView,
+  TeamWorkItemView,
+} from "./team-work-item.js";
 
 /**
  * The complete renderer-facing desktop surface for the initial application
@@ -112,6 +123,17 @@ export interface DesktopBridge {
   removeConversationAttachment(input: RemoveConversationAttachmentInput): Promise<void>;
   setTeamCoordinator(input: SetTeamCoordinatorInput): Promise<void>;
   sendTeamMessage(input: SendTeamMessageInput): Promise<ConversationMessageSubmission>;
+  listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]>;
+  getTeamWorkItemExecution(
+    input: GetTeamWorkItemExecutionInput,
+  ): Promise<TeamWorkItemExecutionView>;
+  submitTeamWorkItem(input: SubmitTeamWorkItemInput): Promise<TeamWorkItemView>;
+  updateTeamWorkItem(input: UpdateTeamWorkItemInput): Promise<TeamWorkItemView>;
+  updateTeamWorkItemPermission(
+    input: UpdateTeamWorkItemPermissionInput,
+  ): Promise<TeamWorkItemView>;
+  requestTeamWorkItemRework(input: RequestTeamWorkItemReworkInput): Promise<TeamWorkItemView>;
+  acceptTeamWorkItem(input: AcceptTeamWorkItemInput): Promise<TeamWorkItemView>;
   listPlugins(): Promise<PluginCatalogEntry[]>;
   setPluginEnabled(input: SetPluginEnabledInput): Promise<PluginCatalogEntry>;
   getConversationTaskList(

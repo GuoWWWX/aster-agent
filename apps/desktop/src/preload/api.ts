@@ -45,6 +45,13 @@ import type {
   SetTeamCoordinatorInput,
   SendConversationMessageInput,
   SendTeamMessageInput,
+  GetTeamWorkItemExecutionInput,
+  ListTeamWorkItemsInput,
+  RequestTeamWorkItemReworkInput,
+  SubmitTeamWorkItemInput,
+  UpdateTeamWorkItemInput,
+  UpdateTeamWorkItemPermissionInput,
+  AcceptTeamWorkItemInput,
   PluginCatalogEntry,
   SetPluginEnabledInput,
   UpdatePendingConversationMessageInput,
@@ -164,6 +171,36 @@ export function createDesktopBridge(): DesktopBridge {
     },
     sendTeamMessage(input: SendTeamMessageInput) {
       return invoke<BridgeResult<"sendTeamMessage">>(IPC_CHANNELS.teamSendMessage, input);
+    },
+    listTeamWorkItems(input: ListTeamWorkItemsInput) {
+      return invoke<BridgeResult<"listTeamWorkItems">>(IPC_CHANNELS.teamWorkItemList, input);
+    },
+    getTeamWorkItemExecution(input: GetTeamWorkItemExecutionInput) {
+      return invoke<BridgeResult<"getTeamWorkItemExecution">>(
+        IPC_CHANNELS.teamWorkItemGetExecution,
+        input,
+      );
+    },
+    submitTeamWorkItem(input: SubmitTeamWorkItemInput) {
+      return invoke<BridgeResult<"submitTeamWorkItem">>(IPC_CHANNELS.teamWorkItemSubmit, input);
+    },
+    updateTeamWorkItem(input: UpdateTeamWorkItemInput) {
+      return invoke<BridgeResult<"updateTeamWorkItem">>(IPC_CHANNELS.teamWorkItemUpdate, input);
+    },
+    updateTeamWorkItemPermission(input: UpdateTeamWorkItemPermissionInput) {
+      return invoke<BridgeResult<"updateTeamWorkItemPermission">>(
+        IPC_CHANNELS.teamWorkItemUpdatePermission,
+        input,
+      );
+    },
+    requestTeamWorkItemRework(input: RequestTeamWorkItemReworkInput) {
+      return invoke<BridgeResult<"requestTeamWorkItemRework">>(
+        IPC_CHANNELS.teamWorkItemRequestRework,
+        input,
+      );
+    },
+    acceptTeamWorkItem(input: AcceptTeamWorkItemInput) {
+      return invoke<BridgeResult<"acceptTeamWorkItem">>(IPC_CHANNELS.teamWorkItemAccept, input);
     },
     listPlugins() {
       return invoke<PluginCatalogEntry[]>(IPC_CHANNELS.pluginList);

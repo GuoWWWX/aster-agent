@@ -51,6 +51,7 @@ function toProjectSession(conversation: ConversationSummary): ProjectSession {
     projectId: conversation.projectId,
     subagentTaskStatus: conversation.subagentTaskStatus,
     teamId: conversation.teamId,
+    teamWorkItemId: conversation.teamWorkItemId,
     threadKind: conversation.threadKind,
     title: conversation.title,
     workspaceRootPath: conversation.workspaceRootPath,
@@ -59,12 +60,19 @@ function toProjectSession(conversation: ConversationSummary): ProjectSession {
 
 async function listSessionHierarchy(agentClient: AgentClient): Promise<ProjectSession[]> {
   const conversations = await agentClient.listConversations();
-  const forks = await Promise.all(
-    conversations.map((conversation) =>
-      agentClient.listConversationForks({ conversationId: conversation.id }),
-    ),
-  );
-  return [...conversations, ...forks.flat()].map(toProjectSession);
+  const discovered = new Map(conversations.map((conversation) => [conversation.id, conversation]));
+  const pending = [...conversations];
+  while (pending.length > 0) {
+    const parent = pending.shift();
+    if (parent === undefined) continue;
+    const children = await agentClient.listConversationForks({ conversationId: parent.id });
+    for (const child of children) {
+      if (discovered.has(child.id)) continue;
+      discovered.set(child.id, child);
+      pending.push(child);
+    }
+  }
+  return [...discovered.values()].map(toProjectSession);
 }
 
 export function useProjectSessions(

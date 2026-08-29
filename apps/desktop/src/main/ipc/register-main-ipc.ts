@@ -7,6 +7,7 @@ import {
   type IpcMainInvokeEvent
 } from "electron";
 import {
+  acceptTeamWorkItemIpcArgumentsSchema,
   addProjectResponseSchema,
   approveToolChangeIpcArgumentsSchema,
   applicationSettingsIpcArgumentsSchema,
@@ -43,12 +44,14 @@ import {
   deleteConfigurationWorkspaceEntryIpcArgumentsSchema,
   discoveredModelSchema,
   emptyIpcArgumentsSchema,
+  getTeamWorkItemExecutionIpcArgumentsSchema,
   getModelApiKeyIpcArgumentsSchema,
   integrationConfigurationIpcArgumentsSchema,
   integrationConfigurationSchema,
   IPC_CHANNELS,
   listProjectEntriesIpcArgumentsSchema,
   listConfigurationWorkspaceEntriesIpcArgumentsSchema,
+  listTeamWorkItemsIpcArgumentsSchema,
   modelCatalogSchema,
   modelConnectionTestResultSchema,
   modelRuntimeStatusSchema,
@@ -68,6 +71,7 @@ import {
   reorderProjectsIpcArgumentsSchema,
   removeConversationAttachmentIpcArgumentsSchema,
   replaceLatestConversationMessageIpcArgumentsSchema,
+  requestTeamWorkItemReworkIpcArgumentsSchema,
   renameConversationIpcArgumentsSchema,
   renameProjectIpcArgumentsSchema,
   runtimeInfoSchema,
@@ -86,8 +90,14 @@ import {
   setProjectPinnedIpcArgumentsSchema,
   terminalConfigurationIpcArgumentsSchema,
   terminalConfigurationSchema,
+  teamWorkItemExecutionViewSchema,
+  teamWorkItemListSchema,
+  teamWorkItemViewSchema,
   skillDocumentReferenceIpcArgumentsSchema,
   skillDocumentSaveIpcArgumentsSchema,
+  submitTeamWorkItemIpcArgumentsSchema,
+  updateTeamWorkItemIpcArgumentsSchema,
+  updateTeamWorkItemPermissionIpcArgumentsSchema,
   skillDiscoveryResultSchema,
   skillDocumentSchema,
   writeConfigurationWorkspaceFileIpcArgumentsSchema,
@@ -115,6 +125,7 @@ import { ContextCompressionConfigurationStore } from "../settings/context-compre
 import { SkillDocumentStore } from "../settings/skill-document-store.js";
 import { ConfigurationWorkspaceStore } from "../settings/configuration-workspace-store.js";
 import { TerminalConfigurationStore } from "../settings/terminal-configuration-store.js";
+import { TeamWorkItemRuntime } from "../teams/team-work-item-runtime.js";
 import { runIpcHandler } from "./ipc-error-boundary.js";
 import { DESKTOP_CAPABILITIES } from "./desktop-capabilities.js";
 import {
@@ -198,6 +209,7 @@ type MainIpcDependencies = {
   threadLogLegacyImporter: ThreadLogLegacyImporter;
   skillDocuments: SkillDocumentStore;
   terminalConfiguration: TerminalConfigurationStore;
+  teamWorkItems: TeamWorkItemRuntime;
   tools: ProjectToolRegistry;
 };
 
@@ -232,6 +244,7 @@ export function registerMainIpcHandlers(
     threadLogLegacyImporter,
     skillDocuments,
     terminalConfiguration,
+    teamWorkItems,
     tools,
   }: MainIpcDependencies
 ): () => void {
@@ -518,8 +531,10 @@ export function registerMainIpcHandlers(
     const [input] = setConversationModelSelectionIpcArgumentsSchema.parse(args);
     const selection = credentials.resolveSelection(input.modelSelection);
     const current = database.getConversation(input.conversationId);
-    const conversation = database.setConversationModelSelection(input.conversationId, selection);
-    if (current.threadKind !== "subagent") {
+    const conversation = current.teamWorkItemId === null
+      ? database.setConversationModelSelection(input.conversationId, selection)
+      : teamWorkItems.updateModelSelection(input.conversationId, selection);
+    if (current.threadKind !== "subagent" && current.teamWorkItemId === null) {
       credentials.setRecentSelection(selection);
     }
     return conversationSummarySchema.parse(conversation);
@@ -681,9 +696,12 @@ export function registerMainIpcHandlers(
       getTrustedWindow(event, getMainWindow);
       const [input] = sendConversationMessageIpcArgumentsSchema.parse(args);
       return conversationMessageSubmissionSchema.parse(
-        agentRuntime.sendMessage(input, (runEvent) =>
-          sendConversationRunEvent(getMainWindow, runEvent)
-        )
+        database.isTeamWorkItemExecutionTreeConversation(input.conversationId)
+          ? teamWorkItems.sendExecutionGuidance(input, (runEvent) =>
+            sendConversationRunEvent(getMainWindow, runEvent))
+          : agentRuntime.sendMessage(input, (runEvent) =>
+            sendConversationRunEvent(getMainWindow, runEvent)
+          )
       );
     }
   );
@@ -714,6 +732,75 @@ export function registerMainIpcHandlers(
           conversationId: coordinatorConversationId,
         }, (runEvent) => sendConversationRunEvent(getMainWindow, runEvent)),
       );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamWorkItemList,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = listTeamWorkItemsIpcArgumentsSchema.parse(args);
+      return teamWorkItemListSchema.parse(teamWorkItems.list(input));
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamWorkItemGetExecution,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = getTeamWorkItemExecutionIpcArgumentsSchema.parse(args);
+      return teamWorkItemExecutionViewSchema.parse(teamWorkItems.getExecution(input));
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamWorkItemSubmit,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = submitTeamWorkItemIpcArgumentsSchema.parse(args);
+      return teamWorkItemViewSchema.parse(
+        teamWorkItems.submit(input, (runEvent) =>
+          sendConversationRunEvent(getMainWindow, runEvent)),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamWorkItemUpdate,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = updateTeamWorkItemIpcArgumentsSchema.parse(args);
+      return teamWorkItemViewSchema.parse(teamWorkItems.update(input));
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamWorkItemUpdatePermission,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = updateTeamWorkItemPermissionIpcArgumentsSchema.parse(args);
+      return teamWorkItemViewSchema.parse(teamWorkItems.updatePermission(input));
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamWorkItemRequestRework,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = requestTeamWorkItemReworkIpcArgumentsSchema.parse(args);
+      return teamWorkItemViewSchema.parse(
+        teamWorkItems.requestRework(input, (runEvent) =>
+          sendConversationRunEvent(getMainWindow, runEvent)),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamWorkItemAccept,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = acceptTeamWorkItemIpcArgumentsSchema.parse(args);
+      return teamWorkItemViewSchema.parse(teamWorkItems.accept(input));
     },
   );
 
