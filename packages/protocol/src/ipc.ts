@@ -44,7 +44,25 @@ import {
   writeProjectFileInputSchema
 } from "./project.js";
 import { integrationConfigurationSchema } from "./integration.js";
+import { browserConfigurationSchema } from "./browser.js";
 import { terminalConfigurationSchema } from "./terminal.js";
+import {
+  gitFileDiffInputSchema,
+  gitOperationInputSchema,
+  gitReviewInputSchema,
+  managedBrowserBoundsInputSchema,
+  managedBrowserCommandInputSchema,
+  managedBrowserNavigateInputSchema,
+  managedBrowserOpenInputSchema,
+  managedBrowserReferenceInputSchema,
+  terminalSessionOpenInputSchema,
+  terminalSessionOutputInputSchema,
+  terminalSessionReferenceInputSchema,
+  terminalSessionResizeInputSchema,
+  terminalSessionWriteInputSchema,
+  workspaceBrowserTabOpenedInputSchema,
+  workspaceTerminalTabOpenedInputSchema,
+} from "./developer-tools.js";
 import { contextCompressionConfigurationSchema } from "./context-compression.js";
 import { applicationSettingsSchema } from "./application-settings.js";
 import {
@@ -258,6 +276,40 @@ export const integrationConfigurationIpcArgumentsSchema = z.tuple([
 
 export const terminalConfigurationIpcArgumentsSchema = z.tuple([
   terminalConfigurationSchema,
+]);
+
+export const browserConfigurationIpcArgumentsSchema = z.tuple([
+  browserConfigurationSchema,
+]);
+
+export const gitReviewIpcArgumentsSchema = z.tuple([gitReviewInputSchema]);
+export const gitFileDiffIpcArgumentsSchema = z.tuple([gitFileDiffInputSchema]);
+export const gitOperationIpcArgumentsSchema = z.tuple([gitOperationInputSchema]);
+export const terminalSessionOpenIpcArgumentsSchema = z.tuple([terminalSessionOpenInputSchema]);
+export const terminalSessionOutputIpcArgumentsSchema = z.tuple([terminalSessionOutputInputSchema]);
+export const terminalSessionWriteIpcArgumentsSchema = z.tuple([terminalSessionWriteInputSchema]);
+export const terminalSessionResizeIpcArgumentsSchema = z.tuple([terminalSessionResizeInputSchema]);
+export const terminalSessionReferenceIpcArgumentsSchema = z.tuple([
+  terminalSessionReferenceInputSchema,
+]);
+export const workspaceTerminalTabOpenedIpcArgumentsSchema = z.tuple([
+  workspaceTerminalTabOpenedInputSchema,
+]);
+export const workspaceBrowserTabOpenedIpcArgumentsSchema = z.tuple([
+  workspaceBrowserTabOpenedInputSchema,
+]);
+export const managedBrowserOpenIpcArgumentsSchema = z.tuple([managedBrowserOpenInputSchema]);
+export const managedBrowserNavigateIpcArgumentsSchema = z.tuple([
+  managedBrowserNavigateInputSchema,
+]);
+export const managedBrowserCommandIpcArgumentsSchema = z.tuple([
+  managedBrowserCommandInputSchema,
+]);
+export const managedBrowserBoundsIpcArgumentsSchema = z.tuple([
+  managedBrowserBoundsInputSchema,
+]);
+export const managedBrowserReferenceIpcArgumentsSchema = z.tuple([
+  managedBrowserReferenceInputSchema,
 ]);
 
 export const skillDocumentReferenceIpcArgumentsSchema = z.tuple([

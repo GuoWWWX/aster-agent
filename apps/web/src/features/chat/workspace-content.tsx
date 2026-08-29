@@ -16,7 +16,6 @@ import {
   FolderOpen,
   FolderPlus,
   GitFork,
-  Image as ImageIcon,
   LoaderCircle,
   List,
   ListEnd,
@@ -89,7 +88,13 @@ import {
 } from "@agent/protocol";
 
 import { IconButton } from "../../components/ui/icon-button.js";
+import { FileTypeIcon } from "../../components/ui/file-type-icon.js";
 import { AgentMarkdown } from "../../components/markdown/agent-markdown.js";
+import {
+  createDiffPresentation,
+  DiffView,
+  type DiffPresentation,
+} from "../../components/diff/diff-view.js";
 import {
   Popover,
   PopoverContent,
@@ -2272,7 +2277,7 @@ export function ConversationWorkspace({
                 ))}
                 {activeProjectFileMentions.map((mention) => (
                   <span className="conversation-mention-chip" data-kind="file" key={mention.path}>
-                    <FileText aria-hidden="true" size={13} />
+                    <FileTypeIcon path={mention.path} size={13} />
                     <span title={mention.path}>{mention.path}</span>
                     <button
                       aria-label={`移除文件引用 ${mention.path}`}
@@ -2320,7 +2325,7 @@ export function ConversationWorkspace({
                         ) : option.kind === "directory" ? (
                           <Folder aria-hidden="true" size={15} />
                         ) : (
-                          <FileText aria-hidden="true" size={15} />
+                          <FileTypeIcon path={option.value.path} size={15} />
                         )}
                         <span>
                           <strong>{option.kind === "conversation"
@@ -3854,11 +3859,7 @@ function AttachmentChip({
   const sourceLabel = attachment.projectPath ?? "上传文件";
   return (
     <span className="conversation-attachment" title={`${sourceLabel} · ${formatFileSize(attachment.sizeBytes)}`}>
-      {attachment.kind === "image" ? (
-        <ImageIcon aria-hidden="true" size={15} />
-      ) : (
-        <FileText aria-hidden="true" size={15} />
-      )}
+      <FileTypeIcon path={attachment.name} size={15} />
       <span className="conversation-attachment__identity">
         <strong>{attachment.name}</strong>
         <small>
@@ -4953,7 +4954,7 @@ function DirectoryListingResult({
               {entry.kind === "directory" ? (
                 <FolderOpen aria-hidden="true" size={14} />
               ) : (
-                <FileText aria-hidden="true" size={14} />
+                <FileTypeIcon path={entry.path} size={14} />
               )}
               <span className="tool-directory-listing__name" title={entry.path}>{entry.name}</span>
               <span className="tool-directory-listing__kind">
@@ -5097,7 +5098,7 @@ function FindFilesResult({
         <ul className="tool-directory-listing">
           {result.matches.map((match) => (
             <li key={match} data-kind="file">
-              <FileText aria-hidden="true" size={14} />
+              <FileTypeIcon path={match} size={14} />
               <span className="tool-directory-listing__name" title={match}>{match}</span>
               <span className="tool-directory-listing__kind">文件</span>
             </li>
@@ -5314,15 +5315,6 @@ function FileChangeResult({
   return <ToolResultNotice result={result} status="failed" />;
 }
 
-type DiffLineKind = "addition" | "deletion" | "context";
-
-type DiffPresentation = {
-  additions: number;
-  deletions: number;
-  lines: Array<{ content: string; kind: DiffLineKind; lineNumber: number | null }>;
-  path: string;
-};
-
 type FileChangeSummary = {
   action: string;
   additions: number | null;
@@ -5378,23 +5370,6 @@ function isFileChangeToolName(name: string): boolean {
     || name === "replace_in_file"
     || name === "apply_patch"
     || name === "delete_file";
-}
-
-function DiffView({ presentation }: { presentation: DiffPresentation }): ReactElement {
-  return (
-    <pre className="tool-diff-view">
-      <code>
-        {presentation.lines.length === 0 ? (
-          <span className="tool-diff-view__empty">文件不包含可显示的文本内容。</span>
-        ) : presentation.lines.map((line, index) => (
-          <span key={`${index}:${line.content}`} className="tool-diff-view__line" data-kind={line.kind}>
-            <span className="tool-diff-view__line-number">{line.lineNumber ?? ""}</span>
-            <span className="tool-diff-view__line-content">{line.content || " "}</span>
-          </span>
-        ))}
-      </code>
-    </pre>
-  );
 }
 
 function ToolResultNotice({
@@ -5912,74 +5887,6 @@ function subagentTaskStatusLabel(status: string): string {
   }
 }
 
-function createDiffPresentation(diff: string): DiffPresentation {
-  const sourceLines = diff.split(/\r?\n/);
-  if (sourceLines.at(-1) === "") sourceLines.pop();
-
-  const headerPath = sourceLines.find((line) => line.startsWith("+++ "))?.slice(4).split("\t")[0];
-  const fallbackPath = sourceLines.find((line) => line.startsWith("--- "))?.slice(4).split("\t")[0];
-  const rawPath = (headerPath !== undefined && headerPath !== "/dev/null"
-    ? headerPath
-    : fallbackPath !== undefined && fallbackPath !== "/dev/null"
-      ? fallbackPath
-      : undefined) ?? "文件变更";
-  const path = rawPath.replace(/^[ab]\//, "");
-  const lines: DiffPresentation["lines"] = [];
-  let additions = 0;
-  let deletions = 0;
-  let oldLineNumber = 0;
-  let newLineNumber = 0;
-
-  for (const sourceLine of sourceLines) {
-    const hunk = sourceLine.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-    if (hunk !== null) {
-      oldLineNumber = Number(hunk[1]);
-      newLineNumber = Number(hunk[2]);
-      continue;
-    }
-    if (
-      sourceLine.startsWith("Index:") ||
-      sourceLine.startsWith("===") ||
-      sourceLine.startsWith("--- ") ||
-      sourceLine.startsWith("+++ ") ||
-      sourceLine.startsWith("\\ No newline")
-    ) {
-      continue;
-    }
-
-    if (sourceLine.startsWith("+")) {
-      additions += 1;
-      lines.push({
-        content: sourceLine.slice(1),
-        kind: "addition",
-        lineNumber: newLineNumber === 0 ? null : newLineNumber
-      });
-      newLineNumber += 1;
-      continue;
-    }
-    if (sourceLine.startsWith("-")) {
-      deletions += 1;
-      lines.push({
-        content: sourceLine.slice(1),
-        kind: "deletion",
-        lineNumber: oldLineNumber === 0 ? null : oldLineNumber
-      });
-      oldLineNumber += 1;
-      continue;
-    }
-
-    lines.push({
-      content: sourceLine.startsWith(" ") ? sourceLine.slice(1) : sourceLine,
-      kind: "context",
-      lineNumber: newLineNumber === 0 ? null : newLineNumber
-    });
-    oldLineNumber += 1;
-    newLineNumber += 1;
-  }
-
-  return { additions, deletions, lines, path };
-}
-
 function fileNameFromPath(path: string): string {
   const normalizedPath = path.replace(/[\\/]+$/, "");
   const separatorIndex = Math.max(normalizedPath.lastIndexOf("/"), normalizedPath.lastIndexOf("\\"));
@@ -6185,7 +6092,7 @@ function terminalShellDisplayName(
     case "powershell":
       return "Windows PowerShell";
     case "pwsh":
-      return "PowerShell 7";
+      return "PWSH（PowerShell 7）";
     case "cmd":
       return "命令提示符";
     case "bash":

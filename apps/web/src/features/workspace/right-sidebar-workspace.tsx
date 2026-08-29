@@ -30,9 +30,11 @@ import type {
   ConfigurationWorkspaceKind,
   ConversationSummary,
   JavaDeclarationKind,
+  ManagedBrowserSession,
   ProjectEntry,
   ProjectFile,
   ProjectSummary,
+  TerminalSession,
 } from "@agent/protocol";
 import { AgentClientError, parseSerializedAgentError } from "@agent/protocol";
 
@@ -55,7 +57,14 @@ import {
 import { useConversationWorkspaceCache } from "../chat/conversation-workspace-cache.js";
 import { ConversationWorkspace } from "../chat/workspace-content.js";
 import { ConfigurationWorkspaceTreePanel } from "./configuration-workspace-tree-panel.js";
+import { GitReviewWorkspace } from "./git-review-workspace.js";
+import { ManagedBrowserWorkspace } from "./managed-browser-workspace.js";
 import { ProjectTreePanel } from "../projects/project-tree-panel.js";
+import { TerminalWorkspace } from "./terminal-workspace.js";
+import {
+  retainedWorkspaceCacheIds,
+  WORKSPACE_CACHE_SWEEP_INTERVAL_MS,
+} from "./workspace-cache-policy.js";
 import {
   updateSessionRunState,
   type ProjectSession,
@@ -84,8 +93,34 @@ type ConfigurationFileTab = {
 
 type FileTab = ProjectFileTab | ConfigurationFileTab;
 
+type ToolTabBase = {
+  id: string;
+  lastAccessedAt: number;
+  name: string;
+};
+
+type GitReviewTab = ToolTabBase & {
+  kind: "git-review";
+  projectId: string;
+};
+
+type TerminalTab = ToolTabBase & {
+  kind: "terminal";
+  projectId: string;
+  session: TerminalSession | null;
+};
+
+type ManagedBrowserTab = ToolTabBase & {
+  kind: "managed-browser";
+  session: ManagedBrowserSession | null;
+  url: string;
+};
+
+type ToolTab = GitReviewTab | TerminalTab | ManagedBrowserTab;
+
 type SidebarTab =
   | FileTab
+  | ToolTab
   | { id: string; kind: "chat"; name: string; session: ProjectSession };
 
 type FilePreviewState = {
@@ -212,6 +247,46 @@ async function listSideConversations(
   };
 }
 
+type TerminalTabNameCandidate = {
+  kind: ToolTab["kind"];
+  name: string;
+  projectId?: string;
+};
+
+type WorkspaceTabNameCandidate = {
+  name: string;
+};
+
+export function nextWorkspaceTabName(
+  tabs: readonly WorkspaceTabNameCandidate[],
+  requestedName: string,
+): string {
+  const names = new Set(tabs.map((tab) => tab.name));
+  if (!names.has(requestedName)) return requestedName;
+
+  let ordinal = 1;
+  let candidate = `${requestedName} (${ordinal})`;
+  while (names.has(candidate)) {
+    ordinal += 1;
+    candidate = `${requestedName} (${ordinal})`;
+  }
+  return candidate;
+}
+
+export function nextTerminalTabName(
+  tabs: readonly TerminalTabNameCandidate[],
+  projectId: string,
+): string {
+  const names = new Set(
+    tabs
+      .filter((tab) => tab.kind === "terminal" && tab.projectId === projectId)
+      .map((tab) => tab.name),
+  );
+  let ordinal = 1;
+  while (names.has(ordinal === 1 ? "终端" : `终端 (${ordinal - 1})`)) ordinal += 1;
+  return ordinal === 1 ? "终端" : `终端 (${ordinal - 1})`;
+}
+
 function fileTabId(projectId: string, path: string): string {
   return `file:${projectId}:${path}`;
 }
@@ -336,6 +411,8 @@ export function RightSidebarWorkspace({
   >({});
   const [filePreviews, setFilePreviews] = useState<Record<string, FilePreviewState>>({});
   const [fileTabs, setFileTabs] = useState<FileTab[]>([]);
+  const [toolTabs, setToolTabs] = useState<ToolTab[]>([]);
+  const [capabilities, setCapabilities] = useState({ git: false, managedBrowser: false, pty: false });
   const [isFileBrowserOpen, setIsFileBrowserOpen] = useState(false);
   const [isCreatingChat, setIsCreatingChat] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -344,6 +421,7 @@ export function RightSidebarWorkspace({
   const [sideSessions, setSideSessions] = useState<ProjectSession[]>([]);
   const [tabContextMenu, setTabContextMenu] = useState<TabContextMenuState | null>(null);
   const [isTreeCollapsed, setIsTreeCollapsed] = useState(false);
+  const [workspaceCacheClock, setWorkspaceCacheClock] = useState(() => Date.now());
   const configurationFilePreviewsRef = useRef(configurationFilePreviews);
   const configurationSaveQueuesRef = useRef(new Map<string, Promise<boolean>>());
   const filePreviewsRef = useRef(filePreviews);
@@ -354,7 +432,20 @@ export function RightSidebarWorkspace({
   const activeTabIdsBySessionRef = useRef(new Map<string, string | null>());
   const activeTabOwnerRef = useRef<string | null>(activeSession?.id ?? null);
   const openChatIdsBySessionRef = useRef(new Map<string, Set<string>>());
+  const releasingToolTabIdsRef = useRef(new Set<string>());
   const activeSessionId = activeSession?.id ?? null;
+
+  useEffect(() => {
+    let disposed = false;
+    void agentClient.getCapabilities().then((next) => {
+      if (!disposed) {
+        setCapabilities({ git: next.git, managedBrowser: next.managedBrowser, pty: next.pty });
+      }
+    }).catch(() => undefined);
+    return () => {
+      disposed = true;
+    };
+  }, [agentClient]);
 
   const updateOpenChatIds = useCallback(
     (update: (current: Set<string>) => Set<string>): void => {
@@ -371,12 +462,95 @@ export function RightSidebarWorkspace({
   const setActiveTabForCurrentSession = useCallback(
     (tabId: string | null): void => {
       setActiveTabId(tabId);
+      if (tabId !== null) {
+        const now = Date.now();
+        setToolTabs((current) => {
+          const index = current.findIndex((tab) => tab.id === tabId);
+          if (index === -1) return current;
+          const tab = current[index];
+          if (tab === undefined) return current;
+          const next = [...current];
+          next[index] = { ...tab, lastAccessedAt: now };
+          return next;
+        });
+      }
       if (activeSessionId !== null) {
         activeTabIdsBySessionRef.current.set(activeSessionId, tabId);
       }
     },
     [activeSessionId],
   );
+  const openTerminal = useCallback((
+    requestedName?: string,
+    session: TerminalSession | null = null,
+  ): string | null => {
+    if (!capabilities.pty || activeProject === null) return null;
+    const id = `terminal:${crypto.randomUUID()}`;
+    const now = Date.now();
+    const name = requestedName === undefined
+      ? nextTerminalTabName(toolTabs, activeProject.id)
+      : nextWorkspaceTabName([
+        ...fileTabs,
+        ...toolTabs,
+        ...sideSessions.map((sideSession) => ({ name: sideSession.title })),
+      ], requestedName);
+    setToolTabs((current) => [...current, {
+      id,
+      kind: "terminal",
+      lastAccessedAt: now,
+      name,
+      projectId: activeProject.id,
+      session,
+    }]);
+    setActiveTabForCurrentSession(id);
+    setFilePanelOpen(true);
+    setIsFileBrowserOpen(false);
+    setMenuOpen(false);
+    return name;
+  }, [
+    activeProject,
+    capabilities.pty,
+    fileTabs,
+    setActiveTabForCurrentSession,
+    setFilePanelOpen,
+    sideSessions,
+    toolTabs,
+  ]);
+  const openManagedBrowser = useCallback((
+    requestedName?: string,
+    session: ManagedBrowserSession | null = null,
+  ): string | null => {
+    if (!capabilities.managedBrowser) return null;
+    const id = `managed-browser:${crypto.randomUUID()}`;
+    const now = Date.now();
+    const name = requestedName === undefined
+      ? "浏览器"
+      : nextWorkspaceTabName([
+        ...fileTabs,
+        ...toolTabs,
+        ...sideSessions.map((sideSession) => ({ name: sideSession.title })),
+      ], requestedName);
+    setToolTabs((current) => [...current, {
+      id,
+      kind: "managed-browser",
+      lastAccessedAt: now,
+      name,
+      session,
+      url: session?.url ?? "https://www.google.com/",
+    }]);
+    setActiveTabForCurrentSession(id);
+    setFilePanelOpen(true);
+    setIsFileBrowserOpen(false);
+    setMenuOpen(false);
+    return name;
+  }, [
+    capabilities.managedBrowser,
+    fileTabs,
+    setActiveTabForCurrentSession,
+    setFilePanelOpen,
+    sideSessions,
+    toolTabs,
+  ]);
 
   useEffect(() => {
     configurationFilePreviewsRef.current = configurationFilePreviews;
@@ -504,6 +678,90 @@ export function RightSidebarWorkspace({
     setActiveTabForCurrentSession,
     teamMemberOpenRequest,
     updateOpenChatIds,
+  ]);
+
+  useEffect(() => {
+    return agentClient.onWorkspaceTerminalTabOpenRequested((request) => {
+      if (
+        (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId))
+        || request.projectId !== activeProject?.id
+        || !capabilities.pty
+      ) {
+        return;
+      }
+      const resolvedName = openTerminal(request.requestedName ?? undefined, request.session);
+      if (resolvedName === null) return;
+      void agentClient.confirmWorkspaceTerminalTabOpened({
+        requestId: request.requestId,
+        resolvedName,
+      }).catch(() => undefined);
+    });
+  }, [
+    activeProject?.id,
+    activeSessionId,
+    agentClient,
+    capabilities.pty,
+    fileTabs,
+    openChatIds,
+    openTerminal,
+    sideSessions,
+    toolTabs,
+  ]);
+
+  useEffect(() => {
+    return agentClient.onWorkspaceBrowserTabOpenRequested((request) => {
+      if (
+        (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId))
+        || request.projectId !== activeProject?.id
+        || !capabilities.managedBrowser
+      ) {
+        return;
+      }
+      const resolvedName = openManagedBrowser(request.requestedName ?? undefined, request.session);
+      if (resolvedName === null) return;
+      void agentClient.confirmWorkspaceBrowserTabOpened({
+        requestId: request.requestId,
+        resolvedName,
+      }).catch(() => undefined);
+    });
+  }, [
+    activeProject?.id,
+    activeSessionId,
+    agentClient,
+    capabilities.managedBrowser,
+    fileTabs,
+    openChatIds,
+    openManagedBrowser,
+    sideSessions,
+    toolTabs,
+  ]);
+
+  useEffect(() => {
+    return agentClient.onWorkspaceBrowserTabCloseRequested((request) => {
+      if (
+        (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId))
+        || activeProject === null
+      ) {
+        return;
+      }
+      const closedTabIds = new Set(toolTabs
+        .filter((tab) => tab.kind === "managed-browser" && tab.session?.sessionId === request.sessionId)
+        .map((tab) => tab.id));
+      if (closedTabIds.size === 0) return;
+      setToolTabs((current) => current.filter((tab) => !closedTabIds.has(tab.id)));
+      if (activeTabId !== null && closedTabIds.has(activeTabId)) {
+        setActiveTabForCurrentSession(null);
+        setIsFileBrowserOpen(false);
+      }
+    });
+  }, [
+    activeProject,
+    activeSessionId,
+    activeTabId,
+    agentClient,
+    openChatIds,
+    setActiveTabForCurrentSession,
+    toolTabs,
   ]);
 
   useEffect(() => {
@@ -1005,6 +1263,7 @@ export function RightSidebarWorkspace({
   const tabs = useMemo<SidebarTab[]>(
     () => [
       ...fileTabs,
+      ...toolTabs,
       ...openSideSessions
         .map((session): SidebarTab => ({
           id: `chat:${session.id}`,
@@ -1013,9 +1272,18 @@ export function RightSidebarWorkspace({
           session,
         })),
     ],
-    [fileTabs, openSideSessions],
+    [fileTabs, openSideSessions, toolTabs],
   );
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
+  const activeToolTabId = toolTabs.some((tab) => tab.id === activeTabId) ? activeTabId : null;
+  const retainedToolTabIds = useMemo(
+    () => retainedWorkspaceCacheIds(toolTabs, activeToolTabId, workspaceCacheClock),
+    [activeToolTabId, toolTabs, workspaceCacheClock],
+  );
+  const retainedToolTabs = useMemo(
+    () => toolTabs.filter((tab) => retainedToolTabIds.has(tab.id)),
+    [retainedToolTabIds, toolTabs],
+  );
   const retainedSideSessions = useConversationWorkspaceCache(
     activeTab?.kind === "chat" ? activeTab.session : null,
     openSideSessions,
@@ -1031,6 +1299,57 @@ export function RightSidebarWorkspace({
   const activeFilePreview = activeFileTab === null
     ? undefined
     : filePreviews[activeFileTab.id];
+
+  useEffect(() => {
+    const tick = (): void => setWorkspaceCacheClock(Date.now());
+    const interval = window.setInterval(tick, WORKSPACE_CACHE_SWEEP_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    for (const tab of toolTabs) {
+      if (
+        retainedToolTabIds.has(tab.id)
+        || tab.kind === "git-review"
+        || tab.session === null
+        || releasingToolTabIdsRef.current.has(tab.id)
+      ) {
+        continue;
+      }
+      releasingToolTabIdsRef.current.add(tab.id);
+      if (tab.kind === "terminal") {
+        const sessionId = tab.session.sessionId;
+        void agentClient.closeTerminalSession({ sessionId }).then(() => {
+          setToolTabs((current) => current.map((candidate) => (
+            candidate.id === tab.id
+            && candidate.kind === "terminal"
+            && candidate.session?.sessionId === sessionId
+              ? { ...candidate, session: null }
+              : candidate
+          )));
+        }).catch(() => {
+          // Cache eviction is best-effort. A later sweep retries a resource that could not close.
+        }).finally(() => {
+          releasingToolTabIdsRef.current.delete(tab.id);
+        });
+        continue;
+      }
+      const sessionId = tab.session.sessionId;
+      void agentClient.closeManagedBrowser({ sessionId }).then(() => {
+        setToolTabs((current) => current.map((candidate) => (
+          candidate.id === tab.id
+          && candidate.kind === "managed-browser"
+          && candidate.session?.sessionId === sessionId
+            ? { ...candidate, session: null }
+            : candidate
+        )));
+      }).catch(() => {
+        // Cache eviction is best-effort. A later sweep retries a resource that could not close.
+      }).finally(() => {
+        releasingToolTabIdsRef.current.delete(tab.id);
+      });
+    }
+  }, [agentClient, retainedToolTabIds, toolTabs]);
   const openProjectFilePath = useCallback(async (path: string): Promise<void> => {
     if (
       activeConfigurationTab !== null
@@ -1151,6 +1470,47 @@ export function RightSidebarWorkspace({
     setIsTreeCollapsed(false);
   }
 
+  function openGitReview(): void {
+    if (!capabilities.git || activeProject === null) return;
+    const id = `git-review:${activeProject.id}`;
+    const now = Date.now();
+    setToolTabs((current) => current.some((tab) => tab.id === id)
+      ? current
+      : [...current, {
+        id,
+        kind: "git-review",
+        lastAccessedAt: now,
+        name: "审阅",
+        projectId: activeProject.id,
+      }]);
+    setActiveTabForCurrentSession(id);
+    setFilePanelOpen(true);
+    setIsFileBrowserOpen(false);
+    setMenuOpen(false);
+  }
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent): void => {
+      if (!event.ctrlKey || event.altKey || event.metaKey) return;
+      if (event.shiftKey && event.key.toLocaleLowerCase("en-US") === "g") {
+        event.preventDefault();
+        openGitReview();
+        return;
+      }
+      if (!event.shiftKey && event.key === "`") {
+        event.preventDefault();
+        openTerminal();
+        return;
+      }
+      if (!event.shiftKey && event.key.toLocaleLowerCase("en-US") === "t") {
+        event.preventDefault();
+        openManagedBrowser();
+      }
+    };
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  });
+
   useEffect(() => {
     if (
       fileOpenRequest === null
@@ -1187,6 +1547,7 @@ export function RightSidebarWorkspace({
     if (tabIds.size === 0) return;
 
     setFileTabs((current) => current.filter((candidate) => !tabIds.has(candidate.id)));
+    setToolTabs((current) => current.filter((candidate) => !tabIds.has(candidate.id)));
     setConfigurationFilePreviews((current) => Object.fromEntries(
       Object.entries(current).filter(([tabId]) => !tabIds.has(tabId)),
     ));
@@ -1216,6 +1577,24 @@ export function RightSidebarWorkspace({
 
     const closedTabs: SidebarTab[] = [];
     for (const tab of tabsToClose) {
+      if (tab.kind === "terminal" && tab.session !== null) {
+        try {
+          await agentClient.closeTerminalSession({ sessionId: tab.session.sessionId });
+          closedTabs.push(tab);
+        } catch (reason) {
+          setOperationError(getUserErrorMessage(reason, "无法关闭终端。"));
+        }
+        continue;
+      }
+      if (tab.kind === "managed-browser" && tab.session !== null) {
+        try {
+          await agentClient.closeManagedBrowser({ sessionId: tab.session.sessionId });
+          closedTabs.push(tab);
+        } catch (reason) {
+          setOperationError(getUserErrorMessage(reason, "无法关闭浏览器。"));
+        }
+        continue;
+      }
       if (tab.kind !== "chat") {
         closedTabs.push(tab);
         continue;
@@ -1262,7 +1641,7 @@ export function RightSidebarWorkspace({
                   aria-selected={activeTab?.id === tab.id}
                   className="right-sidebar-workspace__tab"
                   role="tab"
-                  title={tab.kind === "chat" ? tab.name : tab.path}
+                  title={tab.kind === "file" || tab.kind === "configuration-file" ? tab.path : tab.name}
                   type="button"
                   onClick={() => void activateTab(tab)}
                   onContextMenu={(event) => {
@@ -1277,6 +1656,12 @@ export function RightSidebarWorkspace({
                 >
                   {tab.kind === "chat" ? (
                     <MessageSquarePlus aria-hidden="true" size={14} />
+                  ) : tab.kind === "git-review" ? (
+                    <SquareCheckBig aria-hidden="true" size={14} />
+                  ) : tab.kind === "terminal" ? (
+                    <Terminal aria-hidden="true" size={14} />
+                  ) : tab.kind === "managed-browser" ? (
+                    <Globe2 aria-hidden="true" size={14} />
                   ) : (
                     <FileTypeIcon
                       javaDeclarationKind={tab.kind === "file" ? tab.javaDeclarationKind : undefined}
@@ -1313,11 +1698,31 @@ export function RightSidebarWorkspace({
               side="bottom"
               sideOffset={5}
             >
-              <button disabled title="当前运行环境未接入终端" type="button">
+              <button
+                disabled={!capabilities.git || activeProject === null}
+                title={activeProject === null ? "请先打开项目" : undefined}
+                type="button"
+                onClick={openGitReview}
+              >
+                <SquareCheckBig aria-hidden="true" size={15} />
+                审阅
+              </button>
+              <button
+                disabled={!capabilities.pty || activeProject === null}
+                title={activeProject === null ? "请先打开项目" : undefined}
+                type="button"
+                onClick={() => {
+                  openTerminal();
+                }}
+              >
                 <Terminal aria-hidden="true" size={15} />
                 终端
               </button>
-              <button disabled title="当前运行环境未接入浏览器" type="button">
+              <button
+                disabled={!capabilities.managedBrowser}
+                type="button"
+                onClick={() => openManagedBrowser()}
+              >
                 <Globe2 aria-hidden="true" size={15} />
                 浏览器
               </button>
@@ -1358,6 +1763,54 @@ export function RightSidebarWorkspace({
         ) : null}
 
         <div className="right-sidebar-workspace__content">
+          {retainedToolTabs.map((tab) => {
+            const isActive = activeTab?.id === tab.id;
+            return (
+              <div
+                aria-hidden={!isActive}
+                className={isActive ? "flex h-full min-h-0 flex-1" : "hidden"}
+                key={tab.id}
+              >
+                {tab.kind === "git-review" ? (
+                  <GitReviewWorkspace
+                    active={isActive}
+                    agentClient={agentClient}
+                    projectId={tab.projectId}
+                  />
+                ) : tab.kind === "terminal" ? (
+                  <TerminalWorkspace
+                    active={isActive}
+                    agentClient={agentClient}
+                    projectId={tab.projectId}
+                    session={tab.session}
+                    onError={(message) => setOperationError(message)}
+                    onSessionOpened={(session) => {
+                      setToolTabs((current) => current.map((candidate) => candidate.id === tab.id && candidate.kind === "terminal"
+                        ? { ...candidate, session }
+                        : candidate));
+                    }}
+                  />
+                ) : (
+                  <ManagedBrowserWorkspace
+                    active={isActive && !menuOpen && tabContextMenu === null}
+                    agentClient={agentClient}
+                    initialUrl={tab.url}
+                    session={tab.session}
+                    onSessionChanged={(session) => {
+                      setToolTabs((current) => current.map((candidate) => candidate.id === tab.id && candidate.kind === "managed-browser"
+                        ? {
+                          ...candidate,
+                          name: session.title.trim() || "浏览器",
+                          session,
+                          url: session.url,
+                        }
+                        : candidate));
+                    }}
+                  />
+                )}
+              </div>
+            );
+          })}
           {retainedSideSessions
             .map((cachedSession) => (
               openSideSessions.find((session) => session.id === cachedSession.id) ?? cachedSession
@@ -1533,12 +1986,22 @@ export function RightSidebarWorkspace({
               onSave={() => void flushConfigurationFile(activeConfigurationTab)}
               onToggleTree={() => setIsTreeCollapsed((current) => !current)}
             />
-          ) : (
+          ) : activeTab?.kind === "git-review"
+            || activeTab?.kind === "terminal"
+            || activeTab?.kind === "managed-browser" ? null : (
             <RightSidebarEmptyState
+              canOpenBrowser={capabilities.managedBrowser}
+              canOpenGitReview={capabilities.git && activeProject !== null}
+              canOpenTerminal={capabilities.pty && activeProject !== null}
               canCreateSideChat={activeSession !== null}
               isCreatingChat={isCreatingChat}
               onCreateSideChat={() => void createSideChat()}
+              onOpenBrowser={openManagedBrowser}
               onOpenFiles={openFileBrowser}
+              onOpenGitReview={openGitReview}
+              onOpenTerminal={() => {
+                openTerminal();
+              }}
             />
           )}
         </div>
@@ -1609,37 +2072,52 @@ export function RightSidebarWorkspace({
 }
 
 function RightSidebarEmptyState({
+  canOpenBrowser,
+  canOpenGitReview,
+  canOpenTerminal,
   canCreateSideChat,
   isCreatingChat,
   onCreateSideChat,
+  onOpenBrowser,
   onOpenFiles,
+  onOpenGitReview,
+  onOpenTerminal,
 }: {
+  canOpenBrowser: boolean;
+  canOpenGitReview: boolean;
+  canOpenTerminal: boolean;
   canCreateSideChat: boolean;
   isCreatingChat: boolean;
   onCreateSideChat: () => void;
+  onOpenBrowser: () => void;
   onOpenFiles: () => void;
+  onOpenGitReview: () => void;
+  onOpenTerminal: () => void;
 }): ReactElement {
   const actions: EmptyStateAction[] = [
     {
-      disabled: true,
+      disabled: !canOpenGitReview,
       icon: SquareCheckBig,
       label: "审阅",
+      onClick: onOpenGitReview,
       shortcut: "Ctrl+Shift+G",
-      title: "当前运行环境未接入审阅",
+      title: canOpenGitReview ? undefined : "请先打开一个 Git 项目",
     },
     {
-      disabled: true,
+      disabled: !canOpenTerminal,
       icon: Terminal,
       label: "终端",
+      onClick: onOpenTerminal,
       shortcut: "Ctrl+`",
-      title: "当前运行环境未接入终端",
+      title: canOpenTerminal ? undefined : "请先打开项目",
     },
     {
-      disabled: true,
+      disabled: !canOpenBrowser,
       icon: Globe2,
       label: "浏览器",
+      onClick: onOpenBrowser,
       shortcut: "Ctrl+T",
-      title: "当前运行环境未接入浏览器",
+      title: canOpenBrowser ? undefined : "当前运行环境未接入浏览器",
     },
     {
       icon: FolderOpen,

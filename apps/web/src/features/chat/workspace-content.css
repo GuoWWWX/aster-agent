@@ -1194,65 +1194,6 @@ button.tool-file-change__path:hover {
   margin-right: 2px;
 }
 
-.tool-diff-view {
-  max-height: min(520px, 55dvh);
-  margin: 0;
-  overflow: auto;
-  background: var(--app-muted);
-  color: var(--app-foreground);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: var(--app-font-size-control);
-  line-height: 1.5;
-  white-space: pre;
-}
-
-.tool-diff-view code {
-  display: block;
-  min-width: max-content;
-}
-
-.tool-diff-view__line {
-  display: grid;
-  min-height: 1.5em;
-  grid-template-columns: 48px minmax(0, 1fr);
-  border-left: 4px solid transparent;
-}
-
-.tool-diff-view__line-number {
-  border-right: 1px solid rgba(148, 163, 184, 0.22);
-  color: var(--app-muted-foreground);
-  padding: 0 9px 0 6px;
-  text-align: right;
-  user-select: none;
-}
-
-.tool-diff-view__line-content {
-  padding: 0 10px;
-}
-
-.tool-diff-view__line[data-kind="deletion"] {
-  border-left-color: #f87171;
-  background: #fee2e2;
-  color: #991b1b;
-}
-
-.tool-diff-view__line[data-kind="addition"] {
-  border-left-color: #4ade80;
-  background: #dcfce7;
-  color: #166534;
-}
-
-.tool-diff-view__empty {
-  display: block;
-  padding: 9px 10px;
-  color: var(--app-muted-foreground);
-}
-
-.tool-timeline-item__payload pre.tool-diff-view {
-  padding: 0;
-  white-space: pre;
-}
-
 .tool-raw-dialog-backdrop {
   position: fixed;
   z-index: 100;
@@ -2818,8 +2759,7 @@ button.tool-file-change__path:hover {
   background: #242424;
 }
 
-[data-theme="dark"] .tool-file-change__surface,
-[data-theme="dark"] .tool-diff-view {
+[data-theme="dark"] .tool-file-change__surface {
   background: #1d1d1d;
 }
 
@@ -2833,18 +2773,6 @@ button.tool-file-change__path:hover {
 
 [data-theme="dark"] .tool-file-change__summary [data-kind="deletion"] {
   color: #f87171;
-}
-
-[data-theme="dark"] .tool-diff-view__line[data-kind="deletion"] {
-  border-left-color: #f87171;
-  background: rgba(127, 29, 29, 0.42);
-  color: #fca5a5;
-}
-
-[data-theme="dark"] .tool-diff-view__line[data-kind="addition"] {
-  border-left-color: #4ade80;
-  background: rgba(20, 83, 45, 0.48);
-  color: #86efac;
 }
 
 [data-theme="dark"] .chat-message[data-role="user"] {

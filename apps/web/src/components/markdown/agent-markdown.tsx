@@ -1,28 +1,10 @@
-import hljs from "highlight.js/lib/common";
-import powershell from "highlight.js/lib/languages/powershell";
 import MarkdownIt from "markdown-it";
 import { useMemo, type ReactElement } from "react";
 
+import { fileTypeIconMarkup, isRecognizedFileTypePath } from "../ui/file-type-icon-data.js";
+import { highlightCode } from "./code-highlighter.js";
+
 import "./agent-markdown.css";
-
-hljs.registerLanguage("powershell", powershell);
-hljs.registerAliases(["ps", "ps1", "pwsh"], { languageName: "powershell" });
-
-const languageAliases: Record<string, string> = {
-  "c#": "csharp",
-  "c++": "cpp",
-  html: "xml",
-  jsx: "javascript",
-  md: "markdown",
-  plaintext: "",
-  shell: "bash",
-  sh: "bash",
-  text: "",
-  tsx: "typescript",
-  txt: "",
-  yml: "yaml",
-  zsh: "bash",
-};
 
 const renderer = new MarkdownIt({
   breaks: true,
@@ -69,11 +51,17 @@ renderer.core.ruler.after("inline", "agent_task_lists", (state) => {
 
 const defaultLinkOpen = renderer.renderer.rules.link_open;
 renderer.renderer.rules.link_open = (tokens, index, options, environment, self) => {
-  tokens[index]?.attrSet("rel", "noreferrer noopener");
-  tokens[index]?.attrSet("target", "_blank");
-  return defaultLinkOpen === undefined
+  const token = tokens[index];
+  token?.attrSet("rel", "noreferrer noopener");
+  token?.attrSet("target", "_blank");
+  const hrefValue = token?.attrGet("href");
+  const href = hrefValue === null || hrefValue === undefined ? "" : String(hrefValue);
+  const isFileLink = isRecognizedFileTypePath(href);
+  if (isFileLink) token?.attrJoin("class", "agent-markdown__file-link");
+  const openingTag = defaultLinkOpen === undefined
     ? self.renderToken(tokens, index, options)
     : defaultLinkOpen(tokens, index, options, environment, self);
+  return isFileLink ? `${openingTag}${fileTypeIconMarkup(href)}` : openingTag;
 };
 
 // MarkdownIt derives inline alignment styles from the separator row. The chat
@@ -110,19 +98,6 @@ renderer.renderer.rules.fence = (tokens, index) => {
   const highlightedSource = highlightCode(source, language);
   return `<pre class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><code class="hljs">${highlightedSource}</code></pre>\n`;
 };
-
-function highlightCode(source: string, language: string): string {
-  const normalizedLanguage = languageAliases[language.toLowerCase()] ?? language.toLowerCase();
-  if (normalizedLanguage.length === 0 || !hljs.getLanguage(normalizedLanguage)) {
-    return renderer.utils.escapeHtml(source);
-  }
-
-  try {
-    return hljs.highlight(source, { ignoreIllegals: true, language: normalizedLanguage }).value;
-  } catch {
-    return renderer.utils.escapeHtml(source);
-  }
-}
 
 export function AgentMarkdown({ content }: { content: string }): ReactElement {
   const html = useMemo(() => renderAgentMarkdown(content), [content]);

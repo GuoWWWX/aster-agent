@@ -13,6 +13,7 @@ import {
 import { MockAgentClient } from "../../runtime/index.js";
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
+import { TooltipProvider } from "../../components/ui/tooltip.js";
 import type { ProjectSession } from "../projects/project-session-model.js";
 import { ConversationWorkspace, WorkspaceContent } from "./workspace-content.js";
 
@@ -88,12 +89,14 @@ describe("Subagent approval queue", () => {
 
     await act(async () => {
       root?.render(
-        <ConversationWorkspace
-          agentClient={client}
-          project={null}
-          relatedSessions={[parent, child]}
-          session={parent}
-        />,
+        <TooltipProvider>
+          <ConversationWorkspace
+            agentClient={client}
+            project={null}
+            relatedSessions={[parent, child]}
+            session={parent}
+          />
+        </TooltipProvider>,
       );
       await Promise.resolve();
       await Promise.resolve();
@@ -158,27 +161,29 @@ describe("Subagent approval queue", () => {
     const cancel = vi.spyOn(client, "cancelRun").mockResolvedValue();
     await act(async () => {
       root?.render(
-        <WorkspaceContent
-          activeProject={null}
-          activeSession={managed}
-          agentClient={client}
-          canAddProjects={false}
-          isAddingProject={false}
-          isCreatingSession={false}
-          projects={[]}
-          sessions={[managed]}
-          onAddProject={() => Promise.resolve(null)}
-          onCreateProjectSession={() => undefined}
-          onCreateTemporarySession={() => undefined}
-          onForkConversation={() => Promise.resolve(undefined)}
-          onLocateProject={() => undefined}
-          onLocateSession={() => undefined}
-          onOpenTeamConversation={() => undefined}
-          onProjectSelected={() => undefined}
-          onSessionSelected={() => undefined}
-          onSessionUpdated={() => undefined}
-          onSessionViewed={() => undefined}
-        />,
+        <TooltipProvider>
+          <WorkspaceContent
+            activeProject={null}
+            activeSession={managed}
+            agentClient={client}
+            canAddProjects={false}
+            isAddingProject={false}
+            isCreatingSession={false}
+            projects={[]}
+            sessions={[managed]}
+            onAddProject={() => Promise.resolve(null)}
+            onCreateProjectSession={() => undefined}
+            onCreateTemporarySession={() => undefined}
+            onForkConversation={() => Promise.resolve(undefined)}
+            onLocateProject={() => undefined}
+            onLocateSession={() => undefined}
+            onOpenTeamConversation={() => undefined}
+            onProjectSelected={() => undefined}
+            onSessionSelected={() => undefined}
+            onSessionUpdated={() => undefined}
+            onSessionViewed={() => undefined}
+          />
+        </TooltipProvider>,
       );
       await flushConversationWorkspace();
     });
@@ -249,27 +254,29 @@ describe("Subagent approval queue", () => {
     document.body.append(container);
     root = createRoot(container);
     const renderWorkspace = (activeSession: ProjectSession) => (
-      <WorkspaceContent
-        activeProject={null}
-        activeSession={activeSession}
-        agentClient={client}
-        canAddProjects={false}
-        isAddingProject={false}
-        isCreatingSession={false}
-        projects={[]}
-        sessions={[activeSession]}
-        onAddProject={() => Promise.resolve(null)}
-        onCreateProjectSession={() => undefined}
-        onCreateTemporarySession={() => undefined}
-        onForkConversation={() => Promise.resolve(undefined)}
-        onLocateProject={() => undefined}
-        onLocateSession={() => undefined}
-        onOpenTeamConversation={() => undefined}
-        onProjectSelected={() => undefined}
-        onSessionSelected={() => undefined}
-        onSessionUpdated={() => undefined}
-        onSessionViewed={() => undefined}
-      />
+      <TooltipProvider>
+        <WorkspaceContent
+          activeProject={null}
+          activeSession={activeSession}
+          agentClient={client}
+          canAddProjects={false}
+          isAddingProject={false}
+          isCreatingSession={false}
+          projects={[]}
+          sessions={[activeSession]}
+          onAddProject={() => Promise.resolve(null)}
+          onCreateProjectSession={() => undefined}
+          onCreateTemporarySession={() => undefined}
+          onForkConversation={() => Promise.resolve(undefined)}
+          onLocateProject={() => undefined}
+          onLocateSession={() => undefined}
+          onOpenTeamConversation={() => undefined}
+          onProjectSelected={() => undefined}
+          onSessionSelected={() => undefined}
+          onSessionUpdated={() => undefined}
+          onSessionViewed={() => undefined}
+        />
+      </TooltipProvider>
     );
 
     await act(async () => {
@@ -336,12 +343,14 @@ describe("Subagent approval queue", () => {
 
     await act(async () => {
       root?.render(
-        <ConversationWorkspace
-          agentClient={client}
-          project={project}
-          relatedSessions={[sourceSession]}
-          session={sourceSession}
-        />,
+        <TooltipProvider>
+          <ConversationWorkspace
+            agentClient={client}
+            project={project}
+            relatedSessions={[sourceSession]}
+            session={sourceSession}
+          />
+        </TooltipProvider>,
       );
       await flushConversationWorkspace();
     });

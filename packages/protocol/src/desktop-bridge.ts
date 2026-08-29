@@ -60,7 +60,36 @@ import type {
 import type { RuntimeInfo } from "./runtime.js";
 import type { WindowState } from "./window.js";
 import type { IntegrationConfiguration } from "./integration.js";
+import type { BrowserConfiguration } from "./browser.js";
 import type { TerminalConfiguration } from "./terminal.js";
+import type {
+  GitFileDiff,
+  GitFileDiffInput,
+  GitOperationInput,
+  GitReviewInput,
+  GitReviewSnapshot,
+  ManagedBrowserBoundsInput,
+  ManagedBrowserCommandInput,
+  ManagedBrowserEvent,
+  ManagedBrowserNavigateInput,
+  ManagedBrowserOpenInput,
+  ManagedBrowserReferenceInput,
+  ManagedBrowserSession,
+  ManagedBrowserSnapshot,
+  TerminalSession,
+  TerminalSessionEvent,
+  TerminalSessionOpenInput,
+  TerminalSessionOutput,
+  TerminalSessionOutputInput,
+  TerminalSessionReferenceInput,
+  TerminalSessionResizeInput,
+  TerminalSessionWriteInput,
+  WorkspaceTerminalTabOpenRequest,
+  WorkspaceTerminalTabOpenedInput,
+  WorkspaceBrowserTabOpenRequest,
+  WorkspaceBrowserTabOpenedInput,
+  WorkspaceBrowserTabCloseRequest,
+} from "./developer-tools.js";
 import type {
   ConfigurationWorkspaceDirectoryListing,
   ConfigurationWorkspaceEntry,
@@ -155,7 +184,35 @@ export interface DesktopBridge {
   getContextCompressionConfiguration(): Promise<ContextCompressionConfiguration>;
   getApplicationSettings(): Promise<ApplicationSettings>;
   getIntegrationConfiguration(): Promise<IntegrationConfiguration>;
+  getBrowserConfiguration(): Promise<BrowserConfiguration>;
   getTerminalConfiguration(): Promise<TerminalConfiguration>;
+  getGitReviewSnapshot(input: GitReviewInput): Promise<GitReviewSnapshot>;
+  getGitFileDiff(input: GitFileDiffInput): Promise<GitFileDiff>;
+  runGitOperation(input: GitOperationInput): Promise<GitReviewSnapshot>;
+  openTerminalSession(input: TerminalSessionOpenInput): Promise<TerminalSession>;
+  readTerminalSessionOutput(input: TerminalSessionOutputInput): Promise<TerminalSessionOutput>;
+  writeTerminalSession(input: TerminalSessionWriteInput): Promise<void>;
+  resizeTerminalSession(input: TerminalSessionResizeInput): Promise<void>;
+  closeTerminalSession(input: TerminalSessionReferenceInput): Promise<void>;
+  onTerminalSessionEvent(listener: (event: TerminalSessionEvent) => void): () => void;
+  confirmWorkspaceTerminalTabOpened(input: WorkspaceTerminalTabOpenedInput): Promise<void>;
+  onWorkspaceTerminalTabOpenRequested(
+    listener: (request: WorkspaceTerminalTabOpenRequest) => void,
+  ): () => void;
+  confirmWorkspaceBrowserTabOpened(input: WorkspaceBrowserTabOpenedInput): Promise<void>;
+  onWorkspaceBrowserTabOpenRequested(
+    listener: (request: WorkspaceBrowserTabOpenRequest) => void,
+  ): () => void;
+  onWorkspaceBrowserTabCloseRequested(
+    listener: (request: WorkspaceBrowserTabCloseRequest) => void,
+  ): () => void;
+  openManagedBrowser(input: ManagedBrowserOpenInput): Promise<ManagedBrowserSession>;
+  navigateManagedBrowser(input: ManagedBrowserNavigateInput): Promise<void>;
+  commandManagedBrowser(input: ManagedBrowserCommandInput): Promise<void>;
+  captureManagedBrowser(input: ManagedBrowserReferenceInput): Promise<ManagedBrowserSnapshot>;
+  setManagedBrowserBounds(input: ManagedBrowserBoundsInput): Promise<void>;
+  closeManagedBrowser(input: ManagedBrowserReferenceInput): Promise<void>;
+  onManagedBrowserEvent(listener: (event: ManagedBrowserEvent) => void): () => void;
   getRuntimeInfo(): Promise<RuntimeInfo>;
   getWindowState(): Promise<WindowState>;
   listProjectEntries(input: ListProjectEntriesInput): Promise<ProjectDirectoryListing>;
@@ -227,6 +284,9 @@ export interface DesktopBridge {
   saveIntegrationConfiguration(
     input: IntegrationConfiguration
   ): Promise<IntegrationConfiguration>;
+  saveBrowserConfiguration(
+    input: BrowserConfiguration
+  ): Promise<BrowserConfiguration>;
   saveTerminalConfiguration(
     input: TerminalConfiguration
   ): Promise<TerminalConfiguration>;

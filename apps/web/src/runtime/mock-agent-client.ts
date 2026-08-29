@@ -1,5 +1,6 @@
 import {
   createSkillMarkdown,
+  DEFAULT_BROWSER_CONFIGURATION,
   DEFAULT_APPLICATION_SETTINGS,
   CONTEXT_MESSAGE_OVERHEAD_TOKENS,
   DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
@@ -15,6 +16,7 @@ import {
   type SkillDocument,
   type SkillDiscoveryResult,
   type ApplicationSettings,
+  type BrowserConfiguration,
   type SkillDocumentReferenceInput,
   type SkillDocumentSaveInput,
   type TerminalConfiguration,
@@ -42,6 +44,7 @@ import {
   type CreateConversationInput,
   type DiscoverModelsInput,
   type DiscoveredModel,
+  type GitReviewSnapshot,
   type IntegrationConfiguration,
   type DeleteConfigurationWorkspaceEntryInput,
   type ListConfigurationWorkspaceEntriesInput,
@@ -49,6 +52,8 @@ import {
   type ModelConnectionTestResult,
   type ModelCatalog,
   type ModelRuntimeStatus,
+  type ManagedBrowserSession,
+  type ManagedBrowserSnapshot,
   type McpServerConfiguration,
   type ModelProfile,
   type ProjectDirectoryListing,
@@ -79,6 +84,8 @@ import {
   type SetProjectPinnedInput,
   type RuntimeInfo,
   type RunAccepted,
+  type TerminalSession,
+  type TerminalSessionOutput,
   type WindowState,
   type WriteConfigurationWorkspaceFileInput,
   type WriteProjectFileInput,
@@ -279,6 +286,10 @@ export class MockAgentClient implements AgentClient {
 
   private terminalConfiguration: TerminalConfiguration = structuredClone(
     DEFAULT_TERMINAL_CONFIGURATION,
+  );
+
+  private browserConfiguration: BrowserConfiguration = structuredClone(
+    DEFAULT_BROWSER_CONFIGURATION,
   );
 
   private contextCompressionConfiguration: ContextCompressionConfiguration = structuredClone(
@@ -921,8 +932,96 @@ export class MockAgentClient implements AgentClient {
     return Promise.resolve(structuredClone(this.integrationConfiguration));
   }
 
+  public getBrowserConfiguration(): Promise<BrowserConfiguration> {
+    return Promise.resolve(structuredClone(this.browserConfiguration));
+  }
+
   public getTerminalConfiguration(): Promise<TerminalConfiguration> {
     return Promise.resolve(structuredClone(this.terminalConfiguration));
+  }
+
+  public getGitReviewSnapshot(): Promise<GitReviewSnapshot> {
+    return Promise.reject(new Error("Git review is unavailable in the mock host."));
+  }
+
+  public getGitFileDiff(): Promise<never> {
+    return Promise.reject(new Error("Git review is unavailable in the mock host."));
+  }
+
+  public runGitOperation(): Promise<GitReviewSnapshot> {
+    return Promise.reject(new Error("Git review is unavailable in the mock host."));
+  }
+
+  public openTerminalSession(): Promise<TerminalSession> {
+    return Promise.reject(new Error("Terminal sessions are unavailable in the mock host."));
+  }
+
+  public readTerminalSessionOutput(): Promise<TerminalSessionOutput> {
+    return Promise.reject(new Error("Terminal sessions are unavailable in the mock host."));
+  }
+
+  public writeTerminalSession(): Promise<void> {
+    return Promise.reject(new Error("Terminal sessions are unavailable in the mock host."));
+  }
+
+  public resizeTerminalSession(): Promise<void> {
+    return Promise.reject(new Error("Terminal sessions are unavailable in the mock host."));
+  }
+
+  public closeTerminalSession(): Promise<void> {
+    return Promise.reject(new Error("Terminal sessions are unavailable in the mock host."));
+  }
+
+  public onTerminalSessionEvent(): () => void {
+    return () => undefined;
+  }
+
+  public confirmWorkspaceTerminalTabOpened(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  public onWorkspaceTerminalTabOpenRequested(): () => void {
+    return () => undefined;
+  }
+
+  public confirmWorkspaceBrowserTabOpened(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  public onWorkspaceBrowserTabOpenRequested(): () => void {
+    return () => undefined;
+  }
+
+  public onWorkspaceBrowserTabCloseRequested(): () => void {
+    return () => undefined;
+  }
+
+  public openManagedBrowser(): Promise<ManagedBrowserSession> {
+    return Promise.reject(new Error("Managed browser is unavailable in the mock host."));
+  }
+
+  public navigateManagedBrowser(): Promise<void> {
+    return Promise.reject(new Error("Managed browser is unavailable in the mock host."));
+  }
+
+  public commandManagedBrowser(): Promise<void> {
+    return Promise.reject(new Error("Managed browser is unavailable in the mock host."));
+  }
+
+  public captureManagedBrowser(): Promise<ManagedBrowserSnapshot> {
+    return Promise.reject(new Error("Managed browser is unavailable in the mock host."));
+  }
+
+  public setManagedBrowserBounds(): Promise<void> {
+    return Promise.reject(new Error("Managed browser is unavailable in the mock host."));
+  }
+
+  public closeManagedBrowser(): Promise<void> {
+    return Promise.reject(new Error("Managed browser is unavailable in the mock host."));
+  }
+
+  public onManagedBrowserEvent(): () => void {
+    return () => undefined;
   }
 
   public getRuntimeInfo(): Promise<RuntimeInfo> {
@@ -1871,6 +1970,13 @@ export class MockAgentClient implements AgentClient {
       workspace.files.set("mcp.json", `${JSON.stringify(server, null, 2)}\n`);
     }
     return this.getIntegrationConfiguration();
+  }
+
+  public saveBrowserConfiguration(
+    input: BrowserConfiguration,
+  ): Promise<BrowserConfiguration> {
+    this.browserConfiguration = structuredClone(input);
+    return this.getBrowserConfiguration();
   }
 
   public saveTerminalConfiguration(

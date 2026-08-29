@@ -8,6 +8,11 @@ type IpcMainHandlerAdapter<THandler> = {
 const IPC_EVENT_CHANNELS: ReadonlySet<IpcChannel> = new Set([
   IPC_CHANNELS.applicationSettingsChanged,
   IPC_CHANNELS.conversationRunEvent,
+  IPC_CHANNELS.managedBrowserEvent,
+  IPC_CHANNELS.terminalSessionEvent,
+  IPC_CHANNELS.workspaceTerminalOpenRequested,
+  IPC_CHANNELS.workspaceBrowserOpenRequested,
+  IPC_CHANNELS.workspaceBrowserCloseRequested,
   IPC_CHANNELS.windowStateChanged,
 ]);
 

@@ -289,6 +289,33 @@
   color: var(--agent-md-code-operator);
 }
 
+.agent-markdown__file-link {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.28em;
+}
+
+.agent-markdown__file-icon {
+  display: inline-block;
+  flex: 0 0 auto;
+  vertical-align: -0.125em;
+}
+
+.agent-markdown__file-icon--java {
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--agent-markdown-file-icon-color);
+  border-radius: 50%;
+  box-sizing: border-box;
+  color: var(--agent-markdown-file-icon-color);
+  display: inline-flex;
+  font-family: Arial, sans-serif;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .agent-markdown blockquote {
   padding: 7px 10px 7px 14px;
   border: 0;

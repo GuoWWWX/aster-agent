@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MockAgentClient } from "../../runtime/index.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
+import { TooltipProvider } from "../ui/tooltip.js";
 import { AppShell } from "./app-shell.js";
 
 let root: Root | null = null;
@@ -46,12 +47,14 @@ describe("AppShell", () => {
     document.body.append(container);
     root = createRoot(container);
     act(() => root?.render(
-      <AppShell
-        agentClient={new MockAgentClient()}
-        filePanel={<StatefulFilePanel />}
-        mainContent={<div>主工作区</div>}
-        projectNavigator={<div>项目导航</div>}
-      />,
+      <TooltipProvider>
+        <AppShell
+          agentClient={new MockAgentClient()}
+          filePanel={<StatefulFilePanel />}
+          mainContent={<div>主工作区</div>}
+          projectNavigator={<div>项目导航</div>}
+        />
+      </TooltipProvider>,
     ));
 
     const filePanelButton = (): HTMLButtonElement | null =>
@@ -74,13 +77,15 @@ describe("AppShell", () => {
 
     function renderShell(activeConversationId: string): void {
       root?.render(
-        <AppShell
-          activeConversationId={activeConversationId}
-          agentClient={new MockAgentClient()}
-          filePanel={<div>右侧工作区</div>}
-          mainContent={<div>主工作区</div>}
-          projectNavigator={<div>项目导航</div>}
-        />,
+        <TooltipProvider>
+          <AppShell
+            activeConversationId={activeConversationId}
+            agentClient={new MockAgentClient()}
+            filePanel={<div>右侧工作区</div>}
+            mainContent={<div>主工作区</div>}
+            projectNavigator={<div>项目导航</div>}
+          />
+        </TooltipProvider>,
       );
     }
 

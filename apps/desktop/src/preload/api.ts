@@ -4,6 +4,13 @@ import { IPC_CHANNELS } from "../../../../packages/protocol/src/ipc-channels.js"
 // Skill YAML parsing, which pulls a Node-only `yaml` dependency into the
 // sandboxed preload bundle and prevents Electron from loading the bridge.
 import { applicationSettingsSchema } from "../../../../packages/protocol/src/application-settings.js";
+import {
+  managedBrowserEventSchema,
+  terminalSessionEventSchema,
+  workspaceBrowserTabCloseRequestSchema,
+  workspaceBrowserTabOpenRequestSchema,
+  workspaceTerminalTabOpenRequestSchema,
+} from "../../../../packages/protocol/src/developer-tools.js";
 import type {
   DesktopBridge,
   ConversationContextUsageInput,
@@ -12,6 +19,7 @@ import type {
   CancelRunInput,
   ApproveToolChangeInput,
   ApplicationSettings,
+  BrowserConfiguration,
   ConversationReferenceInput,
   ForkConversationInput,
   PendingConversationMessageReferenceInput,
@@ -28,6 +36,9 @@ import type {
   CreateConversationInput,
   DiscoverModelsInput,
   IntegrationConfiguration,
+  GitFileDiffInput,
+  GitOperationInput,
+  GitReviewInput,
   DeleteConfigurationWorkspaceEntryInput,
   ListConfigurationWorkspaceEntriesInput,
   ProjectReferenceInput,
@@ -53,6 +64,11 @@ import type {
   UpdateTeamWorkItemPermissionInput,
   AcceptTeamWorkItemInput,
   PluginCatalogEntry,
+  ManagedBrowserBoundsInput,
+  ManagedBrowserCommandInput,
+  ManagedBrowserNavigateInput,
+  ManagedBrowserOpenInput,
+  ManagedBrowserReferenceInput,
   SetPluginEnabledInput,
   UpdatePendingConversationMessageInput,
   SetConversationArchivedInput,
@@ -64,6 +80,14 @@ import type {
   SkillDiscoveryResult,
   SkillDocumentSaveInput,
   TerminalConfiguration,
+  TerminalSessionOpenInput,
+  TerminalSessionOutput,
+  TerminalSessionOutputInput,
+  TerminalSessionReferenceInput,
+  TerminalSessionResizeInput,
+  TerminalSessionWriteInput,
+  WorkspaceTerminalTabOpenedInput,
+  WorkspaceBrowserTabOpenedInput,
   WriteConfigurationWorkspaceFileInput,
   WriteProjectFileInput,
   WindowState
@@ -268,10 +292,63 @@ export function createDesktopBridge(): DesktopBridge {
         IPC_CHANNELS.integrationGetConfiguration
       );
     },
+    getBrowserConfiguration() {
+      return invoke<BridgeResult<"getBrowserConfiguration">>(
+        IPC_CHANNELS.browserGetConfiguration
+      );
+    },
     getTerminalConfiguration() {
       return invoke<BridgeResult<"getTerminalConfiguration">>(
         IPC_CHANNELS.terminalGetConfiguration
       );
+    },
+    getGitReviewSnapshot(input: GitReviewInput) {
+      return invoke<BridgeResult<"getGitReviewSnapshot">>(IPC_CHANNELS.gitReviewGetSnapshot, input);
+    },
+    getGitFileDiff(input: GitFileDiffInput) {
+      return invoke<BridgeResult<"getGitFileDiff">>(IPC_CHANNELS.gitReviewGetFileDiff, input);
+    },
+    runGitOperation(input: GitOperationInput) {
+      return invoke<BridgeResult<"runGitOperation">>(IPC_CHANNELS.gitReviewRunOperation, input);
+    },
+    openTerminalSession(input: TerminalSessionOpenInput) {
+      return invoke<BridgeResult<"openTerminalSession">>(IPC_CHANNELS.terminalSessionOpen, input);
+    },
+    readTerminalSessionOutput(input: TerminalSessionOutputInput) {
+      return invoke<TerminalSessionOutput>(IPC_CHANNELS.terminalSessionReadOutput, input);
+    },
+    async writeTerminalSession(input: TerminalSessionWriteInput) {
+      await invoke<void>(IPC_CHANNELS.terminalSessionWrite, input);
+    },
+    async resizeTerminalSession(input: TerminalSessionResizeInput) {
+      await invoke<void>(IPC_CHANNELS.terminalSessionResize, input);
+    },
+    async closeTerminalSession(input: TerminalSessionReferenceInput) {
+      await invoke<void>(IPC_CHANNELS.terminalSessionClose, input);
+    },
+    async confirmWorkspaceTerminalTabOpened(input: WorkspaceTerminalTabOpenedInput) {
+      await invoke<void>(IPC_CHANNELS.workspaceTerminalOpened, input);
+    },
+    async confirmWorkspaceBrowserTabOpened(input: WorkspaceBrowserTabOpenedInput) {
+      await invoke<void>(IPC_CHANNELS.workspaceBrowserOpened, input);
+    },
+    openManagedBrowser(input: ManagedBrowserOpenInput) {
+      return invoke<BridgeResult<"openManagedBrowser">>(IPC_CHANNELS.managedBrowserOpen, input);
+    },
+    async navigateManagedBrowser(input: ManagedBrowserNavigateInput) {
+      await invoke<void>(IPC_CHANNELS.managedBrowserNavigate, input);
+    },
+    async commandManagedBrowser(input: ManagedBrowserCommandInput) {
+      await invoke<void>(IPC_CHANNELS.managedBrowserCommand, input);
+    },
+    captureManagedBrowser(input: ManagedBrowserReferenceInput) {
+      return invoke<BridgeResult<"captureManagedBrowser">>(IPC_CHANNELS.managedBrowserCapture, input);
+    },
+    async setManagedBrowserBounds(input: ManagedBrowserBoundsInput) {
+      await invoke<void>(IPC_CHANNELS.managedBrowserSetBounds, input);
+    },
+    async closeManagedBrowser(input: ManagedBrowserReferenceInput) {
+      await invoke<void>(IPC_CHANNELS.managedBrowserClose, input);
     },
     importSkillDocument() {
       return invoke<BridgeResult<"importSkillDocument">>(
@@ -394,6 +471,41 @@ export function createDesktopBridge(): DesktopBridge {
           handleApplicationSettingsChanged,
         );
       };
+    },
+    onTerminalSessionEvent(listener) {
+      const handle = (_event: IpcRendererEvent, value: unknown): void => {
+        listener(terminalSessionEventSchema.parse(value));
+      };
+      ipcRenderer.on(IPC_CHANNELS.terminalSessionEvent, handle);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.terminalSessionEvent, handle);
+    },
+    onWorkspaceTerminalTabOpenRequested(listener) {
+      const handle = (_event: IpcRendererEvent, value: unknown): void => {
+        listener(workspaceTerminalTabOpenRequestSchema.parse(value));
+      };
+      ipcRenderer.on(IPC_CHANNELS.workspaceTerminalOpenRequested, handle);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.workspaceTerminalOpenRequested, handle);
+    },
+    onWorkspaceBrowserTabOpenRequested(listener) {
+      const handle = (_event: IpcRendererEvent, value: unknown): void => {
+        listener(workspaceBrowserTabOpenRequestSchema.parse(value));
+      };
+      ipcRenderer.on(IPC_CHANNELS.workspaceBrowserOpenRequested, handle);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.workspaceBrowserOpenRequested, handle);
+    },
+    onWorkspaceBrowserTabCloseRequested(listener) {
+      const handle = (_event: IpcRendererEvent, value: unknown): void => {
+        listener(workspaceBrowserTabCloseRequestSchema.parse(value));
+      };
+      ipcRenderer.on(IPC_CHANNELS.workspaceBrowserCloseRequested, handle);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.workspaceBrowserCloseRequested, handle);
+    },
+    onManagedBrowserEvent(listener) {
+      const handle = (_event: IpcRendererEvent, value: unknown): void => {
+        listener(managedBrowserEventSchema.parse(value));
+      };
+      ipcRenderer.on(IPC_CHANNELS.managedBrowserEvent, handle);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.managedBrowserEvent, handle);
     },
     onWindowStateChanged(listener) {
       const handleWindowStateChanged = (
@@ -532,6 +644,12 @@ export function createDesktopBridge(): DesktopBridge {
     saveIntegrationConfiguration(input: IntegrationConfiguration) {
       return invoke<BridgeResult<"saveIntegrationConfiguration">>(
         IPC_CHANNELS.integrationSaveConfiguration,
+        input
+      );
+    },
+    saveBrowserConfiguration(input: BrowserConfiguration) {
+      return invoke<BridgeResult<"saveBrowserConfiguration">>(
+        IPC_CHANNELS.browserSaveConfiguration,
         input
       );
     },

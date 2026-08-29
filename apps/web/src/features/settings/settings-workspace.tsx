@@ -14,6 +14,7 @@ import {
   EyeOff,
   FileJson2,
   FolderOpen,
+  Globe2,
   KeyRound,
   ListTree,
   LoaderCircle,
@@ -48,9 +49,12 @@ import {
 
 import {
   ARCHIVED_CONVERSATION_RETENTION_DAYS,
+  DEFAULT_BROWSER_CONFIGURATION,
+  DEFAULT_TERMINAL_CONFIGURATION,
   DEFAULT_MODEL_CATALOG,
   DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
   type ContextCompressionConfiguration,
+  type BrowserConfiguration,
   type ContextCompressionThreshold,
   type ConversationPermissionMode,
   type ConversationSummary,
@@ -80,6 +84,7 @@ import {
   integrationConfigurationSchema,
   modelReasoningOptionKey,
   terminalConfigurationSchema,
+  browserConfigurationSchema,
 } from "@agent/protocol";
 
 import { IconButton } from "../../components/ui/icon-button.js";
@@ -101,6 +106,7 @@ import { getUserErrorMessage, type AgentClient } from "../../runtime/index.js";
 import { loadModelStatus, rememberModelStatus } from "../../runtime/model-status-cache.js";
 import {
   useWorkbenchUiStore,
+  type SettingsSection,
   type ThemeMode,
 } from "../../stores/workbench-ui-store.js";
 import { useApplicationSettingsStore } from "../../stores/application-settings-store.js";
@@ -119,17 +125,6 @@ import {
 import { AgentTeamSettings } from "./agent-team-settings.js";
 import { useQueuedAutoSave, type AutoSaveState } from "./use-queued-auto-save.js";
 import "./settings-workspace.css";
-
-type SettingsSection =
-  | "general"
-  | "models"
-  | "agents"
-  | "mcp"
-  | "skills"
-  | "permissions"
-  | "terminal"
-  | "archived"
-  | "appearance";
 
 type PermissionRule = {
   action: string;
@@ -180,6 +175,7 @@ const SETTINGS_NAVIGATION: readonly SettingsNavItem[] = [
   { id: "mcp", label: "MCP", icon: PlugZap },
   { id: "skills", label: "Skill", icon: Sparkles },
   { id: "permissions", label: "权限", icon: ShieldCheck },
+  { id: "browser", label: "浏览器", icon: Globe2 },
   { id: "terminal", label: "终端", icon: Terminal },
   { id: "archived", label: "已归档对话", icon: Archive },
   { id: "appearance", label: "外观", icon: MonitorCog },
@@ -215,7 +211,51 @@ const TERMINAL_OUTPUT_ENCODING_OPTIONS: readonly {
   { label: "UTF-16 LE", value: "utf-16le" },
 ];
 
+const TERMINAL_FONT_PRESETS = [
+  {
+    label: "默认（匹配 Windows Terminal · 图标与 Emoji）",
+    value: DEFAULT_TERMINAL_CONFIGURATION.fontFamily,
+  },
+  {
+    label: "CodeNewRoman Nerd Font Mono",
+    value: "'CodeNewRoman Nerd Font Mono', 'Cascadia Mono', 'Segoe UI Emoji', 'Microsoft YaHei UI', Consolas, monospace",
+  },
+  {
+    label: "Cascadia Mono",
+    value: "'Cascadia Mono', 'Segoe UI Emoji', 'Microsoft YaHei UI', Consolas, monospace",
+  },
+  {
+    label: "JetBrains Mono",
+    value: "'JetBrains Mono', 'Segoe UI Emoji', 'Microsoft YaHei UI', Consolas, monospace",
+  },
+  {
+    label: "Consolas",
+    value: "Consolas, 'Segoe UI Emoji', 'Microsoft YaHei UI', monospace",
+  },
+] as const;
+
+const BROWSER_ZOOM_OPTIONS = [
+  25,
+  33,
+  50,
+  67,
+  75,
+  80,
+  90,
+  100,
+  110,
+  125,
+  150,
+  175,
+  200,
+  250,
+  300,
+  400,
+  500,
+] as const;
+
 const PERMISSION_RULES: readonly Omit<PermissionRule, "policy">[] = [
+  { id: "browser-control", action: "浏览器操作", scope: "模型创建的浏览器标签" },
   { id: "workspace-read", action: "工作区读取", scope: "已授权项目" },
   { id: "workspace-search", action: "代码搜索", scope: "已授权项目" },
   { id: "patch-write", action: "应用 Patch", scope: "目标文件" },
@@ -224,7 +264,8 @@ const PERMISSION_RULES: readonly Omit<PermissionRule, "policy">[] = [
 ] as const;
 
 export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient }): ReactElement {
-  const [activeSection, setActiveSection] = useState<SettingsSection>("general");
+  const activeSection = useWorkbenchUiStore((state) => state.settingsSection);
+  const setActiveSection = useWorkbenchUiStore((state) => state.setSettingsSection);
   const permissionPolicies = useApplicationSettingsStore((state) => state.permissionPolicies);
   const setPermissionPolicy = useApplicationSettingsStore((state) => state.setPermissionPolicy);
   const permissions = useMemo(() => PERMISSION_RULES.map((permission) => ({
@@ -284,6 +325,9 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
               permissions={permissions}
               onChange={setPermissionPolicy}
             />
+          ) : null}
+          {activeSection === "browser" ? (
+            <BrowserSettings agentClient={agentClient} />
           ) : null}
           {activeSection === "terminal" ? (
             <TerminalSettings agentClient={agentClient} />
@@ -3605,6 +3649,95 @@ function PermissionsSettings({
   );
 }
 
+function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactElement {
+  const [draft, setDraft] = useState<BrowserConfiguration>(
+    structuredClone(DEFAULT_BROWSER_CONFIGURATION),
+  );
+  const [operationError, setOperationError] = useState<string | null>(null);
+  const [saveRevision, setSaveRevision] = useState(0);
+  const draftRef = useRef(draft);
+  const latestSaveRevisionRef = useRef(0);
+
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+
+  useEffect(() => {
+    let disposed = false;
+    void agentClient.getBrowserConfiguration().then(
+      (configuration) => {
+        if (!disposed) setDraft(configuration);
+      },
+      () => {
+        if (!disposed) setOperationError("无法读取浏览器配置");
+      },
+    );
+    return () => {
+      disposed = true;
+    };
+  }, [agentClient]);
+
+  const autoSave = useQueuedAutoSave({
+    revision: saveRevision,
+    save: (next: BrowserConfiguration) => agentClient.saveBrowserConfiguration(next),
+    validate: (next: BrowserConfiguration) => {
+      const parsed = browserConfigurationSchema.safeParse(next);
+      return parsed.success ? parsed.data : null;
+    },
+    value: draft,
+    onError: (reason) => setOperationError(errorMessage(reason)),
+    onSaved: (configuration, revision) => {
+      if (revision !== latestSaveRevisionRef.current) return;
+      draftRef.current = configuration;
+      setDraft(configuration);
+    },
+  });
+
+  const updateDefaultZoom = (defaultZoomPercent: number): void => {
+    const next = { ...draftRef.current, defaultZoomPercent };
+    draftRef.current = next;
+    setDraft(next);
+    setOperationError(null);
+    latestSaveRevisionRef.current += 1;
+    setSaveRevision(latestSaveRevisionRef.current);
+  };
+
+  return (
+    <SettingsSectionHeader eyebrow="内置浏览器" title="浏览器">
+      <div className="settings-terminal-form">
+        <div className="settings-terminal-grid">
+          <label className="settings-field">
+            <span>新标签默认缩放</span>
+            <Select
+              value={String(draft.defaultZoomPercent)}
+              onValueChange={(value) => updateDefaultZoom(Number(value))}
+            >
+              <SelectTrigger aria-label="新浏览器标签默认缩放" className="settings-select-trigger">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="start">
+                {BROWSER_ZOOM_OPTIONS.map((percent) => (
+                  <SelectItem key={percent} value={String(percent)}>{percent}%</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
+        </div>
+        <p className="settings-terminal-status">
+          当前标签可通过 Ctrl + 鼠标滚轮或浏览器菜单单独调整；该默认值仅影响之后新建的标签。
+        </p>
+        {operationError !== null ? (
+          <p className="settings-terminal-status" role="alert">{operationError}</p>
+        ) : (
+          <p className="settings-terminal-status" role="status">
+            {autoSaveStateLabel(autoSave.state)}
+          </p>
+        )}
+      </div>
+    </SettingsSectionHeader>
+  );
+}
+
 function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactElement {
   const savedConfiguration = useWorkbenchUiStore((state) => state.terminalConfiguration);
   const setTerminalConfiguration = useWorkbenchUiStore(
@@ -3690,14 +3823,14 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
       <div className="settings-terminal-form">
         <div className="settings-terminal-grid">
           <label className="settings-field">
-            <span>终端</span>
+            <span>默认终端</span>
             <Select
               value={draft.shell}
               onValueChange={(shell) => {
                 updateDraft({ shell: shell as TerminalShell });
               }}
             >
-              <SelectTrigger aria-label="终端" className="settings-select-trigger">
+              <SelectTrigger aria-label="默认终端" className="settings-select-trigger">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent align="start">
@@ -3708,6 +3841,24 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
                 ))}
               </SelectContent>
             </Select>
+          </label>
+
+          <label className="settings-field settings-field--wide">
+            <span>{terminalShellLabel(draft.shell, platform)}启动路径（可选）</span>
+            <input
+              aria-label="终端启动路径"
+              placeholder="例如 C:\\Program Files\\PowerShell\\7\\pwsh.exe"
+              value={draft.shellPaths[resolvedTerminalShell(draft.shell, platform)]}
+              onChange={(event) => {
+                const shell = resolvedTerminalShell(draft.shell, platform);
+                updateDraft({
+                  shellPaths: {
+                    ...draftRef.current.shellPaths,
+                    [shell]: event.target.value,
+                  },
+                });
+              }}
+            />
           </label>
 
           <label className="settings-field">
@@ -3734,9 +3885,31 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
           </label>
 
           <label className="settings-field settings-field--wide">
-            <span>字体</span>
+            <span>字体预设</span>
+            <Select
+              value={terminalFontPresetValue(draft.fontFamily)}
+              onValueChange={(fontFamily) => {
+                if (fontFamily !== "custom") updateDraft({ fontFamily });
+              }}
+            >
+              <SelectTrigger aria-label="终端字体预设" className="settings-select-trigger">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="start">
+                {TERMINAL_FONT_PRESETS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+                <SelectItem value="custom">自定义（使用下方字体栈）</SelectItem>
+              </SelectContent>
+            </Select>
+          </label>
+
+          <label className="settings-field settings-field--wide">
+            <span>自定义字体栈</span>
             <input
-              aria-label="终端字体"
+              aria-label="终端自定义字体"
               value={draft.fontFamily}
               onChange={(event) => {
                 updateDraft({ fontFamily: event.target.value });
@@ -3774,6 +3947,10 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
             />
           </label>
         </div>
+
+        <p className="settings-terminal-status">
+          默认字体支持 Starship 图标与 Emoji；可选择预设或直接填写 CSS 字体栈。路径留空时按默认命令启动；PWSH 会尝试常见安装目录。填写时必须是对应可执行文件的绝对路径，只影响之后新建的终端标签。
+        </p>
 
         <section
           aria-label="终端预览"
@@ -3815,14 +3992,14 @@ function terminalShellOptions(
     return [
       { label: "系统默认（Windows PowerShell）", value: "system" },
       { label: "Windows PowerShell", value: "powershell" },
-      { label: "PowerShell 7", value: "pwsh" },
+      { label: "PWSH（PowerShell 7）", value: "pwsh" },
       { label: "命令提示符", value: "cmd" },
     ];
   }
 
   return [
     { label: "系统默认（PowerShell 7）", value: "system" },
-    { label: "PowerShell 7", value: "pwsh" },
+    { label: "PWSH（PowerShell 7）", value: "pwsh" },
     { label: "Bash", value: "bash" },
   ];
 }
@@ -3830,6 +4007,20 @@ function terminalShellOptions(
 function terminalShellLabel(shell: TerminalShell, platform: RuntimePlatform): string {
   return terminalShellOptions(platform).find((option) => option.value === shell)?.label
     ?? "系统默认";
+}
+
+function terminalFontPresetValue(fontFamily: string): string {
+  return TERMINAL_FONT_PRESETS.some((option) => option.value === fontFamily)
+    ? fontFamily
+    : "custom";
+}
+
+function resolvedTerminalShell(
+  shell: TerminalShell,
+  platform: RuntimePlatform,
+): Exclude<TerminalShell, "system"> {
+  if (shell !== "system") return shell;
+  return platform === "win32" ? "powershell" : "pwsh";
 }
 
 function terminalOutputEncodingLabel(encoding: TerminalOutputEncoding): string {

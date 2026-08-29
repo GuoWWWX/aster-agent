@@ -21,6 +21,7 @@ export const agentStatusSchema = z.enum(["running", "sleeping", "standby"]);
 /** Tool surfaces that can create an Agent-scoped allow rule. */
 export const agentPermissionToolSchema = z.enum([
   "apply_patch",
+  "browser_control",
   "delete_file",
   "external_read",
   "replace_in_file",
@@ -150,6 +151,7 @@ export const agentDirectoryConfigurationSchema = z.object({
 export const permissionPolicySchema = z.enum(["allow", "ask", "unavailable"]);
 
 export const applicationPermissionPoliciesSchema = z.object({
+  "browser-control": permissionPolicySchema.default("ask"),
   "command-run": permissionPolicySchema,
   "git-write": permissionPolicySchema,
   "patch-write": permissionPolicySchema,
@@ -351,6 +353,7 @@ export const DEFAULT_APPLICATION_SETTINGS: ApplicationSettings = {
     showContextUsage: true,
   },
   permissionPolicies: {
+    "browser-control": "ask",
     "command-run": "ask",
     "git-write": "unavailable",
     "patch-write": "ask",

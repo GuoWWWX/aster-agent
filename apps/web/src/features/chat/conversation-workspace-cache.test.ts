@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ProjectSession } from "../projects/project-session-model.js";
 import {
-  CONVERSATION_WORKSPACE_CACHE_MIN_RETAINED,
+  CONVERSATION_WORKSPACE_CACHE_MAX_RETAINED,
   CONVERSATION_WORKSPACE_CACHE_TTL_MS,
   conversationWorkspaceSessions,
   retainConversationWorkspace,
@@ -64,7 +64,7 @@ describe("conversation workspace cache", () => {
     expect(retained[0]?.lastAccessedAt).toBe(30);
   });
 
-  it("keeps every recently accessed conversation without a hard count limit", () => {
+  it("keeps only the most recent cached conversations", () => {
     const entries = Array.from({ length: 10 }, (_, index) => ({
       lastAccessedAt: 1_000 - index,
       session: session(`recent-${index}`),
@@ -72,10 +72,20 @@ describe("conversation workspace cache", () => {
 
     const retained = retainConversationWorkspace(entries, session("active"), 2_000);
 
-    expect(retained).toHaveLength(11);
+    expect(retained).toHaveLength(CONVERSATION_WORKSPACE_CACHE_MAX_RETAINED);
+    expect(retained.map((entry) => entry.session.id)).toEqual([
+      "active",
+      "recent-0",
+      "recent-1",
+      "recent-2",
+      "recent-3",
+      "recent-4",
+      "recent-5",
+      "recent-6",
+    ]);
   });
 
-  it("evicts inactive conversations after the ttl while preserving the three most recent", () => {
+  it("evicts every inactive conversation after the ttl", () => {
     const now = CONVERSATION_WORKSPACE_CACHE_TTL_MS + 100;
     const active = session("active");
     const retained = retainConversationWorkspace([
@@ -85,11 +95,10 @@ describe("conversation workspace cache", () => {
       { lastAccessedAt: 0, session: session("expired") },
     ], active, now);
 
-    expect(retained.map((entry) => entry.session.id)).toEqual(["active", "second", "third"]);
-    expect(retained).toHaveLength(CONVERSATION_WORKSPACE_CACHE_MIN_RETAINED);
+    expect(retained.map((entry) => entry.session.id)).toEqual(["active"]);
   });
 
-  it("retains a recently accessed conversation beyond the protected minimum", () => {
+  it("retains a recently accessed conversation while evicting older pages", () => {
     const now = CONVERSATION_WORKSPACE_CACHE_TTL_MS + 100;
     const entries = [
       { lastAccessedAt: 0, session: session("first") },
@@ -100,11 +109,6 @@ describe("conversation workspace cache", () => {
 
     const retained = retainConversationWorkspace(entries, null, now);
 
-    expect(retained.map((entry) => entry.session.id)).toEqual([
-      "first",
-      "second",
-      "third",
-      "recent",
-    ]);
+    expect(retained.map((entry) => entry.session.id)).toEqual(["recent"]);
   });
 });
