@@ -2,57 +2,72 @@ import {
   Bot,
   MessageSquareText,
   Scale,
-  Sparkles,
   UsersRound,
 } from "lucide-react";
 import type { ReactElement } from "react";
-
 import type {
-  TeamWorkItemPrototype,
-  TeamWorkerPrototype,
-} from "./team-runtime-prototype.js";
+  ConversationSummary,
+  TeamWorkItemExecutionAgent,
+  TeamWorkItemExecutionView,
+} from "@agent/protocol";
+
+import type { TeamWorkItemPrototype } from "./team-runtime-prototype.js";
 
 export function TeamOperations({
+  execution,
   item,
-  temporaryCount,
-  workers,
+  onOpenConversation,
 }: {
+  execution: TeamWorkItemExecutionView | null;
   item: TeamWorkItemPrototype | null;
-  temporaryCount: number;
-  workers: readonly TeamWorkerPrototype[];
+  onOpenConversation: (conversation: ConversationSummary) => void;
 }): ReactElement {
-  const activeWorkers = workers.filter(
-    (worker) => worker.status === "active" || worker.status === "reviewing",
-  ).length;
+  const members = execution?.agents ?? [];
+  const lead = members.find((member) => member.depth === 0) ?? null;
+  const activeWorkers = members.filter(isMemberActive).length;
+  const maxDepth = members.reduce((maximum, member) => Math.max(maximum, member.depth), 0);
   return (
     <aside className="team-command-panel team-operations" aria-labelledby="team-operations-heading">
-      <PanelHeading id="team-operations-heading" label="团队调度" meta={`${activeWorkers}/${workers.length} 工作中`} />
+      <PanelHeading id="team-operations-heading" label="实际执行成员" meta={`${activeWorkers}/${members.length} 执行中`} />
       <section className="team-supervisor">
         <div className="team-supervisor__identity">
           <span><Scale aria-hidden="true" size={16} /></span>
-          <div><strong>Team Lead</strong><small>全局管理 Agent</small></div>
-          <em>在线</em>
+          <div>
+            <strong>{lead === null ? "等待 Team Lead" : memberName(lead)}</strong>
+            <small>{lead?.agent?.role.trim() || "全局管理 Agent"}</small>
+          </div>
+          <em>{lead === null ? "待命" : memberStatus(lead)}</em>
         </div>
-        <p>负责接单、制定方案、分配开发、触发测试评审，并在通过后生成统一交付。</p>
+        <p>{lead === null
+          ? "等待 Team Lead 领取当前工作项后生成真实执行会话。"
+          : "成员状态和任务分派来自当前工作项的持久化对话记录。"}</p>
         <div className="team-supervisor__capacity">
-          <span><UsersRound aria-hidden="true" size={13} />常驻 4</span>
-          <span><Sparkles aria-hidden="true" size={13} />临时 {temporaryCount}</span>
-          <span>上限 6</span>
+          <span><UsersRound aria-hidden="true" size={13} />实际成员 {members.length}</span>
+          <span>活跃 {activeWorkers}</span>
+          <span>协作层级 {maxDepth}</span>
         </div>
       </section>
 
       <section className="team-roster-section">
-        <SectionHeading icon={<Bot aria-hidden="true" size={14} />} label="当前成员" meta="自动扩缩容" />
+        <SectionHeading icon={<Bot aria-hidden="true" size={14} />} label="当前成员" meta="持久对话" />
         <div className="team-roster-list">
-          {workers.map((worker) => (
-            <article key={worker.id} className="team-worker-row" data-status={worker.status}>
+          {members.length === 0 ? <p className="team-operations__empty">尚无实际成员会话</p> : null}
+          {members.map((member) => (
+            <button
+              aria-label={`打开 ${memberName(member)} 的对话`}
+              key={member.conversation.id}
+              className="team-worker-row w-full appearance-none border-0 bg-transparent text-left hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-[-2px]"
+              data-status={isMemberActive(member) ? "active" : "waiting"}
+              type="button"
+              onClick={() => onOpenConversation(member.conversation)}
+            >
               <span className="team-worker-row__avatar"><Bot aria-hidden="true" size={14} /></span>
               <div>
-                <strong>{worker.name}{worker.kind === "temporary" ? <em>临时</em> : null}</strong>
-                <small>{worker.role} · {worker.assignment}</small>
+                <strong>{memberName(member)}{member.depth > 0 ? <em>成员</em> : null}</strong>
+                <small>{memberAssignment(member)} · {memberStatus(member)}</small>
               </div>
               <span className="team-worker-row__state" />
-            </article>
+            </button>
           ))}
         </div>
       </section>
@@ -70,6 +85,35 @@ export function TeamOperations({
       </section>
     </aside>
   );
+}
+
+function memberName(member: TeamWorkItemExecutionAgent): string {
+  return member.agent?.name ?? member.conversation.title;
+}
+
+function memberAssignment(member: TeamWorkItemExecutionAgent): string {
+  if (member.delegation !== null) return member.delegation.title;
+  return member.depth === 0 ? "Team Lead 执行会话" : "等待 Team Lead 分派任务";
+}
+
+function isMemberActive(member: TeamWorkItemExecutionAgent): boolean {
+  return member.conversation.activeRunId !== null
+    || member.delegation?.status === "queued"
+    || member.delegation?.status === "running";
+}
+
+function memberStatus(member: TeamWorkItemExecutionAgent): string {
+  if (member.conversation.activeRunId !== null || member.delegation?.status === "running") {
+    return "执行中";
+  }
+  if (member.delegation?.status === "queued") return "等待调度";
+  if (member.delegation?.status === "completed") return "已完成";
+  if (member.delegation?.status === "failed") return "执行失败";
+  if (member.delegation?.status === "cancelled") return "已取消";
+  if (member.conversation.lastRunStatus === "completed") return "已完成";
+  if (member.conversation.lastRunStatus === "failed") return "执行失败";
+  if (member.conversation.lastRunStatus === "cancelled") return "已取消";
+  return "待命";
 }
 
 function PanelHeading({ id, label, meta }: { id: string; label: string; meta: string }): ReactElement {

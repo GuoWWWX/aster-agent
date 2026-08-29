@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  getTeamWorkItemExecutionInputSchema,
   submitTeamWorkItemInputSchema,
+  teamWorkItemExecutionViewSchema,
   teamWorkItemViewSchema,
+  updateTeamWorkItemInputSchema,
+  updateTeamWorkItemPermissionInputSchema,
 } from "./team-work-item.js";
 
 describe("Team WorkItem protocol", () => {
@@ -19,6 +23,27 @@ describe("Team WorkItem protocol", () => {
       priority: "normal",
     });
     expect(() => submitTeamWorkItemInputSchema.parse({ ...input, status: "completed" }))
+      .toThrow();
+  });
+
+  it("allows requirement edits only through a narrow WorkItem update contract", () => {
+    const input = {
+      requirement: "补充验收条件并调整实现范围。",
+      title: "补充验收条件",
+      workItemId: "00000000-0000-4000-8000-000000000009",
+    };
+    expect(updateTeamWorkItemInputSchema.parse(input)).toEqual(input);
+    expect(() => updateTeamWorkItemInputSchema.parse({ ...input, teamId: "default-team" }))
+      .toThrow();
+  });
+
+  it("allows an execution permission update without widening requirement edits", () => {
+    const input = {
+      permissionMode: "read_only",
+      workItemId: "00000000-0000-4000-8000-000000000009",
+    };
+    expect(updateTeamWorkItemPermissionInputSchema.parse(input)).toEqual(input);
+    expect(() => updateTeamWorkItemPermissionInputSchema.parse({ ...input, title: "不应修改需求" }))
       .toThrow();
   });
 
@@ -45,5 +70,65 @@ describe("Team WorkItem protocol", () => {
       title: "测试",
       updatedAt: now,
     })).toThrow();
+  });
+
+  it("validates a durable WorkItem execution lineage", () => {
+    const now = new Date().toISOString();
+    const workItemId = "00000000-0000-4000-8000-000000000010";
+    const rootConversationId = "00000000-0000-4000-8000-000000000011";
+    const childConversationId = "00000000-0000-4000-8000-000000000012";
+    const execution = teamWorkItemExecutionViewSchema.parse({
+      agents: [
+        {
+          agent: {
+            id: "team-lead",
+            instructions: "负责汇总交付。",
+            isDefault: true,
+            name: "Team Lead",
+            role: "负责人",
+          },
+          conversation: {
+            activeRunId: "00000000-0000-4000-8000-000000000013",
+            createdAt: now,
+            id: rootConversationId,
+            lastRunStatus: "running",
+            projectId: null,
+            title: "团队任务：验证执行谱系",
+            updatedAt: now,
+          },
+          delegation: null,
+          depth: 0,
+        },
+        {
+          agent: null,
+          conversation: {
+            activeRunId: "00000000-0000-4000-8000-000000000014",
+            createdAt: now,
+            id: childConversationId,
+            lastRunStatus: "queued",
+            parentConversationId: rootConversationId,
+            projectId: null,
+            threadKind: "subagent",
+            title: "检查数据库查询",
+            updatedAt: now,
+          },
+          delegation: {
+            id: "00000000-0000-4000-8000-000000000015",
+            status: "running",
+            title: "检查数据库查询",
+          },
+          depth: 1,
+        },
+      ],
+      workItemId,
+    });
+
+    expect(execution.agents.map((agent) => agent.depth)).toEqual([0, 1]);
+    expect(getTeamWorkItemExecutionInputSchema.parse({ workItemId })).toEqual({ workItemId });
+    expect(() => getTeamWorkItemExecutionInputSchema.parse({ extra: true, workItemId })).toThrow();
+    expect(() => teamWorkItemExecutionViewSchema.parse({ ...execution, agents: [{
+      ...execution.agents[0],
+      depth: -1,
+    }] })).toThrow();
   });
 });

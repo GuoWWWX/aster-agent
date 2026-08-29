@@ -85,7 +85,10 @@ import {
   type ListTeamWorkItemsInput,
   type RequestTeamWorkItemReworkInput,
   type SubmitTeamWorkItemInput,
+  type UpdateTeamWorkItemInput,
+  type UpdateTeamWorkItemPermissionInput,
   type AcceptTeamWorkItemInput,
+  type TeamWorkItemExecutionView,
   type TeamWorkItemView,
 } from "@agent/protocol";
 
@@ -411,6 +414,7 @@ export class MockAgentClient implements AgentClient {
       pinOrder: null,
       projectId,
       teamId: input.teamId ?? null,
+      teamWorkItemId: null,
       threadKind: input.threadKind ?? "agent",
       title:
         projectConversations.length === 0
@@ -484,6 +488,7 @@ export class MockAgentClient implements AgentClient {
       pinOrder: null,
       projectId: source.projectId,
       teamId: source.teamId,
+      teamWorkItemId: null,
       threadKind: "agent",
       title: isSiblingFork
         ? `${source.title} (${siblingForkNumber})`
@@ -815,6 +820,10 @@ export class MockAgentClient implements AgentClient {
     if (index < 0) {
       return Promise.reject(new Error("The mock conversation is unavailable."));
     }
+    if (this.conversations[index]?.teamWorkItemId !== null
+      && this.conversations[index]?.teamWorkItemId !== undefined) {
+      return Promise.reject(new Error("Managed Team WorkItem conversations are retained by their WorkItem lifecycle."));
+    }
 
     const deletedIds = new Set([
       input.conversationId,
@@ -1058,6 +1067,13 @@ export class MockAgentClient implements AgentClient {
       && (input.projectId === undefined || item.projectId === input.projectId))));
   }
 
+  public getTeamWorkItemExecution(workItemId: string): Promise<TeamWorkItemExecutionView> {
+    if (!this.teamWorkItems.some((item) => item.id === workItemId)) {
+      return Promise.reject(new Error("The mock Team WorkItem is unavailable."));
+    }
+    return Promise.resolve({ agents: [], workItemId });
+  }
+
   public submitTeamWorkItem(input: SubmitTeamWorkItemInput): Promise<TeamWorkItemView> {
     const now = new Date().toISOString();
     const item: TeamWorkItemView = {
@@ -1087,6 +1103,7 @@ export class MockAgentClient implements AgentClient {
       requirement: input.requirement,
       resultSummary: null,
       revision: 1,
+      sourceConversationId: input.sourceConversationId ?? null,
       status: "queued",
       tasks: [],
       teamId: input.teamId,
@@ -1094,6 +1111,57 @@ export class MockAgentClient implements AgentClient {
       updatedAt: now,
     };
     this.teamWorkItems.push(item);
+    return Promise.resolve(structuredClone(item));
+  }
+
+  public updateTeamWorkItem(input: UpdateTeamWorkItemInput): Promise<TeamWorkItemView> {
+    const item = this.teamWorkItems.find((candidate) => candidate.id === input.workItemId);
+    if (item === undefined || item.status !== "queued") {
+      return Promise.reject(new Error("Only a queued mock Team WorkItem can be edited."));
+    }
+    item.title = input.title;
+    item.requirement = input.requirement;
+    item.updatedAt = new Date().toISOString();
+    const nextTeamEventSequence = this.teamWorkItems
+      .filter((candidate) => candidate.teamId === item.teamId)
+      .flatMap((candidate) => candidate.events)
+      .reduce((sequence, event) => Math.max(sequence, event.sequence), 0) + 1;
+    item.events.push({
+      createdAt: item.updatedAt,
+      detail: "浏览器模拟用户在调度前更新了需求。",
+      id: this.createIdentifier(),
+      sequence: nextTeamEventSequence,
+      type: "updated",
+    });
+    return Promise.resolve(structuredClone(item));
+  }
+
+  public updateTeamWorkItemPermission(
+    input: UpdateTeamWorkItemPermissionInput,
+  ): Promise<TeamWorkItemView> {
+    const item = this.teamWorkItems.find((candidate) => candidate.id === input.workItemId);
+    if (
+      item === undefined
+      || item.status === "completed"
+      || item.status === "cancelled"
+      || item.status === "failed"
+    ) {
+      return Promise.reject(new Error("The mock Team WorkItem permission cannot be changed."));
+    }
+    if (item.permissionMode === input.permissionMode) return Promise.resolve(structuredClone(item));
+    item.permissionMode = input.permissionMode;
+    item.updatedAt = new Date().toISOString();
+    const nextTeamEventSequence = this.teamWorkItems
+      .filter((candidate) => candidate.teamId === item.teamId)
+      .flatMap((candidate) => candidate.events)
+      .reduce((sequence, event) => Math.max(sequence, event.sequence), 0) + 1;
+    item.events.push({
+      createdAt: item.updatedAt,
+      detail: "浏览器模拟用户更新了团队执行权限。",
+      id: this.createIdentifier(),
+      sequence: nextTeamEventSequence,
+      type: "updated",
+    });
     return Promise.resolve(structuredClone(item));
   }
 
@@ -1234,6 +1302,9 @@ export class MockAgentClient implements AgentClient {
     if (conversation === undefined) {
       return Promise.reject(new Error("The mock conversation is unavailable."));
     }
+    if (conversation.teamWorkItemId !== null && conversation.teamWorkItemId !== undefined) {
+      return Promise.reject(new Error("Managed Team WorkItem conversations retain their WorkItem project binding."));
+    }
     if (input.projectId !== null && this.project?.id !== input.projectId) {
       return Promise.reject(new Error("The mock project is unavailable."));
     }
@@ -1275,8 +1346,37 @@ export class MockAgentClient implements AgentClient {
         return Promise.reject(new Error("The selected reasoning option is not configured."));
       }
     }
+    const workItem = conversation.teamWorkItemId === null || conversation.teamWorkItemId === undefined
+      ? undefined
+      : this.teamWorkItems.find((candidate) => candidate.id === conversation.teamWorkItemId);
+    if (conversation.teamWorkItemId !== null && conversation.teamWorkItemId !== undefined) {
+      if (
+        workItem === undefined
+        || workItem.status === "completed"
+        || workItem.status === "cancelled"
+        || workItem.status === "failed"
+      ) {
+        return Promise.reject(new Error("The mock Team WorkItem model cannot be changed."));
+      }
+      workItem.modelSelection = structuredClone(input.modelSelection);
+      workItem.updatedAt = new Date().toISOString();
+      const nextTeamEventSequence = this.teamWorkItems
+        .filter((candidate) => candidate.teamId === workItem.teamId)
+        .flatMap((candidate) => candidate.events)
+        .reduce((sequence, event) => Math.max(sequence, event.sequence), 0) + 1;
+      workItem.events.push({
+        createdAt: workItem.updatedAt,
+        detail: "浏览器模拟用户更新了团队执行模型和思考程度。",
+        id: this.createIdentifier(),
+        sequence: nextTeamEventSequence,
+        type: "updated",
+      });
+    }
     conversation.modelSelection = structuredClone(input.modelSelection);
-    if (conversation.threadKind !== "subagent") {
+    if (
+      conversation.threadKind !== "subagent"
+      && (conversation.teamWorkItemId === null || conversation.teamWorkItemId === undefined)
+    ) {
       this.modelStatus.recentSelection = structuredClone(input.modelSelection);
     }
     conversation.updatedAt = new Date().toISOString();
@@ -1350,7 +1450,15 @@ export class MockAgentClient implements AgentClient {
     const conversation = this.conversations.find(
       (candidate) => candidate.id === input.conversationId,
     );
-    if (conversation === undefined || (input.archived && conversation.activeRunId !== null)) {
+    if (
+      conversation === undefined
+      || (input.archived && conversation.activeRunId !== null)
+      || (
+        input.archived
+        && conversation.teamWorkItemId !== null
+        && conversation.teamWorkItemId !== undefined
+      )
+    ) {
       return Promise.reject(new Error("The mock conversation cannot be archived."));
     }
     if (conversation.isArchived === input.archived) {

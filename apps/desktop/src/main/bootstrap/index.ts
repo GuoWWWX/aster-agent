@@ -2,7 +2,11 @@ import { app, BrowserWindow } from "electron";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-import { ARCHIVED_CONVERSATION_RETENTION_DAYS } from "@agent/protocol";
+import {
+  ARCHIVED_CONVERSATION_RETENTION_DAYS,
+  conversationRunEventSchema,
+  IPC_CHANNELS,
+} from "@agent/protocol";
 
 import { AgentRuntime } from "../agent/agent-runtime.js";
 import { SkillRuntime } from "../agent/skill-runtime.js";
@@ -270,8 +274,11 @@ async function initializeServices(): Promise<DesktopServices> {
     projectRegistry,
     { getConfiguration: () => applicationSettings.getConfiguration().agentDirectory },
   );
+  agentRuntime.setTeamWorkItemDispatcher(teamWorkItems);
+  applicationSettings.onChanged(() => {
+    teamWorkItems.resumeQueued(sendConversationRunEvent);
+  });
   database.blockInterruptedTeamWorkItems();
-  teamWorkItems.resumeQueued(() => undefined);
 
   return {
     agentRuntime,
@@ -302,6 +309,15 @@ function getServices(): DesktopServices {
     throw new Error("Desktop services were not initialized.");
   }
   return services;
+}
+
+function sendConversationRunEvent(event: unknown): void {
+  const window = mainWindow;
+  if (window === undefined || window.isDestroyed()) return;
+  window.webContents.send(
+    IPC_CHANNELS.conversationRunEvent,
+    conversationRunEventSchema.parse(event),
+  );
 }
 
 async function openMainWindow(): Promise<void> {
@@ -347,6 +363,9 @@ async function openMainWindow(): Promise<void> {
   });
 
   window.once("ready-to-show", () => window.show());
+  window.webContents.once("did-finish-load", () => {
+    services?.teamWorkItems.resumeQueued(sendConversationRunEvent);
+  });
   await loadRenderer(window, rendererTarget);
 }
 

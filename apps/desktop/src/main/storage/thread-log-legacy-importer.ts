@@ -34,7 +34,7 @@ export class ThreadLogLegacyImporter {
     const importedConversationIds: string[] = [];
     const skippedConversationIds: string[] = [];
     const relationConversationIds = this.relationshipConversationIds();
-    for (const conversationId of this.database.listAllConversationIds()) {
+    for (const conversationId of this.database.listProjectableConversationIds()) {
       if (!this.importConversationIfMissing(conversationId, relationConversationIds.has(conversationId))) {
         skippedConversationIds.push(conversationId);
         continue;
@@ -52,7 +52,7 @@ export class ThreadLogLegacyImporter {
   public recoverUnreadableConversationLogs(): ThreadLogCorruptionRecoveryResult {
     const quarantinedConversationIds: string[] = [];
     const relationConversationIds = this.relationshipConversationIds();
-    for (const conversationId of this.database.listAllConversationIds()) {
+    for (const conversationId of this.database.listProjectableConversationIds()) {
       try {
         this.threadLog.read(conversationId);
       } catch {
@@ -92,7 +92,7 @@ export class ThreadLogLegacyImporter {
 
   private relationshipConversationIds(): ReadonlySet<string> {
     const relationshipConversationIds = new Set<string>();
-    for (const conversationId of this.database.listAllConversationIds()) {
+    for (const conversationId of this.database.listProjectableConversationIds()) {
       const parentConversationId = this.database.getConversation(conversationId).parentConversationId;
       if (parentConversationId === null) continue;
       relationshipConversationIds.add(conversationId);

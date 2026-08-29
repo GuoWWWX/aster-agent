@@ -178,6 +178,7 @@ describe("project session model", () => {
       pinOrder: null,
       projectId: null,
       teamId: null,
+      teamWorkItemId: null,
       threadKind: "agent",
       title: "新会话",
       workspaceRootPath: null,
@@ -247,5 +248,35 @@ describe("project session model", () => {
     expect(groupSubagentSessionsByParent([parent, sideConversation, subagent])).toEqual(
       new Map([[parent.id, [subagent]]]),
     );
+  });
+
+  it("keeps all managed Team members below their source conversation", () => {
+    const source = createProjectSession("project-a", [], "source");
+    const lead: ProjectSession = {
+      ...createProjectSession("project-a", [source], "lead"),
+      parentConversationId: source.id,
+      teamId: "default-team",
+      teamWorkItemId: "work-item-1",
+      threadKind: "team_lead",
+      title: "Team Lead · 实现需求",
+    };
+    const worker: ProjectSession = {
+      ...createProjectSession("project-a", [source, lead], "worker"),
+      parentConversationId: lead.id,
+      teamId: "default-team",
+      teamWorkItemId: "work-item-1",
+      threadKind: "subagent",
+      title: "实现 Agent",
+    };
+
+    expect(getProjectSessions([source, lead, worker], "project-a")).toEqual([source]);
+    expect(groupSubagentSessionsByParent([source, lead, worker])).toEqual(
+      new Map([[source.id, [lead, worker]]]),
+    );
+    expect(aggregateSideConversationState([{ ...source }, lead, {
+      ...worker,
+      activeRunId: "run-worker",
+      lastRunStatus: "running",
+    }])[0]).toMatchObject({ activeSideConversationCount: 1 });
   });
 });

@@ -35,10 +35,7 @@ export function conversationWorkspaceSessions(
   activeSession: ProjectSession | null,
   availableSessionIds: ReadonlySet<string> | null = null,
 ): readonly ProjectSession[] {
-  const availableActiveSession = activeSession !== null
-    && (availableSessionIds?.has(activeSession.id) ?? true)
-    ? activeSession
-    : null;
+  const availableActiveSession = activeSession;
   const cachedSessions = entries
     .filter((entry) => entry.session.id !== availableActiveSession?.id)
     .filter((entry) => availableSessionIds?.has(entry.session.id) ?? true)
@@ -62,10 +59,7 @@ export function useConversationWorkspaceCache(
         ),
     [availableSessions],
   );
-  const availableActiveSession = activeSession !== null
-    && (availableSessionIds?.has(activeSession.id) ?? true)
-    ? activeSession
-    : null;
+  const availableActiveSession = activeSession;
   const [entries, setEntries] = useState<ConversationWorkspaceCacheEntry[]>(() =>
     retainConversationWorkspace([], availableActiveSession, Date.now())
   );

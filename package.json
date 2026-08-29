@@ -8,7 +8,7 @@
     "pnpm": ">=10 <11"
   },
   "scripts": {
-    "dev": "concurrently --kill-others-on-fail --names web,desktop --prefix-colors cyan,green \"pnpm --filter @agent/web dev\" \"wait-on tcp:127.0.0.1:5173 && pnpm --filter @agent/desktop dev\"",
+    "dev": "concurrently --kill-others-on-fail --names web,desktop --prefix-colors cyan,green \"pnpm --filter @agent/web dev -- --strictPort\" \"wait-on tcp:127.0.0.1:5173 && pnpm --filter @agent/desktop dev\"",
     "lint": "pnpm --recursive --if-present run lint",
     "typecheck": "pnpm --recursive --if-present run typecheck",
     "test": "pnpm --recursive --if-present run test",

@@ -70,7 +70,10 @@ import type {
   ListTeamWorkItemsInput,
   RequestTeamWorkItemReworkInput,
   SubmitTeamWorkItemInput,
+  UpdateTeamWorkItemInput,
+  UpdateTeamWorkItemPermissionInput,
   AcceptTeamWorkItemInput,
+  TeamWorkItemExecutionView,
   TeamWorkItemView,
 } from "@agent/protocol";
 
@@ -154,6 +157,7 @@ export interface AgentClient {
   ): Promise<ConfigurationWorkspaceDirectoryListing>;
   listProjects(): Promise<ProjectSummary[]>;
   listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]>;
+  getTeamWorkItemExecution(workItemId: string): Promise<TeamWorkItemExecutionView>;
   readProjectFile(input: ReadProjectFileInput): Promise<ProjectFile>;
   writeProjectFile(input: WriteProjectFileInput): Promise<ProjectFile>;
   readProjectPreviewImage(input: ReadProjectPreviewImageInput): Promise<ProjectPreviewImage>;
@@ -162,6 +166,10 @@ export interface AgentClient {
   ): Promise<ConfigurationWorkspaceFile>;
   removeProject(input: ProjectReferenceInput): Promise<void>;
   submitTeamWorkItem(input: SubmitTeamWorkItemInput): Promise<TeamWorkItemView>;
+  updateTeamWorkItem(input: UpdateTeamWorkItemInput): Promise<TeamWorkItemView>;
+  updateTeamWorkItemPermission(
+    input: UpdateTeamWorkItemPermissionInput,
+  ): Promise<TeamWorkItemView>;
   requestTeamWorkItemRework(input: RequestTeamWorkItemReworkInput): Promise<TeamWorkItemView>;
   acceptTeamWorkItem(input: AcceptTeamWorkItemInput): Promise<TeamWorkItemView>;
   minimizeWindow(): Promise<void>;

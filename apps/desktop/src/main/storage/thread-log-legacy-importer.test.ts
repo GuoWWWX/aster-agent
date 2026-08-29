@@ -91,6 +91,28 @@ describe("ThreadLogLegacyImporter", () => {
     expect(recoveredDatabase.listTimeline(conversation.id)).toHaveLength(2);
   });
 
+  it("does not import a Conversation already marked for deletion", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "thread-log-import-pending-delete-"));
+    temporaryDirectories.push(directory);
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const run = database.createRunWithUserMessage(conversation.id, "将被删除的历史", "test-model");
+    database.finishRun(run.runId, "completed", null);
+    database.createConversationDeletionTask(conversation.id);
+    const threadLog = new ThreadLog(path.join(directory, "conversations"));
+    const importer = new ThreadLogLegacyImporter(
+      database,
+      threadLog,
+      new EventProjector(database, threadLog),
+    );
+
+    expect(importer.importMissingConversationLogs()).toEqual({
+      importedConversationIds: [],
+      skippedConversationIds: [],
+    });
+    expect(threadLog.hasConversation(conversation.id)).toBe(false);
+  });
+
   it("recovers a Fork only after its parent Conversation is projected", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "thread-log-import-"));
     temporaryDirectories.push(directory);

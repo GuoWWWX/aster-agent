@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronRight, CircleDotDashed, ClipboardList, Clock3, SendHorizontal } from "lucide-react";
+import { CheckCircle2, ChevronRight, CircleDotDashed, ClipboardList, Clock3 } from "lucide-react";
 import type { ReactElement } from "react";
 
 import type { TeamWorkItemPrototype, TeamWorkItemStatus } from "./team-runtime-prototype.js";
@@ -31,24 +31,19 @@ const STATUS_LABEL: Record<TeamWorkItemStatus, string> = {
 
 export function TeamWorkItemBoard({
   items,
-  onCreate,
   onOpen,
 }: {
   items: readonly TeamWorkItemPrototype[];
-  onCreate: () => void;
   onOpen: (workItemId: string) => void;
 }): ReactElement {
   return (
-    <section className="team-command-panel team-workitem-board" aria-labelledby="team-workitem-board-heading">
-      <header className="team-command-panel__heading team-workitem-board__heading">
+    <section className="team-workitem-board" aria-labelledby="team-workitem-board-heading">
+      <header className="team-command-panel team-command-panel__heading team-workitem-board__heading">
         <div>
           <ClipboardList aria-hidden="true" size={14} />
           <h2 id="team-workitem-board-heading">需求状态看板</h2>
           <span>{items.length} 个需求</span>
         </div>
-        <button type="button" onClick={onCreate}>
-          <SendHorizontal aria-hidden="true" size={13} />投递需求
-        </button>
       </header>
       <div className="team-workitem-board__columns">
         {BOARD_COLUMNS.map((column) => {

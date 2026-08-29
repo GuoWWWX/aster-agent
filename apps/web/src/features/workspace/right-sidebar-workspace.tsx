@@ -133,6 +133,12 @@ export type ProjectFileOpenRequest = {
   projectId: string;
 };
 
+export type TeamMemberOpenRequest = {
+  conversation: ProjectSession;
+  requestId: number;
+  sourceConversationId: string;
+};
+
 function toProjectSession(conversation: ConversationSummary): ProjectSession {
   return {
     activeSubagentCount: conversation.activeSubagentCount,
@@ -149,6 +155,7 @@ function toProjectSession(conversation: ConversationSummary): ProjectSession {
     projectId: conversation.projectId,
     subagentTaskStatus: conversation.subagentTaskStatus,
     teamId: conversation.teamId,
+    teamWorkItemId: conversation.teamWorkItemId,
     threadKind: conversation.threadKind,
     title: conversation.title,
     workspaceRootPath: conversation.workspaceRootPath,
@@ -163,6 +170,46 @@ export function upsertSideSession(
   return sessions.some((candidate) => candidate.id === session.id)
     ? sessions.map((candidate) => candidate.id === session.id ? session : candidate)
     : [...sessions, session];
+}
+
+function isManagedTeamMember(
+  conversation: { teamWorkItemId?: string | null },
+): boolean {
+  return conversation.teamWorkItemId !== null && conversation.teamWorkItemId !== undefined;
+}
+
+/** Team executions are retained for audit; closing only hides their side tab. */
+export function shouldDeleteSidebarChat(
+  conversation: { teamWorkItemId?: string | null },
+): boolean {
+  return !isManagedTeamMember(conversation);
+}
+
+async function listSideConversations(
+  agentClient: AgentClient,
+  sourceConversationId: string,
+): Promise<{ autoOpenIds: Set<string>; sessions: ProjectSession[] }> {
+  const directChildren = await agentClient.listConversationForks({
+    conversationId: sourceConversationId,
+  });
+  const ordinarySideChats = directChildren.filter(
+    (conversation) => conversation.threadKind === "agent" && !isManagedTeamMember(conversation),
+  );
+  const managedMembers: ConversationSummary[] = [];
+  const pending = directChildren.filter(isManagedTeamMember);
+  const seen = new Set<string>();
+  while (pending.length > 0) {
+    const member = pending.shift();
+    if (member === undefined || seen.has(member.id)) continue;
+    seen.add(member.id);
+    managedMembers.push(member);
+    const children = await agentClient.listConversationForks({ conversationId: member.id });
+    pending.push(...children.filter(isManagedTeamMember));
+  }
+  return {
+    autoOpenIds: new Set(ordinarySideChats.map((conversation) => conversation.id)),
+    sessions: [...ordinarySideChats, ...managedMembers].map(toProjectSession),
+  };
 }
 
 function fileTabId(projectId: string, path: string): string {
@@ -256,6 +303,7 @@ export function RightSidebarWorkspace({
   activeSession,
   agentClient,
   fileOpenRequest,
+  teamMemberOpenRequest,
   onLocateProject,
   onLocateSession,
   onSessionViewed,
@@ -266,6 +314,7 @@ export function RightSidebarWorkspace({
   activeSession: ProjectSession | null;
   agentClient: AgentClient;
   fileOpenRequest: ProjectFileOpenRequest | null;
+  teamMemberOpenRequest: TeamMemberOpenRequest | null;
   onLocateProject: (projectId: string) => void;
   onLocateSession: (sessionId: string) => void;
   onSessionViewed: (sessionId: string) => void;
@@ -301,6 +350,7 @@ export function RightSidebarWorkspace({
   const fileSaveQueuesRef = useRef(new Map<string, Promise<boolean>>());
   const fileLoadRequestIdsRef = useRef(new Map<string, number>());
   const handledFileOpenRequestRef = useRef<ProjectFileOpenRequest | null>(null);
+  const handledTeamMemberOpenRequestIdRef = useRef<number | null>(null);
   const activeTabIdsBySessionRef = useRef(new Map<string, string | null>());
   const activeTabOwnerRef = useRef<string | null>(activeSession?.id ?? null);
   const openChatIdsBySessionRef = useRef(new Map<string, Set<string>>());
@@ -370,18 +420,14 @@ export function RightSidebarWorkspace({
       }
 
       try {
-        const forks = await agentClient.listConversationForks({
-          conversationId: activeSessionId,
-        });
+        const loaded = await listSideConversations(agentClient, activeSessionId);
         if (disposed) return;
-        const sessions = forks
-          .filter((conversation) => conversation.threadKind === "agent")
-          .map(toProjectSession);
+        const sessions = loaded.sessions;
         setSideSessions(sessions);
         const sessionIds = new Set(sessions.map((session) => session.id));
         const savedOpenChatIds = openChatIdsBySessionRef.current.get(activeSessionId);
         const nextOpenChatIds = savedOpenChatIds === undefined
-          ? sessionIds
+          ? loaded.autoOpenIds
           : new Set([...savedOpenChatIds].filter((id) => sessionIds.has(id)));
         openChatIdsBySessionRef.current.set(activeSessionId, nextOpenChatIds);
         setOpenChatIds(nextOpenChatIds);
@@ -398,17 +444,24 @@ export function RightSidebarWorkspace({
 
   useEffect(() => {
     return agentClient.onConversationRunEvent((event) => {
-      if (
-        event.type === "conversation.updated"
-        && event.conversation.parentConversationId === activeSessionId
-        && event.conversation.threadKind === "agent"
-      ) {
+      if (event.type === "conversation.updated") {
         const nextSession = toProjectSession(event.conversation);
-        setSideSessions((current) => current.some((session) => session.id === nextSession.id)
-          ? current.map((session) => session.id === nextSession.id ? nextSession : session)
-          : [...current, nextSession]);
-        updateOpenChatIds((current) => new Set(current).add(nextSession.id));
-        return;
+        const isOrdinarySideChat = event.conversation.parentConversationId === activeSessionId
+          && event.conversation.threadKind === "agent"
+          && !isManagedTeamMember(event.conversation);
+        if (isOrdinarySideChat) {
+          setSideSessions((current) => upsertSideSession(current, event.conversation));
+          updateOpenChatIds((current) => new Set(current).add(nextSession.id));
+          return;
+        }
+        if (isManagedTeamMember(event.conversation)) {
+          setSideSessions((current) => {
+            const belongsToSource = event.conversation.parentConversationId === activeSessionId
+              || current.some((session) => session.id === event.conversation.parentConversationId);
+            return belongsToSource ? upsertSideSession(current, event.conversation) : current;
+          });
+          return;
+        }
       }
       const conversationId =
         event.type === "conversation.updated"
@@ -431,6 +484,27 @@ export function RightSidebarWorkspace({
       );
     });
   }, [activeSessionId, agentClient, updateOpenChatIds]);
+
+  useEffect(() => {
+    if (
+      teamMemberOpenRequest === null
+      || teamMemberOpenRequest.sourceConversationId !== activeSessionId
+      || handledTeamMemberOpenRequestIdRef.current === teamMemberOpenRequest.requestId
+    ) return;
+    handledTeamMemberOpenRequestIdRef.current = teamMemberOpenRequest.requestId;
+    const session = teamMemberOpenRequest.conversation;
+    setSideSessions((current) => current.some((candidate) => candidate.id === session.id)
+      ? current.map((candidate) => candidate.id === session.id ? session : candidate)
+      : [...current, session]);
+    updateOpenChatIds((current) => new Set(current).add(session.id));
+    setActiveTabForCurrentSession(`chat:${session.id}`);
+    setIsFileBrowserOpen(false);
+  }, [
+    activeSessionId,
+    setActiveTabForCurrentSession,
+    teamMemberOpenRequest,
+    updateOpenChatIds,
+  ]);
 
   useEffect(() => {
     if (activeTabOwnerRef.current !== activeSessionId) {
@@ -1146,6 +1220,10 @@ export function RightSidebarWorkspace({
         closedTabs.push(tab);
         continue;
       }
+      if (!shouldDeleteSidebarChat(tab.session)) {
+        closedTabs.push(tab);
+        continue;
+      }
       try {
         await agentClient.deleteConversation({ conversationId: tab.session.id });
         closedTabs.push(tab);
@@ -1289,7 +1367,7 @@ export function RightSidebarWorkspace({
               return (
                 <div
                   aria-hidden={!isActive}
-                  className={isActive ? "flex h-full min-h-0 flex-1" : "hidden"}
+                  className={isActive ? "flex min-h-0 flex-1" : "hidden"}
                   key={session.id}
                 >
                   <ConversationWorkspace
@@ -1300,10 +1378,12 @@ export function RightSidebarWorkspace({
                       if (activeSession !== null) onLocateSession(activeSession.id);
                     }}
                      onOpenProjectFile={(path) => void openProjectFilePath(path)}
-                     onSessionUpdated={updateSideSession}
-                     onViewed={() => onSessionViewed(session.id)}
-                     project={session.projectId === null ? null : activeProject}
+                    onSessionUpdated={updateSideSession}
+                    onViewed={() => onSessionViewed(session.id)}
+                    project={session.projectId === null ? null : activeProject}
+                    relatedSessions={sideSessions}
                     session={session}
+                    teamManaged={session.teamWorkItemId !== null && session.teamWorkItemId !== undefined}
                   />
                 </div>
               );

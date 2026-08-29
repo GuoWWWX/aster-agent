@@ -23,7 +23,10 @@ import {
   conversationToolItemSchema,
   projectSummarySchema,
   submitTeamWorkItemInputSchema,
+  updateTeamWorkItemInputSchema,
+  updateTeamWorkItemPermissionInputSchema,
   teamWorkItemEventSchema,
+  teamWorkItemExecutionViewSchema,
   teamWorkItemViewSchema,
   conversationAttachmentSchema,
   type AcceptTeamWorkItemInput,
@@ -45,7 +48,10 @@ import {
   type RunAccepted,
   type SendConversationMessageInput,
   type SubmitTeamWorkItemInput,
+  type UpdateTeamWorkItemInput,
+  type UpdateTeamWorkItemPermissionInput,
   type TeamWorkItemEvent,
+  type TeamWorkItemExecutionView,
   type TeamWorkItemStatus,
   type TeamWorkItemView,
 } from "@agent/protocol";
@@ -135,6 +141,14 @@ export type TeamMemberRecord = {
   agentId: string;
   instructions: string;
   role: string;
+  teamId: string;
+};
+
+/** A durable Team Lead conversation, reused for one source conversation and Team. */
+export type TeamExecutionConversationRecord = {
+  conversationId: string;
+  projectId: string;
+  sourceConversationId: string | null;
   teamId: string;
 };
 
@@ -528,6 +542,12 @@ function likePattern(term: string): string {
   return `%${term.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
 }
 
+function teamExecutionScopeKey(projectId: string, sourceConversationId: string | null): string {
+  return sourceConversationId === null
+    ? `project:${projectId}`
+    : `conversation:${sourceConversationId}`;
+}
+
 function serializeRunExecutionSnapshot(
   snapshot: RunExecutionSnapshot | undefined,
 ): string | null {
@@ -730,6 +750,44 @@ function toConversationDeletionTask(row: DatabaseRow): ConversationDeletionTask 
   };
 }
 
+const teamWorkItemExecutionTreeCte = `WITH RECURSIVE team_execution_tree(work_item_id, conversation_id) AS (
+  SELECT id, execution_conversation_id
+  FROM team_work_items
+  WHERE execution_conversation_id IS NOT NULL
+  UNION
+  SELECT team_execution_tree.work_item_id, team_member_conversations.conversation_id
+  FROM team_execution_tree
+  JOIN team_member_conversations
+    ON team_member_conversations.team_execution_conversation_id = team_execution_tree.conversation_id
+  UNION
+  SELECT team_execution_tree.work_item_id, subagent_tasks.child_conversation_id
+  FROM team_execution_tree
+  JOIN subagent_tasks
+    ON subagent_tasks.parent_conversation_id = team_execution_tree.conversation_id
+), team_execution_tree_projection AS (
+  SELECT team_execution_tree.conversation_id,
+    (
+      SELECT candidate.work_item_id
+      FROM team_execution_tree AS candidate
+      JOIN team_work_items AS candidate_work_item
+        ON candidate_work_item.id = candidate.work_item_id
+      WHERE candidate.conversation_id = team_execution_tree.conversation_id
+      ORDER BY CASE candidate_work_item.status
+        WHEN 'running' THEN 0
+        WHEN 'reviewing' THEN 1
+        WHEN 'waiting_user' THEN 2
+        WHEN 'planned' THEN 3
+        WHEN 'queued' THEN 4
+        ELSE 5
+      END,
+      candidate_work_item.updated_at DESC,
+      candidate_work_item.rowid DESC
+      LIMIT 1
+    ) AS work_item_id
+  FROM team_execution_tree
+  GROUP BY team_execution_tree.conversation_id
+)`;
+
 function toConversation(row: DatabaseRow): ConversationSummary {
   const selectedProviderId = asNullableString(row, "selected_provider_id");
   const selectedModelId = asNullableString(row, "selected_model_id");
@@ -760,6 +818,7 @@ function toConversation(row: DatabaseRow): ConversationSummary {
     projectId: asNullableString(row, "project_id"),
     subagentTaskStatus: asNullableString(row, "subagent_task_status"),
     teamId: asNullableString(row, "team_id"),
+    teamWorkItemId: asNullableString(row, "team_work_item_id"),
     threadKind: asString(row, "thread_kind"),
     title: asString(row, "title"),
     updatedAt: asString(row, "updated_at"),
@@ -976,7 +1035,8 @@ export class AgentDatabase {
   public listConversations(): ConversationSummary[] {
     const rows = this.database
       .prepare(
-        `SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
+        `${teamWorkItemExecutionTreeCte}
+         SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
             selected_provider_id, selected_model_id, selected_reasoning_json,
             thread_kind, agent_id, avatar_icon, team_id, title, created_at, conversations.updated_at,
             conversations.archived_at,
@@ -992,9 +1052,12 @@ export class AgentDatabase {
           ,(SELECT COUNT(*) FROM subagent_tasks
             WHERE parent_conversation_id = conversations.id
               AND status IN ('queued', 'running')) AS active_subagent_count
-          ,(SELECT status FROM subagent_tasks
-            WHERE child_conversation_id = conversations.id LIMIT 1) AS subagent_task_status
-         FROM conversations
+           ,(SELECT status FROM subagent_tasks
+             WHERE child_conversation_id = conversations.id LIMIT 1) AS subagent_task_status
+           ,team_execution_tree_projection.work_item_id AS team_work_item_id
+          FROM conversations
+          LEFT JOIN team_execution_tree_projection
+            ON team_execution_tree_projection.conversation_id = conversations.id
          WHERE parent_conversation_id IS NULL AND deletion_pending = 0
          ORDER BY conversations.is_pinned DESC, conversations.sort_order ASC,
                   conversations.updated_at DESC`
@@ -1021,10 +1084,25 @@ export class AgentDatabase {
     return rows.map((row) => asString(row, "id"));
   }
 
+  /**
+   * Background projection must not revive a Conversation already owned by a
+   * persisted deletion task. Keep listAllConversationIds() inclusive for
+   * deletion/recovery workflows and use this narrower query at that boundary.
+   */
+  public listProjectableConversationIds(): string[] {
+    const rows = this.database
+      .prepare(
+        "SELECT id FROM conversations WHERE deletion_pending = 0 ORDER BY created_at ASC, rowid ASC",
+      )
+      .all() as DatabaseRow[];
+    return rows.map((row) => asString(row, "id"));
+  }
+
   public getConversation(conversationId: string): ConversationSummary {
     const row = this.database
       .prepare(
-        `SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
+        `${teamWorkItemExecutionTreeCte}
+         SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
             selected_provider_id, selected_model_id, selected_reasoning_json,
             thread_kind, agent_id, avatar_icon, team_id, title, created_at, conversations.updated_at,
             conversations.archived_at,
@@ -1040,9 +1118,13 @@ export class AgentDatabase {
           ,(SELECT COUNT(*) FROM subagent_tasks
             WHERE parent_conversation_id = conversations.id
               AND status IN ('queued', 'running')) AS active_subagent_count
-          ,(SELECT status FROM subagent_tasks
-            WHERE child_conversation_id = conversations.id LIMIT 1) AS subagent_task_status
-         FROM conversations WHERE conversations.id = ? AND deletion_pending = 0`
+           ,(SELECT status FROM subagent_tasks
+             WHERE child_conversation_id = conversations.id LIMIT 1) AS subagent_task_status
+           ,team_execution_tree_projection.work_item_id AS team_work_item_id
+         FROM conversations
+         LEFT JOIN team_execution_tree_projection
+           ON team_execution_tree_projection.conversation_id = conversations.id
+         WHERE conversations.id = ? AND deletion_pending = 0`
       )
       .get(conversationId) as DatabaseRow | undefined;
     if (row === undefined) {
@@ -1182,6 +1264,169 @@ export class AgentDatabase {
       .run(conversationId, new Date().toISOString(), teamId);
   }
 
+  /**
+   * Resolves the durable Team Lead conversation for one source Conversation.
+   * WorkItems remain independent records, but repeated requests from this
+   * source enter the same Team Lead and member audit trail.
+   */
+  public getTeamExecutionConversation(input: {
+    projectId: string;
+    sourceConversationId: string | null;
+    teamId: string;
+  }): ConversationSummary | null {
+    const scopeKey = teamExecutionScopeKey(input.projectId, input.sourceConversationId);
+    const row = this.database.prepare(
+      `SELECT conversation_id FROM team_execution_conversations
+       WHERE team_id = ? AND scope_key = ?`,
+    ).get(input.teamId, scopeKey) as DatabaseRow | undefined;
+    return row === undefined ? null : this.getConversation(asString(row, "conversation_id"));
+  }
+
+  public bindTeamExecutionConversation(input: {
+    conversationId: string;
+    projectId: string;
+    sourceConversationId: string | null;
+    teamId: string;
+  }): ConversationSummary {
+    const source = input.sourceConversationId === null
+      ? null
+      : this.getConversation(input.sourceConversationId);
+    if (source !== null && source.projectId !== input.projectId) {
+      throw new Error("The Team execution source must belong to the selected project.");
+    }
+    const conversation = this.getConversation(input.conversationId);
+    if (
+      conversation.projectId !== input.projectId
+      || conversation.teamId !== input.teamId
+      || conversation.threadKind !== "team_lead"
+      || conversation.parentConversationId !== input.sourceConversationId
+    ) {
+      throw new Error("Team execution conversation does not match its Team and source.");
+    }
+    const scopeKey = teamExecutionScopeKey(input.projectId, input.sourceConversationId);
+    const now = new Date().toISOString();
+    this.database.prepare(
+      `INSERT INTO team_execution_conversations (
+        team_id, project_id, source_conversation_id, scope_key, conversation_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(team_id, scope_key) DO NOTHING`,
+    ).run(
+      input.teamId,
+      input.projectId,
+      input.sourceConversationId,
+      scopeKey,
+      input.conversationId,
+      now,
+      now,
+    );
+    const bound = this.getTeamExecutionConversation(input);
+    if (bound === null) throw new Error("Team execution conversation could not be persisted.");
+    return bound;
+  }
+
+  public listTeamMemberConversations(teamExecutionConversationId: string): ConversationSummary[] {
+    this.getConversation(teamExecutionConversationId);
+    const rows = this.database.prepare(
+      `SELECT conversation_id FROM team_member_conversations
+       WHERE team_execution_conversation_id = ?
+       ORDER BY created_at ASC, rowid ASC`,
+    ).all(teamExecutionConversationId) as DatabaseRow[];
+    return rows.map((row) => this.getConversation(asString(row, "conversation_id")));
+  }
+
+  public bindTeamMemberConversation(input: {
+    agentId: string;
+    conversationId: string;
+    teamExecutionConversationId: string;
+  }): ConversationSummary {
+    const lead = this.getConversation(input.teamExecutionConversationId);
+    const member = this.getConversation(input.conversationId);
+    if (
+      lead.threadKind !== "team_lead"
+      || lead.teamId === null
+      || member.threadKind !== "agent"
+      || member.teamId !== lead.teamId
+      || member.parentConversationId !== lead.id
+      || member.agentId !== input.agentId
+    ) {
+      throw new Error("Team member conversation does not match its Team Lead.");
+    }
+    const now = new Date().toISOString();
+    this.database.prepare(
+      `INSERT INTO team_member_conversations (
+        team_execution_conversation_id, team_id, agent_id, conversation_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(team_execution_conversation_id, agent_id) DO NOTHING`,
+    ).run(lead.id, lead.teamId, input.agentId, member.id, now, now);
+    const row = this.database.prepare(
+      `SELECT conversation_id FROM team_member_conversations
+       WHERE team_execution_conversation_id = ? AND agent_id = ?`,
+    ).get(lead.id, input.agentId) as DatabaseRow | undefined;
+    if (row === undefined) throw new Error("Team member conversation could not be persisted.");
+    return this.getConversation(asString(row, "conversation_id"));
+  }
+
+  public getTeamExecutionConversationIdForParticipant(conversationId: string): string | null {
+    const asLead = this.database.prepare(
+      "SELECT conversation_id FROM team_execution_conversations WHERE conversation_id = ?",
+    ).get(conversationId) as DatabaseRow | undefined;
+    if (asLead !== undefined) return asString(asLead, "conversation_id");
+    const asMember = this.database.prepare(
+      `SELECT team_execution_conversation_id FROM team_member_conversations
+       WHERE conversation_id = ?`,
+    ).get(conversationId) as DatabaseRow | undefined;
+    return asMember === undefined
+      ? null
+      : asString(asMember, "team_execution_conversation_id");
+  }
+
+  public isTeamMemberConversation(conversationId: string): boolean {
+    return this.database.prepare(
+      "SELECT 1 FROM team_member_conversations WHERE conversation_id = ? LIMIT 1",
+    ).get(conversationId) !== undefined;
+  }
+
+  public areTeamExecutionParticipants(
+    firstConversationId: string,
+    secondConversationId: string,
+  ): boolean {
+    const first = this.getTeamExecutionConversationIdForParticipant(firstConversationId);
+    const second = this.getTeamExecutionConversationIdForParticipant(secondConversationId);
+    return first !== null && first === second;
+  }
+
+  public recordTeamMemberAssignment(input: {
+    message: ConversationAgentMessageItem;
+    workItemId: string;
+  }): void {
+    const workItem = this.getTeamWorkItem(input.workItemId);
+    if (workItem.status !== "running" || workItem.executionConversationId === null) return;
+    const senderLeadId = this.getTeamExecutionConversationIdForParticipant(
+      input.message.senderConversationId,
+    );
+    const targetLeadId = this.getTeamExecutionConversationIdForParticipant(input.message.conversationId);
+    if (
+      senderLeadId === null
+      || senderLeadId !== workItem.executionConversationId
+      || targetLeadId !== senderLeadId
+      || !this.isTeamMemberConversation(input.message.conversationId)
+    ) return;
+    const now = new Date().toISOString();
+    this.database.prepare(
+      `INSERT INTO team_work_item_member_assignments (
+        id, work_item_id, member_conversation_id, message_id, title, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(message_id) DO NOTHING`,
+    ).run(
+      randomUUID(),
+      input.workItemId,
+      input.message.conversationId,
+      input.message.id,
+      input.message.content.replaceAll(/\s+/gu, " ").slice(0, 300) || "团队成员任务",
+      now,
+    );
+  }
+
   public createTeamWorkItem(
     rawInput: SubmitTeamWorkItemInput,
     modelSelection: ConversationModelSelection,
@@ -1190,6 +1435,17 @@ export class AgentDatabase {
     this.getTeamCoordinatorConversationId(input.teamId);
     const project = this.database.prepare("SELECT id FROM projects WHERE id = ?").get(input.projectId);
     if (project === undefined) throw new Error("Team WorkItem project was not found.");
+    const sourceConversation = input.sourceConversationId === undefined
+      ? null
+      : this.getConversation(input.sourceConversationId);
+    if (sourceConversation !== null) {
+      if (sourceConversation.projectId !== input.projectId) {
+        throw new Error("The source conversation must belong to the Team WorkItem project.");
+      }
+      if (sourceConversation.threadKind !== "agent" || sourceConversation.teamWorkItemId !== null) {
+        throw new Error("Only a normal project conversation can submit a Team WorkItem.");
+      }
+    }
     const id = randomUUID();
     const now = new Date().toISOString();
     this.withTransaction(() => {
@@ -1198,8 +1454,8 @@ export class AgentDatabase {
           id, team_id, project_id, title, requirement, acceptance_criteria_json,
           priority, status, revision, permission_mode, model_selection_json,
           execution_conversation_id, active_run_id, result_summary, blocked_reason,
-          created_at, updated_at, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 1, ?, ?, NULL, NULL, NULL, NULL, ?, ?, NULL)`,
+          source_conversation_id, created_at, updated_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 1, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, NULL)`,
       ).run(
         id,
         input.teamId,
@@ -1210,6 +1466,7 @@ export class AgentDatabase {
         input.priority,
         input.permissionMode,
         JSON.stringify(modelSelection),
+        sourceConversation?.id ?? null,
         now,
         now,
       );
@@ -1217,6 +1474,125 @@ export class AgentDatabase {
       this.appendTeamWorkItemEvent(input.teamId, id, "scheduled", "需求已进入调度队列。", now);
     });
     return this.getTeamWorkItem(id);
+  }
+
+  public updateTeamWorkItem(rawInput: UpdateTeamWorkItemInput): TeamWorkItemView {
+    const input = updateTeamWorkItemInputSchema.parse(rawInput);
+    const current = this.getTeamWorkItem(input.workItemId);
+    if (current.status !== "queued") {
+      throw new Error("Only a queued Team WorkItem can be edited before Team Lead starts it.");
+    }
+    const now = new Date().toISOString();
+    this.withTransaction(() => {
+      const result = this.database.prepare(
+        `UPDATE team_work_items
+         SET title = ?, requirement = ?, updated_at = ?
+         WHERE id = ? AND status = 'queued'`,
+      ).run(input.title, input.requirement, now, input.workItemId);
+      if (result.changes !== 1) {
+        throw new Error("Team WorkItem was claimed before the edit could be saved.");
+      }
+      this.appendTeamWorkItemEvent(
+        current.teamId,
+        input.workItemId,
+        "updated",
+        "用户在 Team Lead 领取前更新了需求。",
+        now,
+      );
+    });
+    return this.getTeamWorkItem(input.workItemId);
+  }
+
+  /**
+   * Changes the policy future Team Runs inherit without retroactively changing
+   * an in-flight Run or approving an already displayed tool request.
+   */
+  public updateTeamWorkItemPermission(
+    rawInput: UpdateTeamWorkItemPermissionInput,
+  ): TeamWorkItemView {
+    const input = updateTeamWorkItemPermissionInputSchema.parse(rawInput);
+    const current = this.getTeamWorkItem(input.workItemId);
+    if (current.status === "completed" || current.status === "cancelled" || current.status === "failed") {
+      throw new Error("A completed Team WorkItem cannot change its execution permission.");
+    }
+    if (current.permissionMode === input.permissionMode) return current;
+    const now = new Date().toISOString();
+    this.withTransaction(() => {
+      const result = this.database.prepare(
+        `UPDATE team_work_items
+         SET permission_mode = ?, updated_at = ?
+         WHERE id = ?`,
+      ).run(input.permissionMode, now, input.workItemId);
+      if (result.changes !== 1) throw new Error("Team WorkItem permission could not be saved.");
+      this.appendTeamWorkItemEvent(
+        current.teamId,
+        input.workItemId,
+        "updated",
+        "用户更新了团队执行权限；当前 Run 保持原策略，后续执行将使用新策略。",
+        now,
+      );
+    });
+    return this.getTeamWorkItem(input.workItemId);
+  }
+
+  /**
+   * Keeps a managed member Conversation visually and behaviorally aligned with
+   * an ordinary Conversation without letting a renderer rewrite an active Run.
+   */
+  public updateTeamWorkItemModelSelection(
+    workItemId: string,
+    conversationId: string,
+    rawSelection: ConversationModelSelection,
+  ): ConversationSummary {
+    const selection = conversationModelSelectionSchema.parse(rawSelection);
+    const workItem = this.getTeamWorkItem(workItemId);
+    if (workItem.status === "completed" || workItem.status === "cancelled" || workItem.status === "failed") {
+      throw new Error("A completed Team WorkItem cannot change its execution model.");
+    }
+    const conversation = this.getConversation(conversationId);
+    if (!this.isConversationInTeamWorkItemExecution(conversation.id, workItemId)) {
+      throw new Error("The Conversation is not owned by the requested Team WorkItem.");
+    }
+    const workItemSelectionMatches = workItem.modelSelection.providerId === selection.providerId
+      && workItem.modelSelection.modelId === selection.modelId
+      && JSON.stringify(workItem.modelSelection.reasoning) === JSON.stringify(selection.reasoning);
+    const conversationSelectionMatches = conversation.modelSelection?.providerId === selection.providerId
+      && conversation.modelSelection.modelId === selection.modelId
+      && JSON.stringify(conversation.modelSelection.reasoning) === JSON.stringify(selection.reasoning);
+    if (workItemSelectionMatches && conversationSelectionMatches) return conversation;
+
+    const now = new Date().toISOString();
+    this.withTransaction(() => {
+      const workItemUpdate = this.database.prepare(
+        `UPDATE team_work_items
+         SET model_selection_json = ?, updated_at = ?
+         WHERE id = ?`,
+      ).run(JSON.stringify(selection), now, workItemId);
+      if (workItemUpdate.changes !== 1) throw new Error("Team WorkItem model could not be saved.");
+      const conversationUpdate = this.database.prepare(
+        `UPDATE conversations
+         SET selected_provider_id = ?, selected_model_id = ?, selected_reasoning_json = ?,
+             updated_at = ?
+         WHERE id = ? AND deletion_pending = 0`,
+      ).run(
+        selection.providerId,
+        selection.modelId,
+        selection.reasoning === null ? null : JSON.stringify(selection.reasoning),
+        now,
+        conversationId,
+      );
+      if (conversationUpdate.changes !== 1) {
+        throw new Error("Team member Conversation model could not be saved.");
+      }
+      this.appendTeamWorkItemEvent(
+        workItem.teamId,
+        workItemId,
+        "updated",
+        "用户更新了团队执行模型和思考程度；当前 Run 保持原快照，后续执行将使用新选择。",
+        now,
+      );
+    });
+    return this.getConversation(conversationId);
   }
 
   public getTeamWorkItem(workItemId: string): TeamWorkItemView {
@@ -1228,9 +1604,68 @@ export class AgentDatabase {
   }
 
   public isManagedTeamWorkItemConversation(conversationId: string): boolean {
-    return this.database
-      .prepare("SELECT 1 FROM team_work_items WHERE execution_conversation_id = ? LIMIT 1")
-      .get(conversationId) !== undefined;
+    return this.getTeamExecutionConversationIdForParticipant(conversationId) !== null
+      || this.database
+        .prepare("SELECT 1 FROM team_work_items WHERE execution_conversation_id = ? LIMIT 1")
+        .get(conversationId) !== undefined;
+  }
+
+  /** Whether a Conversation belongs below a WorkItem's Team Lead execution root. */
+  public isTeamWorkItemExecutionTreeConversation(conversationId: string): boolean {
+    return this.database.prepare(
+      `${teamWorkItemExecutionTreeCte}
+       SELECT 1 FROM team_execution_tree
+       WHERE conversation_id = ?
+       LIMIT 1`,
+    ).get(conversationId) !== undefined;
+  }
+
+  private isConversationInTeamWorkItemExecution(
+    conversationId: string,
+    workItemId: string,
+  ): boolean {
+    return this.database.prepare(
+      `${teamWorkItemExecutionTreeCte}
+       SELECT 1 FROM team_execution_tree
+       WHERE conversation_id = ? AND work_item_id = ?
+       LIMIT 1`,
+    ).get(conversationId, workItemId) !== undefined;
+  }
+
+  /**
+   * Returns the running WorkItem that owns a Team Lead execution Conversation.
+   * AgentRuntime uses this only while delivering a Subagent result so the
+   * follow-up consolidation Run retains the WorkItem's frozen execution policy.
+   */
+  public getRunningTeamWorkItemByExecutionConversation(
+    conversationId: string,
+  ): TeamWorkItemView | null {
+    const row = this.database.prepare(
+      `SELECT * FROM team_work_items
+       WHERE execution_conversation_id = ? AND status = 'running'
+       LIMIT 1`,
+    ).get(conversationId) as DatabaseRow | undefined;
+    return row === undefined ? null : this.toTeamWorkItem(row);
+  }
+
+  /**
+   * Returns the running WorkItem for either its Team Lead Conversation or one
+   * of its persisted delegated member Conversations.
+   */
+  public getRunningTeamWorkItemByExecutionTreeConversation(
+    conversationId: string,
+  ): TeamWorkItemView | null {
+    const row = this.database.prepare(
+      `${teamWorkItemExecutionTreeCte}
+       SELECT team_work_items.*
+       FROM team_work_items
+       INNER JOIN team_execution_tree
+         ON team_execution_tree.work_item_id = team_work_items.id
+       WHERE team_execution_tree.conversation_id = ?
+         AND team_work_items.status = 'running'
+       LIMIT 1`,
+    ).get(conversationId) as DatabaseRow | undefined;
+    return row === undefined ? null : this.toTeamWorkItem(row);
   }
 
   public listTeamWorkItems(
@@ -1254,6 +1689,126 @@ export class AgentDatabase {
     return rows.map((row) => this.toTeamWorkItem(row));
   }
 
+  /**
+   * Reads the durable Team Lead and member conversations for one WorkItem.
+   * Member participation is proved by the Team mapping and each routed Agent
+   * message is retained as an assignment record; ordinary side chats are not
+   * included merely because they share a parent Conversation.
+   */
+  public getTeamWorkItemExecution(workItemId: string): TeamWorkItemExecutionView {
+    const workItemRow = this.database.prepare(
+      "SELECT execution_conversation_id FROM team_work_items WHERE id = ?",
+    ).get(workItemId) as DatabaseRow | undefined;
+    if (workItemRow === undefined) throw new Error("Team WorkItem was not found.");
+    const executionConversationId = asNullableString(workItemRow, "execution_conversation_id");
+    const projectableConversationIds = new Set(this.listProjectableConversationIds());
+    if (
+      executionConversationId === null
+      || !projectableConversationIds.has(executionConversationId)
+    ) {
+      return teamWorkItemExecutionViewSchema.parse({ agents: [], workItemId });
+    }
+
+    const assignments = new Map(
+      (this.database.prepare(
+        `SELECT member_conversation_id, message_id, title
+         FROM team_work_item_member_assignments
+         WHERE work_item_id = ?
+         ORDER BY created_at DESC, rowid DESC`,
+      ).all(workItemId) as DatabaseRow[]).map((row) => [
+        asString(row, "member_conversation_id"),
+        {
+          id: asString(row, "message_id"),
+          title: asString(row, "title"),
+        },
+      ]),
+    );
+    const agents: TeamWorkItemExecutionView["agents"] = [];
+    const visitedConversationIds = new Set<string>();
+    const pending = [{
+      conversationId: executionConversationId,
+      delegation: null as TeamWorkItemExecutionView["agents"][number]["delegation"],
+      depth: 0,
+    }];
+
+    while (pending.length > 0) {
+      const current = pending.shift();
+      if (current === undefined || visitedConversationIds.has(current.conversationId)) continue;
+      visitedConversationIds.add(current.conversationId);
+      if (!projectableConversationIds.has(current.conversationId)) continue;
+      const conversation = this.getConversation(current.conversationId);
+      agents.push({
+        agent: this.getConversationAgentBinding(conversation.id),
+        conversation,
+        delegation: current.delegation,
+        depth: current.depth,
+      });
+
+      const persistentMembers = this.listTeamMemberConversations(conversation.id);
+      for (const member of persistentMembers) {
+        const assignment = assignments.get(member.id);
+        pending.push({
+          conversationId: member.id,
+          delegation: assignment === undefined
+            ? null
+            : {
+              id: assignment.id,
+              status: member.activeRunId !== null ? "running" : member.lastRunStatus ?? "queued",
+              title: assignment.title,
+            },
+          depth: current.depth + 1,
+        });
+      }
+      for (const task of this.listSubagentTasks(conversation.id)) {
+        pending.push({
+          conversationId: task.childConversationId,
+          delegation: {
+            id: task.id,
+            status: task.status,
+            title: task.title,
+          },
+          depth: current.depth + 1,
+        });
+      }
+    }
+
+    return teamWorkItemExecutionViewSchema.parse({ agents, workItemId });
+  }
+
+  /**
+   * Claims a queued WorkItem before its first Team Lead Run is written. This
+   * makes a process stop between Conversation creation and Run scheduling
+   * recover as a blocked WorkItem instead of creating or replaying a second
+   * execution root on the next launch.
+   */
+  public reserveTeamWorkItemExecution(
+    workItemId: string,
+    conversationId: string,
+  ): TeamWorkItemView {
+    const current = this.getTeamWorkItem(workItemId);
+    if (current.status !== "queued" || current.executionConversationId !== null) {
+      throw new Error("Only an unclaimed queued Team WorkItem can reserve an execution Conversation.");
+    }
+    this.getConversation(conversationId);
+    const now = new Date().toISOString();
+    this.withTransaction(() => {
+      const result = this.database.prepare(
+        `UPDATE team_work_items
+         SET execution_conversation_id = ?, status = 'planned', updated_at = ?
+         WHERE id = ? AND status = 'queued' AND execution_conversation_id IS NULL`,
+      ).run(conversationId, now, workItemId);
+      if (result.changes !== 1) throw new Error("Team WorkItem changed before its execution Conversation could be reserved.");
+      this.appendTeamWorkItemEvent(
+        current.teamId,
+        workItemId,
+        "planned",
+        "Team Lead 执行对话已创建，等待首个 Run 调度。",
+        now,
+      );
+    });
+    return this.getTeamWorkItem(workItemId);
+  }
+
   public startTeamWorkItem(
     workItemId: string,
     conversationId: string,
@@ -1263,17 +1818,94 @@ export class AgentDatabase {
     if (current.status !== "queued" && current.status !== "planned") {
       throw new Error("Only queued Team WorkItems can start.");
     }
+    if (
+      current.executionConversationId !== null
+      && current.executionConversationId !== conversationId
+    ) {
+      throw new Error("Team WorkItem execution Conversation changed before its Run could start.");
+    }
     const now = new Date().toISOString();
     this.withTransaction(() => {
       const result = this.database.prepare(
         `UPDATE team_work_items
          SET execution_conversation_id = ?, active_run_id = ?, status = 'running', updated_at = ?
-         WHERE id = ? AND status IN ('queued', 'planned')`,
-      ).run(conversationId, runId, now, workItemId);
+         WHERE id = ? AND status IN ('queued', 'planned')
+           AND (execution_conversation_id IS NULL OR execution_conversation_id = ?)`,
+      ).run(conversationId, runId, now, workItemId, conversationId);
       if (result.changes !== 1) throw new Error("Team WorkItem changed before it could start.");
       this.appendTeamWorkItemEvent(current.teamId, workItemId, "run_started", "团队执行对话已启动。", now);
     });
     return this.getTeamWorkItem(workItemId);
+  }
+
+  /**
+   * Starts the Team Lead's next coordination Run after a member result while
+   * retaining the WorkItem's frozen execution policy.
+   */
+  public createTeamWorkItemContinuationRun(input: {
+    conversationId: string;
+    executionSnapshot?: RunExecutionSnapshot;
+    modelId: string;
+    workItemId: string;
+  }): AgentMessageRunCreation {
+    const current = this.getTeamWorkItem(input.workItemId);
+    if (
+      current.status !== "running"
+      || current.executionConversationId !== input.conversationId
+      || current.activeRunId !== null
+    ) {
+      throw new Error("The Team WorkItem is not ready for a coordination Run.");
+    }
+    this.getConversation(input.conversationId);
+    this.assertNoActiveRun(input.conversationId);
+    const now = new Date().toISOString();
+    const runId = randomUUID();
+
+    this.withTransaction(() => {
+      this.database
+        .prepare(
+          `INSERT INTO runs
+             (id, conversation_id, model_id, status, error, created_at, updated_at,
+              execution_snapshot_json)
+           VALUES (?, ?, ?, 'queued', NULL, ?, ?, ?)`
+        )
+        .run(
+          runId,
+          input.conversationId,
+          input.modelId,
+          now,
+          now,
+          serializeRunExecutionSnapshot(input.executionSnapshot),
+        );
+      this.database
+        .prepare(
+          "UPDATE conversations SET updated_at = ?, has_unread_result = 0 WHERE id = ?"
+        )
+        .run(now, input.conversationId);
+      const result = this.database
+        .prepare(
+          `UPDATE team_work_items
+           SET active_run_id = ?, updated_at = ?
+           WHERE id = ? AND status = 'running'
+             AND execution_conversation_id = ? AND active_run_id IS NULL`,
+        )
+        .run(runId, now, input.workItemId, input.conversationId);
+      if (result.changes !== 1) {
+        throw new Error("The Team WorkItem changed before coordination could start.");
+      }
+      this.appendTeamWorkItemEvent(
+        current.teamId,
+        input.workItemId,
+        "run_started",
+        "团队成员消息已送达，正在继续协调执行。",
+        now,
+      );
+    });
+
+    return {
+      conversation: this.getConversation(input.conversationId),
+      runId,
+    };
   }
 
   public failTeamWorkItemBeforeRun(workItemId: string, error: string): TeamWorkItemView {
@@ -1292,7 +1924,28 @@ export class AgentDatabase {
     return this.getTeamWorkItem(workItemId);
   }
 
+  /** Records a non-replayable managed execution failure without changing its history. */
+  public blockTeamWorkItem(workItemId: string, reason: string): TeamWorkItemView {
+    const current = this.getTeamWorkItem(workItemId);
+    if (current.status !== "running") return current;
+    const now = new Date().toISOString();
+    const detail = reason.trim().slice(0, 4_000) || "团队执行需要人工处理。";
+    this.withTransaction(() => {
+      const result = this.database.prepare(
+        `UPDATE team_work_items
+         SET active_run_id = NULL, status = 'blocked', blocked_reason = ?, updated_at = ?
+         WHERE id = ? AND status = 'running'`,
+      ).run(detail, now, workItemId);
+      if (result.changes !== 1) {
+        throw new Error("The Team WorkItem changed before it could be blocked.");
+      }
+      this.appendTeamWorkItemEvent(current.teamId, workItemId, "blocked", detail, now);
+    });
+    return this.getTeamWorkItem(workItemId);
+  }
+
   public finishTeamWorkItemRun(input: {
+    conversationId: string;
     error: string | null;
     resultSummary: string | null;
     runId: string;
@@ -1300,8 +1953,44 @@ export class AgentDatabase {
     workItemId: string;
   }): TeamWorkItemView {
     const current = this.getTeamWorkItem(input.workItemId);
-    if (current.activeRunId !== input.runId) return current;
+    if (
+      current.activeRunId !== input.runId
+      || current.executionConversationId !== input.conversationId
+    ) return current;
+    const activeSubagentCount = input.status === "completed"
+      ? this.countActiveSubagentTasksInExecutionTree(input.conversationId)
+      : 0;
+    const activeMemberCount = input.status === "completed"
+      ? this.countActiveTeamMemberRuns(input.conversationId)
+      : 0;
+    const unreadAgentMessageCount = input.status === "completed"
+      ? this.listUnreadAgentMessages(input.conversationId).length
+      : 0;
     const now = new Date().toISOString();
+    if (activeSubagentCount > 0 || activeMemberCount > 0 || unreadAgentMessageCount > 0) {
+      this.withTransaction(() => {
+        const result = this.database.prepare(
+          `UPDATE team_work_items
+           SET active_run_id = NULL, result_summary = NULL, blocked_reason = NULL, updated_at = ?
+           WHERE id = ? AND status = 'running' AND active_run_id = ?`,
+        ).run(now, input.workItemId, input.runId);
+        if (result.changes !== 1) {
+          throw new Error("Team WorkItem run changed before it could await Subagents.");
+        }
+        this.appendTeamWorkItemEvent(
+          current.teamId,
+          input.workItemId,
+        "task_updated",
+          activeMemberCount > 0
+            ? `Team Lead 已完成当前步骤，正在等待 ${activeMemberCount} 位团队成员交付。`
+            : activeSubagentCount > 0
+            ? `Team Lead 已完成当前步骤，正在等待 ${activeSubagentCount} 个旧版一次性任务交付。`
+            : `正在等待 Team Lead 汇总 ${unreadAgentMessageCount} 条已送达的成员结果。`,
+          now,
+        );
+      });
+      return this.getTeamWorkItem(input.workItemId);
+    }
     const nextStatus: TeamWorkItemStatus = input.status === "completed"
       ? "waiting_user"
       : input.status === "cancelled"
@@ -1332,6 +2021,18 @@ export class AgentDatabase {
       this.appendTeamWorkItemEvent(current.teamId, input.workItemId, eventType, detail, now);
     });
     return this.getTeamWorkItem(input.workItemId);
+  }
+
+  private countActiveTeamMemberRuns(teamExecutionConversationId: string): number {
+    const row = this.database.prepare(
+      `SELECT COUNT(*) AS count
+       FROM team_member_conversations
+       INNER JOIN runs
+         ON runs.conversation_id = team_member_conversations.conversation_id
+        AND runs.status IN ('queued', 'running')
+       WHERE team_member_conversations.team_execution_conversation_id = ?`,
+    ).get(teamExecutionConversationId) as DatabaseRow;
+    return asNumber(row, "count");
   }
 
   public startTeamWorkItemRework(workItemId: string, runId: string, feedback: string): TeamWorkItemView {
@@ -1385,24 +2086,50 @@ export class AgentDatabase {
 
   public blockInterruptedTeamWorkItems(): number {
     const rows = this.database.prepare(
-      `SELECT id, team_id FROM team_work_items
-       WHERE active_run_id IS NOT NULL AND status IN ('triaging', 'planned', 'running', 'reviewing')`,
+      `SELECT id, team_id, status, execution_conversation_id
+       FROM team_work_items
+       WHERE execution_conversation_id IS NOT NULL`,
     ).all() as DatabaseRow[];
     if (rows.length === 0) return 0;
     const now = new Date().toISOString();
+    let blockedCount = 0;
     this.withTransaction(() => {
       for (const row of rows) {
         const id = asString(row, "id");
         const teamId = asString(row, "team_id");
+        const status = asString(row, "status");
+        const executionConversationId = asString(row, "execution_conversation_id");
+        const interruptedRuns = this.database.prepare(
+          `UPDATE runs
+           SET status = 'failed', error = ?, updated_at = ?
+           WHERE conversation_id = ? AND status IN ('queued', 'running')`,
+        ).run(
+          "Application stopped before the managed Team WorkItem Run finished; it was not resumed.",
+          now,
+          executionConversationId,
+        );
+        if (interruptedRuns.changes > 0) {
+          this.database.prepare(
+            "UPDATE conversations SET has_unread_result = 1 WHERE id = ?",
+          ).run(executionConversationId);
+        }
+        if (!["triaging", "planned", "running", "reviewing"].includes(status)) continue;
         this.database.prepare(
           `UPDATE team_work_items
            SET active_run_id = NULL, status = 'blocked', blocked_reason = ?, updated_at = ?
-           WHERE id = ?`,
+           WHERE id = ? AND status IN ('triaging', 'planned', 'running', 'reviewing')`,
         ).run("应用在执行过程中退出；为避免重放文件或命令副作用，任务已阻塞。", now, id);
-        this.appendTeamWorkItemEvent(teamId, id, "blocked", "应用重启后未自动重放副作用，任务需要人工确认。", now);
+        this.appendTeamWorkItemEvent(
+          teamId,
+          id,
+          "blocked",
+          "应用重启后未自动重放副作用，任务需要人工确认。",
+          now,
+        );
+        blockedCount += 1;
       }
     });
-    return rows.length;
+    return blockedCount;
   }
 
   private appendTeamWorkItemEvent(
@@ -1431,11 +2158,21 @@ export class AgentDatabase {
 
   private toTeamWorkItem(row: DatabaseRow): TeamWorkItemView {
     const executionConversationId = asNullableString(row, "execution_conversation_id");
+    // Keep the full append-only audit trail in SQLite, while bounding the
+    // renderer/IPC projection to the protocol's 200-event contract.
     const eventRows = this.database.prepare(
       `SELECT id, sequence, type, detail, created_at
-       FROM team_work_item_events WHERE work_item_id = ? ORDER BY sequence ASC`,
+       FROM (
+         SELECT id, sequence, type, detail, created_at
+         FROM team_work_item_events
+         WHERE work_item_id = ?
+         ORDER BY sequence DESC
+         LIMIT 200
+       )
+       ORDER BY sequence ASC`,
     ).all(asString(row, "id")) as DatabaseRow[];
     const tasks = executionConversationId === null
+      || !this.isConversationProjectable(executionConversationId)
       ? []
       : this.getTaskList(executionConversationId)?.tasks ?? [];
     return teamWorkItemViewSchema.parse({
@@ -1461,12 +2198,21 @@ export class AgentDatabase {
       requirement: asString(row, "requirement"),
       resultSummary: asNullableString(row, "result_summary"),
       revision: asNumber(row, "revision"),
+      sourceConversationId: asNullableString(row, "source_conversation_id"),
       status: asString(row, "status"),
       tasks,
       teamId: asString(row, "team_id"),
       title: asString(row, "title"),
       updatedAt: asString(row, "updated_at"),
     });
+  }
+
+  private isConversationProjectable(conversationId: string): boolean {
+    return this.database
+      .prepare(
+        "SELECT 1 AS present FROM conversations WHERE id = ? AND deletion_pending = 0 LIMIT 1",
+      )
+      .get(conversationId) !== undefined;
   }
 
   /** Plugin files are discovered on disk; this table is their queryable catalog. */
@@ -1552,6 +2298,27 @@ export class AgentDatabase {
     if (projectId !== null) {
       this.assertProjectExists(projectId);
     }
+    const parent = options.parentConversationId === undefined
+      ? null
+      : this.getConversation(options.parentConversationId);
+    if (parent !== null) {
+      if (parent.isArchived) {
+        throw new Error("A Team execution conversation cannot have an archived parent.");
+      }
+      const isTeamLeadFromSource = options.threadKind === "team_lead"
+        && parent.projectId === projectId
+        && parent.parentConversationId === null
+        && parent.threadKind === "agent"
+        && parent.teamWorkItemId === null;
+      const isPersistentMemberFromLead = options.threadKind === "agent"
+        && parent.projectId === projectId
+        && parent.threadKind === "team_lead"
+        && parent.teamId !== null
+        && options.teamId === parent.teamId;
+      if (!isTeamLeadFromSource && !isPersistentMemberFromLead) {
+        throw new Error("A Team execution child must be either a Team Lead or one of its persistent members.");
+      }
+    }
     const countRow = this.database
       .prepare(
         `SELECT COUNT(*) AS count FROM conversations
@@ -1572,11 +2339,12 @@ export class AgentDatabase {
       id: randomUUID(),
       lastRunStatus: null,
       modelSelection: options.modelSelection ?? null,
-      parentConversationId: null,
+      parentConversationId: parent?.id ?? null,
       pinOrder: null,
       projectId,
       subagentTaskStatus: null,
       teamId: options.teamId ?? null,
+      teamWorkItemId: null,
       threadKind: options.threadKind ?? "agent",
       title: count === 0 ? "新会话" : `新会话 ${count + 1}`,
       updatedAt: now,
@@ -1754,7 +2522,10 @@ export class AgentDatabase {
     rawSelection: ConversationModelSelection,
   ): ConversationSummary {
     const selection = conversationModelSelectionSchema.parse(rawSelection);
-    this.getConversation(conversationId);
+    const conversation = this.getConversation(conversationId);
+    if (conversation.teamWorkItemId !== null) {
+      throw new Error("Managed Team WorkItem conversations use the WorkItem's frozen model selection.");
+    }
     this.database
       .prepare(
         `UPDATE conversations
@@ -1813,6 +2584,7 @@ export class AgentDatabase {
       projectId: source.projectId,
       subagentTaskStatus: null,
       teamId: source.teamId,
+      teamWorkItemId: null,
       threadKind: kind === "subagent" ? "subagent" : "agent",
       title: kind === "sibling"
         ? this.createSiblingForkTitle(source)
@@ -2163,7 +2935,8 @@ export class AgentDatabase {
     this.getConversation(sourceConversationId);
     const rows = this.database
       .prepare(
-        `SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
+        `${teamWorkItemExecutionTreeCte}
+         SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
             selected_provider_id, selected_model_id, selected_reasoning_json,
             thread_kind, agent_id, avatar_icon, team_id, title, created_at, conversations.updated_at,
             conversations.archived_at,
@@ -2179,9 +2952,12 @@ export class AgentDatabase {
           ,(SELECT COUNT(*) FROM subagent_tasks
             WHERE parent_conversation_id = conversations.id
               AND status IN ('queued', 'running')) AS active_subagent_count
-          ,(SELECT status FROM subagent_tasks
-            WHERE child_conversation_id = conversations.id LIMIT 1) AS subagent_task_status
+           ,(SELECT status FROM subagent_tasks
+             WHERE child_conversation_id = conversations.id LIMIT 1) AS subagent_task_status
+           ,team_execution_tree_projection.work_item_id AS team_work_item_id
          FROM conversations
+         LEFT JOIN team_execution_tree_projection
+           ON team_execution_tree_projection.conversation_id = conversations.id
          WHERE parent_conversation_id = ? AND deletion_pending = 0
          ORDER BY conversations.created_at ASC`
       )
@@ -2199,7 +2975,8 @@ export class AgentDatabase {
     if (row === undefined) {
       throw new Error("Conversation was not found.");
     }
-    return asNullableString(row, "parent_conversation_id") !== null;
+    return asNullableString(row, "parent_conversation_id") !== null
+      && !this.isManagedTeamWorkItemConversation(conversationId);
   }
 
   public renameConversation(
@@ -2223,6 +3000,9 @@ export class AgentDatabase {
     projectId: string | null
   ): ConversationSummary {
     const conversation = this.getConversation(conversationId);
+    if (conversation.teamWorkItemId !== null) {
+      throw new Error("Managed Team WorkItem conversations retain their WorkItem project binding.");
+    }
     if (conversation.projectId === projectId) {
       return conversation;
     }
@@ -2261,6 +3041,9 @@ export class AgentDatabase {
     archived: boolean
   ): ConversationSummary {
     const conversation = this.getConversation(conversationId);
+    if (archived && conversation.teamWorkItemId !== null) {
+      throw new Error("Managed Team WorkItem conversations are retained by their WorkItem lifecycle.");
+    }
     if (archived && (
       conversation.activeRunId !== null || conversation.activeSubagentCount > 0
     )) {
@@ -2405,7 +3188,10 @@ export class AgentDatabase {
     );
     if (existingTask !== undefined) return existingTask;
 
-    this.getConversation(conversationId);
+    const conversation = this.getConversation(conversationId);
+    if (conversation.teamWorkItemId !== null) {
+      throw new Error("Managed Team WorkItem conversations are retained by their WorkItem lifecycle.");
+    }
     const conversationRows = this.database
       .prepare(
         `WITH RECURSIVE conversation_tree(id, depth) AS (
@@ -2805,6 +3591,26 @@ export class AgentDatabase {
       )
       .all(parentConversationId) as DatabaseRow[];
     return rows.map(toSubagentTask);
+  }
+
+  /** Counts queued/running tasks across an execution tree, including nested delegation. */
+  public countActiveSubagentTasksInExecutionTree(rootConversationId: string): number {
+    this.getConversation(rootConversationId);
+    const row = this.database.prepare(
+      `WITH RECURSIVE execution_tree(conversation_id) AS (
+         SELECT ?
+         UNION
+         SELECT task.child_conversation_id
+         FROM subagent_tasks AS task
+         JOIN execution_tree AS parent
+           ON parent.conversation_id = task.parent_conversation_id
+       )
+       SELECT COUNT(*) AS count
+       FROM subagent_tasks
+       WHERE parent_conversation_id IN (SELECT conversation_id FROM execution_tree)
+         AND status IN ('queued', 'running')`,
+    ).get(rootConversationId) as DatabaseRow;
+    return asNumber(row, "count");
   }
 
   /** A Subagent terminal Run also has a cross-Conversation delivery fact.
@@ -3659,6 +4465,7 @@ export class AgentDatabase {
     attachmentIds: readonly string[] = [],
     modelContent = content,
     executionSnapshot?: RunExecutionSnapshot,
+    titleOverride?: string,
   ): RunCreation {
     const prepared = this.prepareRunWithUserMessage(
       conversationId,
@@ -3667,6 +4474,7 @@ export class AgentDatabase {
       attachmentIds,
       modelContent,
       executionSnapshot,
+      titleOverride,
     );
     this.projectPreparedRunWithUserMessage(prepared);
     return {
@@ -3688,6 +4496,7 @@ export class AgentDatabase {
     attachmentIds: readonly string[] = [],
     modelContent = content,
     executionSnapshot?: RunExecutionSnapshot,
+    titleOverride?: string,
   ): PreparedRunWithUserMessage {
     const conversation = this.getConversation(conversationId);
     this.assertNoActiveRun(conversationId);
@@ -3726,9 +4535,9 @@ export class AgentDatabase {
       status: "completed"
     });
     const userMessageCount = this.countUserMessages(conversationId);
-    const nextTitle = userMessageCount === 0
+    const nextTitle = titleOverride ?? (userMessageCount === 0
       ? this.createTitleFromMessage(content || attachments[0]?.name || "新会话")
-      : conversation.title;
+      : conversation.title);
 
     return {
       attachmentIds: [...attachmentIds],
@@ -4207,6 +5016,15 @@ export class AgentDatabase {
       throw new Error("Tool timeline item was not found.");
     }
     this.touchConversation(validated.conversationId, new Date().toISOString());
+  }
+
+  /**
+   * A Run cannot leave an actionable approval behind after it reaches a
+   * terminal state. Returning the updated rows lets AgentRuntime write the
+   * same fact to ThreadLog for recovery.
+   */
+  public expirePendingToolApprovalsForRun(runId: string): ConversationToolItem[] {
+    return this.withTransaction(() => this.expirePendingToolApprovalsForRunInTransaction(runId));
   }
 
   public completeTool(input: {
@@ -4887,6 +5705,14 @@ export class AgentDatabase {
           continue;
         }
 
+        if (event.type === "tool_approval_expired") {
+          const tool = readProjectionTool(payload, "tool");
+          if (tool !== null && tool.status === "cancelled") {
+            this.expireThreadLogToolApproval(conversationId, tool);
+          }
+          continue;
+        }
+
         if (event.type === "agent_message") {
           const message = readProjectionAgentMessage(payload, "message");
           if (message === null) continue;
@@ -5084,6 +5910,7 @@ export class AgentDatabase {
             );
         }
       }
+      this.expirePendingToolApprovalsForTerminalRunsInTransaction();
     });
     return true;
   }
@@ -5654,6 +6481,76 @@ export class AgentDatabase {
       .run(JSON.stringify(awaiting), toolId);
   }
 
+  private expireThreadLogToolApproval(
+    conversationId: string,
+    tool: ConversationToolItem,
+  ): void {
+    const current = this.database
+      .prepare(
+        `SELECT payload_json FROM conversation_timeline
+         WHERE id = ? AND conversation_id = ? AND kind = 'tool'`,
+      )
+      .get(tool.id, conversationId) as DatabaseRow | undefined;
+    if (current === undefined) return;
+    const currentTool = conversationToolItemSchema.parse(
+      parseJson(asString(current, "payload_json"), "tool"),
+    );
+    if (currentTool.status !== "awaiting_approval") return;
+    this.database
+      .prepare("UPDATE conversation_timeline SET payload_json = ? WHERE id = ? AND kind = 'tool'")
+      .run(JSON.stringify(tool), tool.id);
+  }
+
+  private expirePendingToolApprovalsForRunInTransaction(runId: string): ConversationToolItem[] {
+    const rows = this.database.prepare(
+      `SELECT payload_json FROM conversation_timeline
+       WHERE kind = 'tool'`,
+    ).all() as DatabaseRow[];
+    const expired = rows.flatMap((row) => {
+      const current = conversationToolItemSchema.parse(
+        parseJson(asString(row, "payload_json"), "tool"),
+      );
+      if (current.runId !== runId || current.status !== "awaiting_approval") return [];
+      const tool = conversationToolItemSchema.parse({
+        ...current,
+        result: "审批已失效：所属运行已经结束。",
+        status: "cancelled",
+      });
+      this.database
+        .prepare("UPDATE conversation_timeline SET payload_json = ? WHERE id = ? AND kind = 'tool'")
+        .run(JSON.stringify(tool), tool.id);
+      this.touchConversation(tool.conversationId, new Date().toISOString());
+      return [tool];
+    });
+    return expired;
+  }
+
+  private expirePendingToolApprovalsForTerminalRunsInTransaction(): void {
+    const terminalRunIds = new Set((this.database.prepare(
+      `SELECT id FROM runs WHERE status IN ('completed', 'failed', 'cancelled')`,
+    ).all() as DatabaseRow[]).map((row) => asString(row, "id")));
+    if (terminalRunIds.size === 0) return;
+    const rows = this.database.prepare(
+      `SELECT payload_json FROM conversation_timeline
+       WHERE kind = 'tool'`,
+    ).all() as DatabaseRow[];
+    for (const row of rows) {
+      const current = conversationToolItemSchema.parse(
+        parseJson(asString(row, "payload_json"), "tool"),
+      );
+      if (current.status !== "awaiting_approval" || !terminalRunIds.has(current.runId)) continue;
+      const tool = conversationToolItemSchema.parse({
+        ...current,
+        result: "审批已失效：所属运行已经结束。",
+        status: "cancelled",
+      });
+      this.database
+        .prepare("UPDATE conversation_timeline SET payload_json = ? WHERE id = ? AND kind = 'tool'")
+        .run(JSON.stringify(tool), tool.id);
+      this.touchConversation(tool.conversationId, new Date().toISOString());
+    }
+  }
+
   private replaceThreadLogPendingMessages(
     conversationId: string,
     pendingMessages: readonly StoredPendingMessage[],
@@ -6107,6 +7004,134 @@ export class AgentDatabase {
           }
         },
         version: 10,
+      },
+      {
+        name: "team-work-item-source-conversation",
+        up: (database) => {
+          const columns = database.prepare("PRAGMA table_info(team_work_items)").all() as DatabaseRow[];
+          if (!columns.some((column) => column.name === "source_conversation_id")) {
+            database.exec(
+              "ALTER TABLE team_work_items ADD COLUMN source_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL",
+            );
+          }
+          database.exec(
+            "CREATE INDEX IF NOT EXISTS team_work_items_source_conversation ON team_work_items(source_conversation_id)",
+          );
+        },
+        version: 11,
+      },
+      {
+        name: "team-durable-member-conversations",
+        up: (database) => {
+          database.exec(`
+            CREATE TABLE team_work_items_next (
+              id TEXT PRIMARY KEY,
+              team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+              project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+              title TEXT NOT NULL,
+              requirement TEXT NOT NULL,
+              acceptance_criteria_json TEXT NOT NULL,
+              priority TEXT NOT NULL CHECK(priority IN ('high', 'normal', 'low')),
+              status TEXT NOT NULL CHECK(status IN (
+                'inbox', 'triaging', 'needs_clarification', 'planned', 'queued', 'running',
+                'waiting_user', 'blocked', 'reviewing', 'completed', 'failed', 'cancelled'
+              )),
+              revision INTEGER NOT NULL,
+              permission_mode TEXT NOT NULL,
+              model_selection_json TEXT NOT NULL,
+              execution_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+              active_run_id TEXT UNIQUE REFERENCES runs(id) ON DELETE SET NULL,
+              result_summary TEXT,
+              blocked_reason TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              completed_at TEXT,
+              accepted_criteria_json TEXT NOT NULL DEFAULT '[]',
+              source_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL
+            );
+
+            INSERT INTO team_work_items_next (
+              id, team_id, project_id, title, requirement, acceptance_criteria_json,
+              priority, status, revision, permission_mode, model_selection_json,
+              execution_conversation_id, active_run_id, result_summary, blocked_reason,
+              created_at, updated_at, completed_at, accepted_criteria_json, source_conversation_id
+            )
+            SELECT
+              id, team_id, project_id, title, requirement, acceptance_criteria_json,
+              priority, status, revision, permission_mode, model_selection_json,
+              execution_conversation_id, active_run_id, result_summary, blocked_reason,
+              created_at, updated_at, completed_at, accepted_criteria_json, source_conversation_id
+            FROM team_work_items;
+
+            DROP TABLE team_work_items;
+            ALTER TABLE team_work_items_next RENAME TO team_work_items;
+
+            CREATE INDEX team_work_items_team_status
+              ON team_work_items(team_id, status, priority, created_at);
+            CREATE INDEX team_work_items_project_status
+              ON team_work_items(project_id, status, created_at);
+            CREATE INDEX team_work_items_source_conversation
+              ON team_work_items(source_conversation_id);
+
+            CREATE TABLE IF NOT EXISTS team_execution_conversations (
+              team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+              project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+              source_conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+              scope_key TEXT NOT NULL,
+              conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY (team_id, scope_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS team_execution_conversations_source
+              ON team_execution_conversations(source_conversation_id, team_id);
+
+            CREATE TABLE IF NOT EXISTS team_member_conversations (
+              team_execution_conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+              team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+              agent_id TEXT NOT NULL,
+              conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY (team_execution_conversation_id, agent_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS team_member_conversations_member
+              ON team_member_conversations(conversation_id);
+
+            CREATE TABLE IF NOT EXISTS team_work_item_member_assignments (
+              id TEXT PRIMARY KEY,
+              work_item_id TEXT NOT NULL REFERENCES team_work_items(id) ON DELETE CASCADE,
+              member_conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+              message_id TEXT NOT NULL UNIQUE REFERENCES conversation_agent_messages(id) ON DELETE CASCADE,
+              title TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS team_work_item_member_assignments_work_item
+              ON team_work_item_member_assignments(work_item_id, created_at);
+
+            INSERT OR IGNORE INTO team_execution_conversations (
+              team_id, project_id, source_conversation_id, scope_key, conversation_id, created_at, updated_at
+            )
+            SELECT
+              team_id,
+              project_id,
+              source_conversation_id,
+              CASE
+                WHEN source_conversation_id IS NULL THEN 'project:' || project_id
+                ELSE 'conversation:' || source_conversation_id
+              END,
+              execution_conversation_id,
+              created_at,
+              updated_at
+            FROM team_work_items
+            WHERE execution_conversation_id IS NOT NULL
+            ORDER BY updated_at DESC, rowid DESC;
+          `);
+        },
+        version: 12,
       },
     ]);
   }
@@ -6577,10 +7602,20 @@ export class AgentDatabase {
                   OR id IN (
                     SELECT target_run_id FROM subagent_tasks WHERE target_run_id IS NOT NULL
                   )
+                  OR EXISTS (
+                    SELECT 1 FROM team_work_items
+                    WHERE team_work_items.execution_conversation_id = runs.conversation_id
+                  )
+                  OR EXISTS (
+                    SELECT 1 FROM conversations
+                    WHERE conversations.id = runs.conversation_id
+                      AND conversations.thread_kind = 'subagent'
+                  )
                 )
               )`
         )
         .run(now);
+      this.expirePendingToolApprovalsForTerminalRunsInTransaction();
       this.database
         .prepare(
           `UPDATE subagent_tasks

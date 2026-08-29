@@ -61,9 +61,12 @@ import {
 } from "./skill-document.js";
 import {
   acceptTeamWorkItemInputSchema,
+  getTeamWorkItemExecutionInputSchema,
   listTeamWorkItemsInputSchema,
   requestTeamWorkItemReworkInputSchema,
   submitTeamWorkItemInputSchema,
+  updateTeamWorkItemInputSchema,
+  updateTeamWorkItemPermissionInputSchema,
 } from "./team-work-item.js";
 
 /**
@@ -180,8 +183,20 @@ export const listTeamWorkItemsIpcArgumentsSchema = z.tuple([
   listTeamWorkItemsInputSchema,
 ]);
 
+export const getTeamWorkItemExecutionIpcArgumentsSchema = z.tuple([
+  getTeamWorkItemExecutionInputSchema,
+]);
+
 export const submitTeamWorkItemIpcArgumentsSchema = z.tuple([
   submitTeamWorkItemInputSchema,
+]);
+
+export const updateTeamWorkItemIpcArgumentsSchema = z.tuple([
+  updateTeamWorkItemInputSchema,
+]);
+
+export const updateTeamWorkItemPermissionIpcArgumentsSchema = z.tuple([
+  updateTeamWorkItemPermissionInputSchema,
 ]);
 
 export const requestTeamWorkItemReworkIpcArgumentsSchema = z.tuple([

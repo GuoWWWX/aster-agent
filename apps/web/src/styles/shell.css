@@ -124,7 +124,8 @@
   flex-direction: column;
 }
 
-.workbench-grid[data-active-activity="settings"] > .workbench-main {
+.workbench-grid[data-active-activity="settings"] > .workbench-main,
+.workbench-grid[data-active-activity="team"] > .workbench-main {
   overflow: visible;
   border: 0;
   border-radius: 0;

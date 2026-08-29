@@ -2,11 +2,18 @@ import type {
   AgentDirectoryConfiguration,
   AcceptTeamWorkItemInput,
   ConversationAgentBinding,
+  ConversationModelSelection,
   ConversationMessageItem,
   ConversationRunEvent,
+  ConversationSummary,
+  GetTeamWorkItemExecutionInput,
   ListTeamWorkItemsInput,
   RequestTeamWorkItemReworkInput,
+  SendConversationMessageInput,
   SubmitTeamWorkItemInput,
+  UpdateTeamWorkItemInput,
+  UpdateTeamWorkItemPermissionInput,
+  TeamWorkItemExecutionView,
   TeamWorkItemView,
 } from "@agent/protocol";
 
@@ -20,7 +27,8 @@ type RunEventEmitter = (event: ConversationRunEvent) => void;
 
 /**
  * Coordinates durable Team WorkItems while delegating every model/tool loop to AgentRuntime.
- * One execution Conversation per WorkItem keeps concurrent requirements isolated and recoverable.
+ * A source Conversation reuses one Team Lead and its member conversations; each WorkItem
+ * remains an independent, serialized unit of scheduling and acceptance.
  */
 export class TeamWorkItemRuntime {
   private readonly schedulingTeams = new Set<string>();
@@ -38,6 +46,10 @@ export class TeamWorkItemRuntime {
     return this.database.listTeamWorkItems(input);
   }
 
+  public getExecution(input: GetTeamWorkItemExecutionInput): TeamWorkItemExecutionView {
+    return this.database.getTeamWorkItemExecution(input.workItemId);
+  }
+
   public submit(rawInput: SubmitTeamWorkItemInput, emit: RunEventEmitter): TeamWorkItemView {
     const modelSelection = rawInput.modelSelection === undefined
       ? this.credentials.getPreferredSelection()
@@ -50,6 +62,39 @@ export class TeamWorkItemRuntime {
     const workItem = this.database.createTeamWorkItem(rawInput, modelSelection);
     void this.schedule(rawInput.teamId, emit);
     return workItem;
+  }
+
+  public update(input: UpdateTeamWorkItemInput): TeamWorkItemView {
+    return this.database.updateTeamWorkItem(input);
+  }
+
+  public updatePermission(input: UpdateTeamWorkItemPermissionInput): TeamWorkItemView {
+    return this.database.updateTeamWorkItemPermission(input);
+  }
+
+  /**
+   * A Team member still presents as a normal Conversation. The selected model
+   * becomes the WorkItem policy for future Team Runs while the active Run keeps
+   * its immutable execution snapshot.
+   */
+  public updateModelSelection(
+    conversationId: string,
+    rawSelection: ConversationModelSelection,
+  ): ConversationSummary {
+    const conversation = this.database.getConversation(conversationId);
+    const workItem = this.database.getRunningTeamWorkItemByExecutionTreeConversation(conversationId)
+      ?? (conversation.teamWorkItemId === null
+        ? null
+        : this.database.getTeamWorkItem(conversation.teamWorkItemId));
+    if (workItem === null) {
+      throw new Error("Only a Team WorkItem conversation can update its Team execution model.");
+    }
+    const selection = this.credentials.resolveSelection(rawSelection);
+    return this.database.updateTeamWorkItemModelSelection(
+      workItem.id,
+      conversationId,
+      selection,
+    );
   }
 
   public resumeQueued(emit: RunEventEmitter): void {
@@ -80,7 +125,7 @@ export class TeamWorkItemRuntime {
         ? {}
         : { reasoning: workItem.modelSelection.reasoning }),
     }, (event) => {
-      if (event.type !== "run.finished") {
+      if (event.type !== "run.finished" || event.conversationId !== workItem.executionConversationId) {
         emit(event);
         return;
       }
@@ -88,6 +133,7 @@ export class TeamWorkItemRuntime {
       emit(event);
     }, {
       allowManagedTeamWorkItemExecution: true,
+      titleOverride: this.database.getConversation(workItem.executionConversationId).title,
       beforeRunScheduled: (accepted) => {
         updated = this.database.startTeamWorkItemRework(
           workItem.id,
@@ -101,6 +147,44 @@ export class TeamWorkItemRuntime {
     }
     if (updated === null) throw new Error("Team WorkItem rework Run was not persisted.");
     return updated;
+  }
+
+  /**
+   * Delivers a user's in-flight instruction to a Team member without creating
+   * a standalone Run. The message is consumed as `steer` at the current Run's
+   * next safe model/tool boundary and always retains the WorkItem policy.
+   */
+  public sendExecutionGuidance(
+    input: SendConversationMessageInput,
+    emit: RunEventEmitter,
+  ) {
+    const workItem = this.database.getRunningTeamWorkItemByExecutionTreeConversation(
+      input.conversationId,
+    );
+    const conversation = this.database.getConversation(input.conversationId);
+    if (workItem === null || conversation.activeRunId === null) {
+      throw new Error("This Team member is not currently running. Use the WorkItem review controls to request rework.");
+    }
+    return this.agentRuntime.sendMessage({
+      ...(input.attachmentIds === undefined ? {} : { attachmentIds: input.attachmentIds }),
+      content: input.content,
+      conversationId: input.conversationId,
+      deliveryMode: "steer",
+      modelId: workItem.modelSelection.modelId,
+      permissionMode: workItem.permissionMode,
+      providerId: workItem.modelSelection.providerId,
+      ...(input.referencedConversationIds === undefined
+        ? {}
+        : { referencedConversationIds: input.referencedConversationIds }),
+      ...(input.referencedProjectPaths === undefined
+        ? {}
+        : { referencedProjectPaths: input.referencedProjectPaths }),
+      ...(workItem.modelSelection.reasoning === null
+        ? {}
+        : { reasoning: workItem.modelSelection.reasoning }),
+    }, emit, {
+      allowManagedTeamWorkItemExecution: true,
+    });
   }
 
   public accept(input: AcceptTeamWorkItemInput): TeamWorkItemView {
@@ -119,11 +203,22 @@ export class TeamWorkItemRuntime {
         .length;
       const capacity = Math.max(0, team.maxWorkers - activeCount);
       const queued = this.database.listTeamWorkItems({ teamId })
-        .filter((item) => item.status === "queued")
-        .slice(0, capacity);
+        .filter((item) => item.status === "queued");
+      let remainingCapacity = capacity;
       for (const workItem of queued) {
+        if (remainingCapacity <= 0) break;
+        const existingExecution = this.database.getTeamExecutionConversation({
+          projectId: workItem.projectId,
+          sourceConversationId: workItem.sourceConversationId,
+          teamId: workItem.teamId,
+        });
+        if (
+          existingExecution !== null
+          && this.database.getRunningTeamWorkItemByExecutionConversation(existingExecution.id) !== null
+        ) continue;
         try {
           this.start(workItem, emit);
+          remainingCapacity -= 1;
         } catch (error) {
           const message = error instanceof Error ? error.message : "Team WorkItem could not start.";
           this.database.failTeamWorkItemBeforeRun(workItem.id, message);
@@ -142,25 +237,34 @@ export class TeamWorkItemRuntime {
       (candidate) => candidate.id === team.leadAgentId && candidate.enabled,
     );
     if (lead === undefined) throw new Error("The Team Lead Agent is not available.");
-    const member = team.memberConfigurations[lead.id];
-    const agent: ConversationAgentBinding = {
-      avatarIcon: lead.avatar.kind === "icon" ? lead.avatar.icon : null,
-      id: lead.id,
-      instructions: [lead.instructions, team.instructions, member?.instructions]
-        .filter((value): value is string => value !== undefined && value.trim().length > 0)
-        .join("\n\n")
-        .slice(0, 20_000),
-      isDefault: lead.isDefault,
-      name: lead.name,
-      role: member?.role.trim() || lead.role,
-    };
-    const conversation = this.conversationLifecycle.createConversation(workItem.projectId, {
-      agent,
-      modelSelection: workItem.modelSelection,
+    const agent = this.teamAgentBinding(lead.id, team, directory);
+    let conversation = this.database.getTeamExecutionConversation({
+      projectId: workItem.projectId,
+      sourceConversationId: workItem.sourceConversationId,
       teamId: workItem.teamId,
-      threadKind: "agent",
     });
-    this.database.renameConversation(conversation.id, `团队任务：${workItem.title}`.slice(0, 200));
+    if (conversation === null) {
+      const created = this.conversationLifecycle.createConversation(workItem.projectId, {
+        agent,
+        modelSelection: workItem.modelSelection,
+        ...(workItem.sourceConversationId === null
+          ? {}
+          : { parentConversationId: workItem.sourceConversationId }),
+        teamId: workItem.teamId,
+        threadKind: "team_lead",
+      });
+      conversation = this.database.bindTeamExecutionConversation({
+        conversationId: created.id,
+        projectId: workItem.projectId,
+        sourceConversationId: workItem.sourceConversationId,
+        teamId: workItem.teamId,
+      });
+      const executionTitle = `${agent.name} · ${team.name}`.slice(0, 200);
+      this.database.renameConversation(conversation.id, executionTitle);
+      conversation = this.database.getConversation(conversation.id);
+    }
+    this.ensureTeamMemberConversations(workItem, team, directory, conversation);
+    this.database.reserveTeamWorkItemExecution(workItem.id, conversation.id);
 
     let started: TeamWorkItemView | null = null;
     const submission = this.agentRuntime.sendMessage({
@@ -173,7 +277,7 @@ export class TeamWorkItemRuntime {
         ? {}
         : { reasoning: workItem.modelSelection.reasoning }),
     }, (event) => {
-      if (event.type !== "run.finished") {
+      if (event.type !== "run.finished" || event.conversationId !== conversation.id) {
         emit(event);
         return;
       }
@@ -181,6 +285,7 @@ export class TeamWorkItemRuntime {
       emit(event);
     }, {
       allowManagedTeamWorkItemExecution: true,
+      titleOverride: conversation.title,
       beforeRunScheduled: (accepted) => {
         started = this.database.startTeamWorkItem(workItem.id, conversation.id, accepted.runId);
       },
@@ -189,12 +294,72 @@ export class TeamWorkItemRuntime {
       throw new Error("A new Team execution Conversation unexpectedly queued its first Run.");
     }
     if (started === null) throw new Error("Team WorkItem execution Run was not persisted.");
+    emit({
+      conversation: this.database.getConversation(conversation.id),
+      type: "conversation.updated",
+    });
+  }
+
+  private ensureTeamMemberConversations(
+    workItem: TeamWorkItemView,
+    team: AgentDirectoryConfiguration["teams"][number],
+    directory: AgentDirectoryConfiguration,
+    leadConversation: ConversationSummary,
+  ): void {
+    const existingAgentIds = new Set(
+      this.database.listTeamMemberConversations(leadConversation.id)
+        .flatMap((conversation) => conversation.agentId === null ? [] : [conversation.agentId]),
+    );
+    for (const agentId of team.memberIds) {
+      if (agentId === team.leadAgentId || existingAgentIds.has(agentId)) continue;
+      const configured = directory.agents.find((candidate) => candidate.id === agentId && candidate.enabled);
+      if (configured === undefined) continue;
+      const binding = this.teamAgentBinding(agentId, team, directory);
+      const created = this.conversationLifecycle.createConversation(workItem.projectId, {
+        agent: binding,
+        modelSelection: workItem.modelSelection,
+        parentConversationId: leadConversation.id,
+        teamId: team.id,
+        threadKind: "agent",
+      });
+      this.database.renameConversation(
+        created.id,
+        `${binding.name} · ${team.name}`.slice(0, 200),
+      );
+      this.database.bindTeamMemberConversation({
+        agentId,
+        conversationId: created.id,
+        teamExecutionConversationId: leadConversation.id,
+      });
+    }
+  }
+
+  private teamAgentBinding(
+    agentId: string,
+    team: AgentDirectoryConfiguration["teams"][number],
+    directory: AgentDirectoryConfiguration,
+  ): ConversationAgentBinding {
+    const configured = directory.agents.find((candidate) => candidate.id === agentId && candidate.enabled);
+    if (configured === undefined) throw new Error("The Team Agent is not available.");
+    const member = team.memberConfigurations[configured.id];
+    return {
+      avatarIcon: configured.avatar.kind === "icon" ? configured.avatar.icon : null,
+      id: configured.id,
+      instructions: [configured.instructions, team.instructions, member?.instructions]
+        .filter((value): value is string => value !== undefined && value.trim().length > 0)
+        .join("\n\n")
+        .slice(0, 20_000),
+      isDefault: configured.isDefault,
+      name: configured.name,
+      role: member?.role.trim() || configured.role,
+    };
   }
 
   private assertTeamCanAcceptWork(teamId: string): void {
     const directory = this.agentDirectory.getConfiguration();
-    const team = directory.teams.find((candidate) => candidate.id === teamId && candidate.enabled);
+    const team = directory.teams.find((candidate) => candidate.id === teamId);
     if (team === undefined) throw new Error("The selected Team is not available.");
+    if (!team.enabled) return;
     const lead = directory.agents.find((candidate) => candidate.id === team.leadAgentId && candidate.enabled);
     if (lead === undefined) throw new Error("The Team Lead Agent is not available.");
   }
@@ -209,6 +374,7 @@ export class TeamWorkItemRuntime {
       ? this.lastAssistantResult(workItem.executionConversationId)
       : null;
     this.database.finishTeamWorkItemRun({
+      conversationId: event.conversationId,
       error: event.error,
       resultSummary,
       runId: event.runId,
@@ -242,10 +408,11 @@ export class TeamWorkItemRuntime {
       "",
       "执行要求：",
       "1. 先检查当前项目事实；存在多个可观察步骤时创建并持续更新任务清单。",
-      "2. 简单任务直接完成；只有独立调查、实现或复核确有收益时才使用团队成员 Subagent。",
-      "3. 完成实际修改，并运行与改动相符的测试或检查。",
-      "4. 在结束前做一次需求符合性与回归风险自检；发现问题立即修正。",
-      "5. 最终回复列出完成内容、修改文件、验证结果、未决风险，并逐项对应验收条件。",
+      "2. 简单任务直接完成；需要协作时，通过 send_agent_message 向已配置的持久团队成员分派任务。",
+      "3. 成员的完成结果会以 Agent 消息返回；收到全部必要结果后再汇总，不能把成员对话当作一次性 Subagent。",
+      "4. 完成实际修改，并运行与改动相符的测试或检查。",
+      "5. 在结束前做一次需求符合性与回归风险自检；发现问题立即修正。",
+      "6. 最终回复列出完成内容、修改文件、验证结果、未决风险，并逐项对应验收条件。",
       "不要只给方案；在当前授权范围内把任务推进到可由用户验收的状态。",
     ].join("\n");
   }

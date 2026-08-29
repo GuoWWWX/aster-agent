@@ -44,6 +44,7 @@ import {
   deleteConfigurationWorkspaceEntryIpcArgumentsSchema,
   discoveredModelSchema,
   emptyIpcArgumentsSchema,
+  getTeamWorkItemExecutionIpcArgumentsSchema,
   getModelApiKeyIpcArgumentsSchema,
   integrationConfigurationIpcArgumentsSchema,
   integrationConfigurationSchema,
@@ -89,11 +90,14 @@ import {
   setProjectPinnedIpcArgumentsSchema,
   terminalConfigurationIpcArgumentsSchema,
   terminalConfigurationSchema,
+  teamWorkItemExecutionViewSchema,
   teamWorkItemListSchema,
   teamWorkItemViewSchema,
   skillDocumentReferenceIpcArgumentsSchema,
   skillDocumentSaveIpcArgumentsSchema,
   submitTeamWorkItemIpcArgumentsSchema,
+  updateTeamWorkItemIpcArgumentsSchema,
+  updateTeamWorkItemPermissionIpcArgumentsSchema,
   skillDiscoveryResultSchema,
   skillDocumentSchema,
   writeConfigurationWorkspaceFileIpcArgumentsSchema,
@@ -527,8 +531,10 @@ export function registerMainIpcHandlers(
     const [input] = setConversationModelSelectionIpcArgumentsSchema.parse(args);
     const selection = credentials.resolveSelection(input.modelSelection);
     const current = database.getConversation(input.conversationId);
-    const conversation = database.setConversationModelSelection(input.conversationId, selection);
-    if (current.threadKind !== "subagent") {
+    const conversation = current.teamWorkItemId === null
+      ? database.setConversationModelSelection(input.conversationId, selection)
+      : teamWorkItems.updateModelSelection(input.conversationId, selection);
+    if (current.threadKind !== "subagent" && current.teamWorkItemId === null) {
       credentials.setRecentSelection(selection);
     }
     return conversationSummarySchema.parse(conversation);
@@ -690,9 +696,12 @@ export function registerMainIpcHandlers(
       getTrustedWindow(event, getMainWindow);
       const [input] = sendConversationMessageIpcArgumentsSchema.parse(args);
       return conversationMessageSubmissionSchema.parse(
-        agentRuntime.sendMessage(input, (runEvent) =>
-          sendConversationRunEvent(getMainWindow, runEvent)
-        )
+        database.isTeamWorkItemExecutionTreeConversation(input.conversationId)
+          ? teamWorkItems.sendExecutionGuidance(input, (runEvent) =>
+            sendConversationRunEvent(getMainWindow, runEvent))
+          : agentRuntime.sendMessage(input, (runEvent) =>
+            sendConversationRunEvent(getMainWindow, runEvent)
+          )
       );
     }
   );
@@ -736,6 +745,15 @@ export function registerMainIpcHandlers(
   );
 
   ipcMain.handle(
+    IPC_CHANNELS.teamWorkItemGetExecution,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = getTeamWorkItemExecutionIpcArgumentsSchema.parse(args);
+      return teamWorkItemExecutionViewSchema.parse(teamWorkItems.getExecution(input));
+    },
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.teamWorkItemSubmit,
     (event, ...args: unknown[]) => {
       getTrustedWindow(event, getMainWindow);
@@ -744,6 +762,24 @@ export function registerMainIpcHandlers(
         teamWorkItems.submit(input, (runEvent) =>
           sendConversationRunEvent(getMainWindow, runEvent)),
       );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamWorkItemUpdate,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = updateTeamWorkItemIpcArgumentsSchema.parse(args);
+      return teamWorkItemViewSchema.parse(teamWorkItems.update(input));
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamWorkItemUpdatePermission,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = updateTeamWorkItemPermissionIpcArgumentsSchema.parse(args);
+      return teamWorkItemViewSchema.parse(teamWorkItems.updatePermission(input));
     },
   );
 

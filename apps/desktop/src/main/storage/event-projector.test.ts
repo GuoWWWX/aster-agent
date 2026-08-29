@@ -91,6 +91,33 @@ describe("EventProjector", () => {
     ]));
   });
 
+  it("skips a persisted deletion-pending Conversation even when its JSONL still exists", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-pending-delete-"));
+    temporaryDirectories.push(directory);
+    const database = new AgentDatabase(":memory:");
+    const active = database.createConversation(null);
+    const pendingDeletion = database.createConversation(null);
+    const threadLog = new ThreadLog(path.join(directory, "conversations"));
+    threadLog.append(active.id, {
+      payload: { content: "继续投影" },
+      type: "user_message",
+    });
+    threadLog.append(pendingDeletion.id, {
+      payload: { content: "不应在启动时复活" },
+      type: "user_message",
+    });
+    database.createConversationDeletionTask(pendingDeletion.id);
+
+    const projector = new EventProjector(database, threadLog);
+    const results = projector.projectAllConversationLogs();
+
+    expect(database.listProjectableConversationIds()).toEqual([active.id]);
+    expect(results).toHaveLength(1);
+    expect(database.getThreadLogProjectionCursor(active.id)?.lastSequence).toBe(1);
+    expect(() => database.getThreadLogProjectionCursor(pendingDeletion.id)).toThrow("not found");
+    expect(projector.verifyAllConversationLogs()).toHaveLength(1);
+  });
+
   it("projects a newly appended event without replaying earlier indexed events", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-"));
     temporaryDirectories.push(directory);
@@ -1211,6 +1238,13 @@ describe("EventProjector", () => {
     ]));
     recovered.interruptRecoveredThreadLogRuns();
     expect(recovered.getConversation(creation.conversation.id).lastRunStatus).toBe("failed");
+    expect(recovered.listTimeline(creation.conversation.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: tool.id,
+        result: "审批已失效：所属运行已经结束。",
+        status: "cancelled",
+      }),
+    ]));
     source.close();
     recovered.close();
   });

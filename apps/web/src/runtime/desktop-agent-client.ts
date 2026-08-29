@@ -71,7 +71,10 @@ import type {
   ListTeamWorkItemsInput,
   RequestTeamWorkItemReworkInput,
   SubmitTeamWorkItemInput,
+  UpdateTeamWorkItemInput,
+  UpdateTeamWorkItemPermissionInput,
   AcceptTeamWorkItemInput,
+  TeamWorkItemExecutionView,
   TeamWorkItemView,
 } from "@agent/protocol";
 
@@ -309,8 +312,22 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.listTeamWorkItems(input);
   }
 
+  public getTeamWorkItemExecution(workItemId: string): Promise<TeamWorkItemExecutionView> {
+    return this.desktopBridge.getTeamWorkItemExecution({ workItemId });
+  }
+
   public submitTeamWorkItem(input: SubmitTeamWorkItemInput): Promise<TeamWorkItemView> {
     return this.desktopBridge.submitTeamWorkItem(input);
+  }
+
+  public updateTeamWorkItem(input: UpdateTeamWorkItemInput): Promise<TeamWorkItemView> {
+    return this.desktopBridge.updateTeamWorkItem(input);
+  }
+
+  public updateTeamWorkItemPermission(
+    input: UpdateTeamWorkItemPermissionInput,
+  ): Promise<TeamWorkItemView> {
+    return this.desktopBridge.updateTeamWorkItemPermission(input);
   }
 
   public requestTeamWorkItemRework(

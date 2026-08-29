@@ -199,9 +199,14 @@ export class EventProjector {
   }
 
   private listKnownConversationIds(): string[] {
+    const projectableConversationIds = this.database.listProjectableConversationIds();
+    const projectableIdSet = new Set(projectableConversationIds);
+    const persistedConversationIds = new Set(this.database.listAllConversationIds());
     return [...new Set([
-      ...this.database.listAllConversationIds(),
-      ...this.threadLog.listConversationIds(),
+      ...projectableConversationIds,
+      ...this.threadLog.listConversationIds().filter((conversationId) =>
+        !persistedConversationIds.has(conversationId) || projectableIdSet.has(conversationId),
+      ),
     ])].sort();
   }
 

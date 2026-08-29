@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
-import type { ApplicationSettings } from "@agent/protocol";
+import type { ApplicationSettings, ConversationSummary } from "@agent/protocol";
 
 import { AppShell } from "../components/layout/app-shell.js";
 import { MediaPreviewDialogHost } from "../components/media/image-viewer.js";
@@ -14,7 +14,9 @@ import { useProjectTree } from "../features/projects/use-project-tree.js";
 import {
   RightSidebarWorkspace,
   type ProjectFileOpenRequest,
+  type TeamMemberOpenRequest,
 } from "../features/workspace/right-sidebar-workspace.js";
+import type { ProjectSession } from "../features/projects/project-session-model.js";
 import { useWorkbenchUiStore } from "../stores/workbench-ui-store.js";
 import { useAgentDirectoryStore } from "../stores/agent-directory-store.js";
 import { useApplicationSettingsStore } from "../stores/application-settings-store.js";
@@ -51,6 +53,53 @@ function applicationSettingsSnapshot(): ApplicationSettings {
   };
 }
 
+function toProjectSession(conversation: ConversationSummary): ProjectSession {
+  return {
+    activeSubagentCount: conversation.activeSubagentCount,
+    activeRunId: conversation.activeRunId,
+    agentId: conversation.agentId,
+    avatarIcon: conversation.avatarIcon ?? null,
+    hasUnreadResult: conversation.hasUnreadResult,
+    id: conversation.id,
+    isArchived: conversation.isArchived,
+    isPinned: conversation.isPinned,
+    lastRunStatus: conversation.lastRunStatus,
+    modelSelection: conversation.modelSelection,
+    parentConversationId: conversation.parentConversationId,
+    pinOrder: conversation.pinOrder ?? null,
+    projectId: conversation.projectId,
+    subagentTaskStatus: conversation.subagentTaskStatus,
+    teamId: conversation.teamId,
+    teamWorkItemId: conversation.teamWorkItemId,
+    threadKind: conversation.threadKind,
+    title: conversation.title,
+    workspaceRootPath: conversation.workspaceRootPath,
+  };
+}
+
+function sourceConversationIdForMember(
+  member: ProjectSession,
+  sessions: readonly ProjectSession[],
+): string | null {
+  const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+  const visited = new Set<string>();
+  let current = member;
+  while (current.parentConversationId !== null) {
+    if (visited.has(current.id)) return null;
+    visited.add(current.id);
+    const parent = sessionsById.get(current.parentConversationId);
+    // A fresh team-run event can reach the board before the navigator has
+    // refreshed its recursive session cache. A Team Lead is always attached
+    // directly to its source root, so its persisted parent is enough to open
+    // the source conversation and then its read-only side tab.
+    if (parent === undefined) {
+      return current.threadKind === "team_lead" ? current.parentConversationId : null;
+    }
+    current = parent;
+  }
+  return current.threadKind === "agent" ? current.id : null;
+}
+
 export function App(): ReactElement {
   const agentClient = useMemo<AgentClient>(
     () => createAgentClientForCurrentHost(),
@@ -60,6 +109,7 @@ export function App(): ReactElement {
     (state) => state.setTerminalConfiguration,
   );
   const setFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
+  const setActiveActivity = useWorkbenchUiStore((state) => state.setActiveActivity);
   const projectTree = useProjectTree(agentClient);
   const projectSessions = useProjectSessions(
     agentClient,
@@ -68,6 +118,8 @@ export function App(): ReactElement {
   const [navigatorLocateRequest, setNavigatorLocateRequest] =
     useState<ProjectNavigatorLocateRequest | null>(null);
   const [fileOpenRequest, setFileOpenRequest] = useState<ProjectFileOpenRequest | null>(null);
+  const [teamMemberOpenRequest, setTeamMemberOpenRequest] =
+    useState<TeamMemberOpenRequest | null>(null);
   const requestOpenProjectFile = useCallback((projectId: string, path: string): void => {
     setFileOpenRequest({ path, projectId });
     setFilePanelOpen(true);
@@ -185,10 +237,33 @@ export function App(): ReactElement {
     projectTree.selectProject(projectId);
   }
 
+  const openTeamMemberSession = useCallback((member: ProjectSession): void => {
+    const sourceConversationId = sourceConversationIdForMember(member, projectSessions.sessions);
+    if (sourceConversationId === null) return;
+    if (member.projectId !== null) projectTree.selectProject(member.projectId);
+    projectSessions.selectSession(sourceConversationId);
+    setFilePanelOpen(true);
+    setActiveActivity("conversations");
+    setTeamMemberOpenRequest((current) => ({
+      conversation: member,
+      requestId: (current?.requestId ?? 0) + 1,
+      sourceConversationId,
+    }));
+    setNavigatorLocateRequest((current) => ({
+      id: sourceConversationId,
+      kind: "session",
+      requestId: (current?.requestId ?? 0) + 1,
+    }));
+  }, [projectSessions, projectTree, setActiveActivity, setFilePanelOpen]);
+
   function selectSession(sessionId: string): void {
     const session = projectSessions.sessions.find(
       (candidate) => candidate.id === sessionId,
     );
+    if (session?.teamWorkItemId !== null && session?.teamWorkItemId !== undefined) {
+      openTeamMemberSession(session);
+      return;
+    }
     if (session?.projectId !== null && session?.projectId !== undefined) {
       projectTree.selectProject(session.projectId);
     }
@@ -218,6 +293,11 @@ export function App(): ReactElement {
     }
     projectSessions.selectSession(conversation.id);
   }, [agentClient, projectSessions, projectTree]);
+
+  const openTeamConversation = useCallback((conversation: ConversationSummary): void => {
+    projectSessions.updateSession(conversation);
+    openTeamMemberSession(toProjectSession(conversation));
+  }, [openTeamMemberSession, projectSessions]);
 
   return (
     <>
@@ -288,6 +368,7 @@ export function App(): ReactElement {
           onLocateProject={(projectId) => locateInProjectNavigator("project", projectId)}
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}
           onOpenProjectFile={requestOpenProjectFile}
+          onOpenTeamConversation={openTeamConversation}
           onProjectSelected={(projectId) => projectTree.selectProject(projectId)}
           onSessionSelected={(sessionId) => {
             setNavigatorLocateRequest(null);
@@ -303,6 +384,7 @@ export function App(): ReactElement {
           activeSession={projectSessions.activeSession}
           agentClient={agentClient}
           fileOpenRequest={fileOpenRequest}
+          teamMemberOpenRequest={teamMemberOpenRequest}
           onLocateProject={(projectId) => locateInProjectNavigator("project", projectId)}
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}
           onSessionViewed={(sessionId) => projectSessions.markSessionResultViewed(sessionId)}

@@ -280,6 +280,11 @@ describe("tool batch summary", () => {
     expect(toolBatchLabel(tools)).toBe("运行 1 条命令，读取 1 个文件");
     expect(representativeToolName(tools)).toBe("run_command");
   });
+
+  it("uses team-member terminology for a managed team execution", () => {
+    expect(toolBatchLabel([tool("spawn_subagent"), tool("wait_for_subagents")], true))
+      .toBe("协调 2 次团队成员");
+  });
 });
 
 describe("file change summary", () => {

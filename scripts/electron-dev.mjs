@@ -9,6 +9,9 @@ const desktopDirectory = path.join(repositoryRoot, "apps", "desktop");
 const distDirectory = path.join(desktopDirectory, "dist");
 const requireFromDesktop = createRequire(path.join(desktopDirectory, "package.json"));
 const electronExecutable = requireFromDesktop("electron");
+// 默认端口服务于常规 `pnpm dev`；并行 worktree 可显式传入自己的 Vite 地址，
+// 绝不能让 Electron 静默挂到另一个 worktree 的 Renderer 上。
+const rendererUrl = process.env.ELECTRON_RENDERER_URL ?? "http://127.0.0.1:5173";
 
 let child = null;
 let isShuttingDown = false;
@@ -20,7 +23,7 @@ function launchElectron() {
     cwd: desktopDirectory,
     env: {
       ...process.env,
-      ELECTRON_RENDERER_URL: "http://127.0.0.1:5173",
+      ELECTRON_RENDERER_URL: rendererUrl,
     },
     stdio: "inherit",
   });

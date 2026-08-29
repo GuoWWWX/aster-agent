@@ -124,6 +124,10 @@ import {
   type SkillSnapshotRef,
 } from "./skill-runtime.js";
 import { SubagentTool } from "./subagent-tool.js";
+import {
+  TeamWorkItemTool,
+  type TeamWorkItemDispatcher,
+} from "./team-work-item-tool.js";
 import { BASE_SYSTEM_PROMPT } from "./prompts/prompt-assets.js";
 import {
   ToolHandlerRegistry,
@@ -332,6 +336,8 @@ type RunEventEmitter = (event: ConversationRunEvent) => void;
 type SendMessageOptions = {
   allowManagedTeamWorkItemExecution?: boolean;
   beforeRunScheduled?: (accepted: RunAccepted) => void;
+  /** Keeps an internal execution prompt from replacing a user-facing Conversation title. */
+  titleOverride?: string;
 };
 
 type RuntimeToolContext = ToolHandlerExecutionContext & {
@@ -739,6 +745,10 @@ export class AgentRuntime {
 
   private readonly webSearchTool: WebSearchTool;
 
+  private readonly teamWorkItemTool: TeamWorkItemTool;
+
+  private teamWorkItemDispatcher: TeamWorkItemDispatcher | null = null;
+
   private readonly toolHandlers: ToolHandlerRegistry<RuntimeToolContext>;
 
   public constructor(
@@ -771,11 +781,20 @@ export class AgentRuntime {
       getModelStatus === undefined ? undefined : () => getModelStatus.call(credentials),
     );
     this.webSearchTool = webSearchTool;
+    this.teamWorkItemTool = new TeamWorkItemTool(
+      database,
+      () => this.agentDirectory?.getConfiguration() ?? null,
+      () => this.teamWorkItemDispatcher,
+    );
     this.attachmentTool = attachments === null
       ? null
       : new ConversationAttachmentTool(attachments);
     this.contextCompiler = new ContextCompiler(database, attachments, threadLog);
     this.toolHandlers = this.createToolHandlerRegistry();
+  }
+
+  public setTeamWorkItemDispatcher(dispatcher: TeamWorkItemDispatcher): void {
+    this.teamWorkItemDispatcher = dispatcher;
   }
 
   private enabledPluginSnapshots(): { contentHash: string; id: string; version: string }[] {
@@ -855,6 +874,26 @@ export class AgentRuntime {
   private createToolHandlerRegistry(): ToolHandlerRegistry<RuntimeToolContext> {
     const handlers: ToolHandler<RuntimeToolContext>[] = [
       {
+        execute: ({ context, rawArguments }) => this.teamWorkItemTool.execute({
+          arguments: rawArguments,
+          conversationId: context.conversationId,
+          emit: context.emit,
+          modelSelection: context.providerId === undefined
+            ? undefined
+            : {
+                modelId: context.configuration.modelId,
+                providerId: context.providerId,
+                reasoning: context.reasoning ?? null,
+              },
+          permissionMode: context.permissionMode,
+          signal: context.signal,
+        }),
+        getDefinitions: () => this.teamWorkItemTool.getDefinitions(),
+        getExecutionPolicy: () => this.teamWorkItemTool.getExecutionPolicy(),
+        isAvailable: ({ conversationId, projectId }) =>
+          this.teamWorkItemTool.isAvailable(conversationId, projectId),
+      },
+      {
         execute: ({ context, rawArguments, toolName }) => this.agentCommunicationTool.execute({
           arguments: rawArguments,
           conversationId: context.conversationId,
@@ -899,7 +938,7 @@ export class AgentRuntime {
         }),
         getDefinitions: () => this.subagentTool.getDefinitions(),
         getExecutionPolicy: ({ toolName }) => this.subagentTool.getExecutionPolicy(toolName),
-        isAvailable: () => true,
+        isAvailable: ({ conversationId }) => this.canManageSubagents(conversationId),
       },
       {
         execute: ({ context, rawArguments, toolName }) => {
@@ -1055,8 +1094,7 @@ export class AgentRuntime {
     const input = sendConversationMessageInputSchema.parse(rawInput);
     const conversation = this.database.getConversation(input.conversationId);
     if (
-      conversation.teamId !== null
-      && this.database.isManagedTeamWorkItemConversation(conversation.id)
+      conversation.teamWorkItemId !== null
       && options?.allowManagedTeamWorkItemExecution !== true
     ) {
       throw new Error("Managed Team WorkItem conversations can only be continued through their WorkItem lifecycle.");
@@ -1094,7 +1132,13 @@ export class AgentRuntime {
       return { kind: "pending", pendingMessage };
     }
 
-    const creation = this.startPreparedRun(prepared, emit, undefined, options?.beforeRunScheduled);
+    const creation = this.startPreparedRun(
+      prepared,
+      emit,
+      undefined,
+      options?.beforeRunScheduled,
+      options?.titleOverride,
+    );
     return {
       kind: "started",
       runId: creation.runId,
@@ -1108,6 +1152,9 @@ export class AgentRuntime {
   ): Promise<RunAccepted> {
     const input = replaceLatestConversationMessageInputSchema.parse(rawInput);
     const conversation = this.database.getConversation(input.conversationId);
+    if (conversation.teamWorkItemId !== null) {
+      throw new Error("Managed Team WorkItem conversations cannot be edited outside their WorkItem lifecycle.");
+    }
     if (
       conversation.subagentTaskStatus === "completed"
       || conversation.subagentTaskStatus === "failed"
@@ -1491,6 +1538,7 @@ export class AgentRuntime {
     emit: RunEventEmitter,
     pendingMessageId?: string,
     beforeRunScheduled?: (accepted: RunAccepted) => void,
+    titleOverride?: string,
   ): RunAccepted {
     const { configuration, input } = prepared;
     const executionSnapshot = createRunExecutionSnapshot({
@@ -1513,6 +1561,7 @@ export class AgentRuntime {
                 input.attachmentIds ?? [],
                 prepared.modelInputContent,
                 executionSnapshot,
+                titleOverride,
               )
             : this.database.prepareRunFromPendingMessage(
                 pendingMessageId,
@@ -1553,6 +1602,7 @@ export class AgentRuntime {
             input.attachmentIds ?? [],
             prepared.modelInputContent,
             executionSnapshot,
+            titleOverride,
           )
         : this.database.createRunFromPendingMessage(
             pendingMessageId,
@@ -1640,7 +1690,11 @@ export class AgentRuntime {
   }
 
   private startNextPendingRun(conversationId: string, emit: RunEventEmitter): void {
-    if (this.database.getConversation(conversationId).activeRunId !== null) return;
+    const conversation = this.database.getConversation(conversationId);
+    if (
+      conversation.activeRunId !== null
+      || this.database.isTeamWorkItemExecutionTreeConversation(conversationId)
+    ) return;
     const record = this.database.getNextPendingMessageRecord(conversationId);
     if (record === null) return;
     try {
@@ -2037,7 +2091,10 @@ export class AgentRuntime {
               reasoning,
               signal: controller.signal,
               runId,
-              tools: this.toolHandlers.getDefinitions({ projectId: workspace?.id })
+              tools: this.toolHandlers.getDefinitions({
+                conversationId,
+                projectId: workspace?.id,
+              })
             });
             if (result.content.length > 0) activeAssistantContent = result.content;
             const toolCalls = result.toolCalls.map((toolCall) => ({
@@ -2165,7 +2222,10 @@ export class AgentRuntime {
         ),
         signal: controller.signal,
         threadId: runId,
-        toolDefinitions: this.toolHandlers.getDefinitions({ projectId: workspace?.id }),
+        toolDefinitions: this.toolHandlers.getDefinitions({
+          conversationId,
+          projectId: workspace?.id,
+        }),
         ...(this.graphCheckpointer === null ? {} : { checkpointer: this.graphCheckpointer }),
       });
       const result = lastAssistantResult ?? graphResult.lastResult;
@@ -2256,6 +2316,16 @@ export class AgentRuntime {
       });
     } finally {
       this.clearPendingChangeApprovals(runId);
+      for (const tool of this.database.expirePendingToolApprovalsForRun(runId)) {
+        this.appendShadowThreadLog(tool.conversationId, {
+          payload: {
+            runId,
+            tool,
+            toolId: tool.id,
+          },
+          type: "tool_approval_expired",
+        });
+      }
       for (const [toolId, decision] of this.resumedApprovalDecisions) {
         if (decision.runId === runId) this.resumedApprovalDecisions.delete(toolId);
       }
@@ -2299,16 +2369,12 @@ export class AgentRuntime {
     parent: ConversationSummary,
     agentId: string | undefined,
   ): ConversationAgentBinding | null {
-    if (agentId === undefined) {
+    if (agentId === undefined && parent.threadKind !== "team_lead") {
       return this.database.getConversationAgentBinding(parent.id);
     }
     const directory = this.agentDirectory?.getConfiguration();
     if (directory === undefined) {
       throw new Error("Agent configuration is unavailable for this Subagent request.");
-    }
-    const agent = directory.agents.find((candidate) => candidate.id === agentId);
-    if (agent === undefined || !agent.enabled) {
-      throw new Error("The selected Agent is not available.");
     }
     const teamId = parent.teamId;
     const team = teamId === null
@@ -2316,6 +2382,17 @@ export class AgentRuntime {
       : directory.teams.find((candidate) => candidate.id === teamId);
     if (teamId !== null && (team === undefined || !team.enabled)) {
       throw new Error("The current conversation team is not available.");
+    }
+    const resolvedAgentId = agentId ?? team?.memberIds.find((memberId) =>
+      memberId !== team.leadAgentId
+      && directory.agents.some((candidate) => candidate.id === memberId && candidate.enabled)
+    );
+    if (resolvedAgentId === undefined) {
+      throw new Error("The current Team Lead needs an enabled team member before creating a Worker.");
+    }
+    const agent = directory.agents.find((candidate) => candidate.id === resolvedAgentId);
+    if (agent === undefined || !agent.enabled) {
+      throw new Error("The selected Agent is not available.");
     }
     if (team !== undefined && !team.memberIds.includes(agent.id)) {
       throw new Error("The selected Agent is not a member of the current team.");
@@ -2336,20 +2413,45 @@ export class AgentRuntime {
   }
 
   private agentDelegationContext(conversation: ConversationSummary): string[] {
-    if (conversation.teamId === null) return [];
+    if (conversation.threadKind !== "team_lead" || conversation.teamId === null) return [];
     const directory = this.agentDirectory?.getConfiguration();
     const team = directory?.teams.find((candidate) =>
-      candidate.id === conversation.teamId && candidate.enabled
+      candidate.id === conversation.teamId && candidate.enabled,
     );
-    if (directory === undefined || team === undefined) return [];
-    const members = team.memberIds
-      .map((agentId) => directory.agents.find((agent) => agent.id === agentId && agent.enabled))
-      .filter((agent) => agent !== undefined)
-      .slice(0, 32)
-      .map((agent) => `${agent.id}=${agent.name} (${agent.role || "role not configured"})`);
+    if (team === undefined) return [];
+    const members = this.database.listTeamMemberConversations(conversation.id)
+      .filter((member) => member.agentId !== null
+        && member.agentId !== team.leadAgentId
+        && team.memberIds.includes(member.agentId)
+        && directory?.agents.some((agent) => agent.id === member.agentId && agent.enabled) === true)
+      .map((member) => `${member.id}=${member.title} (${member.agentId ?? "Agent"})`)
+      .slice(0, 32);
     return members.length === 0
       ? []
-      : [`Delegate to a team member by passing its agentId to spawn_subagent: ${members.join("; ")}`];
+      : [
+        "This is a persistent Agent Team. Do not create Subagents for Team work.",
+        `Delegate only through send_agent_message with a member conversationId: ${members.join("; ")}`,
+        "Use expectReply=true for assigned work, wait_for_agent_message for results when needed, and summarize the durable members' results yourself.",
+      ];
+  }
+
+  private canManageSubagents(conversationId: string | undefined): boolean {
+    if (conversationId === undefined) return false;
+    const conversation = this.database.getConversation(conversationId);
+    return conversation.threadKind !== "team_lead"
+      && !this.database.isTeamMemberConversation(conversation.id);
+  }
+
+  private teamWorkerContext(conversation: ConversationSummary): string[] {
+    if (!this.database.isTeamMemberConversation(conversation.id)) return [];
+    return [
+      "You are a persistent Team member. Work only on messages assigned through Agent communication. Do not create Subagents. Report progress or clarification with send_agent_message to a participant in the same Team; your final result is returned to the sender automatically.",
+    ];
+  }
+
+  private teamDispatchContext(conversation: ConversationSummary): string[] {
+    const catalogPrompt = this.teamWorkItemTool.getCatalogPrompt(conversation.id);
+    return catalogPrompt === null ? [] : [catalogPrompt];
   }
 
   private spawnSubagent(input: {
@@ -2369,6 +2471,12 @@ export class AgentRuntime {
   }): SubagentTask {
     const parent = this.database.getConversation(input.parentConversationId);
     if (parent.isArchived) throw new Error("An archived conversation cannot start a Subagent.");
+    if (
+      parent.threadKind === "subagent"
+      && this.database.isTeamWorkItemExecutionTreeConversation(parent.id)
+    ) {
+      throw new Error("A Team WorkItem Subagent cannot delegate again; return its result to the Team Lead.");
+    }
 
     const configuration = input.modelSelection === undefined
       ? input.configuration
@@ -2407,7 +2515,7 @@ export class AgentRuntime {
     this.database.setConversationAvatarIcon(child.id, avatarIcon);
     const title = input.name?.trim()
       || `${selectedAgent?.name ?? "Subagent"} · ${input.task.replace(/\s+/gu, " ").slice(0, 80)}`;
-    const updatedChild = this.database.renameConversation(child.id, title);
+    this.database.renameConversation(child.id, title);
     this.threadLogLegacyImporter?.importConversationIfMissing(child.id);
 
     const executionSnapshot = createRunExecutionSnapshot({
@@ -2505,7 +2613,7 @@ export class AgentRuntime {
     });
     this.emit(input.emit, {
       conversation: {
-        ...updatedChild,
+        ...this.database.getConversation(child.id),
         activeRunId: creation.runId,
         lastRunStatus: "queued",
       },
@@ -2688,6 +2796,12 @@ export class AgentRuntime {
     emit: RunEventEmitter,
   ): void {
     this.appendAgentMessageThreadLog(message);
+    const teamWorkItem = this.database.getRunningTeamWorkItemByExecutionTreeConversation(
+      message.senderConversationId,
+    );
+    if (teamWorkItem !== null) {
+      this.database.recordTeamMemberAssignment({ message, workItemId: teamWorkItem.id });
+    }
     const sourceDepth = message.runId === null
       ? 0
       : this.agentMessageDepthByRun.get(message.runId) ?? 0;
@@ -2743,10 +2857,38 @@ export class AgentRuntime {
       );
       return;
     }
-    if (targetDepth > MAX_AGENT_MESSAGE_AUTO_DEPTH) return;
+    const managedWorkItem = this.database.getRunningTeamWorkItemByExecutionTreeConversation(
+      conversationId,
+    );
+    const isManagedWorkItemConversation = managedWorkItem !== null;
+    const isTeamLeadCoordinator = managedWorkItem?.executionConversationId === conversationId;
+    if (targetDepth > MAX_AGENT_MESSAGE_AUTO_DEPTH) {
+      if (managedWorkItem !== null) {
+        try {
+          this.database.blockTeamWorkItem(
+            managedWorkItem.id,
+            "团队自动汇总超过安全协作深度，任务需要人工确认。",
+          );
+        } catch (error) {
+          reportMainError(
+            toMainAgentError(error, { operation: "team.work_item.auto_run.depth_limit" }),
+            error,
+          );
+        }
+      }
+      return;
+    }
+    if (isManagedWorkItemConversation && managedWorkItem === null) return;
 
+    let managedContinuationRunId: string | null = null;
     try {
-      const configuration = this.credentials.getConfiguration();
+      const selection = managedWorkItem?.modelSelection ?? targetConversation.modelSelection;
+      const providerId = selection?.providerId;
+      const configuration = this.credentials.getConfiguration(providerId, selection?.modelId);
+      const reasoning = selection?.reasoning === null
+        ? undefined
+        : resolveConfiguredReasoning(selection?.reasoning, configuration);
+      const permissionMode = managedWorkItem?.permissionMode ?? DEFAULT_PERMISSION_MODE;
       const contextCompressionConfiguration = structuredClone(
         resolveContextCompressionConfiguration(
           configuration,
@@ -2756,23 +2898,31 @@ export class AgentRuntime {
       const executionSnapshot = createRunExecutionSnapshot({
         configuration,
         contextCompressionConfiguration,
-        permissionMode: DEFAULT_PERMISSION_MODE,
+        permissionMode,
         plugins: this.enabledPluginSnapshots(),
-        providerId: undefined,
-        reasoning: undefined,
+        providerId,
+        reasoning,
         toolDefinitions: this.toolDefinitionsForConversation(conversationId),
       });
-      const creation = this.database.createRunForAgentMessage(
-        conversationId,
-        configuration.modelId,
-        executionSnapshot,
-      );
+      const creation = managedWorkItem === null || !isTeamLeadCoordinator
+        ? this.database.createRunForAgentMessage(
+            conversationId,
+            configuration.modelId,
+            executionSnapshot,
+          )
+        : this.database.createTeamWorkItemContinuationRun({
+            conversationId,
+            executionSnapshot,
+            modelId: configuration.modelId,
+            workItemId: managedWorkItem.id,
+          });
+      if (managedWorkItem !== null) managedContinuationRunId = creation.runId;
       this.appendShadowThreadLog(conversationId, {
         payload: {
           createdAt: new Date().toISOString(),
           executionSnapshot,
           modelId: configuration.modelId,
-          permissionMode: DEFAULT_PERMISSION_MODE,
+          permissionMode,
           runId: creation.runId,
         },
         type: "run_created",
@@ -2789,11 +2939,11 @@ export class AgentRuntime {
         await this.executeRun(
           creation.runId,
           conversationId,
-          undefined,
+          providerId,
           configuration,
           contextCompressionConfiguration,
-          DEFAULT_PERMISSION_MODE,
-          undefined,
+          permissionMode,
+          reasoning,
           controller,
           emit,
         );
@@ -2802,6 +2952,23 @@ export class AgentRuntime {
       const agentError = toMainAgentError(error, {
         operation: "agent.message.auto_run",
       });
+      if (managedWorkItem !== null) {
+        try {
+          if (managedContinuationRunId !== null) {
+            this.database.finishRun(
+              managedContinuationRunId,
+              "cancelled",
+              "Team WorkItem consolidation Run could not be scheduled.",
+            );
+          }
+          this.database.blockTeamWorkItem(managedWorkItem.id, agentError.message);
+        } catch (blockError) {
+          reportMainError(
+            toMainAgentError(blockError, { operation: "team.work_item.auto_run.block" }),
+            blockError,
+          );
+        }
+      }
       reportMainError(agentError, error);
     }
   }
@@ -3053,7 +3220,10 @@ export class AgentRuntime {
     toolCalls: readonly ModelToolCall[];
   }): Promise<Map<string, LangChainToolResultEnvelope>> {
     const callsById = new Map(input.toolCalls.map((toolCall) => [toolCall.id, toolCall]));
-    const definitions = this.toolHandlers.getDefinitions({ projectId: input.projectId });
+    const definitions = this.toolHandlers.getDefinitions({
+      conversationId: input.conversationId,
+      projectId: input.projectId,
+    });
     const toolsByName = new Map<string, DynamicStructuredTool>();
     for (const toolCall of input.toolCalls) {
       if (toolsByName.has(toolCall.name)) continue;
@@ -3841,6 +4011,8 @@ export class AgentRuntime {
         BASE_SYSTEM_PROMPT,
         ...conversationIdentityContext(conversation, agent),
         ...this.agentDelegationContext(conversation),
+        ...this.teamWorkerContext(conversation),
+        ...this.teamDispatchContext(conversation),
         this.skillRuntime === null
           ? "A Skill is a task instruction and capability bundle injected from SKILL.md. No Skill Runtime is currently available, so do not label general abilities as Skills. Git is a command-line program available through run_command, not a Skill or dedicated Git tool; use it only when the task requires it and the workspace is a Git repository."
           : "A Skill is a task instruction and capability bundle injected from SKILL.md, not a built-in tool, Agent role, or command-line program. Use load_skill when catalog details match the task. Skill bodies enter only the current model context, never the chat Timeline, and cannot expand permissions or bypass approval. Git is available through run_command, not as a Skill or dedicated Git tool; use it only when needed in a Git workspace.",
@@ -3884,7 +4056,10 @@ export class AgentRuntime {
       reservedSkillTokens,
       reservedTaskListTokens,
       systemMessage,
-      toolDefinitions: this.toolHandlers.getDefinitions({ projectId: workspace?.id }),
+      toolDefinitions: this.toolHandlers.getDefinitions({
+        conversationId,
+        projectId: workspace?.id,
+      }),
     });
 
     return {
@@ -4095,7 +4270,10 @@ export class AgentRuntime {
   private toolDefinitionsForConversation(conversationId: string): ModelToolDefinition[] {
     const conversation = this.database.getConversation(conversationId);
     const workspace = this.resolveConversationWorkspace(conversation);
-    return this.toolHandlers.getDefinitions({ projectId: workspace?.id });
+    return this.toolHandlers.getDefinitions({
+      conversationId,
+      projectId: workspace?.id,
+    });
   }
 
   private emit(emit: RunEventEmitter, event: ConversationRunEvent): void {

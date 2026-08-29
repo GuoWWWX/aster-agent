@@ -2376,18 +2376,56 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
-  it("lets a Team Lead delegate a temporary Subagent to a configured team member", async () => {
+  it("uses durable team members through Agent messages instead of Subagents", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-team-members-"));
+    temporaryDirectories.push(root);
     const database = new AgentDatabase(":memory:");
     const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
     const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
+    database.syncTeamDirectory(directory);
     const configuredLead = directory.agents.find((agent) => agent.id === "team-lead");
-    if (configuredLead === undefined) throw new Error("Team Lead fixture is missing.");
-    const lead = database.createConversation(null, {
-      agent: configuredLead,
+    const explorer = directory.agents.find((agent) => agent.id === "explorer");
+    if (configuredLead === undefined || explorer === undefined) {
+      throw new Error("Team fixture is missing.");
+    }
+    const lead = database.createConversation(project.id, {
+      agent: {
+        avatarIcon: "sparkles",
+        id: configuredLead.id,
+        instructions: configuredLead.instructions,
+        isDefault: configuredLead.isDefault,
+        name: configuredLead.name,
+        role: configuredLead.role,
+      },
       teamId: "default-team",
       threadKind: "team_lead",
     });
-    const model = new SubagentLifecycleFixtureModel(false, "explorer", undefined, null);
+    database.bindTeamExecutionConversation({
+      conversationId: lead.id,
+      projectId: project.id,
+      sourceConversationId: null,
+      teamId: "default-team",
+    });
+    const member = database.createConversation(project.id, {
+      agent: {
+        avatarIcon: "compass",
+        id: explorer.id,
+        instructions: explorer.instructions,
+        isDefault: explorer.isDefault,
+        name: explorer.name,
+        role: explorer.role,
+      },
+      parentConversationId: lead.id,
+      teamId: "default-team",
+      threadKind: "agent",
+    });
+    database.bindTeamMemberConversation({
+      agentId: explorer.id,
+      conversationId: member.id,
+      teamExecutionConversationId: lead.id,
+    });
+    const model = new FixtureModel();
     const runtime = new AgentRuntime(
       database,
       {
@@ -2408,52 +2446,21 @@ describe("AgentRuntime", () => {
       null,
       { getConfiguration: () => directory },
     );
-    let parentRuns = 0;
-    let childFinished = false;
-    let resolveInitialParent: () => void = () => undefined;
-    let resolveAllRuns: () => void = () => undefined;
-    const initialParentFinished = new Promise<void>((resolve) => {
-      resolveInitialParent = resolve;
-    });
-    const allRunsFinished = new Promise<void>((resolve) => {
-      resolveAllRuns = resolve;
+
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage({ content: "请协调成员", conversationId: lead.id }, (event) => {
+        if (event.type === "run.finished" && event.conversationId === lead.id) resolve();
+      });
     });
 
-    runtime.sendMessage({ content: "委派 Explorer 检查实现", conversationId: lead.id }, (event) => {
-      if (event.type !== "run.finished") return;
-      if (event.conversationId === lead.id) {
-        parentRuns += 1;
-        if (parentRuns === 1) resolveInitialParent();
-      } else {
-        childFinished = true;
-      }
-      if (parentRuns >= 2 && childFinished) resolveAllRuns();
-    });
-
-    await Promise.all([model.childRequestStarted, initialParentFinished]);
-    const [task] = database.listSubagentTasks(lead.id);
-    if (task === undefined) throw new Error("Subagent task was not created.");
-    expect(database.getConversation(task.childConversationId)).toMatchObject({
-      agentId: "explorer",
-      avatarIcon: "compass",
-      parentConversationId: lead.id,
-      teamId: "default-team",
-      threadKind: "subagent",
-    });
-    const parentRequest = model.requests.find((request) =>
-      request.messages[0]?.content.includes("You are the Team Lead for team default-team") === true
-    );
-    const childRequest = model.requests.find((request) =>
-      request.messages[0]?.content.includes(`temporary Subagent derived from parent conversation ${lead.id}`) === true
-    );
-    expect(parentRequest?.messages[0]?.content).toContain("explorer=Explorer");
-    expect(childRequest?.messages[0]?.content).toContain("保持只读；优先搜索和定向读取");
-    expect(childRequest?.messages[0]?.content).toContain("围绕当前工作项协作");
-    expect(childRequest?.messages[0]?.content).toContain("优先核对当前项目的代码和配置事实");
-
-    model.completeChild();
-    await allRunsFinished;
-    expect(database.getSubagentTask(task.id).status).toBe("completed");
+    const request = model.requests[0];
+    expect(request?.messages[0]?.content).toContain("persistent Agent Team");
+    expect(request?.messages[0]?.content).toContain(member.id);
+    expect(request?.tools.map((tool) => tool.name)).toContain("send_agent_message");
+    expect(request?.tools.map((tool) => tool.name)).not.toContain("spawn_subagent");
+    expect(request?.tools.map((tool) => tool.name)).not.toContain("wait_for_subagents");
+    expect(database.listSubagentTasks(lead.id)).toEqual([]);
+    expect(database.listTeamMemberConversations(lead.id).map((conversation) => conversation.id)).toEqual([member.id]);
     database.close();
   });
 
@@ -3637,21 +3644,32 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
-  it("reactivates a completed parent conversation when a background Subagent finishes", async () => {
+  it("reactivates a completed parent conversation with its persisted model selection", async () => {
     const database = new AgentDatabase(":memory:");
     const projects = new ProjectRegistry(database);
-    const parent = database.createConversation(null);
+    const parentSelection = {
+      modelId: "parent-consolidation-model",
+      providerId: crypto.randomUUID(),
+      reasoning: { kind: "effort" as const, value: "high" as const },
+    };
+    const parent = database.createConversation(null, { modelSelection: parentSelection });
     const model = new SubagentLifecycleFixtureModel(false, undefined, undefined, null);
+    const configurationCalls: Array<{ modelId: string | undefined; providerId: string | undefined }> = [];
     const runtime = new AgentRuntime(
       database,
       {
-        getConfiguration: () => ({
-          apiKey: "secret",
-          apiFormat: "openai-chat-completions",
-          baseUrl: "https://example.test/v1",
-          modelId: "test-model",
-          reasoningOptions: [],
-        }),
+        getConfiguration: (providerId?: string, modelId?: string) => {
+          configurationCalls.push({ modelId, providerId });
+          return {
+            apiKey: "secret",
+            apiFormat: "openai-chat-completions" as const,
+            baseUrl: "https://example.test/v1",
+            modelId: modelId ?? "test-model",
+            reasoningOptions: modelId === parentSelection.modelId
+              ? [parentSelection.reasoning]
+              : [],
+          };
+        },
       },
       projects,
       new ProjectToolRegistry(projects),
@@ -3731,6 +3749,118 @@ describe("AgentRuntime", () => {
     expect(parentTimeline.some((item) =>
       item.kind === "agent_message" && item.messageType === "task_result"
     )).toBe(false);
+    const consolidationRequest = model.requests.find((request) => request.messages.some((message) =>
+      message.content.includes("[Subagent task result]"),
+    ));
+    expect(consolidationRequest?.configuration.modelId).toBe(parentSelection.modelId);
+    expect(configurationCalls).toContainEqual({
+      modelId: parentSelection.modelId,
+      providerId: parentSelection.providerId,
+    });
+    database.close();
+  });
+
+  it("runs a durable Team member with its WorkItem's frozen policy", async () => {
+    const database = new AgentDatabase(":memory:");
+    const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
+    database.syncTeamDirectory(directory);
+    const projects = new ProjectRegistry(database);
+    const projectRoot = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-managed-member-"));
+    temporaryDirectories.push(projectRoot);
+    const project = await projects.registerDirectory(projectRoot);
+    const selection = {
+      modelId: "team-frozen-model",
+      providerId: crypto.randomUUID(),
+      reasoning: { kind: "effort" as const, value: "high" as const },
+    };
+    const lead = directory.agents.find((agent) => agent.id === "team-lead");
+    const explorer = directory.agents.find((agent) => agent.id === "explorer");
+    if (lead === undefined || explorer === undefined) throw new Error("Team fixture is unavailable.");
+    const workItem = database.createTeamWorkItem({
+      acceptanceCriteria: ["成员结果已汇总"],
+      modelSelection: selection,
+      permissionMode: "full_access",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "请成员完成一次简单检查。",
+      teamId: "default-team",
+      title: "持久成员策略",
+    }, selection);
+    const root = database.createConversation(project.id, {
+      agent: { id: lead.id, instructions: lead.instructions, isDefault: lead.isDefault, name: lead.name, role: lead.role },
+      modelSelection: selection,
+      teamId: "default-team",
+      threadKind: "team_lead",
+    });
+    database.bindTeamExecutionConversation({
+      conversationId: root.id,
+      projectId: project.id,
+      sourceConversationId: null,
+      teamId: "default-team",
+    });
+    const member = database.createConversation(project.id, {
+      agent: { id: explorer.id, instructions: explorer.instructions, isDefault: explorer.isDefault, name: explorer.name, role: explorer.role },
+      modelSelection: selection,
+      parentConversationId: root.id,
+      teamId: "default-team",
+      threadKind: "agent",
+    });
+    database.bindTeamMemberConversation({
+      agentId: explorer.id,
+      conversationId: member.id,
+      teamExecutionConversationId: root.id,
+    });
+    database.reserveTeamWorkItemExecution(workItem.id, root.id);
+    const rootRun = database.createRunWithUserMessage(root.id, "请分派成员", selection.modelId);
+    database.startTeamWorkItem(workItem.id, root.id, rootRun.runId);
+    const model = new FixtureModel();
+    const configurationCalls: Array<{ modelId: string | undefined; providerId: string | undefined }> = [];
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: (providerId?: string, modelId?: string) => {
+          configurationCalls.push({ modelId, providerId });
+          return {
+            apiKey: "secret",
+            apiFormat: "openai-chat-completions" as const,
+            baseUrl: "https://example.test/v1",
+            modelId: modelId ?? "global-default-model",
+            reasoningOptions: modelId === selection.modelId ? [selection.reasoning] : [],
+          };
+        },
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      undefined,
+      null,
+      null,
+      { getConfiguration: () => directory },
+    );
+    let resolveWorkerFinished: () => void = () => undefined;
+    const workerFinished = new Promise<void>((resolve) => {
+      resolveWorkerFinished = resolve;
+    });
+    database.sendAgentMessage({
+      content: "检查项目目录并回复结论。",
+      runId: rootRun.runId,
+      senderConversationId: root.id,
+      targetConversationId: member.id,
+    });
+    runtime.resumePendingMessages((event) => {
+      if (event.type === "run.finished" && event.conversationId === member.id) {
+        resolveWorkerFinished();
+      }
+    });
+    await workerFinished;
+
+    expect(configurationCalls).toContainEqual({
+      modelId: selection.modelId,
+      providerId: selection.providerId,
+    });
+    expect(database.listSubagentTasks(root.id)).toEqual([]);
+    expect(database.listUnreadAgentMessages(root.id).some((message) => message.messageType === "agent_result")).toBe(true);
     database.close();
   });
 
@@ -4507,6 +4637,53 @@ describe("AgentRuntime", () => {
       .toBeGreaterThan(logEventTypes.indexOf("tool_approval_requested"));
     expect(logEventTypes.indexOf("tool_result"))
       .toBeGreaterThan(logEventTypes.indexOf("tool_approval_decided"));
+    database.close();
+  });
+
+  it("terminalizes a pending tool approval when its Run is stopped", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-cancel-approval-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      new CommandFixtureModel(),
+      () => Promise.resolve(),
+    );
+    const finished = new Promise<Extract<ConversationRunEvent, { type: "run.finished" }>>(
+      (resolve) => {
+        runtime.sendMessage({
+          content: "等待审批后停止",
+          conversationId: conversation.id,
+          permissionMode: "ask_before_changes",
+        }, (event) => {
+          if (event.type === "tool.approval_requested") runtime.cancelRun(event.runId);
+          if (event.type === "run.finished") resolve(event);
+        });
+      },
+    );
+
+    await expect(finished).resolves.toMatchObject({ status: "cancelled" });
+    expect(database.listTimeline(conversation.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "run_command",
+        result: "审批已失效：所属运行已经结束。",
+        status: "cancelled",
+      }),
+    ]));
     database.close();
   });
 

@@ -33,6 +33,7 @@ import {
   SquarePen,
   Terminal,
   Trash2,
+  UsersRound,
   WifiOff,
   Wrench,
   X,
@@ -134,6 +135,7 @@ import { isConversationScrolledToBottom } from "./conversation-scroll.js";
 import {
   appendAssistantDelta,
   completeStreamingAssistantMessages,
+  shouldApplyTimelineLoad,
 } from "./conversation-timeline-state.js";
 import {
   summarizeTaskFileChanges,
@@ -157,6 +159,7 @@ type WorkspaceContentProps = {
   onLocateProject: (projectId: string) => void;
   onLocateSession: (sessionId: string) => void;
   onOpenProjectFile?: (projectId: string, path: string) => void;
+  onOpenTeamConversation: (conversation: ConversationSummary) => void;
   onProjectSelected: (projectId: string) => void;
   onSessionSelected: (sessionId: string) => void;
   onSessionUpdated: (conversation: ConversationSummary) => void;
@@ -236,10 +239,17 @@ type ProjectFileMention = Pick<ProjectEntry, "name" | "path"> & {
   workspaceId: string;
 };
 
+type TeamMention = {
+  enabled: boolean;
+  id: string;
+  name: string;
+};
+
 type MentionOption =
   | { kind: "conversation"; value: ConversationMention }
   | { kind: "directory"; value: ProjectFileMention }
-  | { kind: "file"; value: ProjectFileMention };
+  | { kind: "file"; value: ProjectFileMention }
+  | { kind: "team"; value: TeamMention };
 
 type MentionQuery = {
   end: number;
@@ -473,6 +483,7 @@ export function WorkspaceContent({
   onLocateProject,
   onLocateSession,
   onOpenProjectFile,
+  onOpenTeamConversation,
   onProjectSelected,
   onSessionSelected,
   onSessionUpdated,
@@ -486,7 +497,13 @@ export function WorkspaceContent({
   );
 
   if (activeActivity === "team") {
-    return <TeamWorkspace agentClient={agentClient} projects={projects} />;
+    return (
+      <TeamWorkspace
+        agentClient={agentClient}
+        projects={projects}
+        onOpenConversation={onOpenTeamConversation}
+      />
+    );
   }
 
   if (activeActivity === "tasks") {
@@ -543,6 +560,7 @@ export function WorkspaceContent({
               projects={projects}
               relatedSessions={sessions}
               session={session}
+              teamManaged={session.teamWorkItemId !== null && session.teamWorkItemId !== undefined}
             />
           </div>
         );
@@ -569,6 +587,7 @@ export function ConversationWorkspace({
   projects = [],
   relatedSessions = EMPTY_PROJECT_SESSIONS,
   session,
+  teamManaged = false,
 }: {
   agentClient: AgentClient;
   canAddProjects?: boolean;
@@ -587,9 +606,12 @@ export function ConversationWorkspace({
   projects?: readonly ProjectSummary[];
   relatedSessions?: readonly ProjectSession[];
   session: ProjectSession;
+  /** A Team WorkItem owns execution policy; its Timeline still supports controlled user input. */
+  teamManaged?: boolean;
 }): ReactElement {
   const headingId = useId();
   const agentProfiles = useAgentDirectoryStore((state) => state.agents);
+  const teams = useAgentDirectoryStore((state) => state.teams);
   const defaultAgent = agentProfiles.find((agent) => agent.isDefault)
     ?? agentProfiles[0];
   const defaultMessageDeliveryMode = useApplicationSettingsStore(
@@ -621,6 +643,7 @@ export function ConversationWorkspace({
     useState<ConversationMention[]>([]);
   const [selectedConversationMentions, setSelectedConversationMentions] =
     useState<ConversationMention[]>([]);
+  const [selectedTeamMentions, setSelectedTeamMentions] = useState<TeamMention[]>([]);
   const [selectedProjectFileMentions, setSelectedProjectFileMentions] =
     useState<ProjectFileMention[]>([]);
   const [mentionQuery, setMentionQuery] = useState<MentionQuery | null>(null);
@@ -642,6 +665,7 @@ export function ConversationWorkspace({
   const [isChoosingAttachments, setIsChoosingAttachments] = useState(false);
   const [isLoadingTimeline, setIsLoadingTimeline] = useState(true);
   const [isMockRuntime, setIsMockRuntime] = useState(false);
+  const [isSavingTeamPermission, setIsSavingTeamPermission] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [liveToolOutputs, setLiveToolOutputs] = useState<Record<string, LiveToolOutput>>({});
   const [modelActivity, setModelActivity] = useState<ModelActivity | null>(null);
@@ -678,6 +702,8 @@ export function ConversationWorkspace({
   const [isTaskListExpanded, setIsTaskListExpanded] = useState(false);
   const [timeline, setTimeline] = useState<ConversationTimelineItem[]>([]);
   const timelineRef = useRef<ConversationTimelineItem[]>([]);
+  const timelineLoadRequestIdRef = useRef(0);
+  const timelineRevisionRef = useRef(0);
   const [subagentApprovals, setSubagentApprovals] = useState<SubagentPendingApproval[]>([]);
   const subagentSessions = useMemo(
     () => relatedSessions.filter((candidate) =>
@@ -691,9 +717,11 @@ export function ConversationWorkspace({
   const shouldStickToBottomRef = useRef(true);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const copiedMessageTimeoutRef = useRef<number | null>(null);
-  const isFinishedSubagent = session.subagentTaskStatus === "completed"
+  const isFinishedSubagent = !teamManaged && (
+    session.subagentTaskStatus === "completed"
     || session.subagentTaskStatus === "failed"
-    || session.subagentTaskStatus === "cancelled";
+    || session.subagentTaskStatus === "cancelled"
+  );
   const isEditingComposerMessage = editingMessageId !== null || editingPendingMessageId !== null;
   const modelOptions: readonly ModelProfile[] =
     modelStatus?.models.length
@@ -767,7 +795,7 @@ export function ConversationWorkspace({
       });
       onSessionUpdated?.(conversation);
       const currentStatus = getCachedModelStatus(agentClient);
-      if (currentStatus !== null && conversation.threadKind !== "subagent") {
+      if (currentStatus !== null && conversation.threadKind !== "subagent" && !teamManaged) {
         const nextStatus = rememberModelStatus(agentClient, {
           ...currentStatus,
           recentSelection: conversation.modelSelection,
@@ -777,7 +805,7 @@ export function ConversationWorkspace({
     } catch (error) {
       setOperationError(getUserErrorMessage(error, "无法保存对话模型选择"));
     }
-  }, [agentClient, onSessionUpdated, session.id]);
+  }, [agentClient, onSessionUpdated, session.id, teamManaged]);
 
   const selectModel = useCallback((model: ModelProfile): void => {
     setSelectedModelKey(modelKey(model));
@@ -793,6 +821,27 @@ export function ConversationWorkspace({
       : activeReasoningOptions.find((option) => modelReasoningOptionKey(option) === key) ?? null;
     void persistModelSelection(activeModel, reasoning);
   }, [activeModel, activeReasoningOptions, persistModelSelection]);
+
+  const selectPermissionMode = useCallback((value: string): void => {
+    const nextPermissionMode = value as ConversationPermissionMode;
+    if (!teamManaged || session.teamWorkItemId === null || session.teamWorkItemId === undefined) {
+      setPermissionMode(nextPermissionMode);
+      return;
+    }
+    if (nextPermissionMode === permissionMode || isSavingTeamPermission) return;
+    setIsSavingTeamPermission(true);
+    setOperationError(null);
+    void agentClient.updateTeamWorkItemPermission({
+      permissionMode: nextPermissionMode,
+      workItemId: session.teamWorkItemId,
+    }).then((workItem) => {
+      setPermissionMode(workItem.permissionMode);
+    }).catch((error) => {
+      setOperationError(getUserErrorMessage(error, "无法保存团队权限模式"));
+    }).finally(() => {
+      setIsSavingTeamPermission(false);
+    });
+  }, [agentClient, isSavingTeamPermission, permissionMode, session.teamWorkItemId, teamManaged]);
   const referenceWorkspaceId = project?.id
     ?? (session.workspaceRootPath === null ? null : session.id);
   const activeProjectFileMentions = useMemo(
@@ -858,15 +907,30 @@ export function ConversationWorkspace({
 
   const loadTimeline = useCallback(async (): Promise<void> => {
     const conversationId = session.id;
+    const requestId = ++timelineLoadRequestIdRef.current;
+    const timelineRevision = timelineRevisionRef.current;
     try {
       const nextTimeline = await agentClient.listConversationTimeline({
         conversationId,
       });
-      setTimeline(nextTimeline);
+      if (shouldApplyTimelineLoad(
+        requestId,
+        timelineLoadRequestIdRef.current,
+        timelineRevision,
+        timelineRevisionRef.current,
+      )) {
+        timelineRevisionRef.current += 1;
+        timelineRef.current = nextTimeline;
+        setTimeline(nextTimeline);
+      }
     } catch {
-      setOperationError("无法加载对话记录");
+      if (requestId === timelineLoadRequestIdRef.current) {
+        setOperationError("无法加载对话记录");
+      }
     } finally {
-      setIsLoadingTimeline(false);
+      if (requestId === timelineLoadRequestIdRef.current) {
+        setIsLoadingTimeline(false);
+      }
     }
   }, [agentClient, session.id]);
 
@@ -945,6 +1009,18 @@ export function ConversationWorkspace({
   useEffect(() => {
     void Promise.resolve().then(loadDraftAttachments);
   }, [loadDraftAttachments]);
+
+  useEffect(() => {
+    if (!teamManaged || session.teamWorkItemId === null || session.teamWorkItemId === undefined) return;
+    let disposed = false;
+    void agentClient.listTeamWorkItems({}).then((workItems) => {
+      const workItem = workItems.find((candidate) => candidate.id === session.teamWorkItemId);
+      if (!disposed && workItem !== undefined) setPermissionMode(workItem.permissionMode);
+    }).catch(() => undefined);
+    return () => {
+      disposed = true;
+    };
+  }, [agentClient, session.id, session.teamWorkItemId, teamManaged]);
 
   useEffect(() => {
     const awaitingApprovalToolIds = new Set(
@@ -1066,6 +1142,9 @@ export function ConversationWorkspace({
   }, [timeline]);
 
   useEffect(() => {
+    setActiveRunId(session.activeRunId);
+    setIsCancelling(false);
+    setModelActivity((current) => current?.runId === session.activeRunId ? current : null);
     setRunProgresses(createRestoredRunProgresses(session.activeRunId));
     setLiveToolOutputs({});
   }, [session.activeRunId, session.id]);
@@ -1117,6 +1196,7 @@ export function ConversationWorkspace({
         return;
       }
 
+      timelineRevisionRef.current += 1;
       handleRunEvent(
         event,
         setTimeline,
@@ -1222,6 +1302,7 @@ export function ConversationWorkspace({
     setMentionQuery(null);
     setSlashQuery(null);
     setSelectedConversationMentions([]);
+    setSelectedTeamMentions([]);
     setSelectedProjectFileMentions([]);
     setOperationError(null);
     queueMicrotask(() => {
@@ -1239,6 +1320,7 @@ export function ConversationWorkspace({
     setMentionQuery(null);
     setSlashQuery(null);
     setSelectedConversationMentions([]);
+    setSelectedTeamMentions([]);
     setSelectedProjectFileMentions([]);
     queueMicrotask(() => composerRef.current?.focus());
   }, []);
@@ -1251,6 +1333,7 @@ export function ConversationWorkspace({
     setMentionQuery(null);
     setSlashQuery(null);
     setSelectedConversationMentions([]);
+    setSelectedTeamMentions([]);
     setSelectedProjectFileMentions([]);
     setOperationError(null);
     queueMicrotask(() => {
@@ -1303,6 +1386,7 @@ export function ConversationWorkspace({
         setMentionQuery(null);
         setSlashQuery(null);
         setSelectedConversationMentions([]);
+        setSelectedTeamMentions([]);
         setSelectedProjectFileMentions([]);
       } catch (error) {
         setOperationError(getUserErrorMessage(error, "无法修改排队消息"));
@@ -1349,7 +1433,12 @@ export function ConversationWorkspace({
             }),
           ...(selectedReasoningOption === undefined ? {} : { reasoning: selectedReasoningOption }),
         });
-        setTimeline((current) => replaceTimelineFromMessage(current, accepted.userMessage));
+        timelineRevisionRef.current += 1;
+        setTimeline((current) => {
+          const next = replaceTimelineFromMessage(current, accepted.userMessage);
+          timelineRef.current = next;
+          return next;
+        });
         setActiveRunId(accepted.runId);
         confirmRunProgress(setRunProgresses, accepted.runId, accepted.userMessage.id);
         setModelActivity({
@@ -1387,7 +1476,12 @@ export function ConversationWorkspace({
           ...(selectedReasoningOption === undefined ? {} : { reasoning: selectedReasoningOption }),
         });
         if (accepted.kind === "started") {
-          setTimeline((current) => upsertTimelineItem(current, accepted.userMessage));
+          timelineRevisionRef.current += 1;
+          setTimeline((current) => {
+            const next = upsertTimelineItem(current, accepted.userMessage);
+            timelineRef.current = next;
+            return next;
+          });
           setActiveRunId(accepted.runId);
           confirmRunProgress(setRunProgresses, accepted.runId, accepted.userMessage.id);
           setModelActivity({
@@ -1407,6 +1501,7 @@ export function ConversationWorkspace({
       setMentionQuery(null);
       setSlashQuery(null);
       setSelectedConversationMentions([]);
+      setSelectedTeamMentions([]);
       setSelectedProjectFileMentions([]);
       void loadContextUsage();
     } catch (error) {
@@ -1460,6 +1555,22 @@ export function ConversationWorkspace({
     if (mentionQuery === null || mentionQuery.query.length === 0) return [];
     const options: MentionOption[] = [];
     const normalizedQuery = mentionQuery.query.toLocaleLowerCase();
+    const canMentionTeams = session.projectId !== null
+      && session.parentConversationId === null
+      && session.threadKind === "agent"
+      && !teamManaged;
+    if (canMentionTeams) {
+      options.push(...teams
+        .filter((team) =>
+          !selectedTeamMentions.some((selected) => selected.id === team.id)
+          && team.name.toLocaleLowerCase().includes(normalizedQuery)
+        )
+        .slice(0, 4)
+        .map((team): MentionOption => ({
+          kind: "team",
+          value: { enabled: team.enabled, id: team.id, name: team.name },
+        })));
+    }
     if (
       !mentionQuery.query.includes("/")
       && selectedConversationMentions.length < MAX_SELECTED_CONVERSATION_MENTIONS
@@ -1469,7 +1580,7 @@ export function ConversationWorkspace({
           !selectedConversationMentions.some((selected) => selected.id === conversation.id)
           && conversation.title.toLocaleLowerCase().includes(normalizedQuery)
         )
-        .slice(0, 4)
+        .slice(0, Math.max(0, 4 - options.length))
         .map((value): MentionOption => ({ kind: "conversation", value })));
     }
     if (
@@ -1489,7 +1600,7 @@ export function ConversationWorkspace({
             || !activeProjectFileMentions.some((selected) => selected.path === entry.path)
           )
         )
-        .slice(0, 8 - options.length)
+        .slice(0, Math.max(0, 8 - options.length))
         .map((entry): MentionOption => ({
           kind: entry.kind === "directory" ? "directory" : "file",
           value: {
@@ -1508,6 +1619,12 @@ export function ConversationWorkspace({
     projectMentionLocation,
     referenceWorkspaceId,
     selectedConversationMentions,
+    selectedTeamMentions,
+    session.parentConversationId,
+    session.projectId,
+    session.threadKind,
+    teamManaged,
+    teams,
   ]);
 
   const slashOptions = useMemo(() => {
@@ -1523,7 +1640,9 @@ export function ConversationWorkspace({
     if (mentionQuery === null) return;
     const insertedText = option.kind === "directory"
       ? `@${option.value.path}/`
-      : `@${option.kind === "conversation" ? option.value.title : option.value.path} `;
+      : `@${option.kind === "conversation"
+        ? option.value.title
+        : option.kind === "team" ? option.value.name : option.value.path} `;
     const nextValue = `${composerValue.slice(0, mentionQuery.start)}${insertedText}${composerValue.slice(mentionQuery.end)}`;
     const nextCaret = mentionQuery.start + insertedText.length;
     setComposerValue(nextValue);
@@ -1535,6 +1654,10 @@ export function ConversationWorkspace({
             ? current
             : [...current, option.value]
       );
+    } else if (option.kind === "team") {
+      setSelectedTeamMentions((current) => current.some((selected) => selected.id === option.value.id)
+        ? current
+        : [...current, option.value]);
     } else if (option.kind === "file") {
       setSelectedProjectFileMentions((current) =>
         current.some((selected) => selected.path === option.value.path)
@@ -1865,7 +1988,8 @@ export function ConversationWorkspace({
     && onSessionUpdated !== undefined;
   const canChangeAgent =
     !isLoadingTimeline
-    && !isFinishedSubagent;
+    && !isFinishedSubagent
+    && !teamManaged;
   const taskFileChanges = summarizeTaskFileChanges(
     timeline,
     taskList?.createdAt ?? null,
@@ -1960,6 +2084,8 @@ export function ConversationWorkspace({
                   ) : null}
                   <TimelineItem
                     item={item}
+                    teamManaged={teamManaged}
+                    activeRunId={activeRunId}
                     modelActivity={modelActivity !== null
                       && modelActivityInsertIndex === index
                       && item.kind === "tool_batch"
@@ -1981,7 +2107,7 @@ export function ConversationWorkspace({
                         ? item.content.length > 0
                         : forkableAssistantMessageIds.has(item.id)
                     )}
-                    latestUserMessageId={latestUserMessageId}
+                    latestUserMessageId={teamManaged ? null : latestUserMessageId}
                     onChangeApproval={handleChangeApproval}
                     onCopyMessage={handleCopyMessage}
                     onEditMessage={handleEditMessage}
@@ -2006,12 +2132,15 @@ export function ConversationWorkspace({
         <div className="conversation-workspace__composer-overlay">
           {taskList !== null ? (
             <ConversationTaskListPanel
-            expanded={isTaskListExpanded}
-            fileChanges={taskFileChanges}
-            isActioning={taskListAction !== null || isFinishedSubagent}
-            taskList={taskList}
-            onClose={() => void handleCloseTaskList()}
-            onToggle={() => setIsTaskListExpanded((current) => !current)}
+              allowClose={teamManaged || !isFinishedSubagent}
+              expanded={isTaskListExpanded}
+              fileChanges={taskFileChanges}
+              isActioning={taskListAction !== null || isFinishedSubagent}
+              isRunActive={hasActiveModelRun}
+              lastRunStatus={session.lastRunStatus}
+              taskList={taskList}
+              onClose={() => void handleCloseTaskList()}
+              onToggle={() => setIsTaskListExpanded((current) => !current)}
             />
           ) : null}
 
@@ -2107,8 +2236,25 @@ export function ConversationWorkspace({
                 ))}
               </div>
             ) : null}
-            {selectedConversationMentions.length > 0 || activeProjectFileMentions.length > 0 ? (
+            {selectedConversationMentions.length > 0
+              || selectedTeamMentions.length > 0
+              || activeProjectFileMentions.length > 0 ? (
               <div className="conversation-mentions conversation-mentions--draft">
+                {selectedTeamMentions.map((mention) => (
+                  <span className="conversation-mention-chip" data-kind="team" key={mention.id}>
+                    <UsersRound aria-hidden="true" size={13} />
+                    <span>{mention.name}</span>
+                    <button
+                      aria-label={`移除团队引用 ${mention.name}`}
+                      type="button"
+                      onClick={() => setSelectedTeamMentions((current) =>
+                        current.filter((candidate) => candidate.id !== mention.id)
+                      )}
+                    >
+                      <X aria-hidden="true" size={12} />
+                    </button>
+                  </span>
+                ))}
                 {selectedConversationMentions.map((mention) => (
                   <span className="conversation-mention-chip" data-kind="conversation" key={mention.id}>
                     <AtSign aria-hidden="true" size={13} />
@@ -2159,15 +2305,17 @@ export function ConversationWorkspace({
                         aria-selected={index === mentionSelectionIndex}
                         className={index === mentionSelectionIndex ? "is-selected" : undefined}
                         data-option-index={index}
-                        key={option.kind === "conversation"
-                          ? `conversation:${option.value.id}`
+                        key={option.kind === "conversation" || option.kind === "team"
+                          ? `${option.kind}:${option.value.id}`
                           : `${option.kind}:${option.value.path}`}
                         role="option"
                         type="button"
                         onMouseDown={(event) => event.preventDefault()}
                         onClick={handleMentionOptionClick}
                       >
-                        {option.kind === "conversation" ? (
+                        {option.kind === "team" ? (
+                          <UsersRound aria-hidden="true" size={15} />
+                        ) : option.kind === "conversation" ? (
                           <MessageSquareText aria-hidden="true" size={15} />
                         ) : option.kind === "directory" ? (
                           <Folder aria-hidden="true" size={15} />
@@ -2177,9 +2325,11 @@ export function ConversationWorkspace({
                         <span>
                           <strong>{option.kind === "conversation"
                             ? option.value.title
-                            : option.value.name}</strong>
+                            : option.kind === "team" ? option.value.name : option.value.name}</strong>
                           <small>{option.kind === "conversation"
                             ? `${projectName ?? "临时对话"} · ${threadKindLabel(option.value.threadKind)}`
+                            : option.kind === "team"
+                              ? option.value.enabled ? "团队 · 自动分发" : "团队 · 已暂停，接收后排队"
                             : `${option.kind === "directory" ? "目录" : "文件"} · ${option.value.path}`}</small>
                         </span>
                       </button>
@@ -2375,15 +2525,16 @@ export function ConversationWorkspace({
                   </Select>
                 )}
                 <Select
-                  disabled={isFinishedSubagent}
+                  disabled={isFinishedSubagent || isSavingTeamPermission}
                   value={permissionMode}
-                  onValueChange={(value) =>
-                    setPermissionMode(value as ConversationPermissionMode)
-                  }
+                  onValueChange={selectPermissionMode}
                 >
                   <SelectTrigger
                     aria-label="权限模式"
                     className="conversation-workspace__composer-select conversation-workspace__composer-select--permission"
+                    title={teamManaged && activeRunId !== null
+                      ? "已保存到团队工作项；将在下一次团队执行时生效"
+                      : undefined}
                   >
                     <ShieldCheck aria-hidden="true" size={14} />
                     <SelectValue />
@@ -3102,16 +3253,22 @@ function SubagentApprovalQueue({
 }
 
 function ConversationTaskListPanel({
+  allowClose = true,
   expanded,
   fileChanges,
   isActioning,
+  isRunActive,
+  lastRunStatus,
   taskList,
   onClose,
   onToggle,
 }: {
+  allowClose?: boolean;
   expanded: boolean;
   fileChanges: TaskFileChangeSummary;
   isActioning: boolean;
+  isRunActive: boolean;
+  lastRunStatus: ProjectSession["lastRunStatus"];
   taskList: ConversationTaskList;
   onClose: () => void;
   onToggle: () => void;
@@ -3122,13 +3279,20 @@ function ConversationTaskListPanel({
   const failedIndex = taskList.tasks.findIndex((task) => task.status === "failed");
   const completedCount = taskList.tasks.filter((task) => task.status === "completed").length;
   const isCompleted = completedCount === taskList.tasks.length;
+  const inactiveRunningStatus = runningIndex < 0 || isRunActive
+    ? null
+    : lastRunStatus === "cancelled"
+      ? "stopped"
+      : lastRunStatus === "failed"
+        ? "interrupted"
+        : "paused";
   const summaryStatus = isCompleted
     ? "completed"
     : failedIndex >= 0
       ? "failed"
       : blockedIndex >= 0
         ? "blocked"
-        : "active";
+        : inactiveRunningStatus ?? "active";
   const currentStep =
     runningIndex >= 0
       ? runningIndex + 1
@@ -3161,43 +3325,54 @@ function ConversationTaskListPanel({
       <div className="conversation-task-list__body">
         {expanded ? (
           <div className="conversation-task-list__details" id={summaryId} role="list">
-            {taskList.tasks.map((task) => (
-              <div className="conversation-task-list__task" key={task.id} role="listitem">
-                <span
-                  aria-label={
-                    task.status === "completed"
-                      ? "已完成"
-                      : task.status === "running"
-                        ? "正在进行"
-                        : task.status === "blocked"
-                          ? "已阻塞"
-                          : task.status === "failed"
-                            ? "已失败"
-                        : undefined
-                  }
-                  className="conversation-task-list__status"
-                  data-status={task.status}
-                >
-                  {task.status === "completed" ? (
-                    <Check aria-hidden="true" size={15} strokeWidth={2.4} />
-                  ) : task.status === "running" ? (
-                    <LoaderCircle
-                      aria-hidden="true"
-                      className="conversation-workspace__spin"
-                      size={15}
-                      strokeWidth={2.2}
-                    />
-                  ) : task.status === "blocked" ? (
-                    <CircleAlert aria-hidden="true" size={15} strokeWidth={2.2} />
-                  ) : task.status === "failed" ? (
-                    <X aria-hidden="true" size={15} strokeWidth={2.2} />
-                  ) : null}
-                </span>
-                <div className="conversation-task-list__task-content">
-                  <span>{task.title}</span>
+            {taskList.tasks.map((task) => {
+              const displayStatus = task.status === "running" && inactiveRunningStatus !== null
+                ? inactiveRunningStatus
+                : task.status;
+              return (
+                <div className="conversation-task-list__task" key={task.id} role="listitem">
+                  <span
+                    aria-label={
+                      displayStatus === "completed"
+                        ? "已完成"
+                        : displayStatus === "running"
+                          ? "正在进行"
+                          : displayStatus === "blocked"
+                            ? "已阻塞"
+                            : displayStatus === "failed"
+                              ? "已失败"
+                              : displayStatus === "stopped"
+                                ? "已停止"
+                                : displayStatus === "interrupted"
+                                  ? "已中断"
+                                  : "已暂停"
+                    }
+                    className="conversation-task-list__status"
+                    data-status={displayStatus}
+                  >
+                    {displayStatus === "completed" ? (
+                      <Check aria-hidden="true" size={15} strokeWidth={2.4} />
+                    ) : displayStatus === "running" ? (
+                      <LoaderCircle
+                        aria-hidden="true"
+                        className="conversation-workspace__spin"
+                        size={15}
+                        strokeWidth={2.2}
+                      />
+                    ) : displayStatus === "blocked" ? (
+                      <CircleAlert aria-hidden="true" size={15} strokeWidth={2.2} />
+                    ) : displayStatus === "paused" ? (
+                      <ListTodo aria-hidden="true" size={15} strokeWidth={1.9} />
+                    ) : (
+                      <X aria-hidden="true" size={15} strokeWidth={2.2} />
+                    )}
+                  </span>
+                  <div className="conversation-task-list__task-content">
+                    <span>{task.title}</span>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         ) : null}
         {isChangesExpanded ? (
@@ -3232,6 +3407,10 @@ function ConversationTaskListPanel({
               <X aria-hidden="true" className="conversation-task-list__summary-status" size={15} />
             ) : summaryStatus === "blocked" ? (
               <CircleAlert aria-hidden="true" className="conversation-task-list__summary-status" size={15} />
+            ) : summaryStatus === "paused" ? (
+              <ListTodo aria-hidden="true" className="conversation-task-list__summary-status" size={15} strokeWidth={1.9} />
+            ) : summaryStatus === "stopped" || summaryStatus === "interrupted" ? (
+              <X aria-hidden="true" className="conversation-task-list__summary-status" size={15} />
             ) : runningIndex >= 0 ? (
               <LoaderCircle
                 aria-hidden="true"
@@ -3242,20 +3421,22 @@ function ConversationTaskListPanel({
               <ListTodo aria-hidden="true" size={15} strokeWidth={1.9} />
             )}
             <span>{`第 ${currentStep}/${taskList.tasks.length} 步`}</span>
-            {fileChanges.files.length === 0 ? (
-              <>
-                <span className="conversation-task-list__summary-divider" aria-hidden="true">·</span>
-                <span>{
-                  isCompleted
-                    ? "任务已完成"
-                    : summaryStatus === "failed"
-                      ? "任务已失败"
-                    : summaryStatus === "blocked"
-                        ? "任务已阻塞"
-                        : "任务清单"
-                }</span>
-              </>
-            ) : null}
+            <span className="conversation-task-list__summary-divider" aria-hidden="true">·</span>
+            <span>{
+              isCompleted
+                ? "任务已完成"
+                : summaryStatus === "failed"
+                  ? "任务已失败"
+                  : summaryStatus === "blocked"
+                    ? "任务已阻塞"
+                    : summaryStatus === "stopped"
+                      ? "任务已停止"
+                      : summaryStatus === "interrupted"
+                        ? "任务已中断"
+                        : summaryStatus === "paused"
+                          ? "任务待继续"
+                          : "任务清单"
+            }</span>
             <ChevronDown aria-hidden="true" className="conversation-task-list__chevron" size={15} />
           </button>
           {fileChanges.files.length > 0 ? (
@@ -3275,7 +3456,7 @@ function ConversationTaskListPanel({
           ) : null}
         </div>
       </div>
-      <IconButton
+      {allowClose ? <IconButton
         className="conversation-task-list__action"
         disabled={isActioning}
         label="关闭任务清单"
@@ -3288,7 +3469,7 @@ function ConversationTaskListPanel({
         ) : (
           <X aria-hidden="true" size={15} />
         )}
-      </IconButton>
+      </IconButton> : null}
     </div>
   );
 }
@@ -3455,6 +3636,8 @@ function timelineDisplayItemContains(item: TimelineDisplayItem, timelineItemId: 
 
 function TimelineItem({
   item,
+  teamManaged,
+  activeRunId,
   modelActivity,
   approvalErrors,
   approvingToolId,
@@ -3474,6 +3657,8 @@ function TimelineItem({
   liveToolOutputs,
 }: {
   item: TimelineDisplayItem;
+  teamManaged: boolean;
+  activeRunId: string | null;
   modelActivity: ModelActivity | null;
   approvalErrors: Readonly<Record<string, string>>;
   approvingToolId: string | null;
@@ -3504,6 +3689,8 @@ function TimelineItem({
       <ToolBatchTimelineItem
         key={`${item.id}:${String(hasFailure)}`}
         item={item}
+        teamManaged={teamManaged}
+        activeRunId={activeRunId}
         modelActivity={modelActivity}
         approvalErrors={approvalErrors}
         approvingToolId={approvingToolId}
@@ -3519,6 +3706,8 @@ function TimelineItem({
       <ToolTimelineItem
         key={`${item.id}:${approvalErrors[item.id] === undefined ? String(toolItemHasFailure(item)) : "approval_failed"}`}
         item={item}
+        teamManaged={teamManaged}
+        approvalActionable={item.runId === activeRunId}
         approvalError={approvalErrors[item.id] ?? null}
         isApproving={approvingToolId === item.id}
         onOpenProjectFile={onOpenProjectFile}
@@ -3876,6 +4065,8 @@ function toolItemHasFailure(item: ConversationToolItem): boolean {
 
 function ToolBatchTimelineItem({
   item,
+  teamManaged,
+  activeRunId,
   modelActivity,
   approvalErrors,
   approvingToolId,
@@ -3884,6 +4075,8 @@ function ToolBatchTimelineItem({
   liveToolOutputs,
 }: {
   item: Extract<TimelineDisplayItem, { kind: "tool_batch" }>;
+  teamManaged: boolean;
+  activeRunId: string | null;
   modelActivity: ModelActivity | null;
   approvalErrors: Readonly<Record<string, string>>;
   approvingToolId: string | null;
@@ -3908,8 +4101,8 @@ function ToolBatchTimelineItem({
   const executionMode = toolBatchExecutionMode(item.tools);
   const hasRunningTool = item.tools.some((tool) => tool.status === "running");
   const label = modelActivity === null
-    ? toolBatchLabel(item.tools)
-    : modelActivityLabel(modelActivity) ?? toolBatchLabel(item.tools);
+    ? toolBatchLabel(item.tools, teamManaged)
+    : modelActivityLabel(modelActivity) ?? toolBatchLabel(item.tools, teamManaged);
   const toggleLabel = isExpanded ? "收起本轮工具调用" : "展开本轮工具调用";
 
   return (
@@ -3942,6 +4135,8 @@ function ToolBatchTimelineItem({
             <ToolTimelineItem
               key={`${tool.id}:${approvalErrors[tool.id] === undefined ? String(toolItemHasFailure(tool)) : "approval_failed"}`}
               item={tool}
+              teamManaged={teamManaged}
+              approvalActionable={tool.runId === activeRunId}
               approvalError={approvalErrors[tool.id] ?? null}
               isApproving={approvingToolId === tool.id}
               onOpenProjectFile={onOpenProjectFile}
@@ -3958,6 +4153,8 @@ function ToolBatchTimelineItem({
 
 function ToolTimelineItem({
   item,
+  teamManaged,
+  approvalActionable,
   approvalError,
   isApproving,
   variant = "card",
@@ -3966,6 +4163,8 @@ function ToolTimelineItem({
   liveOutput,
 }: {
   item: ConversationToolItem;
+  teamManaged: boolean;
+  approvalActionable: boolean;
   approvalError: string | null;
   isApproving: boolean;
   variant?: "activity" | "card";
@@ -3980,7 +4179,10 @@ function ToolTimelineItem({
   const isCommand = item.name === "run_command";
   const isExternalRead = item.name === "read_external_file";
   const isFileDeletion = item.name === "delete_file";
-  const effectiveStatus = approvalError === null && !toolItemHasFailure(item)
+  const isExpiredApproval = item.status === "awaiting_approval" && !approvalActionable;
+  const effectiveStatus = isExpiredApproval
+    ? "cancelled"
+    : approvalError === null && !toolItemHasFailure(item)
     ? item.status
     : "failed";
   const [isExpanded, setIsExpanded] = useState(() =>
@@ -3997,7 +4199,11 @@ function ToolTimelineItem({
       <header className="tool-timeline-item__header">
         <span className="tool-timeline-item__identity">
           <ToolTypeIcon name={item.name} />
-          <ToolActivityLabel item={item} onOpenProjectFile={onOpenProjectFile} />
+          <ToolActivityLabel
+            item={item}
+            teamManaged={teamManaged}
+            onOpenProjectFile={onOpenProjectFile}
+          />
           {effectiveStatus === "running" ? <ToolExecutionTimer /> : null}
           {effectiveStatus !== "completed" ? (
             <span className="tool-timeline-item__status-label">
@@ -4028,12 +4234,17 @@ function ToolTimelineItem({
       {isExpanded ? (
         <ToolDetail
           item={item}
+          teamManaged={teamManaged}
           onOpenProjectFile={onOpenProjectFile}
           {...(liveOutput === undefined ? {} : { liveOutput })}
         />
       ) : null}
       {approvalError === null ? null : <ToolErrorNotice message={approvalError} />}
-      {item.status === "awaiting_approval" ? (
+      {isExpiredApproval ? (
+        <footer className="tool-timeline-item__approval">
+          <span>该审批已随运行结束失效。</span>
+        </footer>
+      ) : item.status === "awaiting_approval" ? (
         <footer className="tool-timeline-item__approval">
           <span>
             {isExternalRead
@@ -4186,10 +4397,12 @@ function toolStatusLabel(status: ConversationToolItem["status"]): string {
       return "失败";
     case "rejected":
       return "已拒绝";
+    case "cancelled":
+      return "已失效";
   }
 }
 
-function toolActivityLabel(item: ConversationToolItem): string {
+function toolActivityLabel(item: ConversationToolItem, teamManaged = false): string {
   const argumentsValue = parseToolPayload(item.arguments);
   const path = typeof argumentsValue?.path === "string" ? argumentsValue.path : null;
   const completed = item.status === "completed";
@@ -4261,19 +4474,33 @@ function toolActivityLabel(item: ConversationToolItem): string {
     case "close_task_list":
       return completed ? "任务清单已关闭" : "关闭任务清单";
     case "list_agent_conversations":
-      return completed ? "已查看 Agent 对话" : "查看 Agent 对话";
+      return completed
+        ? (teamManaged ? "已查看团队成员对话" : "已查看 Agent 对话")
+        : (teamManaged ? "查看团队成员对话" : "查看 Agent 对话");
     case "read_agent_conversation":
-      return completed ? "已读取 Agent 对话" : "读取 Agent 对话";
+      return completed
+        ? (teamManaged ? "已读取团队成员对话" : "已读取 Agent 对话")
+        : (teamManaged ? "读取团队成员对话" : "读取 Agent 对话");
     case "send_agent_message":
-      return completed ? "Agent 消息已发送" : "发送 Agent 消息";
+      return completed
+        ? (teamManaged ? "团队成员消息已发送" : "Agent 消息已发送")
+        : (teamManaged ? "发送团队成员消息" : "发送 Agent 消息");
     case "wait_for_agent_message":
-      return completed ? "Agent 消息等待结束" : "等待 Agent 消息";
+      return completed
+        ? (teamManaged ? "团队成员消息等待结束" : "Agent 消息等待结束")
+        : (teamManaged ? "等待团队成员消息" : "等待 Agent 消息");
     case "spawn_subagent":
-      return completed ? "Subagent 已启动" : "启动 Subagent";
+      return completed
+        ? (teamManaged ? "团队成员已启动" : "Subagent 已启动")
+        : (teamManaged ? "启动团队成员" : "启动 Subagent");
     case "list_subagents":
-      return completed ? "已查看 Subagent" : "查看 Subagent";
+      return completed
+        ? (teamManaged ? "已查看团队成员" : "已查看 Subagent")
+        : (teamManaged ? "查看团队成员" : "查看 Subagent");
     case "wait_for_subagents":
-      return completed ? "Subagent 等待结束" : "等待 Subagent";
+      return completed
+        ? (teamManaged ? "团队成员等待结束" : "Subagent 等待结束")
+        : (teamManaged ? "等待团队成员" : "等待 Subagent");
     default:
       return item.name;
   }
@@ -4281,13 +4508,15 @@ function toolActivityLabel(item: ConversationToolItem): string {
 
 function ToolActivityLabel({
   item,
+  teamManaged,
   onOpenProjectFile,
 }: {
   item: ConversationToolItem;
+  teamManaged: boolean;
   onOpenProjectFile: ((path: string) => void) | undefined;
 }): ReactElement {
   const summary = fileChangeSummary(item);
-  if (summary === null) return <span>{toolActivityLabel(item)}</span>;
+  if (summary === null) return <span>{toolActivityLabel(item, teamManaged)}</span>;
 
   return (
     <span className="tool-timeline-item__activity-label">
@@ -4393,11 +4622,18 @@ export function representativeToolName(tools: ConversationToolItem[]): string {
     ?.category.iconToolName ?? tools[0]?.name ?? "tool";
 }
 
-export function toolBatchLabel(tools: ConversationToolItem[]): string {
+export function toolBatchLabel(
+  tools: ConversationToolItem[],
+  teamManaged = false,
+): string {
   const labels = toolBatchCategoryCounts(tools)
     .sort((left, right) => right.category.priority - left.category.priority)
     .slice(0, 2)
-    .map(({ category, count }) => category.label(count));
+    .map(({ category, count }) => (
+      teamManaged && category.iconToolName === "spawn_subagent"
+        ? `协调 ${count} 次团队成员`
+        : category.label(count)
+    ));
 
   return labels.length > 0 ? labels.join("，") : `调用了 ${tools.length} 个工具`;
 }
@@ -4415,10 +4651,12 @@ export function toolBatchExecutionMode(
 
 function ToolDetail({
   item,
+  teamManaged,
   liveOutput,
   onOpenProjectFile,
 }: {
   item: ConversationToolItem;
+  teamManaged: boolean;
   liveOutput?: LiveToolOutput;
   onOpenProjectFile: ((path: string) => void) | undefined;
 }): ReactElement {
@@ -4508,7 +4746,13 @@ function ToolDetail({
     || item.name === "list_subagents"
     || item.name === "wait_for_subagents"
   ) {
-    return <SubagentToolResult payload={item.result} status={item.status} />;
+    return (
+      <SubagentToolResult
+        payload={item.result}
+        status={item.status}
+        teamManaged={teamManaged}
+      />
+    );
   }
 
   if (
@@ -4956,15 +5200,17 @@ function AgentMessageToolResult({
 function SubagentToolResult({
   payload,
   status,
+  teamManaged,
 }: {
   payload: string | null;
   status: ConversationToolItem["status"];
+  teamManaged: boolean;
 }): ReactElement {
   const result = payload === null ? null : parseSubagentToolResult(payload);
   if (result === null) return <ToolResultNotice result={payload} status={status} />;
   const summary = result.waitStatus === "timeout"
-    ? `Subagent 等待超时 · ${result.tasks.length} 项`
-    : `Subagent · ${result.tasks.length} 项`;
+    ? `${teamManaged ? "团队成员等待超时" : "Subagent 等待超时"} · ${result.tasks.length} 项`
+    : `${teamManaged ? "团队成员执行" : "Subagent"} · ${result.tasks.length} 项`;
 
   return (
     <StructuredToolResult summary={summary}>

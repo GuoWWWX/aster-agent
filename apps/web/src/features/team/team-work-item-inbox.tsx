@@ -31,7 +31,7 @@ export function WorkItemInbox({
   onEdit,
   onFilterChange,
   onSelect,
-  onSubmit,
+  onSaveEdit,
   processingCount,
   queuedCount,
   selectedId,
@@ -48,14 +48,14 @@ export function WorkItemInbox({
   onEdit: (id: string) => void;
   onFilterChange: (filter: WorkItemFilter) => void;
   onSelect: (id: string) => void;
-  onSubmit: () => void;
+  onSaveEdit: () => void;
   processingCount: number;
   queuedCount: number;
   selectedId: string | null;
 }): ReactElement {
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    onSubmit();
+    onSaveEdit();
   };
   return (
     <section className="team-command-panel team-inbox-panel" aria-labelledby="team-inbox-heading">
@@ -120,36 +120,34 @@ export function WorkItemInbox({
           </article>
         ))}
       </div>
-      <form className="team-inbox-composer" onSubmit={submit}>
-        {editingItemId === null ? (
-          <p>直接向团队发送需求，Team Lead 领取前可以修改。</p>
-        ) : (
+      {editingItemId === null ? null : (
+        <form className="team-inbox-composer" onSubmit={submit}>
           <div className="team-inbox-composer__editing">
             <span>正在修改待执行需求</span>
             <button aria-label="取消修改" title="取消修改" type="button" onClick={onCancelEdit}>
               <X aria-hidden="true" size={13} />
             </button>
           </div>
-        )}
-        <div>
-          <textarea
-            aria-label={editingItemId === null ? "向团队发送需求" : "修改待执行需求"}
-            maxLength={600}
-            placeholder="描述需要团队持续推进的需求…"
-            rows={2}
-            value={draft}
-            onChange={(event) => onDraftChange(event.target.value)}
-          />
-          <button
-            aria-label={editingItemId === null ? "发送需求" : "保存需求"}
-            disabled={draft.trim().length === 0}
-            title={editingItemId === null ? "发送需求" : "保存修改"}
-            type="submit"
-          >
-            <SendHorizontal aria-hidden="true" size={15} />
-          </button>
-        </div>
-      </form>
+          <div>
+            <textarea
+              aria-label="修改待执行需求"
+              maxLength={50_000}
+              placeholder="修改尚未自动分发的需求…"
+              rows={2}
+              value={draft}
+              onChange={(event) => onDraftChange(event.target.value)}
+            />
+            <button
+              aria-label="保存需求"
+              disabled={draft.trim().length === 0}
+              title="保存修改"
+              type="submit"
+            >
+              <SendHorizontal aria-hidden="true" size={15} />
+            </button>
+          </div>
+        </form>
+      )}
     </section>
   );
 }

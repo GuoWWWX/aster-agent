@@ -5,6 +5,7 @@ import type { ConversationMessageItem } from "@agent/protocol";
 import {
   appendAssistantDelta,
   completeStreamingAssistantMessages,
+  shouldApplyTimelineLoad,
 } from "./conversation-timeline-state.js";
 
 const conversationId = "00000000-0000-4000-8000-000000000001";
@@ -56,5 +57,11 @@ describe("conversation timeline streaming state", () => {
       { id: "first", status: "completed" },
       { id: "second", status: "completed" },
     ]);
+  });
+
+  it("does not replace newer streamed state with a stale timeline load", () => {
+    expect(shouldApplyTimelineLoad(2, 2, 4, 4)).toBe(true);
+    expect(shouldApplyTimelineLoad(1, 2, 4, 4)).toBe(false);
+    expect(shouldApplyTimelineLoad(2, 2, 3, 4)).toBe(false);
   });
 });

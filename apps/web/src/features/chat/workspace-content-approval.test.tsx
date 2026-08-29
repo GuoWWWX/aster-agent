@@ -4,16 +4,23 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ConversationToolItem } from "@agent/protocol";
+import {
+  DEFAULT_AGENT_DIRECTORY_CONFIGURATION,
+  type ConversationTaskList,
+  type ConversationToolItem,
+} from "@agent/protocol";
 
 import { MockAgentClient } from "../../runtime/index.js";
+import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
+import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 import type { ProjectSession } from "../projects/project-session-model.js";
-import { ConversationWorkspace } from "./workspace-content.js";
+import { ConversationWorkspace, WorkspaceContent } from "./workspace-content.js";
 
 const PARENT_ID = "00000000-0000-4000-8000-000000000001";
 const CHILD_ID = "00000000-0000-4000-8000-000000000002";
 const RUN_ID = "00000000-0000-4000-8000-000000000003";
 const TOOL_ID = "00000000-0000-4000-8000-000000000004";
+const WORK_ITEM_ID = "00000000-0000-4000-8000-000000000005";
 
 function session(input: Partial<ProjectSession> & Pick<ProjectSession, "id" | "title">): ProjectSession {
   return {
@@ -37,6 +44,8 @@ let root: Root | null = null;
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  useWorkbenchUiStore.setState({ activeActivity: "conversations" });
+  useAgentDirectoryStore.getState().hydrate(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
 });
 
 afterEach(() => {
@@ -109,4 +118,274 @@ describe("Subagent approval queue", () => {
       toolId: TOOL_ID,
     });
   });
+
+  it("keeps a managed Team WorkItem conversation controllable from its side Tab", async () => {
+    const client = new MockAgentClient();
+    const status = await client.saveModelConfiguration({
+      apiKey: "test-key",
+      apiFormat: "openai-chat-completions",
+      baseUrl: "https://fixture.invalid/v1",
+      models: [{
+        contextWindow: 128_000,
+        displayName: "DeepSeek V4 Flash",
+        modelId: "deepseek-v4-flash",
+        reasoningOptions: [],
+      }],
+      providerName: "DeepSeek",
+    });
+    if (status.providerId === null || status.modelId === null) {
+      throw new Error("Mock model configuration did not return a selected model.");
+    }
+    const conversation = await client.createConversation({
+      modelSelection: {
+        modelId: status.modelId,
+        providerId: status.providerId,
+        reasoning: null,
+      },
+      projectId: null,
+    });
+    const managed = session({
+      activeRunId: RUN_ID,
+      id: conversation.id,
+      modelSelection: conversation.modelSelection,
+      teamWorkItemId: WORK_ITEM_ID,
+      title: "Team Lead · 受管任务",
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    const cancel = vi.spyOn(client, "cancelRun").mockResolvedValue();
+    await act(async () => {
+      root?.render(
+        <WorkspaceContent
+          activeProject={null}
+          activeSession={managed}
+          agentClient={client}
+          canAddProjects={false}
+          isAddingProject={false}
+          isCreatingSession={false}
+          projects={[]}
+          sessions={[managed]}
+          onAddProject={() => Promise.resolve(null)}
+          onCreateProjectSession={() => undefined}
+          onCreateTemporarySession={() => undefined}
+          onForkConversation={() => Promise.resolve(undefined)}
+          onLocateProject={() => undefined}
+          onLocateSession={() => undefined}
+          onOpenTeamConversation={() => undefined}
+          onProjectSelected={() => undefined}
+          onSessionSelected={() => undefined}
+          onSessionUpdated={() => undefined}
+          onSessionViewed={() => undefined}
+        />,
+      );
+      await flushConversationWorkspace();
+    });
+
+    expect(container.querySelector('textarea[aria-label="输入任务"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="模型"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="权限模式"]')).not.toBeNull();
+    expect((container.querySelector('[aria-label="模型"]') as HTMLButtonElement).disabled).toBe(false);
+    expect((container.querySelector('[aria-label="权限模式"]') as HTMLButtonElement).disabled).toBe(false);
+
+    const stopButton = container.querySelector('[aria-label="停止任务"]') as HTMLButtonElement;
+    act(() => {
+      stopButton.click();
+    });
+
+    expect(cancel).toHaveBeenCalledWith({ runId: RUN_ID });
+  });
+
+  it("keeps a stopped Team task list compact, closable, and out of the running state", async () => {
+    const client = new MockAgentClient();
+    const status = await client.saveModelConfiguration({
+      apiKey: "test-key",
+      apiFormat: "openai-chat-completions",
+      baseUrl: "https://fixture.invalid/v1",
+      models: [{
+        contextWindow: 128_000,
+        displayName: "DeepSeek V4 Flash",
+        modelId: "deepseek-v4-flash",
+        reasoningOptions: [],
+      }],
+      providerName: "DeepSeek",
+    });
+    if (status.providerId === null || status.modelId === null) {
+      throw new Error("Mock model configuration did not return a selected model.");
+    }
+    const conversation = await client.createConversation({
+      modelSelection: {
+        modelId: status.modelId,
+        providerId: status.providerId,
+        reasoning: null,
+      },
+      projectId: null,
+    });
+    const taskList: ConversationTaskList = {
+      closedAt: null,
+      conversationId: conversation.id,
+      createdAt: "2026-08-29T00:00:00.000Z",
+      status: "active",
+      tasks: [{
+        id: TOOL_ID,
+        reason: null,
+        status: "running",
+        title: "核对任务状态",
+      }],
+      updatedAt: "2026-08-29T00:00:00.000Z",
+    };
+    vi.spyOn(client, "getConversationTaskList").mockResolvedValue(taskList);
+    const closeTaskList = vi.spyOn(client, "closeConversationTaskList").mockResolvedValue();
+    const stopped = session({
+      id: conversation.id,
+      lastRunStatus: "cancelled",
+      modelSelection: conversation.modelSelection,
+      subagentTaskStatus: "completed",
+      teamWorkItemId: WORK_ITEM_ID,
+      title: "Team Lead · 已停止任务",
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const renderWorkspace = (activeSession: ProjectSession) => (
+      <WorkspaceContent
+        activeProject={null}
+        activeSession={activeSession}
+        agentClient={client}
+        canAddProjects={false}
+        isAddingProject={false}
+        isCreatingSession={false}
+        projects={[]}
+        sessions={[activeSession]}
+        onAddProject={() => Promise.resolve(null)}
+        onCreateProjectSession={() => undefined}
+        onCreateTemporarySession={() => undefined}
+        onForkConversation={() => Promise.resolve(undefined)}
+        onLocateProject={() => undefined}
+        onLocateSession={() => undefined}
+        onOpenTeamConversation={() => undefined}
+        onProjectSelected={() => undefined}
+        onSessionSelected={() => undefined}
+        onSessionUpdated={() => undefined}
+        onSessionViewed={() => undefined}
+      />
+    );
+
+    await act(async () => {
+      root?.render(renderWorkspace(stopped));
+      await flushConversationWorkspace();
+    });
+
+    expect(container.querySelector(".conversation-task-list")).not.toBeNull();
+    expect(container.querySelector(".conversation-task-list .conversation-workspace__spin")).toBeNull();
+    const closeButton = container.querySelector('[aria-label="关闭任务清单"]') as HTMLButtonElement;
+    expect(closeButton).not.toBeNull();
+
+    await act(async () => {
+      closeButton.click();
+      await Promise.resolve();
+    });
+
+    expect(closeTaskList).toHaveBeenCalledWith({ conversationId: conversation.id });
+  });
+
+  it("offers Teams through @ mentions without a direct composer handoff control", async () => {
+    const client = new MockAgentClient();
+    const status = await client.saveModelConfiguration({
+      apiKey: "test-key",
+      apiFormat: "openai-chat-completions",
+      baseUrl: "https://fixture.invalid/v1",
+      models: [{
+        contextWindow: 128_000,
+        displayName: "DeepSeek V4 Flash",
+        modelId: "deepseek-v4-flash",
+        reasoningOptions: [],
+      }],
+      providerName: "DeepSeek",
+    });
+    if (status.providerId === null || status.modelId === null) {
+      throw new Error("Mock model configuration did not return a selected model.");
+    }
+    const project = {
+      id: "00000000-0000-4000-8000-000000000001",
+      isPinned: false,
+      name: "Team dispatch fixture",
+      rootPath: "C:/team-dispatch-fixture",
+    };
+    const conversation = await client.createConversation({
+      modelSelection: {
+        modelId: status.modelId,
+        providerId: status.providerId,
+        reasoning: null,
+      },
+      projectId: project.id,
+    });
+    const sourceSession = session({
+      id: conversation.id,
+      modelSelection: conversation.modelSelection,
+      projectId: project.id,
+      title: "项目主对话",
+    });
+    const send = vi.spyOn(client, "sendConversationMessage");
+    const team = DEFAULT_AGENT_DIRECTORY_CONFIGURATION.teams[0];
+    if (team === undefined) throw new Error("Default Team fixture is unavailable.");
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <ConversationWorkspace
+          agentClient={client}
+          project={project}
+          relatedSessions={[sourceSession]}
+          session={sourceSession}
+        />,
+      );
+      await flushConversationWorkspace();
+    });
+    const textarea = container.querySelector<HTMLTextAreaElement>('[aria-label="输入任务"]');
+    act(() => {
+      setNativeTextValue(textarea, "@默认");
+      textarea?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const teamMention = [...container.querySelectorAll<HTMLButtonElement>(
+      '[role="option"]',
+    )].find((option) => option.textContent?.includes(team.name) === true);
+    expect(teamMention).toBeDefined();
+    await act(async () => {
+      teamMention?.click();
+      await flushConversationWorkspace();
+    });
+
+    expect(textarea?.value).toBe(`@${team.name} `);
+    expect(container.querySelector('[aria-label="交给团队"]')).toBeNull();
+    expect(container.querySelector(`[aria-label="交给 ${team.name} 并自动分发"]`)).toBeNull();
+    await act(async () => {
+      textarea?.form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await flushConversationWorkspace();
+    });
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      content: `@${team.name}`,
+      conversationId: conversation.id,
+    }));
+  });
 });
+
+async function flushConversationWorkspace(): Promise<void> {
+  for (let index = 0; index < 3; index += 1) {
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    await Promise.resolve();
+  }
+}
+
+function setNativeTextValue(
+  element: HTMLTextAreaElement | null,
+  value: string,
+): void {
+  if (element === null) throw new Error("Expected a conversation textarea.");
+  const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
+  if (descriptor === undefined) throw new Error("Textarea value setter is unavailable.");
+  Reflect.set(HTMLTextAreaElement.prototype, "value", value, element);
+}
