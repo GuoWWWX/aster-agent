@@ -741,8 +741,8 @@
 
 .management-policy-section__heading {
   display: flex;
+  min-width: 0;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   margin-bottom: 8px;
 }
@@ -805,102 +805,18 @@
 
 .agent-editor-grid {
   display: grid;
-  grid-template-columns: minmax(300px, 1.1fr) minmax(320px, 0.9fr);
+  min-width: 0;
 }
 
 .agent-editor-grid > .management-form {
   align-content: start;
-  border-right: 1px solid var(--app-border);
-  border-bottom: 0;
-}
-
-.agent-policy-column {
-  min-width: 0;
+  border-bottom: 1px solid var(--app-border);
 }
 
 .agent-avatar-editor-section > h3 {
   margin-bottom: 9px;
 }
 
-.agent-avatar-editor {
-  display: grid;
-  grid-template-columns: minmax(112px, auto) minmax(0, 1fr);
-  align-items: center;
-  gap: 12px;
-}
-
-.agent-avatar-editor__preview {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 8px;
-}
-
-.agent-avatar-editor__preview > span {
-  max-width: 120px;
-  overflow: hidden;
-  color: var(--app-muted-foreground);
-  font-size: var(--app-font-size-auxiliary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-avatar-presets {
-  display: grid;
-  grid-template-columns: repeat(6, 30px);
-  justify-content: end;
-  gap: 4px;
-}
-
-.agent-avatar-presets button {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  place-items: center;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius);
-  outline: none;
-  background: var(--app-panel);
-  color: var(--app-muted-foreground);
-}
-
-.agent-avatar-presets button:hover {
-  border-color: #93c5fd;
-  color: var(--app-foreground);
-}
-
-.agent-avatar-presets button[aria-pressed="true"] {
-  border-color: #60a5fa;
-  background: #eff6ff;
-  color: #1d4ed8;
-}
-
-.agent-avatar-presets button[data-tone="blue"] {
-  color: #2563eb;
-}
-
-.agent-avatar-presets button[data-tone="cyan"] {
-  color: #0e7490;
-}
-
-.agent-avatar-presets button[data-tone="emerald"] {
-  color: #047857;
-}
-
-.agent-avatar-presets button[data-tone="amber"] {
-  color: #b45309;
-}
-
-.agent-avatar-presets button[data-tone="rose"] {
-  color: #be123c;
-}
-
-.agent-avatar-presets button[data-tone="violet"] {
-  color: #7c3aed;
-}
-
-.agent-avatar-presets button:focus-visible,
-.agent-avatar-upload:focus-within,
 .agent-avatar-reset:focus-visible {
   outline: 2px solid var(--app-focus-ring);
   outline-offset: -2px;
@@ -914,7 +830,6 @@
   margin-top: 9px;
 }
 
-.agent-avatar-upload,
 .agent-avatar-reset {
   display: inline-flex;
   min-height: 28px;
@@ -930,7 +845,6 @@
   font-weight: 600;
 }
 
-.agent-avatar-upload:hover,
 .agent-avatar-reset:hover {
   border-color: #93c5fd;
   color: var(--app-foreground);
@@ -1046,35 +960,10 @@
   color: #17202c;
 }
 
-[data-theme="dark"] .management-choice-row button[aria-pressed="true"],
-[data-theme="dark"] .agent-avatar-presets button[aria-pressed="true"] {
+[data-theme="dark"] .management-choice-row button[aria-pressed="true"] {
   border-color: rgba(96, 165, 250, 0.48);
   background: rgba(59, 130, 246, 0.2);
   color: #bfdbfe;
-}
-
-[data-theme="dark"] .agent-avatar-presets button[data-tone="blue"] {
-  color: #93c5fd;
-}
-
-[data-theme="dark"] .agent-avatar-presets button[data-tone="cyan"] {
-  color: #67e8f9;
-}
-
-[data-theme="dark"] .agent-avatar-presets button[data-tone="emerald"] {
-  color: #6ee7b7;
-}
-
-[data-theme="dark"] .agent-avatar-presets button[data-tone="amber"] {
-  color: #fcd34d;
-}
-
-[data-theme="dark"] .agent-avatar-presets button[data-tone="rose"] {
-  color: #fda4af;
-}
-
-[data-theme="dark"] .agent-avatar-presets button[data-tone="violet"] {
-  color: #c4b5fd;
 }
 
 [data-theme="dark"] .management-toggle[data-enabled="true"] {
@@ -1101,14 +990,6 @@
     grid-template-columns: var(--settings-list-card-width, 270px) minmax(430px, 1fr);
   }
 
-  .agent-editor-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .agent-editor-grid > .management-form {
-    border-right: 0;
-    border-bottom: 1px solid var(--app-border);
-  }
 }
 
 @container (max-width: 780px) {
@@ -1144,13 +1025,6 @@
     grid-template-columns: 1fr;
   }
 
-  .agent-avatar-editor {
-    grid-template-columns: 1fr;
-  }
-
-  .agent-avatar-presets {
-    justify-content: start;
-  }
 }
 
 .agent-permission-rule-list {

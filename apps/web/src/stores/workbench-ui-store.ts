@@ -28,6 +28,11 @@ export type ConfigurationWorkspaceTarget = {
   title: string;
 };
 
+export type AgentPromptWorkspaceTarget = {
+  agentId: string;
+  title: string;
+};
+
 export const PROJECT_NAVIGATOR_WIDTH_RANGE = {
   min: 220,
   max: 420,
@@ -47,6 +52,7 @@ export function clampWorkbenchPanelWidth(
 
 type WorkbenchUiState = {
   activeActivity: ActivityView;
+  agentPromptWorkspaceTarget: AgentPromptWorkspaceTarget | null;
   configurationWorkspaceRevision: number;
   configurationWorkspaceTarget: ConfigurationWorkspaceTarget | null;
   filePanelWidth: number;
@@ -54,6 +60,7 @@ type WorkbenchUiState = {
   isFilePanelOpen: boolean;
   isProjectNavigatorOpen: boolean;
   notifyConfigurationWorkspaceChanged: () => void;
+  openAgentPromptWorkspace: (target: AgentPromptWorkspaceTarget) => void;
   openConfigurationWorkspace: (target: ConfigurationWorkspaceTarget) => void;
   projectNavigatorWidth: number;
   settingsSection: SettingsSection;
@@ -81,6 +88,7 @@ type WorkbenchUiState = {
  */
 export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
   activeActivity: "conversations",
+  agentPromptWorkspaceTarget: null,
   configurationWorkspaceRevision: 0,
   configurationWorkspaceTarget: null,
   filePanelWidth: 520,
@@ -90,7 +98,13 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
   notifyConfigurationWorkspaceChanged: () => set((state) => ({
     configurationWorkspaceRevision: state.configurationWorkspaceRevision + 1,
   })),
+  openAgentPromptWorkspace: (agentPromptWorkspaceTarget) => set({
+    agentPromptWorkspaceTarget,
+    configurationWorkspaceTarget: null,
+    isFilePanelOpen: true,
+  }),
   openConfigurationWorkspace: (configurationWorkspaceTarget) => set({
+    agentPromptWorkspaceTarget: null,
     configurationWorkspaceTarget,
     isFilePanelOpen: true,
   }),

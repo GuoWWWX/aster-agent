@@ -70,9 +70,13 @@ export function AppShell({
   const configurationWorkspaceTarget = useWorkbenchUiStore(
     (state) => state.configurationWorkspaceTarget,
   );
+  const agentPromptWorkspaceTarget = useWorkbenchUiStore(
+    (state) => state.agentPromptWorkspaceTarget,
+  );
   const isConversationWorkspace = activeActivity === "conversations";
   const canShowFileWorkspace = isConversationWorkspace || (
-    activeActivity === "settings" && configurationWorkspaceTarget !== null
+    activeActivity === "settings"
+    && (configurationWorkspaceTarget !== null || agentPromptWorkspaceTarget !== null)
   );
   const activeFilePanelWidth = isConversationWorkspace && activeConversationId !== null
     ? conversationFilePanelWidth ?? filePanelWidth

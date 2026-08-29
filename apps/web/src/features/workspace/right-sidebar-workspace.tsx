@@ -1,6 +1,7 @@
 import {
   Check,
   ChevronRight,
+  FileText,
   Folder,
   FolderOpen,
   Globe2,
@@ -49,11 +50,17 @@ import { FileTypeIcon } from "../../components/ui/file-type-icon.js";
 import { IconButton } from "../../components/ui/icon-button.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover.js";
 import { getUserErrorMessage, type AgentClient } from "../../runtime/index.js";
+import {
+  parseAgentPromptDocument,
+  serializeAgentPromptDocument,
+} from "../../lib/agent-prompt-document.js";
 import { resolveBrowserPreviewImage } from "../../lib/browser-preview-images.js";
 import {
   useWorkbenchUiStore,
+  type AgentPromptWorkspaceTarget,
   type ConfigurationWorkspaceTarget,
 } from "../../stores/workbench-ui-store.js";
+import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
 import { useConversationWorkspaceCache } from "../chat/conversation-workspace-cache.js";
 import { ConversationWorkspace } from "../chat/workspace-content.js";
 import { ConfigurationWorkspaceTreePanel } from "./configuration-workspace-tree-panel.js";
@@ -91,7 +98,15 @@ type ConfigurationFileTab = {
   title: string;
 };
 
-type FileTab = ProjectFileTab | ConfigurationFileTab;
+type AgentPromptTab = {
+  agentId: string;
+  id: string;
+  kind: "agent-prompt";
+  name: string;
+  title: string;
+};
+
+type FileTab = ProjectFileTab | ConfigurationFileTab | AgentPromptTab;
 
 type ToolTabBase = {
   id: string;
@@ -299,6 +314,10 @@ function configurationFileTabId(
   return `configuration:${kind}:${configurationId}:${path}`;
 }
 
+function agentPromptTabId(agentId: string): string {
+  return `agent-prompt:${agentId}`;
+}
+
 function targetForConfigurationTab(tab: ConfigurationFileTab): ConfigurationWorkspaceTarget {
   return {
     configurationId: tab.configurationId,
@@ -400,6 +419,9 @@ export function RightSidebarWorkspace({
   const setFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
   const configurationWorkspaceTarget = useWorkbenchUiStore(
     (state) => state.configurationWorkspaceTarget,
+  );
+  const agentPromptWorkspaceTarget = useWorkbenchUiStore(
+    (state) => state.agentPromptWorkspaceTarget,
   );
   const reloadProjectDirectory = tree.reloadDirectory;
   const notifyConfigurationWorkspaceChanged = useWorkbenchUiStore(
@@ -1061,6 +1083,26 @@ export function RightSidebarWorkspace({
     [activeProject, fileTabs, loadFile, setActiveTabForCurrentSession, setFilePanelOpen],
   );
 
+  const openAgentPromptTab = useCallback(
+    (target: AgentPromptWorkspaceTarget): void => {
+      const tab: AgentPromptTab = {
+        agentId: target.agentId,
+        id: agentPromptTabId(target.agentId),
+        kind: "agent-prompt",
+        name: target.title,
+        title: target.title,
+      };
+      setFileTabs((current) => (
+        current.some((candidate) => candidate.id === tab.id) ? current : [...current, tab]
+      ));
+      setActiveTabForCurrentSession(tab.id);
+      setFilePanelOpen(true);
+      setIsFileBrowserOpen(false);
+      setIsTreeCollapsed(false);
+    },
+    [setActiveTabForCurrentSession, setFilePanelOpen],
+  );
+
   const loadConfigurationFile = useCallback(
     async (tab: ConfigurationFileTab): Promise<void> => {
       setConfigurationFilePreviews((current) => ({
@@ -1295,6 +1337,7 @@ export function RightSidebarWorkspace({
   const activeConfigurationPreview = activeConfigurationTab === null
     ? undefined
     : configurationFilePreviews[activeConfigurationTab.id];
+  const activeAgentPromptTab = activeTab?.kind === "agent-prompt" ? activeTab : null;
   const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
   const activeFilePreview = activeFileTab === null
     ? undefined
@@ -1425,6 +1468,11 @@ export function RightSidebarWorkspace({
     const path = configurationWorkspaceTarget.kind === "skill" ? "SKILL.md" : "mcp.json";
     openConfigurationFile(configurationWorkspaceTarget, path);
   }, [configurationWorkspaceTarget, openConfigurationFile]);
+
+  useEffect(() => {
+    if (agentPromptWorkspaceTarget === null) return;
+    openAgentPromptTab(agentPromptWorkspaceTarget);
+  }, [agentPromptWorkspaceTarget, openAgentPromptTab]);
 
   async function activateTab(tab: SidebarTab): Promise<void> {
     if (
@@ -1662,6 +1710,8 @@ export function RightSidebarWorkspace({
                     <Terminal aria-hidden="true" size={14} />
                   ) : tab.kind === "managed-browser" ? (
                     <Globe2 aria-hidden="true" size={14} />
+                  ) : tab.kind === "agent-prompt" ? (
+                    <FileText aria-hidden="true" size={14} />
                   ) : (
                     <FileTypeIcon
                       javaDeclarationKind={tab.kind === "file" ? tab.javaDeclarationKind : undefined}
@@ -1960,6 +2010,12 @@ export function RightSidebarWorkspace({
               onReload={() => void loadFile(activeTab)}
               onRequestSave={(content) => void flushFileSave(activeTab, undefined, content)}
               onToggleTree={() => setIsTreeCollapsed((current) => !current)}
+            />
+          ) : activeAgentPromptTab !== null ? (
+            <AgentPromptPreview
+              key={activeAgentPromptTab.id}
+              isDark={isDark}
+              tab={activeAgentPromptTab}
             />
           ) : activeConfigurationTab !== null ? (
             <ConfigurationFilePreview
@@ -2327,6 +2383,109 @@ function FilePreview({
           )}
         </>
       )}
+    </section>
+  );
+}
+
+function AgentPromptPreview({
+  isDark,
+  tab,
+}: {
+  isDark: boolean;
+  tab: AgentPromptTab;
+}): ReactElement {
+  const agent = useAgentDirectoryStore((state) => (
+    state.agents.find((candidate) => candidate.id === tab.agentId)
+  ));
+  const updateAgent = useAgentDirectoryStore((state) => state.updateAgent);
+  const editorRef = useRef<LiveMarkdownEditorHandle | null>(null);
+  const initialSource = agent === undefined ? "" : serializeAgentPromptDocument(agent);
+  const sourceRef = useRef(initialSource);
+  const [documentSource, setDocumentSource] = useState(initialSource);
+  const [documentRevision, setDocumentRevision] = useState(0);
+  const saveDocument = useCallback((source: string): void => {
+    if (agent === undefined) return;
+    sourceRef.current = source;
+    const next = parseAgentPromptDocument(source, agent);
+    if (
+      next.name === agent.name
+      && next.role === agent.role
+      && next.description === agent.description
+      && next.instructions === agent.instructions
+    ) {
+      return;
+    }
+    updateAgent(tab.agentId, next);
+  }, [agent, tab.agentId, updateAgent]);
+
+  useEffect(() => {
+    if (agent === undefined) return;
+    const projected = parseAgentPromptDocument(sourceRef.current, agent);
+    if (
+      projected.name === agent.name
+      && projected.role === agent.role
+      && projected.description === agent.description
+      && projected.instructions === agent.instructions
+    ) {
+      return;
+    }
+
+    const nextSource = serializeAgentPromptDocument(agent);
+    sourceRef.current = nextSource;
+    setDocumentSource(nextSource);
+    setDocumentRevision((current) => current + 1);
+  }, [agent]);
+
+  useEffect(() => {
+    editorRef.current?.requestMeasure();
+  }, [tab.id]);
+
+  return (
+    <section className="right-sidebar-file right-sidebar-config-file" aria-label={tab.title}>
+      <header className="right-sidebar-file__header">
+        <div className="right-sidebar-file__path" aria-label="Agent 提示词文档">
+          <span className="right-sidebar-config-file__workspace" title={agent?.name ?? tab.title}>
+            <FileText aria-hidden="true" size={14} />
+            {agent?.name ?? tab.title}
+          </span>
+          <ChevronRight
+            aria-hidden="true"
+            className="right-sidebar-file__path-separator"
+            size={12}
+            strokeWidth={1.75}
+          />
+          <span className="right-sidebar-config-file__path" title="核心指令.md">
+            <FileText aria-hidden="true" size={14} />
+            核心指令.md
+          </span>
+        </div>
+        <div className="right-sidebar-file__actions">
+          <span className="text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]" role="status">
+            自动保存
+          </span>
+        </div>
+      </header>
+      {agent === undefined ? (
+        <div className="right-sidebar-file__state">该 Agent 已删除，无法继续编辑提示词。</div>
+      ) : (
+        <LiveMarkdownEditor
+          ref={editorRef}
+          className="right-sidebar-file__editor"
+          contentRevision={documentRevision}
+          documentKey={tab.id}
+          documentTitle={`${agent.name.trim() || "未命名 Agent"} 的核心指令`}
+          initialContent={documentSource}
+          isDark={isDark}
+          placeholder="用 Markdown 编写这个 Agent 的核心指令…"
+          onDirty={saveDocument}
+          onDocChanged={saveDocument}
+          onRequestSave={saveDocument}
+        />
+      )}
+      <footer className="right-sidebar-config-file__footer">
+        <span>提示词会随 Agent 配置自动保存</span>
+        <span>Markdown</span>
+      </footer>
     </section>
   );
 }
