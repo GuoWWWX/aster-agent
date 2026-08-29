@@ -1,16 +1,11 @@
 import {
-  AlertCircle,
-  CheckCircle2,
-  CircleDotDashed,
-  Clock3,
   GitBranch,
-  ListTodo,
-  MessageSquareText,
-  Play,
+  LayoutDashboard,
   Radio,
+  Sparkles,
   UsersRound,
 } from "lucide-react";
-import { useState, type ReactElement } from "react";
+import { useMemo, useState, type ReactElement } from "react";
 
 import {
   Select,
@@ -19,154 +14,127 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../../components/ui/select.js";
+import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
+import { TeamOperations } from "./team-operations-panel.js";
 import {
-  useAgentDirectoryStore,
-  type AgentProfile,
-} from "../../stores/agent-directory-store.js";
-import { AgentAvatar } from "./agent-avatar.js";
-import { TASK_FIXTURES, type TaskFixture } from "./team-fixtures.js";
+  TEAM_WORK_ITEMS,
+  TEAM_WORKERS,
+  type TeamEventPrototype,
+  type TeamFinalizationAction,
+  type TeamWorkItemPrototype,
+} from "./team-runtime-prototype.js";
+import {
+  matchesWorkItemFilter,
+  transitionWorkItem,
+  type WorkItemLifecycleAction,
+} from "./team-work-item-lifecycle.js";
+import {
+  WorkItemInbox,
+  type WorkItemFilter,
+} from "./team-work-item-inbox.js";
+import { WorkItemLifecyclePanel } from "./team-work-item-lifecycle-panel.js";
+import { TeamWorkItemBoard } from "./team-work-item-board.js";
+import { WorkflowDesigner } from "./team-workflow-designer.js";
+import { WorkflowRuntimePanel } from "./team-workflow-runtime-panel.js";
+import "./team-workflow.css";
 import "./team-workspace.css";
 
-type RuntimeAgentState = "active" | "blocked" | "done" | "waiting";
-
-type RuntimeActivity = {
-  assignment: string;
-  detail: string;
-  state: RuntimeAgentState;
-  updatedAt: string;
-};
-
-type RuntimeEvent = {
-  actor: string;
-  detail: string;
-  id: string;
-  time: string;
-  type: "assignment" | "completion" | "message" | "status";
-};
-
-type TeamRuntimeFixture = {
-  events: RuntimeEvent[];
-  progress: number;
-  project: string;
-  summary: string;
-  taskIds: string[];
-  workItem: string;
-};
-
-const AGENT_RUNTIME: Record<string, RuntimeActivity> = {
-  "team-lead": {
-    assignment: "协调实现与复核",
-    detail: "正在汇总页面边界，并跟进两个并行任务。",
-    state: "active",
-    updatedAt: "刚刚",
-  },
-  explorer: {
-    assignment: "核对现有页面与状态来源",
-    detail: "已定位团队配置、任务夹具和对话入口。",
-    state: "done",
-    updatedAt: "2 分钟前",
-  },
-  implementer: {
-    assignment: "实现团队运行态工作台",
-    detail: "正在接入 Agent 名册、WorkItem 和协作事件。",
-    state: "active",
-    updatedAt: "刚刚",
-  },
-  reviewer: {
-    assignment: "等待界面进入复核",
-    detail: "依赖运行态页面完成后执行响应式与回归检查。",
-    state: "waiting",
-    updatedAt: "5 分钟前",
-  },
-};
-
-const DEFAULT_RUNTIME: TeamRuntimeFixture = {
-  events: [
-    { actor: "Team Lead", detail: "将运行态页面实现分配给 Implementer。", id: "event-1", time: "14:32", type: "assignment" },
-    { actor: "Explorer", detail: "完成现有团队配置和任务数据边界核对。", id: "event-2", time: "14:30", type: "completion" },
-    { actor: "Implementer", detail: "开始构建团队成员状态和工作项视图。", id: "event-3", time: "14:27", type: "status" },
-    { actor: "Team Lead", detail: "确认配置入口迁移到设置，团队页只展示执行过程。", id: "event-4", time: "14:24", type: "message" },
-  ],
-  progress: 62,
-  project: "Aster",
-  summary: "将 Agent 与团队配置迁入设置，并建立可观察每个 Agent 工作状态的团队运行页。",
-  taskIds: ["workbench-ui", "mcp-poc", "ui-review"],
-  workItem: "调整 Agent 与团队的信息架构",
-};
-
-const RELEASE_RUNTIME: TeamRuntimeFixture = {
-  events: [
-    { actor: "Reviewer", detail: "发现响应式复核仍依赖当前界面实现。", id: "release-1", time: "13:18", type: "status" },
-    { actor: "Team Lead", detail: "发布复核组已接收工作项。", id: "release-2", time: "13:12", type: "assignment" },
-  ],
-  progress: 35,
-  project: "Aster",
-  summary: "检查本轮界面调整的构建结果、响应式表现和关键交互。",
-  taskIds: ["ui-review"],
-  workItem: "发布前界面复核",
-};
-
-const TEAM_RUNTIME: Record<string, TeamRuntimeFixture> = {
-  "default-team": DEFAULT_RUNTIME,
-  "release-review-team": RELEASE_RUNTIME,
-};
-
-const AGENT_STATE_LABEL: Record<RuntimeAgentState, string> = {
-  active: "工作中",
-  blocked: "受阻",
-  done: "已完成",
-  waiting: "等待中",
-};
-
-const TASK_STATUS_LABEL: Record<TaskFixture["status"], string> = {
-  blocked: "受阻",
-  completed: "已完成",
-  inbox: "已接收",
-  planned: "待开始",
-  running: "进行中",
-};
+type TeamWorkspaceView = "board" | "planning" | "runtime";
 
 export function TeamWorkspace(): ReactElement {
-  const agents = useAgentDirectoryStore((state) => state.agents);
   const teams = useAgentDirectoryStore((state) => state.teams);
   const [selectedTeamId, setSelectedTeamId] = useState(teams[0]?.id ?? "");
+  const [workItems, setWorkItems] = useState<TeamWorkItemPrototype[]>(() => [...TEAM_WORK_ITEMS]);
+  const [selectedWorkItemId, setSelectedWorkItemId] = useState(TEAM_WORK_ITEMS[0]?.id ?? "");
+  const [filter, setFilter] = useState<WorkItemFilter>("all");
+  const [draft, setDraft] = useState("");
+  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [view, setView] = useState<TeamWorkspaceView>("board");
   const selectedTeam = teams.find((team) => team.id === selectedTeamId) ?? teams[0];
+  const selectedWorkItem = workItems.find((item) => item.id === selectedWorkItemId)
+    ?? workItems[0]
+    ?? null;
+  const filteredWorkItems = useMemo(
+    () => workItems.filter((item) => matchesWorkItemFilter(item, filter)),
+    [filter, workItems],
+  );
 
-  if (selectedTeam === undefined) {
-    return <EmptyTeamWorkspace />;
-  }
+  if (selectedTeam === undefined) return <EmptyTeamWorkspace />;
 
-  const runtime = TEAM_RUNTIME[selectedTeam.id] ?? {
-    ...DEFAULT_RUNTIME,
-    events: [],
-    progress: 0,
-    summary: selectedTeam.description || "该团队当前没有运行中的工作项。",
-    taskIds: [],
-    workItem: "等待新的工作项",
+  const queuedCount = workItems.filter((item) => item.status === "queued").length;
+  const processingCount = workItems.filter((item) => matchesWorkItemFilter(item, "processing")).length;
+  const acceptanceCount = workItems.filter((item) => item.status === "awaiting_acceptance").length;
+  const completedCount = workItems.filter((item) => item.status === "completed").length;
+  const temporaryCount = TEAM_WORKERS.filter((worker) => worker.kind === "temporary").length;
+
+  const submitWorkItem = (): void => {
+    const title = draft.trim();
+    if (title.length === 0) return;
+    if (editingItemId !== null) {
+      setWorkItems((current) => current.map((item) => item.id === editingItemId && item.status === "queued"
+        ? {
+            ...item,
+            events: [...item.events, createLifecycleEvent("用户", "更新了待执行需求。", "status")],
+            title,
+          }
+        : item));
+      setEditingItemId(null);
+      setDraft("");
+      return;
+    }
+    const created = createPrototypeWorkItem(title);
+    setWorkItems((current) => [created, ...current]);
+    setSelectedWorkItemId(created.id);
+    setFilter("queued");
+    setDraft("");
   };
-  const members = selectedTeam.memberIds
-    .map((memberId) => agents.find((agent) => agent.id === memberId))
-    .filter((agent): agent is AgentProfile => agent !== undefined);
-  const tasks = runtime.taskIds
-    .map((taskId) => TASK_FIXTURES.find((task) => task.id === taskId))
-    .filter((task): task is TaskFixture => task !== undefined);
-  const activeCount = members.filter(
-    (agent) => runtimeActivityFor(agent).state === "active",
-  ).length;
-  const blockedCount = tasks.filter((task) => task.status === "blocked").length;
+
+  const editWorkItem = (id: string): void => {
+    const item = workItems.find((candidate) => candidate.id === id);
+    if (item === undefined || item.status !== "queued") return;
+    setSelectedWorkItemId(id);
+    setEditingItemId(id);
+    setDraft(item.title);
+  };
+
+  const cancelEdit = (): void => {
+    setEditingItemId(null);
+    setDraft("");
+  };
+
+  const applyLifecycleAction = (action: WorkItemLifecycleAction): void => {
+    if (selectedWorkItem === null) return;
+    if (transitionWorkItem(selectedWorkItem, action) === selectedWorkItem) return;
+    setWorkItems((current) => current.map((item) => {
+      if (item.id !== selectedWorkItem.id) return item;
+      const transitioned = transitionWorkItem(item, action);
+      if (transitioned === item) return item;
+      const event = lifecycleActionEvent(action);
+      return { ...transitioned, events: [...item.events, event] };
+    }));
+    if (action.type === "claim" || action.type === "request_rework" || action.type === "approve") {
+      setFilter("processing");
+    } else if (action.type === "execution_completed") {
+      setFilter("acceptance");
+    } else {
+      setFilter("completed");
+    }
+  };
 
   return (
     <section className="team-workspace" aria-labelledby="team-workspace-heading">
-      <header className="workspace-page-header team-runtime-header">
+      <header className="workspace-page-header team-command-header">
         <div>
-          <p className="workspace-page-eyebrow">团队运行态</p>
+          <p className="workspace-page-eyebrow">团队控制台</p>
           <h1 id="team-workspace-heading">{selectedTeam.name}</h1>
-          <p className="workspace-page-description">{runtime.workItem}</p>
+          <p className="workspace-page-description">
+            持续接收项目任务，由管理 Agent 规划路径、调度成员并汇总交付。
+          </p>
         </div>
-        <div className="team-runtime-header__controls">
+        <div className="team-command-header__controls">
           <span className="team-live-badge" data-active={selectedTeam.enabled}>
             <Radio aria-hidden="true" size={12} />
-            {selectedTeam.enabled ? "运行中" : "已停用"}
+            {selectedTeam.enabled ? "自动调度中" : "团队已停用"}
           </span>
           <Select value={selectedTeam.id} onValueChange={setSelectedTeamId}>
             <SelectTrigger aria-label="选择要查看的团队" className="team-runtime-select">
@@ -181,163 +149,162 @@ export function TeamWorkspace(): ReactElement {
         </div>
       </header>
 
-      <div className="team-runtime-summary" aria-label="团队运行概况">
-        <RuntimeMetric icon={UsersRound} label="团队成员" value={String(members.length)} />
-        <RuntimeMetric icon={Play} label="正在工作" value={String(activeCount)} tone="active" />
-        <RuntimeMetric icon={ListTodo} label="当前任务" value={String(tasks.length)} />
-        <RuntimeMetric icon={AlertCircle} label="受阻任务" value={String(blockedCount)} tone={blockedCount > 0 ? "blocked" : "neutral"} />
+      <div className="team-prototype-notice" role="note">
+        <div><Sparkles aria-hidden="true" size={13} />当前为确定性模拟，不会调用真实模型或修改项目。</div>
+        <div className="team-view-switcher" role="tablist" aria-label="团队页面模式">
+          <button aria-selected={view === "board"} role="tab" type="button" onClick={() => setView("board")}>
+            <LayoutDashboard aria-hidden="true" size={12} />需求看板
+          </button>
+          <button aria-selected={view === "runtime"} role="tab" type="button" onClick={() => setView("runtime")}>
+            <Radio aria-hidden="true" size={12} />任务与验收
+          </button>
+          <button aria-selected={view === "planning"} role="tab" type="button" onClick={() => setView("planning")}>
+            <GitBranch aria-hidden="true" size={12} />执行规划
+          </button>
+        </div>
       </div>
 
-      <div className="team-runtime-layout">
-        <section className="team-runtime-panel team-roster-panel" aria-labelledby="team-roster-heading">
-          <PanelHeading id="team-roster-heading" label="Agent 状态" meta={`${members.length} 名成员`} />
-          <div className="team-runtime-roster">
-            {members.map((agent) => (
-              <AgentRuntimeRow key={agent.id} agent={agent} activity={runtimeActivityFor(agent)} />
-            ))}
-          </div>
-        </section>
-
-        <section className="team-runtime-panel team-work-panel" aria-labelledby="team-work-heading">
-          <PanelHeading id="team-work-heading" label="当前 WorkItem" meta={runtime.project} />
-          <div className="team-workitem">
-            <div className="team-workitem__heading">
-              <div>
-                <span>进行中</span>
-                <h2>{runtime.workItem}</h2>
-              </div>
-              <strong>{runtime.progress}%</strong>
-            </div>
-            <p>{runtime.summary}</p>
-            <div className="team-progress-track" aria-label={`工作项进度 ${runtime.progress}%`}>
-              <span style={{ width: `${runtime.progress}%` }} />
-            </div>
-          </div>
-          <div className="team-task-list" aria-label="工作项任务">
-            {tasks.length === 0 ? (
-              <div className="team-runtime-empty"><Clock3 aria-hidden="true" size={18} />尚未拆分任务</div>
-            ) : tasks.map((task) => <RuntimeTaskRow key={task.id} task={task} />)}
-          </div>
-        </section>
-
-        <aside className="team-runtime-panel team-event-panel" aria-labelledby="team-event-heading">
-          <PanelHeading id="team-event-heading" label="协作动态" meta="最近事件" />
-          <div className="team-event-list">
-            {runtime.events.length === 0 ? (
-              <div className="team-runtime-empty"><MessageSquareText aria-hidden="true" size={18} />暂无协作动态</div>
-            ) : runtime.events.map((event) => <RuntimeEventRow key={event.id} event={event} />)}
-          </div>
-        </aside>
-      </div>
+      {view === "board" ? (
+        <div className="team-command-layout team-command-layout--board">
+          <TeamWorkItemBoard
+            items={workItems}
+            onCreate={() => {
+              setFilter("all");
+              setView("runtime");
+            }}
+            onOpen={(workItemId) => {
+              setSelectedWorkItemId(workItemId);
+              setFilter("all");
+              setView("runtime");
+            }}
+          />
+        </div>
+      ) : view === "planning" ? (
+        <div className="team-command-layout team-command-layout--designer">
+          <WorkflowDesigner workItemTitle={selectedWorkItem?.title} />
+        </div>
+      ) : (
+        <div className="team-command-layout">
+          <WorkItemInbox
+            acceptanceCount={acceptanceCount}
+            completedCount={completedCount}
+            draft={draft}
+            editingItemId={editingItemId}
+            filter={filter}
+            items={filteredWorkItems}
+            processingCount={processingCount}
+            queuedCount={queuedCount}
+            selectedId={selectedWorkItem?.id ?? null}
+            onCancelEdit={cancelEdit}
+            onDraftChange={setDraft}
+            onEdit={editWorkItem}
+            onFilterChange={setFilter}
+            onSelect={setSelectedWorkItemId}
+            onSubmit={submitWorkItem}
+          />
+          {selectedWorkItem === null ? (
+            <main className="team-command-panel team-runtime-empty">未选择任务</main>
+          ) : isLifecyclePanelStatus(selectedWorkItem.status) ? (
+            <WorkItemLifecyclePanel
+              key={`${selectedWorkItem.id}-${selectedWorkItem.status}-${selectedWorkItem.acceptanceRound}`}
+              item={selectedWorkItem}
+              onApprove={(action: TeamFinalizationAction, acceptedCriteria) => applyLifecycleAction({ acceptedCriteria, action, type: "approve" })}
+              onClaim={() => applyLifecycleAction({ type: "claim" })}
+              onFinishFinalization={() => applyLifecycleAction({ type: "finalization_completed" })}
+              onRequestRework={(request) => applyLifecycleAction({ request, type: "request_rework" })}
+            />
+          ) : (
+            <WorkflowRuntimePanel
+              key={`${selectedWorkItem.id}-${selectedWorkItem.acceptanceRound}`}
+              workItemTitle={selectedWorkItem.title}
+              onComplete={() => applyLifecycleAction({ type: "execution_completed" })}
+            />
+          )}
+          <TeamOperations temporaryCount={temporaryCount} workers={TEAM_WORKERS} item={selectedWorkItem} />
+        </div>
+      )}
     </section>
   );
 }
 
-function runtimeActivityFor(agent: AgentProfile): RuntimeActivity {
-  return AGENT_RUNTIME[agent.id] ?? {
-    assignment: "等待 Team Lead 分配",
-    detail: "当前没有正在执行的任务。",
-    state: "waiting",
-    updatedAt: "暂无活动",
+function createPrototypeWorkItem(title: string): TeamWorkItemPrototype {
+  const id = `prototype-${Date.now()}`;
+  return {
+    acceptance: [
+      "执行结果覆盖用户发送的需求",
+      "开发、测试和内部评审证据完整",
+      "交付摘要、风险和后续动作说明清楚",
+    ],
+    acceptedCriteria: [],
+    acceptanceRound: 1,
+    createdAt: "刚刚",
+    delivery: null,
+    events: [{
+      actor: "Team Lead",
+      detail: "任务已通过团队控制台进入收件箱，等待规划。",
+      id: `${id}-received`,
+      time: "刚刚",
+      type: "status",
+    }],
+    id,
+    nextAction: "管理 Agent 将分析任务、确认项目边界并决定是否拆分。",
+    plan: "等待管理 Agent 输出针对性方案。",
+    priority: "normal",
+    project: "Aster",
+    source: "direct",
+    status: "queued",
+    tasks: [],
+    title,
+    finalizationAction: null,
+    reworkRequest: null,
   };
 }
 
-function AgentRuntimeRow({
-  activity,
-  agent,
-}: {
-  activity: RuntimeActivity;
-  agent: AgentProfile;
-}): ReactElement {
-  return (
-    <article className="team-agent-runtime" data-state={activity.state}>
-      <AgentAvatar avatar={agent.avatar} status={activity.state === "active" ? "running" : agent.status} />
-      <div className="team-agent-runtime__body">
-        <div className="team-agent-runtime__identity">
-          <strong>{agent.name}</strong>
-          <span data-state={activity.state}>{AGENT_STATE_LABEL[activity.state]}</span>
-        </div>
-        <p>{activity.assignment}</p>
-        <small>{activity.detail}</small>
-        <time>{activity.updatedAt}</time>
-      </div>
-    </article>
-  );
+function isLifecyclePanelStatus(status: TeamWorkItemPrototype["status"]): boolean {
+  return status === "queued"
+    || status === "awaiting_acceptance"
+    || status === "finalizing"
+    || status === "completed";
 }
 
-function RuntimeTaskRow({ task }: { task: TaskFixture }): ReactElement {
-  const Icon = task.status === "completed"
-    ? CheckCircle2
-    : task.status === "running"
-      ? Play
-      : task.status === "blocked"
-        ? AlertCircle
-        : CircleDotDashed;
-
-  return (
-    <article className="team-runtime-task" data-status={task.status}>
-      <span className="team-runtime-task__icon"><Icon aria-hidden="true" size={14} /></span>
-      <div>
-        <strong>{task.title}</strong>
-        <span>{task.assignee}</span>
-      </div>
-      <small>{TASK_STATUS_LABEL[task.status]}</small>
-    </article>
-  );
+function lifecycleActionEvent(action: WorkItemLifecycleAction): TeamEventPrototype {
+  if (action.type === "claim") {
+    return createLifecycleEvent("Team Lead", "已领取需求并锁定当前版本，开始制定执行方案。", "assignment");
+  }
+  if (action.type === "execution_completed") {
+    return createLifecycleEvent("Team Lead", "内部执行和评审完成，已提交给用户逐项验收。", "completion");
+  }
+  if (action.type === "request_rework") {
+    return createLifecycleEvent("用户", `验收未通过并要求返工：${action.request.trim()}`, "review");
+  }
+  if (action.type === "approve") {
+    const label: Record<TeamFinalizationAction, string> = {
+      commit: "提交当前分支",
+      complete: "仅确认完成",
+      merge: "创建并合并 PR",
+    };
+    return createLifecycleEvent("用户", `逐项验收通过，并授权：${label[action.action]}。`, "review");
+  }
+  return createLifecycleEvent("Team Lead", "用户授权的收尾动作已完成，任务进入最终状态。", "completion");
 }
 
-function RuntimeEventRow({ event }: { event: RuntimeEvent }): ReactElement {
-  const Icon = event.type === "completion"
-    ? CheckCircle2
-    : event.type === "assignment"
-      ? GitBranch
-      : event.type === "message"
-        ? MessageSquareText
-        : Radio;
-
-  return (
-    <article className="team-runtime-event" data-type={event.type}>
-      <span><Icon aria-hidden="true" size={13} /></span>
-      <div>
-        <p><strong>{event.actor}</strong>{event.detail}</p>
-        <time>{event.time}</time>
-      </div>
-    </article>
-  );
-}
-
-function PanelHeading({ id, label, meta }: { id: string; label: string; meta: string }): ReactElement {
-  return (
-    <header className="team-runtime-panel__heading">
-      <h2 id={id}>{label}</h2>
-      <span>{meta}</span>
-    </header>
-  );
-}
-
-function RuntimeMetric({
-  icon: Icon,
-  label,
-  tone = "neutral",
-  value,
-}: {
-  icon: typeof UsersRound;
-  label: string;
-  tone?: "active" | "blocked" | "neutral";
-  value: string;
-}): ReactElement {
-  return (
-    <div className="team-runtime-metric" data-tone={tone}>
-      <Icon aria-hidden="true" size={15} />
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
+function createLifecycleEvent(
+  actor: string,
+  detail: string,
+  type: TeamEventPrototype["type"],
+): TeamEventPrototype {
+  return {
+    actor,
+    detail,
+    id: `lifecycle-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    time: "刚刚",
+    type,
+  };
 }
 
 function EmptyTeamWorkspace(): ReactElement {
   return (
-    <section className="team-workspace team-workspace--empty" aria-label="团队运行态">
+    <section className="team-workspace team-workspace--empty" aria-label="团队控制台">
       <UsersRound aria-hidden="true" size={24} />
       <h1>还没有团队</h1>
       <p>请先在设置中创建 Agent 和团队。</p>
