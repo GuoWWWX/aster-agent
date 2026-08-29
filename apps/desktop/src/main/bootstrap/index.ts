@@ -31,6 +31,7 @@ import { ContextCompressionConfigurationStore } from "../settings/context-compre
 import { SkillDocumentStore } from "../settings/skill-document-store.js";
 import { ConfigurationWorkspaceStore } from "../settings/configuration-workspace-store.js";
 import { TerminalConfigurationStore } from "../settings/terminal-configuration-store.js";
+import { TeamWorkItemRuntime } from "../teams/team-work-item-runtime.js";
 import { ProjectToolRegistry } from "../tools/project-tool-registry.js";
 import { createMainWindow } from "../windows/main-window.js";
 
@@ -51,6 +52,7 @@ type DesktopServices = {
   skillDocuments: SkillDocumentStore;
   skillRuntime: SkillRuntime;
   terminalConfiguration: TerminalConfigurationStore;
+  teamWorkItems: TeamWorkItemRuntime;
   projectRegistry: ProjectRegistry;
   threadLogLegacyImporter: ThreadLogLegacyImporter;
   tools: ProjectToolRegistry;
@@ -121,7 +123,9 @@ function loadLocalEnvironment(): void {
 async function initializeServices(): Promise<DesktopServices> {
   loadLocalEnvironment();
   const agentHome = await initializeAgentHome({
+    environment: process.env,
     legacyRootPath: app.getPath("userData"),
+    migrateLegacy: process.env.AGENT_HOME_SKIP_LEGACY_MIGRATION !== "1",
   });
   const database = new AgentDatabase(agentHome.paths.agentDatabasePath);
   const pluginCatalog = new PluginCatalog(database, agentHome.paths.pluginsPath);
@@ -236,8 +240,7 @@ async function initializeServices(): Promise<DesktopServices> {
     );
   }
 
-  return {
-    agentRuntime: new AgentRuntime(
+  const agentRuntime = new AgentRuntime(
       database,
       credentials,
       projectRegistry,
@@ -258,7 +261,20 @@ async function initializeServices(): Promise<DesktopServices> {
        eventProjector,
        threadLogLegacyImporter,
        pluginCatalog,
-      ),
+      );
+  const teamWorkItems = new TeamWorkItemRuntime(
+    database,
+    conversationLifecycle,
+    agentRuntime,
+    credentials,
+    projectRegistry,
+    { getConfiguration: () => applicationSettings.getConfiguration().agentDirectory },
+  );
+  database.blockInterruptedTeamWorkItems();
+  teamWorkItems.resumeQueued(() => undefined);
+
+  return {
+    agentRuntime,
     applicationSettings,
     attachments,
     conversationDeletion,
@@ -276,6 +292,7 @@ async function initializeServices(): Promise<DesktopServices> {
     skillDocuments,
     skillRuntime,
     terminalConfiguration,
+    teamWorkItems,
     tools,
   };
 }

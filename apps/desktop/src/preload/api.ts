@@ -45,6 +45,10 @@ import type {
   SetTeamCoordinatorInput,
   SendConversationMessageInput,
   SendTeamMessageInput,
+  ListTeamWorkItemsInput,
+  RequestTeamWorkItemReworkInput,
+  SubmitTeamWorkItemInput,
+  AcceptTeamWorkItemInput,
   PluginCatalogEntry,
   SetPluginEnabledInput,
   UpdatePendingConversationMessageInput,
@@ -164,6 +168,21 @@ export function createDesktopBridge(): DesktopBridge {
     },
     sendTeamMessage(input: SendTeamMessageInput) {
       return invoke<BridgeResult<"sendTeamMessage">>(IPC_CHANNELS.teamSendMessage, input);
+    },
+    listTeamWorkItems(input: ListTeamWorkItemsInput) {
+      return invoke<BridgeResult<"listTeamWorkItems">>(IPC_CHANNELS.teamWorkItemList, input);
+    },
+    submitTeamWorkItem(input: SubmitTeamWorkItemInput) {
+      return invoke<BridgeResult<"submitTeamWorkItem">>(IPC_CHANNELS.teamWorkItemSubmit, input);
+    },
+    requestTeamWorkItemRework(input: RequestTeamWorkItemReworkInput) {
+      return invoke<BridgeResult<"requestTeamWorkItemRework">>(
+        IPC_CHANNELS.teamWorkItemRequestRework,
+        input,
+      );
+    },
+    acceptTeamWorkItem(input: AcceptTeamWorkItemInput) {
+      return invoke<BridgeResult<"acceptTeamWorkItem">>(IPC_CHANNELS.teamWorkItemAccept, input);
     },
     listPlugins() {
       return invoke<PluginCatalogEntry[]>(IPC_CHANNELS.pluginList);

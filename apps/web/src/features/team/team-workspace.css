@@ -91,6 +91,17 @@
   font-size: var(--app-font-size-auxiliary);
 }
 
+.team-runtime-error {
+  border: 1px solid color-mix(in srgb, var(--destructive) 35%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--destructive) 8%, var(--background));
+  color: var(--destructive);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0 12px 12px;
+  padding: 8px 10px;
+}
+
 .team-prototype-notice > div:first-child,
 .team-view-switcher,
 .team-view-switcher button {

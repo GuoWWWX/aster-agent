@@ -68,6 +68,11 @@ import type {
   WriteConfigurationWorkspaceFileInput,
   WriteProjectFileInput,
   WindowState,
+  ListTeamWorkItemsInput,
+  RequestTeamWorkItemReworkInput,
+  SubmitTeamWorkItemInput,
+  AcceptTeamWorkItemInput,
+  TeamWorkItemView,
 } from "@agent/protocol";
 
 import type {
@@ -298,6 +303,24 @@ export class DesktopAgentClientAdapter implements AgentClient {
 
   public listProjects(): Promise<ProjectSummary[]> {
     return this.desktopBridge.listProjects();
+  }
+
+  public listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]> {
+    return this.desktopBridge.listTeamWorkItems(input);
+  }
+
+  public submitTeamWorkItem(input: SubmitTeamWorkItemInput): Promise<TeamWorkItemView> {
+    return this.desktopBridge.submitTeamWorkItem(input);
+  }
+
+  public requestTeamWorkItemRework(
+    input: RequestTeamWorkItemReworkInput,
+  ): Promise<TeamWorkItemView> {
+    return this.desktopBridge.requestTeamWorkItemRework(input);
+  }
+
+  public acceptTeamWorkItem(input: AcceptTeamWorkItemInput): Promise<TeamWorkItemView> {
+    return this.desktopBridge.acceptTeamWorkItem(input);
   }
 
   public readProjectFile(input: ReadProjectFileInput): Promise<ProjectFile> {

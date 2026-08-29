@@ -329,6 +329,11 @@ function assertRunConfigurationMatchesSnapshot(
 
 type RunEventEmitter = (event: ConversationRunEvent) => void;
 
+type SendMessageOptions = {
+  allowManagedTeamWorkItemExecution?: boolean;
+  beforeRunScheduled?: (accepted: RunAccepted) => void;
+};
+
 type RuntimeToolContext = ToolHandlerExecutionContext & {
   configuration: ModelConfiguration;
   contextCompressionConfiguration: ContextCompressionThreshold;
@@ -1044,10 +1049,18 @@ export class AgentRuntime {
 
   public sendMessage(
     rawInput: SendConversationMessageInput,
-    emit: RunEventEmitter
+    emit: RunEventEmitter,
+    options?: SendMessageOptions,
   ): ConversationMessageSubmission {
     const input = sendConversationMessageInputSchema.parse(rawInput);
     const conversation = this.database.getConversation(input.conversationId);
+    if (
+      conversation.teamId !== null
+      && this.database.isManagedTeamWorkItemConversation(conversation.id)
+      && options?.allowManagedTeamWorkItemExecution !== true
+    ) {
+      throw new Error("Managed Team WorkItem conversations can only be continued through their WorkItem lifecycle.");
+    }
     if (
       conversation.subagentTaskStatus === "completed"
       || conversation.subagentTaskStatus === "failed"
@@ -1081,7 +1094,7 @@ export class AgentRuntime {
       return { kind: "pending", pendingMessage };
     }
 
-    const creation = this.startPreparedRun(prepared, emit);
+    const creation = this.startPreparedRun(prepared, emit, undefined, options?.beforeRunScheduled);
     return {
       kind: "started",
       runId: creation.runId,
@@ -1476,7 +1489,8 @@ export class AgentRuntime {
   private startPreparedRun(
     prepared: PreparedConversationMessage,
     emit: RunEventEmitter,
-    pendingMessageId?: string
+    pendingMessageId?: string,
+    beforeRunScheduled?: (accepted: RunAccepted) => void,
   ): RunAccepted {
     const { configuration, input } = prepared;
     const executionSnapshot = createRunExecutionSnapshot({
@@ -1571,6 +1585,13 @@ export class AgentRuntime {
         },
         type: "run_created",
       });
+    }
+    const accepted = { runId: creation.runId, userMessage: creation.userMessage };
+    try {
+      beforeRunScheduled?.(accepted);
+    } catch (error) {
+      this.database.finishRun(creation.runId, "cancelled", "Run scheduling was rejected.");
+      throw error;
     }
     return this.schedulePreparedRun(creation, prepared, emit);
   }

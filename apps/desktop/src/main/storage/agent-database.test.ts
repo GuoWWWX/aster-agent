@@ -47,10 +47,10 @@ describe("AgentDatabase", () => {
       .get() as Record<string, unknown>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(8);
-    expect(firstRow.name).toBe("conversation-avatar-icon");
+    expect(firstRow.version).toBe(10);
+    expect(firstRow.name).toBe("team-work-item-acceptance");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(8);
+    expect(migrationCount.count).toBe(10);
   });
 
   it("searches persisted conversation messages by bounded keyword matches", () => {
@@ -212,7 +212,7 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 8",
+      "newer than supported version 10",
     );
   });
 
@@ -252,6 +252,79 @@ describe("AgentDatabase", () => {
     expect(database.getTeamCoordinatorConversationId("default-team")).toBe(coordinator.id);
     expect(() => database.getTeamCoordinatorConversationId("release-review-team"))
       .toThrow("Team was not found");
+    database.close();
+  });
+
+  it("persists Team WorkItem execution, rework, and user acceptance", () => {
+    const database = new AgentDatabase(":memory:");
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = {
+      id: "00000000-0000-4000-8000-000000000001",
+      isPinned: false,
+      name: "Team fixture",
+      rootPath: "D:\\workspace\\team-fixture",
+    };
+    database.saveProject(project);
+    const modelSelection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000002",
+      reasoning: { kind: "effort" as const, value: "high" as const },
+    };
+    const created = database.createTeamWorkItem({
+      acceptanceCriteria: ["测试通过"],
+      modelSelection,
+      permissionMode: "full_access",
+      priority: "high",
+      projectId: project.id,
+      requirement: "实现一个可测试的加法函数。",
+      teamId: "default-team",
+      title: "实现加法函数",
+    }, modelSelection);
+
+    expect(created).toMatchObject({ revision: 1, status: "queued" });
+    expect(created.events.map((event) => event.type)).toEqual(["received", "scheduled"]);
+
+    const execution = database.createConversation(project.id);
+    const firstRun = database.createRunWithUserMessage(execution.id, "开始执行", modelSelection.modelId);
+    database.createTaskList(execution.id, [{ status: "running", title: "实现与测试" }]);
+    expect(database.startTeamWorkItem(created.id, execution.id, firstRun.runId)).toMatchObject({
+      activeRunId: firstRun.runId,
+      status: "running",
+      tasks: [expect.objectContaining({ title: "实现与测试" })],
+    });
+    database.finishRun(firstRun.runId, "completed", null);
+    expect(database.finishTeamWorkItemRun({
+      error: null,
+      resultSummary: "实现完成，测试通过。",
+      runId: firstRun.runId,
+      status: "completed",
+      workItemId: created.id,
+    })).toMatchObject({ resultSummary: "实现完成，测试通过。", status: "waiting_user" });
+
+    const secondRun = database.createRunWithUserMessage(execution.id, "补充边界测试", modelSelection.modelId);
+    expect(database.startTeamWorkItemRework(created.id, secondRun.runId, "补充负数测试"))
+      .toMatchObject({ revision: 2, status: "running" });
+    database.finishRun(secondRun.runId, "completed", null);
+    database.finishTeamWorkItemRun({
+      error: null,
+      resultSummary: "已补充负数测试。",
+      runId: secondRun.runId,
+      status: "completed",
+      workItemId: created.id,
+    });
+    expect(() => database.acceptTeamWorkItem({
+      acceptedCriteria: [],
+      workItemId: created.id,
+    })).toThrow("Every acceptance criterion");
+    const accepted = database.acceptTeamWorkItem({
+      acceptedCriteria: created.acceptanceCriteria,
+      workItemId: created.id,
+    });
+    expect(accepted).toMatchObject({
+      revision: 2,
+      status: "completed",
+    });
+    expect(typeof accepted.completedAt).toBe("string");
     database.close();
   });
 
@@ -401,6 +474,8 @@ describe("AgentDatabase", () => {
       { version: 6 },
       { version: 7 },
       { version: 8 },
+      { version: 9 },
+      { version: 10 },
     ]);
     metadata.close();
   });

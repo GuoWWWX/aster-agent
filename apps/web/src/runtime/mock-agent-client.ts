@@ -82,6 +82,11 @@ import {
   type WindowState,
   type WriteConfigurationWorkspaceFileInput,
   type WriteProjectFileInput,
+  type ListTeamWorkItemsInput,
+  type RequestTeamWorkItemReworkInput,
+  type SubmitTeamWorkItemInput,
+  type AcceptTeamWorkItemInput,
+  type TeamWorkItemView,
 } from "@agent/protocol";
 
 import type {
@@ -249,6 +254,8 @@ export class MockAgentClient implements AgentClient {
   private readonly pendingMessages = new Map<string, ConversationPendingMessage[]>();
 
   private readonly taskLists = new Map<string, ConversationTaskList>();
+
+  private readonly teamWorkItems: TeamWorkItemView[] = [];
 
   private readonly skillDocuments = new Map<string, SkillDocument>();
 
@@ -1043,6 +1050,80 @@ export class MockAgentClient implements AgentClient {
 
   public listProjects(): Promise<ProjectSummary[]> {
     return Promise.resolve(this.project === null ? [] : [{ ...this.project }]);
+  }
+
+  public listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]> {
+    return Promise.resolve(structuredClone(this.teamWorkItems.filter((item) =>
+      (input.teamId === undefined || item.teamId === input.teamId)
+      && (input.projectId === undefined || item.projectId === input.projectId))));
+  }
+
+  public submitTeamWorkItem(input: SubmitTeamWorkItemInput): Promise<TeamWorkItemView> {
+    const now = new Date().toISOString();
+    const item: TeamWorkItemView = {
+      acceptanceCriteria: input.acceptanceCriteria ?? [],
+      acceptedCriteria: [],
+      activeRunId: null,
+      blockedReason: null,
+      completedAt: null,
+      createdAt: now,
+      events: [{
+        createdAt: now,
+        detail: "需求已进入浏览器模拟收件箱。",
+        id: this.createIdentifier(),
+        sequence: this.teamWorkItems.length + 1,
+        type: "received",
+      }],
+      executionConversationId: null,
+      id: this.createIdentifier(),
+      modelSelection: input.modelSelection ?? {
+        modelId: "mock-model",
+        providerId: "00000000-0000-4000-8000-000000000001",
+        reasoning: null,
+      },
+      permissionMode: input.permissionMode ?? "ask_before_changes",
+      priority: input.priority ?? "normal",
+      projectId: input.projectId,
+      requirement: input.requirement,
+      resultSummary: null,
+      revision: 1,
+      status: "queued",
+      tasks: [],
+      teamId: input.teamId,
+      title: input.title,
+      updatedAt: now,
+    };
+    this.teamWorkItems.push(item);
+    return Promise.resolve(structuredClone(item));
+  }
+
+  public requestTeamWorkItemRework(
+    input: RequestTeamWorkItemReworkInput,
+  ): Promise<TeamWorkItemView> {
+    const item = this.teamWorkItems.find((candidate) => candidate.id === input.workItemId);
+    if (item === undefined || item.status !== "waiting_user") {
+      return Promise.reject(new Error("The mock Team WorkItem is not waiting for acceptance."));
+    }
+    item.status = "running";
+    item.revision += 1;
+    item.acceptedCriteria = [];
+    item.updatedAt = new Date().toISOString();
+    return Promise.resolve(structuredClone(item));
+  }
+
+  public acceptTeamWorkItem(input: AcceptTeamWorkItemInput): Promise<TeamWorkItemView> {
+    const item = this.teamWorkItems.find((candidate) => candidate.id === input.workItemId);
+    if (item === undefined || item.status !== "waiting_user") {
+      return Promise.reject(new Error("The mock Team WorkItem is not waiting for acceptance."));
+    }
+    if (item.acceptanceCriteria.some((criterion) => !input.acceptedCriteria.includes(criterion))) {
+      return Promise.reject(new Error("Every acceptance criterion must be explicitly confirmed."));
+    }
+    item.acceptedCriteria = [...input.acceptedCriteria];
+    item.status = "completed";
+    item.completedAt = new Date().toISOString();
+    item.updatedAt = item.completedAt;
+    return Promise.resolve(structuredClone(item));
   }
 
   public readProjectFile(input: ReadProjectFileInput): Promise<ProjectFile> {

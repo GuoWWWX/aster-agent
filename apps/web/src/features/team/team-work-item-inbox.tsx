@@ -19,6 +19,7 @@ const STATUS_LABEL: Record<TeamWorkItemStatus, string> = {
 };
 
 export function WorkItemInbox({
+  allowQueuedEditing = true,
   acceptanceCount,
   completedCount,
   draft,
@@ -35,6 +36,7 @@ export function WorkItemInbox({
   queuedCount,
   selectedId,
 }: {
+  allowQueuedEditing?: boolean;
   acceptanceCount: number;
   completedCount: number;
   draft: string;
@@ -104,7 +106,7 @@ export function WorkItemInbox({
                 <time>{item.createdAt}</time>
               </span>
             </button>
-            {canEditWorkItem(item) ? (
+            {allowQueuedEditing && canEditWorkItem(item) ? (
               <button
                 aria-label={`编辑需求：${item.title}`}
                 className="team-workitem-row__edit"

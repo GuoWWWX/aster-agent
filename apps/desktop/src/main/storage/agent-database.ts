@@ -22,7 +22,11 @@ import {
   conversationTimelineItemSchema,
   conversationToolItemSchema,
   projectSummarySchema,
+  submitTeamWorkItemInputSchema,
+  teamWorkItemEventSchema,
+  teamWorkItemViewSchema,
   conversationAttachmentSchema,
+  type AcceptTeamWorkItemInput,
   type AgentDirectoryConfiguration,
   type ConversationAttachment,
   type ConversationAgentMessageItem,
@@ -39,7 +43,11 @@ import {
   type CreateConversationInput,
   type ProjectSummary,
   type RunAccepted,
-  type SendConversationMessageInput
+  type SendConversationMessageInput,
+  type SubmitTeamWorkItemInput,
+  type TeamWorkItemEvent,
+  type TeamWorkItemStatus,
+  type TeamWorkItemView,
 } from "@agent/protocol";
 import type { ModelProviderState, ModelToolCall } from "../model/model-contracts.js";
 
@@ -1092,6 +1100,19 @@ export class AgentDatabase {
             .run(team.id, agentId, index, member?.role ?? "", member?.instructions ?? "");
         }
       }
+      const removedTeamIds = (this.database
+        .prepare("SELECT id FROM teams")
+        .all() as DatabaseRow[])
+        .map((row) => asString(row, "id"))
+        .filter((teamId) => !retainedIds.has(teamId));
+      for (const teamId of removedTeamIds) {
+        const workItem = this.database
+          .prepare("SELECT id FROM team_work_items WHERE team_id = ? LIMIT 1")
+          .get(teamId);
+        if (workItem !== undefined) {
+          throw new Error("Cannot remove a Team that still has WorkItems; resolve or archive them first.");
+        }
+      }
       if (retainedIds.size === 0) {
         this.database.exec("DELETE FROM teams");
       } else {
@@ -1159,6 +1180,293 @@ export class AgentDatabase {
     this.database
       .prepare("UPDATE teams SET coordinator_conversation_id = ?, updated_at = ? WHERE id = ?")
       .run(conversationId, new Date().toISOString(), teamId);
+  }
+
+  public createTeamWorkItem(
+    rawInput: SubmitTeamWorkItemInput,
+    modelSelection: ConversationModelSelection,
+  ): TeamWorkItemView {
+    const input = submitTeamWorkItemInputSchema.parse(rawInput);
+    this.getTeamCoordinatorConversationId(input.teamId);
+    const project = this.database.prepare("SELECT id FROM projects WHERE id = ?").get(input.projectId);
+    if (project === undefined) throw new Error("Team WorkItem project was not found.");
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    this.withTransaction(() => {
+      this.database.prepare(
+        `INSERT INTO team_work_items (
+          id, team_id, project_id, title, requirement, acceptance_criteria_json,
+          priority, status, revision, permission_mode, model_selection_json,
+          execution_conversation_id, active_run_id, result_summary, blocked_reason,
+          created_at, updated_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 1, ?, ?, NULL, NULL, NULL, NULL, ?, ?, NULL)`,
+      ).run(
+        id,
+        input.teamId,
+        input.projectId,
+        input.title,
+        input.requirement,
+        JSON.stringify(input.acceptanceCriteria),
+        input.priority,
+        input.permissionMode,
+        JSON.stringify(modelSelection),
+        now,
+        now,
+      );
+      this.appendTeamWorkItemEvent(input.teamId, id, "received", "需求已进入团队收件箱。", now);
+      this.appendTeamWorkItemEvent(input.teamId, id, "scheduled", "需求已进入调度队列。", now);
+    });
+    return this.getTeamWorkItem(id);
+  }
+
+  public getTeamWorkItem(workItemId: string): TeamWorkItemView {
+    const row = this.database
+      .prepare("SELECT * FROM team_work_items WHERE id = ?")
+      .get(workItemId) as DatabaseRow | undefined;
+    if (row === undefined) throw new Error("Team WorkItem was not found.");
+    return this.toTeamWorkItem(row);
+  }
+
+  public isManagedTeamWorkItemConversation(conversationId: string): boolean {
+    return this.database
+      .prepare("SELECT 1 FROM team_work_items WHERE execution_conversation_id = ? LIMIT 1")
+      .get(conversationId) !== undefined;
+  }
+
+  public listTeamWorkItems(
+    input: { projectId?: string | undefined; teamId?: string | undefined } = {},
+  ): TeamWorkItemView[] {
+    const clauses: string[] = [];
+    const values: string[] = [];
+    if (input.teamId !== undefined) {
+      clauses.push("team_id = ?");
+      values.push(input.teamId);
+    }
+    if (input.projectId !== undefined) {
+      clauses.push("project_id = ?");
+      values.push(input.projectId);
+    }
+    const rows = this.database.prepare(
+      `SELECT * FROM team_work_items${clauses.length === 0 ? "" : ` WHERE ${clauses.join(" AND ")}`}
+       ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
+                created_at ASC, rowid ASC`,
+    ).all(...values) as DatabaseRow[];
+    return rows.map((row) => this.toTeamWorkItem(row));
+  }
+
+  public startTeamWorkItem(
+    workItemId: string,
+    conversationId: string,
+    runId: string,
+  ): TeamWorkItemView {
+    const current = this.getTeamWorkItem(workItemId);
+    if (current.status !== "queued" && current.status !== "planned") {
+      throw new Error("Only queued Team WorkItems can start.");
+    }
+    const now = new Date().toISOString();
+    this.withTransaction(() => {
+      const result = this.database.prepare(
+        `UPDATE team_work_items
+         SET execution_conversation_id = ?, active_run_id = ?, status = 'running', updated_at = ?
+         WHERE id = ? AND status IN ('queued', 'planned')`,
+      ).run(conversationId, runId, now, workItemId);
+      if (result.changes !== 1) throw new Error("Team WorkItem changed before it could start.");
+      this.appendTeamWorkItemEvent(current.teamId, workItemId, "run_started", "团队执行对话已启动。", now);
+    });
+    return this.getTeamWorkItem(workItemId);
+  }
+
+  public failTeamWorkItemBeforeRun(workItemId: string, error: string): TeamWorkItemView {
+    const current = this.getTeamWorkItem(workItemId);
+    if (current.status !== "queued" && current.status !== "planned") return current;
+    const now = new Date().toISOString();
+    const detail = error.trim().slice(0, 4_000) || "团队执行对话启动失败。";
+    this.withTransaction(() => {
+      const result = this.database.prepare(
+        `UPDATE team_work_items SET status = 'failed', blocked_reason = ?, updated_at = ?
+         WHERE id = ? AND status IN ('queued', 'planned')`,
+      ).run(detail, now, workItemId);
+      if (result.changes !== 1) throw new Error("Team WorkItem changed before start failure was recorded.");
+      this.appendTeamWorkItemEvent(current.teamId, workItemId, "failed", detail, now);
+    });
+    return this.getTeamWorkItem(workItemId);
+  }
+
+  public finishTeamWorkItemRun(input: {
+    error: string | null;
+    resultSummary: string | null;
+    runId: string;
+    status: "cancelled" | "completed" | "failed";
+    workItemId: string;
+  }): TeamWorkItemView {
+    const current = this.getTeamWorkItem(input.workItemId);
+    if (current.activeRunId !== input.runId) return current;
+    const now = new Date().toISOString();
+    const nextStatus: TeamWorkItemStatus = input.status === "completed"
+      ? "waiting_user"
+      : input.status === "cancelled"
+        ? "cancelled"
+        : "failed";
+    const eventType = input.status === "completed"
+      ? "review_ready"
+      : input.status === "cancelled"
+        ? "cancelled"
+        : "failed";
+    const detail = input.status === "completed"
+      ? "执行、验证与自检已结束，等待用户验收。"
+      : input.error ?? (input.status === "cancelled" ? "执行已取消。" : "执行失败。");
+    this.withTransaction(() => {
+      const result = this.database.prepare(
+        `UPDATE team_work_items
+         SET active_run_id = NULL, status = ?, result_summary = ?, blocked_reason = ?, updated_at = ?
+         WHERE id = ? AND active_run_id = ?`,
+      ).run(
+        nextStatus,
+        input.resultSummary,
+        input.status === "failed" ? detail : null,
+        now,
+        input.workItemId,
+        input.runId,
+      );
+      if (result.changes !== 1) throw new Error("Team WorkItem run changed before it finished.");
+      this.appendTeamWorkItemEvent(current.teamId, input.workItemId, eventType, detail, now);
+    });
+    return this.getTeamWorkItem(input.workItemId);
+  }
+
+  public startTeamWorkItemRework(workItemId: string, runId: string, feedback: string): TeamWorkItemView {
+    const current = this.getTeamWorkItem(workItemId);
+    if (current.status !== "waiting_user" || current.executionConversationId === null) {
+      throw new Error("Only a WorkItem waiting for user acceptance can be reworked.");
+    }
+    const now = new Date().toISOString();
+    this.withTransaction(() => {
+      const result = this.database.prepare(
+        `UPDATE team_work_items
+         SET active_run_id = ?, status = 'running', revision = revision + 1,
+             result_summary = NULL, accepted_criteria_json = '[]', blocked_reason = NULL, updated_at = ?
+         WHERE id = ? AND status = 'waiting_user'`,
+      ).run(runId, now, workItemId);
+      if (result.changes !== 1) throw new Error("Team WorkItem changed before rework started.");
+      this.appendTeamWorkItemEvent(
+        current.teamId,
+        workItemId,
+        "rework_requested",
+        `用户要求返工：${feedback.slice(0, 1_500)}`,
+        now,
+      );
+    });
+    return this.getTeamWorkItem(workItemId);
+  }
+
+  public acceptTeamWorkItem(input: AcceptTeamWorkItemInput): TeamWorkItemView {
+    const current = this.getTeamWorkItem(input.workItemId);
+    if (current.status !== "waiting_user") {
+      throw new Error("Only a WorkItem waiting for user acceptance can be completed.");
+    }
+    if (
+      current.acceptanceCriteria.length !== input.acceptedCriteria.length
+      || current.acceptanceCriteria.some((criterion) => !input.acceptedCriteria.includes(criterion))
+    ) {
+      throw new Error("Every acceptance criterion must be explicitly confirmed before completion.");
+    }
+    const now = new Date().toISOString();
+    this.withTransaction(() => {
+      const result = this.database.prepare(
+        `UPDATE team_work_items
+         SET status = 'completed', accepted_criteria_json = ?, completed_at = ?, updated_at = ?
+         WHERE id = ? AND status = 'waiting_user'`,
+      ).run(JSON.stringify(input.acceptedCriteria), now, now, input.workItemId);
+      if (result.changes !== 1) throw new Error("Team WorkItem changed before acceptance.");
+      this.appendTeamWorkItemEvent(current.teamId, input.workItemId, "accepted", "用户已逐项验收通过，工作项已完成。", now);
+    });
+    return this.getTeamWorkItem(input.workItemId);
+  }
+
+  public blockInterruptedTeamWorkItems(): number {
+    const rows = this.database.prepare(
+      `SELECT id, team_id FROM team_work_items
+       WHERE active_run_id IS NOT NULL AND status IN ('triaging', 'planned', 'running', 'reviewing')`,
+    ).all() as DatabaseRow[];
+    if (rows.length === 0) return 0;
+    const now = new Date().toISOString();
+    this.withTransaction(() => {
+      for (const row of rows) {
+        const id = asString(row, "id");
+        const teamId = asString(row, "team_id");
+        this.database.prepare(
+          `UPDATE team_work_items
+           SET active_run_id = NULL, status = 'blocked', blocked_reason = ?, updated_at = ?
+           WHERE id = ?`,
+        ).run("应用在执行过程中退出；为避免重放文件或命令副作用，任务已阻塞。", now, id);
+        this.appendTeamWorkItemEvent(teamId, id, "blocked", "应用重启后未自动重放副作用，任务需要人工确认。", now);
+      }
+    });
+    return rows.length;
+  }
+
+  private appendTeamWorkItemEvent(
+    teamId: string,
+    workItemId: string,
+    type: TeamWorkItemEvent["type"],
+    detail: string,
+    createdAt: string,
+  ): void {
+    const row = this.database.prepare(
+      "SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM team_work_item_events WHERE team_id = ?",
+    ).get(teamId) as DatabaseRow;
+    const event = teamWorkItemEventSchema.parse({
+      createdAt,
+      detail,
+      id: randomUUID(),
+      sequence: asNumber(row, "next_sequence"),
+      type,
+    });
+    this.database.prepare(
+      `INSERT INTO team_work_item_events
+       (id, team_id, work_item_id, sequence, type, detail, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(event.id, teamId, workItemId, event.sequence, event.type, event.detail, event.createdAt);
+  }
+
+  private toTeamWorkItem(row: DatabaseRow): TeamWorkItemView {
+    const executionConversationId = asNullableString(row, "execution_conversation_id");
+    const eventRows = this.database.prepare(
+      `SELECT id, sequence, type, detail, created_at
+       FROM team_work_item_events WHERE work_item_id = ? ORDER BY sequence ASC`,
+    ).all(asString(row, "id")) as DatabaseRow[];
+    const tasks = executionConversationId === null
+      ? []
+      : this.getTaskList(executionConversationId)?.tasks ?? [];
+    return teamWorkItemViewSchema.parse({
+      acceptanceCriteria: parseJson(asString(row, "acceptance_criteria_json"), "Team WorkItem acceptance criteria"),
+      acceptedCriteria: parseJson(asString(row, "accepted_criteria_json"), "Team WorkItem accepted criteria"),
+      activeRunId: asNullableString(row, "active_run_id"),
+      blockedReason: asNullableString(row, "blocked_reason"),
+      completedAt: asNullableString(row, "completed_at"),
+      createdAt: asString(row, "created_at"),
+      events: eventRows.map((eventRow) => ({
+        createdAt: asString(eventRow, "created_at"),
+        detail: asString(eventRow, "detail"),
+        id: asString(eventRow, "id"),
+        sequence: asNumber(eventRow, "sequence"),
+        type: asString(eventRow, "type"),
+      })),
+      executionConversationId,
+      id: asString(row, "id"),
+      modelSelection: parseJson(asString(row, "model_selection_json"), "Team WorkItem model selection"),
+      permissionMode: asString(row, "permission_mode"),
+      priority: asString(row, "priority"),
+      projectId: asString(row, "project_id"),
+      requirement: asString(row, "requirement"),
+      resultSummary: asNullableString(row, "result_summary"),
+      revision: asNumber(row, "revision"),
+      status: asString(row, "status"),
+      tasks,
+      teamId: asString(row, "team_id"),
+      title: asString(row, "title"),
+      updatedAt: asString(row, "updated_at"),
+    });
   }
 
   /** Plugin files are discovered on disk; this table is their queryable catalog. */
@@ -5739,6 +6047,66 @@ export class AgentDatabase {
           }
         },
         version: 8,
+      },
+      {
+        name: "team-work-items",
+        up: (database) => {
+          database.exec(`
+            CREATE TABLE IF NOT EXISTS team_work_items (
+              id TEXT PRIMARY KEY,
+              team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+              project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+              title TEXT NOT NULL,
+              requirement TEXT NOT NULL,
+              acceptance_criteria_json TEXT NOT NULL,
+              priority TEXT NOT NULL CHECK(priority IN ('high', 'normal', 'low')),
+              status TEXT NOT NULL CHECK(status IN (
+                'inbox', 'triaging', 'needs_clarification', 'planned', 'queued', 'running',
+                'waiting_user', 'blocked', 'reviewing', 'completed', 'failed', 'cancelled'
+              )),
+              revision INTEGER NOT NULL,
+              permission_mode TEXT NOT NULL,
+              model_selection_json TEXT NOT NULL,
+              execution_conversation_id TEXT UNIQUE REFERENCES conversations(id) ON DELETE SET NULL,
+              active_run_id TEXT UNIQUE REFERENCES runs(id) ON DELETE SET NULL,
+              result_summary TEXT,
+              blocked_reason TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              completed_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS team_work_items_team_status
+              ON team_work_items(team_id, status, priority, created_at);
+            CREATE INDEX IF NOT EXISTS team_work_items_project_status
+              ON team_work_items(project_id, status, created_at);
+
+            CREATE TABLE IF NOT EXISTS team_work_item_events (
+              id TEXT PRIMARY KEY,
+              team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+              work_item_id TEXT NOT NULL REFERENCES team_work_items(id) ON DELETE CASCADE,
+              sequence INTEGER NOT NULL,
+              type TEXT NOT NULL,
+              detail TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              UNIQUE(team_id, sequence)
+            );
+
+            CREATE INDEX IF NOT EXISTS team_work_item_events_work_item
+              ON team_work_item_events(work_item_id, sequence);
+          `);
+        },
+        version: 9,
+      },
+      {
+        name: "team-work-item-acceptance",
+        up: (database) => {
+          const columns = database.prepare("PRAGMA table_info(team_work_items)").all() as DatabaseRow[];
+          if (!columns.some((column) => column.name === "accepted_criteria_json")) {
+            database.exec("ALTER TABLE team_work_items ADD COLUMN accepted_criteria_json TEXT NOT NULL DEFAULT '[]'");
+          }
+        },
+        version: 10,
       },
     ]);
   }

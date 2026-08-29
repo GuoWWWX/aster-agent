@@ -209,6 +209,29 @@ export {
   DEFAULT_APPLICATION_SETTINGS,
   permissionPolicySchema,
 } from "./application-settings.js";
+export {
+  acceptTeamWorkItemInputSchema,
+  listTeamWorkItemsInputSchema,
+  requestTeamWorkItemReworkInputSchema,
+  submitTeamWorkItemInputSchema,
+  teamWorkItemEventSchema,
+  teamWorkItemListSchema,
+  teamWorkItemPrioritySchema,
+  teamWorkItemReferenceInputSchema,
+  teamWorkItemStatusSchema,
+  teamWorkItemViewSchema,
+} from "./team-work-item.js";
+export type {
+  AcceptTeamWorkItemInput,
+  ListTeamWorkItemsInput,
+  RequestTeamWorkItemReworkInput,
+  SubmitTeamWorkItemInput,
+  TeamWorkItemEvent,
+  TeamWorkItemPriority,
+  TeamWorkItemReferenceInput,
+  TeamWorkItemStatus,
+  TeamWorkItemView,
+} from "./team-work-item.js";
 export type {
   AgentCapabilityScope,
   AgentDirectoryConfiguration,
@@ -301,6 +324,7 @@ export type {
   TerminalShell,
 } from "./terminal.js";
 export {
+  acceptTeamWorkItemIpcArgumentsSchema,
   approveToolChangeIpcArgumentsSchema,
   applicationSettingsIpcArgumentsSchema,
   cancelRunIpcArgumentsSchema,
@@ -315,6 +339,7 @@ export {
   reorderPendingConversationMessagesIpcArgumentsSchema,
   removeConversationAttachmentIpcArgumentsSchema,
   replaceLatestConversationMessageIpcArgumentsSchema,
+  requestTeamWorkItemReworkIpcArgumentsSchema,
   conversationContextUsageIpcArgumentsSchema,
   createProjectEntryIpcArgumentsSchema,
   createConversationIpcArgumentsSchema,
@@ -326,6 +351,7 @@ export {
   IPC_CHANNELS,
   listProjectEntriesIpcArgumentsSchema,
   listConfigurationWorkspaceEntriesIpcArgumentsSchema,
+  listTeamWorkItemsIpcArgumentsSchema,
   projectReferenceIpcArgumentsSchema,
   readProjectFileIpcArgumentsSchema,
   readProjectPreviewImageIpcArgumentsSchema,
@@ -348,6 +374,7 @@ export {
   terminalConfigurationIpcArgumentsSchema,
   skillDocumentReferenceIpcArgumentsSchema,
   skillDocumentSaveIpcArgumentsSchema,
+  submitTeamWorkItemIpcArgumentsSchema,
   writeConfigurationWorkspaceFileIpcArgumentsSchema,
   writeProjectFileIpcArgumentsSchema,
   sendConversationMessageIpcArgumentsSchema,

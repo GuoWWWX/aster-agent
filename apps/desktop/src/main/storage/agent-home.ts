@@ -81,12 +81,15 @@ export async function initializeAgentHome(input: {
   environment?: NodeJS.ProcessEnv;
   homeDirectory?: string;
   legacyRootPath: string;
+  migrateLegacy?: boolean;
 }): Promise<AgentHomeInitialization> {
   const paths = createAgentHomePaths(resolveAgentHomePath(input));
   const legacyRootPath = path.resolve(input.legacyRootPath);
   await mkdir(paths.rootPath, { recursive: true, mode: 0o700 });
 
-  if (legacyRootPath === paths.rootPath) return { migratedEntries: [], paths };
+  if (input.migrateLegacy === false || legacyRootPath === paths.rootPath) {
+    return { migratedEntries: [], paths };
+  }
 
   const migratedEntries: string[] = [];
   for (const entry of LEGACY_AGENT_ENTRIES) {

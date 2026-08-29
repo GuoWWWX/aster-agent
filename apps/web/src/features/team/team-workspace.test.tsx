@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { TEAM_WORK_ITEMS } from "./team-runtime-prototype.js";
+import { MockAgentClient } from "../../runtime/mock-agent-client.js";
 import { TeamWorkspace } from "./team-workspace.js";
 
 let root: Root | null = null;
@@ -24,7 +24,16 @@ describe("TeamWorkspace", () => {
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    act(() => root?.render(<TeamWorkspace />));
+    act(() => root?.render(
+      <TeamWorkspace
+        agentClient={new MockAgentClient()}
+        projects={[{
+          id: "00000000-0000-4000-8000-000000000001",
+          name: "Mock Project",
+          rootPath: "C:/mock-project",
+        }]}
+      />,
+    ));
 
     const tabs = [...container.querySelectorAll<HTMLButtonElement>('.team-view-switcher [role="tab"]')];
     expect(tabs.map((tab) => tab.textContent)).toEqual([
@@ -36,6 +45,5 @@ describe("TeamWorkspace", () => {
 
     act(() => tabs[2]?.click());
     expect(container.querySelector("#workflow-canvas-heading")?.textContent).toBe("执行规划画布");
-    expect(container.textContent).toContain(`当前需求：${TEAM_WORK_ITEMS[0]?.title}`);
   });
 });

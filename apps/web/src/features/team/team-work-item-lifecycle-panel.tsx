@@ -2,8 +2,6 @@ import {
   Check,
   CheckCircle2,
   CircleDotDashed,
-  GitCommitHorizontal,
-  GitMerge,
   ListChecks,
   RotateCcw,
   ShieldCheck,
@@ -55,19 +53,19 @@ export function WorkItemLifecyclePanel({
 function QueuedPanel({ item, onClaim }: { item: TeamWorkItemPrototype; onClaim: () => void }): ReactElement {
   return (
     <main className="team-command-panel team-lifecycle-panel" aria-labelledby="team-lifecycle-heading">
-      <LifecycleHeader eyebrow="需求已收集 · 尚未执行" title={item.title} />
+      <LifecycleHeader eyebrow="需求已收集 · 等待调度" title={item.title} />
       <div className="team-lifecycle-panel__body">
         <section className="team-lifecycle-hero" data-tone="queued">
           <CircleDotDashed aria-hidden="true" size={22} />
-          <div><strong>等待 Team Lead 领取</strong><p>当前需求仍可在左侧输入框中修改；领取后将锁定需求版本并开始方案设计。</p></div>
+          <div><strong>等待可用的团队执行容量</strong><p>运行时会按团队容量自动领取需求；开始执行后会锁定当前需求版本。</p></div>
         </section>
         <section className="team-lifecycle-section">
           <SectionHeading icon={<ListChecks aria-hidden="true" size={15} />} label="预期验收条件" />
           <ul>{item.acceptance.map((criterion) => <li key={criterion}><Check aria-hidden="true" size={13} />{criterion}</li>)}</ul>
         </section>
         <div className="team-lifecycle-actions">
-          <span>原型中由你手动模拟 Team Lead 领取。</span>
-          <button type="button" onClick={onClaim}><Sparkles aria-hidden="true" size={14} />模拟领取并开始</button>
+          <span>系统会自动调度；可手动刷新一次当前状态。</span>
+          <button type="button" onClick={onClaim}><Sparkles aria-hidden="true" size={14} />刷新状态</button>
         </div>
       </div>
     </main>
@@ -85,7 +83,7 @@ function AcceptancePanel({
 }): ReactElement {
   const [accepted, setAccepted] = useState<string[]>([]);
   const [reworkRequest, setReworkRequest] = useState("");
-  const [finalizationAction, setFinalizationAction] = useState<TeamFinalizationAction>("merge");
+  const finalizationAction: TeamFinalizationAction = "complete";
   const allAccepted = item.acceptance.length > 0 && accepted.length === item.acceptance.length;
   const toggleCriterion = (criterion: string): void => {
     setAccepted((current) => current.includes(criterion)
@@ -131,16 +129,14 @@ function AcceptancePanel({
         </section>
         <section className="team-approval-box">
           <div><strong>全部通过后的收尾动作</strong><span>必须先勾选全部验收项</span></div>
-          <Select value={finalizationAction} onValueChange={(value) => setFinalizationAction(value as TeamFinalizationAction)}>
+          <Select value={finalizationAction} disabled>
             <SelectTrigger aria-label="选择验收通过后的收尾动作"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="commit"><GitCommitHorizontal aria-hidden="true" size={13} />提交当前分支</SelectItem>
-              <SelectItem value="merge"><GitMerge aria-hidden="true" size={13} />创建并合并 PR</SelectItem>
               <SelectItem value="complete"><Check aria-hidden="true" size={13} />仅确认完成</SelectItem>
             </SelectContent>
           </Select>
           <button disabled={!allAccepted} type="button" onClick={() => onApprove(finalizationAction, accepted)}>
-            <ShieldCheck aria-hidden="true" size={14} />验收通过并授权收尾
+            <ShieldCheck aria-hidden="true" size={14} />验收通过并确认完成
           </button>
         </section>
       </div>

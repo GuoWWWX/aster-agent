@@ -486,7 +486,7 @@ export function WorkspaceContent({
   );
 
   if (activeActivity === "team") {
-    return <TeamWorkspace />;
+    return <TeamWorkspace agentClient={agentClient} projects={projects} />;
   }
 
   if (activeActivity === "tasks") {

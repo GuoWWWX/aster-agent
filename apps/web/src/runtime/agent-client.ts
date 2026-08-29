@@ -67,6 +67,11 @@ import type {
   WriteConfigurationWorkspaceFileInput,
   WriteProjectFileInput,
   WindowState,
+  ListTeamWorkItemsInput,
+  RequestTeamWorkItemReworkInput,
+  SubmitTeamWorkItemInput,
+  AcceptTeamWorkItemInput,
+  TeamWorkItemView,
 } from "@agent/protocol";
 
 export type WindowStateListener = (state: WindowState) => void;
@@ -148,6 +153,7 @@ export interface AgentClient {
     input: ListConfigurationWorkspaceEntriesInput,
   ): Promise<ConfigurationWorkspaceDirectoryListing>;
   listProjects(): Promise<ProjectSummary[]>;
+  listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]>;
   readProjectFile(input: ReadProjectFileInput): Promise<ProjectFile>;
   writeProjectFile(input: WriteProjectFileInput): Promise<ProjectFile>;
   readProjectPreviewImage(input: ReadProjectPreviewImageInput): Promise<ProjectPreviewImage>;
@@ -155,6 +161,9 @@ export interface AgentClient {
     input: ReadConfigurationWorkspaceFileInput,
   ): Promise<ConfigurationWorkspaceFile>;
   removeProject(input: ProjectReferenceInput): Promise<void>;
+  submitTeamWorkItem(input: SubmitTeamWorkItemInput): Promise<TeamWorkItemView>;
+  requestTeamWorkItemRework(input: RequestTeamWorkItemReworkInput): Promise<TeamWorkItemView>;
+  acceptTeamWorkItem(input: AcceptTeamWorkItemInput): Promise<TeamWorkItemView>;
   minimizeWindow(): Promise<void>;
   onConversationRunEvent(listener: ConversationRunEventListener): () => void;
   onApplicationSettingsChanged(listener: ApplicationSettingsListener): () => void;

@@ -7,6 +7,7 @@ import {
   type IpcMainInvokeEvent
 } from "electron";
 import {
+  acceptTeamWorkItemIpcArgumentsSchema,
   addProjectResponseSchema,
   approveToolChangeIpcArgumentsSchema,
   applicationSettingsIpcArgumentsSchema,
@@ -49,6 +50,7 @@ import {
   IPC_CHANNELS,
   listProjectEntriesIpcArgumentsSchema,
   listConfigurationWorkspaceEntriesIpcArgumentsSchema,
+  listTeamWorkItemsIpcArgumentsSchema,
   modelCatalogSchema,
   modelConnectionTestResultSchema,
   modelRuntimeStatusSchema,
@@ -68,6 +70,7 @@ import {
   reorderProjectsIpcArgumentsSchema,
   removeConversationAttachmentIpcArgumentsSchema,
   replaceLatestConversationMessageIpcArgumentsSchema,
+  requestTeamWorkItemReworkIpcArgumentsSchema,
   renameConversationIpcArgumentsSchema,
   renameProjectIpcArgumentsSchema,
   runtimeInfoSchema,
@@ -86,8 +89,11 @@ import {
   setProjectPinnedIpcArgumentsSchema,
   terminalConfigurationIpcArgumentsSchema,
   terminalConfigurationSchema,
+  teamWorkItemListSchema,
+  teamWorkItemViewSchema,
   skillDocumentReferenceIpcArgumentsSchema,
   skillDocumentSaveIpcArgumentsSchema,
+  submitTeamWorkItemIpcArgumentsSchema,
   skillDiscoveryResultSchema,
   skillDocumentSchema,
   writeConfigurationWorkspaceFileIpcArgumentsSchema,
@@ -115,6 +121,7 @@ import { ContextCompressionConfigurationStore } from "../settings/context-compre
 import { SkillDocumentStore } from "../settings/skill-document-store.js";
 import { ConfigurationWorkspaceStore } from "../settings/configuration-workspace-store.js";
 import { TerminalConfigurationStore } from "../settings/terminal-configuration-store.js";
+import { TeamWorkItemRuntime } from "../teams/team-work-item-runtime.js";
 import { runIpcHandler } from "./ipc-error-boundary.js";
 import { DESKTOP_CAPABILITIES } from "./desktop-capabilities.js";
 import {
@@ -198,6 +205,7 @@ type MainIpcDependencies = {
   threadLogLegacyImporter: ThreadLogLegacyImporter;
   skillDocuments: SkillDocumentStore;
   terminalConfiguration: TerminalConfigurationStore;
+  teamWorkItems: TeamWorkItemRuntime;
   tools: ProjectToolRegistry;
 };
 
@@ -232,6 +240,7 @@ export function registerMainIpcHandlers(
     threadLogLegacyImporter,
     skillDocuments,
     terminalConfiguration,
+    teamWorkItems,
     tools,
   }: MainIpcDependencies
 ): () => void {
@@ -714,6 +723,48 @@ export function registerMainIpcHandlers(
           conversationId: coordinatorConversationId,
         }, (runEvent) => sendConversationRunEvent(getMainWindow, runEvent)),
       );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamWorkItemList,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = listTeamWorkItemsIpcArgumentsSchema.parse(args);
+      return teamWorkItemListSchema.parse(teamWorkItems.list(input));
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamWorkItemSubmit,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = submitTeamWorkItemIpcArgumentsSchema.parse(args);
+      return teamWorkItemViewSchema.parse(
+        teamWorkItems.submit(input, (runEvent) =>
+          sendConversationRunEvent(getMainWindow, runEvent)),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamWorkItemRequestRework,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = requestTeamWorkItemReworkIpcArgumentsSchema.parse(args);
+      return teamWorkItemViewSchema.parse(
+        teamWorkItems.requestRework(input, (runEvent) =>
+          sendConversationRunEvent(getMainWindow, runEvent)),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamWorkItemAccept,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = acceptTeamWorkItemIpcArgumentsSchema.parse(args);
+      return teamWorkItemViewSchema.parse(teamWorkItems.accept(input));
     },
   );
 
