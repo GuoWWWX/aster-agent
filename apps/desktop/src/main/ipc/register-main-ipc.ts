@@ -12,6 +12,8 @@ import {
   approveToolChangeIpcArgumentsSchema,
   applicationSettingsIpcArgumentsSchema,
   applicationSettingsSchema,
+  browserConfigurationIpcArgumentsSchema,
+  browserConfigurationSchema,
   cancelRunIpcArgumentsSchema,
   clipboardWriteTextIpcArgumentsSchema,
   configurationWorkspaceDirectoryListingSchema,
@@ -48,6 +50,11 @@ import {
   getModelApiKeyIpcArgumentsSchema,
   integrationConfigurationIpcArgumentsSchema,
   integrationConfigurationSchema,
+  gitFileDiffIpcArgumentsSchema,
+  gitFileDiffSchema,
+  gitOperationIpcArgumentsSchema,
+  gitReviewIpcArgumentsSchema,
+  gitReviewSnapshotSchema,
   IPC_CHANNELS,
   listProjectEntriesIpcArgumentsSchema,
   listConfigurationWorkspaceEntriesIpcArgumentsSchema,
@@ -55,6 +62,14 @@ import {
   modelCatalogSchema,
   modelConnectionTestResultSchema,
   modelRuntimeStatusSchema,
+  managedBrowserBoundsIpcArgumentsSchema,
+  managedBrowserCommandIpcArgumentsSchema,
+  managedBrowserEventSchema,
+  managedBrowserNavigateIpcArgumentsSchema,
+  managedBrowserOpenIpcArgumentsSchema,
+  managedBrowserReferenceIpcArgumentsSchema,
+  managedBrowserSessionSchema,
+  managedBrowserSnapshotSchema,
   modelApiKeySchema,
   projectDirectoryListingSchema,
   projectEntrySchema,
@@ -93,6 +108,19 @@ import {
   teamWorkItemExecutionViewSchema,
   teamWorkItemListSchema,
   teamWorkItemViewSchema,
+  terminalSessionEventSchema,
+  terminalSessionOpenIpcArgumentsSchema,
+  terminalSessionOutputIpcArgumentsSchema,
+  terminalSessionOutputSchema,
+  workspaceBrowserTabCloseRequestSchema,
+  workspaceBrowserTabOpenedIpcArgumentsSchema,
+  workspaceBrowserTabOpenRequestSchema,
+  terminalSessionReferenceIpcArgumentsSchema,
+  terminalSessionResizeIpcArgumentsSchema,
+  terminalSessionSchema,
+  terminalSessionWriteIpcArgumentsSchema,
+  workspaceTerminalTabOpenedIpcArgumentsSchema,
+  workspaceTerminalTabOpenRequestSchema,
   skillDocumentReferenceIpcArgumentsSchema,
   skillDocumentSaveIpcArgumentsSchema,
   submitTeamWorkItemIpcArgumentsSchema,
@@ -114,6 +142,11 @@ import { ModelCredentialStore } from "../model/model-credential-store.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
 import { PluginCatalog } from "../plugins/plugin-catalog.js";
 import { ProjectToolRegistry } from "../tools/project-tool-registry.js";
+import { GitReviewReader } from "../tools/git-review-reader.js";
+import { TerminalSessionController } from "../tools/terminal-session-controller.js";
+import { WorkspaceTerminalTabController } from "../tools/workspace-terminal-tab-controller.js";
+import { WorkspaceBrowserTabController } from "../tools/workspace-browser-tab-controller.js";
+import { ManagedBrowserController } from "../windows/managed-browser-controller.js";
 import { AgentDatabase } from "../storage/agent-database.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
 import { ConversationLifecycleService } from "../storage/conversation-lifecycle-service.js";
@@ -121,6 +154,7 @@ import { ConversationDeletionService } from "../storage/conversation-deletion-se
 import { ThreadLogLegacyImporter } from "../storage/thread-log-legacy-importer.js";
 import { IntegrationConfigurationStore } from "../settings/integration-configuration-store.js";
 import { ApplicationSettingsStore } from "../settings/application-settings-store.js";
+import { BrowserConfigurationStore } from "../settings/browser-configuration-store.js";
 import { ContextCompressionConfigurationStore } from "../settings/context-compression-configuration-store.js";
 import { SkillDocumentStore } from "../settings/skill-document-store.js";
 import { ConfigurationWorkspaceStore } from "../settings/configuration-workspace-store.js";
@@ -195,6 +229,7 @@ function subscribeToWindowState(window: BrowserWindow): void {
 type MainIpcDependencies = {
   agentRuntime: AgentRuntime;
   applicationSettings: ApplicationSettingsStore;
+  browserConfiguration: BrowserConfigurationStore;
   attachments: ConversationAttachmentStore;
   conversationDeletion: ConversationDeletionService;
   conversationLifecycle: ConversationLifecycleService;
@@ -205,12 +240,21 @@ type MainIpcDependencies = {
   pluginCatalog: PluginCatalog;
   database: AgentDatabase;
   integrationConfiguration: IntegrationConfigurationStore;
+  gitReview: GitReviewReader;
+  managedBrowser: ManagedBrowserController;
   projectRegistry: ProjectRegistry;
   threadLogLegacyImporter: ThreadLogLegacyImporter;
   skillDocuments: SkillDocumentStore;
   terminalConfiguration: TerminalConfigurationStore;
   teamWorkItems: TeamWorkItemRuntime;
+  terminalSessions: TerminalSessionController;
+  workspaceTerminalTabs: WorkspaceTerminalTabController;
+  workspaceBrowserTabs: WorkspaceBrowserTabController;
   tools: ProjectToolRegistry;
+};
+
+type MainIpcRegistrationOptions = {
+  resumePendingMessages?: boolean;
 };
 
 function sendConversationRunEvent(
@@ -230,6 +274,7 @@ export function registerMainIpcHandlers(
   {
     agentRuntime,
     applicationSettings,
+    browserConfiguration,
     attachments,
     conversationDeletion,
     conversationLifecycle,
@@ -240,13 +285,19 @@ export function registerMainIpcHandlers(
     pluginCatalog,
     database,
     integrationConfiguration,
+    gitReview,
+    managedBrowser,
     projectRegistry,
     threadLogLegacyImporter,
     skillDocuments,
     terminalConfiguration,
     teamWorkItems,
+    terminalSessions,
+    workspaceTerminalTabs,
+    workspaceBrowserTabs,
     tools,
-  }: MainIpcDependencies
+  }: MainIpcDependencies,
+  { resumePendingMessages = true }: MainIpcRegistrationOptions = {},
 ): () => void {
   const ipcMain = createIpcHandlerRegistrar<IpcHandler>({
     handle(channel, handler): void {
@@ -265,6 +316,43 @@ export function registerMainIpcHandlers(
       IPC_CHANNELS.applicationSettingsChanged,
       applicationSettingsSchema.parse(settings),
     );
+  });
+  const disposeTerminalSessionListener = terminalSessions.onEvent((event) => {
+    const window = getMainWindow();
+    if (window === undefined || window.isDestroyed()) return;
+    window.webContents.send(IPC_CHANNELS.terminalSessionEvent, terminalSessionEventSchema.parse(event));
+  });
+  const disposeWorkspaceTerminalTabListener = workspaceTerminalTabs.onOpenRequested((request) => {
+    const window = getMainWindow();
+    if (window === undefined || window.isDestroyed()) return false;
+    window.webContents.send(
+      IPC_CHANNELS.workspaceTerminalOpenRequested,
+      workspaceTerminalTabOpenRequestSchema.parse(request),
+    );
+    return true;
+  });
+  const disposeWorkspaceBrowserTabListener = workspaceBrowserTabs.onOpenRequested((request) => {
+    const window = getMainWindow();
+    if (window === undefined || window.isDestroyed()) return false;
+    window.webContents.send(
+      IPC_CHANNELS.workspaceBrowserOpenRequested,
+      workspaceBrowserTabOpenRequestSchema.parse(request),
+    );
+    return true;
+  });
+  const disposeWorkspaceBrowserTabCloseListener = workspaceBrowserTabs.onCloseRequested((request) => {
+    const window = getMainWindow();
+    if (window === undefined || window.isDestroyed()) return false;
+    window.webContents.send(
+      IPC_CHANNELS.workspaceBrowserCloseRequested,
+      workspaceBrowserTabCloseRequestSchema.parse(request),
+    );
+    return true;
+  });
+  const disposeManagedBrowserListener = managedBrowser.onEvent((event) => {
+    const window = getMainWindow();
+    if (window === undefined || window.isDestroyed()) return;
+    window.webContents.send(IPC_CHANNELS.managedBrowserEvent, managedBrowserEventSchema.parse(event));
   });
 
   ipcMain.handle(IPC_CHANNELS.runtimeGetInfo, (event, ...args: unknown[]) => {
@@ -1021,6 +1109,28 @@ export function registerMainIpcHandlers(
   );
 
   ipcMain.handle(
+    IPC_CHANNELS.browserGetConfiguration,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      parseNoArguments(args);
+      return browserConfigurationSchema.parse(
+        browserConfiguration.getConfiguration(),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.browserSaveConfiguration,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = browserConfigurationIpcArgumentsSchema.parse(args);
+      return browserConfigurationSchema.parse(
+        browserConfiguration.saveConfiguration(input),
+      );
+    },
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.terminalGetConfiguration,
     (event, ...args: unknown[]) => {
       getTrustedWindow(event, getMainWindow);
@@ -1041,6 +1151,111 @@ export function registerMainIpcHandlers(
       );
     },
   );
+
+  ipcMain.handle(IPC_CHANNELS.gitReviewGetSnapshot, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = gitReviewIpcArgumentsSchema.parse(args);
+    return gitReviewSnapshotSchema.parse(await gitReview.getSnapshot(input));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.gitReviewGetFileDiff, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = gitFileDiffIpcArgumentsSchema.parse(args);
+    return gitFileDiffSchema.parse(await gitReview.getFileDiff(input));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.gitReviewRunOperation, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = gitOperationIpcArgumentsSchema.parse(args);
+    return gitReviewSnapshotSchema.parse(await gitReview.runOperation(input));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.terminalSessionOpen, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = terminalSessionOpenIpcArgumentsSchema.parse(args);
+    return terminalSessionSchema.parse(terminalSessions.open(input));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.terminalSessionReadOutput, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = terminalSessionOutputIpcArgumentsSchema.parse(args);
+    return terminalSessionOutputSchema.parse(terminalSessions.readOutput(input));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.terminalSessionWrite, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = terminalSessionWriteIpcArgumentsSchema.parse(args);
+    terminalSessions.write(input);
+    return voidIpcResponseSchema.parse(undefined);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.terminalSessionResize, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = terminalSessionResizeIpcArgumentsSchema.parse(args);
+    terminalSessions.resize(input);
+    return voidIpcResponseSchema.parse(undefined);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.terminalSessionClose, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = terminalSessionReferenceIpcArgumentsSchema.parse(args);
+    terminalSessions.close(input);
+    return voidIpcResponseSchema.parse(undefined);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.workspaceTerminalOpened, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = workspaceTerminalTabOpenedIpcArgumentsSchema.parse(args);
+    workspaceTerminalTabs.confirmOpened(input);
+    return voidIpcResponseSchema.parse(undefined);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.workspaceBrowserOpened, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = workspaceBrowserTabOpenedIpcArgumentsSchema.parse(args);
+    workspaceBrowserTabs.confirmOpened(input);
+    return voidIpcResponseSchema.parse(undefined);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.managedBrowserOpen, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = managedBrowserOpenIpcArgumentsSchema.parse(args);
+    return managedBrowserSessionSchema.parse(await managedBrowser.open(input));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.managedBrowserNavigate, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = managedBrowserNavigateIpcArgumentsSchema.parse(args);
+    await managedBrowser.navigate(input);
+    return voidIpcResponseSchema.parse(undefined);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.managedBrowserCommand, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = managedBrowserCommandIpcArgumentsSchema.parse(args);
+    await managedBrowser.command(input);
+    return voidIpcResponseSchema.parse(undefined);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.managedBrowserCapture, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = managedBrowserReferenceIpcArgumentsSchema.parse(args);
+    return managedBrowserSnapshotSchema.parse(await managedBrowser.capture(input));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.managedBrowserSetBounds, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = managedBrowserBoundsIpcArgumentsSchema.parse(args);
+    managedBrowser.setBounds(input);
+    return voidIpcResponseSchema.parse(undefined);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.managedBrowserClose, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = managedBrowserReferenceIpcArgumentsSchema.parse(args);
+    managedBrowser.close(input);
+    return voidIpcResponseSchema.parse(undefined);
+  });
 
   ipcMain.handle(IPC_CHANNELS.skillCreateDocument, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
@@ -1189,6 +1404,11 @@ export function registerMainIpcHandlers(
     ipcMain.assertRegisteredChannels(DESKTOP_IPC_HANDLER_CHANNELS);
   } catch (error) {
     disposeApplicationSettingsListener();
+    disposeTerminalSessionListener();
+    disposeWorkspaceTerminalTabListener();
+    disposeWorkspaceBrowserTabListener();
+    disposeWorkspaceBrowserTabCloseListener();
+    disposeManagedBrowserListener();
     ipcMain.dispose();
     throw error;
   }
@@ -1197,14 +1417,23 @@ export function registerMainIpcHandlers(
   if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
     subscribeToWindowState(mainWindow);
   }
-  setImmediate(() => {
-    agentRuntime.resumePendingMessages((runEvent) =>
-      sendConversationRunEvent(getMainWindow, runEvent)
-    );
-  });
+  if (resumePendingMessages) {
+    setImmediate(() => {
+      agentRuntime.resumePendingMessages((runEvent) =>
+        sendConversationRunEvent(getMainWindow, runEvent)
+      );
+    });
+  }
 
   return () => {
     disposeApplicationSettingsListener();
+    disposeTerminalSessionListener();
+    disposeWorkspaceTerminalTabListener();
+    disposeWorkspaceBrowserTabListener();
+    disposeWorkspaceBrowserTabCloseListener();
+    disposeManagedBrowserListener();
+    workspaceTerminalTabs.dispose();
+    workspaceBrowserTabs.dispose();
     ipcMain.dispose();
   };
 }

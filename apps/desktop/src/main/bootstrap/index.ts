@@ -32,16 +32,24 @@ import { ThreadLogLegacyImporter } from "../storage/thread-log-legacy-importer.j
 import { IntegrationConfigurationStore } from "../settings/integration-configuration-store.js";
 import { ApplicationSettingsStore } from "../settings/application-settings-store.js";
 import { ContextCompressionConfigurationStore } from "../settings/context-compression-configuration-store.js";
+import { BrowserConfigurationStore } from "../settings/browser-configuration-store.js";
 import { SkillDocumentStore } from "../settings/skill-document-store.js";
 import { ConfigurationWorkspaceStore } from "../settings/configuration-workspace-store.js";
 import { TerminalConfigurationStore } from "../settings/terminal-configuration-store.js";
 import { TeamWorkItemRuntime } from "../teams/team-work-item-runtime.js";
 import { ProjectToolRegistry } from "../tools/project-tool-registry.js";
+import { GitReviewReader } from "../tools/git-review-reader.js";
+import { TerminalSessionController } from "../tools/terminal-session-controller.js";
+import { WorkspaceTerminalTabController } from "../tools/workspace-terminal-tab-controller.js";
+import { WorkspaceBrowserTabController } from "../tools/workspace-browser-tab-controller.js";
+import { BrowserToolPlugin } from "../plugins/browser-tool-plugin.js";
 import { createMainWindow } from "../windows/main-window.js";
+import { ManagedBrowserController } from "../windows/managed-browser-controller.js";
 
 type DesktopServices = {
   agentRuntime: AgentRuntime;
   applicationSettings: ApplicationSettingsStore;
+  browserConfiguration: BrowserConfigurationStore;
   attachments: ConversationAttachmentStore;
   conversationDeletion: ConversationDeletionService;
   conversationLifecycle: ConversationLifecycleService;
@@ -52,11 +60,16 @@ type DesktopServices = {
   integrationConfiguration: IntegrationConfigurationStore;
   contextCompression: ContextCompressionConfigurationStore;
   graphCheckpointer: NodeSqliteCheckpointSaver;
+  gitReview: GitReviewReader;
   configurationWorkspaces: ConfigurationWorkspaceStore;
   skillDocuments: SkillDocumentStore;
   skillRuntime: SkillRuntime;
   terminalConfiguration: TerminalConfigurationStore;
   teamWorkItems: TeamWorkItemRuntime;
+  terminalSessions: TerminalSessionController;
+  workspaceTerminalTabs: WorkspaceTerminalTabController;
+  workspaceBrowserTabs: WorkspaceBrowserTabController;
+  managedBrowser: ManagedBrowserController;
   projectRegistry: ProjectRegistry;
   threadLogLegacyImporter: ThreadLogLegacyImporter;
   tools: ProjectToolRegistry;
@@ -209,7 +222,19 @@ async function initializeServices(): Promise<DesktopServices> {
   const terminalConfiguration = new TerminalConfigurationStore(
     agentHome.paths.terminalSettingsPath,
   );
+  const browserConfiguration = new BrowserConfigurationStore(
+    agentHome.paths.browserSettingsPath,
+  );
   const tools = new ProjectToolRegistry(projectRegistry, terminalConfiguration);
+  const gitReview = new GitReviewReader(projectRegistry);
+  const terminalSessions = new TerminalSessionController(projectRegistry, terminalConfiguration);
+  const workspaceTerminalTabs = new WorkspaceTerminalTabController();
+  const workspaceBrowserTabs = new WorkspaceBrowserTabController();
+  const managedBrowser = new ManagedBrowserController(
+    () => mainWindow,
+    browserConfiguration,
+  );
+  const browserToolPlugin = new BrowserToolPlugin(managedBrowser, workspaceBrowserTabs);
   const eventProjector = new EventProjector(
     database,
     threadLog,
@@ -245,27 +270,30 @@ async function initializeServices(): Promise<DesktopServices> {
   }
 
   const agentRuntime = new AgentRuntime(
-      database,
-      credentials,
-      projectRegistry,
-      tools,
-      undefined,
-      undefined,
-      contextCompression,
-        null,
-        attachments,
-        {
-          getConfiguration: () => applicationSettings.getConfiguration().agentDirectory,
-        },
-        skillRuntime,
-        graphCheckpointer,
-        undefined,
-      applicationSettings,
-       threadLog,
-       eventProjector,
-       threadLogLegacyImporter,
-       pluginCatalog,
-      );
+    database,
+    credentials,
+    projectRegistry,
+    tools,
+    undefined,
+    undefined,
+    contextCompression,
+    null,
+    attachments,
+    {
+      getConfiguration: () => applicationSettings.getConfiguration().agentDirectory,
+    },
+    skillRuntime,
+    graphCheckpointer,
+    undefined,
+    applicationSettings,
+    threadLog,
+    eventProjector,
+    threadLogLegacyImporter,
+    pluginCatalog,
+    workspaceTerminalTabs,
+    terminalSessions,
+    browserToolPlugin,
+  );
   const teamWorkItems = new TeamWorkItemRuntime(
     database,
     conversationLifecycle,
@@ -283,12 +311,14 @@ async function initializeServices(): Promise<DesktopServices> {
   return {
     agentRuntime,
     applicationSettings,
+    browserConfiguration,
     attachments,
     conversationDeletion,
     conversationLifecycle,
     credentials,
     contextCompression,
     graphCheckpointer,
+    gitReview,
     configurationWorkspaces,
     modelCatalog,
     pluginCatalog,
@@ -300,6 +330,10 @@ async function initializeServices(): Promise<DesktopServices> {
     skillRuntime,
     terminalConfiguration,
     teamWorkItems,
+    terminalSessions,
+    workspaceTerminalTabs,
+    workspaceBrowserTabs,
+    managedBrowser,
     tools,
   };
 }
@@ -324,7 +358,9 @@ async function openMainWindow(): Promise<void> {
   const window = createMainWindow();
   let rendererRecoveryAttempted = false;
   mainWindow = window;
-  disposeIpcHandlers = registerMainIpcHandlers(() => mainWindow, getServices());
+  disposeIpcHandlers = registerMainIpcHandlers(() => mainWindow, getServices(), {
+    resumePendingMessages: process.env.AGENT_SKIP_PENDING_RUN_RESUMPTION !== "1",
+  });
   const rendererTarget = applyRendererSecurityPolicy(window);
 
   window.webContents.on("preload-error", (_event, preloadPath, error) => {
@@ -358,6 +394,8 @@ async function openMainWindow(): Promise<void> {
     if (mainWindow === window) {
       disposeIpcHandlers?.();
       disposeIpcHandlers = undefined;
+      services?.managedBrowser.dispose();
+      services?.terminalSessions.dispose();
       mainWindow = undefined;
     }
   });
@@ -427,6 +465,8 @@ async function bootstrap(): Promise<void> {
       archivedConversationCleanupTimer = undefined;
     }
     services?.graphCheckpointer.close();
+    services?.managedBrowser.dispose();
+    services?.terminalSessions.dispose();
     services?.database.close();
     services = undefined;
   });

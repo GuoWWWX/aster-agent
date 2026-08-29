@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 
 import type { ProjectSession } from "../projects/project-session-model.js";
+import {
+  retainedWorkspaceCacheIds,
+  WORKSPACE_CACHE_MAX_RETAINED,
+  WORKSPACE_CACHE_SWEEP_INTERVAL_MS,
+  WORKSPACE_CACHE_TTL_MS,
+} from "../workspace/workspace-cache-policy.js";
 
-export const CONVERSATION_WORKSPACE_CACHE_MIN_RETAINED = 3;
-export const CONVERSATION_WORKSPACE_CACHE_TTL_MS = 60 * 60_000;
+export const CONVERSATION_WORKSPACE_CACHE_MAX_RETAINED = WORKSPACE_CACHE_MAX_RETAINED;
+export const CONVERSATION_WORKSPACE_CACHE_TTL_MS = WORKSPACE_CACHE_TTL_MS;
 
 export type ConversationWorkspaceCacheEntry = {
   lastAccessedAt: number;
@@ -23,11 +29,12 @@ export function retainConversationWorkspace(
         ...entries.filter((entry) => entry.session.id !== activeSession.id),
       ];
 
-  return ordered.filter((entry, index) =>
-    index < CONVERSATION_WORKSPACE_CACHE_MIN_RETAINED
-    || entry.session.id === activeSessionId
-    || now - entry.lastAccessedAt < CONVERSATION_WORKSPACE_CACHE_TTL_MS
+  const retainedIds = retainedWorkspaceCacheIds(
+    ordered.map((entry) => ({ id: entry.session.id, lastAccessedAt: entry.lastAccessedAt })),
+    activeSessionId,
+    now,
   );
+  return ordered.filter((entry) => retainedIds.has(entry.session.id));
 }
 
 export function conversationWorkspaceSessions(
@@ -82,7 +89,7 @@ export function useConversationWorkspaceCache(
         availableActiveSession,
         Date.now(),
       ));
-    }, 60_000);
+    }, WORKSPACE_CACHE_SWEEP_INTERVAL_MS);
     return () => window.clearInterval(interval);
   }, [availableActiveSession, availableSessionIds]);
 

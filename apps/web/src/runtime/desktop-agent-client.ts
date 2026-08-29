@@ -1,6 +1,7 @@
 import type {
   CapabilitySet,
   ApplicationSettings,
+  BrowserConfiguration,
   ApproveToolChangeInput,
   CancelRunInput,
   ConversationContextUsage,
@@ -25,12 +26,24 @@ import type {
   DesktopBridge,
   DiscoverModelsInput,
   DiscoveredModel,
+  GitFileDiff,
+  GitFileDiffInput,
+  GitOperationInput,
+  GitReviewInput,
+  GitReviewSnapshot,
   IntegrationConfiguration,
   ListConfigurationWorkspaceEntriesInput,
   ListProjectEntriesInput,
   ModelConnectionTestResult,
   ModelCatalog,
   ModelRuntimeStatus,
+  ManagedBrowserBoundsInput,
+  ManagedBrowserCommandInput,
+  ManagedBrowserNavigateInput,
+  ManagedBrowserOpenInput,
+  ManagedBrowserReferenceInput,
+  ManagedBrowserSession,
+  ManagedBrowserSnapshot,
   ProjectDirectoryListing,
   ProjectEntry,
   ProjectFile,
@@ -65,6 +78,15 @@ import type {
   SkillDocumentReferenceInput,
   SkillDocumentSaveInput,
   TerminalConfiguration,
+  TerminalSession,
+  TerminalSessionOpenInput,
+  TerminalSessionOutput,
+  TerminalSessionOutputInput,
+  TerminalSessionReferenceInput,
+  TerminalSessionResizeInput,
+  TerminalSessionWriteInput,
+  WorkspaceTerminalTabOpenedInput,
+  WorkspaceBrowserTabOpenedInput,
   WriteConfigurationWorkspaceFileInput,
   WriteProjectFileInput,
   WindowState,
@@ -81,6 +103,11 @@ import type {
 import type {
   AgentClient,
   ConversationRunEventListener,
+  ManagedBrowserEventListener,
+  TerminalSessionEventListener,
+  WorkspaceTerminalTabOpenRequestListener,
+  WorkspaceBrowserTabOpenRequestListener,
+  WorkspaceBrowserTabCloseRequestListener,
   WindowStateListener,
 } from "./agent-client.js";
 
@@ -248,8 +275,102 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.getIntegrationConfiguration();
   }
 
+  public getBrowserConfiguration(): Promise<BrowserConfiguration> {
+    return this.desktopBridge.getBrowserConfiguration();
+  }
+
   public getTerminalConfiguration(): Promise<TerminalConfiguration> {
     return this.desktopBridge.getTerminalConfiguration();
+  }
+
+  public getGitReviewSnapshot(input: GitReviewInput): Promise<GitReviewSnapshot> {
+    return this.desktopBridge.getGitReviewSnapshot(input);
+  }
+
+  public getGitFileDiff(input: GitFileDiffInput): Promise<GitFileDiff> {
+    return this.desktopBridge.getGitFileDiff(input);
+  }
+
+  public runGitOperation(input: GitOperationInput): Promise<GitReviewSnapshot> {
+    return this.desktopBridge.runGitOperation(input);
+  }
+
+  public openTerminalSession(input: TerminalSessionOpenInput): Promise<TerminalSession> {
+    return this.desktopBridge.openTerminalSession(input);
+  }
+
+  public readTerminalSessionOutput(input: TerminalSessionOutputInput): Promise<TerminalSessionOutput> {
+    return this.desktopBridge.readTerminalSessionOutput(input);
+  }
+
+  public writeTerminalSession(input: TerminalSessionWriteInput): Promise<void> {
+    return this.desktopBridge.writeTerminalSession(input);
+  }
+
+  public resizeTerminalSession(input: TerminalSessionResizeInput): Promise<void> {
+    return this.desktopBridge.resizeTerminalSession(input);
+  }
+
+  public closeTerminalSession(input: TerminalSessionReferenceInput): Promise<void> {
+    return this.desktopBridge.closeTerminalSession(input);
+  }
+
+  public onTerminalSessionEvent(listener: TerminalSessionEventListener): () => void {
+    return this.desktopBridge.onTerminalSessionEvent(listener);
+  }
+
+  public confirmWorkspaceTerminalTabOpened(input: WorkspaceTerminalTabOpenedInput): Promise<void> {
+    return this.desktopBridge.confirmWorkspaceTerminalTabOpened(input);
+  }
+
+  public onWorkspaceTerminalTabOpenRequested(
+    listener: WorkspaceTerminalTabOpenRequestListener,
+  ): () => void {
+    return this.desktopBridge.onWorkspaceTerminalTabOpenRequested(listener);
+  }
+
+  public confirmWorkspaceBrowserTabOpened(input: WorkspaceBrowserTabOpenedInput): Promise<void> {
+    return this.desktopBridge.confirmWorkspaceBrowserTabOpened(input);
+  }
+
+  public onWorkspaceBrowserTabOpenRequested(
+    listener: WorkspaceBrowserTabOpenRequestListener,
+  ): () => void {
+    return this.desktopBridge.onWorkspaceBrowserTabOpenRequested(listener);
+  }
+
+  public onWorkspaceBrowserTabCloseRequested(
+    listener: WorkspaceBrowserTabCloseRequestListener,
+  ): () => void {
+    return this.desktopBridge.onWorkspaceBrowserTabCloseRequested(listener);
+  }
+
+  public openManagedBrowser(input: ManagedBrowserOpenInput): Promise<ManagedBrowserSession> {
+    return this.desktopBridge.openManagedBrowser(input);
+  }
+
+  public navigateManagedBrowser(input: ManagedBrowserNavigateInput): Promise<void> {
+    return this.desktopBridge.navigateManagedBrowser(input);
+  }
+
+  public commandManagedBrowser(input: ManagedBrowserCommandInput): Promise<void> {
+    return this.desktopBridge.commandManagedBrowser(input);
+  }
+
+  public captureManagedBrowser(input: ManagedBrowserReferenceInput): Promise<ManagedBrowserSnapshot> {
+    return this.desktopBridge.captureManagedBrowser(input);
+  }
+
+  public setManagedBrowserBounds(input: ManagedBrowserBoundsInput): Promise<void> {
+    return this.desktopBridge.setManagedBrowserBounds(input);
+  }
+
+  public closeManagedBrowser(input: ManagedBrowserReferenceInput): Promise<void> {
+    return this.desktopBridge.closeManagedBrowser(input);
+  }
+
+  public onManagedBrowserEvent(listener: ManagedBrowserEventListener): () => void {
+    return this.desktopBridge.onManagedBrowserEvent(listener);
   }
 
   public getRuntimeInfo(): Promise<RuntimeInfo> {
@@ -512,6 +633,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
     input: IntegrationConfiguration,
   ): Promise<IntegrationConfiguration> {
     return this.desktopBridge.saveIntegrationConfiguration(input);
+  }
+
+  public saveBrowserConfiguration(
+    input: BrowserConfiguration,
+  ): Promise<BrowserConfiguration> {
+    return this.desktopBridge.saveBrowserConfiguration(input);
   }
 
   public saveTerminalConfiguration(

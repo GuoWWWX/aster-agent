@@ -7,6 +7,7 @@ const LEGACY_AGENT_ENTRIES = [
   "agent.sqlite-shm",
   "agent.sqlite-wal",
   "application-settings.json",
+  "browser-settings.json",
   "context-compression-settings.json",
   "conversation-files",
   "integration-settings.json",
@@ -24,6 +25,7 @@ const LEGACY_AGENT_ENTRIES = [
 export type AgentHomePaths = {
   agentDatabasePath: string;
   applicationSettingsPath: string;
+  browserSettingsPath: string;
   contextCompressionSettingsPath: string;
   conversationFilesPath: string;
   conversationsPath: string;
@@ -62,6 +64,7 @@ export function createAgentHomePaths(rootPath: string): AgentHomePaths {
   return {
     agentDatabasePath: path.join(resolvedRootPath, "agent.sqlite"),
     applicationSettingsPath: path.join(resolvedRootPath, "application-settings.json"),
+    browserSettingsPath: path.join(resolvedRootPath, "browser-settings.json"),
     contextCompressionSettingsPath: path.join(resolvedRootPath, "context-compression-settings.json"),
     conversationFilesPath: path.join(resolvedRootPath, "conversation-files"),
     conversationsPath: path.join(resolvedRootPath, "conversations"),

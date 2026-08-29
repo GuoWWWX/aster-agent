@@ -4,6 +4,8 @@ import type { ConversationSummary, ModelReasoningOption } from "@agent/protocol"
 
 import {
   shouldDeleteSidebarChat,
+  nextTerminalTabName,
+  nextWorkspaceTabName,
   upsertSideSession,
 } from "./right-sidebar-workspace.js";
 
@@ -89,5 +91,24 @@ describe("right sidebar side session state", () => {
       modelId: "model-b",
       reasoning: { kind: "effort", value: "low" },
     });
+  });
+});
+
+describe("right sidebar terminal tabs", () => {
+  it("gives each new terminal in a project a distinct tab label", () => {
+    expect(nextTerminalTabName([], "project-a")).toBe("终端");
+    expect(nextTerminalTabName([
+      { kind: "terminal", name: "终端", projectId: "project-a" },
+      { kind: "terminal", name: "终端 (2)", projectId: "project-a" },
+      { kind: "terminal", name: "终端", projectId: "project-b" },
+    ], "project-a")).toBe("终端 (1)");
+  });
+
+  it("keeps an Agent-provided terminal label distinct from every open tab", () => {
+    expect(nextWorkspaceTabName([
+      { name: "构建日志" },
+      { name: "构建日志 (1)" },
+      { name: "README.md" },
+    ], "构建日志")).toBe("构建日志 (2)");
   });
 });

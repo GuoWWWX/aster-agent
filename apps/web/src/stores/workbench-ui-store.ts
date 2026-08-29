@@ -8,6 +8,18 @@ import {
 
 export type ActivityView = "conversations" | "team" | "tasks" | "settings";
 
+export type SettingsSection =
+  | "general"
+  | "models"
+  | "agents"
+  | "mcp"
+  | "skills"
+  | "permissions"
+  | "browser"
+  | "terminal"
+  | "archived"
+  | "appearance";
+
 export type ThemeMode = "light" | "dark";
 
 export type ConfigurationWorkspaceTarget = {
@@ -44,6 +56,7 @@ type WorkbenchUiState = {
   notifyConfigurationWorkspaceChanged: () => void;
   openConfigurationWorkspace: (target: ConfigurationWorkspaceTarget) => void;
   projectNavigatorWidth: number;
+  settingsSection: SettingsSection;
   setFilePanelOpen: (isOpen: boolean) => void;
   setFilePanelWidth: (width: number) => void;
   setFilePanelWidthForConversation: (conversationId: string, width: number) => void;
@@ -52,6 +65,7 @@ type WorkbenchUiState = {
   setProjectNavigatorOpen: (isOpen: boolean) => void;
   setProjectNavigatorWidth: (width: number) => void;
   setSettings: () => void;
+  setSettingsSection: (settingsSection: SettingsSection) => void;
   setTerminalConfiguration: (terminalConfiguration: TerminalConfiguration) => void;
   setThemeMode: (themeMode: ThemeMode) => void;
   terminalConfiguration: TerminalConfiguration;
@@ -81,6 +95,7 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
     isFilePanelOpen: true,
   }),
   projectNavigatorWidth: 288,
+  settingsSection: "general",
   setFilePanelOpen: (isFilePanelOpen) => set({ isFilePanelOpen }),
   setFilePanelWidth: (filePanelWidth) =>
     set({
@@ -123,6 +138,7 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
       ),
     }),
   setSettings: () => set({ activeActivity: "settings" }),
+  setSettingsSection: (settingsSection) => set({ settingsSection }),
   setTerminalConfiguration: (terminalConfiguration) => set({ terminalConfiguration }),
   setThemeMode: (themeMode) => set({ themeMode }),
   terminalConfiguration: structuredClone(DEFAULT_TERMINAL_CONFIGURATION),

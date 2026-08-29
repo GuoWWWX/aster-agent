@@ -87,8 +87,13 @@ import { ModelGateway } from "./model-gateway.js";
 import { TaskListTool } from "../tasks/task-list-tool.js";
 import { ConversationAttachmentTool } from "../tools/conversation-attachment-tool.js";
 import { WebSearchTool } from "../tools/web-search-tool.js";
+import { WorkspaceTerminalTool } from "../tools/workspace-terminal-tool.js";
+import type { WorkspaceTerminalTabPort } from "../tools/workspace-terminal-tab-controller.js";
+import type { TerminalSessionPort } from "../tools/terminal-session-controller.js";
+import { BrowserToolPlugin } from "../plugins/browser-tool-plugin.js";
 import {
   ProjectToolRegistry,
+  type PreparedApprovedAction,
   type PreparedCommand,
   type PreparedExternalFileRead,
   type PreparedFileChange,
@@ -393,6 +398,7 @@ type ToolApprovalInterrupt = {
 type PermissionDecision = "allow" | "ask" | "deny";
 
 const DEFAULT_APPLICATION_PERMISSION_POLICIES: ApplicationPermissionPolicies = {
+  "browser-control": "ask",
   "command-run": "ask",
   "git-write": "unavailable",
   "patch-write": "ask",
@@ -749,6 +755,10 @@ export class AgentRuntime {
 
   private teamWorkItemDispatcher: TeamWorkItemDispatcher | null = null;
 
+  private readonly workspaceTerminalTool: WorkspaceTerminalTool | null;
+
+  private readonly browserToolPlugin: BrowserToolPlugin | null;
+
   private readonly toolHandlers: ToolHandlerRegistry<RuntimeToolContext>;
 
   public constructor(
@@ -771,6 +781,9 @@ export class AgentRuntime {
     private readonly eventProjector: EventProjector | null = null,
     private readonly threadLogLegacyImporter: ThreadLogLegacyImporter | null = null,
     private readonly pluginCatalog: PluginCatalogProvider | null = null,
+    workspaceTerminalTabs: WorkspaceTerminalTabPort | null = null,
+    terminalSessions: TerminalSessionPort | null = null,
+    browserToolPlugin: BrowserToolPlugin | null = null,
   ) {
     this.modelGateway = new ModelGateway(model);
     this.taskListTool = new TaskListTool(database);
@@ -786,6 +799,10 @@ export class AgentRuntime {
       () => this.agentDirectory?.getConfiguration() ?? null,
       () => this.teamWorkItemDispatcher,
     );
+    this.workspaceTerminalTool = workspaceTerminalTabs === null || terminalSessions === null
+      ? null
+      : new WorkspaceTerminalTool(workspaceTerminalTabs, terminalSessions, this.tools);
+    this.browserToolPlugin = browserToolPlugin;
     this.attachmentTool = attachments === null
       ? null
       : new ConversationAttachmentTool(attachments);
@@ -1022,6 +1039,43 @@ export class AgentRuntime {
       getExecutionPolicy: () => this.webSearchTool.getExecutionPolicy(),
       isAvailable: () => true,
     });
+    if (this.workspaceTerminalTool !== null) {
+      handlers.push({
+        execute: ({ context, rawArguments, toolName }) => this.workspaceTerminalTool?.execute({
+          conversationId: context.conversationId,
+          operationOwner: context.operationOwner,
+          projectId: context.projectId,
+          rawArguments,
+          signal: context.signal,
+          toolName,
+        }) ?? Promise.resolve({
+          content: "Workspace terminal tool is unavailable.",
+          isError: true,
+          kind: "completed" as const,
+        }),
+        getDefinitions: () => this.workspaceTerminalTool?.getDefinitions() ?? [],
+        getExecutionPolicy: () => ({ kind: "serial" }),
+        isAvailable: ({ projectId }) => projectId !== undefined,
+      });
+    }
+    if (this.browserToolPlugin !== null) {
+      handlers.push({
+        execute: ({ context, rawArguments, toolName }) => this.browserToolPlugin?.execute({
+          conversationId: context.conversationId,
+          projectId: context.projectId,
+          rawArguments,
+          signal: context.signal,
+          toolName,
+        }) ?? Promise.resolve({
+          content: "Browser plugin is unavailable.",
+          isError: true,
+          kind: "completed" as const,
+        }),
+        getDefinitions: () => this.browserToolPlugin?.getDefinitions() ?? [],
+        getExecutionPolicy: () => ({ kind: "serial" }),
+        isAvailable: ({ projectId }) => projectId !== undefined,
+      });
+    }
     handlers.push({
       execute: ({ context, rawArguments, toolName }) => {
         return this.tools.execute(
@@ -3408,6 +3462,7 @@ export class AgentRuntime {
           proposal.kind === "change"
           || proposal.kind === "command"
           || proposal.kind === "external_read"
+          || proposal.kind === "approved_action"
         ) {
           this.preparedToolsByRunCall.set(key, proposal);
         }
@@ -3444,6 +3499,15 @@ export class AgentRuntime {
           : proposal.kind === "external_read"
             ? await this.resolveExternalFileRead({
                 prepared: proposal.externalRead,
+                controller: input.controller,
+                emit: input.emit,
+                permissionMode: input.permissionMode,
+                runId: input.runId,
+                startedTool,
+              })
+          : proposal.kind === "approved_action"
+            ? await this.resolveApprovedAction({
+                action: proposal.action,
                 controller: input.controller,
                 emit: input.emit,
                 permissionMode: input.permissionMode,
@@ -3566,7 +3630,23 @@ export class AgentRuntime {
   private permissionPolicyFor(toolName: string): PermissionPolicy {
     const policies = this.applicationSettings?.getConfiguration().permissionPolicies
       ?? DEFAULT_APPLICATION_PERMISSION_POLICIES;
-    if (toolName === "run_command") return policies["command-run"];
+    if (
+      toolName === "run_command"
+      || toolName === "create_terminal"
+      || toolName === "open_terminal"
+      || toolName === "execute_terminal_command"
+    ) return policies["command-run"];
+    if (
+      toolName === "browser_control"
+      || toolName === "browser_open"
+      || toolName === "browser_navigate"
+      || toolName === "browser_click"
+      || toolName === "browser_fill"
+      || toolName === "browser_select_option"
+      || toolName === "browser_key"
+      || toolName === "browser_scroll"
+      || toolName === "browser_close"
+    ) return policies["browser-control"];
     if (
       toolName === "write_file"
       || toolName === "delete_file"
@@ -3585,7 +3665,23 @@ export class AgentRuntime {
     if (policy !== "unavailable") return null;
     if (PROJECT_READ_TOOL_NAMES.has(toolName)) return "工作区读取已在应用权限设置中禁用。";
     if (PROJECT_SEARCH_TOOL_NAMES.has(toolName)) return "工作区搜索已在应用权限设置中禁用。";
-    if (toolName === "run_command") return "终端命令执行已在应用权限设置中禁用。";
+    if (
+      toolName === "run_command"
+      || toolName === "create_terminal"
+      || toolName === "open_terminal"
+      || toolName === "execute_terminal_command"
+    ) return "终端命令执行已在应用权限设置中禁用。";
+    if (
+      toolName === "browser_control"
+      || toolName === "browser_open"
+      || toolName === "browser_navigate"
+      || toolName === "browser_click"
+      || toolName === "browser_fill"
+      || toolName === "browser_select_option"
+      || toolName === "browser_key"
+      || toolName === "browser_scroll"
+      || toolName === "browser_close"
+    ) return "浏览器模型操作已在应用权限设置中禁用。";
     if (
       toolName === "write_file"
       || toolName === "delete_file"
@@ -3748,6 +3844,65 @@ export class AgentRuntime {
       type: "tool.approval_requested",
     });
     return interrupt<ToolApprovalInterrupt, boolean>(interruptValue);
+  }
+
+  private async resolveApprovedAction(input: {
+    action: PreparedApprovedAction;
+    controller: AbortController;
+    emit: RunEventEmitter;
+    permissionMode: ConversationPermissionMode;
+    runId: string;
+    startedTool: ReturnType<typeof conversationToolItemSchema.parse>;
+  }): Promise<ToolExecutionResult> {
+    const decision = this.permissionDecision({
+      conversationId: input.startedTool.conversationId,
+      permissionMode: input.permissionMode,
+      permissionTool: input.action.permissionTool,
+      pattern: input.action.pattern,
+      toolId: input.startedTool.id,
+    });
+    if (decision === "deny") {
+      const message = input.permissionMode === "read_only"
+        ? "This action is blocked because this conversation is read-only."
+        : this.unavailableToolReason(input.action.permissionTool)
+          ?? "This action is blocked by the current permission policy.";
+      return {
+        content: JSON.stringify({ error: message, ok: false }),
+        isError: true,
+        kind: "completed",
+      };
+    }
+    if (decision === "ask") {
+      const awaitingTool = conversationToolItemSchema.parse({
+        ...input.startedTool,
+        status: "awaiting_approval",
+      });
+      const approved = this.requestToolApproval({
+        emit: input.emit,
+        pattern: input.action.pattern,
+        permissionTool: input.action.permissionTool,
+        runId: input.runId,
+        signal: input.controller.signal,
+        tool: awaitingTool,
+      });
+      this.pendingChangeApprovals.delete(awaitingTool.id);
+      if (!approved) {
+        return {
+          content: JSON.stringify({
+            error: input.action.rejectionMessage,
+            ok: false,
+            ...(input.action.rejectionValue === undefined
+              ? {}
+              : { value: input.action.rejectionValue }),
+          }),
+          isError: true,
+          kind: "completed",
+          status: "rejected",
+        };
+      }
+    }
+    input.controller.signal.throwIfAborted();
+    return input.action.execute();
   }
 
   private async resolveFileChange(input: {

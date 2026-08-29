@@ -39,4 +39,16 @@ describe("AgentMarkdown", () => {
     expect(html).not.toContain('style="text-align:right"');
     expect(html).not.toContain('style="text-align:left"');
   });
+
+  it("decorates file links with shared type icons without changing ordinary web links", () => {
+    const html = renderAgentMarkdown([
+      "[Word 文档](docs/report.docx)",
+      "[TSX 文件](src/app.tsx)",
+      "[普通网站](https://example.com)",
+    ].join(" "));
+
+    expect(html.match(/class="agent-markdown__file-link"/gu)).toHaveLength(2);
+    expect(html.match(/class="agent-markdown__file-icon"/gu)).toHaveLength(2);
+    expect(html).toContain('<a href="https://example.com"');
+  });
 });

@@ -55,6 +55,19 @@ describe("main agent errors", () => {
     ).toBe("MODEL_CONFIGURATION_INVALID");
   });
 
+  it("keeps terminal startup failures actionable instead of treating them as missing artifacts", () => {
+    const error = Object.assign(
+      new Error("无法启动PWSH（PowerShell 7）。请检查设置中的终端启动路径和项目目录。"),
+      { code: "TERMINAL_LAUNCH_FAILED" },
+    );
+
+    expect(toMainAgentError(error, { operation: "ipc:terminal.session_open" })).toMatchObject({
+      code: "PROCESS_FAILED",
+      message: "无法启动PWSH（PowerShell 7）。请检查设置中的终端启动路径和项目目录。",
+      retryable: false,
+    });
+  });
+
   it("keeps a safe network technical detail without exposing a stack", () => {
     const error = toMainAgentError(
       new TypeError("fetch failed", {

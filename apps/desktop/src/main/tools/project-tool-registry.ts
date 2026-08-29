@@ -8,6 +8,7 @@ import {
   DEFAULT_TERMINAL_CONFIGURATION,
   projectFileSchema,
   relativeProjectPathSchema,
+  type AgentPermissionTool,
   type ProjectFile,
   type TerminalConfiguration,
   type TerminalOutputEncoding,
@@ -22,6 +23,7 @@ import type { ModelToolDefinition } from "../model/model-contracts.js";
 import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
 import { toolErrorContent } from "../errors/tool-error.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
+import { resolveTerminalExecutable } from "./terminal-executable-resolver.js";
 import { findFilesWithRipgrep, searchTextWithRipgrep } from "./ripgrep-search.js";
 import type { ToolExecutionPolicy } from "./tool-execution-policy.js";
 
@@ -252,6 +254,14 @@ export type PreparedExternalFileRead = {
   sizeBytes: number;
 };
 
+export type PreparedApprovedAction = {
+  execute(): Promise<ToolExecutionResult>;
+  pattern: string;
+  permissionTool: AgentPermissionTool;
+  rejectionMessage: string;
+  rejectionValue?: Record<string, unknown>;
+};
+
 export type ProjectOperationOwner = {
   conversationId: string;
   conversationTitle: string;
@@ -331,6 +341,12 @@ class PreparedFileChangeStaleError extends Error {
 
 export type ToolExecution =
   | ToolExecutionResult
+  | {
+      action: PreparedApprovedAction;
+      content: string;
+      isError: false;
+      kind: "approved_action";
+    }
   | {
       change: PreparedFileChange;
       content: string;
@@ -955,6 +971,29 @@ export class ProjectToolRegistry {
     }
   }
 
+  public async executeApprovedCommandAction(
+    command: string,
+    projectId: string,
+    signal: AbortSignal,
+    owner: ProjectOperationOwner,
+    action: () => Promise<ToolExecutionResult>,
+  ): Promise<ToolExecutionResult> {
+    try {
+      return await this.runProjectMutation(
+        projectId,
+        { command, kind: "command", parallel: false },
+        owner,
+        signal,
+        async () => action(),
+      );
+    } catch (error) {
+      if (error instanceof ProjectOperationConflictError) {
+        return this.operationConflict(error.conflict, "command");
+      }
+      throw error;
+    }
+  }
+
   private async prepareWriteFile(
     rawArguments: unknown,
     projectId: string,
@@ -1089,14 +1128,22 @@ export class ProjectToolRegistry {
             command,
           ],
           displayName: process.platform === "win32" ? "Windows PowerShell" : "PowerShell",
-          executable: process.platform === "win32" ? "powershell.exe" : "pwsh",
+          executable: resolveTerminalExecutable(
+            configuration,
+            shell,
+            process.platform === "win32" ? "powershell.exe" : "pwsh",
+          ),
           shell,
         };
       case "pwsh":
         return {
           args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
-          displayName: "PowerShell 7",
-          executable: process.platform === "win32" ? "pwsh.exe" : "pwsh",
+          displayName: "PWSH（PowerShell 7）",
+          executable: resolveTerminalExecutable(
+            configuration,
+            shell,
+            process.platform === "win32" ? "pwsh.exe" : "pwsh",
+          ),
           shell,
         };
       case "cmd":
@@ -1105,8 +1152,8 @@ export class ProjectToolRegistry {
         }
         return {
           args: ["/d", "/s", "/c", command],
-          displayName: "Command Prompt",
-          executable: "cmd.exe",
+          displayName: "命令提示符",
+          executable: resolveTerminalExecutable(configuration, shell, "cmd.exe"),
           shell,
         };
       case "bash":
@@ -1116,7 +1163,7 @@ export class ProjectToolRegistry {
         return {
           args: ["--noprofile", "--norc", "-lc", command],
           displayName: "Bash",
-          executable: "bash",
+          executable: resolveTerminalExecutable(configuration, shell, "bash"),
           shell,
         };
     }
@@ -1644,7 +1691,7 @@ function waitForDelay(delayMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
-function commandEnvironmentWithBundledRipgrep(
+export function commandEnvironmentWithBundledRipgrep(
   environment: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   const nextEnvironment = { ...environment };

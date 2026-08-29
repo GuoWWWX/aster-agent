@@ -6,11 +6,11 @@ describe("desktop capabilities", () => {
   it("reports controlled process and Skill execution capabilities", () => {
     expect(DESKTOP_CAPABILITIES).toMatchObject({
       fileWrite: true,
-      git: false,
-      managedBrowser: false,
+      git: true,
+      managedBrowser: true,
       mcp: false,
       process: true,
-      pty: false,
+      pty: true,
       skills: true,
       workspace: true,
     });

@@ -1,6 +1,7 @@
 import type {
   CapabilitySet,
   ApplicationSettings,
+  BrowserConfiguration,
   ApproveToolChangeInput,
   CancelRunInput,
   ConversationContextUsage,
@@ -26,10 +27,23 @@ import type {
   DiscoverModelsInput,
   DiscoveredModel,
   IntegrationConfiguration,
+  GitFileDiff,
+  GitFileDiffInput,
+  GitOperationInput,
+  GitReviewInput,
+  GitReviewSnapshot,
   ListConfigurationWorkspaceEntriesInput,
   ListProjectEntriesInput,
   ModelConnectionTestResult,
   ModelRuntimeStatus,
+  ManagedBrowserBoundsInput,
+  ManagedBrowserCommandInput,
+  ManagedBrowserEvent,
+  ManagedBrowserNavigateInput,
+  ManagedBrowserOpenInput,
+  ManagedBrowserReferenceInput,
+  ManagedBrowserSession,
+  ManagedBrowserSnapshot,
   ModelCatalog,
   ProjectDirectoryListing,
   ProjectEntry,
@@ -64,6 +78,19 @@ import type {
   SkillDocumentReferenceInput,
   SkillDocumentSaveInput,
   TerminalConfiguration,
+  TerminalSession,
+  TerminalSessionEvent,
+  TerminalSessionOpenInput,
+  TerminalSessionOutput,
+  TerminalSessionOutputInput,
+  TerminalSessionReferenceInput,
+  TerminalSessionResizeInput,
+  TerminalSessionWriteInput,
+  WorkspaceTerminalTabOpenRequest,
+  WorkspaceTerminalTabOpenedInput,
+  WorkspaceBrowserTabOpenRequest,
+  WorkspaceBrowserTabOpenedInput,
+  WorkspaceBrowserTabCloseRequest,
   WriteConfigurationWorkspaceFileInput,
   WriteProjectFileInput,
   WindowState,
@@ -80,6 +107,11 @@ import type {
 export type WindowStateListener = (state: WindowState) => void;
 export type ConversationRunEventListener = (event: ConversationRunEvent) => void;
 export type ApplicationSettingsListener = (settings: ApplicationSettings) => void;
+export type TerminalSessionEventListener = (event: TerminalSessionEvent) => void;
+export type WorkspaceTerminalTabOpenRequestListener = (request: WorkspaceTerminalTabOpenRequest) => void;
+export type WorkspaceBrowserTabOpenRequestListener = (request: WorkspaceBrowserTabOpenRequest) => void;
+export type WorkspaceBrowserTabCloseRequestListener = (request: WorkspaceBrowserTabCloseRequest) => void;
+export type ManagedBrowserEventListener = (event: ManagedBrowserEvent) => void;
 
 /**
  * Renderer-facing runtime port. UI code talks only to this contract so the
@@ -134,7 +166,31 @@ export interface AgentClient {
   getContextCompressionConfiguration(): Promise<ContextCompressionConfiguration>;
   getApplicationSettings(): Promise<ApplicationSettings>;
   getIntegrationConfiguration(): Promise<IntegrationConfiguration>;
+  getBrowserConfiguration(): Promise<BrowserConfiguration>;
   getTerminalConfiguration(): Promise<TerminalConfiguration>;
+  getGitReviewSnapshot(input: GitReviewInput): Promise<GitReviewSnapshot>;
+  getGitFileDiff(input: GitFileDiffInput): Promise<GitFileDiff>;
+  runGitOperation(input: GitOperationInput): Promise<GitReviewSnapshot>;
+  openTerminalSession(input: TerminalSessionOpenInput): Promise<TerminalSession>;
+  readTerminalSessionOutput(input: TerminalSessionOutputInput): Promise<TerminalSessionOutput>;
+  writeTerminalSession(input: TerminalSessionWriteInput): Promise<void>;
+  resizeTerminalSession(input: TerminalSessionResizeInput): Promise<void>;
+  closeTerminalSession(input: TerminalSessionReferenceInput): Promise<void>;
+  onTerminalSessionEvent(listener: TerminalSessionEventListener): () => void;
+  confirmWorkspaceTerminalTabOpened(input: WorkspaceTerminalTabOpenedInput): Promise<void>;
+  onWorkspaceTerminalTabOpenRequested(
+    listener: WorkspaceTerminalTabOpenRequestListener,
+  ): () => void;
+  confirmWorkspaceBrowserTabOpened(input: WorkspaceBrowserTabOpenedInput): Promise<void>;
+  onWorkspaceBrowserTabOpenRequested(listener: WorkspaceBrowserTabOpenRequestListener): () => void;
+  onWorkspaceBrowserTabCloseRequested(listener: WorkspaceBrowserTabCloseRequestListener): () => void;
+  openManagedBrowser(input: ManagedBrowserOpenInput): Promise<ManagedBrowserSession>;
+  navigateManagedBrowser(input: ManagedBrowserNavigateInput): Promise<void>;
+  commandManagedBrowser(input: ManagedBrowserCommandInput): Promise<void>;
+  captureManagedBrowser(input: ManagedBrowserReferenceInput): Promise<ManagedBrowserSnapshot>;
+  setManagedBrowserBounds(input: ManagedBrowserBoundsInput): Promise<void>;
+  closeManagedBrowser(input: ManagedBrowserReferenceInput): Promise<void>;
+  onManagedBrowserEvent(listener: ManagedBrowserEventListener): () => void;
   getRuntimeInfo(): Promise<RuntimeInfo>;
   getWindowState(): Promise<WindowState>;
   importSkillDocument(): Promise<SkillDocument | null>;
@@ -220,6 +276,9 @@ export interface AgentClient {
   saveIntegrationConfiguration(
     input: IntegrationConfiguration,
   ): Promise<IntegrationConfiguration>;
+  saveBrowserConfiguration(
+    input: BrowserConfiguration,
+  ): Promise<BrowserConfiguration>;
   saveTerminalConfiguration(
     input: TerminalConfiguration,
   ): Promise<TerminalConfiguration>;

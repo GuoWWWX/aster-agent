@@ -28,6 +28,7 @@ import { ConversationAttachmentStore } from "../storage/conversation-attachment-
 import { EventProjector } from "../storage/event-projector.js";
 import { ThreadLog } from "../storage/thread-log.js";
 import { ProjectToolRegistry } from "../tools/project-tool-registry.js";
+import { WorkspaceTerminalTabController } from "../tools/workspace-terminal-tab-controller.js";
 import {
   AgentRuntime,
   type ContextCompactionInput,
@@ -88,6 +89,27 @@ class FixtureModel implements ModelProviderAdapter {
       finishReason: "stop",
       toolCalls: []
     });
+  }
+}
+
+class OpenTerminalFixtureModel implements ModelProviderAdapter {
+  public readonly requests: CompleteTurnInput[] = [];
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.requests.push({ ...input, messages: [...input.messages] });
+    if (this.requests.length === 1) {
+      return Promise.resolve({
+        content: "",
+        finishReason: "tool_calls",
+        toolCalls: [{
+          arguments: JSON.stringify({ name: "构建" }),
+          id: "call_open_terminal",
+          name: "open_terminal",
+        }],
+      });
+    }
+    input.onTextDelta("终端已打开");
+    return Promise.resolve({ content: "终端已打开", finishReason: "stop", toolCalls: [] });
   }
 }
 
@@ -1251,6 +1273,88 @@ class FixtureContextCompactor implements ContextCompactor {
 }
 
 describe("AgentRuntime", () => {
+  it("registers open_terminal for a project conversation and returns the resolved tab name", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-open-terminal-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const terminalTabs = new WorkspaceTerminalTabController();
+    terminalTabs.onOpenRequested((request) => {
+      terminalTabs.confirmOpened({ requestId: request.requestId, resolvedName: "构建 (1)" });
+      return true;
+    });
+    const model = new OpenTerminalFixtureModel();
+    const terminalSessions = {
+      close: vi.fn(),
+      open: vi.fn(() => ({
+        projectId: project.id,
+        sessionId: "00000000-0000-4000-8000-000000000003",
+        shellLabel: "PWSH（PowerShell 7）",
+      })),
+      readOutput: vi.fn(() => ({ data: "", nextCursor: 0, truncated: false })),
+      write: vi.fn(),
+    };
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      undefined,
+      null,
+      null,
+      null,
+      null,
+      null,
+      undefined,
+      null,
+      null,
+      null,
+      null,
+      null,
+      terminalTabs,
+      terminalSessions,
+    );
+
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage({
+        content: "打开构建终端",
+        conversationId: conversation.id,
+        permissionMode: "ask_before_changes",
+      }, (event) => {
+        if (event.type === "tool.approval_requested") {
+          expect(terminalSessions.open).not.toHaveBeenCalled();
+          runtime.approveToolChange({ approved: true, runId: event.runId, toolId: event.tool.id });
+        }
+        if (event.type === "run.finished") resolve();
+      });
+    });
+
+    expect(model.requests[0]?.tools.some((tool) => tool.name === "open_terminal")).toBe(true);
+    const toolMessage = model.requests[1]?.messages.find((message) => (
+      message.role === "tool" && message.toolCallId === "call_open_terminal"
+    ));
+    expect(toolMessage?.content).toContain('"resolvedName":"构建 (1)"');
+    expect(toolMessage?.content).toContain('"terminalId":"00000000-0000-4000-8000-000000000003"');
+    expect(terminalSessions.open).toHaveBeenCalledOnce();
+    expect(database.listTimeline(conversation.id)).toContainEqual(expect.objectContaining({
+      name: "open_terminal",
+      status: "completed",
+    }));
+    database.close();
+  });
+
   it("writes an ordered shadow ThreadLog for a completed user Run", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-thread-log-"));
     temporaryDirectories.push(root);

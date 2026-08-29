@@ -171,6 +171,9 @@ function classifyError(
   if (nodeCode === "TOOL_ARGUMENTS_INVALID") {
     return classificationForCode("VALIDATION_FAILED");
   }
+  if (nodeCode === "TERMINAL_LAUNCH_FAILED") {
+    return classificationForCode("PROCESS_FAILED");
+  }
   if (isGraphRecursionLimit(reason)) {
     return classificationForCode("MODEL_RESPONSE_INVALID");
   }

@@ -1,0 +1,125 @@
+import { describe, expect, it, vi } from "vitest";
+
+import type { ProjectOperationOwner, ToolExecutionResult } from "./project-tool-registry.js";
+import { WorkspaceTerminalTabController } from "./workspace-terminal-tab-controller.js";
+import {
+  CREATE_TERMINAL_TOOL_NAME,
+  EXECUTE_TERMINAL_COMMAND_TOOL_NAME,
+  OPEN_TERMINAL_TOOL_NAME,
+  READ_TERMINAL_OUTPUT_TOOL_NAME,
+  WorkspaceTerminalTool,
+} from "./workspace-terminal-tool.js";
+
+const CONVERSATION_ID = "00000000-0000-4000-8000-000000000001";
+const PROJECT_ID = "00000000-0000-4000-8000-000000000002";
+const OPERATION_OWNER: ProjectOperationOwner = {
+  conversationId: CONVERSATION_ID,
+  conversationTitle: "测试会话",
+  runId: "00000000-0000-4000-8000-000000000004",
+};
+
+describe("WorkspaceTerminalTool", () => {
+  it("creates one persistent PTY-backed side terminal, then writes and reads it", async () => {
+    const controller = new WorkspaceTerminalTabController();
+    controller.onOpenRequested((request) => {
+      controller.confirmOpened({ requestId: request.requestId, resolvedName: "服务日志 (1)" });
+      return true;
+    });
+    const terminalId = "00000000-0000-4000-8000-000000000003";
+    const terminalSessions = {
+      close: vi.fn(),
+      open: vi.fn(() => ({ projectId: PROJECT_ID, sessionId: terminalId, shellLabel: "PWSH（PowerShell 7）" })),
+      readOutput: vi.fn(() => ({ data: "server ready" + String.fromCharCode(13, 10), nextCursor: 14, truncated: false })),
+      write: vi.fn(),
+    };
+    const projectOperations = {
+      executeApprovedCommandAction: vi.fn(async (
+        _command: string,
+        _projectId: string,
+        _signal: AbortSignal,
+        _owner: ProjectOperationOwner,
+        action: () => Promise<ToolExecutionResult>,
+      ) => action()),
+    };
+    const tool = new WorkspaceTerminalTool(controller, terminalSessions, projectOperations);
+
+    expect(tool.getDefinitions().map((definition) => definition.name)).toEqual([
+      CREATE_TERMINAL_TOOL_NAME,
+      OPEN_TERMINAL_TOOL_NAME,
+      EXECUTE_TERMINAL_COMMAND_TOOL_NAME,
+      READ_TERMINAL_OUTPUT_TOOL_NAME,
+    ]);
+
+    const proposal = await tool.execute({
+      conversationId: CONVERSATION_ID,
+      operationOwner: OPERATION_OWNER,
+      projectId: PROJECT_ID,
+      rawArguments: JSON.stringify({ name: "服务日志" }),
+      signal: new AbortController().signal,
+      toolName: CREATE_TERMINAL_TOOL_NAME,
+    });
+
+    expect(proposal).toMatchObject({ isError: false, kind: "approved_action" });
+    expect(terminalSessions.open).not.toHaveBeenCalled();
+    if (proposal.kind !== "approved_action") throw new Error("Expected terminal approval proposal.");
+    const result = await proposal.action.execute();
+    expect(projectOperations.executeApprovedCommandAction).toHaveBeenCalledWith(
+      "create_terminal",
+      PROJECT_ID,
+      expect.any(AbortSignal),
+      OPERATION_OWNER,
+      expect.any(Function),
+    );
+    expect(JSON.parse(result.content)).toEqual({
+      ok: true,
+      value: {
+        nameAdjusted: true,
+        opened: true,
+        requestedName: "服务日志",
+        resolvedName: "服务日志 (1)",
+        terminalId,
+      },
+    });
+
+    const writeProposal = await tool.execute({
+      conversationId: CONVERSATION_ID,
+      operationOwner: OPERATION_OWNER,
+      projectId: PROJECT_ID,
+      rawArguments: JSON.stringify({ command: "npm run dev", terminalId, yieldTimeMs: 0 }),
+      signal: new AbortController().signal,
+      toolName: EXECUTE_TERMINAL_COMMAND_TOOL_NAME,
+    });
+    expect(terminalSessions.write).not.toHaveBeenCalled();
+    if (writeProposal.kind !== "approved_action") throw new Error("Expected command approval proposal.");
+    const write = await writeProposal.action.execute();
+    expect(projectOperations.executeApprovedCommandAction).toHaveBeenLastCalledWith(
+      "npm run dev",
+      PROJECT_ID,
+      expect.any(AbortSignal),
+      OPERATION_OWNER,
+      expect.any(Function),
+    );
+    expect(JSON.parse(write.content)).toEqual({
+      ok: true,
+      value: {
+        output: { data: "server ready\r\n", nextCursor: 14, truncated: false },
+        sent: true,
+        terminalId,
+      },
+    });
+    expect(terminalSessions.write).toHaveBeenCalledWith({ data: "npm run dev\r", sessionId: terminalId });
+
+    const read = await tool.execute({
+      conversationId: CONVERSATION_ID,
+      operationOwner: OPERATION_OWNER,
+      projectId: PROJECT_ID,
+      rawArguments: JSON.stringify({ terminalId }),
+      signal: new AbortController().signal,
+      toolName: READ_TERMINAL_OUTPUT_TOOL_NAME,
+    });
+    expect(JSON.parse(read.content)).toEqual({
+      ok: true,
+      value: { data: "server ready\r\n", nextCursor: 14, terminalId, truncated: false },
+    });
+  });
+});

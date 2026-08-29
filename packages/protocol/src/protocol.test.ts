@@ -5,7 +5,9 @@ import {
   capabilitySetSchema,
   agentAvatarIconSchema,
   agentPermissionRuleSchema,
+  applicationSettingsSchema,
   approveToolChangeInputSchema,
+  browserConfigurationSchema,
   clipboardWriteTextIpcArgumentsSchema,
   contextCompressionConfigurationSchema,
   contextCompressionThresholdSchema,
@@ -16,12 +18,20 @@ import {
   conversationTaskListSchema,
   createProjectEntryInputSchema,
   createConversationInputSchema,
+  DEFAULT_APPLICATION_SETTINGS,
   emptyIpcArgumentsSchema,
   forkConversationInputSchema,
+  gitFileDiffInputSchema,
+  gitOperationInputSchema,
+  gitReviewSnapshotSchema,
   IPC_CHANNELS,
   isReasoningOptionEnabled,
   isReasoningOptionSupportedByApiFormat,
   listProjectEntriesInputSchema,
+  managedBrowserBoundsInputSchema,
+  managedBrowserCommandInputSchema,
+  managedBrowserEventSchema,
+  managedBrowserSnapshotSchema,
   pluginCatalogEntrySchema,
   runtimeInfoSchema,
   resolveContextCompressionThresholdTokens,
@@ -31,7 +41,12 @@ import {
   setConversationModelSelectionInputSchema,
   testModelConnectionInputSchema,
   setConversationProjectInputSchema,
-  sendConversationMessageInputSchema
+  sendConversationMessageInputSchema,
+  terminalSessionEventSchema,
+  terminalSessionOpenInputSchema,
+  workspaceBrowserTabOpenRequestSchema,
+  workspaceTerminalTabOpenedInputSchema,
+  workspaceTerminalTabOpenRequestSchema,
 } from "./index.js";
 
 describe("protocol bootstrap contract", () => {
@@ -56,6 +71,8 @@ describe("protocol bootstrap contract", () => {
     }).scope).toBe("agent");
     expect(agentPermissionRuleSchema.parse({ tool: "run_command", pattern: "mvn package *" }))
       .toEqual({ pattern: "mvn package *", tool: "run_command" });
+    expect(agentPermissionRuleSchema.parse({ tool: "browser_control", pattern: "navigate https://example.com/*" }))
+      .toEqual({ pattern: "navigate https://example.com/*", tool: "browser_control" });
     expect(() => agentPermissionRuleSchema.parse({ tool: "run_command", pattern: "mvn * test" }))
       .toThrow();
     expect(() => approveToolChangeInputSchema.parse({
@@ -64,6 +81,18 @@ describe("protocol bootstrap contract", () => {
       scope: "global",
       toolId: "00000000-0000-4000-8000-000000000002",
     })).toThrow();
+  });
+
+  it("defaults browser control to ask when loading settings saved before the policy existed", () => {
+    const { ["browser-control"]: browserControl, ...legacyPermissionPolicies } =
+      DEFAULT_APPLICATION_SETTINGS.permissionPolicies;
+    expect(browserControl).toBe("ask");
+    const settings = applicationSettingsSchema.parse({
+      ...DEFAULT_APPLICATION_SETTINGS,
+      permissionPolicies: legacyPermissionPolicies,
+    });
+
+    expect(settings.permissionPolicies["browser-control"]).toBe("ask");
   });
 
   it("bounds clipboard text at the IPC boundary", () => {
@@ -160,6 +189,154 @@ describe("protocol bootstrap contract", () => {
 
   it("rejects IPC arguments during bootstrap", () => {
     expect(() => emptyIpcArgumentsSchema.parse(["unexpected"])).toThrow();
+  });
+
+  it("validates the terminal-tab open handshake without accepting blank names", () => {
+    const requestId = "00000000-0000-4000-8000-000000000001";
+    expect(workspaceTerminalTabOpenRequestSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000002",
+      projectId: "00000000-0000-4000-8000-000000000003",
+      requestedName: "构建日志",
+      requestId,
+      session: {
+        projectId: "00000000-0000-4000-8000-000000000003",
+        sessionId: "00000000-0000-4000-8000-000000000004",
+        shellLabel: "PWSH（PowerShell 7）",
+      },
+    })).toMatchObject({ requestedName: "构建日志" });
+    expect(workspaceTerminalTabOpenedInputSchema.parse({
+      requestId,
+      resolvedName: "构建日志 (1)",
+    })).toMatchObject({ resolvedName: "构建日志 (1)" });
+    expect(() => workspaceTerminalTabOpenedInputSchema.parse({ requestId, resolvedName: "  " }))
+      .toThrow();
+  });
+
+  it("validates the browser-tab open handshake with an already-created isolated session", () => {
+    expect(workspaceBrowserTabOpenRequestSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000002",
+      projectId: "00000000-0000-4000-8000-000000000003",
+      requestedName: "资料",
+      requestId: "00000000-0000-4000-8000-000000000001",
+      session: {
+        canGoBack: false,
+        canGoForward: false,
+        isLoading: false,
+        sessionId: "00000000-0000-4000-8000-000000000004",
+        title: "Example",
+        url: "https://example.test/",
+        zoomPercent: 100,
+      },
+    })).toMatchObject({ requestedName: "资料" });
+  });
+
+  it("validates bounded developer-tool contracts", () => {
+    const sessionId = "00000000-0000-4000-8000-000000000001";
+    const projectId = "00000000-0000-4000-8000-000000000002";
+    expect(terminalSessionOpenInputSchema.parse({ columns: 120, projectId, rows: 36 }))
+      .toEqual({ columns: 120, projectId, rows: 36 });
+    expect(() => terminalSessionOpenInputSchema.parse({ columns: 0, projectId, rows: 36 }))
+      .toThrow();
+    expect(terminalSessionEventSchema.parse({ data: "ready\r\n", sessionId, type: "data" }))
+      .toMatchObject({ type: "data" });
+    expect(managedBrowserBoundsInputSchema.parse({
+      height: 600,
+      sessionId,
+      visible: true,
+      width: 900,
+      x: 400,
+      y: 80,
+    })).toMatchObject({ visible: true, width: 900 });
+    expect(managedBrowserCommandInputSchema.parse({
+      command: "zoomIn",
+      sessionId,
+    })).toEqual({ command: "zoomIn", sessionId });
+    expect(managedBrowserCommandInputSchema.parse({
+      command: "showMenu",
+      sessionId,
+    })).toEqual({ command: "showMenu", sessionId });
+    expect(managedBrowserEventSchema.parse({
+      session: {
+        canGoBack: false,
+        canGoForward: false,
+        isLoading: false,
+        sessionId,
+        title: "Example",
+        url: "https://example.com/",
+        zoomPercent: 125,
+      },
+      type: "state",
+    })).toMatchObject({ session: { zoomPercent: 125 }, type: "state" });
+    expect(() => managedBrowserEventSchema.parse({
+      message: "x".repeat(2_001),
+      sessionId,
+      type: "error",
+    })).toThrow();
+    expect(managedBrowserEventSchema.parse({
+      sessionId,
+      type: "openSettings",
+    })).toEqual({ sessionId, type: "openSettings" });
+    expect(managedBrowserSnapshotSchema.parse({
+      data: "c25hcHNob3Q=",
+      height: 600,
+      mimeType: "image/jpeg",
+      width: 900,
+    })).toMatchObject({ height: 600, width: 900 });
+    expect(gitReviewSnapshotSchema.parse({
+      ahead: 0,
+      behind: 1,
+      branch: "develop",
+      branches: [{ current: true, name: "develop", upstream: "origin/develop" }],
+      changes: [{
+        additions: 2,
+        deletions: 1,
+        isStaged: false,
+        originalPath: null,
+        path: "src/app.ts",
+        status: " M",
+      }],
+      isRepository: true,
+      projectId,
+      refreshedAt: "2026-08-28T00:00:00.000Z",
+      upstream: "origin/develop",
+    }).changes).toHaveLength(1);
+    expect(gitFileDiffInputSchema.parse({ path: "src/app.ts", projectId }))
+      .toEqual({ path: "src/app.ts", projectId });
+    expect(gitOperationInputSchema.parse({
+      action: "untrackFiles",
+      paths: ["src/app.ts"],
+      projectId,
+    })).toMatchObject({ action: "untrackFiles" });
+    expect(gitOperationInputSchema.parse({
+      action: "stageFiles",
+      paths: ["src/app.ts", "src/new-file.ts"],
+      projectId,
+    })).toMatchObject({ action: "stageFiles" });
+    expect(gitOperationInputSchema.parse({
+      action: "commit",
+      message: "feat: test",
+      paths: ["src/app.ts"],
+      projectId,
+    })).toMatchObject({ action: "commit" });
+    expect(() => gitOperationInputSchema.parse({ action: "commit", message: "feat: test", projectId }))
+      .toThrow();
+    expect(gitOperationInputSchema.parse({
+      action: "createBranch",
+      branch: "feature/review-menu",
+      projectId,
+      startPoint: "develop",
+    })).toEqual({
+      action: "createBranch",
+      branch: "feature/review-menu",
+      projectId,
+      startPoint: "develop",
+    });
+    expect(() => gitOperationInputSchema.parse({ action: "stageFile", path: "../outside", projectId }))
+      .toThrow();
+    expect(IPC_CHANNELS.managedBrowserOpen).toBe("managed_browser.open");
+    expect(IPC_CHANNELS.managedBrowserCapture).toBe("managed_browser.capture");
+    expect(browserConfigurationSchema.parse({ defaultZoomPercent: 125, version: 1 }))
+      .toEqual({ defaultZoomPercent: 125, version: 1 });
   });
 
   it("validates project entry creation paths", () => {
