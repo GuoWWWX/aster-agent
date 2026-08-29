@@ -51,7 +51,7 @@ import {
 
 describe("protocol bootstrap contract", () => {
   it("keeps Agent and Subagent avatar icons in one bounded catalog", () => {
-    expect(AGENT_AVATAR_ICONS).toHaveLength(18);
+    expect(AGENT_AVATAR_ICONS).toHaveLength(63);
     expect(new Set(AGENT_AVATAR_ICONS).size).toBe(AGENT_AVATAR_ICONS.length);
     expect(agentAvatarIconSchema.parse("brain")).toBe("brain");
     expect(() => agentAvatarIconSchema.parse("arbitrary-svg")).toThrow();

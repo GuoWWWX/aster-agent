@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CirclePlus,
+  Eye,
   ImagePlus,
   Layers3,
   Plus,
@@ -36,7 +37,9 @@ import {
   type AgentProfile,
   type AgentTeam,
 } from "../../stores/agent-directory-store.js";
-import { AgentAvatar, AGENT_AVATAR_ICON_OPTIONS } from "../team/agent-avatar.js";
+import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
+import { AgentAvatar } from "../team/agent-avatar.js";
+import { AgentAvatarPicker } from "./agent-avatar-picker.js";
 import "./agent-team-settings.css";
 
 type ManagementView = "agents" | "teams";
@@ -544,6 +547,9 @@ function AgentConfigurationPane({
   teams: AgentTeam[];
 }): ReactElement {
   const updateAgent = useAgentDirectoryStore((state) => state.updateAgent);
+  const openAgentPromptWorkspace = useWorkbenchUiStore(
+    (state) => state.openAgentPromptWorkspace,
+  );
   const memberships = teams.filter((team) => team.memberIds.includes(agent.id));
 
   return (
@@ -567,42 +573,64 @@ function AgentConfigurationPane({
 
       <div className="management-detail-body">
         <div className="agent-editor-grid">
-          <div className="management-form">
-          <div className="management-form__row">
-            <label>
-              <span>名称</span>
-              <input
-                value={agent.name}
-                onChange={(event) => updateAgent(agent.id, { name: event.target.value })}
-              />
-            </label>
-            <label>
-              <span>角色</span>
-              <input
-                value={agent.role}
-                onChange={(event) => updateAgent(agent.id, { role: event.target.value })}
-              />
-            </label>
-          </div>
-          <label>
-            <span>用途说明</span>
-            <input
-              value={agent.description}
-              onChange={(event) => updateAgent(agent.id, { description: event.target.value })}
-            />
-          </label>
-          <label>
-            <span>核心指令</span>
-            <textarea
-              rows={5}
-              value={agent.instructions}
-              onChange={(event) => updateAgent(agent.id, { instructions: event.target.value })}
-            />
-          </label>
-          </div>
+          <AvatarEditor agent={agent} onUpdate={(patch) => updateAgent(agent.id, patch)} />
 
-          <div className="agent-policy-column">
-            <AvatarEditor agent={agent} onUpdate={(patch) => updateAgent(agent.id, patch)} />
+          <div className="management-form">
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              <h3 className="m-0 text-[length:var(--app-font-size-auxiliary)] font-bold text-[var(--app-muted-foreground)]">
+                Markdown 文档属性
+              </h3>
+              <span className="shrink-0 text-[length:var(--app-font-size-caption)] font-semibold text-[var(--app-accent)]">自动同步</span>
+            </div>
+            <div className="management-form__row">
+              <label>
+                <span>名称</span>
+                <input
+                  aria-label="名称"
+                  value={agent.name}
+                  onChange={(event) => updateAgent(agent.id, { name: event.target.value })}
+                />
+              </label>
+              <label>
+                <span>角色</span>
+                <input
+                  aria-label="角色"
+                  value={agent.role}
+                  onChange={(event) => updateAgent(agent.id, { role: event.target.value })}
+                />
+              </label>
+            </div>
+            <label>
+              <span>用途说明</span>
+              <input
+                aria-label="用途说明"
+                value={agent.description}
+                onChange={(event) => updateAgent(agent.id, { description: event.target.value })}
+              />
+            </label>
+            <section className="grid min-w-0 gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] p-2" aria-labelledby={`agent-instructions-${agent.id}`}>
+              <div className="flex min-w-0 items-center justify-between gap-2">
+                <h3 id={`agent-instructions-${agent.id}`} className="m-0 text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-foreground)]">
+                  详细提示词
+                </h3>
+                <button
+                  aria-label={`查看 ${agent.name} 的提示词文档`}
+                  className="inline-flex h-7 shrink-0 items-center gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-2 text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-muted-foreground)] outline-none hover:border-[var(--app-accent)] hover:text-[var(--app-foreground)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+                  type="button"
+                  onClick={() => openAgentPromptWorkspace({
+                    agentId: agent.id,
+                    title: `${agent.name.trim() || "未命名 Agent"} 提示词`,
+                  })}
+                >
+                  <Eye aria-hidden="true" size={14} />
+                  查看
+                </button>
+              </div>
+              <p className="m-0 text-[length:var(--app-font-size-auxiliary)] leading-[1.45] text-[var(--app-muted-foreground)]">
+                在右侧标签中查看和编辑完整 Markdown 提示词及其文档属性。
+              </p>
+            </section>
+          </div>
 
           <section className="management-policy-section">
             <h3>模型策略</h3>
@@ -636,7 +664,6 @@ function AgentConfigurationPane({
               ))}
             </div>
           </section>
-          </div>
         </div>
       </div>
     </aside>
@@ -690,34 +717,14 @@ function AvatarEditor({
   return (
     <section className="management-policy-section agent-avatar-editor-section">
       <h3>头像</h3>
-      <div className="agent-avatar-editor">
-        <div className="agent-avatar-editor__preview">
-          <AgentAvatar avatar={agent.avatar} size="large" status={agent.status} />
-          <span>{agent.avatar.kind === "image" ? agent.avatar.fileName : "预设图标"}</span>
-        </div>
-        <div className="agent-avatar-presets" aria-label="预设 Agent 图标">
-          {AGENT_AVATAR_ICON_OPTIONS.map((option) => {
-            const Icon = option.icon;
-            const selected = agent.avatar.kind === "icon" && agent.avatar.icon === option.id;
-            return (
-              <button
-                key={option.id}
-                aria-label={option.label}
-                aria-pressed={selected}
-                data-tone={option.tone}
-                title={option.label}
-                type="button"
-                onClick={() => {
-                  setError(null);
-                  onUpdate({ avatar: { icon: option.id, kind: "icon" } });
-                }}
-              >
-                <Icon aria-hidden="true" size={15} strokeWidth={1.8} />
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <AgentAvatarPicker
+        avatar={agent.avatar}
+        status={agent.status}
+        onIconChange={(icon) => {
+          setError(null);
+          onUpdate({ avatar: { icon, kind: "icon" } });
+        }}
+      />
       <div className="agent-avatar-actions">
         <label className="agent-avatar-upload">
           <ImagePlus aria-hidden="true" size={14} />
@@ -869,27 +876,36 @@ function PermissionEditor({
   }
 
   return (
-    <section className="management-policy-section" aria-labelledby={`agent-permissions-${agent.id}`}>
+    <section
+      className="management-policy-section min-w-0"
+      aria-labelledby={`agent-permissions-${agent.id}`}
+    >
       <div className="management-policy-section__heading">
-        <div>
+        <div className="min-w-0">
           <h3 id={`agent-permissions-${agent.id}`}>权限规则</h3>
-          <p className="settings-section__description">
+          <p className="m-0 max-w-full break-words text-[length:var(--app-font-size-control)] font-medium leading-[1.35] text-[var(--app-muted-foreground)]">
             只保存明确允许的规则；未匹配的命令或敏感操作仍需审批。命令末尾可使用 * 做前缀匹配。
           </p>
         </div>
-        <button disabled={rules.length >= 200} type="button" onClick={addRule}>
-          <Plus aria-hidden="true" size={13} />
-          添加规则
-        </button>
       </div>
+      <button
+        className="mb-2 inline-flex h-8 items-center gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-2 text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-muted-foreground)] outline-none hover:border-[#93c5fd] hover:text-[var(--app-foreground)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] disabled:pointer-events-none disabled:opacity-40"
+        disabled={rules.length >= 200}
+        type="button"
+        onClick={addRule}
+      >
+        <Plus aria-hidden="true" size={13} />
+        添加规则
+      </button>
       {rules.length === 0 ? (
         <p className="capability-inherited-note">当前 Agent 没有持久化允许规则。</p>
       ) : (
-        <div className="agent-permission-rule-list">
+        <div className="agent-permission-rule-list min-w-0">
           {rules.map((rule, index) => (
-            <div className="agent-permission-rule" key={`${rule.tool}-${index}`}>
+            <div className="agent-permission-rule min-w-0" key={`${rule.tool}-${index}`}>
               <select
                 aria-label="权限工具"
+                className="w-full max-w-full"
                 value={rule.tool}
                 onChange={(event) => updateRule(index, {
                   tool: event.target.value as AgentPermissionTool,
@@ -901,6 +917,7 @@ function PermissionEditor({
               </select>
               <input
                 aria-label="权限匹配规则"
+                className="w-full max-w-full"
                 placeholder={rule.tool === "run_command" ? "例如：mvn package *" : "例如：src/* 或 *"}
                 value={rule.pattern}
                 onChange={(event) => updateRule(index, { pattern: event.target.value })}
