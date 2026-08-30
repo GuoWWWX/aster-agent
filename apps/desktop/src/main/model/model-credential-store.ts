@@ -549,6 +549,7 @@ export class ModelCredentialStore {
   ): Promise<{ content: string; modelId: string }> {
     try {
       const configuration = this.getConfiguration(providerId, modelId);
+      let receivedReasoning = false;
       const result = await new ModelAdapterRegistry().completeTurn({
         configuration,
         maxOutputTokens: 64,
@@ -559,17 +560,23 @@ export class ModelCredentialStore {
           toolCallId: null,
           toolCalls: [],
         }],
+        onReasoningDelta: ({ delta }) => {
+          if (delta.trim().length > 0) receivedReasoning = true;
+        },
         onTextDelta: () => undefined,
         reasoning: undefined,
         signal: AbortSignal.timeout(20_000),
         tools: [],
       });
       const content = result.content.trim();
-      if (content.length === 0) {
+      if (content.length === 0 && !receivedReasoning) {
         throw new ModelResponseError("Model did not return a reply.");
       }
       this.setModelConnectionStatus(providerId, modelId, "healthy");
-      return { content: content.slice(0, 2_000), modelId };
+      return {
+        content: content.length === 0 ? "模型已返回有效推理响应。" : content.slice(0, 2_000),
+        modelId,
+      };
     } catch (error) {
       this.setModelConnectionStatus(providerId, modelId, "error");
       throw error;

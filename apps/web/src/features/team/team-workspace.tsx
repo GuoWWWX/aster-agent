@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import type {
   ConversationSummary,
   ProjectSummary,
+  TeamCollaborationProjection,
   TeamWorkItemExecutionView,
   TeamWorkItemView,
 } from "@agent/protocol";
@@ -34,7 +35,7 @@ import {
 } from "./team-work-item-inbox.js";
 import { WorkItemLifecyclePanel } from "./team-work-item-lifecycle-panel.js";
 import { TeamWorkItemBoard } from "./team-work-item-board.js";
-import { WorkflowDesigner } from "./team-workflow-designer.js";
+import { CollaborationGraph } from "./collaboration/collaboration-graph.js";
 import "./team-workflow.css";
 import "./team-workspace.css";
 
@@ -53,6 +54,9 @@ export function TeamWorkspace({
   const [selectedTeamId, setSelectedTeamId] = useState(teams[0]?.id ?? "");
   const [runtimeItems, setRuntimeItems] = useState<TeamWorkItemView[]>([]);
   const [execution, setExecution] = useState<TeamWorkItemExecutionView | null>(null);
+  const [collaborationProjections, setCollaborationProjections] = useState<
+    ReadonlyMap<string, TeamCollaborationProjection>
+  >(new Map());
   const [selectedWorkItemId, setSelectedWorkItemId] = useState("");
   const [filter, setFilter] = useState<WorkItemFilter>("all");
   const [draft, setDraft] = useState("");
@@ -76,6 +80,9 @@ export function TeamWorkspace({
   const selectedExecution = execution?.workItemId === selectedRuntimeWorkItem?.id
     ? execution
     : null;
+  const selectedCollaborationProjection = selectedRuntimeWorkItem === null
+    ? null
+    : collaborationProjections.get(selectedRuntimeWorkItem.id) ?? null;
   const activeTeamIdRef = useRef<string | null>(selectedTeam?.id ?? null);
   const workItemsRequestIdRef = useRef(0);
   const workItemMutationRequestIdRef = useRef(0);
@@ -109,6 +116,7 @@ export function TeamWorkspace({
       if (cancelled) return;
       setRuntimeItems([]);
       setExecution(null);
+      setCollaborationProjections(new Map());
       setSelectedWorkItemId("");
       setEditingItemId(null);
       setDraft("");
@@ -140,6 +148,23 @@ export function TeamWorkspace({
         items.some((item) => item.id === current) ? current : items[0]?.id ?? ""
       ));
       setError(null);
+      const projectionEntries = await Promise.all(items.map(async (item) => {
+        try {
+          const projection = await agentClient.getTeamCollaborationProjection(item.id);
+          return [item.id, projection] as const;
+        } catch {
+          return null;
+        }
+      }));
+      if (
+        requestId !== workItemsRequestIdRef.current
+        || activeTeamIdRef.current !== teamId
+      ) return;
+      setCollaborationProjections(new Map(
+        projectionEntries.filter((entry): entry is readonly [string, TeamCollaborationProjection] => (
+          entry !== null
+        )),
+      ));
     } catch (reason) {
       if (
         requestId !== workItemsRequestIdRef.current
@@ -217,6 +242,12 @@ export function TeamWorkspace({
     ) return;
     void loadWorkItems();
     void loadExecution();
+    if (event.type === "run.finished") {
+      window.setTimeout(() => {
+        void loadWorkItems();
+        void loadExecution();
+      }, 100);
+    }
   }), [
     agentClient,
     selectedExecution,
@@ -341,6 +372,7 @@ export function TeamWorkspace({
         <div className="team-command-layout team-command-layout--board">
           <TeamWorkItemBoard
             items={workItems}
+            projections={collaborationProjections}
             onOpen={(workItemId) => {
               setSelectedWorkItemId(workItemId);
               setFilter("all");
@@ -350,7 +382,21 @@ export function TeamWorkspace({
         </div>
       ) : view === "planning" ? (
         <div className="team-command-layout team-command-layout--designer">
-          <WorkflowDesigner workItemTitle={selectedWorkItem?.title} />
+          {selectedCollaborationProjection === null ? (
+            <div className="team-command-panel team-runtime-empty">选择任务后查看真实协作计划与通信</div>
+          ) : (
+            <CollaborationGraph
+              projection={selectedCollaborationProjection}
+              title={selectedWorkItem?.title ?? "Agent 协作计划与实时通信"}
+              variant="full"
+              onOpenConversation={(conversationId) => {
+                const conversation = selectedExecution?.agents.find(
+                  (participant) => participant.conversation.id === conversationId,
+                )?.conversation;
+                if (conversation !== undefined) onOpenConversation(conversation);
+              }}
+            />
+          )}
         </div>
       ) : (
         <div className="team-command-layout team-command-layout--execution">
@@ -394,6 +440,7 @@ export function TeamWorkspace({
                 execution={selectedExecution}
                 isLifecycle={isSelectedWorkItemLifecycle}
                 item={selectedRuntimeWorkItem}
+                projection={selectedCollaborationProjection}
                 onOpenConversation={onOpenConversation}
               />
               {isSelectedWorkItemLifecycle ? (
@@ -485,11 +532,13 @@ function TeamWorkItemStatusPanel({
   execution,
   isLifecycle,
   item,
+  projection,
   onOpenConversation,
 }: {
   execution: TeamWorkItemExecutionView | null;
   isLifecycle: boolean;
   item: TeamWorkItemView;
+  projection: TeamCollaborationProjection | null;
   onOpenConversation: (conversation: ConversationSummary) => void;
 }): ReactElement {
   const lead = execution?.workItemId === item.id
@@ -538,6 +587,19 @@ function TeamWorkItemStatusPanel({
             打开 Team Lead 对话
           </button>
         </section>
+        {projection === null ? null : (
+          <CollaborationGraph
+            projection={projection}
+            title="Agent 协作计划与实时通信"
+            variant="embedded"
+            onOpenConversation={(conversationId) => {
+              const conversation = execution?.agents.find(
+                (participant) => participant.conversation.id === conversationId,
+              )?.conversation;
+              if (conversation !== undefined) onOpenConversation(conversation);
+            }}
+          />
+        )}
         <section className="grid gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] p-[10px]">
           <div className="flex items-center justify-between gap-[5px]">
             <strong className="text-[length:var(--app-font-size-body)] text-[var(--app-foreground)]">

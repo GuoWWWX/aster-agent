@@ -1,8 +1,8 @@
 # Agent 团队协作计划与运行图产品需求及概要设计（PRD + HLD）
 
-> 文档状态：方案设计，尚未实施
+> 文档状态：核心功能已实施；历史回放、布局持久化与专用活动事件待后续
 >
-> 版本：v1.2
+> 版本：v1.3
 >
 > 更新时间：2026-08-31
 >
@@ -21,15 +21,23 @@
 3. “任务与验收”页：中央栏内的只读嵌入图，位于 Team Lead 对话入口和执行进度之间。
 4. “执行规划”页：完整画布，用于查看计划、实时运行、计划/实际对比和历史回放。
 
-连线的生命周期采用以下规则：**计划发布时出现；消息发生时短暂高亮并显示方向流动；消息结束后连线不消失，而是沉淀为带次数和最近活动时间的已发生关系；计划外联系生成琥珀色临时边；计划修订后旧边进入历史版本，不覆盖既有执行事实。**〔INFER〕
+连线的生命周期采用以下规则：**计划发布时出现；消息发生时短暂高亮并显示方向流动；消息结束后连线不消失，而是沉淀为带次数和最近活动时间的已发生关系；计划外联系生成红色临时边；计划修订后旧边进入历史版本，不覆盖既有执行事实。**〔INFER〕
 
 ![四处展示的组合效果图](./assets/agent-team-collaboration-visualization-overview.png)
 
 可编辑矢量源稿：[agent-team-collaboration-visualization-overview.svg](./assets/agent-team-collaboration-visualization-overview.svg)。
 
-## 1. 背景与现状基线
+### 0.1 2026-08-31 实施快照
 
-### 1.1 已有产品事实
+当前代码已经完成计划/实际关系图的生产竖切：Protocol 提供统一投影 Schema；SQLite Migration 17 新增计划、节点和路线表，并给真实 Agent 消息补充 WorkItem 归属；Team Lead 可用 `set_team_collaboration_plan` 发布完整计划修订；Main 生成计划内、计划外、跳过和已发生路线；Renderer 用一套 SVG 图元分别渲染看板微缩图、来源主对话主图、“任务与验收”嵌入图和“执行规划”完整画布。图的布局、颜色、间距和响应式使用 Tailwind 与语义 Token，Feature CSS 只保留 SVG 数据流关键帧。〔FACT｜`packages/protocol/src/team-collaboration.ts`；`apps/desktop/src/main/storage/agent-database.ts`；`apps/web/src/features/team/collaboration/collaboration-graph.tsx`〕
+
+本批次没有实现历史时间轴、旧计划版本切换、用户拖动后的布局持久化、专用 `team.collaboration.activity` 事件和聚合投影表。当前可见图通过既有 Conversation Run 事件刷新持久投影；已发生路线使用方向虚线持续表达流动，`prefers-reduced-motion` 时停止动画。〔FACT〕
+
+## 1. 背景与实施前基线
+
+### 1.1 实施前已有产品事实
+
+> 本节保留立项时的事实快照，用于说明改造起点；当前实现以 0.1 节和代码为准。
 
 - 团队页面已经有“需求看板 / 任务与验收 / 执行规划”三个页签；需求看板点击 WorkItem 后会进入任务与验收，执行规划当前加载独立的 `WorkflowDesigner`。〔FACT｜`apps/web/src/features/team/team-workspace.tsx:319`〕
 - “任务与验收”中央栏已经依次展示 WorkItem 摘要、Team Lead 主对话入口和执行进度；这为在两者之间插入“协作路径”区块提供了稳定位置。〔FACT｜`apps/web/src/features/team/team-workspace.tsx:499`〕
@@ -147,7 +155,7 @@ flowchart LR
 | `planned` 计划中 | 当前激活计划声明 A → B，尚无真实消息 | 细灰虚线 + 空心箭头 | 计划版本有效期间保留 |
 | `active` 活动脉冲 | 新消息已提交并在 UI 收到事件 | 蓝色高亮 + 单次方向粒子 | 只保留 1.2–2 秒的动效 |
 | `observed` 已发生 | 路线上已有至少一条真实消息 | 中性实线 + 消息次数 + 最近时间 | WorkItem 历史中保留 |
-| `ad_hoc` 计划外 | 真实 A → B 消息没有匹配当前计划路线 | 琥珀色点划线 + “计划外” | 当前版本及历史中保留 |
+| `ad_hoc` 计划外 | 真实 A → B 消息没有匹配当前计划路线 | 红色点划线 + “计划外” | 当前版本及历史中保留 |
 | `skipped` 未使用 | WorkItem 结束时计划路线从未发生消息 | 淡灰虚线 + “未使用” | 历史回放中保留 |
 | `superseded` 已修订 | 新计划版本替代旧版本 | 仅在历史/对比模式显示 | 永久保留旧版本事实 |
 
@@ -189,7 +197,7 @@ sequenceDiagram
   L-->>U: 汇总并等待验收
 ```
 
-上述时序为目标流程，尚未在当前 Runtime 中实现计划发布步骤。〔INFER〕
+上述时序中的计划发布、委派、真实消息关联和当前投影已经实现；逐事件瞬时脉冲和历史回放仍待后续。〔FACT/INFER〕
 
 ### 5.2 无法提前完整规划
 
@@ -331,7 +339,7 @@ sequenceDiagram
 1. Team Lead 发布含 4 个节点、5 条路线的 v1 后，四个入口在刷新后显示相同版本、节点数和路线数。
 2. Team Lead 沿计划边向成员发送消息后，可见画布只播放一次正确方向的脉冲；刷新后边显示消息次数，动画不重播。
 3. 成员向 Team Lead 回复时显示独立反向边或匹配已计划的反向边，不能把双向消息合成无方向线。
-4. 未规划的成员之间发送合法消息时，消息成功投递且出现琥珀色计划外边。
+4. 未规划的成员之间发送合法消息时，消息成功投递且出现红色计划外边。
 5. 发布 v2 后，v1 仍可回放；v1 时间段的消息计数不迁移到 v2。
 6. 一次性 Subagent 完成后节点变灰并可折叠，父子关系和历史消息计数仍可查看。
 7. 点击任务与验收图中的持久成员，来源主对话保持不变，右侧打开该成员原生 Conversation Tab。
@@ -375,7 +383,7 @@ sequenceDiagram
 
 ## 10. 概要架构
 
-> 本节为目标架构，不表示当前代码已经存在。〔INFER〕
+> 计划表、统一投影、Team Lead 工具、查询 IPC 和四个 Renderer 容器已经落地；图中的专用事件与历史能力仍是目标部分。〔FACT/INFER〕
 
 ```mermaid
 flowchart TB
@@ -450,7 +458,7 @@ team_collaboration_plans
   id PK
   work_item_id FK
   revision UNIQUE(work_item_id, revision)
-  status draft | active | superseded
+  status active | superseded
   created_by_conversation_id FK
   reason
   created_at
@@ -480,7 +488,7 @@ team_collaboration_plan_routes
   UNIQUE(plan_id, from_node_id, to_node_id)
 ```
 
-第一版不新增 `team_collaboration_events`：真实消息继续由 `conversation_agent_messages` 提供，分派继续由 `team_work_item_member_assignments` 提供。只有明确出现查询性能瓶颈后，才增加可重建的聚合投影表。〔INFER〕
+第一版不新增 `team_collaboration_events`：真实消息继续由 `conversation_agent_messages` 提供，分派继续由 `team_work_item_member_assignments` 提供；Migration 17 为消息增加可空 `work_item_id`，消息提交后再由 Runtime 关联，保证投影不会混入同一持久 Conversation 的其他 WorkItem。当前计划不保存未发布草稿，发布事务直接生成 `active` 修订并把旧版改为 `superseded`。只有明确出现查询性能瓶颈后，才增加可重建的聚合投影表。〔FACT〕
 
 ### 11.2 投影 DTO
 
@@ -554,9 +562,10 @@ team.collaboration.update_layout({ workItemId, planId, positions })
 team.collaboration.request_replan({ workItemId, instruction })
 ```
 
-- `get_projection` 是四处 UI 的唯一读取入口。
-- `update_layout` 只写坐标，不改变节点身份或路线。
-- `request_replan` 不直接写计划，由 Team Lead 后续生成并发布。
+- `get_projection({ workItemId })` 已实现，是四处 UI 的唯一读取入口；`revision` 和 `at` 尚未开放。〔FACT〕
+- `list_plan_versions`、`update_layout`、`request_replan` 尚未实现，保留为后续合同。〔INFER〕
+- 后续的 `update_layout` 只写坐标，不改变节点身份或路线。
+- 后续的 `request_replan` 不直接写计划，由 Team Lead 生成并发布。
 
 ### 12.2 Renderer 事件
 
@@ -581,6 +590,8 @@ type TeamCollaborationActivityEvent = {
 ```
 
 `changed` 用于刷新持久投影，`activity` 仅用于一次性方向脉冲。两者都必须在消息/计划事务提交后发送。〔INFER〕
+
+当前尚未新增这两个专用事件。Renderer 订阅既有 Conversation Run 事件并重新读取持久投影；已发生路线使用方向虚线表达流动。专用事件留在 Phase 3 剩余项中，不能把当前持续动画描述成已经具备逐消息去重脉冲。〔FACT〕
 
 ## 13. 前端复用与改造边界
 
@@ -654,30 +665,30 @@ features/team/collaboration/
 
 ## 15. 实施分期
 
-> 每一期都能独立验收，不以“以后可能使用”为理由提前实现后续层。〔INFER〕
+> 每一期都能独立验收，不以“以后可能使用”为理由提前实现后续层。下列状态按 2026-08-31 代码更新。〔FACT/INFER〕
 
 ### Phase 1：只读实际关系图
 
-- 从现有 WorkItem 执行谱系、分派和 Agent 消息生成实际图。
-- 先落“任务与验收”嵌入图与完整画布实际模式。
-- 验证节点跳转、方向、计数、空状态和旧数据兼容。
+- [x] 从现有 WorkItem 执行谱系、分派和 Agent 消息生成实际图。
+- [x] 落地“任务与验收”嵌入图与完整画布实际模式。
+- [x] 自动验证节点跳转、方向、计数和空状态；旧数据在没有计划时仍可生成参与者图。
 
 ### Phase 2：计划发布与计划/实际对比
 
-- 新增计划表、Protocol、Use Case 和 Team Lead 计划工具。
-- 完成计划边、计划外边、版本修订和对比。
-- 将现有执行规划页由示例 WorkflowDesigner 切换为真实 WorkItem 画布。
+- [x] 新增计划表、Protocol、Main 投影和 Team Lead 计划工具。
+- [x] 完成计划边、计划外边、版本修订和当前版本对比。
+- [x] 将现有执行规划页由示例 WorkflowDesigner 切换为真实 WorkItem 画布。
 
 ### Phase 3：四处投影与实时脉冲
 
-- 增加看板微缩图，并把主协作图直接放入来源主对话。
-- 增加提交后事件、可见性控制、去重和 reduced motion。
-- 完成 30 卡片与密集消息性能验收。
+- [x] 增加看板微缩图，并把主协作图直接放入来源主对话的成功提交结果之后。
+- [x] 使用既有 Run 事件刷新投影，并支持 reduced motion；微缩图保持静态。
+- [ ] 增加专用、可去重的一次性活动事件，并完成 30 卡片与密集消息性能验收。
 
 ### Phase 4：历史回放与聚合优化
 
-- 增加时间轴、版本切换和按 Task/消息类型过滤。
-- 仅当真实查询指标不足时增加可重建的聚合投影表。
+- [ ] 增加时间轴、版本切换和按 Task/消息类型过滤。
+- [ ] 仅当真实查询指标不足时增加可重建的聚合投影表。
 
 ## 16. 测试策略
 
@@ -716,6 +727,6 @@ features/team/collaboration/
 - Team Lead 应在可以判断执行路径时提前建立计划线，后续允许动态变化。
 - 一次消息不让整条关系线随发送结束而消失；动画结束后保留已发生关系。
 - 不建立团队级永久通信信道；图的业务作用域是 WorkItem。
-- 当前阶段先形成设计，不修改生产功能。
+- 核心计划/实际投影和四处展示已进入生产代码；历史回放、布局持久化和专用活动事件继续按分期实现。
 
-由于本轮没有改变已实现的 WorkItem、消息、IPC 或数据库合同，`02-前后端接口与数据约定.md`、`05-多Agent团队与任务调度设计.md`、`14-业务上下文.md` 暂不改写为已实现事实。进入 Phase 1/2 后，应随代码分别同步 Protocol/IPC、团队语义、实现状态和业务决策记录。〔INFER〕
+本轮已经同步更新 `02-前后端接口与数据约定.md`、`05-多Agent团队与任务调度设计.md`、`11-AI工具体系与生命周期设计.md` 和 `14-业务上下文.md`；后续完成 Phase 3 剩余项或 Phase 4 时继续同步事件、性能和历史语义。〔FACT〕

@@ -61,6 +61,7 @@ export const IPC_CHANNELS = {
   teamSendMessage: "team.send_message",
   teamWorkItemList: "team.work_item.list",
   teamWorkItemGetExecution: "team.work_item.get_execution",
+  teamCollaborationGetProjection: "team.collaboration.get_projection",
   teamWorkItemSubmit: "team.work_item.submit",
   teamWorkItemUpdate: "team.work_item.update",
   teamWorkItemUpdatePermission: "team.work_item.update_permission",

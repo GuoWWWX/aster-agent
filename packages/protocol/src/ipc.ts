@@ -88,6 +88,7 @@ import {
   updateTeamWorkItemInputSchema,
   updateTeamWorkItemPermissionInputSchema,
 } from "./team-work-item.js";
+import { getTeamCollaborationProjectionInputSchema } from "./team-collaboration.js";
 import {
   createTeamInstanceInputSchema,
   ensureTeamInstanceMemberConversationInputSchema,
@@ -250,6 +251,10 @@ export const listTeamWorkItemsIpcArgumentsSchema = z.tuple([
 
 export const getTeamWorkItemExecutionIpcArgumentsSchema = z.tuple([
   getTeamWorkItemExecutionInputSchema,
+]);
+
+export const getTeamCollaborationProjectionIpcArgumentsSchema = z.tuple([
+  getTeamCollaborationProjectionInputSchema,
 ]);
 
 export const submitTeamWorkItemIpcArgumentsSchema = z.tuple([

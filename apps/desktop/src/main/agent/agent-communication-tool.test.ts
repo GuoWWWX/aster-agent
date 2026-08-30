@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_AGENT_DIRECTORY_CONFIGURATION } from "@agent/protocol";
 
 import { AgentDatabase } from "../storage/agent-database.js";
 import { agentMessageModelContent } from "../storage/agent-database.js";
@@ -205,6 +206,97 @@ describe("AgentCommunicationTool", () => {
         },
       },
     });
+    database.close();
+  });
+
+  it("lets only the running WorkItem Team Lead publish an advisory collaboration plan", async () => {
+    const database = new AgentDatabase(":memory:");
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = {
+      id: "00000000-0000-4000-8000-000000000121",
+      isPinned: false,
+      name: "Plan tool fixture",
+      rootPath: "D:\\workspace\\plan-tool",
+    };
+    const modelSelection = {
+      modelId: "test-model",
+      providerId: "00000000-0000-4000-8000-000000000122",
+      reasoning: null,
+    };
+    database.saveProject(project);
+    const workItem = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      modelSelection,
+      permissionMode: "full_access",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "验证计划工具权限。",
+      teamId: "default-team",
+      title: "计划工具",
+    }, modelSelection);
+    const lead = database.createConversation(project.id, {
+      agent: {
+        id: "team-lead",
+        instructions: "负责团队。",
+        isDefault: true,
+        name: "Team Lead",
+        role: "负责人",
+      },
+      modelSelection,
+      teamId: "default-team",
+      threadKind: "team_lead",
+    });
+    const member = database.createConversation(project.id, {
+      agent: {
+        id: "developer",
+        instructions: "负责开发。",
+        isDefault: false,
+        name: "开发 Agent",
+        role: "开发",
+      },
+      modelSelection,
+      parentConversationId: lead.id,
+      teamId: "default-team",
+      threadKind: "agent",
+    });
+    database.bindTeamMemberConversation({
+      agentId: "developer",
+      conversationId: member.id,
+      teamExecutionConversationId: lead.id,
+    });
+    const run = database.createRunWithUserMessage(lead.id, "开始执行", modelSelection.modelId);
+    database.startTeamWorkItem(workItem.id, lead.id, run.runId);
+    const tool = new AgentCommunicationTool(database);
+    const argumentsValue = JSON.stringify({
+      reason: "由开发 Agent 完成后回传。",
+      routes: [{
+        fromConversationId: lead.id,
+        purpose: "分派实现",
+        toConversationId: member.id,
+      }],
+    });
+
+    const published = await tool.execute({
+      arguments: argumentsValue,
+      conversationId: lead.id,
+      runId: run.runId,
+      signal: new AbortController().signal,
+      toolName: "set_team_collaboration_plan",
+    });
+    expect(published.isError).toBe(false);
+    expect(JSON.parse(published.content)).toMatchObject({
+      value: { plan: { revision: 1 }, workItemId: workItem.id },
+    });
+
+    const rejected = await tool.execute({
+      arguments: argumentsValue,
+      conversationId: member.id,
+      runId: run.runId,
+      signal: new AbortController().signal,
+      toolName: "set_team_collaboration_plan",
+    });
+    expect(rejected.isError).toBe(true);
+    expect(rejected.content).toContain("Only the current WorkItem Team Lead");
     database.close();
   });
 });

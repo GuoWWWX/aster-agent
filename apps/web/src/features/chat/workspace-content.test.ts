@@ -27,9 +27,40 @@ import {
   resolveInitialConversationModelSelection,
   runtimeBadgeLabel,
   stripLegacyErrorInstanceId,
+  submittedTeamWorkItems,
   toolBatchLabel,
   toolBatchExecutionMode,
 } from "./workspace-content.js";
+
+describe("Team WorkItem collaboration graph placement", () => {
+  it("extracts a submitted WorkItem only from its successful tool result", () => {
+    const tool: ConversationToolItem = {
+      arguments: "{}",
+      batchId: null,
+      conversationId: "00000000-0000-4000-8000-000000000211",
+      createdAt: "2026-08-31T08:00:00.000Z",
+      diff: null,
+      executionMode: "serial",
+      id: "00000000-0000-4000-8000-000000000212",
+      kind: "tool",
+      name: "submit_team_work_item",
+      result: JSON.stringify({
+        ok: true,
+        value: {
+          id: "00000000-0000-4000-8000-000000000213",
+          title: "实现 Agent 协作图",
+        },
+      }),
+      runId: "00000000-0000-4000-8000-000000000214",
+      status: "completed",
+    };
+    expect(submittedTeamWorkItems(tool)).toEqual([{
+      id: "00000000-0000-4000-8000-000000000213",
+      title: "实现 Agent 协作图",
+    }]);
+    expect(submittedTeamWorkItems({ ...tool, status: "failed" })).toEqual([]);
+  });
+});
 
 describe("conversation path scope", () => {
   it("shows a shared team member conversation under the team hierarchy", () => {

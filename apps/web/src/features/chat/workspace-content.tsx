@@ -139,6 +139,7 @@ import { reasoningOptionDisplayName } from "../settings/model-reasoning-options.
 import { TaskWorkspace } from "../tasks/task-workspace.js";
 import { AgentAvatar } from "../team/agent-avatar.js";
 import { TeamWorkspace } from "../team/team-workspace.js";
+import { CollaborationProjectionGraph } from "../team/collaboration/collaboration-graph.js";
 import { useConversationWorkspaceCache } from "./conversation-workspace-cache.js";
 import { formatConversationRunMarkdown } from "./conversation-copy.js";
 import { ContextUsageIndicator } from "./context-usage-indicator.js";
@@ -224,6 +225,36 @@ type TimelineDisplayItem = ConversationTimelineItem | {
   kind: "tool_batch";
   tools: ConversationToolItem[];
 };
+
+export function submittedTeamWorkItems(
+  item: TimelineDisplayItem,
+): Array<{ id: string; title: string }> {
+  const tools = item.kind === "tool_batch"
+    ? item.tools
+    : item.kind === "tool" ? [item] : [];
+  return tools.flatMap((tool) => {
+    if (
+      tool.name !== "submit_team_work_item"
+      || tool.status !== "completed"
+      || tool.result === null
+    ) return [];
+    try {
+      const parsed: unknown = JSON.parse(tool.result);
+      if (!isRecord(parsed) || parsed.ok !== true || !isRecord(parsed.value)) return [];
+      const id = parsed.value.id;
+      const title = parsed.value.title;
+      return typeof id === "string" && typeof title === "string"
+        ? [{ id, title }]
+        : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 type ModelActivity = {
   anchorTimelineItemId: string | null;
@@ -2384,6 +2415,18 @@ export function ConversationWorkspace({
                     onSessionSelected={onSessionSelected}
                     liveToolOutputs={liveToolOutputs}
                   />
+                  {submittedTeamWorkItems(item).map((workItem) => (
+                    <CollaborationProjectionGraph
+                      agentClient={agentClient}
+                      key={workItem.id}
+                      title={`${workItem.title} · Agent 协作图`}
+                      variant="conversation"
+                      workItemId={workItem.id}
+                      {...(onSessionSelected === undefined ? {} : {
+                        onOpenConversation: onSessionSelected,
+                      })}
+                    />
+                  ))}
                 </Fragment>
               ))}
               {(runProgressesByInsertIndex.get(displayTimeline.length) ?? []).map((progress) => (

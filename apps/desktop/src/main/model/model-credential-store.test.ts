@@ -185,6 +185,38 @@ describe("ModelCredentialStore", () => {
     ]);
   });
 
+  it("accepts a reasoning-only reply as a healthy model connection", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-credentials-"));
+    temporaryDirectories.push(directory);
+    const store = new ModelCredentialStore(path.join(directory, "model-credentials.json"));
+    const status = store.saveConfiguration({
+      apiKey: "test-key",
+      apiFormat: "openai-chat-completions",
+      baseUrl: "https://example.test/v1",
+      models: [{
+        contextWindow: 128_000,
+        displayName: "推理模型",
+        modelId: "reasoning-model",
+        reasoningOptions: [],
+      }],
+      providerName: "测试供应商",
+    });
+    const providerId = status.providerId;
+    if (providerId === null) throw new Error("Expected a saved provider.");
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      'data: {"choices":[{"delta":{"role":"assistant","reasoning_content":"thinking"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\ndata: [DONE]\n\n',
+      { headers: { "Content-Type": "text/event-stream" }, status: 200 },
+    )));
+
+    await expect(store.testModelConnection(providerId, "reasoning-model")).resolves.toEqual({
+      content: "模型已返回有效推理响应。",
+      modelId: "reasoning-model",
+    });
+    expect(store.getStatus().models).toEqual([
+      expect.objectContaining({ connectionStatus: "healthy", modelId: "reasoning-model" }),
+    ]);
+  });
+
   it("migrates an existing configuration and preserves it when another provider is saved", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-credentials-"));
     temporaryDirectories.push(directory);

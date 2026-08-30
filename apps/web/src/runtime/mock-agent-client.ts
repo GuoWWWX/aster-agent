@@ -102,6 +102,7 @@ import {
   type UpdateTeamWorkItemPermissionInput,
   type AcceptTeamWorkItemInput,
   type TeamWorkItemExecutionView,
+  type TeamCollaborationProjection,
   type TeamMemberConversationView,
   type TeamWorkItemView,
   type RenameTeamInstanceInput,
@@ -1440,6 +1441,26 @@ export class MockAgentClient implements AgentClient {
       return Promise.reject(new Error("The mock Team WorkItem is unavailable."));
     }
     return Promise.resolve({ agents: [], workItemId });
+  }
+
+  public getTeamCollaborationProjection(workItemId: string): Promise<TeamCollaborationProjection> {
+    if (!this.teamWorkItems.some((item) => item.id === workItemId)) {
+      return Promise.reject(new Error("The mock Team WorkItem is unavailable."));
+    }
+    return Promise.resolve({
+      edges: [],
+      nodes: [],
+      plan: null,
+      summary: {
+        adHocRouteCount: 0,
+        lastActivityAt: null,
+        messageCount: 0,
+        observedRouteCount: 0,
+        participantCount: 0,
+        plannedRouteCount: 0,
+      },
+      workItemId,
+    });
   }
 
   public submitTeamWorkItem(input: SubmitTeamWorkItemInput): Promise<TeamWorkItemView> {

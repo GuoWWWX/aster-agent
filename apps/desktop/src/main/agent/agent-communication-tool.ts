@@ -12,11 +12,13 @@ import type { ToolExecutionPolicy } from "../tools/tool-execution-policy.js";
 const LIST_AGENT_CONVERSATIONS_TOOL_NAME = "list_agent_conversations";
 const READ_AGENT_CONVERSATION_TOOL_NAME = "read_agent_conversation";
 const SEND_AGENT_MESSAGE_TOOL_NAME = "send_agent_message";
+const SET_TEAM_COLLABORATION_PLAN_TOOL_NAME = "set_team_collaboration_plan";
 const WAIT_FOR_AGENT_MESSAGE_TOOL_NAME = "wait_for_agent_message";
 const toolNames = new Set([
   LIST_AGENT_CONVERSATIONS_TOOL_NAME,
   READ_AGENT_CONVERSATION_TOOL_NAME,
   SEND_AGENT_MESSAGE_TOOL_NAME,
+  SET_TEAM_COLLABORATION_PLAN_TOOL_NAME,
   WAIT_FOR_AGENT_MESSAGE_TOOL_NAME,
 ]);
 
@@ -33,6 +35,19 @@ const sendMessageArgumentsSchema = z.object({
     .describe("Whether the target Agent should automatically return a bounded completion receipt to this conversation."),
   replyInstruction: z.string().trim().min(1).max(1_000).optional()
     .describe("Optional guidance for the concise completion receipt, such as required conclusions, evidence, or risks. Full details remain in the target conversation."),
+}).strict();
+const setTeamCollaborationPlanArgumentsSchema = z.object({
+  reason: z.string().trim().min(1).max(2_000)
+    .describe("Why this complete plan is appropriate, or what changed since the previous revision."),
+  routes: z.array(z.object({
+    fromConversationId: z.string().uuid()
+      .describe("Sender participant conversation UUID from list_agent_conversations."),
+    purpose: z.string().trim().min(1).max(500)
+      .describe("Short responsibility or expected information carried on this route."),
+    toConversationId: z.string().uuid()
+      .describe("Recipient participant conversation UUID from list_agent_conversations."),
+  }).strict()).min(1).max(80)
+    .describe("Complete directed route set for this revision, including Team Lead return paths."),
 }).strict();
 const waitForMessageArgumentsSchema = z.object({
   conversationId: z.string().uuid().optional()
@@ -80,6 +95,11 @@ export class AgentCommunicationTool {
         parameters: modelToolParameters(sendMessageArgumentsSchema),
       },
       {
+        description: "Publish the current Team WorkItem's complete advisory communication plan before delegating work. Only the WorkItem Team Lead can use this tool. List participant conversations first, then define directed routes and their purposes, including expected result paths back to the Team Lead. Publish a new complete revision when the route changes. The plan never blocks legitimate send_agent_message calls.",
+        name: SET_TEAM_COLLABORATION_PLAN_TOOL_NAME,
+        parameters: modelToolParameters(setTeamCollaborationPlanArgumentsSchema),
+      },
+      {
         description: "Wait for the next Agent message, optionally from one conversation. The returned message includes senderConversationId and senderTitle; reply by passing senderConversationId as send_agent_message.conversationId. Use this after asking a conflicting Agent to notify you. The wait is cancellable and bounded by timeoutMs.",
         name: WAIT_FOR_AGENT_MESSAGE_TOOL_NAME,
         parameters: modelToolParameters(waitForMessageArgumentsSchema),
@@ -93,6 +113,7 @@ export class AgentCommunicationTool {
       case READ_AGENT_CONVERSATION_TOOL_NAME:
         return { group: "read", kind: "parallel" };
       case SEND_AGENT_MESSAGE_TOOL_NAME:
+      case SET_TEAM_COLLABORATION_PLAN_TOOL_NAME:
       case WAIT_FOR_AGENT_MESSAGE_TOOL_NAME:
         return { kind: "serial" };
       default:
@@ -175,6 +196,19 @@ export class AgentCommunicationTool {
           this.notifyMessage(message);
           input.onMessageSent?.(message);
           return success({ message });
+        }
+        case SET_TEAM_COLLABORATION_PLAN_TOOL_NAME: {
+          const parsed = setTeamCollaborationPlanArgumentsSchema.parse(argumentsValue);
+          const projection = this.database.setTeamCollaborationPlan({
+            createdByConversationId: input.conversationId,
+            reason: parsed.reason,
+            routes: parsed.routes,
+          });
+          return success({
+            plan: projection.plan,
+            summary: projection.summary,
+            workItemId: projection.workItemId,
+          });
         }
         case WAIT_FOR_AGENT_MESSAGE_TOOL_NAME: {
           const parsed = waitForMessageArgumentsSchema.parse(argumentsValue);

@@ -2903,6 +2903,7 @@ export class AgentRuntime {
       message.senderConversationId,
     );
     if (teamWorkItem !== null) {
+      this.database.recordTeamCollaborationMessage({ message, workItemId: teamWorkItem.id });
       this.database.recordTeamMemberAssignment({ message, workItemId: teamWorkItem.id });
     }
     const sourceDepth = message.runId === null

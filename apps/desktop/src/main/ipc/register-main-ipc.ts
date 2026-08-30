@@ -50,6 +50,7 @@ import {
   ensureTeamMemberConversationIpcArgumentsSchema,
   ensureTeamInstanceMemberConversationIpcArgumentsSchema,
   getTeamWorkItemExecutionIpcArgumentsSchema,
+  getTeamCollaborationProjectionIpcArgumentsSchema,
   getModelApiKeyIpcArgumentsSchema,
   integrationConfigurationIpcArgumentsSchema,
   integrationConfigurationSchema,
@@ -114,6 +115,7 @@ import {
   terminalConfigurationIpcArgumentsSchema,
   terminalConfigurationSchema,
   teamWorkItemExecutionViewSchema,
+  teamCollaborationProjectionSchema,
   teamMemberConversationViewSchema,
   teamWorkItemListSchema,
   teamWorkItemViewSchema,
@@ -945,6 +947,17 @@ export function registerMainIpcHandlers(
       getTrustedWindow(event, getMainWindow);
       const [input] = getTeamWorkItemExecutionIpcArgumentsSchema.parse(args);
       return teamWorkItemExecutionViewSchema.parse(teamWorkItems.getExecution(input));
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamCollaborationGetProjection,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = getTeamCollaborationProjectionIpcArgumentsSchema.parse(args);
+      return teamCollaborationProjectionSchema.parse(
+        teamWorkItems.getCollaborationProjection(input),
+      );
     },
   );
 

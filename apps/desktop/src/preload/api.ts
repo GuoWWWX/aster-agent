@@ -65,6 +65,7 @@ import type {
   SendConversationMessageInput,
   SendTeamMessageInput,
   GetTeamWorkItemExecutionInput,
+  GetTeamCollaborationProjectionInput,
   ListTeamWorkItemsInput,
   RequestTeamWorkItemReworkInput,
   SubmitTeamWorkItemInput,
@@ -247,6 +248,12 @@ export function createDesktopBridge(): DesktopBridge {
     getTeamWorkItemExecution(input: GetTeamWorkItemExecutionInput) {
       return invoke<BridgeResult<"getTeamWorkItemExecution">>(
         IPC_CHANNELS.teamWorkItemGetExecution,
+        input,
+      );
+    },
+    getTeamCollaborationProjection(input: GetTeamCollaborationProjectionInput) {
+      return invoke<BridgeResult<"getTeamCollaborationProjection">>(
+        IPC_CHANNELS.teamCollaborationGetProjection,
         input,
       );
     },
