@@ -42,6 +42,9 @@ import {
   type CreateProjectEntryInput,
   type CreateConfigurationWorkspaceEntryInput,
   type CreateConversationInput,
+  type CreateTeamInstanceInput,
+  type EnsureTeamMemberConversationInput,
+  type EnsureTeamInstanceMemberConversationInput,
   type DiscoverModelsInput,
   type DiscoveredModel,
   type GitReviewSnapshot,
@@ -83,6 +86,7 @@ import {
   type SetConversationProjectInput,
   type SetConversationPinnedInput,
   type SetProjectPinnedInput,
+  type SetProjectTeamsInNavigatorInput,
   type RuntimeInfo,
   type RunAccepted,
   type TerminalSession,
@@ -91,13 +95,20 @@ import {
   type WriteConfigurationWorkspaceFileInput,
   type WriteProjectFileInput,
   type ListTeamWorkItemsInput,
+  type ListTeamInstancesInput,
   type RequestTeamWorkItemReworkInput,
   type SubmitTeamWorkItemInput,
   type UpdateTeamWorkItemInput,
   type UpdateTeamWorkItemPermissionInput,
   type AcceptTeamWorkItemInput,
   type TeamWorkItemExecutionView,
+  type TeamMemberConversationView,
   type TeamWorkItemView,
+  type RenameTeamInstanceInput,
+  type ReorderTeamInstancesInput,
+  type SetTeamInstanceArchivedInput,
+  type TeamInstanceReferenceInput,
+  type TeamInstanceView,
 } from "@agent/protocol";
 
 import type {
@@ -267,6 +278,8 @@ export class MockAgentClient implements AgentClient {
   private readonly taskLists = new Map<string, ConversationTaskList>();
 
   private readonly teamWorkItems: TeamWorkItemView[] = [];
+
+  private readonly teamInstances: TeamInstanceView[] = [];
 
   private readonly skillDocuments = new Map<string, SkillDocument>();
 
@@ -439,6 +452,252 @@ export class MockAgentClient implements AgentClient {
     this.conversations.unshift(conversation);
     this.timelines.set(conversation.id, []);
     return Promise.resolve({ ...conversation });
+  }
+
+  public async ensureTeamMemberConversation(
+    input: EnsureTeamMemberConversationInput,
+  ): Promise<TeamMemberConversationView> {
+    const team = this.applicationSettings.agentDirectory.teams.find(
+      (candidate) => candidate.id === input.teamId,
+    );
+    if (team === undefined || !team.memberIds.includes(input.agentId)) {
+      throw new Error("The mock Team member is unavailable.");
+    }
+    const toBinding = (agentId: string) => {
+      const agent = this.applicationSettings.agentDirectory.agents.find(
+        (candidate) => candidate.id === agentId && candidate.enabled,
+      );
+      if (agent === undefined) throw new Error("The mock Agent is unavailable.");
+      const configured = team.memberConfigurations[agent.id];
+      return {
+        avatarIcon: agent.avatar.kind === "icon" ? agent.avatar.icon : null,
+        id: agent.id,
+        instructions: [agent.instructions, team.instructions, configured?.instructions]
+          .filter((value): value is string => value !== undefined && value.trim().length > 0)
+          .join("\n\n")
+          .slice(0, 20_000),
+        isDefault: agent.isDefault,
+        name: agent.name,
+        role: configured?.role.trim() || agent.role,
+      };
+    };
+    let lead = this.conversations.find((conversation) =>
+      !conversation.isArchived
+      && conversation.parentConversationId === null
+      && conversation.projectId === null
+      && conversation.teamId === team.id
+      && conversation.threadKind === "team_lead"
+    );
+    if (lead === undefined) {
+      const created = await this.createConversation({
+        agent: toBinding(team.leadAgentId),
+        projectId: null,
+        teamId: team.id,
+        threadKind: "team_lead",
+      });
+      lead = this.conversations.find((conversation) => conversation.id === created.id);
+      if (lead === undefined) throw new Error("The mock Team Lead could not be created.");
+      lead.title = `${lead.agentId === null ? "Team Lead" : toBinding(team.leadAgentId).name} · ${team.name}`;
+    }
+    if (input.agentId === team.leadAgentId) {
+      return { lead: { ...lead }, member: { ...lead } };
+    }
+    let member = this.conversations.find((conversation) =>
+      !conversation.isArchived
+      && conversation.agentId === input.agentId
+      && conversation.parentConversationId === lead.id
+      && conversation.teamId === team.id
+      && conversation.threadKind === "agent"
+    );
+    if (member === undefined) {
+      const binding = toBinding(input.agentId);
+      const created = await this.createConversation({
+        agent: binding,
+        projectId: null,
+        teamId: team.id,
+        threadKind: "agent",
+      });
+      member = this.conversations.find((conversation) => conversation.id === created.id);
+      if (member === undefined) throw new Error("The mock Team member could not be created.");
+      member.parentConversationId = lead.id;
+      member.title = `${binding.name} · ${team.name}`;
+    }
+    return { lead: { ...lead }, member: { ...member } };
+  }
+
+  public listTeamInstances(input: ListTeamInstancesInput): Promise<TeamInstanceView[]> {
+    return Promise.resolve(this.teamInstances.filter((instance) =>
+      (input.includeArchived === true || !instance.isArchived)
+      && (input.projectId === undefined || instance.projectId === input.projectId)
+      && (
+        input.sourceConversationId === undefined
+        || instance.sourceConversationId === input.sourceConversationId
+      )
+    ).map((instance) => ({ ...instance })));
+  }
+
+  public async createTeamInstance(input: CreateTeamInstanceInput): Promise<TeamInstanceView> {
+    const team = this.applicationSettings.agentDirectory.teams.find(
+      (candidate) => candidate.id === input.teamId,
+    );
+    if (team === undefined) throw new Error("The mock Team template is unavailable.");
+    const existingNames = new Set(this.teamInstances.filter((instance) =>
+      !instance.isArchived && (
+        instance.scope === "global"
+        || (input.projectId !== undefined
+          && instance.scope === "project"
+          && instance.projectId === input.projectId)
+        || (input.sourceConversationId !== undefined
+          && instance.scope === "conversation"
+          && instance.sourceConversationId === input.sourceConversationId)
+      )
+    ).map((instance) => instance.name.toLocaleLowerCase()));
+    const baseName = input.name?.trim() || team.name;
+    let name = baseName;
+    for (let suffix = 1; existingNames.has(name.toLocaleLowerCase()); suffix += 1) {
+      name = `${baseName} (${suffix})`;
+    }
+    const now = new Date().toISOString();
+    const instance: TeamInstanceView = {
+      createdAt: now,
+      id: this.createIdentifier(),
+      isArchived: false,
+      name,
+      projectId: input.projectId ?? null,
+      rootConversationId: null,
+      scope: input.scope,
+      sourceConversationId: input.sourceConversationId ?? null,
+      teamId: input.teamId,
+      updatedAt: now,
+    };
+    const toBinding = (agentId: string) => {
+      const agent = this.applicationSettings.agentDirectory.agents.find(
+        (candidate) => candidate.id === agentId,
+      );
+      if (agent === undefined) throw new Error("The mock Agent is unavailable.");
+      return {
+        avatarIcon: agent.avatar.kind === "icon" ? agent.avatar.icon : null,
+        id: agent.id,
+        instructions: agent.instructions,
+        isDefault: agent.isDefault,
+        name: agent.name,
+        role: team.memberConfigurations[agent.id]?.role.trim() || agent.role,
+      };
+    };
+    const leadBinding = toBinding(team.leadAgentId);
+    const leadSummary = await this.createConversation({
+      agent: leadBinding,
+      ...(instance.projectId === null ? {} : { projectId: instance.projectId }),
+      teamId: team.id,
+      threadKind: "team_lead",
+    });
+    const lead = this.conversations.find((conversation) => conversation.id === leadSummary.id)!;
+    lead.parentConversationId = instance.sourceConversationId;
+    lead.title = `${leadBinding.name} · ${instance.name}`;
+    instance.rootConversationId = lead.id;
+    this.teamInstances.push(instance);
+    for (const agentId of team.memberIds) {
+      if (agentId === team.leadAgentId) continue;
+      const binding = toBinding(agentId);
+      const memberSummary = await this.createConversation({
+        agent: binding,
+        ...(instance.projectId === null ? {} : { projectId: instance.projectId }),
+        teamId: team.id,
+        threadKind: "agent",
+      });
+      const member = this.conversations.find(
+        (conversation) => conversation.id === memberSummary.id,
+      )!;
+      member.parentConversationId = lead.id;
+      member.title = `${binding.name} · ${instance.name}`;
+    }
+    return { ...instance };
+  }
+
+  public renameTeamInstance(input: RenameTeamInstanceInput): Promise<TeamInstanceView> {
+    const instance = this.teamInstances.find((candidate) => candidate.id === input.teamInstanceId);
+    if (instance === undefined) return Promise.reject(new Error("The mock Team instance was not found."));
+    if (input.projectId !== undefined) {
+      if (instance.scope === "conversation") {
+        return Promise.reject(new Error("A conversation Team retains its source conversation project."));
+      }
+      instance.projectId = input.projectId;
+      instance.scope = input.projectId === null ? "global" : "project";
+      if (instance.rootConversationId !== null) {
+        const participantIds = new Set([
+          instance.rootConversationId,
+          ...this.conversations.filter((conversation) =>
+            conversation.parentConversationId === instance.rootConversationId
+          ).map((conversation) => conversation.id),
+        ]);
+        for (const conversation of this.conversations) {
+          if (participantIds.has(conversation.id)) conversation.projectId = input.projectId;
+        }
+      }
+    }
+    instance.name = input.name.trim();
+    instance.updatedAt = new Date().toISOString();
+    return Promise.resolve({ ...instance });
+  }
+
+  public reorderTeamInstances(input: ReorderTeamInstancesInput): Promise<TeamInstanceView[]> {
+    const visibleIds = this.teamInstances.filter((instance) =>
+      !instance.isArchived && instance.scope !== "conversation"
+    ).map((instance) => instance.id);
+    if (
+      input.teamInstanceIds.length !== visibleIds.length
+      || new Set(input.teamInstanceIds).size !== input.teamInstanceIds.length
+      || input.teamInstanceIds.some((teamInstanceId) => !visibleIds.includes(teamInstanceId))
+    ) {
+      return Promise.reject(new Error("Team instance reorder must include every visible Team."));
+    }
+    const orderById = new Map(input.teamInstanceIds.map((teamInstanceId, index) => [
+      teamInstanceId,
+      index,
+    ]));
+    this.teamInstances.sort((left, right) => {
+      const leftOrder = orderById.get(left.id);
+      const rightOrder = orderById.get(right.id);
+      if (leftOrder === undefined && rightOrder === undefined) return 0;
+      if (leftOrder === undefined) return 1;
+      if (rightOrder === undefined) return -1;
+      return leftOrder - rightOrder;
+    });
+    return this.listTeamInstances({ includeArchived: false });
+  }
+
+  public setTeamInstanceArchived(input: SetTeamInstanceArchivedInput): Promise<TeamInstanceView> {
+    const instance = this.teamInstances.find((candidate) => candidate.id === input.teamInstanceId);
+    if (instance === undefined) return Promise.reject(new Error("The mock Team instance was not found."));
+    instance.isArchived = input.archived;
+    instance.updatedAt = new Date().toISOString();
+    return Promise.resolve({ ...instance });
+  }
+
+  public deleteTeamInstance(input: TeamInstanceReferenceInput): Promise<void> {
+    const index = this.teamInstances.findIndex((candidate) => candidate.id === input.teamInstanceId);
+    if (index < 0) return Promise.reject(new Error("The mock Team instance was not found."));
+    this.teamInstances.splice(index, 1);
+    return Promise.resolve();
+  }
+
+  public ensureTeamInstanceMemberConversation(
+    input: EnsureTeamInstanceMemberConversationInput,
+  ): Promise<TeamMemberConversationView> {
+    const instance = this.teamInstances.find((candidate) => candidate.id === input.teamInstanceId);
+    if (instance === undefined || instance.rootConversationId === null) {
+      return Promise.reject(new Error("The mock Team instance is unavailable."));
+    }
+    const lead = this.conversations.find((conversation) => conversation.id === instance.rootConversationId);
+    const member = input.agentId === lead?.agentId
+      ? lead
+      : this.conversations.find((conversation) =>
+        conversation.parentConversationId === lead?.id && conversation.agentId === input.agentId
+      );
+    if (lead === undefined || member === undefined) {
+      return Promise.reject(new Error("The mock Team member is unavailable."));
+    }
+    return Promise.resolve({ lead: { ...lead }, member: { ...member } });
   }
 
   public forkConversation(
@@ -1200,6 +1459,7 @@ export class MockAgentClient implements AgentClient {
         type: "received",
       }],
       executionConversationId: null,
+      executionScope: input.executionScope ?? "project",
       id: this.createIdentifier(),
       modelSelection: input.modelSelection ?? {
         modelId: "mock-model",
@@ -1613,6 +1873,19 @@ export class MockAgentClient implements AgentClient {
       return Promise.reject(new Error("The mock project is unavailable."));
     }
     this.project = { ...this.project, isPinned: input.pinned };
+    return Promise.resolve({ ...this.project });
+  }
+
+  public setProjectTeamsInNavigator(
+    input: SetProjectTeamsInNavigatorInput,
+  ): Promise<ProjectSummary> {
+    if (this.project?.id !== input.projectId) {
+      return Promise.reject(new Error("The mock project is unavailable."));
+    }
+    this.project = {
+      ...this.project,
+      showTeamsInNavigator: input.showTeamsInNavigator,
+    };
     return Promise.resolve({ ...this.project });
   }
 

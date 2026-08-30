@@ -9,7 +9,11 @@ import {
   DEFAULT_AGENT_DIRECTORY_CONFIGURATION,
   DEFAULT_APPLICATION_SETTINGS,
 } from "@agent/protocol";
-import type { ConversationRunEvent, ConversationToolItem } from "@agent/protocol";
+import type {
+  ConversationAgentMessageItem,
+  ConversationRunEvent,
+  ConversationToolItem,
+} from "@agent/protocol";
 
 import type {
   CompleteTurnInput,
@@ -580,6 +584,20 @@ class RetryingFixtureModel implements ModelProviderAdapter {
   }
 }
 
+class TimeoutThenSuccessfulFixtureModel implements ModelProviderAdapter {
+  public requests = 0;
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.requests += 1;
+    if (this.requests === 1) {
+      return Promise.reject(new Error("Command execution timed out."));
+    }
+
+    input.onTextDelta("超时后已恢复");
+    return Promise.resolve({ content: "超时后已恢复", finishReason: "stop", toolCalls: [] });
+  }
+}
+
 class PartialStreamFailureFixtureModel implements ModelProviderAdapter {
   public requests = 0;
 
@@ -1056,7 +1074,10 @@ class DeferredAgentResultFixtureModel implements ModelProviderAdapter {
 
   private resolveRecipientRequestStarted: () => void = () => undefined;
 
-  public constructor(private readonly targetConversationId: string) {
+  public constructor(
+    private readonly targetConversationId: string,
+    private readonly targetResult = "B 最终结果",
+  ) {
     this.recipientRequestStarted = new Promise((resolve) => {
       this.resolveRecipientRequestStarted = resolve;
     });
@@ -1084,9 +1105,9 @@ class DeferredAgentResultFixtureModel implements ModelProviderAdapter {
       this.resolveRecipientRequestStarted();
       return new Promise((resolve) => {
         this.releaseRecipientRequest = () => {
-          input.onTextDelta("B 最终结果");
+          input.onTextDelta(this.targetResult);
           resolve({
-            content: "B 最终结果",
+            content: this.targetResult,
             finishReason: "stop",
             toolCalls: [],
           });
@@ -3070,10 +3091,10 @@ describe("AgentRuntime", () => {
     expect(deliveredMessage?.content).toContain("Sender conversation: 协作 Agent");
     expect(deliveredMessage?.content).toContain(`Sender conversationId: ${sender.id}`);
     expect(deliveredMessage?.content).toContain(
-      "runtime automatically links that final result back to the sender",
+      "runtime can return only a bounded completion receipt",
     );
     expect(model.requests[1]?.messages[0]?.content).toContain(
-      "runtime links final results back to the sender",
+      "runtime returns only a bounded completion receipt",
     );
     expect(database.listUnreadAgentMessages(target.id)).toEqual([]);
     expect(database.listTimeline(sender.id)).toEqual(expect.arrayContaining([
@@ -3560,7 +3581,8 @@ describe("AgentRuntime", () => {
     const projects = new ProjectRegistry(database);
     const sender = database.createConversation(null);
     const target = database.createConversation(null);
-    const model = new DeferredAgentResultFixtureModel(target.id);
+    const targetResult = `B 最终结果\n\n---\n\n${"完整执行细节".repeat(1_000)}`;
+    const model = new DeferredAgentResultFixtureModel(target.id, targetResult);
     const runtime = new AgentRuntime(
       database,
       {
@@ -3619,20 +3641,27 @@ describe("AgentRuntime", () => {
         senderConversationId: sender.id,
       }),
       expect.objectContaining({
-        content: "B 最终结果",
+        content: targetResult,
         kind: "message",
         role: "assistant",
         status: "completed",
       }),
     ]);
     const timeline = database.listTimeline(sender.id);
+    const resultMessage = timeline.find((item): item is ConversationAgentMessageItem =>
+      item.kind === "agent_message" && item.messageType === "agent_result"
+    );
+    expect(resultMessage).toMatchObject({
+      kind: "agent_message",
+      messageType: "agent_result",
+      senderConversationId: target.id,
+    });
+    expect(resultMessage?.content).toContain("B 最终结果");
+    expect(resultMessage?.content).toContain("完整结果保留在执行 Agent 对话");
+    expect(resultMessage?.content).not.toContain("完整执行细节");
+    expect(resultMessage?.content.length).toBeLessThanOrEqual(1_000);
+    expect(resultMessage?.content).not.toBe(targetResult);
     expect(timeline).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        content: "B 最终结果",
-        kind: "agent_message",
-        messageType: "agent_result",
-        senderConversationId: target.id,
-      }),
       expect.objectContaining({
         content: "已收到 B 的自动回传结果",
         kind: "message",
@@ -4583,6 +4612,52 @@ describe("AgentRuntime", () => {
     expect(database.listTimeline(conversation.id)).toEqual([
       expect.objectContaining({ content: "重试模型请求", role: "user" }),
       expect.objectContaining({ content: "连接已恢复", role: "assistant", status: "completed" })
+    ]);
+    database.close();
+  });
+
+  it("retries a generic model transport timeout instead of treating it as a command failure", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const model = new TimeoutThenSuccessfulFixtureModel();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      () => Promise.resolve(),
+    );
+    const events: ConversationRunEvent[] = [];
+    const finished = new Promise<Extract<ConversationRunEvent, { type: "run.finished" }>>(
+      (resolve) => {
+        runtime.sendMessage(
+          { content: "重试模型超时", conversationId: conversation.id },
+          (event) => {
+            events.push(event);
+            if (event.type === "run.finished") resolve(event);
+          },
+        );
+      },
+    );
+
+    await expect(finished).resolves.toMatchObject({ error: null, status: "completed" });
+    expect(model.requests).toBe(2);
+    expect(events.filter((event) => event.type === "model.request_retrying")).toEqual([
+      expect.objectContaining({ attempt: 1, retryInMs: 1_000 }),
+    ]);
+    expect(database.listTimeline(conversation.id)).toEqual([
+      expect.objectContaining({ content: "重试模型超时", role: "user" }),
+      expect.objectContaining({ content: "超时后已恢复", role: "assistant", status: "completed" }),
     ]);
     database.close();
   });

@@ -20,6 +20,276 @@ afterEach(() => {
 });
 
 describe("TeamWorkItemRuntime", () => {
+  it("provisions manually created project and conversation Team instances with every configured member", () => {
+    const database = new AgentDatabase(":memory:");
+    databases.push(database);
+    const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
+    database.syncTeamDirectory(directory);
+    const project = {
+      id: "00000000-0000-4000-8000-000000000071",
+      isPinned: false,
+      name: "Scoped Team fixture",
+      rootPath: "D:\\workspace\\scoped-team",
+    };
+    database.saveProject(project);
+    const source = database.createConversation(project.id);
+    const lifecycle = {
+      createConversation(
+        projectId: string | null,
+        options: Parameters<AgentDatabase["createConversation"]>[1],
+      ) {
+        return database.createConversation(projectId, options);
+      },
+    } as unknown as ConversationLifecycleService;
+    const runtime = new TeamWorkItemRuntime(
+      database,
+      lifecycle,
+      {} as AgentRuntime,
+      {} as ModelCredentialStore,
+      {} as ProjectRegistry,
+      { getConfiguration: () => structuredClone(directory) },
+    );
+
+    const projectInstance = runtime.createInstance({
+      projectId: project.id,
+      scope: "project",
+      teamId: "default-team",
+    });
+    const conversationInstance = runtime.createInstance({
+      projectId: project.id,
+      scope: "conversation",
+      sourceConversationId: source.id,
+      teamId: "default-team",
+    });
+    const team = directory.teams[0]!;
+    const projectRoot = database.getConversation(projectInstance.rootConversationId!);
+    const conversationRoot = database.getConversation(conversationInstance.rootConversationId!);
+
+    expect(projectRoot).toMatchObject({
+      parentConversationId: null,
+      projectId: project.id,
+      threadKind: "team_lead",
+    });
+    expect(conversationRoot).toMatchObject({
+      parentConversationId: source.id,
+      projectId: project.id,
+      threadKind: "team_lead",
+    });
+    expect(database.listTeamMemberConversations(projectRoot.id)).toHaveLength(
+      team.memberIds.length - 1,
+    );
+    expect(database.listTeamMemberConversations(conversationRoot.id)).toHaveLength(
+      team.memberIds.length - 1,
+    );
+  });
+
+  it("moves a reusable Team between global and project scope with all participant conversations", () => {
+    const database = new AgentDatabase(":memory:");
+    databases.push(database);
+    const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
+    database.syncTeamDirectory(directory);
+    const project = {
+      id: "00000000-0000-4000-8000-000000000091",
+      isPinned: false,
+      name: "Editable Team fixture",
+      rootPath: "D:\\workspace\\editable-team",
+    };
+    database.saveProject(project);
+    const lifecycle = {
+      createConversation(
+        projectId: string | null,
+        options: Parameters<AgentDatabase["createConversation"]>[1],
+      ) {
+        return database.createConversation(projectId, options);
+      },
+    } as unknown as ConversationLifecycleService;
+    const runtime = new TeamWorkItemRuntime(
+      database,
+      lifecycle,
+      {} as AgentRuntime,
+      {} as ModelCredentialStore,
+      {} as ProjectRegistry,
+      { getConfiguration: () => structuredClone(directory) },
+    );
+    const globalInstance = runtime.createInstance({
+      name: "共享交付组",
+      scope: "global",
+      teamId: "default-team",
+    });
+    const rootId = globalInstance.rootConversationId!;
+
+    const projectInstance = runtime.renameInstance({
+      name: "项目交付组",
+      projectId: project.id,
+      teamInstanceId: globalInstance.id,
+    });
+
+    expect(projectInstance).toMatchObject({
+      name: "项目交付组",
+      projectId: project.id,
+      scope: "project",
+    });
+    expect(database.getConversation(rootId)).toMatchObject({
+      projectId: project.id,
+      title: "Team Lead · 项目交付组",
+    });
+    expect(database.listTeamMemberConversations(rootId).every(
+      (conversation) => conversation.projectId === project.id,
+    )).toBe(true);
+    expect(database.getTeamExecutionConversation({
+      projectId: project.id,
+      sourceConversationId: null,
+      teamId: globalInstance.teamId,
+      teamInstanceId: globalInstance.id,
+    })?.id).toBe(rootId);
+
+    const sharedAgain = runtime.renameInstance({
+      name: "共享交付组",
+      projectId: null,
+      teamInstanceId: globalInstance.id,
+    });
+    expect(sharedAgain).toMatchObject({ projectId: null, scope: "global" });
+    expect(database.getConversation(rootId).projectId).toBeNull();
+    expect(database.listTeamMemberConversations(rootId).every(
+      (conversation) => conversation.projectId === null,
+    )).toBe(true);
+    expect(database.getTeamExecutionConversation({
+      projectId: project.id,
+      sourceConversationId: null,
+      teamId: globalInstance.teamId,
+      teamInstanceId: globalInstance.id,
+    })).toBeNull();
+
+    const source = database.createConversation(project.id);
+    const conversationInstance = runtime.createInstance({
+      projectId: project.id,
+      scope: "conversation",
+      sourceConversationId: source.id,
+      teamId: "default-team",
+    });
+    expect(() => runtime.renameInstance({
+      name: conversationInstance.name,
+      projectId: null,
+      teamInstanceId: conversationInstance.id,
+    })).toThrow("retains its source conversation project");
+  });
+
+  it("never derives a conversation Team implicitly from another instance", () => {
+    const database = new AgentDatabase(":memory:");
+    databases.push(database);
+    const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
+    database.syncTeamDirectory(directory);
+    const project = {
+      id: "00000000-0000-4000-8000-000000000081",
+      isPinned: false,
+      name: "Explicit Team fixture",
+      rootPath: "D:\\workspace\\explicit-team",
+    };
+    database.saveProject(project);
+    const source = database.createConversation(project.id);
+    const selection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000082",
+      reasoning: null,
+    };
+    const runtime = new TeamWorkItemRuntime(
+      database,
+      {
+        createConversation(
+          projectId: string | null,
+          options: Parameters<AgentDatabase["createConversation"]>[1],
+        ) {
+          return database.createConversation(projectId, options);
+        },
+      } as unknown as ConversationLifecycleService,
+      {} as AgentRuntime,
+      {
+        getPreferredSelection: () => selection,
+        resolveSelection: () => selection,
+      } as unknown as ModelCredentialStore,
+      { getProject: () => project } as unknown as ProjectRegistry,
+      { getConfiguration: () => structuredClone(directory) },
+    );
+    const projectInstance = runtime.createInstance({
+      projectId: project.id,
+      scope: "project",
+      teamId: "default-team",
+    });
+
+    expect(() => runtime.submit({
+      acceptanceCriteria: [],
+      executionScope: "conversation",
+      permissionMode: "ask_before_changes",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "不得隐式创建团队。",
+      sourceConversationId: source.id,
+      teamId: "default-team",
+      teamInstanceId: projectInstance.id,
+      title: "显式团队约束",
+    }, () => undefined)).toThrow(
+      "Create and select a conversation Team instance before isolated work.",
+    );
+    expect(database.listTeamInstances({ includeArchived: false })).toHaveLength(1);
+    expect(database.listTeamWorkItems({ teamId: "default-team" })).toEqual([]);
+  });
+
+  it("creates one durable shared Team conversation per configured member and reuses it", () => {
+    const database = new AgentDatabase(":memory:");
+    databases.push(database);
+    const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
+    database.syncTeamDirectory(directory);
+    const lifecycle = {
+      createConversation(
+        projectId: string | null,
+        options: Parameters<AgentDatabase["createConversation"]>[1],
+      ) {
+        return database.createConversation(projectId, options);
+      },
+    } as unknown as ConversationLifecycleService;
+    const runtime = new TeamWorkItemRuntime(
+      database,
+      lifecycle,
+      {} as AgentRuntime,
+      {} as ModelCredentialStore,
+      {} as ProjectRegistry,
+      { getConfiguration: () => structuredClone(directory) },
+    );
+
+    const first = runtime.ensureSharedMemberConversation({
+      agentId: "frontend-engineer",
+      teamId: "default-team",
+    });
+    const second = runtime.ensureSharedMemberConversation({
+      agentId: "frontend-engineer",
+      teamId: "default-team",
+    });
+    const lead = runtime.ensureSharedMemberConversation({
+      agentId: "team-lead",
+      teamId: "default-team",
+    });
+
+    expect(first.lead).toMatchObject({
+      agentId: "team-lead",
+      parentConversationId: null,
+      projectId: null,
+      teamId: "default-team",
+      threadKind: "team_lead",
+    });
+    expect(first.member).toMatchObject({
+      agentId: "frontend-engineer",
+      parentConversationId: first.lead.id,
+      projectId: null,
+      teamId: "default-team",
+      threadKind: "agent",
+    });
+    expect(second.member.id).toBe(first.member.id);
+    expect(second.lead.id).toBe(first.lead.id);
+    expect(lead.member.id).toBe(first.lead.id);
+    expect(database.listTeamMemberConversations(first.lead.id)).toHaveLength(1);
+    expect(database.listTeamWorkItems({ teamId: "default-team" })).toEqual([]);
+  });
+
   it("runs a WorkItem through AgentRuntime and stops for user acceptance", () => {
     const database = new AgentDatabase(":memory:");
     databases.push(database);
@@ -56,7 +326,7 @@ describe("TeamWorkItemRuntime", () => {
         options?: { beforeRunScheduled?: (accepted: { runId: string; userMessage: unknown }) => void },
       ) {
         sendInputs.push(input);
-        if (sendInputs.length > 1) {
+        if (input.deliveryMode === "steer") {
           return { kind: "pending" as const, pendingMessage: {} };
         }
         const run = database.createRunWithUserMessage(
@@ -80,10 +350,17 @@ describe("TeamWorkItemRuntime", () => {
       { getProject: () => project } as unknown as ProjectRegistry,
       { getConfiguration: () => structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION) },
     );
+    const instance = runtime.createInstance({
+      projectId: project.id,
+      scope: "conversation",
+      sourceConversationId: sourceConversation.id,
+      teamId: "default-team",
+    });
     const emitted: ConversationRunEvent[] = [];
 
     const submitted = runtime.submit({
       acceptanceCriteria: ["自动化测试通过"],
+      executionScope: "conversation",
       modelSelection: selection,
       permissionMode: "full_access",
       priority: "high",
@@ -91,6 +368,7 @@ describe("TeamWorkItemRuntime", () => {
       requirement: "实现一个简单函数并补测试。",
       sourceConversationId: sourceConversation.id,
       teamId: "default-team",
+      teamInstanceId: instance.id,
       title: "实现简单函数",
     }, (event) => emitted.push(event));
     const running = runtime.list({ teamId: "default-team" })[0];
@@ -117,6 +395,9 @@ describe("TeamWorkItemRuntime", () => {
       "每个工作项都必须至少通过 send_agent_message 委派一位持久团队成员",
     );
     expect(sendInputs[0]?.content).toContain("简单任务走短路径");
+    expect(sendInputs[0]?.content).toContain(`本次 Run 只允许执行团队工作项 ${submitted.id}`);
+    expect(sendInputs[0]?.content).toContain("不得执行、重试、补做或总结任何其他工作项");
+    expect(sendInputs[0]?.content).toContain("可复用历史中已经确认的项目事实、架构决定和验证结论");
     const execution = runtime.getExecution({ workItemId: submitted.id });
     expect(execution.workItemId).toBe(submitted.id);
     expect(execution.agents[0]).toMatchObject({
@@ -188,6 +469,14 @@ describe("TeamWorkItemRuntime", () => {
       resultSummary: "实现完成，测试通过。",
       status: "waiting_user",
     });
+    const reworked = runtime.requestRework({
+      feedback: "只回复返工已收到。",
+      workItemId: submitted.id,
+    }, (event) => emitted.push(event));
+    expect(reworked).toMatchObject({ status: "running" });
+    expect(sendInputs.at(-1)?.content).toContain(`本次 Run 只允许执行团队工作项 ${submitted.id}`);
+    expect(sendInputs.at(-1)?.content).toContain("原始需求：\n实现一个简单函数并补测试。");
+    expect(sendInputs.at(-1)?.content).toContain("若历史中的未完成工作与当前工作项冲突，忽略历史工作");
     expect(emitted.at(-1)?.type).toBe("run.finished");
   });
 
@@ -275,6 +564,11 @@ describe("TeamWorkItemRuntime", () => {
       { getProject: () => project } as unknown as ProjectRegistry,
       { getConfiguration: () => configuration },
     );
+    const instance = database.createTeamInstance({
+      projectId: project.id,
+      scope: "project",
+      teamId: "default-team",
+    });
 
     const submitted = runtime.submit({
       acceptanceCriteria: [],
@@ -283,6 +577,7 @@ describe("TeamWorkItemRuntime", () => {
       projectId: project.id,
       requirement: "团队暂停期间仍应接收需求。",
       teamId: "default-team",
+      teamInstanceId: instance.id,
       title: "暂停团队入箱",
     }, () => undefined);
 
@@ -294,7 +589,7 @@ describe("TeamWorkItemRuntime", () => {
     expect(sendCalls).toBe(0);
   });
 
-  it("automatically starts new Team Lead instances until capacity, then dispatches queued work after completion", () => {
+  it("reuses one project-scoped Team execution across source conversations", () => {
     const database = new AgentDatabase(":memory:");
     databases.push(database);
     const configuration = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
@@ -346,6 +641,11 @@ describe("TeamWorkItemRuntime", () => {
     );
     const sourceOne = database.createConversation(project.id);
     const sourceTwo = database.createConversation(project.id);
+    const instance = runtime.createInstance({
+      projectId: project.id,
+      scope: "project",
+      teamId: "default-team",
+    });
     const submit = (title: string, sourceConversationId: string) => runtime.submit({
       acceptanceCriteria: [],
       permissionMode: "ask_before_changes",
@@ -354,6 +654,7 @@ describe("TeamWorkItemRuntime", () => {
       requirement: `${title} 的需求。`,
       sourceConversationId,
       teamId: "default-team",
+      teamInstanceId: instance.id,
       title,
     }, () => undefined);
 
@@ -364,9 +665,13 @@ describe("TeamWorkItemRuntime", () => {
     const running = initial.filter((item) => item.status === "running");
     const queued = initial.find((item) => item.title === "第三个任务");
 
-    expect(running).toHaveLength(2);
-    expect(new Set(running.map((item) => item.executionConversationId)).size).toBe(2);
+    expect(running).toHaveLength(1);
+    expect(running[0]?.executionScope).toBe("project");
     expect(queued).toMatchObject({ executionConversationId: null, status: "queued" });
+    expect(initial.find((item) => item.title === "第二个任务")).toMatchObject({
+      executionConversationId: null,
+      status: "queued",
+    });
     const first = running[0];
     if (first?.activeRunId === null || first?.activeRunId === undefined || first.executionConversationId === null) {
       throw new Error("The first Team Lead Run was not created.");
@@ -392,10 +697,15 @@ describe("TeamWorkItemRuntime", () => {
     });
 
     const afterCompletion = runtime.list({ teamId: "default-team" });
-    const dispatched = afterCompletion.find((item) => item.title === "第三个任务");
-    expect(afterCompletion.filter((item) => item.status === "running")).toHaveLength(2);
+    const dispatched = afterCompletion.find((item) => item.title === "第二个任务");
+    expect(afterCompletion.filter((item) => item.status === "running")).toHaveLength(1);
     expect(dispatched).toMatchObject({ status: "running" });
     expect(dispatched?.executionConversationId).toBe(first.executionConversationId);
+    expect(afterCompletion.find((item) => item.title === "第三个任务")).toMatchObject({
+      executionConversationId: null,
+      status: "queued",
+    });
     expect(database.getConversation(dispatched?.executionConversationId ?? "").threadKind).toBe("team_lead");
+    expect(database.getConversation(dispatched?.executionConversationId ?? "").parentConversationId).toBeNull();
   });
 });

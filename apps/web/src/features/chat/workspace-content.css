@@ -91,6 +91,17 @@
   white-space: nowrap;
 }
 
+.conversation-workspace__path-team {
+  max-width: 28%;
+}
+
+.conversation-workspace__path-team span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .conversation-workspace__path-link--project {
   max-width: 42%;
 }

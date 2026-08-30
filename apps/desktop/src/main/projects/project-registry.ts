@@ -247,7 +247,8 @@ export class ProjectRegistry {
       id: randomUUID(),
       isPinned: false,
       name: path.basename(canonicalRoot) || canonicalRoot,
-      rootPath: canonicalRoot
+      rootPath: canonicalRoot,
+      showTeamsInNavigator: false
     };
 
     this.projectsById.set(project.id, project);
@@ -322,6 +323,20 @@ export class ProjectRegistry {
       throw new Error("Project is not registered for this application session.");
     }
     project.isPinned = pinned;
+    const summary = this.toProjectSummary(project);
+    this.store?.saveProject(summary);
+    return summary;
+  }
+
+  public setProjectTeamsInNavigator(
+    projectId: string,
+    showTeamsInNavigator: boolean
+  ): ProjectSummary {
+    const project = this.projectsById.get(projectId);
+    if (project === undefined) {
+      throw new Error("Project is not registered for this application session.");
+    }
+    project.showTeamsInNavigator = showTeamsInNavigator;
     const summary = this.toProjectSummary(project);
     this.store?.saveProject(summary);
     return summary;
@@ -597,7 +612,8 @@ export class ProjectRegistry {
       id: project.id,
       isPinned: project.isPinned ?? false,
       name: project.name,
-      rootPath: project.rootPath
+      rootPath: project.rootPath,
+      ...(project.showTeamsInNavigator === true ? { showTeamsInNavigator: true } : {})
     };
   }
 }

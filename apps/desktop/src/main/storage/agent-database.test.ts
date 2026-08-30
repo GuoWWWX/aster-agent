@@ -47,10 +47,64 @@ describe("AgentDatabase", () => {
       .get() as Record<string, unknown>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(12);
-    expect(firstRow.name).toBe("team-durable-member-conversations");
+    expect(firstRow.version).toBe(16);
+    expect(firstRow.name).toBe("team-instance-sort-order");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(12);
+    expect(migrationCount.count).toBe(16);
+  });
+
+  it("preserves legacy Team execution scope when migrating version 12 data", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "agent.sqlite");
+    const database = new AgentDatabase(databasePath);
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = {
+      id: "00000000-0000-4000-8000-000000000061",
+      isPinned: false,
+      name: "Team scope migration fixture",
+      rootPath: "D:\\workspace\\team-scope-migration",
+    };
+    const selection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000062",
+      reasoning: null,
+    };
+    database.saveProject(project);
+    const source = database.createConversation(project.id);
+    const projectScoped = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      modelSelection: selection,
+      permissionMode: "ask_before_changes",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "旧版无来源任务。",
+      teamId: "default-team",
+      title: "旧版项目任务",
+    }, selection);
+    const conversationScoped = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      executionScope: "conversation",
+      modelSelection: selection,
+      permissionMode: "ask_before_changes",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "旧版有来源任务。",
+      sourceConversationId: source.id,
+      teamId: "default-team",
+      title: "旧版对话任务",
+    }, selection);
+    database.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec("ALTER TABLE team_work_items DROP COLUMN execution_scope");
+    legacy.exec("DELETE FROM schema_migrations WHERE version >= 13");
+    legacy.close();
+
+    const migrated = new AgentDatabase(databasePath);
+    expect(migrated.getTeamWorkItem(projectScoped.id).executionScope).toBe("project");
+    expect(migrated.getTeamWorkItem(conversationScoped.id).executionScope).toBe("conversation");
+    migrated.close();
   });
 
   it("searches persisted conversation messages by bounded keyword matches", () => {
@@ -234,7 +288,7 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 12",
+      "newer than supported version 16",
     );
   });
 
@@ -305,7 +359,11 @@ describe("AgentDatabase", () => {
       title: "实现加法函数",
     }, modelSelection);
 
-    expect(created).toMatchObject({ revision: 1, status: "queued" });
+    expect(created).toMatchObject({
+      executionScope: "project",
+      revision: 1,
+      status: "queued",
+    });
     expect(created.events.map((event) => event.type)).toEqual(["received", "scheduled"]);
     expect(database.updateTeamWorkItem({
       requirement: "实现一个可测试的加法函数，并验证负数边界。",
@@ -403,7 +461,23 @@ describe("AgentDatabase", () => {
       title: "对话来源任务",
     }, selection);
 
-    expect(created.sourceConversationId).toBe(sourceConversation.id);
+    expect(created).toMatchObject({
+      executionScope: "project",
+      sourceConversationId: sourceConversation.id,
+    });
+    const isolated = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      executionScope: "conversation",
+      modelSelection: selection,
+      permissionMode: "ask_before_changes",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "仅复用当前对话的团队上下文。",
+      sourceConversationId: sourceConversation.id,
+      teamId: "default-team",
+      title: "对话隔离任务",
+    }, selection);
+    expect(isolated.executionScope).toBe("conversation");
     const otherProject = {
       ...project,
       id: "00000000-0000-4000-8000-000000000073",
@@ -423,6 +497,170 @@ describe("AgentDatabase", () => {
       teamId: "default-team",
       title: "来源校验",
     }, selection)).toThrow("source conversation must belong");
+    database.close();
+  });
+
+  it("keeps project-scoped Team executions separate across projects", () => {
+    const database = new AgentDatabase(":memory:");
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const firstProject = {
+      id: "00000000-0000-4000-8000-000000000074",
+      isPinned: false,
+      name: "First project",
+      rootPath: "D:\\workspace\\team-scope-first",
+    };
+    const secondProject = {
+      ...firstProject,
+      id: "00000000-0000-4000-8000-000000000075",
+      name: "Second project",
+      rootPath: "D:\\workspace\\team-scope-second",
+    };
+    database.saveProject(firstProject);
+    database.saveProject(secondProject);
+    const firstLead = database.createConversation(firstProject.id, {
+      teamId: "default-team",
+      threadKind: "team_lead",
+    });
+    const secondLead = database.createConversation(secondProject.id, {
+      teamId: "default-team",
+      threadKind: "team_lead",
+    });
+    database.bindTeamExecutionConversation({
+      conversationId: firstLead.id,
+      projectId: firstProject.id,
+      sourceConversationId: null,
+      teamId: "default-team",
+    });
+    database.bindTeamExecutionConversation({
+      conversationId: secondLead.id,
+      projectId: secondProject.id,
+      sourceConversationId: null,
+      teamId: "default-team",
+    });
+
+    expect(database.getTeamExecutionConversation({
+      projectId: firstProject.id,
+      sourceConversationId: null,
+      teamId: "default-team",
+    })?.id).toBe(firstLead.id);
+    expect(database.getTeamExecutionConversation({
+      projectId: secondProject.id,
+      sourceConversationId: null,
+      teamId: "default-team",
+    })?.id).toBe(secondLead.id);
+    database.close();
+  });
+
+  it("allocates stable unique Team instance names inside a project", () => {
+    const database = new AgentDatabase(":memory:");
+    const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
+    directory.teams[1]!.name = directory.teams[0]!.name;
+    database.syncTeamDirectory(directory);
+    const project = {
+      id: "00000000-0000-4000-8000-000000000076",
+      isPinned: false,
+      name: "Named Team fixture",
+      rootPath: "D:\\workspace\\named-team",
+    };
+    database.saveProject(project);
+    const source = database.createConversation(project.id);
+    const selection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000077",
+      reasoning: null,
+    };
+    const create = (teamId: string, instanceName?: string) => database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      ...(instanceName === undefined ? {} : { instanceName }),
+      permissionMode: "ask_before_changes" as const,
+      priority: "normal" as const,
+      projectId: project.id,
+      requirement: "验证团队实例命名。",
+      sourceConversationId: source.id,
+      teamId,
+      title: "团队实例命名",
+    }, selection);
+
+    const first = create(directory.teams[0]!.id);
+    const duplicateTemplateName = create(directory.teams[1]!.id);
+    const reused = create(directory.teams[0]!.id, "不应覆盖已有名称");
+
+    expect(first.instanceName).toBe(directory.teams[0]!.name);
+    expect(duplicateTemplateName.instanceName).toBe(`${directory.teams[0]!.name} (1)`);
+    expect(reused.instanceName).toBe(first.instanceName);
+    database.close();
+  });
+
+  it("keeps conversation Team instance names scoped to their source conversation", () => {
+    const database = new AgentDatabase(":memory:");
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = {
+      id: "00000000-0000-4000-8000-000000000078",
+      isPinned: false,
+      name: "Conversation Team fixture",
+      rootPath: "D:\\workspace\\conversation-team",
+    };
+    database.saveProject(project);
+    const firstSource = database.createConversation(project.id);
+    const secondSource = database.createConversation(project.id);
+    const selection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000079",
+      reasoning: null,
+    };
+    const create = (sourceConversationId: string) => database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      executionScope: "conversation",
+      instanceName: "专项小组",
+      permissionMode: "ask_before_changes",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "验证对话团队隔离。",
+      sourceConversationId,
+      teamId: "default-team",
+      title: "对话团队隔离",
+    }, selection);
+
+    expect(create(firstSource.id).instanceName).toBe("专项小组");
+    expect(create(firstSource.id).instanceName).toBe("专项小组");
+    expect(create(secondSource.id).instanceName).toBe("专项小组");
+    database.close();
+  });
+
+  it("persists the custom order of visible Team instances", () => {
+    const database = new AgentDatabase(":memory:");
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = {
+      id: "00000000-0000-4000-8000-000000000080",
+      isPinned: false,
+      name: "Team order fixture",
+      rootPath: "D:\\workspace\\team-order",
+    };
+    database.saveProject(project);
+    const first = database.createTeamInstance({
+      name: "全局团队",
+      scope: "global",
+      teamId: "default-team",
+    });
+    const second = database.createTeamInstance({
+      name: "项目团队",
+      projectId: project.id,
+      scope: "project",
+      teamId: "default-team",
+    });
+
+    expect(database.listTeamInstances().map((instance) => instance.id)).toEqual([
+      first.id,
+      second.id,
+    ]);
+    expect(database.reorderTeamInstances([second.id, first.id]).map((instance) => instance.id))
+      .toEqual([second.id, first.id]);
+    expect(() => database.reorderTeamInstances([first.id, first.id])).toThrow(
+      "duplicate identifiers",
+    );
+    expect(() => database.reorderTeamInstances([first.id])).toThrow(
+      "include every visible Team",
+    );
     database.close();
   });
 
@@ -974,6 +1212,27 @@ describe("AgentDatabase", () => {
     reopenedDatabase.close();
   });
 
+  it("persists the opt-in project team navigator visibility", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "agent.sqlite");
+    const project = {
+      id: "00000000-0000-4000-8000-000000000001",
+      isPinned: false,
+      name: "团队导航项目",
+      rootPath: "D:\\workspace\\team-navigation",
+      showTeamsInNavigator: true,
+    };
+    const firstDatabase = new AgentDatabase(databasePath);
+    firstDatabase.saveProject(project);
+    expect(firstDatabase.listProjects()).toEqual([project]);
+    firstDatabase.close();
+
+    const reopenedDatabase = new AgentDatabase(databasePath);
+    expect(reopenedDatabase.listProjects()).toEqual([project]);
+    reopenedDatabase.close();
+  });
+
   it("persists manual project order inside a pin group", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-"));
     temporaryDirectories.push(directory);
@@ -1047,6 +1306,10 @@ describe("AgentDatabase", () => {
       { version: 10 },
       { version: 11 },
       { version: 12 },
+      { version: 13 },
+      { version: 14 },
+      { version: 15 },
+      { version: 16 },
     ]);
     metadata.close();
   });
@@ -2034,6 +2297,7 @@ describe("AgentDatabase", () => {
 
     const message = database.sendAgentMessage({
       content: "文件处理完后请通知我。",
+      replyInstruction: "仅回三点摘要。",
       runId: crypto.randomUUID(),
       senderConversationId: sender.id,
       targetConversationId: target.id,
@@ -2045,6 +2309,7 @@ describe("AgentDatabase", () => {
     expect(modelContent).toContain("Sender conversation: 负责人");
     expect(modelContent).toContain(`Sender conversationId: ${sender.id}`);
     expect(modelContent).toContain("Call send_agent_message");
+    expect(modelContent).toContain("仅回三点摘要。");
     expect(database.getConversation(target.id).hasUnreadResult).toBe(true);
 
     database.markAgentMessagesRead([message.id]);
@@ -2056,6 +2321,80 @@ describe("AgentDatabase", () => {
       expect(timelineMessage.status).toBe("read");
       expect(typeof timelineMessage.readAt).toBe("string");
     }
+    database.close();
+  });
+
+  it("uses persistent Team Agent names for message senders and stable conversation titles", () => {
+    const database = new AgentDatabase(":memory:");
+    const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
+    database.syncTeamDirectory(directory);
+    const leadProfile = directory.agents.find((agent) => agent.id === "team-lead");
+    const architectProfile = directory.agents.find((agent) => agent.id === "solution-architect");
+    if (leadProfile === undefined || architectProfile === undefined) {
+      throw new Error("The default Team Agent fixtures are missing.");
+    }
+    const lead = database.createConversation(null, {
+      agent: {
+        id: leadProfile.id,
+        instructions: leadProfile.instructions,
+        isDefault: leadProfile.isDefault,
+        name: leadProfile.name,
+        role: leadProfile.role,
+      },
+      teamId: "default-team",
+      threadKind: "team_lead",
+    });
+    database.renameConversation(lead.id, "请进行一次可见的团队协作测试");
+    const architect = database.createConversation(null, {
+      agent: {
+        id: architectProfile.id,
+        instructions: architectProfile.instructions,
+        isDefault: architectProfile.isDefault,
+        name: architectProfile.name,
+        role: architectProfile.role,
+      },
+      parentConversationId: lead.id,
+      teamId: "default-team",
+      threadKind: "agent",
+    });
+    const historic = database.sendAgentMessage({
+      content: "你好，架构师！",
+      messageType: "notification",
+      runId: crypto.randomUUID(),
+      senderConversationId: lead.id,
+      targetConversationId: architect.id,
+    });
+    expect(historic.senderTitle).toBe("请进行一次可见的团队协作测试");
+
+    const instance = database.createTeamInstance({
+      name: "默认团队",
+      scope: "global",
+      teamId: "default-team",
+    });
+    database.setTeamInstanceRoot(instance.id, lead.id);
+    database.bindTeamMemberConversation({
+      agentId: architectProfile.id,
+      conversationId: architect.id,
+      teamExecutionConversationId: lead.id,
+    });
+    database.renameConversation(lead.id, "Team Lead · 默认团队");
+    database.renameConversation(architect.id, "架构师 · 默认团队");
+
+    const restoredHistoric = database.listTimeline(architect.id)
+      .find((item) => item.kind === "agent_message" && item.id === historic.id);
+    expect(restoredHistoric).toMatchObject({ senderTitle: "Team Lead · 默认团队" });
+    const current = database.sendAgentMessage({
+      content: "请继续评审。",
+      messageType: "notification",
+      runId: crypto.randomUUID(),
+      senderConversationId: lead.id,
+      targetConversationId: architect.id,
+    });
+    expect(current.senderTitle).toBe("Team Lead · 默认团队");
+
+    const run = database.createRunWithUserMessage(lead.id, "新的团队任务", "test-model");
+    expect(database.getConversation(lead.id).title).toBe("Team Lead · 默认团队");
+    database.finishRun(run.runId, "completed", null);
     database.close();
   });
 

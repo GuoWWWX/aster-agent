@@ -58,8 +58,9 @@ Claude Code 官方文档指出，多 Agent 的 Token 成本随活跃成员增长
 ## 3. 推荐组织模型
 
 ```text
-AI Team（长期存在）
-├─ Team Lead（唯一负责人；同一来源主对话与 Team 复用一个持久执行对话）
+AI Team Instance（用户显式创建、长期存在）
+├─ Scope（global / project / conversation）
+├─ Team Lead（唯一负责人；在实例内复用持久执行对话）
 ├─ Team Inbox（持续接收用户任务）
 ├─ Project Registry（团队可服务的项目）
 ├─ Agent Profiles（可复用能力定义）
@@ -73,7 +74,7 @@ AI Team（长期存在）
 
 ### 3.1 Team Lead
 
-团队只有一个主负责人身份。它保存团队级配置、用户偏好、当前优先级和任务总览；同一来源主对话调用同一 Team 时复用一个 Team Lead 根执行对话及其成员对话。WorkItem 仍是独立的调度、审计和验收单元，并在该根对话上串行执行，避免两个工作项混淆当前运行策略。默认开发团队的 Team Lead 不替代专业成员实现：每个 WorkItem 至少向一位持久成员发出 `expectReply=true` 的任务，简单任务只走一位成员的短路径，主要负责：
+团队只有一个主负责人身份。团队设置中的 Team 只是创建模板，实际工作必须由用户或界面先显式创建 `TeamInstance`。实例分为全局、项目和对话三种作用域；WorkItem 通过 `teamInstanceId` 精确选择一个可见实例，不能根据模板、项目或来源对话静默派生新实例。Team Lead 在实例内保存团队级配置、当前优先级和任务总览，WorkItem 仍是独立的调度、来源审计和验收单元，并在实例执行根上串行执行，避免两个工作项混淆当前运行策略。默认开发团队的 Team Lead 不替代专业成员实现：每个 WorkItem 至少向一位持久成员发出 `expectReply=true` 的任务，简单任务只走一位成员的短路径，主要负责：
 
 - 任务澄清和项目绑定。
 - 拆分任务并定义验收标准。
@@ -123,7 +124,11 @@ AI Team（长期存在）
 
 ### 3.6 Agent 逻辑对话与模型
 
-每个 Team Lead、持久团队成员和临时 Subagent 都有独立的逻辑对话 Thread。它是 SQLite 中的对话与事件归属，不是独占的 OS 线程、Node `worker_threads` 或进程。每个来源主对话与 Team 的组合建立一个 `team_lead` 根 Thread，并建立该 Team 配置成员的持久 `agent` Thread；后续 WorkItem 复用这些 Thread。Team Lead 通过 `send_agent_message` 与 `wait_for_agent_message` 分派、等待和汇总，成员消息与任务分派记录共同构成可审计事实；团队内禁止把成员创建为 `subagent_tasks`。团队面板只读取这些持久关系和消息分派，不嵌入或复制成员 Timeline。用户从团队面板点击成员时，主对话保持可用，成员消息、工具、审批、Artifact 和结果在右侧侧边 Tab 查看；该 Tab 与普通对话保留相同的输入、排队、停止、任务清单关闭、模型/思考、权限和审批入口。运行中的输入只可作为同一 Run 的 `steer`，不能更换 Agent 或开启一个独立 Run；用户修改模型、思考或权限时，以原子方式更新 WorkItem 的后续 Run 策略及当前 Conversation 的展示选择，而当前 Run 的模型/权限快照和已经出现的审批不追溯变化。没有运行的成员要继续工作时使用 WorkItem 的返工/验收流程。左侧导航则把同一执行谱系显示为来源主对话下的协作层级。临时 Subagent 完成后 Thread 仍可查看；用户继续对话时创建新 Run，不修改历史 Run。〔FACT｜`apps/desktop/src/main/teams/team-work-item-runtime.ts`；`apps/desktop/src/main/agent/agent-runtime.ts`；`apps/web/src/features/workspace/right-sidebar-workspace.tsx`〕
+每个 Team Lead、持久团队成员和临时 Subagent 都有独立的逻辑对话 Thread。它是 SQLite 中的对话与事件归属，不是独占的 OS 线程、Node `worker_threads` 或进程。创建 TeamInstance 时建立该实例自己的 `team_lead` 根 Thread 和配置成员的持久 `agent` Thread；全局实例可被任意项目主对话选择，项目实例只对同项目主对话可见，对话实例只对所属来源对话可见。后续 WorkItem 始终复用所选实例的身份与消息谱系。Team Lead 通过 `send_agent_message` 与 `wait_for_agent_message` 分派、等待和汇总，成员消息与任务分派记录共同构成可审计事实；团队内禁止把成员创建为 `subagent_tasks`。团队面板只读取这些持久关系和消息分派，不嵌入或复制成员 Timeline。用户点击成员时，成员消息、工具、审批、Artifact 和结果使用其原生 Conversation；运行中的输入只可作为同一 Run 的 `steer`，不能更换 Agent 或开启一个独立 Run。没有运行的成员要继续工作时使用 WorkItem 的返工/验收流程。临时 Subagent 完成后 Thread 仍可查看；用户继续对话时创建新 Run，不修改历史 Run。〔FACT｜`apps/desktop/src/main/teams/team-work-item-runtime.ts`；`apps/desktop/src/main/agent/agent-runtime.ts`；`apps/web/src/features/workspace/right-sidebar-workspace.tsx`〕
+
+持久 Agent 的“完整对话”和“跨 Agent 回执”是两个边界：成员在最终回答开头按 `replyInstruction` 写简述，以单独一行 Markdown `---` 分隔详细结果；完整回答只写入成员 Thread，`expectReply=true` 仅向发送方投递分隔线前最多 1000 字符的完成回执、终态和成员 Conversation ID。发送方可随时用 `list_agent_conversations` 查看成员状态，并按自己选择的 `maxTokens` 调用 `read_agent_conversation` 取回运行中或已完成成员对话的有界快照。回执、状态查询和主动读取都不创建第二份成员 Timeline，也不把完整成员输出复制进 Team Lead 上下文。
+
+左侧“团队”分组统一列出用户创建的全局实例和项目实例；项目实例在团队名后显示其关联项目的当前名称。团队分组的创建入口允许选择“不关联项目”或一个已注册项目。项目三点菜单提供“在项目中显示团队”开关，默认关闭；开启后项目实例才会作为同一数据的快捷入口出现在该项目普通对话列表中。对话实例继续直接显示在来源对话展开后的协作树中，不增加“对话团队”中间目录。项目标题行和普通对话的悬浮操作仍可分别创建项目实例和对话实例。实例默认采用模板名，重名自动追加 `(1)`、`(2)`，并支持重命名、归档和删除。全局/项目实例的团队名行支持持久化自定义排序，单击团队名只展开或收起成员；选中态只属于实际打开的成员 Conversation。全局/项目实例直接展示模板中的全部成员；对话实例只展示已经被该实例 WorkItem 实际启用的成员。成员行打开实例自己的原生持久 Conversation，不创建 WorkItem 或 Run，也不复制 Timeline。`@实例名` 只列当前对话可见的真实实例；模板本身不出现在投递菜单，投递也绝不自动创建实例。
 
 空闲 Agent 不占用模型连接、执行线程或子进程。任务到来时才创建 Run，由共享异步调度器和受限 Worker/进程池执行；Agent 数量因此不直接受 CPU 线程数限制，活动 Run 数量则受内存、供应商限流、工具进程和用户预算共同约束。
 
@@ -214,6 +219,7 @@ inbox
 
 - 团队级记忆只保存用户偏好、通用规范和项目目录索引。
 - 项目技术栈、代码事实、历史修改和构建命令保存在项目记忆中。
+- 默认项目执行 Conversation 可复用历史中已确认的项目事实、架构决定和验证结论，但每个 WorkItem 的当前需求仍是唯一任务指令，历史未完成任务不得自动续做。
 - Agent 执行时只加载当前项目上下文，不把其他项目完整历史混入模型。
 - 同名文件、分支和命令必须包含项目 ID，不能依赖当前 UI 选中的目录推断。
 

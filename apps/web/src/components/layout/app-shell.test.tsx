@@ -19,6 +19,7 @@ beforeEach(() => {
     filePanelWidthsByConversationId: {},
     isFilePanelOpen: true,
     isProjectNavigatorOpen: true,
+    themeMode: "light",
   });
 });
 
@@ -26,9 +27,30 @@ afterEach(() => {
   act(() => root?.unmount());
   root = null;
   document.body.replaceChildren();
+  document.documentElement.removeAttribute("data-theme");
 });
 
 describe("AppShell", () => {
+  it("applies the active theme to document-level portals", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() => root?.render(
+      <TooltipProvider>
+        <AppShell
+          agentClient={new MockAgentClient()}
+          filePanel={<div>右侧工作区</div>}
+          mainContent={<div>主工作区</div>}
+          projectNavigator={<div>项目导航</div>}
+        />
+      </TooltipProvider>,
+    ));
+
+    expect(document.documentElement.dataset.theme).toBe("light");
+    act(() => useWorkbenchUiStore.getState().setThemeMode("dark"));
+    expect(document.documentElement.dataset.theme).toBe("dark");
+  });
+
   it("keeps the right workspace mounted while it is collapsed", () => {
     let mountCount = 0;
     function StatefulFilePanel(): ReactElement {

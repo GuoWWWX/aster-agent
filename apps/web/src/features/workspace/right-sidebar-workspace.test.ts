@@ -7,7 +7,9 @@ import type {
 } from "@agent/protocol";
 
 import {
+  isAutoOpenedSideConversation,
   shouldDeleteSidebarChat,
+  shouldLoadSideConversations,
   nextTerminalTabName,
   nextWorkspaceTabName,
   updateSideSessionsForRunEvent,
@@ -52,6 +54,49 @@ function sideConversation(
 }
 
 describe("right sidebar side session state", () => {
+  const teamLead = {
+    ...sideConversation(PARENT_ID, "model-a", { kind: "effort", value: "medium" }),
+    agentId: "team-lead",
+    parentConversationId: null,
+    teamId: "default-team",
+    threadKind: "team_lead" as const,
+    title: "Team Lead · 默认团队",
+  };
+  const team = {
+    id: "default-team",
+    leadAgentId: "team-lead",
+    memberIds: ["team-lead", "requirements-analyst"],
+  };
+
+  it("does not treat a Team Lead's durable member as a side chat", () => {
+    const member = {
+      ...sideConversation("00000000-0000-4000-8000-000000000005", "model-a", {
+        kind: "effort",
+        value: "medium",
+      }),
+      agentId: "requirements-analyst",
+      teamId: "default-team",
+      title: "需求分析师 · 默认团队",
+    };
+
+    expect(isAutoOpenedSideConversation(member, teamLead, team)).toBe(false);
+    expect(shouldDeleteSidebarChat(member, teamLead, team)).toBe(false);
+  });
+
+  it("keeps a Team Lead's manually created side chat as an ordinary side chat", () => {
+    const sideChat = {
+      ...sideConversation("00000000-0000-4000-8000-000000000006", "model-a", {
+        kind: "effort",
+        value: "medium",
+      }),
+      agentId: "team-lead",
+      teamId: "default-team",
+    };
+
+    expect(isAutoOpenedSideConversation(sideChat, teamLead, team)).toBe(true);
+    expect(shouldDeleteSidebarChat(sideChat, teamLead, team)).toBe(true);
+  });
+
   it("only hides a managed team member when its side tab closes", () => {
     const managedMember = {
       ...sideConversation("00000000-0000-4000-8000-000000000005", "model-a", {
@@ -64,6 +109,22 @@ describe("right sidebar side session state", () => {
 
     expect(shouldDeleteSidebarChat(managedMember)).toBe(false);
     expect(shouldDeleteSidebarChat(sideConversation("00000000-0000-4000-8000-000000000007", "model-a", {
+      kind: "effort",
+      value: "medium",
+    }))).toBe(true);
+  });
+
+  it("does not try to load side chats for a managed Team WorkItem conversation", () => {
+    const managedMember = {
+      ...sideConversation("00000000-0000-4000-8000-000000000005", "model-a", {
+        kind: "effort",
+        value: "medium",
+      }),
+      teamWorkItemId: "00000000-0000-4000-8000-000000000006",
+    };
+
+    expect(shouldLoadSideConversations(managedMember)).toBe(false);
+    expect(shouldLoadSideConversations(sideConversation("00000000-0000-4000-8000-000000000007", "model-a", {
       kind: "effort",
       value: "medium",
     }))).toBe(true);

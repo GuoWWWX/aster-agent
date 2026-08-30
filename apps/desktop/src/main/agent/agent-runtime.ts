@@ -530,7 +530,8 @@ function isRetryableModelError(error: unknown): boolean {
     return error.status === 400 && /insufficient[_\s-]?(?:quota|balance|credit)|(?:额度|余额)(?:不足|耗尽)/iu.test(error.message);
   }
 
-  return error instanceof TypeError && /fetch failed|network|socket|connect|connection|timed out|timeout|terminated|econn/iu.test(error.message);
+  return (error instanceof Error || error instanceof DOMException)
+    && /fetch failed|network|socket|connect|connection|timed out|timeout|terminated|econn/iu.test(error.message);
 }
 
 function isToolApprovalInterrupt(value: unknown): value is ToolApprovalInterrupt {
@@ -679,6 +680,9 @@ function replaceStoredVisibleMessageContent(
   return content;
 }
 
+const MAX_AGENT_RESULT_RECEIPT_LENGTH = 1_000;
+const AGENT_RESULT_RECEIPT_TRUNCATION = "\n\n[完整结果保留在执行 Agent 对话，可按需读取]";
+
 function agentResultContent(input: {
   error: string | null;
   result: string | null;
@@ -691,6 +695,25 @@ function agentResultContent(input: {
     return "Agent 处理本次协作消息时被取消。";
   }
   return `Agent 处理本次协作消息失败：${input.error ?? "未知错误"}`;
+}
+
+function agentResultReceiptContent(input: {
+  error: string | null;
+  result: string | null;
+  status: "completed" | "failed" | "cancelled";
+}): string {
+  const content = agentResultContent(input);
+  if (input.status !== "completed") {
+    return content.slice(0, MAX_AGENT_RESULT_RECEIPT_LENGTH);
+  }
+  const divider = /\n\s*---+\s*(?:\n|$)/u.exec(content);
+  const receipt = divider?.index === undefined
+    ? content
+    : content.slice(0, divider.index).trimEnd();
+  const hasMoreDetail = divider !== null || receipt.length < content.length;
+  if (!hasMoreDetail && receipt.length <= MAX_AGENT_RESULT_RECEIPT_LENGTH) return receipt;
+  const receiptBudget = MAX_AGENT_RESULT_RECEIPT_LENGTH - AGENT_RESULT_RECEIPT_TRUNCATION.length;
+  return `${receipt.slice(0, receiptBudget).trimEnd()}${AGENT_RESULT_RECEIPT_TRUNCATION}`;
 }
 
 export class AgentRuntime {
@@ -2503,7 +2526,7 @@ export class AgentRuntime {
         "This is a persistent Agent Team. Do not create Subagents for Team work.",
         `Delegate only through send_agent_message with a member conversationId: ${members.join("; ")}`,
         "Every Team WorkItem must delegate to at least one durable member with expectReply=true before the Team Lead gives a final answer. For simple work choose only the best-matched member; add more roles only when the task genuinely needs them.",
-        "Use wait_for_agent_message for results when needed, verify the returned work, and summarize the durable members' results yourself.",
+        "Use replyInstruction to request a concise completion receipt. The member puts a standalone Markdown --- after that receipt, so the runtime can return only a bounded completion receipt automatically. Check member status with list_agent_conversations, read full member conversations only on demand with read_agent_conversation and a deliberate maxTokens budget, verify the returned work, and summarize it yourself.",
       ];
   }
 
@@ -2517,7 +2540,7 @@ export class AgentRuntime {
   private teamWorkerContext(conversation: ConversationSummary): string[] {
     if (!this.database.isTeamMemberConversation(conversation.id)) return [];
     return [
-      "You are a persistent Team member. Work only on messages assigned through Agent communication. Do not create Subagents. Report progress or clarification with send_agent_message to a participant in the same Team; your final result is returned to the sender automatically.",
+      "You are a persistent Team member. Work only on messages assigned through Agent communication. Do not create Subagents. Report progress or clarification with send_agent_message to a participant in the same Team. Start your final answer with the requested concise completion receipt, add a standalone Markdown --- line, then keep supporting detail after it in this conversation; the runtime returns only a bounded completion receipt before that divider.",
     ];
   }
 
@@ -2839,7 +2862,7 @@ export class AgentRuntime {
     }
     for (const trigger of bySender.values()) {
       try {
-        const content = agentResultContent(input).slice(0, 20_000);
+        const content = agentResultReceiptContent(input);
         const message = this.database.sendAgentMessage({
           content,
           messageType: "agent_result",

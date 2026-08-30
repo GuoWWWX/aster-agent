@@ -34,7 +34,8 @@ export const projectSummarySchema = z
     id: projectIdSchema,
     isPinned: z.boolean().optional(),
     name: z.string().trim().min(1).max(MAX_PROJECT_NAME_LENGTH),
-    rootPath: z.string().trim().min(1).max(MAX_PROJECT_PATH_LENGTH)
+    rootPath: z.string().trim().min(1).max(MAX_PROJECT_PATH_LENGTH),
+    showTeamsInNavigator: z.boolean().optional()
   })
   .strict();
 
@@ -53,6 +54,13 @@ export const setProjectPinnedInputSchema = z
   .object({
     pinned: z.boolean(),
     projectId: projectIdSchema
+  })
+  .strict();
+
+export const setProjectTeamsInNavigatorInputSchema = z
+  .object({
+    projectId: projectIdSchema,
+    showTeamsInNavigator: z.boolean()
   })
   .strict();
 
@@ -174,6 +182,9 @@ export type ProjectSummary = z.infer<typeof projectSummarySchema>;
 export type ProjectReferenceInput = z.infer<typeof projectReferenceInputSchema>;
 export type RenameProjectInput = z.infer<typeof renameProjectInputSchema>;
 export type SetProjectPinnedInput = z.infer<typeof setProjectPinnedInputSchema>;
+export type SetProjectTeamsInNavigatorInput = z.infer<
+  typeof setProjectTeamsInNavigatorInputSchema
+>;
 export type ReorderProjectsInput = z.infer<typeof reorderProjectsInputSchema>;
 export type ProjectEntry = z.infer<typeof projectEntrySchema>;
 export type ProjectEntryKind = z.infer<typeof projectEntryKindSchema>;

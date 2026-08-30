@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
 
 import type { AgentClient } from "../../runtime/index.js";
 import {
@@ -73,6 +73,14 @@ export function AppShell({
   const agentPromptWorkspaceTarget = useWorkbenchUiStore(
     (state) => state.agentPromptWorkspaceTarget,
   );
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = themeMode;
+    return () => {
+      document.documentElement.removeAttribute("data-theme");
+    };
+  }, [themeMode]);
+
   const isConversationWorkspace = activeActivity === "conversations";
   const canShowFileWorkspace = isConversationWorkspace || (
     activeActivity === "settings"

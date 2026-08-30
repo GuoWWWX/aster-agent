@@ -23,6 +23,9 @@ import type {
   CreateProjectEntryInput,
   DeleteConfigurationWorkspaceEntryInput,
   CreateConversationInput,
+  CreateTeamInstanceInput,
+  EnsureTeamMemberConversationInput,
+  EnsureTeamInstanceMemberConversationInput,
   DesktopBridge,
   DiscoverModelsInput,
   DiscoveredModel,
@@ -72,6 +75,7 @@ import type {
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SetProjectPinnedInput,
+  SetProjectTeamsInNavigatorInput,
   RuntimeInfo,
   RunAccepted,
   SkillDocument,
@@ -92,13 +96,20 @@ import type {
   WriteProjectFileInput,
   WindowState,
   ListTeamWorkItemsInput,
+  ListTeamInstancesInput,
   RequestTeamWorkItemReworkInput,
   SubmitTeamWorkItemInput,
   UpdateTeamWorkItemInput,
   UpdateTeamWorkItemPermissionInput,
   AcceptTeamWorkItemInput,
   TeamWorkItemExecutionView,
+  TeamMemberConversationView,
   TeamWorkItemView,
+  TeamInstanceReferenceInput,
+  TeamInstanceView,
+  RenameTeamInstanceInput,
+  ReorderTeamInstancesInput,
+  SetTeamInstanceArchivedInput,
 } from "@agent/protocol";
 
 import type {
@@ -156,6 +167,42 @@ export class DesktopAgentClientAdapter implements AgentClient {
     input: CreateConversationInput,
   ): Promise<ConversationSummary> {
     return this.desktopBridge.createConversation(input);
+  }
+
+  public listTeamInstances(input: ListTeamInstancesInput): Promise<TeamInstanceView[]> {
+    return this.desktopBridge.listTeamInstances(input);
+  }
+
+  public createTeamInstance(input: CreateTeamInstanceInput): Promise<TeamInstanceView> {
+    return this.desktopBridge.createTeamInstance(input);
+  }
+
+  public renameTeamInstance(input: RenameTeamInstanceInput): Promise<TeamInstanceView> {
+    return this.desktopBridge.renameTeamInstance(input);
+  }
+
+  public reorderTeamInstances(input: ReorderTeamInstancesInput): Promise<TeamInstanceView[]> {
+    return this.desktopBridge.reorderTeamInstances(input);
+  }
+
+  public setTeamInstanceArchived(input: SetTeamInstanceArchivedInput): Promise<TeamInstanceView> {
+    return this.desktopBridge.setTeamInstanceArchived(input);
+  }
+
+  public deleteTeamInstance(input: TeamInstanceReferenceInput): Promise<void> {
+    return this.desktopBridge.deleteTeamInstance(input);
+  }
+
+  public ensureTeamInstanceMemberConversation(
+    input: EnsureTeamInstanceMemberConversationInput,
+  ): Promise<TeamMemberConversationView> {
+    return this.desktopBridge.ensureTeamInstanceMemberConversation(input);
+  }
+
+  public ensureTeamMemberConversation(
+    input: EnsureTeamMemberConversationInput,
+  ): Promise<TeamMemberConversationView> {
+    return this.desktopBridge.ensureTeamMemberConversation(input);
   }
 
   public selectConversationWorkspace(
@@ -574,6 +621,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
 
   public setProjectPinned(input: SetProjectPinnedInput): Promise<ProjectSummary> {
     return this.desktopBridge.setProjectPinned(input);
+  }
+
+  public setProjectTeamsInNavigator(
+    input: SetProjectTeamsInNavigatorInput,
+  ): Promise<ProjectSummary> {
+    return this.desktopBridge.setProjectTeamsInNavigator(input);
   }
 
   public readSkillDocument(input: SkillDocumentReferenceInput): Promise<SkillDocument> {

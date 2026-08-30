@@ -45,6 +45,10 @@ export type ProjectTreeController = {
   reorderProjects(projectIds: string[]): Promise<boolean>;
   renameProject(projectId: string, name: string): Promise<boolean>;
   setProjectPinned(projectId: string, pinned: boolean): Promise<boolean>;
+  setProjectTeamsInNavigator(
+    projectId: string,
+    showTeamsInNavigator: boolean,
+  ): Promise<boolean>;
   selectPath(path: string): void;
   selectProject(projectId: string): void;
   setQuery(query: string): void;
@@ -270,6 +274,26 @@ export function useProjectTree(
       return true;
     } catch {
       setOperationError("无法修改项目置顶状态");
+      return false;
+    }
+  }, [agentClient]);
+
+  const setProjectTeamsInNavigator = useCallback(async (
+    projectId: string,
+    showTeamsInNavigator: boolean,
+  ): Promise<boolean> => {
+    setOperationError(null);
+    try {
+      const project = await agentClient.setProjectTeamsInNavigator({
+        projectId,
+        showTeamsInNavigator,
+      });
+      setProjects((current) =>
+        current.map((candidate) => candidate.id === project.id ? project : candidate),
+      );
+      return true;
+    } catch {
+      setOperationError("无法修改项目团队显示设置");
       return false;
     }
   }, [agentClient]);
@@ -514,6 +538,7 @@ export function useProjectTree(
     selectProject: setActiveProjectId,
     selectedPath,
     setProjectPinned,
+    setProjectTeamsInNavigator,
     setQuery,
     toggleDirectory,
   };

@@ -68,6 +68,25 @@ describe("main agent errors", () => {
     });
   });
 
+  it("keeps model transport timeouts separate from command timeouts", () => {
+    expect(toMainAgentError(
+      new Error("Command execution timed out."),
+      { operation: "agent.run" },
+    )).toMatchObject({
+      code: "MODEL_TIMEOUT",
+      message: "模型请求超时，请检查网络后重试。",
+      retryable: true,
+    });
+    expect(toMainAgentError(
+      new Error("Command execution timed out."),
+      { operation: "tool:run_command" },
+    )).toMatchObject({
+      code: "PROCESS_TIMEOUT",
+      message: "命令执行超时。",
+      retryable: true,
+    });
+  });
+
   it("classifies an ended or restarted terminal as a recoverable conflict", () => {
     const error = Object.assign(
       new Error("终端会话已结束或桌面服务已重启，请重新打开终端后重试。"),

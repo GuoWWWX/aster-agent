@@ -443,6 +443,11 @@ describe("Subagent approval queue", () => {
     const send = vi.spyOn(client, "sendConversationMessage");
     const team = DEFAULT_AGENT_DIRECTORY_CONFIGURATION.teams[0];
     if (team === undefined) throw new Error("Default Team fixture is unavailable.");
+    const teamInstance = await client.createTeamInstance({
+      projectId: project.id,
+      scope: "project",
+      teamId: team.id,
+    });
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -455,6 +460,7 @@ describe("Subagent approval queue", () => {
             project={project}
             relatedSessions={[sourceSession]}
             session={sourceSession}
+            teamInstances={[teamInstance]}
           />
         </TooltipProvider>,
       );

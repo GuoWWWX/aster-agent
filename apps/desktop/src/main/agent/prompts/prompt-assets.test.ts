@@ -21,6 +21,7 @@ describe("prompt assets", () => {
     expect(BASE_SYSTEM_PROMPT).toContain(
       "A terminal tab opened manually by the user is not automatically owned by this conversation",
     );
+    expect(BASE_SYSTEM_PROMPT).toContain("returns only a bounded completion receipt");
     expect(BASE_SYSTEM_PROMPT).not.toMatch(/\p{Script=Han}/u);
     expect(BASE_SYSTEM_PROMPT).not.toMatch(/\r/u);
   });

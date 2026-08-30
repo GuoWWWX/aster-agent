@@ -56,6 +56,7 @@ export {
   createConversationInputSchema,
   discoverModelsInputSchema,
   discoveredModelSchema,
+  ensureTeamMemberConversationInputSchema,
   getModelApiKeyInputSchema,
   importConversationAttachmentBytesInputSchema,
   isGemini3ReasoningModel,
@@ -92,6 +93,7 @@ export {
   sendConversationMessageInputSchema,
   sendTeamMessageInputSchema,
   setTeamCoordinatorInputSchema,
+  teamMemberConversationViewSchema,
   updatePendingConversationMessageInputSchema
 } from "./conversation.js";
 export type {
@@ -124,6 +126,7 @@ export type {
   ConversationToolItem,
   ConversationToolExecutionMode,
   CreateConversationInput,
+  EnsureTeamMemberConversationInput,
   DiscoverModelsInput,
   DiscoveredModel,
   GetModelApiKeyInput,
@@ -154,6 +157,7 @@ export type {
   SendConversationMessageInput,
   SendTeamMessageInput,
   SetTeamCoordinatorInput,
+  TeamMemberConversationView,
   UpdatePendingConversationMessageInput
 } from "./conversation.js";
 export {
@@ -285,6 +289,7 @@ export {
   teamWorkItemExecutionAgentSchema,
   teamWorkItemExecutionViewSchema,
   teamWorkItemEventSchema,
+  teamWorkItemExecutionScopeSchema,
   teamWorkItemListSchema,
   teamWorkItemPrioritySchema,
   teamWorkItemReferenceInputSchema,
@@ -300,6 +305,7 @@ export type {
   UpdateTeamWorkItemInput,
   UpdateTeamWorkItemPermissionInput,
   TeamWorkItemEvent,
+  TeamWorkItemExecutionScope,
   TeamWorkItemExecutionAgent,
   TeamWorkItemExecutionView,
   TeamWorkItemPriority,
@@ -307,6 +313,31 @@ export type {
   TeamWorkItemStatus,
   TeamWorkItemView,
 } from "./team-work-item.js";
+export {
+  createTeamInstanceInputSchema,
+  ensureTeamInstanceMemberConversationInputSchema,
+  listTeamInstancesInputSchema,
+  renameTeamInstanceInputSchema,
+  reorderTeamInstancesInputSchema,
+  setTeamInstanceArchivedInputSchema,
+  teamInstanceIdSchema,
+  teamInstanceListSchema,
+  teamInstanceNameSchema,
+  teamInstanceReferenceInputSchema,
+  teamInstanceScopeSchema,
+  teamInstanceViewSchema,
+} from "./team-instance.js";
+export type {
+  CreateTeamInstanceInput,
+  EnsureTeamInstanceMemberConversationInput,
+  ListTeamInstancesInput,
+  RenameTeamInstanceInput,
+  ReorderTeamInstancesInput,
+  SetTeamInstanceArchivedInput,
+  TeamInstanceReferenceInput,
+  TeamInstanceScope,
+  TeamInstanceView,
+} from "./team-instance.js";
 export type {
   AgentCapabilityScope,
   AgentDirectoryConfiguration,
@@ -419,8 +450,12 @@ export {
   conversationContextUsageIpcArgumentsSchema,
   createProjectEntryIpcArgumentsSchema,
   createConversationIpcArgumentsSchema,
+  createTeamInstanceIpcArgumentsSchema,
+  deleteTeamInstanceIpcArgumentsSchema,
   discoverModelsIpcArgumentsSchema,
   emptyIpcArgumentsSchema,
+  ensureTeamMemberConversationIpcArgumentsSchema,
+  ensureTeamInstanceMemberConversationIpcArgumentsSchema,
   getTeamWorkItemExecutionIpcArgumentsSchema,
   getModelApiKeyIpcArgumentsSchema,
   integrationConfigurationIpcArgumentsSchema,
@@ -429,15 +464,19 @@ export {
   listProjectEntriesIpcArgumentsSchema,
   listConfigurationWorkspaceEntriesIpcArgumentsSchema,
   listTeamWorkItemsIpcArgumentsSchema,
+  listTeamInstancesIpcArgumentsSchema,
   projectReferenceIpcArgumentsSchema,
   readProjectFileIpcArgumentsSchema,
   readProjectPreviewImageIpcArgumentsSchema,
   readConfigurationWorkspaceFileIpcArgumentsSchema,
   reorderConversationsIpcArgumentsSchema,
   reorderProjectsIpcArgumentsSchema,
+  reorderTeamInstancesIpcArgumentsSchema,
   renameProjectIpcArgumentsSchema,
   setProjectPinnedIpcArgumentsSchema,
+  setProjectTeamsInNavigatorIpcArgumentsSchema,
   renameConversationIpcArgumentsSchema,
+  renameTeamInstanceIpcArgumentsSchema,
   saveModelConfigurationIpcArgumentsSchema,
   sendTeamMessageIpcArgumentsSchema,
   setTeamCoordinatorIpcArgumentsSchema,
@@ -448,6 +487,7 @@ export {
   setConversationModelSelectionIpcArgumentsSchema,
   setConversationProjectIpcArgumentsSchema,
   setConversationPinnedIpcArgumentsSchema,
+  setTeamInstanceArchivedIpcArgumentsSchema,
   terminalConfigurationIpcArgumentsSchema,
   gitFileDiffIpcArgumentsSchema,
   gitOperationIpcArgumentsSchema,
@@ -494,6 +534,7 @@ export {
   reorderProjectsInputSchema,
   renameProjectInputSchema,
   setProjectPinnedInputSchema,
+  setProjectTeamsInNavigatorInputSchema,
   projectSummarySchema,
   relativeProjectPathSchema,
   writeProjectFileInputSchema
@@ -514,6 +555,7 @@ export type {
   ReorderProjectsInput,
   RenameProjectInput,
   SetProjectPinnedInput,
+  SetProjectTeamsInNavigatorInput,
   ProjectSummary
 } from "./project.js";
 export { runtimeInfoSchema, runtimePlatformSchema } from "./runtime.js";

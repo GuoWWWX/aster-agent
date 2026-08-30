@@ -24,6 +24,7 @@ import {
   MessageSquareText,
   Paperclip,
   Pencil,
+  Scale,
   Search,
   Send,
   SendHorizontal,
@@ -61,6 +62,7 @@ import { createPortal } from "react-dom";
 
 import type {
   AgentAvatarIcon,
+  AgentTeam,
   ContextCompressionConfiguration,
   ApproveToolChangeInput,
   ConversationAttachment,
@@ -80,6 +82,8 @@ import type {
   ModelRuntimeStatus,
   ProjectEntry,
   ProjectSummary,
+  TeamInstanceScope,
+  TeamInstanceView,
 } from "@agent/protocol";
 import {
   agentAvatarIconSchema,
@@ -163,6 +167,7 @@ type WorkspaceContentProps = {
   isCreatingSession: boolean;
   projects: readonly ProjectSummary[];
   sessions: readonly ProjectSession[];
+  teamInstances?: readonly TeamInstanceView[];
   onAddProject: () => Promise<ProjectSummary | null>;
   onCreateProjectSession: (projectId: string) => void;
   onCreateTemporarySession: () => void;
@@ -176,6 +181,42 @@ type WorkspaceContentProps = {
   onSessionUpdated: (conversation: ConversationSummary) => void;
   onSessionViewed: (sessionId: string) => void;
 };
+
+type ConversationPathScope = {
+  kind: "project" | "team" | "temporary";
+  label: string;
+};
+
+export function resolveConversationPathScope(
+  project: Pick<ProjectSummary, "name"> | null,
+  session: Pick<ProjectSession, "teamId" | "teamWorkItemId">,
+  teams: readonly Pick<AgentTeam, "id" | "name">[],
+): ConversationPathScope {
+  if (project !== null) return { kind: "project", label: project.name };
+  if (session.teamId !== null && session.teamWorkItemId == null) {
+    return {
+      kind: "team",
+      label: teams.find((team) => team.id === session.teamId)?.name ?? "团队会话",
+    };
+  }
+  return { kind: "temporary", label: "临时对话" };
+}
+
+export type ConversationPathIconKind = "agent" | "conversation" | "subagent" | "team_lead";
+
+export function resolveConversationPathIconKind(
+  scope: ConversationPathScope["kind"],
+  session: Pick<ProjectSession, "avatarIcon" | "parentConversationId" | "threadKind">,
+): ConversationPathIconKind {
+  if (scope === "team") return "agent";
+  if (session.parentConversationId === null) {
+    return session.threadKind === "team_lead" ? "team_lead" : "conversation";
+  }
+  if (session.threadKind === "team_lead") return "team_lead";
+  return session.avatarIcon === null || session.avatarIcon === undefined
+    ? "subagent"
+    : "agent";
+}
 
 type TimelineDisplayItem = ConversationTimelineItem | {
   batchId: string;
@@ -293,7 +334,7 @@ export function createRestoredRunProgresses(
 
 type ConversationMention = Pick<
   ConversationSummary,
-  "id" | "projectId" | "threadKind" | "title"
+  "id" | "projectId" | "teamId" | "threadKind" | "title"
 >;
 
 type ProjectFileMention = Pick<ProjectEntry, "name" | "path"> & {
@@ -301,9 +342,9 @@ type ProjectFileMention = Pick<ProjectEntry, "name" | "path"> & {
 };
 
 type TeamMention = {
-  enabled: boolean;
   id: string;
   name: string;
+  scope: TeamInstanceScope;
 };
 
 type MentionOption =
@@ -550,6 +591,7 @@ export function WorkspaceContent({
   onSessionUpdated,
   onSessionViewed,
   sessions,
+  teamInstances = [],
 }: WorkspaceContentProps): ReactElement {
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
   const retainedSessions = useConversationWorkspaceCache(
@@ -621,6 +663,7 @@ export function WorkspaceContent({
               projects={projects}
               relatedSessions={sessions}
               session={session}
+              teamInstances={teamInstances}
               teamManaged={session.teamWorkItemId !== null && session.teamWorkItemId !== undefined}
             />
           </div>
@@ -648,6 +691,7 @@ export function ConversationWorkspace({
   projects = [],
   relatedSessions = EMPTY_PROJECT_SESSIONS,
   session,
+  teamInstances = [],
   teamManaged = false,
 }: {
   agentClient: AgentClient;
@@ -667,6 +711,7 @@ export function ConversationWorkspace({
   projects?: readonly ProjectSummary[];
   relatedSessions?: readonly ProjectSession[];
   session: ProjectSession;
+  teamInstances?: readonly TeamInstanceView[];
   /** A Team WorkItem owns execution policy; its Timeline still supports controlled user input. */
   teamManaged?: boolean;
 }): ReactElement {
@@ -1156,11 +1201,14 @@ export function ConversationWorkspace({
         setAvailableConversationMentions(
           [...conversations, ...forks.flat()]
             .filter((conversation) =>
-              conversation.id !== session.id && !conversation.isArchived
+              conversation.id !== session.id
+              && !conversation.isArchived
+              && conversation.teamId === null
             )
-            .map(({ id, projectId, threadKind, title }) => ({
+            .map(({ id, projectId, teamId, threadKind, title }) => ({
               id,
               projectId,
+              teamId,
               threadKind,
               title,
             })),
@@ -1733,15 +1781,27 @@ export function ConversationWorkspace({
       && session.threadKind === "agent"
       && !teamManaged;
     if (canMentionTeams) {
-      options.push(...teams
-        .filter((team) =>
-          !selectedTeamMentions.some((selected) => selected.id === team.id)
-          && team.name.toLocaleLowerCase().includes(normalizedQuery)
+      options.push(...teamInstances
+        .filter((instance) =>
+          !selectedTeamMentions.some((selected) => selected.id === instance.id)
+          && instance.name.toLocaleLowerCase().includes(normalizedQuery)
+          && (
+            instance.scope === "global"
+            || (instance.scope === "project" && instance.projectId === session.projectId)
+            || (
+              instance.scope === "conversation"
+              && instance.sourceConversationId === session.id
+            )
+          )
         )
         .slice(0, 4)
-        .map((team): MentionOption => ({
+        .map((instance): MentionOption => ({
           kind: "team",
-          value: { enabled: team.enabled, id: team.id, name: team.name },
+          value: {
+            id: instance.id,
+            name: instance.name,
+            scope: instance.scope,
+          },
         })));
     }
     if (
@@ -1793,11 +1853,12 @@ export function ConversationWorkspace({
     referenceWorkspaceId,
     selectedConversationMentions,
     selectedTeamMentions,
+    session.id,
     session.parentConversationId,
     session.projectId,
     session.threadKind,
     teamManaged,
-    teams,
+    teamInstances,
   ]);
 
   const slashOptions = useMemo(() => {
@@ -2165,6 +2226,11 @@ export function ConversationWorkspace({
     timeline,
     taskList?.createdAt ?? null,
   );
+  const pathScope = resolveConversationPathScope(project, session, teams);
+  const pathAgent = session.agentId === null
+    ? undefined
+    : agentProfiles.find((agent) => agent.id === session.agentId);
+  const pathIconKind = resolveConversationPathIconKind(pathScope.kind, session);
 
   return (
     <section
@@ -2178,7 +2244,7 @@ export function ConversationWorkspace({
     >
       <header className="conversation-workspace__header">
         <div className="conversation-workspace__path" aria-label="对话路径">
-          {project !== null ? (
+          {pathScope.kind === "project" && project !== null ? (
             <button
               aria-label={`在左侧定位项目 ${project.name}`}
               className="conversation-workspace__path-link conversation-workspace__path-link--project"
@@ -2189,10 +2255,24 @@ export function ConversationWorkspace({
               <Folder aria-hidden="true" size={14} strokeWidth={1.75} />
               <span>{project.name}</span>
             </button>
+          ) : pathScope.kind === "team" ? (
+            <>
+              <span className="conversation-workspace__path-temporary">
+                <UsersRound aria-hidden="true" size={16} />
+                团队
+              </span>
+              <ChevronRight aria-hidden="true" size={12} strokeWidth={1.75} />
+              <span
+                className="conversation-workspace__path-temporary conversation-workspace__path-team"
+                title={pathScope.label}
+              >
+                <span>{pathScope.label}</span>
+              </span>
+            </>
           ) : (
             <span className="conversation-workspace__path-temporary">
               <MessageSquareText aria-hidden="true" size={16} />
-              临时对话
+              {pathScope.label}
             </span>
           )}
           <ChevronRight aria-hidden="true" size={12} strokeWidth={1.75} />
@@ -2203,14 +2283,30 @@ export function ConversationWorkspace({
             type="button"
             onClick={() => onLocateSession?.(session.id)}
           >
-            <MessageSquareText aria-hidden="true" size={14} strokeWidth={1.75} />
+            {pathIconKind === "conversation" ? (
+              <MessageSquareText aria-hidden="true" size={14} strokeWidth={1.75} />
+            ) : pathIconKind === "team_lead" ? (
+              <Scale aria-label="Team Lead 对话" size={14} />
+            ) : pathIconKind === "agent" && pathAgent !== undefined ? (
+              <AgentAvatar avatar={pathAgent.avatar} size="compact" />
+            ) : pathIconKind === "agent"
+              && session.avatarIcon !== null
+              && session.avatarIcon !== undefined ? (
+              <AgentAvatar
+                avatar={{ icon: session.avatarIcon, kind: "icon" }}
+                size="compact"
+              />
+            ) : (
+              <Bot aria-hidden="true" size={14} />
+            )}
             <h1 id={headingId}>{session.title}</h1>
           </button>
         </div>
         <RuntimeBadge
+          isConfigured={isMockRuntime || !isModelUnavailable}
           isMockRuntime={isMockRuntime}
           isRunning={isRunning}
-          status={modelStatus}
+          modelDisplayName={modelDisplayName}
         />
       </header>
 
@@ -2504,7 +2600,11 @@ export function ConversationWorkspace({
                           <small>{option.kind === "conversation"
                             ? `${projectName ?? "临时对话"} · ${threadKindLabel(option.value.threadKind)}`
                             : option.kind === "team"
-                              ? option.value.enabled ? "团队 · 自动分发" : "团队 · 已暂停，接收后排队"
+                              ? option.value.scope === "global"
+                                ? "全局团队"
+                                : option.value.scope === "project"
+                                  ? "项目团队"
+                                  : "对话团队"
                             : `${option.kind === "directory" ? "目录" : "文件"} · ${option.value.path}`}</small>
                         </span>
                       </button>
@@ -3780,7 +3880,10 @@ export function getConversationRunDurationInsertIndexes(
   let runStartIndex = 0;
 
   for (const [index, item] of timeline.entries()) {
-    if (item.kind === "message" && item.role === "user") {
+    if (
+      item.kind === "agent_message"
+      || (item.kind === "message" && item.role === "user")
+    ) {
       runStartIndex = index + 1;
       continue;
     }
@@ -5765,29 +5868,30 @@ function ToolPayload({ label, payload }: { label: string; payload: string }): Re
   );
 }
 
+export function runtimeBadgeLabel(
+  isMockRuntime: boolean,
+  modelDisplayName: string,
+): string {
+  return isMockRuntime ? "浏览器预览" : modelDisplayName;
+}
+
 function RuntimeBadge({
+  isConfigured,
   isMockRuntime,
   isRunning,
-  status,
+  modelDisplayName,
 }: {
+  isConfigured: boolean;
   isMockRuntime: boolean;
   isRunning: boolean;
-  status: ModelRuntimeStatus | null;
+  modelDisplayName: string;
 }): ReactElement {
-  const label = isMockRuntime
-    ? "浏览器预览"
-    : status === null
-      ? "读取模型…"
-      : status.configured
-        ? status.models.find(
-          (model) => model.providerId === status.providerId && model.modelId === status.modelId,
-        )?.displayName ?? status.modelId ?? "已配置模型"
-        : "未配置模型";
+  const label = runtimeBadgeLabel(isMockRuntime, modelDisplayName);
 
   return (
     <span
       className="runtime-badge"
-      data-configured={String(isMockRuntime || status?.configured)}
+      data-configured={String(isConfigured)}
       data-running={String(isRunning)}
       title={isRunning ? `${label} · 正在运行` : label}
     >

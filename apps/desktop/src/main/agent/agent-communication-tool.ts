@@ -30,7 +30,9 @@ const sendMessageArgumentsSchema = z.object({
   content: z.string().trim().min(1).max(20_000).describe("Message body to send to the target Agent."),
   conversationId: z.string().uuid().describe("Target Agent conversation UUID."),
   expectReply: z.boolean().default(true)
-    .describe("Whether the target Agent should automatically return its final result to this conversation."),
+    .describe("Whether the target Agent should automatically return a bounded completion receipt to this conversation."),
+  replyInstruction: z.string().trim().min(1).max(1_000).optional()
+    .describe("Optional guidance for the concise completion receipt, such as required conclusions, evidence, or risks. Full details remain in the target conversation."),
 }).strict();
 const waitForMessageArgumentsSchema = z.object({
   conversationId: z.string().uuid().optional()
@@ -63,17 +65,17 @@ export class AgentCommunicationTool {
   public getDefinitions(): ModelToolDefinition[] {
     return [
       {
-        description: "List other active Agent conversations, their identifiers, roles, projects, and current run state.",
+        description: "List other Agent conversations and their explicit status, identifiers, roles, projects, active Run, and active Subagent count. Use it at any time to check whether an Agent is idle, running, completed, failed, or cancelled.",
         name: LIST_AGENT_CONVERSATIONS_TOOL_NAME,
         parameters: modelToolParameters(emptyArgumentsSchema),
       },
       {
-        description: "Read a bounded snapshot of another Agent conversation. It contains the latest compression checkpoint plus newer original messages and never exceeds maxTokens.",
+        description: "Read a bounded snapshot of another Agent conversation at any time, including while it is running. It contains the latest compression checkpoint plus newer original messages, reports current status, and never exceeds maxTokens. Call again with a different budget when more detail is needed.",
         name: READ_AGENT_CONVERSATION_TOOL_NAME,
         parameters: modelToolParameters(readConversationArgumentsSchema),
       },
       {
-        description: "Send a persistent message to another Agent conversation. A running recipient receives it before the next model turn; an idle recipient starts automatically. With expectReply=true, the recipient's final output is automatically returned to this conversation. Use expectReply=false for progress updates or notifications.",
+        description: "Send a persistent message to another Agent conversation. A running recipient receives it before the next model turn; an idle recipient starts automatically. With expectReply=true, the recipient returns only a bounded completion receipt and keeps its full answer in its own conversation; use replyInstruction to request receipt focus. Use expectReply=false for progress updates or notifications.",
         name: SEND_AGENT_MESSAGE_TOOL_NAME,
         parameters: modelToolParameters(sendMessageArgumentsSchema),
       },
@@ -115,10 +117,13 @@ export class AgentCommunicationTool {
           const conversations = this.database.listAgentConversations()
             .filter((conversation) => conversation.id !== input.conversationId)
             .map((conversation) => ({
+              activeSubagentCount: conversation.activeSubagentCount,
               activeRunId: conversation.activeRunId,
               agentId: conversation.agentId,
               conversationId: conversation.id,
+              lastRunStatus: conversation.lastRunStatus,
               projectId: conversation.projectId,
+              status: agentConversationStatus(conversation),
               teamId: conversation.teamId,
               threadKind: conversation.threadKind,
               title: conversation.title,
@@ -136,7 +141,18 @@ export class AgentCommunicationTool {
           if (reference.referencedConversationIds.length === 0) {
             throw new Error("An Agent cannot read its own conversation through this tool.");
           }
-          return success(reference);
+          const conversation = this.database.getConversation(parsed.conversationId);
+          return success({
+            ...reference,
+            conversation: {
+              activeSubagentCount: conversation.activeSubagentCount,
+              activeRunId: conversation.activeRunId,
+              conversationId: conversation.id,
+              lastRunStatus: conversation.lastRunStatus,
+              status: agentConversationStatus(conversation),
+              title: conversation.title,
+            },
+          });
         }
         case SEND_AGENT_MESSAGE_TOOL_NAME: {
           const parsed = sendMessageArgumentsSchema.parse(argumentsValue);
@@ -151,6 +167,7 @@ export class AgentCommunicationTool {
           const message = this.database.sendAgentMessage({
             content: parsed.content,
             messageType: parsed.expectReply ? "message" : "notification",
+            replyInstruction: parsed.expectReply ? parsed.replyInstruction ?? null : null,
             runId: input.runId,
             senderConversationId: input.conversationId,
             targetConversationId: parsed.conversationId,
@@ -242,6 +259,14 @@ export class AgentCommunicationTool {
       this.messageWaiters.add(waiter);
     });
   }
+}
+
+function agentConversationStatus(conversation: {
+  activeRunId: string | null;
+  lastRunStatus: "queued" | "running" | "completed" | "failed" | "cancelled" | null;
+}): "idle" | "queued" | "running" | "completed" | "failed" | "cancelled" {
+  if (conversation.activeRunId !== null) return "running";
+  return conversation.lastRunStatus ?? "idle";
 }
 
 function toAbortError(reason: unknown): Error {

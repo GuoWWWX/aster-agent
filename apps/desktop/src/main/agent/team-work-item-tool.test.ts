@@ -24,6 +24,11 @@ describe("TeamWorkItemTool", () => {
     };
     database.saveProject(project);
     const source = database.createConversation(project.id);
+    const instance = database.createTeamInstance({
+      projectId: project.id,
+      scope: "project",
+      teamId: "default-team",
+    });
     const submissions: unknown[] = [];
     const events: ConversationRunEvent[] = [];
     const tool = new TeamWorkItemTool(
@@ -45,6 +50,7 @@ describe("TeamWorkItemTool", () => {
             createdAt: "2026-08-29T00:00:00.000Z",
             events: [],
             executionConversationId: null,
+            executionScope: "project",
             id: "00000000-0000-4000-8000-000000000052",
             modelSelection: {
               modelId: "deepseek-v4-flash",
@@ -71,7 +77,7 @@ describe("TeamWorkItemTool", () => {
     const result = await tool.execute({
       arguments: JSON.stringify({
         requirement: "检查 Team 工具。",
-        teamId: "default-team",
+        teamInstanceId: instance.id,
         title: "检查 Team 工具",
       }),
       conversationId: source.id,
@@ -90,6 +96,7 @@ describe("TeamWorkItemTool", () => {
       projectId: project.id,
       sourceConversationId: source.id,
       teamId: "default-team",
+      teamInstanceId: instance.id,
     })]);
     expect(events).toHaveLength(1);
   });

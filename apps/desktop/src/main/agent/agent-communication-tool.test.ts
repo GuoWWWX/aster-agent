@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { AgentDatabase } from "../storage/agent-database.js";
+import { agentMessageModelContent } from "../storage/agent-database.js";
 import { AgentCommunicationTool } from "./agent-communication-tool.js";
 
 describe("AgentCommunicationTool", () => {
@@ -128,6 +129,82 @@ describe("AgentCommunicationTool", () => {
 
     expect(database.listUnreadAgentMessages(target.id).map((message) => message.messageType))
       .toEqual(["message", "notification"]);
+    database.close();
+  });
+
+  it("persists a bounded completion-receipt instruction for delegated work", async () => {
+    const database = new AgentDatabase(":memory:");
+    const sender = database.createConversation(null);
+    const target = database.createConversation(null);
+    const tool = new AgentCommunicationTool(database);
+
+    const result = await tool.execute({
+      arguments: JSON.stringify({
+        content: "检查登录方案",
+        conversationId: target.id,
+        replyInstruction: "只回结论、验证证据和未解决风险，最多三点。",
+      }),
+      conversationId: sender.id,
+      runId: crypto.randomUUID(),
+      signal: new AbortController().signal,
+      toolName: "send_agent_message",
+    });
+
+    expect(result.isError).toBe(false);
+    const message = database.listUnreadAgentMessages(target.id)[0];
+    expect(message?.replyInstruction).toBe("只回结论、验证证据和未解决风险，最多三点。");
+    expect(message === undefined ? "" : agentMessageModelContent(message)).toContain(
+      "只回结论、验证证据和未解决风险，最多三点。",
+    );
+    database.close();
+  });
+
+  it("reports explicit Agent status and read metadata", async () => {
+    const database = new AgentDatabase(":memory:");
+    const current = database.createConversation(null);
+    const target = database.createConversation(null);
+    database.renameConversation(target.id, "架构师");
+    const run = database.createRunWithUserMessage(target.id, "分析方案", "test-model");
+    const tool = new AgentCommunicationTool(database);
+    const signal = new AbortController().signal;
+
+    const listResult = await tool.execute({
+      arguments: "{}",
+      conversationId: current.id,
+      runId: crypto.randomUUID(),
+      signal,
+      toolName: "list_agent_conversations",
+    });
+    expect(listResult.isError).toBe(false);
+    expect(JSON.parse(listResult.content)).toMatchObject({
+      value: {
+        conversations: [expect.objectContaining({
+          activeRunId: run.runId,
+          activeSubagentCount: 0,
+          conversationId: target.id,
+          status: "running",
+          title: "分析方案",
+        })],
+      },
+    });
+
+    const readResult = await tool.execute({
+      arguments: JSON.stringify({ conversationId: target.id, maxTokens: 512 }),
+      conversationId: current.id,
+      runId: crypto.randomUUID(),
+      signal,
+      toolName: "read_agent_conversation",
+    });
+    expect(readResult.isError).toBe(false);
+    expect(JSON.parse(readResult.content)).toMatchObject({
+      value: {
+        conversation: {
+          activeRunId: run.runId,
+          conversationId: target.id,
+          status: "running",
+        },
+      },
+    });
     database.close();
   });
 });

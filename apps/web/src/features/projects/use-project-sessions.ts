@@ -19,9 +19,14 @@ export type ProjectSessionsController = {
   createTemporarySession(): Promise<void>;
   deleteSession(sessionId: string): Promise<boolean>;
   discardProjectSessions(projectId: string): void;
+  ensureTeamInstanceMemberSession(
+    teamInstanceId: string,
+    agentId: string,
+  ): Promise<ProjectSession | null>;
   isCreatingSession: boolean;
   isLoadingSessions: boolean;
   operationError: string | null;
+  refreshSessions(): Promise<void>;
   markSessionResultViewed(sessionId: string): void;
   renameSession(sessionId: string, title: string): Promise<boolean>;
   reorderSessions(sessionIds: string[]): Promise<boolean>;
@@ -224,6 +229,33 @@ export function useProjectSessions(
         : [...current, session]);
   }, []);
 
+  const ensureTeamInstanceMemberSession = useCallback(async (
+    teamInstanceId: string,
+    agentId: string,
+  ): Promise<ProjectSession | null> => {
+    setOperationError(null);
+    try {
+      const result = await agentClient.ensureTeamInstanceMemberConversation({
+        agentId,
+        teamInstanceId,
+      });
+      const lead = toProjectSession(result.lead);
+      const member = toProjectSession(result.member);
+      const updates = new Map([lead, member].map((session) => [session.id, session]));
+      setSessions((current) => {
+        const next = current.map((session) => updates.get(session.id) ?? session);
+        for (const session of updates.values()) {
+          if (!next.some((candidate) => candidate.id === session.id)) next.push(session);
+        }
+        return next;
+      });
+      return member;
+    } catch {
+      setOperationError("无法打开团队成员对话");
+      return null;
+    }
+  }, [agentClient]);
+
   const renameSession = useCallback(async (
     sessionId: string,
     title: string,
@@ -343,10 +375,12 @@ export function useProjectSessions(
     discardProjectSessions: (projectId) => {
       setSessions((current) => current.filter((session) => session.projectId !== projectId));
     },
+    ensureTeamInstanceMemberSession,
     isCreatingSession,
     isLoadingSessions,
     markSessionResultViewed: (sessionId) => void markSessionResultViewed(sessionId),
     operationError,
+    refreshSessions: loadSessions,
     renameSession,
     reorderSessions,
     selectProject,

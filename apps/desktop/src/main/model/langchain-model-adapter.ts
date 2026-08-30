@@ -397,11 +397,53 @@ function toLangChainMessage(
   });
 }
 
+function orderToolResultsBeforeInterleavedMessages(
+  messages: readonly ModelMessage[],
+): ModelMessage[] {
+  const ordered: ModelMessage[] = [];
+  let index = 0;
+  while (index < messages.length) {
+    const current = messages[index];
+    if (current === undefined) break;
+    ordered.push(current);
+    index += 1;
+    if (current.role !== "assistant" || current.toolCalls.length === 0) continue;
+
+    const pendingToolCallIds = new Set(current.toolCalls.map((call) => call.id));
+    const toolResults: ModelMessage[] = [];
+    const interleaved: ModelMessage[] = [];
+    let cursor = index;
+    while (cursor < messages.length && pendingToolCallIds.size > 0) {
+      const candidate = messages[cursor];
+      if (candidate === undefined || candidate.role === "assistant") break;
+      cursor += 1;
+      if (
+        candidate.role === "tool"
+        && candidate.toolCallId !== null
+        && pendingToolCallIds.delete(candidate.toolCallId)
+      ) {
+        toolResults.push(candidate);
+      } else {
+        interleaved.push(candidate);
+      }
+    }
+
+    if (pendingToolCallIds.size > 0) continue;
+    ordered.push(...toolResults, ...interleaved);
+    index = cursor;
+  }
+  return ordered;
+}
+
 function toLangChainMessages(
   messages: readonly ModelMessage[],
   input: CompleteTurnInput,
 ): BaseMessage[] {
-  return messages.map((message) => toLangChainMessage(message, input));
+  const orderedMessages = input.configuration.apiFormat === "openai-chat-completions"
+    || input.configuration.apiFormat === "openai-responses"
+    ? orderToolResultsBeforeInterleavedMessages(messages)
+    : messages;
+  return orderedMessages.map((message) => toLangChainMessage(message, input));
 }
 
 function openAiChatReasoningByAssistant(input: CompleteTurnInput): Array<string | null> {
