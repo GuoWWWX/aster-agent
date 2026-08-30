@@ -29,6 +29,7 @@ import { createPortal } from "react-dom";
 import type {
   ConfigurationWorkspaceFile,
   ConfigurationWorkspaceKind,
+  ConversationRunEvent,
   ConversationSummary,
   JavaDeclarationKind,
   ManagedBrowserSession,
@@ -220,6 +221,33 @@ export function upsertSideSession(
   return sessions.some((candidate) => candidate.id === session.id)
     ? sessions.map((candidate) => candidate.id === session.id ? session : candidate)
     : [...sessions, session];
+}
+
+export function updateSideSessionsForRunEvent(
+  sessions: ProjectSession[],
+  event: ConversationRunEvent,
+): ProjectSession[] {
+  if (
+    event.type !== "conversation.updated"
+    && event.type !== "run.started"
+    && event.type !== "run.finished"
+  ) {
+    return sessions;
+  }
+  const conversationId = event.type === "conversation.updated"
+    ? event.conversation.id
+    : event.conversationId;
+  const existingIndex = sessions.findIndex((session) => session.id === conversationId);
+  if (existingIndex < 0) return sessions;
+  const existing = sessions[existingIndex];
+  if (existing === undefined) return sessions;
+  const updated = event.type === "conversation.updated"
+    ? toProjectSession(event.conversation)
+    : updateSessionRunState([existing], event)[0] ?? existing;
+  if (updated === existing) return sessions;
+  const next = [...sessions];
+  next[existingIndex] = updated;
+  return next;
 }
 
 function isManagedTeamMember(
@@ -647,7 +675,9 @@ export function RightSidebarWorkspace({
           && !isManagedTeamMember(event.conversation);
         if (isOrdinarySideChat) {
           setSideSessions((current) => upsertSideSession(current, event.conversation));
-          updateOpenChatIds((current) => new Set(current).add(nextSession.id));
+          updateOpenChatIds((current) => current.has(nextSession.id)
+            ? current
+            : new Set(current).add(nextSession.id));
           return;
         }
         if (isManagedTeamMember(event.conversation)) {
@@ -659,25 +689,7 @@ export function RightSidebarWorkspace({
           return;
         }
       }
-      const conversationId =
-        event.type === "conversation.updated"
-          ? event.conversation.id
-          : event.conversationId;
-      setSideSessions((current) =>
-        current.map((session) => {
-          if (session.id !== conversationId) return session;
-          if (event.type === "conversation.updated") {
-            return toProjectSession(event.conversation);
-          }
-          if (event.type === "run.started") {
-            return updateSessionRunState([session], event)[0] ?? session;
-          }
-          if (event.type === "run.finished") {
-            return updateSessionRunState([session], event)[0] ?? session;
-          }
-          return session;
-        }),
-      );
+      setSideSessions((current) => updateSideSessionsForRunEvent(current, event));
     });
   }, [activeSessionId, agentClient, updateOpenChatIds]);
 
@@ -1818,7 +1830,7 @@ export function RightSidebarWorkspace({
             return (
               <div
                 aria-hidden={!isActive}
-                className={isActive ? "flex h-full min-h-0 flex-1" : "hidden"}
+                className={isActive ? "flex h-full min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"}
                 key={tab.id}
               >
                 {tab.kind === "git-review" ? (
@@ -1870,7 +1882,7 @@ export function RightSidebarWorkspace({
               return (
                 <div
                   aria-hidden={!isActive}
-                  className={isActive ? "flex min-h-0 flex-1" : "hidden"}
+                  className={isActive ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"}
                   key={session.id}
                 >
                   <ConversationWorkspace

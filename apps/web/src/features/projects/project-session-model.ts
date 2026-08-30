@@ -93,9 +93,12 @@ export function getSessionFamilyResultIds(
 }
 
 export function updateSessionRunState(
-  sessions: readonly ProjectSession[],
+  sessions: ProjectSession[],
   event: SessionRunEvent,
 ): ProjectSession[] {
+  if (!sessions.some((session) => session.id === event.conversationId)) {
+    return sessions;
+  }
   return sessions.map((session) => {
     if (session.id !== event.conversationId) return session;
     if (event.type === "run.started") {

@@ -141,6 +141,7 @@ Anthropic 的配置 `baseUrl` 延续项目原有的版本化格式（例如 `htt
 4. LangChain `AIMessage`/`ToolMessage` 只在图和 adapter 内使用；落库继续使用当前中立 `ModelMessage` 合同。
 5. 旧 `model-protocol-adapter.ts`、`openai-compatible-adapter.ts` 和 AI SDK adapter 在新 adapter 通过回归后删除，不保留生产双路回退。
 6. 新快照只写 LangChain 版本 2；迁移期只读转换 AI SDK 版本 1 的 Assistant Provider State。OpenAI Chat 的兼容端点字段 `reasoning_content` 由 Adapter 在序列化后的请求体中窄范围补回，其他 Provider 使用 LangChain 原生消息块。
+7. Provider 明确拒绝图片且当前消息没有新图片时，Adapter 可以在首个请求尚无任何输出的前提下，把历史图片转换为带附件标识的文字说明并只重试一次；当前消息包含图片时不得降级，Runtime 也不承担此 Provider 兼容分支。
 
 ## 6. Skill 生命周期与上下文
 

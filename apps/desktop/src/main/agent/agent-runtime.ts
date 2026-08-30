@@ -2193,6 +2193,9 @@ export class AgentRuntime {
                       content: result.content,
                       messageId,
                       modelId: configuration.modelId,
+                      ...(result.reasoningContent === undefined
+                        ? {}
+                        : { reasoningContent: result.reasoningContent }),
                       ...(result.providerState === undefined
                         ? {}
                         : { providerState: result.providerState }),
@@ -2208,6 +2211,9 @@ export class AgentRuntime {
                     conversationId,
                     messageId,
                     modelId: configuration.modelId,
+                    ...(result.reasoningContent === undefined
+                      ? {}
+                      : { reasoningContent: result.reasoningContent }),
                     ...(result.providerState === undefined
                       ? {}
                       : { providerState: result.providerState }),
@@ -2219,6 +2225,9 @@ export class AgentRuntime {
                       content: result.content,
                       messageId,
                       modelId: configuration.modelId,
+                      ...(result.reasoningContent === undefined
+                        ? {}
+                        : { reasoningContent: result.reasoningContent }),
                       ...(result.providerState === undefined
                         ? {}
                         : { providerState: result.providerState }),
@@ -2290,6 +2299,9 @@ export class AgentRuntime {
           kind: "turn",
           messageId: lastAssistantMessageId,
           modelId: configuration.modelId,
+          ...(result.reasoningContent === undefined
+            ? {}
+            : { reasoningContent: result.reasoningContent }),
           ...(result.providerState === undefined
             ? {}
             : { providerState: result.providerState }),
@@ -2478,14 +2490,20 @@ export class AgentRuntime {
         && member.agentId !== team.leadAgentId
         && team.memberIds.includes(member.agentId)
         && directory?.agents.some((agent) => agent.id === member.agentId && agent.enabled) === true)
-      .map((member) => `${member.id}=${member.title} (${member.agentId ?? "Agent"})`)
+      .map((member) => {
+        const binding = this.database.getConversationAgentBinding(member.id);
+        const name = binding?.name ?? member.title;
+        const role = binding?.role.trim() ?? "";
+        return `${member.id}=${name} (${member.agentId ?? "Agent"}${role.length === 0 ? "" : `; ${role}`})`;
+      })
       .slice(0, 32);
     return members.length === 0
       ? []
       : [
         "This is a persistent Agent Team. Do not create Subagents for Team work.",
         `Delegate only through send_agent_message with a member conversationId: ${members.join("; ")}`,
-        "Use expectReply=true for assigned work, wait_for_agent_message for results when needed, and summarize the durable members' results yourself.",
+        "Every Team WorkItem must delegate to at least one durable member with expectReply=true before the Team Lead gives a final answer. For simple work choose only the best-matched member; add more roles only when the task genuinely needs them.",
+        "Use wait_for_agent_message for results when needed, verify the returned work, and summarize the durable members' results yourself.",
       ];
   }
 
@@ -2712,6 +2730,11 @@ export class AgentRuntime {
           modelId: assistant?.modelId ?? null,
           ...(assistant !== null
             && assistant.kind !== "failure"
+            && assistant.reasoningContent !== undefined
+            ? { reasoningContent: assistant.reasoningContent }
+            : {}),
+          ...(assistant !== null
+            && assistant.kind !== "failure"
             && assistant.providerState !== undefined
             ? { providerState: assistant.providerState }
             : {}),
@@ -2741,6 +2764,9 @@ export class AgentRuntime {
           content: input.assistant.content,
           messageId: input.assistant.messageId,
           modelId: input.assistant.modelId,
+          ...(input.assistant.kind !== "failure" && input.assistant.reasoningContent !== undefined
+            ? { reasoningContent: input.assistant.reasoningContent }
+            : {}),
           ...(input.assistant.kind === "turn" && input.assistant.providerState !== undefined
             ? { providerState: input.assistant.providerState }
             : {}),
@@ -3088,6 +3114,8 @@ export class AgentRuntime {
           conversationId: input.conversationId,
           delta: event.delta,
           kind: event.kind,
+          messageId: input.messageId,
+          modelId: input.configuration.modelId,
           reset: event.reset,
           runId: input.runId,
           type: "assistant.reasoning_delta"

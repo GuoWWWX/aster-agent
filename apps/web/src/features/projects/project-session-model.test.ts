@@ -65,6 +65,17 @@ describe("project session model", () => {
     expect(finished).toMatchObject({ activeRunId: null, hasUnreadResult: true });
   });
 
+  it("keeps the session collection stable for an unknown Agent run", () => {
+    const sessions = [createProjectSession("project-a", [], "session")];
+
+    expect(updateSessionRunState(sessions, {
+      conversationId: "unknown-agent-conversation",
+      modelId: "model",
+      runId: "run-1",
+      type: "run.started",
+    })).toBe(sessions);
+  });
+
   it("acknowledges the parent and ordinary side conversations as one result group", () => {
     const parent = createProjectSession("project-a", [], "parent");
     const side: ProjectSession = {

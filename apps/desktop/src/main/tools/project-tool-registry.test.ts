@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { DEFAULT_TERMINAL_CONFIGURATION } from "@agent/protocol";
+
 import { ProjectRegistry } from "../projects/project-registry.js";
 import { decodeTerminalOutput, ProjectToolRegistry } from "./project-tool-registry.js";
 
@@ -48,6 +50,23 @@ async function createLargeFixture(fileCount = 400) {
 }
 
 describe("ProjectToolRegistry", () => {
+  it("keeps the one-shot command shell independent from side-terminal preferences", () => {
+    const projects = new ProjectRegistry();
+    const tools = new ProjectToolRegistry(projects, {
+      getConfiguration: () => ({
+        ...DEFAULT_TERMINAL_CONFIGURATION,
+        outputEncoding: "gbk",
+        shell: process.platform === "win32" ? "pwsh" : "bash",
+      }),
+    });
+
+    expect(tools.getCommandEnvironmentDescription()).toContain(
+      process.platform === "win32" ? "Windows PowerShell" : "PWSH（PowerShell 7）",
+    );
+    expect(tools.getCommandEnvironmentDescription()).not.toContain("output decoding: auto");
+    expect(tools.getCommandEnvironmentDescription()).toContain("output decoding: GBK");
+  });
+
   it("writes an editor file atomically and rejects stale content", async () => {
     const { project, projects, tools } = await createFixture();
     const signal = new AbortController().signal;
@@ -130,6 +149,11 @@ describe("ProjectToolRegistry", () => {
 
   it("declares safe read, file preparation, and command policies", async () => {
     const { tools } = await createFixture();
+
+    const runCommand = tools.getDefinitions().find((tool) => tool.name === "run_command");
+    expect(runCommand?.description).toContain("default choice for ordinary commands");
+    expect(runCommand?.description).toContain("does not open a visible terminal tab");
+    expect(runCommand?.description).toContain("create_terminal");
 
     expect(tools.getExecutionPolicy("read_file", JSON.stringify({ path: "src/index.ts" }), false))
       .toEqual({ group: "read", kind: "parallel" });

@@ -68,6 +68,19 @@ describe("main agent errors", () => {
     });
   });
 
+  it("classifies an ended or restarted terminal as a recoverable conflict", () => {
+    const error = Object.assign(
+      new Error("终端会话已结束或桌面服务已重启，请重新打开终端后重试。"),
+      { code: "TERMINAL_UNAVAILABLE" },
+    );
+
+    expect(toMainAgentError(error, { operation: "tool:execute_terminal_command" })).toMatchObject({
+      code: "CONFLICT",
+      message: "终端会话已结束或桌面服务已重启，请重新打开终端后重试。",
+      retryable: true,
+    });
+  });
+
   it("keeps a safe network technical detail without exposing a stack", () => {
     const error = toMainAgentError(
       new TypeError("fetch failed", {

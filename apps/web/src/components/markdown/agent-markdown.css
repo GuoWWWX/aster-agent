@@ -239,6 +239,32 @@
   text-transform: uppercase;
 }
 
+.agent-markdown__code-copy {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--app-radius);
+  outline: none;
+  background: transparent;
+  color: var(--agent-md-code-label);
+  padding: 0 7px;
+  font: inherit;
+  font-family: var(--app-font, Geist, sans-serif);
+  font-size: var(--app-font-size-auxiliary);
+}
+
+.agent-markdown__code-copy:hover {
+  background: var(--app-hover);
+  color: var(--agent-md-code-text);
+}
+
+.agent-markdown__code-copy:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: -2px;
+}
+
 .agent-markdown__code-block code {
   display: block;
   min-width: max-content;

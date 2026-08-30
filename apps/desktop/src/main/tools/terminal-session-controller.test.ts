@@ -56,11 +56,13 @@ describe("TerminalSessionController", () => {
     controller.onEvent((event) => events.push(event));
 
     const session = controller.open({ columns: 120, projectId, rows: 32 });
+    expect(controller.isActive({ sessionId: session.sessionId })).toBe(true);
     controller.write({ data: "git status\r", sessionId: session.sessionId });
     controller.resize({ columns: 100, rows: 20, sessionId: session.sessionId });
     fake.emitData("working tree clean\r\n");
     await new Promise<void>((resolve) => setImmediate(resolve));
     fake.emitExit(0);
+    expect(controller.isActive({ sessionId: session.sessionId })).toBe(false);
 
     expect(createPty).toHaveBeenCalledOnce();
     expect(launchOptions).toBeDefined();
@@ -77,7 +79,7 @@ describe("TerminalSessionController", () => {
       { exitCode: 0, sessionId: session.sessionId, type: "exit" },
     ]);
     expect(() => controller.write({ data: "x", sessionId: session.sessionId })).toThrow(
-      "终端会话不存在或已经结束",
+      "终端会话已结束或桌面服务已重启，请重新打开终端后重试。",
     );
   });
 

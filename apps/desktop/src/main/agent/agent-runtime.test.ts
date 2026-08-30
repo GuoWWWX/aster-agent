@@ -1288,6 +1288,7 @@ describe("AgentRuntime", () => {
     const model = new OpenTerminalFixtureModel();
     const terminalSessions = {
       close: vi.fn(),
+      isActive: vi.fn(() => true),
       open: vi.fn(() => ({
         projectId: project.id,
         sessionId: "00000000-0000-4000-8000-000000000003",
@@ -1827,6 +1828,9 @@ describe("AgentRuntime", () => {
     expect(events.filter((event) => event.type === "assistant.reasoning_delta").map((event) =>
       event.delta
     )).toEqual(["正在检查项目目录", "正在整理检查结果"]);
+    expect(events.filter((event) => event.type === "assistant.reasoning_delta").every((event) =>
+      event.messageId.length > 0
+    )).toBe(true);
     expect(
       events.filter((event) => event.type === "assistant.delta").map((event) => event.delta)
     ).toEqual(["项目", "已确认"]);
@@ -2489,8 +2493,8 @@ describe("AgentRuntime", () => {
     const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
     database.syncTeamDirectory(directory);
     const configuredLead = directory.agents.find((agent) => agent.id === "team-lead");
-    const explorer = directory.agents.find((agent) => agent.id === "explorer");
-    if (configuredLead === undefined || explorer === undefined) {
+    const requirementsAnalyst = directory.agents.find((agent) => agent.id === "requirements-analyst");
+    if (configuredLead === undefined || requirementsAnalyst === undefined) {
       throw new Error("Team fixture is missing.");
     }
     const lead = database.createConversation(project.id, {
@@ -2513,19 +2517,19 @@ describe("AgentRuntime", () => {
     });
     const member = database.createConversation(project.id, {
       agent: {
-        avatarIcon: "compass",
-        id: explorer.id,
-        instructions: explorer.instructions,
-        isDefault: explorer.isDefault,
-        name: explorer.name,
-        role: explorer.role,
+        avatarIcon: "clipboard-check",
+        id: requirementsAnalyst.id,
+        instructions: requirementsAnalyst.instructions,
+        isDefault: requirementsAnalyst.isDefault,
+        name: requirementsAnalyst.name,
+        role: requirementsAnalyst.role,
       },
       parentConversationId: lead.id,
       teamId: "default-team",
       threadKind: "agent",
     });
     database.bindTeamMemberConversation({
-      agentId: explorer.id,
+      agentId: requirementsAnalyst.id,
       conversationId: member.id,
       teamExecutionConversationId: lead.id,
     });
@@ -2560,6 +2564,8 @@ describe("AgentRuntime", () => {
     const request = model.requests[0];
     expect(request?.messages[0]?.content).toContain("persistent Agent Team");
     expect(request?.messages[0]?.content).toContain(member.id);
+    expect(request?.messages[0]?.content).toContain("需求澄清与验收定义");
+    expect(request?.messages[0]?.content).toContain("must delegate to at least one durable member");
     expect(request?.tools.map((tool) => tool.name)).toContain("send_agent_message");
     expect(request?.tools.map((tool) => tool.name)).not.toContain("spawn_subagent");
     expect(request?.tools.map((tool) => tool.name)).not.toContain("wait_for_subagents");

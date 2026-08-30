@@ -400,6 +400,7 @@ describe("LangChainModelAdapter", () => {
     const adapter = new LangChainModelAdapter("openai-chat-completions", request);
     const first = await adapter.completeTurn(inputFor("openai-chat-completions"));
     if (first.providerState === undefined) throw new Error("Expected OpenAI Chat provider state.");
+    expect(first.reasoningContent).toBe("hidden thought");
 
     await adapter.completeTurn(inputFor("openai-chat-completions", {
       messages: [{
@@ -600,6 +601,7 @@ describe("LangChainModelAdapter", () => {
     if (first.providerState === undefined) throw new Error("Expected Responses provider state.");
 
     expect(first.content).toBe("");
+    expect(first).not.toHaveProperty("reasoningContent");
     expect(textDeltas).toEqual([]);
     expect(reasoningDeltas).toEqual([{
       delta: "Checking files",
@@ -676,6 +678,56 @@ describe("LangChainModelAdapter", () => {
       new LangChainModelAdapter("openai-responses", request)
         .completeTurn(inputFor("openai-responses")),
     ).rejects.not.toThrow("6b8e86b3-4a7d-461b-85cf-b9d86b0aede4");
+  });
+
+  it("retries without historical image bytes when the provider rejects vision input", async () => {
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { message: "This model does not support image" },
+      }), {
+        headers: { "Content-Type": "application/json" },
+        status: 400,
+      }))
+      .mockResolvedValueOnce(createStreamResponse(successChunks("openai-chat-completions")));
+    const input = multimodalInput("openai-chat-completions");
+    input.messages.push({
+      attachments: [],
+      content: "I saw the screenshot.",
+      role: "assistant",
+      toolCallId: null,
+      toolCalls: [],
+    }, {
+      attachments: [],
+      content: "continue without looking at the old screenshot",
+      role: "user",
+      toolCallId: null,
+      toolCalls: [],
+    });
+
+    const result = await new LangChainModelAdapter("openai-chat-completions", request)
+      .completeTurn(input);
+
+    expect(result.content).toBe("ok");
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(recordBody(request, 0))).toContain("image_url");
+    expect(JSON.stringify(recordBody(request, 1))).not.toContain("image_url");
+    expect(JSON.stringify(recordBody(request, 1))).toContain("历史图片未发送给当前模型");
+    expect(input.messages[0]?.attachments[1]).toMatchObject({ kind: "image" });
+  });
+
+  it("does not hide an unsupported-image error for the current user message", async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      error: { message: "This model does not support image" },
+    }), {
+      headers: { "Content-Type": "application/json" },
+      status: 400,
+    }));
+
+    await expect(
+      new LangChainModelAdapter("openai-chat-completions", request)
+        .completeTurn(multimodalInput("openai-chat-completions")),
+    ).rejects.toThrow("This model does not support image");
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it("passes cancellation to the LangChain stream without remapping it", async () => {

@@ -9,12 +9,16 @@ import type {
 import {
   createRestoredRunProgresses,
   collectSubagentPendingApprovals,
+  commandTerminalClipboardText,
+  commandTerminalHeaderLabel,
   fileChangeSummary,
   formatToolPayload,
   formatConversationTime,
   formatRunDuration,
+  getConversationRunProgressInsertIndex,
   getConversationRunDurationInsertIndexes,
   getFinalCompletedAssistantMessageIds,
+  getLatestActiveToolId,
   groupToolBatches,
   describeConversationError,
   representativeToolName,
@@ -23,6 +27,21 @@ import {
   toolBatchLabel,
   toolBatchExecutionMode,
 } from "./workspace-content.js";
+
+describe("command terminal presentation", () => {
+  it("shows only the shell name in the terminal header", () => {
+    expect(commandTerminalHeaderLabel({ displayName: "PWSH（PowerShell 7）" }))
+      .toBe("PWSH（PowerShell 7）");
+    expect(commandTerminalHeaderLabel(null)).toBe("命令行");
+  });
+
+  it("copies the visible command and output without internal metadata", () => {
+    expect(commandTerminalClipboardText("Get-Location", "D:\\Code\\Project"))
+      .toBe("$ Get-Location\n\nD:\\Code\\Project");
+    expect(commandTerminalClipboardText("Write-Output ok", ""))
+      .toBe("$ Write-Output ok");
+  });
+});
 
 describe("Subagent approvals", () => {
   it("restores only approvals that belong to each Subagent's active run", () => {
@@ -111,6 +130,29 @@ describe("run progress duration", () => {
     expect(formatRunDuration(startedAt, 90_061_000)).toBe("1天 1小时 1分 1秒");
   });
 
+  it("keeps a restored running indicator at the top of the active assistant turn", () => {
+    const timeline = [
+      { id: "user-1", kind: "message", role: "user" },
+      { id: "assistant-1", kind: "message", role: "assistant" },
+      { id: "tool-batch-1", kind: "tool_batch", tools: [{ id: "tool-1" }] },
+    ];
+
+    expect(getConversationRunProgressInsertIndex(timeline, null)).toBe(1);
+    expect(getConversationRunProgressInsertIndex(timeline, "tool-1")).toBe(1);
+  });
+
+  it("keeps the running indicator with its anchored user turn", () => {
+    const timeline = [
+      { id: "user-1", kind: "message", role: "user" },
+      { id: "assistant-1", kind: "message", role: "assistant" },
+      { id: "user-2", kind: "message", role: "user" },
+      { id: "assistant-2", kind: "message", role: "assistant" },
+      { id: "tool-batch-2", kind: "tool_batch", tools: [{ id: "tool-2" }] },
+    ];
+
+    expect(getConversationRunProgressInsertIndex(timeline, "tool-2")).toBe(3);
+  });
+
   it("inserts a completed run duration before its tool calls", () => {
     const indexes = getConversationRunDurationInsertIndexes([
       { kind: "message", role: "user" },
@@ -149,6 +191,28 @@ describe("run progress duration", () => {
     ]);
 
     expect([...ids]).toEqual(["final"]);
+  });
+});
+
+describe("tool detail auto expansion", () => {
+  it("expands only the latest running or approval-blocked tool", () => {
+    expect(getLatestActiveToolId([
+      { id: "tool-1", kind: "tool", status: "running" },
+      { id: "tool-2", kind: "tool", status: "completed" },
+      { id: "tool-3", kind: "tool", status: "running" },
+    ])).toBe("tool-3");
+
+    expect(getLatestActiveToolId([
+      { id: "tool-1", kind: "tool", status: "completed" },
+      { id: "tool-2", kind: "tool", status: "awaiting_approval" },
+    ])).toBe("tool-2");
+  });
+
+  it("keeps completed tool results collapsed by default", () => {
+    expect(getLatestActiveToolId([
+      { id: "tool-1", kind: "tool", status: "completed" },
+      { id: "tool-2", kind: "tool", status: "failed" },
+    ])).toBeNull();
   });
 });
 

@@ -13,7 +13,7 @@ type ToolValidationIssue = {
 };
 
 type ToolRecovery = {
-  action: "fix_arguments" | "reread_and_rebuild_change";
+  action: "fix_arguments" | "recreate_terminal" | "reread_and_rebuild_change";
   instruction: string;
   issues?: ToolValidationIssue[];
   retryable: boolean;

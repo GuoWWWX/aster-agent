@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import type { ConversationSummary, ModelReasoningOption } from "@agent/protocol";
+import type {
+  ConversationRunEvent,
+  ConversationSummary,
+  ModelReasoningOption,
+} from "@agent/protocol";
 
 import {
   shouldDeleteSidebarChat,
   nextTerminalTabName,
   nextWorkspaceTabName,
+  updateSideSessionsForRunEvent,
   upsertSideSession,
 } from "./right-sidebar-workspace.js";
 
@@ -91,6 +96,34 @@ describe("right sidebar side session state", () => {
       modelId: "model-b",
       reasoning: { kind: "effort", value: "low" },
     });
+  });
+
+  it("keeps the side-session state stable for unrelated Agent tool events", () => {
+    const sessions = upsertSideSession([], sideConversation(
+      "00000000-0000-4000-8000-000000000003",
+      "model-a",
+      { kind: "effort", value: "high" },
+    ));
+    const event: ConversationRunEvent = {
+      conversationId: PARENT_ID,
+      runId: "00000000-0000-4000-8000-000000000010",
+      tool: {
+        arguments: "{}",
+        batchId: null,
+        conversationId: PARENT_ID,
+        createdAt: "2026-08-30T00:00:00.000Z",
+        diff: null,
+        id: "00000000-0000-4000-8000-000000000009",
+        kind: "tool",
+        name: "list_agent_conversations",
+        result: null,
+        runId: "00000000-0000-4000-8000-000000000010",
+        status: "running",
+      },
+      type: "tool.started",
+    };
+
+    expect(updateSideSessionsForRunEvent(sessions, event)).toBe(sessions);
   });
 });
 

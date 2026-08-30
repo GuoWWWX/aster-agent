@@ -3,6 +3,7 @@ import {
   ArrowDown,
   ArrowUp,
   AtSign,
+  BrainCircuit,
   ChevronDown,
   ChevronRight,
   CircleAlert,
@@ -47,6 +48,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type ClipboardEvent as ReactClipboardEvent,
   type KeyboardEvent,
   type MouseEvent,
   type CSSProperties,
@@ -136,9 +138,13 @@ import { TeamWorkspace } from "../team/team-workspace.js";
 import { useConversationWorkspaceCache } from "./conversation-workspace-cache.js";
 import { formatConversationRunMarkdown } from "./conversation-copy.js";
 import { ContextUsageIndicator } from "./context-usage-indicator.js";
-import { isConversationScrolledToBottom } from "./conversation-scroll.js";
+import {
+  isConversationScrolledToBottom,
+  scrollConversationToBottom,
+} from "./conversation-scroll.js";
 import {
   appendAssistantDelta,
+  appendAssistantReasoningDelta,
   completeStreamingAssistantMessages,
   shouldApplyTimelineLoad,
 } from "./conversation-timeline-state.js";
@@ -203,6 +209,56 @@ type RunProgress = {
   runId: string | null;
   startedAt: number;
 };
+
+const MAX_DRAFT_ATTACHMENTS = 10;
+const MAX_DRAFT_ATTACHMENT_BYTES = 25 * 1_024 * 1_024;
+
+function getClipboardAttachmentFiles(clipboardData: DataTransfer): File[] {
+  const files = Array.from(clipboardData.files);
+  if (files.length > 0) return files;
+
+  return Array.from(clipboardData.items).flatMap((item) => {
+    if (item.kind !== "file") return [];
+    const file = item.getAsFile();
+    return file === null ? [] : [file];
+  });
+}
+
+function pastedAttachmentName(file: File, index: number): string {
+  const name = file.name.trim();
+  if (name.length > 0) return name;
+
+  const extension = file.type === "image/jpeg"
+    ? "jpg"
+    : file.type === "image/gif"
+      ? "gif"
+      : file.type === "image/webp"
+        ? "webp"
+        : file.type === "image/png"
+          ? "png"
+          : "bin";
+  return `pasted-${file.type.startsWith("image/") ? "image" : "file"}-${index + 1}.${extension}`;
+}
+
+function readAttachmentFileAsBase64(file: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("无法读取粘贴的附件"));
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error("无法读取粘贴的附件"));
+        return;
+      }
+      const separatorIndex = reader.result.indexOf(",");
+      if (separatorIndex < 0) {
+        reject(new Error("无法读取粘贴的附件"));
+        return;
+      }
+      resolve(reader.result.slice(separatorIndex + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 export type SubagentPendingApproval = {
   childConversationId: string;
@@ -531,7 +587,7 @@ export function WorkspaceContent({
   }
 
   return (
-    <div className="flex min-h-0 flex-1">
+    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
       {retainedSessions.map((session) => {
         const isActive = session.id === activeSession.id;
         const conversationProject = session.projectId === null
@@ -541,7 +597,7 @@ export function WorkspaceContent({
         return (
           <div
             aria-hidden={!isActive}
-            className={isActive ? "flex min-h-0 flex-1" : "hidden"}
+            className={isActive ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"}
             key={session.id}
           >
             <ConversationWorkspace
@@ -660,6 +716,10 @@ export function ConversationWorkspace({
   } | null>(null);
   const [slashQuery, setSlashQuery] = useState<MentionQuery | null>(null);
   const [draftAttachments, setDraftAttachments] = useState<ConversationAttachment[]>([]);
+  const [draftAttachmentPreviewUrls, setDraftAttachmentPreviewUrls] = useState<
+    Record<string, string>
+  >({});
+  const draftAttachmentPreviewUrlsRef = useRef<Record<string, string>>({});
   const [contextCompressionConfiguration, setContextCompressionConfiguration] =
     useState<ContextCompressionConfiguration>(DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION);
   const [contextUsage, setContextUsage] =
@@ -667,7 +727,7 @@ export function ConversationWorkspace({
   const [isCancelling, setIsCancelling] = useState(false);
   const [isChangingWorkspace, setIsChangingWorkspace] = useState(false);
   const [isChangingProject, setIsChangingProject] = useState(false);
-  const [isChoosingAttachments, setIsChoosingAttachments] = useState(false);
+  const [isAddingAttachments, setIsAddingAttachments] = useState(false);
   const [isLoadingTimeline, setIsLoadingTimeline] = useState(true);
   const [isMockRuntime, setIsMockRuntime] = useState(false);
   const [isSavingTeamPermission, setIsSavingTeamPermission] = useState(false);
@@ -722,6 +782,33 @@ export function ConversationWorkspace({
   const shouldStickToBottomRef = useRef(true);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const copiedMessageTimeoutRef = useRef<number | null>(null);
+  const rememberDraftAttachmentPreview = useCallback((attachmentId: string, url: string): void => {
+    draftAttachmentPreviewUrlsRef.current = {
+      ...draftAttachmentPreviewUrlsRef.current,
+      [attachmentId]: url,
+    };
+    setDraftAttachmentPreviewUrls(draftAttachmentPreviewUrlsRef.current);
+  }, []);
+  const forgetDraftAttachmentPreview = useCallback((attachmentId: string): void => {
+    const currentUrl = draftAttachmentPreviewUrlsRef.current[attachmentId];
+    if (currentUrl !== undefined) URL.revokeObjectURL(currentUrl);
+    const nextUrls = { ...draftAttachmentPreviewUrlsRef.current };
+    delete nextUrls[attachmentId];
+    draftAttachmentPreviewUrlsRef.current = nextUrls;
+    setDraftAttachmentPreviewUrls(nextUrls);
+  }, []);
+  const clearDraftAttachmentPreviews = useCallback((): void => {
+    Object.values(draftAttachmentPreviewUrlsRef.current).forEach((url) => {
+      URL.revokeObjectURL(url);
+    });
+    draftAttachmentPreviewUrlsRef.current = {};
+    setDraftAttachmentPreviewUrls({});
+  }, []);
+  useEffect(() => () => {
+    Object.values(draftAttachmentPreviewUrlsRef.current).forEach((url) => {
+      URL.revokeObjectURL(url);
+    });
+  }, []);
   const isFinishedSubagent = !teamManaged && (
     session.subagentTaskStatus === "completed"
     || session.subagentTaskStatus === "failed"
@@ -943,7 +1030,7 @@ export function ConversationWorkspace({
     let disposed = false;
     const activeSubagents = subagentSessions.filter((subagent) => subagent.activeRunId !== null);
     if (activeSubagents.length === 0) {
-      setSubagentApprovals([]);
+      setSubagentApprovals((current) => current.length === 0 ? current : []);
       return () => {
         disposed = true;
       };
@@ -1012,8 +1099,9 @@ export function ConversationWorkspace({
   }, [loadPendingMessages]);
 
   useEffect(() => {
+    clearDraftAttachmentPreviews();
     void Promise.resolve().then(loadDraftAttachments);
-  }, [loadDraftAttachments]);
+  }, [clearDraftAttachmentPreviews, loadDraftAttachments]);
 
   useEffect(() => {
     if (!teamManaged || session.teamWorkItemId === null || session.teamWorkItemId === undefined) return;
@@ -1243,7 +1331,7 @@ export function ConversationWorkspace({
     if (messages === null || !shouldStickToBottomRef.current) return;
 
     const scrollToBottom = (): void => {
-      if (shouldStickToBottomRef.current) messages.scrollTop = messages.scrollHeight;
+      if (shouldStickToBottomRef.current) scrollConversationToBottom(messages);
     };
     scrollToBottom();
     const animationFrame = window.requestAnimationFrame(scrollToBottom);
@@ -1501,6 +1589,7 @@ export function ConversationWorkspace({
           ]);
         }
         setDraftAttachments([]);
+        clearDraftAttachmentPreviews();
       }
       setComposerValue("");
       setMentionQuery(null);
@@ -1522,8 +1611,8 @@ export function ConversationWorkspace({
   };
 
   const handleChooseAttachments = useCallback(async (): Promise<void> => {
-    if (isChoosingAttachments || isSending || isFinishedSubagent) return;
-    setIsChoosingAttachments(true);
+    if (isAddingAttachments || isSending || isFinishedSubagent) return;
+    setIsAddingAttachments(true);
     setOperationError(null);
     try {
       const attachments = await agentClient.chooseConversationAttachments({
@@ -1533,9 +1622,87 @@ export function ConversationWorkspace({
     } catch (error) {
       setOperationError(getUserErrorMessage(error, "无法添加附件"));
     } finally {
-      setIsChoosingAttachments(false);
+      setIsAddingAttachments(false);
     }
-  }, [agentClient, isChoosingAttachments, isSending, isFinishedSubagent, session.id]);
+  }, [agentClient, isAddingAttachments, isSending, isFinishedSubagent, session.id]);
+
+  const handlePasteAttachments = useCallback(
+    (event: ReactClipboardEvent<HTMLTextAreaElement>): void => {
+      const files = getClipboardAttachmentFiles(event.clipboardData);
+      if (files.length === 0) return;
+
+      if (
+        isMockRuntime
+        || isSending
+        || isFinishedSubagent
+        || isAddingAttachments
+        || isEditingComposerMessage
+      ) {
+        return;
+      }
+      event.preventDefault();
+
+      const remainingCount = MAX_DRAFT_ATTACHMENTS - draftAttachments.length;
+      if (files.length > remainingCount) {
+        setOperationError(`每条消息最多添加 ${MAX_DRAFT_ATTACHMENTS} 个附件。`);
+        return;
+      }
+      const oversizedFile = files.find((file) => file.size > MAX_DRAFT_ATTACHMENT_BYTES);
+      if (oversizedFile !== undefined) {
+        setOperationError(`“${pastedAttachmentName(oversizedFile, 0)}”超过 25 MB。`);
+        return;
+      }
+
+      setIsAddingAttachments(true);
+      setOperationError(null);
+      void (async () => {
+        try {
+          let attachments = draftAttachments;
+          for (const [index, file] of files.entries()) {
+            const previousAttachmentIds = new Set(attachments.map((attachment) => attachment.id));
+            const importedAttachments = await agentClient.importConversationAttachmentBytes({
+              base64: await readAttachmentFileAsBase64(file),
+              conversationId: session.id,
+              ...(file.type.length === 0 ? {} : { mimeType: file.type }),
+              name: pastedAttachmentName(file, index),
+            });
+            const importedImage = file.type.startsWith("image/")
+              ? importedAttachments.find((attachment) =>
+                attachment.kind === "image" && !previousAttachmentIds.has(attachment.id)
+              )
+              : undefined;
+            if (importedImage !== undefined) {
+              rememberDraftAttachmentPreview(importedImage.id, URL.createObjectURL(file));
+            }
+            attachments = importedAttachments;
+          }
+          setDraftAttachments(attachments);
+        } catch (error) {
+          try {
+            setDraftAttachments(await agentClient.listDraftConversationAttachments({
+              conversationId: session.id,
+            }));
+          } catch {
+            // Keep the current draft list when the recovery read also fails.
+          }
+          setOperationError(getUserErrorMessage(error, "无法粘贴附件"));
+        } finally {
+          setIsAddingAttachments(false);
+        }
+      })();
+    },
+    [
+      agentClient,
+      draftAttachments,
+      isAddingAttachments,
+      isEditingComposerMessage,
+      isFinishedSubagent,
+      isMockRuntime,
+      isSending,
+      rememberDraftAttachmentPreview,
+      session.id,
+    ],
+  );
 
   const handleRemoveAttachment = useCallback(async (attachmentId: string): Promise<void> => {
     if (removingAttachmentId !== null || isSending) return;
@@ -1549,12 +1716,13 @@ export function ConversationWorkspace({
       setDraftAttachments((current) =>
         current.filter((attachment) => attachment.id !== attachmentId)
       );
+      forgetDraftAttachmentPreview(attachmentId);
     } catch {
       setOperationError("无法移除附件");
     } finally {
       setRemovingAttachmentId(null);
     }
-  }, [agentClient, isSending, removingAttachmentId, session.id]);
+  }, [agentClient, forgetDraftAttachmentPreview, isSending, removingAttachmentId, session.id]);
 
   const mentionOptions = useMemo((): MentionOption[] => {
     if (mentionQuery === null || mentionQuery.query.length === 0) return [];
@@ -1951,6 +2119,7 @@ export function ConversationWorkspace({
     timeline,
     modelActivity?.anchorTimelineItemId ?? null,
   );
+  const latestActiveToolId = useMemo(() => getLatestActiveToolId(timeline), [timeline]);
   const runDurationsByInsertIndex = useMemo(
     () => getConversationRunDurationInsertIndexes(displayTimeline),
     [displayTimeline],
@@ -1970,13 +2139,10 @@ export function ConversationWorkspace({
   const runProgressesByInsertIndex = useMemo(() => {
     const progressByIndex = new Map<number, RunProgress[]>();
     for (const progress of runProgresses) {
-      const anchorTimelineItemId = progress.anchorTimelineItemId;
-      const anchorIndex = anchorTimelineItemId === null
-        ? -1
-        : displayTimeline.findIndex((item) =>
-          timelineDisplayItemContains(item, anchorTimelineItemId),
-        );
-      const insertIndex = anchorIndex < 0 ? displayTimeline.length : anchorIndex + 1;
+      const insertIndex = getConversationRunProgressInsertIndex(
+        displayTimeline,
+        progress.anchorTimelineItemId,
+      );
       const items = progressByIndex.get(insertIndex) ?? [];
       items.push(progress);
       progressByIndex.set(insertIndex, items);
@@ -2091,6 +2257,7 @@ export function ConversationWorkspace({
                     item={item}
                     teamManaged={teamManaged}
                     activeRunId={activeRunId}
+                    latestActiveToolId={latestActiveToolId}
                     modelActivity={modelActivity !== null
                       && modelActivityInsertIndex === index
                       && item.kind === "tool_batch"
@@ -2236,6 +2403,9 @@ export function ConversationWorkspace({
                     key={attachment.id}
                     attachment={attachment}
                     isRemoving={removingAttachmentId === attachment.id}
+                    {...(draftAttachmentPreviewUrls[attachment.id] === undefined
+                      ? {}
+                      : { previewUrl: draftAttachmentPreviewUrls[attachment.id] })}
                     onRemove={() => void handleRemoveAttachment(attachment.id)}
                   />
                 ))}
@@ -2412,6 +2582,7 @@ export function ConversationWorkspace({
                   setMentionSelectionIndex(0);
                 }}
                 onKeyDown={handleComposerKeyDown}
+                onPaste={handlePasteAttachments}
               />
             </div>
             <div className="conversation-workspace__composer-toolbar">
@@ -2421,21 +2592,21 @@ export function ConversationWorkspace({
                     isMockRuntime
                     || isSending
                     || isFinishedSubagent
-                    || isChoosingAttachments
+                    || isAddingAttachments
                     || isEditingComposerMessage
-                    || draftAttachments.length >= 10
+                    || draftAttachments.length >= MAX_DRAFT_ATTACHMENTS
                   }
                   label={isEditingComposerMessage
                     ? "编辑消息时保留原附件"
-                    : isChoosingAttachments
+                    : isAddingAttachments
                       ? "正在添加附件"
-                      : "添加文件或图片"}
+                      : "添加文件或图片，也可直接粘贴"}
                   size="compact"
                   type="button"
                   variant="quiet"
                   onClick={() => void handleChooseAttachments()}
                 >
-                  {isChoosingAttachments ? (
+                  {isAddingAttachments ? (
                     <LoaderCircle
                       aria-hidden="true"
                       className="conversation-workspace__spin"
@@ -2764,6 +2935,11 @@ function handleRunEvent(
       });
       return;
     case "assistant.reasoning_delta": {
+      if (event.kind === "content") {
+        setModelActivity((current) => current?.runId === event.runId ? null : current);
+        updateTimeline((current) => appendAssistantReasoningDelta(current, event));
+        return;
+      }
       updateTimeline(completeStreamingAssistantMessages);
       const anchorTimelineItemId = timelineRef.current.at(-1)?.id ?? null;
       setModelActivity((current) => {
@@ -2806,6 +2982,7 @@ function handleRunEvent(
       return;
     case "tool.completed":
     case "tool.started":
+      setModelActivity((current) => current?.runId === event.runId ? null : current);
       updateTimeline((current) => upsertTimelineItem(
         completeStreamingAssistantMessages(current),
         event.tool,
@@ -3577,6 +3754,19 @@ export function groupToolBatches(
   return grouped;
 }
 
+export function getLatestActiveToolId(
+  timeline: readonly {
+    id: string;
+    kind: string;
+    status?: string | undefined;
+  }[],
+): string | null {
+  return timeline.findLast((item) =>
+    item.kind === "tool"
+    && (item.status === "running" || item.status === "awaiting_approval")
+  )?.id ?? null;
+}
+
 export function getConversationRunDurationInsertIndexes(
   timeline: readonly {
     durationMs?: number | null | undefined;
@@ -3606,6 +3796,31 @@ export function getConversationRunDurationInsertIndexes(
   }
 
   return durationsByInsertIndex;
+}
+
+export function getConversationRunProgressInsertIndex(
+  timeline: readonly {
+    id: string;
+    kind: string;
+    role?: string | undefined;
+    tools?: readonly { id: string }[] | undefined;
+  }[],
+  anchorTimelineItemId: string | null,
+): number {
+  const anchorIndex = anchorTimelineItemId === null
+    ? -1
+    : timeline.findIndex((item) =>
+      item.id === anchorTimelineItemId
+      || item.tools?.some((tool) => tool.id === anchorTimelineItemId) === true,
+    );
+  const searchStartIndex = anchorIndex < 0 ? timeline.length - 1 : anchorIndex;
+
+  for (let index = searchStartIndex; index >= 0; index -= 1) {
+    const item = timeline[index];
+    if (item?.kind === "message" && item.role === "user") return index + 1;
+  }
+
+  return 0;
 }
 
 export function getFinalCompletedAssistantMessageIds(
@@ -3639,10 +3854,56 @@ function timelineDisplayItemContains(item: TimelineDisplayItem, timelineItemId: 
     : item.id === timelineItemId;
 }
 
+function AssistantReasoningBlock({
+  content,
+  streaming,
+}: {
+  content: string;
+  streaming: boolean;
+}): ReactElement {
+  const contentId = useId();
+  const [isExpanded, setIsExpanded] = useState(streaming);
+
+  return (
+    <section className="my-[5px] overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)]">
+      <button
+        aria-controls={contentId}
+        aria-expanded={isExpanded}
+        className="flex min-h-8 w-full min-w-0 items-center gap-[5px] px-2 text-left text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--app-focus-ring)]"
+        title={isExpanded ? "收起思考过程" : "展开思考过程"}
+        type="button"
+        onClick={() => setIsExpanded((current) => !current)}
+      >
+        <BrainCircuit aria-hidden="true" className="shrink-0" size={14} />
+        <span className="min-w-0 flex-1 truncate">
+          {streaming ? "正在思考" : "思考过程"}
+        </span>
+        {streaming ? (
+          <span className="shrink-0 text-[length:var(--app-font-size-auxiliary)]">实时</span>
+        ) : null}
+        {isExpanded ? (
+          <ChevronDown aria-hidden="true" className="shrink-0" size={14} />
+        ) : (
+          <ChevronRight aria-hidden="true" className="shrink-0" size={14} />
+        )}
+      </button>
+      {isExpanded ? (
+        <div
+          className="border-t border-[var(--app-border)] bg-[var(--app-panel)] px-3 py-2 text-[length:var(--app-font-size-body)]"
+          id={contentId}
+        >
+          <AgentMarkdown content={content} />
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function TimelineItem({
   item,
   teamManaged,
   activeRunId,
+  latestActiveToolId,
   modelActivity,
   approvalErrors,
   approvingToolId,
@@ -3664,6 +3925,7 @@ function TimelineItem({
   item: TimelineDisplayItem;
   teamManaged: boolean;
   activeRunId: string | null;
+  latestActiveToolId: string | null;
   modelActivity: ModelActivity | null;
   approvalErrors: Readonly<Record<string, string>>;
   approvingToolId: string | null;
@@ -3692,10 +3954,11 @@ function TimelineItem({
     );
     return (
       <ToolBatchTimelineItem
-        key={`${item.id}:${String(hasFailure)}`}
+        key={`${item.id}:${String(hasFailure)}:${latestActiveToolId ?? "idle"}`}
         item={item}
         teamManaged={teamManaged}
         activeRunId={activeRunId}
+        latestActiveToolId={latestActiveToolId}
         modelActivity={modelActivity}
         approvalErrors={approvalErrors}
         approvingToolId={approvingToolId}
@@ -3709,9 +3972,10 @@ function TimelineItem({
   if (item.kind === "tool") {
     return (
       <ToolTimelineItem
-        key={`${item.id}:${approvalErrors[item.id] === undefined ? String(toolItemHasFailure(item)) : "approval_failed"}`}
+        key={`${item.id}:${approvalErrors[item.id] === undefined ? String(toolItemHasFailure(item)) : "approval_failed"}:${latestActiveToolId ?? "idle"}`}
         item={item}
         teamManaged={teamManaged}
+        latestActiveToolId={latestActiveToolId}
         approvalActionable={item.runId === activeRunId}
         approvalError={approvalErrors[item.id] ?? null}
         isApproving={approvingToolId === item.id}
@@ -3766,7 +4030,16 @@ function TimelineItem({
         {item.role === "assistant" && item.status === "failed" ? (
           <ConversationErrorContent content={item.content} />
         ) : item.role === "assistant" ? (
-          <AgentMarkdown content={item.content} />
+          <>
+            {item.reasoningContent?.trim().length ? (
+              <AssistantReasoningBlock
+                content={item.reasoningContent}
+                key={item.status}
+                streaming={item.status === "streaming"}
+              />
+            ) : null}
+            {item.content.length > 0 ? <AgentMarkdown content={item.content} /> : null}
+          </>
         ) : (
           <>
             {item.attachments.length > 0 ? (
@@ -3851,22 +4124,49 @@ function AttachmentChip({
   attachment,
   isRemoving = false,
   onRemove,
+  previewUrl,
 }: {
   attachment: ConversationAttachment;
   isRemoving?: boolean;
   onRemove?: () => void;
+  previewUrl?: string;
 }): ReactElement {
   const sourceLabel = attachment.projectPath ?? "上传文件";
+  const isDraft = onRemove !== undefined;
+  const showsImagePreview = isDraft && attachment.kind === "image" && previewUrl !== undefined;
   return (
-    <span className="conversation-attachment" title={`${sourceLabel} · ${formatFileSize(attachment.sizeBytes)}`}>
-      <FileTypeIcon path={attachment.name} size={15} />
-      <span className="conversation-attachment__identity">
-        <strong>{attachment.name}</strong>
-        <small>
-          {formatFileSize(attachment.sizeBytes)}
-          {attachment.truncated ? " · 已按预览注入" : ""}
-        </small>
-      </span>
+    <span
+      className={[
+        "conversation-attachment",
+        isDraft ? "conversation-attachment--draft" : "",
+        showsImagePreview
+          ? "conversation-attachment--image-preview"
+          : isDraft
+            ? "conversation-attachment--file-card"
+            : "",
+      ].filter(Boolean).join(" ")}
+      title={`${attachment.name} · ${sourceLabel} · ${formatFileSize(attachment.sizeBytes)}`}
+    >
+      {showsImagePreview ? (
+        <img alt="" aria-hidden="true" src={previewUrl} />
+      ) : (
+        <>
+          {isDraft ? (
+            <span className="conversation-attachment__file-icon">
+              <FileTypeIcon path={attachment.name} size={28} />
+            </span>
+          ) : (
+            <FileTypeIcon path={attachment.name} size={15} />
+          )}
+          <span className="conversation-attachment__identity">
+            <strong>{attachment.name}</strong>
+            <small>
+              {isDraft ? attachmentTypeLabel(attachment) : formatFileSize(attachment.sizeBytes)}
+              {!isDraft && attachment.truncated ? " · 已按预览注入" : ""}
+            </small>
+          </span>
+        </>
+      )}
       {onRemove === undefined ? null : (
         <button
           aria-label={`移除附件 ${attachment.name}`}
@@ -3883,6 +4183,17 @@ function AttachmentChip({
       )}
     </span>
   );
+}
+
+function attachmentTypeLabel(attachment: ConversationAttachment): string {
+  const extensionMatch = /\.([^.]+)$/u.exec(attachment.name.trim());
+  if (extensionMatch?.[1] !== undefined && extensionMatch[1].length <= 12) {
+    return extensionMatch[1].toLocaleUpperCase();
+  }
+  const mimeSubtype = attachment.mimeType.split("/").at(-1)?.split("+")[0]?.trim();
+  return mimeSubtype === undefined || mimeSubtype.length === 0
+    ? "FILE"
+    : mimeSubtype.toLocaleUpperCase();
 }
 
 function formatFileSize(sizeBytes: number): string {
@@ -4068,6 +4379,7 @@ function ToolBatchTimelineItem({
   item,
   teamManaged,
   activeRunId,
+  latestActiveToolId,
   modelActivity,
   approvalErrors,
   approvingToolId,
@@ -4078,6 +4390,7 @@ function ToolBatchTimelineItem({
   item: Extract<TimelineDisplayItem, { kind: "tool_batch" }>;
   teamManaged: boolean;
   activeRunId: string | null;
+  latestActiveToolId: string | null;
   modelActivity: ModelActivity | null;
   approvalErrors: Readonly<Record<string, string>>;
   approvingToolId: string | null;
@@ -4089,13 +4402,9 @@ function ToolBatchTimelineItem({
   ) => Promise<void>;
   liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
 }): ReactElement {
-  const [isExpanded, setIsExpanded] = useState(() =>
-    item.tools.some((tool) =>
-      tool.status === "running"
-      || tool.status === "awaiting_approval"
-      || approvalErrors[tool.id] !== undefined
-    ),
-  );
+  const shouldAutoExpand = latestActiveToolId !== null
+    && item.tools.some((tool) => tool.id === latestActiveToolId);
+  const [isExpanded, setIsExpanded] = useState(shouldAutoExpand);
   const hasFailure = item.tools.some((tool) =>
     toolItemHasFailure(tool) || approvalErrors[tool.id] !== undefined
   );
@@ -4137,6 +4446,7 @@ function ToolBatchTimelineItem({
               key={`${tool.id}:${approvalErrors[tool.id] === undefined ? String(toolItemHasFailure(tool)) : "approval_failed"}`}
               item={tool}
               teamManaged={teamManaged}
+              latestActiveToolId={latestActiveToolId}
               approvalActionable={tool.runId === activeRunId}
               approvalError={approvalErrors[tool.id] ?? null}
               isApproving={approvingToolId === tool.id}
@@ -4155,6 +4465,7 @@ function ToolBatchTimelineItem({
 function ToolTimelineItem({
   item,
   teamManaged,
+  latestActiveToolId,
   approvalActionable,
   approvalError,
   isApproving,
@@ -4165,6 +4476,7 @@ function ToolTimelineItem({
 }: {
   item: ConversationToolItem;
   teamManaged: boolean;
+  latestActiveToolId: string | null;
   approvalActionable: boolean;
   approvalError: string | null;
   isApproving: boolean;
@@ -4186,9 +4498,8 @@ function ToolTimelineItem({
     : approvalError === null && !toolItemHasFailure(item)
     ? item.status
     : "failed";
-  const [isExpanded, setIsExpanded] = useState(() =>
-    effectiveStatus === "running" || effectiveStatus === "awaiting_approval",
-  );
+  const shouldAutoExpand = item.id === latestActiveToolId;
+  const [isExpanded, setIsExpanded] = useState(shouldAutoExpand);
   const [isRawCallOpen, setIsRawCallOpen] = useState(false);
   const detailsLabel = isExpanded ? "收起调用详情" : "展开调用详情";
 
@@ -4786,35 +5097,29 @@ function CommandTerminal({
   resultPayload: string | null;
   status: ConversationToolItem["status"];
 }): ReactElement {
-  const terminalConfiguration = useWorkbenchUiStore(
-    (state) => state.terminalConfiguration,
-  );
+  const [copied, setCopied] = useState(false);
   const invocation = parseCommandInvocation(argumentsPayload);
   const command = invocation?.command ?? "命令参数无法识别，请查看原始调用。";
   const result = resultPayload === null ? null : parseCommandResult(resultPayload);
   const output = commandTerminalOutput(resultPayload, status, liveOutput);
-  const terminal = result?.terminal;
-  const lifecycleStatus = liveOutput?.status ?? result?.status;
-  const lifecycleLabel = lifecycleStatus == null ? null : commandSessionStatusLabel(lifecycleStatus);
-  const terminalStyle: CSSProperties = {
-    fontFamily: terminalConfiguration.fontFamily,
-    fontSize: terminalConfiguration.fontSize,
-    lineHeight: terminalConfiguration.lineHeight,
-  };
+  const clipboardText = commandTerminalClipboardText(command, output);
 
   return (
     <section className="tool-timeline-item__payload tool-structured-result tool-command-terminal">
-      <p className="tool-timeline-item__payload-label">
-        {terminal?.displayName ?? terminalShellDisplayName(terminalConfiguration.shell)}
-        {" · "}
-        {terminalOutputEncodingLabel(terminal?.outputEncoding ?? terminalConfiguration.outputEncoding)}
-        {lifecycleLabel === null ? null : ` · ${lifecycleLabel}`}
-        {result?.commandId === null || result?.commandId === undefined
-          ? null
-          : ` · ID ${result.commandId}`}
-      </p>
+      <header className="tool-command-terminal__header">
+        <span>{commandTerminalHeaderLabel(result?.terminal ?? null)}</span>
+        <IconButton
+          className="tool-command-terminal__copy"
+          label={copied ? "已复制终端内容" : "复制终端内容"}
+          size="compact"
+          variant="quiet"
+          onClick={() => void copyTextWithFeedback(clipboardText, setCopied)}
+        >
+          {copied ? <Check aria-hidden="true" size={15} /> : <Copy aria-hidden="true" size={15} />}
+        </IconButton>
+      </header>
       <div className="tool-structured-result__content">
-        <pre style={terminalStyle}>
+        <pre>
           <code>
             <span className="tool-command-terminal__prompt">$</span> {command}
             {output.length === 0 ? null : `\n\n${output}`}
@@ -5913,13 +6218,30 @@ function fileChangeType(toolName: string, presentation: DiffPresentation): "crea
 }
 
 async function copyDiff(diff: string, setCopied: (copied: boolean) => void): Promise<void> {
+  await copyTextWithFeedback(diff, setCopied);
+}
+
+async function copyTextWithFeedback(
+  text: string,
+  setCopied: (copied: boolean) => void,
+): Promise<void> {
   try {
-    await navigator.clipboard.writeText(diff);
+    await navigator.clipboard.writeText(text);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1_500);
   } catch {
     setCopied(false);
   }
+}
+
+export function commandTerminalHeaderLabel(
+  terminal: { displayName: string } | null,
+): string {
+  return terminal?.displayName.trim() || "命令行";
+}
+
+export function commandTerminalClipboardText(command: string, output: string): string {
+  return output.length === 0 ? `$ ${command}` : `$ ${command}\n\n${output}`;
 }
 
 function parseCommandInvocation(payload: string): { command: string } | null {
@@ -6068,53 +6390,6 @@ function isCommandSessionStatus(
   value: unknown,
 ): value is Exclude<CommandResultPayload["status"], null> {
   return value === "running" || value === "completed" || value === "failed" || value === "cancelled";
-}
-
-function commandSessionStatusLabel(status: Exclude<CommandResultPayload["status"], null>): string {
-  switch (status) {
-    case "running":
-      return "后台运行中";
-    case "completed":
-      return "已完成";
-    case "failed":
-      return "失败";
-    case "cancelled":
-      return "已停止";
-  }
-}
-
-function terminalShellDisplayName(
-  shell: "system" | "powershell" | "pwsh" | "cmd" | "bash",
-): string {
-  switch (shell) {
-    case "system":
-      return "系统终端";
-    case "powershell":
-      return "Windows PowerShell";
-    case "pwsh":
-      return "PWSH（PowerShell 7）";
-    case "cmd":
-      return "命令提示符";
-    case "bash":
-      return "Bash";
-  }
-}
-
-function terminalOutputEncodingLabel(encoding: string): string {
-  switch (encoding) {
-    case "auto":
-      return "自动（UTF-8/GB18030）";
-    case "utf-8":
-      return "UTF-8";
-    case "gbk":
-      return "GBK";
-    case "gb18030":
-      return "GB18030";
-    case "utf-16le":
-      return "UTF-16 LE";
-    default:
-      return encoding;
-  }
 }
 
 function commandTerminalOutput(

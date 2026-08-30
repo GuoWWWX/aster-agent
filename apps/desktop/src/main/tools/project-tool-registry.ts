@@ -471,7 +471,7 @@ export class ProjectToolRegistry {
       },
       {
         description:
-          `Run one non-interactive ${commandEnvironment} command. Project conversations run it in the authorized workspace root; temporary conversations run it in an isolated temporary directory. The bundled rg command is always available. Short commands return normally; a command still running after yieldTimeMs returns a commandId for wait_for_commands. timeoutMs is the command's execution limit; yieldTimeMs only controls when a still-running command is handed back. Independent commands returned in the same model turn run in parallel by default whenever the permission mode allows commands; set parallel=false when this command depends on another command or shared mutable state. In ask-before-changes mode each command still requires its own approval, and approved independent commands can overlap.`,
+          `Run one non-interactive ${commandEnvironment} command. This is the default choice for ordinary commands, builds, checks, and tests; it returns output to the conversation and does not open a visible terminal tab. When the user explicitly requests a visible, right-side, or interactive terminal, or the task genuinely requires an ongoing PTY, use create_terminal and execute_terminal_command instead when available. Project conversations run this command in the authorized workspace root; temporary conversations run it in an isolated temporary directory. The bundled rg command is always available. Short commands return normally; a command still running after yieldTimeMs returns a commandId for wait_for_commands. timeoutMs is the command's execution limit; yieldTimeMs only controls when a still-running command is handed back. Independent commands returned in the same model turn run in parallel by default whenever the permission mode allows commands; set parallel=false when this command depends on another command or shared mutable state. In ask-before-changes mode each command still requires its own approval, and approved independent commands can overlap.`,
         name: "run_command",
         parameters: modelToolParameters(runCommandArgumentsSchema)
       }
@@ -527,7 +527,7 @@ export class ProjectToolRegistry {
   }
 
   public getCommandEnvironmentDescription(): string {
-    const configuration = this.terminalConfiguration.getConfiguration();
+    const configuration = this.getCommandConfiguration();
     const terminal = this.createTerminalLaunch(configuration, "");
     return `${terminal.displayName} (output decoding: ${terminalOutputEncodingLabel(
       configuration.outputEncoding,
@@ -911,7 +911,7 @@ export class ProjectToolRegistry {
     owner: ProjectOperationOwner = unknownOperationOwner(),
     onOutput?: CommandOutputListener,
   ): Promise<ToolExecutionResult> {
-    const configuration = this.terminalConfiguration.getConfiguration();
+    const configuration = this.getCommandConfiguration();
     const terminal = this.createTerminalLaunch(configuration, command.command);
     let session: CommandSession | undefined;
     try {
@@ -1167,6 +1167,13 @@ export class ProjectToolRegistry {
           shell,
         };
     }
+  }
+
+  private getCommandConfiguration(): TerminalConfiguration {
+    return {
+      ...DEFAULT_TERMINAL_CONFIGURATION,
+      outputEncoding: this.terminalConfiguration.getConfiguration().outputEncoding,
+    };
   }
 
   private resolveTerminalShell(shell: TerminalShell): ResolvedTerminalShell {

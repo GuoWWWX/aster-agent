@@ -4,6 +4,7 @@ import type { ConversationMessageItem } from "@agent/protocol";
 
 import {
   appendAssistantDelta,
+  appendAssistantReasoningDelta,
   completeStreamingAssistantMessages,
   shouldApplyTimelineLoad,
 } from "./conversation-timeline-state.js";
@@ -47,6 +48,49 @@ describe("conversation timeline streaming state", () => {
       { content: "第一段", id: "first", status: "completed" },
       { content: "第二段", id: "second", status: "streaming" },
     ]);
+  });
+
+  it("streams full reasoning into its assistant message without flattening it", () => {
+    const first = appendAssistantReasoningDelta([], {
+      conversationId,
+      delta: "先分析问题。\n",
+      kind: "content",
+      messageId: "reasoning-message",
+      modelId: "deepseek-v4-flash",
+      reset: true,
+      runId,
+      type: "assistant.reasoning_delta",
+    });
+    const next = appendAssistantReasoningDelta(first, {
+      conversationId,
+      delta: "再验证答案。",
+      kind: "content",
+      messageId: "reasoning-message",
+      modelId: "deepseek-v4-flash",
+      reset: false,
+      runId,
+      type: "assistant.reasoning_delta",
+    });
+
+    expect(next).toMatchObject([{
+      content: "",
+      id: "reasoning-message",
+      reasoningContent: "先分析问题。\n再验证答案。",
+      status: "streaming",
+    }]);
+  });
+
+  it("keeps summary reasoning out of the persisted message timeline", () => {
+    expect(appendAssistantReasoningDelta([], {
+      conversationId,
+      delta: "正在检查文件",
+      kind: "summary",
+      messageId: "summary-message",
+      modelId: "gpt-5.6-terra",
+      reset: true,
+      runId,
+      type: "assistant.reasoning_delta",
+    })).toEqual([]);
   });
 
   it("completes the active text segment when output moves to a tool", () => {

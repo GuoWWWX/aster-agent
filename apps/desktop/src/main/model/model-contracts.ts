@@ -76,6 +76,7 @@ export type ModelTurnResult = {
   content: string;
   finishReason: string | null;
   providerState?: ModelProviderState;
+  reasoningContent?: string;
   toolCalls: ModelToolCall[];
 };
 

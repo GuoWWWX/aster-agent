@@ -28,6 +28,7 @@ describe("WorkspaceTerminalTool", () => {
     const terminalId = "00000000-0000-4000-8000-000000000003";
     const terminalSessions = {
       close: vi.fn(),
+      isActive: vi.fn(() => true),
       open: vi.fn(() => ({ projectId: PROJECT_ID, sessionId: terminalId, shellLabel: "PWSH（PowerShell 7）" })),
       readOutput: vi.fn(() => ({ data: "server ready" + String.fromCharCode(13, 10), nextCursor: 14, truncated: false })),
       write: vi.fn(),
@@ -49,6 +50,21 @@ describe("WorkspaceTerminalTool", () => {
       EXECUTE_TERMINAL_COMMAND_TOOL_NAME,
       READ_TERMINAL_OUTPUT_TOOL_NAME,
     ]);
+    const definitions = new Map(
+      tool.getDefinitions().map((definition) => [definition.name, definition.description]),
+    );
+    expect(definitions.get(CREATE_TERMINAL_TOOL_NAME)).toContain(
+      "explicitly asks for a visible, right-side, or interactive terminal",
+    );
+    expect(definitions.get(CREATE_TERMINAL_TOOL_NAME)).toContain(
+      "Use run_command for ordinary commands",
+    );
+    expect(definitions.get(OPEN_TERMINAL_TOOL_NAME)).toContain(
+      "Follow the same selection rule as create_terminal",
+    );
+    expect(definitions.get(EXECUTE_TERMINAL_COMMAND_TOOL_NAME)).toContain(
+      "Do not guess or reuse a terminal tab opened manually by the user",
+    );
 
     const proposal = await tool.execute({
       conversationId: CONVERSATION_ID,
@@ -102,6 +118,7 @@ describe("WorkspaceTerminalTool", () => {
     expect(JSON.parse(write.content)).toEqual({
       ok: true,
       value: {
+        effectiveYieldTimeMs: 0,
         output: { data: "server ready\r\n", nextCursor: 14, truncated: false },
         sent: true,
         terminalId,
@@ -121,5 +138,105 @@ describe("WorkspaceTerminalTool", () => {
       ok: true,
       value: { data: "server ready\r\n", nextCursor: 14, terminalId, truncated: false },
     });
+  });
+
+  it("tells the model to recreate a terminal when a historical terminal id is no longer active", async () => {
+    const controller = new WorkspaceTerminalTabController();
+    const terminalSessions = {
+      close: vi.fn(),
+      isActive: vi.fn(() => false),
+      open: vi.fn(),
+      readOutput: vi.fn(),
+      write: vi.fn(),
+    };
+    const tool = new WorkspaceTerminalTool(controller, terminalSessions, {
+      executeApprovedCommandAction: vi.fn(),
+    });
+
+    const result = await tool.execute({
+      conversationId: CONVERSATION_ID,
+      operationOwner: OPERATION_OWNER,
+      projectId: PROJECT_ID,
+      rawArguments: JSON.stringify({
+        command: "ping baidu.com -n 4",
+        terminalId: "00000000-0000-4000-8000-000000000003",
+      }),
+      signal: new AbortController().signal,
+      toolName: EXECUTE_TERMINAL_COMMAND_TOOL_NAME,
+    });
+
+    expect(result).toMatchObject({ isError: true, kind: "completed" });
+    expect(JSON.parse(result.content)).toMatchObject({
+      agentError: { code: "CONFLICT", retryable: true },
+      code: "TERMINAL_UNAVAILABLE",
+      ok: false,
+      recovery: {
+        action: "recreate_terminal",
+        retryable: true,
+      },
+    });
+  });
+
+  it("accepts an oversized immediate-output wait hint so it can be capped at execution time", async () => {
+    const controller = new WorkspaceTerminalTabController();
+    controller.onOpenRequested((request) => {
+      controller.confirmOpened({ requestId: request.requestId, resolvedName: "测试终端" });
+      return true;
+    });
+    const terminalId = "00000000-0000-4000-8000-000000000003";
+    const terminalSessions = {
+      close: vi.fn(),
+      isActive: vi.fn(() => true),
+      open: vi.fn(() => ({ projectId: PROJECT_ID, sessionId: terminalId, shellLabel: "PWSH（PowerShell 7）" })),
+      readOutput: vi.fn(() => ({ data: "", nextCursor: 0, truncated: false })),
+      write: vi.fn(),
+    };
+    const projectOperations = {
+      executeApprovedCommandAction: vi.fn(async (
+        _command: string,
+        _projectId: string,
+        _signal: AbortSignal,
+        _owner: ProjectOperationOwner,
+        action: () => Promise<ToolExecutionResult>,
+      ) => action()),
+    };
+    const tool = new WorkspaceTerminalTool(controller, terminalSessions, projectOperations);
+    const create = await tool.execute({
+      conversationId: CONVERSATION_ID,
+      operationOwner: OPERATION_OWNER,
+      projectId: PROJECT_ID,
+      rawArguments: "{}",
+      signal: new AbortController().signal,
+      toolName: CREATE_TERMINAL_TOOL_NAME,
+    });
+    if (create.kind !== "approved_action") throw new Error("Expected terminal approval proposal.");
+    await create.action.execute();
+
+    const result = await tool.execute({
+      conversationId: CONVERSATION_ID,
+      operationOwner: OPERATION_OWNER,
+      projectId: PROJECT_ID,
+      rawArguments: JSON.stringify({
+        command: "ping baidu.com -n 4",
+        terminalId,
+        yieldTimeMs: 8_000,
+      }),
+      signal: new AbortController().signal,
+      toolName: EXECUTE_TERMINAL_COMMAND_TOOL_NAME,
+    });
+
+    expect(result).toMatchObject({ isError: false, kind: "approved_action" });
+    if (result.kind !== "approved_action") throw new Error("Expected command approval proposal.");
+    vi.useFakeTimers();
+    try {
+      const execution = result.action.execute();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(JSON.parse((await execution).content)).toMatchObject({
+        ok: true,
+        value: { effectiveYieldTimeMs: 5_000, sent: true, terminalId },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

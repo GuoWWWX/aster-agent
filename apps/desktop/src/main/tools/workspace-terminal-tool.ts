@@ -9,8 +9,13 @@ import type {
   ToolExecution,
   ToolExecutionResult,
 } from "./project-tool-registry.js";
-import type { TerminalSessionPort } from "./terminal-session-controller.js";
+import {
+  TerminalSessionUnavailableError,
+  type TerminalSessionPort,
+} from "./terminal-session-controller.js";
 import type { WorkspaceTerminalTabPort } from "./workspace-terminal-tab-controller.js";
+
+const MAX_IMMEDIATE_OUTPUT_WAIT_MS = 5_000;
 
 const createTerminalArgumentsSchema = z.object({
   columns: z.number().int().min(2).max(500).default(120)
@@ -29,9 +34,11 @@ const executeTerminalCommandArgumentsSchema = z.object({
     .describe("One command to send to the persistent terminal. Enter is appended automatically."),
   maxChars: z.number().int().min(1).max(65_536).default(32_768)
     .describe("Maximum output characters included in this command's immediate result."),
-  terminalId: z.string().uuid().describe("Terminal ID returned by create_terminal or open_terminal."),
-  yieldTimeMs: z.number().int().min(0).max(5_000).default(200)
-    .describe("Briefly wait for immediate output. This never waits for a long-running command to finish."),
+  terminalId: z.string().uuid().describe(
+    "Live terminal ID returned by create_terminal or open_terminal for this conversation in the current app session.",
+  ),
+  yieldTimeMs: z.number().int().min(0).default(200)
+    .describe("Optional immediate-output wait in milliseconds. Omit normally; values above 5000 are capped at 5000. This never waits for command completion."),
 }).strict();
 
 const readTerminalOutputArgumentsSchema = z.object({
@@ -39,7 +46,9 @@ const readTerminalOutputArgumentsSchema = z.object({
     .describe("Read output after this cursor. Pass nextCursor from the prior result to read only new output."),
   maxChars: z.number().int().min(1).max(65_536).default(32_768)
     .describe("Maximum transcript characters to return."),
-  terminalId: z.string().uuid().describe("Terminal ID returned by create_terminal or open_terminal."),
+  terminalId: z.string().uuid().describe(
+    "Live terminal ID returned by create_terminal or open_terminal for this conversation in the current app session.",
+  ),
 }).strict();
 
 export const OPEN_TERMINAL_TOOL_NAME = "open_terminal";
@@ -64,7 +73,7 @@ export class WorkspaceTerminalTool {
   public getDefinitions(): readonly ModelToolDefinition[] {
     const createDefinition: ModelToolDefinition = {
       description:
-        "Create a persistent AI-managed terminal in a visible right-side terminal tab for the current project. The returned terminalId identifies the same long-lived PTY for execute_terminal_command and read_terminal_output. name is optional; the workspace resolves duplicate labels and returns resolvedName.",
+        "Create a visible right-side persistent PTY terminal for the current project. Use this only when the user explicitly asks for a visible, right-side, or interactive terminal, or the task genuinely requires an ongoing PTY the user can inspect or take over. Use run_command for ordinary commands, builds, checks, and tests. Call this before execute_terminal_command when no live terminalId is available. The returned terminalId is valid only for this conversation while the desktop process and PTY remain active; after a restart or terminal exit, create a new terminal. name is optional; the workspace resolves duplicate labels and returns resolvedName.",
       name: CREATE_TERMINAL_TOOL_NAME,
       parameters: modelToolParameters(createTerminalArgumentsSchema),
     };
@@ -72,18 +81,18 @@ export class WorkspaceTerminalTool {
       createDefinition,
       {
         ...createDefinition,
-        description: "Compatibility alias for create_terminal. Creates a persistent visible terminal and returns its terminalId.",
+        description: "Compatibility alias for create_terminal. Follow the same selection rule as create_terminal and prefer create_terminal for new calls.",
         name: OPEN_TERMINAL_TOOL_NAME,
       },
       {
         description:
-          "Send one command to a persistent AI-managed terminal and press Enter. It returns a brief incremental-output sample, not command completion; use read_terminal_output to continue inspecting a long-running process in the visible terminal tab.",
+          "Send one command to a live AI-managed right-side terminal and press Enter. Reuse only a terminalId returned for this conversation in the current app session. Do not guess or reuse a terminal tab opened manually by the user. Use run_command instead for ordinary non-interactive commands. Omit yieldTimeMs normally; values above 5000 are capped. The result is an immediate output sample, not command completion; use read_terminal_output for later output.",
         name: EXECUTE_TERMINAL_COMMAND_TOOL_NAME,
         parameters: modelToolParameters(executeTerminalCommandArgumentsSchema),
       },
       {
         description:
-          "Read a bounded incremental transcript from one persistent AI-managed terminal. Reuse nextCursor to avoid receiving the same output twice. The terminal remains running and user-accessible in its right-side tab.",
+          "Read a bounded incremental transcript from one live right-side terminal. Reuse only a terminalId returned for this conversation in the current app session, and reuse nextCursor to avoid duplicate output. If the terminal is unavailable, create a new terminal rather than retrying the stale ID.",
         name: READ_TERMINAL_OUTPUT_TOOL_NAME,
         parameters: modelToolParameters(readTerminalOutputArgumentsSchema),
       },
@@ -117,7 +126,7 @@ export class WorkspaceTerminalTool {
     } catch (error) {
       if (input.signal.aborted) throw error;
       return Promise.resolve({
-        content: toolErrorContent(error, `tool:${input.toolName}`),
+        content: terminalToolErrorContent(error, input.toolName),
         isError: true,
         kind: "completed" as const,
       });
@@ -234,25 +243,44 @@ export class WorkspaceTerminalTool {
     rawArguments: string;
     signal: AbortSignal;
   }, arguments_: z.infer<typeof executeTerminalCommandArgumentsSchema>): Promise<ToolExecutionResult> {
-    this.requireOwnedTerminal(input.conversationId, input.projectId, arguments_.terminalId);
-    const data = /[\r\n]$/u.test(arguments_.command)
-      ? arguments_.command
-      : `${arguments_.command}\r`;
-    this.terminalSessions.write({ data, sessionId: arguments_.terminalId });
-    await waitForTerminalOutput(arguments_.yieldTimeMs, input.signal);
-    const output = this.terminalSessions.readOutput({
-      afterCursor: arguments_.afterCursor,
-      maxChars: arguments_.maxChars,
-      sessionId: arguments_.terminalId,
-    });
-    return {
-      content: JSON.stringify({
-        ok: true,
-        value: { output, sent: true, terminalId: arguments_.terminalId },
-      }),
-      isError: false,
-      kind: "completed",
-    };
+    try {
+      this.requireOwnedTerminal(input.conversationId, input.projectId, arguments_.terminalId);
+      const data = /[\r\n]$/u.test(arguments_.command)
+        ? arguments_.command
+        : `${arguments_.command}\r`;
+      this.terminalSessions.write({ data, sessionId: arguments_.terminalId });
+      const effectiveYieldTimeMs = Math.min(
+        arguments_.yieldTimeMs,
+        MAX_IMMEDIATE_OUTPUT_WAIT_MS,
+      );
+      await waitForTerminalOutput(effectiveYieldTimeMs, input.signal);
+      const output = this.terminalSessions.readOutput({
+        afterCursor: arguments_.afterCursor,
+        maxChars: arguments_.maxChars,
+        sessionId: arguments_.terminalId,
+      });
+      return {
+        content: JSON.stringify({
+          ok: true,
+          value: {
+            effectiveYieldTimeMs,
+            output,
+            sent: true,
+            terminalId: arguments_.terminalId,
+          },
+        }),
+        isError: false,
+        kind: "completed",
+      };
+    } catch (error) {
+      if (input.signal.aborted) throw error;
+      if (!(error instanceof TerminalSessionUnavailableError)) throw error;
+      return {
+        content: terminalToolErrorContent(error, EXECUTE_TERMINAL_COMMAND_TOOL_NAME),
+        isError: true,
+        kind: "completed",
+      };
+    }
   }
 
   private readTerminalOutput(input: {
@@ -277,9 +305,26 @@ export class WorkspaceTerminalTool {
   private requireOwnedTerminal(conversationId: string, projectId: string, terminalId: string): void {
     const terminal = this.terminals.get(terminalId);
     if (terminal === undefined || terminal.conversationId !== conversationId || terminal.projectId !== projectId) {
-      throw new Error("The terminal does not belong to this conversation.");
+      throw new TerminalSessionUnavailableError();
+    }
+    if (!this.terminalSessions.isActive({ sessionId: terminalId })) {
+      this.terminals.delete(terminalId);
+      throw new TerminalSessionUnavailableError();
     }
   }
+}
+
+function terminalToolErrorContent(error: unknown, toolName: string): string {
+  return error instanceof TerminalSessionUnavailableError
+    ? toolErrorContent(error, `tool:${toolName}`, {
+        code: "TERMINAL_UNAVAILABLE",
+        recovery: {
+          action: "recreate_terminal",
+          instruction: "这个 terminalId 已失效。调用 create_terminal 或 open_terminal 创建新终端，再使用返回的新 terminalId 重试命令；不要继续重试旧 ID。",
+          retryable: true,
+        },
+      })
+    : toolErrorContent(error, `tool:${toolName}`);
 }
 
 function waitForTerminalOutput(timeoutMs: number, signal: AbortSignal): Promise<void> {

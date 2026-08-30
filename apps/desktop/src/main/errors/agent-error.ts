@@ -174,6 +174,13 @@ function classifyError(
   if (nodeCode === "TERMINAL_LAUNCH_FAILED") {
     return classificationForCode("PROCESS_FAILED");
   }
+  if (nodeCode === "TERMINAL_UNAVAILABLE") {
+    return {
+      code: "CONFLICT",
+      message: "终端会话已结束或桌面服务已重启，请重新打开终端后重试。",
+      retryable: true,
+    };
+  }
   if (isGraphRecursionLimit(reason)) {
     return classificationForCode("MODEL_RESPONSE_INVALID");
   }
