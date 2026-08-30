@@ -1,3 +1,4 @@
+/* CSS trigger 2: nested tree indentation and interactive row states. */
 .project-navigator {
   display: flex;
   min-height: 0;
@@ -172,17 +173,21 @@
 }
 
 .project-navigator__project-row[draggable="true"],
-.project-navigator__session-shell[draggable="true"] {
+.project-navigator__session-shell[draggable="true"],
+.project-navigator__team-instance-session[draggable="true"] {
   cursor: grab;
+  user-select: none;
 }
 
 .project-navigator__project-row[data-dragging="true"],
-.project-navigator__session-shell[data-dragging="true"] {
+.project-navigator__session-shell[data-dragging="true"],
+.project-navigator__session-branch-row[data-dragging="true"] {
   opacity: 0.45;
 }
 
 .project-navigator__project-row[data-drop-position]::after,
-.project-navigator__session-shell[data-drop-position]::after {
+.project-navigator__session-shell[data-drop-position]::after,
+.project-navigator__session-branch-row[data-drop-position]::after {
   position: absolute;
   z-index: 4;
   right: 4px;
@@ -193,12 +198,14 @@
 }
 
 .project-navigator__project-row[data-drop-position="before"]::after,
-.project-navigator__session-shell[data-drop-position="before"]::after {
+.project-navigator__session-shell[data-drop-position="before"]::after,
+.project-navigator__session-branch-row[data-drop-position="before"]::after {
   top: -1px;
 }
 
 .project-navigator__project-row[data-drop-position="after"]::after,
-.project-navigator__session-shell[data-drop-position="after"]::after {
+.project-navigator__session-shell[data-drop-position="after"]::after,
+.project-navigator__session-branch-row[data-drop-position="after"]::after {
   bottom: -1px;
 }
 
@@ -326,6 +333,7 @@
 }
 
 .project-navigator__session-branch-row {
+  position: relative;
   display: flex;
   min-width: 0;
   align-items: center;
@@ -529,6 +537,7 @@
 }
 
 .project-navigator__pinned .project-navigator__sessions,
+.project-navigator__team-group .project-navigator__sessions,
 .project-navigator__temporary .project-navigator__sessions {
   padding-left: 0;
 }
@@ -549,6 +558,90 @@
 .project-navigator__temporary {
   position: relative;
   margin: 7px 0 0;
+}
+
+.project-navigator__team-group {
+  position: relative;
+  margin: 7px 0 0;
+  padding-top: 7px;
+}
+
+.project-navigator__team-group::before {
+  position: absolute;
+  top: 0;
+  right: 7px;
+  left: 7px;
+  border-top: 1px solid var(--app-border);
+  content: "";
+}
+
+.project-navigator__team-empty {
+  margin: 0;
+  color: var(--app-muted-foreground);
+  padding: 4px 7px;
+  font-size: var(--app-font-size-caption);
+}
+
+.project-navigator__team-member {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: var(--app-radius);
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 3px 7px 3px 5px;
+  text-align: left;
+}
+
+button.project-navigator__team-member:hover {
+  background: var(--app-hover);
+}
+
+button.project-navigator__team-member[data-active="true"],
+button.project-navigator__team-member[data-active="true"]:hover {
+  background: var(--app-selection);
+  color: var(--app-selection-foreground);
+}
+
+button.project-navigator__team-member[data-active="true"]
+  .project-navigator__team-member-name {
+  color: var(--app-selection-foreground);
+}
+
+button.project-navigator__team-member:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--app-focus-ring);
+}
+
+.project-navigator__team-member-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.project-navigator__team-member-name,
+.project-navigator__team-member-role {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-navigator__team-member-name {
+  color: var(--app-foreground);
+  font-size: var(--app-font-size-control);
+  line-height: 17px;
+}
+
+.project-navigator__team-member-role {
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-caption);
+  line-height: 14px;
 }
 
 .project-navigator__temporary--separated {

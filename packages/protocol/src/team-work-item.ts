@@ -10,6 +10,7 @@ import {
   conversationTaskSchema,
 } from "./conversation.js";
 import { projectIdSchema } from "./project.js";
+import { teamInstanceIdSchema, teamInstanceNameSchema } from "./team-instance.js";
 
 const teamIdSchema = z.string().trim().min(1).max(200);
 const workItemIdSchema = z.string().uuid();
@@ -31,6 +32,7 @@ export const teamWorkItemStatusSchema = z.enum([
 ]);
 
 export const teamWorkItemPrioritySchema = z.enum(["high", "normal", "low"]);
+export const teamWorkItemExecutionScopeSchema = z.enum(["project", "conversation"]);
 
 export const teamWorkItemEventSchema = z.object({
   createdAt: isoTimestampSchema,
@@ -62,8 +64,11 @@ export const teamWorkItemViewSchema = z.object({
   createdAt: isoTimestampSchema,
   events: z.array(teamWorkItemEventSchema).max(200),
   executionConversationId: z.string().uuid().nullable(),
+  executionScope: teamWorkItemExecutionScopeSchema,
   id: workItemIdSchema,
+  instanceName: teamInstanceNameSchema.optional(),
   modelSelection: conversationModelSelectionSchema,
+  participantConversationIds: z.array(conversationIdSchema).max(100).optional(),
   permissionMode: conversationPermissionModeSchema,
   priority: teamWorkItemPrioritySchema,
   projectId: projectIdSchema,
@@ -74,6 +79,7 @@ export const teamWorkItemViewSchema = z.object({
   status: teamWorkItemStatusSchema,
   tasks: z.array(conversationTaskSchema).max(20),
   teamId: teamIdSchema,
+  teamInstanceId: teamInstanceIdSchema.optional(),
   title: z.string().trim().min(1).max(300),
   updatedAt: isoTimestampSchema,
 }).strict();
@@ -108,6 +114,8 @@ export const listTeamWorkItemsInputSchema = z.object({
 
 export const submitTeamWorkItemInputSchema = z.object({
   acceptanceCriteria: z.array(z.string().trim().min(1).max(1_000)).max(20).default([]),
+  executionScope: teamWorkItemExecutionScopeSchema.default("project"),
+  instanceName: teamInstanceNameSchema.optional(),
   modelSelection: conversationModelSelectionSchema.optional(),
   permissionMode: conversationPermissionModeSchema.default("ask_before_changes"),
   priority: teamWorkItemPrioritySchema.default("normal"),
@@ -115,8 +123,17 @@ export const submitTeamWorkItemInputSchema = z.object({
   requirement: z.string().trim().min(1).max(50_000),
   sourceConversationId: conversationIdSchema.optional(),
   teamId: teamIdSchema,
+  teamInstanceId: teamInstanceIdSchema.optional(),
   title: z.string().trim().min(1).max(300),
-}).strict();
+}).strict().superRefine((input, context) => {
+  if (input.executionScope === "conversation" && input.sourceConversationId === undefined) {
+    context.addIssue({
+      code: "custom",
+      message: "Conversation-scoped Team work requires a source conversation.",
+      path: ["sourceConversationId"],
+    });
+  }
+});
 
 /** A requirement is editable only before Team Lead has claimed its WorkItem. */
 export const updateTeamWorkItemInputSchema = z.object({
@@ -152,12 +169,18 @@ export const requestTeamWorkItemReworkInputSchema = z.object({
 
 export type TeamWorkItemStatus = z.infer<typeof teamWorkItemStatusSchema>;
 export type TeamWorkItemPriority = z.infer<typeof teamWorkItemPrioritySchema>;
+export type TeamWorkItemExecutionScope = z.infer<typeof teamWorkItemExecutionScopeSchema>;
 export type TeamWorkItemEvent = z.infer<typeof teamWorkItemEventSchema>;
 export type TeamWorkItemView = z.infer<typeof teamWorkItemViewSchema>;
 export type TeamWorkItemExecutionAgent = z.infer<typeof teamWorkItemExecutionAgentSchema>;
 export type TeamWorkItemExecutionView = z.infer<typeof teamWorkItemExecutionViewSchema>;
 export type ListTeamWorkItemsInput = z.infer<typeof listTeamWorkItemsInputSchema>;
-export type SubmitTeamWorkItemInput = z.infer<typeof submitTeamWorkItemInputSchema>;
+export type SubmitTeamWorkItemInput = Omit<
+  z.output<typeof submitTeamWorkItemInputSchema>,
+  "executionScope"
+> & {
+  executionScope?: TeamWorkItemExecutionScope;
+};
 export type UpdateTeamWorkItemInput = z.infer<typeof updateTeamWorkItemInputSchema>;
 export type UpdateTeamWorkItemPermissionInput = z.infer<
   typeof updateTeamWorkItemPermissionInputSchema

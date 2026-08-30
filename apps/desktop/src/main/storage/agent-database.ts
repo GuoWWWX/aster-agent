@@ -22,12 +22,17 @@ import {
   conversationTimelineItemSchema,
   conversationToolItemSchema,
   projectSummarySchema,
+  createTeamInstanceInputSchema,
+  listTeamInstancesInputSchema,
+  renameTeamInstanceInputSchema,
+  setTeamInstanceArchivedInputSchema,
   submitTeamWorkItemInputSchema,
   updateTeamWorkItemInputSchema,
   updateTeamWorkItemPermissionInputSchema,
   teamWorkItemEventSchema,
   teamWorkItemExecutionViewSchema,
   teamWorkItemViewSchema,
+  teamInstanceViewSchema,
   conversationAttachmentSchema,
   type AcceptTeamWorkItemInput,
   type AgentDirectoryConfiguration,
@@ -44,7 +49,10 @@ import {
   type ConversationTimelineItem,
   type ConversationToolItem,
   type CreateConversationInput,
+  type CreateTeamInstanceInput,
+  type ListTeamInstancesInput,
   type ProjectSummary,
+  type RenameTeamInstanceInput,
   type RunAccepted,
   type SendConversationMessageInput,
   type SubmitTeamWorkItemInput,
@@ -54,6 +62,7 @@ import {
   type TeamWorkItemExecutionView,
   type TeamWorkItemStatus,
   type TeamWorkItemView,
+  type TeamInstanceView,
 } from "@agent/protocol";
 import type { ModelProviderState, ModelToolCall } from "../model/model-contracts.js";
 
@@ -144,12 +153,13 @@ export type TeamMemberRecord = {
   teamId: string;
 };
 
-/** A durable Team Lead conversation, reused for one source conversation and Team. */
+/** A durable Team Lead conversation, reused for one project or explicit source-conversation scope. */
 export type TeamExecutionConversationRecord = {
   conversationId: string;
   projectId: string;
   sourceConversationId: string | null;
   teamId: string;
+  teamInstanceId: string;
 };
 
 export type PluginCatalogRecord = {
@@ -204,6 +214,7 @@ export type ConversationDeletionTask = {
 export type SendAgentMessageInput = {
   content: string;
   messageType?: "message" | "notification" | "agent_result" | "task_result";
+  replyInstruction?: string | null;
   runId: string;
   senderConversationId: string;
   taskId?: string | null;
@@ -228,8 +239,8 @@ export function agentMessageModelContent(message: ConversationAgentMessageItem):
       `Executor conversation: ${message.senderTitle}`,
       `Executor conversationId: ${message.senderConversationId}`,
       ...(message.taskId === null ? [] : [`Original collaboration message ID: ${message.taskId}`]),
-      "This final result was returned automatically after the recipient completed the collaboration request. Do not reply again.",
-      "Result:",
+      "This is a bounded completion receipt, not the executor's full answer. Full details remain only in the executor conversation; use read_agent_conversation with a chosen maxTokens budget when needed. Do not reply again unless follow-up work is required.",
+      "Completion receipt:",
       message.content,
     ].join("\n");
   }
@@ -247,7 +258,8 @@ export function agentMessageModelContent(message: ConversationAgentMessageItem):
     "[Agent collaboration request]",
     `Sender conversation: ${message.senderTitle}`,
     `Sender conversationId: ${message.senderConversationId}`,
-    "Complete the requested work and provide the final answer directly. The runtime automatically links that final result back to the sender. Call send_agent_message only for progress, clarification, or another proactive message.",
+    "Complete the requested work in this persistent conversation. Start the final answer with the concise completion receipt requested below, add a standalone Markdown --- line, then keep full details after the divider in this conversation. The runtime can return only a bounded completion receipt before the divider. Call send_agent_message only for progress, clarification, or another proactive message.",
+    `Completion receipt request: ${message.replyInstruction ?? "Summarize the conclusion, key evidence, and unresolved risks concisely."}`,
     "Message:",
     message.content
   ].join("\n");
@@ -855,11 +867,13 @@ function toSubagentTask(row: DatabaseRow): SubagentTask {
 }
 
 function toProject(row: DatabaseRow): ProjectSummary {
+  const showTeamsInNavigator = asBoolean(row, "show_teams_in_navigator");
   return projectSummarySchema.parse({
     id: asString(row, "id"),
     isPinned: asBoolean(row, "is_pinned"),
     name: asString(row, "name"),
-    rootPath: asString(row, "root_path")
+    rootPath: asString(row, "root_path"),
+    ...(showTeamsInNavigator ? { showTeamsInNavigator: true } : {})
   });
 }
 
@@ -963,7 +977,7 @@ export class AgentDatabase {
   public listProjects(): ProjectSummary[] {
     const rows = this.database
       .prepare(
-        "SELECT id, name, root_path, is_pinned FROM projects ORDER BY is_pinned DESC, sort_order ASC, created_at ASC"
+        "SELECT id, name, root_path, is_pinned, show_teams_in_navigator FROM projects ORDER BY is_pinned DESC, sort_order ASC, created_at ASC"
       )
       .all() as DatabaseRow[];
     return rows.map(toProject);
@@ -973,17 +987,21 @@ export class AgentDatabase {
     const validated = projectSummarySchema.parse(project);
     this.database
       .prepare(
-        `INSERT INTO projects (id, name, root_path, is_pinned, sort_order, created_at)
-         SELECT ?, ?, ?, ?, COALESCE(MAX(sort_order), -1) + 1, ? FROM projects WHERE true
+        `INSERT INTO projects (
+           id, name, root_path, is_pinned, show_teams_in_navigator, sort_order, created_at
+         )
+         SELECT ?, ?, ?, ?, ?, COALESCE(MAX(sort_order), -1) + 1, ? FROM projects WHERE true
          ON CONFLICT(root_path) DO UPDATE SET
            name = excluded.name,
-           is_pinned = excluded.is_pinned`
+           is_pinned = excluded.is_pinned,
+           show_teams_in_navigator = excluded.show_teams_in_navigator`
       )
       .run(
         validated.id,
         validated.name,
         validated.rootPath,
         Number(validated.isPinned ?? false),
+        Number(validated.showTeamsInNavigator ?? false),
         new Date().toISOString()
       );
   }
@@ -1269,6 +1287,270 @@ export class AgentDatabase {
       .run(conversationId, new Date().toISOString(), teamId);
   }
 
+  public listTeamInstances(rawInput: Partial<ListTeamInstancesInput> = {}): TeamInstanceView[] {
+    const input = listTeamInstancesInputSchema.parse(rawInput);
+    const clauses = ["deleted_at IS NULL"];
+    const values: string[] = [];
+    if (!input.includeArchived) clauses.push("archived_at IS NULL");
+    if (input.projectId !== undefined) {
+      clauses.push("project_id = ?");
+      values.push(input.projectId);
+    }
+    if (input.sourceConversationId !== undefined) {
+      clauses.push("source_conversation_id = ?");
+      values.push(input.sourceConversationId);
+    }
+    const rows = this.database.prepare(
+      `SELECT * FROM team_instances
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY CASE WHEN scope IN ('global', 'project') THEN sort_order ELSE 0 END ASC,
+                created_at ASC, rowid ASC`,
+    ).all(...values) as DatabaseRow[];
+    return rows.map((row) => this.toTeamInstance(row));
+  }
+
+  public getTeamInstance(teamInstanceId: string): TeamInstanceView {
+    const row = this.database.prepare(
+      "SELECT * FROM team_instances WHERE id = ? AND deleted_at IS NULL",
+    ).get(teamInstanceId) as DatabaseRow | undefined;
+    if (row === undefined) throw new Error("Team instance was not found.");
+    return this.toTeamInstance(row);
+  }
+
+  public createTeamInstance(rawInput: CreateTeamInstanceInput): TeamInstanceView {
+    const input = createTeamInstanceInputSchema.parse(rawInput);
+    const team = this.database.prepare("SELECT name FROM teams WHERE id = ?").get(input.teamId) as DatabaseRow | undefined;
+    if (team === undefined) throw new Error("The selected Team template is not available.");
+    if (input.projectId !== undefined) {
+      const project = this.database.prepare("SELECT id FROM projects WHERE id = ?").get(input.projectId);
+      if (project === undefined) throw new Error("Team instance project was not found.");
+    }
+    if (input.sourceConversationId !== undefined) {
+      const source = this.getConversation(input.sourceConversationId);
+      if (source.projectId !== input.projectId) {
+        throw new Error("The Team instance source must belong to its project.");
+      }
+    }
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const sortOrder = input.scope === "conversation"
+      ? 0
+      : Number((this.database.prepare(
+        `SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_sort_order
+         FROM team_instances
+         WHERE scope IN ('global', 'project') AND deleted_at IS NULL`,
+      ).get() as DatabaseRow).next_sort_order);
+    const name = this.allocateTeamInstanceName({
+      baseName: input.name ?? asString(team, "name"),
+      projectId: input.projectId ?? null,
+      scope: input.scope,
+      sourceConversationId: input.sourceConversationId ?? null,
+    });
+    this.database.prepare(
+      `INSERT INTO team_instances (
+        id, team_id, scope, project_id, source_conversation_id, name,
+        root_conversation_id, sort_order, archived_at, deleted_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
+    ).run(
+      id,
+      input.teamId,
+      input.scope,
+      input.projectId ?? null,
+      input.sourceConversationId ?? null,
+      name,
+      sortOrder,
+      now,
+      now,
+    );
+    return this.getTeamInstance(id);
+  }
+
+  public setTeamInstanceRoot(teamInstanceId: string, conversationId: string): TeamInstanceView {
+    const instance = this.getTeamInstance(teamInstanceId);
+    const conversation = this.getConversation(conversationId);
+    if (
+      conversation.teamId !== instance.teamId
+      || conversation.threadKind !== "team_lead"
+      || conversation.projectId !== instance.projectId
+      || conversation.parentConversationId !== instance.sourceConversationId
+    ) {
+      throw new Error("Team instance root does not match its owner and Team template.");
+    }
+    const now = new Date().toISOString();
+    const result = this.database.prepare(
+      `UPDATE team_instances SET root_conversation_id = ?, updated_at = ?
+       WHERE id = ? AND deleted_at IS NULL`,
+    ).run(conversationId, now, teamInstanceId);
+    if (result.changes !== 1) throw new Error("Team instance root could not be saved.");
+    return this.getTeamInstance(teamInstanceId);
+  }
+
+  public renameTeamInstance(rawInput: RenameTeamInstanceInput): TeamInstanceView {
+    const input = renameTeamInstanceInputSchema.parse(rawInput);
+    const current = this.getTeamInstance(input.teamInstanceId);
+    if (input.projectId !== undefined && current.scope === "conversation") {
+      throw new Error("A conversation Team retains its source conversation project.");
+    }
+    const projectId = input.projectId === undefined ? current.projectId : input.projectId;
+    if (projectId !== null) this.assertProjectExists(projectId);
+    const scope = current.scope === "conversation"
+      ? current.scope
+      : projectId === null ? "global" : "project";
+    const associationChanged = projectId !== current.projectId || scope !== current.scope;
+    if (associationChanged && this.hasActiveTeamInstanceWork(current.id)) {
+      throw new Error("A Team instance with active work cannot change its project.");
+    }
+    const name = this.allocateTeamInstanceName({
+      baseName: input.name,
+      excludeTeamInstanceId: current.id,
+      projectId,
+      scope,
+      sourceConversationId: current.sourceConversationId,
+    });
+    const now = new Date().toISOString();
+    this.withTransaction(() => {
+      if (associationChanged && current.rootConversationId !== null) {
+        const participantIds = [
+          current.rootConversationId,
+          ...this.listTeamMemberConversations(current.rootConversationId)
+            .map((conversation) => conversation.id),
+        ];
+        for (const conversationId of participantIds) {
+          this.setConversationProject(conversationId, projectId);
+        }
+        this.database.prepare(
+          "DELETE FROM team_execution_conversations WHERE team_instance_id = ?",
+        ).run(current.id);
+        if (scope === "project") {
+          this.database.prepare(
+            `INSERT INTO team_execution_conversations (
+              team_instance_id, team_id, project_id, source_conversation_id,
+              scope_key, conversation_id, created_at, updated_at
+            ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)`,
+          ).run(
+            current.id,
+            current.teamId,
+            projectId,
+            teamExecutionScopeKey(projectId!, null),
+            current.rootConversationId,
+            now,
+            now,
+          );
+          this.database.prepare(
+            `UPDATE teams SET coordinator_conversation_id = NULL, updated_at = ?
+             WHERE id = ? AND coordinator_conversation_id = ?`,
+          ).run(now, current.teamId, current.rootConversationId);
+        }
+      }
+      this.database.prepare(
+        `UPDATE team_instances
+         SET name = ?, scope = ?, project_id = ?, updated_at = ?
+         WHERE id = ? AND deleted_at IS NULL`,
+      ).run(name, scope, projectId, now, current.id);
+    });
+    return this.getTeamInstance(current.id);
+  }
+
+  public reorderTeamInstances(teamInstanceIds: readonly string[]): TeamInstanceView[] {
+    if (new Set(teamInstanceIds).size !== teamInstanceIds.length) {
+      throw new Error("Team instance order contains duplicate identifiers.");
+    }
+    const rows = this.database.prepare(
+      `SELECT id FROM team_instances
+       WHERE scope IN ('global', 'project')
+         AND archived_at IS NULL
+         AND deleted_at IS NULL`,
+    ).all() as DatabaseRow[];
+    const existingIds = new Set(rows.map((row) => asString(row, "id")));
+    if (
+      teamInstanceIds.length !== existingIds.size
+      || teamInstanceIds.some((teamInstanceId) => !existingIds.has(teamInstanceId))
+    ) {
+      throw new Error("Team instance reorder must include every visible Team.");
+    }
+    this.withTransaction(() => {
+      const update = this.database.prepare(
+        "UPDATE team_instances SET sort_order = ?, updated_at = ? WHERE id = ?",
+      );
+      const now = new Date().toISOString();
+      teamInstanceIds.forEach((teamInstanceId, index) => update.run(index, now, teamInstanceId));
+    });
+    return this.listTeamInstances({ includeArchived: false });
+  }
+
+  public setTeamInstanceArchived(
+    rawInput: { archived: boolean; teamInstanceId: string },
+  ): TeamInstanceView {
+    const input = setTeamInstanceArchivedInputSchema.parse(rawInput);
+    const current = this.getTeamInstance(input.teamInstanceId);
+    if (input.archived && this.hasActiveTeamInstanceWork(current.id)) {
+      throw new Error("A Team instance with active work cannot be archived.");
+    }
+    const now = new Date().toISOString();
+    this.database.prepare(
+      `UPDATE team_instances SET archived_at = ?, updated_at = ?
+       WHERE id = ? AND deleted_at IS NULL`,
+    ).run(input.archived ? now : null, now, current.id);
+    return this.getTeamInstance(current.id);
+  }
+
+  public deleteTeamInstance(teamInstanceId: string): void {
+    const current = this.getTeamInstance(teamInstanceId);
+    if (this.hasActiveTeamInstanceWork(current.id)) {
+      throw new Error("A Team instance with active work cannot be deleted.");
+    }
+    const now = new Date().toISOString();
+    this.database.prepare(
+      `UPDATE team_instances SET archived_at = COALESCE(archived_at, ?), deleted_at = ?, updated_at = ?
+       WHERE id = ? AND deleted_at IS NULL`,
+    ).run(now, now, now, current.id);
+  }
+
+  private hasActiveTeamInstanceWork(teamInstanceId: string): boolean {
+    return this.database.prepare(
+      `SELECT 1 FROM team_work_items
+       WHERE team_instance_id = ? AND status IN ('queued', 'planned', 'running', 'reviewing')
+       LIMIT 1`,
+    ).get(teamInstanceId) !== undefined;
+  }
+
+  private allocateTeamInstanceName(input: {
+    baseName: string;
+    excludeTeamInstanceId?: string;
+    projectId: string | null;
+    scope: TeamInstanceView["scope"];
+    sourceConversationId: string | null;
+  }): string {
+    const baseName = input.baseName.trim().slice(0, 120);
+    if (baseName.length === 0) throw new Error("Team instance name cannot be empty.");
+    const rows = this.database.prepare(
+      `SELECT id, name FROM team_instances
+       WHERE deleted_at IS NULL AND archived_at IS NULL
+         AND (
+           scope = 'global'
+           OR (? IS NOT NULL AND scope = 'project' AND project_id = ?)
+           OR (? IS NOT NULL AND scope = 'conversation' AND source_conversation_id = ?)
+         )`,
+    ).all(
+      input.projectId,
+      input.projectId,
+      input.sourceConversationId,
+      input.sourceConversationId,
+    ) as DatabaseRow[];
+    const names = new Set(rows.flatMap((row) =>
+      asString(row, "id") === input.excludeTeamInstanceId
+        ? []
+        : [asString(row, "name").toLocaleLowerCase()]
+    ));
+    if (!names.has(baseName.toLocaleLowerCase())) return baseName;
+    for (let suffix = 1; suffix < 10_000; suffix += 1) {
+      const marker = ` (${suffix})`;
+      const candidate = `${baseName.slice(0, Math.max(1, 120 - marker.length))}${marker}`;
+      if (!names.has(candidate.toLocaleLowerCase())) return candidate;
+    }
+    throw new Error("A unique Team instance name could not be allocated.");
+  }
+
   /**
    * Resolves the durable Team Lead conversation for one source Conversation.
    * WorkItems remain independent records, but repeated requests from this
@@ -1278,12 +1560,18 @@ export class AgentDatabase {
     projectId: string;
     sourceConversationId: string | null;
     teamId: string;
+    teamInstanceId?: string;
   }): ConversationSummary | null {
     const scopeKey = teamExecutionScopeKey(input.projectId, input.sourceConversationId);
-    const row = this.database.prepare(
-      `SELECT conversation_id FROM team_execution_conversations
-       WHERE team_id = ? AND scope_key = ?`,
-    ).get(input.teamId, scopeKey) as DatabaseRow | undefined;
+    const row = input.teamInstanceId === undefined
+      ? this.database.prepare(
+        `SELECT conversation_id FROM team_execution_conversations
+         WHERE team_id = ? AND scope_key = ? ORDER BY created_at ASC LIMIT 1`,
+      ).get(input.teamId, scopeKey) as DatabaseRow | undefined
+      : this.database.prepare(
+        `SELECT conversation_id FROM team_execution_conversations
+         WHERE team_instance_id = ? AND scope_key = ?`,
+      ).get(input.teamInstanceId, scopeKey) as DatabaseRow | undefined;
     return row === undefined ? null : this.getConversation(asString(row, "conversation_id"));
   }
 
@@ -1292,6 +1580,7 @@ export class AgentDatabase {
     projectId: string;
     sourceConversationId: string | null;
     teamId: string;
+    teamInstanceId?: string;
   }): ConversationSummary {
     const source = input.sourceConversationId === null
       ? null
@@ -1309,13 +1598,24 @@ export class AgentDatabase {
       throw new Error("Team execution conversation does not match its Team and source.");
     }
     const scopeKey = teamExecutionScopeKey(input.projectId, input.sourceConversationId);
+    const teamInstanceId = input.teamInstanceId ?? this.resolveLegacyTeamInstanceId({
+      projectId: input.projectId,
+      sourceConversationId: input.sourceConversationId,
+      teamId: input.teamId,
+    });
+    const instance = this.getTeamInstance(teamInstanceId);
+    if (instance.teamId !== input.teamId || instance.isArchived) {
+      throw new Error("Team execution instance is unavailable or uses another Team template.");
+    }
     const now = new Date().toISOString();
     this.database.prepare(
       `INSERT INTO team_execution_conversations (
-        team_id, project_id, source_conversation_id, scope_key, conversation_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(team_id, scope_key) DO NOTHING`,
+        team_instance_id, team_id, project_id, source_conversation_id,
+        scope_key, conversation_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(team_instance_id, scope_key) DO NOTHING`,
     ).run(
+      teamInstanceId,
       input.teamId,
       input.projectId,
       input.sourceConversationId,
@@ -1324,9 +1624,38 @@ export class AgentDatabase {
       now,
       now,
     );
-    const bound = this.getTeamExecutionConversation(input);
+    const bound = this.getTeamExecutionConversation({ ...input, teamInstanceId });
     if (bound === null) throw new Error("Team execution conversation could not be persisted.");
     return bound;
+  }
+
+  private resolveLegacyTeamInstanceId(input: {
+    projectId: string;
+    sourceConversationId: string | null;
+    teamId: string;
+  }): string {
+    const row = this.database.prepare(
+      `SELECT id FROM team_instances
+       WHERE team_id = ? AND project_id = ? AND deleted_at IS NULL
+         AND scope = ?
+         AND ((? IS NULL AND source_conversation_id IS NULL) OR source_conversation_id = ?)
+       ORDER BY created_at ASC LIMIT 1`,
+    ).get(
+      input.teamId,
+      input.projectId,
+      input.sourceConversationId === null ? "project" : "conversation",
+      input.sourceConversationId,
+      input.sourceConversationId,
+    ) as DatabaseRow | undefined;
+    if (row !== undefined) return asString(row, "id");
+    return this.createTeamInstance({
+      projectId: input.projectId,
+      scope: input.sourceConversationId === null ? "project" : "conversation",
+      ...(input.sourceConversationId === null
+        ? {}
+        : { sourceConversationId: input.sourceConversationId }),
+      teamId: input.teamId,
+    }).id;
   }
 
   public listTeamMemberConversations(teamExecutionConversationId: string): ConversationSummary[] {
@@ -1376,6 +1705,11 @@ export class AgentDatabase {
       "SELECT conversation_id FROM team_execution_conversations WHERE conversation_id = ?",
     ).get(conversationId) as DatabaseRow | undefined;
     if (asLead !== undefined) return asString(asLead, "conversation_id");
+    const asInstanceRoot = this.database.prepare(
+      `SELECT root_conversation_id FROM team_instances
+       WHERE root_conversation_id = ? AND deleted_at IS NULL`,
+    ).get(conversationId) as DatabaseRow | undefined;
+    if (asInstanceRoot !== undefined) return asString(asInstanceRoot, "root_conversation_id");
     const asMember = this.database.prepare(
       `SELECT team_execution_conversation_id FROM team_member_conversations
        WHERE conversation_id = ?`,
@@ -1451,19 +1785,21 @@ export class AgentDatabase {
         throw new Error("Only a normal project conversation can submit a Team WorkItem.");
       }
     }
+    const instance = this.resolveTeamInstanceForWorkItem(input);
     const id = randomUUID();
     const now = new Date().toISOString();
     this.withTransaction(() => {
       this.database.prepare(
         `INSERT INTO team_work_items (
-          id, team_id, project_id, title, requirement, acceptance_criteria_json,
+          id, team_id, team_instance_id, project_id, title, requirement, acceptance_criteria_json,
           priority, status, revision, permission_mode, model_selection_json,
           execution_conversation_id, active_run_id, result_summary, blocked_reason,
-          source_conversation_id, created_at, updated_at, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 1, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, NULL)`,
+          source_conversation_id, execution_scope, created_at, updated_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', 1, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, NULL)`,
       ).run(
         id,
         input.teamId,
+        instance.id,
         input.projectId,
         input.title,
         input.requirement,
@@ -1472,6 +1808,7 @@ export class AgentDatabase {
         input.permissionMode,
         JSON.stringify(modelSelection),
         sourceConversation?.id ?? null,
+        input.executionScope,
         now,
         now,
       );
@@ -1479,6 +1816,53 @@ export class AgentDatabase {
       this.appendTeamWorkItemEvent(input.teamId, id, "scheduled", "需求已进入调度队列。", now);
     });
     return this.getTeamWorkItem(id);
+  }
+
+  private resolveTeamInstanceForWorkItem(
+    input: ReturnType<typeof submitTeamWorkItemInputSchema.parse>,
+  ): TeamInstanceView {
+    if (input.teamInstanceId !== undefined) {
+      const instance = this.getTeamInstance(input.teamInstanceId);
+      if (instance.teamId !== input.teamId || instance.isArchived) {
+        throw new Error("The selected Team instance is unavailable or uses another Team template.");
+      }
+      if (instance.scope === "project" && instance.projectId !== input.projectId) {
+        throw new Error("The selected Team instance belongs to another project.");
+      }
+      if (
+        instance.scope === "conversation"
+        && (
+          input.executionScope !== "conversation"
+          || instance.sourceConversationId !== (input.sourceConversationId ?? null)
+        )
+      ) {
+        throw new Error("The selected conversation Team instance belongs to another conversation.");
+      }
+      if (instance.scope !== "conversation" && input.executionScope === "conversation") {
+        throw new Error("Conversation isolation requires a conversation Team instance.");
+      }
+      return instance;
+    }
+
+    const scope = input.executionScope === "conversation" ? "conversation" : "project";
+    const sourceConversationId = scope === "conversation"
+      ? input.sourceConversationId ?? null
+      : null;
+    const existing = this.listTeamInstances({ includeArchived: false })
+      .find((instance) =>
+        instance.teamId === input.teamId
+        && instance.scope === scope
+        && instance.projectId === input.projectId
+        && instance.sourceConversationId === sourceConversationId
+      );
+    if (existing !== undefined) return existing;
+    return this.createTeamInstance({
+      ...(input.instanceName === undefined ? {} : { name: input.instanceName }),
+      projectId: input.projectId,
+      scope,
+      ...(sourceConversationId === null ? {} : { sourceConversationId }),
+      teamId: input.teamId,
+    });
   }
 
   public updateTeamWorkItem(rawInput: UpdateTeamWorkItemInput): TeamWorkItemView {
@@ -2163,6 +2547,24 @@ export class AgentDatabase {
 
   private toTeamWorkItem(row: DatabaseRow): TeamWorkItemView {
     const executionConversationId = asNullableString(row, "execution_conversation_id");
+    const teamInstanceId = asNullableString(row, "team_instance_id");
+    const instanceRow = teamInstanceId === null
+      ? undefined
+      : this.database.prepare("SELECT * FROM team_instances WHERE id = ?")
+        .get(teamInstanceId) as DatabaseRow | undefined;
+    const instance = instanceRow === undefined ? null : this.toTeamInstance(instanceRow);
+    const participantConversationIds = executionConversationId === null
+      ? []
+      : [
+        executionConversationId,
+        ...(this.database.prepare(
+          `SELECT DISTINCT member_conversation_id
+           FROM team_work_item_member_assignments
+           WHERE work_item_id = ?
+           ORDER BY created_at ASC, rowid ASC`,
+        ).all(asString(row, "id")) as DatabaseRow[])
+          .map((participant) => asString(participant, "member_conversation_id")),
+      ];
     // Keep the full append-only audit trail in SQLite, while bounding the
     // renderer/IPC projection to the protocol's 200-event contract.
     const eventRows = this.database.prepare(
@@ -2195,8 +2597,11 @@ export class AgentDatabase {
         type: asString(eventRow, "type"),
       })),
       executionConversationId,
+      executionScope: asString(row, "execution_scope"),
       id: asString(row, "id"),
+      ...(instance === null ? {} : { instanceName: instance.name }),
       modelSelection: parseJson(asString(row, "model_selection_json"), "Team WorkItem model selection"),
+      participantConversationIds,
       permissionMode: asString(row, "permission_mode"),
       priority: asString(row, "priority"),
       projectId: asString(row, "project_id"),
@@ -2207,7 +2612,23 @@ export class AgentDatabase {
       status: asString(row, "status"),
       tasks,
       teamId: asString(row, "team_id"),
+      ...(teamInstanceId === null ? {} : { teamInstanceId }),
       title: asString(row, "title"),
+      updatedAt: asString(row, "updated_at"),
+    });
+  }
+
+  private toTeamInstance(row: DatabaseRow): TeamInstanceView {
+    return teamInstanceViewSchema.parse({
+      createdAt: asString(row, "created_at"),
+      id: asString(row, "id"),
+      isArchived: asNullableString(row, "archived_at") !== null,
+      name: asString(row, "name"),
+      projectId: asNullableString(row, "project_id"),
+      rootConversationId: asNullableString(row, "root_conversation_id"),
+      scope: asString(row, "scope"),
+      sourceConversationId: asNullableString(row, "source_conversation_id"),
+      teamId: asString(row, "team_id"),
       updatedAt: asString(row, "updated_at"),
     });
   }
@@ -3746,6 +4167,9 @@ export class AgentDatabase {
       const item = conversationTimelineItemSchema.parse(
         parseJson(asString(row, "payload_json"), "timeline item")
       );
+      if (item.kind === "agent_message") {
+        return this.withCurrentAgentMessageSenderTitle(item);
+      }
       if (item.kind !== "message" || item.role !== "assistant" || item.runId === null) {
         return item;
       }
@@ -3799,9 +4223,10 @@ export class AgentDatabase {
       kind: "agent_message",
       messageType: input.messageType ?? "message",
       readAt: null,
+      replyInstruction: input.replyInstruction ?? null,
       runId: input.runId,
       senderConversationId: sender.id,
-      senderTitle: sender.title,
+      senderTitle: this.agentMessageSenderTitle(sender),
       status: "unread",
       taskId: input.taskId ?? null
     });
@@ -3868,8 +4293,10 @@ export class AgentDatabase {
              ORDER BY created_at ASC LIMIT 50`
           )
           .all(conversationId, senderConversationId) as DatabaseRow[];
-    return rows.map((row) => conversationAgentMessageItemSchema.parse(
-      parseJson(asString(row, "payload_json"), "Agent message")
+    return rows.map((row) => this.withCurrentAgentMessageSenderTitle(
+      conversationAgentMessageItemSchema.parse(
+        parseJson(asString(row, "payload_json"), "Agent message")
+      ),
     ));
   }
 
@@ -4404,7 +4831,7 @@ export class AgentDatabase {
       status: "completed"
     });
     const userMessageCount = this.countUserMessages(record.message.conversationId);
-    const nextTitle = userMessageCount === 0
+    const nextTitle = userMessageCount === 0 && !this.hasStableTeamParticipantTitle(conversation)
       ? this.createTitleFromMessage(
           record.message.content || attachments[0]?.name || "新会话"
         )
@@ -4540,9 +4967,11 @@ export class AgentDatabase {
       status: "completed"
     });
     const userMessageCount = this.countUserMessages(conversationId);
-    const nextTitle = titleOverride ?? (userMessageCount === 0
-      ? this.createTitleFromMessage(content || attachments[0]?.name || "新会话")
-      : conversation.title);
+    const nextTitle = this.hasStableTeamParticipantTitle(conversation)
+      ? conversation.title
+      : titleOverride ?? (userMessageCount === 0
+          ? this.createTitleFromMessage(content || attachments[0]?.name || "新会话")
+          : conversation.title);
 
     return {
       attachmentIds: [...attachmentIds],
@@ -4691,6 +5120,7 @@ export class AgentDatabase {
       runId,
     });
     const nextTitle = this.countUserMessages(input.conversationId) === 1
+      && !this.hasStableTeamParticipantTitle(conversation)
       ? this.createTitleFromMessage(
           input.content || userMessage.attachments[0]?.name || "新会话",
         )
@@ -4791,6 +5221,7 @@ export class AgentDatabase {
         serializeRunExecutionSnapshot(input.executionSnapshot),
       );
       const nextTitle = this.countUserMessages(input.conversationId) === 1
+        && !this.hasStableTeamParticipantTitle(conversation)
         ? this.createTitleFromMessage(
             input.content || message.attachments[0]?.name || "新会话",
           )
@@ -7159,6 +7590,223 @@ export class AgentDatabase {
         },
         version: 12,
       },
+      {
+        name: "team-work-item-execution-scope",
+        up: (database) => {
+          const columns = database.prepare("PRAGMA table_info(team_work_items)").all() as DatabaseRow[];
+          if (!columns.some((column) => column.name === "execution_scope")) {
+            database.exec(
+              "ALTER TABLE team_work_items ADD COLUMN execution_scope TEXT NOT NULL DEFAULT 'conversation' CHECK(execution_scope IN ('project', 'conversation'))",
+            );
+            database.exec(
+              "UPDATE team_work_items SET execution_scope = 'project' WHERE source_conversation_id IS NULL",
+            );
+          }
+        },
+        version: 13,
+      },
+      {
+        name: "team-instance-names",
+        up: (database) => {
+          database.exec(`
+            CREATE TABLE IF NOT EXISTS team_instances (
+              id TEXT PRIMARY KEY,
+              team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+              scope TEXT NOT NULL CHECK(scope IN ('global', 'project', 'conversation')),
+              project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+              source_conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+              name TEXT NOT NULL,
+              root_conversation_id TEXT UNIQUE REFERENCES conversations(id) ON DELETE SET NULL,
+              archived_at TEXT,
+              deleted_at TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS team_instances_owner
+              ON team_instances(scope, project_id, source_conversation_id, archived_at, deleted_at);
+            CREATE INDEX IF NOT EXISTS team_instances_team
+              ON team_instances(team_id, archived_at, deleted_at);
+
+            INSERT OR IGNORE INTO team_instances (
+              id, team_id, scope, project_id, source_conversation_id, name,
+              root_conversation_id, archived_at, deleted_at, created_at, updated_at
+            )
+            SELECT
+              coordinator_conversation_id,
+              id,
+              'global',
+              NULL,
+              NULL,
+              name,
+              coordinator_conversation_id,
+              NULL,
+              NULL,
+              created_at,
+              updated_at
+            FROM teams
+            WHERE coordinator_conversation_id IS NOT NULL;
+
+            INSERT OR IGNORE INTO team_instances (
+              id, team_id, scope, project_id, source_conversation_id, name,
+              root_conversation_id, archived_at, deleted_at, created_at, updated_at
+            )
+            SELECT
+              binding.conversation_id,
+              binding.team_id,
+              CASE WHEN binding.source_conversation_id IS NULL THEN 'project' ELSE 'conversation' END,
+              binding.project_id,
+              binding.source_conversation_id,
+              teams.name,
+              binding.conversation_id,
+              NULL,
+              NULL,
+              binding.created_at,
+              binding.updated_at
+            FROM team_execution_conversations AS binding
+            JOIN teams ON teams.id = binding.team_id;
+
+            INSERT OR IGNORE INTO team_instances (
+              id, team_id, scope, project_id, source_conversation_id, name,
+              root_conversation_id, archived_at, deleted_at, created_at, updated_at
+            )
+            SELECT
+              MIN(work_item.id),
+              work_item.team_id,
+              CASE WHEN work_item.execution_scope = 'conversation' THEN 'conversation' ELSE 'project' END,
+              work_item.project_id,
+              CASE WHEN work_item.execution_scope = 'conversation'
+                THEN work_item.source_conversation_id ELSE NULL END,
+              teams.name,
+              NULL,
+              NULL,
+              NULL,
+              MIN(work_item.created_at),
+              MAX(work_item.updated_at)
+            FROM team_work_items AS work_item
+            JOIN teams ON teams.id = work_item.team_id
+            WHERE NOT EXISTS (
+              SELECT 1 FROM team_instances AS instance
+              WHERE instance.team_id = work_item.team_id
+                AND instance.project_id = work_item.project_id
+                AND instance.scope = CASE
+                  WHEN work_item.execution_scope = 'conversation' THEN 'conversation' ELSE 'project' END
+                AND (
+                  (work_item.execution_scope = 'project' AND instance.source_conversation_id IS NULL)
+                  OR instance.source_conversation_id = work_item.source_conversation_id
+                )
+            )
+            GROUP BY
+              work_item.team_id,
+              work_item.project_id,
+              work_item.execution_scope,
+              CASE WHEN work_item.execution_scope = 'conversation'
+                THEN work_item.source_conversation_id ELSE NULL END;
+          `);
+
+          const workItemColumns = database.prepare("PRAGMA table_info(team_work_items)").all() as DatabaseRow[];
+          if (!workItemColumns.some((column) => column.name === "team_instance_id")) {
+            database.exec("ALTER TABLE team_work_items ADD COLUMN team_instance_id TEXT");
+          }
+          database.exec(`
+            UPDATE team_work_items
+            SET team_instance_id = (
+              SELECT instance.id
+              FROM team_instances AS instance
+              WHERE instance.team_id = team_work_items.team_id
+                AND instance.project_id = team_work_items.project_id
+                AND instance.scope = CASE
+                  WHEN team_work_items.execution_scope = 'conversation' THEN 'conversation' ELSE 'project' END
+                AND (
+                  (team_work_items.execution_scope = 'project' AND instance.source_conversation_id IS NULL)
+                  OR instance.source_conversation_id = team_work_items.source_conversation_id
+                )
+              ORDER BY instance.created_at ASC
+              LIMIT 1
+            )
+            WHERE team_instance_id IS NULL;
+
+            CREATE INDEX IF NOT EXISTS team_work_items_instance_status
+              ON team_work_items(team_instance_id, status, created_at);
+
+            CREATE TABLE team_execution_conversations_next (
+              team_instance_id TEXT NOT NULL REFERENCES team_instances(id) ON DELETE CASCADE,
+              team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+              project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+              source_conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+              scope_key TEXT NOT NULL,
+              conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY (team_instance_id, scope_key)
+            );
+
+            INSERT INTO team_execution_conversations_next (
+              team_instance_id, team_id, project_id, source_conversation_id,
+              scope_key, conversation_id, created_at, updated_at
+            )
+            SELECT
+              instance.id,
+              binding.team_id,
+              binding.project_id,
+              binding.source_conversation_id,
+              binding.scope_key,
+              binding.conversation_id,
+              binding.created_at,
+              binding.updated_at
+            FROM team_execution_conversations AS binding
+            JOIN team_instances AS instance
+              ON instance.root_conversation_id = binding.conversation_id;
+
+            DROP TABLE team_execution_conversations;
+            ALTER TABLE team_execution_conversations_next RENAME TO team_execution_conversations;
+
+            CREATE INDEX team_execution_conversations_source
+              ON team_execution_conversations(source_conversation_id, team_id);
+            CREATE INDEX team_execution_conversations_instance
+              ON team_execution_conversations(team_instance_id, project_id, source_conversation_id);
+          `);
+        },
+        version: 14,
+      },
+      {
+        name: "project-team-navigator-visibility",
+        up: (database) => {
+          const columns = database
+            .prepare("PRAGMA table_info(projects)")
+            .all() as DatabaseRow[];
+          if (!columns.some((column) => column.name === "show_teams_in_navigator")) {
+            database.exec(`
+              ALTER TABLE projects
+              ADD COLUMN show_teams_in_navigator INTEGER NOT NULL DEFAULT 0;
+            `);
+          }
+        },
+        version: 15,
+      },
+      {
+        name: "team-instance-sort-order",
+        up: (database) => {
+          const columns = database
+            .prepare("PRAGMA table_info(team_instances)")
+            .all() as DatabaseRow[];
+          if (!columns.some((column) => column.name === "sort_order")) {
+            database.exec(
+              "ALTER TABLE team_instances ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
+            );
+          }
+          const rows = database.prepare(
+            `SELECT id FROM team_instances
+             WHERE scope IN ('global', 'project') AND deleted_at IS NULL
+             ORDER BY created_at ASC, rowid ASC`,
+          ).all() as DatabaseRow[];
+          const update = database.prepare(
+            "UPDATE team_instances SET sort_order = ? WHERE id = ?",
+          );
+          rows.forEach((row, index) => update.run(index, asString(row, "id")));
+        },
+        version: 16,
+      },
     ]);
   }
 
@@ -7724,6 +8372,37 @@ export class AgentDatabase {
       )
       .get(conversationId) as DatabaseRow;
     return Number(row.count);
+  }
+
+  private hasStableTeamParticipantTitle(conversation: ConversationSummary): boolean {
+    return conversation.teamId !== null
+      && this.getTeamExecutionConversationIdForParticipant(conversation.id) !== null;
+  }
+
+  private agentMessageSenderTitle(conversation: ConversationSummary): string {
+    const teamExecutionConversationId = this.getTeamExecutionConversationIdForParticipant(
+      conversation.id,
+    );
+    if (teamExecutionConversationId === null) return conversation.title;
+    const agent = this.getConversationAgentBinding(conversation.id);
+    if (agent === null) return conversation.title;
+    const instanceRow = this.database.prepare(
+      `SELECT name FROM team_instances
+       WHERE root_conversation_id = ? AND deleted_at IS NULL
+       ORDER BY created_at ASC LIMIT 1`,
+    ).get(teamExecutionConversationId) as DatabaseRow | undefined;
+    if (instanceRow === undefined) return agent.name;
+    return `${agent.name} · ${asString(instanceRow, "name")}`.slice(0, 200);
+  }
+
+  private withCurrentAgentMessageSenderTitle(
+    message: ConversationAgentMessageItem,
+  ): ConversationAgentMessageItem {
+    const senderTitle = this.agentMessageSenderTitle(
+      this.getConversation(message.senderConversationId),
+    );
+    if (senderTitle === message.senderTitle) return message;
+    return conversationAgentMessageItemSchema.parse({ ...message, senderTitle });
   }
 
   public getPendingMessageRecord(pendingMessageId: string): StoredPendingMessage {

@@ -21,6 +21,7 @@ import {
   createConversationInputSchema,
   DEFAULT_APPLICATION_SETTINGS,
   emptyIpcArgumentsSchema,
+  ensureTeamMemberConversationInputSchema,
   forkConversationInputSchema,
   gitFileDiffInputSchema,
   gitOperationInputSchema,
@@ -37,11 +38,14 @@ import {
   runtimeInfoSchema,
   resolveContextCompressionThresholdTokens,
   replaceLatestConversationMessageInputSchema,
+  renameTeamInstanceInputSchema,
+  reorderTeamInstancesInputSchema,
   saveModelConfigurationInputSchema,
   setDefaultModelInputSchema,
   setConversationModelSelectionInputSchema,
   testModelConnectionInputSchema,
   setConversationProjectInputSchema,
+  setProjectTeamsInNavigatorInputSchema,
   sendConversationMessageInputSchema,
   terminalSessionEventSchema,
   terminalSessionOpenInputSchema,
@@ -51,6 +55,30 @@ import {
 } from "./index.js";
 
 describe("protocol bootstrap contract", () => {
+  it("accepts an optional Team project association while editing", () => {
+    const teamInstanceId = "00000000-0000-4000-8000-000000000001";
+    const projectId = "00000000-0000-4000-8000-000000000002";
+    expect(renameTeamInstanceInputSchema.parse({
+      name: "项目交付组",
+      projectId,
+      teamInstanceId,
+    })).toEqual({ name: "项目交付组", projectId, teamInstanceId });
+    expect(renameTeamInstanceInputSchema.parse({
+      name: "共享交付组",
+      projectId: null,
+      teamInstanceId,
+    })).toEqual({ name: "共享交付组", projectId: null, teamInstanceId });
+  });
+
+  it("validates complete Team instance reorder identifiers without duplicates", () => {
+    const first = "00000000-0000-4000-8000-000000000001";
+    const second = "00000000-0000-4000-8000-000000000002";
+    expect(reorderTeamInstancesInputSchema.parse({ teamInstanceIds: [second, first] }))
+      .toEqual({ teamInstanceIds: [second, first] });
+    expect(() => reorderTeamInstancesInputSchema.parse({ teamInstanceIds: [first, first] }))
+      .toThrow("duplicate identifiers");
+  });
+
   it("keeps Agent and Subagent avatar icons in one bounded catalog", () => {
     expect(AGENT_AVATAR_ICONS).toHaveLength(63);
     expect(new Set(AGENT_AVATAR_ICONS).size).toBe(AGENT_AVATAR_ICONS.length);
@@ -661,6 +689,32 @@ describe("protocol bootstrap contract", () => {
       reset: true,
       type: "assistant.reasoning_delta"
     });
+  });
+
+  it("validates the project team navigator visibility preference", () => {
+    const projectId = "00000000-0000-4000-8000-000000000001";
+    expect(setProjectTeamsInNavigatorInputSchema.parse({
+      projectId,
+      showTeamsInNavigator: true,
+    })).toEqual({ projectId, showTeamsInNavigator: true });
+    expect(() => setProjectTeamsInNavigatorInputSchema.parse({
+      projectId,
+      showTeamsInNavigator: "true",
+    })).toThrow();
+  });
+
+  it("validates the durable shared Team member conversation request", () => {
+    expect(ensureTeamMemberConversationInputSchema.parse({
+      agentId: "frontend-engineer",
+      teamId: "default-team",
+    })).toEqual({
+      agentId: "frontend-engineer",
+      teamId: "default-team",
+    });
+    expect(() => ensureTeamMemberConversationInputSchema.parse({
+      agentId: "",
+      teamId: "default-team",
+    })).toThrow();
   });
 
   it("carries persisted full reasoning on assistant timeline messages", () => {

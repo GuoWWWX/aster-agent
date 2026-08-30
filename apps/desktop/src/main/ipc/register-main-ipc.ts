@@ -39,6 +39,7 @@ import {
   conversationTimelineResponseSchema,
   conversationWorkspaceSelectionResponseSchema,
   createConversationIpcArgumentsSchema,
+  createTeamInstanceIpcArgumentsSchema,
   createConfigurationWorkspaceEntryIpcArgumentsSchema,
   createSkillDocumentIpcArgumentsSchema,
   createProjectEntryIpcArgumentsSchema,
@@ -46,6 +47,8 @@ import {
   deleteConfigurationWorkspaceEntryIpcArgumentsSchema,
   discoveredModelSchema,
   emptyIpcArgumentsSchema,
+  ensureTeamMemberConversationIpcArgumentsSchema,
+  ensureTeamInstanceMemberConversationIpcArgumentsSchema,
   getTeamWorkItemExecutionIpcArgumentsSchema,
   getModelApiKeyIpcArgumentsSchema,
   integrationConfigurationIpcArgumentsSchema,
@@ -59,6 +62,7 @@ import {
   listProjectEntriesIpcArgumentsSchema,
   listConfigurationWorkspaceEntriesIpcArgumentsSchema,
   listTeamWorkItemsIpcArgumentsSchema,
+  listTeamInstancesIpcArgumentsSchema,
   modelCatalogSchema,
   modelConnectionTestResultSchema,
   modelRuntimeStatusSchema,
@@ -84,11 +88,13 @@ import {
   reorderConversationsIpcArgumentsSchema,
   reorderPendingConversationMessagesIpcArgumentsSchema,
   reorderProjectsIpcArgumentsSchema,
+  reorderTeamInstancesIpcArgumentsSchema,
   removeConversationAttachmentIpcArgumentsSchema,
   replaceLatestConversationMessageIpcArgumentsSchema,
   requestTeamWorkItemReworkIpcArgumentsSchema,
   renameConversationIpcArgumentsSchema,
   renameProjectIpcArgumentsSchema,
+  renameTeamInstanceIpcArgumentsSchema,
   runtimeInfoSchema,
   runtimePlatformSchema,
   runAcceptedSchema,
@@ -103,11 +109,17 @@ import {
   setConversationProjectIpcArgumentsSchema,
   setConversationPinnedIpcArgumentsSchema,
   setProjectPinnedIpcArgumentsSchema,
+  setProjectTeamsInNavigatorIpcArgumentsSchema,
+  setTeamInstanceArchivedIpcArgumentsSchema,
   terminalConfigurationIpcArgumentsSchema,
   terminalConfigurationSchema,
   teamWorkItemExecutionViewSchema,
+  teamMemberConversationViewSchema,
   teamWorkItemListSchema,
   teamWorkItemViewSchema,
+  teamInstanceListSchema,
+  teamInstanceViewSchema,
+  deleteTeamInstanceIpcArgumentsSchema,
   terminalSessionEventSchema,
   terminalSessionOpenIpcArgumentsSchema,
   terminalSessionOutputIpcArgumentsSchema,
@@ -436,6 +448,20 @@ export function registerMainIpcHandlers(
       projectRegistry.setProjectPinned(input.projectId, input.pinned)
     );
   });
+
+  ipcMain.handle(
+    IPC_CHANNELS.projectSetTeamsInNavigator,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = setProjectTeamsInNavigatorIpcArgumentsSchema.parse(args);
+      return projectSummarySchema.parse(
+        projectRegistry.setProjectTeamsInNavigator(
+          input.projectId,
+          input.showTeamsInNavigator
+        )
+      );
+    }
+  );
 
   ipcMain.handle(IPC_CHANNELS.projectRemove, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
@@ -801,6 +827,87 @@ export function registerMainIpcHandlers(
       const [input] = setTeamCoordinatorIpcArgumentsSchema.parse(args);
       database.setTeamCoordinatorConversation(input.teamId, input.conversationId);
       return voidIpcResponseSchema.parse(undefined);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamEnsureMemberConversation,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = ensureTeamMemberConversationIpcArgumentsSchema.parse(args);
+      return teamMemberConversationViewSchema.parse(
+        teamWorkItems.ensureSharedMemberConversation(input),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamInstanceList,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = listTeamInstancesIpcArgumentsSchema.parse(args);
+      return teamInstanceListSchema.parse(
+        database.listTeamInstances(input),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamInstanceCreate,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = createTeamInstanceIpcArgumentsSchema.parse(args);
+      return teamInstanceViewSchema.parse(teamWorkItems.createInstance(input));
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamInstanceRename,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = renameTeamInstanceIpcArgumentsSchema.parse(args);
+      return teamInstanceViewSchema.parse(teamWorkItems.renameInstance(input));
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamInstanceReorder,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = reorderTeamInstancesIpcArgumentsSchema.parse(args);
+      return teamInstanceListSchema.parse(
+        database.reorderTeamInstances(input.teamInstanceIds),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamInstanceSetArchived,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = setTeamInstanceArchivedIpcArgumentsSchema.parse(args);
+      return teamInstanceViewSchema.parse(teamWorkItems.setInstanceArchived(input));
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamInstanceDelete,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = deleteTeamInstanceIpcArgumentsSchema.parse(args);
+      teamWorkItems.deleteInstance(input.teamInstanceId);
+      return voidIpcResponseSchema.parse(undefined);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamInstanceEnsureMemberConversation,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = ensureTeamInstanceMemberConversationIpcArgumentsSchema.parse(args);
+      return teamMemberConversationViewSchema.parse(
+        teamWorkItems.ensureInstanceMemberConversation(input),
+      );
     },
   );
 

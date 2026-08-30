@@ -24,6 +24,9 @@ import type {
   CreateProjectEntryInput,
   DeleteConfigurationWorkspaceEntryInput,
   CreateConversationInput,
+  CreateTeamInstanceInput,
+  EnsureTeamMemberConversationInput,
+  EnsureTeamInstanceMemberConversationInput,
   DiscoverModelsInput,
   DiscoveredModel,
   IntegrationConfiguration,
@@ -72,6 +75,7 @@ import type {
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SetProjectPinnedInput,
+  SetProjectTeamsInNavigatorInput,
   RuntimeInfo,
   RunAccepted,
   SkillDocument,
@@ -96,13 +100,20 @@ import type {
   WriteProjectFileInput,
   WindowState,
   ListTeamWorkItemsInput,
+  ListTeamInstancesInput,
   RequestTeamWorkItemReworkInput,
   SubmitTeamWorkItemInput,
   UpdateTeamWorkItemInput,
   UpdateTeamWorkItemPermissionInput,
   AcceptTeamWorkItemInput,
   TeamWorkItemExecutionView,
+  TeamMemberConversationView,
   TeamWorkItemView,
+  TeamInstanceReferenceInput,
+  TeamInstanceView,
+  RenameTeamInstanceInput,
+  ReorderTeamInstancesInput,
+  SetTeamInstanceArchivedInput,
 } from "@agent/protocol";
 
 export type WindowStateListener = (state: WindowState) => void;
@@ -129,6 +140,18 @@ export interface AgentClient {
   closeWindow(): Promise<void>;
   writeClipboardText(text: string): Promise<void>;
   createConversation(input: CreateConversationInput): Promise<ConversationSummary>;
+  ensureTeamMemberConversation(
+    input: EnsureTeamMemberConversationInput,
+  ): Promise<TeamMemberConversationView>;
+  listTeamInstances(input: ListTeamInstancesInput): Promise<TeamInstanceView[]>;
+  createTeamInstance(input: CreateTeamInstanceInput): Promise<TeamInstanceView>;
+  renameTeamInstance(input: RenameTeamInstanceInput): Promise<TeamInstanceView>;
+  reorderTeamInstances(input: ReorderTeamInstancesInput): Promise<TeamInstanceView[]>;
+  setTeamInstanceArchived(input: SetTeamInstanceArchivedInput): Promise<TeamInstanceView>;
+  deleteTeamInstance(input: TeamInstanceReferenceInput): Promise<void>;
+  ensureTeamInstanceMemberConversation(
+    input: EnsureTeamInstanceMemberConversationInput,
+  ): Promise<TeamMemberConversationView>;
   selectConversationWorkspace(
     input: ConversationReferenceInput,
   ): Promise<ConversationSummary | null>;
@@ -250,6 +273,9 @@ export interface AgentClient {
   setConversationProject(input: SetConversationProjectInput): Promise<ConversationSummary>;
   setConversationPinned(input: SetConversationPinnedInput): Promise<ConversationSummary>;
   setProjectPinned(input: SetProjectPinnedInput): Promise<ProjectSummary>;
+  setProjectTeamsInNavigator(
+    input: SetProjectTeamsInNavigatorInput,
+  ): Promise<ProjectSummary>;
   readSkillDocument(input: SkillDocumentReferenceInput): Promise<SkillDocument>;
   sendConversationMessage(
     input: SendConversationMessageInput,

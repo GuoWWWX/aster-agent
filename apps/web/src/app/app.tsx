@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
-import type { ApplicationSettings, ConversationSummary } from "@agent/protocol";
+import type {
+  ApplicationSettings,
+  ConversationSummary,
+  CreateTeamInstanceInput,
+  TeamInstanceView,
+  TeamWorkItemView,
+} from "@agent/protocol";
 
 import { AppShell } from "../components/layout/app-shell.js";
 import { MediaPreviewDialogHost } from "../components/media/image-viewer.js";
@@ -22,6 +28,7 @@ import { useAgentDirectoryStore } from "../stores/agent-directory-store.js";
 import { useApplicationSettingsStore } from "../stores/application-settings-store.js";
 import {
   createAgentClientForCurrentHost,
+  getUserErrorMessage,
   type AgentClient,
 } from "../runtime/index.js";
 
@@ -110,6 +117,11 @@ export function App(): ReactElement {
   );
   const setFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
   const setActiveActivity = useWorkbenchUiStore((state) => state.setActiveActivity);
+  const agents = useAgentDirectoryStore((state) => state.agents);
+  const teams = useAgentDirectoryStore((state) => state.teams);
+  const [teamInstances, setTeamInstances] = useState<TeamInstanceView[]>([]);
+  const [teamNavigatorWorkItems, setTeamNavigatorWorkItems] = useState<TeamWorkItemView[]>([]);
+  const [teamInstanceError, setTeamInstanceError] = useState<string | null>(null);
   const projectTree = useProjectTree(agentClient);
   const projectSessions = useProjectSessions(
     agentClient,
@@ -125,6 +137,138 @@ export function App(): ReactElement {
     setFilePanelOpen(true);
   }, [setFilePanelOpen]);
   const applicationSettingsSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+  useEffect(() => {
+    let disposed = false;
+    let refreshTimer: number | undefined;
+
+    async function refreshTeamNavigation(): Promise<void> {
+      try {
+        const [instances, items] = await Promise.all([
+          agentClient.listTeamInstances({ includeArchived: false }),
+          Promise.all(
+            teams.map((team) => agentClient.listTeamWorkItems({ teamId: team.id })),
+          ).then((groups) => groups.flat()),
+        ]);
+        if (!disposed) {
+          setTeamInstances(instances);
+          setTeamNavigatorWorkItems(items);
+        }
+      } catch {
+        // The conversation tree remains usable when Team history is unavailable.
+      }
+    }
+
+    void refreshTeamNavigation();
+    const unsubscribe = agentClient.onConversationRunEvent((event) => {
+      if (
+        event.type !== "conversation.updated"
+        && event.type !== "run.started"
+        && event.type !== "run.finished"
+        && event.type !== "task_list.updated"
+        && event.type !== "tool.completed"
+      ) return;
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => void refreshTeamNavigation(), 120);
+    });
+
+    return () => {
+      disposed = true;
+      unsubscribe();
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+    };
+  }, [agentClient, teams]);
+
+  const refreshTeamState = useCallback(async (): Promise<void> => {
+    const [instances, items] = await Promise.all([
+      agentClient.listTeamInstances({ includeArchived: false }),
+      Promise.all(
+        teams.map((team) => agentClient.listTeamWorkItems({ teamId: team.id })),
+      ).then((groups) => groups.flat()),
+    ]);
+    setTeamInstances(instances);
+    setTeamNavigatorWorkItems(items);
+    await projectSessions.refreshSessions();
+  }, [agentClient, projectSessions, teams]);
+
+  const createTeamInstance = useCallback(async (
+    input: CreateTeamInstanceInput,
+  ): Promise<boolean> => {
+    setTeamInstanceError(null);
+    try {
+      await agentClient.createTeamInstance(input);
+      await refreshTeamState();
+      return true;
+    } catch (error) {
+      setTeamInstanceError(getUserErrorMessage(error, "无法创建团队"));
+      return false;
+    }
+  }, [agentClient, refreshTeamState]);
+
+  const renameTeamInstance = useCallback(async (
+    teamInstanceId: string,
+    name: string,
+    projectId?: string | null,
+  ): Promise<boolean> => {
+    setTeamInstanceError(null);
+    try {
+      await agentClient.renameTeamInstance({
+        name,
+        teamInstanceId,
+        ...(projectId === undefined ? {} : { projectId }),
+      });
+      await refreshTeamState();
+      return true;
+    } catch (error) {
+      setTeamInstanceError(getUserErrorMessage(error, "无法编辑团队"));
+      return false;
+    }
+  }, [agentClient, refreshTeamState]);
+
+  const reorderTeamInstances = useCallback(async (
+    teamInstanceIds: string[],
+  ): Promise<boolean> => {
+    setTeamInstanceError(null);
+    try {
+      setTeamInstances(await agentClient.reorderTeamInstances({ teamInstanceIds }));
+      return true;
+    } catch (error) {
+      setTeamInstanceError(getUserErrorMessage(error, "无法调整团队顺序"));
+      return false;
+    }
+  }, [agentClient]);
+
+  const setTeamInstanceArchived = useCallback(async (
+    teamInstanceId: string,
+    archived: boolean,
+  ): Promise<boolean> => {
+    setTeamInstanceError(null);
+    try {
+      await agentClient.setTeamInstanceArchived({ archived, teamInstanceId });
+      await refreshTeamState();
+      return true;
+    } catch (error) {
+      setTeamInstanceError(getUserErrorMessage(
+        error,
+        archived ? "无法归档团队" : "无法恢复团队",
+      ));
+      return false;
+    }
+  }, [agentClient, refreshTeamState]);
+
+  const deleteTeamInstance = useCallback(async (
+    teamInstanceId: string,
+  ): Promise<boolean> => {
+    setTeamInstanceError(null);
+    try {
+      await agentClient.deleteTeamInstance({ teamInstanceId });
+      await refreshTeamState();
+      return true;
+    } catch (error) {
+      setTeamInstanceError(getUserErrorMessage(error, "无法删除团队"));
+      return false;
+    }
+  }, [agentClient, refreshTeamState]);
 
   useEffect(() => {
     let disposed = false;
@@ -239,7 +383,12 @@ export function App(): ReactElement {
 
   const openTeamMemberSession = useCallback((member: ProjectSession): void => {
     const sourceConversationId = sourceConversationIdForMember(member, projectSessions.sessions);
-    if (sourceConversationId === null) return;
+    if (sourceConversationId === null) {
+      if (member.projectId !== null) projectTree.selectProject(member.projectId);
+      projectSessions.selectSession(member.id);
+      setActiveActivity("conversations");
+      return;
+    }
     if (member.projectId !== null) projectTree.selectProject(member.projectId);
     projectSessions.selectSession(sourceConversationId);
     setFilePanelOpen(true);
@@ -307,20 +456,38 @@ export function App(): ReactElement {
         projectNavigator={
         <ProjectNavigator
           activeSessionId={projectSessions.activeSessionId}
+          agents={agents}
           isCreatingSession={projectSessions.isCreatingSession}
           isLoadingSessions={projectSessions.isLoadingSessions}
           locateRequest={navigatorLocateRequest}
-          operationError={projectSessions.operationError}
+          operationError={teamInstanceError ?? projectSessions.operationError}
           sessions={projectSessions.sessions}
+          teamInstances={teamInstances}
+          teams={teams}
+          teamWorkItems={teamNavigatorWorkItems}
           tree={projectTree}
-          onClearOperationError={() => projectSessions.clearOperationError()}
+          onClearOperationError={() => {
+            setTeamInstanceError(null);
+            projectSessions.clearOperationError();
+          }}
           onCreateProjectSession={(projectId) => {
             setNavigatorLocateRequest(null);
             projectTree.selectProject(projectId);
             void projectSessions.createProjectSession(projectId);
           }}
           onCreateTemporarySession={() => void projectSessions.createTemporarySession()}
+          onCreateTeamInstance={createTeamInstance}
           onDeleteSession={(sessionId) => projectSessions.deleteSession(sessionId)}
+          onDeleteTeamInstance={deleteTeamInstance}
+          onOpenTeamMember={(teamInstanceId, agentId, session) => {
+            void projectSessions.ensureTeamInstanceMemberSession(
+              teamInstanceId,
+              agentId,
+            ).then((ensured) => {
+              const member = ensured ?? session;
+              if (member !== null) openTeamMemberSession(member);
+            });
+          }}
           onRemoveProject={async (projectId) => {
             const removed = await projectTree.removeProject(projectId);
             if (removed) projectSessions.discardProjectSessions(projectId);
@@ -330,7 +497,9 @@ export function App(): ReactElement {
           onRenameSession={(sessionId, title) =>
             projectSessions.renameSession(sessionId, title)
           }
+          onRenameTeamInstance={renameTeamInstance}
           onReorderSessions={(sessionIds) => projectSessions.reorderSessions(sessionIds)}
+          onReorderTeamInstances={reorderTeamInstances}
           onSelectProject={(projectId) => {
             setNavigatorLocateRequest(null);
             selectProject(projectId);
@@ -345,6 +514,7 @@ export function App(): ReactElement {
           onSetSessionPinned={(sessionId, pinned) =>
             projectSessions.setSessionPinned(sessionId, pinned)
           }
+          onSetTeamInstanceArchived={setTeamInstanceArchived}
         />
       }
       mainContent={
@@ -357,6 +527,7 @@ export function App(): ReactElement {
           isCreatingSession={projectSessions.isCreatingSession}
           projects={projectTree.projects}
           sessions={projectSessions.sessions}
+          teamInstances={teamInstances}
           onAddProject={() => projectTree.addProject()}
           onCreateProjectSession={(projectId) => {
             setNavigatorLocateRequest(null);

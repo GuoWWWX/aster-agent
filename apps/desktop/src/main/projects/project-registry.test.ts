@@ -51,6 +51,12 @@ describe("ProjectRegistry", () => {
 
     expect(duplicateProject.id).toBe(project.id);
     expect(registry.listProjects()).toEqual([project]);
+    expect(project.showTeamsInNavigator).toBeUndefined();
+    expect(registry.setProjectTeamsInNavigator(project.id, true)).toMatchObject({
+      showTeamsInNavigator: true,
+    });
+    expect(registry.setProjectTeamsInNavigator(project.id, false).showTeamsInNavigator)
+      .toBeUndefined();
     expect(registry.setProjectPinned(project.id, true)).toMatchObject({
       isPinned: true,
     });

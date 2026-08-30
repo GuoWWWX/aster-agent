@@ -13,6 +13,7 @@ import type {
   ConversationTaskList,
   ConversationTimelineItem,
   CreateConversationInput,
+  EnsureTeamMemberConversationInput,
   DiscoverModelsInput,
   DiscoveredModel,
   ModelConnectionTestResult,
@@ -30,6 +31,7 @@ import type {
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SetTeamCoordinatorInput,
+  TeamMemberConversationView,
   SaveModelConfigurationInput,
   TestModelConnectionInput,
   SetDefaultModelInput,
@@ -54,6 +56,7 @@ import type {
   RenameProjectInput,
   ReorderProjectsInput,
   SetProjectPinnedInput,
+  SetProjectTeamsInNavigatorInput,
   ProjectSummary,
   WriteProjectFileInput
 } from "./project.js";
@@ -118,6 +121,16 @@ import type {
   TeamWorkItemExecutionView,
   TeamWorkItemView,
 } from "./team-work-item.js";
+import type {
+  CreateTeamInstanceInput,
+  EnsureTeamInstanceMemberConversationInput,
+  ListTeamInstancesInput,
+  RenameTeamInstanceInput,
+  ReorderTeamInstancesInput,
+  SetTeamInstanceArchivedInput,
+  TeamInstanceReferenceInput,
+  TeamInstanceView,
+} from "./team-instance.js";
 
 /**
  * The complete renderer-facing desktop surface for the initial application
@@ -151,6 +164,18 @@ export interface DesktopBridge {
   ): Promise<ConversationAttachment[]>;
   removeConversationAttachment(input: RemoveConversationAttachmentInput): Promise<void>;
   setTeamCoordinator(input: SetTeamCoordinatorInput): Promise<void>;
+  ensureTeamMemberConversation(
+    input: EnsureTeamMemberConversationInput
+  ): Promise<TeamMemberConversationView>;
+  listTeamInstances(input: ListTeamInstancesInput): Promise<TeamInstanceView[]>;
+  createTeamInstance(input: CreateTeamInstanceInput): Promise<TeamInstanceView>;
+  renameTeamInstance(input: RenameTeamInstanceInput): Promise<TeamInstanceView>;
+  reorderTeamInstances(input: ReorderTeamInstancesInput): Promise<TeamInstanceView[]>;
+  setTeamInstanceArchived(input: SetTeamInstanceArchivedInput): Promise<TeamInstanceView>;
+  deleteTeamInstance(input: TeamInstanceReferenceInput): Promise<void>;
+  ensureTeamInstanceMemberConversation(
+    input: EnsureTeamInstanceMemberConversationInput,
+  ): Promise<TeamMemberConversationView>;
   sendTeamMessage(input: SendTeamMessageInput): Promise<ConversationMessageSubmission>;
   listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]>;
   getTeamWorkItemExecution(
@@ -249,6 +274,9 @@ export interface DesktopBridge {
   renameProject(input: RenameProjectInput): Promise<ProjectSummary>;
   reorderProjects(input: ReorderProjectsInput): Promise<ProjectSummary[]>;
   setProjectPinned(input: SetProjectPinnedInput): Promise<ProjectSummary>;
+  setProjectTeamsInNavigator(
+    input: SetProjectTeamsInNavigatorInput
+  ): Promise<ProjectSummary>;
   setConversationArchived(input: SetConversationArchivedInput): Promise<ConversationSummary>;
   setConversationModelSelection(
     input: SetConversationModelSelectionInput

@@ -305,6 +305,20 @@ export const setTeamCoordinatorInputSchema = z
   })
   .strict();
 
+export const ensureTeamMemberConversationInputSchema = z
+  .object({
+    agentId: z.string().trim().min(1).max(200),
+    teamId: teamIdInputSchema,
+  })
+  .strict();
+
+export const teamMemberConversationViewSchema = z
+  .object({
+    lead: conversationSummarySchema,
+    member: conversationSummarySchema,
+  })
+  .strict();
+
 export const forkConversationInputSchema = z
   .object({
     conversationId: conversationIdSchema,
@@ -404,6 +418,7 @@ export const conversationAgentMessageItemSchema = z
     kind: z.literal("agent_message"),
     messageType: conversationAgentMessageTypeSchema.default("message"),
     readAt: isoTimestampSchema.nullable(),
+    replyInstruction: z.string().trim().min(1).max(1_000).nullable().default(null),
     runId: runIdSchema.nullable(),
     senderConversationId: conversationIdSchema,
     senderTitle: z.string().trim().min(1).max(MAX_TITLE_LENGTH),
@@ -1072,6 +1087,10 @@ export type ConversationReferenceInput = z.infer<
   typeof conversationReferenceInputSchema
 >;
 export type SetTeamCoordinatorInput = z.infer<typeof setTeamCoordinatorInputSchema>;
+export type EnsureTeamMemberConversationInput = z.infer<
+  typeof ensureTeamMemberConversationInputSchema
+>;
+export type TeamMemberConversationView = z.infer<typeof teamMemberConversationViewSchema>;
 export type ForkConversationInput = z.infer<typeof forkConversationInputSchema>;
 export type SetConversationArchivedInput = z.infer<
   typeof setConversationArchivedInputSchema

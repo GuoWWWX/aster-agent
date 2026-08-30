@@ -6,14 +6,19 @@ import type {
   ConversationMessageItem,
   ConversationRunEvent,
   ConversationSummary,
+  CreateTeamInstanceInput,
+  EnsureTeamMemberConversationInput,
   GetTeamWorkItemExecutionInput,
   ListTeamWorkItemsInput,
+  RenameTeamInstanceInput,
   RequestTeamWorkItemReworkInput,
   SendConversationMessageInput,
   SubmitTeamWorkItemInput,
   UpdateTeamWorkItemInput,
   UpdateTeamWorkItemPermissionInput,
   TeamWorkItemExecutionView,
+  TeamMemberConversationView,
+  TeamInstanceView,
   TeamWorkItemView,
 } from "@agent/protocol";
 
@@ -27,8 +32,9 @@ type RunEventEmitter = (event: ConversationRunEvent) => void;
 
 /**
  * Coordinates durable Team WorkItems while delegating every model/tool loop to AgentRuntime.
- * A source Conversation reuses one Team Lead and its member conversations; each WorkItem
- * remains an independent, serialized unit of scheduling and acceptance.
+ * A project reuses one Team Lead and its member conversations by default. Explicit
+ * conversation isolation keeps a separate execution tree for that source Conversation.
+ * Each WorkItem remains an independent, serialized unit of scheduling and acceptance.
  */
 export class TeamWorkItemRuntime {
   private readonly schedulingTeams = new Set<string>();
@@ -46,8 +52,236 @@ export class TeamWorkItemRuntime {
     return this.database.listTeamWorkItems(input);
   }
 
+  public listInstances(): TeamInstanceView[] {
+    return this.database.listTeamInstances({ includeArchived: false });
+  }
+
+  public createInstance(input: CreateTeamInstanceInput): TeamInstanceView {
+    const instance = this.database.createTeamInstance(input);
+    try {
+      return this.provisionTeamInstance(instance);
+    } catch (error) {
+      this.database.deleteTeamInstance(instance.id);
+      throw error;
+    }
+  }
+
+  public renameInstance(input: RenameTeamInstanceInput): TeamInstanceView {
+    const instance = this.database.renameTeamInstance(input);
+    this.renameTeamInstanceConversations(instance);
+    return instance;
+  }
+
+  public setInstanceArchived(input: {
+    archived: boolean;
+    teamInstanceId: string;
+  }): TeamInstanceView {
+    return this.database.setTeamInstanceArchived(input);
+  }
+
+  public deleteInstance(teamInstanceId: string): void {
+    this.database.deleteTeamInstance(teamInstanceId);
+  }
+
+  public ensureInstanceMemberConversation(input: {
+    agentId: string;
+    teamInstanceId: string;
+  }): TeamMemberConversationView {
+    const instance = this.database.getTeamInstance(input.teamInstanceId);
+    if (instance.isArchived || instance.rootConversationId === null) {
+      throw new Error("The selected Team instance is unavailable.");
+    }
+    const directory = this.agentDirectory.getConfiguration();
+    const team = directory.teams.find(
+      (candidate) => candidate.id === instance.teamId,
+    );
+    if (team === undefined || !team.memberIds.includes(input.agentId)) {
+      throw new Error("The selected Agent is not a member of this Team instance.");
+    }
+    let lead = this.database.getConversation(instance.rootConversationId);
+    const leadAgent = this.teamAgentBinding(team.leadAgentId, team, directory);
+    const expectedLeadTitle = `${leadAgent.name} · ${instance.name}`.slice(0, 200);
+    if (lead.title !== expectedLeadTitle) {
+      lead = this.database.renameConversation(lead.id, expectedLeadTitle);
+    }
+    if (input.agentId === team.leadAgentId) return { lead, member: lead };
+    let member = this.database.listTeamMemberConversations(lead.id)
+      .find((conversation) => conversation.agentId === input.agentId);
+    if (member === undefined) throw new Error("The Team member conversation is unavailable.");
+    const memberAgent = this.teamAgentBinding(input.agentId, team, directory);
+    const expectedMemberTitle = `${memberAgent.name} · ${instance.name}`.slice(0, 200);
+    if (member.title !== expectedMemberTitle) {
+      member = this.database.renameConversation(member.id, expectedMemberTitle);
+    }
+    return { lead, member };
+  }
+
   public getExecution(input: GetTeamWorkItemExecutionInput): TeamWorkItemExecutionView {
     return this.database.getTeamWorkItemExecution(input.workItemId);
+  }
+
+  public ensureSharedMemberConversation(
+    input: EnsureTeamMemberConversationInput,
+  ): TeamMemberConversationView {
+    const directory = this.agentDirectory.getConfiguration();
+    const team = directory.teams.find((candidate) => candidate.id === input.teamId);
+    if (team === undefined) throw new Error("The selected Team is not available.");
+    if (!team.memberIds.includes(input.agentId)) {
+      throw new Error("The selected Agent is not a member of this Team.");
+    }
+
+    const leadAgent = this.teamAgentBinding(team.leadAgentId, team, directory);
+    const coordinatorId = this.database.getTeamCoordinatorConversationId(team.id);
+    let lead = coordinatorId === null
+      ? this.database.listConversations().find((conversation) =>
+          conversation.projectId === null
+          && conversation.parentConversationId === null
+          && conversation.teamId === team.id
+          && conversation.threadKind === "team_lead"
+        ) ?? null
+      : this.database.getConversation(coordinatorId);
+
+    if (lead === null) {
+      const created = this.conversationLifecycle.createConversation(null, {
+        agent: leadAgent,
+        teamId: team.id,
+        threadKind: "team_lead",
+      });
+      lead = this.database.renameConversation(
+        created.id,
+        `${leadAgent.name} · ${team.name}`.slice(0, 200),
+      );
+    } else if (lead.isArchived) {
+      lead = this.database.setConversationArchived(lead.id, false);
+    }
+    this.database.setTeamCoordinatorConversation(team.id, lead.id);
+
+    if (input.agentId === team.leadAgentId) {
+      return { lead, member: lead };
+    }
+
+    let member = this.database.listTeamMemberConversations(lead.id)
+      .find((conversation) => conversation.agentId === input.agentId) ?? null;
+    if (member === null) {
+      const existingChild = this.database.listConversationForks(lead.id).find((conversation) =>
+        conversation.agentId === input.agentId
+        && conversation.teamId === team.id
+        && conversation.threadKind === "agent"
+      );
+      if (existingChild !== undefined) {
+        member = this.database.bindTeamMemberConversation({
+          agentId: input.agentId,
+          conversationId: existingChild.id,
+          teamExecutionConversationId: lead.id,
+        });
+      } else {
+        const memberAgent = this.teamAgentBinding(input.agentId, team, directory);
+        const created = this.conversationLifecycle.createConversation(null, {
+          agent: memberAgent,
+          ...(lead.modelSelection === null ? {} : { modelSelection: lead.modelSelection }),
+          parentConversationId: lead.id,
+          teamId: team.id,
+          threadKind: "agent",
+        });
+        const renamed = this.database.renameConversation(
+          created.id,
+          `${memberAgent.name} · ${team.name}`.slice(0, 200),
+        );
+        member = this.database.bindTeamMemberConversation({
+          agentId: input.agentId,
+          conversationId: renamed.id,
+          teamExecutionConversationId: lead.id,
+        });
+      }
+    }
+    if (member.isArchived) {
+      member = this.database.setConversationArchived(member.id, false);
+    }
+    return { lead, member };
+  }
+
+  private provisionTeamInstance(instance: TeamInstanceView): TeamInstanceView {
+    const directory = this.agentDirectory.getConfiguration();
+    const team = directory.teams.find((candidate) => candidate.id === instance.teamId);
+    if (team === undefined) throw new Error("The selected Team template is not available.");
+    const leadAgent = this.teamAgentBinding(team.leadAgentId, team, directory);
+    const created = this.conversationLifecycle.createConversation(instance.projectId, {
+      agent: leadAgent,
+      ...(instance.sourceConversationId === null
+        ? {}
+        : { parentConversationId: instance.sourceConversationId }),
+      teamId: team.id,
+      threadKind: "team_lead",
+    });
+    const lead = this.database.renameConversation(
+      created.id,
+      `${leadAgent.name} · ${instance.name}`.slice(0, 200),
+    );
+    const saved = this.database.setTeamInstanceRoot(instance.id, lead.id);
+    if (saved.scope !== "global") {
+      this.database.bindTeamExecutionConversation({
+        conversationId: lead.id,
+        projectId: saved.projectId!,
+        sourceConversationId: saved.sourceConversationId,
+        teamId: saved.teamId,
+        teamInstanceId: saved.id,
+      });
+    }
+    this.ensureConfiguredTeamMemberConversations({
+      directory,
+      instanceName: saved.name,
+      leadConversation: lead,
+      modelSelection: lead.modelSelection,
+      projectId: saved.projectId,
+      team,
+    });
+    return this.database.getTeamInstance(saved.id);
+  }
+
+  private renameTeamInstanceConversations(instance: TeamInstanceView): void {
+    if (instance.rootConversationId === null) return;
+    const directory = this.agentDirectory.getConfiguration();
+    const team = directory.teams.find((candidate) => candidate.id === instance.teamId);
+    if (team === undefined) return;
+    const lead = this.database.getConversation(instance.rootConversationId);
+    const leadName = lead.agentId === null
+      ? "Team Lead"
+      : directory.agents.find((agent) => agent.id === lead.agentId)?.name ?? "Team Lead";
+    this.database.renameConversation(lead.id, `${leadName} · ${instance.name}`.slice(0, 200));
+    for (const member of this.database.listTeamMemberConversations(lead.id)) {
+      const memberName = member.agentId === null
+        ? "Agent"
+        : directory.agents.find((agent) => agent.id === member.agentId)?.name ?? "Agent";
+      this.database.renameConversation(member.id, `${memberName} · ${instance.name}`.slice(0, 200));
+    }
+  }
+
+  private validateSubmissionTeamInstance(rawInput: SubmitTeamWorkItemInput): TeamInstanceView {
+    if (rawInput.teamInstanceId === undefined) {
+      throw new Error("Select an existing Team instance before submitting work.");
+    }
+    const selected = this.database.getTeamInstance(rawInput.teamInstanceId);
+    if (selected.isArchived) throw new Error("The selected Team instance is archived.");
+    if (selected.teamId !== rawInput.teamId) {
+      throw new Error("The selected Team instance does not match the Team template.");
+    }
+    if (selected.scope === "conversation") {
+      if (
+        rawInput.executionScope !== "conversation"
+        || rawInput.sourceConversationId !== selected.sourceConversationId
+        || rawInput.projectId !== selected.projectId
+      ) {
+        throw new Error("The selected conversation Team belongs to another conversation.");
+      }
+      return selected;
+    }
+    if (rawInput.executionScope === "conversation") {
+      throw new Error("Create and select a conversation Team instance before isolated work.");
+    }
+    if (selected.scope === "project" && selected.projectId !== rawInput.projectId) {
+      throw new Error("The selected project Team belongs to another project.");
+    }
+    return selected;
   }
 
   public submit(rawInput: SubmitTeamWorkItemInput, emit: RunEventEmitter): TeamWorkItemView {
@@ -59,6 +293,7 @@ export class TeamWorkItemRuntime {
     }
     this.assertTeamCanAcceptWork(rawInput.teamId);
     this.projects.getProject(rawInput.projectId);
+    this.validateSubmissionTeamInstance(rawInput);
     const workItem = this.database.createTeamWorkItem(rawInput, modelSelection);
     void this.schedule(rawInput.teamId, emit);
     return workItem;
@@ -207,10 +442,14 @@ export class TeamWorkItemRuntime {
       let remainingCapacity = capacity;
       for (const workItem of queued) {
         if (remainingCapacity <= 0) break;
+        const executionSourceConversationId = this.executionSourceConversationId(workItem);
         const existingExecution = this.database.getTeamExecutionConversation({
           projectId: workItem.projectId,
-          sourceConversationId: workItem.sourceConversationId,
+          sourceConversationId: executionSourceConversationId,
           teamId: workItem.teamId,
+          ...(workItem.teamInstanceId === undefined
+            ? {}
+            : { teamInstanceId: workItem.teamInstanceId }),
         });
         if (
           existingExecution !== null
@@ -238,28 +477,35 @@ export class TeamWorkItemRuntime {
     );
     if (lead === undefined) throw new Error("The Team Lead Agent is not available.");
     const agent = this.teamAgentBinding(lead.id, team, directory);
+    const executionSourceConversationId = this.executionSourceConversationId(workItem);
     let conversation = this.database.getTeamExecutionConversation({
       projectId: workItem.projectId,
-      sourceConversationId: workItem.sourceConversationId,
+      sourceConversationId: executionSourceConversationId,
       teamId: workItem.teamId,
+      ...(workItem.teamInstanceId === undefined
+        ? {}
+        : { teamInstanceId: workItem.teamInstanceId }),
     });
     if (conversation === null) {
       const created = this.conversationLifecycle.createConversation(workItem.projectId, {
         agent,
         modelSelection: workItem.modelSelection,
-        ...(workItem.sourceConversationId === null
+        ...(executionSourceConversationId === null
           ? {}
-          : { parentConversationId: workItem.sourceConversationId }),
+          : { parentConversationId: executionSourceConversationId }),
         teamId: workItem.teamId,
         threadKind: "team_lead",
       });
       conversation = this.database.bindTeamExecutionConversation({
         conversationId: created.id,
         projectId: workItem.projectId,
-        sourceConversationId: workItem.sourceConversationId,
+        sourceConversationId: executionSourceConversationId,
         teamId: workItem.teamId,
+        ...(workItem.teamInstanceId === undefined
+          ? {}
+          : { teamInstanceId: workItem.teamInstanceId }),
       });
-      const executionTitle = `${agent.name} · ${team.name}`.slice(0, 200);
+      const executionTitle = `${agent.name} · ${workItem.instanceName ?? team.name}`.slice(0, 200);
       this.database.renameConversation(conversation.id, executionTitle);
       conversation = this.database.getConversation(conversation.id);
     }
@@ -306,32 +552,58 @@ export class TeamWorkItemRuntime {
     directory: AgentDirectoryConfiguration,
     leadConversation: ConversationSummary,
   ): void {
+    this.ensureConfiguredTeamMemberConversations({
+      directory,
+      instanceName: workItem.instanceName ?? team.name,
+      leadConversation,
+      modelSelection: workItem.modelSelection,
+      projectId: workItem.projectId,
+      team,
+    });
+  }
+
+  private ensureConfiguredTeamMemberConversations(input: {
+    directory: AgentDirectoryConfiguration;
+    instanceName: string;
+    leadConversation: ConversationSummary;
+    modelSelection: ConversationModelSelection | null;
+    projectId: string | null;
+    team: AgentDirectoryConfiguration["teams"][number];
+  }): void {
     const existingAgentIds = new Set(
-      this.database.listTeamMemberConversations(leadConversation.id)
+      this.database.listTeamMemberConversations(input.leadConversation.id)
         .flatMap((conversation) => conversation.agentId === null ? [] : [conversation.agentId]),
     );
-    for (const agentId of team.memberIds) {
-      if (agentId === team.leadAgentId || existingAgentIds.has(agentId)) continue;
-      const configured = directory.agents.find((candidate) => candidate.id === agentId && candidate.enabled);
+    for (const agentId of input.team.memberIds) {
+      if (agentId === input.team.leadAgentId || existingAgentIds.has(agentId)) continue;
+      const configured = input.directory.agents.find(
+        (candidate) => candidate.id === agentId && candidate.enabled,
+      );
       if (configured === undefined) continue;
-      const binding = this.teamAgentBinding(agentId, team, directory);
-      const created = this.conversationLifecycle.createConversation(workItem.projectId, {
+      const binding = this.teamAgentBinding(agentId, input.team, input.directory);
+      const created = this.conversationLifecycle.createConversation(input.projectId, {
         agent: binding,
-        modelSelection: workItem.modelSelection,
-        parentConversationId: leadConversation.id,
-        teamId: team.id,
+        ...(input.modelSelection === null ? {} : { modelSelection: input.modelSelection }),
+        parentConversationId: input.leadConversation.id,
+        teamId: input.team.id,
         threadKind: "agent",
       });
       this.database.renameConversation(
         created.id,
-        `${binding.name} · ${team.name}`.slice(0, 200),
+        `${binding.name} · ${input.instanceName}`.slice(0, 200),
       );
       this.database.bindTeamMemberConversation({
         agentId,
         conversationId: created.id,
-        teamExecutionConversationId: leadConversation.id,
+        teamExecutionConversationId: input.leadConversation.id,
       });
     }
+  }
+
+  private executionSourceConversationId(workItem: TeamWorkItemView): string | null {
+    return workItem.executionScope === "conversation"
+      ? workItem.sourceConversationId
+      : null;
   }
 
   private teamAgentBinding(
@@ -400,6 +672,8 @@ export class TeamWorkItemRuntime {
     return [
       `你正在负责团队工作项 ${workItem.id}：${workItem.title}`,
       "",
+      ...this.createWorkItemBoundary(workItem),
+      "",
       "需求：",
       workItem.requirement,
       "",
@@ -411,7 +685,7 @@ export class TeamWorkItemRuntime {
       "2. 每个工作项都必须至少通过 send_agent_message 委派一位持久团队成员，并使用 expectReply=true 等待专业结果；不能由 Team Lead 独自完成。",
       "3. 简单任务走短路径：只选择一位最匹配的专业成员处理，Team Lead 验收后汇总，不强制跑完整团队流程。",
       "4. 常规或复杂任务再按实际需要组合需求、架构、前端、后端和测试角色；没有真实并行收益时不要同时唤醒所有成员。",
-      "5. 成员的完成结果会以 Agent 消息返回；收到全部必要结果后再汇总，不能把成员对话当作一次性 Subagent。",
+      "5. 成员完成后只会自动返回有界回执；随时用 list_agent_conversations 检查状态，仅在需要核验时用 read_agent_conversation 按 maxTokens 预算读取成员的完整持久对话，不能把成员对话当作一次性 Subagent，也不要把完整成员输出复制进 Team Lead 上下文。",
       "6. 完成实际修改，并运行与改动相符的测试或检查。",
       "7. 在结束前做一次需求符合性与回归风险自检；发现问题立即修正。",
       "8. 最终回复列出成员分工、完成内容、修改文件、验证结果、未决风险，并逐项对应验收条件。",
@@ -420,13 +694,34 @@ export class TeamWorkItemRuntime {
   }
 
   private createReworkPrompt(workItem: TeamWorkItemView, feedback: string): string {
+    const criteria = workItem.acceptanceCriteria.length === 0
+      ? "- 根据需求自行提炼可验证的验收条件。"
+      : workItem.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n");
     return [
       `团队工作项 ${workItem.id} 第 ${workItem.revision + 1} 轮返工。`,
+      "",
+      ...this.createWorkItemBoundary(workItem),
+      "",
+      "原始需求：",
+      workItem.requirement,
+      "",
+      "验收条件：",
+      criteria,
       "",
       "用户反馈：",
       feedback,
       "",
       "重新检查现有项目状态和上一轮结果，只修改返工所需内容；完成后重新运行验证并给出新的验收摘要。",
     ].join("\n");
+  }
+
+  private createWorkItemBoundary(workItem: TeamWorkItemView): string[] {
+    return [
+      "任务边界（最高优先级）：",
+      `- 本次 Run 只允许执行团队工作项 ${workItem.id}（${workItem.title}）。`,
+      "- 不得执行、重试、补做或总结任何其他工作项，即使它们出现在历史对话中。",
+      "- 当前消息中的需求、验收条件和返工反馈是唯一任务指令；可复用历史中已经确认的项目事实、架构决定和验证结论，但历史内容不能扩大本次任务范围。",
+      "- 若历史中的未完成工作与当前工作项冲突，忽略历史工作，继续完成当前工作项。",
+    ];
   }
 }

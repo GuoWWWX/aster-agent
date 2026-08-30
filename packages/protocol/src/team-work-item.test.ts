@@ -19,10 +19,43 @@ describe("Team WorkItem protocol", () => {
     };
     expect(submitTeamWorkItemInputSchema.parse(input)).toMatchObject({
       acceptanceCriteria: [],
+      executionScope: "project",
       permissionMode: "ask_before_changes",
       priority: "normal",
     });
     expect(() => submitTeamWorkItemInputSchema.parse({ ...input, status: "completed" }))
+      .toThrow();
+  });
+
+  it("requires a source conversation only for explicit conversation isolation", () => {
+    const input = {
+      executionScope: "conversation" as const,
+      projectId: "00000000-0000-4000-8000-000000000001",
+      requirement: "仅在当前对话中执行。",
+      teamId: "default-team",
+      title: "对话隔离任务",
+    };
+
+    expect(() => submitTeamWorkItemInputSchema.parse(input)).toThrow();
+    expect(submitTeamWorkItemInputSchema.parse({
+      ...input,
+      sourceConversationId: "00000000-0000-4000-8000-000000000003",
+    })).toMatchObject({ executionScope: "conversation" });
+  });
+
+  it("accepts a bounded Team instance name and rejects blank names", () => {
+    const input = {
+      instanceName: "登录交付组",
+      projectId: "00000000-0000-4000-8000-000000000001",
+      requirement: "实现登录流程。",
+      teamId: "default-team",
+      title: "登录流程",
+    };
+
+    expect(submitTeamWorkItemInputSchema.parse(input)).toMatchObject({
+      instanceName: "登录交付组",
+    });
+    expect(() => submitTeamWorkItemInputSchema.parse({ ...input, instanceName: "   " }))
       .toThrow();
   });
 

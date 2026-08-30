@@ -34,6 +34,14 @@ import type {
   CreateConfigurationWorkspaceEntryInput,
   CreateProjectEntryInput,
   CreateConversationInput,
+  EnsureTeamMemberConversationInput,
+  CreateTeamInstanceInput,
+  EnsureTeamInstanceMemberConversationInput,
+  ListTeamInstancesInput,
+  RenameTeamInstanceInput,
+  ReorderTeamInstancesInput,
+  SetTeamInstanceArchivedInput,
+  TeamInstanceReferenceInput,
   DiscoverModelsInput,
   IntegrationConfiguration,
   GitFileDiffInput,
@@ -76,6 +84,7 @@ import type {
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SetProjectPinnedInput,
+  SetProjectTeamsInNavigatorInput,
   SkillDocumentReferenceInput,
   SkillDiscoveryResult,
   SkillDocumentSaveInput,
@@ -192,6 +201,42 @@ export function createDesktopBridge(): DesktopBridge {
     },
     async setTeamCoordinator(input: SetTeamCoordinatorInput) {
       await invoke<void>(IPC_CHANNELS.teamSetCoordinator, input);
+    },
+    ensureTeamMemberConversation(input: EnsureTeamMemberConversationInput) {
+      return invoke<BridgeResult<"ensureTeamMemberConversation">>(
+        IPC_CHANNELS.teamEnsureMemberConversation,
+        input,
+      );
+    },
+    listTeamInstances(input: ListTeamInstancesInput) {
+      return invoke<BridgeResult<"listTeamInstances">>(IPC_CHANNELS.teamInstanceList, input);
+    },
+    createTeamInstance(input: CreateTeamInstanceInput) {
+      return invoke<BridgeResult<"createTeamInstance">>(IPC_CHANNELS.teamInstanceCreate, input);
+    },
+    renameTeamInstance(input: RenameTeamInstanceInput) {
+      return invoke<BridgeResult<"renameTeamInstance">>(IPC_CHANNELS.teamInstanceRename, input);
+    },
+    reorderTeamInstances(input: ReorderTeamInstancesInput) {
+      return invoke<BridgeResult<"reorderTeamInstances">>(
+        IPC_CHANNELS.teamInstanceReorder,
+        input,
+      );
+    },
+    setTeamInstanceArchived(input: SetTeamInstanceArchivedInput) {
+      return invoke<BridgeResult<"setTeamInstanceArchived">>(
+        IPC_CHANNELS.teamInstanceSetArchived,
+        input,
+      );
+    },
+    deleteTeamInstance(input: TeamInstanceReferenceInput) {
+      return invoke<BridgeResult<"deleteTeamInstance">>(IPC_CHANNELS.teamInstanceDelete, input);
+    },
+    ensureTeamInstanceMemberConversation(input: EnsureTeamInstanceMemberConversationInput) {
+      return invoke<BridgeResult<"ensureTeamInstanceMemberConversation">>(
+        IPC_CHANNELS.teamInstanceEnsureMemberConversation,
+        input,
+      );
     },
     sendTeamMessage(input: SendTeamMessageInput) {
       return invoke<BridgeResult<"sendTeamMessage">>(IPC_CHANNELS.teamSendMessage, input);
@@ -572,6 +617,12 @@ export function createDesktopBridge(): DesktopBridge {
     setProjectPinned(input: SetProjectPinnedInput) {
       return invoke<BridgeResult<"setProjectPinned">>(
         IPC_CHANNELS.projectSetPinned,
+        input
+      );
+    },
+    setProjectTeamsInNavigator(input: SetProjectTeamsInNavigatorInput) {
+      return invoke<BridgeResult<"setProjectTeamsInNavigator">>(
+        IPC_CHANNELS.projectSetTeamsInNavigator,
         input
       );
     },

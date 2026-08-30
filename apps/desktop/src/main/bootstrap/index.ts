@@ -81,6 +81,7 @@ let services: DesktopServices | undefined;
 let archivedConversationCleanupTimer: ReturnType<typeof setInterval> | undefined;
 
 const ARCHIVED_CONVERSATION_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1_000;
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 function parseLocalEnvironmentFile(contents: string): Map<string, string> {
   const entries = new Map<string, string>();
@@ -423,7 +424,25 @@ function reportStartupError(error: unknown): void {
   reportUnhandledError(error, "electron.startup");
 }
 
+function focusMainWindow(): void {
+  const window = mainWindow;
+  if (window === undefined || window.isDestroyed()) return;
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+}
+
+if (hasSingleInstanceLock) {
+  app.on("second-instance", () => {
+    focusMainWindow();
+  });
+}
+
 async function bootstrap(): Promise<void> {
+  if (!hasSingleInstanceLock) {
+    app.quit();
+    return;
+  }
   await app.whenReady();
   app.setAppUserModelId("com.agent.workbench");
   services = await initializeServices();

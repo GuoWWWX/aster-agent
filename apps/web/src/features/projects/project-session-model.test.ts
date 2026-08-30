@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_AGENT_DIRECTORY_CONFIGURATION } from "@agent/protocol";
 
 import {
   aggregateSideConversationState,
@@ -7,7 +8,10 @@ import {
   getPinnedSessions,
   getProjectSessions,
   getSubagentSessions,
+  getTeamInstanceNavigatorGroups,
   getTemporarySessions,
+  getTeamSharedMemberSession,
+  getTeamNavigatorGroups,
   groupSubagentSessionsByParent,
   getSessionFamilyResultIds,
   updateSessionRunState,
@@ -42,6 +46,21 @@ describe("project session model", () => {
         hasFailedUnreadSideConversationResult: true,
         hasUnreadSideConversationResult: true,
       });
+  });
+
+  it("does not keep a Team parent running after its member clears activeRunId", () => {
+    const parent = createProjectSession("project-a", [], "parent");
+    const member: ProjectSession = {
+      ...createProjectSession("project-a", [parent], "member"),
+      lastRunStatus: "running",
+      parentConversationId: parent.id,
+      teamId: "default-team",
+      teamWorkItemId: "work-item-1",
+      threadKind: "agent",
+    };
+
+    expect(aggregateSideConversationState([parent, member])[0])
+      .toMatchObject({ activeSideConversationCount: 0 });
   });
 
   it("marks a completed run unread even when its conversation remains selected", () => {
@@ -90,6 +109,31 @@ describe("project session model", () => {
 
     expect(getSessionFamilyResultIds([parent, side, subagent], side.id))
       .toEqual([parent.id, side.id]);
+  });
+
+  it("acknowledges every managed Team conversation when its source conversation is viewed", () => {
+    const source = createProjectSession("project-a", [], "source");
+    const lead: ProjectSession = {
+      ...createProjectSession("project-a", [source], "lead"),
+      parentConversationId: source.id,
+      teamId: "default-team",
+      teamWorkItemId: "work-item-1",
+      threadKind: "team_lead",
+    };
+    const worker: ProjectSession = {
+      ...createProjectSession("project-a", [source, lead], "worker"),
+      parentConversationId: lead.id,
+      teamId: "default-team",
+      teamWorkItemId: "work-item-1",
+      threadKind: "subagent",
+    };
+
+    expect(getSessionFamilyResultIds([source, lead, worker], source.id))
+      .toEqual([source.id, lead.id, worker.id]);
+    expect(getSessionFamilyResultIds([source, lead, worker], lead.id))
+      .toEqual([lead.id]);
+    expect(getSessionFamilyResultIds([source, lead, worker], worker.id))
+      .toEqual([worker.id]);
   });
 
   it("keeps sessions scoped to their project", () => {
@@ -289,5 +333,208 @@ describe("project session model", () => {
       activeRunId: "run-worker",
       lastRunStatus: "running",
     }])[0]).toMatchObject({ activeSideConversationCount: 1 });
+  });
+
+  it("builds one Team navigator reference for each conversation-scoped execution", () => {
+    const team = DEFAULT_AGENT_DIRECTORY_CONFIGURATION.teams[0]!;
+    const configuredMembers = team.memberIds.map((memberId) =>
+      DEFAULT_AGENT_DIRECTORY_CONFIGURATION.agents.find((agent) => agent.id === memberId)!,
+    );
+    const source = {
+      ...createProjectSession("project-a", [], "source"),
+      title: "实现登录页",
+    };
+    const lead: ProjectSession = {
+      ...createProjectSession("project-a", [source], "lead"),
+      parentConversationId: source.id,
+      teamId: team.id,
+      teamWorkItemId: "work-item-1",
+      threadKind: "team_lead",
+      title: "Team Lead · 实现登录页",
+    };
+    const worker: ProjectSession = {
+      ...createProjectSession("project-a", [source, lead], "worker"),
+      parentConversationId: lead.id,
+      teamId: team.id,
+      teamWorkItemId: "work-item-1",
+      threadKind: "agent",
+      title: "前端开发",
+    };
+
+    expect(getTeamNavigatorGroups(
+      [team],
+      [source, lead, worker],
+      DEFAULT_AGENT_DIRECTORY_CONFIGURATION.agents,
+    )).toEqual([{
+      configuredMembers,
+      dedicatedUsages: [{
+        lead,
+        members: [worker],
+        sourceSession: source,
+      }],
+      sharedUsages: [],
+      team,
+    }]);
+  });
+
+  it("keeps shared Team conversations out of project and pinned conversation groups", () => {
+    const team = DEFAULT_AGENT_DIRECTORY_CONFIGURATION.teams[0]!;
+    const configuredMembers = team.memberIds.map((memberId) =>
+      DEFAULT_AGENT_DIRECTORY_CONFIGURATION.agents.find((agent) => agent.id === memberId)!,
+    );
+    const sharedLead: ProjectSession = {
+      ...createProjectSession("project-a", [], "shared-lead"),
+      isPinned: true,
+      projectId: null,
+      teamId: team.id,
+      teamWorkItemId: null,
+      threadKind: "team_lead",
+      title: "Team Lead · 共享会话",
+    };
+
+    expect(getProjectSessions([sharedLead], "project-a")).toEqual([]);
+    expect(getPinnedSessions([sharedLead])).toEqual([]);
+    const [group] = getTeamNavigatorGroups(
+      [team],
+      [sharedLead],
+      DEFAULT_AGENT_DIRECTORY_CONFIGURATION.agents,
+    );
+    expect(group).toEqual({
+      configuredMembers,
+      dedicatedUsages: [],
+      sharedUsages: [{
+        lead: sharedLead,
+        members: [],
+        sourceSession: null,
+      }],
+      team,
+    });
+    expect(getTeamSharedMemberSession(group!, team.leadAgentId)).toEqual(sharedLead);
+    expect(getTeamSharedMemberSession(group!, "missing-agent")).toBeNull();
+  });
+
+  it("shows a project-scoped Team WorkItem as one project execution instance", () => {
+    const team = DEFAULT_AGENT_DIRECTORY_CONFIGURATION.teams[0]!;
+    const executionLead: ProjectSession = {
+      ...createProjectSession("project-a", [], "execution-lead"),
+      teamId: team.id,
+      teamWorkItemId: "work-item-1",
+      threadKind: "team_lead",
+      title: "Team Lead · 项目执行",
+    };
+    const architect: ProjectSession = {
+      ...createProjectSession("project-a", [executionLead], "architect"),
+      agentId: "solution-architect",
+      parentConversationId: executionLead.id,
+      teamId: team.id,
+      teamWorkItemId: "work-item-1",
+      threadKind: "agent",
+      title: "架构师 · 默认团队",
+    };
+
+    const [group] = getTeamNavigatorGroups(
+      [team],
+      [executionLead, architect],
+      DEFAULT_AGENT_DIRECTORY_CONFIGURATION.agents,
+    );
+
+    expect(group?.sharedUsages).toEqual([]);
+    expect(group?.dedicatedUsages).toEqual([{
+      lead: executionLead,
+      members: [architect],
+      sourceSession: null,
+    }]);
+    expect(getTeamSharedMemberSession(group!, "solution-architect")).toBeNull();
+    expect(getTeamSharedMemberSession(group!, team.leadAgentId, "project-a"))
+      .toEqual(executionLead);
+    expect(getTeamSharedMemberSession(group!, "solution-architect", "project-a"))
+      .toEqual(architect);
+  });
+
+  it("shows configured Teams even before they have a conversation", () => {
+    const team = DEFAULT_AGENT_DIRECTORY_CONFIGURATION.teams[0]!;
+    const configuredMembers = team.memberIds.map((memberId) =>
+      DEFAULT_AGENT_DIRECTORY_CONFIGURATION.agents.find((agent) => agent.id === memberId)!,
+    );
+
+    expect(getTeamNavigatorGroups(
+      [team],
+      [],
+      DEFAULT_AGENT_DIRECTORY_CONFIGURATION.agents,
+    )).toEqual([{
+      configuredMembers,
+      dedicatedUsages: [],
+      sharedUsages: [],
+      team,
+    }]);
+  });
+
+  it("groups project Team instances under their project and keeps only used conversation members", () => {
+    const team = DEFAULT_AGENT_DIRECTORY_CONFIGURATION.teams[0]!;
+    const source = createProjectSession("project-a", [], "source");
+    const isolatedLead: ProjectSession = {
+      ...createProjectSession("project-a", [source], "isolated-lead"),
+      agentId: team.leadAgentId,
+      parentConversationId: source.id,
+      teamId: team.id,
+      teamWorkItemId: "00000000-0000-4000-8000-000000000101",
+      threadKind: "team_lead",
+    };
+    const usedMember: ProjectSession = {
+      ...createProjectSession("project-a", [source, isolatedLead], "used-member"),
+      agentId: "frontend-engineer",
+      parentConversationId: isolatedLead.id,
+      teamId: team.id,
+      teamWorkItemId: isolatedLead.teamWorkItemId ?? null,
+      threadKind: "agent",
+    };
+    const unusedMember: ProjectSession = {
+      ...usedMember,
+      id: "unused-member",
+    };
+    const workItem = {
+      executionConversationId: isolatedLead.id,
+      executionScope: "conversation" as const,
+      id: isolatedLead.teamWorkItemId!,
+      instanceName: "登录专项组",
+      participantConversationIds: [isolatedLead.id, usedMember.id],
+      projectId: "project-a",
+      sourceConversationId: source.id,
+      teamId: team.id,
+    };
+
+    const grouped = groupSubagentSessionsByParent(
+      [source, isolatedLead, usedMember, unusedMember],
+      [workItem],
+    );
+    expect(grouped.get(source.id)?.map((session) => session.id))
+      .toEqual([isolatedLead.id, usedMember.id]);
+
+    const instanceId = "00000000-0000-4000-8000-000000000102";
+    const instanceGroups = getTeamInstanceNavigatorGroups(
+      [{
+        createdAt: "2026-08-30T00:00:00.000Z",
+        id: instanceId,
+        isArchived: false,
+        name: "登录专项组",
+        projectId: "project-a",
+        rootConversationId: isolatedLead.id,
+        scope: "conversation",
+        sourceConversationId: source.id,
+        teamId: team.id,
+        updatedAt: "2026-08-30T00:00:00.000Z",
+      }],
+      [team],
+      [source, isolatedLead, usedMember, unusedMember],
+      DEFAULT_AGENT_DIRECTORY_CONFIGURATION.agents,
+      [{
+        participantConversationIds: [isolatedLead.id, usedMember.id],
+        teamInstanceId: instanceId,
+      }],
+    );
+    expect(instanceGroups[0]?.members.map(({ profile }) => profile.id)).toEqual([
+      team.leadAgentId,
+      "frontend-engineer",
+    ]);
   });
 });

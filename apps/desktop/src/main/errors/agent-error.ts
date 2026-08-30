@@ -241,7 +241,13 @@ function classifyError(
     return classificationForCode("FILE_CHANGED");
   }
   if (/approval.+reject/iu.test(message)) return classificationForCode("APPROVAL_REJECTED");
-  if (/timed? out|timeout/iu.test(message)) return classificationForCode("PROCESS_TIMEOUT");
+  if (/timed? out|timeout/iu.test(message)) {
+    return classificationForCode(
+      operation === "agent.run" || operation.startsWith("ipc:model.") || operation.startsWith("model.")
+        ? "MODEL_TIMEOUT"
+        : "PROCESS_TIMEOUT",
+    );
+  }
   if (/model.+(?:not configured|disabled)|no model provider|provider.+no configured models/iu.test(message)) {
     return classificationForCode("MODEL_CONFIGURATION_INVALID");
   }

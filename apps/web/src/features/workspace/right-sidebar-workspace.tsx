@@ -33,6 +33,7 @@ import type {
   ConversationSummary,
   JavaDeclarationKind,
   ManagedBrowserSession,
+  AgentTeam,
   ProjectEntry,
   ProjectFile,
   ProjectSummary,
@@ -64,6 +65,7 @@ import {
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
 import { useConversationWorkspaceCache } from "../chat/conversation-workspace-cache.js";
 import { ConversationWorkspace } from "../chat/workspace-content.js";
+import { AgentAvatar } from "../team/agent-avatar.js";
 import { ConfigurationWorkspaceTreePanel } from "./configuration-workspace-tree-panel.js";
 import { GitReviewWorkspace } from "./git-review-workspace.js";
 import { ManagedBrowserWorkspace } from "./managed-browser-workspace.js";
@@ -250,43 +252,79 @@ export function updateSideSessionsForRunEvent(
   return next;
 }
 
+type TeamMembership = Pick<AgentTeam, "id" | "leadAgentId" | "memberIds">;
+type SidebarConversation = Pick<
+  ConversationSummary,
+  "agentId" | "parentConversationId" | "teamId" | "threadKind"
+> & { teamWorkItemId?: string | null };
+type SidebarConversationSource = Pick<ConversationSummary, "id" | "teamId" | "threadKind">;
+
 function isManagedTeamMember(
   conversation: { teamWorkItemId?: string | null },
 ): boolean {
   return conversation.teamWorkItemId !== null && conversation.teamWorkItemId !== undefined;
 }
 
+export function isDirectTeamMemberConversation(
+  conversation: SidebarConversation,
+  sourceConversation: SidebarConversationSource | null,
+  team: TeamMembership | null,
+): boolean {
+  if (
+    sourceConversation === null
+    || sourceConversation.threadKind !== "team_lead"
+    || sourceConversation.teamId === null
+    || team?.id !== sourceConversation.teamId
+    || conversation.threadKind !== "agent"
+    || conversation.parentConversationId !== sourceConversation.id
+    || conversation.teamId !== team.id
+    || conversation.agentId === null
+  ) {
+    return false;
+  }
+  return conversation.agentId !== team.leadAgentId && team.memberIds.includes(conversation.agentId);
+}
+
+export function isAutoOpenedSideConversation(
+  conversation: SidebarConversation,
+  sourceConversation: SidebarConversationSource | null,
+  team: TeamMembership | null,
+): boolean {
+  return conversation.threadKind === "agent"
+    && !isManagedTeamMember(conversation)
+    && !isDirectTeamMemberConversation(conversation, sourceConversation, team);
+}
+
 /** Team executions are retained for audit; closing only hides their side tab. */
 export function shouldDeleteSidebarChat(
-  conversation: { teamWorkItemId?: string | null },
+  conversation: SidebarConversation,
+  sourceConversation: SidebarConversationSource | null = null,
+  team: TeamMembership | null = null,
 ): boolean {
-  return !isManagedTeamMember(conversation);
+  return !isManagedTeamMember(conversation)
+    && !isDirectTeamMemberConversation(conversation, sourceConversation, team);
+}
+
+export function shouldLoadSideConversations(
+  conversation: { teamWorkItemId?: string | null } | null,
+): boolean {
+  return !isManagedTeamMember(conversation ?? {});
 }
 
 async function listSideConversations(
   agentClient: AgentClient,
-  sourceConversationId: string,
+  sourceConversation: ProjectSession,
+  team: TeamMembership | null,
 ): Promise<{ autoOpenIds: Set<string>; sessions: ProjectSession[] }> {
   const directChildren = await agentClient.listConversationForks({
-    conversationId: sourceConversationId,
+    conversationId: sourceConversation.id,
   });
   const ordinarySideChats = directChildren.filter(
-    (conversation) => conversation.threadKind === "agent" && !isManagedTeamMember(conversation),
+    (conversation) => isAutoOpenedSideConversation(conversation, sourceConversation, team),
   );
-  const managedMembers: ConversationSummary[] = [];
-  const pending = directChildren.filter(isManagedTeamMember);
-  const seen = new Set<string>();
-  while (pending.length > 0) {
-    const member = pending.shift();
-    if (member === undefined || seen.has(member.id)) continue;
-    seen.add(member.id);
-    managedMembers.push(member);
-    const children = await agentClient.listConversationForks({ conversationId: member.id });
-    pending.push(...children.filter(isManagedTeamMember));
-  }
   return {
     autoOpenIds: new Set(ordinarySideChats.map((conversation) => conversation.id)),
-    sessions: [...ordinarySideChats, ...managedMembers].map(toProjectSession),
+    sessions: ordinarySideChats.map(toProjectSession),
   };
 }
 
@@ -444,6 +482,8 @@ export function RightSidebarWorkspace({
   tree: ProjectTreeController;
 }): ReactElement {
   const isDark = useWorkbenchUiStore((state) => state.themeMode === "dark");
+  const agentProfiles = useAgentDirectoryStore((state) => state.agents);
+  const teams = useAgentDirectoryStore((state) => state.teams);
   const setFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
   const configurationWorkspaceTarget = useWorkbenchUiStore(
     (state) => state.configurationWorkspaceTarget,
@@ -484,6 +524,9 @@ export function RightSidebarWorkspace({
   const openChatIdsBySessionRef = useRef(new Map<string, Set<string>>());
   const releasingToolTabIdsRef = useRef(new Set<string>());
   const activeSessionId = activeSession?.id ?? null;
+  const activeTeam = activeSession?.teamId === null || activeSession === null
+    ? null
+    : teams.find((team) => team.id === activeSession.teamId) ?? null;
 
   useEffect(() => {
     let disposed = false;
@@ -636,7 +679,13 @@ export function RightSidebarWorkspace({
     void Promise.resolve().then(async () => {
       if (disposed) return;
       setOperationError(null);
-      if (activeSessionId === null) {
+      if (activeSession === null || activeSessionId === null) {
+        setSideSessions([]);
+        setOpenChatIds(new Set());
+        setActiveTabId(null);
+        return;
+      }
+      if (!shouldLoadSideConversations(activeSession)) {
         setSideSessions([]);
         setOpenChatIds(new Set());
         setActiveTabId(null);
@@ -644,7 +693,7 @@ export function RightSidebarWorkspace({
       }
 
       try {
-        const loaded = await listSideConversations(agentClient, activeSessionId);
+        const loaded = await listSideConversations(agentClient, activeSession, activeTeam);
         if (disposed) return;
         const sessions = loaded.sessions;
         setSideSessions(sessions);
@@ -664,15 +713,14 @@ export function RightSidebarWorkspace({
     return () => {
       disposed = true;
     };
-  }, [activeSessionId, agentClient]);
+  }, [activeSession, activeSessionId, activeTeam, agentClient]);
 
   useEffect(() => {
     return agentClient.onConversationRunEvent((event) => {
       if (event.type === "conversation.updated") {
         const nextSession = toProjectSession(event.conversation);
         const isOrdinarySideChat = event.conversation.parentConversationId === activeSessionId
-          && event.conversation.threadKind === "agent"
-          && !isManagedTeamMember(event.conversation);
+          && isAutoOpenedSideConversation(event.conversation, activeSession, activeTeam);
         if (isOrdinarySideChat) {
           setSideSessions((current) => upsertSideSession(current, event.conversation));
           updateOpenChatIds((current) => current.has(nextSession.id)
@@ -680,18 +728,21 @@ export function RightSidebarWorkspace({
             : new Set(current).add(nextSession.id));
           return;
         }
-        if (isManagedTeamMember(event.conversation)) {
+        if (
+          isManagedTeamMember(event.conversation)
+          || isDirectTeamMemberConversation(event.conversation, activeSession, activeTeam)
+        ) {
           setSideSessions((current) => {
-            const belongsToSource = event.conversation.parentConversationId === activeSessionId
-              || current.some((session) => session.id === event.conversation.parentConversationId);
-            return belongsToSource ? upsertSideSession(current, event.conversation) : current;
+            return current.some((session) => session.id === event.conversation.id)
+              ? upsertSideSession(current, event.conversation)
+              : current;
           });
           return;
         }
       }
       setSideSessions((current) => updateSideSessionsForRunEvent(current, event));
     });
-  }, [activeSessionId, agentClient, updateOpenChatIds]);
+  }, [activeSession, activeSessionId, activeTeam, agentClient, updateOpenChatIds]);
 
   useEffect(() => {
     if (
@@ -1659,7 +1710,7 @@ export function RightSidebarWorkspace({
         closedTabs.push(tab);
         continue;
       }
-      if (!shouldDeleteSidebarChat(tab.session)) {
+      if (!shouldDeleteSidebarChat(tab.session, activeSession, activeTeam)) {
         closedTabs.push(tab);
         continue;
       }
@@ -1691,61 +1742,70 @@ export function RightSidebarWorkspace({
       <div className="right-sidebar-workspace__main">
         <div className="right-sidebar-workspace__tabs-row">
           <div className="right-sidebar-workspace__tabs" role="tablist" aria-label="已打开文件和侧边聊天">
-            {tabs.map((tab) => (
-              <div
-                className="right-sidebar-workspace__tab-shell"
-                data-active={String(activeTab?.id === tab.id)}
-                key={tab.id}
-              >
-                <button
-                  aria-selected={activeTab?.id === tab.id}
-                  className="right-sidebar-workspace__tab"
-                  role="tab"
-                  title={tab.kind === "file" || tab.kind === "configuration-file" ? tab.path : tab.name}
-                  type="button"
-                  onClick={() => void activateTab(tab)}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    void activateTab(tab);
-                    setTabContextMenu({
-                      tab,
-                      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 176)),
-                      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 128)),
-                    });
-                  }}
+            {tabs.map((tab) => {
+              const tabAgent = tab.kind === "chat" && tab.session.agentId !== null
+                ? agentProfiles.find((agent) => agent.id === tab.session.agentId)
+                : undefined;
+              return (
+                <div
+                  className="right-sidebar-workspace__tab-shell"
+                  data-active={String(activeTab?.id === tab.id)}
+                  key={tab.id}
                 >
-                  {tab.kind === "chat" ? (
-                    <MessageSquarePlus aria-hidden="true" size={14} />
-                  ) : tab.kind === "git-review" ? (
-                    <SquareCheckBig aria-hidden="true" size={14} />
-                  ) : tab.kind === "terminal" ? (
-                    <Terminal aria-hidden="true" size={14} />
-                  ) : tab.kind === "managed-browser" ? (
-                    <Globe2 aria-hidden="true" size={14} />
-                  ) : tab.kind === "agent-prompt" ? (
-                    <FileText aria-hidden="true" size={14} />
-                  ) : (
-                    <FileTypeIcon
-                      javaDeclarationKind={tab.kind === "file" ? tab.javaDeclarationKind : undefined}
-                      path={tab.path}
-                      size={14}
-                    />
-                  )}
-                  <span>{tab.name}</span>
-                </button>
-                <button
-                  aria-label={`关闭 ${tab.name}`}
-                  className="right-sidebar-workspace__tab-close"
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void closeTabs([tab]);
-                  }}
-                >
-                  <X aria-hidden="true" size={12} />
-                </button>
-              </div>
-            ))}
+                  <button
+                    aria-selected={activeTab?.id === tab.id}
+                    className="right-sidebar-workspace__tab"
+                    role="tab"
+                    title={tab.kind === "file" || tab.kind === "configuration-file" ? tab.path : tab.name}
+                    type="button"
+                    onClick={() => void activateTab(tab)}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      void activateTab(tab);
+                      setTabContextMenu({
+                        tab,
+                        x: Math.max(8, Math.min(event.clientX, window.innerWidth - 176)),
+                        y: Math.max(8, Math.min(event.clientY, window.innerHeight - 128)),
+                      });
+                    }}
+                  >
+                    {tab.kind === "chat" ? (
+                      tabAgent === undefined ? (
+                        <MessageSquarePlus aria-hidden="true" size={14} />
+                      ) : (
+                        <AgentAvatar avatar={tabAgent.avatar} size="compact" />
+                      )
+                    ) : tab.kind === "git-review" ? (
+                      <SquareCheckBig aria-hidden="true" size={14} />
+                    ) : tab.kind === "terminal" ? (
+                      <Terminal aria-hidden="true" size={14} />
+                    ) : tab.kind === "managed-browser" ? (
+                      <Globe2 aria-hidden="true" size={14} />
+                    ) : tab.kind === "agent-prompt" ? (
+                      <FileText aria-hidden="true" size={14} />
+                    ) : (
+                      <FileTypeIcon
+                        javaDeclarationKind={tab.kind === "file" ? tab.javaDeclarationKind : undefined}
+                        path={tab.path}
+                        size={14}
+                      />
+                    )}
+                    <span>{tab.name}</span>
+                  </button>
+                  <button
+                    aria-label={`关闭 ${tab.name}`}
+                    className="right-sidebar-workspace__tab-close"
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void closeTabs([tab]);
+                    }}
+                  >
+                    <X aria-hidden="true" size={12} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
 
           <Popover open={menuOpen} onOpenChange={setMenuOpen}>

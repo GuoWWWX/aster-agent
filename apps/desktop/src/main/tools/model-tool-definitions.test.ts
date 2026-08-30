@@ -97,6 +97,9 @@ describe("model tool definitions", () => {
     expect(property(definitions, "send_agent_message", "content")).toMatchObject({
       maxLength: 20_000,
     });
+    expect(property(definitions, "send_agent_message", "replyInstruction")).toMatchObject({
+      maxLength: 1_000,
+    });
     expect(property(definitions, "spawn_subagent", "task")).toMatchObject({
       maxLength: 20_000,
     });

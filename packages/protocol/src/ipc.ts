@@ -15,6 +15,7 @@ import {
   removeConversationAttachmentInputSchema,
   createConversationInputSchema,
   discoverModelsInputSchema,
+  ensureTeamMemberConversationInputSchema,
   getModelApiKeyInputSchema,
   testModelConnectionInputSchema,
   reorderConversationsInputSchema,
@@ -41,6 +42,7 @@ import {
   reorderProjectsInputSchema,
   renameProjectInputSchema,
   setProjectPinnedInputSchema,
+  setProjectTeamsInNavigatorInputSchema,
   writeProjectFileInputSchema
 } from "./project.js";
 import { integrationConfigurationSchema } from "./integration.js";
@@ -86,6 +88,15 @@ import {
   updateTeamWorkItemInputSchema,
   updateTeamWorkItemPermissionInputSchema,
 } from "./team-work-item.js";
+import {
+  createTeamInstanceInputSchema,
+  ensureTeamInstanceMemberConversationInputSchema,
+  listTeamInstancesInputSchema,
+  renameTeamInstanceInputSchema,
+  reorderTeamInstancesInputSchema,
+  setTeamInstanceArchivedInputSchema,
+  teamInstanceReferenceInputSchema,
+} from "./team-instance.js";
 
 /**
  * Bootstrap IPC methods deliberately accept no renderer-supplied arguments.
@@ -127,6 +138,10 @@ export const reorderProjectsIpcArgumentsSchema = z.tuple([
 
 export const setProjectPinnedIpcArgumentsSchema = z.tuple([
   setProjectPinnedInputSchema
+]);
+
+export const setProjectTeamsInNavigatorIpcArgumentsSchema = z.tuple([
+  setProjectTeamsInNavigatorInputSchema
 ]);
 
 export const createConversationIpcArgumentsSchema = z.tuple([
@@ -195,6 +210,38 @@ export const sendConversationMessageIpcArgumentsSchema = z.tuple([
 
 export const setTeamCoordinatorIpcArgumentsSchema = z.tuple([
   setTeamCoordinatorInputSchema,
+]);
+
+export const ensureTeamMemberConversationIpcArgumentsSchema = z.tuple([
+  ensureTeamMemberConversationInputSchema,
+]);
+
+export const listTeamInstancesIpcArgumentsSchema = z.tuple([
+  listTeamInstancesInputSchema,
+]);
+
+export const createTeamInstanceIpcArgumentsSchema = z.tuple([
+  createTeamInstanceInputSchema,
+]);
+
+export const renameTeamInstanceIpcArgumentsSchema = z.tuple([
+  renameTeamInstanceInputSchema,
+]);
+
+export const reorderTeamInstancesIpcArgumentsSchema = z.tuple([
+  reorderTeamInstancesInputSchema,
+]);
+
+export const setTeamInstanceArchivedIpcArgumentsSchema = z.tuple([
+  setTeamInstanceArchivedInputSchema,
+]);
+
+export const deleteTeamInstanceIpcArgumentsSchema = z.tuple([
+  teamInstanceReferenceInputSchema,
+]);
+
+export const ensureTeamInstanceMemberConversationIpcArgumentsSchema = z.tuple([
+  ensureTeamInstanceMemberConversationInputSchema,
 ]);
 
 export const listTeamWorkItemsIpcArgumentsSchema = z.tuple([

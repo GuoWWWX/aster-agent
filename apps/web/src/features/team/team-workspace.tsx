@@ -71,6 +71,8 @@ export function TeamWorkspace({
   const selectedRuntimeWorkItem = runtimeItems.find((item) => item.id === selectedWorkItemId)
     ?? runtimeItems[0]
     ?? null;
+  const isSelectedWorkItemLifecycle = selectedWorkItem !== null
+    && isLifecyclePanelStatus(selectedWorkItem.status);
   const selectedExecution = execution?.workItemId === selectedRuntimeWorkItem?.id
     ? execution
     : null;
@@ -301,7 +303,7 @@ export function TeamWorkspace({
         <div className="team-command-header__controls">
           <span className="team-live-badge" data-active={selectedTeam.enabled}>
             <Radio aria-hidden="true" size={12} />
-            {selectedTeam.enabled ? "自动调度中" : "团队已停用"}
+            {selectedTeam.enabled ? "自动分发中" : "团队已停用"}
           </span>
           <Select value={selectedTeam.id} onValueChange={setSelectedTeamId}>
             <SelectTrigger aria-label="选择要查看的团队" className="team-runtime-select">
@@ -384,16 +386,17 @@ export function TeamWorkspace({
           ) : selectedRuntimeWorkItem === null ? (
             <main className="team-command-panel team-runtime-empty">无法加载真实执行状态</main>
           ) : (
-            <div className={isLifecyclePanelStatus(selectedWorkItem.status)
+            <div className={isSelectedWorkItemLifecycle
               ? "grid min-h-0 grid-rows-[minmax(180px,0.34fr)_minmax(0,0.66fr)] gap-[5px]"
               : "grid min-h-0"}
             >
               <TeamWorkItemStatusPanel
                 execution={selectedExecution}
+                isLifecycle={isSelectedWorkItemLifecycle}
                 item={selectedRuntimeWorkItem}
                 onOpenConversation={onOpenConversation}
               />
-              {isLifecyclePanelStatus(selectedWorkItem.status) ? (
+              {isSelectedWorkItemLifecycle ? (
               <WorkItemLifecyclePanel
                 key={`${selectedWorkItem.id}-${selectedWorkItem.status}-${selectedWorkItem.acceptanceRound}`}
                 item={selectedWorkItem}
@@ -480,10 +483,12 @@ function toPrototypeWorkItem(
 
 function TeamWorkItemStatusPanel({
   execution,
+  isLifecycle,
   item,
   onOpenConversation,
 }: {
   execution: TeamWorkItemExecutionView | null;
+  isLifecycle: boolean;
   item: TeamWorkItemView;
   onOpenConversation: (conversation: ConversationSummary) => void;
 }): ReactElement {
@@ -494,6 +499,8 @@ function TeamWorkItemStatusPanel({
   const activeMemberCount = execution?.workItemId === item.id
     ? execution.agents.filter((member) => member.conversation.activeRunId !== null).length
     : 0;
+  const showResultSummary = item.blockedReason !== null
+    || (item.resultSummary !== null && !isLifecycle);
 
   return (
     <main className="team-command-panel flex min-h-0 flex-col" aria-labelledby="team-work-item-status-heading">
@@ -565,7 +572,7 @@ function TeamWorkItemStatusPanel({
             </ol>
           )}
         </section>
-        {item.resultSummary !== null || item.blockedReason !== null ? (
+        {showResultSummary ? (
           <section className="grid gap-[3px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] p-[10px]">
             <strong className="text-[length:var(--app-font-size-body)] text-[var(--app-foreground)]">
               {item.blockedReason === null ? "交付摘要" : "需要处理"}

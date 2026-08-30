@@ -23,8 +23,8 @@ const submitArgumentsSchema = z.object({
     .describe("Queue priority. Use normal unless the user explicitly marks this work urgent or low priority."),
   requirement: z.string().trim().min(1).max(50_000)
     .describe("The complete user requirement to hand off to the selected Team."),
-  teamId: z.string().trim().min(1).max(200)
-    .describe("Exact Team ID from the current Team catalog."),
+  teamInstanceId: z.string().uuid()
+    .describe("Exact Team instance ID from the current visible Team instance catalog."),
   title: z.string().trim().min(1).max(300)
     .describe("Short, specific WorkItem title shown in the Team board."),
 }).strict();
@@ -50,7 +50,7 @@ export class TeamWorkItemTool {
 
   public getDefinitions(): readonly ModelToolDefinition[] {
     return [{
-      description: "Create a durable Team WorkItem from the current project conversation. Use this only when the user explicitly @mentions a Team or clearly asks to hand this task to a Team. Choose the exact teamId from the current Team catalog. The WorkItem is queued durably and an enabled Team automatically dispatches it when capacity is available. Do not use this tool merely to create a plan or to delegate an internal subtask of a Team Lead.",
+      description: "Create a durable Team WorkItem from the current project conversation. Use this only when the user explicitly @mentions a visible Team instance or clearly asks to hand this task to that Team. Choose the exact teamInstanceId from the scoped catalog. The selected instance scope is fixed: global and project instances are reused, while a conversation instance is isolated to its owning conversation. Never create or derive another Team implicitly. The WorkItem is queued durably and an enabled Team automatically dispatches it when capacity is available.",
       name: SUBMIT_TEAM_WORK_ITEM_TOOL_NAME,
       parameters: modelToolParameters(submitArgumentsSchema),
     }];
@@ -64,18 +64,25 @@ export class TeamWorkItemTool {
     return conversationId !== undefined
       && projectId !== undefined
       && this.getDispatcher() !== null
-      && this.canSubmitFromConversation(conversationId, projectId);
+      && this.canSubmitFromConversation(conversationId, projectId)
+      && this.visibleInstances(conversationId, projectId).length > 0;
   }
 
   public getCatalogPrompt(conversationId: string): string | null {
     const conversation = this.database.getConversation(conversationId);
     if (!this.canSubmitFromConversation(conversation.id, conversation.projectId ?? undefined)) return null;
-    const teams = this.getDirectory()?.teams ?? [];
-    if (teams.length === 0) return null;
+    const instances = this.visibleInstances(conversation.id, conversation.projectId!);
+    if (instances.length === 0) return null;
+    const teams = new Map((this.getDirectory()?.teams ?? []).map((team) => [team.id, team]));
     return [
       "Team handoff is available in this main project conversation. Only call submit_team_work_item when the user explicitly mentions a Team with @ or explicitly asks to send work to a Team; do not silently hand off ordinary requests.",
-      "Configured Teams:",
-      ...teams.map((team) => `- ${team.name} (teamId: ${team.id}; ${team.enabled ? "automatic dispatch enabled" : "paused: accept and queue only"})`),
+      "Choose by the exact visible instance name and teamInstanceId below. Global instances are visible in every project; project instances are visible only in this project; conversation instances are visible only in this conversation.",
+      "The selected instance already determines scope. Never derive or create a different Team instance during handoff.",
+      "Visible Team instances:",
+      ...instances.map((instance) => {
+        const team = teams.get(instance.teamId);
+        return `- @${instance.name} (teamInstanceId: ${instance.id}; scope: ${instance.scope}; template: ${team?.name ?? instance.teamId}; ${team?.enabled === false ? "paused: accept and queue only" : "automatic dispatch enabled"})`;
+      }),
       "After a successful handoff, tell the user that the request was queued and that they can inspect the Team board or the member side tabs while the main conversation remains available.",
     ].join("\n");
   }
@@ -97,17 +104,23 @@ export class TeamWorkItemTool {
         throw new Error("Only a main project conversation can submit a Team WorkItem.");
       }
       const argumentsValue = submitArgumentsSchema.parse(parseToolArguments(input.arguments));
-      const team = this.getDirectory()?.teams.find((candidate) => candidate.id === argumentsValue.teamId);
-      if (team === undefined) throw new Error("The selected Team is not available.");
+      const instance = this.visibleInstances(conversation.id, conversation.projectId!)
+        .find((candidate) => candidate.id === argumentsValue.teamInstanceId);
+      if (instance === undefined) throw new Error("The selected Team instance is not visible here.");
+      const team = this.getDirectory()?.teams.find((candidate) => candidate.id === instance.teamId);
+      if (team === undefined) throw new Error("The selected Team template is not available.");
+      const executionScope = instance.scope === "conversation" ? "conversation" : "project";
       const workItem = dispatcher.submit({
         acceptanceCriteria: argumentsValue.acceptanceCriteria,
+        executionScope,
         ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
         permissionMode: input.permissionMode,
         priority: argumentsValue.priority,
         projectId: conversation.projectId!,
         requirement: argumentsValue.requirement,
         sourceConversationId: conversation.id,
-        teamId: argumentsValue.teamId,
+        teamId: instance.teamId,
+        teamInstanceId: instance.id,
         title: argumentsValue.title,
       }, input.emit);
       return Promise.resolve({
@@ -118,6 +131,7 @@ export class TeamWorkItemTool {
             id: workItem.id,
             status: workItem.status,
             teamId: workItem.teamId,
+            teamInstanceId: workItem.teamInstanceId,
             title: workItem.title,
           },
         }),
@@ -142,6 +156,18 @@ export class TeamWorkItemTool {
       && conversation.threadKind === "agent"
       && conversation.teamWorkItemId === null
       && !conversation.isArchived;
+  }
+
+  private visibleInstances(conversationId: string, projectId: string) {
+    return this.database.listTeamInstances({ includeArchived: false }).filter((instance) =>
+      instance.scope === "global"
+      || (instance.scope === "project" && instance.projectId === projectId)
+      || (
+        instance.scope === "conversation"
+        && instance.projectId === projectId
+        && instance.sourceConversationId === conversationId
+      )
+    );
   }
 }
 

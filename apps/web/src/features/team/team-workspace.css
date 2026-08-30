@@ -1615,6 +1615,25 @@
   font-size: var(--app-font-size-caption);
 }
 
+.team-delivery-summary__details {
+  grid-column: 1 / -1;
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-caption);
+}
+
+.team-delivery-summary__details summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--app-accent);
+}
+
+.team-delivery-summary__details p {
+  max-height: 220px;
+  margin-top: 6px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
 .team-acceptance-checklist {
   display: grid;
   gap: 6px;

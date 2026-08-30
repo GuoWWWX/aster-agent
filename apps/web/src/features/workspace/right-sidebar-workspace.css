@@ -83,7 +83,8 @@
   flex: 0 0 auto;
 }
 
-.right-sidebar-workspace__tab > span:not(.file-type-icon--java) {
+.right-sidebar-workspace__tab
+  > span:not(.file-type-icon--java):not(.agent-profile-avatar) {
   min-width: 0;
   overflow: hidden;
   flex: 1;

@@ -99,11 +99,7 @@ function AcceptancePanel({
           <div><strong>模型已完成，任务还没有结束</strong><p>逐项确认结果；有任何一项不满足就提交返工要求，不会自动进入最终状态。</p></div>
         </section>
         {item.delivery === null ? null : (
-          <section className="team-delivery-summary">
-            <div><strong>{item.delivery.changedFiles}</strong><span>变更文件</span></div>
-            <div><strong>{item.delivery.commits}</strong><span>本地提交</span></div>
-            <p>{item.delivery.summary}</p>
-          </section>
+          <DeliverySummary delivery={item.delivery} />
         )}
         <fieldset className="team-acceptance-checklist">
           <legend>逐项验收 <span>{accepted.length}/{item.acceptance.length}</span></legend>
@@ -167,8 +163,9 @@ function CompletedPanel({ item }: { item: TeamWorkItemPrototype }): ReactElement
       <div className="team-lifecycle-panel__body">
         <section className="team-lifecycle-hero" data-tone="completed">
           <CheckCircle2 aria-hidden="true" size={22} />
-          <div><strong>执行、用户验收和收尾均已完成</strong><p>{item.delivery?.summary ?? "任务已经按用户确认的结果结束。"}</p></div>
+          <div><strong>执行、用户验收和收尾均已完成</strong><p>完整过程可在 Team Lead 对话中审计；这里保留交付摘要和最终记录。</p></div>
         </section>
+        {item.delivery === null ? null : <DeliverySummary delivery={item.delivery} />}
         <section className="team-lifecycle-section">
           <SectionHeading icon={<ShieldCheck aria-hidden="true" size={15} />} label="最终记录" />
           <dl>
@@ -180,6 +177,34 @@ function CompletedPanel({ item }: { item: TeamWorkItemPrototype }): ReactElement
       </div>
     </main>
   );
+}
+
+function DeliverySummary({
+  delivery,
+}: {
+  delivery: NonNullable<TeamWorkItemPrototype["delivery"]>;
+}): ReactElement {
+  const preview = compactDeliverySummary(delivery.summary);
+  const isTruncated = preview.length < delivery.summary.length;
+
+  return (
+    <section className="team-delivery-summary">
+      <div><strong>{delivery.changedFiles}</strong><span>变更文件</span></div>
+      <div><strong>{delivery.commits}</strong><span>本地提交</span></div>
+      <p>{preview}</p>
+      {isTruncated ? (
+        <details className="team-delivery-summary__details">
+          <summary>查看完整交付内容</summary>
+          <p>{delivery.summary}</p>
+        </details>
+      ) : null}
+    </section>
+  );
+}
+
+export function compactDeliverySummary(summary: string, maxLength = 280): string {
+  const normalized = summary.replace(/\s+/gu, " ").trim();
+  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength).trimEnd()}…`;
 }
 
 function LifecycleHeader({ eyebrow, title }: { eyebrow: string; title: string }): ReactElement {

@@ -173,8 +173,56 @@ describe("MockAgentClient", () => {
       pinned: true,
       projectId: project.id,
     })).resolves.toMatchObject({ isPinned: true });
+    await expect(client.setProjectTeamsInNavigator({
+      projectId: project.id,
+      showTeamsInNavigator: true,
+    })).resolves.toMatchObject({ showTeamsInNavigator: true });
     await client.removeProject({ projectId: project.id });
     await expect(client.listProjects()).resolves.toEqual([]);
+  });
+
+  it("keeps custom Team instance ordering in the mock runtime", async () => {
+    const client = new MockAgentClient();
+    const teams = (await client.getApplicationSettings()).agentDirectory.teams;
+    const firstTeam = teams[0];
+    const secondTeam = teams[1];
+    if (firstTeam === undefined || secondTeam === undefined) {
+      throw new Error("The mock Team templates are missing.");
+    }
+    const first = await client.createTeamInstance({ scope: "global", teamId: firstTeam.id });
+    const second = await client.createTeamInstance({ scope: "global", teamId: secondTeam.id });
+
+    await expect(client.reorderTeamInstances({
+      teamInstanceIds: [second.id, first.id],
+    })).resolves.toMatchObject([{ id: second.id }, { id: first.id }]);
+  });
+
+  it("creates and reuses a durable shared Team member conversation", async () => {
+    const client = new MockAgentClient();
+
+    const first = await client.ensureTeamMemberConversation({
+      agentId: "frontend-engineer",
+      teamId: "default-team",
+    });
+    const second = await client.ensureTeamMemberConversation({
+      agentId: "frontend-engineer",
+      teamId: "default-team",
+    });
+
+    expect(first.lead).toMatchObject({
+      agentId: "team-lead",
+      parentConversationId: null,
+      projectId: null,
+      threadKind: "team_lead",
+    });
+    expect(first.member).toMatchObject({
+      agentId: "frontend-engineer",
+      parentConversationId: first.lead.id,
+      projectId: null,
+      threadKind: "agent",
+    });
+    expect(second.member.id).toBe(first.member.id);
+    expect(second.lead.id).toBe(first.lead.id);
   });
 
   it("keeps conversations in the order they were pinned", async () => {

@@ -366,6 +366,59 @@ describe("LangChainModelAdapter", () => {
     ]);
   });
 
+  it("keeps tool results adjacent to their OpenAI-compatible assistant tool call", async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse(successChunks(
+      "openai-chat-completions",
+    )));
+    const adapter = new LangChainModelAdapter("openai-chat-completions", request);
+
+    await adapter.completeTurn(inputFor("openai-chat-completions", {
+      messages: [
+        {
+          attachments: [],
+          content: "Delegating to a durable Team member.",
+          role: "assistant",
+          toolCallId: null,
+          toolCalls: [{
+            arguments: JSON.stringify({ conversationId: "member-1", content: "Please reply." }),
+            id: "call-member",
+            name: "send_agent_message",
+          }],
+        },
+        {
+          attachments: [],
+          content: "[Agent result] member completed the request.",
+          role: "user",
+          toolCallId: null,
+          toolCalls: [],
+        },
+        {
+          attachments: [],
+          content: JSON.stringify({ ok: true }),
+          role: "tool",
+          toolCallId: "call-member",
+          toolCalls: [],
+        },
+        {
+          attachments: [],
+          content: "Continue with the Team result.",
+          role: "user",
+          toolCallId: null,
+          toolCalls: [],
+        },
+      ],
+    }));
+
+    const payload = recordBody(request).messages;
+    if (!isUnknownArray(payload)) throw new Error("Expected OpenAI messages.");
+    expect(payload.map((message) => isRecord(message) ? message.role : null)).toEqual([
+      "assistant",
+      "tool",
+      "user",
+      "user",
+    ]);
+  });
+
   it("sends OpenAI Chat reasoning effort through the compatible request field", async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse([
       'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n',

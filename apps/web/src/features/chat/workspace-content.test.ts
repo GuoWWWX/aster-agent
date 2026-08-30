@@ -22,11 +22,60 @@ import {
   groupToolBatches,
   describeConversationError,
   representativeToolName,
+  resolveConversationPathIconKind,
+  resolveConversationPathScope,
   resolveInitialConversationModelSelection,
+  runtimeBadgeLabel,
   stripLegacyErrorInstanceId,
   toolBatchLabel,
   toolBatchExecutionMode,
 } from "./workspace-content.js";
+
+describe("conversation path scope", () => {
+  it("shows a shared team member conversation under the team hierarchy", () => {
+    expect(resolveConversationPathScope(
+      null,
+      { teamId: "team-default", teamWorkItemId: null },
+      [{ id: "team-default", name: "默认团队" }],
+    )).toEqual({ kind: "team", label: "默认团队" });
+  });
+
+  it("keeps ordinary project and temporary conversation paths unchanged", () => {
+    expect(resolveConversationPathScope(
+      { name: "Demo" },
+      { teamId: "team-default", teamWorkItemId: null },
+      [{ id: "team-default", name: "默认团队" }],
+    )).toEqual({ kind: "project", label: "Demo" });
+    expect(resolveConversationPathScope(
+      null,
+      { teamId: null, teamWorkItemId: null },
+      [],
+    )).toEqual({ kind: "temporary", label: "临时对话" });
+  });
+
+  it("uses the same icon categories as the conversation tree", () => {
+    expect(resolveConversationPathIconKind("project", {
+      avatarIcon: "sparkles",
+      parentConversationId: null,
+      threadKind: "agent",
+    })).toBe("conversation");
+    expect(resolveConversationPathIconKind("team", {
+      avatarIcon: "sparkles",
+      parentConversationId: null,
+      threadKind: "agent",
+    })).toBe("agent");
+    expect(resolveConversationPathIconKind("project", {
+      avatarIcon: "sparkles",
+      parentConversationId: "source",
+      threadKind: "agent",
+    })).toBe("agent");
+    expect(resolveConversationPathIconKind("project", {
+      avatarIcon: null,
+      parentConversationId: "source",
+      threadKind: "team_lead",
+    })).toBe("team_lead");
+  });
+});
 
 describe("command terminal presentation", () => {
   it("shows only the shell name in the terminal header", () => {
@@ -183,6 +232,20 @@ describe("run progress duration", () => {
     expect([...indexes.entries()]).toEqual([[1, [40_000]]]);
   });
 
+  it("keeps each Agent message Run duration beside its own result", () => {
+    const indexes = getConversationRunDurationInsertIndexes([
+      { kind: "agent_message" },
+      { durationMs: 11_000, kind: "message", role: "assistant", runId: "run-1" },
+      { kind: "agent_message" },
+      { durationMs: 1_000, kind: "message", role: "assistant", runId: "run-2" },
+    ]);
+
+    expect([...indexes.entries()]).toEqual([
+      [1, [11_000]],
+      [3, [1_000]],
+    ]);
+  });
+
   it("shows the completion time only on the final message of a run", () => {
     const ids = getFinalCompletedAssistantMessageIds([
       { id: "intermediate", kind: "message", role: "assistant", runId: "run-1", status: "completed" },
@@ -191,6 +254,16 @@ describe("run progress duration", () => {
     ]);
 
     expect([...ids]).toEqual(["final"]);
+  });
+});
+
+describe("runtime model badge", () => {
+  it("shows the active conversation model instead of the application default", () => {
+    expect(runtimeBadgeLabel(false, "deepseek-v4-flash")).toBe("deepseek-v4-flash");
+  });
+
+  it("keeps the preview runtime label", () => {
+    expect(runtimeBadgeLabel(true, "deepseek-v4-flash")).toBe("浏览器预览");
   });
 });
 
