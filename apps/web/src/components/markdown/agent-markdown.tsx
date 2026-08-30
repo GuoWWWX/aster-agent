@@ -1,5 +1,5 @@
 import MarkdownIt from "markdown-it";
-import { useMemo, type ReactElement } from "react";
+import { useCallback, useMemo, type MouseEvent, type ReactElement } from "react";
 
 import { fileTypeIconMarkup, isRecognizedFileTypePath } from "../ui/file-type-icon-data.js";
 import { highlightCode } from "./code-highlighter.js";
@@ -96,16 +96,31 @@ renderer.renderer.rules.fence = (tokens, index) => {
   const language = token?.info.trim().split(/\s+/)[0] || "text";
   const source = token?.content ?? "";
   const highlightedSource = highlightCode(source, language);
-  return `<pre class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><code class="hljs">${highlightedSource}</code></pre>\n`;
+  return `<pre class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><button aria-label="复制代码" class="agent-markdown__code-copy" data-action="copy-code" type="button">复制</button><code class="hljs">${highlightedSource}</code></pre>\n`;
 };
 
 export function AgentMarkdown({ content }: { content: string }): ReactElement {
   const html = useMemo(() => renderAgentMarkdown(content), [content]);
+  const copyCodeBlock = useCallback((event: MouseEvent<HTMLDivElement>): void => {
+    if (!(event.target instanceof Element)) return;
+    const button = event.target.closest<HTMLButtonElement>("[data-action='copy-code']");
+    if (button === null || !event.currentTarget.contains(button)) return;
+    const code = button.closest("pre")?.querySelector("code")?.textContent;
+    if (code === null || code === undefined) return;
+
+    void navigator.clipboard.writeText(code).then(() => {
+      button.textContent = "已复制";
+      window.setTimeout(() => {
+        if (button.isConnected) button.textContent = "复制";
+      }, 1_500);
+    }).catch(() => undefined);
+  }, []);
 
   return (
     <div
       className="agent-markdown"
       dangerouslySetInnerHTML={{ __html: html }}
+      onClick={copyCodeBlock}
     />
   );
 }

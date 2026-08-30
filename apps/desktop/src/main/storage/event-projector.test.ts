@@ -553,6 +553,7 @@ describe("EventProjector", () => {
         content: "我先读取配置。",
         messageId: crypto.randomUUID(),
         modelId: "test-model",
+        reasoningContent: "先分析配置来源。",
         runId: queued.runId,
         toolCalls: [{ arguments: "{}", id: "call-read", name: "read_file" }],
         writeAhead: true,
@@ -608,7 +609,11 @@ describe("EventProjector", () => {
     });
     projector.projectBusinessEvent(creation.conversation.id, checkpointEvent);
     expect(source.listTimeline(creation.conversation.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ content: "我先读取配置。", role: "assistant" }),
+      expect.objectContaining({
+        content: "我先读取配置。",
+        reasoningContent: "先分析配置来源。",
+        role: "assistant",
+      }),
       expect.objectContaining({ kind: "tool", name: "read_file", status: "completed" }),
     ]));
     expect(source.listContextMessages(creation.conversation.id)).toEqual(expect.arrayContaining([
@@ -627,7 +632,11 @@ describe("EventProjector", () => {
     const recovered = new AgentDatabase(":memory:");
     new EventProjector(recovered, threadLog).projectAllConversationLogs();
     expect(recovered.listTimeline(creation.conversation.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ content: "我先读取配置。", role: "assistant" }),
+      expect.objectContaining({
+        content: "我先读取配置。",
+        reasoningContent: "先分析配置来源。",
+        role: "assistant",
+      }),
       expect.objectContaining({ kind: "tool", name: "read_file", status: "completed" }),
     ]));
     expect(recovered.listContextMessages(creation.conversation.id)).toEqual(expect.arrayContaining([

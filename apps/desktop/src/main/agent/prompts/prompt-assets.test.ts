@@ -10,9 +10,16 @@ describe("prompt assets", () => {
     expect(BASE_SYSTEM_PROMPT).toContain("You are a local coding Agent.");
     expect(BASE_SYSTEM_PROMPT).toContain("# Response Language");
     expect(BASE_SYSTEM_PROMPT).toContain("# Commands and Task Management");
+    expect(BASE_SYSTEM_PROMPT).toContain("# Command and Terminal Choice");
     expect(BASE_SYSTEM_PROMPT).toContain("# Conflict Recovery");
     expect(BASE_SYSTEM_PROMPT).toContain(
       "The application language is Simplified Chinese (zh-CN).",
+    );
+    expect(BASE_SYSTEM_PROMPT).toContain(
+      "Use `run_command` by default for ordinary non-interactive commands",
+    );
+    expect(BASE_SYSTEM_PROMPT).toContain(
+      "A terminal tab opened manually by the user is not automatically owned by this conversation",
     );
     expect(BASE_SYSTEM_PROMPT).not.toMatch(/\p{Script=Han}/u);
     expect(BASE_SYSTEM_PROMPT).not.toMatch(/\r/u);

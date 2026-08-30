@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   DEFAULT_AGENT_DIRECTORY_CONFIGURATION,
+  type ConversationAttachment,
   type ConversationTaskList,
   type ConversationToolItem,
 } from "@agent/protocol";
@@ -53,9 +54,114 @@ afterEach(() => {
   act(() => root?.unmount());
   root = null;
   document.body.replaceChildren();
+  vi.restoreAllMocks();
 });
 
 describe("Subagent approval queue", () => {
+  it("adds the same removable attachment drafts from file selection and clipboard paste", async () => {
+    const createObjectUrl = vi.spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:clipboard-image-preview");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const client = new MockAgentClient();
+    const status = await client.saveModelConfiguration({
+      apiKey: "test-key",
+      apiFormat: "openai-chat-completions",
+      baseUrl: "https://fixture.invalid/v1",
+      models: [{
+        contextWindow: 128_000,
+        displayName: "Attachment test model",
+        modelId: "attachment-test-model",
+        reasoningOptions: [],
+      }],
+      providerName: "Test",
+    });
+    if (status.providerId === null || status.modelId === null) {
+      throw new Error("Mock model configuration did not return a selected model.");
+    }
+    const sourceSession = session({
+      id: PARENT_ID,
+      modelSelection: {
+        modelId: status.modelId,
+        providerId: status.providerId,
+        reasoning: null,
+      },
+      title: "附件测试",
+    });
+    const selectedAttachment = attachment({
+      conversationId: sourceSession.id,
+      id: "00000000-0000-4000-8000-000000000011",
+      name: "selected.txt",
+    });
+    const pastedAttachment = attachment({
+      conversationId: sourceSession.id,
+      id: "00000000-0000-4000-8000-000000000012",
+      kind: "image",
+      mimeType: "image/png",
+      name: "clipboard.png",
+    });
+    const capabilities = await client.getCapabilities();
+    vi.spyOn(client, "getCapabilities").mockResolvedValue({
+      ...capabilities,
+      mode: "desktop",
+    });
+    const choose = vi.spyOn(client, "chooseConversationAttachments")
+      .mockResolvedValue([selectedAttachment]);
+    const importBytes = vi.spyOn(client, "importConversationAttachmentBytes")
+      .mockResolvedValue([selectedAttachment, pastedAttachment]);
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace
+            agentClient={client}
+            project={null}
+            relatedSessions={[sourceSession]}
+            session={sourceSession}
+          />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+
+    const addButton = container.querySelector<HTMLButtonElement>(
+      '[aria-label="添加文件或图片，也可直接粘贴"]',
+    );
+    await act(async () => {
+      addButton?.click();
+      await flushConversationWorkspace();
+    });
+    expect(choose).toHaveBeenCalledWith({ conversationId: sourceSession.id });
+    expect(container.textContent).toContain("selected.txt");
+    expect(container.textContent).toContain("TXT");
+
+    const file = new File(["image-bytes"], "clipboard.png", { type: "image/png" });
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      value: { files: [file], items: [] },
+    });
+    const textarea = container.querySelector<HTMLTextAreaElement>('[aria-label="输入任务"]');
+    await act(async () => {
+      textarea?.dispatchEvent(pasteEvent);
+      await flushConversationWorkspace();
+    });
+
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    expect(importBytes).toHaveBeenCalledWith({
+      base64: "aW1hZ2UtYnl0ZXM=",
+      conversationId: sourceSession.id,
+      mimeType: "image/png",
+      name: "clipboard.png",
+    });
+    expect(createObjectUrl).toHaveBeenCalledWith(file);
+    expect(container.querySelector<HTMLImageElement>(
+      '.conversation-attachment--image-preview img[src="blob:clipboard-image-preview"]',
+    )).not.toBeNull();
+    expect(container.textContent).not.toContain("clipboard.png");
+  });
+
   it("shows a child's pending approval above the parent composer and submits it", async () => {
     const parent = session({ id: PARENT_ID, title: "主对话" });
     const child = session({
@@ -397,4 +503,22 @@ function setNativeTextValue(
   const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
   if (descriptor === undefined) throw new Error("Textarea value setter is unavailable.");
   Reflect.set(HTMLTextAreaElement.prototype, "value", value, element);
+}
+
+function attachment(
+  input: Pick<ConversationAttachment, "conversationId" | "id" | "name">
+    & Partial<ConversationAttachment>,
+): ConversationAttachment {
+  return {
+    contextTokens: 1,
+    createdAt: "2026-08-30T00:00:00.000Z",
+    kind: "file",
+    messageId: null,
+    mimeType: "text/plain",
+    projectPath: null,
+    sizeBytes: 11,
+    source: "upload",
+    truncated: false,
+    ...input,
+  };
 }

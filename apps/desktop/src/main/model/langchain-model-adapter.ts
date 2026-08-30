@@ -767,6 +767,53 @@ function providerErrorMessage(error: unknown, status: number): string {
   return summarizeModelErrorText(message);
 }
 
+function rejectsImageInput(error: unknown): boolean {
+  const status = providerErrorStatus(error);
+  if (status === null || status < 400 || status >= 500) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  const mentionsImage = /(?:image|vision|图片|图像)/iu.test(message);
+  const rejectsCapability = /(?:does not support|not supported|unsupported|不支持)/iu.test(message);
+  return mentionsImage && rejectsCapability;
+}
+
+function withoutHistoricalImageData(messages: ModelMessage[]): ModelMessage[] | null {
+  let latestUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      latestUserIndex = index;
+      break;
+    }
+  }
+  if (latestUserIndex < 0) return null;
+  if (messages[latestUserIndex]?.attachments.some((attachment) => attachment.kind === "image")) {
+    return null;
+  }
+
+  let changed = false;
+  const result = messages.map((message, messageIndex) => {
+    if (messageIndex >= latestUserIndex) return message;
+    if (!message.attachments.some((attachment) => attachment.kind === "image")) return message;
+    changed = true;
+    const attachments = message.attachments.map((attachment) => {
+      if (attachment.kind !== "image") return attachment;
+      return {
+        content: `[历史图片未发送给当前模型]\n${modelImageAttachmentCaption(attachment)}`,
+        contextTokens: attachment.contextTokens,
+        id: attachment.id,
+        kind: "text" as const,
+        mimeType: attachment.mimeType,
+        name: attachment.name,
+        projectPath: attachment.projectPath,
+        readState: attachment.readState,
+        source: attachment.source,
+        truncated: attachment.truncated,
+      };
+    });
+    return { ...message, attachments };
+  });
+  return changed ? result : null;
+}
+
 export class LangChainModelAdapter implements ModelProviderAdapter {
   public constructor(
     private readonly apiFormat: ModelApiFormat,
@@ -781,6 +828,24 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
       );
     }
 
+    let receivedProviderOutput = false;
+    try {
+      return await this.completeTurnOnce(input, () => {
+        receivedProviderOutput = true;
+      });
+    } catch (error) {
+      const fallbackMessages = receivedProviderOutput || !rejectsImageInput(error)
+        ? null
+        : withoutHistoricalImageData(input.messages);
+      if (fallbackMessages === null) throw error;
+      return this.completeTurnOnce({ ...input, messages: fallbackMessages });
+    }
+  }
+
+  private async completeTurnOnce(
+    input: CompleteTurnInput,
+    onProviderOutput: () => void = () => undefined,
+  ): Promise<ModelTurnResult> {
     const model = this.factory(input, this.request);
     const boundModel = input.tools.length === 0 || model.bindTools === undefined
       ? model
@@ -788,7 +853,11 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
     const messages = toLangChainMessages(input.messages, input);
     let content = "";
     let latest: LangChainAssistantMessage | null = null;
+    let reasoningContent = "";
     let reasoningStarted = false;
+    const reasoningKind = this.apiFormat === "openai-responses" || this.apiFormat === "anthropic-messages"
+      ? "summary"
+      : "content";
     try {
       const stream = await boundModel.stream(messages, {
         maxRetries: 0,
@@ -796,17 +865,17 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
       });
       for await (const chunk of stream) {
         if (input.signal.aborted) throw input.signal.reason;
+        onProviderOutput();
         const text = textFromContent(chunk.content);
         if (text.length > 0) {
           content += text;
           input.onTextDelta(text);
         }
         for (const reasoning of reasoningFromMessage(chunk)) {
+          if (reasoningKind === "content") reasoningContent += reasoning;
           input.onReasoningDelta?.({
             delta: reasoning,
-            kind: this.apiFormat === "openai-responses" || this.apiFormat === "anthropic-messages"
-              ? "summary"
-              : "content",
+            kind: reasoningKind,
             reset: !reasoningStarted,
           });
           reasoningStarted = true;
@@ -826,6 +895,7 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
         ...(savedProviderState === undefined
           ? {}
           : { providerState: savedProviderState }),
+        ...(reasoningContent.length === 0 ? {} : { reasoningContent }),
         toolCalls,
       };
     } catch (error) {

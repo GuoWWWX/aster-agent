@@ -61,6 +61,7 @@ const MAX_TERMINAL_TRANSCRIPT_CHARS = 512_000;
 
 export type TerminalSessionPort = {
   close(input: TerminalSessionReferenceInput): void;
+  isActive(input: TerminalSessionReferenceInput): boolean;
   open(input: TerminalSessionOpenInput): TerminalSession;
   readOutput(input: TerminalSessionOutputInput): TerminalSessionOutput;
   write(input: TerminalSessionWriteInput): void;
@@ -72,6 +73,15 @@ class TerminalLaunchError extends Error {
   public constructor(label: string) {
     super(`无法启动${label}。请检查设置中的终端启动路径和项目目录。`);
     this.name = "TerminalLaunchError";
+  }
+}
+
+export class TerminalSessionUnavailableError extends Error {
+  public readonly code = "TERMINAL_UNAVAILABLE";
+
+  public constructor() {
+    super("终端会话已结束或桌面服务已重启，请重新打开终端后重试。");
+    this.name = "TerminalSessionUnavailableError";
   }
 }
 
@@ -129,6 +139,10 @@ export class TerminalSessionController {
     });
   }
 
+  public isActive(input: TerminalSessionReferenceInput): boolean {
+    return this.sessions.has(input.sessionId);
+  }
+
   public write(input: TerminalSessionWriteInput): void {
     this.requireSession(input.sessionId).process.write(input.data);
   }
@@ -171,7 +185,7 @@ export class TerminalSessionController {
 
   private requireSession(sessionId: string): ActiveTerminalSession {
     const session = this.sessions.get(sessionId);
-    if (session === undefined) throw new Error("终端会话不存在或已经结束。");
+    if (session === undefined) throw new TerminalSessionUnavailableError();
     return session;
   }
 

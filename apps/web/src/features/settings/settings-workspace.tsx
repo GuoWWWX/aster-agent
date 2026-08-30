@@ -3817,20 +3817,20 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
 
   return (
     <SettingsSectionHeader
-      eyebrow="命令工具"
-      title="终端"
+      eyebrow="工作区"
+      title="侧边终端"
     >
       <div className="settings-terminal-form">
         <div className="settings-terminal-grid">
           <label className="settings-field">
-            <span>默认终端</span>
+            <span>默认 Shell</span>
             <Select
               value={draft.shell}
               onValueChange={(shell) => {
                 updateDraft({ shell: shell as TerminalShell });
               }}
             >
-              <SelectTrigger aria-label="默认终端" className="settings-select-trigger">
+              <SelectTrigger aria-label="侧边终端默认 Shell" className="settings-select-trigger">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent align="start">
@@ -3862,7 +3862,7 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
           </label>
 
           <label className="settings-field">
-            <span>输出字符集</span>
+            <span>一次性命令输出字符集</span>
             <Select
               value={draft.outputEncoding}
               onValueChange={(outputEncoding) => {
@@ -3949,7 +3949,7 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
         </div>
 
         <p className="settings-terminal-status">
-          默认字体支持 Starship 图标与 Emoji；可选择预设或直接填写 CSS 字体栈。路径留空时按默认命令启动；PWSH 会尝试常见安装目录。填写时必须是对应可执行文件的绝对路径，只影响之后新建的终端标签。
+          Shell、启动路径、字体、字号和行高只影响之后新建的侧边终端标签，不会改变 AI 的一次性命令 Shell。输出字符集仅用于一次性命令结果解码。路径留空时按默认命令启动；PWSH 会尝试常见安装目录。
         </p>
 
         <section
@@ -3963,7 +3963,7 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
         >
           <header>
             <span>{terminalShellLabel(draft.shell, platform)}</span>
-            <span>{terminalOutputEncodingLabel(draft.outputEncoding)}</span>
+            <span>侧边终端</span>
           </header>
           <pre>
             <code>
@@ -4021,11 +4021,6 @@ function resolvedTerminalShell(
 ): Exclude<TerminalShell, "system"> {
   if (shell !== "system") return shell;
   return platform === "win32" ? "powershell" : "pwsh";
-}
-
-function terminalOutputEncodingLabel(encoding: TerminalOutputEncoding): string {
-  return TERMINAL_OUTPUT_ENCODING_OPTIONS.find((option) => option.value === encoding)?.label
-    ?? encoding;
 }
 
 function AppearanceSettings(): ReactElement {

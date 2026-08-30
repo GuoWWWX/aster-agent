@@ -46,6 +46,7 @@ import {
   type DiscoveredModel,
   type GitReviewSnapshot,
   type IntegrationConfiguration,
+  type ImportConversationAttachmentBytesInput,
   type DeleteConfigurationWorkspaceEntryInput,
   type ListConfigurationWorkspaceEntriesInput,
   type ListProjectEntriesInput,
@@ -698,6 +699,15 @@ export class MockAgentClient implements AgentClient {
   public chooseConversationAttachments(): Promise<ConversationAttachment[]> {
     return Promise.reject(
       new Error("File selection is unavailable in the browser preview."),
+    );
+  }
+
+  public importConversationAttachmentBytes(
+    input: ImportConversationAttachmentBytesInput,
+  ): Promise<ConversationAttachment[]> {
+    void input;
+    return Promise.reject(
+      new Error("Conversation attachments are unavailable in the browser preview."),
     );
   }
 
@@ -1684,6 +1694,7 @@ export class MockAgentClient implements AgentClient {
       modelId: input.modelId ?? "mock-agent",
       timeout: null,
     };
+    const assistantMessageId = this.createIdentifier();
     this.activeRuns.set(runId, activeRun);
     queueMicrotask(() => {
       if (!this.activeRuns.has(runId)) {
@@ -1708,6 +1719,8 @@ export class MockAgentClient implements AgentClient {
           conversationId: conversation.id,
           delta: "正在检查浏览器预览配置",
           kind: "summary",
+          messageId: assistantMessageId,
+          modelId: activeRun.modelId,
           reset: true,
           runId,
           type: "assistant.reasoning_delta",
@@ -1723,7 +1736,7 @@ export class MockAgentClient implements AgentClient {
           content: response,
           conversationId: conversation.id,
           createdAt: new Date().toISOString(),
-          id: this.createIdentifier(),
+          id: assistantMessageId,
           kind: "message",
           modelId: activeRun.modelId,
           role: "assistant",

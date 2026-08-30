@@ -314,6 +314,7 @@ export type CompleteRunInput = {
         messageId: string;
         modelId: string;
         providerState?: ModelProviderState;
+        reasoningContent?: string;
       }
     | {
         content: string;
@@ -327,6 +328,7 @@ export type CompleteRunInput = {
         messageId: string;
         modelId: string;
         providerState?: ModelProviderState;
+        reasoningContent?: string;
       }
     | null;
   conversationId: string;
@@ -700,6 +702,7 @@ function threadLogTerminalAssistant(payload: Record<string, unknown>): {
   messageId: string;
   modelId: string;
   providerState?: ModelProviderState;
+  reasoningContent?: string;
 } | null {
   const kind = payload.assistantKind;
   if (kind === null || kind === undefined) return null;
@@ -713,12 +716,14 @@ function threadLogTerminalAssistant(payload: Record<string, unknown>): {
     throw new Error("ThreadLog terminal assistant payload is invalid.");
   }
   const providerState = readProjectionProviderState(payload);
+  const reasoningContent = readProjectionString(payload, "reasoningContent");
   return {
     content,
     kind,
     messageId,
     modelId,
     ...(providerState === undefined ? {} : { providerState }),
+    ...(reasoningContent === null ? {} : { reasoningContent }),
   };
 }
 
@@ -4843,6 +4848,7 @@ export class AgentDatabase {
       if (input.assistant?.kind === "turn") {
         const now = new Date().toISOString();
         assistantMessage = input.assistant.content.length === 0
+          && (input.assistant.reasoningContent?.length ?? 0) === 0
           ? null
           : conversationMessageItemSchema.parse({
               content: input.assistant.content,
@@ -4851,6 +4857,9 @@ export class AgentDatabase {
               id: input.assistant.messageId,
               kind: "message",
               modelId: input.assistant.modelId,
+              ...(input.assistant.reasoningContent === undefined
+                ? {}
+                : { reasoningContent: input.assistant.reasoningContent }),
               role: "assistant",
               runId: input.runId,
               status: "completed"
@@ -4887,6 +4896,7 @@ export class AgentDatabase {
       } else if (input.assistant?.kind === "cancelled") {
         const now = new Date().toISOString();
         assistantMessage = input.assistant.content.length === 0
+          && (input.assistant.reasoningContent?.length ?? 0) === 0
           ? null
           : conversationMessageItemSchema.parse({
               content: input.assistant.content,
@@ -4895,6 +4905,9 @@ export class AgentDatabase {
               id: input.assistant.messageId,
               kind: "message",
               modelId: input.assistant.modelId,
+              ...(input.assistant.reasoningContent === undefined
+                ? {}
+                : { reasoningContent: input.assistant.reasoningContent }),
               role: "assistant",
               runId: input.runId,
               status: "cancelled"
@@ -4934,12 +4947,13 @@ export class AgentDatabase {
     messageId: string;
     modelId: string;
     providerState?: ModelProviderState;
+    reasoningContent?: string;
     runId: string;
     toolCalls: ModelToolCall[];
   }): ConversationMessageItem | null {
     const now = new Date().toISOString();
     const message =
-      input.content.length === 0
+      input.content.length === 0 && (input.reasoningContent?.length ?? 0) === 0
         ? null
         : conversationMessageItemSchema.parse({
             content: input.content,
@@ -4948,6 +4962,9 @@ export class AgentDatabase {
             id: input.messageId,
             kind: "message",
             modelId: input.modelId,
+            ...(input.reasoningContent === undefined
+              ? {}
+              : { reasoningContent: input.reasoningContent }),
             role: "assistant",
             runId: input.runId,
             status: "completed"
@@ -6205,8 +6222,9 @@ export class AgentDatabase {
     const storedTimelineMessage = readProjectionTimelineMessage(payload, "timelineMessage");
     const messageId = readProjectionString(payload, "messageId");
     const modelId = readProjectionString(payload, "modelId");
+    const reasoningContent = readProjectionString(payload, "reasoningContent");
     const timelineMessage = storedTimelineMessage
-      ?? (content.length === 0
+      ?? (content.length === 0 && reasoningContent === null
         ? null
         : messageId !== null && modelId !== null
           ? conversationMessageItemSchema.parse({
@@ -6216,12 +6234,17 @@ export class AgentDatabase {
               id: messageId,
               kind: "message",
               modelId,
+              ...(reasoningContent === null ? {} : { reasoningContent }),
               role: "assistant",
               runId,
               status: "completed",
             })
           : null);
-    if (payload.writeAhead === true && content.length > 0 && timelineMessage === null) {
+    if (
+      payload.writeAhead === true
+      && (content.length > 0 || reasoningContent !== null)
+      && timelineMessage === null
+    ) {
       throw new Error("ThreadLog write-ahead Assistant timeline message is invalid.");
     }
     const providerState = readProjectionProviderState(payload);
@@ -6306,16 +6329,19 @@ export class AgentDatabase {
     const assistant = threadLogTerminalAssistant(payload);
     if (assistant !== null) {
       const timelineMessage = assistant.kind === "turn" || assistant.kind === "cancelled"
-        ? assistant.content.length === 0
+        ? assistant.content.length === 0 && (assistant.reasoningContent?.length ?? 0) === 0
           ? null
           : conversationMessageItemSchema.parse({
               content: assistant.content,
               conversationId,
               createdAt: event.createdAt,
               id: assistant.messageId,
-              kind: "message",
-              modelId: assistant.modelId,
-              role: "assistant",
+               kind: "message",
+               modelId: assistant.modelId,
+               ...(assistant.reasoningContent === undefined
+                 ? {}
+                 : { reasoningContent: assistant.reasoningContent }),
+               role: "assistant",
               runId,
               status: assistant.kind === "turn" ? "completed" : "cancelled",
             })

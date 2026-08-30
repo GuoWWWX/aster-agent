@@ -13,6 +13,7 @@ import {
   contextCompressionThresholdSchema,
   conversationContextUsageInputSchema,
   conversationContextUsageSchema,
+  conversationMessageItemSchema,
   conversationRunEventSchema,
   conversationSummarySchema,
   conversationTaskListSchema,
@@ -93,6 +94,34 @@ describe("protocol bootstrap contract", () => {
     });
 
     expect(settings.permissionPolicies["browser-control"]).toBe("ask");
+  });
+
+  it("ships a focused six-role development team with mandatory specialist delegation", () => {
+    const team = DEFAULT_APPLICATION_SETTINGS.agentDirectory.teams.find(
+      (candidate) => candidate.id === "default-team",
+    );
+    expect(team).toMatchObject({
+      leadAgentId: "team-lead",
+      memberIds: [
+        "team-lead",
+        "requirements-analyst",
+        "solution-architect",
+        "frontend-engineer",
+        "backend-engineer",
+        "qa-engineer",
+      ],
+    });
+    expect(team?.instructions).toContain("每个工作项至少委派一位专业成员");
+    expect(team?.memberIds.map((agentId) =>
+      DEFAULT_APPLICATION_SETTINGS.agentDirectory.agents.find((agent) => agent.id === agentId)?.name
+    )).toEqual([
+      "Team Lead",
+      "需求分析师",
+      "架构师",
+      "前端开发",
+      "后端开发",
+      "测试工程师",
+    ]);
   });
 
   it("bounds clipboard text at the IPC boundary", () => {
@@ -621,6 +650,8 @@ describe("protocol bootstrap contract", () => {
       conversationId: "00000000-0000-4000-8000-000000000001",
       delta: "正在检查模型适配器",
       kind: "summary",
+      messageId: "00000000-0000-4000-8000-000000000003",
+      modelId: "test-model",
       reset: true,
       runId: "00000000-0000-4000-8000-000000000002",
       type: "assistant.reasoning_delta"
@@ -629,6 +660,25 @@ describe("protocol bootstrap contract", () => {
       kind: "summary",
       reset: true,
       type: "assistant.reasoning_delta"
+    });
+  });
+
+  it("carries persisted full reasoning on assistant timeline messages", () => {
+    expect(conversationMessageItemSchema.parse({
+      attachments: [],
+      content: "最终回答",
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      createdAt: "2026-08-30T00:00:00.000Z",
+      id: "00000000-0000-4000-8000-000000000003",
+      kind: "message",
+      modelId: "deepseek-v4-flash",
+      reasoningContent: "先分析问题，再验证答案。",
+      role: "assistant",
+      runId: "00000000-0000-4000-8000-000000000002",
+      status: "completed",
+    })).toMatchObject({
+      reasoningContent: "先分析问题，再验证答案。",
+      role: "assistant",
     });
   });
 

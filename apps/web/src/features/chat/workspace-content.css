@@ -4,8 +4,11 @@
 
   display: flex;
   min-height: 0;
+  min-width: 0;
+  max-width: 100%;
   flex: 1;
   flex-direction: column;
+  overflow: hidden;
   background: var(--app-panel);
 }
 
@@ -13,6 +16,8 @@
   position: relative;
   display: flex;
   min-height: 0;
+  min-width: 0;
+  max-width: 100%;
   flex: 1;
   flex-direction: column;
   overflow: hidden;
@@ -146,10 +151,13 @@
 .conversation-workspace__messages {
   display: flex;
   min-height: 0;
+  min-width: 0;
+  max-width: 100%;
   flex: 1;
   flex-direction: column;
   gap: 20px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: transparent;
   padding: 24px max(16px, calc((100% - var(--conversation-content-max-width)) / 2)) 140px;
 }
@@ -377,11 +385,11 @@
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 5px;
 }
 
 .conversation-attachments--draft {
-  max-height: 108px;
+  max-height: 132px;
   overflow: auto;
   border-bottom: 1px solid var(--app-border);
   padding: 8px 10px;
@@ -399,10 +407,42 @@
 }
 
 .conversation-attachments--draft .conversation-attachment {
+  position: relative;
+  height: 56px;
   border: 1px solid var(--app-border);
-  border-radius: var(--app-radius);
+  border-radius: var(--app-radius-large);
   background: var(--app-panel-subtle);
-  padding: 4px 5px 4px 8px;
+}
+
+.conversation-attachment--image-preview {
+  width: 56px;
+  max-width: 56px;
+  flex: 0 0 56px;
+  overflow: hidden;
+  padding: 0;
+}
+
+.conversation-attachment--image-preview > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.conversation-attachment--file-card {
+  width: min(240px, 100%);
+  min-width: 180px;
+  padding: 6px 28px 6px 6px;
+}
+
+.conversation-attachment__file-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  place-items: center;
+  border-radius: var(--app-radius);
+  background: var(--app-panel);
 }
 
 .conversation-attachments--message .conversation-attachment {
@@ -459,6 +499,23 @@
 .conversation-attachment > button:focus-visible {
   outline: 2px solid var(--app-focus-ring);
   outline-offset: -2px;
+}
+
+.conversation-attachments--draft .conversation-attachment > button {
+  position: absolute;
+  z-index: 1;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-pill);
+  background: var(--app-panel);
+  color: var(--app-foreground);
+}
+
+.conversation-attachments--draft .conversation-attachment > button:hover:not(:disabled) {
+  background: var(--app-hover);
 }
 
 .chat-message p {
@@ -1089,6 +1146,32 @@ button.tool-file-change__path:focus-visible {
   margin: 0;
 }
 
+.tool-command-terminal__header {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 5px;
+  background: var(--app-panel-subtle);
+  color: var(--app-muted-foreground);
+  padding-left: 9px;
+  font-size: var(--app-font-size-control);
+  font-weight: 600;
+}
+
+.tool-command-terminal__header > span {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-command-terminal__copy {
+  width: 28px;
+  height: 28px;
+  margin-right: 2px;
+}
+
 .tool-command-terminal pre {
   max-height: min(520px, 55dvh);
   margin: 0;
@@ -1096,7 +1179,7 @@ button.tool-file-change__path:focus-visible {
   background: var(--app-muted);
   color: var(--app-foreground);
   padding: 8px 9px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   font-size: var(--app-font-size-control);
   line-height: 1.55;
   overflow-wrap: anywhere;

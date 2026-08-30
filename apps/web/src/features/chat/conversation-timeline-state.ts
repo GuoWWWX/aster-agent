@@ -68,3 +68,48 @@ export function appendAssistantDelta(
       : item,
   );
 }
+
+export function appendAssistantReasoningDelta(
+  timeline: ConversationTimelineItem[],
+  event: Extract<ConversationRunEvent, { type: "assistant.reasoning_delta" }>,
+): ConversationTimelineItem[] {
+  if (event.kind !== "content") return timeline;
+
+  const finalizedTimeline = completeStreamingAssistantMessages(timeline, event.messageId);
+  const existing = finalizedTimeline.find(
+    (item): item is ConversationMessageItem =>
+      item.kind === "message" && item.id === event.messageId && item.role === "assistant",
+  );
+  if (existing === undefined) {
+    return [
+      ...finalizedTimeline,
+      {
+        attachments: [],
+        completedAt: null,
+        content: "",
+        conversationId: event.conversationId,
+        createdAt: new Date().toISOString(),
+        durationMs: null,
+        id: event.messageId,
+        kind: "message",
+        modelId: event.modelId,
+        reasoningContent: event.delta,
+        role: "assistant",
+        runId: event.runId,
+        status: "streaming",
+      },
+    ];
+  }
+
+  return finalizedTimeline.map((item) =>
+    item.id === existing.id && item.kind === "message"
+      ? {
+          ...item,
+          reasoningContent: event.reset
+            ? event.delta
+            : `${item.reasoningContent ?? ""}${event.delta}`,
+          status: "streaming",
+        }
+      : item,
+  );
+}

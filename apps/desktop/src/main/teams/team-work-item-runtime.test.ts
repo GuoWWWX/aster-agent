@@ -113,6 +113,10 @@ describe("TeamWorkItemRuntime", () => {
       teamWorkItemId: submitted.id,
     });
     expect(emitted.some((event) => event.type === "conversation.updated")).toBe(true);
+    expect(sendInputs[0]?.content).toContain(
+      "每个工作项都必须至少通过 send_agent_message 委派一位持久团队成员",
+    );
+    expect(sendInputs[0]?.content).toContain("简单任务走短路径");
     const execution = runtime.getExecution({ workItemId: submitted.id });
     expect(execution.workItemId).toBe(submitted.id);
     expect(execution.agents[0]).toMatchObject({

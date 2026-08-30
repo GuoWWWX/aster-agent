@@ -351,6 +351,7 @@ export const conversationMessageItemSchema = z
     id: timelineItemIdSchema,
     kind: z.literal("message"),
     modelId: z.string().min(1).max(200).nullable(),
+    reasoningContent: z.string().max(MAX_MESSAGE_LENGTH).nullable().optional(),
     role: conversationMessageRoleSchema,
     runId: runIdSchema.nullable(),
     status: conversationMessageStatusSchema
@@ -931,6 +932,8 @@ const assistantReasoningDeltaEventSchema = z
     conversationId: conversationIdSchema,
     delta: z.string().min(1).max(MAX_MESSAGE_LENGTH),
     kind: z.enum(["summary", "content"]),
+    messageId: timelineItemIdSchema,
+    modelId: z.string().min(1).max(200),
     reset: z.boolean(),
     runId: runIdSchema,
     type: z.literal("assistant.reasoning_delta")

@@ -27,6 +27,7 @@ import type {
   DiscoverModelsInput,
   DiscoveredModel,
   IntegrationConfiguration,
+  ImportConversationAttachmentBytesInput,
   GitFileDiff,
   GitFileDiffInput,
   GitOperationInput,
@@ -138,6 +139,9 @@ export interface AgentClient {
   ): Promise<ConversationContextUsage>;
   chooseConversationAttachments(
     input: ConversationReferenceInput,
+  ): Promise<ConversationAttachment[]>;
+  importConversationAttachmentBytes(
+    input: ImportConversationAttachmentBytesInput,
   ): Promise<ConversationAttachment[]>;
   listDraftConversationAttachments(
     input: ConversationReferenceInput,

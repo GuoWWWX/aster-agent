@@ -91,6 +91,28 @@ describe("AgentDatabase", () => {
     database.close();
   });
 
+  it("persists full reasoning for display without adding it to model-visible text", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const run = database.createRunWithUserMessage(conversation.id, "请分析", "test-model");
+    const message = database.appendAssistantTurn({
+      content: "",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      reasoningContent: "完整思考过程",
+      runId: run.runId,
+      toolCalls: [],
+    });
+
+    expect(message).toMatchObject({ content: "", reasoningContent: "完整思考过程" });
+    expect(database.listTimeline(conversation.id)).toContainEqual(
+      expect.objectContaining({ reasoningContent: "完整思考过程" }),
+    );
+    expect(database.listModelMessages(conversation.id).at(-1)?.content).toBe("");
+    database.close();
+  });
+
   it("keeps the context search index synchronized across restart, edit, and deletion", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-search-"));
     temporaryDirectories.push(directory);
@@ -226,10 +248,12 @@ describe("AgentDatabase", () => {
       "default-team",
     ]);
     expect(database.listTeamMembers("default-team")).toEqual([
-      expect.objectContaining({ agentId: "team-lead", role: "" }),
-      expect.objectContaining({ agentId: "explorer", role: "项目事实调查" }),
-      expect.objectContaining({ agentId: "implementer", role: "" }),
-      expect.objectContaining({ agentId: "reviewer", role: "独立质量复核" }),
+      expect.objectContaining({ agentId: "team-lead", role: "任务分诊、调度与交付" }),
+      expect.objectContaining({ agentId: "requirements-analyst", role: "需求澄清与验收定义" }),
+      expect.objectContaining({ agentId: "solution-architect", role: "技术方案与架构边界" }),
+      expect.objectContaining({ agentId: "frontend-engineer", role: "前端实现与交互验证" }),
+      expect.objectContaining({ agentId: "backend-engineer", role: "后端实现与数据安全" }),
+      expect.objectContaining({ agentId: "qa-engineer", role: "测试设计与质量验收" }),
     ]);
 
     const lead = directory.agents.find((agent) => agent.id === "team-lead");

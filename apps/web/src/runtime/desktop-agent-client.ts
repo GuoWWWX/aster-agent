@@ -32,6 +32,7 @@ import type {
   GitReviewInput,
   GitReviewSnapshot,
   IntegrationConfiguration,
+  ImportConversationAttachmentBytesInput,
   ListConfigurationWorkspaceEntriesInput,
   ListProjectEntriesInput,
   ModelConnectionTestResult,
@@ -185,6 +186,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
     input: ConversationReferenceInput,
   ): Promise<ConversationAttachment[]> {
     return this.desktopBridge.chooseConversationAttachments(input);
+  }
+
+  public importConversationAttachmentBytes(
+    input: ImportConversationAttachmentBytesInput,
+  ): Promise<ConversationAttachment[]> {
+    return this.desktopBridge.importConversationAttachmentBytes(input);
   }
 
   public listDraftConversationAttachments(
