@@ -176,7 +176,8 @@ type WorkspaceContentProps = {
   onLocateProject: (projectId: string) => void;
   onLocateSession: (sessionId: string) => void;
   onOpenProjectFile?: (projectId: string, path: string) => void;
-  onOpenTeamConversation: (conversation: ConversationSummary) => void;
+  onOpenTeamConversation: (conversation: ProjectSession, sourceConversationId?: string) => void;
+  onNavigateToTeamConversation?: (conversationId: string) => void;
   onProjectSelected: (projectId: string) => void;
   onSessionSelected: (sessionId: string) => void;
   onSessionUpdated: (conversation: ConversationSummary) => void;
@@ -645,6 +646,7 @@ export function WorkspaceContent({
   onLocateSession,
   onOpenProjectFile,
   onOpenTeamConversation,
+  onNavigateToTeamConversation,
   onProjectSelected,
   onSessionSelected,
   onSessionUpdated,
@@ -664,6 +666,9 @@ export function WorkspaceContent({
         agentClient={agentClient}
         projects={projects}
         onOpenConversation={onOpenTeamConversation}
+        {...(onNavigateToTeamConversation === undefined ? {} : {
+          onNavigateToConversation: onNavigateToTeamConversation,
+        })}
       />
     );
   }
@@ -712,6 +717,10 @@ export function WorkspaceContent({
                 : (path) => {
                     onOpenProjectFile?.(projectId, path);
                   }}
+              onOpenTeamConversation={onOpenTeamConversation}
+              {...(onNavigateToTeamConversation === undefined ? {} : {
+                onNavigateToTeamConversation,
+              })}
               onForkConversation={onForkConversation}
               onAddProject={onAddProject}
               onProjectSelected={onProjectSelected}
@@ -741,6 +750,8 @@ export function ConversationWorkspace({
   onLocateProject,
   onLocateSession,
   onOpenProjectFile,
+  onOpenTeamConversation,
+  onNavigateToTeamConversation,
   onForkConversation,
   onProjectSelected,
   onSessionSelected,
@@ -761,6 +772,8 @@ export function ConversationWorkspace({
   onLocateProject?: (projectId: string) => void;
   onLocateSession?: (sessionId: string) => void;
   onOpenProjectFile?: ((path: string) => void) | undefined;
+  onOpenTeamConversation?: (conversation: ProjectSession, sourceConversationId?: string) => void;
+  onNavigateToTeamConversation?: (conversationId: string) => void;
   onForkConversation?: (conversationId: string, throughMessageId: string) => Promise<void>;
   onProjectSelected?: (projectId: string) => void;
   onSessionSelected?: (sessionId: string) => void;
@@ -2450,8 +2463,16 @@ export function ConversationWorkspace({
                       title={resolveSubmittedTeamGraphTitle(workItem, teamInstances, teams)}
                       variant="conversation"
                       workItemId={workItem.id}
-                      {...(onSessionSelected === undefined ? {} : {
-                        onOpenConversation: onSessionSelected,
+                      {...(onOpenTeamConversation === undefined ? {} : {
+                        onOpenConversation: (conversationId: string) => {
+                          const conversation = relatedSessions.find(
+                            (candidate) => candidate.id === conversationId,
+                          );
+                          if (conversation !== undefined) onOpenTeamConversation(conversation, session.id);
+                        },
+                      })}
+                      {...(onNavigateToTeamConversation === undefined ? {} : {
+                        onNavigateToConversation: onNavigateToTeamConversation,
                       })}
                     />
                   ))}

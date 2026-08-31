@@ -1,12 +1,17 @@
-import { ArrowRight, GitBranch, MessageSquareText } from "lucide-react";
+import { ArrowRight, ArrowUpRight, GitBranch, LocateFixed, MessageSquareText, PanelRightOpen } from "lucide-react";
 import {
   useEffect,
   useId,
   useMemo,
+  useRef,
   useState,
   type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactElement,
+  type WheelEvent as ReactWheelEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   MAX_TEAM_COLLABORATION_OUTPUT_LENGTH,
   type ConversationRunEvent,
@@ -16,6 +21,7 @@ import {
 } from "@agent/protocol";
 
 import type { AgentClient } from "../../../runtime/agent-client.js";
+import { IconButton } from "../../../components/ui/icon-button.js";
 import { cn } from "../../../lib/cn.js";
 import { resolveAgentAvatarIcon } from "../agent-avatar.js";
 import "./collaboration-graph.css";
@@ -25,83 +31,249 @@ export type CollaborationGraphVariant = "conversation" | "embedded" | "full" | "
 const NODE_WIDTH = 156;
 const NODE_HEIGHT = 100;
 const CANVAS_PADDING = 42;
+const HORIZONTAL_NODE_GAP = 84;
+const RETURN_ROUTE_BEND = 64;
+const ZOOM_MAX = 1.8;
+const ZOOM_MIN = 0.7;
+const ZOOM_STEP = 0.1;
+
+type NodeContextMenu = {
+  conversationId: string;
+  x: number;
+  y: number;
+};
+
+type CanvasPan = {
+  x: number;
+  y: number;
+};
+
+type CanvasViewport = CanvasPan & {
+  height: number;
+  width: number;
+};
+
+type CanvasPointer = {
+  relativeX: number;
+  relativeY: number;
+  x: number;
+  y: number;
+};
+
+type CanvasPanStart = {
+  clientX: number;
+  clientY: number;
+  pan: CanvasPan;
+  pointerId: number;
+  viewport: CanvasViewport;
+};
 
 export function CollaborationGraph({
   onOpenConversation,
+  onNavigateToConversation,
   projection,
   title,
   variant,
 }: {
   onOpenConversation?: (conversationId: string) => void;
+  onNavigateToConversation?: (conversationId: string) => void;
   projection: TeamCollaborationProjection;
   title?: string;
   variant: CollaborationGraphVariant;
 }): ReactElement {
   const markerPrefix = useId().replaceAll(":", "");
   const isMini = variant === "mini";
-  const geometry = useMemo(
-    () => graphGeometry(projection.nodes, isMini),
-    [isMini, projection.nodes],
+  const [contextMenu, setContextMenu] = useState<NodeContextMenu | null>(null);
+  const [isPanning, setIsPanning] = useState(false);
+  const [pan, setPan] = useState<CanvasPan>({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+  const panStartRef = useRef<CanvasPanStart | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const displayNodes = useMemo(
+    () => layoutGraphNodes(projection.nodes, projection.edges, isMini),
+    [isMini, projection.edges, projection.nodes],
   );
+  const geometry = useMemo(
+    () => graphGeometry(displayNodes, projection.edges, isMini),
+    [displayNodes, isMini, projection.edges],
+  );
+  const viewport = useMemo(
+    () => zoomedViewport(geometry, zoom, pan),
+    [geometry, pan, zoom],
+  );
+  const viewBox = useMemo(() => viewportViewBox(viewport), [viewport]);
   const nodesById = useMemo(
-    () => new Map(projection.nodes.map((node) => [node.id, node])),
-    [projection.nodes],
+    () => new Map(displayNodes.map((node) => [node.id, node])),
+    [displayNodes],
   );
   const edgeKeys = useMemo(
     () => new Set(projection.edges.map((edge) => edgeKey(edge.fromNodeId, edge.toNodeId))),
     [projection.edges],
   );
+  const openNodeConversation = (conversationId: string, navigate: boolean): void => {
+    if (navigate && onNavigateToConversation !== undefined) {
+      onNavigateToConversation(conversationId);
+      return;
+    }
+    if (onOpenConversation !== undefined) {
+      onOpenConversation(conversationId);
+      return;
+    }
+    onNavigateToConversation?.(conversationId);
+  };
   const handleNodeKeyDown = (
     event: KeyboardEvent<SVGGElement>,
     conversationId: string | null,
   ): void => {
-    if (conversationId === null || onOpenConversation === undefined) return;
+    if (conversationId === null) return;
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
-    onOpenConversation(conversationId);
+    openNodeConversation(conversationId, event.ctrlKey || event.metaKey);
+  };
+  const handleCanvasWheel = (event: ReactWheelEvent<HTMLDivElement>): void => {
+    if (isMini || !event.ctrlKey) return;
+    event.preventDefault();
+    const direction = event.deltaY < 0 ? 1 : -1;
+    const nextZoom = clamp(zoom + direction * ZOOM_STEP, ZOOM_MIN, ZOOM_MAX);
+    if (nextZoom === zoom) return;
+    const pointer = canvasPointer(event, event.currentTarget, svgRef.current, viewport);
+    setZoom(nextZoom);
+    setPan(panForZoom(geometry, nextZoom, pointer));
+  };
+  const handleCanvasPointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (isMini || event.button !== 0 || !isCanvasBackground(event.target)) return;
+    event.preventDefault();
+    panStartRef.current = {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      pan,
+      pointerId: event.pointerId,
+      viewport,
+    };
+    if (typeof event.currentTarget.setPointerCapture === "function") {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    setIsPanning(true);
+  };
+  const handleCanvasPointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    const start = panStartRef.current;
+    if (start === null || start.pointerId !== event.pointerId) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) return;
+    event.preventDefault();
+    setPan({
+      x: start.pan.x - (event.clientX - start.clientX) * start.viewport.width / bounds.width,
+      y: start.pan.y - (event.clientY - start.clientY) * start.viewport.height / bounds.height,
+    });
+  };
+  const endCanvasPan = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    const start = panStartRef.current;
+    if (start === null || start.pointerId !== event.pointerId) return;
+    panStartRef.current = null;
+    if (
+      typeof event.currentTarget.hasPointerCapture === "function"
+      && event.currentTarget.hasPointerCapture(event.pointerId)
+    ) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setIsPanning(false);
+  };
+  const resetViewport = (): void => {
+    panStartRef.current = null;
+    setIsPanning(false);
+    setPan({ x: 0, y: 0 });
+    setZoom(1);
+  };
+  const openNodeContextMenu = (
+    event: ReactMouseEvent<SVGGElement>,
+    conversationId: string | null,
+  ): void => {
+    if (conversationId === null || (onOpenConversation === undefined && onNavigateToConversation === undefined)) return;
+    event.preventDefault();
+    setContextMenu({ conversationId, x: event.clientX, y: event.clientY });
+  };
+  const runContextMenuAction = (navigate: boolean): void => {
+    if (contextMenu === null) return;
+    const { conversationId } = contextMenu;
+    setContextMenu(null);
+    openNodeConversation(conversationId, navigate);
   };
 
+  useEffect(() => {
+    if (contextMenu === null) return undefined;
+    const closeOnEscape = (event: globalThis.KeyboardEvent): void => {
+      if (event.key === "Escape") setContextMenu(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [contextMenu]);
+
   return (
-    <section
-      className={cn(
-        "@container grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)]",
-        variant === "mini" && "h-[86px] grid-rows-[minmax(0,1fr)] border-[color-mix(in_srgb,var(--app-border)_78%,transparent)] bg-[var(--app-panel-subtle)]",
-        variant === "embedded" && "min-h-[190px] max-h-[290px]",
-        variant === "conversation" && "mx-auto mt-1 mb-3 min-h-[260px] max-h-[430px] w-[min(960px,calc(100%-12px))] shadow-[0_8px_24px_color-mix(in_srgb,var(--app-foreground)_8%,transparent)]",
-        variant === "full" && "h-full min-h-[420px]",
-      )}
-      data-empty={projection.nodes.length === 0}
-      data-variant={variant}
-      aria-label={title ?? "Agent 团队协作图"}
-    >
+    <>
+      <section
+        className={cn(
+          "@container grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)]",
+          variant === "mini" && "h-[86px] grid-rows-[minmax(0,1fr)] border-[color-mix(in_srgb,var(--app-border)_78%,transparent)] bg-[var(--app-panel-subtle)]",
+          variant === "embedded" && "min-h-[190px] max-h-[290px]",
+          variant === "conversation" && "mx-auto mt-1 mb-3 min-h-[260px] max-h-[430px] w-[min(960px,calc(100%-12px))] shadow-[0_8px_24px_color-mix(in_srgb,var(--app-foreground)_8%,transparent)]",
+          variant === "full" && "h-full min-h-[420px]",
+        )}
+        data-empty={projection.nodes.length === 0}
+        data-variant={variant}
+        aria-label={title ?? "Agent 团队协作图"}
+      >
       {isMini ? null : (
         <header className="flex min-h-[38px] min-w-0 items-center justify-between gap-2 border-b border-[var(--app-border)] px-[10px] text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
           <div className="flex min-w-0 items-center gap-[5px] text-[var(--app-foreground)]">
             <GitBranch aria-hidden="true" className="shrink-0 text-[var(--app-accent)]" size={14} />
             <strong className="overflow-hidden text-[length:var(--app-font-size-body)] text-ellipsis whitespace-nowrap">{title ?? "Agent 协作计划与实时通信"}</strong>
           </div>
-          <span className="overflow-hidden text-ellipsis whitespace-nowrap">
-            {projection.plan === null ? "尚未发布计划" : `计划 v${projection.plan.revision}`}
-            {` · ${projection.summary.messageCount} 条消息`}
-          </span>
+          <div className="flex shrink-0 items-center gap-[2px]">
+            <span className="overflow-hidden text-ellipsis whitespace-nowrap">
+              {projection.plan === null ? "尚未发布计划" : `计划 v${projection.plan.revision}`}
+              {` · ${projection.summary.messageCount} 条消息`}
+            </span>
+            <IconButton
+              className="-mr-[5px]"
+              label="定位并适配协作图"
+              onClick={resetViewport}
+            >
+              <LocateFixed aria-hidden="true" size={14} />
+            </IconButton>
+          </div>
         </header>
       )}
 
-      {projection.nodes.length === 0 ? (
+      {displayNodes.length === 0 ? (
         <div className="flex min-h-[92px] items-center justify-center gap-[6px] p-3 text-center text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
           <MessageSquareText aria-hidden="true" size={16} />
           <span>Team Lead 领取任务后，这里会显示计划路线和真实通信。</span>
         </div>
       ) : (
-        <div className="min-h-0 overflow-auto bg-[var(--app-canvas)] [background-image:radial-gradient(circle,color-mix(in_srgb,var(--app-border)_72%,transparent)_1px,transparent_1px)] [background-size:16px_16px]">
+        <div
+          className={cn(
+            "min-h-0 overflow-hidden bg-[var(--app-canvas)] [background-image:radial-gradient(circle,color-mix(in_srgb,var(--app-border)_72%,transparent)_1px,transparent_1px)] [background-size:16px_16px]",
+            !isMini && "touch-none select-none",
+            !isMini && (isPanning ? "cursor-grabbing" : "cursor-grab"),
+          )}
+          data-collaboration-canvas
+          data-zoom={zoom.toFixed(2)}
+          title={isMini ? undefined : "空白处按住鼠标左键可拖动画布；按住 Ctrl 并滚动鼠标滚轮可缩放画布"}
+          onPointerCancel={endCanvasPan}
+          onPointerDown={handleCanvasPointerDown}
+          onPointerMove={handleCanvasPointerMove}
+          onPointerUp={endCanvasPan}
+          onWheel={handleCanvasWheel}
+        >
           <svg
             aria-hidden="true"
             className={cn("block h-full w-full", isMini ? "min-h-[84px]" : "min-h-[150px]")}
             preserveAspectRatio="xMidYMid meet"
-            viewBox={`${geometry.minX} ${geometry.minY} ${geometry.width} ${geometry.height}`}
+            ref={svgRef}
+            viewBox={viewBox}
           >
             <defs>
-              {(["planned", "observed", "ad_hoc", "skipped"] as const).map((state) => (
+              {(["normal", "active"] as const).map((state) => (
                 <marker
                   id={`${markerPrefix}-${state}`}
                   key={state}
@@ -113,7 +285,7 @@ export function CollaborationGraph({
                   refY="3.5"
                   viewBox="0 0 7 7"
                 >
-                  <path className={edgeMarkerClassName(state)} d="M0,0 L7,3.5 L0,7 Z" />
+                  <path className={edgeMarkerClassName(state === "active")} d="M0,0 L7,3.5 L0,7 Z" />
                 </marker>
               ))}
             </defs>
@@ -129,13 +301,13 @@ export function CollaborationGraph({
                   isMini,
                   to,
                 });
-                const flowing = edgeIsFlowing(edge.state, from.runStatus);
+                const flowing = projection.isLive && edgeIsFlowing(edge.state, from.runStatus);
                 return (
                   <path
-                    className={edgePathClassName(edge.state, flowing)}
+                    className={edgePathClassName(flowing)}
                     d={path}
                     key={edge.id}
-                    markerEnd={`url(#${markerPrefix}-${edge.state})`}
+                    markerEnd={`url(#${markerPrefix}-${flowing ? "active" : "normal"})`}
                     vectorEffect="non-scaling-stroke"
                   />
                 );
@@ -143,8 +315,9 @@ export function CollaborationGraph({
             </g>
 
             <g>
-              {projection.nodes.map((node) => {
-                const clickable = node.conversationId !== null && onOpenConversation !== undefined;
+              {displayNodes.map((node) => {
+                const clickable = node.conversationId !== null
+                  && (onOpenConversation !== undefined || onNavigateToConversation !== undefined);
                 const AvatarIcon = node.avatarIcon === null
                   ? null
                   : resolveAgentAvatarIcon(node.avatarIcon);
@@ -156,13 +329,17 @@ export function CollaborationGraph({
                     data-clickable={clickable}
                     data-kind={node.kind}
                     data-status={node.runStatus}
+                    data-agent-node={node.id}
                     key={node.id}
                     role={clickable ? "button" : "img"}
                     tabIndex={clickable ? 0 : undefined}
                     transform={`translate(${node.position.x} ${node.position.y})`}
-                    onClick={() => {
-                      if (clickable) onOpenConversation(node.conversationId!);
+                    onClick={(event) => {
+                      if (node.conversationId === null || !clickable) return;
+                      setContextMenu(null);
+                      openNodeConversation(node.conversationId, event.ctrlKey || event.metaKey);
                     }}
+                    onContextMenu={(event) => openNodeContextMenu(event, node.conversationId)}
                     onKeyDown={(event) => handleNodeKeyDown(event, node.conversationId)}
                   >
                     {isMini ? (
@@ -236,11 +413,8 @@ export function CollaborationGraph({
         </div>
       )}
 
-      {isMini || projection.nodes.length === 0 ? null : (
+      {isMini || displayNodes.length === 0 ? null : (
         <footer className="flex min-h-[30px] min-w-0 items-center gap-2 border-t border-[var(--app-border)] bg-[var(--app-panel)] px-[10px] text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
-          <LegendItem label="计划路线" state="planned" />
-          <LegendItem label="已发生" state="observed" />
-          <LegendItem label="计划外" state="ad_hoc" />
           <span className="ml-auto overflow-hidden text-ellipsis whitespace-nowrap">
             {projection.summary.participantCount} 个 Agent · {projection.summary.observedRouteCount} 条活跃路线
           </span>
@@ -248,7 +422,7 @@ export function CollaborationGraph({
       )}
 
       <ul className="sr-only">
-        {projection.nodes.map((node) => (
+        {displayNodes.map((node) => (
           <li key={node.id}>
             {node.name}：{node.role}，{runStatusLabel(node.runStatus)}
             {node.latestOutput === null ? "" : `，最新输出：${node.latestOutput}`}
@@ -263,18 +437,63 @@ export function CollaborationGraph({
           </li>
         ))}
       </ul>
-    </section>
+      </section>
+      {contextMenu === null ? null : createPortal(
+        <>
+          <div
+            aria-hidden="true"
+            className="fixed inset-0 z-40"
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setContextMenu(null);
+            }}
+            onMouseDown={() => setContextMenu(null)}
+          />
+          <div
+            className="fixed z-50 grid min-w-[156px] gap-[2px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] p-[3px] shadow-[0_8px_24px_color-mix(in_srgb,var(--app-foreground)_18%,transparent)]"
+            role="menu"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+          >
+            {onOpenConversation === undefined ? null : (
+              <button
+                className="flex h-[28px] items-center gap-[5px] rounded-[var(--app-radius-small)] px-[7px] text-left text-[length:var(--app-font-size-control)] text-[var(--app-foreground)] hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
+                role="menuitem"
+                type="button"
+                onClick={() => runContextMenuAction(false)}
+              >
+                <PanelRightOpen aria-hidden="true" size={14} />
+                在侧边打开
+              </button>
+            )}
+            {onNavigateToConversation === undefined ? null : (
+              <button
+                className="flex h-[28px] items-center gap-[5px] rounded-[var(--app-radius-small)] px-[7px] text-left text-[length:var(--app-font-size-control)] text-[var(--app-foreground)] hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
+                role="menuitem"
+                type="button"
+                onClick={() => runContextMenuAction(true)}
+              >
+                <ArrowUpRight aria-hidden="true" size={14} />
+                跳转到 Agent 对话
+              </button>
+            )}
+          </div>
+        </>,
+        document.body,
+      )}
+    </>
   );
 }
 
 export function CollaborationProjectionGraph({
   agentClient,
+  onNavigateToConversation,
   onOpenConversation,
   title,
   variant,
   workItemId,
 }: {
   agentClient: AgentClient;
+  onNavigateToConversation?: (conversationId: string) => void;
   onOpenConversation?: (conversationId: string) => void;
   title?: string;
   variant: Exclude<CollaborationGraphVariant, "mini">;
@@ -301,7 +520,7 @@ export function CollaborationProjectionGraph({
       if (event.type === "assistant.delta") {
         setProjection((current) => current === null
           ? current
-          : applyCollaborationAssistantDelta(current, event));
+          : applyCollaborationAssistantDelta(current, event, workItemId));
         return;
       }
       if (
@@ -327,6 +546,7 @@ export function CollaborationProjectionGraph({
     <CollaborationGraph
       projection={projection}
       variant={variant}
+      {...(onNavigateToConversation === undefined ? {} : { onNavigateToConversation })}
       {...(onOpenConversation === undefined ? {} : { onOpenConversation })}
       {...(title === undefined ? {} : { title })}
     />
@@ -336,7 +556,9 @@ export function CollaborationProjectionGraph({
 export function applyCollaborationAssistantDelta(
   projection: TeamCollaborationProjection,
   event: Extract<ConversationRunEvent, { type: "assistant.delta" }>,
+  workItemId: string,
 ): TeamCollaborationProjection {
+  if (event.teamWorkItemId !== workItemId) return projection;
   let changed = false;
   const nodes = projection.nodes.map((node) => {
     if (node.conversationId !== event.conversationId) return node;
@@ -353,41 +575,12 @@ export function applyCollaborationAssistantDelta(
   return changed ? { ...projection, nodes } : projection;
 }
 
-function LegendItem({
-  label,
-  state,
-}: {
-  label: string;
-  state: "ad_hoc" | "observed" | "planned";
-}): ReactElement {
-  return (
-    <span className="inline-flex items-center gap-1 whitespace-nowrap">
-      <span
-        aria-hidden="true"
-        className={cn(
-          "inline-block w-[15px] border-t-2 border-dashed",
-          state === "planned" && "border-[var(--app-muted-foreground)]",
-          state === "observed" && "border-[var(--app-accent)]",
-          state === "ad_hoc" && "border-[var(--app-destructive)]",
-        )}
-      />
-      {label}
-    </span>
-  );
-}
-
-function edgePathClassName(
-  state: TeamCollaborationEdgeView["state"],
-  flowing: boolean,
-): string {
+function edgePathClassName(flowing: boolean): string {
   return cn(
     "fill-none [stroke-width:1.65] [vector-effect:non-scaling-stroke]",
-    state === "planned" && "stroke-[var(--app-muted-foreground)] [stroke-dasharray:6_5]",
-    state === "observed" && "stroke-[var(--app-accent)] [stroke-dasharray:8_4]",
-    state === "observed" && flowing && "[animation:team-collaboration-flow_1.1s_linear_infinite] motion-reduce:animate-none",
-    state === "ad_hoc" && "stroke-[var(--app-destructive)] [stroke-dasharray:3_4]",
-    state === "ad_hoc" && flowing && "[animation:team-collaboration-flow_.9s_linear_infinite] motion-reduce:animate-none",
-    state === "skipped" && "stroke-[color-mix(in_srgb,var(--app-muted-foreground)_48%,transparent)] [stroke-dasharray:2_5]",
+    flowing
+      ? "stroke-[var(--app-accent)] [stroke-dasharray:8_4] [animation:team-collaboration-flow_1.1s_linear_infinite] motion-reduce:animate-none"
+      : "stroke-[var(--app-muted-foreground)] [stroke-dasharray:6_5]",
   );
 }
 
@@ -398,13 +591,8 @@ function edgeIsFlowing(
   return senderStatus === "running" && (state === "observed" || state === "ad_hoc");
 }
 
-function edgeMarkerClassName(state: TeamCollaborationEdgeView["state"]): string {
-  return cn(
-    state === "planned" && "fill-[var(--app-muted-foreground)]",
-    state === "observed" && "fill-[var(--app-accent)]",
-    state === "ad_hoc" && "fill-[var(--app-destructive)]",
-    state === "skipped" && "fill-[color-mix(in_srgb,var(--app-muted-foreground)_48%,transparent)]",
-  );
+function edgeMarkerClassName(flowing: boolean): string {
+  return flowing ? "fill-[var(--app-accent)]" : "fill-[var(--app-muted-foreground)]";
 }
 
 function nodeSurfaceClassName(
@@ -429,6 +617,7 @@ function nodeStatusClassName(status: TeamCollaborationNodeView["runStatus"]): st
 
 function graphGeometry(
   nodes: readonly TeamCollaborationNodeView[],
+  edges: readonly TeamCollaborationEdgeView[],
   isMini: boolean,
 ): {
   height: number;
@@ -444,13 +633,156 @@ function graphGeometry(
   const minX = Math.min(...xs) - nodeWidth / 2 - CANVAS_PADDING;
   const maxX = Math.max(...xs) + nodeWidth / 2 + CANVAS_PADDING;
   const minY = Math.min(...ys) - nodeHeight / 2 - CANVAS_PADDING;
-  const maxY = Math.max(...ys) + nodeHeight / 2 + CANVAS_PADDING;
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const needsReturnLane = edges.some((edge) => {
+    const from = nodesById.get(edge.fromNodeId);
+    const to = nodesById.get(edge.toNodeId);
+    return from !== undefined && to !== undefined && isLongReturnToLead(from, to, isMini);
+  });
+  const maxY = Math.max(...ys) + nodeHeight / 2 + CANVAS_PADDING
+    + (needsReturnLane ? RETURN_ROUTE_BEND : 0);
   return {
     height: Math.max(150, maxY - minY),
     minX,
     minY,
     width: Math.max(420, maxX - minX),
   };
+}
+
+function layoutGraphNodes(
+  nodes: readonly TeamCollaborationNodeView[],
+  edges: readonly TeamCollaborationEdgeView[],
+  isMini: boolean,
+): TeamCollaborationNodeView[] {
+  if (isMini || nodes.length < 2) return [...nodes];
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const lead = nodes.find((node) => node.kind === "team_lead") ?? nodes[0];
+  if (lead === undefined) return [...nodes];
+
+  const depthById = new Map<string, number>([[lead.id, 0]]);
+  const pendingNodeIds = [lead.id];
+  while (pendingNodeIds.length > 0) {
+    const currentId = pendingNodeIds.shift();
+    if (currentId === undefined) continue;
+    const depth = depthById.get(currentId);
+    if (depth === undefined) continue;
+    for (const edge of edges) {
+      if (edge.fromNodeId !== currentId || edge.toNodeId === lead.id) continue;
+      if (!byId.has(edge.toNodeId) || depthById.has(edge.toNodeId)) continue;
+      depthById.set(edge.toNodeId, depth + 1);
+      pendingNodeIds.push(edge.toNodeId);
+    }
+  }
+
+  const fallbackDepth = Math.max(...depthById.values(), 0) + 1;
+  const nodesByDepth = new Map<number, TeamCollaborationNodeView[]>();
+  for (const node of nodes) {
+    const depth = depthById.get(node.id) ?? fallbackDepth;
+    const group = nodesByDepth.get(depth) ?? [];
+    group.push(node);
+    nodesByDepth.set(depth, group);
+  }
+
+  const positionById = new Map<string, TeamCollaborationNodeView["position"]>();
+  for (const [depth, group] of nodesByDepth) {
+    const ordered = [...group].sort((left, right) => (
+      left.position.y - right.position.y || left.position.x - right.position.x
+    ));
+    ordered.forEach((node, index) => {
+      positionById.set(node.id, {
+        x: depth * (NODE_WIDTH + HORIZONTAL_NODE_GAP),
+        y: (index - (ordered.length - 1) / 2) * (NODE_HEIGHT + 28),
+      });
+    });
+  }
+  return nodes.map((node) => ({
+    ...node,
+    position: positionById.get(node.id) ?? node.position,
+  }));
+}
+
+function zoomedViewport(
+  geometry: ReturnType<typeof graphGeometry>,
+  zoom: number,
+  pan: CanvasPan,
+): CanvasViewport {
+  const width = geometry.width / zoom;
+  const height = geometry.height / zoom;
+  return {
+    height,
+    width,
+    x: geometry.minX + (geometry.width - width) / 2 + pan.x,
+    y: geometry.minY + (geometry.height - height) / 2 + pan.y,
+  };
+}
+
+function viewportViewBox(viewport: CanvasViewport): string {
+  return `${viewport.x} ${viewport.y} ${viewport.width} ${viewport.height}`;
+}
+
+function panForZoom(
+  geometry: ReturnType<typeof graphGeometry>,
+  zoom: number,
+  pointer: CanvasPointer,
+): CanvasPan {
+  const width = geometry.width / zoom;
+  const height = geometry.height / zoom;
+  const centeredX = geometry.minX + (geometry.width - width) / 2;
+  const centeredY = geometry.minY + (geometry.height - height) / 2;
+  return {
+    x: pointer.x - pointer.relativeX * width - centeredX,
+    y: pointer.y - pointer.relativeY * height - centeredY,
+  };
+}
+
+function canvasPointer(
+  event: { clientX: number; clientY: number },
+  canvas: HTMLDivElement,
+  svg: SVGSVGElement | null,
+  viewport: CanvasViewport,
+): CanvasPointer {
+  const svgPoint = svg === null || typeof svg.getScreenCTM !== "function"
+    ? null
+    : pointerInSvgCoordinates(event, svg);
+  if (svgPoint !== null) {
+    return {
+      relativeX: clamp((svgPoint.x - viewport.x) / viewport.width, 0, 1),
+      relativeY: clamp((svgPoint.y - viewport.y) / viewport.height, 0, 1),
+      x: svgPoint.x,
+      y: svgPoint.y,
+    };
+  }
+  const bounds = canvas.getBoundingClientRect();
+  const relativeX = bounds.width === 0
+    ? 0.5
+    : clamp((event.clientX - bounds.left) / bounds.width, 0, 1);
+  const relativeY = bounds.height === 0
+    ? 0.5
+    : clamp((event.clientY - bounds.top) / bounds.height, 0, 1);
+  return {
+    relativeX,
+    relativeY,
+    x: viewport.x + viewport.width * relativeX,
+    y: viewport.y + viewport.height * relativeY,
+  };
+}
+
+function pointerInSvgCoordinates(
+  event: { clientX: number; clientY: number },
+  svg: SVGSVGElement,
+): { x: number; y: number } | null {
+  const matrix = svg.getScreenCTM();
+  if (matrix === null || typeof svg.createSVGPoint !== "function") return null;
+  const point = svg.createSVGPoint();
+  point.x = event.clientX;
+  point.y = event.clientY;
+  const transformed = point.matrixTransform(matrix.inverse());
+  return { x: transformed.x, y: transformed.y };
+}
+
+function isCanvasBackground(target: EventTarget | null): boolean {
+  return target instanceof Element
+    && target.closest("[data-agent-node], path[marker-end]") === null;
 }
 
 function edgePath({
@@ -489,7 +821,24 @@ function edgePath({
   const startY = from.position.y + offsetY + unitY * clipDistance;
   const endX = to.position.x + offsetX - unitX * clipDistance;
   const endY = to.position.y + offsetY - unitY * clipDistance;
+  if (isLongReturnToLead(from, to, isMini)) {
+    const laneY = Math.max(from.position.y, to.position.y) + halfHeight + RETURN_ROUTE_BEND;
+    return `M ${from.position.x} ${from.position.y + halfHeight}`
+      + ` C ${from.position.x - HORIZONTAL_NODE_GAP / 4} ${laneY},`
+      + ` ${to.position.x + HORIZONTAL_NODE_GAP / 4} ${laneY},`
+      + ` ${to.position.x} ${to.position.y + halfHeight}`;
+  }
   return `M ${startX} ${startY} L ${endX} ${endY}`;
+}
+
+function isLongReturnToLead(
+  from: TeamCollaborationNodeView,
+  to: TeamCollaborationNodeView,
+  isMini: boolean,
+): boolean {
+  return !isMini
+    && to.kind === "team_lead"
+    && from.position.x - to.position.x > NODE_WIDTH + HORIZONTAL_NODE_GAP;
 }
 
 function edgeKey(fromNodeId: string, toNodeId: string): string {
@@ -505,6 +854,10 @@ function truncate(value: string, maxLength: number): string {
   return characters.length <= maxLength
     ? value
     : `${characters.slice(0, maxLength - 1).join("")}…`;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(Math.max(value, minimum), maximum);
 }
 
 function collaborationOutputExcerpt(value: string): string {

@@ -573,7 +573,7 @@ class RetryingFixtureModel implements ModelProviderAdapter {
   public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
     this.requests.push({ ...input, messages: [...input.messages] });
     if (this.requests.length === 1) {
-      return Promise.reject(new TypeError("fetch failed"));
+      return Promise.reject(new Error("Connection error. | UND_ERR_SOCKET"));
     }
     if (this.requests.length <= 5) {
       return Promise.reject(new ModelRequestError(429, "Model request failed (429): insufficient quota"));
@@ -4001,6 +4001,11 @@ describe("AgentRuntime", () => {
     });
     expect(database.listSubagentTasks(root.id)).toEqual([]);
     expect(database.listUnreadAgentMessages(root.id).some((message) => message.messageType === "agent_result")).toBe(true);
+    const memberNode = database.getTeamCollaborationProjection(workItem.id).nodes.find(
+      (node) => node.conversationId === member.id,
+    );
+    expect(typeof memberNode?.latestOutput).toBe("string");
+    expect(typeof memberNode?.latestOutputRunId).toBe("string");
     database.close();
   });
 

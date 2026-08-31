@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type {
   ConversationRunEvent,
@@ -12,6 +12,7 @@ import { DEFAULT_AGENT_DIRECTORY_CONFIGURATION } from "@agent/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MockAgentClient } from "../../runtime/mock-agent-client.js";
+import { TooltipProvider } from "../../components/ui/tooltip.js";
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
 import { TeamWorkspace } from "./team-workspace.js";
 
@@ -28,12 +29,16 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
+function renderTeamWorkspace(workspace: ReactElement): void {
+  root?.render(<TooltipProvider>{workspace}</TooltipProvider>);
+}
+
 describe("TeamWorkspace", () => {
   it("keeps execution planning at the right side of the team tabs", () => {
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    act(() => root?.render(
+    act(() => renderTeamWorkspace(
         <TeamWorkspace
           agentClient={new MockAgentClient()}
           onOpenConversation={() => undefined}
@@ -78,7 +83,7 @@ describe("TeamWorkspace", () => {
     document.body.append(container);
     root = createRoot(container);
     await act(async () => {
-      root?.render(
+      renderTeamWorkspace(
         <TeamWorkspace
           agentClient={client}
           onOpenConversation={() => undefined}
@@ -182,7 +187,7 @@ describe("TeamWorkspace", () => {
     document.body.append(container);
     root = createRoot(container);
     await act(async () => {
-      root?.render(
+      renderTeamWorkspace(
         <TeamWorkspace
           agentClient={client}
           onOpenConversation={() => undefined}
@@ -276,7 +281,7 @@ describe("TeamWorkspace", () => {
     document.body.append(container);
     root = createRoot(container);
     await act(async () => {
-      root?.render(
+      renderTeamWorkspace(
         <TeamWorkspace
           agentClient={client}
           onOpenConversation={() => undefined}

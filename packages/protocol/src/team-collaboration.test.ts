@@ -53,6 +53,7 @@ describe("Team collaboration protocol", () => {
         toNodeId: "member",
         unreadCount: 1,
       }],
+      isLive: true,
       nodes: [{
         agentId: "team-lead",
         avatarIcon: "crown",

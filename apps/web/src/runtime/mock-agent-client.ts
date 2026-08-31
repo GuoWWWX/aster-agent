@@ -1449,6 +1449,7 @@ export class MockAgentClient implements AgentClient {
     }
     return Promise.resolve({
       edges: [],
+      isLive: false,
       nodes: [],
       plan: null,
       summary: {

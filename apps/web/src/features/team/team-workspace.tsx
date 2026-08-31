@@ -24,6 +24,7 @@ import {
 } from "../../components/ui/select.js";
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
 import type { AgentClient } from "../../runtime/agent-client.js";
+import type { ProjectSession } from "../projects/project-session-model.js";
 import { TeamOperations } from "./team-operations-panel.js";
 import type { TeamWorkItemPrototype } from "./team-runtime-prototype.js";
 import {
@@ -44,13 +45,41 @@ import "./team-workspace.css";
 
 type TeamWorkspaceView = "board" | "planning" | "runtime";
 
+function toProjectSession(conversation: ConversationSummary): ProjectSession {
+  return {
+    activeSubagentCount: conversation.activeSubagentCount,
+    activeRunId: conversation.activeRunId,
+    agentId: conversation.agentId,
+    avatarIcon: conversation.avatarIcon ?? null,
+    hasUnreadResult: conversation.hasUnreadResult,
+    id: conversation.id,
+    isArchived: conversation.isArchived,
+    isPinned: conversation.isPinned,
+    lastRunStatus: conversation.lastRunStatus,
+    modelSelection: conversation.modelSelection,
+    parentConversationId: conversation.parentConversationId,
+    pinOrder: conversation.pinOrder ?? null,
+    projectId: conversation.projectId,
+    teamId: conversation.teamId,
+    teamWorkItemId: conversation.teamWorkItemId,
+    threadKind: conversation.threadKind,
+    title: conversation.title,
+    workspaceRootPath: conversation.workspaceRootPath,
+    ...(conversation.subagentTaskStatus === undefined ? {} : {
+      subagentTaskStatus: conversation.subagentTaskStatus,
+    }),
+  };
+}
+
 export function TeamWorkspace({
   agentClient,
   onOpenConversation,
+  onNavigateToConversation,
   projects,
 }: {
   agentClient: AgentClient;
-  onOpenConversation: (conversation: ConversationSummary) => void;
+  onOpenConversation: (conversation: ProjectSession, sourceConversationId?: string) => void;
+  onNavigateToConversation?: (conversationId: string) => void;
   projects: readonly ProjectSummary[];
 }): ReactElement {
   const teams = useAgentDirectoryStore((state) => state.teams);
@@ -217,7 +246,11 @@ export function TeamWorkspace({
       setCollaborationProjections((current) => {
         const projection = current.get(selectedRuntimeWorkItem.id);
         if (projection === undefined) return current;
-        const updated = applyCollaborationAssistantDelta(projection, event);
+        const updated = applyCollaborationAssistantDelta(
+          projection,
+          event,
+          selectedRuntimeWorkItem.id,
+        );
         if (updated === projection) return current;
         const next = new Map(current);
         next.set(selectedRuntimeWorkItem.id, updated);
@@ -410,8 +443,14 @@ export function TeamWorkspace({
                 const conversation = selectedExecution?.agents.find(
                   (participant) => participant.conversation.id === conversationId,
                 )?.conversation;
-                if (conversation !== undefined) onOpenConversation(conversation);
+                if (conversation !== undefined) {
+                  onOpenConversation(
+                    toProjectSession(conversation),
+                    selectedRuntimeWorkItem?.sourceConversationId ?? undefined,
+                  );
+                }
               }}
+              {...(onNavigateToConversation === undefined ? {} : { onNavigateToConversation })}
             />
           )}
         </div>
@@ -459,6 +498,7 @@ export function TeamWorkspace({
                 item={selectedRuntimeWorkItem}
                 projection={selectedCollaborationProjection}
                 onOpenConversation={onOpenConversation}
+                {...(onNavigateToConversation === undefined ? {} : { onNavigateToConversation })}
               />
               {isSelectedWorkItemLifecycle ? (
               <WorkItemLifecyclePanel
@@ -475,7 +515,10 @@ export function TeamWorkspace({
           <TeamOperations
             execution={selectedExecution}
             item={selectedWorkItem}
-            onOpenConversation={onOpenConversation}
+            onOpenConversation={(conversation) => onOpenConversation(
+              toProjectSession(conversation),
+              selectedRuntimeWorkItem?.sourceConversationId ?? undefined,
+            )}
           />
         </div>
       )}
@@ -549,14 +592,16 @@ function TeamWorkItemStatusPanel({
   execution,
   isLifecycle,
   item,
+  onNavigateToConversation,
   projection,
   onOpenConversation,
 }: {
   execution: TeamWorkItemExecutionView | null;
   isLifecycle: boolean;
   item: TeamWorkItemView;
+  onNavigateToConversation?: (conversationId: string) => void;
   projection: TeamCollaborationProjection | null;
-  onOpenConversation: (conversation: ConversationSummary) => void;
+  onOpenConversation: (conversation: ProjectSession, sourceConversationId?: string) => void;
 }): ReactElement {
   const lead = execution?.workItemId === item.id
     ? execution.agents.find((member) => member.depth === 0) ?? null
@@ -599,7 +644,9 @@ function TeamWorkItemStatusPanel({
             className="inline-flex h-[30px] items-center gap-[4px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-[8px] text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-foreground)] hover:bg-[var(--app-hover)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
             disabled={lead === null}
             type="button"
-            onClick={() => lead === null ? undefined : onOpenConversation(lead.conversation)}
+            onClick={() => lead === null
+              ? undefined
+              : onOpenConversation(toProjectSession(lead.conversation), item.sourceConversationId ?? undefined)}
           >
             打开 Team Lead 对话
           </button>
@@ -613,8 +660,14 @@ function TeamWorkItemStatusPanel({
               const conversation = execution?.agents.find(
                 (participant) => participant.conversation.id === conversationId,
               )?.conversation;
-              if (conversation !== undefined) onOpenConversation(conversation);
+              if (conversation !== undefined) {
+                onOpenConversation(
+                  toProjectSession(conversation),
+                  item.sourceConversationId ?? undefined,
+                );
+              }
             }}
+            {...(onNavigateToConversation === undefined ? {} : { onNavigateToConversation })}
           />
         )}
         <section className="grid gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] p-[10px]">

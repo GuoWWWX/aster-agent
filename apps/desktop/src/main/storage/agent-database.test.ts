@@ -47,10 +47,10 @@ describe("AgentDatabase", () => {
       .get() as Record<string, unknown>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(17);
-    expect(firstRow.name).toBe("team-collaboration-plans");
+    expect(firstRow.version).toBe(18);
+    expect(firstRow.name).toBe("team-collaboration-output-snapshots");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(17);
+    expect(migrationCount.count).toBe(18);
   });
 
   it("preserves legacy Team execution scope when migrating version 12 data", async () => {
@@ -288,7 +288,7 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 17",
+      "newer than supported version 18",
     );
   });
 
@@ -1209,9 +1209,10 @@ describe("AgentDatabase", () => {
       modelSelection.modelId,
     );
     database.markRunRunning(memberRun.runId);
+    const memberOutput = `已完成实现。${"详细输出".repeat(80)}`;
     database.completeRun({
       assistant: {
-        content: `已完成实现。${"详细输出".repeat(80)}`,
+        content: memberOutput,
         kind: "turn",
         messageId: crypto.randomUUID(),
         modelId: modelSelection.modelId,
@@ -1221,6 +1222,12 @@ describe("AgentDatabase", () => {
       result: "已完成实现。",
       runId: memberRun.runId,
       status: "completed",
+    });
+    database.recordTeamCollaborationOutput({
+      content: memberOutput,
+      conversationId: plannedMember.id,
+      runId: memberRun.runId,
+      workItemId: workItem.id,
     });
 
     const firstPlan = database.setTeamCollaborationPlan({
@@ -1298,6 +1305,65 @@ describe("AgentDatabase", () => {
       expect.objectContaining({ messageCount: 1, purposes: ["正式评审"], state: "observed" }),
       expect.objectContaining({ messageCount: 1, purposes: ["计划外通信"], state: "ad_hoc" }),
     ]));
+
+    database.finishRun(run.runId, "completed", null);
+    expect(database.finishTeamWorkItemRun({
+      conversationId: lead.id,
+      error: null,
+      resultSummary: "第一项协作任务已完成。",
+      runId: run.runId,
+      status: "completed",
+      workItemId: workItem.id,
+    })).toMatchObject({ status: "waiting_user" });
+    const laterWorkItem = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      modelSelection,
+      permissionMode: "full_access",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "执行后续的独立协作任务。",
+      teamId: "default-team",
+      title: "后续协作投影",
+    }, modelSelection);
+    database.reserveTeamWorkItemExecution(laterWorkItem.id, lead.id);
+    const laterLeadRun = database.createRunWithUserMessage(
+      lead.id,
+      "开始后续协作任务",
+      modelSelection.modelId,
+    );
+    database.startTeamWorkItem(laterWorkItem.id, lead.id, laterLeadRun.runId);
+    const laterMemberRun = database.createRunWithUserMessage(
+      plannedMember.id,
+      "处理后续任务",
+      modelSelection.modelId,
+    );
+    database.completeRun({
+      assistant: {
+        content: "这是后续 WorkItem 的成员输出。",
+        kind: "turn",
+        messageId: crypto.randomUUID(),
+        modelId: modelSelection.modelId,
+      },
+      conversationId: plannedMember.id,
+      error: null,
+      result: "这是后续 WorkItem 的成员输出。",
+      runId: laterMemberRun.runId,
+      status: "completed",
+    });
+    database.recordTeamCollaborationOutput({
+      content: "这是后续 WorkItem 的成员输出。",
+      conversationId: plannedMember.id,
+      runId: laterMemberRun.runId,
+      workItemId: laterWorkItem.id,
+    });
+    const historicalProjection = database.getTeamCollaborationProjection(workItem.id);
+    expect(historicalProjection.isLive).toBe(false);
+    expect(database.getTeamCollaborationProjection(laterWorkItem.id).isLive).toBe(true);
+    expect(historicalProjection.nodes.find(
+      (node) => node.conversationId === plannedMember.id,
+    )).toMatchObject({
+      latestOutputRunId: memberRun.runId,
+    });
     database.close();
   });
 
@@ -1477,6 +1543,7 @@ describe("AgentDatabase", () => {
       { version: 15 },
       { version: 16 },
       { version: 17 },
+      { version: 18 },
     ]);
     metadata.close();
   });

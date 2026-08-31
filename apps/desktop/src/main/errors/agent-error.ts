@@ -212,7 +212,7 @@ function classifyError(
   ) {
     return classificationForCode("MODEL_RESPONSE_INVALID");
   }
-  if (reason instanceof TypeError && /fetch|network|socket|connect|econn/iu.test(message)) {
+  if (reason instanceof Error && /fetch|network|socket|connect|econn/iu.test(message)) {
     return classificationForCode("NETWORK_UNAVAILABLE");
   }
   if (/model provider.+unavailable/iu.test(message)) {

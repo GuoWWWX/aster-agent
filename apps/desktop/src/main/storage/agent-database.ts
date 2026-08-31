@@ -532,26 +532,13 @@ function collaborationRunStatus(
   return "idle";
 }
 
-function collaborationLatestOutput(
-  timeline: readonly ConversationTimelineItem[],
-): Pick<
-  TeamCollaborationProjection["nodes"][number],
-  "latestOutput" | "latestOutputRunId"
-> {
-  for (let index = timeline.length - 1; index >= 0; index -= 1) {
-    const item = timeline[index];
-    if (item?.kind !== "message" || item.role !== "assistant") continue;
-    const normalized = item.content.replace(/\s+/gu, " ").trim();
-    if (normalized.length === 0) continue;
-    const characters = Array.from(normalized);
-    return {
-      latestOutput: characters.length <= MAX_TEAM_COLLABORATION_OUTPUT_LENGTH
-        ? normalized
-        : `…${characters.slice(-(MAX_TEAM_COLLABORATION_OUTPUT_LENGTH - 1)).join("")}`,
-      latestOutputRunId: item.runId,
-    };
-  }
-  return { latestOutput: null, latestOutputRunId: null };
+function collaborationOutputExcerpt(content: string): string | null {
+  const normalized = content.replace(/\s+/gu, " ").trim();
+  if (normalized.length === 0) return null;
+  const characters = Array.from(normalized);
+  return characters.length <= MAX_TEAM_COLLABORATION_OUTPUT_LENGTH
+    ? normalized
+    : `…${characters.slice(-(MAX_TEAM_COLLABORATION_OUTPUT_LENGTH - 1)).join("")}`;
 }
 
 function collaborationEdgeView(input: {
@@ -2391,6 +2378,30 @@ export class AgentDatabase {
     ).run(input.workItemId, input.message.id);
   }
 
+  /** Persists the last visible Assistant excerpt for exactly one WorkItem participant. */
+  public recordTeamCollaborationOutput(input: {
+    content: string;
+    conversationId: string;
+    runId: string;
+    workItemId: string;
+  }): void {
+    if (!this.isConversationInTeamWorkItemExecution(input.conversationId, input.workItemId)) {
+      return;
+    }
+    const content = collaborationOutputExcerpt(input.content);
+    if (content === null) return;
+    const now = new Date().toISOString();
+    this.database.prepare(
+      `INSERT INTO team_work_item_collaboration_outputs
+         (work_item_id, conversation_id, run_id, content, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(work_item_id, conversation_id) DO UPDATE SET
+         run_id = excluded.run_id,
+         content = excluded.content,
+         updated_at = excluded.updated_at`,
+    ).run(input.workItemId, input.conversationId, input.runId, content, now);
+  }
+
   /** Builds the single renderer projection from persisted plan and message facts. */
   public getTeamCollaborationProjection(workItemId: string): TeamCollaborationProjection {
     const workItem = this.getTeamWorkItem(workItemId);
@@ -2398,12 +2409,28 @@ export class AgentDatabase {
     const executionByConversationId = new Map(
       execution.agents.map((participant) => [participant.conversation.id, participant]),
     );
+    const outputByConversationId = new Map(
+      (this.database.prepare(
+        `SELECT conversation_id, content, run_id
+         FROM team_work_item_collaboration_outputs
+         WHERE work_item_id = ?`,
+      ).all(workItemId) as DatabaseRow[]).map((row) => [
+        asString(row, "conversation_id"),
+        {
+          latestOutput: asString(row, "content"),
+          latestOutputRunId: asString(row, "run_id"),
+        },
+      ]),
+    );
     const nodePresentationByConversationId = new Map(
       execution.agents.map((participant) => [
         participant.conversation.id,
         {
           avatarIcon: participant.conversation.avatarIcon ?? null,
-          ...collaborationLatestOutput(this.listTimeline(participant.conversation.id)),
+          ...(outputByConversationId.get(participant.conversation.id) ?? {
+            latestOutput: null,
+            latestOutputRunId: null,
+          }),
         },
       ]),
     );
@@ -2442,6 +2469,9 @@ export class AgentDatabase {
       const participant = conversationId === null
         ? undefined
         : executionByConversationId.get(conversationId);
+      const output = conversationId === null
+        ? undefined
+        : outputByConversationId.get(conversationId);
       const presentation = conversationId === null
         ? undefined
         : nodePresentationByConversationId.get(conversationId);
@@ -2454,8 +2484,8 @@ export class AgentDatabase {
         id,
         kind: z.enum(["team_lead", "standing", "ephemeral", "placeholder"])
           .parse(asString(row, "kind")),
-        latestOutput: presentation?.latestOutput ?? null,
-        latestOutputRunId: presentation?.latestOutputRunId ?? null,
+        latestOutput: output?.latestOutput ?? null,
+        latestOutputRunId: output?.latestOutputRunId ?? null,
         name: asString(row, "name_snapshot"),
         position: {
           x: asNumber(row, "position_x"),
@@ -2566,6 +2596,7 @@ export class AgentDatabase {
     const lastActivityAt = messages.at(-1)?.createdAt ?? null;
     return teamCollaborationProjectionSchema.parse({
       edges,
+      isLive: workItem.status === "running" || workItem.status === "reviewing",
       nodes,
       plan: planRow === undefined ? null : {
         activatedAt: asString(planRow, "activated_at"),
@@ -8294,6 +8325,25 @@ export class AgentDatabase {
           `);
         },
         version: 17,
+      },
+      {
+        name: "team-collaboration-output-snapshots",
+        up: (database) => {
+          database.exec(`
+            CREATE TABLE IF NOT EXISTS team_work_item_collaboration_outputs (
+              work_item_id TEXT NOT NULL REFERENCES team_work_items(id) ON DELETE CASCADE,
+              conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+              run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+              content TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY (work_item_id, conversation_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS team_work_item_collaboration_outputs_work_item
+              ON team_work_item_collaboration_outputs(work_item_id, updated_at);
+          `);
+        },
+        version: 18,
       },
     ]);
   }

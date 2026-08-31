@@ -78,6 +78,7 @@ export const teamCollaborationEdgeViewSchema = z.object({
 
 export const teamCollaborationProjectionSchema = z.object({
   edges: z.array(teamCollaborationEdgeViewSchema).max(200),
+  isLive: z.boolean(),
   nodes: z.array(teamCollaborationNodeViewSchema).max(100),
   plan: teamCollaborationPlanViewSchema.nullable(),
   summary: z.object({

@@ -2739,6 +2739,17 @@ export class AgentRuntime {
     runId: string;
     status: "completed" | "failed" | "cancelled";
   }): void {
+    const teamWorkItem = this.database.getRunningTeamWorkItemByExecutionTreeConversation(
+      input.conversationId,
+    );
+    if (teamWorkItem !== null) {
+      this.database.recordTeamCollaborationOutput({
+        content: input.result ?? input.assistant?.content ?? "",
+        conversationId: input.conversationId,
+        runId: input.runId,
+        workItemId: teamWorkItem.id,
+      });
+    }
     const canWriteAheadTerminal = this.threadLog !== null
       && this.eventProjector !== null
       && !this.database.hasSubagentTaskForTargetRun(input.runId);
@@ -3124,6 +3135,9 @@ export class AgentRuntime {
 
   private async completeModelTurn(input: ModelTurnRequest): Promise<ModelTurnResult> {
     input.signal.throwIfAborted();
+    const teamWorkItemId = this.database.getRunningTeamWorkItemByExecutionTreeConversation(
+      input.conversationId,
+    )?.id;
     this.emit(input.emit, {
       conversationId: input.conversationId,
       runId: input.runId,
@@ -3153,6 +3167,7 @@ export class AgentRuntime {
           messageId: input.messageId,
           modelId: input.configuration.modelId,
           runId: input.runId,
+          ...(teamWorkItemId === undefined ? {} : { teamWorkItemId }),
           type: "assistant.delta"
         });
       },

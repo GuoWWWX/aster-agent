@@ -1,13 +1,16 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { TeamCollaborationProjection } from "@agent/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { TooltipProvider } from "../../../components/ui/tooltip.js";
+import type { AgentClient } from "../../../runtime/agent-client.js";
 import {
   applyCollaborationAssistantDelta,
   CollaborationGraph,
+  CollaborationProjectionGraph,
 } from "./collaboration-graph.js";
 
 let root: Root | null = null;
@@ -18,13 +21,17 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
+function renderGraph(graph: ReactElement): void {
+  root?.render(<TooltipProvider>{graph}</TooltipProvider>);
+}
+
 describe("CollaborationGraph", () => {
-  it("renders planned and actual routes and opens a participant conversation", () => {
+  it("renders a single route treatment and opens a participant conversation", () => {
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
     const onOpenConversation = vi.fn();
-    act(() => root?.render(
+    act(() => renderGraph(
       <CollaborationGraph
         onOpenConversation={onOpenConversation}
         projection={projectionFixture()}
@@ -36,7 +43,10 @@ describe("CollaborationGraph", () => {
     expect(container.textContent).toContain("协作测试");
     expect(container.textContent).toContain("计划 v1 · 2 条消息");
     expect(container.textContent).not.toContain("实现 · 2");
-    expect(container.textContent).toContain("计划外");
+    expect(container.textContent).not.toContain("计划路线");
+    expect(container.textContent).not.toContain("已发生");
+    expect(container.textContent).not.toContain("计划外");
+    expect(container.textContent).toContain("2 个 Agent · 1 条活跃路线");
     expect(container.textContent).toContain("正在检查代码细节");
     expect(container.querySelector('[data-agent-icon="code"]')).not.toBeNull();
     expect(container.querySelectorAll('[role="button"]')).toHaveLength(2);
@@ -51,11 +61,142 @@ describe("CollaborationGraph", () => {
     );
   });
 
+  it("navigates to the full Agent conversation when Ctrl-clicking a participant", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const onOpenConversation = vi.fn();
+    const onNavigateToConversation = vi.fn();
+    act(() => renderGraph(
+      <CollaborationGraph
+        onNavigateToConversation={onNavigateToConversation}
+        onOpenConversation={onOpenConversation}
+        projection={projectionFixture()}
+        variant="embedded"
+      />,
+    ));
+
+    act(() => {
+      container.querySelector<SVGGElement>('[aria-label^="开发 Agent"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, ctrlKey: true }),
+      );
+    });
+
+    expect(onNavigateToConversation).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-000000000202",
+    );
+    expect(onOpenConversation).not.toHaveBeenCalled();
+  });
+
+  it("preserves side opening and direct navigation through the loaded projection graph", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const projection = projectionFixture();
+    const onOpenConversation = vi.fn();
+    const onNavigateToConversation = vi.fn();
+    const agentClient = {
+      getTeamCollaborationProjection: vi.fn(() => Promise.resolve(projection)),
+      onConversationRunEvent: vi.fn(() => () => undefined),
+    } as unknown as AgentClient;
+
+    await act(async () => {
+      renderGraph(
+        <CollaborationProjectionGraph
+          agentClient={agentClient}
+          onNavigateToConversation={onNavigateToConversation}
+          onOpenConversation={onOpenConversation}
+          variant="conversation"
+          workItemId={projection.workItemId}
+        />,
+      );
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    const member = container.querySelector<SVGGElement>('[aria-label^="开发 Agent"]');
+    expect(member).not.toBeNull();
+    act(() => {
+      member?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      member?.dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
+    });
+    expect(onOpenConversation).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-000000000202",
+    );
+    expect(onNavigateToConversation).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-000000000202",
+    );
+
+    act(() => {
+      member?.dispatchEvent(new MouseEvent("contextmenu", {
+        bubbles: true,
+        clientX: 120,
+        clientY: 80,
+      }));
+    });
+    const menu = document.querySelector<HTMLElement>('[role="menu"]');
+    expect(menu?.textContent).toContain("在侧边打开");
+    expect(menu?.textContent).toContain("跳转到 Agent 对话");
+  });
+
+  it("offers side opening and direct navigation from an Agent node context menu", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const onOpenConversation = vi.fn();
+    const onNavigateToConversation = vi.fn();
+    act(() => renderGraph(
+      <CollaborationGraph
+        onNavigateToConversation={onNavigateToConversation}
+        onOpenConversation={onOpenConversation}
+        projection={projectionFixture()}
+        variant="embedded"
+      />,
+    ));
+
+    const member = container.querySelector<SVGGElement>('[aria-label^="开发 Agent"]');
+    act(() => {
+      member?.dispatchEvent(new MouseEvent("contextmenu", {
+        bubbles: true,
+        clientX: 120,
+        clientY: 80,
+      }));
+    });
+    const menu = document.querySelector<HTMLElement>('[role="menu"]');
+    expect(menu?.textContent).toContain("在侧边打开");
+    expect(menu?.textContent).toContain("跳转到 Agent 对话");
+
+    act(() => {
+      [...(menu?.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]') ?? [])]
+        .find((button) => button.textContent?.includes("在侧边打开"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onOpenConversation).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-000000000202",
+    );
+
+    act(() => {
+      member?.dispatchEvent(new MouseEvent("contextmenu", {
+        bubbles: true,
+        clientX: 120,
+        clientY: 80,
+      }));
+    });
+    const reopenedMenu = document.querySelector<HTMLElement>('[role="menu"]');
+    act(() => {
+      [...(reopenedMenu?.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]') ?? [])]
+        .find((button) => button.textContent?.includes("跳转到 Agent 对话"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onNavigateToConversation).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-000000000202",
+    );
+  });
+
   it("keeps the board mini graph free of headings and animated detail labels", () => {
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    act(() => root?.render(
+    act(() => renderGraph(
       <CollaborationGraph projection={projectionFixture()} variant="mini" />,
     ));
 
@@ -70,18 +211,58 @@ describe("CollaborationGraph", () => {
     root = createRoot(container);
     const projection = projectionFixture();
 
-    act(() => root?.render(
+    act(() => renderGraph(
       <CollaborationGraph projection={projection} variant="conversation" />,
     ));
     expect(container.querySelector('svg path[marker-end]')?.getAttribute("class"))
       .toContain("animation:team-collaboration-flow");
 
-    projection.nodes[0]!.runStatus = "completed";
-    act(() => root?.render(
-      <CollaborationGraph projection={projection} variant="conversation" />,
+    const completedProjection = {
+      ...projection,
+      nodes: projection.nodes.map((node) => node.id === "lead"
+        ? { ...node, runStatus: "completed" as const }
+        : node),
+    };
+    act(() => renderGraph(
+      <CollaborationGraph projection={completedProjection} variant="conversation" />,
     ));
     const stoppedRoute = container.querySelector<SVGPathElement>('svg path[marker-end]');
     expect(stoppedRoute?.getAttribute("class")).not.toContain("animation:team-collaboration-flow");
+  });
+
+  it("keeps a historical route static when a reused Agent conversation runs a later WorkItem", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const historicalProjection = {
+      ...projectionFixture(),
+      isLive: false,
+    };
+
+    act(() => renderGraph(
+      <CollaborationGraph projection={historicalProjection} variant="conversation" />,
+    ));
+
+    expect(container.querySelector('svg path[marker-end]')?.getAttribute("class"))
+      .not.toContain("animation:team-collaboration-flow");
+  });
+
+  it("keeps inactive ad-hoc communication neutral instead of treating it as an error", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const projection = projectionFixture();
+    projection.isLive = false;
+    projection.edges = projection.edges.map((edge) => ({ ...edge, state: "ad_hoc" }));
+
+    act(() => renderGraph(
+      <CollaborationGraph projection={projection} variant="conversation" />,
+    ));
+
+    const route = container.querySelector<SVGPathElement>("svg path[marker-end]");
+    expect(route?.getAttribute("class")).toContain("stroke-[var(--app-muted-foreground)]");
+    expect(route?.getAttribute("class")).not.toContain("stroke-[var(--app-destructive)]");
+    expect(route?.getAttribute("marker-end")).toContain("normal");
   });
 
   it("draws reciprocal communication as parallel straight routes without visible labels", () => {
@@ -100,7 +281,7 @@ describe("CollaborationGraph", () => {
         toNodeId: "lead",
       },
     ];
-    act(() => root?.render(
+    act(() => renderGraph(
       <CollaborationGraph projection={projection} variant="conversation" />,
     ));
 
@@ -119,6 +300,139 @@ describe("CollaborationGraph", () => {
     expect(visibleSvgText).not.toContain("结果回传");
   });
 
+  it("lays a staged collaboration left-to-right and curves the long return to Team Lead", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const projection = projectionFixture();
+    const architect = {
+      ...projection.nodes[1]!,
+      id: "architect",
+      name: "架构师",
+      position: { x: 40, y: -80 },
+    };
+    const tester = {
+      ...projection.nodes[1]!,
+      id: "tester",
+      name: "测试工程师",
+      position: { x: 40, y: 80 },
+    };
+    projection.nodes = [projection.nodes[0]!, projection.nodes[1]!, architect, tester];
+    projection.edges = [
+      projection.edges[0]!,
+      {
+        ...projection.edges[0]!,
+        fromNodeId: "member",
+        id: "member-to-architect",
+        toNodeId: "architect",
+      },
+      {
+        ...projection.edges[0]!,
+        fromNodeId: "architect",
+        id: "architect-to-tester",
+        toNodeId: "tester",
+      },
+      {
+        ...projection.edges[0]!,
+        fromNodeId: "tester",
+        id: "tester-to-lead",
+        toNodeId: "lead",
+      },
+    ];
+    act(() => renderGraph(
+      <CollaborationGraph projection={projection} variant="conversation" />,
+    ));
+
+    expect(container.querySelector('[data-agent-node="lead"]')?.getAttribute("transform"))
+      .toBe("translate(0 0)");
+    expect(container.querySelector('[data-agent-node="member"]')?.getAttribute("transform"))
+      .toBe("translate(240 0)");
+    expect(container.querySelector('[data-agent-node="architect"]')?.getAttribute("transform"))
+      .toBe("translate(480 0)");
+    expect(container.querySelector('[data-agent-node="tester"]')?.getAttribute("transform"))
+      .toBe("translate(720 0)");
+    const paths = [...container.querySelectorAll<SVGPathElement>("svg path[marker-end]")];
+    expect(paths.slice(0, 3).every((path) => path.getAttribute("d")?.includes(" L "))).toBe(true);
+    expect(paths[3]?.getAttribute("d")).toContain(" C ");
+  });
+
+  it("zooms the canvas only for Ctrl-wheel while it is hovered", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() => renderGraph(
+      <CollaborationGraph projection={projectionFixture()} variant="conversation" />,
+    ));
+
+    const canvas = container.querySelector<HTMLElement>("[data-collaboration-canvas]");
+    const svg = canvas?.querySelector("svg");
+    mockCanvasBounds(canvas);
+    const initialViewBox = svg?.getAttribute("viewBox");
+    act(() => {
+      canvas?.dispatchEvent(new WheelEvent("wheel", {
+        bubbles: true,
+        clientX: 450,
+        clientY: 120,
+        ctrlKey: true,
+        deltaY: -120,
+      }));
+    });
+    expect(canvas?.getAttribute("data-zoom")).toBe("1.10");
+    expect(svg?.getAttribute("viewBox")).not.toBe(initialViewBox);
+    expect(viewBoxNumbers(svg?.getAttribute("viewBox"))[0])
+      .toBeGreaterThan(viewBoxNumbers(initialViewBox)[0]!);
+
+    act(() => {
+      canvas?.dispatchEvent(new WheelEvent("wheel", {
+        bubbles: true,
+        deltaY: -120,
+      }));
+    });
+    expect(canvas?.getAttribute("data-zoom")).toBe("1.10");
+  });
+
+  it("pans from blank canvas space and locates the full graph again", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() => renderGraph(
+      <CollaborationGraph projection={projectionFixture()} variant="conversation" />,
+    ));
+
+    const canvas = container.querySelector<HTMLElement>("[data-collaboration-canvas]");
+    const svg = canvas?.querySelector("svg");
+    mockCanvasBounds(canvas);
+    const initialViewBox = svg?.getAttribute("viewBox");
+    act(() => {
+      canvas?.dispatchEvent(new MouseEvent("pointerdown", {
+        bubbles: true,
+        button: 0,
+        clientX: 300,
+        clientY: 120,
+      }));
+      canvas?.dispatchEvent(new MouseEvent("pointermove", {
+        bubbles: true,
+        button: 0,
+        clientX: 360,
+        clientY: 150,
+      }));
+      canvas?.dispatchEvent(new MouseEvent("pointerup", {
+        bubbles: true,
+        button: 0,
+        clientX: 360,
+        clientY: 150,
+      }));
+    });
+    expect(svg?.getAttribute("viewBox")).not.toBe(initialViewBox);
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="定位并适配协作图"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(canvas?.getAttribute("data-zoom")).toBe("1.00");
+    expect(svg?.getAttribute("viewBox")).toBe(initialViewBox);
+  });
+
   it("replaces an older output when a new Run starts streaming and then appends deltas", () => {
     const projection = projectionFixture();
     const first = applyCollaborationAssistantDelta(projection, {
@@ -127,21 +441,38 @@ describe("CollaborationGraph", () => {
       messageId: "00000000-0000-4000-8000-000000000211",
       modelId: "test-model",
       runId: "00000000-0000-4000-8000-000000000212",
+      teamWorkItemId: projection.workItemId,
       type: "assistant.delta",
-    });
+    }, projection.workItemId);
     const second = applyCollaborationAssistantDelta(first, {
       conversationId: "00000000-0000-4000-8000-000000000202",
       delta: "，正在验证。",
       messageId: "00000000-0000-4000-8000-000000000211",
       modelId: "test-model",
       runId: "00000000-0000-4000-8000-000000000212",
+      teamWorkItemId: projection.workItemId,
       type: "assistant.delta",
-    });
+    }, projection.workItemId);
 
     expect(second.nodes[1]).toMatchObject({
       latestOutput: "开始处理，正在验证。",
       latestOutputRunId: "00000000-0000-4000-8000-000000000212",
     });
+  });
+
+  it("ignores a later WorkItem's assistant output on a historical graph", () => {
+    const projection = projectionFixture();
+    const updated = applyCollaborationAssistantDelta(projection, {
+      conversationId: "00000000-0000-4000-8000-000000000202",
+      delta: "后续任务的输出",
+      messageId: "00000000-0000-4000-8000-000000000211",
+      modelId: "test-model",
+      runId: "00000000-0000-4000-8000-000000000212",
+      teamWorkItemId: "00000000-0000-4000-8000-000000000213",
+      type: "assistant.delta",
+    }, projection.workItemId);
+
+    expect(updated).toBe(projection);
   });
 });
 
@@ -164,6 +495,7 @@ function projectionFixture(): TeamCollaborationProjection {
       toNodeId: "member",
       unreadCount: 1,
     }],
+    isLive: true,
     nodes: [{
       agentId: "lead",
       avatarIcon: "crown",
@@ -209,4 +541,25 @@ function projectionFixture(): TeamCollaborationProjection {
     },
     workItemId: "00000000-0000-4000-8000-000000000204",
   };
+}
+
+function mockCanvasBounds(canvas: HTMLElement | null): void {
+  if (canvas === null) throw new Error("Expected collaboration canvas.");
+  Object.defineProperty(canvas, "getBoundingClientRect", {
+    configurable: true,
+    value: () => ({
+      bottom: 300,
+      height: 300,
+      left: 0,
+      right: 600,
+      top: 0,
+      width: 600,
+      x: 0,
+      y: 0,
+    }),
+  });
+}
+
+function viewBoxNumbers(viewBox: string | null | undefined): number[] {
+  return (viewBox ?? "").split(" ").map(Number);
 }
