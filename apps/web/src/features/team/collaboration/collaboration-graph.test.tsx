@@ -32,7 +32,7 @@ describe("CollaborationGraph", () => {
 
     expect(container.textContent).toContain("协作测试");
     expect(container.textContent).toContain("计划 v1 · 2 条消息");
-    expect(container.textContent).toContain("实现 · 2");
+    expect(container.textContent).not.toContain("实现 · 2");
     expect(container.textContent).toContain("计划外");
     expect(container.querySelectorAll('[role="button"]')).toHaveLength(2);
 
@@ -57,6 +57,39 @@ describe("CollaborationGraph", () => {
     expect(container.textContent).not.toContain("计划 v1");
     expect(container.textContent).not.toContain("实现 · 2");
     expect(container.querySelectorAll("svg circle").length).toBeGreaterThan(0);
+  });
+
+  it("draws reciprocal communication as parallel straight routes without visible labels", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const projection = projectionFixture();
+    projection.edges = [
+      ...projection.edges,
+      {
+        ...projection.edges[0]!,
+        fromNodeId: "member",
+        id: "return-route",
+        messageCount: 1,
+        purposes: ["结果回传"],
+        toNodeId: "lead",
+      },
+    ];
+    act(() => root?.render(
+      <CollaborationGraph projection={projection} variant="conversation" />,
+    ));
+
+    const routes = [...container.querySelectorAll<SVGPathElement>("svg path[marker-end]")];
+    const routePaths = routes.map((route) => route.getAttribute("d"));
+    const visibleSvgText = [...container.querySelectorAll<SVGTextElement>("svg text")]
+      .map((node) => node.textContent)
+      .join(" ");
+    expect(routes).toHaveLength(2);
+    expect(routePaths.every((path) => path?.includes(" L "))).toBe(true);
+    expect(routePaths.every((path) => !path?.includes(" C "))).toBe(true);
+    expect(new Set(routePaths)).toHaveLength(2);
+    expect(visibleSvgText).not.toContain("实现");
+    expect(visibleSvgText).not.toContain("结果回传");
   });
 });
 

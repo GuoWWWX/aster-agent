@@ -36,12 +36,16 @@ export function CollaborationGraph({
 }): ReactElement {
   const markerPrefix = useId().replaceAll(":", "");
   const geometry = useMemo(
-    () => graphGeometry(projection.nodes, projection.edges),
-    [projection.edges, projection.nodes],
+    () => graphGeometry(projection.nodes),
+    [projection.nodes],
   );
   const nodesById = useMemo(
     () => new Map(projection.nodes.map((node) => [node.id, node])),
     [projection.nodes],
+  );
+  const edgeKeys = useMemo(
+    () => new Set(projection.edges.map((edge) => edgeKey(edge.fromNodeId, edge.toNodeId))),
+    [projection.edges],
   );
   const isMini = variant === "mini";
   const handleNodeKeyDown = (
@@ -116,23 +120,20 @@ export function CollaborationGraph({
                 const from = nodesById.get(edge.fromNodeId);
                 const to = nodesById.get(edge.toNodeId);
                 if (from === undefined || to === undefined) return null;
-                const path = edgePath(from, to);
-                const label = edgeLabel(edge);
+                const path = edgePath({
+                  from,
+                  hasReciprocal: edgeKeys.has(edgeKey(edge.toNodeId, edge.fromNodeId)),
+                  isMini,
+                  to,
+                });
                 return (
-                  <g key={edge.id}>
-                    <path
-                      className={edgePathClassName(edge.state)}
-                      d={path.d}
-                      markerEnd={`url(#${markerPrefix}-${edge.state})`}
-                      vectorEffect="non-scaling-stroke"
-                    />
-                    {isMini ? null : (
-                      <g transform={`translate(${path.labelX} ${path.labelY})`}>
-                        <rect className="fill-[color-mix(in_srgb,var(--app-panel)_92%,transparent)] stroke-[var(--app-border)] stroke-1" height="20" rx="4" width={Math.min(180, Math.max(42, label.length * 7 + 14))} x={-Math.min(180, Math.max(42, label.length * 7 + 14)) / 2} y="-10" />
-                        <text className="fill-[var(--app-muted-foreground)] text-[10px]" dominantBaseline="middle" textAnchor="middle">{label}</text>
-                      </g>
-                    )}
-                  </g>
+                  <path
+                    className={edgePathClassName(edge.state)}
+                    d={path}
+                    key={edge.id}
+                    markerEnd={`url(#${markerPrefix}-${edge.state})`}
+                    vectorEffect="non-scaling-stroke"
+                  />
                 );
               })}
             </g>
@@ -332,7 +333,6 @@ function nodeStatusClassName(status: TeamCollaborationNodeView["runStatus"]): st
 
 function graphGeometry(
   nodes: readonly TeamCollaborationNodeView[],
-  edges: readonly TeamCollaborationEdgeView[],
 ): {
   height: number;
   minX: number;
@@ -342,16 +342,10 @@ function graphGeometry(
   if (nodes.length === 0) return { height: 160, minX: 0, minY: 0, width: 480 };
   const xs = nodes.map((node) => node.position.x);
   const ys = nodes.map((node) => node.position.y);
-  const nodesById = new Map(nodes.map((node) => [node.id, node]));
-  const hasFeedbackRoute = edges.some((edge) => {
-    const from = nodesById.get(edge.fromNodeId);
-    const to = nodesById.get(edge.toNodeId);
-    return from !== undefined && to !== undefined && to.position.x <= from.position.x + 20;
-  });
   const minX = Math.min(...xs) - NODE_WIDTH / 2 - CANVAS_PADDING;
   const maxX = Math.max(...xs) + NODE_WIDTH / 2 + CANVAS_PADDING;
   const minY = Math.min(...ys) - NODE_HEIGHT / 2 - CANVAS_PADDING;
-  const maxY = Math.max(...ys) + NODE_HEIGHT / 2 + (hasFeedbackRoute ? 110 : CANVAS_PADDING);
+  const maxY = Math.max(...ys) + NODE_HEIGHT / 2 + CANVAS_PADDING;
   return {
     height: Math.max(150, maxY - minY),
     minX,
@@ -360,36 +354,47 @@ function graphGeometry(
   };
 }
 
-function edgePath(from: TeamCollaborationNodeView, to: TeamCollaborationNodeView): {
-  d: string;
-  labelX: number;
-  labelY: number;
-} {
-  const forward = to.position.x > from.position.x + 20;
-  const startX = from.position.x + (forward ? NODE_WIDTH / 2 : 0);
-  const startY = from.position.y + (forward ? 0 : NODE_HEIGHT / 2);
-  const endX = to.position.x - (forward ? NODE_WIDTH / 2 : 0);
-  const endY = to.position.y - (forward ? 0 : NODE_HEIGHT / 2);
-  if (forward) {
-    const bend = Math.max(50, (endX - startX) * 0.48);
-    return {
-      d: `M ${startX} ${startY} C ${startX + bend} ${startY}, ${endX - bend} ${endY}, ${endX} ${endY}`,
-      labelX: (startX + endX) / 2,
-      labelY: (startY + endY) / 2 - 13,
-    };
-  }
-  const offset = Math.max(45, Math.abs(endY - startY) * 0.25 + 45);
-  const controlY = Math.max(startY, endY) + offset;
-  return {
-    d: `M ${startX} ${startY} C ${startX + 70} ${controlY}, ${endX - 70} ${controlY}, ${endX} ${endY}`,
-    labelX: (startX + endX) / 2,
-    labelY: controlY - 10,
-  };
+function edgePath({
+  from,
+  hasReciprocal,
+  isMini,
+  to,
+}: {
+  from: TeamCollaborationNodeView;
+  hasReciprocal: boolean;
+  isMini: boolean;
+  to: TeamCollaborationNodeView;
+}): string {
+  const deltaX = to.position.x - from.position.x;
+  const deltaY = to.position.y - from.position.y;
+  const distance = Math.hypot(deltaX, deltaY);
+  if (distance === 0) return `M ${from.position.x} ${from.position.y}`;
+
+  const unitX = deltaX / distance;
+  const unitY = deltaY / distance;
+  const perpendicularX = -unitY;
+  const perpendicularY = unitX;
+  const routeOffset = hasReciprocal ? -10 : 0;
+  const halfWidth = isMini ? 16 : NODE_WIDTH / 2;
+  const halfHeight = isMini ? 16 : NODE_HEIGHT / 2;
+  const horizontalClip = Math.abs(unitX) < Number.EPSILON
+    ? Number.POSITIVE_INFINITY
+    : halfWidth / Math.abs(unitX);
+  const verticalClip = Math.abs(unitY) < Number.EPSILON
+    ? Number.POSITIVE_INFINITY
+    : halfHeight / Math.abs(unitY);
+  const clipDistance = Math.min(horizontalClip, verticalClip);
+  const offsetX = perpendicularX * routeOffset;
+  const offsetY = perpendicularY * routeOffset;
+  const startX = from.position.x + offsetX + unitX * clipDistance;
+  const startY = from.position.y + offsetY + unitY * clipDistance;
+  const endX = to.position.x + offsetX - unitX * clipDistance;
+  const endY = to.position.y + offsetY - unitY * clipDistance;
+  return `M ${startX} ${startY} L ${endX} ${endY}`;
 }
 
-function edgeLabel(edge: TeamCollaborationEdgeView): string {
-  const purpose = edge.purposes[0] ?? "通信";
-  return edge.messageCount === 0 ? purpose : `${purpose} · ${edge.messageCount}`;
+function edgeKey(fromNodeId: string, toNodeId: string): string {
+  return JSON.stringify([fromNodeId, toNodeId]);
 }
 
 function nodeInitial(name: string): string {
