@@ -31,7 +31,7 @@
 
 当前代码已经完成计划/实际关系图的生产竖切：Protocol 提供统一投影 Schema；SQLite Migration 17 新增计划、节点和路线表，并给真实 Agent 消息补充 WorkItem 归属；Team Lead 可用 `set_team_collaboration_plan` 发布完整计划修订；Main 生成计划内、计划外、跳过和已发生路线；Renderer 用一套 SVG 图元分别渲染看板微缩图、来源主对话主图、“任务与验收”嵌入图和“执行规划”完整画布。节点复用 Conversation 上受控的 Agent 图标；非微缩卡片底部保留两行最新输出区域，持久快照只带最近 Assistant 输出的 280 字符以内尾部摘录，运行中按 Run ID 合并 `assistant.delta`。图的布局、颜色、间距和响应式使用 Tailwind 与语义 Token，Feature CSS 只保留 SVG 数据流关键帧。〔FACT｜`packages/protocol/src/team-collaboration.ts`；`apps/desktop/src/main/storage/agent-database.ts`；`apps/web/src/features/team/collaboration/collaboration-graph.tsx`〕
 
-本批次没有实现历史时间轴、旧计划版本切换、用户拖动后的布局持久化、专用 `team.collaboration.activity` 事件和聚合投影表。当前可见图通过既有 Conversation Run 事件刷新持久投影，并直接消费 Assistant 文本增量更新卡片；已发生路线使用方向虚线持续表达流动，`prefers-reduced-motion` 时停止动画。〔FACT〕
+本批次没有实现历史时间轴、旧计划版本切换、用户拖动后的布局持久化、专用 `team.collaboration.activity` 事件和聚合投影表。当前可见图通过既有 Conversation Run 事件刷新持久投影，并直接消费 Assistant 文本增量更新卡片；已发生和计划外路线使用方向虚线表达流向，仅在发送方 Conversation 处于 `running` 时播放流动动画，发送方停止后保留虚线但立即静止，`prefers-reduced-motion` 时也停止动画。〔FACT〕
 
 ## 1. 背景与实施前基线
 
@@ -591,7 +591,7 @@ type TeamCollaborationActivityEvent = {
 
 `changed` 用于刷新持久投影，`activity` 仅用于一次性方向脉冲。两者都必须在消息/计划事务提交后发送。〔INFER〕
 
-当前尚未新增这两个专用事件。Renderer 订阅既有 Conversation Run 事件并重新读取持久投影；已发生路线使用方向虚线表达流动。专用事件留在 Phase 3 剩余项中，不能把当前持续动画描述成已经具备逐消息去重脉冲。〔FACT〕
+当前尚未新增这两个专用事件。Renderer 订阅既有 Conversation Run 事件并重新读取持久投影；已发生和计划外路线在发送方 `running` 期间使用方向虚线表达流动，发送方停止后虚线静止。专用事件留在 Phase 3 剩余项中，不能把当前按 Run 状态驱动的动画描述成已经具备逐消息去重脉冲。〔FACT〕
 
 ## 13. 前端复用与改造边界
 

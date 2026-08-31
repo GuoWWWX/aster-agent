@@ -64,6 +64,26 @@ describe("CollaborationGraph", () => {
     expect(container.querySelectorAll("svg circle").length).toBeGreaterThan(0);
   });
 
+  it("stops an observed route animation when its sender is no longer running", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const projection = projectionFixture();
+
+    act(() => root?.render(
+      <CollaborationGraph projection={projection} variant="conversation" />,
+    ));
+    expect(container.querySelector('svg path[marker-end]')?.getAttribute("class"))
+      .toContain("animation:team-collaboration-flow");
+
+    projection.nodes[0]!.runStatus = "completed";
+    act(() => root?.render(
+      <CollaborationGraph projection={projection} variant="conversation" />,
+    ));
+    const stoppedRoute = container.querySelector<SVGPathElement>('svg path[marker-end]');
+    expect(stoppedRoute?.getAttribute("class")).not.toContain("animation:team-collaboration-flow");
+  });
+
   it("draws reciprocal communication as parallel straight routes without visible labels", () => {
     const container = document.createElement("div");
     document.body.append(container);

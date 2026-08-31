@@ -129,9 +129,10 @@ export function CollaborationGraph({
                   isMini,
                   to,
                 });
+                const flowing = edgeIsFlowing(edge.state, from.runStatus);
                 return (
                   <path
-                    className={edgePathClassName(edge.state)}
+                    className={edgePathClassName(edge.state, flowing)}
                     d={path}
                     key={edge.id}
                     markerEnd={`url(#${markerPrefix}-${edge.state})`}
@@ -375,14 +376,26 @@ function LegendItem({
   );
 }
 
-function edgePathClassName(state: TeamCollaborationEdgeView["state"]): string {
+function edgePathClassName(
+  state: TeamCollaborationEdgeView["state"],
+  flowing: boolean,
+): string {
   return cn(
     "fill-none [stroke-width:1.65] [vector-effect:non-scaling-stroke]",
     state === "planned" && "stroke-[var(--app-muted-foreground)] [stroke-dasharray:6_5]",
-    state === "observed" && "stroke-[var(--app-accent)] [stroke-dasharray:8_4] [animation:team-collaboration-flow_1.1s_linear_infinite] motion-reduce:animate-none",
-    state === "ad_hoc" && "stroke-[var(--app-destructive)] [stroke-dasharray:3_4] [animation:team-collaboration-flow_.9s_linear_infinite] motion-reduce:animate-none",
+    state === "observed" && "stroke-[var(--app-accent)] [stroke-dasharray:8_4]",
+    state === "observed" && flowing && "[animation:team-collaboration-flow_1.1s_linear_infinite] motion-reduce:animate-none",
+    state === "ad_hoc" && "stroke-[var(--app-destructive)] [stroke-dasharray:3_4]",
+    state === "ad_hoc" && flowing && "[animation:team-collaboration-flow_.9s_linear_infinite] motion-reduce:animate-none",
     state === "skipped" && "stroke-[color-mix(in_srgb,var(--app-muted-foreground)_48%,transparent)] [stroke-dasharray:2_5]",
   );
+}
+
+function edgeIsFlowing(
+  state: TeamCollaborationEdgeView["state"],
+  senderStatus: TeamCollaborationNodeView["runStatus"],
+): boolean {
+  return senderStatus === "running" && (state === "observed" || state === "ad_hoc");
 }
 
 function edgeMarkerClassName(state: TeamCollaborationEdgeView["state"]): string {
