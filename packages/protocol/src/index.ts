@@ -314,6 +314,7 @@ export type {
   TeamWorkItemView,
 } from "./team-work-item.js";
 export {
+  MAX_TEAM_COLLABORATION_OUTPUT_LENGTH,
   getTeamCollaborationProjectionInputSchema,
   setTeamCollaborationPlanInputSchema,
   teamCollaborationEdgeStateSchema,

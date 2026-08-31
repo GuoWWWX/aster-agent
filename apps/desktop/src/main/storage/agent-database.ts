@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { DatabaseMigrationRunner } from "./database-migration-runner.js";
 import { z } from "zod";
 import {
+  MAX_TEAM_COLLABORATION_OUTPUT_LENGTH,
   agentAvatarIconSchema,
   agentDirectoryConfigurationSchema,
   contextCompressionThresholdSchema,
@@ -529,6 +530,28 @@ function collaborationRunStatus(
   if (conversation?.lastRunStatus === "completed") return "completed";
   if (conversation?.lastRunStatus === "cancelled" || workItemStatus === "blocked") return "blocked";
   return "idle";
+}
+
+function collaborationLatestOutput(
+  timeline: readonly ConversationTimelineItem[],
+): Pick<
+  TeamCollaborationProjection["nodes"][number],
+  "latestOutput" | "latestOutputRunId"
+> {
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const item = timeline[index];
+    if (item?.kind !== "message" || item.role !== "assistant") continue;
+    const normalized = item.content.replace(/\s+/gu, " ").trim();
+    if (normalized.length === 0) continue;
+    const characters = Array.from(normalized);
+    return {
+      latestOutput: characters.length <= MAX_TEAM_COLLABORATION_OUTPUT_LENGTH
+        ? normalized
+        : `…${characters.slice(-(MAX_TEAM_COLLABORATION_OUTPUT_LENGTH - 1)).join("")}`,
+      latestOutputRunId: item.runId,
+    };
+  }
+  return { latestOutput: null, latestOutputRunId: null };
 }
 
 function collaborationEdgeView(input: {
@@ -2375,6 +2398,15 @@ export class AgentDatabase {
     const executionByConversationId = new Map(
       execution.agents.map((participant) => [participant.conversation.id, participant]),
     );
+    const nodePresentationByConversationId = new Map(
+      execution.agents.map((participant) => [
+        participant.conversation.id,
+        {
+          avatarIcon: participant.conversation.avatarIcon ?? null,
+          ...collaborationLatestOutput(this.listTimeline(participant.conversation.id)),
+        },
+      ]),
+    );
     const planRow = this.database.prepare(
       `SELECT * FROM team_collaboration_plans
        WHERE work_item_id = ? AND status = 'active'
@@ -2410,14 +2442,20 @@ export class AgentDatabase {
       const participant = conversationId === null
         ? undefined
         : executionByConversationId.get(conversationId);
+      const presentation = conversationId === null
+        ? undefined
+        : nodePresentationByConversationId.get(conversationId);
       const id = asString(row, "id");
       if (conversationId !== null) nodeIdByConversationId.set(conversationId, id);
       nodes.push({
         agentId: asNullableString(row, "stable_agent_id"),
+        avatarIcon: presentation?.avatarIcon ?? null,
         conversationId,
         id,
         kind: z.enum(["team_lead", "standing", "ephemeral", "placeholder"])
           .parse(asString(row, "kind")),
+        latestOutput: presentation?.latestOutput ?? null,
+        latestOutputRunId: presentation?.latestOutputRunId ?? null,
         name: asString(row, "name_snapshot"),
         position: {
           x: asNumber(row, "position_x"),
@@ -2443,14 +2481,18 @@ export class AgentDatabase {
         node.position.x === positionX ? Math.max(maximum, node.position.y) : maximum
       ), -30);
       const id = `conversation:${participant.conversation.id}`;
+      const presentation = nodePresentationByConversationId.get(participant.conversation.id);
       nodeIdByConversationId.set(participant.conversation.id, id);
       nodes.push({
         agentId: participant.agent?.id ?? null,
+        avatarIcon: presentation?.avatarIcon ?? null,
         conversationId: participant.conversation.id,
         id,
         kind: participant.depth === 0
           ? "team_lead"
           : participant.conversation.threadKind === "subagent" ? "ephemeral" : "standing",
+        latestOutput: presentation?.latestOutput ?? null,
+        latestOutputRunId: presentation?.latestOutputRunId ?? null,
         name: participant.agent?.name ?? participant.conversation.title,
         position: {
           x: positionX,

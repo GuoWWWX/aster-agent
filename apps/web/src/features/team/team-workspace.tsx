@@ -35,7 +35,10 @@ import {
 } from "./team-work-item-inbox.js";
 import { WorkItemLifecyclePanel } from "./team-work-item-lifecycle-panel.js";
 import { TeamWorkItemBoard } from "./team-work-item-board.js";
-import { CollaborationGraph } from "./collaboration/collaboration-graph.js";
+import {
+  applyCollaborationAssistantDelta,
+  CollaborationGraph,
+} from "./collaboration/collaboration-graph.js";
 import "./team-workflow.css";
 import "./team-workspace.css";
 
@@ -209,6 +212,19 @@ export function TeamWorkspace({
   }, [loadExecution]);
 
   useEffect(() => agentClient.onConversationRunEvent((event) => {
+    if (event.type === "assistant.delta") {
+      if (view === "board" || selectedRuntimeWorkItem === null) return;
+      setCollaborationProjections((current) => {
+        const projection = current.get(selectedRuntimeWorkItem.id);
+        if (projection === undefined) return current;
+        const updated = applyCollaborationAssistantDelta(projection, event);
+        if (updated === projection) return current;
+        const next = new Map(current);
+        next.set(selectedRuntimeWorkItem.id, updated);
+        return next;
+      });
+      return;
+    }
     if (
       event.type !== "conversation.updated"
       && event.type !== "run.started"
@@ -255,6 +271,7 @@ export function TeamWorkspace({
     loadWorkItems,
     selectedRuntimeWorkItem,
     selectedTeam?.id,
+    view,
   ]);
 
   if (selectedTeam === undefined) return <EmptyTeamWorkspace />;

@@ -5,7 +5,10 @@ import { createRoot, type Root } from "react-dom/client";
 import type { TeamCollaborationProjection } from "@agent/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { CollaborationGraph } from "./collaboration-graph.js";
+import {
+  applyCollaborationAssistantDelta,
+  CollaborationGraph,
+} from "./collaboration-graph.js";
 
 let root: Root | null = null;
 
@@ -34,6 +37,8 @@ describe("CollaborationGraph", () => {
     expect(container.textContent).toContain("计划 v1 · 2 条消息");
     expect(container.textContent).not.toContain("实现 · 2");
     expect(container.textContent).toContain("计划外");
+    expect(container.textContent).toContain("正在检查代码细节");
+    expect(container.querySelector('[data-agent-icon="code"]')).not.toBeNull();
     expect(container.querySelectorAll('[role="button"]')).toHaveLength(2);
 
     act(() => {
@@ -91,6 +96,31 @@ describe("CollaborationGraph", () => {
     expect(visibleSvgText).not.toContain("实现");
     expect(visibleSvgText).not.toContain("结果回传");
   });
+
+  it("replaces an older output when a new Run starts streaming and then appends deltas", () => {
+    const projection = projectionFixture();
+    const first = applyCollaborationAssistantDelta(projection, {
+      conversationId: "00000000-0000-4000-8000-000000000202",
+      delta: "开始处理",
+      messageId: "00000000-0000-4000-8000-000000000211",
+      modelId: "test-model",
+      runId: "00000000-0000-4000-8000-000000000212",
+      type: "assistant.delta",
+    });
+    const second = applyCollaborationAssistantDelta(first, {
+      conversationId: "00000000-0000-4000-8000-000000000202",
+      delta: "，正在验证。",
+      messageId: "00000000-0000-4000-8000-000000000211",
+      modelId: "test-model",
+      runId: "00000000-0000-4000-8000-000000000212",
+      type: "assistant.delta",
+    });
+
+    expect(second.nodes[1]).toMatchObject({
+      latestOutput: "开始处理，正在验证。",
+      latestOutputRunId: "00000000-0000-4000-8000-000000000212",
+    });
+  });
 });
 
 function projectionFixture(): TeamCollaborationProjection {
@@ -114,9 +144,12 @@ function projectionFixture(): TeamCollaborationProjection {
     }],
     nodes: [{
       agentId: "lead",
+      avatarIcon: "crown",
       conversationId: "00000000-0000-4000-8000-000000000201",
       id: "lead",
       kind: "team_lead",
+      latestOutput: null,
+      latestOutputRunId: null,
       name: "Team Lead",
       position: { x: 120, y: 90 },
       role: "负责人",
@@ -124,9 +157,12 @@ function projectionFixture(): TeamCollaborationProjection {
       taskIds: [],
     }, {
       agentId: "developer",
+      avatarIcon: "code",
       conversationId: "00000000-0000-4000-8000-000000000202",
       id: "member",
       kind: "standing",
+      latestOutput: "正在检查代码细节",
+      latestOutputRunId: "00000000-0000-4000-8000-000000000210",
       name: "开发 Agent",
       position: { x: 360, y: 90 },
       role: "开发",

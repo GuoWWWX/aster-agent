@@ -1162,6 +1162,7 @@ describe("AgentDatabase", () => {
     }, modelSelection);
     const lead = database.createConversation(project.id, {
       agent: {
+        avatarIcon: "crown",
         id: "team-lead",
         instructions: "负责总体执行。",
         isDefault: true,
@@ -1172,9 +1173,14 @@ describe("AgentDatabase", () => {
       teamId: "default-team",
       threadKind: "team_lead",
     });
-    const createMember = (agentId: string, name: string) => {
+    const createMember = (
+      agentId: string,
+      name: string,
+      avatarIcon: "code" | "shield",
+    ) => {
       const member = database.createConversation(project.id, {
         agent: {
+          avatarIcon,
           id: agentId,
           instructions: "执行专业任务。",
           isDefault: false,
@@ -1193,10 +1199,29 @@ describe("AgentDatabase", () => {
       });
       return member;
     };
-    const plannedMember = createMember("developer", "开发 Agent");
-    const adHocMember = createMember("reviewer", "评审 Agent");
+    const plannedMember = createMember("developer", "开发 Agent", "code");
+    const adHocMember = createMember("reviewer", "评审 Agent", "shield");
     const run = database.createRunWithUserMessage(lead.id, "开始执行", modelSelection.modelId);
     database.startTeamWorkItem(workItem.id, lead.id, run.runId);
+    const memberRun = database.createRunWithUserMessage(
+      plannedMember.id,
+      "实现并汇报",
+      modelSelection.modelId,
+    );
+    database.markRunRunning(memberRun.runId);
+    database.completeRun({
+      assistant: {
+        content: `已完成实现。${"详细输出".repeat(80)}`,
+        kind: "turn",
+        messageId: crypto.randomUUID(),
+        modelId: modelSelection.modelId,
+      },
+      conversationId: plannedMember.id,
+      error: null,
+      result: "已完成实现。",
+      runId: memberRun.runId,
+      status: "completed",
+    });
 
     const firstPlan = database.setTeamCollaborationPlan({
       createdByConversationId: lead.id,
@@ -1244,6 +1269,20 @@ describe("AgentDatabase", () => {
       observedRouteCount: 2,
       participantCount: 3,
     });
+    expect(projection.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ avatarIcon: "crown", latestOutput: null, name: "Team Lead" }),
+      expect.objectContaining({
+        avatarIcon: "code",
+        latestOutputRunId: memberRun.runId,
+        name: "开发 Agent",
+      }),
+      expect.objectContaining({ avatarIcon: "shield", latestOutput: null, name: "评审 Agent" }),
+    ]));
+    const developerOutput = projection.nodes.find(
+      (node) => node.name === "开发 Agent",
+    )?.latestOutput;
+    expect(developerOutput).toMatch(/^…/u);
+    expect(developerOutput).toHaveLength(280);
 
     const revised = database.setTeamCollaborationPlan({
       createdByConversationId: lead.id,

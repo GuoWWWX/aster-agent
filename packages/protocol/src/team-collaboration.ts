@@ -1,9 +1,11 @@
 import { z } from "zod";
 
-import { conversationIdSchema } from "./conversation.js";
+import { agentAvatarIconSchema } from "./agent-avatar.js";
+import { conversationIdSchema, runIdSchema } from "./conversation.js";
 
 const workItemIdSchema = z.string().uuid();
 const isoTimestampSchema = z.string().datetime();
+export const MAX_TEAM_COLLABORATION_OUTPUT_LENGTH = 280;
 
 export const teamCollaborationPlanStatusSchema = z.enum(["active", "superseded"]);
 export const teamCollaborationNodeKindSchema = z.enum([
@@ -38,9 +40,12 @@ export const teamCollaborationPlanViewSchema = z.object({
 
 export const teamCollaborationNodeViewSchema = z.object({
   agentId: z.string().trim().min(1).max(200).nullable(),
+  avatarIcon: agentAvatarIconSchema.nullable(),
   conversationId: conversationIdSchema.nullable(),
   id: z.string().trim().min(1).max(300),
   kind: teamCollaborationNodeKindSchema,
+  latestOutput: z.string().max(MAX_TEAM_COLLABORATION_OUTPUT_LENGTH).nullable(),
+  latestOutputRunId: runIdSchema.nullable(),
   name: z.string().trim().min(1).max(300),
   position: z.object({
     x: z.number().finite(),

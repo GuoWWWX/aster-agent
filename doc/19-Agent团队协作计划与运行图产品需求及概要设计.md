@@ -29,9 +29,9 @@
 
 ### 0.1 2026-08-31 实施快照
 
-当前代码已经完成计划/实际关系图的生产竖切：Protocol 提供统一投影 Schema；SQLite Migration 17 新增计划、节点和路线表，并给真实 Agent 消息补充 WorkItem 归属；Team Lead 可用 `set_team_collaboration_plan` 发布完整计划修订；Main 生成计划内、计划外、跳过和已发生路线；Renderer 用一套 SVG 图元分别渲染看板微缩图、来源主对话主图、“任务与验收”嵌入图和“执行规划”完整画布。图的布局、颜色、间距和响应式使用 Tailwind 与语义 Token，Feature CSS 只保留 SVG 数据流关键帧。〔FACT｜`packages/protocol/src/team-collaboration.ts`；`apps/desktop/src/main/storage/agent-database.ts`；`apps/web/src/features/team/collaboration/collaboration-graph.tsx`〕
+当前代码已经完成计划/实际关系图的生产竖切：Protocol 提供统一投影 Schema；SQLite Migration 17 新增计划、节点和路线表，并给真实 Agent 消息补充 WorkItem 归属；Team Lead 可用 `set_team_collaboration_plan` 发布完整计划修订；Main 生成计划内、计划外、跳过和已发生路线；Renderer 用一套 SVG 图元分别渲染看板微缩图、来源主对话主图、“任务与验收”嵌入图和“执行规划”完整画布。节点复用 Conversation 上受控的 Agent 图标；非微缩卡片底部保留两行最新输出区域，持久快照只带最近 Assistant 输出的 280 字符以内尾部摘录，运行中按 Run ID 合并 `assistant.delta`。图的布局、颜色、间距和响应式使用 Tailwind 与语义 Token，Feature CSS 只保留 SVG 数据流关键帧。〔FACT｜`packages/protocol/src/team-collaboration.ts`；`apps/desktop/src/main/storage/agent-database.ts`；`apps/web/src/features/team/collaboration/collaboration-graph.tsx`〕
 
-本批次没有实现历史时间轴、旧计划版本切换、用户拖动后的布局持久化、专用 `team.collaboration.activity` 事件和聚合投影表。当前可见图通过既有 Conversation Run 事件刷新持久投影；已发生路线使用方向虚线持续表达流动，`prefers-reduced-motion` 时停止动画。〔FACT〕
+本批次没有实现历史时间轴、旧计划版本切换、用户拖动后的布局持久化、专用 `team.collaboration.activity` 事件和聚合投影表。当前可见图通过既有 Conversation Run 事件刷新持久投影，并直接消费 Assistant 文本增量更新卡片；已发生路线使用方向虚线持续表达流动，`prefers-reduced-motion` 时停止动画。〔FACT〕
 
 ## 1. 背景与实施前基线
 
@@ -144,7 +144,7 @@ flowchart LR
 | 一次性 Subagent | 单次分支任务 Conversation | 虚线边框、“临时”标记 | 置灰但保留父子谱系，可折叠 |
 | 计划占位节点 | 已规划岗位但尚未绑定实际 Conversation | 空心边框、“待分配”标记 | 绑定后在原位置替换，不新建重复节点 |
 
-节点点击统一打开右侧详情；若已绑定 Conversation，则复用现有成员侧边 Tab，不在图中复制完整 Timeline。〔INFER〕
+节点点击统一打开右侧详情；若已绑定 Conversation，则复用现有成员侧边 Tab。节点头像优先使用该 Conversation 持久化的受控 Agent 图标，缺失时回退到名称首字；非微缩卡片只显示两行最新 Assistant 输出摘录，不在图中复制完整 Timeline。〔FACT〕
 
 ### 4.4 连线不是永久信道
 
@@ -214,9 +214,9 @@ sequenceDiagram
 | 展示位置 | 默认尺寸/位置 | 默认内容 | 交互 | 动画策略 |
 | --- | --- | --- | --- | --- |
 | 需求看板 | WorkItem 卡片底部约 96–120 px | 最多 6 个关键节点、路线状态、计划外数量 | 点击卡片进入任务与验收；选中卡可展开到约 220 px | 全部静态；仅选中展开卡播放新事件一次 |
-| 来源主对话 | `submit_team_work_item` 结果之后，约 280–360 px | 直接显示主协作图、当前计划和实际流向 | 打开完整规划、打开成员侧边 Tab | 当前对话可见时播放一次 |
-| 任务与验收 | 中央栏，Team Lead 对话入口和执行进度之间，约 240–320 px | 完整参与者、当前计划边、实际边、图例 | 选择节点/边、筛选、打开完整画布 | 当前 WorkItem 可见时播放一次 |
-| 执行规划 | 现有完整页签，占满中央工作区 | 计划/实际/对比/回放、版本、详情抽屉 | 缩放、平移、选中、布局调整、版本切换、回放 | 允许完整事件动画，支持 reduced motion |
+| 来源主对话 | `submit_team_work_item` 结果之后，约 280–360 px | 主协作图、当前计划、实际流向、Agent 图标和两行最新输出 | 打开完整规划、打开成员侧边 Tab | 当前对话可见时播放一次 |
+| 任务与验收 | 中央栏，Team Lead 对话入口和执行进度之间，约 240–320 px | 完整参与者、当前计划边、实际边、Agent 图标、两行最新输出和图例 | 选择节点/边、筛选、打开完整画布 | 当前 WorkItem 可见时播放一次 |
+| 执行规划 | 现有完整页签，占满中央工作区 | 计划/实际/对比、版本、Agent 图标、两行最新输出和详情 | 缩放、平移、选中、布局调整、版本切换、回放 | 允许完整事件动画，支持 reduced motion |
 
 四处必须读取相同的 `TeamCollaborationProjection`，不能分别维护节点、边或消息计数。〔INFER〕
 
@@ -683,6 +683,7 @@ features/team/collaboration/
 
 - [x] 增加看板微缩图，并把主协作图直接放入来源主对话的成功提交结果之后。
 - [x] 使用既有 Run 事件刷新投影，并支持 reduced motion；微缩图保持静态。
+- [x] 节点复用受控 Agent 图标；非微缩卡片显示持久最新输出摘录并实时合并 Assistant 文本增量。
 - [ ] 增加专用、可去重的一次性活动事件，并完成 30 卡片与密集消息性能验收。
 
 ### Phase 4：历史回放与聚合优化
@@ -714,7 +715,7 @@ features/team/collaboration/
 | 动画过多 | 看板干扰、CPU 占用 | 微缩图静态、只对可见选中视图播放一次 |
 | 节点位置跳动 | 用户无法跟踪 Agent | 稳定节点 ID、计划占位绑定后保留坐标 |
 | 计划版本改写历史 | 无法复盘偏差 | 只追加版本，按激活时间匹配消息 |
-| 消息正文泄露 | 敏感内容扩散到多个页面 | 投影不含正文，详情只给有界摘要并跳转原 Conversation |
+| 消息正文泄露 | 敏感内容扩散到多个页面 | 投影不含 Agent 间消息、Prompt、工具参数或完整回复，只返回最近 Assistant 输出的 280 字符以内摘录；完整内容仍跳转原 Conversation |
 | 图过密 | 线条不可读 | 节点/边上限、角色聚合、只看活动/偏差过滤 |
 | 计划工具失败阻塞任务 | 团队可用性下降 | 计划是软能力，失败显示真实状态但不阻断合法执行 |
 

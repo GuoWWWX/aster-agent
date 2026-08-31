@@ -7,20 +7,23 @@ import {
   type KeyboardEvent,
   type ReactElement,
 } from "react";
-import type {
-  TeamCollaborationEdgeView,
-  TeamCollaborationNodeView,
-  TeamCollaborationProjection,
+import {
+  MAX_TEAM_COLLABORATION_OUTPUT_LENGTH,
+  type ConversationRunEvent,
+  type TeamCollaborationEdgeView,
+  type TeamCollaborationNodeView,
+  type TeamCollaborationProjection,
 } from "@agent/protocol";
 
 import type { AgentClient } from "../../../runtime/agent-client.js";
 import { cn } from "../../../lib/cn.js";
+import { resolveAgentAvatarIcon } from "../agent-avatar.js";
 import "./collaboration-graph.css";
 
 export type CollaborationGraphVariant = "conversation" | "embedded" | "full" | "mini";
 
 const NODE_WIDTH = 156;
-const NODE_HEIGHT = 60;
+const NODE_HEIGHT = 100;
 const CANVAS_PADDING = 42;
 
 export function CollaborationGraph({
@@ -35,9 +38,10 @@ export function CollaborationGraph({
   variant: CollaborationGraphVariant;
 }): ReactElement {
   const markerPrefix = useId().replaceAll(":", "");
+  const isMini = variant === "mini";
   const geometry = useMemo(
-    () => graphGeometry(projection.nodes),
-    [projection.nodes],
+    () => graphGeometry(projection.nodes, isMini),
+    [isMini, projection.nodes],
   );
   const nodesById = useMemo(
     () => new Map(projection.nodes.map((node) => [node.id, node])),
@@ -47,7 +51,6 @@ export function CollaborationGraph({
     () => new Set(projection.edges.map((edge) => edgeKey(edge.fromNodeId, edge.toNodeId))),
     [projection.edges],
   );
-  const isMini = variant === "mini";
   const handleNodeKeyDown = (
     event: KeyboardEvent<SVGGElement>,
     conversationId: string | null,
@@ -141,9 +144,13 @@ export function CollaborationGraph({
             <g>
               {projection.nodes.map((node) => {
                 const clickable = node.conversationId !== null && onOpenConversation !== undefined;
+                const AvatarIcon = node.avatarIcon === null
+                  ? null
+                  : resolveAgentAvatarIcon(node.avatarIcon);
+                const outputLines = collaborationOutputLines(node);
                 return (
                   <g
-                    aria-label={`${node.name}，${node.role}，${runStatusLabel(node.runStatus)}`}
+                    aria-label={`${node.name}，${node.role}，${runStatusLabel(node.runStatus)}${node.latestOutput === null ? "" : `，最新输出：${node.latestOutput}`}`}
                     className={cn("group focus:outline-none", clickable && "cursor-pointer")}
                     data-clickable={clickable}
                     data-kind={node.kind}
@@ -160,16 +167,63 @@ export function CollaborationGraph({
                     {isMini ? (
                       <>
                         <circle className={nodeSurfaceClassName(node.kind, clickable)} r="16" />
-                        <text className="fill-[var(--app-foreground)] text-[11px] font-bold" dominantBaseline="middle" textAnchor="middle">{nodeInitial(node.name)}</text>
+                        {AvatarIcon === null ? (
+                          <text className="fill-[var(--app-foreground)] text-[11px] font-bold" dominantBaseline="middle" textAnchor="middle">{nodeInitial(node.name)}</text>
+                        ) : (
+                          <AvatarIcon
+                            aria-hidden="true"
+                            className="text-[var(--app-accent)]"
+                            data-agent-icon={node.avatarIcon}
+                            height={15}
+                            strokeWidth={1.8}
+                            width={15}
+                            x={-7.5}
+                            y={-7.5}
+                          />
+                        )}
                         <circle className={nodeStatusClassName(node.runStatus)} cx="12" cy="-12" r="4" />
                       </>
                     ) : (
                       <>
                         <rect className={nodeSurfaceClassName(node.kind, clickable)} height={NODE_HEIGHT} rx="8" width={NODE_WIDTH} x={-NODE_WIDTH / 2} y={-NODE_HEIGHT / 2} />
-                        <circle className="fill-[var(--app-panel-subtle)] stroke-[var(--app-border)] stroke-[1.25]" cx={-NODE_WIDTH / 2 + 25} cy="0" r="14" />
-                        <text className="fill-[var(--app-foreground)] text-[11px] font-bold" dominantBaseline="middle" textAnchor="middle" x={-NODE_WIDTH / 2 + 25}>{nodeInitial(node.name)}</text>
-                        <text className="fill-[var(--app-foreground)] text-[12px] font-bold" x={-NODE_WIDTH / 2 + 48} y="-5">{truncate(node.name, 14)}</text>
-                        <text className="fill-[var(--app-muted-foreground)] text-[10px]" x={-NODE_WIDTH / 2 + 48} y="14">{truncate(node.role, 16)}</text>
+                        <circle className="fill-[var(--app-panel-subtle)] stroke-[var(--app-border)] stroke-[1.25]" cx={-NODE_WIDTH / 2 + 25} cy="-20" r="14" />
+                        {AvatarIcon === null ? (
+                          <text className="fill-[var(--app-foreground)] text-[11px] font-bold" dominantBaseline="middle" textAnchor="middle" x={-NODE_WIDTH / 2 + 25} y="-20">{nodeInitial(node.name)}</text>
+                        ) : (
+                          <AvatarIcon
+                            aria-hidden="true"
+                            className="text-[var(--app-accent)]"
+                            data-agent-icon={node.avatarIcon}
+                            height={15}
+                            strokeWidth={1.8}
+                            width={15}
+                            x={-NODE_WIDTH / 2 + 17.5}
+                            y={-27.5}
+                          />
+                        )}
+                        <text className="fill-[var(--app-foreground)] text-[12px] font-bold" x={-NODE_WIDTH / 2 + 48} y="-24">{truncate(node.name, 14)}</text>
+                        <text className="fill-[var(--app-muted-foreground)] text-[10px]" x={-NODE_WIDTH / 2 + 48} y="-5">{truncate(node.role, 16)}</text>
+                        <line className="stroke-[var(--app-border)] [stroke-width:1]" x1={-NODE_WIDTH / 2 + 10} x2={NODE_WIDTH / 2 - 10} y1="9" y2="9" />
+                        <text
+                          className={cn(
+                            "text-[9px]",
+                            node.latestOutput === null
+                              ? "fill-[var(--app-muted-foreground)]"
+                              : "fill-[var(--app-foreground)]",
+                          )}
+                          x={-NODE_WIDTH / 2 + 10}
+                          y="26"
+                        >
+                          {outputLines.map((line, index) => (
+                            <tspan
+                              key={`${node.id}-output-${index}`}
+                              x={-NODE_WIDTH / 2 + 10}
+                              dy={index === 0 ? 0 : 13}
+                            >
+                              {line}
+                            </tspan>
+                          ))}
+                        </text>
                         <circle className={nodeStatusClassName(node.runStatus)} cx={NODE_WIDTH / 2 - 10} cy={-NODE_HEIGHT / 2 + 10} r="4" />
                       </>
                     )}
@@ -194,7 +248,10 @@ export function CollaborationGraph({
 
       <ul className="sr-only">
         {projection.nodes.map((node) => (
-          <li key={node.id}>{node.name}：{node.role}，{runStatusLabel(node.runStatus)}</li>
+          <li key={node.id}>
+            {node.name}：{node.role}，{runStatusLabel(node.runStatus)}
+            {node.latestOutput === null ? "" : `，最新输出：${node.latestOutput}`}
+          </li>
         ))}
         {projection.edges.map((edge) => (
           <li key={edge.id}>
@@ -240,6 +297,12 @@ export function CollaborationProjectionGraph({
     };
     void load();
     const dispose = agentClient.onConversationRunEvent((event) => {
+      if (event.type === "assistant.delta") {
+        setProjection((current) => current === null
+          ? current
+          : applyCollaborationAssistantDelta(current, event));
+        return;
+      }
       if (
         event.type === "conversation.updated"
         || event.type === "run.started"
@@ -267,6 +330,26 @@ export function CollaborationProjectionGraph({
       {...(title === undefined ? {} : { title })}
     />
   );
+}
+
+export function applyCollaborationAssistantDelta(
+  projection: TeamCollaborationProjection,
+  event: Extract<ConversationRunEvent, { type: "assistant.delta" }>,
+): TeamCollaborationProjection {
+  let changed = false;
+  const nodes = projection.nodes.map((node) => {
+    if (node.conversationId !== event.conversationId) return node;
+    changed = true;
+    const previous = node.latestOutputRunId === event.runId
+      ? node.latestOutput ?? ""
+      : "";
+    return {
+      ...node,
+      latestOutput: collaborationOutputExcerpt(`${previous}${event.delta}`),
+      latestOutputRunId: event.runId,
+    };
+  });
+  return changed ? { ...projection, nodes } : projection;
 }
 
 function LegendItem({
@@ -333,6 +416,7 @@ function nodeStatusClassName(status: TeamCollaborationNodeView["runStatus"]): st
 
 function graphGeometry(
   nodes: readonly TeamCollaborationNodeView[],
+  isMini: boolean,
 ): {
   height: number;
   minX: number;
@@ -342,10 +426,12 @@ function graphGeometry(
   if (nodes.length === 0) return { height: 160, minX: 0, minY: 0, width: 480 };
   const xs = nodes.map((node) => node.position.x);
   const ys = nodes.map((node) => node.position.y);
-  const minX = Math.min(...xs) - NODE_WIDTH / 2 - CANVAS_PADDING;
-  const maxX = Math.max(...xs) + NODE_WIDTH / 2 + CANVAS_PADDING;
-  const minY = Math.min(...ys) - NODE_HEIGHT / 2 - CANVAS_PADDING;
-  const maxY = Math.max(...ys) + NODE_HEIGHT / 2 + CANVAS_PADDING;
+  const nodeWidth = isMini ? 32 : NODE_WIDTH;
+  const nodeHeight = isMini ? 32 : NODE_HEIGHT;
+  const minX = Math.min(...xs) - nodeWidth / 2 - CANVAS_PADDING;
+  const maxX = Math.max(...xs) + nodeWidth / 2 + CANVAS_PADDING;
+  const minY = Math.min(...ys) - nodeHeight / 2 - CANVAS_PADDING;
+  const maxY = Math.max(...ys) + nodeHeight / 2 + CANVAS_PADDING;
   return {
     height: Math.max(150, maxY - minY),
     minX,
@@ -406,6 +492,29 @@ function truncate(value: string, maxLength: number): string {
   return characters.length <= maxLength
     ? value
     : `${characters.slice(0, maxLength - 1).join("")}…`;
+}
+
+function collaborationOutputExcerpt(value: string): string {
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  const characters = Array.from(normalized);
+  return characters.length <= MAX_TEAM_COLLABORATION_OUTPUT_LENGTH
+    ? normalized
+    : `…${characters.slice(-(MAX_TEAM_COLLABORATION_OUTPUT_LENGTH - 1)).join("")}`;
+}
+
+function collaborationOutputLines(node: TeamCollaborationNodeView): string[] {
+  if (node.latestOutput === null) {
+    return [node.runStatus === "running" || node.runStatus === "queued"
+      ? "等待 Agent 输出…"
+      : "暂无输出"];
+  }
+  const characters = Array.from(node.latestOutput);
+  const visibleCharacters = characters.length <= 28
+    ? characters
+    : ["…", ...characters.slice(-27)];
+  const firstLine = visibleCharacters.slice(0, 14).join("");
+  const secondLine = visibleCharacters.slice(14, 28).join("");
+  return secondLine.length === 0 ? [firstLine] : [firstLine, secondLine];
 }
 
 function runStatusLabel(status: TeamCollaborationNodeView["runStatus"]): string {

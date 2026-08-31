@@ -34,7 +34,7 @@ describe("Team collaboration protocol", () => {
     })).toThrow("different conversations");
   });
 
-  it("validates the renderer projection without message bodies", () => {
+  it("validates a renderer projection with bounded Agent presentation data", () => {
     const projection = teamCollaborationProjectionSchema.parse({
       edges: [{
         firstActivityAt: "2026-08-31T08:01:00.000Z",
@@ -55,9 +55,12 @@ describe("Team collaboration protocol", () => {
       }],
       nodes: [{
         agentId: "team-lead",
+        avatarIcon: "crown",
         conversationId: leadConversationId,
         id: "lead",
         kind: "team_lead",
+        latestOutput: "正在拆分任务。",
+        latestOutputRunId: "00000000-0000-4000-8000-000000000105",
         name: "Team Lead",
         position: { x: 120, y: 90 },
         role: "负责人",
@@ -65,9 +68,12 @@ describe("Team collaboration protocol", () => {
         taskIds: [],
       }, {
         agentId: "developer",
+        avatarIcon: "code",
         conversationId: memberConversationId,
         id: "member",
         kind: "standing",
+        latestOutput: null,
+        latestOutputRunId: null,
         name: "开发 Agent",
         position: { x: 360, y: 90 },
         role: "开发",
@@ -94,5 +100,13 @@ describe("Team collaboration protocol", () => {
     });
     expect(projection.edges[0]?.state).toBe("observed");
     expect("content" in projection.edges[0]!).toBe(false);
+    expect(projection.nodes[0]).toMatchObject({
+      avatarIcon: "crown",
+      latestOutput: "正在拆分任务。",
+    });
+    expect(() => teamCollaborationProjectionSchema.parse({
+      ...projection,
+      nodes: [{ ...projection.nodes[0], latestOutput: "x".repeat(281) }],
+    })).toThrow();
   });
 });
