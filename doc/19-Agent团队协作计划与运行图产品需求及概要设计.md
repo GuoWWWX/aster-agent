@@ -29,7 +29,7 @@
 
 ### 0.1 2026-08-31 实施快照
 
-当前代码已经完成计划/实际关系图的生产竖切：Protocol 提供统一投影 Schema；SQLite Migration 17 新增计划、节点和路线表，并给真实 Agent 消息补充 WorkItem 归属；Team Lead 可用 `set_team_collaboration_plan` 发布完整计划修订；Main 生成计划内、计划外、跳过和已发生路线；Renderer 用一套 SVG 图元分别渲染看板微缩图、来源主对话主图、“任务与验收”嵌入图和“执行规划”完整画布。节点复用 Conversation 上受控的 Agent 图标；非微缩卡片底部保留两行最新输出区域，持久快照只带最近 Assistant 输出的 280 字符以内尾部摘录，运行中按 Run ID 合并 `assistant.delta`。图的布局、颜色、间距和响应式使用 Tailwind 与语义 Token，Feature CSS 只保留 SVG 数据流关键帧。〔FACT｜`packages/protocol/src/team-collaboration.ts`；`apps/desktop/src/main/storage/agent-database.ts`；`apps/web/src/features/team/collaboration/collaboration-graph.tsx`〕
+当前代码已经完成计划/实际关系图的生产竖切：Protocol 提供统一投影 Schema；SQLite Migration 17 新增计划、节点和路线表，并给真实 Agent 消息补充 WorkItem 归属；Team Lead 可用 `set_team_collaboration_plan` 发布完整计划修订；Main 生成计划内、计划外、跳过和已发生路线；Renderer 用一套 SVG 图元分别渲染看板微缩图、来源主对话主图、“任务与验收”嵌入图和“执行规划”完整画布。来源主对话主图以实际 TeamInstance 名称作为标题，缺失时回退到 Team 模板名称或“Agent 团队”，最大宽度为 960 px 并随可用容器收缩；另外三个入口维持原有标题与尺寸。节点复用 Conversation 上受控的 Agent 图标；非微缩卡片底部保留两行最新输出区域，持久快照只带最近 Assistant 输出的 280 字符以内尾部摘录，运行中按 Run ID 合并 `assistant.delta`。图的布局、颜色、间距和响应式使用 Tailwind 与语义 Token，Feature CSS 只保留 SVG 数据流关键帧。〔FACT｜`packages/protocol/src/team-collaboration.ts`；`apps/desktop/src/main/storage/agent-database.ts`；`apps/web/src/features/team/collaboration/collaboration-graph.tsx`〕
 
 本批次没有实现历史时间轴、旧计划版本切换、用户拖动后的布局持久化、专用 `team.collaboration.activity` 事件和聚合投影表。当前可见图通过既有 Conversation Run 事件刷新持久投影，并直接消费 Assistant 文本增量更新卡片；已发生和计划外路线使用方向虚线表达流向，仅在发送方 Conversation 处于 `running` 时播放流动动画，发送方停止后保留虚线但立即静止，`prefers-reduced-motion` 时也停止动画。〔FACT〕
 
@@ -214,7 +214,7 @@ sequenceDiagram
 | 展示位置 | 默认尺寸/位置 | 默认内容 | 交互 | 动画策略 |
 | --- | --- | --- | --- | --- |
 | 需求看板 | WorkItem 卡片底部约 96–120 px | 最多 6 个关键节点、路线状态、计划外数量 | 点击卡片进入任务与验收；选中卡可展开到约 220 px | 全部静态；仅选中展开卡播放新事件一次 |
-| 来源主对话 | `submit_team_work_item` 结果之后，约 280–360 px | 主协作图、当前计划、实际流向、Agent 图标和两行最新输出 | 打开完整规划、打开成员侧边 Tab | 当前对话可见时播放一次 |
+| 来源主对话 | `submit_team_work_item` 结果之后，最大宽度 960 px、随容器收缩，高约 280–360 px | TeamInstance 名称、主协作图、当前计划、实际流向、Agent 图标和两行最新输出 | 打开完整规划、打开成员侧边 Tab | 当前对话可见时播放一次 |
 | 任务与验收 | 中央栏，Team Lead 对话入口和执行进度之间，约 240–320 px | 完整参与者、当前计划边、实际边、Agent 图标、两行最新输出和图例 | 选择节点/边、筛选、打开完整画布 | 当前 WorkItem 可见时播放一次 |
 | 执行规划 | 现有完整页签，占满中央工作区 | 计划/实际/对比、版本、Agent 图标、两行最新输出和详情 | 缩放、平移、选中、布局调整、版本切换、回放 | 允许完整事件动画，支持 reduced motion |
 
@@ -235,7 +235,8 @@ sequenceDiagram
 来源主对话只做一项调整：团队任务提交成功后，在对应结果消息下方直接显示主协作图，不再额外设计另一套摘要卡或折叠态。需求看板、“任务与验收”和“执行规划”的既有方案保持不变。〔INFER〕
 
 - 图与 `sourceConversationId + workItemId` 精确绑定。
-- 图标题栏只保留 WorkItem 名称、状态、计划版本和“打开执行规划”入口。
+- 图标题栏使用实际 TeamInstance 名称；历史结果缺少实例标识时依次回退 Team 模板名称和“Agent 团队”。右侧保留状态、计划版本和“打开执行规划”入口。
+- 主图最大宽度为 960 px，并在窄容器内保留 6 px 水平安全间距；需求看板、“任务与验收”和“执行规划”不随本调整改变尺寸。
 - 点击节点时保持来源主对话不变，并在右侧打开对应成员 Tab。
 - WorkItem 完成后图保留在原消息位置，转为只读历史。
 - 空间不足时在图内部缩放或平移，不改成另一种图形语义。

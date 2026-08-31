@@ -113,6 +113,8 @@ describe("CollaborationGraph", () => {
     expect(routePaths.every((path) => path?.includes(" L "))).toBe(true);
     expect(routePaths.every((path) => !path?.includes(" C "))).toBe(true);
     expect(new Set(routePaths)).toHaveLength(2);
+    expect(container.querySelector('[data-variant="conversation"]')?.getAttribute("class"))
+      .toContain("w-[min(960px,calc(100%-12px))]");
     expect(visibleSvgText).not.toContain("实现");
     expect(visibleSvgText).not.toContain("结果回传");
   });

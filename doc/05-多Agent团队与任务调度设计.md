@@ -311,7 +311,7 @@ Worker 必须返回结构化结果：状态、摘要、证据、改动、验证�
 
 真实通信仍以 `conversation_agent_messages` 为事实源。消息提交成功后，Runtime 把同一执行树内的发送与接收 Conversation 关联到当前 WorkItem；Main 将活动计划、真实成员谱系和消息方向聚合为统一 `TeamCollaborationProjection`。计划内已发生路线为 `observed`，没有计划边但合法发生的路线为 `ad_hoc`，终态 WorkItem 中从未发生的计划路线为 `skipped`。投影不含 Agent 间消息正文；每个节点只补充 Conversation 的受控图标，以及最近 Assistant 输出的 280 字符以内尾部摘录和 Run ID，供卡片展示并与实时增量衔接。应用重启后，关系可从计划表与消息表重建，最新输出可从原生 Timeline 恢复。
 
-同一投影当前显示在四处：需求看板卡片使用静态微缩图；来源主对话在成功的 `submit_team_work_item` 工具结果后直接显示主协作图；“任务与验收”显示嵌入图；“执行规划”显示完整画布。所有节点显示 Agent 的受控图标；除看板微缩图外，节点卡片底部保留两行最新输出区域，运行中直接合并 `assistant.delta`，完成后显示持久终态摘录。节点可跳转到其原生 Conversation，四个容器不复制 Timeline 或另建可写业务状态。已发生和计划外路线使用方向虚线表达数据流，但只在发送方 Conversation 处于 `running` 时播放流动动画；发送方停止后保留虚线关系并立即静止，`prefers-reduced-motion` 时也停止动画。〔FACT｜`packages/protocol/src/team-collaboration.ts`；`apps/desktop/src/main/storage/agent-database.ts`；`apps/web/src/features/team/collaboration/collaboration-graph.tsx`〕
+同一投影当前显示在四处：需求看板卡片使用静态微缩图；来源主对话在成功的 `submit_team_work_item` 工具结果后直接显示主协作图；“任务与验收”显示嵌入图；“执行规划”显示完整画布。来源主对话的图标题优先使用实际 TeamInstance 名称，缺失时回退到 Team 模板名称或“Agent 团队”，并使用 960 px 最大宽度与容器内响应式收缩；其他三个位置维持各自既定尺寸。所有节点显示 Agent 的受控图标；除看板微缩图外，节点卡片底部保留两行最新输出区域，运行中直接合并 `assistant.delta`，完成后显示持久终态摘录。节点可跳转到其原生 Conversation，四个容器不复制 Timeline 或另建可写业务状态。已发生和计划外路线使用方向虚线表达数据流，但只在发送方 Conversation 处于 `running` 时播放流动动画；发送方停止后保留虚线关系并立即静止，`prefers-reduced-motion` 时也停止动画。〔FACT｜`packages/protocol/src/team-collaboration.ts`；`apps/desktop/src/main/storage/agent-database.ts`；`apps/web/src/features/team/collaboration/collaboration-graph.tsx`〕
 
 ## 10. 状态与持久化
 

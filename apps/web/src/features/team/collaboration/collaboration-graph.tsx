@@ -67,7 +67,7 @@ export function CollaborationGraph({
         "@container grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)]",
         variant === "mini" && "h-[86px] grid-rows-[minmax(0,1fr)] border-[color-mix(in_srgb,var(--app-border)_78%,transparent)] bg-[var(--app-panel-subtle)]",
         variant === "embedded" && "min-h-[190px] max-h-[290px]",
-        variant === "conversation" && "mx-auto mt-1 mb-3 min-h-[260px] max-h-[430px] w-[min(760px,calc(100%-28px))] shadow-[0_8px_24px_color-mix(in_srgb,var(--app-foreground)_8%,transparent)]",
+        variant === "conversation" && "mx-auto mt-1 mb-3 min-h-[260px] max-h-[430px] w-[min(960px,calc(100%-12px))] shadow-[0_8px_24px_color-mix(in_srgb,var(--app-foreground)_8%,transparent)]",
         variant === "full" && "h-full min-h-[420px]",
       )}
       data-empty={projection.nodes.length === 0}

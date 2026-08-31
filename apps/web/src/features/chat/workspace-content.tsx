@@ -226,9 +226,16 @@ type TimelineDisplayItem = ConversationTimelineItem | {
   tools: ConversationToolItem[];
 };
 
+type SubmittedTeamWorkItem = {
+  id: string;
+  teamId: string | null;
+  teamInstanceId: string | null;
+  title: string;
+};
+
 export function submittedTeamWorkItems(
   item: TimelineDisplayItem,
-): Array<{ id: string; title: string }> {
+): SubmittedTeamWorkItem[] {
   const tools = item.kind === "tool_batch"
     ? item.tools
     : item.kind === "tool" ? [item] : [];
@@ -242,14 +249,35 @@ export function submittedTeamWorkItems(
       const parsed: unknown = JSON.parse(tool.result);
       if (!isRecord(parsed) || parsed.ok !== true || !isRecord(parsed.value)) return [];
       const id = parsed.value.id;
+      const teamId = parsed.value.teamId;
+      const teamInstanceId = parsed.value.teamInstanceId;
       const title = parsed.value.title;
       return typeof id === "string" && typeof title === "string"
-        ? [{ id, title }]
+        ? [{
+            id,
+            teamId: typeof teamId === "string" ? teamId : null,
+            teamInstanceId: typeof teamInstanceId === "string" ? teamInstanceId : null,
+            title,
+          }]
         : [];
     } catch {
       return [];
     }
   });
+}
+
+export function resolveSubmittedTeamGraphTitle(
+  workItem: Pick<SubmittedTeamWorkItem, "teamId" | "teamInstanceId">,
+  teamInstances: readonly Pick<TeamInstanceView, "id" | "name">[],
+  teams: readonly Pick<AgentTeam, "id" | "name">[],
+): string {
+  const instanceName = workItem.teamInstanceId === null
+    ? undefined
+    : teamInstances.find((instance) => instance.id === workItem.teamInstanceId)?.name;
+  const templateName = workItem.teamId === null
+    ? undefined
+    : teams.find((team) => team.id === workItem.teamId)?.name;
+  return `${instanceName ?? templateName ?? "Agent 团队"} · Agent 协作图`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -2419,7 +2447,7 @@ export function ConversationWorkspace({
                     <CollaborationProjectionGraph
                       agentClient={agentClient}
                       key={workItem.id}
-                      title={`${workItem.title} · Agent 协作图`}
+                      title={resolveSubmittedTeamGraphTitle(workItem, teamInstances, teams)}
                       variant="conversation"
                       workItemId={workItem.id}
                       {...(onSessionSelected === undefined ? {} : {
