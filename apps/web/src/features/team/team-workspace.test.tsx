@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type {
   ConversationRunEvent,
@@ -12,6 +12,7 @@ import { DEFAULT_AGENT_DIRECTORY_CONFIGURATION } from "@agent/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MockAgentClient } from "../../runtime/mock-agent-client.js";
+import { TooltipProvider } from "../../components/ui/tooltip.js";
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
 import { TeamWorkspace } from "./team-workspace.js";
 
@@ -28,12 +29,16 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
+function renderTeamWorkspace(workspace: ReactElement): void {
+  root?.render(<TooltipProvider>{workspace}</TooltipProvider>);
+}
+
 describe("TeamWorkspace", () => {
   it("keeps execution planning at the right side of the team tabs", () => {
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    act(() => root?.render(
+    act(() => renderTeamWorkspace(
         <TeamWorkspace
           agentClient={new MockAgentClient()}
           onOpenConversation={() => undefined}
@@ -56,7 +61,8 @@ describe("TeamWorkspace", () => {
     expect(container.textContent).not.toContain("投递需求");
 
     act(() => tabs[2]?.click());
-    expect(container.querySelector("#workflow-canvas-heading")?.textContent).toBe("执行规划画布");
+    expect(container.textContent).toContain("选择任务后查看真实协作计划与通信");
+    expect(container.querySelector("#workflow-canvas-heading")).toBeNull();
   });
 
   it("edits a queued requirement in place instead of creating a second WorkItem", async () => {
@@ -77,7 +83,7 @@ describe("TeamWorkspace", () => {
     document.body.append(container);
     root = createRoot(container);
     await act(async () => {
-      root?.render(
+      renderTeamWorkspace(
         <TeamWorkspace
           agentClient={client}
           onOpenConversation={() => undefined}
@@ -181,7 +187,7 @@ describe("TeamWorkspace", () => {
     document.body.append(container);
     root = createRoot(container);
     await act(async () => {
-      root?.render(
+      renderTeamWorkspace(
         <TeamWorkspace
           agentClient={client}
           onOpenConversation={() => undefined}
@@ -243,12 +249,76 @@ describe("TeamWorkspace", () => {
 
     expect(container.textContent).toContain("Implementer");
   });
+
+  it("refreshes collaboration data again after a run finishes", async () => {
+    const client = new TeamWorkspaceEventClient({
+      agents: [],
+      workItemId: "00000000-0000-4000-8000-000000000000",
+    });
+    const team = DEFAULT_AGENT_DIRECTORY_CONFIGURATION.teams[0];
+    if (team === undefined) throw new Error("Default team fixture is unavailable.");
+    const workItem = await client.submitTeamWorkItem({
+      acceptanceCriteria: [],
+      permissionMode: "ask_before_changes",
+      priority: "normal",
+      projectId: "00000000-0000-4000-8000-000000000001",
+      requirement: "验证成员回执刷新。",
+      teamId: team.id,
+      title: "验证成员回执刷新",
+    });
+    const lead = createTeamConversation({
+      id: "00000000-0000-4000-8000-000000000111",
+      teamWorkItemId: workItem.id,
+      threadKind: "team_lead",
+      title: "Team Lead · 验证成员回执刷新",
+    });
+    client.execution = {
+      agents: [{ agent: null, conversation: lead, delegation: null, depth: 0 }],
+      workItemId: workItem.id,
+    };
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      renderTeamWorkspace(
+        <TeamWorkspace
+          agentClient={client}
+          onOpenConversation={() => undefined}
+          projects={[{
+            id: "00000000-0000-4000-8000-000000000001",
+            name: "Mock Project",
+            rootPath: "C:/mock-project",
+          }]}
+        />,
+      );
+      await flushTeamWorkspace();
+    });
+    const requestCountBeforeFinish = client.projectionRequests.length;
+
+    await act(async () => {
+      client.emit({
+        agentError: null,
+        conversationId: lead.id,
+        error: null,
+        runId: "00000000-0000-4000-8000-000000000112",
+        status: "completed",
+        type: "run.finished",
+      });
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 150));
+      await flushTeamWorkspace();
+    });
+
+    expect(client.projectionRequests.length).toBeGreaterThanOrEqual(requestCountBeforeFinish + 2);
+  });
 });
 
 class TeamWorkspaceEventClient extends MockAgentClient {
   public execution: TeamWorkItemExecutionView;
 
   public readonly executionRequests: string[] = [];
+
+  public readonly projectionRequests: string[] = [];
 
   private readonly listeners = new Set<(event: ConversationRunEvent) => void>();
 
@@ -260,6 +330,11 @@ class TeamWorkspaceEventClient extends MockAgentClient {
   public override getTeamWorkItemExecution(workItemId: string): Promise<TeamWorkItemExecutionView> {
     this.executionRequests.push(workItemId);
     return Promise.resolve({ ...structuredClone(this.execution), workItemId });
+  }
+
+  public override getTeamCollaborationProjection(workItemId: string) {
+    this.projectionRequests.push(workItemId);
+    return super.getTeamCollaborationProjection(workItemId);
   }
 
   public override onConversationRunEvent(

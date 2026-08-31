@@ -47,10 +47,10 @@ describe("AgentDatabase", () => {
       .get() as Record<string, unknown>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(16);
-    expect(firstRow.name).toBe("team-instance-sort-order");
+    expect(firstRow.version).toBe(18);
+    expect(firstRow.name).toBe("team-collaboration-output-snapshots");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(16);
+    expect(migrationCount.count).toBe(18);
   });
 
   it("preserves legacy Team execution scope when migrating version 12 data", async () => {
@@ -288,7 +288,7 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 16",
+      "newer than supported version 18",
     );
   });
 
@@ -1135,6 +1135,238 @@ describe("AgentDatabase", () => {
     database.close();
   });
 
+  it("versions Team Lead collaboration plans and projects planned and ad-hoc messages", () => {
+    const database = new AgentDatabase(":memory:");
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = {
+      id: "00000000-0000-4000-8000-000000000081",
+      isPinned: false,
+      name: "Collaboration projection fixture",
+      rootPath: "D:\\workspace\\collaboration-projection",
+    };
+    const modelSelection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000082",
+      reasoning: null,
+    };
+    database.saveProject(project);
+    const workItem = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      modelSelection,
+      permissionMode: "full_access",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "验证计划与实际通信投影。",
+      teamId: "default-team",
+      title: "协作投影",
+    }, modelSelection);
+    const lead = database.createConversation(project.id, {
+      agent: {
+        avatarIcon: "crown",
+        id: "team-lead",
+        instructions: "负责总体执行。",
+        isDefault: true,
+        name: "Team Lead",
+        role: "负责人",
+      },
+      modelSelection,
+      teamId: "default-team",
+      threadKind: "team_lead",
+    });
+    const createMember = (
+      agentId: string,
+      name: string,
+      avatarIcon: "code" | "shield",
+    ) => {
+      const member = database.createConversation(project.id, {
+        agent: {
+          avatarIcon,
+          id: agentId,
+          instructions: "执行专业任务。",
+          isDefault: false,
+          name,
+          role: "专业成员",
+        },
+        modelSelection,
+        parentConversationId: lead.id,
+        teamId: "default-team",
+        threadKind: "agent",
+      });
+      database.bindTeamMemberConversation({
+        agentId,
+        conversationId: member.id,
+        teamExecutionConversationId: lead.id,
+      });
+      return member;
+    };
+    const plannedMember = createMember("developer", "开发 Agent", "code");
+    const adHocMember = createMember("reviewer", "评审 Agent", "shield");
+    const run = database.createRunWithUserMessage(lead.id, "开始执行", modelSelection.modelId);
+    database.startTeamWorkItem(workItem.id, lead.id, run.runId);
+    const memberRun = database.createRunWithUserMessage(
+      plannedMember.id,
+      "实现并汇报",
+      modelSelection.modelId,
+    );
+    database.markRunRunning(memberRun.runId);
+    const memberOutput = `已完成实现。${"详细输出".repeat(80)}`;
+    database.completeRun({
+      assistant: {
+        content: memberOutput,
+        kind: "turn",
+        messageId: crypto.randomUUID(),
+        modelId: modelSelection.modelId,
+      },
+      conversationId: plannedMember.id,
+      error: null,
+      result: "已完成实现。",
+      runId: memberRun.runId,
+      status: "completed",
+    });
+    database.recordTeamCollaborationOutput({
+      content: memberOutput,
+      conversationId: plannedMember.id,
+      runId: memberRun.runId,
+      workItemId: workItem.id,
+    });
+
+    const firstPlan = database.setTeamCollaborationPlan({
+      createdByConversationId: lead.id,
+      reason: "先由开发 Agent 实现，再返回 Team Lead 汇总。",
+      routes: [
+        {
+          fromConversationId: lead.id,
+          purpose: "分派实现",
+          toConversationId: plannedMember.id,
+        },
+        {
+          fromConversationId: plannedMember.id,
+          purpose: "返回实现结果",
+          toConversationId: lead.id,
+        },
+      ],
+    });
+    expect(firstPlan.plan).toMatchObject({ revision: 1, status: "active" });
+    expect(firstPlan.summary).toMatchObject({ participantCount: 2, plannedRouteCount: 2 });
+
+    const plannedMessage = database.sendAgentMessage({
+      content: "请实现功能。",
+      runId: run.runId,
+      senderConversationId: lead.id,
+      targetConversationId: plannedMember.id,
+    });
+    database.recordTeamCollaborationMessage({ message: plannedMessage, workItemId: workItem.id });
+    const adHocMessage = database.sendAgentMessage({
+      content: "请临时复核风险。",
+      runId: run.runId,
+      senderConversationId: lead.id,
+      targetConversationId: adHocMember.id,
+    });
+    database.recordTeamCollaborationMessage({ message: adHocMessage, workItemId: workItem.id });
+
+    const projection = database.getTeamCollaborationProjection(workItem.id);
+    expect(projection.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ messageCount: 1, purposes: ["分派实现"], state: "observed" }),
+      expect.objectContaining({ messageCount: 0, purposes: ["返回实现结果"], state: "planned" }),
+      expect.objectContaining({ messageCount: 1, purposes: ["计划外通信"], state: "ad_hoc" }),
+    ]));
+    expect(projection.summary).toMatchObject({
+      adHocRouteCount: 1,
+      messageCount: 2,
+      observedRouteCount: 2,
+      participantCount: 3,
+    });
+    expect(projection.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ avatarIcon: "crown", latestOutput: null, name: "Team Lead" }),
+      expect.objectContaining({
+        avatarIcon: "code",
+        latestOutputRunId: memberRun.runId,
+        name: "开发 Agent",
+      }),
+      expect.objectContaining({ avatarIcon: "shield", latestOutput: null, name: "评审 Agent" }),
+    ]));
+    const developerOutput = projection.nodes.find(
+      (node) => node.name === "开发 Agent",
+    )?.latestOutput;
+    expect(developerOutput).toMatch(/^…/u);
+    expect(developerOutput).toHaveLength(280);
+
+    const revised = database.setTeamCollaborationPlan({
+      createdByConversationId: lead.id,
+      reason: "把临时评审纳入正式计划。",
+      routes: [{
+        fromConversationId: lead.id,
+        purpose: "正式评审",
+        toConversationId: adHocMember.id,
+      }],
+    });
+    expect(revised.plan).toMatchObject({ revision: 2, status: "active" });
+    expect(revised.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ messageCount: 1, purposes: ["正式评审"], state: "observed" }),
+      expect.objectContaining({ messageCount: 1, purposes: ["计划外通信"], state: "ad_hoc" }),
+    ]));
+
+    database.finishRun(run.runId, "completed", null);
+    expect(database.finishTeamWorkItemRun({
+      conversationId: lead.id,
+      error: null,
+      resultSummary: "第一项协作任务已完成。",
+      runId: run.runId,
+      status: "completed",
+      workItemId: workItem.id,
+    })).toMatchObject({ status: "waiting_user" });
+    const laterWorkItem = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      modelSelection,
+      permissionMode: "full_access",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "执行后续的独立协作任务。",
+      teamId: "default-team",
+      title: "后续协作投影",
+    }, modelSelection);
+    database.reserveTeamWorkItemExecution(laterWorkItem.id, lead.id);
+    const laterLeadRun = database.createRunWithUserMessage(
+      lead.id,
+      "开始后续协作任务",
+      modelSelection.modelId,
+    );
+    database.startTeamWorkItem(laterWorkItem.id, lead.id, laterLeadRun.runId);
+    const laterMemberRun = database.createRunWithUserMessage(
+      plannedMember.id,
+      "处理后续任务",
+      modelSelection.modelId,
+    );
+    database.completeRun({
+      assistant: {
+        content: "这是后续 WorkItem 的成员输出。",
+        kind: "turn",
+        messageId: crypto.randomUUID(),
+        modelId: modelSelection.modelId,
+      },
+      conversationId: plannedMember.id,
+      error: null,
+      result: "这是后续 WorkItem 的成员输出。",
+      runId: laterMemberRun.runId,
+      status: "completed",
+    });
+    database.recordTeamCollaborationOutput({
+      content: "这是后续 WorkItem 的成员输出。",
+      conversationId: plannedMember.id,
+      runId: laterMemberRun.runId,
+      workItemId: laterWorkItem.id,
+    });
+    const historicalProjection = database.getTeamCollaborationProjection(workItem.id);
+    expect(historicalProjection.isLive).toBe(false);
+    expect(database.getTeamCollaborationProjection(laterWorkItem.id).isLive).toBe(true);
+    expect(historicalProjection.nodes.find(
+      (node) => node.conversationId === plannedMember.id,
+    )).toMatchObject({
+      latestOutputRunId: memberRun.runId,
+    });
+    database.close();
+  });
+
   it("keeps Plugin discovery data queryable without resetting a user's enabled state", () => {
     const database = new AgentDatabase(":memory:");
     const record = {
@@ -1310,6 +1542,8 @@ describe("AgentDatabase", () => {
       { version: 14 },
       { version: 15 },
       { version: 16 },
+      { version: 17 },
+      { version: 18 },
     ]);
     metadata.close();
   });

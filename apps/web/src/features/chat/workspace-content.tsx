@@ -139,6 +139,7 @@ import { reasoningOptionDisplayName } from "../settings/model-reasoning-options.
 import { TaskWorkspace } from "../tasks/task-workspace.js";
 import { AgentAvatar } from "../team/agent-avatar.js";
 import { TeamWorkspace } from "../team/team-workspace.js";
+import { CollaborationProjectionGraph } from "../team/collaboration/collaboration-graph.js";
 import { useConversationWorkspaceCache } from "./conversation-workspace-cache.js";
 import { formatConversationRunMarkdown } from "./conversation-copy.js";
 import { ContextUsageIndicator } from "./context-usage-indicator.js";
@@ -175,7 +176,8 @@ type WorkspaceContentProps = {
   onLocateProject: (projectId: string) => void;
   onLocateSession: (sessionId: string) => void;
   onOpenProjectFile?: (projectId: string, path: string) => void;
-  onOpenTeamConversation: (conversation: ConversationSummary) => void;
+  onOpenTeamConversation: (conversation: ProjectSession, sourceConversationId?: string) => void;
+  onNavigateToTeamConversation?: (conversationId: string) => void;
   onProjectSelected: (projectId: string) => void;
   onSessionSelected: (sessionId: string) => void;
   onSessionUpdated: (conversation: ConversationSummary) => void;
@@ -224,6 +226,64 @@ type TimelineDisplayItem = ConversationTimelineItem | {
   kind: "tool_batch";
   tools: ConversationToolItem[];
 };
+
+type SubmittedTeamWorkItem = {
+  id: string;
+  teamId: string | null;
+  teamInstanceId: string | null;
+  title: string;
+};
+
+export function submittedTeamWorkItems(
+  item: TimelineDisplayItem,
+): SubmittedTeamWorkItem[] {
+  const tools = item.kind === "tool_batch"
+    ? item.tools
+    : item.kind === "tool" ? [item] : [];
+  return tools.flatMap((tool) => {
+    if (
+      tool.name !== "submit_team_work_item"
+      || tool.status !== "completed"
+      || tool.result === null
+    ) return [];
+    try {
+      const parsed: unknown = JSON.parse(tool.result);
+      if (!isRecord(parsed) || parsed.ok !== true || !isRecord(parsed.value)) return [];
+      const id = parsed.value.id;
+      const teamId = parsed.value.teamId;
+      const teamInstanceId = parsed.value.teamInstanceId;
+      const title = parsed.value.title;
+      return typeof id === "string" && typeof title === "string"
+        ? [{
+            id,
+            teamId: typeof teamId === "string" ? teamId : null,
+            teamInstanceId: typeof teamInstanceId === "string" ? teamInstanceId : null,
+            title,
+          }]
+        : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+export function resolveSubmittedTeamGraphTitle(
+  workItem: Pick<SubmittedTeamWorkItem, "teamId" | "teamInstanceId">,
+  teamInstances: readonly Pick<TeamInstanceView, "id" | "name">[],
+  teams: readonly Pick<AgentTeam, "id" | "name">[],
+): string {
+  const instanceName = workItem.teamInstanceId === null
+    ? undefined
+    : teamInstances.find((instance) => instance.id === workItem.teamInstanceId)?.name;
+  const templateName = workItem.teamId === null
+    ? undefined
+    : teams.find((team) => team.id === workItem.teamId)?.name;
+  return `${instanceName ?? templateName ?? "Agent 团队"} · Agent 协作图`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 type ModelActivity = {
   anchorTimelineItemId: string | null;
@@ -586,6 +646,7 @@ export function WorkspaceContent({
   onLocateSession,
   onOpenProjectFile,
   onOpenTeamConversation,
+  onNavigateToTeamConversation,
   onProjectSelected,
   onSessionSelected,
   onSessionUpdated,
@@ -605,6 +666,9 @@ export function WorkspaceContent({
         agentClient={agentClient}
         projects={projects}
         onOpenConversation={onOpenTeamConversation}
+        {...(onNavigateToTeamConversation === undefined ? {} : {
+          onNavigateToConversation: onNavigateToTeamConversation,
+        })}
       />
     );
   }
@@ -653,6 +717,10 @@ export function WorkspaceContent({
                 : (path) => {
                     onOpenProjectFile?.(projectId, path);
                   }}
+              onOpenTeamConversation={onOpenTeamConversation}
+              {...(onNavigateToTeamConversation === undefined ? {} : {
+                onNavigateToTeamConversation,
+              })}
               onForkConversation={onForkConversation}
               onAddProject={onAddProject}
               onProjectSelected={onProjectSelected}
@@ -682,6 +750,8 @@ export function ConversationWorkspace({
   onLocateProject,
   onLocateSession,
   onOpenProjectFile,
+  onOpenTeamConversation,
+  onNavigateToTeamConversation,
   onForkConversation,
   onProjectSelected,
   onSessionSelected,
@@ -702,6 +772,8 @@ export function ConversationWorkspace({
   onLocateProject?: (projectId: string) => void;
   onLocateSession?: (sessionId: string) => void;
   onOpenProjectFile?: ((path: string) => void) | undefined;
+  onOpenTeamConversation?: (conversation: ProjectSession, sourceConversationId?: string) => void;
+  onNavigateToTeamConversation?: (conversationId: string) => void;
   onForkConversation?: (conversationId: string, throughMessageId: string) => Promise<void>;
   onProjectSelected?: (projectId: string) => void;
   onSessionSelected?: (sessionId: string) => void;
@@ -2384,6 +2456,26 @@ export function ConversationWorkspace({
                     onSessionSelected={onSessionSelected}
                     liveToolOutputs={liveToolOutputs}
                   />
+                  {submittedTeamWorkItems(item).map((workItem) => (
+                    <CollaborationProjectionGraph
+                      agentClient={agentClient}
+                      key={workItem.id}
+                      title={resolveSubmittedTeamGraphTitle(workItem, teamInstances, teams)}
+                      variant="conversation"
+                      workItemId={workItem.id}
+                      {...(onOpenTeamConversation === undefined ? {} : {
+                        onOpenConversation: (conversationId: string) => {
+                          const conversation = relatedSessions.find(
+                            (candidate) => candidate.id === conversationId,
+                          );
+                          if (conversation !== undefined) onOpenTeamConversation(conversation, session.id);
+                        },
+                      })}
+                      {...(onNavigateToTeamConversation === undefined ? {} : {
+                        onNavigateToConversation: onNavigateToTeamConversation,
+                      })}
+                    />
+                  ))}
                 </Fragment>
               ))}
               {(runProgressesByInsertIndex.get(displayTimeline.length) ?? []).map((progress) => (

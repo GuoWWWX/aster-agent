@@ -107,6 +107,7 @@ import type {
   UpdateTeamWorkItemPermissionInput,
   AcceptTeamWorkItemInput,
   TeamWorkItemExecutionView,
+  TeamCollaborationProjection,
   TeamMemberConversationView,
   TeamWorkItemView,
   TeamInstanceReferenceInput,
@@ -241,6 +242,7 @@ export interface AgentClient {
   listProjects(): Promise<ProjectSummary[]>;
   listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]>;
   getTeamWorkItemExecution(workItemId: string): Promise<TeamWorkItemExecutionView>;
+  getTeamCollaborationProjection(workItemId: string): Promise<TeamCollaborationProjection>;
   readProjectFile(input: ReadProjectFileInput): Promise<ProjectFile>;
   writeProjectFile(input: WriteProjectFileInput): Promise<ProjectFile>;
   readProjectPreviewImage(input: ReadProjectPreviewImageInput): Promise<ProjectPreviewImage>;

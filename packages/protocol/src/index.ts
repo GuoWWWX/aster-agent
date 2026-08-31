@@ -314,6 +314,33 @@ export type {
   TeamWorkItemView,
 } from "./team-work-item.js";
 export {
+  MAX_TEAM_COLLABORATION_OUTPUT_LENGTH,
+  getTeamCollaborationProjectionInputSchema,
+  setTeamCollaborationPlanInputSchema,
+  teamCollaborationEdgeStateSchema,
+  teamCollaborationEdgeViewSchema,
+  teamCollaborationNodeKindSchema,
+  teamCollaborationNodeRunStatusSchema,
+  teamCollaborationNodeViewSchema,
+  teamCollaborationPlanRouteInputSchema,
+  teamCollaborationPlanStatusSchema,
+  teamCollaborationPlanViewSchema,
+  teamCollaborationProjectionSchema,
+} from "./team-collaboration.js";
+export type {
+  GetTeamCollaborationProjectionInput,
+  SetTeamCollaborationPlanInput,
+  TeamCollaborationEdgeState,
+  TeamCollaborationEdgeView,
+  TeamCollaborationNodeKind,
+  TeamCollaborationNodeRunStatus,
+  TeamCollaborationNodeView,
+  TeamCollaborationPlanRouteInput,
+  TeamCollaborationPlanStatus,
+  TeamCollaborationPlanView,
+  TeamCollaborationProjection,
+} from "./team-collaboration.js";
+export {
   createTeamInstanceInputSchema,
   ensureTeamInstanceMemberConversationInputSchema,
   listTeamInstancesInputSchema,
@@ -457,6 +484,7 @@ export {
   ensureTeamMemberConversationIpcArgumentsSchema,
   ensureTeamInstanceMemberConversationIpcArgumentsSchema,
   getTeamWorkItemExecutionIpcArgumentsSchema,
+  getTeamCollaborationProjectionIpcArgumentsSchema,
   getModelApiKeyIpcArgumentsSchema,
   integrationConfigurationIpcArgumentsSchema,
   importConversationAttachmentBytesIpcArgumentsSchema,

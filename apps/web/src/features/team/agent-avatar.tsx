@@ -153,6 +153,10 @@ const TONES: Record<AgentAvatarIcon, (typeof AGENT_AVATAR_ICON_OPTIONS)[number][
     AGENT_AVATAR_ICON_OPTIONS.map((option) => [option.id, option.tone]),
   ) as Record<AgentAvatarIcon, (typeof AGENT_AVATAR_ICON_OPTIONS)[number]["tone"]>;
 
+export function resolveAgentAvatarIcon(icon: AgentAvatarIcon): LucideIcon {
+  return ICONS[icon];
+}
+
 export function AgentAvatar({
   avatar,
   size = "regular",

@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { DatabaseMigrationRunner } from "./database-migration-runner.js";
 import { z } from "zod";
 import {
+  MAX_TEAM_COLLABORATION_OUTPUT_LENGTH,
   agentAvatarIconSchema,
   agentDirectoryConfigurationSchema,
   contextCompressionThresholdSchema,
@@ -32,6 +33,8 @@ import {
   teamWorkItemEventSchema,
   teamWorkItemExecutionViewSchema,
   teamWorkItemViewSchema,
+  setTeamCollaborationPlanInputSchema,
+  teamCollaborationProjectionSchema,
   teamInstanceViewSchema,
   conversationAttachmentSchema,
   type AcceptTeamWorkItemInput,
@@ -63,6 +66,8 @@ import {
   type TeamWorkItemStatus,
   type TeamWorkItemView,
   type TeamInstanceView,
+  type SetTeamCollaborationPlanInput,
+  type TeamCollaborationProjection,
 } from "@agent/protocol";
 import type { ModelProviderState, ModelToolCall } from "../model/model-contracts.js";
 
@@ -509,6 +514,66 @@ function asNumber(row: DatabaseRow, key: string): number {
     throw new Error(`Database column ${key} is not a number.`);
   }
   return value;
+}
+
+function collaborationRunStatus(
+  conversation: ConversationSummary | undefined,
+  workItemStatus: TeamWorkItemStatus,
+): TeamCollaborationProjection["nodes"][number]["runStatus"] {
+  if (conversation?.activeRunId !== null && conversation?.activeRunId !== undefined) {
+    return "running";
+  }
+  if (conversation?.lastRunStatus === "queued" || conversation?.lastRunStatus === "running") {
+    return conversation.lastRunStatus;
+  }
+  if (conversation?.lastRunStatus === "failed") return "failed";
+  if (conversation?.lastRunStatus === "completed") return "completed";
+  if (conversation?.lastRunStatus === "cancelled" || workItemStatus === "blocked") return "blocked";
+  return "idle";
+}
+
+function collaborationOutputExcerpt(content: string): string | null {
+  const normalized = content.replace(/\s+/gu, " ").trim();
+  if (normalized.length === 0) return null;
+  const characters = Array.from(normalized);
+  return characters.length <= MAX_TEAM_COLLABORATION_OUTPUT_LENGTH
+    ? normalized
+    : `…${characters.slice(-(MAX_TEAM_COLLABORATION_OUTPUT_LENGTH - 1)).join("")}`;
+}
+
+function collaborationEdgeView(input: {
+  activity: readonly ConversationAgentMessageItem[];
+  fromNodeId: string;
+  id: string;
+  purposes: string[];
+  state: TeamCollaborationProjection["edges"][number]["state"];
+  toNodeId: string;
+}): TeamCollaborationProjection["edges"][number] {
+  const firstActivityAt = input.activity[0]?.createdAt ?? null;
+  const lastActivityAt = input.activity.at(-1)?.createdAt ?? null;
+  return {
+    firstActivityAt,
+    fromNodeId: input.fromNodeId,
+    id: input.id,
+    lastActivityAt,
+    messageCount: input.activity.length,
+    messageTypes: {
+      agent_result: input.activity.filter((message) => message.messageType === "agent_result").length,
+      message: input.activity.filter((message) => message.messageType === "message").length,
+      notification: input.activity.filter((message) => message.messageType === "notification").length,
+      task_result: input.activity.filter((message) => message.messageType === "task_result").length,
+    },
+    purposes: input.purposes,
+    state: input.state,
+    toNodeId: input.toNodeId,
+    unreadCount: input.activity.filter((message) => message.status === "unread").length,
+  };
+}
+
+function isTerminalTeamWorkItemStatus(status: TeamWorkItemStatus): boolean {
+  return status === "completed"
+    || status === "failed"
+    || status === "cancelled";
 }
 
 function parseJson<T>(value: string, description: string): T {
@@ -2162,6 +2227,395 @@ export class AgentDatabase {
     }
 
     return teamWorkItemExecutionViewSchema.parse({ agents, workItemId });
+  }
+
+  /**
+   * Publishes a complete collaboration-plan revision for the running WorkItem
+   * owned by the calling Team Lead. Routes are advisory: message delivery does
+   * not consult this table and therefore remains available for plan deviations.
+   */
+  public setTeamCollaborationPlan(
+    rawInput: SetTeamCollaborationPlanInput,
+  ): TeamCollaborationProjection {
+    const input = setTeamCollaborationPlanInputSchema.parse(rawInput);
+    const workItem = this.getRunningTeamWorkItemByExecutionTreeConversation(
+      input.createdByConversationId,
+    );
+    if (
+      workItem === null
+      || workItem.executionConversationId !== input.createdByConversationId
+      || this.getConversation(input.createdByConversationId).threadKind !== "team_lead"
+    ) {
+      throw new Error("Only the current WorkItem Team Lead can publish its collaboration plan.");
+    }
+
+    const execution = this.getTeamWorkItemExecution(workItem.id);
+    const participants = new Map(
+      execution.agents.map((participant) => [participant.conversation.id, participant]),
+    );
+    for (const route of input.routes) {
+      if (
+        !participants.has(route.fromConversationId)
+        || !participants.has(route.toConversationId)
+      ) {
+        throw new Error("Collaboration routes may reference only participants in the current WorkItem.");
+      }
+    }
+    const plannedConversationIds = new Set<string>([input.createdByConversationId]);
+    for (const route of input.routes) {
+      plannedConversationIds.add(route.fromConversationId);
+      plannedConversationIds.add(route.toConversationId);
+    }
+    const plannedParticipants = execution.agents.filter((participant) => (
+      plannedConversationIds.has(participant.conversation.id)
+    ));
+
+    const now = new Date().toISOString();
+    const planId = randomUUID();
+    this.withTransaction(() => {
+      const revisionRow = this.database.prepare(
+        "SELECT COALESCE(MAX(revision), 0) AS revision FROM team_collaboration_plans WHERE work_item_id = ?",
+      ).get(workItem.id) as DatabaseRow;
+      const revision = asNumber(revisionRow, "revision") + 1;
+      this.database.prepare(
+        `UPDATE team_collaboration_plans
+         SET status = 'superseded', superseded_at = ?
+         WHERE work_item_id = ? AND status = 'active'`,
+      ).run(now, workItem.id);
+      this.database.prepare(
+        `INSERT INTO team_collaboration_plans (
+          id, work_item_id, revision, status, created_by_conversation_id,
+          reason, created_at, activated_at, superseded_at
+        ) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, NULL)`,
+      ).run(
+        planId,
+        workItem.id,
+        revision,
+        input.createdByConversationId,
+        input.reason,
+        now,
+        now,
+      );
+
+      const participantsByDepth = new Map<number, typeof plannedParticipants>();
+      for (const participant of plannedParticipants) {
+        const depthParticipants = participantsByDepth.get(participant.depth) ?? [];
+        depthParticipants.push(participant);
+        participantsByDepth.set(participant.depth, depthParticipants);
+      }
+      const nodeIds = new Map<string, string>();
+      const insertNode = this.database.prepare(
+        `INSERT INTO team_collaboration_plan_nodes (
+          id, plan_id, stable_agent_id, conversation_id, kind, name_snapshot,
+          role_snapshot, position_x, position_y, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const participant of plannedParticipants) {
+        const siblings = participantsByDepth.get(participant.depth) ?? [participant];
+        const siblingIndex = Math.max(0, siblings.findIndex(
+          (candidate) => candidate.conversation.id === participant.conversation.id,
+        ));
+        const nodeId = randomUUID();
+        nodeIds.set(participant.conversation.id, nodeId);
+        insertNode.run(
+          nodeId,
+          planId,
+          participant.agent?.id ?? null,
+          participant.conversation.id,
+          participant.depth === 0
+            ? "team_lead"
+            : participant.conversation.threadKind === "subagent" ? "ephemeral" : "standing",
+          participant.agent?.name ?? participant.conversation.title,
+          participant.agent?.role ?? (participant.depth === 0 ? "Team Lead" : "团队成员"),
+          120 + participant.depth * 240,
+          90 + siblingIndex * 120,
+          now,
+        );
+      }
+
+      const insertRoute = this.database.prepare(
+        `INSERT INTO team_collaboration_plan_routes (
+          id, plan_id, from_node_id, to_node_id, purposes_json, optional, created_at
+        ) VALUES (?, ?, ?, ?, ?, 0, ?)`,
+      );
+      for (const route of input.routes) {
+        const fromNodeId = nodeIds.get(route.fromConversationId);
+        const toNodeId = nodeIds.get(route.toConversationId);
+        if (fromNodeId === undefined || toNodeId === undefined) {
+          throw new Error("A collaboration-plan participant disappeared while publishing the plan.");
+        }
+        insertRoute.run(
+          randomUUID(),
+          planId,
+          fromNodeId,
+          toNodeId,
+          JSON.stringify([route.purpose]),
+          now,
+        );
+      }
+    });
+
+    return this.getTeamCollaborationProjection(workItem.id);
+  }
+
+  /** Associates an already committed Agent message with its running WorkItem. */
+  public recordTeamCollaborationMessage(input: {
+    message: ConversationAgentMessageItem;
+    workItemId: string;
+  }): void {
+    if (
+      !this.isConversationInTeamWorkItemExecution(
+        input.message.senderConversationId,
+        input.workItemId,
+      )
+      || !this.isConversationInTeamWorkItemExecution(
+        input.message.conversationId,
+        input.workItemId,
+      )
+    ) return;
+    this.database.prepare(
+      "UPDATE conversation_agent_messages SET work_item_id = ? WHERE id = ? AND work_item_id IS NULL",
+    ).run(input.workItemId, input.message.id);
+  }
+
+  /** Persists the last visible Assistant excerpt for exactly one WorkItem participant. */
+  public recordTeamCollaborationOutput(input: {
+    content: string;
+    conversationId: string;
+    runId: string;
+    workItemId: string;
+  }): void {
+    if (!this.isConversationInTeamWorkItemExecution(input.conversationId, input.workItemId)) {
+      return;
+    }
+    const content = collaborationOutputExcerpt(input.content);
+    if (content === null) return;
+    const now = new Date().toISOString();
+    this.database.prepare(
+      `INSERT INTO team_work_item_collaboration_outputs
+         (work_item_id, conversation_id, run_id, content, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(work_item_id, conversation_id) DO UPDATE SET
+         run_id = excluded.run_id,
+         content = excluded.content,
+         updated_at = excluded.updated_at`,
+    ).run(input.workItemId, input.conversationId, input.runId, content, now);
+  }
+
+  /** Builds the single renderer projection from persisted plan and message facts. */
+  public getTeamCollaborationProjection(workItemId: string): TeamCollaborationProjection {
+    const workItem = this.getTeamWorkItem(workItemId);
+    const execution = this.getTeamWorkItemExecution(workItemId);
+    const executionByConversationId = new Map(
+      execution.agents.map((participant) => [participant.conversation.id, participant]),
+    );
+    const outputByConversationId = new Map(
+      (this.database.prepare(
+        `SELECT conversation_id, content, run_id
+         FROM team_work_item_collaboration_outputs
+         WHERE work_item_id = ?`,
+      ).all(workItemId) as DatabaseRow[]).map((row) => [
+        asString(row, "conversation_id"),
+        {
+          latestOutput: asString(row, "content"),
+          latestOutputRunId: asString(row, "run_id"),
+        },
+      ]),
+    );
+    const nodePresentationByConversationId = new Map(
+      execution.agents.map((participant) => [
+        participant.conversation.id,
+        {
+          avatarIcon: participant.conversation.avatarIcon ?? null,
+          ...(outputByConversationId.get(participant.conversation.id) ?? {
+            latestOutput: null,
+            latestOutputRunId: null,
+          }),
+        },
+      ]),
+    );
+    const planRow = this.database.prepare(
+      `SELECT * FROM team_collaboration_plans
+       WHERE work_item_id = ? AND status = 'active'
+       ORDER BY revision DESC LIMIT 1`,
+    ).get(workItemId) as DatabaseRow | undefined;
+    const planId = planRow === undefined ? null : asString(planRow, "id");
+    const planNodeRows = planId === null
+      ? []
+      : this.database.prepare(
+          "SELECT * FROM team_collaboration_plan_nodes WHERE plan_id = ? ORDER BY created_at ASC, rowid ASC",
+        ).all(planId) as DatabaseRow[];
+    const messageRows = this.database.prepare(
+      `SELECT DISTINCT messages.payload_json
+       FROM conversation_agent_messages AS messages
+       LEFT JOIN team_work_item_member_assignments AS assignments
+         ON assignments.message_id = messages.id
+       WHERE messages.work_item_id = ? OR assignments.work_item_id = ?
+       ORDER BY messages.created_at ASC`,
+    ).all(workItemId, workItemId) as DatabaseRow[];
+    const messages = messageRows.map((row) => conversationAgentMessageItemSchema.parse(
+      parseJson(asString(row, "payload_json"), "Team collaboration message"),
+    ));
+    const actualConversationIds = new Set<string>();
+    for (const message of messages) {
+      actualConversationIds.add(message.senderConversationId);
+      actualConversationIds.add(message.conversationId);
+    }
+
+    const nodes: TeamCollaborationProjection["nodes"] = [];
+    const nodeIdByConversationId = new Map<string, string>();
+    for (const row of planNodeRows) {
+      const conversationId = asNullableString(row, "conversation_id");
+      const participant = conversationId === null
+        ? undefined
+        : executionByConversationId.get(conversationId);
+      const output = conversationId === null
+        ? undefined
+        : outputByConversationId.get(conversationId);
+      const presentation = conversationId === null
+        ? undefined
+        : nodePresentationByConversationId.get(conversationId);
+      const id = asString(row, "id");
+      if (conversationId !== null) nodeIdByConversationId.set(conversationId, id);
+      nodes.push({
+        agentId: asNullableString(row, "stable_agent_id"),
+        avatarIcon: presentation?.avatarIcon ?? null,
+        conversationId,
+        id,
+        kind: z.enum(["team_lead", "standing", "ephemeral", "placeholder"])
+          .parse(asString(row, "kind")),
+        latestOutput: output?.latestOutput ?? null,
+        latestOutputRunId: output?.latestOutputRunId ?? null,
+        name: asString(row, "name_snapshot"),
+        position: {
+          x: asNumber(row, "position_x"),
+          y: asNumber(row, "position_y"),
+        },
+        role: asString(row, "role_snapshot"),
+        runStatus: collaborationRunStatus(participant?.conversation, workItem.status),
+        taskIds: participant?.delegation === null || participant?.delegation === undefined
+          ? []
+          : [participant.delegation.id],
+      });
+    }
+
+    for (const participant of execution.agents) {
+      if (nodeIdByConversationId.has(participant.conversation.id)) continue;
+      if (
+        participant.depth !== 0
+        && participant.delegation === null
+        && !actualConversationIds.has(participant.conversation.id)
+      ) continue;
+      const positionX = 120 + participant.depth * 240;
+      const lastPositionY = nodes.reduce((maximum, node) => (
+        node.position.x === positionX ? Math.max(maximum, node.position.y) : maximum
+      ), -30);
+      const id = `conversation:${participant.conversation.id}`;
+      const presentation = nodePresentationByConversationId.get(participant.conversation.id);
+      nodeIdByConversationId.set(participant.conversation.id, id);
+      nodes.push({
+        agentId: participant.agent?.id ?? null,
+        avatarIcon: presentation?.avatarIcon ?? null,
+        conversationId: participant.conversation.id,
+        id,
+        kind: participant.depth === 0
+          ? "team_lead"
+          : participant.conversation.threadKind === "subagent" ? "ephemeral" : "standing",
+        latestOutput: presentation?.latestOutput ?? null,
+        latestOutputRunId: presentation?.latestOutputRunId ?? null,
+        name: participant.agent?.name ?? participant.conversation.title,
+        position: {
+          x: positionX,
+          y: lastPositionY + 120,
+        },
+        role: participant.agent?.role ?? (participant.depth === 0 ? "Team Lead" : "团队成员"),
+        runStatus: collaborationRunStatus(participant.conversation, workItem.status),
+        taskIds: participant.delegation === null ? [] : [participant.delegation.id],
+      });
+    }
+
+    const messageGroups = new Map<string, ConversationAgentMessageItem[]>();
+    for (const message of messages) {
+      const key = `${message.senderConversationId}:${message.conversationId}`;
+      const group = messageGroups.get(key) ?? [];
+      group.push(message);
+      messageGroups.set(key, group);
+    }
+
+    const edges: TeamCollaborationProjection["edges"] = [];
+    const plannedRouteKeys = new Set<string>();
+    if (planId !== null) {
+      const routeRows = this.database.prepare(
+        `SELECT routes.*, source.conversation_id AS from_conversation_id,
+                target.conversation_id AS to_conversation_id
+         FROM team_collaboration_plan_routes AS routes
+         JOIN team_collaboration_plan_nodes AS source ON source.id = routes.from_node_id
+         JOIN team_collaboration_plan_nodes AS target ON target.id = routes.to_node_id
+         WHERE routes.plan_id = ? ORDER BY routes.created_at ASC, routes.rowid ASC`,
+      ).all(planId) as DatabaseRow[];
+      for (const row of routeRows) {
+        const fromConversationId = asNullableString(row, "from_conversation_id");
+        const toConversationId = asNullableString(row, "to_conversation_id");
+        const routeKey = fromConversationId === null || toConversationId === null
+          ? null
+          : `${fromConversationId}:${toConversationId}`;
+        if (routeKey !== null) plannedRouteKeys.add(routeKey);
+        const activity = routeKey === null ? [] : messageGroups.get(routeKey) ?? [];
+        edges.push(collaborationEdgeView({
+          activity,
+          fromNodeId: asString(row, "from_node_id"),
+          id: asString(row, "id"),
+          purposes: z.array(z.string().trim().min(1).max(500)).max(20).parse(
+            parseJson(asString(row, "purposes_json"), "Team collaboration route purposes"),
+          ),
+          state: activity.length > 0
+            ? "observed"
+            : isTerminalTeamWorkItemStatus(workItem.status) ? "skipped" : "planned",
+          toNodeId: asString(row, "to_node_id"),
+        }));
+      }
+    }
+
+    for (const [routeKey, activity] of messageGroups) {
+      if (plannedRouteKeys.has(routeKey)) continue;
+      const first = activity[0];
+      if (first === undefined) continue;
+      const fromNodeId = nodeIdByConversationId.get(first.senderConversationId);
+      const toNodeId = nodeIdByConversationId.get(first.conversationId);
+      if (fromNodeId === undefined || toNodeId === undefined) continue;
+      edges.push(collaborationEdgeView({
+        activity,
+        fromNodeId,
+        id: `actual:${routeKey}`,
+        purposes: ["计划外通信"],
+        state: "ad_hoc",
+        toNodeId,
+      }));
+    }
+
+    const lastActivityAt = messages.at(-1)?.createdAt ?? null;
+    return teamCollaborationProjectionSchema.parse({
+      edges,
+      isLive: workItem.status === "running" || workItem.status === "reviewing",
+      nodes,
+      plan: planRow === undefined ? null : {
+        activatedAt: asString(planRow, "activated_at"),
+        createdAt: asString(planRow, "created_at"),
+        id: asString(planRow, "id"),
+        reason: asString(planRow, "reason"),
+        revision: asNumber(planRow, "revision"),
+        status: "active",
+      },
+      summary: {
+        adHocRouteCount: edges.filter((edge) => edge.state === "ad_hoc").length,
+        lastActivityAt,
+        messageCount: messages.length,
+        observedRouteCount: edges.filter((edge) => edge.messageCount > 0).length,
+        participantCount: nodes.length,
+        plannedRouteCount: edges.filter((edge) => edge.state !== "ad_hoc").length,
+      },
+      workItemId,
+    });
   }
 
   /**
@@ -7806,6 +8260,90 @@ export class AgentDatabase {
           rows.forEach((row, index) => update.run(index, asString(row, "id")));
         },
         version: 16,
+      },
+      {
+        name: "team-collaboration-plans",
+        up: (database) => {
+          const messageColumns = database
+            .prepare("PRAGMA table_info(conversation_agent_messages)")
+            .all() as DatabaseRow[];
+          if (!messageColumns.some((column) => column.name === "work_item_id")) {
+            database.exec(`
+              ALTER TABLE conversation_agent_messages
+              ADD COLUMN work_item_id TEXT REFERENCES team_work_items(id) ON DELETE SET NULL;
+            `);
+          }
+          database.exec(`
+            CREATE INDEX IF NOT EXISTS conversation_agent_messages_work_item
+              ON conversation_agent_messages(work_item_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS team_collaboration_plans (
+              id TEXT PRIMARY KEY,
+              work_item_id TEXT NOT NULL REFERENCES team_work_items(id) ON DELETE CASCADE,
+              revision INTEGER NOT NULL,
+              status TEXT NOT NULL CHECK(status IN ('active', 'superseded')),
+              created_by_conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+              reason TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              activated_at TEXT NOT NULL,
+              superseded_at TEXT,
+              UNIQUE(work_item_id, revision)
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS team_collaboration_plans_active
+              ON team_collaboration_plans(work_item_id) WHERE status = 'active';
+
+            CREATE TABLE IF NOT EXISTS team_collaboration_plan_nodes (
+              id TEXT PRIMARY KEY,
+              plan_id TEXT NOT NULL REFERENCES team_collaboration_plans(id) ON DELETE CASCADE,
+              stable_agent_id TEXT,
+              conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+              kind TEXT NOT NULL CHECK(kind IN ('team_lead', 'standing', 'ephemeral', 'placeholder')),
+              name_snapshot TEXT NOT NULL,
+              role_snapshot TEXT NOT NULL,
+              position_x REAL NOT NULL,
+              position_y REAL NOT NULL,
+              created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS team_collaboration_plan_nodes_plan
+              ON team_collaboration_plan_nodes(plan_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS team_collaboration_plan_routes (
+              id TEXT PRIMARY KEY,
+              plan_id TEXT NOT NULL REFERENCES team_collaboration_plans(id) ON DELETE CASCADE,
+              from_node_id TEXT NOT NULL REFERENCES team_collaboration_plan_nodes(id) ON DELETE CASCADE,
+              to_node_id TEXT NOT NULL REFERENCES team_collaboration_plan_nodes(id) ON DELETE CASCADE,
+              purposes_json TEXT NOT NULL,
+              optional INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL,
+              UNIQUE(plan_id, from_node_id, to_node_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS team_collaboration_plan_routes_plan
+              ON team_collaboration_plan_routes(plan_id, created_at);
+          `);
+        },
+        version: 17,
+      },
+      {
+        name: "team-collaboration-output-snapshots",
+        up: (database) => {
+          database.exec(`
+            CREATE TABLE IF NOT EXISTS team_work_item_collaboration_outputs (
+              work_item_id TEXT NOT NULL REFERENCES team_work_items(id) ON DELETE CASCADE,
+              conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+              run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+              content TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY (work_item_id, conversation_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS team_work_item_collaboration_outputs_work_item
+              ON team_work_item_collaboration_outputs(work_item_id, updated_at);
+          `);
+        },
+        version: 18,
       },
     ]);
   }

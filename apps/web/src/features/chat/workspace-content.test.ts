@@ -26,10 +26,64 @@ import {
   resolveConversationPathScope,
   resolveInitialConversationModelSelection,
   runtimeBadgeLabel,
+  resolveSubmittedTeamGraphTitle,
   stripLegacyErrorInstanceId,
+  submittedTeamWorkItems,
   toolBatchLabel,
   toolBatchExecutionMode,
 } from "./workspace-content.js";
+
+describe("Team WorkItem collaboration graph placement", () => {
+  it("extracts a submitted WorkItem only from its successful tool result", () => {
+    const tool: ConversationToolItem = {
+      arguments: "{}",
+      batchId: null,
+      conversationId: "00000000-0000-4000-8000-000000000211",
+      createdAt: "2026-08-31T08:00:00.000Z",
+      diff: null,
+      executionMode: "serial",
+      id: "00000000-0000-4000-8000-000000000212",
+      kind: "tool",
+      name: "submit_team_work_item",
+      result: JSON.stringify({
+        ok: true,
+        value: {
+          id: "00000000-0000-4000-8000-000000000213",
+          teamId: "team-default",
+          teamInstanceId: "00000000-0000-4000-8000-000000000215",
+          title: "实现 Agent 协作图",
+        },
+      }),
+      runId: "00000000-0000-4000-8000-000000000214",
+      status: "completed",
+    };
+    expect(submittedTeamWorkItems(tool)).toEqual([{
+      id: "00000000-0000-4000-8000-000000000213",
+      teamId: "team-default",
+      teamInstanceId: "00000000-0000-4000-8000-000000000215",
+      title: "实现 Agent 协作图",
+    }]);
+    expect(submittedTeamWorkItems({ ...tool, status: "failed" })).toEqual([]);
+  });
+
+  it("uses the submitted Team instance name for the graph title", () => {
+    const workItem = {
+      id: "00000000-0000-4000-8000-000000000213",
+      teamId: "team-default",
+      teamInstanceId: "00000000-0000-4000-8000-000000000215",
+      title: "实现 Agent 协作图",
+    };
+
+    expect(resolveSubmittedTeamGraphTitle(
+      workItem,
+      [{ id: workItem.teamInstanceId, name: "默认团队" }],
+      [{ id: workItem.teamId, name: "默认团队模板" }],
+    )).toBe("默认团队 · Agent 协作图");
+    expect(resolveSubmittedTeamGraphTitle(workItem, [], [
+      { id: workItem.teamId, name: "默认团队模板" },
+    ])).toBe("默认团队模板 · Agent 协作图");
+  });
+});
 
 describe("conversation path scope", () => {
   it("shows a shared team member conversation under the team hierarchy", () => {

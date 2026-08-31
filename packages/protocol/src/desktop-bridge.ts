@@ -122,6 +122,10 @@ import type {
   TeamWorkItemView,
 } from "./team-work-item.js";
 import type {
+  GetTeamCollaborationProjectionInput,
+  TeamCollaborationProjection,
+} from "./team-collaboration.js";
+import type {
   CreateTeamInstanceInput,
   EnsureTeamInstanceMemberConversationInput,
   ListTeamInstancesInput,
@@ -181,6 +185,9 @@ export interface DesktopBridge {
   getTeamWorkItemExecution(
     input: GetTeamWorkItemExecutionInput,
   ): Promise<TeamWorkItemExecutionView>;
+  getTeamCollaborationProjection(
+    input: GetTeamCollaborationProjectionInput,
+  ): Promise<TeamCollaborationProjection>;
   submitTeamWorkItem(input: SubmitTeamWorkItemInput): Promise<TeamWorkItemView>;
   updateTeamWorkItem(input: UpdateTeamWorkItemInput): Promise<TeamWorkItemView>;
   updateTeamWorkItemPermission(

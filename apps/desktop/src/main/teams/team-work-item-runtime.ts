@@ -9,6 +9,7 @@ import type {
   CreateTeamInstanceInput,
   EnsureTeamMemberConversationInput,
   GetTeamWorkItemExecutionInput,
+  GetTeamCollaborationProjectionInput,
   ListTeamWorkItemsInput,
   RenameTeamInstanceInput,
   RequestTeamWorkItemReworkInput,
@@ -17,6 +18,7 @@ import type {
   UpdateTeamWorkItemInput,
   UpdateTeamWorkItemPermissionInput,
   TeamWorkItemExecutionView,
+  TeamCollaborationProjection,
   TeamMemberConversationView,
   TeamInstanceView,
   TeamWorkItemView,
@@ -118,6 +120,12 @@ export class TeamWorkItemRuntime {
 
   public getExecution(input: GetTeamWorkItemExecutionInput): TeamWorkItemExecutionView {
     return this.database.getTeamWorkItemExecution(input.workItemId);
+  }
+
+  public getCollaborationProjection(
+    input: GetTeamCollaborationProjectionInput,
+  ): TeamCollaborationProjection {
+    return this.database.getTeamCollaborationProjection(input.workItemId);
   }
 
   public ensureSharedMemberConversation(
@@ -682,13 +690,14 @@ export class TeamWorkItemRuntime {
       "",
       "执行要求：",
       "1. 先检查当前项目事实；存在多个可观察步骤时创建并持续更新任务清单。",
-      "2. 每个工作项都必须至少通过 send_agent_message 委派一位持久团队成员，并使用 expectReply=true 等待专业结果；不能由 Team Lead 独自完成。",
-      "3. 简单任务走短路径：只选择一位最匹配的专业成员处理，Team Lead 验收后汇总，不强制跑完整团队流程。",
-      "4. 常规或复杂任务再按实际需要组合需求、架构、前端、后端和测试角色；没有真实并行收益时不要同时唤醒所有成员。",
-      "5. 成员完成后只会自动返回有界回执；随时用 list_agent_conversations 检查状态，仅在需要核验时用 read_agent_conversation 按 maxTokens 预算读取成员的完整持久对话，不能把成员对话当作一次性 Subagent，也不要把完整成员输出复制进 Team Lead 上下文。",
-      "6. 完成实际修改，并运行与改动相符的测试或检查。",
-      "7. 在结束前做一次需求符合性与回归风险自检；发现问题立即修正。",
-      "8. 最终回复列出成员分工、完成内容、修改文件、验证结果、未决风险，并逐项对应验收条件。",
+      "2. 在第一次委派前调用 list_agent_conversations 获取成员 Conversation ID，并用 set_team_collaboration_plan 发布本工作项的完整有向通信计划；至少包含 Team Lead 到执行成员及成员返回 Team Lead 的路线。计划是软约束，发布失败时说明原因并继续合法协作，不能因此阻塞任务。",
+      "3. 每个工作项都必须至少通过 send_agent_message 委派一位持久团队成员，并使用 expectReply=true 等待专业结果；不能由 Team Lead 独自完成。后续路线变化时，用 set_team_collaboration_plan 发布完整的新修订。",
+      "4. 简单任务走短路径：只选择一位最匹配的专业成员处理，Team Lead 验收后汇总，不强制跑完整团队流程。",
+      "5. 常规或复杂任务再按实际需要组合需求、架构、前端、后端和测试角色；没有真实并行收益时不要同时唤醒所有成员。",
+      "6. 成员完成后只会自动返回有界回执；随时用 list_agent_conversations 检查状态，仅在需要核验时用 read_agent_conversation 按 maxTokens 预算读取成员的完整持久对话，不能把成员对话当作一次性 Subagent，也不要把完整成员输出复制进 Team Lead 上下文。",
+      "7. 完成实际修改，并运行与改动相符的测试或检查。",
+      "8. 在结束前做一次需求符合性与回归风险自检；发现问题立即修正。",
+      "9. 最终回复列出成员分工、完成内容、修改文件、验证结果、未决风险，并逐项对应验收条件。",
       "不要只给方案；在当前授权范围内把任务推进到可由用户验收的状态。",
     ].join("\n");
   }

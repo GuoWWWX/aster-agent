@@ -103,6 +103,7 @@ import type {
   UpdateTeamWorkItemPermissionInput,
   AcceptTeamWorkItemInput,
   TeamWorkItemExecutionView,
+  TeamCollaborationProjection,
   TeamMemberConversationView,
   TeamWorkItemView,
   TeamInstanceReferenceInput,
@@ -489,6 +490,10 @@ export class DesktopAgentClientAdapter implements AgentClient {
 
   public getTeamWorkItemExecution(workItemId: string): Promise<TeamWorkItemExecutionView> {
     return this.desktopBridge.getTeamWorkItemExecution({ workItemId });
+  }
+
+  public getTeamCollaborationProjection(workItemId: string): Promise<TeamCollaborationProjection> {
+    return this.desktopBridge.getTeamCollaborationProjection({ workItemId });
   }
 
   public submitTeamWorkItem(input: SubmitTeamWorkItemInput): Promise<TeamWorkItemView> {

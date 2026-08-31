@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 
 import type {
   ApplicationSettings,
-  ConversationSummary,
   CreateTeamInstanceInput,
   TeamInstanceView,
   TeamWorkItemView,
@@ -57,30 +56,6 @@ function applicationSettingsSnapshot(): ApplicationSettings {
     },
     permissionPolicies: structuredClone(applicationSettings.permissionPolicies),
     version: 1,
-  };
-}
-
-function toProjectSession(conversation: ConversationSummary): ProjectSession {
-  return {
-    activeSubagentCount: conversation.activeSubagentCount,
-    activeRunId: conversation.activeRunId,
-    agentId: conversation.agentId,
-    avatarIcon: conversation.avatarIcon ?? null,
-    hasUnreadResult: conversation.hasUnreadResult,
-    id: conversation.id,
-    isArchived: conversation.isArchived,
-    isPinned: conversation.isPinned,
-    lastRunStatus: conversation.lastRunStatus,
-    modelSelection: conversation.modelSelection,
-    parentConversationId: conversation.parentConversationId,
-    pinOrder: conversation.pinOrder ?? null,
-    projectId: conversation.projectId,
-    subagentTaskStatus: conversation.subagentTaskStatus,
-    teamId: conversation.teamId,
-    teamWorkItemId: conversation.teamWorkItemId,
-    threadKind: conversation.threadKind,
-    title: conversation.title,
-    workspaceRootPath: conversation.workspaceRootPath,
   };
 }
 
@@ -381,8 +356,12 @@ export function App(): ReactElement {
     projectTree.selectProject(projectId);
   }
 
-  const openTeamMemberSession = useCallback((member: ProjectSession): void => {
-    const sourceConversationId = sourceConversationIdForMember(member, projectSessions.sessions);
+  const openTeamMemberSession = useCallback((
+    member: ProjectSession,
+    requestedSourceConversationId?: string,
+  ): void => {
+    const sourceConversationId = requestedSourceConversationId
+      ?? sourceConversationIdForMember(member, projectSessions.sessions);
     if (sourceConversationId === null) {
       if (member.projectId !== null) projectTree.selectProject(member.projectId);
       projectSessions.selectSession(member.id);
@@ -443,10 +422,22 @@ export function App(): ReactElement {
     projectSessions.selectSession(conversation.id);
   }, [agentClient, projectSessions, projectTree]);
 
-  const openTeamConversation = useCallback((conversation: ConversationSummary): void => {
-    projectSessions.updateSession(conversation);
-    openTeamMemberSession(toProjectSession(conversation));
-  }, [openTeamMemberSession, projectSessions]);
+  const openTeamConversation = useCallback((
+    conversation: ProjectSession,
+    sourceConversationId?: string,
+  ): void => {
+    openTeamMemberSession(conversation, sourceConversationId);
+  }, [openTeamMemberSession]);
+
+  const navigateToTeamConversation = useCallback((conversationId: string): void => {
+    const session = projectSessions.sessions.find((candidate) => candidate.id === conversationId);
+    if (session?.projectId !== null && session?.projectId !== undefined) {
+      projectTree.selectProject(session.projectId);
+    }
+    setNavigatorLocateRequest(null);
+    projectSessions.selectSession(conversationId);
+    setActiveActivity("conversations");
+  }, [projectSessions, projectTree, setActiveActivity]);
 
   return (
     <>
@@ -540,6 +531,7 @@ export function App(): ReactElement {
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}
           onOpenProjectFile={requestOpenProjectFile}
           onOpenTeamConversation={openTeamConversation}
+          onNavigateToTeamConversation={navigateToTeamConversation}
           onProjectSelected={(projectId) => projectTree.selectProject(projectId)}
           onSessionSelected={(sessionId) => {
             setNavigatorLocateRequest(null);

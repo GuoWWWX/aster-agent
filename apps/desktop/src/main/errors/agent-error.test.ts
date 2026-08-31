@@ -114,6 +114,17 @@ describe("main agent errors", () => {
     });
   });
 
+  it("classifies a plain Undici socket error as a retryable network failure", () => {
+    expect(toMainAgentError(
+      new Error("Connection error. | UND_ERR_SOCKET"),
+      { operation: "agent.run" },
+    )).toMatchObject({
+      code: "NETWORK_UNAVAILABLE",
+      message: "网络连接失败，请检查网络和模型服务地址。",
+      retryable: true,
+    });
+  });
+
   it("classifies model response conversion TypeErrors as invalid model responses", () => {
     const error = toMainAgentError(
       new TypeError("Cannot read properties of undefined (reading 'map')"),

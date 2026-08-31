@@ -938,6 +938,7 @@ const assistantDeltaEventSchema = z
     messageId: timelineItemIdSchema,
     modelId: z.string().min(1).max(200),
     runId: runIdSchema,
+    teamWorkItemId: z.string().uuid().optional(),
     type: z.literal("assistant.delta")
   })
   .strict();

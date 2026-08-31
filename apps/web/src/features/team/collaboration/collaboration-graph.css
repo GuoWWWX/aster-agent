@@ -1,0 +1,6 @@
+/* CSS trigger 3 only: SVG dash-offset keyframes for live message flow. */
+@keyframes team-collaboration-flow {
+  to {
+    stroke-dashoffset: -24;
+  }
+}

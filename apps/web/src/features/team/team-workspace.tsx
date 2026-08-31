@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import type {
   ConversationSummary,
   ProjectSummary,
+  TeamCollaborationProjection,
   TeamWorkItemExecutionView,
   TeamWorkItemView,
 } from "@agent/protocol";
@@ -23,6 +24,7 @@ import {
 } from "../../components/ui/select.js";
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
 import type { AgentClient } from "../../runtime/agent-client.js";
+import type { ProjectSession } from "../projects/project-session-model.js";
 import { TeamOperations } from "./team-operations-panel.js";
 import type { TeamWorkItemPrototype } from "./team-runtime-prototype.js";
 import {
@@ -34,25 +36,59 @@ import {
 } from "./team-work-item-inbox.js";
 import { WorkItemLifecyclePanel } from "./team-work-item-lifecycle-panel.js";
 import { TeamWorkItemBoard } from "./team-work-item-board.js";
-import { WorkflowDesigner } from "./team-workflow-designer.js";
+import {
+  applyCollaborationAssistantDelta,
+  CollaborationGraph,
+} from "./collaboration/collaboration-graph.js";
 import "./team-workflow.css";
 import "./team-workspace.css";
 
 type TeamWorkspaceView = "board" | "planning" | "runtime";
 
+function toProjectSession(conversation: ConversationSummary): ProjectSession {
+  return {
+    activeSubagentCount: conversation.activeSubagentCount,
+    activeRunId: conversation.activeRunId,
+    agentId: conversation.agentId,
+    avatarIcon: conversation.avatarIcon ?? null,
+    hasUnreadResult: conversation.hasUnreadResult,
+    id: conversation.id,
+    isArchived: conversation.isArchived,
+    isPinned: conversation.isPinned,
+    lastRunStatus: conversation.lastRunStatus,
+    modelSelection: conversation.modelSelection,
+    parentConversationId: conversation.parentConversationId,
+    pinOrder: conversation.pinOrder ?? null,
+    projectId: conversation.projectId,
+    teamId: conversation.teamId,
+    teamWorkItemId: conversation.teamWorkItemId,
+    threadKind: conversation.threadKind,
+    title: conversation.title,
+    workspaceRootPath: conversation.workspaceRootPath,
+    ...(conversation.subagentTaskStatus === undefined ? {} : {
+      subagentTaskStatus: conversation.subagentTaskStatus,
+    }),
+  };
+}
+
 export function TeamWorkspace({
   agentClient,
   onOpenConversation,
+  onNavigateToConversation,
   projects,
 }: {
   agentClient: AgentClient;
-  onOpenConversation: (conversation: ConversationSummary) => void;
+  onOpenConversation: (conversation: ProjectSession, sourceConversationId?: string) => void;
+  onNavigateToConversation?: (conversationId: string) => void;
   projects: readonly ProjectSummary[];
 }): ReactElement {
   const teams = useAgentDirectoryStore((state) => state.teams);
   const [selectedTeamId, setSelectedTeamId] = useState(teams[0]?.id ?? "");
   const [runtimeItems, setRuntimeItems] = useState<TeamWorkItemView[]>([]);
   const [execution, setExecution] = useState<TeamWorkItemExecutionView | null>(null);
+  const [collaborationProjections, setCollaborationProjections] = useState<
+    ReadonlyMap<string, TeamCollaborationProjection>
+  >(new Map());
   const [selectedWorkItemId, setSelectedWorkItemId] = useState("");
   const [filter, setFilter] = useState<WorkItemFilter>("all");
   const [draft, setDraft] = useState("");
@@ -76,6 +112,9 @@ export function TeamWorkspace({
   const selectedExecution = execution?.workItemId === selectedRuntimeWorkItem?.id
     ? execution
     : null;
+  const selectedCollaborationProjection = selectedRuntimeWorkItem === null
+    ? null
+    : collaborationProjections.get(selectedRuntimeWorkItem.id) ?? null;
   const activeTeamIdRef = useRef<string | null>(selectedTeam?.id ?? null);
   const workItemsRequestIdRef = useRef(0);
   const workItemMutationRequestIdRef = useRef(0);
@@ -109,6 +148,7 @@ export function TeamWorkspace({
       if (cancelled) return;
       setRuntimeItems([]);
       setExecution(null);
+      setCollaborationProjections(new Map());
       setSelectedWorkItemId("");
       setEditingItemId(null);
       setDraft("");
@@ -140,6 +180,23 @@ export function TeamWorkspace({
         items.some((item) => item.id === current) ? current : items[0]?.id ?? ""
       ));
       setError(null);
+      const projectionEntries = await Promise.all(items.map(async (item) => {
+        try {
+          const projection = await agentClient.getTeamCollaborationProjection(item.id);
+          return [item.id, projection] as const;
+        } catch {
+          return null;
+        }
+      }));
+      if (
+        requestId !== workItemsRequestIdRef.current
+        || activeTeamIdRef.current !== teamId
+      ) return;
+      setCollaborationProjections(new Map(
+        projectionEntries.filter((entry): entry is readonly [string, TeamCollaborationProjection] => (
+          entry !== null
+        )),
+      ));
     } catch (reason) {
       if (
         requestId !== workItemsRequestIdRef.current
@@ -184,6 +241,23 @@ export function TeamWorkspace({
   }, [loadExecution]);
 
   useEffect(() => agentClient.onConversationRunEvent((event) => {
+    if (event.type === "assistant.delta") {
+      if (view === "board" || selectedRuntimeWorkItem === null) return;
+      setCollaborationProjections((current) => {
+        const projection = current.get(selectedRuntimeWorkItem.id);
+        if (projection === undefined) return current;
+        const updated = applyCollaborationAssistantDelta(
+          projection,
+          event,
+          selectedRuntimeWorkItem.id,
+        );
+        if (updated === projection) return current;
+        const next = new Map(current);
+        next.set(selectedRuntimeWorkItem.id, updated);
+        return next;
+      });
+      return;
+    }
     if (
       event.type !== "conversation.updated"
       && event.type !== "run.started"
@@ -217,6 +291,12 @@ export function TeamWorkspace({
     ) return;
     void loadWorkItems();
     void loadExecution();
+    if (event.type === "run.finished") {
+      window.setTimeout(() => {
+        void loadWorkItems();
+        void loadExecution();
+      }, 100);
+    }
   }), [
     agentClient,
     selectedExecution,
@@ -224,6 +304,7 @@ export function TeamWorkspace({
     loadWorkItems,
     selectedRuntimeWorkItem,
     selectedTeam?.id,
+    view,
   ]);
 
   if (selectedTeam === undefined) return <EmptyTeamWorkspace />;
@@ -341,6 +422,7 @@ export function TeamWorkspace({
         <div className="team-command-layout team-command-layout--board">
           <TeamWorkItemBoard
             items={workItems}
+            projections={collaborationProjections}
             onOpen={(workItemId) => {
               setSelectedWorkItemId(workItemId);
               setFilter("all");
@@ -350,7 +432,27 @@ export function TeamWorkspace({
         </div>
       ) : view === "planning" ? (
         <div className="team-command-layout team-command-layout--designer">
-          <WorkflowDesigner workItemTitle={selectedWorkItem?.title} />
+          {selectedCollaborationProjection === null ? (
+            <div className="team-command-panel team-runtime-empty">选择任务后查看真实协作计划与通信</div>
+          ) : (
+            <CollaborationGraph
+              projection={selectedCollaborationProjection}
+              title={selectedWorkItem?.title ?? "Agent 协作计划与实时通信"}
+              variant="full"
+              onOpenConversation={(conversationId) => {
+                const conversation = selectedExecution?.agents.find(
+                  (participant) => participant.conversation.id === conversationId,
+                )?.conversation;
+                if (conversation !== undefined) {
+                  onOpenConversation(
+                    toProjectSession(conversation),
+                    selectedRuntimeWorkItem?.sourceConversationId ?? undefined,
+                  );
+                }
+              }}
+              {...(onNavigateToConversation === undefined ? {} : { onNavigateToConversation })}
+            />
+          )}
         </div>
       ) : (
         <div className="team-command-layout team-command-layout--execution">
@@ -394,7 +496,9 @@ export function TeamWorkspace({
                 execution={selectedExecution}
                 isLifecycle={isSelectedWorkItemLifecycle}
                 item={selectedRuntimeWorkItem}
+                projection={selectedCollaborationProjection}
                 onOpenConversation={onOpenConversation}
+                {...(onNavigateToConversation === undefined ? {} : { onNavigateToConversation })}
               />
               {isSelectedWorkItemLifecycle ? (
               <WorkItemLifecyclePanel
@@ -411,7 +515,10 @@ export function TeamWorkspace({
           <TeamOperations
             execution={selectedExecution}
             item={selectedWorkItem}
-            onOpenConversation={onOpenConversation}
+            onOpenConversation={(conversation) => onOpenConversation(
+              toProjectSession(conversation),
+              selectedRuntimeWorkItem?.sourceConversationId ?? undefined,
+            )}
           />
         </div>
       )}
@@ -485,12 +592,16 @@ function TeamWorkItemStatusPanel({
   execution,
   isLifecycle,
   item,
+  onNavigateToConversation,
+  projection,
   onOpenConversation,
 }: {
   execution: TeamWorkItemExecutionView | null;
   isLifecycle: boolean;
   item: TeamWorkItemView;
-  onOpenConversation: (conversation: ConversationSummary) => void;
+  onNavigateToConversation?: (conversationId: string) => void;
+  projection: TeamCollaborationProjection | null;
+  onOpenConversation: (conversation: ProjectSession, sourceConversationId?: string) => void;
 }): ReactElement {
   const lead = execution?.workItemId === item.id
     ? execution.agents.find((member) => member.depth === 0) ?? null
@@ -533,11 +644,32 @@ function TeamWorkItemStatusPanel({
             className="inline-flex h-[30px] items-center gap-[4px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-[8px] text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-foreground)] hover:bg-[var(--app-hover)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
             disabled={lead === null}
             type="button"
-            onClick={() => lead === null ? undefined : onOpenConversation(lead.conversation)}
+            onClick={() => lead === null
+              ? undefined
+              : onOpenConversation(toProjectSession(lead.conversation), item.sourceConversationId ?? undefined)}
           >
             打开 Team Lead 对话
           </button>
         </section>
+        {projection === null ? null : (
+          <CollaborationGraph
+            projection={projection}
+            title="Agent 协作计划与实时通信"
+            variant="embedded"
+            onOpenConversation={(conversationId) => {
+              const conversation = execution?.agents.find(
+                (participant) => participant.conversation.id === conversationId,
+              )?.conversation;
+              if (conversation !== undefined) {
+                onOpenConversation(
+                  toProjectSession(conversation),
+                  item.sourceConversationId ?? undefined,
+                );
+              }
+            }}
+            {...(onNavigateToConversation === undefined ? {} : { onNavigateToConversation })}
+          />
+        )}
         <section className="grid gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] p-[10px]">
           <div className="flex items-center justify-between gap-[5px]">
             <strong className="text-[length:var(--app-font-size-body)] text-[var(--app-foreground)]">
