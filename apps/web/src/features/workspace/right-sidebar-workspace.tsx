@@ -374,6 +374,33 @@ export function nextTerminalTabName(
   return ordinal === 1 ? "终端" : `终端 (${ordinal - 1})`;
 }
 
+export function scrollWorkspaceTabsOnWheel(
+  tabs: Pick<HTMLElement, "clientWidth" | "scrollLeft" | "scrollWidth">,
+  event: Pick<WheelEvent, "deltaMode" | "deltaX" | "deltaY" | "preventDefault">,
+): void {
+  const maxScrollLeft = Math.max(0, tabs.scrollWidth - tabs.clientWidth);
+  if (maxScrollLeft === 0) return;
+
+  const rawDelta = Math.abs(event.deltaX) > Math.abs(event.deltaY)
+    ? event.deltaX
+    : event.deltaY;
+  if (rawDelta === 0) return;
+
+  const deltaScale = event.deltaMode === 1
+    ? 32
+    : event.deltaMode === 2
+      ? tabs.clientWidth
+      : 1;
+  const nextScrollLeft = Math.max(
+    0,
+    Math.min(maxScrollLeft, tabs.scrollLeft + rawDelta * deltaScale),
+  );
+  if (nextScrollLeft === tabs.scrollLeft) return;
+
+  tabs.scrollLeft = nextScrollLeft;
+  event.preventDefault();
+}
+
 function fileTabId(projectId: string, path: string): string {
   return `file:${projectId}:${path}`;
 }
@@ -531,10 +558,22 @@ export function RightSidebarWorkspace({
   const managedBrowserMenuRequestIdRef = useRef(0);
   const handledTeamMemberOpenRequestIdRef = useRef<number | null>(null);
   const teamMemberOpenRequestRef = useRef(teamMemberOpenRequest);
+  const workspaceTabsRef = useRef<HTMLDivElement | null>(null);
   const activeTabIdsBySessionRef = useRef(new Map<string, string | null>());
   const activeTabOwnerRef = useRef<string | null>(activeSession?.id ?? null);
   const openChatIdsBySessionRef = useRef(new Map<string, Set<string>>());
   const releasingToolTabIdsRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    const workspaceTabs = workspaceTabsRef.current;
+    if (workspaceTabs === null) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      scrollWorkspaceTabsOnWheel(workspaceTabs, event);
+    };
+    workspaceTabs.addEventListener("wheel", handleWheel, { passive: false });
+    return () => workspaceTabs.removeEventListener("wheel", handleWheel);
+  }, []);
   const activeSessionId = activeSession?.id ?? null;
   const activeTeam = activeSession?.teamId === null || activeSession === null
     ? null
@@ -1853,7 +1892,12 @@ export function RightSidebarWorkspace({
     <WorkbenchPanel className="right-sidebar-workspace" aria-label="右侧工作区">
       <div className="right-sidebar-workspace__main">
         <div className="right-sidebar-workspace__tabs-row">
-          <div className="right-sidebar-workspace__tabs" role="tablist" aria-label="已打开文件和侧边聊天">
+          <div
+            aria-label="已打开文件和侧边聊天"
+            className="right-sidebar-workspace__tabs"
+            ref={workspaceTabsRef}
+            role="tablist"
+          >
             {tabs.map((tab) => {
               const tabAgent = tab.kind === "chat" && tab.session.agentId !== null
                 ? agentProfiles.find((agent) => agent.id === tab.session.agentId)
@@ -2263,8 +2307,9 @@ export function RightSidebarWorkspace({
 
       {showFileWorkspace ? (
         <div
-          className="right-sidebar-workspace__tree"
-          data-collapsed={String(isTreeCollapsed)}
+          className={isTreeCollapsed
+            ? "right-sidebar-workspace__tree hidden"
+            : "right-sidebar-workspace__tree flex min-h-0 min-w-[220px] flex-[0_0_clamp(220px,42%,360px)] border-l border-[var(--app-border)]"}
         >
           {activeConfigurationTarget !== null ? (
             <ConfigurationWorkspaceTreePanel

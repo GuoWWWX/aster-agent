@@ -2207,8 +2207,10 @@ button.tool-file-change__path:hover {
 }
 
 .conversation-workspace__reasoning-slider {
-  --reasoning-strong: #8b5cf6;
-  --reasoning-maximum: #7c3aed;
+  --reasoning-blue: #2563eb;
+  --reasoning-light-blue: #38bdf8;
+  --reasoning-blue-violet: #6366f1;
+  --reasoning-maximum: #6d28d9;
   position: relative;
   display: flex;
   width: 100%;
@@ -2228,44 +2230,23 @@ button.tool-file-change__path:hover {
   height: 26px;
   transform: translateY(-50%);
   border-radius: var(--app-radius);
-  background: linear-gradient(
-    to right,
-    var(--reasoning-fill, var(--app-accent)) 0,
-    var(--reasoning-fill, var(--app-accent)) var(--reasoning-progress, 0%),
-    color-mix(in srgb, var(--app-border) 78%, var(--app-panel)) var(--reasoning-progress, 0%),
-    color-mix(in srgb, var(--app-border) 78%, var(--app-panel)) 100%
-  );
+  background: color-mix(in srgb, var(--app-border) 78%, var(--app-panel));
   box-shadow: inset 0 1px 2px color-mix(in srgb, var(--app-foreground) 8%, transparent);
   overflow: hidden;
   transition: height 120ms ease, background-color 120ms ease;
 }
 
 .conversation-workspace__reasoning-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
   height: 100%;
+  overflow: hidden;
   border-radius: var(--app-radius);
   background: var(--reasoning-fill, var(--app-accent));
   box-shadow: inset 0 1px 1px color-mix(in srgb, var(--app-accent-foreground) 26%, transparent);
   transition: width 180ms ease, background-color 180ms ease, box-shadow 120ms ease;
-}
-
-.conversation-workspace__reasoning-track::after {
-  position: absolute;
-  inset: 0;
-  content: "";
-  background-image:
-    radial-gradient(circle, color-mix(in srgb, var(--app-accent-foreground) 90%, transparent) 0 1px, transparent 1.6px),
-    radial-gradient(circle, color-mix(in srgb, var(--app-accent-foreground) 78%, transparent) 0 1.4px, transparent 2px),
-    radial-gradient(circle, color-mix(in srgb, var(--app-accent-foreground) 66%, transparent) 0 1px, transparent 1.6px);
-  background-position: -10px 5px, 8px 14px, 20px 8px;
-  background-repeat: repeat-x;
-  background-size: 28px 20px, 44px 24px, 36px 18px;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.conversation-workspace__reasoning-slider[data-max-effect="active"]
-  .conversation-workspace__reasoning-track::after {
-  animation: conversation-workspace-reasoning-particles 900ms ease-out 1;
 }
 
 .conversation-workspace__reasoning-slider:has(.conversation-workspace__reasoning-thumb:active)
@@ -2328,8 +2309,10 @@ button.tool-file-change__path:hover {
 }
 
 [data-theme="dark"] .conversation-workspace__reasoning-slider {
-  --reasoning-strong: #a78bfa;
-  --reasoning-maximum: #c084fc;
+  --reasoning-blue: #60a5fa;
+  --reasoning-light-blue: #7dd3fc;
+  --reasoning-blue-violet: #818cf8;
+  --reasoning-maximum: #a855f7;
 }
 
 .conversation-workspace__reasoning-scale {
@@ -2494,27 +2477,11 @@ button.tool-file-change__path:hover {
   }
 }
 
-@keyframes conversation-workspace-reasoning-particles {
-  0% {
-    background-position: -10px 5px, 8px 14px, 20px 8px;
-    opacity: 0;
-  }
-
-  18% {
-    opacity: 0.9;
-  }
-
-  100% {
-    background-position: 70px 5px, 106px 14px, 124px 8px;
-    opacity: 0;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .conversation-run-progress[data-status="thinking"] .conversation-run-progress__label,
   .conversation-workspace__reasoning-range,
   .conversation-workspace__reasoning-thumb,
-  .conversation-workspace__reasoning-track::after {
+  .conversation-workspace__reasoning-track {
     animation: none;
     transition: none;
   }

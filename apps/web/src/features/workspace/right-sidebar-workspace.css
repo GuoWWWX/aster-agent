@@ -202,19 +202,6 @@
   overflow: hidden;
 }
 
-.right-sidebar-workspace__tree {
-  display: flex;
-  min-width: 220px;
-  min-height: 0;
-  flex: 0 0 clamp(220px, 42%, 360px);
-  border-left: 1px solid var(--app-border);
-}
-
-.right-sidebar-workspace__tree[data-collapsed="true"] {
-  min-width: 42px;
-  flex-basis: 42px;
-}
-
 .right-sidebar-workspace__tree > .configuration-workspace-tree-panel,
 .right-sidebar-workspace__tree > .project-tree-panel,
 .right-sidebar-workspace__content > * {

@@ -219,7 +219,11 @@ function classifyError(
     return classificationForCode("MODEL_PROVIDER_UNAVAILABLE");
   }
   if (/decrypting the ciphertext|safeStorage.+decrypt/iu.test(message)) {
-    return classificationForCode("MODEL_CONFIGURATION_INVALID");
+    return {
+      code: "MODEL_CONFIGURATION_INVALID",
+      message: "API Key 无法解密。请在模型设置中重新输入一次，并保持软件使用同一个数据目录。",
+      retryable: false,
+    };
   }
   if (/模型.+(?:未返回|无法处理)|model.+(?:incomplete|invalid response)/iu.test(message)) {
     return classificationForCode("MODEL_RESPONSE_INVALID");

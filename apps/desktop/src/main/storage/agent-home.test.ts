@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createAgentHomePaths,
   initializeAgentHome,
+  initializeElectronUserDataPath,
   resolveAgentHomePath,
 } from "./agent-home.js";
 
@@ -30,6 +31,51 @@ describe("Agent home", () => {
   it("requires an absolute AGENT_HOME path", () => {
     expect(() => resolveAgentHomePath({ environment: { AGENT_HOME: "relative-agent-home" } }))
       .toThrow("AGENT_HOME 必须是绝对路径。");
+  });
+
+  it("keeps Electron user data beside an explicitly configured Agent home", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-electron-profile-"));
+    temporaryDirectories.push(root);
+    const legacyRootPath = path.join(root, "legacy");
+    const configuredHomePath = path.join(root, "configured");
+    await mkdir(legacyRootPath, { recursive: true });
+    await writeFile(path.join(legacyRootPath, "Local State"), "legacy-encryption-state", "utf8");
+
+    const userDataPath = initializeElectronUserDataPath({
+      environment: { AGENT_HOME: configuredHomePath },
+      legacyRootPath,
+    });
+
+    expect(userDataPath).toBe(path.join(configuredHomePath, "electron-profile"));
+    await expect(readFile(path.join(userDataPath, "Local State"), "utf8"))
+      .resolves.toBe("legacy-encryption-state");
+  });
+
+  it("does not replace an existing Electron encryption state on restart", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-electron-profile-repeat-"));
+    temporaryDirectories.push(root);
+    const legacyRootPath = path.join(root, "legacy");
+    const configuredHomePath = path.join(root, "configured");
+    const userDataPath = path.join(configuredHomePath, "electron-profile");
+    await mkdir(legacyRootPath, { recursive: true });
+    await mkdir(userDataPath, { recursive: true });
+    await writeFile(path.join(legacyRootPath, "Local State"), "legacy-encryption-state", "utf8");
+    await writeFile(path.join(userDataPath, "Local State"), "current-encryption-state", "utf8");
+
+    initializeElectronUserDataPath({
+      environment: { AGENT_HOME: configuredHomePath },
+      legacyRootPath,
+    });
+
+    await expect(readFile(path.join(userDataPath, "Local State"), "utf8"))
+      .resolves.toBe("current-encryption-state");
+  });
+
+  it("keeps the normal Electron profile when AGENT_HOME is not explicit", () => {
+    const legacyRootPath = path.join(os.tmpdir(), "agent-electron-default");
+
+    expect(initializeElectronUserDataPath({ environment: {}, legacyRootPath }))
+      .toBe(path.resolve(legacyRootPath));
   });
 
   it("uses the configured Agent home and preserves the legacy storage layout during migration", async () => {

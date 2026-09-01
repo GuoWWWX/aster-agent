@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type {
   ConversationRunEvent,
@@ -12,6 +12,7 @@ import {
   shouldLoadSideConversations,
   nextTerminalTabName,
   nextWorkspaceTabName,
+  scrollWorkspaceTabsOnWheel,
   updateSideSessionsForRunEvent,
   upsertSideSession,
 } from "./right-sidebar-workspace.js";
@@ -204,5 +205,48 @@ describe("right sidebar terminal tabs", () => {
       { name: "构建日志 (1)" },
       { name: "README.md" },
     ], "构建日志")).toBe("构建日志 (2)");
+  });
+});
+
+describe("right sidebar workspace tab scrolling", () => {
+  it("converts a vertical wheel gesture into horizontal tab scrolling", () => {
+    const preventDefault = vi.fn();
+    const tabs = { clientWidth: 300, scrollLeft: 100, scrollWidth: 800 };
+
+    scrollWorkspaceTabsOnWheel(tabs, {
+      deltaMode: 0,
+      deltaX: 0,
+      deltaY: 120,
+      preventDefault,
+    });
+
+    expect(tabs.scrollLeft).toBe(220);
+    expect(preventDefault).toHaveBeenCalledOnce();
+  });
+
+  it("uses horizontal trackpad movement and clamps at the tab strip edges", () => {
+    const preventDefault = vi.fn();
+    const tabs = { clientWidth: 300, scrollLeft: 100, scrollWidth: 800 };
+
+    scrollWorkspaceTabsOnWheel(tabs, {
+      deltaMode: 0,
+      deltaX: -160,
+      deltaY: 20,
+      preventDefault,
+    });
+
+    expect(tabs.scrollLeft).toBe(0);
+    expect(preventDefault).toHaveBeenCalledOnce();
+
+    preventDefault.mockClear();
+    scrollWorkspaceTabsOnWheel(tabs, {
+      deltaMode: 0,
+      deltaX: -160,
+      deltaY: 0,
+      preventDefault,
+    });
+
+    expect(tabs.scrollLeft).toBe(0);
+    expect(preventDefault).not.toHaveBeenCalled();
   });
 });

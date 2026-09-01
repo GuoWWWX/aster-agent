@@ -765,7 +765,9 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
         setDraft((current) => ({ ...current, apiKey: apiKey ?? "" }));
       })
       .catch(() => {
-        if (!disposed) setOperationError("无法读取已保存的供应商配置");
+        if (!disposed) {
+          setOperationError("API Key 无法解密，请重新输入一次；之后会随当前软件的数据目录稳定保存");
+        }
       });
 
     return () => {
@@ -1208,7 +1210,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                   <input
                     autoComplete="off"
                     name="apiKey"
-                    placeholder="请输入 API Key"
+                    placeholder="请输入或重新输入 API Key"
                     type={isApiKeyVisible ? "text" : "password"}
                     value={draft.apiKey}
                     onChange={updateDraft}
