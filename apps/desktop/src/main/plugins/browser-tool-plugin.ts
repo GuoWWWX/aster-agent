@@ -84,7 +84,7 @@ export class BrowserToolPlugin {
   public getDefinitions(): readonly ModelToolDefinition[] {
     return [
       {
-        description: "Open a persistent, user-visible browser tab through the browser plugin. The returned browserId is used by every other browser_* tool. Browser tabs are isolated, accept only HTTP/HTTPS without embedded credentials, and block downloads and permission prompts.",
+        description: "Open a persistent, user-visible browser tab through the browser plugin. The returned browserId is used by every other browser_* tool. Browser tabs are isolated, accept only HTTP/HTTPS without embedded credentials, save downloads to the system Downloads folder, and block permission prompts.",
         name: BROWSER_TOOL_NAMES.open,
         parameters: modelToolParameters(browserOpenArgumentsSchema),
       },

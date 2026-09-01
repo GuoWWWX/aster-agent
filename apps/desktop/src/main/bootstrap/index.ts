@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, nativeTheme } from "electron";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -199,8 +199,11 @@ async function initializeServices(): Promise<DesktopServices> {
     agentHome.paths.applicationSettingsPath,
   );
   applicationSettings.ensureFile();
-  database.syncTeamDirectory(applicationSettings.getConfiguration().agentDirectory);
+  const initialApplicationSettings = applicationSettings.getConfiguration();
+  nativeTheme.themeSource = initialApplicationSettings.appearance.themeMode;
+  database.syncTeamDirectory(initialApplicationSettings.agentDirectory);
   applicationSettings.onChanged((configuration) => {
+    nativeTheme.themeSource = configuration.appearance.themeMode;
     database.syncTeamDirectory(configuration.agentDirectory);
   });
   const contextCompression = new ContextCompressionConfigurationStore(

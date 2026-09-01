@@ -189,22 +189,66 @@ export const managedBrowserNavigateInputSchema = z.object({
   url: z.string().trim().min(1).max(8_192),
 }).strict();
 
-export const managedBrowserCommandInputSchema = z.object({
-  command: z.enum([
-    "back",
-    "clearBrowsingData",
-    "forward",
-    "openDevTools",
-    "print",
-    "reload",
-    "resetZoom",
-    "showMenu",
-    "stop",
-    "zoomIn",
-    "zoomOut",
-  ]),
-  sessionId: sessionIdSchema,
-}).strict();
+export const managedBrowserWorkspaceAddActionSchema = z.enum([
+  "createSideChat",
+  "openBrowser",
+  "openFiles",
+  "openGitReview",
+  "openTerminal",
+]);
+
+export const managedBrowserWorkspaceTabActionSchema = z.enum([
+  "close",
+  "closeAll",
+  "closeOthers",
+]);
+
+const managedBrowserMenuCoordinateSchema = z.number().int().min(0).max(16_384);
+
+export const managedBrowserCommandInputSchema = z.discriminatedUnion("command", [
+  z.object({
+    command: z.enum([
+      "back",
+      "clearBrowsingData",
+      "forward",
+      "openDevTools",
+      "print",
+      "reload",
+      "resetZoom",
+      "stop",
+      "zoomIn",
+      "zoomOut",
+    ]),
+    sessionId: sessionIdSchema,
+  }).strict(),
+  z.object({
+    command: z.enum(["showDownloads", "showMenu"]),
+    sessionId: sessionIdSchema,
+    x: managedBrowserMenuCoordinateSchema,
+    y: managedBrowserMenuCoordinateSchema,
+  }).strict(),
+  z.object({
+    colorScheme: z.enum(["light", "dark"]),
+    command: z.literal("setColorScheme"),
+    sessionId: sessionIdSchema,
+  }).strict(),
+  z.object({
+    canCreateSideChat: z.boolean(),
+    canOpenGitReview: z.boolean(),
+    canOpenTerminal: z.boolean(),
+    command: z.literal("showWorkspaceAddMenu"),
+    sessionId: sessionIdSchema,
+    x: managedBrowserMenuCoordinateSchema,
+    y: managedBrowserMenuCoordinateSchema,
+  }).strict(),
+  z.object({
+    canCloseOthers: z.boolean(),
+    command: z.literal("showWorkspaceTabMenu"),
+    sessionId: sessionIdSchema,
+    x: managedBrowserMenuCoordinateSchema,
+    y: managedBrowserMenuCoordinateSchema,
+  }).strict(),
+]);
 
 export const managedBrowserBoundsInputSchema = z.object({
   height: z.number().int().min(0).max(16_384),
@@ -259,6 +303,16 @@ export const managedBrowserEventSchema = z.discriminatedUnion("type", [
     sessionId: sessionIdSchema,
     type: z.literal("openSettings"),
   }).strict(),
+  z.object({
+    action: managedBrowserWorkspaceAddActionSchema,
+    sessionId: sessionIdSchema,
+    type: z.literal("workspaceAddMenu"),
+  }).strict(),
+  z.object({
+    action: managedBrowserWorkspaceTabActionSchema,
+    sessionId: sessionIdSchema,
+    type: z.literal("workspaceTabMenu"),
+  }).strict(),
 ]);
 
 export type GitReviewInput = z.infer<typeof gitReviewInputSchema>;
@@ -276,6 +330,8 @@ export type ManagedBrowserOpenInput = z.infer<typeof managedBrowserOpenInputSche
 export type ManagedBrowserReferenceInput = z.infer<typeof managedBrowserReferenceInputSchema>;
 export type ManagedBrowserSession = z.infer<typeof managedBrowserSessionSchema>;
 export type ManagedBrowserSnapshot = z.infer<typeof managedBrowserSnapshotSchema>;
+export type ManagedBrowserWorkspaceAddAction = z.infer<typeof managedBrowserWorkspaceAddActionSchema>;
+export type ManagedBrowserWorkspaceTabAction = z.infer<typeof managedBrowserWorkspaceTabActionSchema>;
 export type TerminalSession = z.infer<typeof terminalSessionSchema>;
 export type TerminalSessionEvent = z.infer<typeof terminalSessionEventSchema>;
 export type TerminalSessionOpenInput = z.infer<typeof terminalSessionOpenInputSchema>;

@@ -1257,9 +1257,20 @@ export function registerMainIpcHandlers(
     (event, ...args: unknown[]) => {
       getTrustedWindow(event, getMainWindow);
       const [input] = browserConfigurationIpcArgumentsSchema.parse(args);
-      return browserConfigurationSchema.parse(
+      const saved = browserConfigurationSchema.parse(
         browserConfiguration.saveConfiguration(input),
       );
+      managedBrowser.applyConfiguration(saved);
+      return saved;
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.browserClearData,
+    async (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      parseNoArguments(args);
+      await managedBrowser.clearBrowsingData();
     },
   );
 

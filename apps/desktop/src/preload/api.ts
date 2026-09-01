@@ -356,6 +356,9 @@ export function createDesktopBridge(): DesktopBridge {
         IPC_CHANNELS.browserGetConfiguration
       );
     },
+    clearBrowserData() {
+      return invoke<BridgeResult<"clearBrowserData">>(IPC_CHANNELS.browserClearData);
+    },
     getTerminalConfiguration() {
       return invoke<BridgeResult<"getTerminalConfiguration">>(
         IPC_CHANNELS.terminalGetConfiguration
