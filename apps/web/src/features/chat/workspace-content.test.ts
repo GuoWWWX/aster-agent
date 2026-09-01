@@ -22,6 +22,7 @@ import {
   groupToolBatches,
   describeConversationError,
   representativeToolName,
+  reasoningEndpointColor,
   resolveConversationPathIconKind,
   resolveConversationPathScope,
   resolveInitialConversationModelSelection,
@@ -191,6 +192,23 @@ describe("initial conversation model selection", () => {
 
     expect(resolveInitialConversationModelSelection(sessionSelection, status))
       .toBe(sessionSelection);
+  });
+});
+
+describe("reasoning strength color progression", () => {
+  it("moves through blue, light blue, blue-violet, and deep purple stops", () => {
+    expect(reasoningEndpointColor(0)).toBe("var(--reasoning-blue)");
+    expect(reasoningEndpointColor(34)).toBe("var(--reasoning-light-blue)");
+    expect(reasoningEndpointColor(68)).toBe("var(--reasoning-blue-violet)");
+    expect(reasoningEndpointColor(100)).toBe("var(--reasoning-maximum)");
+  });
+
+  it("interpolates between adjacent stops and clamps invalid progress", () => {
+    expect(reasoningEndpointColor(51)).toBe(
+      "color-mix(in srgb, var(--reasoning-light-blue) 50%, var(--reasoning-blue-violet) 50%)",
+    );
+    expect(reasoningEndpointColor(-10)).toBe("var(--reasoning-blue)");
+    expect(reasoningEndpointColor(Number.NaN)).toBe("var(--reasoning-blue)");
   });
 });
 

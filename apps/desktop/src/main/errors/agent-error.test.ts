@@ -51,8 +51,12 @@ describe("main agent errors", () => {
       toMainAgentError(
         new Error("Error while decrypting the ciphertext provided to safeStorage.decryptString."),
         { operation: "model.get_api_key" },
-      ).code,
-    ).toBe("MODEL_CONFIGURATION_INVALID");
+      ),
+    ).toMatchObject({
+      code: "MODEL_CONFIGURATION_INVALID",
+      message: "API Key 无法解密。请在模型设置中重新输入一次，并保持软件使用同一个数据目录。",
+      retryable: false,
+    });
   });
 
   it("keeps terminal startup failures actionable instead of treating them as missing artifacts", () => {

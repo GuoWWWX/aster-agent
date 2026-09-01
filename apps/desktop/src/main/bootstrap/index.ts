@@ -21,7 +21,10 @@ import {
 import { ProjectRegistry } from "../projects/project-registry.js";
 import { PluginCatalog } from "../plugins/plugin-catalog.js";
 import { AgentDatabase } from "../storage/agent-database.js";
-import { initializeAgentHome } from "../storage/agent-home.js";
+import {
+  initializeAgentHome,
+  initializeElectronUserDataPath,
+} from "../storage/agent-home.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
 import { ConversationDeletionService } from "../storage/conversation-deletion-service.js";
 import { ConversationLifecycleService } from "../storage/conversation-lifecycle-service.js";
@@ -81,6 +84,17 @@ let services: DesktopServices | undefined;
 let archivedConversationCleanupTimer: ReturnType<typeof setInterval> | undefined;
 
 const ARCHIVED_CONVERSATION_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1_000;
+loadLocalEnvironment();
+const legacyUserDataPath = app.commandLine.hasSwitch("user-data-dir")
+  ? path.join(app.getPath("appData"), app.getName())
+  : app.getPath("userData");
+const electronUserDataPath = initializeElectronUserDataPath({
+  environment: process.env,
+  legacyRootPath: legacyUserDataPath,
+});
+if (path.resolve(app.getPath("userData")) !== path.resolve(electronUserDataPath)) {
+  app.setPath("userData", electronUserDataPath);
+}
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 function parseLocalEnvironmentFile(contents: string): Map<string, string> {
@@ -139,10 +153,9 @@ function loadLocalEnvironment(): void {
 }
 
 async function initializeServices(): Promise<DesktopServices> {
-  loadLocalEnvironment();
   const agentHome = await initializeAgentHome({
     environment: process.env,
-    legacyRootPath: app.getPath("userData"),
+    legacyRootPath: legacyUserDataPath,
     migrateLegacy: process.env.AGENT_HOME_SKIP_LEGACY_MIGRATION !== "1",
   });
   const database = new AgentDatabase(agentHome.paths.agentDatabasePath);

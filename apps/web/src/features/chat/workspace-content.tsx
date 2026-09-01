@@ -143,6 +143,7 @@ import { CollaborationProjectionGraph } from "../team/collaboration/collaboratio
 import { useConversationWorkspaceCache } from "./conversation-workspace-cache.js";
 import { formatConversationRunMarkdown } from "./conversation-copy.js";
 import { ContextUsageIndicator } from "./context-usage-indicator.js";
+import { ReasoningEnergyField } from "./reasoning-energy-field.js";
 import {
   isConversationScrolledToBottom,
   scrollConversationToBottom,
@@ -439,6 +440,32 @@ type ConversationReasoningControlProps = {
   selectedKey: string;
 };
 
+const REASONING_COLOR_STOPS = [
+  { color: "var(--reasoning-blue)", progress: 0 },
+  { color: "var(--reasoning-light-blue)", progress: 34 },
+  { color: "var(--reasoning-blue-violet)", progress: 68 },
+  { color: "var(--reasoning-maximum)", progress: 100 },
+] as const;
+
+export function reasoningEndpointColor(progress: number): string {
+  const normalizedProgress = Number.isFinite(progress)
+    ? Math.min(Math.max(progress, 0), 100)
+    : 0;
+  const upperIndex = REASONING_COLOR_STOPS.findIndex(
+    (stop) => stop.progress >= normalizedProgress,
+  );
+  if (upperIndex <= 0) return REASONING_COLOR_STOPS[0].color;
+
+  const lower = REASONING_COLOR_STOPS[upperIndex - 1]!;
+  const upper = REASONING_COLOR_STOPS[upperIndex]!;
+  if (normalizedProgress === upper.progress) return upper.color;
+
+  const upperWeight = Math.round(
+    ((normalizedProgress - lower.progress) / (upper.progress - lower.progress)) * 100,
+  );
+  return `color-mix(in srgb, ${lower.color} ${100 - upperWeight}%, ${upper.color} ${upperWeight}%)`;
+}
+
 function ConversationReasoningControl({
   disabled,
   fallbackOption,
@@ -448,8 +475,6 @@ function ConversationReasoningControl({
 }: ConversationReasoningControlProps): ReactElement {
   const [mode, setMode] = useState<"slider" | "list">("slider");
   const [open, setOpen] = useState(false);
-  const [isMaxEffectActive, setIsMaxEffectActive] = useState(false);
-  const maxEffectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectedOption = options.find(
     (option) => modelReasoningOptionKey(option) === selectedKey,
   );
@@ -461,61 +486,33 @@ function ConversationReasoningControl({
   const selectedIndex = selectedOption === undefined
     ? 0
     : options.findIndex((option) => modelReasoningOptionKey(option) === selectedKey) + 1;
-  const progress = options.length === 0 ? 0 : (selectedIndex / options.length) * 100;
   const displayName = selectedOption === undefined
     ? fallbackSelectedOption === undefined
       ? "自动"
       : reasoningOptionDisplayName(fallbackSelectedOption)
     : reasoningOptionDisplayName(selectedOption);
   const isDisabled = disabled || options.length === 0;
-  const strengthWeight = Math.round(progress * 0.46);
+  const colorProgress = selectedIndex === 0
+    ? 0
+    : options.length <= 1
+      ? 100
+      : 34 + ((selectedIndex - 1) / (options.length - 1)) * 66;
   const isMaximumStrength = options.length > 0 && selectedIndex === options.length;
-  const maximumOptionKey = options.length > 0
-    ? modelReasoningOptionKey(options[options.length - 1]!)
-    : null;
   const sliderStyle = {
-    "--reasoning-fill": selectedIndex === 0
-      ? "color-mix(in srgb, var(--app-muted-foreground) 58%, var(--app-accent))"
-      : isMaximumStrength
-        ? "var(--reasoning-maximum)"
-      : `color-mix(in srgb, var(--app-accent) ${100 - strengthWeight}%, var(--reasoning-strong) ${strengthWeight}%)`,
-    "--reasoning-progress": `${progress}%`,
+    "--reasoning-fill": reasoningEndpointColor(colorProgress),
   } as CSSProperties;
   const labels = [
     "自动",
     ...options.map((option) => reasoningOptionDisplayName(option)),
   ];
 
-  useEffect(() => () => {
-    if (maxEffectTimerRef.current !== null) {
-      clearTimeout(maxEffectTimerRef.current);
-    }
-  }, []);
-
-  const updateMaxEffect = (isMaximum: boolean): void => {
-    if (maxEffectTimerRef.current !== null) {
-      clearTimeout(maxEffectTimerRef.current);
-      maxEffectTimerRef.current = null;
-    }
-
-    setIsMaxEffectActive(isMaximum);
-    if (isMaximum) {
-      maxEffectTimerRef.current = setTimeout(() => {
-        setIsMaxEffectActive(false);
-        maxEffectTimerRef.current = null;
-      }, 900);
-    }
-  };
-
   const selectSliderValue = (value: string): void => {
     const index = Number(value);
     const option = options[index - 1];
-    updateMaxEffect(option !== undefined && index === options.length);
     onValueChange(option === undefined ? "auto" : modelReasoningOptionKey(option));
   };
 
   const selectReasoningOption = (value: string): void => {
-    updateMaxEffect(value === maximumOptionKey);
     onValueChange(value);
     setOpen(false);
   };
@@ -535,8 +532,7 @@ function ConversationReasoningControl({
         </button>
       </PopoverTrigger>
       <PopoverContent
-        align="start"
-        alignOffset={5}
+        align="end"
         className="conversation-workspace__reasoning-popover"
         side="top"
         sideOffset={8}
@@ -562,7 +558,6 @@ function ConversationReasoningControl({
             <Slider
               aria-label="推理强度"
               className="conversation-workspace__reasoning-slider"
-              data-max-effect={isMaxEffectActive ? "active" : undefined}
               disabled={isDisabled}
               max={Math.max(options.length, 1)}
               min={0}
@@ -572,7 +567,9 @@ function ConversationReasoningControl({
               onValueChange={(values) => selectSliderValue(String(values[0] ?? 0))}
             >
               <SliderTrack className="conversation-workspace__reasoning-track">
-                <SliderRange className="conversation-workspace__reasoning-range" />
+                <SliderRange className="conversation-workspace__reasoning-range">
+                  <ReasoningEnergyField active={isMaximumStrength} />
+                </SliderRange>
               </SliderTrack>
               <SliderThumb
                 aria-label="推理强度"
@@ -2951,6 +2948,7 @@ export function ConversationWorkspace({
                 ) : null}
                 <span className="conversation-workspace__model-controls">
                   <ModelProfilePicker
+                    align="end"
                     ariaLabel="对话模型列表"
                     className="model-profile-picker--conversation"
                     defaultContextCompression={contextCompressionConfiguration}

@@ -1,3 +1,4 @@
+/* CSS trigger 2: structural selectors coordinate the picker hierarchy and interaction states. */
 .model-profile-picker {
   display: grid;
   width: min(560px, calc(100vw - 24px));
@@ -28,6 +29,10 @@
 .model-profile-picker__toolbar .model-profile-picker__search {
   min-width: 0;
   flex: 1 1 auto;
+}
+
+.model-profile-picker__toolbar .model-profile-picker__search input {
+  font-size: var(--app-font-size-control);
 }
 
 .model-profile-picker__toolbar-divider {
@@ -106,7 +111,7 @@
   align-items: center;
   gap: 5px;
   color: var(--app-foreground);
-  font-size: var(--app-font-size-subtitle);
+  font-size: var(--app-font-size-control);
   font-weight: 700;
 }
 

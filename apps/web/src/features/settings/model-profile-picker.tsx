@@ -77,7 +77,7 @@ export function ModelProfilePicker({
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [collapsedProviderIds, setCollapsedProviderIds] = useState<Set<string>>(
-    () => new Set(),
+    () => defaultCollapsedProviderIds(models, selectedProviderId, selectedModelId),
   );
   const [sortOpen, setSortOpen] = useState(false);
   const [sortOption, setSortOption] = useState<ModelProfileSortOption>("default");
@@ -125,7 +125,15 @@ export function ModelProfilePicker({
       open={isOpen}
       onOpenChange={(nextOpen) => {
         setIsOpen(nextOpen);
-        if (!nextOpen) setSearchQuery("");
+        if (nextOpen) {
+          setCollapsedProviderIds(defaultCollapsedProviderIds(
+            models,
+            selectedProviderId,
+            selectedModelId,
+          ));
+        } else {
+          setSearchQuery("");
+        }
       }}
     >
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
@@ -214,7 +222,8 @@ export function ModelProfilePicker({
         </div>
         <div className="model-profile-picker__options" role="listbox" aria-label={ariaLabel}>
           {sortedGroups.map((provider) => {
-            const isCollapsed = collapsedProviderIds.has(provider.id);
+            const isCollapsed = normalizedQuery.length === 0
+              && collapsedProviderIds.has(provider.id);
             return (
               <section
                 key={provider.id}
@@ -274,6 +283,7 @@ export function ModelProfilePicker({
                       type="button"
                       onClick={() => {
                         onSelect(model);
+                        setSearchQuery("");
                         setIsOpen(false);
                       }}
                     >
@@ -315,6 +325,19 @@ export function ModelProfilePicker({
       </PopoverContent>
     </Popover>
   );
+}
+
+export function defaultCollapsedProviderIds(
+  models: readonly ModelProfile[],
+  selectedProviderId: string | null,
+  selectedModelId: string | null,
+): Set<string> {
+  const selectedProviderExists = models.some((model) =>
+    model.providerId === selectedProviderId && model.modelId === selectedModelId
+  );
+  return new Set(models
+    .map((model) => model.providerId)
+    .filter((providerId) => !selectedProviderExists || providerId !== selectedProviderId));
 }
 
 function sortProviderGroups(

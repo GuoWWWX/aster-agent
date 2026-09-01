@@ -1,3 +1,4 @@
+import { chmodSync, copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { cp, mkdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -57,6 +58,33 @@ export function resolveAgentHomePath(input: {
     return path.resolve(configuredPath);
   }
   return path.join(path.resolve(input.homeDirectory ?? os.homedir()), ".agent");
+}
+
+export function initializeElectronUserDataPath(input: {
+  environment?: NodeJS.ProcessEnv;
+  legacyRootPath: string;
+}): string {
+  const legacyRootPath = path.resolve(input.legacyRootPath);
+  const configuredAgentHome = input.environment?.AGENT_HOME?.trim();
+  if (configuredAgentHome === undefined || configuredAgentHome.length === 0) {
+    return legacyRootPath;
+  }
+
+  const userDataPath = path.join(
+    resolveAgentHomePath(
+      input.environment === undefined ? {} : { environment: input.environment },
+    ),
+    "electron-profile",
+  );
+  mkdirSync(userDataPath, { recursive: true, mode: 0o700 });
+
+  const sourceLocalStatePath = path.join(legacyRootPath, "Local State");
+  const targetLocalStatePath = path.join(userDataPath, "Local State");
+  if (!existsSync(targetLocalStatePath) && existsSync(sourceLocalStatePath)) {
+    copyFileSync(sourceLocalStatePath, targetLocalStatePath);
+    chmodSync(targetLocalStatePath, 0o600);
+  }
+  return userDataPath;
 }
 
 export function createAgentHomePaths(rootPath: string): AgentHomePaths {
