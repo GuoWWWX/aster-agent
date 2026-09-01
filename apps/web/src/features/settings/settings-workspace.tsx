@@ -3654,6 +3654,7 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
     structuredClone(DEFAULT_BROWSER_CONFIGURATION),
   );
   const [operationError, setOperationError] = useState<string | null>(null);
+  const [clearState, setClearState] = useState<"idle" | "clearing" | "cleared">("idle");
   const [saveRevision, setSaveRevision] = useState(0);
   const draftRef = useRef(draft);
   const latestSaveRevisionRef = useRef(0);
@@ -3693,8 +3694,8 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
     },
   });
 
-  const updateDefaultZoom = (defaultZoomPercent: number): void => {
-    const next = { ...draftRef.current, defaultZoomPercent };
+  const updateConfiguration = (update: Partial<BrowserConfiguration>): void => {
+    const next = { ...draftRef.current, ...update };
     draftRef.current = next;
     setDraft(next);
     setOperationError(null);
@@ -3702,30 +3703,131 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
     setSaveRevision(latestSaveRevisionRef.current);
   };
 
+  const clearBrowserData = async (): Promise<void> => {
+    setClearState("clearing");
+    setOperationError(null);
+    try {
+      await agentClient.clearBrowserData();
+      setClearState("cleared");
+    } catch (error) {
+      setClearState("idle");
+      setOperationError(errorMessage(error));
+    }
+  };
+
   return (
-    <SettingsSectionHeader eyebrow="内置浏览器" title="浏览器">
+    <SettingsSectionHeader
+      bodyClassName="settings-section__body--general"
+      eyebrow="内置浏览器"
+      title="浏览器"
+    >
       <div className="settings-terminal-form">
-        <div className="settings-terminal-grid">
-          <label className="settings-field">
-            <span>新标签默认缩放</span>
-            <Select
-              value={String(draft.defaultZoomPercent)}
-              onValueChange={(value) => updateDefaultZoom(Number(value))}
-            >
-              <SelectTrigger aria-label="新浏览器标签默认缩放" className="settings-select-trigger">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent align="start">
-                {BROWSER_ZOOM_OPTIONS.map((percent) => (
-                  <SelectItem key={percent} value={String(percent)}>{percent}%</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </label>
-        </div>
-        <p className="settings-terminal-status">
-          当前标签可通过 Ctrl + 鼠标滚轮或浏览器菜单单独调整；该默认值仅影响之后新建的标签。
-        </p>
+        <section className="settings-general-category" aria-labelledby="browser-startup-heading">
+          <h3 id="browser-startup-heading">启动与搜索</h3>
+          <div className="settings-general-card">
+            <article className="settings-general-row">
+              <div>
+                <h4>默认搜索引擎</h4>
+                <p>地址栏输入的内容不是网址时，使用此搜索引擎。</p>
+              </div>
+              <Select
+                value={draft.searchEngine}
+                onValueChange={(value) => updateConfiguration({
+                  searchEngine: value as BrowserConfiguration["searchEngine"],
+                })}
+              >
+                <SelectTrigger aria-label="默认搜索引擎" className="settings-select-trigger">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  <SelectItem value="google">Google</SelectItem>
+                  <SelectItem value="bing">Bing</SelectItem>
+                  <SelectItem value="duckduckgo">DuckDuckGo</SelectItem>
+                </SelectContent>
+              </Select>
+            </article>
+            <article className="settings-general-row">
+              <div>
+                <h4>新标签默认缩放</h4>
+                <p>当前的 100% 对应原始网页的 80%，只影响之后新建的标签。</p>
+              </div>
+              <Select
+                value={String(draft.defaultZoomPercent)}
+                onValueChange={(value) => updateConfiguration({ defaultZoomPercent: Number(value) })}
+              >
+                <SelectTrigger aria-label="新浏览器标签默认缩放" className="settings-select-trigger">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  {BROWSER_ZOOM_OPTIONS.map((percent) => (
+                    <SelectItem key={percent} value={String(percent)}>{percent}%</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </article>
+          </div>
+        </section>
+
+        <section className="settings-general-category" aria-labelledby="browser-download-heading">
+          <h3 id="browser-download-heading">下载</h3>
+          <div className="settings-general-card">
+            <article className="settings-general-row">
+              <div>
+                <h4>下载前询问保存位置</h4>
+                <p>关闭时自动保存到系统“下载”文件夹。</p>
+              </div>
+              <label className="settings-switch">
+                <input
+                  aria-label="下载前询问保存位置"
+                  checked={draft.askForDownloadLocation}
+                  type="checkbox"
+                  onChange={(event) => updateConfiguration({
+                    askForDownloadLocation: event.target.checked,
+                  })}
+                />
+                <span aria-hidden="true" />
+              </label>
+            </article>
+          </div>
+        </section>
+
+        <section className="settings-general-category" aria-labelledby="browser-password-heading">
+          <h3 id="browser-password-heading">密码和自动填充</h3>
+          <div className="settings-general-card">
+            <article className="settings-general-row">
+              <div>
+                <h4>密码保存</h4>
+                <p>隔离的内置浏览器不会保存或自动填充密码。</p>
+              </div>
+              <span className="settings-state-badge" data-state="offline">已关闭</span>
+            </article>
+          </div>
+        </section>
+
+        <section className="settings-general-category" aria-labelledby="browser-privacy-heading">
+          <h3 id="browser-privacy-heading">隐私</h3>
+          <div className="settings-general-card">
+            <article className="settings-general-row">
+              <div>
+                <h4>清除浏览数据</h4>
+                <p>清除内置浏览器的 Cookie、缓存、站点数据和当前历史记录。</p>
+              </div>
+              <button
+                className="settings-secondary-button"
+                disabled={clearState === "clearing"}
+                type="button"
+                onClick={() => void clearBrowserData()}
+              >
+                <Trash2 aria-hidden="true" size={14} />
+                {clearState === "clearing" ? "正在清除" : "清除浏览数据"}
+              </button>
+            </article>
+          </div>
+        </section>
+
+        {clearState === "cleared" ? (
+          <p className="settings-terminal-status" role="status">浏览数据已清除。</p>
+        ) : null}
         {operationError !== null ? (
           <p className="settings-terminal-status" role="alert">{operationError}</p>
         ) : (

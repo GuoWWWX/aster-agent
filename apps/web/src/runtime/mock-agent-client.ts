@@ -1207,6 +1207,10 @@ export class MockAgentClient implements AgentClient {
     return Promise.resolve(structuredClone(this.browserConfiguration));
   }
 
+  public clearBrowserData(): Promise<void> {
+    return Promise.resolve();
+  }
+
   public getTerminalConfiguration(): Promise<TerminalConfiguration> {
     return Promise.resolve(structuredClone(this.terminalConfiguration));
   }

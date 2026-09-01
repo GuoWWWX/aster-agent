@@ -23,6 +23,7 @@ import {
   useRef,
   useState,
   type ReactElement,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
 
@@ -33,6 +34,8 @@ import type {
   ConversationSummary,
   JavaDeclarationKind,
   ManagedBrowserSession,
+  ManagedBrowserWorkspaceAddAction,
+  ManagedBrowserWorkspaceTabAction,
   AgentTeam,
   ProjectEntry,
   ProjectFile,
@@ -68,7 +71,10 @@ import { ConversationWorkspace } from "../chat/workspace-content.js";
 import { AgentAvatar } from "../team/agent-avatar.js";
 import { ConfigurationWorkspaceTreePanel } from "./configuration-workspace-tree-panel.js";
 import { GitReviewWorkspace } from "./git-review-workspace.js";
-import { ManagedBrowserWorkspace } from "./managed-browser-workspace.js";
+import {
+  ManagedBrowserWorkspace,
+  type ManagedBrowserWorkspaceMenuRequest,
+} from "./managed-browser-workspace.js";
 import { ProjectTreePanel } from "../projects/project-tree-panel.js";
 import { TerminalWorkspace } from "./terminal-workspace.js";
 import {
@@ -505,6 +511,10 @@ export function RightSidebarWorkspace({
   const [capabilities, setCapabilities] = useState({ git: false, managedBrowser: false, pty: false });
   const [isFileBrowserOpen, setIsFileBrowserOpen] = useState(false);
   const [isCreatingChat, setIsCreatingChat] = useState(false);
+  const [managedBrowserMenuRequest, setManagedBrowserMenuRequest] = useState<{
+    request: ManagedBrowserWorkspaceMenuRequest;
+    tabId: string;
+  } | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [openChatIds, setOpenChatIds] = useState<Set<string>>(() => new Set());
   const [operationError, setOperationError] = useState<string | null>(null);
@@ -518,6 +528,7 @@ export function RightSidebarWorkspace({
   const fileSaveQueuesRef = useRef(new Map<string, Promise<boolean>>());
   const fileLoadRequestIdsRef = useRef(new Map<string, number>());
   const handledFileOpenRequestRef = useRef<ProjectFileOpenRequest | null>(null);
+  const managedBrowserMenuRequestIdRef = useRef(0);
   const handledTeamMemberOpenRequestIdRef = useRef<number | null>(null);
   const teamMemberOpenRequestRef = useRef(teamMemberOpenRequest);
   const activeTabIdsBySessionRef = useRef(new Map<string, string | null>());
@@ -619,7 +630,7 @@ export function RightSidebarWorkspace({
     const id = `managed-browser:${crypto.randomUUID()}`;
     const now = Date.now();
     const name = requestedName === undefined
-      ? "浏览器"
+      ? "新标签页"
       : nextWorkspaceTabName([
         ...fileTabs,
         ...toolTabs,
@@ -631,7 +642,7 @@ export function RightSidebarWorkspace({
       lastAccessedAt: now,
       name,
       session,
-      url: session?.url ?? "https://www.google.com/",
+      url: session?.url ?? "",
     }]);
     setActiveTabForCurrentSession(id);
     setFilePanelOpen(true);
@@ -1740,6 +1751,89 @@ export function RightSidebarWorkspace({
     commitCloseTabs(closedTabs);
   }
 
+  function openFilesFromWorkspaceMenu(): void {
+    void (async () => {
+      if (
+        activeConfigurationTab !== null
+        && !await flushConfigurationFile(activeConfigurationTab)
+      ) return;
+      openFileBrowser();
+      setMenuOpen(false);
+    })();
+  }
+
+  function handleWorkspaceAddMenuAction(action: ManagedBrowserWorkspaceAddAction): void {
+    switch (action) {
+      case "createSideChat":
+        void createSideChat();
+        return;
+      case "openBrowser":
+        openManagedBrowser();
+        return;
+      case "openFiles":
+        openFilesFromWorkspaceMenu();
+        return;
+      case "openGitReview":
+        openGitReview();
+        return;
+      case "openTerminal":
+        openTerminal();
+    }
+  }
+
+  function handleWorkspaceTabMenuAction(
+    tab: ManagedBrowserTab,
+    action: ManagedBrowserWorkspaceTabAction,
+  ): void {
+    switch (action) {
+      case "close":
+        void closeTabs([tab]);
+        return;
+      case "closeAll":
+        void closeTabs(tabs);
+        return;
+      case "closeOthers":
+        void closeTabs(tabs.filter((candidate) => candidate.id !== tab.id));
+    }
+  }
+
+  function showNativeWorkspaceAddMenu(
+    tab: ManagedBrowserTab,
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ): void {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    managedBrowserMenuRequestIdRef.current += 1;
+    setManagedBrowserMenuRequest({
+      request: {
+        canCreateSideChat: activeSession !== null && !isCreatingChat,
+        canOpenGitReview: capabilities.git && activeProject !== null,
+        canOpenTerminal: capabilities.pty && activeProject !== null,
+        id: managedBrowserMenuRequestIdRef.current,
+        kind: "add",
+        x: Math.max(0, Math.min(16_384, Math.round(bounds.left))),
+        y: Math.max(0, Math.min(16_384, Math.round(bounds.bottom))),
+      },
+      tabId: tab.id,
+    });
+  }
+
+  function showNativeWorkspaceTabMenu(
+    tab: ManagedBrowserTab,
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ): void {
+    managedBrowserMenuRequestIdRef.current += 1;
+    setManagedBrowserMenuRequest({
+      request: {
+        canCloseOthers: tabs.length > 1,
+        id: managedBrowserMenuRequestIdRef.current,
+        kind: "tab",
+        x: Math.max(0, Math.min(16_384, Math.round(event.clientX))),
+        y: Math.max(0, Math.min(16_384, Math.round(event.clientY))),
+      },
+      tabId: tab.id,
+    });
+  }
+
   function removeDeletedConfigurationEntry(
     target: ConfigurationWorkspaceTarget,
     path: string,
@@ -1752,6 +1846,8 @@ export function RightSidebarWorkspace({
     ));
     commitCloseTabs(tabsToClose);
   }
+
+  const activeManagedBrowserTab = activeTab?.kind === "managed-browser" ? activeTab : null;
 
   return (
     <WorkbenchPanel className="right-sidebar-workspace" aria-label="右侧工作区">
@@ -1778,6 +1874,10 @@ export function RightSidebarWorkspace({
                     onContextMenu={(event) => {
                       event.preventDefault();
                       void activateTab(tab);
+                      if (tab.kind === "managed-browser") {
+                        showNativeWorkspaceTabMenu(tab, event);
+                        return;
+                      }
                       setTabContextMenu({
                         tab,
                         x: Math.max(8, Math.min(event.clientX, window.innerWidth - 176)),
@@ -1824,18 +1924,28 @@ export function RightSidebarWorkspace({
             })}
           </div>
 
-          <Popover open={menuOpen} onOpenChange={setMenuOpen}>
-            <PopoverTrigger asChild>
-              <IconButton className="right-sidebar-workspace__add" label="打开项目" size="compact">
-                <Plus aria-hidden="true" size={16} />
-              </IconButton>
-            </PopoverTrigger>
-            <PopoverContent
-              align="end"
-              className="right-sidebar-workspace__menu"
-              side="bottom"
-              sideOffset={5}
+          {activeManagedBrowserTab !== null ? (
+            <IconButton
+              className="right-sidebar-workspace__add"
+              label="打开项目"
+              size="compact"
+              onClick={(event) => showNativeWorkspaceAddMenu(activeManagedBrowserTab, event)}
             >
+              <Plus aria-hidden="true" size={16} />
+            </IconButton>
+          ) : (
+            <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+              <PopoverTrigger asChild>
+                <IconButton className="right-sidebar-workspace__add" label="打开项目" size="compact">
+                  <Plus aria-hidden="true" size={16} />
+                </IconButton>
+              </PopoverTrigger>
+              <PopoverContent
+                align="end"
+                className="right-sidebar-workspace__menu"
+                side="bottom"
+                sideOffset={5}
+              >
               <button
                 disabled={!capabilities.git || activeProject === null}
                 title={activeProject === null ? "请先打开项目" : undefined}
@@ -1866,16 +1976,7 @@ export function RightSidebarWorkspace({
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  void (async () => {
-                    if (
-                      activeConfigurationTab !== null
-                      && !await flushConfigurationFile(activeConfigurationTab)
-                    ) return;
-                    openFileBrowser();
-                    setMenuOpen(false);
-                  })();
-                }}
+                onClick={openFilesFromWorkspaceMenu}
               >
                 <FolderOpen aria-hidden="true" size={15} />
                 文件
@@ -1892,8 +1993,9 @@ export function RightSidebarWorkspace({
                 )}
                 侧边聊天
               </button>
-            </PopoverContent>
-          </Popover>
+              </PopoverContent>
+            </Popover>
+          )}
         </div>
 
         {operationError !== null ? (
@@ -1930,20 +2032,28 @@ export function RightSidebarWorkspace({
                   />
                 ) : (
                   <ManagedBrowserWorkspace
-                    active={isActive && !menuOpen && tabContextMenu === null}
+                    active={isActive}
                     agentClient={agentClient}
+                    colorScheme={isDark ? "dark" : "light"}
                     initialUrl={tab.url}
+                    menuRequest={managedBrowserMenuRequest?.tabId === tab.id
+                      ? managedBrowserMenuRequest.request
+                      : null}
                     session={tab.session}
                     onSessionChanged={(session) => {
                       setToolTabs((current) => current.map((candidate) => candidate.id === tab.id && candidate.kind === "managed-browser"
                         ? {
                           ...candidate,
-                          name: session.title.trim() || "浏览器",
+                          name: session.url.trim().length === 0
+                            ? "新标签页"
+                            : session.title.trim() || "浏览器",
                           session,
                           url: session.url,
                         }
                         : candidate));
                     }}
+                    onWorkspaceAddMenuAction={handleWorkspaceAddMenuAction}
+                    onWorkspaceTabMenuAction={(action) => handleWorkspaceTabMenuAction(tab, action)}
                   />
                 )}
               </div>
@@ -2215,7 +2325,7 @@ export function RightSidebarWorkspace({
   );
 }
 
-function RightSidebarEmptyState({
+export function RightSidebarEmptyState({
   canOpenBrowser,
   canOpenGitReview,
   canOpenTerminal,
@@ -2292,7 +2402,7 @@ function RightSidebarEmptyState({
               key={action.label}
               title={action.title}
               type="button"
-              onClick={action.onClick}
+              onClick={() => action.onClick?.()}
             >
               <Icon aria-hidden="true" size={19} strokeWidth={1.7} />
               <span>{action.label}</span>

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -32,10 +32,29 @@ describe("BrowserConfigurationStore", () => {
     temporaryDirectories.push(directory);
     const configurationPath = path.join(directory, "browser-settings.json");
     const store = new BrowserConfigurationStore(configurationPath);
-    const configuration = { defaultZoomPercent: 125, version: 1 as const };
+    const configuration = {
+      askForDownloadLocation: true,
+      defaultZoomPercent: 125,
+      searchEngine: "duckduckgo" as const,
+      version: 1 as const,
+    };
 
     expect(store.saveConfiguration(configuration)).toEqual(configuration);
     expect(store.getConfiguration()).toEqual(configuration);
     expect(JSON.parse(await readFile(configurationPath, "utf8"))).toEqual(configuration);
+  });
+
+  it("fills new browser settings when reading an older configuration", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-browser-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "browser-settings.json");
+    await writeFile(configurationPath, JSON.stringify({ defaultZoomPercent: 125, version: 1 }));
+
+    expect(new BrowserConfigurationStore(configurationPath).getConfiguration()).toEqual({
+      askForDownloadLocation: false,
+      defaultZoomPercent: 125,
+      searchEngine: "google",
+      version: 1,
+    });
   });
 });

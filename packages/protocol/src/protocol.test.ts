@@ -311,7 +311,29 @@ describe("protocol bootstrap contract", () => {
     expect(managedBrowserCommandInputSchema.parse({
       command: "showMenu",
       sessionId,
-    })).toEqual({ command: "showMenu", sessionId });
+      x: 880,
+      y: 112,
+    })).toEqual({ command: "showMenu", sessionId, x: 880, y: 112 });
+    expect(managedBrowserCommandInputSchema.parse({
+      command: "showDownloads",
+      sessionId,
+      x: 848,
+      y: 112,
+    })).toEqual({ command: "showDownloads", sessionId, x: 848, y: 112 });
+    expect(managedBrowserCommandInputSchema.parse({
+      colorScheme: "light",
+      command: "setColorScheme",
+      sessionId,
+    })).toEqual({ colorScheme: "light", command: "setColorScheme", sessionId });
+    expect(managedBrowserCommandInputSchema.parse({
+      canCreateSideChat: true,
+      canOpenGitReview: false,
+      canOpenTerminal: true,
+      command: "showWorkspaceAddMenu",
+      sessionId,
+      x: 400,
+      y: 80,
+    })).toMatchObject({ command: "showWorkspaceAddMenu", x: 400, y: 80 });
     expect(managedBrowserEventSchema.parse({
       session: {
         canGoBack: false,
@@ -333,6 +355,11 @@ describe("protocol bootstrap contract", () => {
       sessionId,
       type: "openSettings",
     })).toEqual({ sessionId, type: "openSettings" });
+    expect(managedBrowserEventSchema.parse({
+      action: "openFiles",
+      sessionId,
+      type: "workspaceAddMenu",
+    })).toEqual({ action: "openFiles", sessionId, type: "workspaceAddMenu" });
     expect(managedBrowserSnapshotSchema.parse({
       data: "c25hcHNob3Q=",
       height: 600,
@@ -392,8 +419,14 @@ describe("protocol bootstrap contract", () => {
       .toThrow();
     expect(IPC_CHANNELS.managedBrowserOpen).toBe("managed_browser.open");
     expect(IPC_CHANNELS.managedBrowserCapture).toBe("managed_browser.capture");
+    expect(IPC_CHANNELS.browserClearData).toBe("browser.clear_data");
     expect(browserConfigurationSchema.parse({ defaultZoomPercent: 125, version: 1 }))
-      .toEqual({ defaultZoomPercent: 125, version: 1 });
+      .toEqual({
+        askForDownloadLocation: false,
+        defaultZoomPercent: 125,
+        searchEngine: "google",
+        version: 1,
+      });
   });
 
   it("validates project entry creation paths", () => {

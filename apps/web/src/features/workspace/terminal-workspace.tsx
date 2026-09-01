@@ -9,6 +9,12 @@ import type { TerminalSession } from "@agent/protocol";
 import { type AgentClient } from "../../runtime/index.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 
+export function shouldHandleTerminalKeyEvent(
+  event: Pick<KeyboardEvent, "key" | "repeat" | "type">,
+): boolean {
+  return !(event.type === "keydown" && event.key === "Enter" && event.repeat);
+}
+
 export function TerminalWorkspace({
   active,
   agentClient,
@@ -89,6 +95,7 @@ export function TerminalWorkspace({
         selectionBackground: "#3a3a3a",
       },
     });
+    terminal.attachCustomKeyEventHandler(shouldHandleTerminalKeyEvent);
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(container);

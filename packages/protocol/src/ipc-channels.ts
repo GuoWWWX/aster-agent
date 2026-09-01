@@ -84,6 +84,7 @@ export const IPC_CHANNELS = {
   applicationSettingsSaveConfiguration: "application_settings.save_configuration",
   browserGetConfiguration: "browser.get_configuration",
   browserSaveConfiguration: "browser.save_configuration",
+  browserClearData: "browser.clear_data",
   terminalGetConfiguration: "terminal.get_configuration",
   terminalSaveConfiguration: "terminal.save_configuration",
   terminalSessionOpen: "terminal.session_open",

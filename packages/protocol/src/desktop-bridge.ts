@@ -219,6 +219,7 @@ export interface DesktopBridge {
   getApplicationSettings(): Promise<ApplicationSettings>;
   getIntegrationConfiguration(): Promise<IntegrationConfiguration>;
   getBrowserConfiguration(): Promise<BrowserConfiguration>;
+  clearBrowserData(): Promise<void>;
   getTerminalConfiguration(): Promise<TerminalConfiguration>;
   getGitReviewSnapshot(input: GitReviewInput): Promise<GitReviewSnapshot>;
   getGitFileDiff(input: GitFileDiffInput): Promise<GitFileDiff>;
