@@ -7,6 +7,7 @@ import type {
   ConversationSummary,
   ListTeamWorkItemsInput,
   PublishTeamWorkItemInput,
+  SubmitTeamWorkItemInput,
   TeamWorkItemExecutionView,
   TeamWorkItemView,
   UpdateTeamWorkItemInput,
@@ -61,11 +62,70 @@ describe("TeamWorkspace", () => {
     ]);
     expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
     expect(container.querySelector(".team-live-execution-panel")).toBeNull();
-    expect(container.textContent).not.toContain("投递需求");
+    expect(container.querySelector('[aria-label="新建团队任务"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="按项目筛选"]')).not.toBeNull();
+    expect(container.querySelector(".team-workspace__toolbar.team-command-panel__heading")).not.toBeNull();
+    expect(container.querySelector(".team-workitem-board__heading")).toBeNull();
 
     act(() => tabs[2]?.click());
     expect(container.textContent).toContain("选择任务后查看真实协作计划与通信");
     expect(container.querySelector("#workflow-canvas-heading")).toBeNull();
+  });
+
+  it("creates and publishes a project-linked task from the team page", async () => {
+    const client = new TeamWorkspaceCreateClient();
+    const team = DEFAULT_AGENT_DIRECTORY_CONFIGURATION.teams[0];
+    if (team === undefined) throw new Error("Default team fixture is unavailable.");
+    const project = {
+      id: "00000000-0000-4000-8000-000000000001",
+      name: "Mock Project",
+      rootPath: "C:/mock-project",
+    };
+    const instance = await client.createTeamInstance({
+      projectId: project.id,
+      scope: "project",
+      teamId: team.id,
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      renderTeamWorkspace(
+        <TeamWorkspace
+          agentClient={client}
+          onOpenConversation={() => undefined}
+          projects={[project]}
+        />,
+      );
+      await flushTeamWorkspace();
+    });
+
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="新建团队任务"]')?.click());
+    const title = document.querySelector<HTMLInputElement>('[aria-label="任务标题"]');
+    const requirement = document.querySelector<HTMLTextAreaElement>('[aria-label="任务需求"]');
+    const acceptance = document.querySelector<HTMLTextAreaElement>('[aria-label="验收条件"]');
+    act(() => {
+      setNativeInputValue(title, "补齐项目任务评论");
+      title?.dispatchEvent(new Event("input", { bubbles: true }));
+      setNativeTextValue(requirement, "实现任务评论，并确保普通评论不会触发 Agent Run。");
+      requirement?.dispatchEvent(new Event("input", { bubbles: true }));
+      setNativeTextValue(acceptance, "评论刷新后仍存在\n只有明确返工才启动 Run");
+      acceptance?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[aria-label="创建并发布团队任务"]')?.click();
+      await flushTeamWorkspace();
+    });
+
+    expect(client.submitRequests).toEqual([expect.objectContaining({
+      acceptanceCriteria: ["评论刷新后仍存在", "只有明确返工才启动 Run"],
+      executionScope: "project",
+      projectId: project.id,
+      requirement: "实现任务评论，并确保普通评论不会触发 Agent Run。",
+      teamInstanceId: instance.id,
+      title: "补齐项目任务评论",
+    })]);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
   it("edits a queued requirement in place instead of creating a second WorkItem", async () => {
@@ -139,6 +199,49 @@ describe("TeamWorkspace", () => {
         title: "修改后的需求，仍然使用同一个任务。",
       }),
     ]);
+  });
+
+  it("shows task conversation activity without a comment composer", async () => {
+    const client = new MockAgentClient();
+    const team = DEFAULT_AGENT_DIRECTORY_CONFIGURATION.teams[0];
+    if (team === undefined) throw new Error("Default team fixture is unavailable.");
+    const created = await client.submitTeamWorkItem({
+      acceptanceCriteria: [],
+      permissionMode: "ask_before_changes",
+      priority: "normal",
+      projectId: "00000000-0000-4000-8000-000000000001",
+      requirement: "先完成任务，再通过任务讨论补充说明。",
+      teamId: team.id,
+      title: "任务评论",
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      renderTeamWorkspace(
+        <TeamWorkspace
+          agentClient={client}
+          onOpenConversation={() => undefined}
+          projects={[{
+            id: "00000000-0000-4000-8000-000000000001",
+            name: "Mock Project",
+            rootPath: "C:/mock-project",
+          }]}
+        />,
+      );
+      await flushTeamWorkspace();
+    });
+    const runtimeTab = [...container.querySelectorAll<HTMLButtonElement>(
+      '.team-view-switcher [role="tab"]',
+    )].find((tab) => tab.textContent === "任务与验收");
+    await act(async () => {
+      runtimeTab?.click();
+      await flushTeamWorkspace();
+    });
+    expect(created.id).not.toHaveLength(0);
+    expect(container.textContent).toContain("任务对话轨迹");
+    expect(container.querySelector('[aria-label="添加任务评论"]')).toBeNull();
+    expect(container.querySelector('[aria-label="发表评论"]')).toBeNull();
   });
 
   it("refreshes the roster when a newly delegated member reports its Conversation", async () => {
@@ -230,6 +333,15 @@ describe("TeamWorkspace", () => {
     expect(container.querySelector('[aria-label="用户需求"]')?.firstElementChild?.textContent).toContain("Team Lead 主对话");
     expect(container.querySelector('[aria-label="用户需求"]')?.firstElementChild?.textContent).toContain("查看完整需求");
     expect(container.querySelector('[aria-label="用户需求"]')?.firstElementChild?.textContent).toContain("打开对话");
+    const requirementButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "查看完整需求");
+    act(() => requirementButton?.click());
+    const requirementDialog = container.querySelector<HTMLElement>('[aria-label="完整用户需求"]');
+    expect(requirementDialog?.className).toContain("shadow-lg");
+    expect(requirementDialog?.parentElement?.className).toContain("bg-transparent");
+    expect(requirementDialog?.parentElement?.className).not.toContain("bg-black");
+    expect(requirementDialog?.parentElement?.className).not.toContain("backdrop-blur");
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="关闭完整用户需求"]')?.click());
     const runtimeTracks = "grid-rows-[145px_minmax(220px,280px)_minmax(320px,1fr)]";
     expect(container.querySelector('[data-team-runtime-layout="details"]')?.className).toContain(runtimeTracks);
     expect(container.querySelector('[data-team-runtime-layout="operations"]')?.className).toContain(runtimeTracks);
@@ -461,6 +573,15 @@ class TeamWorkspaceEditClient extends MockAgentClient {
   }
 }
 
+class TeamWorkspaceCreateClient extends MockAgentClient {
+  public readonly submitRequests: SubmitTeamWorkItemInput[] = [];
+
+  public override submitTeamWorkItem(input: SubmitTeamWorkItemInput) {
+    this.submitRequests.push(input);
+    return super.submitTeamWorkItem(input);
+  }
+}
+
 function createTeamConversation({
   id,
   parentConversationId = null,
@@ -519,4 +640,17 @@ function setNativeTextValue(
   );
   if (descriptor === undefined) throw new Error("Textarea value setter is unavailable.");
   Reflect.set(HTMLTextAreaElement.prototype, "value", value, element);
+}
+
+function setNativeInputValue(
+  element: HTMLInputElement | null,
+  value: string,
+): void {
+  if (element === null) throw new Error("Expected a Team WorkItem input.");
+  const descriptor = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    "value",
+  );
+  if (descriptor === undefined) throw new Error("Input value setter is unavailable.");
+  Reflect.set(HTMLInputElement.prototype, "value", value, element);
 }

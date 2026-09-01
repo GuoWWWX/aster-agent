@@ -177,7 +177,11 @@ type WorkspaceContentProps = {
   onLocateProject: (projectId: string) => void;
   onLocateSession: (sessionId: string) => void;
   onOpenProjectFile?: (projectId: string, path: string) => void;
-  onOpenTeamConversation: (conversation: ProjectSession, sourceConversationId?: string) => void;
+  onOpenTeamConversation: (
+    conversation: ProjectSession,
+    sourceConversationId?: string,
+    timelineItemId?: string,
+  ) => void;
   onNavigateToTeamConversation?: (conversationId: string) => void;
   onProjectSelected: (projectId: string) => void;
   onSessionSelected: (sessionId: string) => void;
@@ -743,6 +747,7 @@ export function ConversationWorkspace({
   canAddProjects = false,
   compact = false,
   isAddingProject = false,
+  locateTimelineItem = null,
   onAddProject,
   onLocateProject,
   onLocateSession,
@@ -765,11 +770,16 @@ export function ConversationWorkspace({
   canAddProjects?: boolean;
   compact?: boolean;
   isAddingProject?: boolean;
+  locateTimelineItem?: { id: string; requestId: number } | null;
   onAddProject?: () => Promise<ProjectSummary | null>;
   onLocateProject?: (projectId: string) => void;
   onLocateSession?: (sessionId: string) => void;
   onOpenProjectFile?: ((path: string) => void) | undefined;
-  onOpenTeamConversation?: (conversation: ProjectSession, sourceConversationId?: string) => void;
+  onOpenTeamConversation?: (
+    conversation: ProjectSession,
+    sourceConversationId?: string,
+    timelineItemId?: string,
+  ) => void;
   onNavigateToTeamConversation?: (conversationId: string) => void;
   onForkConversation?: (conversationId: string, throughMessageId: string) => Promise<void>;
   onProjectSelected?: (projectId: string) => void;
@@ -893,6 +903,7 @@ export function ConversationWorkspace({
   );
   const contextUsageRequestRef = useRef(0);
   const messagesRef = useRef<HTMLDivElement | null>(null);
+  const locatedTimelineRequestIdRef = useRef<number | null>(null);
   const shouldStickToBottomRef = useRef(true);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const copiedMessageTimeoutRef = useRef<number | null>(null);
@@ -2249,6 +2260,29 @@ export function ConversationWorkspace({
     timeline,
     modelActivity?.anchorTimelineItemId ?? null,
   );
+  useLayoutEffect(() => {
+    if (
+      locateTimelineItem === null
+      || isLoadingTimeline
+      || locatedTimelineRequestIdRef.current === locateTimelineItem.requestId
+    ) return;
+    const messages = messagesRef.current;
+    if (messages === null) return;
+    const anchor = Array.from(messages.querySelectorAll<HTMLElement>(
+      "[data-conversation-timeline-item]",
+    )).find((candidate) => (
+      candidate.dataset.conversationTimelineItem === locateTimelineItem.id
+    ));
+    if (anchor === undefined) return;
+    const target = anchor.firstElementChild instanceof HTMLElement
+      ? anchor.firstElementChild
+      : anchor;
+    shouldStickToBottomRef.current = false;
+    if (typeof target.scrollIntoView === "function") {
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    locatedTimelineRequestIdRef.current = locateTimelineItem.requestId;
+  }, [isLoadingTimeline, locateTimelineItem, timeline]);
   const latestActiveToolId = useMemo(() => getLatestActiveToolId(timeline), [timeline]);
   const runDurationsByInsertIndex = useMemo(
     () => getConversationRunDurationInsertIndexes(displayTimeline),
@@ -2433,49 +2467,54 @@ export function ConversationWorkspace({
                     && item.kind !== "tool_batch" ? (
                     <ModelActivityIndicator activity={modelActivity} />
                   ) : null}
-                  <TimelineItem
-                    item={item}
-                    agentAvatar={item.kind === "agent_message"
-                      ? conversationAgentAvatars.get(item.senderConversationId)
-                        ?? agentProfiles.find((agent) =>
-                          item.senderTitle === agent.name
-                          || item.senderTitle.startsWith(`${agent.name} ·`)
-                        )?.avatar
-                        ?? null
-                      : null}
-                    teamManaged={teamManaged}
-                    activeRunId={activeRunId}
-                    latestActiveToolId={latestActiveToolId}
-                    modelActivity={modelActivity !== null
-                      && modelActivityInsertIndex === index
-                      && item.kind === "tool_batch"
-                      ? modelActivity
-                      : null}
-                    approvalErrors={approvalErrors}
-                    approvingToolId={approvingToolId}
-                    copiedMessageId={copiedMessageId}
-                    editingMessageId={editingMessageId}
-                    forkingMessageId={forkingMessageId}
-                    canForkMessage={item.kind === "message"
-                      && forkableAssistantMessageIds.has(item.id)
-                      && onForkConversation !== undefined
-                      && !isFinishedSubagent}
-                    canShowCompletionTime={item.kind === "message"
-                      && forkableAssistantMessageIds.has(item.id)}
-                    canCopyMessage={item.kind === "message" && (
-                      item.role === "user"
-                        ? item.content.length > 0
-                        : forkableAssistantMessageIds.has(item.id)
-                    )}
-                    latestUserMessageId={teamManaged ? null : latestUserMessageId}
-                    onChangeApproval={handleChangeApproval}
-                    onCopyMessage={handleCopyMessage}
-                    onEditMessage={handleEditMessage}
-                    onForkMessage={handleForkMessage}
-                    onOpenProjectFile={onOpenProjectFile}
-                    onSessionSelected={onSessionSelected}
-                    liveToolOutputs={liveToolOutputs}
-                  />
+                  <div
+                    className="contents"
+                    data-conversation-timeline-item={item.id}
+                  >
+                    <TimelineItem
+                      item={item}
+                      agentAvatar={item.kind === "agent_message"
+                        ? conversationAgentAvatars.get(item.senderConversationId)
+                          ?? agentProfiles.find((agent) =>
+                            item.senderTitle === agent.name
+                            || item.senderTitle.startsWith(`${agent.name} ·`)
+                          )?.avatar
+                          ?? null
+                        : null}
+                      teamManaged={teamManaged}
+                      activeRunId={activeRunId}
+                      latestActiveToolId={latestActiveToolId}
+                      modelActivity={modelActivity !== null
+                        && modelActivityInsertIndex === index
+                        && item.kind === "tool_batch"
+                        ? modelActivity
+                        : null}
+                      approvalErrors={approvalErrors}
+                      approvingToolId={approvingToolId}
+                      copiedMessageId={copiedMessageId}
+                      editingMessageId={editingMessageId}
+                      forkingMessageId={forkingMessageId}
+                      canForkMessage={item.kind === "message"
+                        && forkableAssistantMessageIds.has(item.id)
+                        && onForkConversation !== undefined
+                        && !isFinishedSubagent}
+                      canShowCompletionTime={item.kind === "message"
+                        && forkableAssistantMessageIds.has(item.id)}
+                      canCopyMessage={item.kind === "message" && (
+                        item.role === "user"
+                          ? item.content.length > 0
+                          : forkableAssistantMessageIds.has(item.id)
+                      )}
+                      latestUserMessageId={teamManaged ? null : latestUserMessageId}
+                      onChangeApproval={handleChangeApproval}
+                      onCopyMessage={handleCopyMessage}
+                      onEditMessage={handleEditMessage}
+                      onForkMessage={handleForkMessage}
+                      onOpenProjectFile={onOpenProjectFile}
+                      onSessionSelected={onSessionSelected}
+                      liveToolOutputs={liveToolOutputs}
+                    />
+                  </div>
                   {submittedTeamWorkItems(item).map((workItem) => (
                     <CollaborationProjectionGraph
                       agentClient={agentClient}

@@ -47,10 +47,10 @@ describe("AgentDatabase", () => {
       .get() as Record<string, unknown>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(18);
-    expect(firstRow.name).toBe("team-collaboration-output-snapshots");
+    expect(firstRow.version).toBe(19);
+    expect(firstRow.name).toBe("team-work-item-soft-delete");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(18);
+    expect(migrationCount.count).toBe(19);
   });
 
   it("preserves legacy Team execution scope when migrating version 12 data", async () => {
@@ -288,7 +288,7 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 18",
+      "newer than supported version 19",
     );
   });
 
@@ -365,6 +365,13 @@ describe("AgentDatabase", () => {
       status: "queued",
     });
     expect(created.events.map((event) => event.type)).toEqual(["received", "scheduled"]);
+    expect(database.addTeamWorkItemComment({
+      content: "补充说明：验收时请附上测试证据。",
+      workItemId: created.id,
+    }).events.at(-1)).toMatchObject({
+      detail: "补充说明：验收时请附上测试证据。",
+      type: "commented",
+    });
     expect(database.updateTeamWorkItem({
       requirement: "实现一个可测试的加法函数，并验证负数边界。",
       title: "实现加法函数和边界测试",
@@ -382,11 +389,15 @@ describe("AgentDatabase", () => {
       status: "running",
       tasks: [expect.objectContaining({ title: "实现与测试" })],
     });
-    expect(() => database.updateTeamWorkItem({
-      requirement: "不应覆盖已开始执行的需求。",
-      title: "不应覆盖",
+    expect(database.updateTeamWorkItem({
+      requirement: "执行中补充负数和零值边界。",
+      title: "补充执行中需求",
       workItemId: created.id,
-    })).toThrow("Only a queued Team WorkItem");
+    })).toMatchObject({
+      requirement: "执行中补充负数和零值边界。",
+      status: "running",
+      title: "补充执行中需求",
+    });
     expect(database.updateTeamWorkItemPermission({
       permissionMode: "read_only",
       workItemId: created.id,
@@ -429,6 +440,30 @@ describe("AgentDatabase", () => {
       status: "completed",
     });
     expect(typeof accepted.completedAt).toBe("string");
+
+    const completedReworkRun = database.createRunWithUserMessage(
+      execution.id,
+      "根据评论继续返工",
+      modelSelection.modelId,
+    );
+    const reopened = database.startTeamWorkItemRework(
+      created.id,
+      completedReworkRun.runId,
+      "验收后发现窄窗口仍需调整",
+    );
+    expect(reopened).toMatchObject({
+      acceptedCriteria: [],
+      completedAt: null,
+      revision: 3,
+      status: "running",
+    });
+    expect(reopened.events.map((event) => event.type)).toContain("accepted");
+    expect(reopened.events.at(-1)).toMatchObject({ type: "rework_requested" });
+    expect(database.deleteTeamWorkItem({ workItemId: created.id })).toMatchObject({
+      status: "cancelled",
+    });
+    expect(database.getTeamWorkItem(created.id).events.at(-1)).toMatchObject({ type: "deleted" });
+    expect(database.listTeamWorkItems({ teamId: "default-team" })).toEqual([]);
     database.close();
   });
 
@@ -1607,6 +1642,7 @@ describe("AgentDatabase", () => {
       { version: 16 },
       { version: 17 },
       { version: 18 },
+      { version: 19 },
     ]);
     metadata.close();
   });

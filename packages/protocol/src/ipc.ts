@@ -80,7 +80,9 @@ import {
   skillDocumentSaveInputSchema,
 } from "./skill-document.js";
 import {
+  addTeamWorkItemCommentInputSchema,
   acceptTeamWorkItemInputSchema,
+  deleteTeamWorkItemInputSchema,
   getTeamWorkItemExecutionInputSchema,
   listTeamWorkItemsInputSchema,
   publishTeamWorkItemInputSchema,
@@ -266,12 +268,20 @@ export const updateTeamWorkItemIpcArgumentsSchema = z.tuple([
   updateTeamWorkItemInputSchema,
 ]);
 
+export const deleteTeamWorkItemIpcArgumentsSchema = z.tuple([
+  deleteTeamWorkItemInputSchema,
+]);
+
 export const updateTeamWorkItemPermissionIpcArgumentsSchema = z.tuple([
   updateTeamWorkItemPermissionInputSchema,
 ]);
 
 export const publishTeamWorkItemIpcArgumentsSchema = z.tuple([
   publishTeamWorkItemInputSchema,
+]);
+
+export const addTeamWorkItemCommentIpcArgumentsSchema = z.tuple([
+  addTeamWorkItemCommentInputSchema,
 ]);
 
 export const requestTeamWorkItemReworkIpcArgumentsSchema = z.tuple([

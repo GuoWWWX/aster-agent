@@ -6,6 +6,7 @@ import {
   CircleDotDashed,
   ClipboardList,
   Clock3,
+  FolderKanban,
   Inbox,
   ListFilter,
   Pencil,
@@ -27,12 +28,18 @@ import {
 
 import type { TeamWorkItemPrototype, TeamWorkItemStatus } from "./team-runtime-prototype.js";
 import { canEditWorkItem, type WorkItemFilter } from "./team-work-item-lifecycle.js";
+import {
+  compareTeamWorkItems,
+  DEFAULT_TEAM_WORK_ITEM_SORT,
+  TeamWorkItemSortButton,
+  type TeamWorkItemSort,
+} from "./team-work-item-sort.js";
 import { formatTeamWorkItemTime } from "./team-work-item-time.js";
 
 export type { WorkItemFilter } from "./team-work-item-lifecycle.js";
 
 const STATUS_LABEL: Record<TeamWorkItemStatus, string> = {
-  blocked: "需要处理",
+  blocked: "待处理",
   completed: "已完成",
   executing: "执行中",
   finalizing: "收尾中",
@@ -40,7 +47,7 @@ const STATUS_LABEL: Record<TeamWorkItemStatus, string> = {
   queued: "待执行",
   reworking: "返工中",
   reviewing: "测试评审",
-  awaiting_acceptance: "待用户验收",
+  awaiting_acceptance: "待验收",
 };
 
 const PAGE_SIZE = 10;
@@ -82,17 +89,20 @@ export function WorkItemInbox({
 }): ReactElement {
   const [query, setQuery] = useState("");
   const [priorityFilter, setPriorityFilter] = useState<TeamWorkItemPrototype["priority"] | "all">("all");
+  const [sort, setSort] = useState<TeamWorkItemSort>(DEFAULT_TEAM_WORK_ITEM_SORT);
   const [sourceFilter, setSourceFilter] = useState<TeamWorkItemPrototype["source"] | "all">("all");
   const visibleItems = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
-    return items.filter((item) => {
-      if (sourceFilter !== "all" && item.source !== sourceFilter) return false;
-      if (priorityFilter !== "all" && item.priority !== priorityFilter) return false;
-      if (normalized.length === 0) return true;
-      return item.title.toLocaleLowerCase().includes(normalized)
-        || item.project.toLocaleLowerCase().includes(normalized);
-    });
-  }, [items, priorityFilter, query, sourceFilter]);
+    return items
+      .filter((item) => {
+        if (sourceFilter !== "all" && item.source !== sourceFilter) return false;
+        if (priorityFilter !== "all" && item.priority !== priorityFilter) return false;
+        if (normalized.length === 0) return true;
+        return item.title.toLocaleLowerCase().includes(normalized)
+          || item.project.toLocaleLowerCase().includes(normalized);
+      })
+      .toSorted((left, right) => compareTeamWorkItems(left, right, sort));
+  }, [items, priorityFilter, query, sort, sourceFilter]);
   const pageCount = Math.max(1, Math.ceil(visibleItems.length / PAGE_SIZE));
   const [page, setPage] = useState(1);
   const currentPage = Math.min(page, pageCount);
@@ -105,39 +115,24 @@ export function WorkItemInbox({
     event.preventDefault();
     onSaveEdit();
   };
+  const selectFilter = (nextFilter: WorkItemFilter): void => {
+    setPage(1);
+    onFilterChange(nextFilter);
+  };
   return (
     <section
-      className="team-command-panel grid min-h-0 grid-rows-[40px_auto_auto_auto_minmax(0,1fr)_auto_auto]"
+      className="team-command-panel grid min-h-0 grid-rows-[40px_auto_auto_minmax(0,1fr)_auto_auto] @max-[720px]:min-h-full"
       aria-labelledby="team-inbox-heading"
     >
       <PanelHeading id="team-inbox-heading" label="需求与任务" meta={`${queuedCount} 个待执行`} />
-      <div aria-label="任务概况" className="grid grid-cols-4 gap-[5px] border-b border-[var(--app-border)] p-[10px]">
-        <InboxMetric icon={<ClipboardList aria-hidden="true" size={16} />} label="待执行" tone="info" value={queuedCount} />
-        <InboxMetric icon={<Clock3 aria-hidden="true" size={16} />} label="处理中" tone="warning" value={processingCount} />
-        <InboxMetric icon={<CircleDotDashed aria-hidden="true" size={16} />} label="待验收" tone="success" value={acceptanceCount} />
-        <InboxMetric icon={<CheckCircle2 aria-hidden="true" size={16} />} label="已完成" tone="success" value={completedCount} />
+      <div aria-label="任务筛选" className="grid grid-cols-5 gap-[5px] border-b border-[var(--app-border)] p-[10px]" role="tablist">
+        <InboxMetric active={filter === "all"} filter="all" icon={<Inbox aria-hidden="true" size={16} />} label="全部" tone="info" value={queuedCount + processingCount + acceptanceCount + completedCount} onSelect={selectFilter} />
+        <InboxMetric active={filter === "queued"} filter="queued" icon={<ClipboardList aria-hidden="true" size={16} />} label="待执行" tone="info" value={queuedCount} onSelect={selectFilter} />
+        <InboxMetric active={filter === "processing"} filter="processing" icon={<Clock3 aria-hidden="true" size={16} />} label="处理中" tone="warning" value={processingCount} onSelect={selectFilter} />
+        <InboxMetric active={filter === "acceptance"} filter="acceptance" icon={<CircleDotDashed aria-hidden="true" size={16} />} label="待验收" tone="success" value={acceptanceCount} onSelect={selectFilter} />
+        <InboxMetric active={filter === "completed"} filter="completed" icon={<CheckCircle2 aria-hidden="true" size={16} />} label="已完成" tone="success" value={completedCount} onSelect={selectFilter} />
       </div>
-      <div className="flex min-w-0 items-center gap-[2px] overflow-x-auto border-b border-[var(--app-border)] px-[5px] py-[5px]" role="tablist" aria-label="任务筛选">
-        {([["all", "全部"], ["queued", "待执行"], ["processing", "处理中"], ["acceptance", "待验收"], ["completed", "已完成"]] as const)
-          .map(([id, label]) => (
-            <button
-              key={id}
-              aria-selected={filter === id}
-              className={filter === id
-                ? "h-[26px] shrink-0 rounded-[var(--app-radius-small)] bg-[var(--app-selection)] px-[8px] text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-selection-foreground)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
-                : "h-[26px] shrink-0 rounded-[var(--app-radius-small)] bg-transparent px-[8px] text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)] hover:text-[var(--app-foreground)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"}
-              role="tab"
-              type="button"
-              onClick={() => {
-                setPage(1);
-                onFilterChange(id);
-              }}
-            >
-              {label}
-            </button>
-          ))}
-      </div>
-      <div aria-label="任务搜索与筛选" className="grid grid-cols-[105px_minmax(0,1fr)_32px] gap-[5px] border-b border-[var(--app-border)] px-[10px] py-[7px]">
+      <div aria-label="任务搜索与筛选" className="grid grid-cols-[105px_minmax(0,1fr)_32px_32px] gap-[5px] border-b border-[var(--app-border)] px-[10px] py-[7px]">
         <Select value={sourceFilter} onValueChange={(value) => {
           setSourceFilter(value as TeamWorkItemPrototype["source"] | "all");
           setPage(1);
@@ -185,6 +180,14 @@ export function WorkItemInbox({
             <SelectItem value="low">P3 · 低</SelectItem>
           </SelectContent>
         </Select>
+        <TeamWorkItemSortButton
+          ariaLabel="排序团队任务"
+          value={sort}
+          onChange={(value) => {
+            setSort(value);
+            setPage(1);
+          }}
+        />
       </div>
       <div className="grid min-h-0 auto-rows-max content-start overflow-auto" role="listbox" aria-label="团队任务">
         {visibleItems.length === 0 ? (
@@ -214,8 +217,18 @@ export function WorkItemInbox({
                 <strong className="overflow-hidden text-[length:var(--app-font-size-body)] text-[var(--app-foreground)] text-ellipsis whitespace-nowrap">
                   {item.title}
                 </strong>
-                <span className="overflow-hidden text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)] text-ellipsis whitespace-nowrap">
-                  {item.project} · {item.source === "conversation" ? "来自对话" : "直接投递"}
+                <span className="flex min-w-0 items-center gap-[5px] text-[length:var(--app-font-size-auxiliary)]">
+                  <span
+                    className="inline-flex min-w-0 max-w-[68%] items-center gap-[3px] rounded-[var(--app-radius-small)] bg-[var(--app-status-info-bg)] px-[5px] py-[2px] text-[var(--app-status-info-fg)]"
+                    data-work-item-project="true"
+                    title={item.project}
+                  >
+                    <FolderKanban aria-hidden="true" className="shrink-0" size={11} />
+                    <span className="overflow-hidden text-ellipsis whitespace-nowrap">{item.project}</span>
+                  </span>
+                  <span className="shrink-0 text-[var(--app-muted-foreground)]">
+                    {item.source === "conversation" ? "来自对话" : "直接投递"}
+                  </span>
                 </span>
               </span>
               <span className="flex shrink-0 items-center gap-[8px] self-center whitespace-nowrap" data-work-item-meta="true">
@@ -285,24 +298,39 @@ export function WorkItemInbox({
 }
 
 function InboxMetric({
+  active,
+  filter,
   icon,
   label,
+  onSelect,
   tone,
   value,
 }: {
+  active: boolean;
+  filter: WorkItemFilter;
   icon: ReactElement;
   label: string;
+  onSelect: (filter: WorkItemFilter) => void;
   tone: "info" | "success" | "warning";
   value: number;
 }): ReactElement {
   return (
-    <div className="grid min-w-0 place-items-center gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-[4px] py-[9px]" data-metric-tone={tone}>
+    <button
+      aria-selected={active}
+      className={active
+        ? "grid min-w-0 place-items-center gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-accent)] bg-[var(--app-selection)] px-[4px] py-[9px] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
+        : "grid min-w-0 place-items-center gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-[4px] py-[9px] hover:border-[var(--app-accent)] hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"}
+      data-metric-tone={tone}
+      role="tab"
+      type="button"
+      onClick={() => onSelect(filter)}
+    >
       <div className="flex items-center justify-center gap-[6px]">
         <span className={metricIconClass(tone)}>{icon}</span>
         <strong className="text-[length:var(--app-font-size-subtitle)] leading-none text-[var(--app-foreground)]">{value}</strong>
       </div>
       <span className="overflow-hidden text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)] text-ellipsis whitespace-nowrap">{label}</span>
-    </div>
+    </button>
   );
 }
 

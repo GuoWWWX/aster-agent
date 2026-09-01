@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  addTeamWorkItemCommentInputSchema,
+  deleteTeamWorkItemInputSchema,
   getTeamWorkItemExecutionInputSchema,
   submitTeamWorkItemInputSchema,
   teamWorkItemExecutionViewSchema,
@@ -10,6 +12,19 @@ import {
 } from "./team-work-item.js";
 
 describe("Team WorkItem protocol", () => {
+  it("accepts a bounded task comment without turning it into an Agent message", () => {
+    const input = {
+      content: "补充说明：窄窗口下也要保持可用。",
+      workItemId: "00000000-0000-4000-8000-000000000009",
+    };
+
+    expect(addTeamWorkItemCommentInputSchema.parse(input)).toEqual(input);
+    expect(() => addTeamWorkItemCommentInputSchema.parse({ ...input, content: "   " }))
+      .toThrow();
+    expect(() => addTeamWorkItemCommentInputSchema.parse({ ...input, notifyAgents: true }))
+      .toThrow();
+  });
+
   it("applies safe submission defaults and rejects unknown fields", () => {
     const input = {
       projectId: "00000000-0000-4000-8000-000000000001",
@@ -68,6 +83,12 @@ describe("Team WorkItem protocol", () => {
     expect(updateTeamWorkItemInputSchema.parse(input)).toEqual(input);
     expect(() => updateTeamWorkItemInputSchema.parse({ ...input, teamId: "default-team" }))
       .toThrow();
+  });
+
+  it("deletes a WorkItem only through its identifier", () => {
+    const input = { workItemId: "00000000-0000-4000-8000-000000000009" };
+    expect(deleteTeamWorkItemInputSchema.parse(input)).toEqual(input);
+    expect(() => deleteTeamWorkItemInputSchema.parse({ ...input, hardDelete: true })).toThrow();
   });
 
   it("allows an execution permission update without widening requirement edits", () => {

@@ -1,5 +1,7 @@
 import type {
   CapabilitySet,
+  AddTeamWorkItemCommentInput,
+  DeleteTeamWorkItemInput,
   ApplicationSettings,
   BrowserConfiguration,
   ApproveToolChangeInput,
@@ -254,10 +256,12 @@ export interface AgentClient {
   removeProject(input: ProjectReferenceInput): Promise<void>;
   submitTeamWorkItem(input: SubmitTeamWorkItemInput): Promise<TeamWorkItemView>;
   updateTeamWorkItem(input: UpdateTeamWorkItemInput): Promise<TeamWorkItemView>;
+  deleteTeamWorkItem(input: DeleteTeamWorkItemInput): Promise<void>;
   updateTeamWorkItemPermission(
     input: UpdateTeamWorkItemPermissionInput,
   ): Promise<TeamWorkItemView>;
   publishTeamWorkItem(input: PublishTeamWorkItemInput): Promise<TeamWorkItemView>;
+  addTeamWorkItemComment(input: AddTeamWorkItemCommentInput): Promise<TeamWorkItemView>;
   requestTeamWorkItemRework(input: RequestTeamWorkItemReworkInput): Promise<TeamWorkItemView>;
   acceptTeamWorkItem(input: AcceptTeamWorkItemInput): Promise<TeamWorkItemView>;
   minimizeWindow(): Promise<void>;

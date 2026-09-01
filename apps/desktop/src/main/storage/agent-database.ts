@@ -5,6 +5,8 @@ import { z } from "zod";
 import {
   MAX_TEAM_COLLABORATION_OUTPUT_LENGTH,
   agentAvatarIconSchema,
+  addTeamWorkItemCommentInputSchema,
+  deleteTeamWorkItemInputSchema,
   agentDirectoryConfigurationSchema,
   contextCompressionThresholdSchema,
   conversationAgentBindingSchema,
@@ -38,6 +40,8 @@ import {
   teamInstanceViewSchema,
   conversationAttachmentSchema,
   type AcceptTeamWorkItemInput,
+  type AddTeamWorkItemCommentInput,
+  type DeleteTeamWorkItemInput,
   type AgentDirectoryConfiguration,
   type ConversationAttachment,
   type ConversationAgentMessageItem,
@@ -1933,28 +1937,84 @@ export class AgentDatabase {
   public updateTeamWorkItem(rawInput: UpdateTeamWorkItemInput): TeamWorkItemView {
     const input = updateTeamWorkItemInputSchema.parse(rawInput);
     const current = this.getTeamWorkItem(input.workItemId);
-    if (current.status !== "queued") {
-      throw new Error("Only a queued Team WorkItem can be edited before Team Lead starts it.");
-    }
     const now = new Date().toISOString();
     this.withTransaction(() => {
       const result = this.database.prepare(
         `UPDATE team_work_items
          SET title = ?, requirement = ?, updated_at = ?
-         WHERE id = ? AND status = 'queued'`,
+         WHERE id = ? AND deleted_at IS NULL`,
       ).run(input.title, input.requirement, now, input.workItemId);
       if (result.changes !== 1) {
-        throw new Error("Team WorkItem was claimed before the edit could be saved.");
+        throw new Error("Team WorkItem was deleted before the edit could be saved.");
       }
       this.appendTeamWorkItemEvent(
         current.teamId,
         input.workItemId,
         "updated",
-        "用户在 Team Lead 领取前更新了需求。",
+        current.status === "running"
+          ? "用户更新了任务标题和需求内容；补充指令将发送给当前执行。"
+          : "用户更新了任务标题和需求内容。",
         now,
       );
     });
     return this.getTeamWorkItem(input.workItemId);
+  }
+
+  public deleteTeamWorkItem(rawInput: DeleteTeamWorkItemInput): TeamWorkItemView {
+    const input = deleteTeamWorkItemInputSchema.parse(rawInput);
+    const current = this.getTeamWorkItem(input.workItemId);
+    const deletedAt = this.database.prepare(
+      "SELECT deleted_at FROM team_work_items WHERE id = ?",
+    ).get(input.workItemId) as DatabaseRow;
+    if (asNullableString(deletedAt, "deleted_at") !== null) return current;
+    const now = new Date().toISOString();
+    this.withTransaction(() => {
+      const result = this.database.prepare(
+        `UPDATE team_work_items
+         SET status = CASE
+               WHEN status IN ('waiting_user', 'completed') THEN status
+               ELSE 'cancelled'
+             END,
+             active_run_id = NULL, deleted_at = ?, updated_at = ?
+         WHERE id = ? AND deleted_at IS NULL`,
+      ).run(now, now, input.workItemId);
+      if (result.changes !== 1) throw new Error("Team WorkItem could not be deleted.");
+      this.appendTeamWorkItemEvent(
+        current.teamId,
+        input.workItemId,
+        "deleted",
+        "用户已从任务看板删除该任务；历史执行记录继续保留。",
+        now,
+      );
+    });
+    return this.getTeamWorkItem(input.workItemId);
+  }
+
+  public startTeamWorkItemGuidance(workItemId: string, runId: string): TeamWorkItemView {
+    const current = this.getTeamWorkItem(workItemId);
+    if (current.status !== "running" || current.executionConversationId === null) {
+      throw new Error("Only a running Team WorkItem can start a revision guidance Run.");
+    }
+    const now = new Date().toISOString();
+    this.withTransaction(() => {
+      const result = this.database.prepare(
+        `UPDATE team_work_items
+         SET active_run_id = ?, updated_at = ?
+         WHERE id = ? AND status = 'running' AND active_run_id IS NULL
+           AND deleted_at IS NULL`,
+      ).run(runId, now, workItemId);
+      if (result.changes !== 1) {
+        throw new Error("Team WorkItem changed before revision guidance could start.");
+      }
+      this.appendTeamWorkItemEvent(
+        current.teamId,
+        workItemId,
+        "run_started",
+        "Team Lead 正在处理用户修改后的任务内容。",
+        now,
+      );
+    });
+    return this.getTeamWorkItem(workItemId);
   }
 
   /**
@@ -2166,7 +2226,7 @@ export class AgentDatabase {
   public listTeamWorkItems(
     input: { projectId?: string | undefined; teamId?: string | undefined } = {},
   ): TeamWorkItemView[] {
-    const clauses: string[] = [];
+    const clauses: string[] = ["deleted_at IS NULL"];
     const values: string[] = [];
     if (input.teamId !== undefined) {
       clauses.push("team_id = ?");
@@ -2177,7 +2237,7 @@ export class AgentDatabase {
       values.push(input.projectId);
     }
     const rows = this.database.prepare(
-      `SELECT * FROM team_work_items${clauses.length === 0 ? "" : ` WHERE ${clauses.join(" AND ")}`}
+      `SELECT * FROM team_work_items WHERE ${clauses.join(" AND ")}
        ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
                 created_at ASC, rowid ASC`,
     ).all(...values) as DatabaseRow[];
@@ -2921,16 +2981,20 @@ export class AgentDatabase {
 
   public startTeamWorkItemRework(workItemId: string, runId: string, feedback: string): TeamWorkItemView {
     const current = this.getTeamWorkItem(workItemId);
-    if (current.status !== "waiting_user" || current.executionConversationId === null) {
-      throw new Error("Only a WorkItem waiting for user acceptance can be reworked.");
+    if (
+      (current.status !== "waiting_user" && current.status !== "completed")
+      || current.executionConversationId === null
+    ) {
+      throw new Error("Only a WorkItem waiting for acceptance or already completed can be reworked.");
     }
     const now = new Date().toISOString();
     this.withTransaction(() => {
       const result = this.database.prepare(
         `UPDATE team_work_items
          SET active_run_id = ?, status = 'running', revision = revision + 1,
-             result_summary = NULL, accepted_criteria_json = '[]', blocked_reason = NULL, updated_at = ?
-         WHERE id = ? AND status = 'waiting_user'`,
+             result_summary = NULL, accepted_criteria_json = '[]', blocked_reason = NULL,
+             completed_at = NULL, updated_at = ?
+         WHERE id = ? AND status IN ('waiting_user', 'completed')`,
       ).run(runId, now, workItemId);
       if (result.changes !== 1) throw new Error("Team WorkItem changed before rework started.");
       this.appendTeamWorkItemEvent(
@@ -2942,6 +3006,25 @@ export class AgentDatabase {
       );
     });
     return this.getTeamWorkItem(workItemId);
+  }
+
+  public addTeamWorkItemComment(rawInput: AddTeamWorkItemCommentInput): TeamWorkItemView {
+    const input = addTeamWorkItemCommentInputSchema.parse(rawInput);
+    const current = this.getTeamWorkItem(input.workItemId);
+    const now = new Date().toISOString();
+    this.withTransaction(() => {
+      this.appendTeamWorkItemEvent(
+        current.teamId,
+        input.workItemId,
+        "commented",
+        input.content,
+        now,
+      );
+      this.database.prepare(
+        "UPDATE team_work_items SET updated_at = ? WHERE id = ?",
+      ).run(now, input.workItemId);
+    });
+    return this.getTeamWorkItem(input.workItemId);
   }
 
   public acceptTeamWorkItem(input: AcceptTeamWorkItemInput): TeamWorkItemView {
@@ -8385,6 +8468,20 @@ export class AgentDatabase {
           `);
         },
         version: 18,
+      },
+      {
+        name: "team-work-item-soft-delete",
+        up: (database) => {
+          const columns = database.prepare("PRAGMA table_info(team_work_items)").all() as DatabaseRow[];
+          if (!columns.some((column) => column.name === "deleted_at")) {
+            database.exec("ALTER TABLE team_work_items ADD COLUMN deleted_at TEXT");
+          }
+          database.exec(`
+            CREATE INDEX IF NOT EXISTS team_work_items_visible_status
+              ON team_work_items(team_id, deleted_at, status, created_at);
+          `);
+        },
+        version: 19,
       },
     ]);
   }

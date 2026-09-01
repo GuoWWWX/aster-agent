@@ -283,7 +283,9 @@ export {
   permissionPolicySchema,
 } from "./application-settings.js";
 export {
+  addTeamWorkItemCommentInputSchema,
   acceptTeamWorkItemInputSchema,
+  deleteTeamWorkItemInputSchema,
   getTeamWorkItemExecutionInputSchema,
   listTeamWorkItemsInputSchema,
   publishTeamWorkItemInputSchema,
@@ -302,7 +304,9 @@ export {
   teamWorkItemViewSchema,
 } from "./team-work-item.js";
 export type {
+  AddTeamWorkItemCommentInput,
   AcceptTeamWorkItemInput,
+  DeleteTeamWorkItemInput,
   GetTeamWorkItemExecutionInput,
   ListTeamWorkItemsInput,
   PublishTeamWorkItemInput,
@@ -463,6 +467,7 @@ export type {
   TerminalShell,
 } from "./terminal.js";
 export {
+  addTeamWorkItemCommentIpcArgumentsSchema,
   acceptTeamWorkItemIpcArgumentsSchema,
   approveToolChangeIpcArgumentsSchema,
   applicationSettingsIpcArgumentsSchema,
@@ -542,6 +547,7 @@ export {
   skillDocumentReferenceIpcArgumentsSchema,
   skillDocumentSaveIpcArgumentsSchema,
   submitTeamWorkItemIpcArgumentsSchema,
+  deleteTeamWorkItemIpcArgumentsSchema,
   updateTeamWorkItemIpcArgumentsSchema,
   updateTeamWorkItemPermissionIpcArgumentsSchema,
   writeConfigurationWorkspaceFileIpcArgumentsSchema,
