@@ -31,6 +31,14 @@
 
 当前代码已经完成计划/实际关系图的生产竖切：Protocol 提供统一投影 Schema；SQLite Migration 17 新增计划、节点和路线表，并给真实 Agent 消息补充 WorkItem 归属；Team Lead 可用 `set_team_collaboration_plan` 发布完整计划修订；Main 生成计划内、计划外、跳过和已发生路线；Renderer 用一套 SVG 图元分别渲染看板微缩图、来源主对话主图、“任务与验收”嵌入图和“执行规划”完整画布。来源主对话主图以实际 TeamInstance 名称作为标题，缺失时回退到 Team 模板名称或“Agent 团队”，最大宽度为 960 px 并随可用容器收缩；另外三个入口维持原有标题与尺寸。节点复用 Conversation 上受控的 Agent 图标；非微缩卡片底部保留两行最新输出区域，持久快照只带最近 Assistant 输出的 280 字符以内尾部摘录，运行中按 Run ID 合并 `assistant.delta`。图的布局、颜色、间距和响应式使用 Tailwind 与语义 Token，Feature CSS 只保留 SVG 数据流关键帧。〔FACT｜`packages/protocol/src/team-collaboration.ts`；`apps/desktop/src/main/storage/agent-database.ts`；`apps/web/src/features/team/collaboration/collaboration-graph.tsx`〕
 
+### 0.2 任务与验收界面原型
+
+以下两张已确认原型记录“任务与验收”三栏布局及从协作图节点打开 Agent 对话的侧边栏形态；实现保留既有协作画布与交互语义，并复用应用内 Agent 图标。
+
+![任务与验收三栏布局原型](./assets/team-workspace-runtime-prototype.png)
+
+![Agent 对话侧边栏原型](./assets/team-workspace-agent-conversation-drawer-prototype.png)
+
 本批次没有实现历史时间轴、旧计划版本切换、用户拖动后的布局持久化、专用 `team.collaboration.activity` 事件和聚合投影表。当前可见图通过既有 Conversation Run 事件刷新持久投影，并直接消费 Assistant 文本增量更新卡片；已发生和计划外路线使用方向虚线表达流向，仅在发送方 Conversation 处于 `running` 时播放流动动画，发送方停止后保留虚线但立即静止，`prefers-reduced-motion` 时也停止动画。〔FACT〕
 
 ## 1. 背景与实施前基线
@@ -275,6 +283,7 @@ sequenceDiagram
 - Main 校验节点属于当前 Team/WorkItem 或是合法占位岗位，且每一条边的两端存在。
 - 当前版本中同一有向 Agent 对只允许一条业务路线；多个目的合并到同一条边的 `purpose` 列表，保证没有显式 `routeId` 的既有消息仍可确定性匹配。
 - 计划工具失败不自动伪造成功；WorkItem 可以继续执行，但图显示“计划未发布”。
+- 尚未形成计划且处于排队、阻塞、失败或取消状态时，图标题栏显示“发布处理/重新发布”；点击后通过 WorkItem 生命周期显式发起新 Run，不在 Renderer 直接改状态，也不删除旧执行历史。
 
 ### FR-02 计划版本
 

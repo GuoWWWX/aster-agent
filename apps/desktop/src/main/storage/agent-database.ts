@@ -1958,6 +1958,47 @@ export class AgentDatabase {
   }
 
   /**
+   * Requeues a terminal, non-replayable Team WorkItem only after an explicit
+   * user action. Its earlier execution remains available in history while the
+   * WorkItem releases the old execution binding for a fresh Run.
+   */
+  public publishTeamWorkItem(workItemId: string): TeamWorkItemView {
+    const current = this.getTeamWorkItem(workItemId);
+    if (current.status === "queued") return current;
+    if (
+      current.status !== "blocked"
+      && current.status !== "failed"
+      && current.status !== "cancelled"
+    ) {
+      throw new Error("Only a queued, blocked, failed, or cancelled Team WorkItem can be published.");
+    }
+    if (current.activeRunId !== null) {
+      throw new Error("The Team WorkItem still has an active Run and cannot be published again.");
+    }
+    const now = new Date().toISOString();
+    this.withTransaction(() => {
+      const result = this.database.prepare(
+        `UPDATE team_work_items
+         SET status = 'queued', execution_conversation_id = NULL, active_run_id = NULL,
+             result_summary = NULL, accepted_criteria_json = '[]', blocked_reason = NULL,
+             completed_at = NULL, revision = revision + 1, updated_at = ?
+         WHERE id = ? AND status IN ('blocked', 'failed', 'cancelled') AND active_run_id IS NULL`,
+      ).run(now, workItemId);
+      if (result.changes !== 1) {
+        throw new Error("Team WorkItem changed before it could be published.");
+      }
+      this.appendTeamWorkItemEvent(
+        current.teamId,
+        workItemId,
+        "scheduled",
+        "用户已重新发布任务，等待团队调度。",
+        now,
+      );
+    });
+    return this.getTeamWorkItem(workItemId);
+  }
+
+  /**
    * Changes the policy future Team Runs inherit without retroactively changing
    * an in-flight Run or approving an already displayed tool request.
    */

@@ -1,9 +1,8 @@
 import { CheckCircle2, ChevronRight, CircleDotDashed, ClipboardList, Clock3 } from "lucide-react";
 import type { ReactElement } from "react";
-import type { TeamCollaborationProjection } from "@agent/protocol";
 
 import type { TeamWorkItemPrototype, TeamWorkItemStatus } from "./team-runtime-prototype.js";
-import { CollaborationGraph } from "./collaboration/collaboration-graph.js";
+import { formatTeamWorkItemTime } from "./team-work-item-time.js";
 
 type WorkItemBoardColumnId = "acceptance" | "completed" | "processing" | "queued";
 
@@ -34,11 +33,9 @@ const STATUS_LABEL: Record<TeamWorkItemStatus, string> = {
 export function TeamWorkItemBoard({
   items,
   onOpen,
-  projections,
 }: {
   items: readonly TeamWorkItemPrototype[];
   onOpen: (workItemId: string) => void;
-  projections: ReadonlyMap<string, TeamCollaborationProjection>;
 }): ReactElement {
   return (
     <section className="team-workitem-board" aria-labelledby="team-workitem-board-heading">
@@ -70,14 +67,8 @@ export function TeamWorkItemBoard({
                     </span>
                     <small data-status={item.status}>{STATUS_LABEL[item.status]}</small>
                     <span>{item.project} · {item.source === "conversation" ? "来自对话" : "直接投递"}</span>
-                    {projections.get(item.id) === undefined ? null : (
-                      <CollaborationGraph
-                        projection={projections.get(item.id)!}
-                        variant="mini"
-                      />
-                    )}
                     <p>{item.nextAction}</p>
-                    <time>{item.createdAt}</time>
+                    <time>{formatTeamWorkItemTime(item.createdAt)}</time>
                   </button>
                 ))}
               </div>

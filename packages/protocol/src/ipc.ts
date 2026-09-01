@@ -83,6 +83,7 @@ import {
   acceptTeamWorkItemInputSchema,
   getTeamWorkItemExecutionInputSchema,
   listTeamWorkItemsInputSchema,
+  publishTeamWorkItemInputSchema,
   requestTeamWorkItemReworkInputSchema,
   submitTeamWorkItemInputSchema,
   updateTeamWorkItemInputSchema,
@@ -267,6 +268,10 @@ export const updateTeamWorkItemIpcArgumentsSchema = z.tuple([
 
 export const updateTeamWorkItemPermissionIpcArgumentsSchema = z.tuple([
   updateTeamWorkItemPermissionInputSchema,
+]);
+
+export const publishTeamWorkItemIpcArgumentsSchema = z.tuple([
+  publishTeamWorkItemInputSchema,
 ]);
 
 export const requestTeamWorkItemReworkIpcArgumentsSchema = z.tuple([

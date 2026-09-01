@@ -67,6 +67,7 @@ import type {
   GetTeamWorkItemExecutionInput,
   GetTeamCollaborationProjectionInput,
   ListTeamWorkItemsInput,
+  PublishTeamWorkItemInput,
   RequestTeamWorkItemReworkInput,
   SubmitTeamWorkItemInput,
   UpdateTeamWorkItemInput,
@@ -266,6 +267,12 @@ export function createDesktopBridge(): DesktopBridge {
     updateTeamWorkItemPermission(input: UpdateTeamWorkItemPermissionInput) {
       return invoke<BridgeResult<"updateTeamWorkItemPermission">>(
         IPC_CHANNELS.teamWorkItemUpdatePermission,
+        input,
+      );
+    },
+    publishTeamWorkItem(input: PublishTeamWorkItemInput) {
+      return invoke<BridgeResult<"publishTeamWorkItem">>(
+        IPC_CHANNELS.teamWorkItemPublish,
         input,
       );
     },

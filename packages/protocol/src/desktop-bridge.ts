@@ -113,6 +113,7 @@ import type {
 import type {
   GetTeamWorkItemExecutionInput,
   ListTeamWorkItemsInput,
+  PublishTeamWorkItemInput,
   RequestTeamWorkItemReworkInput,
   SubmitTeamWorkItemInput,
   UpdateTeamWorkItemInput,
@@ -193,6 +194,7 @@ export interface DesktopBridge {
   updateTeamWorkItemPermission(
     input: UpdateTeamWorkItemPermissionInput,
   ): Promise<TeamWorkItemView>;
+  publishTeamWorkItem(input: PublishTeamWorkItemInput): Promise<TeamWorkItemView>;
   requestTeamWorkItemRework(input: RequestTeamWorkItemReworkInput): Promise<TeamWorkItemView>;
   acceptTeamWorkItem(input: AcceptTeamWorkItemInput): Promise<TeamWorkItemView>;
   listPlugins(): Promise<PluginCatalogEntry[]>;

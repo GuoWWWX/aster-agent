@@ -426,8 +426,18 @@ export function App(): ReactElement {
     conversation: ProjectSession,
     sourceConversationId?: string,
   ): void => {
-    openTeamMemberSession(conversation, sourceConversationId);
-  }, [openTeamMemberSession]);
+    const ownerConversationId = sourceConversationId
+      ?? sourceConversationIdForMember(conversation, projectSessions.sessions)
+      ?? conversation.id;
+    if (conversation.projectId !== null) projectTree.selectProject(conversation.projectId);
+    projectSessions.selectSession(ownerConversationId);
+    setFilePanelOpen(true);
+    setTeamMemberOpenRequest((current) => ({
+      conversation,
+      requestId: (current?.requestId ?? 0) + 1,
+      sourceConversationId: ownerConversationId,
+    }));
+  }, [projectSessions, projectTree, setFilePanelOpen]);
 
   const navigateToTeamConversation = useCallback((conversationId: string): void => {
     const session = projectSessions.sessions.find((candidate) => candidate.id === conversationId);

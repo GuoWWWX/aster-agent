@@ -157,6 +157,8 @@ export const teamWorkItemReferenceInputSchema = z.object({
 
 export const getTeamWorkItemExecutionInputSchema = teamWorkItemReferenceInputSchema;
 
+export const publishTeamWorkItemInputSchema = teamWorkItemReferenceInputSchema;
+
 export const acceptTeamWorkItemInputSchema = z.object({
   acceptedCriteria: z.array(z.string().trim().min(1).max(1_000)).max(20),
   workItemId: workItemIdSchema,
@@ -187,5 +189,6 @@ export type UpdateTeamWorkItemPermissionInput = z.infer<
 >;
 export type TeamWorkItemReferenceInput = z.infer<typeof teamWorkItemReferenceInputSchema>;
 export type GetTeamWorkItemExecutionInput = z.infer<typeof getTeamWorkItemExecutionInputSchema>;
+export type PublishTeamWorkItemInput = z.infer<typeof publishTeamWorkItemInputSchema>;
 export type AcceptTeamWorkItemInput = z.infer<typeof acceptTeamWorkItemInputSchema>;
 export type RequestTeamWorkItemReworkInput = z.infer<typeof requestTeamWorkItemReworkInputSchema>;

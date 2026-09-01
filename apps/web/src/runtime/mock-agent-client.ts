@@ -95,6 +95,7 @@ import {
   type WriteConfigurationWorkspaceFileInput,
   type WriteProjectFileInput,
   type ListTeamWorkItemsInput,
+  type PublishTeamWorkItemInput,
   type ListTeamInstancesInput,
   type RequestTeamWorkItemReworkInput,
   type SubmitTeamWorkItemInput,
@@ -1552,6 +1553,41 @@ export class MockAgentClient implements AgentClient {
       id: this.createIdentifier(),
       sequence: nextTeamEventSequence,
       type: "updated",
+    });
+    return Promise.resolve(structuredClone(item));
+  }
+
+  public publishTeamWorkItem(input: PublishTeamWorkItemInput): Promise<TeamWorkItemView> {
+    const item = this.teamWorkItems.find((candidate) => candidate.id === input.workItemId);
+    if (
+      item === undefined
+      || (item.status !== "queued"
+        && item.status !== "blocked"
+        && item.status !== "failed"
+        && item.status !== "cancelled")
+    ) {
+      return Promise.reject(new Error("The mock Team WorkItem cannot be published."));
+    }
+    if (item.status === "queued") return Promise.resolve(structuredClone(item));
+    item.status = "queued";
+    item.executionConversationId = null;
+    item.activeRunId = null;
+    item.resultSummary = null;
+    item.acceptedCriteria = [];
+    item.blockedReason = null;
+    item.completedAt = null;
+    item.revision += 1;
+    item.updatedAt = new Date().toISOString();
+    const nextTeamEventSequence = this.teamWorkItems
+      .filter((candidate) => candidate.teamId === item.teamId)
+      .flatMap((candidate) => candidate.events)
+      .reduce((sequence, event) => Math.max(sequence, event.sequence), 0) + 1;
+    item.events.push({
+      createdAt: item.updatedAt,
+      detail: "浏览器模拟用户已重新发布任务。",
+      id: this.createIdentifier(),
+      sequence: nextTeamEventSequence,
+      type: "scheduled",
     });
     return Promise.resolve(structuredClone(item));
   }

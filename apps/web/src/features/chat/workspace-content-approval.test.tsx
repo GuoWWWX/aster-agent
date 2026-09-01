@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_AGENT_DIRECTORY_CONFIGURATION,
   type ConversationAttachment,
+  type ConversationAgentMessageItem,
   type ConversationTaskList,
   type ConversationToolItem,
 } from "@agent/protocol";
@@ -58,6 +59,75 @@ afterEach(() => {
 });
 
 describe("Subagent approval queue", () => {
+  it("shows the configured Agent identity above the message bubble", async () => {
+    const configuredAgent = {
+      ...DEFAULT_AGENT_DIRECTORY_CONFIGURATION.agents[0]!,
+      avatar: { icon: "hammer", kind: "icon" } as const,
+      id: "00000000-0000-4000-8000-000000000010",
+      name: "Implementer",
+    };
+    useAgentDirectoryStore.getState().hydrate({
+      ...structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION),
+      agents: [configuredAgent],
+    });
+    const parent = session({ id: PARENT_ID, title: "Team Lead · 默认团队" });
+    const worker = session({
+      agentId: configuredAgent.id,
+      avatarIcon: "bot",
+      id: CHILD_ID,
+      parentConversationId: PARENT_ID,
+      teamId: "default-team",
+      title: "Implementer · 默认团队",
+    });
+    const message: ConversationAgentMessageItem = {
+      content: "你好，团队测试通过。",
+      conversationId: PARENT_ID,
+      createdAt: "2026-08-30T00:00:00.000Z",
+      id: TOOL_ID,
+      kind: "agent_message",
+      messageType: "agent_result",
+      readAt: "2026-08-30T00:00:01.000Z",
+      replyInstruction: null,
+      runId: RUN_ID,
+      senderConversationId: CHILD_ID,
+      senderTitle: worker.title,
+      status: "read",
+      taskId: null,
+    };
+    const client = new MockAgentClient();
+    vi.spyOn(client, "listConversationTimeline").mockImplementation(({ conversationId }) =>
+      Promise.resolve(conversationId === PARENT_ID ? [message] : [])
+    );
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace
+            agentClient={client}
+            project={null}
+            relatedSessions={[parent]}
+            session={parent}
+          />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+
+    const source = container.querySelector<HTMLButtonElement>(
+      '[aria-label="打开来源对话 Implementer · 默认团队"]',
+    );
+    expect(source).not.toBeNull();
+    expect(source?.closest(".chat-message")).toBeNull();
+    expect(source?.nextElementSibling?.matches(".chat-message")).toBe(true);
+    expect(source?.querySelector(".agent-profile-avatar .lucide-hammer")).not.toBeNull();
+    expect(source?.textContent).toBe("Implementer · 默认团队");
+    expect(source?.textContent).not.toContain("Agent 处理结果");
+    expect(source?.textContent).not.toContain("来自");
+  });
+
   it("adds the same removable attachment drafts from file selection and clipboard paste", async () => {
     const createObjectUrl = vi.spyOn(URL, "createObjectURL")
       .mockReturnValue("blob:clipboard-image-preview");

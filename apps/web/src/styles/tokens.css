@@ -28,6 +28,16 @@
   --app-radius-pill: 999px;
   --app-selection: rgba(191, 219, 254, 0.55);
   --app-selection-foreground: #16395f;
+  --app-status-danger-bg: #fef2f2;
+  --app-status-danger-fg: #b91c1c;
+  --app-status-info-bg: #eff6ff;
+  --app-status-info-fg: #1d4ed8;
+  --app-status-neutral-bg: #f1f5f9;
+  --app-status-neutral-fg: #475569;
+  --app-status-success-bg: #f0fdf4;
+  --app-status-success-fg: #15803d;
+  --app-status-warning-bg: #fff7ed;
+  --app-status-warning-fg: #c2410c;
   --app-titlebar: rgba(255, 255, 255, 0.72);
 }
 
@@ -48,5 +58,15 @@
   --app-panel-subtle: #282828;
   --app-selection: #2a3b56;
   --app-selection-foreground: #d7e5ff;
+  --app-status-danger-bg: rgba(127, 29, 29, 0.32);
+  --app-status-danger-fg: #fca5a5;
+  --app-status-info-bg: rgba(30, 64, 175, 0.3);
+  --app-status-info-fg: #93c5fd;
+  --app-status-neutral-bg: #303236;
+  --app-status-neutral-fg: #cbd5e1;
+  --app-status-success-bg: rgba(20, 83, 45, 0.34);
+  --app-status-success-fg: #86efac;
+  --app-status-warning-bg: rgba(124, 45, 18, 0.34);
+  --app-status-warning-fg: #fdba74;
   --app-titlebar: rgba(32, 32, 32, 0.82);
 }

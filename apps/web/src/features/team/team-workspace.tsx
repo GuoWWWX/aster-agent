@@ -3,6 +3,7 @@ import {
   LayoutDashboard,
   MessageSquareText,
   Radio,
+  Send,
   Sparkles,
   UsersRound,
 } from "lucide-react";
@@ -26,6 +27,7 @@ import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import type { ProjectSession } from "../projects/project-session-model.js";
 import { TeamOperations } from "./team-operations-panel.js";
+import { AgentAvatar } from "./agent-avatar.js";
 import type { TeamWorkItemPrototype } from "./team-runtime-prototype.js";
 import {
   matchesWorkItemFilter,
@@ -35,6 +37,7 @@ import {
   type WorkItemFilter,
 } from "./team-work-item-inbox.js";
 import { WorkItemLifecyclePanel } from "./team-work-item-lifecycle-panel.js";
+import { formatTeamWorkItemTime } from "./team-work-item-time.js";
 import { TeamWorkItemBoard } from "./team-work-item-board.js";
 import {
   applyCollaborationAssistantDelta,
@@ -95,6 +98,7 @@ export function TeamWorkspace({
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [publishingWorkItemId, setPublishingWorkItemId] = useState<string | null>(null);
   const [view, setView] = useState<TeamWorkspaceView>("board");
   const selectedTeam = teams.find((team) => team.id === selectedTeamId) ?? teams[0];
   const workItems = useMemo(
@@ -154,6 +158,7 @@ export function TeamWorkspace({
       setDraft("");
       setError(null);
       setIsSubmitting(false);
+      setPublishingWorkItemId(null);
     });
     return () => {
       cancelled = true;
@@ -360,6 +365,23 @@ export function TeamWorkspace({
     }
   };
 
+  const publishWorkItem = async (): Promise<void> => {
+    const workItemId = selectedRuntimeWorkItem?.id;
+    if (workItemId === undefined || publishingWorkItemId !== null) return;
+    setPublishingWorkItemId(workItemId);
+    try {
+      const updated = await agentClient.publishTeamWorkItem({ workItemId });
+      setRuntimeItems((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setError(null);
+      await loadWorkItems();
+      await loadExecution();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "任务发布失败。");
+    } finally {
+      setPublishingWorkItemId((current) => current === workItemId ? null : current);
+    }
+  };
+
   const acceptWorkItem = async (acceptedCriteria: readonly string[]): Promise<void> => {
     const workItemId = selectedWorkItem?.id;
     if (workItemId === undefined) return;
@@ -422,7 +444,6 @@ export function TeamWorkspace({
         <div className="team-command-layout team-command-layout--board">
           <TeamWorkItemBoard
             items={workItems}
-            projections={collaborationProjections}
             onOpen={(workItemId) => {
               setSelectedWorkItemId(workItemId);
               setFilter("all");
@@ -488,28 +509,34 @@ export function TeamWorkspace({
           ) : selectedRuntimeWorkItem === null ? (
             <main className="team-command-panel team-runtime-empty">无法加载真实执行状态</main>
           ) : (
-            <div className={isSelectedWorkItemLifecycle
-              ? "grid min-h-0 grid-rows-[minmax(180px,0.34fr)_minmax(0,0.66fr)] gap-[5px]"
-              : "grid min-h-0"}
+            <div
+              aria-label="任务详情"
+              className="relative grid min-h-0 grid-rows-[145px_minmax(220px,280px)_minmax(320px,1fr)] gap-[5px] overflow-hidden"
+              data-team-runtime-layout="details"
             >
               <TeamWorkItemStatusPanel
                 execution={selectedExecution}
-                isLifecycle={isSelectedWorkItemLifecycle}
+                isPublishing={publishingWorkItemId === selectedRuntimeWorkItem.id}
                 item={selectedRuntimeWorkItem}
+                onPublish={() => void publishWorkItem()}
                 projection={selectedCollaborationProjection}
                 onOpenConversation={onOpenConversation}
                 {...(onNavigateToConversation === undefined ? {} : { onNavigateToConversation })}
               />
-              {isSelectedWorkItemLifecycle ? (
-              <WorkItemLifecyclePanel
-                key={`${selectedWorkItem.id}-${selectedWorkItem.status}-${selectedWorkItem.acceptanceRound}`}
-                item={selectedWorkItem}
-                onApprove={(_action, acceptedCriteria) => void acceptWorkItem(acceptedCriteria)}
-                onClaim={() => void loadWorkItems()}
-                onFinishFinalization={() => void loadWorkItems()}
-                onRequestRework={(request) => void requestRework(request)}
-              />
-              ) : null}
+              <div className="grid min-h-0" data-team-runtime-card="progress">
+                {isSelectedWorkItemLifecycle ? (
+                  <WorkItemLifecyclePanel
+                    key={`${selectedWorkItem.id}-${selectedWorkItem.status}-${selectedWorkItem.acceptanceRound}`}
+                    item={selectedWorkItem}
+                    onApprove={(_action, acceptedCriteria) => void acceptWorkItem(acceptedCriteria)}
+                    onClaim={() => void loadWorkItems()}
+                    onFinishFinalization={() => void loadWorkItems()}
+                    onRequestRework={(request) => void requestRework(request)}
+                  />
+                ) : (
+                  <ExecutionProgressPanel execution={selectedExecution} item={selectedRuntimeWorkItem} />
+                )}
+              </div>
             </div>
           )}
           <TeamOperations
@@ -537,7 +564,7 @@ function toPrototypeWorkItem(
       : item.acceptanceCriteria,
     acceptedCriteria: item.acceptedCriteria,
     acceptanceRound: item.revision,
-    createdAt: formatWorkItemTime(item.createdAt),
+    createdAt: item.createdAt,
     delivery: item.resultSummary === null ? null : {
       changedFiles: 0,
       commits: 0,
@@ -550,7 +577,7 @@ function toPrototypeWorkItem(
         : "Team Lead",
       detail: event.detail,
       id: event.id,
-      time: formatWorkItemTime(event.createdAt),
+      time: formatTeamWorkItemTime(event.createdAt),
       type: event.type === "accepted" || event.type === "rework_requested"
         ? "review"
         : event.type === "failed" || event.type === "blocked"
@@ -590,130 +617,149 @@ function toPrototypeWorkItem(
 
 function TeamWorkItemStatusPanel({
   execution,
-  isLifecycle,
+  isPublishing,
   item,
   onNavigateToConversation,
   projection,
   onOpenConversation,
+  onPublish,
 }: {
   execution: TeamWorkItemExecutionView | null;
-  isLifecycle: boolean;
+  isPublishing: boolean;
   item: TeamWorkItemView;
   onNavigateToConversation?: (conversationId: string) => void;
   projection: TeamCollaborationProjection | null;
   onOpenConversation: (conversation: ProjectSession, sourceConversationId?: string) => void;
+  onPublish: () => void;
 }): ReactElement {
   const lead = execution?.workItemId === item.id
     ? execution.agents.find((member) => member.depth === 0) ?? null
     : null;
+  const [isRequirementOpen, setIsRequirementOpen] = useState(false);
   const status = teamWorkItemStatusLabel(item.status);
-  const activeMemberCount = execution?.workItemId === item.id
-    ? execution.agents.filter((member) => member.conversation.activeRunId !== null).length
-    : 0;
-  const showResultSummary = item.blockedReason !== null
-    || (item.resultSummary !== null && !isLifecycle);
+  const priority = workItemPriorityLabel(item.priority);
+  const canPublish = isPublishableWorkItemStatus(item.status);
+  const publishAction = canPublish ? (
+    <button
+      className="ml-[5px] inline-flex h-[26px] shrink-0 items-center gap-[4px] rounded-[var(--app-radius-small)] bg-[var(--app-accent)] px-[8px] text-[length:var(--app-font-size-control)] font-semibold text-white shadow-sm hover:brightness-95 disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
+      disabled={isPublishing}
+      type="button"
+      onClick={onPublish}
+    >
+      <Send aria-hidden="true" className={isPublishing ? "animate-pulse" : undefined} size={13} />
+      {isPublishing ? "发布中" : item.status === "queued" ? "发布处理" : "重新发布"}
+    </button>
+  ) : null;
 
   return (
-    <main className="team-command-panel flex min-h-0 flex-col" aria-labelledby="team-work-item-status-heading">
-      <header className="team-command-panel__heading">
-        <h2 id="team-work-item-status-heading">当前任务状态</h2>
-        <span>{status}</span>
-      </header>
-      <div className="grid min-h-0 content-start gap-[5px] overflow-auto p-[10px]">
-        <section className="grid gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] p-[10px]">
-          <strong className="min-w-0 overflow-hidden text-[length:var(--app-font-size-subtitle)] text-[var(--app-foreground)] text-ellipsis whitespace-nowrap">
-            {item.title}
-          </strong>
-          <p className="m-0 text-[length:var(--app-font-size-body)] leading-[1.55] text-[var(--app-muted-foreground)]">
-            {item.requirement}
-          </p>
-        </section>
-        <section className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] p-[10px]">
-          <MessageSquareText aria-hidden="true" className="text-[var(--app-accent)]" size={17} />
-          <div className="grid min-w-0 gap-[2px]">
-            <strong className="overflow-hidden text-[length:var(--app-font-size-body)] text-[var(--app-foreground)] text-ellipsis whitespace-nowrap">
-              {lead === null ? "等待 Team Lead 创建执行对话" : `${lead.agent?.name ?? lead.conversation.title} 主对话`}
-            </strong>
-            <span className="overflow-hidden text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)] text-ellipsis whitespace-nowrap">
-              {lead === null
-                ? "任务被领取后，会在正常项目对话列表中出现。"
-                : "成员 Agent 位于该对话节点下方；在正常对话区查看完整过程。"}
-            </span>
+    <>
+      <section
+        aria-labelledby="team-work-item-requirement-heading"
+        className="team-command-panel grid min-h-0 grid-rows-[40px_minmax(0,1fr)]"
+        data-team-runtime-card="requirement"
+      >
+        <header className="team-command-panel__heading">
+          <h2 id="team-work-item-requirement-heading">用户需求</h2>
+          <div className="flex min-w-0 items-center gap-[5px]">
+            <span className="rounded-[var(--app-radius-small)] bg-[var(--app-selection)] px-[5px] py-[2px] font-semibold text-[var(--app-selection-foreground)]">{status}</span>
+            <span className="rounded-[var(--app-radius-small)] border border-[var(--app-border)] bg-[var(--app-panel)] px-[5px] py-[2px] font-semibold text-[var(--app-foreground)]">{priority}</span>
+            <time className="truncate text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">创建于 {formatTeamWorkItemTime(item.createdAt)}</time>
           </div>
-          <button
-            className="inline-flex h-[30px] items-center gap-[4px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-[8px] text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-foreground)] hover:bg-[var(--app-hover)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
-            disabled={lead === null}
-            type="button"
-            onClick={() => lead === null
-              ? undefined
-              : onOpenConversation(toProjectSession(lead.conversation), item.sourceConversationId ?? undefined)}
-          >
-            打开 Team Lead 对话
-          </button>
-        </section>
-        {projection === null ? null : (
+        </header>
+        <div aria-label="用户需求" className="grid min-h-0 grid-rows-[32px_minmax(0,1fr)] gap-[5px] px-[10px] py-[8px]">
+          <div className="flex min-w-0 items-center justify-between border-b border-[var(--app-border)] pb-[5px]">
+            <span className="flex min-w-0 items-center gap-[5px] text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">
+              <span data-team-lead-avatar="true"><AgentAvatar avatar={{ icon: lead?.conversation.avatarIcon ?? "sparkles", kind: "icon" }} size="compact" /></span>
+              <span className="truncate">Team Lead 主对话：{lead?.agent?.name ?? "等待创建"}</span>
+            </span>
+            <div className="flex shrink-0 items-center gap-[5px]">
+              <button className="inline-flex h-[28px] items-center rounded-[var(--app-radius)] px-[8px] text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-accent)] hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1" type="button" onClick={() => setIsRequirementOpen(true)}>查看完整需求</button>
+              <button aria-label={lead === null ? "等待 Team Lead 创建执行对话" : "打开 Team Lead 对话"} className="inline-flex h-[28px] items-center gap-[4px] rounded-[var(--app-radius)] border border-[var(--app-accent)] bg-[var(--app-panel)] px-[8px] text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-accent)] hover:bg-[var(--app-hover)] disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1" disabled={lead === null} type="button" onClick={() => lead === null ? undefined : onOpenConversation(toProjectSession(lead.conversation), item.sourceConversationId ?? undefined)}>
+                <MessageSquareText aria-hidden="true" size={14} />打开对话
+              </button>
+            </div>
+          </div>
+          <p className="m-0 line-clamp-2 self-start text-[length:var(--app-font-size-body)] leading-[1.5] font-medium text-[var(--app-foreground)]" title={item.requirement}>{item.requirement}</p>
+        </div>
+      </section>
+      <div aria-label="协作与执行" className="grid min-h-0" data-team-runtime-card="collaboration">
+        {projection === null ? (
+          <div className="team-command-panel grid min-h-0 grid-rows-[38px_minmax(0,1fr)] overflow-hidden">
+            <header className="flex min-w-0 items-center justify-between border-b border-[var(--app-border)] px-[10px]">
+              <strong className="text-[length:var(--app-font-size-body)] text-[var(--app-foreground)]">协作计划与通信</strong>
+              <div className="flex items-center text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
+                <span>尚未发布计划 · 0 条消息</span>
+                {publishAction}
+              </div>
+            </header>
+            <div className="team-runtime-empty">Team Lead 领取任务后，这里会显示计划路线和真实通信。</div>
+          </div>
+        ) : (
           <CollaborationGraph
+            headerAction={publishAction}
             projection={projection}
-            title="Agent 协作计划与实时通信"
+            title="协作计划与通信"
             variant="embedded"
             onOpenConversation={(conversationId) => {
-              const conversation = execution?.agents.find(
-                (participant) => participant.conversation.id === conversationId,
-              )?.conversation;
-              if (conversation !== undefined) {
-                onOpenConversation(
-                  toProjectSession(conversation),
-                  item.sourceConversationId ?? undefined,
-                );
-              }
+              const conversation = execution?.agents.find((participant) => participant.conversation.id === conversationId)?.conversation;
+              if (conversation !== undefined) onOpenConversation(toProjectSession(conversation), item.sourceConversationId ?? undefined);
             }}
             {...(onNavigateToConversation === undefined ? {} : { onNavigateToConversation })}
           />
         )}
-        <section className="grid gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] p-[10px]">
-          <div className="flex items-center justify-between gap-[5px]">
-            <strong className="text-[length:var(--app-font-size-body)] text-[var(--app-foreground)]">
-              执行进度
-            </strong>
-            <span className="text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
-              {execution === null ? "等待执行谱系" : `${activeMemberCount}/${execution.agents.length} 个成员运行中`}
-            </span>
-          </div>
-          {item.tasks.length === 0 ? (
-            <p className="m-0 text-[length:var(--app-font-size-auxiliary)] leading-[1.5] text-[var(--app-muted-foreground)]">
-              Team Lead 正在理解需求、拆分任务或分派成员；产生计划后会显示在这里。
-            </p>
-          ) : (
-            <ol className="m-0 grid list-none gap-[5px] p-0">
-              {item.tasks.map((task, index) => (
-                <li
-                  key={task.id}
-                  className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[5px] rounded-[var(--app-radius-small)] bg-[var(--app-panel-subtle)] px-[8px] py-[6px]"
-                >
-                  <span className="grid h-[18px] w-[18px] place-items-center rounded-full border border-[var(--app-border)] text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">
-                    {index + 1}
-                  </span>
-                  <span className="min-w-0 overflow-hidden text-[length:var(--app-font-size-auxiliary)] text-[var(--app-foreground)] text-ellipsis whitespace-nowrap">
-                    {task.title}
-                  </span>
-                  <span className="text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">
-                    {teamTaskStatusLabel(task.status)}
-                  </span>
-                </li>
-              ))}
-            </ol>
-          )}
-        </section>
-        {showResultSummary ? (
-          <section className="grid gap-[3px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] p-[10px]">
-            <strong className="text-[length:var(--app-font-size-body)] text-[var(--app-foreground)]">
-              {item.blockedReason === null ? "交付摘要" : "需要处理"}
-            </strong>
-            <p className="m-0 text-[length:var(--app-font-size-auxiliary)] leading-[1.5] text-[var(--app-muted-foreground)]">
-              {item.blockedReason ?? item.resultSummary}
-            </p>
+      </div>
+      {isRequirementOpen ? (
+        <div className="absolute inset-0 z-30 grid place-items-center bg-black/20 p-[20px] backdrop-blur-[1px]">
+          <button aria-label="关闭完整用户需求" className="absolute inset-0 cursor-default" type="button" onClick={() => setIsRequirementOpen(false)} />
+          <section aria-label="完整用户需求" aria-modal="true" className="relative z-10 grid max-h-[80%] w-[min(540px,90%)] grid-rows-[40px_minmax(0,1fr)] overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] shadow-xl" role="dialog">
+            <header className="flex items-center justify-between border-b border-[var(--app-border)] px-[10px]">
+              <strong className="text-[length:var(--app-font-size-body)] text-[var(--app-foreground)]">用户需求</strong>
+              <button aria-label="关闭完整用户需求" className="h-[28px] rounded-[var(--app-radius-small)] px-[8px] text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)]" type="button" onClick={() => setIsRequirementOpen(false)}>关闭</button>
+            </header>
+            <p className="m-0 overflow-auto whitespace-pre-wrap p-[12px] text-[length:var(--app-font-size-body)] leading-[1.6] text-[var(--app-foreground)]">{item.requirement}</p>
           </section>
-        ) : null}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function ExecutionProgressPanel({
+  execution,
+  item,
+}: {
+  execution: TeamWorkItemExecutionView | null;
+  item: TeamWorkItemView;
+}): ReactElement {
+  const activeMemberCount = execution?.workItemId === item.id
+    ? execution.agents.filter((member) => member.conversation.activeRunId !== null).length
+    : 0;
+  const summary = item.blockedReason ?? item.resultSummary;
+
+  return (
+    <main className="team-command-panel grid min-h-0 grid-rows-[40px_minmax(0,1fr)]" aria-labelledby="team-execution-progress-heading">
+      <header className="team-command-panel__heading">
+        <h2 id="team-execution-progress-heading">执行进度</h2>
+        <span>{execution === null ? "等待执行谱系" : `${activeMemberCount}/${execution.agents.length} 个成员运行中`}</span>
+      </header>
+      <div className="grid min-h-0 content-start gap-[10px] overflow-auto p-[10px]">
+        {summary === null ? null : (
+          <section className="grid gap-[3px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] px-[10px] py-[8px]">
+            <strong className={item.blockedReason === null ? "text-[var(--app-foreground)]" : "text-[var(--app-destructive)]"}>{item.blockedReason === null ? "阶段结果" : "需要处理"}</strong>
+            <p className="m-0 line-clamp-3 text-[length:var(--app-font-size-auxiliary)] leading-[1.5] text-[var(--app-muted-foreground)]">{summary}</p>
+          </section>
+        )}
+        <ol className="m-0 grid list-none gap-[5px] p-0">
+          {item.tasks.length === 0 ? (
+            <li className="text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">Team Lead 正在理解需求、拆分任务或分派成员。</li>
+          ) : item.tasks.map((task, index) => (
+            <li key={task.id} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[8px] rounded-[var(--app-radius-small)] border border-[var(--app-border)] px-[8px] py-[7px]">
+              <span className="grid h-[20px] w-[20px] place-items-center rounded-full bg-[var(--app-panel-subtle)] text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">{index + 1}</span>
+              <span className="truncate text-[length:var(--app-font-size-auxiliary)] text-[var(--app-foreground)]">{task.title}</span>
+              <span className="text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">{teamTaskStatusLabel(task.status)}</span>
+            </li>
+          ))}
+        </ol>
       </div>
     </main>
   );
@@ -739,6 +785,13 @@ function nextAction(item: TeamWorkItemView): string {
   return "团队正在执行、验证并整理交付结果。";
 }
 
+function isPublishableWorkItemStatus(status: TeamWorkItemView["status"]): boolean {
+  return status === "queued"
+    || status === "blocked"
+    || status === "failed"
+    || status === "cancelled";
+}
+
 function teamWorkItemStatusLabel(status: TeamWorkItemView["status"]): string {
   if (status === "queued") return "等待调度";
   if (status === "triaging" || status === "planned") return "方案整理中";
@@ -749,16 +802,18 @@ function teamWorkItemStatusLabel(status: TeamWorkItemView["status"]): string {
   return "需要处理";
 }
 
+function workItemPriorityLabel(priority: TeamWorkItemView["priority"]): "P1" | "P2" | "P3" {
+  if (priority === "high") return "P1";
+  if (priority === "normal") return "P2";
+  return "P3";
+}
+
 function teamTaskStatusLabel(status: TeamWorkItemView["tasks"][number]["status"]): string {
   if (status === "pending") return "待处理";
   if (status === "running") return "处理中";
   if (status === "completed") return "已完成";
   if (status === "blocked") return "已阻塞";
   return "失败";
-}
-
-function formatWorkItemTime(value: string): string {
-  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
 
 function workItemTitleFromRequirement(requirement: string): string {

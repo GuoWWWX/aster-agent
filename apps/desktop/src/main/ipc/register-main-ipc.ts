@@ -83,6 +83,7 @@ import {
   projectPreviewImageSchema,
   projectReferenceIpcArgumentsSchema,
   projectSummarySchema,
+  publishTeamWorkItemIpcArgumentsSchema,
   readProjectFileIpcArgumentsSchema,
   readProjectPreviewImageIpcArgumentsSchema,
   readConfigurationWorkspaceFileIpcArgumentsSchema,
@@ -988,6 +989,18 @@ export function registerMainIpcHandlers(
       getTrustedWindow(event, getMainWindow);
       const [input] = updateTeamWorkItemPermissionIpcArgumentsSchema.parse(args);
       return teamWorkItemViewSchema.parse(teamWorkItems.updatePermission(input));
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamWorkItemPublish,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = publishTeamWorkItemIpcArgumentsSchema.parse(args);
+      return teamWorkItemViewSchema.parse(
+        teamWorkItems.publish(input, (runEvent) =>
+          sendConversationRunEvent(getMainWindow, runEvent)),
+      );
     },
   );
 

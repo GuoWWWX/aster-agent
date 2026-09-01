@@ -784,6 +784,69 @@ describe("AgentDatabase", () => {
     reopened.close();
   });
 
+  it("requeues a blocked Team WorkItem only after explicit publication and keeps its history", () => {
+    const database = new AgentDatabase(":memory:");
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = {
+      id: "00000000-0000-4000-8000-000000000093",
+      isPinned: false,
+      name: "Republish Team fixture",
+      rootPath: "D:\\workspace\\republish-team",
+    };
+    const modelSelection = {
+      modelId: "deepseek-v4-flash",
+      providerId: "00000000-0000-4000-8000-000000000094",
+      reasoning: null,
+    };
+    database.saveProject(project);
+    const workItem = database.createTeamWorkItem({
+      acceptanceCriteria: [],
+      modelSelection,
+      permissionMode: "full_access",
+      priority: "normal",
+      projectId: project.id,
+      requirement: "验证用户能够重新发布已阻塞任务。",
+      teamId: "default-team",
+      title: "重新发布阻塞任务",
+    }, modelSelection);
+    const root = database.createConversation(project.id, {
+      modelSelection,
+      teamId: "default-team",
+      threadKind: "team_lead",
+    });
+    database.reserveTeamWorkItemExecution(workItem.id, root.id);
+    const run = database.createRunWithUserMessage(root.id, "开始执行", modelSelection.modelId);
+    database.startTeamWorkItem(workItem.id, root.id, run.runId);
+    database.finishRun(run.runId, "failed", "connection closed");
+    const blocked = database.blockTeamWorkItem(workItem.id, "连接中断，需要人工确认。");
+
+    expect(blocked).toMatchObject({
+      blockedReason: "连接中断，需要人工确认。",
+      executionConversationId: root.id,
+      revision: 1,
+      status: "blocked",
+    });
+
+    const published = database.publishTeamWorkItem(workItem.id);
+
+    expect(published).toMatchObject({
+      activeRunId: null,
+      blockedReason: null,
+      executionConversationId: null,
+      revision: 2,
+      status: "queued",
+    });
+    expect(published.events.at(-1)).toMatchObject({
+      detail: "用户已重新发布任务，等待团队调度。",
+      type: "scheduled",
+    });
+    expect(database.reserveTeamWorkItemExecution(workItem.id, root.id)).toMatchObject({
+      executionConversationId: root.id,
+      status: "planned",
+    });
+    database.close();
+  });
+
   it("keeps a WorkItem running until every delegated execution branch is terminal", () => {
     const database = new AgentDatabase(":memory:");
     const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);

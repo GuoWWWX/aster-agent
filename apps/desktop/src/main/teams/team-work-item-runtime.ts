@@ -11,6 +11,7 @@ import type {
   GetTeamWorkItemExecutionInput,
   GetTeamCollaborationProjectionInput,
   ListTeamWorkItemsInput,
+  PublishTeamWorkItemInput,
   RenameTeamInstanceInput,
   RequestTeamWorkItemReworkInput,
   SendConversationMessageInput,
@@ -313,6 +314,15 @@ export class TeamWorkItemRuntime {
 
   public updatePermission(input: UpdateTeamWorkItemPermissionInput): TeamWorkItemView {
     return this.database.updateTeamWorkItemPermission(input);
+  }
+
+  public publish(input: PublishTeamWorkItemInput, emit: RunEventEmitter): TeamWorkItemView {
+    const current = this.database.getTeamWorkItem(input.workItemId);
+    this.assertTeamCanAcceptWork(current.teamId);
+    this.projects.getProject(current.projectId);
+    const published = this.database.publishTeamWorkItem(input.workItemId);
+    this.schedule(published.teamId, emit);
+    return this.database.getTeamWorkItem(published.id);
   }
 
   /**
