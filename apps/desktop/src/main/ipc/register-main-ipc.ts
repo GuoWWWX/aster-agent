@@ -89,6 +89,7 @@ import {
   readConfigurationWorkspaceFileIpcArgumentsSchema,
   reorderConversationsIpcArgumentsSchema,
   reorderPendingConversationMessagesIpcArgumentsSchema,
+  addTeamWorkItemCommentIpcArgumentsSchema,
   reorderProjectsIpcArgumentsSchema,
   reorderTeamInstancesIpcArgumentsSchema,
   removeConversationAttachmentIpcArgumentsSchema,
@@ -139,6 +140,7 @@ import {
   skillDocumentReferenceIpcArgumentsSchema,
   skillDocumentSaveIpcArgumentsSchema,
   submitTeamWorkItemIpcArgumentsSchema,
+  deleteTeamWorkItemIpcArgumentsSchema,
   updateTeamWorkItemIpcArgumentsSchema,
   updateTeamWorkItemPermissionIpcArgumentsSchema,
   skillDiscoveryResultSchema,
@@ -979,7 +981,21 @@ export function registerMainIpcHandlers(
     (event, ...args: unknown[]) => {
       getTrustedWindow(event, getMainWindow);
       const [input] = updateTeamWorkItemIpcArgumentsSchema.parse(args);
-      return teamWorkItemViewSchema.parse(teamWorkItems.update(input));
+      return teamWorkItemViewSchema.parse(
+        teamWorkItems.update(input, (runEvent) =>
+          sendConversationRunEvent(getMainWindow, runEvent)),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamWorkItemDelete,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = deleteTeamWorkItemIpcArgumentsSchema.parse(args);
+      teamWorkItems.delete(input, (runEvent) =>
+        sendConversationRunEvent(getMainWindow, runEvent));
+      return voidIpcResponseSchema.parse(undefined);
     },
   );
 
@@ -1013,6 +1029,15 @@ export function registerMainIpcHandlers(
         teamWorkItems.requestRework(input, (runEvent) =>
           sendConversationRunEvent(getMainWindow, runEvent)),
       );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.teamWorkItemAddComment,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = addTeamWorkItemCommentIpcArgumentsSchema.parse(args);
+      return teamWorkItemViewSchema.parse(teamWorkItems.addComment(input));
     },
   );
 

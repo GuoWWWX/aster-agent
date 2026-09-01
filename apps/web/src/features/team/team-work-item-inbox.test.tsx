@@ -24,6 +24,7 @@ afterEach(() => {
 
 describe("WorkItemInbox", () => {
   it("paginates the filtered task list ten items at a time", () => {
+    const onFilterChange = vi.fn();
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -43,7 +44,7 @@ describe("WorkItemInbox", () => {
           onCancelEdit={vi.fn()}
           onDraftChange={vi.fn()}
           onEdit={vi.fn()}
-          onFilterChange={vi.fn()}
+          onFilterChange={onFilterChange}
           onSaveEdit={vi.fn()}
           onSelect={vi.fn()}
         />
@@ -53,23 +54,40 @@ describe("WorkItemInbox", () => {
     expect(container.textContent).toContain("1 / 2");
     expect(container.querySelector('[aria-label="按任务来源筛选"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="按优先级筛选"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="排序团队任务：更新时间降序"]')).not.toBeNull();
+    const filters = [...container.querySelectorAll<HTMLButtonElement>('[aria-label="任务筛选"] [role="tab"]')];
+    expect(filters.map((filterButton) => filterButton.textContent)).toEqual([
+      "12全部",
+      "0待执行",
+      "12处理中",
+      "0待验收",
+      "0已完成",
+    ]);
+    expect(filters[0]?.getAttribute("aria-selected")).toBe("true");
     expect([...container.querySelectorAll('[data-metric-tone]')].map((metric) => metric.getAttribute("data-metric-tone"))).toEqual([
+      "info",
       "info",
       "warning",
       "success",
       "success",
     ]);
+    act(() => filters[2]?.click());
+    expect(onFilterChange).toHaveBeenCalledWith("processing");
     expect(container.querySelector('[data-slot="badge"]')?.getAttribute("data-tone")).toBe("warning");
     expect(container.querySelector('[data-slot="badge"]')?.className).not.toContain("dark:");
-    expect(renderedTitles(container)).toContain("任务 1");
-    expect(renderedTitles(container)).not.toContain("任务 11");
+    const project = container.querySelector('[data-work-item-project="true"]');
+    expect(project?.textContent).toBe("Demo");
+    expect(project?.getAttribute("title")).toBe("Demo");
+    expect(project?.parentElement?.textContent).toBe("Demo来自对话");
+    expect(renderedTitles(container)).toContain("任务 12");
+    expect(renderedTitles(container)).not.toContain("任务 2");
     expect(container.querySelector<HTMLButtonElement>('[aria-label="上一页"]')?.disabled).toBe(true);
 
     act(() => container.querySelector<HTMLButtonElement>('[aria-label="下一页"]')?.click());
 
     expect(container.textContent).toContain("2 / 2");
-    expect(renderedTitles(container)).toContain("任务 11");
-    expect(renderedTitles(container)).not.toContain("任务 1");
+    expect(renderedTitles(container)).toContain("任务 2");
+    expect(renderedTitles(container)).not.toContain("任务 12");
     expect(container.querySelector<HTMLButtonElement>('[aria-label="下一页"]')?.disabled).toBe(true);
   });
 
@@ -115,7 +133,69 @@ describe("WorkItemInbox", () => {
       "昨天 18:40",
     ]);
   });
+
+  it("uses the same created, updated, and priority sorting as the board", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const items = [
+      { ...workItem(1, "2026-08-28T10:00:00.000Z"), priority: "high" as const, title: "较早创建最近更新", updatedAt: "2026-08-30T10:00:00.000Z" },
+      { ...workItem(2, "2026-08-29T10:00:00.000Z"), priority: "low" as const, title: "中间创建最早更新", updatedAt: "2026-08-28T10:00:00.000Z" },
+      { ...workItem(3, "2026-08-30T10:00:00.000Z"), priority: "normal" as const, title: "最近创建中间更新", updatedAt: "2026-08-29T10:00:00.000Z" },
+    ];
+
+    act(() => root?.render(
+      <TooltipProvider>
+        <WorkItemInbox
+          acceptanceCount={0}
+          completedCount={0}
+          draft=""
+          editingItemId={null}
+          filter="all"
+          items={items}
+          processingCount={3}
+          queuedCount={0}
+          selectedId={null}
+          onCancelEdit={vi.fn()}
+          onDraftChange={vi.fn()}
+          onEdit={vi.fn()}
+          onFilterChange={vi.fn()}
+          onSaveEdit={vi.fn()}
+          onSelect={vi.fn()}
+        />
+      </TooltipProvider>,
+    ));
+
+    expect(renderedTitles(container)).toEqual([
+      "较早创建最近更新",
+      "最近创建中间更新",
+      "中间创建最早更新",
+    ]);
+
+    chooseSort(container, "创建时间升序");
+    expect(renderedTitles(container)).toEqual([
+      "较早创建最近更新",
+      "中间创建最早更新",
+      "最近创建中间更新",
+    ]);
+
+    chooseSort(container, "优先级升序");
+    expect(renderedTitles(container)).toEqual([
+      "中间创建最早更新",
+      "最近创建中间更新",
+      "较早创建最近更新",
+    ]);
+  });
 });
+
+function chooseSort(container: HTMLElement, label: string): void {
+  const trigger = container.querySelector<HTMLButtonElement>('button[aria-label^="排序团队任务："]');
+  act(() => trigger?.click());
+  const option = [...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')]
+    .find((candidate) => candidate.textContent?.includes(label));
+  expect(option).not.toBeUndefined();
+  act(() => option?.click());
+}
 
 function renderedTitles(container: HTMLElement): string[] {
   return [...container.querySelectorAll<HTMLElement>('[role="option"] strong')]
@@ -136,10 +216,12 @@ function workItem(index: number, createdAt = new Date(2026, 7, index, 10).toISOS
     plan: "执行并验证",
     priority: "normal",
     project: "Demo",
+    projectId: "00000000-0000-4000-8000-000000000001",
     reworkRequest: null,
     source: "conversation",
     status: "executing",
     tasks: [],
     title: `任务 ${index}`,
+    updatedAt: createdAt,
   };
 }

@@ -24,6 +24,7 @@ const CHILD_ID = "00000000-0000-4000-8000-000000000002";
 const RUN_ID = "00000000-0000-4000-8000-000000000003";
 const TOOL_ID = "00000000-0000-4000-8000-000000000004";
 const WORK_ITEM_ID = "00000000-0000-4000-8000-000000000005";
+const MESSAGE_ID = "00000000-0000-4000-8000-000000000006";
 
 function session(input: Partial<ProjectSession> & Pick<ProjectSession, "id" | "title">): ProjectSession {
   return {
@@ -56,6 +57,62 @@ afterEach(() => {
   root = null;
   document.body.replaceChildren();
   vi.restoreAllMocks();
+});
+
+describe("Conversation timeline location", () => {
+  it("scrolls the requested message into view after the timeline loads", async () => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "Team Lead · 默认团队" });
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([{
+      attachments: [],
+      content: "需要定位的任务消息",
+      conversationId: PARENT_ID,
+      createdAt: "2026-08-30T00:00:00.000Z",
+      id: MESSAGE_ID,
+      kind: "message",
+      modelId: null,
+      role: "user",
+      runId: null,
+      status: "completed",
+    }]);
+    const originalScrollIntoView = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollIntoView",
+    );
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace
+            agentClient={client}
+            locateTimelineItem={{ id: MESSAGE_ID, requestId: 1 }}
+            project={null}
+            session={target}
+          />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+
+    expect(container.querySelector(
+      `[data-conversation-timeline-item="${MESSAGE_ID}"]`,
+    )).not.toBeNull();
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
+
+    if (originalScrollIntoView === undefined) {
+      Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+    } else {
+      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView);
+    }
+  });
 });
 
 describe("Subagent approval queue", () => {

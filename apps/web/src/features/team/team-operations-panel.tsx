@@ -9,14 +9,27 @@ import type {
 import type { TeamWorkItemPrototype } from "./team-runtime-prototype.js";
 import { AgentAvatar } from "./agent-avatar.js";
 
+export type TeamConversationActivity = {
+  actor: string;
+  actorConversationId: string | null;
+  content: string;
+  conversation: ConversationSummary;
+  createdAt: string;
+  id: string;
+  time: string;
+  timelineItemId: string;
+};
+
 export function TeamOperations({
+  activities,
   execution,
   item,
   onOpenConversation,
 }: {
+  activities: readonly TeamConversationActivity[];
   execution: TeamWorkItemExecutionView | null;
   item: TeamWorkItemPrototype | null;
-  onOpenConversation: (conversation: ConversationSummary) => void;
+  onOpenConversation: (conversation: ConversationSummary, timelineItemId?: string) => void;
 }): ReactElement {
   const members = execution?.agents ?? [];
   const activeWorkers = members.filter(isMemberActive).length;
@@ -24,7 +37,7 @@ export function TeamOperations({
   return (
     <aside
       aria-label="团队执行信息"
-      className="team-operations grid min-h-0 grid-rows-[145px_minmax(220px,280px)_minmax(320px,1fr)] gap-[5px] overflow-hidden"
+      className="team-operations grid min-h-0 grid-rows-[145px_minmax(220px,280px)_minmax(320px,1fr)] gap-[5px] overflow-hidden @max-[1080px]:min-h-[695px]"
       data-team-runtime-layout="operations"
     >
       <section className="team-command-panel grid min-h-0 grid-rows-[40px_minmax(0,1fr)]" data-team-operations-card="summary">
@@ -83,24 +96,35 @@ export function TeamOperations({
       </section>
 
       <section className="team-command-panel grid min-h-0 grid-rows-[35px_minmax(0,1fr)]" data-team-operations-card="activity">
-        <SectionHeading icon={<MessageSquareText aria-hidden="true" size={14} />} label="协作动态" meta="当前任务" />
+        <SectionHeading icon={<MessageSquareText aria-hidden="true" size={14} />} label="任务对话轨迹" meta={`${activities.length} 条消息`} />
         <div className="grid min-h-0 auto-rows-max content-start overflow-auto border-t border-[var(--app-border)]">
-          {item === null || item.events.length === 0 ? (
-            <p className="m-0 px-[10px] py-[12px] text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">暂无协作动态</p>
-          ) : item.events.slice().reverse().map((event) => {
-            const actorMember = findMemberForActor(members, event.actor);
+          {activities.length === 0 ? (
+            <p className="m-0 px-[10px] py-[12px] text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">暂无任务对话</p>
+          ) : activities.map((activity) => {
+            const actorMember = activity.actorConversationId === null
+              ? null
+              : members.find((member) => (
+                member.conversation.id === activity.actorConversationId
+              )) ?? null;
             return (
-              <article
-                key={event.id}
-                className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-[8px] border-t border-[var(--app-border)] px-[10px] py-[8px] first:border-t-0"
+              <button
+                aria-label={`在对话中定位 ${activity.actor} 的这条消息`}
+                key={activity.id}
+                className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-[8px] border-0 border-t border-[var(--app-border)] bg-transparent px-[10px] py-[8px] text-left first:border-t-0 hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-[-2px]"
+                title="打开对应对话并定位到该消息"
+                type="button"
+                onClick={() => onOpenConversation(
+                  activity.conversation,
+                  activity.timelineItemId,
+                )}
               >
-                <ActivityActorAvatar actor={event.actor} member={actorMember} />
-                <p className="m-0 min-w-0 text-[length:var(--app-font-size-auxiliary)] leading-[1.45] text-[var(--app-muted-foreground)]">
-                  <strong className="mr-[3px] text-[var(--app-foreground)]">{event.actor}</strong>
-                  {event.detail}
+                <ActivityActorAvatar actor={activity.actor} member={actorMember} />
+                <p className="m-0 min-w-0 line-clamp-2 text-[length:var(--app-font-size-auxiliary)] leading-[1.45] text-[var(--app-muted-foreground)]">
+                  <strong className="mr-[3px] text-[var(--app-foreground)]">{activity.actor}</strong>
+                  {activity.content}
                 </p>
-                <time className="text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">{event.time}</time>
-              </article>
+                <time className="shrink-0 text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">{activity.time}</time>
+              </button>
             );
           })}
         </div>
@@ -111,18 +135,6 @@ export function TeamOperations({
 
 function memberName(member: TeamWorkItemExecutionAgent): string {
   return member.agent?.name ?? member.conversation.title;
-}
-
-function findMemberForActor(
-  members: readonly TeamWorkItemExecutionAgent[],
-  actor: string,
-): TeamWorkItemExecutionAgent | null {
-  const normalizedActor = actor.trim().toLocaleLowerCase();
-  return members.find((member) => {
-    const name = memberName(member).trim().toLocaleLowerCase();
-    const title = member.conversation.title.trim().toLocaleLowerCase();
-    return name === normalizedActor || title.startsWith(normalizedActor);
-  }) ?? null;
 }
 
 function ActivityActorAvatar({

@@ -419,6 +419,20 @@ describe("TeamWorkItemRuntime", () => {
     expect(database.getTeamWorkItem(submitted.id)).toMatchObject({
       modelSelection: updatedSelection,
     });
+    expect(runtime.update({
+      requirement: "实现函数，并补充零值与负数边界测试。",
+      title: "实现函数和边界测试",
+      workItemId: submitted.id,
+    }, (event) => emitted.push(event))).toMatchObject({
+      requirement: "实现函数，并补充零值与负数边界测试。",
+      status: "running",
+    });
+    expect(sendInputs.at(-1)).toMatchObject({
+      conversationId: executionConversationId,
+      deliveryMode: "steer",
+    });
+    expect(sendInputs.at(-1)?.content).toContain("修改后的完整需求");
+    expect(sendInputs.at(-1)?.content).toContain("零值与负数边界测试");
     expect(runtime.sendExecutionGuidance({
       agent: {
         avatarIcon: null,
@@ -475,7 +489,7 @@ describe("TeamWorkItemRuntime", () => {
     }, (event) => emitted.push(event));
     expect(reworked).toMatchObject({ status: "running" });
     expect(sendInputs.at(-1)?.content).toContain(`本次 Run 只允许执行团队工作项 ${submitted.id}`);
-    expect(sendInputs.at(-1)?.content).toContain("原始需求：\n实现一个简单函数并补测试。");
+    expect(sendInputs.at(-1)?.content).toContain("原始需求：\n实现函数，并补充零值与负数边界测试。");
     expect(sendInputs.at(-1)?.content).toContain("若历史中的未完成工作与当前工作项冲突，忽略历史工作");
     expect(emitted.at(-1)?.type).toBe("run.finished");
   });
@@ -525,7 +539,7 @@ describe("TeamWorkItemRuntime", () => {
     );
 
     expect(() => runtime.requestRework({ feedback: "不应启动", workItemId: workItem.id }, () => undefined))
-      .toThrow("Only a WorkItem waiting for user acceptance");
+      .toThrow("Only a WorkItem waiting for acceptance or already completed");
     expect(sendCalls).toBe(0);
   });
 

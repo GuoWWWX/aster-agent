@@ -1,6 +1,8 @@
 import type {
   AgentDirectoryConfiguration,
   AcceptTeamWorkItemInput,
+  AddTeamWorkItemCommentInput,
+  DeleteTeamWorkItemInput,
   ConversationAgentBinding,
   ConversationModelSelection,
   ConversationMessageItem,
@@ -308,8 +310,54 @@ export class TeamWorkItemRuntime {
     return workItem;
   }
 
-  public update(input: UpdateTeamWorkItemInput): TeamWorkItemView {
-    return this.database.updateTeamWorkItem(input);
+  public update(input: UpdateTeamWorkItemInput, emit: RunEventEmitter): TeamWorkItemView {
+    const current = this.database.getTeamWorkItem(input.workItemId);
+    const updated = this.database.updateTeamWorkItem(input);
+    if (current.status !== "running" || current.executionConversationId === null) {
+      return updated;
+    }
+    const conversation = this.database.getConversation(current.executionConversationId);
+    this.agentRuntime.sendMessage({
+      content: this.createRevisionGuidancePrompt(updated),
+      conversationId: conversation.id,
+      deliveryMode: "steer",
+      modelId: updated.modelSelection.modelId,
+      permissionMode: updated.permissionMode,
+      providerId: updated.modelSelection.providerId,
+      ...(updated.modelSelection.reasoning === null
+        ? {}
+        : { reasoning: updated.modelSelection.reasoning }),
+    }, (event) => {
+      if (event.type !== "run.finished" || event.conversationId !== conversation.id) {
+        emit(event);
+        return;
+      }
+      this.finishRun(updated.id, event, emit);
+      emit(event);
+    }, {
+      allowManagedTeamWorkItemExecution: true,
+      titleOverride: conversation.title,
+      ...(conversation.activeRunId === null
+        ? {
+            beforeRunScheduled: (accepted: { runId: string }) => {
+              this.database.startTeamWorkItemGuidance(updated.id, accepted.runId);
+            },
+          }
+        : {}),
+    });
+    return this.database.getTeamWorkItem(updated.id);
+  }
+
+  public delete(input: DeleteTeamWorkItemInput, emit: RunEventEmitter): void {
+    const current = this.database.getTeamWorkItem(input.workItemId);
+    const execution = this.database.getTeamWorkItemExecution(input.workItemId);
+    const activeRunIds = new Set([
+      current.activeRunId,
+      ...execution.agents.map((member) => member.conversation.activeRunId),
+    ].filter((runId): runId is string => runId !== null));
+    this.database.deleteTeamWorkItem(input);
+    for (const runId of activeRunIds) this.agentRuntime.cancelRun(runId);
+    void this.schedule(current.teamId, emit);
   }
 
   public updatePermission(input: UpdateTeamWorkItemPermissionInput): TeamWorkItemView {
@@ -364,8 +412,11 @@ export class TeamWorkItemRuntime {
     emit: RunEventEmitter,
   ): TeamWorkItemView {
     const workItem = this.database.getTeamWorkItem(input.workItemId);
-    if (workItem.status !== "waiting_user" || workItem.executionConversationId === null) {
-      throw new Error("Only a WorkItem waiting for user acceptance can be reworked.");
+    if (
+      (workItem.status !== "waiting_user" && workItem.status !== "completed")
+      || workItem.executionConversationId === null
+    ) {
+      throw new Error("Only a WorkItem waiting for acceptance or already completed can be reworked.");
     }
     let updated: TeamWorkItemView | null = null;
     const submission = this.agentRuntime.sendMessage({
@@ -400,6 +451,10 @@ export class TeamWorkItemRuntime {
     }
     if (updated === null) throw new Error("Team WorkItem rework Run was not persisted.");
     return updated;
+  }
+
+  public addComment(input: AddTeamWorkItemCommentInput): TeamWorkItemView {
+    return this.database.addTeamWorkItemComment(input);
   }
 
   /**
@@ -731,6 +786,20 @@ export class TeamWorkItemRuntime {
       feedback,
       "",
       "重新检查现有项目状态和上一轮结果，只修改返工所需内容；完成后重新运行验证并给出新的验收摘要。",
+    ].join("\n");
+  }
+
+  private createRevisionGuidancePrompt(workItem: TeamWorkItemView): string {
+    return [
+      `用户刚刚修改了团队工作项 ${workItem.id}。`,
+      "",
+      "修改后的标题：",
+      workItem.title,
+      "",
+      "修改后的完整需求：",
+      workItem.requirement,
+      "",
+      "请以这份最新内容为准，停止尚未开始且与新需求冲突的步骤；已经发生的副作用不得假装回滚。重新核对当前进度、任务清单和成员分工，然后继续执行。",
     ].join("\n");
   }
 

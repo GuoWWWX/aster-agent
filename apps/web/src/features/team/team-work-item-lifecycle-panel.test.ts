@@ -41,7 +41,12 @@ describe("compactDeliverySummary", () => {
     document.body.append(container);
     const root = createRoot(container);
     const item: TeamWorkItemPrototype = {
-      acceptance: ["需求实现完整", "功能验证通过", "代码规范合规", "文档更新完整"],
+      acceptance: [
+        "Team Lead 创建了名为“问候员甲”和“问候员乙”的两位 Worker，并等待两位成员完整回复",
+        "功能验证通过",
+        "代码规范合规",
+        "文档更新完整",
+      ],
       acceptedCriteria: [],
       acceptanceRound: 2,
       createdAt: "10:25",
@@ -58,11 +63,13 @@ describe("compactDeliverySummary", () => {
       plan: "实现并验证",
       priority: "normal",
       project: "Demo",
+      projectId: "00000000-0000-4000-8000-000000000001",
       reworkRequest: null,
       source: "conversation",
       status: "awaiting_acceptance",
       tasks: [],
       title: "验收任务",
+      updatedAt: "10:25",
     };
 
     const onApprove = vi.fn();
@@ -81,26 +88,32 @@ describe("compactDeliverySummary", () => {
 
     expect(container.textContent).toContain("交付已完成，等待验收");
     expect(container.textContent).toContain("完成于 10:25");
-    expect(container.textContent).toContain("变更文件12 个");
-    expect(container.textContent).toContain("提交记录6 次");
-    expect(container.textContent).toContain("交付结果");
-    expect(container.querySelectorAll('.team-acceptance-delivery__preview > ul > li')).toHaveLength(2);
-    expect(container.querySelectorAll('.team-acceptance-checklist label')).toHaveLength(4);
+    expect(container.querySelector(".team-lifecycle-panel__header")?.textContent)
+      .toContain("交付已完成，等待验收");
+    expect(container.querySelector('.team-lifecycle-panel__header [data-tone="success"]'))
+      .not.toBeNull();
+    expect(container.querySelector(".team-acceptance-banner")).toBeNull();
+    expect(container.textContent).toContain("完成说明");
+    expect(container.textContent).toContain("由 Team Lead 汇总");
+    expect(container.textContent).toContain("完成内容与功能");
+    expect(container.textContent).not.toContain("变更文件12 个");
+    expect(container.textContent).not.toContain("提交记录6 次");
+    expect(container.textContent).toContain("用于核对完成说明，无需逐项勾选。");
+    expect(container.textContent).toContain("原始验收要求");
+    expect(container.textContent).toContain("Team Lead 创建了名为“问候员甲”和“问候员乙”的两位 Worker，并等待两位成员完整回复");
+    expect(container.querySelectorAll('[data-completion-report="true"] li')).toHaveLength(2);
+    expect(container.querySelectorAll('[data-original-acceptance="true"] li')).toHaveLength(4);
+    expect(container.querySelectorAll('[data-original-acceptance="true"] input')).toHaveLength(0);
     expect(container.querySelector<HTMLTextAreaElement>('#team-rework-request')?.maxLength).toBe(500);
     expect(container.querySelector('[aria-label="展开返工输入框"]')).not.toBeNull();
     const approvalButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.includes("验收通过并完成任务"));
     const reworkButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.includes("发送返工要求"));
-    expect(approvalButton?.disabled).toBe(true);
+    expect(approvalButton?.disabled).toBe(false);
     expect(reworkButton?.disabled).toBe(true);
     expect(container.textContent).not.toContain("模型已完成，任务还没有结束");
 
-    act(() => {
-      container.querySelectorAll<HTMLInputElement>('.team-acceptance-checklist input')
-        .forEach((checkbox) => checkbox.click());
-    });
-    expect(approvalButton?.disabled).toBe(false);
     act(() => approvalButton?.click());
     expect(onApprove).toHaveBeenCalledWith("complete", item.acceptance);
 

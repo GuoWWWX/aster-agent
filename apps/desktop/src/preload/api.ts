@@ -64,6 +64,8 @@ import type {
   SetTeamCoordinatorInput,
   SendConversationMessageInput,
   SendTeamMessageInput,
+  AddTeamWorkItemCommentInput,
+  DeleteTeamWorkItemInput,
   GetTeamWorkItemExecutionInput,
   GetTeamCollaborationProjectionInput,
   ListTeamWorkItemsInput,
@@ -264,6 +266,9 @@ export function createDesktopBridge(): DesktopBridge {
     updateTeamWorkItem(input: UpdateTeamWorkItemInput) {
       return invoke<BridgeResult<"updateTeamWorkItem">>(IPC_CHANNELS.teamWorkItemUpdate, input);
     },
+    deleteTeamWorkItem(input: DeleteTeamWorkItemInput) {
+      return invoke<BridgeResult<"deleteTeamWorkItem">>(IPC_CHANNELS.teamWorkItemDelete, input);
+    },
     updateTeamWorkItemPermission(input: UpdateTeamWorkItemPermissionInput) {
       return invoke<BridgeResult<"updateTeamWorkItemPermission">>(
         IPC_CHANNELS.teamWorkItemUpdatePermission,
@@ -273,6 +278,12 @@ export function createDesktopBridge(): DesktopBridge {
     publishTeamWorkItem(input: PublishTeamWorkItemInput) {
       return invoke<BridgeResult<"publishTeamWorkItem">>(
         IPC_CHANNELS.teamWorkItemPublish,
+        input,
+      );
+    },
+    addTeamWorkItemComment(input: AddTeamWorkItemCommentInput) {
+      return invoke<BridgeResult<"addTeamWorkItemComment">>(
+        IPC_CHANNELS.teamWorkItemAddComment,
         input,
       );
     },

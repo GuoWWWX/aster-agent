@@ -376,6 +376,7 @@ export function App(): ReactElement {
       conversation: member,
       requestId: (current?.requestId ?? 0) + 1,
       sourceConversationId,
+      timelineItemId: null,
     }));
     setNavigatorLocateRequest((current) => ({
       id: sourceConversationId,
@@ -425,6 +426,7 @@ export function App(): ReactElement {
   const openTeamConversation = useCallback((
     conversation: ProjectSession,
     sourceConversationId?: string,
+    timelineItemId?: string,
   ): void => {
     const ownerConversationId = sourceConversationId
       ?? sourceConversationIdForMember(conversation, projectSessions.sessions)
@@ -436,6 +438,7 @@ export function App(): ReactElement {
       conversation,
       requestId: (current?.requestId ?? 0) + 1,
       sourceConversationId: ownerConversationId,
+      timelineItemId: timelineItemId ?? null,
     }));
   }, [projectSessions, projectTree, setFilePanelOpen]);
 

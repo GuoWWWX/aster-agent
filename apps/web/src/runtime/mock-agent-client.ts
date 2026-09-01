@@ -16,6 +16,8 @@ import {
   type SkillDocument,
   type SkillDiscoveryResult,
   type ApplicationSettings,
+  type AddTeamWorkItemCommentInput,
+  type DeleteTeamWorkItemInput,
   type BrowserConfiguration,
   type SkillDocumentReferenceInput,
   type SkillDocumentSaveInput,
@@ -1512,9 +1514,7 @@ export class MockAgentClient implements AgentClient {
 
   public updateTeamWorkItem(input: UpdateTeamWorkItemInput): Promise<TeamWorkItemView> {
     const item = this.teamWorkItems.find((candidate) => candidate.id === input.workItemId);
-    if (item === undefined || item.status !== "queued") {
-      return Promise.reject(new Error("Only a queued mock Team WorkItem can be edited."));
-    }
+    if (item === undefined) return Promise.reject(new Error("Mock Team WorkItem was not found."));
     item.title = input.title;
     item.requirement = input.requirement;
     item.updatedAt = new Date().toISOString();
@@ -1600,13 +1600,46 @@ export class MockAgentClient implements AgentClient {
     input: RequestTeamWorkItemReworkInput,
   ): Promise<TeamWorkItemView> {
     const item = this.teamWorkItems.find((candidate) => candidate.id === input.workItemId);
-    if (item === undefined || item.status !== "waiting_user") {
-      return Promise.reject(new Error("The mock Team WorkItem is not waiting for acceptance."));
+    if (
+      item === undefined
+      || (item.status !== "waiting_user" && item.status !== "completed")
+    ) {
+      return Promise.reject(new Error("The mock Team WorkItem cannot be reworked."));
     }
     item.status = "running";
     item.revision += 1;
     item.acceptedCriteria = [];
+    item.completedAt = null;
     item.updatedAt = new Date().toISOString();
+    return Promise.resolve(structuredClone(item));
+  }
+
+  public deleteTeamWorkItem(input: DeleteTeamWorkItemInput): Promise<void> {
+    const index = this.teamWorkItems.findIndex((candidate) => candidate.id === input.workItemId);
+    if (index < 0) return Promise.reject(new Error("Mock Team WorkItem was not found."));
+    this.teamWorkItems.splice(index, 1);
+    return Promise.resolve();
+  }
+
+  public addTeamWorkItemComment(
+    input: AddTeamWorkItemCommentInput,
+  ): Promise<TeamWorkItemView> {
+    const item = this.teamWorkItems.find((candidate) => candidate.id === input.workItemId);
+    if (item === undefined) {
+      return Promise.reject(new Error("The mock Team WorkItem is unavailable."));
+    }
+    item.updatedAt = new Date().toISOString();
+    const nextTeamEventSequence = this.teamWorkItems
+      .filter((candidate) => candidate.teamId === item.teamId)
+      .flatMap((candidate) => candidate.events)
+      .reduce((sequence, event) => Math.max(sequence, event.sequence), 0) + 1;
+    item.events.push({
+      createdAt: item.updatedAt,
+      detail: input.content.trim(),
+      id: this.createIdentifier(),
+      sequence: nextTeamEventSequence,
+      type: "commented",
+    });
     return Promise.resolve(structuredClone(item));
   }
 

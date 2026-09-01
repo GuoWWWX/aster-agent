@@ -9,7 +9,10 @@ import {
 } from "@agent/protocol";
 
 import type { TeamWorkItemPrototype } from "./team-runtime-prototype.js";
-import { TeamOperations } from "./team-operations-panel.js";
+import {
+  TeamOperations,
+  type TeamConversationActivity,
+} from "./team-operations-panel.js";
 
 const WORK_ITEM_ID = "00000000-0000-4000-8000-000000000101";
 const PROJECT_ID = "00000000-0000-4000-8000-000000000102";
@@ -50,11 +53,13 @@ const item: TeamWorkItemPrototype = {
   plan: "开发后验证",
   priority: "normal",
   project: "Fixture",
+  projectId: "00000000-0000-4000-8000-000000000001",
   reworkRequest: null,
   source: "direct",
   status: "executing",
   tasks: [],
   title: "团队会话跳转",
+  updatedAt: "刚刚",
 };
 
 const execution: TeamWorkItemExecutionView = {
@@ -91,6 +96,21 @@ const execution: TeamWorkItemExecutionView = {
   workItemId: WORK_ITEM_ID,
 };
 
+const activities: TeamConversationActivity[] = [{
+  actor: "开发 Agent",
+  actorConversationId: MEMBER_CONVERSATION_ID,
+  content: "完成实现并提交回执。",
+  conversation: execution.agents[1]?.conversation ?? conversation(
+    MEMBER_CONVERSATION_ID,
+    "开发 Agent · 实现功能",
+    "subagent",
+  ),
+  createdAt: "2026-08-29T00:01:00.000Z",
+  id: `${MEMBER_CONVERSATION_ID}:message-1`,
+  time: "刚刚",
+  timelineItemId: "message-1",
+}];
+
 let root: Root | null = null;
 
 beforeEach(() => {
@@ -104,6 +124,35 @@ afterEach(() => {
 });
 
 describe("TeamOperations", () => {
+  it("uses the task conversation trajectory instead of a comment composer", () => {
+    const onOpenConversation = vi.fn();
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() => root?.render(
+      <TeamOperations
+        activities={activities}
+        execution={execution}
+        item={{ ...item, status: "completed" }}
+        onOpenConversation={onOpenConversation}
+      />,
+    ));
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>(
+        '[aria-label="在对话中定位 开发 Agent 的这条消息"]',
+      )?.click();
+    });
+
+    expect(container.textContent).toContain("任务对话轨迹");
+    expect(container.textContent).toContain("完成实现并提交回执。");
+    expect(container.querySelector('[aria-label="添加任务评论"]')).toBeNull();
+    expect(onOpenConversation).toHaveBeenCalledWith(
+      execution.agents[1]?.conversation,
+      "message-1",
+    );
+  });
+
   it("opens the selected member in the normal conversation tree", () => {
     const onOpenConversation = vi.fn();
     const container = document.createElement("div");
@@ -112,6 +161,7 @@ describe("TeamOperations", () => {
 
     act(() => root?.render(
       <TeamOperations
+        activities={activities}
         execution={execution}
         item={item}
         onOpenConversation={onOpenConversation}
@@ -141,6 +191,7 @@ describe("TeamOperations", () => {
 
     act(() => root?.render(
       <TeamOperations
+        activities={activities}
         execution={execution}
         item={item}
         onOpenConversation={vi.fn()}
@@ -159,6 +210,7 @@ describe("TeamOperations", () => {
 
     act(() => root?.render(
       <TeamOperations
+        activities={activities}
         execution={{
           ...execution,
           agents: execution.agents.map((member) => member.conversation.id === developer.conversation.id

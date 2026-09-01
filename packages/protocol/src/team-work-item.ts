@@ -47,8 +47,10 @@ export const teamWorkItemEventSchema = z.object({
     "run_started",
     "task_updated",
     "review_ready",
+    "commented",
     "rework_requested",
     "accepted",
+    "deleted",
     "blocked",
     "failed",
     "cancelled",
@@ -135,7 +137,7 @@ export const submitTeamWorkItemInputSchema = z.object({
   }
 });
 
-/** A requirement is editable only before Team Lead has claimed its WorkItem. */
+/** A requirement edit is audited and may be delivered to an active Team Run. */
 export const updateTeamWorkItemInputSchema = z.object({
   requirement: z.string().trim().min(1).max(50_000),
   title: z.string().trim().min(1).max(300),
@@ -157,6 +159,8 @@ export const teamWorkItemReferenceInputSchema = z.object({
 
 export const getTeamWorkItemExecutionInputSchema = teamWorkItemReferenceInputSchema;
 
+export const deleteTeamWorkItemInputSchema = teamWorkItemReferenceInputSchema;
+
 export const publishTeamWorkItemInputSchema = teamWorkItemReferenceInputSchema;
 
 export const acceptTeamWorkItemInputSchema = z.object({
@@ -166,6 +170,15 @@ export const acceptTeamWorkItemInputSchema = z.object({
 
 export const requestTeamWorkItemReworkInputSchema = z.object({
   feedback: z.string().trim().min(1).max(20_000),
+  workItemId: workItemIdSchema,
+}).strict();
+
+/**
+ * A WorkItem comment is durable task context. It does not send a message to an
+ * Agent or start a Run; rework remains an explicit, separate action.
+ */
+export const addTeamWorkItemCommentInputSchema = z.object({
+  content: z.string().trim().min(1).max(2_000),
   workItemId: workItemIdSchema,
 }).strict();
 
@@ -189,6 +202,8 @@ export type UpdateTeamWorkItemPermissionInput = z.infer<
 >;
 export type TeamWorkItemReferenceInput = z.infer<typeof teamWorkItemReferenceInputSchema>;
 export type GetTeamWorkItemExecutionInput = z.infer<typeof getTeamWorkItemExecutionInputSchema>;
+export type DeleteTeamWorkItemInput = z.infer<typeof deleteTeamWorkItemInputSchema>;
 export type PublishTeamWorkItemInput = z.infer<typeof publishTeamWorkItemInputSchema>;
 export type AcceptTeamWorkItemInput = z.infer<typeof acceptTeamWorkItemInputSchema>;
 export type RequestTeamWorkItemReworkInput = z.infer<typeof requestTeamWorkItemReworkInputSchema>;
+export type AddTeamWorkItemCommentInput = z.infer<typeof addTeamWorkItemCommentInputSchema>;

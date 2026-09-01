@@ -10,8 +10,10 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type {
   ConversationSummary,
+  ConversationTimelineItem,
   ProjectSummary,
   TeamCollaborationProjection,
+  TeamInstanceView,
   TeamWorkItemExecutionView,
   TeamWorkItemView,
 } from "@agent/protocol";
@@ -26,8 +28,16 @@ import {
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import type { ProjectSession } from "../projects/project-session-model.js";
-import { TeamOperations } from "./team-operations-panel.js";
+import {
+  TeamOperations,
+  type TeamConversationActivity,
+} from "./team-operations-panel.js";
 import { AgentAvatar } from "./agent-avatar.js";
+import { EditTeamWorkItemDialog } from "./edit-team-work-item-dialog.js";
+import {
+  NewTeamWorkItemDialog,
+  type NewTeamWorkItemDraft,
+} from "./new-team-work-item-dialog.js";
 import type { TeamWorkItemPrototype } from "./team-runtime-prototype.js";
 import {
   matchesWorkItemFilter,
@@ -81,14 +91,22 @@ export function TeamWorkspace({
   projects,
 }: {
   agentClient: AgentClient;
-  onOpenConversation: (conversation: ProjectSession, sourceConversationId?: string) => void;
+  onOpenConversation: (
+    conversation: ProjectSession,
+    sourceConversationId?: string,
+    timelineItemId?: string,
+  ) => void;
   onNavigateToConversation?: (conversationId: string) => void;
   projects: readonly ProjectSummary[];
 }): ReactElement {
   const teams = useAgentDirectoryStore((state) => state.teams);
   const [selectedTeamId, setSelectedTeamId] = useState(teams[0]?.id ?? "");
   const [runtimeItems, setRuntimeItems] = useState<TeamWorkItemView[]>([]);
+  const [teamInstances, setTeamInstances] = useState<TeamInstanceView[]>([]);
   const [execution, setExecution] = useState<TeamWorkItemExecutionView | null>(null);
+  const [conversationActivities, setConversationActivities] = useState<
+    TeamConversationActivity[]
+  >([]);
   const [collaborationProjections, setCollaborationProjections] = useState<
     ReadonlyMap<string, TeamCollaborationProjection>
   >(new Map());
@@ -99,17 +117,27 @@ export function TeamWorkspace({
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [publishingWorkItemId, setPublishingWorkItemId] = useState<string | null>(null);
+  const [editingBoardWorkItemId, setEditingBoardWorkItemId] = useState<string | null>(null);
+  const [isManagingWorkItem, setIsManagingWorkItem] = useState(false);
+  const [projectFilter, setProjectFilter] = useState("all");
   const [view, setView] = useState<TeamWorkspaceView>("board");
   const selectedTeam = teams.find((team) => team.id === selectedTeamId) ?? teams[0];
   const workItems = useMemo(
     () => runtimeItems.map((item) => toPrototypeWorkItem(item, projects)),
     [projects, runtimeItems],
   );
-  const selectedWorkItem = workItems.find((item) => item.id === selectedWorkItemId)
-    ?? workItems[0]
+  const projectWorkItems = useMemo(
+    () => projectFilter === "all"
+      ? workItems
+      : workItems.filter((item) => item.projectId === projectFilter),
+    [projectFilter, workItems],
+  );
+  const selectedWorkItem = projectWorkItems.find((item) => item.id === selectedWorkItemId)
+    ?? projectWorkItems[0]
     ?? null;
-  const selectedRuntimeWorkItem = runtimeItems.find((item) => item.id === selectedWorkItemId)
-    ?? runtimeItems[0]
+  const selectedRuntimeWorkItem = runtimeItems.find((item) => item.id === selectedWorkItem?.id)
+    ?? null;
+  const editingBoardWorkItem = runtimeItems.find((item) => item.id === editingBoardWorkItemId)
     ?? null;
   const isSelectedWorkItemLifecycle = selectedWorkItem !== null
     && isLifecyclePanelStatus(selectedWorkItem.status);
@@ -124,9 +152,10 @@ export function TeamWorkspace({
   const workItemMutationRequestIdRef = useRef(0);
   const activeExecutionWorkItemIdRef = useRef<string | null>(null);
   const executionRequestIdRef = useRef(0);
+  const conversationActivityRequestIdRef = useRef(0);
   const filteredWorkItems = useMemo(
-    () => workItems.filter((item) => matchesWorkItemFilter(item, filter)),
-    [filter, workItems],
+    () => projectWorkItems.filter((item) => matchesWorkItemFilter(item, filter)),
+    [filter, projectWorkItems],
   );
 
   useEffect(() => {
@@ -147,11 +176,14 @@ export function TeamWorkspace({
     workItemsRequestIdRef.current += 1;
     workItemMutationRequestIdRef.current += 1;
     executionRequestIdRef.current += 1;
+    conversationActivityRequestIdRef.current += 1;
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
       setRuntimeItems([]);
+      setTeamInstances([]);
       setExecution(null);
+      setConversationActivities([]);
       setCollaborationProjections(new Map());
       setSelectedWorkItemId("");
       setEditingItemId(null);
@@ -159,6 +191,9 @@ export function TeamWorkspace({
       setError(null);
       setIsSubmitting(false);
       setPublishingWorkItemId(null);
+      setEditingBoardWorkItemId(null);
+      setIsManagingWorkItem(false);
+      setProjectFilter("all");
     });
     return () => {
       cancelled = true;
@@ -211,6 +246,22 @@ export function TeamWorkspace({
     }
   }, [agentClient, selectedTeam]);
 
+  const loadTeamInstances = useCallback(async (): Promise<void> => {
+    const teamId = selectedTeam?.id;
+    if (teamId === undefined) return;
+    try {
+      const instances = await agentClient.listTeamInstances({ includeArchived: false });
+      if (activeTeamIdRef.current !== teamId) return;
+      setTeamInstances(instances.filter((instance) => (
+        instance.teamId === teamId && instance.scope !== "conversation"
+      )));
+    } catch (reason) {
+      if (activeTeamIdRef.current !== teamId) return;
+      setTeamInstances([]);
+      setError(reason instanceof Error ? reason.message : "团队实例加载失败。");
+    }
+  }, [agentClient, selectedTeam?.id]);
+
   const loadExecution = useCallback(async (): Promise<void> => {
     const workItemId = selectedRuntimeWorkItem?.id;
     const requestId = ++executionRequestIdRef.current;
@@ -235,15 +286,57 @@ export function TeamWorkspace({
     }
   }, [agentClient, selectedRuntimeWorkItem?.id]);
 
+  const loadConversationActivities = useCallback(async (): Promise<void> => {
+    const workItemId = selectedRuntimeWorkItem?.id;
+    const currentExecution = selectedExecution;
+    const requestId = ++conversationActivityRequestIdRef.current;
+    if (
+      workItemId === undefined
+      || currentExecution === null
+      || currentExecution.agents.length === 0
+    ) {
+      setConversationActivities([]);
+      return;
+    }
+    const entries = await Promise.all(currentExecution.agents.map(async (member) => {
+      try {
+        const timeline = await agentClient.listConversationTimeline({
+          conversationId: member.conversation.id,
+        });
+        return [member.conversation.id, timeline] as const;
+      } catch {
+        return [member.conversation.id, [] as ConversationTimelineItem[]] as const;
+      }
+    }));
+    if (
+      requestId !== conversationActivityRequestIdRef.current
+      || activeExecutionWorkItemIdRef.current !== workItemId
+    ) return;
+    setConversationActivities(buildTeamConversationActivities(
+      currentExecution,
+      new Map(entries),
+    ));
+  }, [agentClient, selectedExecution, selectedRuntimeWorkItem?.id]);
+
   useEffect(() => {
     const timeout = window.setTimeout(() => void loadWorkItems(), 0);
     return () => window.clearTimeout(timeout);
   }, [loadWorkItems]);
 
   useEffect(() => {
+    const timeout = window.setTimeout(() => void loadTeamInstances(), 0);
+    return () => window.clearTimeout(timeout);
+  }, [loadTeamInstances]);
+
+  useEffect(() => {
     const timeout = window.setTimeout(() => void loadExecution(), 0);
     return () => window.clearTimeout(timeout);
   }, [loadExecution]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => void loadConversationActivities(), 0);
+    return () => window.clearTimeout(timeout);
+  }, [loadConversationActivities]);
 
   useEffect(() => agentClient.onConversationRunEvent((event) => {
     if (event.type === "assistant.delta") {
@@ -296,16 +389,19 @@ export function TeamWorkspace({
     ) return;
     void loadWorkItems();
     void loadExecution();
+    void loadConversationActivities();
     if (event.type === "run.finished") {
       window.setTimeout(() => {
         void loadWorkItems();
         void loadExecution();
+        void loadConversationActivities();
       }, 100);
     }
   }), [
     agentClient,
     selectedExecution,
     loadExecution,
+    loadConversationActivities,
     loadWorkItems,
     selectedRuntimeWorkItem,
     selectedTeam?.id,
@@ -314,10 +410,47 @@ export function TeamWorkspace({
 
   if (selectedTeam === undefined) return <EmptyTeamWorkspace />;
 
-  const queuedCount = workItems.filter((item) => item.status === "queued").length;
-  const processingCount = workItems.filter((item) => matchesWorkItemFilter(item, "processing")).length;
-  const acceptanceCount = workItems.filter((item) => item.status === "awaiting_acceptance").length;
-  const completedCount = workItems.filter((item) => item.status === "completed").length;
+  const queuedCount = projectWorkItems.filter((item) => item.status === "queued").length;
+  const processingCount = projectWorkItems.filter((item) => matchesWorkItemFilter(item, "processing")).length;
+  const acceptanceCount = projectWorkItems.filter((item) => item.status === "awaiting_acceptance").length;
+  const completedCount = projectWorkItems.filter((item) => item.status === "completed").length;
+
+  const createWorkItem = async (next: NewTeamWorkItemDraft): Promise<void> => {
+    const teamId = selectedTeam?.id;
+    if (teamId === undefined || isSubmitting) return;
+    const mutationRequestId = ++workItemMutationRequestIdRef.current;
+    setIsSubmitting(true);
+    try {
+      const created = await agentClient.submitTeamWorkItem({
+        ...next,
+        executionScope: "project",
+        permissionMode: "ask_before_changes",
+        teamId,
+      });
+      if (
+        mutationRequestId !== workItemMutationRequestIdRef.current
+        || activeTeamIdRef.current !== teamId
+      ) return;
+      setProjectFilter(created.projectId);
+      setFilter("all");
+      setSelectedWorkItemId(created.id);
+      setView("runtime");
+      setError(null);
+      await loadWorkItems();
+    } catch (reason) {
+      if (
+        mutationRequestId !== workItemMutationRequestIdRef.current
+        || activeTeamIdRef.current !== teamId
+      ) return;
+      setError(reason instanceof Error ? reason.message : "团队任务创建失败。");
+      throw reason;
+    } finally {
+      if (
+        mutationRequestId === workItemMutationRequestIdRef.current
+        && activeTeamIdRef.current === teamId
+      ) setIsSubmitting(false);
+    }
+  };
 
   const submitWorkItem = async (): Promise<void> => {
     const requirement = draft.trim();
@@ -353,15 +486,56 @@ export function TeamWorkspace({
     }
   };
 
-  const requestRework = async (request: string): Promise<void> => {
+  const requestRework = async (request: string): Promise<boolean> => {
     const workItemId = selectedWorkItem?.id;
-    if (workItemId === undefined) return;
+    if (workItemId === undefined) return false;
     try {
       await agentClient.requestTeamWorkItemRework({ feedback: request, workItemId });
       setFilter("processing");
       await loadWorkItems();
+      return true;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "返工请求提交失败。");
+      return false;
+    }
+  };
+
+  const updateBoardWorkItem = async (input: {
+    requirement: string;
+    title: string;
+    workItemId: string;
+  }): Promise<void> => {
+    if (isManagingWorkItem) return;
+    setIsManagingWorkItem(true);
+    try {
+      const updated = await agentClient.updateTeamWorkItem(input);
+      setRuntimeItems((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setSelectedWorkItemId(updated.id);
+      setError(null);
+      await loadWorkItems();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "任务修改失败。");
+      throw reason;
+    } finally {
+      setIsManagingWorkItem(false);
+    }
+  };
+
+  const deleteBoardWorkItem = async (workItemId: string): Promise<void> => {
+    if (isManagingWorkItem) return;
+    setIsManagingWorkItem(true);
+    try {
+      await agentClient.deleteTeamWorkItem({ workItemId });
+      setRuntimeItems((current) => current.filter((item) => item.id !== workItemId));
+      setSelectedWorkItemId((current) => current === workItemId ? "" : current);
+      setEditingBoardWorkItemId((current) => current === workItemId ? null : current);
+      setError(null);
+      await loadWorkItems();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "任务删除失败。");
+      throw reason;
+    } finally {
+      setIsManagingWorkItem(false);
     }
   };
 
@@ -421,7 +595,7 @@ export function TeamWorkspace({
         </div>
       </header>
 
-      <div className="team-workspace__toolbar">
+      <div className="team-workspace__toolbar team-command-panel team-command-panel__heading">
         <div className="team-view-switcher" role="tablist" aria-label="团队页面模式">
           <button aria-selected={view === "board"} role="tab" type="button" onClick={() => setView("board")}>
             <LayoutDashboard aria-hidden="true" size={12} />需求看板
@@ -437,13 +611,41 @@ export function TeamWorkspace({
           <Sparkles aria-hidden="true" size={13} />
           已连接真实团队 Runtime；任务会调用所选模型并在授权项目中执行。
         </div>
+        <div className="ml-auto flex shrink-0 items-center gap-[5px]">
+          <Select value={projectFilter} onValueChange={setProjectFilter}>
+            <SelectTrigger aria-label="按项目筛选" className="h-[30px] w-[150px] bg-[var(--app-panel)] text-[length:var(--app-font-size-control)]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部项目</SelectItem>
+              {projects.map((project) => (
+                <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <NewTeamWorkItemDialog
+            defaultProjectId={projectFilter === "all" ? null : projectFilter}
+            isSubmitting={isSubmitting}
+            projects={projects}
+            teamInstances={teamInstances}
+            onSubmit={createWorkItem}
+          />
+        </div>
       </div>
       {error === null ? null : <div className="team-runtime-error" role="alert">{error}</div>}
+      <EditTeamWorkItemDialog
+        isSubmitting={isManagingWorkItem}
+        item={editingBoardWorkItem}
+        onClose={() => setEditingBoardWorkItemId(null)}
+        onSubmit={updateBoardWorkItem}
+      />
 
       {view === "board" ? (
         <div className="team-command-layout team-command-layout--board">
           <TeamWorkItemBoard
-            items={workItems}
+            items={projectWorkItems}
+            onDelete={deleteBoardWorkItem}
+            onEdit={setEditingBoardWorkItemId}
             onOpen={(workItemId) => {
               setSelectedWorkItemId(workItemId);
               setFilter("all");
@@ -476,7 +678,7 @@ export function TeamWorkspace({
           )}
         </div>
       ) : (
-        <div className="team-command-layout team-command-layout--execution">
+        <div className="team-command-layout team-command-layout--execution @min-[721px]:@max-[1080px]:content-start @min-[721px]:@max-[1080px]:grid-rows-[minmax(100%,auto)_auto]">
           <WorkItemInbox
             allowQueuedEditing
             acceptanceCount={acceptanceCount}
@@ -511,7 +713,7 @@ export function TeamWorkspace({
           ) : (
             <div
               aria-label="任务详情"
-              className="relative grid min-h-0 grid-rows-[145px_minmax(220px,280px)_minmax(320px,1fr)] gap-[5px] overflow-hidden"
+              className="relative grid min-h-0 min-w-0 grid-rows-[145px_minmax(220px,280px)_minmax(320px,1fr)] gap-[5px] overflow-hidden @max-[720px]:min-h-full"
               data-team-runtime-layout="details"
             >
               <TeamWorkItemStatusPanel
@@ -519,6 +721,7 @@ export function TeamWorkspace({
                 isPublishing={publishingWorkItemId === selectedRuntimeWorkItem.id}
                 item={selectedRuntimeWorkItem}
                 onPublish={() => void publishWorkItem()}
+                projectName={projects.find((project) => project.id === selectedRuntimeWorkItem.projectId)?.name ?? "未知项目"}
                 projection={selectedCollaborationProjection}
                 onOpenConversation={onOpenConversation}
                 {...(onNavigateToConversation === undefined ? {} : { onNavigateToConversation })}
@@ -540,17 +743,66 @@ export function TeamWorkspace({
             </div>
           )}
           <TeamOperations
+            activities={conversationActivities}
             execution={selectedExecution}
             item={selectedWorkItem}
-            onOpenConversation={(conversation) => onOpenConversation(
+            onOpenConversation={(conversation, timelineItemId) => onOpenConversation(
               toProjectSession(conversation),
               selectedRuntimeWorkItem?.sourceConversationId ?? undefined,
+              timelineItemId,
             )}
           />
         </div>
       )}
     </section>
   );
+}
+
+function buildTeamConversationActivities(
+  execution: TeamWorkItemExecutionView,
+  timelines: ReadonlyMap<string, readonly ConversationTimelineItem[]>,
+): TeamConversationActivity[] {
+  const membersByConversationId = new Map(execution.agents.map((member) => [
+    member.conversation.id,
+    member,
+  ]));
+  return execution.agents.flatMap((member) => (
+    (timelines.get(member.conversation.id) ?? []).flatMap((timelineItem) => {
+      if (
+        timelineItem.kind === "tool"
+        || (timelineItem.kind === "agent_message" && timelineItem.messageType === "task_result")
+      ) return [];
+      const content = timelineItem.content.trim();
+      if (content.length === 0) return [];
+      const actorMember = timelineItem.kind === "agent_message"
+        ? membersByConversationId.get(timelineItem.senderConversationId)
+        : timelineItem.role === "assistant" ? member : undefined;
+      const actor = timelineItem.kind === "agent_message"
+        ? actorMember === undefined
+          ? timelineItem.senderTitle
+          : executionMemberName(actorMember)
+        : timelineItem.role === "user" ? "用户" : executionMemberName(member);
+      return [{
+        actor,
+        actorConversationId: actorMember?.conversation.id ?? null,
+        content,
+        conversation: member.conversation,
+        createdAt: timelineItem.createdAt,
+        id: `${member.conversation.id}:${timelineItem.id}`,
+        time: formatTeamWorkItemTime(timelineItem.createdAt),
+        timelineItemId: timelineItem.id,
+      }];
+    })
+  )).sort((left, right) => (
+    Date.parse(right.createdAt) - Date.parse(left.createdAt)
+    || right.id.localeCompare(left.id)
+  ));
+}
+
+function executionMemberName(
+  member: TeamWorkItemExecutionView["agents"][number],
+): string {
+  return member.agent?.name ?? member.conversation.title;
 }
 
 function toPrototypeWorkItem(
@@ -572,7 +824,10 @@ function toPrototypeWorkItem(
       tests: item.tasks.filter((task) => task.status === "completed").map((task) => task.title),
     },
     events: item.events.map((event) => ({
-      actor: event.type === "accepted" || event.type === "rework_requested" || event.type === "updated"
+      actor: event.type === "accepted"
+        || event.type === "commented"
+        || event.type === "rework_requested"
+        || event.type === "updated"
         ? "用户"
         : "Team Lead",
       detail: event.detail,
@@ -594,6 +849,7 @@ function toPrototypeWorkItem(
       : item.tasks.map((task) => task.title).join(" → "),
     priority: item.priority,
     project: projects.find((project) => project.id === item.projectId)?.name ?? "未知项目",
+    projectId: item.projectId,
     reworkRequest: item.events.filter((event) => event.type === "rework_requested").at(-1)?.detail ?? null,
     source: item.sourceConversationId === null ? "direct" : "conversation",
     status,
@@ -612,6 +868,7 @@ function toPrototypeWorkItem(
       title: task.title,
     })),
     title: item.title,
+    updatedAt: item.updatedAt,
   };
 }
 
@@ -620,6 +877,7 @@ function TeamWorkItemStatusPanel({
   isPublishing,
   item,
   onNavigateToConversation,
+  projectName,
   projection,
   onOpenConversation,
   onPublish,
@@ -628,6 +886,7 @@ function TeamWorkItemStatusPanel({
   isPublishing: boolean;
   item: TeamWorkItemView;
   onNavigateToConversation?: (conversationId: string) => void;
+  projectName: string;
   projection: TeamCollaborationProjection | null;
   onOpenConversation: (conversation: ProjectSession, sourceConversationId?: string) => void;
   onPublish: () => void;
@@ -661,6 +920,7 @@ function TeamWorkItemStatusPanel({
         <header className="team-command-panel__heading">
           <h2 id="team-work-item-requirement-heading">用户需求</h2>
           <div className="flex min-w-0 items-center gap-[5px]">
+            <span className="max-w-[120px] truncate rounded-[var(--app-radius-small)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] px-[5px] py-[2px] text-[var(--app-muted-foreground)]" title={`所属项目：${projectName}`}>{projectName}</span>
             <span className="rounded-[var(--app-radius-small)] bg-[var(--app-selection)] px-[5px] py-[2px] font-semibold text-[var(--app-selection-foreground)]">{status}</span>
             <span className="rounded-[var(--app-radius-small)] border border-[var(--app-border)] bg-[var(--app-panel)] px-[5px] py-[2px] font-semibold text-[var(--app-foreground)]">{priority}</span>
             <time className="truncate text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">创建于 {formatTeamWorkItemTime(item.createdAt)}</time>
@@ -709,9 +969,9 @@ function TeamWorkItemStatusPanel({
         )}
       </div>
       {isRequirementOpen ? (
-        <div className="absolute inset-0 z-30 grid place-items-center bg-black/20 p-[20px] backdrop-blur-[1px]">
+        <div className="absolute inset-0 z-30 grid place-items-center bg-transparent p-[20px]">
           <button aria-label="关闭完整用户需求" className="absolute inset-0 cursor-default" type="button" onClick={() => setIsRequirementOpen(false)} />
-          <section aria-label="完整用户需求" aria-modal="true" className="relative z-10 grid max-h-[80%] w-[min(540px,90%)] grid-rows-[40px_minmax(0,1fr)] overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] shadow-xl" role="dialog">
+          <section aria-label="完整用户需求" aria-modal="true" className="relative z-10 grid max-h-[80%] w-[min(540px,90%)] grid-rows-[40px_minmax(0,1fr)] overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] shadow-lg" role="dialog">
             <header className="flex items-center justify-between border-b border-[var(--app-border)] px-[10px]">
               <strong className="text-[length:var(--app-font-size-body)] text-[var(--app-foreground)]">用户需求</strong>
               <button aria-label="关闭完整用户需求" className="h-[28px] rounded-[var(--app-radius-small)] px-[8px] text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)]" type="button" onClick={() => setIsRequirementOpen(false)}>关闭</button>

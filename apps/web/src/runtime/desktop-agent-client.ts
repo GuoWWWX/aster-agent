@@ -1,5 +1,7 @@
 import type {
   CapabilitySet,
+  AddTeamWorkItemCommentInput,
+  DeleteTeamWorkItemInput,
   ApplicationSettings,
   BrowserConfiguration,
   ApproveToolChangeInput,
@@ -509,6 +511,10 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.updateTeamWorkItem(input);
   }
 
+  public deleteTeamWorkItem(input: DeleteTeamWorkItemInput): Promise<void> {
+    return this.desktopBridge.deleteTeamWorkItem(input);
+  }
+
   public updateTeamWorkItemPermission(
     input: UpdateTeamWorkItemPermissionInput,
   ): Promise<TeamWorkItemView> {
@@ -517,6 +523,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
 
   public publishTeamWorkItem(input: PublishTeamWorkItemInput): Promise<TeamWorkItemView> {
     return this.desktopBridge.publishTeamWorkItem(input);
+  }
+
+  public addTeamWorkItemComment(
+    input: AddTeamWorkItemCommentInput,
+  ): Promise<TeamWorkItemView> {
+    return this.desktopBridge.addTeamWorkItemComment(input);
   }
 
   public requestTeamWorkItemRework(

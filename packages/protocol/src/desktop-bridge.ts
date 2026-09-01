@@ -111,6 +111,8 @@ import type {
   SkillDocumentSaveInput,
 } from "./skill-document.js";
 import type {
+  AddTeamWorkItemCommentInput,
+  DeleteTeamWorkItemInput,
   GetTeamWorkItemExecutionInput,
   ListTeamWorkItemsInput,
   PublishTeamWorkItemInput,
@@ -191,10 +193,12 @@ export interface DesktopBridge {
   ): Promise<TeamCollaborationProjection>;
   submitTeamWorkItem(input: SubmitTeamWorkItemInput): Promise<TeamWorkItemView>;
   updateTeamWorkItem(input: UpdateTeamWorkItemInput): Promise<TeamWorkItemView>;
+  deleteTeamWorkItem(input: DeleteTeamWorkItemInput): Promise<void>;
   updateTeamWorkItemPermission(
     input: UpdateTeamWorkItemPermissionInput,
   ): Promise<TeamWorkItemView>;
   publishTeamWorkItem(input: PublishTeamWorkItemInput): Promise<TeamWorkItemView>;
+  addTeamWorkItemComment(input: AddTeamWorkItemCommentInput): Promise<TeamWorkItemView>;
   requestTeamWorkItemRework(input: RequestTeamWorkItemReworkInput): Promise<TeamWorkItemView>;
   acceptTeamWorkItem(input: AcceptTeamWorkItemInput): Promise<TeamWorkItemView>;
   listPlugins(): Promise<PluginCatalogEntry[]>;

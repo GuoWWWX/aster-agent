@@ -49,10 +49,12 @@ export type TeamWorkItemPrototype = {
   plan: string;
   priority: "high" | "normal" | "low";
   project: string;
+  projectId: string;
   source: "conversation" | "direct";
   status: TeamWorkItemStatus;
   tasks: TeamTaskPrototype[];
   title: string;
+  updatedAt: string;
   finalizationAction: TeamFinalizationAction | null;
   reworkRequest: string | null;
 };
@@ -81,10 +83,12 @@ export const TEAM_WORK_ITEMS: readonly TeamWorkItemPrototype[] = [
     plan: "尚未开始规划。",
     priority: "normal",
     project: "Aster",
+    projectId: "00000000-0000-4000-8000-000000000001",
     source: "direct",
     status: "queued",
     tasks: [],
     title: "完善团队任务的用户验收闭环",
+    updatedAt: "刚刚",
     finalizationAction: null,
     reworkRequest: null,
   },
@@ -109,6 +113,7 @@ export const TEAM_WORK_ITEMS: readonly TeamWorkItemPrototype[] = [
     plan: "先固定模型选择的唯一数据源，再处理主对话、侧边对话和新建对话的继承顺序，最后补充切换与恢复测试。",
     priority: "high",
     project: "Aster",
+    projectId: "00000000-0000-4000-8000-000000000001",
     source: "conversation",
     status: "executing",
     tasks: [
@@ -118,6 +123,7 @@ export const TEAM_WORK_ITEMS: readonly TeamWorkItemPrototype[] = [
       { agent: "Review Agent", id: "model-review", result: "依赖开发和自动化测试结果", role: "reviewer", status: "queued", title: "审查状态覆盖和竞态风险" },
     ],
     title: "完善全局模型选择与对话继承",
+    updatedAt: "今天 14:31",
     finalizationAction: null,
     reworkRequest: null,
   },
@@ -141,6 +147,7 @@ export const TEAM_WORK_ITEMS: readonly TeamWorkItemPrototype[] = [
     plan: "复用桌面开发启动链路，先探测空闲端口，再验证缓存命中、超时淘汰和重新加载状态。",
     priority: "normal",
     project: "Aster",
+    projectId: "00000000-0000-4000-8000-000000000001",
     source: "direct",
     status: "reviewing",
     tasks: [
@@ -149,6 +156,7 @@ export const TEAM_WORK_ITEMS: readonly TeamWorkItemPrototype[] = [
       { agent: "Review Agent", id: "desktop-review", result: "等待测试证据", role: "reviewer", status: "queued", title: "确认回归结果" },
     ],
     title: "验证桌面端对话缓存效果",
+    updatedAt: "今天 11:24",
     finalizationAction: null,
     reworkRequest: null,
   },
@@ -171,6 +179,7 @@ export const TEAM_WORK_ITEMS: readonly TeamWorkItemPrototype[] = [
     plan: "先制作可交互页面确认信息架构；通过后再实现 WorkItem、Task、调度、扩缩容和交付包的持久化闭环。",
     priority: "high",
     project: "Aster",
+    projectId: "00000000-0000-4000-8000-000000000001",
     source: "conversation",
     status: "planning",
     tasks: [
@@ -179,6 +188,7 @@ export const TEAM_WORK_ITEMS: readonly TeamWorkItemPrototype[] = [
       { agent: "Review Agent", id: "team-feedback", result: "等待用户确认页面方向", role: "reviewer", status: "blocked", title: "确认交互与信息密度" },
     ],
     title: "研究团队任务下发与管理",
+    updatedAt: "今天 15:06",
     finalizationAction: null,
     reworkRequest: null,
   },
@@ -208,6 +218,7 @@ export const TEAM_WORK_ITEMS: readonly TeamWorkItemPrototype[] = [
     plan: "任务已经完成全部流水线。",
     priority: "normal",
     project: "Aster",
+    projectId: "00000000-0000-4000-8000-000000000001",
     source: "direct",
     status: "awaiting_acceptance",
     tasks: [
@@ -216,6 +227,7 @@ export const TEAM_WORK_ITEMS: readonly TeamWorkItemPrototype[] = [
       { agent: "Review Agent", id: "delivery-review", result: "评审通过", role: "reviewer", status: "completed", title: "完成代码评审" },
     ],
     title: "等待用户验收的交付示例",
+    updatedAt: "昨天 19:44",
     finalizationAction: null,
     reworkRequest: null,
   },
@@ -247,12 +259,14 @@ export const TEAM_WORK_ITEMS: readonly TeamWorkItemPrototype[] = [
     plan: "任务已完成全部执行、验收与收尾流程。",
     priority: "low",
     project: "Aster",
+    projectId: "00000000-0000-4000-8000-000000000001",
     source: "direct",
     status: "completed",
     tasks: [
       { agent: "Team Lead", id: "complete-close", result: "PR 已合并", role: "lead", status: "completed", title: "完成任务收尾" },
     ],
     title: "已完成任务的最终状态示例",
+    updatedAt: "周一 17:18",
     finalizationAction: "merge",
     reworkRequest: "请补充窄窗口下的验收截图。",
   },

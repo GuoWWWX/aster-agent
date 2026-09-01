@@ -196,6 +196,7 @@ export type TeamMemberOpenRequest = {
   conversation: ProjectSession;
   requestId: number;
   sourceConversationId: string;
+  timelineItemId: string | null;
 };
 
 function toProjectSession(conversation: ConversationSummary): ProjectSession {
@@ -2074,6 +2075,13 @@ export function RightSidebarWorkspace({
                   <ConversationWorkspace
                     compact
                     agentClient={agentClient}
+                    locateTimelineItem={teamMemberOpenRequest?.conversation.id === session.id
+                      && teamMemberOpenRequest.timelineItemId !== null
+                      ? {
+                          id: teamMemberOpenRequest.timelineItemId,
+                          requestId: teamMemberOpenRequest.requestId,
+                        }
+                      : null}
                     onLocateProject={onLocateProject}
                     onLocateSession={() => {
                       if (activeSession !== null) onLocateSession(activeSession.id);
