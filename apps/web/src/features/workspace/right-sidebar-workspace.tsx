@@ -519,6 +519,7 @@ export function RightSidebarWorkspace({
   const fileLoadRequestIdsRef = useRef(new Map<string, number>());
   const handledFileOpenRequestRef = useRef<ProjectFileOpenRequest | null>(null);
   const handledTeamMemberOpenRequestIdRef = useRef<number | null>(null);
+  const teamMemberOpenRequestRef = useRef(teamMemberOpenRequest);
   const activeTabIdsBySessionRef = useRef(new Map<string, string | null>());
   const activeTabOwnerRef = useRef<string | null>(activeSession?.id ?? null);
   const openChatIdsBySessionRef = useRef(new Map<string, Set<string>>());
@@ -527,6 +528,7 @@ export function RightSidebarWorkspace({
   const activeTeam = activeSession?.teamId === null || activeSession === null
     ? null
     : teams.find((team) => team.id === activeSession.teamId) ?? null;
+  teamMemberOpenRequestRef.current = teamMemberOpenRequest;
 
   useEffect(() => {
     let disposed = false;
@@ -685,22 +687,36 @@ export function RightSidebarWorkspace({
         setActiveTabId(null);
         return;
       }
+      const request = teamMemberOpenRequestRef.current;
+      const requestedMember = request?.sourceConversationId === activeSessionId
+        ? request.conversation
+        : null;
       if (!shouldLoadSideConversations(activeSession)) {
-        setSideSessions([]);
-        setOpenChatIds(new Set());
-        setActiveTabId(null);
+        setSideSessions(requestedMember === null ? [] : [requestedMember]);
+        setOpenChatIds(requestedMember === null ? new Set() : new Set([requestedMember.id]));
+        setActiveTabId(requestedMember === null ? null : `chat:${requestedMember.id}`);
         return;
       }
 
       try {
         const loaded = await listSideConversations(agentClient, activeSession, activeTeam);
         if (disposed) return;
-        const sessions = loaded.sessions;
+        const latestRequest = teamMemberOpenRequestRef.current;
+        const latestRequestedMember = latestRequest?.sourceConversationId === activeSessionId
+          ? latestRequest.conversation
+          : null;
+        const sessions = latestRequestedMember === null
+          || loaded.sessions.some((session) => session.id === latestRequestedMember.id)
+          ? loaded.sessions
+          : [...loaded.sessions, latestRequestedMember];
         setSideSessions(sessions);
         const sessionIds = new Set(sessions.map((session) => session.id));
         const savedOpenChatIds = openChatIdsBySessionRef.current.get(activeSessionId);
         const nextOpenChatIds = savedOpenChatIds === undefined
-          ? loaded.autoOpenIds
+          ? new Set([
+              ...loaded.autoOpenIds,
+              ...(latestRequestedMember === null ? [] : [latestRequestedMember.id]),
+            ])
           : new Set([...savedOpenChatIds].filter((id) => sessionIds.has(id)));
         openChatIdsBySessionRef.current.set(activeSessionId, nextOpenChatIds);
         setOpenChatIds(nextOpenChatIds);

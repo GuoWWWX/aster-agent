@@ -340,6 +340,7 @@ team_events
 - 无副作用的只读任务可以由用户或负责人选择重试。
 - 写入、命令和网页提交不得自动重放。
 - 已保留执行根的 Team WorkItem 以及任何未完整绑定任务关系的 `subagent` queued Run 都标记失败；对应 WorkItem 进入阻塞，必须由用户明确处理，不能因为它们在崩溃时仍是 `queued` 而恢复。
+- 团队页只对 `queued`、`blocked`、`failed`、`cancelled` WorkItem 显示“发布处理/重新发布”。用户点击后才释放旧执行占用并创建新 Run；旧 Conversation、Run 与事件历史继续保留。`running`、`waiting_user`、`completed` 不允许借此绕过当前生命周期。
 - 常驻 Agent 恢复历史摘要和任务记录，但不假装原进程仍在运行。
 
 ## 11. UI 信息架构

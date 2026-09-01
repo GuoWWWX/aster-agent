@@ -13,8 +13,9 @@ export function Select(
 export function SelectTrigger({
   children,
   className,
+  showIndicator = true,
   ...props
-}: ComponentProps<typeof SelectPrimitive.Trigger>): ReactElement {
+}: ComponentProps<typeof SelectPrimitive.Trigger> & { showIndicator?: boolean }): ReactElement {
   return (
     <SelectPrimitive.Trigger
       className={cn(
@@ -25,13 +26,15 @@ export function SelectTrigger({
       {...props}
     >
       {children}
-      <SelectPrimitive.Icon asChild>
-        <ChevronDown
-          aria-hidden="true"
-          className="shrink-0 text-[var(--app-muted-foreground)]"
-          size={14}
-        />
-      </SelectPrimitive.Icon>
+      {showIndicator ? (
+        <SelectPrimitive.Icon asChild>
+          <ChevronDown
+            aria-hidden="true"
+            className="shrink-0 text-[var(--app-muted-foreground)]"
+            size={14}
+          />
+        </SelectPrimitive.Icon>
+      ) : null}
     </SelectPrimitive.Trigger>
   );
 }

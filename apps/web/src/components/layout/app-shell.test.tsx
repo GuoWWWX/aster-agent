@@ -92,6 +92,31 @@ describe("AppShell", () => {
     expect(mountCount).toBe(1);
   });
 
+  it("shows the global right workspace control on the team page without a placeholder left icon", () => {
+    useWorkbenchUiStore.setState({ activeActivity: "team", isFilePanelOpen: true });
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() => root?.render(
+      <TooltipProvider>
+        <AppShell
+          agentClient={new MockAgentClient()}
+          filePanel={<div>Agent 完整对话</div>}
+          mainContent={<div>团队页面</div>}
+          projectNavigator={<div>项目导航</div>}
+        />
+      </TooltipProvider>,
+    ));
+
+    expect(container.querySelector(".app-titlebar__brand-icon")).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="收起右侧工作区"]')).not.toBeNull();
+    expect(container.querySelector(".workbench-sidebar--right")?.textContent).toContain("Agent 完整对话");
+
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="收起右侧工作区"]')?.click());
+    expect(container.querySelector<HTMLElement>(".workbench-sidebar--right")?.hidden).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="展开右侧工作区"]')).not.toBeNull();
+  });
+
   it("restores the right workspace width for each conversation", () => {
     const container = document.createElement("div");
     document.body.append(container);

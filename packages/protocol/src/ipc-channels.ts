@@ -65,6 +65,7 @@ export const IPC_CHANNELS = {
   teamWorkItemSubmit: "team.work_item.submit",
   teamWorkItemUpdate: "team.work_item.update",
   teamWorkItemUpdatePermission: "team.work_item.update_permission",
+  teamWorkItemPublish: "team.work_item.publish",
   teamWorkItemRequestRework: "team.work_item.request_rework",
   teamWorkItemAccept: "team.work_item.accept",
   pluginList: "plugin.list",

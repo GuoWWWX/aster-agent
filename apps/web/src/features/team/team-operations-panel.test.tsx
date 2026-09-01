@@ -37,7 +37,13 @@ const item: TeamWorkItemPrototype = {
   acceptanceRound: 1,
   createdAt: "刚刚",
   delivery: null,
-  events: [],
+  events: [{
+    actor: "开发 Agent",
+    detail: "完成实现并提交回执。",
+    id: "event-1",
+    time: "刚刚",
+    type: "completion",
+  }],
   finalizationAction: null,
   id: WORK_ITEM_ID,
   nextAction: "等待交付",
@@ -112,10 +118,71 @@ describe("TeamOperations", () => {
       />,
     ));
 
+    expect(container.textContent).toContain("执行概况");
+    expect(container.querySelector('[aria-label="执行汇总"]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-team-operations-card]')).toHaveLength(3);
+    expect(container.querySelector('[data-team-runtime-layout="operations"]')?.className).toContain(
+      "grid-rows-[145px_minmax(220px,280px)_minmax(320px,1fr)]",
+    );
+    expect(container.querySelectorAll(".agent-profile-avatar")).toHaveLength(3);
+    expect(container.querySelector(`[data-activity-member-avatar="${MEMBER_CONVERSATION_ID}"]`)).not.toBeNull();
+
     act(() => {
       container.querySelector<HTMLButtonElement>('button[aria-label="打开 开发 Agent 的对话"]')?.click();
     });
 
     expect(onOpenConversation).toHaveBeenCalledWith(execution.agents[1]?.conversation);
+  });
+
+  it("uses work state instead of task result as the member status", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    act(() => root?.render(
+      <TeamOperations
+        execution={execution}
+        item={item}
+        onOpenConversation={vi.fn()}
+      />,
+    ));
+
+    expect(container.querySelectorAll('[data-member-work-state="idle"]')).toHaveLength(2);
+    expect(container.querySelectorAll('[data-member-work-state="working"]')).toHaveLength(0);
+    expect(container.textContent).toContain("空闲");
+    expect(container.textContent).not.toContain("待命");
+    expect(container.textContent).not.toContain("执行失败");
+
+    const developer = execution.agents[1];
+    expect(developer).toBeDefined();
+    if (developer === undefined) return;
+
+    act(() => root?.render(
+      <TeamOperations
+        execution={{
+          ...execution,
+          agents: execution.agents.map((member) => member.conversation.id === developer.conversation.id
+            ? {
+              ...developer,
+              conversation: {
+                ...developer.conversation,
+                activeRunId: "00000000-0000-4000-8000-000000000106",
+                lastRunStatus: "running",
+              },
+              delegation: developer.delegation === null
+                ? null
+                : { ...developer.delegation, status: "running" },
+            }
+            : member),
+        }}
+        item={item}
+        onOpenConversation={vi.fn()}
+      />,
+    ));
+
+    expect(container.querySelectorAll('[data-member-work-state="idle"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-member-work-state="working"]')).toHaveLength(1);
+    expect(container.textContent).toContain("工作中");
+    expect(container.textContent).toContain("1 运行中");
   });
 });

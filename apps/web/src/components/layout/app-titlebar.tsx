@@ -1,7 +1,6 @@
 import {
   Copy,
   Minus,
-  PanelLeft,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -135,9 +134,7 @@ export function AppTitlebar({
           )}
         </IconButton>
       ) : (
-        <div className="app-titlebar__brand" data-app-drag-region="true">
-          <PanelLeft aria-hidden="true" className="app-titlebar__brand-icon" size={17} />
-        </div>
+        <div className="app-titlebar__brand" data-app-drag-region="true" />
       )}
 
       <div className="app-titlebar__context" data-app-drag-region="true">

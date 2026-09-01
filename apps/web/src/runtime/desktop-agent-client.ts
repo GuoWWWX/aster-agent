@@ -96,6 +96,7 @@ import type {
   WriteProjectFileInput,
   WindowState,
   ListTeamWorkItemsInput,
+  PublishTeamWorkItemInput,
   ListTeamInstancesInput,
   RequestTeamWorkItemReworkInput,
   SubmitTeamWorkItemInput,
@@ -508,6 +509,10 @@ export class DesktopAgentClientAdapter implements AgentClient {
     input: UpdateTeamWorkItemPermissionInput,
   ): Promise<TeamWorkItemView> {
     return this.desktopBridge.updateTeamWorkItemPermission(input);
+  }
+
+  public publishTeamWorkItem(input: PublishTeamWorkItemInput): Promise<TeamWorkItemView> {
+    return this.desktopBridge.publishTeamWorkItem(input);
   }
 
   public requestTeamWorkItemRework(

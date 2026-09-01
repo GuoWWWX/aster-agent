@@ -82,10 +82,12 @@ export function AppShell({
   }, [themeMode]);
 
   const isConversationWorkspace = activeActivity === "conversations";
-  const canShowFileWorkspace = isConversationWorkspace || (
-    activeActivity === "settings"
-    && (configurationWorkspaceTarget !== null || agentPromptWorkspaceTarget !== null)
-  );
+  const canShowFileWorkspace = isConversationWorkspace
+    || activeActivity === "team"
+    || (
+      activeActivity === "settings"
+      && (configurationWorkspaceTarget !== null || agentPromptWorkspaceTarget !== null)
+    );
   const activeFilePanelWidth = isConversationWorkspace && activeConversationId !== null
     ? conversationFilePanelWidth ?? filePanelWidth
     : filePanelWidth;

@@ -588,42 +588,6 @@
   }
 }
 
-.conversation-agent-message {
-  gap: 5px;
-}
-
-.conversation-agent-message__source {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-self: start;
-  gap: 6px;
-  border: 0;
-  border-radius: var(--app-radius);
-  outline: none;
-  background: transparent;
-  color: inherit;
-  padding: 1px 2px;
-  cursor: pointer;
-  font-size: var(--app-font-size-control);
-  font-weight: 650;
-}
-
-.conversation-agent-message__source span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.conversation-agent-message__source:hover {
-  background: rgba(37, 99, 235, 0.08);
-}
-
-.conversation-agent-message__source:focus-visible {
-  outline: 2px solid var(--app-focus-ring);
-  outline-offset: 1px;
-}
-
 .chat-message[data-status="streaming"]::after {
   display: inline-block;
   width: 5px;

@@ -9,6 +9,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
+  type ReactNode,
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import { createPortal } from "react-dom";
@@ -69,12 +70,14 @@ type CanvasPanStart = {
 };
 
 export function CollaborationGraph({
+  headerAction,
   onOpenConversation,
   onNavigateToConversation,
   projection,
   title,
   variant,
 }: {
+  headerAction?: ReactNode;
   onOpenConversation?: (conversationId: string) => void;
   onNavigateToConversation?: (conversationId: string) => void;
   projection: TeamCollaborationProjection;
@@ -160,10 +163,15 @@ export function CollaborationGraph({
     if (start === null || start.pointerId !== event.pointerId) return;
     const bounds = event.currentTarget.getBoundingClientRect();
     if (bounds.width <= 0 || bounds.height <= 0) return;
+    const canvasScale = Math.min(
+      bounds.width / start.viewport.width,
+      bounds.height / start.viewport.height,
+    );
+    if (canvasScale <= 0) return;
     event.preventDefault();
     setPan({
-      x: start.pan.x - (event.clientX - start.clientX) * start.viewport.width / bounds.width,
-      y: start.pan.y - (event.clientY - start.clientY) * start.viewport.height / bounds.height,
+      x: start.pan.x - (event.clientX - start.clientX) / canvasScale,
+      y: start.pan.y - (event.clientY - start.clientY) / canvasScale,
     });
   };
   const endCanvasPan = (event: ReactPointerEvent<HTMLDivElement>): void => {
@@ -212,9 +220,9 @@ export function CollaborationGraph({
     <>
       <section
         className={cn(
-          "@container grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)]",
+          "@container grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)]",
           variant === "mini" && "h-[86px] grid-rows-[minmax(0,1fr)] border-[color-mix(in_srgb,var(--app-border)_78%,transparent)] bg-[var(--app-panel-subtle)]",
-          variant === "embedded" && "min-h-[190px] max-h-[290px]",
+          variant === "embedded" && "h-full min-h-[190px]",
           variant === "conversation" && "mx-auto mt-1 mb-3 min-h-[260px] max-h-[430px] w-[min(960px,calc(100%-12px))] shadow-[0_8px_24px_color-mix(in_srgb,var(--app-foreground)_8%,transparent)]",
           variant === "full" && "h-full min-h-[420px]",
         )}
@@ -233,6 +241,7 @@ export function CollaborationGraph({
               {projection.plan === null ? "尚未发布计划" : `计划 v${projection.plan.revision}`}
               {` · ${projection.summary.messageCount} 条消息`}
             </span>
+            {headerAction}
             <IconButton
               className="-mr-[5px]"
               label="定位并适配协作图"
@@ -252,7 +261,7 @@ export function CollaborationGraph({
       ) : (
         <div
           className={cn(
-            "min-h-0 overflow-hidden bg-[var(--app-canvas)] [background-image:radial-gradient(circle,color-mix(in_srgb,var(--app-border)_72%,transparent)_1px,transparent_1px)] [background-size:16px_16px]",
+            "min-h-0 overflow-hidden bg-[var(--app-panel)] [background-image:radial-gradient(circle,color-mix(in_srgb,var(--app-border)_72%,transparent)_1px,transparent_1px)] [background-size:16px_16px]",
             !isMini && "touch-none select-none",
             !isMini && (isPanning ? "cursor-grabbing" : "cursor-grab"),
           )}
@@ -411,14 +420,6 @@ export function CollaborationGraph({
             </g>
           </svg>
         </div>
-      )}
-
-      {isMini || displayNodes.length === 0 ? null : (
-        <footer className="flex min-h-[30px] min-w-0 items-center gap-2 border-t border-[var(--app-border)] bg-[var(--app-panel)] px-[10px] text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
-          <span className="ml-auto overflow-hidden text-ellipsis whitespace-nowrap">
-            {projection.summary.participantCount} 个 Agent · {projection.summary.observedRouteCount} 条活跃路线
-          </span>
-        </footer>
       )}
 
       <ul className="sr-only">

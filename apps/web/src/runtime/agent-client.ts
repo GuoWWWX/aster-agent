@@ -100,6 +100,7 @@ import type {
   WriteProjectFileInput,
   WindowState,
   ListTeamWorkItemsInput,
+  PublishTeamWorkItemInput,
   ListTeamInstancesInput,
   RequestTeamWorkItemReworkInput,
   SubmitTeamWorkItemInput,
@@ -255,6 +256,7 @@ export interface AgentClient {
   updateTeamWorkItemPermission(
     input: UpdateTeamWorkItemPermissionInput,
   ): Promise<TeamWorkItemView>;
+  publishTeamWorkItem(input: PublishTeamWorkItemInput): Promise<TeamWorkItemView>;
   requestTeamWorkItemRework(input: RequestTeamWorkItemReworkInput): Promise<TeamWorkItemView>;
   acceptTeamWorkItem(input: AcceptTeamWorkItemInput): Promise<TeamWorkItemView>;
   minimizeWindow(): Promise<void>;

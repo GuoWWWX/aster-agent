@@ -2298,6 +2298,21 @@ export function ConversationWorkspace({
     timeline,
     taskList?.createdAt ?? null,
   );
+  const conversationAgentAvatars = useMemo(() => {
+    const profilesById = new Map(agentProfiles.map((agent) => [agent.id, agent]));
+    const avatars = new Map<string, AgentProfile["avatar"]>();
+    for (const candidate of [session, ...relatedSessions]) {
+      const profile = candidate.agentId === null
+        ? undefined
+        : profilesById.get(candidate.agentId);
+      if (profile !== undefined) {
+        avatars.set(candidate.id, profile.avatar);
+      } else if (candidate.avatarIcon !== null && candidate.avatarIcon !== undefined) {
+        avatars.set(candidate.id, { icon: candidate.avatarIcon, kind: "icon" });
+      }
+    }
+    return avatars;
+  }, [agentProfiles, relatedSessions, session]);
   const pathScope = resolveConversationPathScope(project, session, teams);
   const pathAgent = session.agentId === null
     ? undefined
@@ -2423,6 +2438,14 @@ export function ConversationWorkspace({
                   ) : null}
                   <TimelineItem
                     item={item}
+                    agentAvatar={item.kind === "agent_message"
+                      ? conversationAgentAvatars.get(item.senderConversationId)
+                        ?? agentProfiles.find((agent) =>
+                          item.senderTitle === agent.name
+                          || item.senderTitle.startsWith(`${agent.name} ·`)
+                        )?.avatar
+                        ?? null
+                      : null}
                     teamManaged={teamManaged}
                     activeRunId={activeRunId}
                     latestActiveToolId={latestActiveToolId}
@@ -4096,6 +4119,7 @@ function AssistantReasoningBlock({
 
 function TimelineItem({
   item,
+  agentAvatar,
   teamManaged,
   activeRunId,
   latestActiveToolId,
@@ -4118,6 +4142,7 @@ function TimelineItem({
   liveToolOutputs,
 }: {
   item: TimelineDisplayItem;
+  agentAvatar: AgentProfile["avatar"] | null;
   teamManaged: boolean;
   activeRunId: string | null;
   latestActiveToolId: string | null;
@@ -4185,27 +4210,31 @@ function TimelineItem({
   if (item.kind === "agent_message") {
     if (item.messageType === "task_result") return null;
     return (
-      <article
-        className="chat-message conversation-agent-message"
-        data-role="user"
-        data-status={item.status}
-      >
+      <div className="flex w-full max-w-[var(--conversation-content-max-width)] flex-col items-end gap-[5px] self-center">
         <button
           aria-label={`打开来源对话 ${item.senderTitle}`}
-          className="conversation-agent-message__source"
+          className="inline-flex min-w-0 max-w-full items-center gap-[6px] rounded-[var(--app-radius)] px-[2px] py-[1px] text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)] hover:text-[var(--app-foreground)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
           title={`打开来源对话：${item.senderTitle}`}
           type="button"
           onClick={() => onSessionSelected?.(item.senderConversationId)}
         >
-          <Bot aria-hidden="true" size={15} />
-          <span>
-            {item.messageType === "agent_result"
-                ? "Agent 处理结果"
-                : "来自"} {item.senderTitle}
+          {agentAvatar === null ? (
+            <Bot aria-hidden="true" className="shrink-0" size={15} />
+          ) : (
+            <AgentAvatar avatar={agentAvatar} size="compact" />
+          )}
+          <span className="min-w-0 truncate">
+            {item.senderTitle}
           </span>
         </button>
-        <p>{item.content}</p>
-      </article>
+        <article
+          className="chat-message"
+          data-role="user"
+          data-status={item.status}
+        >
+          <p>{item.content}</p>
+        </article>
+      </div>
     );
   }
 

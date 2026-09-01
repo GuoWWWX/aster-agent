@@ -5,7 +5,10 @@ import { createRoot, type Root } from "react-dom/client";
 import type {
   ConversationRunEvent,
   ConversationSummary,
+  ListTeamWorkItemsInput,
+  PublishTeamWorkItemInput,
   TeamWorkItemExecutionView,
+  TeamWorkItemView,
   UpdateTeamWorkItemInput,
 } from "@agent/protocol";
 import { DEFAULT_AGENT_DIRECTORY_CONFIGURATION } from "@agent/protocol";
@@ -150,7 +153,7 @@ describe("TeamWorkspace", () => {
       permissionMode: "ask_before_changes",
       priority: "normal",
       projectId: "00000000-0000-4000-8000-000000000001",
-      requirement: "让 Team Lead 委派一名开发成员。",
+      requirement: `让 Team Lead 委派一名开发成员。${"请保持任务概要紧凑展示，并把长需求默认收起。".repeat(12)}`,
       teamId: team.id,
       title: "委派开发成员",
     });
@@ -214,6 +217,24 @@ describe("TeamWorkspace", () => {
     await act(async () => {
       await flushTeamWorkspace();
     });
+    expect(container.querySelector('[aria-label="用户需求"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="协作与执行"]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-team-runtime-card]')).toHaveLength(3);
+    expect(container.querySelector('[data-team-runtime-card="requirement"]')?.textContent).toContain(workItem.requirement);
+    expect(container.querySelector('[data-team-runtime-card="collaboration"]')).not.toBeNull();
+    expect(container.querySelector('[data-team-runtime-card="progress"]')).not.toBeNull();
+    expect(container.textContent).toContain("用户需求");
+    expect(container.textContent).toContain("查看完整需求");
+    expect(container.textContent).toContain("P2");
+    expect(container.querySelector('[data-team-lead-avatar="true"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="用户需求"]')?.firstElementChild?.textContent).toContain("Team Lead 主对话");
+    expect(container.querySelector('[aria-label="用户需求"]')?.firstElementChild?.textContent).toContain("查看完整需求");
+    expect(container.querySelector('[aria-label="用户需求"]')?.firstElementChild?.textContent).toContain("打开对话");
+    const runtimeTracks = "grid-rows-[145px_minmax(220px,280px)_minmax(320px,1fr)]";
+    expect(container.querySelector('[data-team-runtime-layout="details"]')?.className).toContain(runtimeTracks);
+    expect(container.querySelector('[data-team-runtime-layout="operations"]')?.className).toContain(runtimeTracks);
+    expect(container.textContent).not.toContain("展开完整需求");
+    expect(container.textContent).not.toContain("成员 Agent 位于该对话节点下方");
     expect(container.textContent).not.toContain("Implementer");
     expect(client.executionRequests).toContain(workItem.id);
 
@@ -311,6 +332,61 @@ describe("TeamWorkspace", () => {
 
     expect(client.projectionRequests.length).toBeGreaterThanOrEqual(requestCountBeforeFinish + 2);
   });
+
+  it("publishes an unhandled blocked WorkItem from the collaboration card", async () => {
+    const client = new TeamWorkspacePublishClient();
+    const team = DEFAULT_AGENT_DIRECTORY_CONFIGURATION.teams[0];
+    if (team === undefined) throw new Error("Default team fixture is unavailable.");
+    const workItem = await client.submitTeamWorkItem({
+      acceptanceCriteria: [],
+      permissionMode: "ask_before_changes",
+      priority: "normal",
+      projectId: "00000000-0000-4000-8000-000000000001",
+      requirement: "重新发布未形成执行计划的任务。",
+      teamId: team.id,
+      title: "重新发布未处理任务",
+    });
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      renderTeamWorkspace(
+        <TeamWorkspace
+          agentClient={client}
+          onOpenConversation={() => undefined}
+          projects={[{
+            id: "00000000-0000-4000-8000-000000000001",
+            name: "Mock Project",
+            rootPath: "C:/mock-project",
+          }]}
+        />,
+      );
+      await flushTeamWorkspace();
+    });
+    const runtimeTab = [...container.querySelectorAll<HTMLButtonElement>(
+      '.team-view-switcher [role="tab"]',
+    )].find((tab) => tab.textContent === "任务与验收");
+    await act(async () => {
+      runtimeTab?.click();
+      await flushTeamWorkspace();
+    });
+
+    const publishButton = [...container.querySelectorAll<HTMLButtonElement>(
+      '[data-team-runtime-card="collaboration"] button',
+    )].find((button) => button.textContent?.includes("重新发布"));
+    expect(publishButton).not.toBeNull();
+
+    await act(async () => {
+      publishButton?.click();
+      await flushTeamWorkspace();
+    });
+
+    expect(client.publishRequests).toEqual([{ workItemId: workItem.id }]);
+    expect([...container.querySelectorAll<HTMLButtonElement>(
+      '[data-team-runtime-card="collaboration"] button',
+    )].some((button) => button.textContent?.includes("重新发布"))).toBe(false);
+  });
 });
 
 class TeamWorkspaceEventClient extends MockAgentClient {
@@ -346,6 +422,33 @@ class TeamWorkspaceEventClient extends MockAgentClient {
 
   public emit(event: ConversationRunEvent): void {
     this.listeners.forEach((listener) => listener(event));
+  }
+}
+
+class TeamWorkspacePublishClient extends MockAgentClient {
+  public readonly publishRequests: PublishTeamWorkItemInput[] = [];
+
+  private isPublished = false;
+
+  public override async listTeamWorkItems(
+    input: ListTeamWorkItemsInput,
+  ): Promise<TeamWorkItemView[]> {
+    const items = await super.listTeamWorkItems(input);
+    return items.map((item) => ({
+      ...item,
+      blockedReason: this.isPublished ? null : "应用退出后等待用户重新发布。",
+      status: this.isPublished ? "running" : "blocked",
+    }));
+  }
+
+  public override async publishTeamWorkItem(
+    input: PublishTeamWorkItemInput,
+  ): Promise<TeamWorkItemView> {
+    this.publishRequests.push(input);
+    this.isPublished = true;
+    const [item] = await this.listTeamWorkItems({});
+    if (item === undefined) throw new Error("Publish fixture WorkItem is unavailable.");
+    return item;
   }
 }
 

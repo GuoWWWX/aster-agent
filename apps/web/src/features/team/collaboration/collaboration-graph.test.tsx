@@ -46,7 +46,10 @@ describe("CollaborationGraph", () => {
     expect(container.textContent).not.toContain("计划路线");
     expect(container.textContent).not.toContain("已发生");
     expect(container.textContent).not.toContain("计划外");
-    expect(container.textContent).toContain("2 个 Agent · 1 条活跃路线");
+    expect(container.textContent).not.toContain("2 个 Agent · 1 条活跃路线");
+    expect(container.querySelector("footer")).toBeNull();
+    expect(container.querySelector("[data-collaboration-canvas]")?.getAttribute("class"))
+      .toContain("bg-[var(--app-panel)]");
     expect(container.textContent).toContain("正在检查代码细节");
     expect(container.querySelector('[data-agent-icon="code"]')).not.toBeNull();
     expect(container.querySelectorAll('[role="button"]')).toHaveLength(2);
@@ -401,7 +404,7 @@ describe("CollaborationGraph", () => {
 
     const canvas = container.querySelector<HTMLElement>("[data-collaboration-canvas]");
     const svg = canvas?.querySelector("svg");
-    mockCanvasBounds(canvas);
+    mockCanvasBounds(canvas, { height: 300, width: 1_200 });
     const initialViewBox = svg?.getAttribute("viewBox");
     act(() => {
       canvas?.dispatchEvent(new MouseEvent("pointerdown", {
@@ -423,7 +426,11 @@ describe("CollaborationGraph", () => {
         clientY: 150,
       }));
     });
-    expect(svg?.getAttribute("viewBox")).not.toBe(initialViewBox);
+    const initialViewport = viewBoxNumbers(initialViewBox);
+    const movedViewport = viewBoxNumbers(svg?.getAttribute("viewBox"));
+    const canvasScale = Math.min(1_200 / initialViewport[2]!, 300 / initialViewport[3]!);
+    expect(movedViewport[0]).toBeCloseTo(initialViewport[0]! - 60 / canvasScale);
+    expect(movedViewport[1]).toBeCloseTo(initialViewport[1]! - 30 / canvasScale);
 
     act(() => {
       container.querySelector<HTMLButtonElement>('button[aria-label="定位并适配协作图"]')
@@ -543,17 +550,20 @@ function projectionFixture(): TeamCollaborationProjection {
   };
 }
 
-function mockCanvasBounds(canvas: HTMLElement | null): void {
+function mockCanvasBounds(
+  canvas: HTMLElement | null,
+  size: { height: number; width: number } = { height: 300, width: 600 },
+): void {
   if (canvas === null) throw new Error("Expected collaboration canvas.");
   Object.defineProperty(canvas, "getBoundingClientRect", {
     configurable: true,
     value: () => ({
-      bottom: 300,
-      height: 300,
+      bottom: size.height,
+      height: size.height,
       left: 0,
-      right: 600,
+      right: size.width,
       top: 0,
-      width: 600,
+      width: size.width,
       x: 0,
       y: 0,
     }),
