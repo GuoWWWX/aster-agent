@@ -15,6 +15,15 @@ export type ModelProviderState = {
   baseUrl: string;
   modelId: string;
   payload: unknown;
+  usage?: ModelProviderTokenUsage;
+};
+
+export type ModelProviderTokenUsage = {
+  cacheCreationInputTokens?: number;
+  cachedInputTokens?: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
 };
 
 export type ModelConfiguration = {

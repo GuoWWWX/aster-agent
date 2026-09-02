@@ -1,4 +1,4 @@
-/* CSS trigger 2: table wrapper and cell selectors need structural selectors. */
+/* CSS trigger 2: rendered Markdown tables, nested lists, and decorated file links need structural selectors. */
 .agent-markdown {
   --agent-md-heading-strong: #0f172a;
   --agent-md-heading: #1e293b;
@@ -152,6 +152,22 @@
   padding-left: 22px;
 }
 
+.agent-markdown ul {
+  list-style-type: disc;
+}
+
+.agent-markdown ol {
+  list-style-type: decimal;
+}
+
+.agent-markdown :is(ul, ol) ul {
+  list-style-type: circle;
+}
+
+.agent-markdown :is(ul, ol) :is(ul, ol) ul {
+  list-style-type: square;
+}
+
 .agent-markdown ul ul,
 .agent-markdown ul ol,
 .agent-markdown ol ul,
@@ -164,7 +180,7 @@
 }
 
 .agent-markdown li::marker {
-  color: var(--agent-md-marker);
+  color: currentColor;
 }
 
 .agent-markdown__task-item {
@@ -320,6 +336,16 @@
   min-width: 0;
   align-items: center;
   gap: 0.28em;
+}
+
+.agent-markdown a.agent-markdown__file-link {
+  text-decoration: none;
+}
+
+.agent-markdown__file-label {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
 }
 
 .agent-markdown__file-icon {

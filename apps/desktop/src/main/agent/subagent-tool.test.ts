@@ -112,6 +112,48 @@ describe("SubagentTool", () => {
     database.close();
   });
 
+  it("ignores an unsupported decorative icon instead of blocking Subagent creation", async () => {
+    const database = new AgentDatabase(":memory:");
+    const parent = database.createConversation(null);
+    const child = database.forkConversation(parent.id);
+    const tool = new SubagentTool(database);
+    let selectedIcon: string | undefined;
+
+    const result = await tool.execute({
+      arguments: JSON.stringify({
+        icon: "wave",
+        name: "问候助手",
+        task: "回复一句友好问候",
+      }),
+      conversationId: parent.id,
+      signal: new AbortController().signal,
+      spawn: (_task, _name, icon) => {
+        selectedIcon = icon;
+        return {
+          childConversationId: child.id,
+          completedAt: null,
+          createdAt: "2026-09-02T00:00:00.000Z",
+          error: null,
+          id: crypto.randomUUID(),
+          parentConversationId: parent.id,
+          result: null,
+          resultMessageId: null,
+          sourceRunId: crypto.randomUUID(),
+          status: "queued",
+          targetRunId: null,
+          task: "回复一句友好问候",
+          title: "问候助手",
+          updatedAt: "2026-09-02T00:00:00.000Z",
+        };
+      },
+      toolName: "spawn_subagent",
+    });
+
+    expect(result.isError).toBe(false);
+    expect(selectedIcon).toBeUndefined();
+    database.close();
+  });
+
   it("accepts empty JSON arguments for list_subagents", async () => {
     const database = new AgentDatabase(":memory:");
     const conversation = database.createConversation(null);

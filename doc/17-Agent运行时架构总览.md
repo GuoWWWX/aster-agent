@@ -325,7 +325,7 @@ Agent 间通信仍然是业务工具和持久化消息，不是把多个模型�
 
 ### 6.2 重试
 
-模型重试循环位于 `LangGraphExecutor` 的 `wrapModelCall` Middleware。Runtime 提供错误分类、退避时间、可取消等待和 `model.request_retrying` 事件回调；只有尚未产生可见文本的可重试错误或空响应才会重试。一旦本轮已经产生文本或 Tool Call，Middleware 不自动重放整轮，避免重复副作用。
+模型重试循环位于 `LangGraphExecutor` 的 `wrapModelCall` Middleware。每次语义模型请求使用稳定 `requestId`，Runtime 提供错误分类、退避时间、可取消等待和 `onRetry/onSuccess/onFailure` 回调；回调幂等更新同一个持久 `model_retry` Timeline 项，并通过 `model.retry_updated` 实时同步 UI。只有尚未产生可见文本的可重试错误或空响应才会重试；一旦本轮已经产生文本或 Tool Call，Middleware 不自动重放整轮，避免重复副作用。重试耗尽时，该卡片保留最终脱敏错误，Run 不再追加通用重复失败消息。
 
 ### 6.3 应用重启
 

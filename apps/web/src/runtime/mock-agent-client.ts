@@ -809,6 +809,17 @@ export class MockAgentClient implements AgentClient {
             runId,
           };
         }
+        if (item.kind === "model_retry") {
+          if (runId === null || runId === undefined) {
+            throw new Error("The mock fork model retry Run could not be mapped.");
+          }
+          return {
+            ...structuredClone(item),
+            conversationId: conversation.id,
+            id,
+            runId,
+          };
+        }
         const copiedItem = {
           ...structuredClone(item),
           conversationId: conversation.id,
@@ -865,6 +876,7 @@ export class MockAgentClient implements AgentClient {
           estimateContextTokens(item.content) + CONTEXT_MESSAGE_OVERHEAD_TOKENS;
         continue;
       }
+      if (item.kind === "model_retry") continue;
 
       estimatedToolTokens +=
         estimateContextTokens(item.arguments) +
@@ -912,7 +924,7 @@ export class MockAgentClient implements AgentClient {
                 + estimateContextTokens(
                   item.kind === "tool"
                     ? `${item.arguments}\n${item.result ?? ""}`
-                    : item.content,
+                    : item.kind === "model_retry" ? "" : item.content,
                 )
                 + CONTEXT_MESSAGE_OVERHEAD_TOKENS,
               0,
@@ -946,13 +958,15 @@ export class MockAgentClient implements AgentClient {
         (total, item) =>
           total +
           (item.kind === "message"
-            ? item.content.length
-            : item.kind === "agent_message"
               ? item.content.length
-              : item.arguments.length + (item.result?.length ?? 0)),
+              : item.kind === "agent_message"
+                ? item.content.length
+                : item.kind === "model_retry"
+                  ? 0
+                  : item.arguments.length + (item.result?.length ?? 0)),
         0,
       ),
-      includedMessageCount: contextTimeline.length,
+      includedMessageCount: contextTimeline.filter((item) => item.kind !== "model_retry").length,
       omittedMessageCount: 0,
       outputReserveTokens: 8_192,
       skillReserveTokens: 0,

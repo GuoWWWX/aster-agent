@@ -401,6 +401,31 @@ export const conversationToolItemSchema = z
   })
   .strict();
 
+export const conversationModelRetryStatusSchema = z.enum([
+  "retrying",
+  "completed",
+  "failed",
+]);
+
+/** One durable model-request retry lifecycle within a Run. */
+export const conversationModelRetryItemSchema = z
+  .object({
+    attempt: z.number().int().min(1).max(20),
+    completedAt: isoTimestampSchema.nullable().optional(),
+    conversationId: conversationIdSchema,
+    createdAt: isoTimestampSchema,
+    durationMs: z.number().int().nonnegative().nullable().optional(),
+    id: timelineItemIdSchema,
+    kind: z.literal("model_retry"),
+    maxAttempts: z.number().int().min(1).max(20),
+    reason: z.string().trim().min(1).max(1_000),
+    retryInMs: z.number().int().positive().max(60_000).nullable(),
+    runId: runIdSchema,
+    status: conversationModelRetryStatusSchema,
+    updatedAt: isoTimestampSchema,
+  })
+  .strict();
+
 export const conversationAgentMessageStatusSchema = z.enum(["unread", "read"]);
 export const conversationAgentMessageTypeSchema = z.enum([
   "message",
@@ -430,6 +455,7 @@ export const conversationAgentMessageItemSchema = z
 export const conversationTimelineItemSchema = z.discriminatedUnion("kind", [
   conversationAgentMessageItemSchema,
   conversationMessageItemSchema,
+  conversationModelRetryItemSchema,
   conversationToolItemSchema
 ]);
 
@@ -514,6 +540,32 @@ export const conversationContextUsageSchema = z
     includedMessageCount: z.number().int().nonnegative(),
     omittedMessageCount: z.number().int().nonnegative(),
     outputReserveTokens: z.number().int().nonnegative(),
+    providerCache: z
+      .object({
+        cumulative: z
+          .object({
+            cacheCreationInputTokens: z.number().int().nonnegative(),
+            cachedInputTokens: z.number().int().nonnegative(),
+            hitRate: z.number().min(0).max(1).nullable(),
+            inputTokens: z.number().int().nonnegative(),
+            reportedRequestCount: z.number().int().nonnegative(),
+            requestCount: z.number().int().nonnegative(),
+          })
+          .strict(),
+        latest: z
+          .object({
+            cacheCreationInputTokens: z.number().int().nonnegative().nullable(),
+            cachedInputTokens: z.number().int().nonnegative().nullable(),
+            hitRate: z.number().min(0).max(1).nullable(),
+            inputTokens: z.number().int().nonnegative(),
+            outputTokens: z.number().int().nonnegative(),
+            trendDelta: z.number().min(-1).max(1).nullable(),
+          })
+          .strict()
+          .nullable(),
+      })
+      .strict()
+      .optional(),
     skillReserveTokens: z.number().int().nonnegative().default(0)
   })
   .strict();
@@ -920,14 +972,12 @@ const modelRequestStartedEventSchema = z
   })
   .strict();
 
-const modelRequestRetryingEventSchema = z
+const modelRetryUpdatedEventSchema = z
   .object({
-    attempt: z.number().int().min(1).max(5),
     conversationId: conversationIdSchema,
-    reason: z.string().trim().min(1).max(1_000).optional(),
-    retryInMs: z.number().int().positive().max(60_000),
+    retry: conversationModelRetryItemSchema,
     runId: runIdSchema,
-    type: z.literal("model.request_retrying")
+    type: z.literal("model.retry_updated")
   })
   .strict();
 
@@ -1047,7 +1097,7 @@ const runFinishedEventSchema = z
 export const conversationRunEventSchema = z.discriminatedUnion("type", [
   runStartedEventSchema,
   modelRequestStartedEventSchema,
-  modelRequestRetryingEventSchema,
+  modelRetryUpdatedEventSchema,
   assistantReasoningDeltaEventSchema,
   assistantDeltaEventSchema,
   taskListUpdatedEventSchema,
@@ -1121,6 +1171,8 @@ export type ConversationAgentMessageType = z.infer<
   typeof conversationAgentMessageTypeSchema
 >;
 export type ConversationToolItem = z.infer<typeof conversationToolItemSchema>;
+export type ConversationModelRetryItem = z.infer<typeof conversationModelRetryItemSchema>;
+export type ConversationModelRetryStatus = z.infer<typeof conversationModelRetryStatusSchema>;
 export type ConversationToolExecutionMode = z.infer<
   typeof conversationToolExecutionModeSchema
 >;

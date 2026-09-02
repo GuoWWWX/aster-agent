@@ -163,9 +163,9 @@ export function ProjectTreeNode({
                 重试
               </button>
             </li>
-          ) : visibleChildren.length === 0 && !childState?.isLoading ? (
+          ) : visibleChildren.length === 0 && !childState?.isLoading && query.length > 0 ? (
             <li className="project-tree__message" role="none">
-              {query.length > 0 ? "没有匹配项" : "空目录"}
+              没有匹配项
             </li>
           ) : (
             visibleChildren.map((child) => (

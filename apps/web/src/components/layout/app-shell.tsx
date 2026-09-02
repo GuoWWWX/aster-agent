@@ -4,6 +4,7 @@ import type { AgentClient } from "../../runtime/index.js";
 import {
   FILE_PANEL_WIDTH_RANGE,
   PROJECT_NAVIGATOR_WIDTH_RANGE,
+  resolveActiveSettingsWorkspaceTarget,
   useWorkbenchUiStore,
 } from "../../stores/workbench-ui-store.js";
 import { ActivityBar } from "./activity-bar.js";
@@ -36,6 +37,9 @@ export function AppShell({
   const isFilePanelOpen = useWorkbenchUiStore(
     (state) => state.isFilePanelOpen,
   );
+  const isSettingsFilePanelOpen = useWorkbenchUiStore(
+    (state) => state.isSettingsFilePanelOpen,
+  );
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
   const isProjectNavigatorOpen = useWorkbenchUiStore(
     (state) => state.isProjectNavigatorOpen,
@@ -50,6 +54,9 @@ export function AppShell({
     (state) => state.projectNavigatorWidth,
   );
   const setFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
+  const setSettingsFilePanelOpen = useWorkbenchUiStore(
+    (state) => state.setSettingsFilePanelOpen,
+  );
   const setFilePanelWidth = useWorkbenchUiStore((state) => state.setFilePanelWidth);
   const setFilePanelWidthForConversation = useWorkbenchUiStore(
     (state) => state.setFilePanelWidthForConversation,
@@ -64,6 +71,9 @@ export function AppShell({
   const toggleFilePanel = useWorkbenchUiStore(
     (state) => state.toggleFilePanel,
   );
+  const toggleSettingsFilePanel = useWorkbenchUiStore(
+    (state) => state.toggleSettingsFilePanel,
+  );
   const toggleProjectNavigator = useWorkbenchUiStore(
     (state) => state.toggleProjectNavigator,
   );
@@ -73,6 +83,7 @@ export function AppShell({
   const agentPromptWorkspaceTarget = useWorkbenchUiStore(
     (state) => state.agentPromptWorkspaceTarget,
   );
+  const settingsSection = useWorkbenchUiStore((state) => state.settingsSection);
 
   useEffect(() => {
     document.documentElement.dataset.theme = themeMode;
@@ -82,12 +93,25 @@ export function AppShell({
   }, [themeMode]);
 
   const isConversationWorkspace = activeActivity === "conversations";
+  const activeSettingsWorkspaceTarget = resolveActiveSettingsWorkspaceTarget(
+    activeActivity,
+    settingsSection,
+    agentPromptWorkspaceTarget,
+    configurationWorkspaceTarget,
+  );
+  const isSettingsWorkspace = activeSettingsWorkspaceTarget !== null;
   const canShowFileWorkspace = isConversationWorkspace
     || activeActivity === "team"
-    || (
-      activeActivity === "settings"
-      && (configurationWorkspaceTarget !== null || agentPromptWorkspaceTarget !== null)
-    );
+    || isSettingsWorkspace;
+  const activeFilePanelOpen = activeActivity === "settings"
+    ? isSettingsFilePanelOpen
+    : isFilePanelOpen;
+  const setActiveFilePanelOpen = activeActivity === "settings"
+    ? setSettingsFilePanelOpen
+    : setFilePanelOpen;
+  const toggleActiveFilePanel = activeActivity === "settings"
+    ? toggleSettingsFilePanel
+    : toggleFilePanel;
   const activeFilePanelWidth = isConversationWorkspace && activeConversationId !== null
     ? conversationFilePanelWidth ?? filePanelWidth
     : filePanelWidth;
@@ -101,9 +125,9 @@ export function AppShell({
       <AppTitlebar
         agentClient={agentClient}
         contextText={TITLEBAR_CONTEXT[activeActivity]}
-        isFilePanelOpen={isFilePanelOpen}
+        isFilePanelOpen={activeFilePanelOpen}
         isProjectNavigatorOpen={isProjectNavigatorOpen}
-        onToggleFilePanel={toggleFilePanel}
+        onToggleFilePanel={toggleActiveFilePanel}
         onToggleProjectNavigator={toggleProjectNavigator}
         showFilePanelControl={canShowFileWorkspace}
         showProjectNavigatorControl={isConversationWorkspace}
@@ -140,14 +164,14 @@ export function AppShell({
         <main className="workbench-main" aria-label="主要工作区">
           {mainContent}
         </main>
-        {canShowFileWorkspace && (isFilePanelOpen || isFilePanelResizing) ? <ResizableDivider
+        {canShowFileWorkspace && (activeFilePanelOpen || isFilePanelResizing) ? <ResizableDivider
           ariaLabel="调整右侧工作区宽度"
           className="workbench-resizable-divider--right"
           direction="from-end"
           max={FILE_PANEL_WIDTH_RANGE.max}
           min={FILE_PANEL_WIDTH_RANGE.min}
           size={activeFilePanelWidth}
-          onCollapsedChange={(isCollapsed) => setFilePanelOpen(!isCollapsed)}
+          onCollapsedChange={(isCollapsed) => setActiveFilePanelOpen(!isCollapsed)}
           onDraggingChange={setFilePanelResizing}
           onResize={(width) => {
             if (isConversationWorkspace && activeConversationId !== null) {
@@ -159,7 +183,7 @@ export function AppShell({
         /> : null}
         <div
           className="workbench-sidebar workbench-sidebar--right"
-          hidden={!canShowFileWorkspace || !isFilePanelOpen}
+          hidden={!canShowFileWorkspace || !activeFilePanelOpen}
           style={filePanelStyle}
         >
           {filePanel}

@@ -61,7 +61,20 @@ renderer.renderer.rules.link_open = (tokens, index, options, environment, self) 
   const openingTag = defaultLinkOpen === undefined
     ? self.renderToken(tokens, index, options)
     : defaultLinkOpen(tokens, index, options, environment, self);
-  return isFileLink ? `${openingTag}${fileTypeIconMarkup(href)}` : openingTag;
+  return isFileLink
+    ? `${openingTag}${fileTypeIconMarkup(href)}<span class="agent-markdown__file-label">`
+    : openingTag;
+};
+
+const defaultLinkClose = renderer.renderer.rules.link_close;
+renderer.renderer.rules.link_close = (tokens, index, options, environment, self) => {
+  const openingToken = tokens.slice(0, index).findLast((token) => token.type === "link_open");
+  const hrefValue = openingToken?.attrGet("href");
+  const href = hrefValue === null || hrefValue === undefined ? "" : String(hrefValue);
+  const closingTag = defaultLinkClose === undefined
+    ? self.renderToken(tokens, index, options)
+    : defaultLinkClose(tokens, index, options, environment, self);
+  return isRecognizedFileTypePath(href) ? `</span>${closingTag}` : closingTag;
 };
 
 // MarkdownIt derives inline alignment styles from the separator row. The chat

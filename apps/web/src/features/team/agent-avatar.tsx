@@ -157,6 +157,96 @@ export function resolveAgentAvatarIcon(icon: AgentAvatarIcon): LucideIcon {
   return ICONS[icon];
 }
 
+const SUBAGENT_IDENTICON_TONES = [
+  "blue",
+  "cyan",
+  "emerald",
+  "amber",
+  "rose",
+  "violet",
+] as const;
+
+export type SubagentIdenticon = {
+  cells: Array<{ x: number; y: number }>;
+  tone: (typeof SUBAGENT_IDENTICON_TONES)[number];
+};
+
+function hashIdenticonSeed(seed: string): number {
+  let hash = 2_166_136_261;
+  for (const character of seed) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16_777_619) >>> 0;
+  }
+  return hash;
+}
+
+function nextIdenticonValue(value: number): number {
+  let next = value || 0x9e3779b9;
+  next ^= next << 13;
+  next ^= next >>> 17;
+  next ^= next << 5;
+  return next >>> 0;
+}
+
+export function createSubagentIdenticon(seed: string): SubagentIdenticon {
+  const hash = hashIdenticonSeed(seed);
+  const cells: SubagentIdenticon["cells"] = [];
+  let state = hash;
+  for (let y = 0; y < 5; y += 1) {
+    for (let x = 0; x < 3; x += 1) {
+      state = nextIdenticonValue(state);
+      const filled = (state & 1) === 1 || (x === 2 && y === 2);
+      if (!filled) continue;
+      cells.push({ x, y });
+      if (x !== 2) cells.push({ x: 4 - x, y });
+    }
+  }
+  return {
+    cells,
+    tone: SUBAGENT_IDENTICON_TONES[hash % SUBAGENT_IDENTICON_TONES.length] ?? "violet",
+  };
+}
+
+export function SubagentAvatar({
+  icon,
+  seed,
+  size = "regular",
+  status,
+}: {
+  icon: AgentAvatarIcon | null | undefined;
+  seed: string;
+  size?: "compact" | "large" | "regular";
+  status?: AgentStatus;
+}): ReactElement {
+  if (icon !== null && icon !== undefined) {
+    return (
+      <AgentAvatar
+        avatar={{ icon, kind: "icon" }}
+        size={size}
+        {...(status === undefined ? {} : { status })}
+      />
+    );
+  }
+
+  const identicon = createSubagentIdenticon(seed);
+  return (
+    <span
+      aria-hidden="true"
+      className="agent-profile-avatar"
+      data-size={size}
+      data-status={status}
+      data-subagent-avatar="generated"
+      data-tone={identicon.tone}
+    >
+      <svg focusable="false" shapeRendering="crispEdges" viewBox="0 0 5 5">
+        {identicon.cells.map((cell) => (
+          <rect fill="currentColor" height="1" key={`${cell.x}:${cell.y}`} width="1" x={cell.x} y={cell.y} />
+        ))}
+      </svg>
+    </span>
+  );
+}
+
 export function AgentAvatar({
   avatar,
   size = "regular",

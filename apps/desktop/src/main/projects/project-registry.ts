@@ -36,8 +36,12 @@ const MAX_JAVA_DECLARATION_BYTES = 128 * 1024;
 const MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024;
 const REMOTE_IMAGE_SOURCE_PATTERN = /^(?:https?:|data:|blob:)/i;
 const PREVIEW_IMAGE_MIME_TYPES: Readonly<Record<string, string>> = {
+  apng: "image/apng",
+  avif: "image/avif",
   bmp: "image/bmp",
   gif: "image/gif",
+  ico: "image/x-icon",
+  jfif: "image/jpeg",
   jpeg: "image/jpeg",
   jpg: "image/jpeg",
   png: "image/png",

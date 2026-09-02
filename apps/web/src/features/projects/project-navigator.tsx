@@ -77,7 +77,7 @@ import {
   type TeamInstanceNavigatorGroup,
 } from "./project-session-model.js";
 import type { ProjectTreeController } from "./use-project-tree.js";
-import { AgentAvatar } from "../team/agent-avatar.js";
+import { AgentAvatar, SubagentAvatar } from "../team/agent-avatar.js";
 import "./project-navigator.css";
 
 type ProjectNavigatorProps = {
@@ -1892,11 +1892,10 @@ function SubagentSessionButton({
     >
       {session.threadKind === "team_lead" ? (
         <Scale aria-label="Team Lead 对话" size={14} />
-      ) : session.avatarIcon === null || session.avatarIcon === undefined ? (
-        <Bot aria-hidden="true" size={14} />
       ) : (
-        <AgentAvatar
-          avatar={{ icon: session.avatarIcon, kind: "icon" }}
+        <SubagentAvatar
+          icon={session.avatarIcon}
+          seed={session.id}
           size="compact"
           status={isSessionRunning(session) ? "running" : "standby"}
         />

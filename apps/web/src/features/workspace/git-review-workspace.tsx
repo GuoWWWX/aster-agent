@@ -51,7 +51,7 @@ import {
 } from "../../components/ui/popover.js";
 import { cn } from "../../lib/cn.js";
 import { getUserErrorMessage, type AgentClient } from "../../runtime/index.js";
-import { WORKSPACE_CACHE_TTL_MS } from "./workspace-cache-policy.js";
+import type { GitReviewCache } from "./git-review-cache.js";
 
 import "./git-review-workspace.css";
 
@@ -63,8 +63,6 @@ export type GitChangeKeyboardSelection = {
   initiallySelectedPaths: ReadonlySet<string>;
 };
 
-const BACKGROUND_DIFF_CONCURRENCY = 2;
-const BACKGROUND_DIFF_LIMIT = 20;
 const DEFAULT_DIFF_CONTEXT_LINES = 3;
 const EXPANDED_DIFF_CONTEXT_LINES = 10_000;
 const COMMIT_PANEL_DEFAULT_HEIGHT = 208;
@@ -194,23 +192,15 @@ function splitPath(path: string): { directory: string; name: string } {
     : { directory: path.slice(0, separator), name: path.slice(separator + 1) };
 }
 
-export function backgroundDiffPaths(changes: readonly GitWorkingTreeChange[]): string[] {
-  const paths = new Set<string>();
-  for (const change of changes) {
-    if (change.additions === null || change.deletions === null) continue;
-    paths.add(change.path);
-    if (paths.size === BACKGROUND_DIFF_LIMIT) break;
-  }
-  return [...paths];
-}
-
 export function GitReviewWorkspace({
   active,
   agentClient,
+  gitReviewCache,
   projectId,
 }: {
   active: boolean;
   agentClient: AgentClient;
+  gitReviewCache: GitReviewCache;
   projectId: string;
 }): ReactElement {
   const [dialog, setDialog] = useState<ReviewDialog>(null);
@@ -225,23 +215,21 @@ export function GitReviewWorkspace({
   const [diff, setDiff] = useState<GitFileDiff | null>(null);
   const [diffContextLines, setDiffContextLines] = useState(DEFAULT_DIFF_CONTEXT_LINES);
   const [error, setError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(() => gitReviewCache.peekSnapshot(projectId) === null);
   const [operation, setOperation] = useState<string | null>(null);
   const [keyboardSelection, setKeyboardSelection] = useState<GitChangeKeyboardSelection | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(() => new Set());
-  const [snapshot, setSnapshot] = useState<GitReviewSnapshot | null>(null);
+  const [snapshot, setSnapshot] = useState<GitReviewSnapshot | null>(() => (
+    gitReviewCache.peekSnapshot(projectId)
+  ));
   const [toolbarMenuOpen, setToolbarMenuOpen] = useState(false);
   const [trackedExpanded, setTrackedExpanded] = useState(true);
   const [untrackedExpanded, setUntrackedExpanded] = useState(true);
   const commitMessageRef = useRef<HTMLTextAreaElement | null>(null);
   const commitPanelResizeCleanupRef = useRef<(() => void) | null>(null);
-  const diffCacheRef = useRef(new Map<string, GitFileDiff>());
-  const diffCacheVersionRef = useRef(0);
-  const diffRequestsRef = useRef(new Map<string, Promise<GitFileDiff>>());
   const diffRequestRef = useRef(0);
-  const prefetchVersionRef = useRef(0);
-  const snapshotLoadedAtRef = useRef<number | null>(null);
+  const selectedPathRef = useRef<string | null>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const changeButtonRefs = useRef(new Map<string, HTMLButtonElement>());
 
@@ -263,52 +251,10 @@ export function GitReviewWorkspace({
 
   const requestDiff = useCallback((
     path: string,
-    cacheVersion: number,
     contextLines = DEFAULT_DIFF_CONTEXT_LINES,
-  ): Promise<GitFileDiff> => {
-    const cacheKey = `${contextLines}:${path}`;
-    const cached = diffCacheRef.current.get(cacheKey);
-    if (cached !== undefined && cacheVersion === diffCacheVersionRef.current) {
-      return Promise.resolve(cached);
-    }
-    const key = `${cacheVersion}:${cacheKey}`;
-    const inFlight = diffRequestsRef.current.get(key);
-    if (inFlight !== undefined) return inFlight;
-    const request = agentClient.getGitFileDiff({ contextLines, path, projectId }).then((next) => {
-      if (cacheVersion === diffCacheVersionRef.current) diffCacheRef.current.set(cacheKey, next);
-      return next;
-    }).finally(() => {
-      diffRequestsRef.current.delete(key);
-    });
-    diffRequestsRef.current.set(key, request);
-    return request;
-  }, [agentClient, projectId]);
-
-  const prefetchDiffs = useCallback((changes: readonly GitWorkingTreeChange[]): void => {
-    const paths = backgroundDiffPaths(changes);
-    if (paths.length === 0) return;
-    const prefetchVersion = prefetchVersionRef.current + 1;
-    prefetchVersionRef.current = prefetchVersion;
-    const cacheVersion = diffCacheVersionRef.current;
-    window.setTimeout(() => {
-      let cursor = 0;
-      const worker = async (): Promise<void> => {
-        while (prefetchVersionRef.current === prefetchVersion) {
-          const path = paths[cursor];
-          cursor += 1;
-          if (path === undefined) return;
-          try {
-            await requestDiff(path, cacheVersion);
-          } catch {
-            // A selected file surfaces its own error; background warming stays silent.
-          }
-        }
-      };
-      for (let index = 0; index < Math.min(BACKGROUND_DIFF_CONCURRENCY, paths.length); index += 1) {
-        void worker();
-      }
-    }, 0);
-  }, [requestDiff]);
+  ): Promise<GitFileDiff> => (
+    gitReviewCache.getFileDiff(projectId, path, contextLines)
+  ), [gitReviewCache, projectId]);
 
   const loadDiff = useCallback(async (
     path: string | null,
@@ -316,27 +262,27 @@ export function GitReviewWorkspace({
   ): Promise<void> => {
     const request = diffRequestRef.current + 1;
     diffRequestRef.current = request;
+    selectedPathRef.current = path;
     setSelectedPath(path);
     setDiffContextLines(contextLines);
-    if (path === null) return;
-    setDiff(null);
+    if (path === null) {
+      setDiff(null);
+      return;
+    }
+    const cached = gitReviewCache.peekFileDiff(projectId, path, contextLines);
+    setDiff(cached);
+    if (cached !== null) return;
     try {
-      const next = await requestDiff(path, diffCacheVersionRef.current, contextLines);
+      const next = await requestDiff(path, contextLines);
       if (diffRequestRef.current === request) setDiff(next);
     } catch (reason) {
       if (diffRequestRef.current === request) {
         setError(getUserErrorMessage(reason, "无法读取文件差异。"));
       }
     }
-  }, [requestDiff]);
+  }, [gitReviewCache, projectId, requestDiff]);
 
-  const applySnapshot = useCallback((next: GitReviewSnapshot, invalidateDiffs = false): void => {
-    if (invalidateDiffs) {
-      prefetchVersionRef.current += 1;
-      diffCacheVersionRef.current += 1;
-      diffCacheRef.current.clear();
-    }
-    snapshotLoadedAtRef.current = Date.now();
+  const applySnapshot = useCallback((next: GitReviewSnapshot): void => {
     setSnapshot(next);
     setKeyboardSelection(null);
     setSelectedPaths((current) => {
@@ -344,20 +290,17 @@ export function GitReviewWorkspace({
       const retainedPaths = new Set([...current].filter((path) => availablePaths.has(path)));
       return retainedPaths.size === current.size ? current : retainedPaths;
     });
+    const selectedPath = selectedPathRef.current;
     const path = selectedPath !== null && next.changes.some((change) => change.path === selectedPath)
       ? selectedPath
       : null;
     void loadDiff(path);
-    prefetchDiffs(next.changes);
-  }, [loadDiff, prefetchDiffs, selectedPath]);
-
-  useEffect(() => () => {
-    prefetchVersionRef.current += 1;
-  }, []);
+  }, [loadDiff]);
 
   const toggleDiff = useCallback((path: string): void => {
     if (selectedPath === path) {
       diffRequestRef.current += 1;
+      selectedPathRef.current = null;
       setSelectedPath(null);
       setDiff(null);
       setDiffContextLines(DEFAULT_DIFF_CONTEXT_LINES);
@@ -428,19 +371,20 @@ export function GitReviewWorkspace({
     setIsLoading(true);
     setError(null);
     try {
-      applySnapshot(await agentClient.getGitReviewSnapshot({ projectId }), true);
+      await gitReviewCache.refreshProject(projectId, { invalidateDiffs: true });
     } catch (reason) {
       setError(getUserErrorMessage(reason, "无法读取 Git 变更。"));
     } finally {
       setIsLoading(false);
     }
-  }, [agentClient, applySnapshot, projectId]);
+  }, [gitReviewCache, projectId]);
 
   const runOperation = useCallback(async (input: GitOperationInput): Promise<boolean> => {
     setOperation(input.action);
     setError(null);
     try {
-      applySnapshot(await agentClient.runGitOperation(input), true);
+      const next = await agentClient.runGitOperation(input);
+      gitReviewCache.replaceSnapshot(projectId, next, { invalidateDiffs: true });
       return true;
     } catch (reason) {
       setError(getUserErrorMessage(reason, "Git 操作失败。"));
@@ -448,16 +392,16 @@ export function GitReviewWorkspace({
     } finally {
       setOperation(null);
     }
-  }, [agentClient, applySnapshot]);
+  }, [agentClient, gitReviewCache, projectId]);
 
   useEffect(() => {
-    const cacheExpired = snapshotLoadedAtRef.current === null
-      || Date.now() - snapshotLoadedAtRef.current >= WORKSPACE_CACHE_TTL_MS;
-    if (!active || (snapshot !== null && !cacheExpired)) return;
+    return gitReviewCache.subscribe(projectId, applySnapshot);
+  }, [applySnapshot, gitReviewCache, projectId]);
+
+  useEffect(() => {
+    if (!active) return;
     let disposed = false;
-    void agentClient.getGitReviewSnapshot({ projectId }).then((next) => {
-      if (!disposed) applySnapshot(next, snapshot !== null);
-    }).catch((reason: unknown) => {
+    void gitReviewCache.warmProject(projectId).catch((reason: unknown) => {
       if (!disposed) setError(getUserErrorMessage(reason, "无法读取 Git 变更。"));
     }).finally(() => {
       if (!disposed) setIsLoading(false);
@@ -465,7 +409,7 @@ export function GitReviewWorkspace({
     return () => {
       disposed = true;
     };
-  }, [active, agentClient, applySnapshot, projectId, snapshot]);
+  }, [active, gitReviewCache, projectId]);
 
   const trackedChanges = snapshot?.changes.filter((change) => !change.status.trim().includes("?")) ?? [];
   const untrackedChanges = snapshot?.changes.filter((change) => change.status.trim().includes("?")) ?? [];

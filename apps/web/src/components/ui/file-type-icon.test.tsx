@@ -6,6 +6,20 @@ import {
 } from "./file-type-icon-data.js";
 
 describe("FileTypeIcon", () => {
+  it("uses compact folded paper icons for document files", () => {
+    expect(isRecognizedFileTypePath("notes.txt")).toBe(true);
+    expect(isRecognizedFileTypePath("NOTES.TXT")).toBe(true);
+    expect(fileTypeIconMarkup("notes.txt")).toContain('data-document-kind="txt"');
+    expect(fileTypeIconMarkup("notes.txt")).toContain('d="M22.038 2H6.375');
+    expect(fileTypeIconMarkup("notes.txt")).not.toContain("<rect");
+    expect(fileTypeIconMarkup("notes.txt")).not.toContain(">txt</text>");
+    expect(fileTypeIconMarkup("README.md")).toContain('data-document-kind="md"');
+    expect(fileTypeIconMarkup("README.mdx")).toContain('data-document-kind="md"');
+    expect(fileTypeIconMarkup("README.md")).toContain("#755838");
+    expect(fileTypeIconMarkup("guide.pdf")).toContain('data-document-kind="pdf"');
+    expect(fileTypeIconMarkup("guide.pdf")).toContain("#dc2626");
+  });
+
   it("distinguishes modern and legacy Word formats", () => {
     expect(isRecognizedFileTypePath("docs/report.doc")).toBe(true);
     expect(isRecognizedFileTypePath("docs/report.docx?download=1")).toBe(true);

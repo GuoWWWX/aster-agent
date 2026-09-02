@@ -377,12 +377,12 @@ function GeneralSettings(): ReactElement {
         <div className="settings-general-card">
           <article className="settings-general-row">
             <div>
-              <h4>显示上下文用量</h4>
-              <p>在输入框右侧显示当前对话的上下文使用情况</p>
+              <h4>显示上下文与缓存用量</h4>
+              <p>显示当前对话的上下文估算，以及输入框下方的 Provider 缓存命中率</p>
             </div>
             <label className="settings-switch">
               <input
-                aria-label="显示上下文用量"
+                aria-label="显示上下文与缓存用量"
                 checked={showContextUsage}
                 type="checkbox"
                 onChange={(event) => setShowContextUsage(event.target.checked)}

@@ -170,27 +170,7 @@
   overflow-x: hidden;
   overflow-y: auto;
   background: transparent;
-  padding: 24px max(16px, calc((100% - var(--conversation-content-max-width)) / 2)) 140px;
-}
-
-.conversation-workspace__surface[data-has-task-list="true"] .conversation-workspace__messages {
-  padding-bottom: 178px;
-}
-
-.conversation-workspace__surface[data-has-pending-messages="true"] .conversation-workspace__messages {
-  padding-bottom: 300px;
-}
-
-/* CSS trigger #2: the absolute composer overlay needs space based on its approval descendants. */
-.conversation-workspace__surface[data-has-subagent-approvals="true"] .conversation-workspace__messages {
-  padding-bottom: 340px;
-}
-
-.conversation-workspace__surface[data-has-subagent-approvals="true"][data-has-pending-messages="true"]
-  .conversation-workspace__messages,
-.conversation-workspace__surface[data-has-subagent-approvals="true"][data-has-task-list="true"]
-  .conversation-workspace__messages {
-  padding-bottom: 520px;
+  padding: 24px max(16px, calc((100% - var(--conversation-content-max-width)) / 2)) 0;
 }
 
 .conversation-workspace__loading,
@@ -850,25 +830,6 @@
   white-space: nowrap;
 }
 
-.tool-timeline-item__file-link {
-  min-width: 0;
-  overflow: hidden;
-  border: 0;
-  border-bottom: 1px dotted currentcolor;
-  background: transparent;
-  color: inherit;
-  padding: 0;
-  cursor: pointer;
-  font: inherit;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tool-timeline-item__file-link:hover {
-  color: var(--app-accent);
-}
-
-.tool-timeline-item__file-link:focus-visible,
 button.tool-file-change__path:focus-visible {
   outline: 2px solid var(--app-focus-ring);
   outline-offset: 2px;
@@ -951,6 +912,7 @@ button.tool-file-change__path:focus-visible {
 
 .tool-timeline-item__payload-label {
   margin: 0;
+  background: var(--app-panel);
   color: var(--app-muted-foreground);
   padding: 6px 9px;
   font-size: var(--app-font-size-control);
@@ -1126,7 +1088,7 @@ button.tool-file-change__path:focus-visible {
   min-height: 32px;
   align-items: center;
   gap: 5px;
-  background: var(--app-panel-subtle);
+  background: var(--app-panel);
   color: var(--app-muted-foreground);
   padding-left: 9px;
   font-size: var(--app-font-size-control);
@@ -1183,26 +1145,13 @@ button.tool-file-change__path:focus-visible {
   margin: 2px 0 5px;
 }
 
-.tool-file-change {
-  border-top: 1px solid var(--app-border);
-  padding: 8px;
-}
-
-.tool-file-change__surface {
-  overflow: hidden;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius);
-  background: var(--app-muted);
-}
-
 .tool-file-change__header {
   display: flex;
-  min-height: 34px;
+  min-height: 32px;
   align-items: center;
-  gap: 8px;
-  border-bottom: 1px solid var(--app-border);
-  background: var(--app-panel-subtle);
-  padding-left: 10px;
+  gap: 5px;
+  background: var(--app-panel);
+  padding-left: 9px;
 }
 
 .tool-file-change__path {
@@ -1218,10 +1167,9 @@ button.tool-file-change__path:focus-visible {
 
 button.tool-file-change__path {
   border: 0;
-  border-bottom: 1px dotted currentcolor;
   background: transparent;
   cursor: pointer;
-  font: inherit;
+  font-family: inherit;
   padding: 0;
   text-align: left;
 }
@@ -1247,8 +1195,8 @@ button.tool-file-change__path:hover {
 }
 
 .tool-file-change__copy {
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   margin-right: 2px;
 }
 
@@ -1746,6 +1694,8 @@ button.tool-file-change__path:hover {
 .conversation-workspace__composer {
   /* CSS trigger #2: keep the transparent form margins from covering the message scrollbar. */
   pointer-events: none;
+  /* CSS trigger #4: status labels respond to the composer width instead of the viewport. */
+  container-type: inline-size;
   padding: 8px 0 12px;
   border: 0;
   background: transparent;
@@ -2429,13 +2379,7 @@ button.tool-file-change__path:hover {
 
 .conversation-workspace[data-compact="true"] .conversation-workspace__messages {
   gap: 16px;
-  padding: 18px max(16px, calc((100% - var(--conversation-content-max-width)) / 2)) 132px;
-}
-
-.conversation-workspace[data-compact="true"]
-  .conversation-workspace__surface[data-has-task-list="true"]
-  .conversation-workspace__messages {
-  padding-bottom: 170px;
+  padding: 18px max(16px, calc((100% - var(--conversation-content-max-width)) / 2)) 0;
 }
 
 .conversation-workspace[data-compact="true"] .conversation-workspace__composer {
@@ -2776,19 +2720,7 @@ button.tool-file-change__path:hover {
   background: #242424;
 }
 
-[data-theme="dark"] .tool-timeline-item__payload pre {
-  background: #1d1d1d;
-}
-
 [data-theme="dark"] .tool-timeline-item__approval {
-  background: #242424;
-}
-
-[data-theme="dark"] .tool-file-change__surface {
-  background: #1d1d1d;
-}
-
-[data-theme="dark"] .tool-file-change__header {
   background: #242424;
 }
 

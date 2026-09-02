@@ -13,6 +13,7 @@ import {
   conversationModelSelectionSchema,
   conversationAgentMessageItemSchema,
   conversationMessageItemSchema,
+  conversationModelRetryItemSchema,
   conversationPendingMessageSchema,
   conversationPermissionModeSchema,
   conversationRunStatusSchema,
@@ -46,6 +47,7 @@ import {
   type ConversationAttachment,
   type ConversationAgentMessageItem,
   type ConversationMessageItem,
+  type ConversationModelRetryItem,
   type ConversationModelSelection,
   type ConversationPendingMessage,
   type ConversationRunStatus,
@@ -73,7 +75,11 @@ import {
   type SetTeamCollaborationPlanInput,
   type TeamCollaborationProjection,
 } from "@agent/protocol";
-import type { ModelProviderState, ModelToolCall } from "../model/model-contracts.js";
+import type {
+  ModelProviderState,
+  ModelProviderTokenUsage,
+  ModelToolCall,
+} from "../model/model-contracts.js";
 
 export type { ModelProviderState, ModelToolCall } from "../model/model-contracts.js";
 
@@ -588,17 +594,32 @@ function parseJson<T>(value: string, description: string): T {
   }
 }
 
+function contextSearchRuns(query: string): string[] {
+  return [...new Set(
+    (query.match(/[\p{Script=Han}]+|[\p{L}\p{N}_./\\:@#-]+/gu) ?? [])
+      .map((run) => run.trim())
+      .filter((run) => run.length >= 2),
+  )];
+}
+
+function isDistinctiveContextTerm(term: string): boolean {
+  return (/^[\p{Script=Han}]+$/u.test(term) && term.length >= 4)
+    || /[._/\\:@#-]|\d/u.test(term)
+    || /[a-z][A-Z]|_/u.test(term);
+}
+
 function contextSearchTerms(query: string): string[] {
-  const runs = query.match(/[\p{Script=Han}]+|[\p{L}\p{N}_./\\:@#-]+/gu) ?? [];
+  const runs = contextSearchRuns(query);
   const terms: string[] = [];
   const append = (term: string): void => {
     const normalized = term.trim();
     if (normalized.length < 2 || terms.includes(normalized)) return;
     terms.push(normalized);
   };
+  for (const run of runs.filter(isDistinctiveContextTerm)) append(run);
+  for (const run of runs) append(run);
   for (const run of runs) {
     if (/^[\p{Script=Han}]+$/u.test(run)) {
-      append(run);
       for (let index = 0; index + 3 <= run.length; index += 1) {
         append(run.slice(index, index + 3));
       }
@@ -614,6 +635,10 @@ function contextSearchTerms(query: string): string[] {
   return terms.slice(0, 24);
 }
 
+function distinctiveContextTerms(query: string): string[] {
+  return contextSearchRuns(query).filter(isDistinctiveContextTerm);
+}
+
 function ftsQueryForTerms(terms: readonly string[]): string {
   return terms
     .filter((term) => term.length >= 3)
@@ -623,6 +648,53 @@ function ftsQueryForTerms(terms: readonly string[]): string {
 
 function likePattern(term: string): string {
   return `%${term.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+}
+
+function rankStrongContextMatches(
+  messages: readonly StoredContextMessage[],
+  distinctiveTerms: readonly string[],
+  terms: readonly string[],
+  limit: number,
+): StoredContextMessage[] {
+  const normalizedTerms = terms.map((term) => term.toLocaleLowerCase());
+  const normalizedDistinctiveTerms = distinctiveTerms.map((term) => term.toLocaleLowerCase());
+  const minimumMatches = normalizedTerms.length <= 2
+    ? 1
+    : Math.min(4, Math.max(2, Math.ceil(normalizedTerms.length / 4)));
+  const candidates = messages.map((message, index) => {
+    const searchableText = `${message.content}\n${JSON.stringify(message.toolCalls)}`
+      .toLocaleLowerCase();
+    return {
+      distinctiveMatch: normalizedDistinctiveTerms.some((term) => searchableText.includes(term)),
+      index,
+      matchedTerms: normalizedTerms.reduce(
+        (count, term) => count + (searchableText.includes(term) ? 1 : 0),
+        0,
+      ),
+      message,
+    };
+  });
+  const strongRunIds = new Set(
+    candidates
+      .filter((candidate) =>
+        candidate.distinctiveMatch || candidate.matchedTerms >= minimumMatches
+      )
+      .map((candidate) => candidate.message.runId)
+      .filter((runId): runId is string => runId !== null),
+  );
+  return candidates
+    .filter((candidate) =>
+      candidate.distinctiveMatch
+      || candidate.matchedTerms >= minimumMatches
+      || (candidate.message.runId !== null && strongRunIds.has(candidate.message.runId))
+    )
+    .sort((left, right) =>
+      Number(right.distinctiveMatch) - Number(left.distinctiveMatch)
+      || right.matchedTerms - left.matchedTerms
+      || left.index - right.index
+    )
+    .slice(0, limit)
+    .map((candidate) => candidate.message);
 }
 
 function teamExecutionScopeKey(projectId: string, sourceConversationId: string | null): string {
@@ -722,13 +794,42 @@ function readProjectionProviderState(
     return undefined;
   }
   const apiFormat = modelApiFormatSchema.safeParse(value.apiFormat);
+  const usage = readProjectionProviderTokenUsage(value.usage);
   return apiFormat.success
     ? {
         apiFormat: apiFormat.data,
         baseUrl: value.baseUrl,
         modelId: value.modelId,
         payload: value.payload,
+        ...(usage === undefined ? {} : { usage }),
       }
+    : undefined;
+}
+
+function readProjectionProviderTokenUsage(
+  value: unknown,
+): ModelProviderTokenUsage | undefined {
+  if (!isProjectionRecord(value)) return undefined;
+  const inputTokens = readProjectionTokenCount(value.inputTokens);
+  const outputTokens = readProjectionTokenCount(value.outputTokens);
+  const totalTokens = readProjectionTokenCount(value.totalTokens);
+  if (inputTokens === undefined || outputTokens === undefined || totalTokens === undefined) {
+    return undefined;
+  }
+  const cachedInputTokens = readProjectionTokenCount(value.cachedInputTokens);
+  const cacheCreationInputTokens = readProjectionTokenCount(value.cacheCreationInputTokens);
+  return {
+    ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
+    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+    inputTokens,
+    outputTokens,
+    totalTokens,
+  };
+}
+
+function readProjectionTokenCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? value
     : undefined;
 }
 
@@ -3630,20 +3731,24 @@ export class AgentDatabase {
           conversation.updatedAt
         );
 
-      const sourceCheckpoint = this.getContextCheckpoint(sourceConversationId);
-      const allSourceMessages = this.database
-        .prepare(
-          `SELECT sequence, run_id, role, content, tool_calls_json, tool_call_id,
-                  attachment_ids_json, provider_state_json, created_at
-           FROM model_messages
-           WHERE conversation_id = ?
-             ${throughModelMessageSequence === null ? "" : "AND sequence <= ?"}
-           ORDER BY sequence ASC`
-        )
-        .all(
-          sourceConversationId,
-          ...(throughModelMessageSequence === null ? [] : [throughModelMessageSequence]),
-        ) as DatabaseRow[];
+      const sourceCheckpoint = kind === "subagent"
+        ? null
+        : this.getContextCheckpoint(sourceConversationId);
+      const allSourceMessages: DatabaseRow[] = kind === "subagent"
+        ? []
+        : this.database
+            .prepare(
+              `SELECT sequence, run_id, role, content, tool_calls_json, tool_call_id,
+                      attachment_ids_json, provider_state_json, created_at
+               FROM model_messages
+               WHERE conversation_id = ?
+                 ${throughModelMessageSequence === null ? "" : "AND sequence <= ?"}
+               ORDER BY sequence ASC`,
+            )
+            .all(
+              sourceConversationId,
+              ...(throughModelMessageSequence === null ? [] : [throughModelMessageSequence]),
+            );
       const sourceMessages = kind === "side" && sourceCheckpoint !== null
         ? allSourceMessages.filter(
             (message) => asNumber(message, "sequence") >= sourceCheckpoint.coveredThroughSequence,
@@ -4748,7 +4853,9 @@ export class AgentDatabase {
       if (item.kind === "agent_message") {
         return this.withCurrentAgentMessageSenderTitle(item);
       }
-      if (item.kind !== "message" || item.role !== "assistant" || item.runId === null) {
+      const hasRunDuration = (item.kind === "message" && item.role === "assistant" && item.runId !== null)
+        || (item.kind === "model_retry" && item.status !== "retrying");
+      if (!hasRunDuration) {
         return item;
       }
 
@@ -6030,6 +6137,15 @@ export class AgentDatabase {
     this.insertTimelineItem(validated);
   }
 
+  public upsertModelRetry(retry: ConversationModelRetryItem): void {
+    const validated = conversationModelRetryItemSchema.parse(retry);
+    this.getConversation(validated.conversationId);
+    this.withTransaction(() => {
+      this.upsertModelRetryInTransaction(validated);
+      this.touchConversation(validated.conversationId, validated.updatedAt);
+    });
+  }
+
   public updateTool(tool: ConversationToolItem): void {
     const validated = conversationToolItemSchema.parse(tool);
     const update = this.database
@@ -6125,6 +6241,7 @@ export class AgentDatabase {
   }): StoredContextMessage[] {
     this.getConversation(input.conversationId);
     const terms = contextSearchTerms(input.query);
+    const distinctiveTerms = distinctiveContextTerms(input.query);
     if (terms.length === 0) return [];
     const limit = input.limit ?? 24;
     if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 100) {
@@ -6136,6 +6253,7 @@ export class AgentDatabase {
     const exclusionSql = excluded.length === 0
       ? ""
       : ` AND model_messages.sequence NOT IN (${excluded.map(() => "?").join(", ")})`;
+    const candidateLimit = Math.min(100, Math.max(limit, limit * 4));
     const ftsQuery = ftsQueryForTerms(terms);
     const columns = `model_messages.sequence, model_messages.run_id, model_messages.role,
       model_messages.content, model_messages.tool_calls_json, model_messages.tool_call_id,
@@ -6154,8 +6272,14 @@ export class AgentDatabase {
            ORDER BY bm25(model_message_search) ASC, model_messages.sequence DESC
            LIMIT ?`,
         )
-        .all(input.conversationId, ftsQuery, ...excluded, limit) as DatabaseRow[];
-      if (rows.length > 0) return rows.map((row) => this.toStoredContextMessage(row));
+        .all(input.conversationId, ftsQuery, ...excluded, candidateLimit) as DatabaseRow[];
+      const strongMatches = rankStrongContextMatches(
+        rows.map((row) => this.toStoredContextMessage(row)),
+        distinctiveTerms,
+        terms,
+        limit,
+      );
+      if (strongMatches.length > 0) return strongMatches;
     }
 
     const searchableText = "(model_messages.content || char(10) || model_messages.tool_calls_json)";
@@ -6174,9 +6298,14 @@ export class AgentDatabase {
         input.conversationId,
         ...terms.map(likePattern),
         ...excluded,
-        limit,
+        candidateLimit,
       ) as DatabaseRow[];
-    return rows.map((row) => this.toStoredContextMessage(row));
+    return rankStrongContextMatches(
+      rows.map((row) => this.toStoredContextMessage(row)),
+      distinctiveTerms,
+      terms,
+      limit,
+    );
   }
 
   public getContextCheckpoint(conversationId: string): ConversationContextCheckpoint | null {
@@ -6544,6 +6673,11 @@ export class AgentDatabase {
           projected = true;
           continue;
         }
+        if (event.type === "model_retry_updated" && event.payload.writeAhead === true) {
+          this.materializeThreadLogModelRetry(conversationId, event);
+          projected = true;
+          continue;
+        }
         if (event.type === "context_checkpoint" && event.payload.writeAhead === true) {
           this.materializeThreadLogContextCheckpoint(conversationId, event);
           projected = true;
@@ -6685,6 +6819,11 @@ export class AgentDatabase {
 
         if (event.type === "assistant_message") {
           this.materializeThreadLogAssistantMessage(conversationId, event);
+          continue;
+        }
+
+        if (event.type === "model_retry_updated") {
+          this.materializeThreadLogModelRetry(conversationId, event);
           continue;
         }
 
@@ -7166,6 +7305,18 @@ export class AgentDatabase {
       pendingMessageId,
       userMessage: message,
     }, event.eventId);
+  }
+
+  private materializeThreadLogModelRetry(
+    conversationId: string,
+    event: ThreadLogProjectionEvent,
+  ): void {
+    const parsed = conversationModelRetryItemSchema.safeParse(event.payload.retry);
+    if (!parsed.success || parsed.data.conversationId !== conversationId) {
+      throw new Error("ThreadLog model retry update is invalid.");
+    }
+    this.upsertModelRetryInTransaction(parsed.data);
+    this.touchConversation(conversationId, parsed.data.updatedAt);
   }
 
   /** Persist the Tool timeline item before its handler is allowed to run. */
@@ -8924,6 +9075,7 @@ export class AgentDatabase {
 
   private interruptUnfinishedRuns(): void {
     this.withTransaction(() => {
+      const interruptedRunError = "Application stopped before the run finished.";
       const taskRows = this.database
         .prepare(
           `SELECT id FROM subagent_tasks
@@ -8939,7 +9091,7 @@ export class AgentDatabase {
       this.database
         .prepare(
           `UPDATE runs
-           SET status = 'failed', error = 'Application stopped before the run finished.', updated_at = ?
+           SET status = 'failed', error = ?, updated_at = ?
            WHERE status = 'running'
               OR (
                 status = 'queued'
@@ -8964,7 +9116,35 @@ export class AgentDatabase {
                 )
               )`
         )
-        .run(now);
+        .run(interruptedRunError, now);
+      const interruptedRunRows = this.database
+        .prepare(
+          `SELECT id FROM runs
+           WHERE status = 'failed' AND error = ?`,
+        )
+        .all(interruptedRunError) as DatabaseRow[];
+      if (interruptedRunRows.length > 0) {
+        const interruptedRunIds = interruptedRunRows.map((row) => asString(row, "id"));
+        const placeholders = interruptedRunIds.map(() => "?").join(", ");
+        const retryRows = this.database
+          .prepare(
+            `SELECT payload_json FROM conversation_timeline
+             WHERE kind = 'model_retry' AND run_id IN (${placeholders})`,
+          )
+          .all(...interruptedRunIds) as DatabaseRow[];
+        for (const row of retryRows) {
+          const retry = conversationModelRetryItemSchema.parse(
+            parseJson(asString(row, "payload_json"), "model retry timeline item"),
+          );
+          if (retry.status !== "retrying") continue;
+          this.upsertModelRetryInTransaction({
+            ...retry,
+            retryInMs: null,
+            status: "failed",
+            updatedAt: now,
+          });
+        }
+      }
       this.expirePendingToolApprovalsForTerminalRunsInTransaction();
       this.database
         .prepare(
@@ -9144,6 +9324,29 @@ export class AgentDatabase {
         JSON.stringify(validated),
         validated.createdAt
       );
+  }
+
+  private upsertModelRetryInTransaction(retry: ConversationModelRetryItem): void {
+    const result = this.database
+      .prepare(
+        `INSERT INTO conversation_timeline
+           (id, conversation_id, run_id, kind, payload_json, created_at)
+         VALUES (?, ?, ?, 'model_retry', ?, ?)
+         ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json
+         WHERE conversation_timeline.conversation_id = excluded.conversation_id
+           AND conversation_timeline.run_id = excluded.run_id
+           AND conversation_timeline.kind = 'model_retry'`,
+      )
+      .run(
+        retry.id,
+        retry.conversationId,
+        retry.runId,
+        JSON.stringify(retry),
+        retry.createdAt,
+      );
+    if (result.changes !== 1) {
+      throw new Error("Model retry timeline identity conflicts with an existing item.");
+    }
   }
 
   private insertModelMessage(input: {

@@ -1,15 +1,18 @@
 import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * 从 md-king 的 index.css 中机械提取 Markdown 编辑器相关规则。
  *
  * 逐字提取而非手工重写：262 条规则里任何一处意译都会造成视觉漂移。
- * 唯一的机械改写是暗色选择器 `.dark ` -> `[data-theme="dark"] `，
- * 因为两个项目的主题挂载方式不同。
+ * 机械改写暗色选择器 `.dark ` -> `[data-theme="dark"] `，并在产物末尾
+ * 让列表标记继承正文颜色；前者适配主题挂载方式，后者遵循 Aster 的文字颜色约定。
  */
 
 const SOURCE = "D:/Code/Project/AI/md-king/src/index.css";
-const TARGET = "D:/Code/Project/202608/Agent/apps/web/src/components/editor/markdown-editor.css";
+const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const TARGET = resolve(REPOSITORY_ROOT, "apps/web/src/components/editor/markdown-editor.css");
 
 /** 选择器命中其中之一才提取。 */
 const SELECTOR_PATTERN = /mk-cm-|mk-word-callout|mk-editor-medium|mk-editor-compact|mk-table-|cm-content|cm-scroller|cm-panel|cm-search/;
@@ -84,14 +87,22 @@ const rewritten = extracted
   .replace(/\.dark /g, '[data-theme="dark"] ')
   .replace(/\.dark\./g, '[data-theme="dark"] .');
 
+const asterOverrides = `
+/* Aster 约定：列表圆点和编号跟随当前正文颜色。 */
+.mk-cm-bullet,
+.mk-cm-ordered-marker {
+  color: currentColor !important;
+}
+`;
+
 const header = `/*
  * Markdown 实时预览编辑器样式。
  *
  * 由 scripts/extract-md-king-editor-css.mjs 从 md-king 的 src/index.css 机械提取，
  * 请勿手工编辑本文件——重新同步时重跑脚本，避免逐条意译造成视觉漂移。
  *
- * 与源文件的唯一差异：暗色选择器 \`.dark\` 改写为 \`[data-theme="dark"]\`，
- * 因为本项目通过 data 属性挂载主题。所需的 shadcn 语义变量由 markdown-token-bridge.css 提供。
+ * 与源文件的差异：暗色选择器 \`.dark\` 改写为 \`[data-theme="dark"]\`；
+ * 列表圆点和编号改为继承正文颜色。所需的 shadcn 语义变量由 markdown-token-bridge.css 提供。
  *
  * 源文件：md-king/src/index.css
  * 提取规则数：${ruleCount}
@@ -101,5 +112,5 @@ const header = `/*
 
 `;
 
-writeFileSync(TARGET, header + rewritten + "\n", "utf8");
+writeFileSync(TARGET, header + rewritten + asterOverrides, "utf8");
 console.log(`提取 ${ruleCount} 条规则 -> ${TARGET}`);

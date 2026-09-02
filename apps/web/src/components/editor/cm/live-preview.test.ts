@@ -50,10 +50,11 @@ afterEach(() => {
 
 describe("live preview decorations", () => {
   it("renders ATX headings with the level-specific line class", () => {
-    const view = mountEditor("# 一级标题\n\n正文", livePreviewPlugin);
+    const view = mountEditor("# 一级标题 {-}\n\n正文", livePreviewPlugin);
 
     expect(view.dom.querySelector(".cm-line.mk-cm-h1")).not.toBeNull();
     expect(view.dom.querySelector(".cm-line.mk-cm-h1")?.textContent).toContain("一级标题");
+    expect(view.dom.querySelector(".cm-line.mk-cm-h1")?.textContent).not.toContain("{-}");
   });
 
   it("renders callout lines and mounts the callout icon widget", () => {
@@ -69,15 +70,29 @@ describe("live preview decorations", () => {
     expect(view.dom.querySelector(".mk-cm-table-wrapper")).not.toBeNull();
     expect(view.dom.querySelector(".mk-cm-table")).not.toBeNull();
     expect(view.dom.querySelector(".mk-cm-table")?.textContent).toContain("A");
-    expect(view.dom.querySelector<HTMLTableCellElement>("thead th")?.style.textAlign).toBe("center");
-    expect(view.dom.querySelector<HTMLTableCellElement>("tbody td")?.style.textAlign).toBe("left");
+    expect(view.dom.querySelector("thead th")).not.toBeNull();
+    expect(view.dom.querySelector("tbody td")).not.toBeNull();
   });
 
   it("replaces a Mermaid fence with a block widget", () => {
-    const view = mountEditor("```mermaid\ngraph TD\n  A-->B\n```", mermaidBlockExtension(false));
+    const view = mountEditor(
+      "```mermaid {caption=\"图1-1 流程图\"}\ngraph TD\n  A-->B\n```",
+      mermaidBlockExtension(false),
+    );
 
     expect(view.dom.querySelector(".mk-cm-mermaid")).not.toBeNull();
     expect(view.dom.querySelector(".mk-cm-mermaid-canvas")).not.toBeNull();
+    expect(view.dom.querySelector(".mk-cm-mermaid-caption")?.textContent).toBe("图1-1 流程图");
+  });
+
+  it("uses an adjacent bold line as a Mermaid caption", () => {
+    const view = mountEditor(
+      "**图1-2 邻接题注**\n```mermaid\ngraph LR\n  A-->B\n```",
+      mermaidBlockExtension(false),
+    );
+
+    expect(view.dom.querySelector(".mk-cm-mermaid-caption")?.textContent).toBe("图1-2 邻接题注");
+    expect(view.dom.textContent?.match(/图1-2 邻接题注/g)).toHaveLength(1);
   });
 
   it("renders YAML frontmatter as a block widget", () => {

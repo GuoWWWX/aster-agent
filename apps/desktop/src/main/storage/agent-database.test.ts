@@ -271,6 +271,75 @@ describe("AgentDatabase", () => {
     database.close();
   });
 
+  it("filters weak one-term context hits when a query has several searchable terms", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const weakRun = database.createRunWithUserMessage(
+      conversation.id,
+      "旧的表单记录",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "This unrelated note only mentions validation.",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: weakRun.runId,
+      toolCalls: [],
+    });
+    database.finishRun(weakRun.runId, "completed", null);
+    const strongRun = database.createRunWithUserMessage(
+      conversation.id,
+      "登录页处理",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "The login page uses src/login.tsx and reuses the validation component.",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: strongRun.runId,
+      toolCalls: [],
+    });
+    database.finishRun(strongRun.runId, "completed", null);
+
+    const matches = database.searchContextMessages({
+      conversationId: conversation.id,
+      query: "login.tsx validation component",
+    });
+
+    expect(matches.some((message) => message.content.includes("src/login.tsx"))).toBe(true);
+    expect(matches.some((message) => message.content.includes("unrelated note"))).toBe(false);
+    database.close();
+  });
+
+  it("keeps a distinctive identifier searchable after a long natural-language prefix", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const run = database.createRunWithUserMessage(
+      conversation.id,
+      "认证配置",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "AUTH_TOKEN 最后保存在系统 secure store 中。",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: run.runId,
+      toolCalls: [],
+    });
+    database.finishRun(run.runId, "completed", null);
+
+    const matches = database.searchContextMessages({
+      conversationId: conversation.id,
+      query: "我们之前在很久以前讨论过的认证配置问题，现在那个 AUTH_TOKEN 最后放到哪里了",
+    });
+
+    expect(matches.some((message) => message.content.includes("AUTH_TOKEN"))).toBe(true);
+    database.close();
+  });
+
   it("refuses to open a database from a newer schema version", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-"));
     temporaryDirectories.push(directory);
@@ -2254,7 +2323,7 @@ describe("AgentDatabase", () => {
     const reopenedDatabase = new AgentDatabase(databasePath);
     expect(reopenedDatabase.listModelMessages(conversation.id)[1]?.providerState)
       .toEqual(providerState);
-    const fork = reopenedDatabase.forkConversation(conversation.id);
+    const fork = reopenedDatabase.forkConversation(conversation.id, "side");
     expect(reopenedDatabase.listModelMessages(fork.id)[1]?.providerState).toEqual(providerState);
     reopenedDatabase.close();
   });
@@ -2491,12 +2560,74 @@ describe("AgentDatabase", () => {
     }]);
     expect(reopened.getConversation(conversation.id).lastRunStatus).toBe("queued");
     reopened.markRunRunning(queued.runId);
+    reopened.upsertModelRetry({
+      attempt: 3,
+      conversationId: conversation.id,
+      createdAt: "2026-09-02T10:00:00.000Z",
+      id: "00000000-0000-4000-8000-000000000099",
+      kind: "model_retry",
+      maxAttempts: 5,
+      reason: "HTTP 402: Insufficient Balance",
+      retryInMs: 4_000,
+      runId: queued.runId,
+      status: "retrying",
+      updatedAt: "2026-09-02T10:00:01.000Z",
+    });
     reopened.close();
 
     const afterInFlight = new AgentDatabase(databasePath);
     expect(afterInFlight.listQueuedRunRecoveries()).toEqual([]);
     expect(afterInFlight.getConversation(conversation.id).lastRunStatus).toBe("failed");
+    expect(afterInFlight.listTimeline(conversation.id)).toContainEqual(expect.objectContaining({
+      id: "00000000-0000-4000-8000-000000000099",
+      kind: "model_retry",
+      reason: "HTTP 402: Insufficient Balance",
+      retryInMs: null,
+      status: "failed",
+    }));
     afterInFlight.close();
+  });
+
+  it("repairs a retrying timeline left behind by an older interrupted-run recovery", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-stale-model-retry-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "agent.sqlite");
+    const first = new AgentDatabase(databasePath);
+    const conversation = first.createConversation(null);
+    const run = first.createRunWithUserMessage(conversation.id, "等待模型重试", "test-model");
+    first.markRunRunning(run.runId);
+    first.upsertModelRetry({
+      attempt: 5,
+      conversationId: conversation.id,
+      createdAt: "2026-09-02T10:00:00.000Z",
+      id: "00000000-0000-4000-8000-000000000098",
+      kind: "model_retry",
+      maxAttempts: 5,
+      reason: "HTTP 402: Insufficient Balance",
+      retryInMs: 16_000,
+      runId: run.runId,
+      status: "retrying",
+      updatedAt: "2026-09-02T10:00:01.000Z",
+    });
+    first.close();
+
+    const legacyRecovery = new DatabaseSync(databasePath);
+    legacyRecovery.prepare(
+      `UPDATE runs
+       SET status = 'failed', error = 'Application stopped before the run finished.',
+           updated_at = '2026-09-02T10:00:02.000Z'
+       WHERE id = ?`,
+    ).run(run.runId);
+    legacyRecovery.close();
+
+    const recovered = new AgentDatabase(databasePath);
+    expect(recovered.listTimeline(conversation.id)).toContainEqual(expect.objectContaining({
+      id: "00000000-0000-4000-8000-000000000098",
+      reason: "HTTP 402: Insufficient Balance",
+      retryInMs: null,
+      status: "failed",
+    }));
+    recovered.close();
   });
 
   it("persists a task list through creation and removes it when closed", async () => {
@@ -2907,6 +3038,49 @@ describe("AgentDatabase", () => {
     database.close();
   });
 
+  it("starts a Subagent without inheriting the parent model context", () => {
+    const database = new AgentDatabase(":memory:");
+    const parent = database.createConversation(null);
+    const parentRun = database.createRunWithUserMessage(
+      parent.id,
+      "父对话中的历史任务",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "父对话中的历史回复",
+      conversationId: parent.id,
+      messageId: "00000000-0000-4000-8000-000000000206",
+      modelId: "test-model",
+      runId: parentRun.runId,
+      toolCalls: [],
+    });
+    database.finishRun(parentRun.runId, "completed", null);
+    const coveredThroughSequence = database.listContextMessages(parent.id).at(-1)?.sequence;
+    if (coveredThroughSequence === undefined) throw new Error("Expected parent context messages.");
+    database.saveContextCheckpoint(
+      parent.id,
+      coveredThroughSequence,
+      JSON.stringify({ goals: ["父对话压缩摘要"] }),
+    );
+
+    const subagent = database.forkConversation(parent.id, "subagent");
+
+    expect(database.listModelMessages(subagent.id)).toEqual([]);
+    expect(database.getContextCheckpoint(subagent.id)).toBeNull();
+    expect(database.listTimeline(subagent.id)).toEqual([]);
+
+    const subagentRun = database.createRunWithUserMessage(
+      subagent.id,
+      "只处理本次明确交办",
+      "test-model",
+    );
+    database.finishRun(subagentRun.runId, "completed", null);
+    expect(database.listModelMessages(subagent.id).map((message) => message.content)).toEqual([
+      "只处理本次明确交办",
+    ]);
+    database.close();
+  });
+
   it("creates numbered sibling conversations from a completed assistant reply", () => {
     const database = new AgentDatabase(":memory:");
     const source = database.createConversation(null);
@@ -2966,7 +3140,9 @@ describe("AgentDatabase", () => {
     ]);
     expect(database.getContextCheckpoint(fork.id)).toBeNull();
     const forkTimeline = database.listTimeline(fork.id);
-    expect(forkTimeline.map((item) => item.kind === "tool" ? item.name : item.content)).toEqual([
+    expect(forkTimeline.map((item) => item.kind === "tool"
+      ? item.name
+      : item.kind === "model_retry" ? item.reason : item.content)).toEqual([
       "第一轮问题",
       "第一轮回复",
     ]);
@@ -2990,7 +3166,7 @@ describe("AgentDatabase", () => {
       "第一轮回复",
     ]);
     expect(database.listTimeline(nestedFork.id).map(
-      (item) => item.kind === "tool" ? item.name : item.content,
+      (item) => item.kind === "tool" ? item.name : item.kind === "model_retry" ? item.reason : item.content,
     )).toEqual(["第一轮问题", "第一轮回复"]);
     expect(database.listTimeline(nestedFork.id).map((item) => item.id)).not.toEqual(
       forkTimeline.map((item) => item.id),
@@ -3003,10 +3179,10 @@ describe("AgentDatabase", () => {
     expect(forkRun.conversation.title).toBe("第一轮问题 (1)");
     database.finishRun(forkRun.runId, "completed", null);
     expect(database.listTimeline(source.id).map(
-      (item) => item.kind === "tool" ? item.name : item.content,
+      (item) => item.kind === "tool" ? item.name : item.kind === "model_retry" ? item.reason : item.content,
     )).toEqual(["第一轮问题", "第一轮回复", "第二轮问题", "第二轮回复"]);
     expect(database.listTimeline(fork.id).map(
-      (item) => item.kind === "tool" ? item.name : item.content,
+      (item) => item.kind === "tool" ? item.name : item.kind === "model_retry" ? item.reason : item.content,
     )).toEqual(["第一轮问题", "第一轮回复", "从分叉位置继续"]);
     expect(() => database.forkConversation(source.id, "sibling", firstRun.userMessage.id))
       .toThrow("completed assistant message");

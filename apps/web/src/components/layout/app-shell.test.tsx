@@ -19,6 +19,8 @@ beforeEach(() => {
     filePanelWidthsByConversationId: {},
     isFilePanelOpen: true,
     isProjectNavigatorOpen: true,
+    isSettingsFilePanelOpen: false,
+    settingsSection: "general",
     themeMode: "light",
   });
 });
@@ -115,6 +117,55 @@ describe("AppShell", () => {
     act(() => container.querySelector<HTMLButtonElement>('[aria-label="收起右侧工作区"]')?.click());
     expect(container.querySelector<HTMLElement>(".workbench-sidebar--right")?.hidden).toBe(true);
     expect(container.querySelector<HTMLButtonElement>('[aria-label="展开右侧工作区"]')).not.toBeNull();
+  });
+
+  it("keeps settings workspaces scoped to their settings section without opening conversations", () => {
+    useWorkbenchUiStore.setState({
+      activeActivity: "settings",
+      agentPromptWorkspaceTarget: { agentId: "agent-1", title: "默认 Agent 提示词" },
+      isFilePanelOpen: false,
+      isSettingsFilePanelOpen: true,
+      settingsSection: "agents",
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() => root?.render(
+      <TooltipProvider>
+        <AppShell
+          activeConversationId="conversation-a"
+          agentClient={new MockAgentClient()}
+          filePanel={<div>默认 Agent 提示词</div>}
+          mainContent={<div>设置页面</div>}
+          projectNavigator={<div>项目导航</div>}
+        />
+      </TooltipProvider>,
+    ));
+
+    const rightPanel = (): HTMLElement | null =>
+      container.querySelector(".workbench-sidebar--right");
+    expect(rightPanel()?.hidden).toBe(false);
+
+    act(() => useWorkbenchUiStore.getState().setSettingsSection("general"));
+    expect(rightPanel()?.hidden).toBe(true);
+
+    act(() => useWorkbenchUiStore.getState().setSettingsSection("agents"));
+    expect(rightPanel()?.hidden).toBe(false);
+
+    act(() => useWorkbenchUiStore.getState().setActiveActivity("conversations"));
+    expect(rightPanel()?.hidden).toBe(true);
+
+    act(() => useWorkbenchUiStore.getState().setFilePanelOpen(true));
+    expect(rightPanel()?.hidden).toBe(false);
+
+    act(() => useWorkbenchUiStore.getState().setActiveActivity("settings"));
+    expect(rightPanel()?.hidden).toBe(false);
+    act(() => useWorkbenchUiStore.getState().closeAgentPromptWorkspace("agent-1"));
+    expect(rightPanel()?.hidden).toBe(true);
+
+    act(() => useWorkbenchUiStore.getState().setActiveActivity("conversations"));
+    act(() => useWorkbenchUiStore.getState().setActiveActivity("settings"));
+    expect(rightPanel()?.hidden).toBe(true);
   });
 
   it("restores the right workspace width for each conversation", () => {

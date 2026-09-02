@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useWorkbenchUiStore } from "./workbench-ui-store.js";
+import {
+  resolveActiveSettingsWorkspaceTarget,
+  useWorkbenchUiStore,
+} from "./workbench-ui-store.js";
 
 describe("workbench prompt workspace", () => {
   beforeEach(() => {
@@ -8,6 +11,7 @@ describe("workbench prompt workspace", () => {
       agentPromptWorkspaceTarget: null,
       configurationWorkspaceTarget: null,
       isFilePanelOpen: false,
+      isSettingsFilePanelOpen: false,
     });
   });
 
@@ -23,7 +27,8 @@ describe("workbench prompt workspace", () => {
         title: "实现 Agent 提示词",
       },
       configurationWorkspaceTarget: null,
-      isFilePanelOpen: true,
+      isFilePanelOpen: false,
+      isSettingsFilePanelOpen: true,
     });
   });
 
@@ -45,7 +50,60 @@ describe("workbench prompt workspace", () => {
         kind: "skill",
         title: "代码审查",
       },
-      isFilePanelOpen: true,
+      isFilePanelOpen: false,
+      isSettingsFilePanelOpen: true,
     });
+  });
+
+  it("clears a closed settings workspace so it cannot reopen automatically", () => {
+    useWorkbenchUiStore.getState().openAgentPromptWorkspace({
+      agentId: "agent-1",
+      title: "实现 Agent 提示词",
+    });
+    useWorkbenchUiStore.getState().closeAgentPromptWorkspace("agent-1");
+
+    expect(useWorkbenchUiStore.getState().agentPromptWorkspaceTarget).toBeNull();
+
+    useWorkbenchUiStore.getState().openConfigurationWorkspace({
+      configurationId: "skill-1",
+      kind: "skill",
+      title: "代码审查",
+    });
+    useWorkbenchUiStore.getState().closeConfigurationWorkspace({
+      configurationId: "skill-1",
+      kind: "skill",
+    });
+
+    expect(useWorkbenchUiStore.getState().configurationWorkspaceTarget).toBeNull();
+  });
+
+  it("only activates a settings workspace in its owning settings section", () => {
+    const agentTarget = { agentId: "agent-1", title: "实现 Agent 提示词" };
+    const skillTarget = { configurationId: "skill-1", kind: "skill" as const, title: "代码审查" };
+
+    expect(resolveActiveSettingsWorkspaceTarget(
+      "settings",
+      "agents",
+      agentTarget,
+      null,
+    )).toEqual({ kind: "agent-prompt", target: agentTarget });
+    expect(resolveActiveSettingsWorkspaceTarget(
+      "settings",
+      "skills",
+      null,
+      skillTarget,
+    )).toEqual({ kind: "configuration", target: skillTarget });
+    expect(resolveActiveSettingsWorkspaceTarget(
+      "settings",
+      "mcp",
+      null,
+      skillTarget,
+    )).toBeNull();
+    expect(resolveActiveSettingsWorkspaceTarget(
+      "conversations",
+      "agents",
+      agentTarget,
+      null,
+    )).toBeNull();
   });
 });

@@ -1,51 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import type { GitWorkingTreeChange } from "@agent/protocol";
-
 import {
   allGitChangePathsSelected,
-  backgroundDiffPaths,
   clampCommitPanelHeight,
   extendGitChangeSelection,
   toggleGitChangeGroupSelection,
   toggleGitChangeSelection,
 } from "./git-review-workspace.js";
-
-function change(
-  path: string,
-  additions: number | null = 1,
-  deletions: number | null = 0,
-): GitWorkingTreeChange {
-  return {
-    additions,
-    deletions,
-    isStaged: false,
-    originalPath: null,
-    path,
-    status: " M",
-  };
-}
-
-describe("Git diff background prefetch", () => {
-  it("warms textual diffs and skips binary files", () => {
-    expect(backgroundDiffPaths([
-      change("src/app.ts"),
-      change("assets/logo.png", null, null),
-      change("src/app.ts"),
-      change("src/feature.ts"),
-    ])).toEqual(["src/app.ts", "src/feature.ts"]);
-  });
-
-  it("keeps the prefetch queue bounded", () => {
-    const paths = backgroundDiffPaths(Array.from(
-      { length: 24 },
-      (_, index) => change(`src/file-${index}.ts`),
-    ));
-
-    expect(paths).toHaveLength(20);
-    expect(paths.at(-1)).toBe("src/file-19.ts");
-  });
-});
 
 describe("Git commit card resize", () => {
   it("keeps a usable review pane and commit card while resizing", () => {

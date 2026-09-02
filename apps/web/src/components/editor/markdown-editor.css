@@ -4,11 +4,11 @@
  * 由 scripts/extract-md-king-editor-css.mjs 从 md-king 的 src/index.css 机械提取，
  * 请勿手工编辑本文件——重新同步时重跑脚本，避免逐条意译造成视觉漂移。
  *
- * 与源文件的唯一差异：暗色选择器 `.dark` 改写为 `[data-theme="dark"]`，
- * 因为本项目通过 data 属性挂载主题。所需的 shadcn 语义变量由 markdown-token-bridge.css 提供。
+ * 与源文件的差异：暗色选择器 `.dark` 改写为 `[data-theme="dark"]`；
+ * 列表圆点和编号改为继承正文颜色。所需的 shadcn 语义变量由 markdown-token-bridge.css 提供。
  *
  * 源文件：md-king/src/index.css
- * 提取规则数：273
+ * 提取规则数：275
  */
 
 @import "./markdown-token-bridge.css";
@@ -781,6 +781,15 @@
 .mk-cm-mermaid svg {
     max-width: 100%;
     height: auto;
+  }
+
+.mk-cm-mermaid-caption {
+    margin: 0;
+    color: #111827;
+    font-family: "SimSun", "宋体", serif;
+    font-weight: 700;
+    line-height: 1.25;
+    text-align: center;
   }
 
 .mk-cm-mermaid[data-state="loading"] .mk-cm-mermaid-canvas,
@@ -1563,6 +1572,10 @@
     background: rgba(24, 24, 27, 0.6);
   }
 
+[data-theme="dark"] .mk-cm-mermaid-caption {
+    color: #f4f4f5;
+  }
+
 [data-theme="dark"] .mk-cm-mermaid[data-state="error"] {
     border-color: rgba(248, 113, 113, 0.4);
     background: rgba(69, 10, 10, 0.5);
@@ -1765,3 +1778,8 @@
   [data-theme="dark"] .mk-word-preview-page:not(.mk-word-preview-page--paper-light) .mk-word-callout-title span {
     color: color-mix(in srgb, var(--mk-callout-accent) 70%, white) !important;
   }
+/* Aster 约定：列表圆点和编号跟随当前正文颜色。 */
+.mk-cm-bullet,
+.mk-cm-ordered-marker {
+  color: currentColor !important;
+}

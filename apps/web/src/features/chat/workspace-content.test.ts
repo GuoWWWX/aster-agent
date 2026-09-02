@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type {
+  ConversationModelRetryItem,
   ConversationModelSelection,
   ConversationToolItem,
   ModelRuntimeStatus,
@@ -17,9 +18,11 @@ import {
   formatRunDuration,
   getConversationRunProgressInsertIndex,
   getConversationRunDurationInsertIndexes,
+  getRepeatedAssistantFailureMessageIds,
   getFinalCompletedAssistantMessageIds,
   getLatestActiveToolId,
   groupToolBatches,
+  modelRetryStatusLabel,
   describeConversationError,
   representativeToolName,
   reasoningEndpointColor,
@@ -251,6 +254,27 @@ describe("run progress duration", () => {
     expect(formatRunDuration(startedAt, 90_061_000)).toBe("1天 1小时 1分 1秒");
   });
 
+  it("keeps model retry progress and terminal status explicit", () => {
+    expect(modelRetryStatusLabel({
+      attempt: 2,
+      maxAttempts: 5,
+      retryInMs: 2_000,
+      status: "retrying",
+    })).toBe("正在重新连接 2/5 · 2 秒后重试");
+    expect(modelRetryStatusLabel({
+      attempt: 2,
+      maxAttempts: 5,
+      retryInMs: null,
+      status: "completed",
+    })).toBe("连接已恢复 · 重试 2 次");
+    expect(modelRetryStatusLabel({
+      attempt: 5,
+      maxAttempts: 5,
+      retryInMs: null,
+      status: "failed",
+    })).toBe("重新连接失败 · 已重试 5/5");
+  });
+
   it("keeps a restored running indicator at the top of the active assistant turn", () => {
     const timeline = [
       { id: "user-1", kind: "message", role: "user" },
@@ -284,6 +308,20 @@ describe("run progress duration", () => {
     expect([...indexes.entries()]).toEqual([[1, [21_000]]]);
   });
 
+  it("keeps a failed retry-only run duration in the conversation", () => {
+    const indexes = getConversationRunDurationInsertIndexes([
+      { kind: "message", role: "user" },
+      {
+        durationMs: 37_000,
+        kind: "model_retry",
+        runId: "run-1",
+        status: "failed",
+      },
+    ]);
+
+    expect([...indexes.entries()]).toEqual([[1, [37_000]]]);
+  });
+
   it("shows one duration when a completed run contains multiple assistant messages", () => {
     const indexes = getConversationRunDurationInsertIndexes([
       { kind: "message", role: "user" },
@@ -292,6 +330,16 @@ describe("run progress duration", () => {
     ]);
 
     expect([...indexes.entries()]).toEqual([[1, [40_000]]]);
+  });
+
+  it("combines automatic continuation runs into one duration for the user turn", () => {
+    const indexes = getConversationRunDurationInsertIndexes([
+      { kind: "message", role: "user" },
+      { durationMs: 40_000, kind: "message", role: "assistant", runId: "run-1" },
+      { durationMs: 21_000, kind: "message", role: "assistant", runId: "run-2" },
+    ]);
+
+    expect([...indexes.entries()]).toEqual([[1, [61_000]]]);
   });
 
   it("keeps legacy messages without a run id to one duration per user turn", () => {
@@ -374,6 +422,61 @@ describe("conversation message time", () => {
 });
 
 describe("conversation error display", () => {
+  it("shows the same adjacent failure only once after an automatic continuation", () => {
+    const duplicateIds = getRepeatedAssistantFailureMessageIds([
+      {
+        content: "模型返回了无法处理的响应，请重试或切换模型。",
+        id: "failure-1",
+        kind: "message",
+        role: "assistant",
+        runId: "run-1",
+        status: "failed",
+      },
+      {
+        content: "模型返回了无法处理的响应，请重试或切换模型。",
+        id: "failure-2",
+        kind: "message",
+        role: "assistant",
+        runId: "run-2",
+        status: "failed",
+      },
+    ]);
+
+    expect([...duplicateIds]).toEqual(["failure-2"]);
+  });
+
+  it("keeps distinct failures and failures from separate user turns", () => {
+    const duplicateIds = getRepeatedAssistantFailureMessageIds([
+      {
+        content: "第一次失败",
+        id: "failure-1",
+        kind: "message",
+        role: "assistant",
+        runId: "run-1",
+        status: "failed",
+      },
+      {
+        content: "第二次失败",
+        id: "failure-2",
+        kind: "message",
+        role: "assistant",
+        runId: "run-2",
+        status: "failed",
+      },
+      { content: "重试", id: "user-2", kind: "message", role: "user" },
+      {
+        content: "第二次失败",
+        id: "failure-3",
+        kind: "message",
+        role: "assistant",
+        runId: "run-3",
+        status: "failed",
+      },
+    ]);
+
+    expect([...duplicateIds]).toEqual([]);
+  });
+
   it("hides correlation ids persisted by older desktop builds", () => {
     expect(stripLegacyErrorInstanceId(
       "模型未返回可显示内容。（错误编号：123e4567-e89b-42d3-a456-426614174000)",
@@ -454,6 +557,30 @@ describe("tool batch execution mode", () => {
     };
 
     expect(groupToolBatches([first, second])).toHaveLength(1);
+  });
+
+  it("keeps model retry progress outside adjacent tool batches", () => {
+    const first = tool("run_command");
+    const retry: ConversationModelRetryItem = {
+      attempt: 1,
+      conversationId: first.conversationId,
+      createdAt: "2026-09-02T00:00:00.000Z",
+      id: "00000000-0000-4000-8000-retry000000",
+      kind: "model_retry",
+      maxAttempts: 5,
+      reason: "接口错误：HTTP 402：Insufficient Balance",
+      retryInMs: 1_000,
+      runId: first.runId,
+      status: "retrying",
+      updatedAt: "2026-09-02T00:00:01.000Z",
+    };
+    const second = {
+      ...tool("run_command"),
+      id: "00000000-0000-4000-8000-second000000",
+    };
+
+    expect(groupToolBatches([first, retry, second]).map((item) => item.kind))
+      .toEqual(["tool", "model_retry", "tool"]);
   });
 
   it("identifies a parallel batch from runtime metadata", () => {
