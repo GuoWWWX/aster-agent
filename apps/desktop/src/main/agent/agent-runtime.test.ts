@@ -5,7 +5,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  AGENT_AVATAR_ICONS,
   DEFAULT_AGENT_DIRECTORY_CONFIGURATION,
   DEFAULT_APPLICATION_SETTINGS,
 } from "@agent/protocol";
@@ -581,6 +580,15 @@ class RetryingFixtureModel implements ModelProviderAdapter {
 
     input.onTextDelta("连接已恢复");
     return Promise.resolve({ content: "连接已恢复", finishReason: "stop", toolCalls: [] });
+  }
+}
+
+class ExhaustedRetryFixtureModel implements ModelProviderAdapter {
+  public requests = 0;
+
+  public completeTurn(): Promise<ModelTurnResult> {
+    this.requests += 1;
+    return Promise.reject(new ModelRequestError(402, "Insufficient Balance"));
   }
 }
 
@@ -2675,15 +2683,15 @@ describe("AgentRuntime", () => {
     expect(emptyResponseTimeline).toMatchObject([
       { content: "你好", role: "user", status: "completed" },
       {
-        role: "assistant",
+        kind: "model_retry",
         status: "failed"
       }
     ]);
     const emptyResponseFailure = emptyResponseTimeline[1];
-    if (emptyResponseFailure?.kind !== "message") {
-      throw new Error("Expected an assistant failure message.");
+    if (emptyResponseFailure?.kind !== "model_retry") {
+      throw new Error("Expected a failed model retry item.");
     }
-    expect(emptyResponseFailure.content).toContain(
+    expect(emptyResponseFailure.reason).toContain(
       "模型未返回可显示内容，请稍后重试或切换模型。",
     );
     expect(model.requests).toBe(6);
@@ -2957,6 +2965,121 @@ describe("AgentRuntime", () => {
     expect(database.listTimeline(conversation.id)[0]).toMatchObject({
       content: "/review 检查这个文件",
       role: "user",
+    });
+    database.close();
+  });
+
+  it("reports latest and cumulative provider cache usage for a conversation", () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          contextWindow: 100_000,
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      new ContinuousConversationFixtureModel(),
+    );
+    const appendUsage = (
+      inputTokens: number,
+      cachedInputTokens: number | undefined,
+      cacheCreationInputTokens: number | undefined,
+      modelId = "test-model",
+    ): void => {
+      const run = database.createRunWithUserMessage(
+        conversation.id,
+        `request-${inputTokens}`,
+        modelId,
+      );
+      database.appendAssistantTurn({
+        content: "done",
+        conversationId: conversation.id,
+        messageId: crypto.randomUUID(),
+        modelId,
+        providerState: {
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId,
+          payload: {},
+          usage: {
+            ...(cacheCreationInputTokens === undefined
+              ? {}
+              : { cacheCreationInputTokens }),
+            ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+            inputTokens,
+            outputTokens: 10,
+            totalTokens: inputTokens + 10,
+          },
+        },
+        runId: run.runId,
+        toolCalls: [],
+      });
+      database.finishRun(run.runId, "completed", null);
+    };
+
+    appendUsage(100, 50, 20);
+    appendUsage(100, 80, 0);
+    const failedRun = database.createRunWithUserMessage(
+      conversation.id,
+      "request-failed-before-provider-usage",
+      "test-model",
+    );
+    database.finishRun(failedRun.runId, "failed", "HTTP 402: Insufficient Balance");
+
+    expect(runtime.getContextUsage({
+      conversationId: conversation.id,
+      permissionMode: "read_only",
+    }).providerCache).toEqual({
+      cumulative: {
+        cacheCreationInputTokens: 20,
+        cachedInputTokens: 130,
+        hitRate: 0.65,
+        inputTokens: 200,
+        reportedRequestCount: 2,
+        requestCount: 2,
+      },
+      latest: {
+        cacheCreationInputTokens: 0,
+        cachedInputTokens: 80,
+        hitRate: 0.8,
+        inputTokens: 100,
+        outputTokens: 10,
+        trendDelta: 0.3,
+      },
+    });
+
+    appendUsage(500, 500, 0, "other-model");
+    appendUsage(50, undefined, undefined);
+
+    expect(runtime.getContextUsage({
+      conversationId: conversation.id,
+      permissionMode: "read_only",
+    }).providerCache).toEqual({
+      cumulative: {
+        cacheCreationInputTokens: 20,
+        cachedInputTokens: 130,
+        hitRate: 0.65,
+        inputTokens: 200,
+        reportedRequestCount: 2,
+        requestCount: 3,
+      },
+      latest: {
+        cacheCreationInputTokens: null,
+        cachedInputTokens: null,
+        hitRate: null,
+        inputTokens: 50,
+        outputTokens: 10,
+        trendDelta: null,
+      },
     });
     database.close();
   });
@@ -3485,6 +3608,15 @@ describe("AgentRuntime", () => {
     expect(messages.slice(assistantToolCallIndex + 1, steerIndex).some(
       (message) => message.role === "user"
     )).toBe(false);
+    expect(messages.slice(0, steerIndex).some(
+      (message) => message.role === "user" && message.content === "先检查项目"
+    )).toBe(true);
+    expect(messages[steerIndex]?.content).toContain(
+      "This message arrived while the current user request was still in progress."
+    );
+    expect(messages[steerIndex]?.content).toContain(
+      "do not silently discard unfinished applicable work"
+    );
     expect(database.listPendingMessages(conversation.id)).toEqual([]);
     database.close();
   });
@@ -3729,6 +3861,12 @@ describe("AgentRuntime", () => {
     );
     expect(childRequest).toBeDefined();
     expect(childRequest?.configuration.modelId).toBe("alternate-model");
+    expect(childRequest?.messages.some(
+      (message) => message.role === "user" && message.content === "检查实现并报告结果",
+    )).toBe(true);
+    expect(childRequest?.messages.some(
+      (message) => message.role === "user" && message.content === "委派并等待检查",
+    )).toBe(false);
     expect(childRequest?.messages.some((message) =>
       JSON.stringify(message.providerState)?.includes("call_spawn_subagent") === true
     )).toBe(false);
@@ -3865,9 +4003,7 @@ describe("AgentRuntime", () => {
     const task = database.listSubagentTasks(parent.id)[0];
     if (task === undefined) throw new Error("Subagent task was not created.");
     expect(task.status).toBe("completed");
-    expect(AGENT_AVATAR_ICONS).toContain(
-      database.getConversation(task.childConversationId).avatarIcon,
-    );
+    expect(database.getConversation(task.childConversationId).avatarIcon).toBeNull();
     expect(database.getConversation(parent.id).activeSubagentCount).toBe(0);
     expect(parentConversationUpdates).toContainEqual({
       activeRunId: null,
@@ -4608,17 +4744,86 @@ describe("AgentRuntime", () => {
     expect(model.requests).toHaveLength(6);
     expect(delays).toEqual([1_000, 2_000, 4_000, 8_000, 16_000]);
     expect(events.filter((event) => event.type === "model.request_started")).toHaveLength(6);
-    expect(events.filter((event) => event.type === "model.request_retrying")).toEqual([
-      expect.objectContaining({ attempt: 1, retryInMs: 1_000 }),
-      expect.objectContaining({ attempt: 2, retryInMs: 2_000 }),
-      expect.objectContaining({ attempt: 3, retryInMs: 4_000 }),
-      expect.objectContaining({ attempt: 4, retryInMs: 8_000 }),
-      expect.objectContaining({ attempt: 5, retryInMs: 16_000 })
+    expect(events.filter((event) => event.type === "model.retry_updated").map((event) => ({
+      attempt: event.retry.attempt,
+      retryInMs: event.retry.retryInMs,
+      status: event.retry.status,
+    }))).toEqual([
+      { attempt: 1, retryInMs: 1_000, status: "retrying" },
+      { attempt: 2, retryInMs: 2_000, status: "retrying" },
+      { attempt: 3, retryInMs: 4_000, status: "retrying" },
+      { attempt: 4, retryInMs: 8_000, status: "retrying" },
+      { attempt: 5, retryInMs: 16_000, status: "retrying" },
+      { attempt: 5, retryInMs: null, status: "completed" },
     ]);
     expect(database.listTimeline(conversation.id)).toEqual([
       expect.objectContaining({ content: "重试模型请求", role: "user" }),
+      expect.objectContaining({ attempt: 5, kind: "model_retry", status: "completed" }),
       expect.objectContaining({ content: "连接已恢复", role: "assistant", status: "completed" })
     ]);
+    database.close();
+  });
+
+  it("persists the final provider error in the retry timeline without a generic failure message", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const model = new ExhaustedRetryFixtureModel();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      () => Promise.resolve(),
+    );
+    const events: ConversationRunEvent[] = [];
+    const finished = new Promise<Extract<ConversationRunEvent, { type: "run.finished" }>>(
+      (resolve) => {
+        runtime.sendMessage(
+          { content: "额度不足时持续显示重试记录", conversationId: conversation.id },
+          (event) => {
+            events.push(event);
+            if (event.type === "run.finished") resolve(event);
+          },
+        );
+      },
+    );
+
+    await expect(finished).resolves.toMatchObject({ status: "failed" });
+    expect(model.requests).toBe(6);
+    const failedRetryEvent = events.filter((event) => event.type === "model.retry_updated").at(-1);
+    if (failedRetryEvent?.type !== "model.retry_updated") {
+      throw new Error("Expected a failed model retry event.");
+    }
+    expect(failedRetryEvent.retry).toMatchObject({
+      attempt: 5,
+      retryInMs: null,
+      status: "failed",
+    });
+    expect(failedRetryEvent.retry.reason).toContain("HTTP 402");
+    const failedTimeline = database.listTimeline(conversation.id);
+    expect(failedTimeline).toHaveLength(2);
+    expect(failedTimeline[0]).toMatchObject({
+      content: "额度不足时持续显示重试记录",
+      role: "user",
+    });
+    const failedRetry = failedTimeline[1];
+    if (failedRetry?.kind !== "model_retry") {
+      throw new Error("Expected a failed model retry timeline item.");
+    }
+    expect(failedRetry).toMatchObject({ attempt: 5, status: "failed" });
+    expect(typeof failedRetry.completedAt).toBe("string");
+    expect(typeof failedRetry.durationMs).toBe("number");
+    expect(failedRetry.reason).toContain("HTTP 402");
     database.close();
   });
 
@@ -4658,11 +4863,17 @@ describe("AgentRuntime", () => {
 
     await expect(finished).resolves.toMatchObject({ error: null, status: "completed" });
     expect(model.requests).toBe(2);
-    expect(events.filter((event) => event.type === "model.request_retrying")).toEqual([
-      expect.objectContaining({ attempt: 1, retryInMs: 1_000 }),
+    expect(events.filter((event) => event.type === "model.retry_updated").map((event) => ({
+      attempt: event.retry.attempt,
+      retryInMs: event.retry.retryInMs,
+      status: event.retry.status,
+    }))).toEqual([
+      { attempt: 1, retryInMs: 1_000, status: "retrying" },
+      { attempt: 1, retryInMs: null, status: "completed" },
     ]);
     expect(database.listTimeline(conversation.id)).toEqual([
       expect.objectContaining({ content: "重试模型超时", role: "user" }),
+      expect.objectContaining({ attempt: 1, kind: "model_retry", status: "completed" }),
       expect.objectContaining({ content: "超时后已恢复", role: "assistant", status: "completed" }),
     ]);
     database.close();
@@ -4704,11 +4915,17 @@ describe("AgentRuntime", () => {
 
     await expect(finished).resolves.toMatchObject({ error: null, status: "completed" });
     expect(model.requests).toBe(2);
-    expect(events.filter((event) => event.type === "model.request_retrying")).toEqual([
-      expect.objectContaining({ attempt: 1, retryInMs: 1_000 })
+    expect(events.filter((event) => event.type === "model.retry_updated").map((event) => ({
+      attempt: event.retry.attempt,
+      retryInMs: event.retry.retryInMs,
+      status: event.retry.status,
+    }))).toEqual([
+      { attempt: 1, retryInMs: 1_000, status: "retrying" },
+      { attempt: 1, retryInMs: null, status: "completed" },
     ]);
     expect(database.listTimeline(conversation.id)).toEqual([
       expect.objectContaining({ content: "重试空响应", role: "user" }),
+      expect.objectContaining({ attempt: 1, kind: "model_retry", status: "completed" }),
       expect.objectContaining({ content: "空响应重试成功", role: "assistant", status: "completed" })
     ]);
     database.close();
@@ -4750,7 +4967,7 @@ describe("AgentRuntime", () => {
 
     await expect(finished).resolves.toMatchObject({ status: "failed" });
     expect(model.requests).toBe(1);
-    expect(events.filter((event) => event.type === "model.request_retrying")).toHaveLength(0);
+    expect(events.filter((event) => event.type === "model.retry_updated")).toHaveLength(0);
     expect(events.filter((event) => event.type === "assistant.delta")).toHaveLength(1);
     database.close();
   });

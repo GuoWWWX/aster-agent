@@ -229,6 +229,27 @@ describe("ProjectRegistry", () => {
     })).rejects.toThrow();
   });
 
+  it.each([
+    ["preview.apng", "image/apng"],
+    ["preview.avif", "image/avif"],
+    ["preview.ico", "image/x-icon"],
+    ["preview.jfif", "image/jpeg"],
+  ])("reads the common image format %s", async (fileName, mimeType) => {
+    const rootPath = await createProjectFixture();
+    await writeFile(path.join(rootPath, fileName), Buffer.from([1, 2, 3, 4]));
+    const registry = new ProjectRegistry();
+    const project = await registry.registerDirectory(rootPath);
+
+    await expect(registry.readPreviewImage({
+      path: fileName,
+      projectId: project.id,
+      sourcePath: "README.md",
+    })).resolves.toEqual({
+      data: Buffer.from([1, 2, 3, 4]).toString("base64"),
+      mimeType,
+    });
+  });
+
   it("rejects preview images larger than the IPC limit", async () => {
     const rootPath = await createProjectFixture();
     await writeFile(path.join(rootPath, "large.png"), Buffer.alloc(8 * 1024 * 1024 + 1));

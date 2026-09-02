@@ -1,4 +1,5 @@
 import { AIMessageChunk } from "@langchain/core/messages";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { FakeStreamingChatModel } from "@langchain/core/utils/testing";
 import { ChatAnthropic } from "@langchain/anthropic";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
@@ -277,6 +278,42 @@ describe("LangChainModelAdapter", () => {
     expect(result.toolCalls).toEqual([]);
     expect(result.providerState?.payload).toMatchObject({
       additionalKwargs: { provider_marker: "test" },
+    });
+  });
+
+  it("preserves normalized provider cache token usage", async () => {
+    const model = {
+      async *stream() {
+        await Promise.resolve();
+        const chunk = new AIMessageChunk({ content: "ok" });
+        Object.assign(chunk, {
+          usage_metadata: {
+            input_token_details: {
+              cache_creation: 15,
+              cache_read: 80,
+            },
+            input_tokens: 100,
+            output_tokens: 10,
+            total_tokens: 110,
+          },
+        });
+        yield chunk;
+      },
+    } as unknown as BaseChatModel;
+    const adapter = new LangChainModelAdapter(
+      "openai-chat-completions",
+      fetch,
+      () => model,
+    );
+
+    const result = await adapter.completeTurn(inputFor());
+
+    expect(result.providerState?.usage).toEqual({
+      cacheCreationInputTokens: 15,
+      cachedInputTokens: 80,
+      inputTokens: 100,
+      outputTokens: 10,
+      totalTokens: 110,
     });
   });
 

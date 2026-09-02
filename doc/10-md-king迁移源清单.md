@@ -54,6 +54,14 @@ HEAD：eaa5d562dc849b5a2887dc068af8d0df5f947aea
 - `apps/web/src/components/editor/document-code-editor.tsx` 复用本清单第 5 节记录的 MD King CodeMirror 最小内核，提供 Markdown 编辑、主题热切换和快捷保存。
 - `apps/web/src/components/markdown/agent-markdown.tsx` 提供只读预览；不迁入 MD King 的 Mermaid、图片、表格和 Tauri 闭包。
 
+### 6.1 对话 Markdown 列表标记
+
+| 源文件 | SHA-256 | 目标路径 | 差异理由 |
+| --- | --- | --- | --- |
+| `src/lib/style-manager-data.ts` | `B59AC27D58DFF59E835866A411481DC2167B9D4147F11A7B63BF21C73C730C94` | `apps/web/src/components/markdown/agent-markdown.css` | 参考 md-king 默认的一级实心圆点、二级空心圆、三级方块层级，在只读对话渲染中用原生 `list-style-type` 恢复被 Tailwind reset 清除的列表符号；圆点与有序编号继承正文颜色，任务列表继续以复选框作为唯一标记，不迁入模板样式配置。 |
+
+验证：`agent-markdown.test.ts` 加载真实 CSS，断言三级无序列表与有序列表的计算样式。
+
 ## 7. Markdown 实时预览编辑器迁移
 
 > 记录时间：2026-08-22
@@ -131,3 +139,18 @@ HEAD：eaa5d562dc849b5a2887dc068af8d0df5f947aea
 新增引擎回归：`apps/web/src/components/editor/cm/live-preview.test.ts` 使用逐文件 `jsdom` 环境和真实 `EditorView`，断言标题、Callout、表格、Mermaid 与 frontmatter 块级/行级装饰。
 
 验证：Web typecheck/lint/test（30/139）、Desktop typecheck/lint/test（40/308）、Protocol test（5/38）和生产 build 通过；Vite 产物包含独立 Mermaid chunk。Electron/浏览器手工视觉验收尚未完成：Browser 插件初始化报“系统找不到指定的路径”。
+
+### 7.5 侧边 Markdown 编辑器同步到当前 md-king（2026-09-02）
+
+> 源仓库基线：`main` / `d64bcde`。本次只同步侧边 Markdown 查看与编辑中的可见渲染及直接编辑交互；md-king 的文档标签、Word 导出与 Tauri 宿主状态不属于 Aster 侧边栏视觉合同。
+
+| 源文件 | SHA-256 | 目标路径 | 差异理由 |
+| --- | --- | --- | --- |
+| `src/index.css` | `6B4035B43C3DD4F5DEB304454EC534E5343633392CC54343A8FAD4C2906EBEBA` | `apps/web/src/components/editor/markdown-editor.css` | 继续由提取脚本机械生成；新增 Mermaid 图题的明暗主题规则。脚本目标改为当前 worktree 根目录，避免同步时误写共享 checkout；产物末尾仅追加列表圆点与编号继承正文颜色的 Aster 约定。 |
+| `src/components/editor/cm/live-preview.ts` | `678CB5DF1D2B5BA8D539DB363B52B3DB291AD50E0563BF54D3F7B90005CE8A33` | `apps/web/src/components/editor/cm/live-preview.ts` | 同步 Mermaid 围栏/相邻加粗题注、标题 `{-}`/`{.unnumbered}` 隐藏和题注邻接表格边界；仅保留 ESM 相对路径与严格索引检查差异。 |
+| `src/components/editor/cm/widgets.ts` | `7099AE313C85E736F42EAAF3B92D5770A91E915992FEFF46B141BC910F805D25` | `apps/web/src/components/editor/cm/widgets.ts` | 同步 Mermaid 图题和表格阅读/编辑态共用的单元格选择、复制交互；图片解析继续走 Aster resolver，媒体查看继续走 Aster Dialog。 |
+| `src/components/editor/cm/markdown-table.ts` | `F252A415E6F87D693BCB443AAEC6347BFC97B57E4B11238391F6D690A170B47B` | `apps/web/src/components/editor/cm/markdown-table.ts` | 同步阅读/编辑共用的表格单元格扩选纯函数；保留本项目更严格的数组越界保护。 |
+| `src/lib/mermaid.ts` | `B64ADC869B2525DCB1CEF1888536672FE3C0DDD5DFE44BB590160A28C3A066AE` | `apps/web/src/lib/mermaid.ts` | 同步微软雅黑字体、HTML label、换行宽度、节点与层级间距；保留相对导入和严格索引检查。 |
+| `src/lib/mermaid-fence.ts` | `8B30C12FB2E38D9CD809DF329BA89CE2225AFC6DEAB2C972CE3722C04BF1AB84` | `apps/web/src/lib/mermaid-fence.ts` | 只提取实时预览使用的 Mermaid caption 与整行加粗题注解析；不迁入仅服务 Word 转换的图题样式块及前后文本重写函数。 |
+
+样式策略：侧边栏外壳仍使用 Tailwind；`markdown-editor.css` 仅承载 CodeMirror 动态 `mk-cm-*` 类、组合选择器和 md-king 机械迁移规则，属于 CSS 触发条件 1、2、5、6，不新增手写平行样式系统。

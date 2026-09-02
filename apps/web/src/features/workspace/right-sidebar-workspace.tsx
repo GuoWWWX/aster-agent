@@ -51,6 +51,7 @@ import {
 } from "../../components/editor/live-markdown-editor.js";
 import { setImageSourceResolver } from "../../components/editor/cm/image-source-resolver.js";
 import { WorkbenchPanel } from "../../components/layout/panel.js";
+import { ResizableDivider } from "../../components/layout/resizable-divider.js";
 import { FileTypeIcon } from "../../components/ui/file-type-icon.js";
 import { IconButton } from "../../components/ui/icon-button.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover.js";
@@ -61,6 +62,7 @@ import {
 } from "../../lib/agent-prompt-document.js";
 import { resolveBrowserPreviewImage } from "../../lib/browser-preview-images.js";
 import {
+  resolveActiveSettingsWorkspaceTarget,
   useWorkbenchUiStore,
   type AgentPromptWorkspaceTarget,
   type ConfigurationWorkspaceTarget,
@@ -68,14 +70,16 @@ import {
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
 import { useConversationWorkspaceCache } from "../chat/conversation-workspace-cache.js";
 import { ConversationWorkspace } from "../chat/workspace-content.js";
-import { AgentAvatar } from "../team/agent-avatar.js";
+import { AgentAvatar, SubagentAvatar } from "../team/agent-avatar.js";
 import { ConfigurationWorkspaceTreePanel } from "./configuration-workspace-tree-panel.js";
+import { getGitReviewCache } from "./git-review-cache.js";
 import { GitReviewWorkspace } from "./git-review-workspace.js";
 import {
   ManagedBrowserWorkspace,
   type ManagedBrowserWorkspaceMenuRequest,
 } from "./managed-browser-workspace.js";
 import { ProjectTreePanel } from "../projects/project-tree-panel.js";
+import { ProjectImageViewer } from "./project-image-viewer.js";
 import { TerminalWorkspace } from "./terminal-workspace.js";
 import {
   retainedWorkspaceCacheIds,
@@ -154,6 +158,7 @@ type FilePreviewState = {
   draft: string;
   error: string | null;
   file: ProjectFile | null;
+  imageDataUrl: string | null;
   isDirty: boolean;
   isLoading: boolean;
   isSaving: boolean;
@@ -402,6 +407,13 @@ export function scrollWorkspaceTabsOnWheel(
   event.preventDefault();
 }
 
+export function shouldCollapseRightSidebarAfterClosingTabs(
+  openTabs: ReadonlyArray<{ id: string }>,
+  closedTabIds: ReadonlySet<string>,
+): boolean {
+  return openTabs.length > 0 && openTabs.every((tab) => closedTabIds.has(tab.id));
+}
+
 function fileTabId(projectId: string, path: string): string {
   return `file:${projectId}:${path}`;
 }
@@ -416,6 +428,11 @@ function configurationFileTabId(
 
 function agentPromptTabId(agentId: string): string {
   return `agent-prompt:${agentId}`;
+}
+
+function isSettingsWorkspaceTabId(tabId: string | null): boolean {
+  return tabId?.startsWith("agent-prompt:") === true
+    || tabId?.startsWith("configuration:") === true;
 }
 
 function targetForConfigurationTab(tab: ConfigurationFileTab): ConfigurationWorkspaceTarget {
@@ -481,6 +498,52 @@ function isMarkdownFile(path: string): boolean {
   return extension === "md" || extension === "mdx";
 }
 
+const PROJECT_PREVIEW_IMAGE_EXTENSIONS = new Set([
+  "apng",
+  "avif",
+  "bmp",
+  "gif",
+  "ico",
+  "jfif",
+  "jpeg",
+  "jpg",
+  "png",
+  "svg",
+  "webp",
+]);
+
+export function isProjectPreviewImagePath(path: string): boolean {
+  return PROJECT_PREVIEW_IMAGE_EXTENSIONS.has(fileExtension(path));
+}
+
+export type ProjectImageNavigation = {
+  currentIndex: number;
+  next: ProjectEntry | null;
+  previous: ProjectEntry | null;
+  total: number;
+};
+
+const FILE_TREE_WIDTH_RANGE = { max: 360, min: 220 } as const;
+
+export function projectImageNavigation(
+  entries: readonly ProjectEntry[],
+  currentPath: string,
+): ProjectImageNavigation {
+  const images = entries.filter(
+    (entry) => entry.kind === "file" && isProjectPreviewImagePath(entry.path),
+  );
+  const currentIndex = images.findIndex((entry) => entry.path === currentPath);
+  if (currentIndex < 0) {
+    return { currentIndex: 0, next: null, previous: null, total: 1 };
+  }
+  return {
+    currentIndex,
+    next: images[currentIndex + 1] ?? null,
+    previous: images[currentIndex - 1] ?? null,
+    total: images.length,
+  };
+}
+
 function saveConflictFor(reason: unknown): FileSaveConflict | null {
   const code = reason instanceof AgentClientError
     ? reason.code
@@ -515,16 +578,49 @@ export function RightSidebarWorkspace({
   onSessionUpdated: (conversation: ConversationSummary) => void;
   tree: ProjectTreeController;
 }): ReactElement {
+  const gitReviewCache = getGitReviewCache(agentClient);
   const isDark = useWorkbenchUiStore((state) => state.themeMode === "dark");
   const agentProfiles = useAgentDirectoryStore((state) => state.agents);
   const teams = useAgentDirectoryStore((state) => state.teams);
-  const setFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
+  const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
+  const settingsSection = useWorkbenchUiStore((state) => state.settingsSection);
+  const setConversationFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
+  const setSettingsFilePanelOpen = useWorkbenchUiStore(
+    (state) => state.setSettingsFilePanelOpen,
+  );
+  const closeAgentPromptWorkspace = useWorkbenchUiStore(
+    (state) => state.closeAgentPromptWorkspace,
+  );
+  const closeConfigurationWorkspace = useWorkbenchUiStore(
+    (state) => state.closeConfigurationWorkspace,
+  );
   const configurationWorkspaceTarget = useWorkbenchUiStore(
     (state) => state.configurationWorkspaceTarget,
   );
   const agentPromptWorkspaceTarget = useWorkbenchUiStore(
     (state) => state.agentPromptWorkspaceTarget,
   );
+  const activeSettingsWorkspaceTarget = useMemo(
+    () => resolveActiveSettingsWorkspaceTarget(
+      activeActivity,
+      settingsSection,
+      agentPromptWorkspaceTarget,
+      configurationWorkspaceTarget,
+    ),
+    [
+      activeActivity,
+      agentPromptWorkspaceTarget,
+      configurationWorkspaceTarget,
+      settingsSection,
+    ],
+  );
+  const setFilePanelOpen = useCallback((isOpen: boolean): void => {
+    if (activeActivity === "settings") {
+      setSettingsFilePanelOpen(isOpen);
+      return;
+    }
+    setConversationFilePanelOpen(isOpen);
+  }, [activeActivity, setConversationFilePanelOpen, setSettingsFilePanelOpen]);
   const reloadProjectDirectory = tree.reloadDirectory;
   const notifyConfigurationWorkspaceChanged = useWorkbenchUiStore(
     (state) => state.notifyConfigurationWorkspaceChanged,
@@ -549,6 +645,7 @@ export function RightSidebarWorkspace({
   const [sideSessions, setSideSessions] = useState<ProjectSession[]>([]);
   const [tabContextMenu, setTabContextMenu] = useState<TabContextMenuState | null>(null);
   const [isTreeCollapsed, setIsTreeCollapsed] = useState(false);
+  const [fileTreeWidth, setFileTreeWidth] = useState<number | null>(null);
   const [workspaceCacheClock, setWorkspaceCacheClock] = useState(() => Date.now());
   const configurationFilePreviewsRef = useRef(configurationFilePreviews);
   const configurationSaveQueuesRef = useRef(new Map<string, Promise<boolean>>());
@@ -593,6 +690,22 @@ export function RightSidebarWorkspace({
     };
   }, [agentClient]);
 
+  useEffect(() => {
+    gitReviewCache.activateProject(activeProject?.id ?? null);
+  }, [activeProject?.id, gitReviewCache]);
+
+  useEffect(() => {
+    if (!capabilities.git || activeProject === null) return;
+    const warm = (): void => {
+      void gitReviewCache.warmProject(activeProject.id).catch(() => {
+        // Opening the Git workspace reports foreground failures; project warming stays silent.
+      });
+    };
+    warm();
+    window.addEventListener("focus", warm);
+    return () => window.removeEventListener("focus", warm);
+  }, [activeProject, capabilities.git, gitReviewCache]);
+
   const updateOpenChatIds = useCallback(
     (update: (current: Set<string>) => Set<string>): void => {
       setOpenChatIds((current) => {
@@ -608,6 +721,7 @@ export function RightSidebarWorkspace({
   const setActiveTabForCurrentSession = useCallback(
     (tabId: string | null): void => {
       setActiveTabId(tabId);
+      if (activeActivity === "settings") return;
       if (tabId !== null) {
         const now = Date.now();
         setToolTabs((current) => {
@@ -624,7 +738,7 @@ export function RightSidebarWorkspace({
         activeTabIdsBySessionRef.current.set(activeSessionId, tabId);
       }
     },
-    [activeSessionId],
+    [activeActivity, activeSessionId],
   );
   const openTerminal = useCallback((
     requestedName?: string,
@@ -917,13 +1031,24 @@ export function RightSidebarWorkspace({
   ]);
 
   useEffect(() => {
+    if (activeActivity === "settings" || isSettingsWorkspaceTabId(activeTabId)) return;
     if (activeTabOwnerRef.current !== activeSessionId) {
       activeTabOwnerRef.current = activeSessionId;
       return;
     }
     if (activeSessionId === null) return;
     activeTabIdsBySessionRef.current.set(activeSessionId, activeTabId);
-  }, [activeSessionId, activeTabId]);
+  }, [activeActivity, activeSessionId, activeTabId]);
+
+  useEffect(() => {
+    if (activeActivity === "settings") return;
+    setActiveTabId(
+      activeSessionId === null
+        ? null
+        : activeTabIdsBySessionRef.current.get(activeSessionId) ?? null,
+    );
+    setIsFileBrowserOpen(false);
+  }, [activeActivity, activeSessionId]);
 
   useEffect(() => {
     if (tabContextMenu === null) return;
@@ -946,6 +1071,7 @@ export function RightSidebarWorkspace({
           draft: current[tab.id]?.draft ?? "",
           error: null,
           file: current[tab.id]?.file ?? null,
+          imageDataUrl: current[tab.id]?.imageDataUrl ?? null,
           isDirty: current[tab.id]?.isDirty ?? false,
           isLoading: true,
           isSaving: current[tab.id]?.isSaving ?? false,
@@ -953,6 +1079,30 @@ export function RightSidebarWorkspace({
         },
       }));
       try {
+        if (isProjectPreviewImagePath(tab.path)) {
+          const image = await agentClient.readProjectPreviewImage({
+            path: tab.name,
+            projectId: tab.projectId,
+            sourcePath: tab.path,
+          });
+          if (fileLoadRequestIdsRef.current.get(tab.id) !== requestId) return;
+          setFilePreviews((current) => ({
+            ...current,
+            [tab.id]: {
+              contentRevision: current[tab.id]?.contentRevision ?? 0,
+              conflict: null,
+              draft: "",
+              error: null,
+              file: null,
+              imageDataUrl: `data:${image.mimeType};base64,${image.data}`,
+              isDirty: false,
+              isLoading: false,
+              isSaving: false,
+              savedContent: "",
+            },
+          }));
+          return;
+        }
         const file = await agentClient.readProjectFile({
           path: tab.path,
           projectId: tab.projectId,
@@ -966,13 +1116,14 @@ export function RightSidebarWorkspace({
             draft: file.content ?? "",
             error: null,
             file,
+            imageDataUrl: null,
             isDirty: false,
             isLoading: false,
             isSaving: false,
             savedContent: file.content ?? "",
           },
         }));
-      } catch {
+      } catch (reason) {
         if (fileLoadRequestIdsRef.current.get(tab.id) !== requestId) return;
         setFilePreviews((current) => ({
           ...current,
@@ -980,8 +1131,12 @@ export function RightSidebarWorkspace({
             contentRevision: current[tab.id]?.contentRevision ?? 0,
             conflict: null,
             draft: "",
-            error: "无法读取文件",
+            error: getUserErrorMessage(
+              reason,
+              isProjectPreviewImagePath(tab.path) ? "无法预览图片" : "无法读取文件",
+            ),
             file: null,
+            imageDataUrl: null,
             isDirty: false,
             isLoading: false,
             isSaving: false,
@@ -1180,14 +1335,15 @@ export function RightSidebarWorkspace({
       if (
         event.type !== "tool.completed"
         || event.fileChange == null
-        || event.fileChange.projectId !== activeProject?.id
       ) {
         return;
       }
 
+      gitReviewCache.noteFileChange(event.fileChange.projectId, event.fileChange.path);
+      if (event.fileChange.projectId !== activeProject?.id) return;
       refreshFileChangeTargets(event.fileChange.projectId, event.fileChange.path);
     });
-  }, [activeProject?.id, agentClient, refreshFileChangeTargets]);
+  }, [activeProject?.id, agentClient, gitReviewCache, refreshFileChangeTargets]);
 
   const openFile = useCallback(
     (entry: ProjectEntry): void => {
@@ -1432,19 +1588,40 @@ export function RightSidebarWorkspace({
     () => sideSessions.filter((session) => openChatIds.has(session.id)),
     [openChatIds, sideSessions],
   );
+  const visibleFileTabs = useMemo(() => {
+    if (activeActivity !== "settings") {
+      return fileTabs.filter((tab): tab is ProjectFileTab => tab.kind === "file");
+    }
+    if (activeSettingsWorkspaceTarget?.kind === "agent-prompt") {
+      return fileTabs.filter((tab): tab is AgentPromptTab => (
+        tab.kind === "agent-prompt"
+        && tab.agentId === activeSettingsWorkspaceTarget.target.agentId
+      ));
+    }
+    if (activeSettingsWorkspaceTarget?.kind === "configuration") {
+      return fileTabs.filter((tab): tab is ConfigurationFileTab => (
+        tab.kind === "configuration-file"
+        && tab.configurationId === activeSettingsWorkspaceTarget.target.configurationId
+        && tab.configurationKind === activeSettingsWorkspaceTarget.target.kind
+      ));
+    }
+    return [];
+  }, [activeActivity, activeSettingsWorkspaceTarget, fileTabs]);
   const tabs = useMemo<SidebarTab[]>(
-    () => [
-      ...fileTabs,
-      ...toolTabs,
-      ...openSideSessions
+    () => activeActivity === "settings"
+      ? visibleFileTabs
+      : [
+        ...visibleFileTabs,
+        ...toolTabs,
+        ...openSideSessions
         .map((session): SidebarTab => ({
           id: `chat:${session.id}`,
           kind: "chat",
           name: session.title,
           session,
         })),
-    ],
-    [fileTabs, openSideSessions, toolTabs],
+      ],
+    [activeActivity, openSideSessions, toolTabs, visibleFileTabs],
   );
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
   const activeToolTabId = toolTabs.some((tab) => tab.id === activeTabId) ? activeTabId : null;
@@ -1472,12 +1649,24 @@ export function RightSidebarWorkspace({
   const activeFilePreview = activeFileTab === null
     ? undefined
     : filePreviews[activeFileTab.id];
+  const activeImageNavigation = useMemo(() => {
+    if (activeFileTab === null || !isProjectPreviewImagePath(activeFileTab.path)) return null;
+    const directoryPath = directoryPathForFile(activeFileTab.path);
+    return projectImageNavigation(
+      tree.directories[directoryPath]?.entries ?? [],
+      activeFileTab.path,
+    );
+  }, [activeFileTab, tree.directories]);
 
   useEffect(() => {
     const tick = (): void => setWorkspaceCacheClock(Date.now());
     const interval = window.setInterval(tick, WORKSPACE_CACHE_SWEEP_INTERVAL_MS);
     return () => window.clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    gitReviewCache.sweep(workspaceCacheClock);
+  }, [gitReviewCache, workspaceCacheClock]);
 
   useEffect(() => {
     for (const tab of toolTabs) {
@@ -1594,15 +1783,16 @@ export function RightSidebarWorkspace({
   ]);
 
   useEffect(() => {
-    if (configurationWorkspaceTarget === null) return;
-    const path = configurationWorkspaceTarget.kind === "skill" ? "SKILL.md" : "mcp.json";
-    openConfigurationFile(configurationWorkspaceTarget, path);
-  }, [configurationWorkspaceTarget, openConfigurationFile]);
+    if (activeSettingsWorkspaceTarget?.kind !== "configuration") return;
+    const { target } = activeSettingsWorkspaceTarget;
+    const path = target.kind === "skill" ? "SKILL.md" : "mcp.json";
+    openConfigurationFile(target, path);
+  }, [activeSettingsWorkspaceTarget, openConfigurationFile]);
 
   useEffect(() => {
-    if (agentPromptWorkspaceTarget === null) return;
-    openAgentPromptTab(agentPromptWorkspaceTarget);
-  }, [agentPromptWorkspaceTarget, openAgentPromptTab]);
+    if (activeSettingsWorkspaceTarget?.kind !== "agent-prompt") return;
+    openAgentPromptTab(activeSettingsWorkspaceTarget.target);
+  }, [activeSettingsWorkspaceTarget, openAgentPromptTab]);
 
   async function activateTab(tab: SidebarTab): Promise<void> {
     if (
@@ -1723,6 +1913,27 @@ export function RightSidebarWorkspace({
         .map((tab) => tab.session.id),
     );
     if (tabIds.size === 0) return;
+    const shouldCollapseRightSidebar = shouldCollapseRightSidebarAfterClosingTabs(tabs, tabIds);
+
+    for (const tab of tabsToClose) {
+      if (tab.kind === "agent-prompt") {
+        closeAgentPromptWorkspace(tab.agentId);
+        continue;
+      }
+      if (tab.kind !== "configuration-file") continue;
+      const hasRemainingConfigurationTab = fileTabs.some((candidate) => (
+        candidate.kind === "configuration-file"
+        && candidate.configurationId === tab.configurationId
+        && candidate.configurationKind === tab.configurationKind
+        && !tabIds.has(candidate.id)
+      ));
+      if (!hasRemainingConfigurationTab) {
+        closeConfigurationWorkspace({
+          configurationId: tab.configurationId,
+          kind: tab.configurationKind,
+        });
+      }
+    }
 
     setFileTabs((current) => current.filter((candidate) => !tabIds.has(candidate.id)));
     setToolTabs((current) => current.filter((candidate) => !tabIds.has(candidate.id)));
@@ -1738,12 +1949,16 @@ export function RightSidebarWorkspace({
       });
     }
 
-    if (activeTabId !== null && tabIds.has(activeTabId)) {
+    if (
+      (activeTabId !== null && tabIds.has(activeTabId))
+      || shouldCollapseRightSidebar
+    ) {
       setActiveTabForCurrentSession(null);
       setIsFileBrowserOpen(false);
       setIsTreeCollapsed(false);
     }
     setTabContextMenu(null);
+    if (shouldCollapseRightSidebar) setFilePanelOpen(false);
   }
 
   async function closeTabs(tabsToClose: SidebarTab[]): Promise<void> {
@@ -1888,6 +2103,14 @@ export function RightSidebarWorkspace({
   }
 
   const activeManagedBrowserTab = activeTab?.kind === "managed-browser" ? activeTab : null;
+  const captureInitialFileTreeWidth = useCallback((element: HTMLDivElement | null): void => {
+    if (element === null) return;
+    setFileTreeWidth((current) => {
+      if (current !== null) return current;
+      const measuredWidth = Math.round(element.getBoundingClientRect().width);
+      return measuredWidth > 0 ? measuredWidth : current;
+    });
+  }, []);
 
   return (
     <WorkbenchPanel className="right-sidebar-workspace" aria-label="右侧工作区">
@@ -1931,7 +2154,13 @@ export function RightSidebarWorkspace({
                     }}
                   >
                     {tab.kind === "chat" ? (
-                      tabAgent === undefined ? (
+                      tab.session.threadKind === "subagent" ? (
+                        <SubagentAvatar
+                          icon={tab.session.avatarIcon}
+                          seed={tab.session.id}
+                          size="compact"
+                        />
+                      ) : tabAgent === undefined ? (
                         <MessageSquarePlus aria-hidden="true" size={14} />
                       ) : (
                         <AgentAvatar avatar={tabAgent.avatar} size="compact" />
@@ -2060,6 +2289,7 @@ export function RightSidebarWorkspace({
                   <GitReviewWorkspace
                     active={isActive}
                     agentClient={agentClient}
+                    gitReviewCache={gitReviewCache}
                     projectId={tab.projectId}
                   />
                 ) : tab.kind === "terminal" ? (
@@ -2144,6 +2374,7 @@ export function RightSidebarWorkspace({
           {activeTab?.kind === "chat" ? null : activeTab?.kind === "file" ? (
             <FilePreview
               isDark={isDark}
+              imageNavigation={activeImageNavigation}
               state={filePreviews[activeTab.id]}
               tab={activeTab}
               isTreeCollapsed={isTreeCollapsed}
@@ -2155,6 +2386,7 @@ export function RightSidebarWorkspace({
                 setIsTreeCollapsed(false);
                 tree.locatePath(activeTab.path);
               }}
+              onNavigateImage={(entry) => void openProjectFile(entry)}
               onChange={(value) => {
                 setFilePreviews((current) => {
                   const preview = current[activeTab.id];
@@ -2314,10 +2546,28 @@ export function RightSidebarWorkspace({
       </div>
 
       {showFileWorkspace ? (
+        <ResizableDivider
+          ariaLabel={isTreeCollapsed ? "拖动展开文件树" : "调整文件树宽度"}
+          collapsed={isTreeCollapsed}
+          direction="from-end"
+          max={FILE_TREE_WIDTH_RANGE.max}
+          min={FILE_TREE_WIDTH_RANGE.min}
+          size={fileTreeWidth ?? FILE_TREE_WIDTH_RANGE.max}
+          onCollapsedChange={setIsTreeCollapsed}
+          onResize={setFileTreeWidth}
+        />
+      ) : null}
+
+      {showFileWorkspace ? (
         <div
           className={isTreeCollapsed
             ? "right-sidebar-workspace__tree hidden"
             : "right-sidebar-workspace__tree flex min-h-0 min-w-[220px] flex-[0_0_clamp(220px,42%,360px)] border-l border-[var(--app-border)]"}
+          ref={captureInitialFileTreeWidth}
+          style={fileTreeWidth === null ? undefined : {
+            flexBasis: fileTreeWidth,
+            width: fileTreeWidth,
+          }}
         >
           {activeConfigurationTarget !== null ? (
             <ConfigurationWorkspaceTreePanel
@@ -2469,6 +2719,7 @@ export function RightSidebarEmptyState({
 }
 
 function FilePreview({
+  imageNavigation,
   isDark,
   isTreeCollapsed,
   state,
@@ -2477,11 +2728,13 @@ function FilePreview({
   onDirty,
   onLocateDirectory,
   onLocateFile,
+  onNavigateImage,
   onOverwrite,
   onReload,
   onRequestSave,
   onToggleTree,
 }: {
+  imageNavigation: ProjectImageNavigation | null;
   isDark: boolean;
   isTreeCollapsed: boolean;
   state: FilePreviewState | undefined;
@@ -2490,12 +2743,14 @@ function FilePreview({
   onDirty: (content: string) => void;
   onLocateDirectory: () => void;
   onLocateFile: () => void;
+  onNavigateImage: (entry: ProjectEntry) => void;
   onOverwrite: () => void | Promise<void>;
   onReload: () => void;
    onRequestSave: (content?: string) => void;
   onToggleTree: () => void;
 }): ReactElement {
   const file = state?.file ?? null;
+  const isImagePreview = isProjectPreviewImagePath(tab.path);
   const editorRef = useRef<LiveMarkdownEditorHandle | null>(null);
   const canEdit = file !== null
     && file.content !== null
@@ -2579,6 +2834,33 @@ function FilePreview({
           <LoaderCircle aria-hidden="true" className="right-sidebar-workspace__spin" size={17} />
           正在读取文件
         </div>
+      ) : isImagePreview ? (
+        state.error !== null || state.imageDataUrl === null ? (
+          <div className="right-sidebar-file__state">
+            <p>{state.error ?? "无法预览图片"}</p>
+            <button type="button" onClick={onReload}>重试</button>
+          </div>
+        ) : (
+          <ProjectImageViewer
+            key={tab.id}
+            currentIndex={imageNavigation?.currentIndex ?? 0}
+            dataUrl={state.imageDataUrl}
+            fileName={tab.name}
+            hasNext={imageNavigation?.next !== null && imageNavigation?.next !== undefined}
+            hasPrevious={imageNavigation?.previous !== null && imageNavigation?.previous !== undefined}
+            total={imageNavigation?.total ?? 1}
+            onNext={() => {
+              if (imageNavigation?.next !== null && imageNavigation?.next !== undefined) {
+                onNavigateImage(imageNavigation.next);
+              }
+            }}
+            onPrevious={() => {
+              if (imageNavigation?.previous !== null && imageNavigation?.previous !== undefined) {
+                onNavigateImage(imageNavigation.previous);
+              }
+            }}
+          />
+        )
       ) : state.error !== null && file === null ? (
         <div className="right-sidebar-file__state">
           <p>{state.error}</p>

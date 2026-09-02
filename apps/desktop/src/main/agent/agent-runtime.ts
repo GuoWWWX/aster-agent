@@ -5,7 +5,6 @@ import { interrupt, isGraphInterrupt } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { z } from "zod";
 import {
-  AGENT_AVATAR_ICONS,
   approveToolChangeInputSchema,
   agentPermissionRuleSchema,
   CONTEXT_MESSAGE_OVERHEAD_TOKENS,
@@ -33,6 +32,7 @@ import {
   type ConversationAttachment,
   type ConversationMessageSubmission,
   type ConversationModelSelection,
+  type ConversationModelRetryItem,
   type ConversationPendingMessage,
   type ConversationContextUsage,
   sendConversationMessageInputSchema,
@@ -157,14 +157,6 @@ const MAX_SUMMARY_OUTPUT_TOKENS = 4_096;
 const MODEL_RETRY_INITIAL_DELAY_MS = 1_000;
 const MODEL_RETRY_MAX_DELAY_MS = 16_000;
 const DEFAULT_PERMISSION_MODE: ConversationPermissionMode = "ask_before_changes";
-
-function fallbackSubagentAvatarIcon(seed: string): AgentAvatarIcon {
-  let hash = 0;
-  for (const character of seed) {
-    hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
-  }
-  return AGENT_AVATAR_ICONS[Math.abs(hash) % AGENT_AVATAR_ICONS.length] ?? "bot";
-}
 
 class ToolCallLimitError extends Error {
   public readonly code = "TOOL_CALL_LIMIT_EXCEEDED";
@@ -506,7 +498,7 @@ function conversationIdentityContext(
           ? "You are an independent Agent."
           : `You are a standing Agent in team ${conversation.teamId}.`;
       case "subagent":
-        return `You are a temporary Subagent derived from parent conversation ${conversation.parentConversationId ?? "unknown"}. The parent snapshot at creation is already injected as this conversation's history; do not reread the parent for the same content. Handle only the assigned branch task, return verifiable results, and do not recursively create teams.`;
+        return `You are a temporary Subagent derived from parent conversation ${conversation.parentConversationId ?? "unknown"}. Parent conversation history is not inherited. Work only from the assigned task message and context explicitly included in it, return verifiable results, and do not recursively create teams.`;
     }
   })();
   if (agent === null) return [identity];
@@ -678,6 +670,17 @@ function replaceStoredVisibleMessageContent(
     return `${content}\n\n${source.modelContent}`;
   }
   return content;
+}
+
+function steerModelContent(content: string): string {
+  return [
+    "[Runtime steer note]",
+    "This message arrived while the current user request was still in progress.",
+    "Reconcile it with the unfinished request and work already completed. Treat explicit corrections, replacement instructions, or conflicts in this message as authoritative. Otherwise, do not silently discard unfinished applicable work: address the new priority, then continue the earlier applicable work or state clearly what remains.",
+    "[End runtime steer note]",
+    "",
+    content,
+  ].join("\n");
 }
 
 const MAX_AGENT_RESULT_RECEIPT_LENGTH = 1_000;
@@ -914,7 +917,7 @@ export class AgentRuntime {
   private createToolHandlerRegistry(): ToolHandlerRegistry<RuntimeToolContext> {
     const handlers: ToolHandler<RuntimeToolContext>[] = [
       {
-        execute: ({ context, rawArguments }) => this.teamWorkItemTool.execute({
+        execute: ({ context, rawArguments, toolName }) => this.teamWorkItemTool.execute({
           arguments: rawArguments,
           conversationId: context.conversationId,
           emit: context.emit,
@@ -927,9 +930,10 @@ export class AgentRuntime {
               },
           permissionMode: context.permissionMode,
           signal: context.signal,
+          toolName,
         }),
         getDefinitions: () => this.teamWorkItemTool.getDefinitions(),
-        getExecutionPolicy: () => this.teamWorkItemTool.getExecutionPolicy(),
+        getExecutionPolicy: ({ toolName }) => this.teamWorkItemTool.getExecutionPolicy(toolName),
         isAvailable: ({ conversationId, projectId }) =>
           this.teamWorkItemTool.isAvailable(conversationId, projectId),
       },
@@ -1799,12 +1803,13 @@ export class AgentRuntime {
     if (records.length === 0) return false;
     for (const record of records) {
       const prepared = this.prepareConversationMessage(record.input);
+      const modelInputContent = steerModelContent(prepared.modelInputContent);
       const userMessage = this.threadLog !== null && this.eventProjector !== null
         ? (() => {
             const pendingConsumption = this.database.preparePendingMessageConsumption(
               record.message.id,
               runId,
-              prepared.modelInputContent,
+              modelInputContent,
             );
             this.appendWriteAheadThreadLog(conversationId, {
               payload: {
@@ -1824,7 +1829,7 @@ export class AgentRuntime {
         : this.database.consumePendingMessageIntoRun(
             record.message.id,
             runId,
-            prepared.modelInputContent,
+            modelInputContent,
           );
       if (this.threadLog === null || this.eventProjector === null) {
         this.appendShadowThreadLog(conversationId, {
@@ -1833,7 +1838,7 @@ export class AgentRuntime {
             content: userMessage.content,
             message: userMessage,
             messageId: userMessage.id,
-            modelContent: prepared.modelInputContent,
+            modelContent: modelInputContent,
             runId,
           },
           type: "user_message",
@@ -1845,7 +1850,7 @@ export class AgentRuntime {
           record.message.attachmentIds,
           true
         ) ?? [],
-        content: prepared.modelInputContent,
+        content: modelInputContent,
         role: "user",
         toolCallId: null,
         toolCalls: []
@@ -1952,6 +1957,52 @@ export class AgentRuntime {
       input.referencedProjectPaths ?? [],
     );
     const projectFileReferenceTokens = estimateContextTokens(projectFileReferences);
+    const providerUsages = this.database.listModelMessages(input.conversationId)
+      .flatMap((message) => {
+        const state = message.role === "assistant" ? message.providerState : undefined;
+        if (
+          state?.usage === undefined
+          || state.apiFormat !== configuration.apiFormat
+          || state.baseUrl !== configuration.baseUrl
+          || state.modelId !== configuration.modelId
+        ) {
+          return [];
+        }
+        return [state.usage];
+      });
+    const latestProviderUsage = providerUsages.at(-1) ?? null;
+    const cacheReportedUsages = providerUsages.filter(
+      (usage) => usage.cachedInputTokens !== undefined,
+    );
+    const reportedInputTokens = cacheReportedUsages.reduce(
+      (total, usage) => total + usage.inputTokens,
+      0,
+    );
+    const cachedInputTokens = cacheReportedUsages.reduce(
+      (total, usage) => total + Math.min(usage.cachedInputTokens ?? 0, usage.inputTokens),
+      0,
+    );
+    const cacheCreationInputTokens = cacheReportedUsages.reduce(
+      (total, usage) => total + (usage.cacheCreationInputTokens ?? 0),
+      0,
+    );
+    const latestHitRate = latestProviderUsage?.cachedInputTokens === undefined
+      || latestProviderUsage.inputTokens <= 0
+      ? null
+      : Math.min(
+          latestProviderUsage.cachedInputTokens,
+          latestProviderUsage.inputTokens,
+        ) / latestProviderUsage.inputTokens;
+    const previousReportedUsage = latestHitRate === null
+      ? null
+      : cacheReportedUsages.at(-2) ?? null;
+    const previousHitRate = previousReportedUsage === null
+      || previousReportedUsage.inputTokens <= 0
+      ? null
+      : Math.min(
+          previousReportedUsage.cachedInputTokens ?? 0,
+          previousReportedUsage.inputTokens,
+        ) / previousReportedUsage.inputTokens;
     return conversationContextUsageSchema.parse({
       ...context.usage,
       estimatedAttachmentTokens:
@@ -1965,6 +2016,31 @@ export class AgentRuntime {
         context.usage.estimatedReferenceTokens
         + references.estimatedTokens
         + projectFileReferenceTokens,
+      providerCache: {
+        cumulative: {
+          cacheCreationInputTokens,
+          cachedInputTokens,
+          hitRate: cacheReportedUsages.length > 0 && reportedInputTokens > 0
+            ? cachedInputTokens / reportedInputTokens
+            : null,
+          inputTokens: reportedInputTokens,
+          reportedRequestCount: cacheReportedUsages.length,
+          requestCount: providerUsages.length,
+        },
+        latest: latestProviderUsage === null
+          ? null
+          : {
+              cacheCreationInputTokens:
+                latestProviderUsage.cacheCreationInputTokens ?? null,
+              cachedInputTokens: latestProviderUsage.cachedInputTokens ?? null,
+              hitRate: latestHitRate,
+              inputTokens: latestProviderUsage.inputTokens,
+              outputTokens: latestProviderUsage.outputTokens,
+              trendDelta: latestHitRate === null || previousHitRate === null
+                ? null
+                : Math.round((latestHitRate - previousHitRate) * 1_000_000) / 1_000_000,
+            },
+      },
     });
   }
 
@@ -2037,6 +2113,7 @@ export class AgentRuntime {
   ): Promise<void> {
     let activeAssistantContent = "";
     let activeAssistantContentPersisted = false;
+    let modelRetryFailurePersisted = false;
     try {
       this.activeSkillRefsByRun.set(runId, new Map());
       if (this.threadLog !== null && this.eventProjector !== null) {
@@ -2300,6 +2377,9 @@ export class AgentRuntime {
           runId,
           conversationId,
           emit,
+          onFinalFailurePersisted: () => {
+            modelRetryFailurePersisted = true;
+          },
           signal: controller.signal,
         }),
         onInterrupt: (interrupts) => this.resumeGraphInterrupts(
@@ -2365,7 +2445,7 @@ export class AgentRuntime {
         reportMainError(agentError, error, [configuration.apiKey]);
       }
       this.completeRunAndNotifySubagent({
-        assistant: status === "failed"
+        assistant: status === "failed" && !modelRetryFailurePersisted
           ? {
               content: message,
               kind: "failure",
@@ -2605,9 +2685,8 @@ export class AgentRuntime {
     const selectedAgent = this.resolveSubagentAgent(parent, input.agentId);
     if (selectedAgent !== null) this.database.bindConversationAgent(child.id, selectedAgent);
     const avatarIcon = input.icon
-      ?? (input.agentId === undefined ? undefined : selectedAgent?.avatarIcon)
-      ?? fallbackSubagentAvatarIcon(child.id);
-    this.database.setConversationAvatarIcon(child.id, avatarIcon);
+      ?? (input.agentId === undefined ? undefined : selectedAgent?.avatarIcon ?? undefined);
+    if (avatarIcon !== undefined) this.database.setConversationAvatarIcon(child.id, avatarIcon);
     const title = input.name?.trim()
       || `${selectedAgent?.name ?? "Subagent"} · ${input.task.replace(/\s+/gu, " ").slice(0, 80)}`;
     this.database.renameConversation(child.id, title);
@@ -3102,35 +3181,95 @@ export class AgentRuntime {
     conversationId: string;
     emit: RunEventEmitter;
     hasSuccessfulToolExecution: () => boolean;
+    onFinalFailurePersisted: () => void;
     providerId: string | undefined;
     runId: string;
     signal: AbortSignal;
   }): AgentGraphModelRetry {
+    const retries = new Map<string, ConversationModelRetryItem>();
+    const updateRetry = (
+      requestId: string,
+      update: Pick<ConversationModelRetryItem, "attempt" | "reason" | "retryInMs" | "status">,
+    ): ConversationModelRetryItem => {
+      const current = retries.get(requestId);
+      const now = new Date().toISOString();
+      const retry: ConversationModelRetryItem = {
+        ...update,
+        conversationId: input.conversationId,
+        createdAt: current?.createdAt ?? now,
+        id: current?.id ?? randomUUID(),
+        kind: "model_retry",
+        maxAttempts: MAX_MODEL_RECONNECT_ATTEMPTS,
+        runId: input.runId,
+        updatedAt: now,
+      };
+      this.persistModelRetry(retry);
+      retries.set(requestId, retry);
+      this.emit(input.emit, {
+        conversationId: input.conversationId,
+        retry,
+        runId: input.runId,
+        type: "model.retry_updated",
+      });
+      return retry;
+    };
     return {
       createEmptyResponseError: () => new Error("模型未返回可显示内容，请稍后重试或切换模型。"),
       getDelay: modelRetryDelay,
       maxRetries: MAX_MODEL_RECONNECT_ATTEMPTS,
-      onFailure: (error) => {
+      onFailure: ({ attempt, error, requestId }) => {
         if (!input.signal.aborted && !isAbortError(error)) {
           this.updateModelConnectionStatus(input.providerId, input.configuration.modelId, "error");
         }
-      },
-      onRetry: ({ attempt, delayMs, error }) => {
-        this.emit(input.emit, {
+        const current = retries.get(requestId);
+        if (current === undefined) return;
+        updateRetry(requestId, {
           attempt,
-          conversationId: input.conversationId,
+          reason: modelRetryReason(error, input.configuration.apiKey),
+          retryInMs: null,
+          status: "failed",
+        });
+        input.onFinalFailurePersisted();
+      },
+      onRetry: ({ attempt, delayMs, error, requestId }) => {
+        updateRetry(requestId, {
+          attempt,
           reason: error === null
             ? "模型未返回可显示内容。"
             : modelRetryReason(error, input.configuration.apiKey),
           retryInMs: delayMs,
-          runId: input.runId,
-          type: "model.request_retrying"
+          status: "retrying",
+        });
+      },
+      onSuccess: ({ attempt, requestId }) => {
+        const current = retries.get(requestId);
+        if (current === undefined) return;
+        updateRetry(requestId, {
+          attempt,
+          reason: current.reason,
+          retryInMs: null,
+          status: "completed",
         });
       },
       shouldFailEmptyResponse: () => !input.hasSuccessfulToolExecution(),
       shouldRetry: isRetryableModelError,
       wait: this.waitForRetry,
     };
+  }
+
+  private persistModelRetry(retry: ConversationModelRetryItem): void {
+    if (this.threadLog !== null && this.eventProjector !== null) {
+      this.appendWriteAheadThreadLog(retry.conversationId, {
+        payload: { retry, writeAhead: true },
+        type: "model_retry_updated",
+      });
+      return;
+    }
+    this.database.upsertModelRetry(retry);
+    this.appendShadowThreadLog(retry.conversationId, {
+      payload: { retry },
+      type: "model_retry_updated",
+    });
   }
 
   private async completeModelTurn(input: ModelTurnRequest): Promise<ModelTurnResult> {

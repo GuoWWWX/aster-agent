@@ -24,6 +24,7 @@ import {
   MessageSquareText,
   Paperclip,
   Pencil,
+  RefreshCw,
   Scale,
   Search,
   Send,
@@ -35,7 +36,6 @@ import {
   Terminal,
   Trash2,
   UsersRound,
-  WifiOff,
   Wrench,
   X,
 } from "lucide-react";
@@ -68,6 +68,7 @@ import type {
   ConversationAttachment,
   ConversationMessageDeliveryMode,
   ConversationModelSelection,
+  ConversationModelRetryItem,
   ConversationMessageItem,
   ConversationPendingMessage,
   ConversationContextUsage,
@@ -137,12 +138,15 @@ import { ModelProfilePicker } from "../settings/model-profile-picker.js";
 import { SettingsWorkspace } from "../settings/settings-workspace.js";
 import { reasoningOptionDisplayName } from "../settings/model-reasoning-options.js";
 import { TaskWorkspace } from "../tasks/task-workspace.js";
-import { AgentAvatar } from "../team/agent-avatar.js";
+import { AgentAvatar, SubagentAvatar } from "../team/agent-avatar.js";
 import { TeamWorkspace } from "../team/team-workspace.js";
 import { CollaborationProjectionGraph } from "../team/collaboration/collaboration-graph.js";
 import { useConversationWorkspaceCache } from "./conversation-workspace-cache.js";
 import { formatConversationRunMarkdown } from "./conversation-copy.js";
-import { ContextUsageIndicator } from "./context-usage-indicator.js";
+import {
+  ContextUsageIndicator,
+  ProviderCacheStatus,
+} from "./context-usage-indicator.js";
 import { ReasoningEnergyField } from "./reasoning-energy-field.js";
 import {
   isConversationScrolledToBottom,
@@ -159,6 +163,8 @@ import {
   type TaskFileChangeSummary,
 } from "./task-file-change-summary.js";
 import "./workspace-content.css";
+
+const DEFAULT_COMPOSER_CLEARANCE_PX = 120;
 
 type WorkspaceContentProps = {
   activeProject: ProjectSummary | null;
@@ -292,12 +298,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 type ModelActivity = {
   anchorTimelineItemId: string | null;
-  attempt?: number;
   preview?: string;
-  reason?: string;
-  retryInMs?: number;
   runId: string | null;
-  status: "thinking" | "retrying";
+  status: "thinking";
 };
 
 type LiveToolOutput = {
@@ -708,6 +711,7 @@ export function WorkspaceContent({
             key={session.id}
           >
             <ConversationWorkspace
+              active={isActive}
               agentClient={agentClient}
               canAddProjects={canAddProjects}
               isAddingProject={isAddingProject}
@@ -743,6 +747,7 @@ export function WorkspaceContent({
 }
 
 export function ConversationWorkspace({
+  active = true,
   agentClient,
   canAddProjects = false,
   compact = false,
@@ -766,6 +771,7 @@ export function ConversationWorkspace({
   teamInstances = [],
   teamManaged = false,
 }: {
+  active?: boolean;
   agentClient: AgentClient;
   canAddProjects?: boolean;
   compact?: boolean;
@@ -855,6 +861,7 @@ export function ConversationWorkspace({
   const [isLoadingTimeline, setIsLoadingTimeline] = useState(true);
   const [isMockRuntime, setIsMockRuntime] = useState(false);
   const [isSavingTeamPermission, setIsSavingTeamPermission] = useState(false);
+  const [isScrolledAwayFromBottom, setIsScrolledAwayFromBottom] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [liveToolOutputs, setLiveToolOutputs] = useState<Record<string, LiveToolOutput>>({});
   const [modelActivity, setModelActivity] = useState<ModelActivity | null>(null);
@@ -903,6 +910,12 @@ export function ConversationWorkspace({
   );
   const contextUsageRequestRef = useRef(0);
   const messagesRef = useRef<HTMLDivElement | null>(null);
+  const composerOverlayRef = useRef<HTMLDivElement | null>(null);
+  const [composerOverlayHeight, setComposerOverlayHeight] = useState(
+    DEFAULT_COMPOSER_CLEARANCE_PX,
+  );
+  const isReturningToBottomRef = useRef(false);
+  const lastKnownScrollTopRef = useRef<number | null>(null);
   const locatedTimelineRequestIdRef = useRef<number | null>(null);
   const shouldStickToBottomRef = useRef(true);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1450,13 +1463,73 @@ export function ConversationWorkspace({
 
   const handleMessagesScroll = useCallback((): void => {
     const messages = messagesRef.current;
+    if (messages === null || !active) return;
+    lastKnownScrollTopRef.current = messages.scrollTop;
+    const isAtBottom = isConversationScrolledToBottom(messages);
+    if (isReturningToBottomRef.current) {
+      isReturningToBottomRef.current = !isAtBottom;
+      shouldStickToBottomRef.current = true;
+      setIsScrolledAwayFromBottom(!isAtBottom);
+      return;
+    }
+    shouldStickToBottomRef.current = isAtBottom;
+    setIsScrolledAwayFromBottom(!isAtBottom);
+  }, [active]);
+
+  const handleScrollToBottom = useCallback((): void => {
+    const messages = messagesRef.current;
     if (messages === null) return;
-    shouldStickToBottomRef.current = isConversationScrolledToBottom(messages);
+    isReturningToBottomRef.current = true;
+    shouldStickToBottomRef.current = true;
+    messages.scrollTo({
+      behavior: "smooth",
+      left: 0,
+      top: messages.scrollHeight,
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    const overlay = composerOverlayRef.current;
+    if (overlay === null) return;
+
+    const updateHeight = (): void => {
+      const nextHeight = Math.ceil(overlay.getBoundingClientRect().height);
+      if (nextHeight <= 0) return;
+      setComposerOverlayHeight((current) => current === nextHeight ? current : nextHeight);
+    };
+    updateHeight();
+    if (typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(overlay);
+    return () => observer.disconnect();
   }, []);
 
   useLayoutEffect(() => {
     const messages = messagesRef.current;
-    if (messages === null || !shouldStickToBottomRef.current) return;
+    if (!active || isLoadingTimeline || messages === null) return;
+    const savedScrollTop = lastKnownScrollTopRef.current;
+    const shouldRestoreBottom = savedScrollTop === null || shouldStickToBottomRef.current;
+    const restoreScrollPosition = (): void => {
+      if (lastKnownScrollTopRef.current !== savedScrollTop) return;
+      if (shouldRestoreBottom) {
+        scrollConversationToBottom(messages);
+      } else {
+        messages.scrollLeft = 0;
+        messages.scrollTop = savedScrollTop;
+      }
+      const isAtBottom = isConversationScrolledToBottom(messages);
+      shouldStickToBottomRef.current = isAtBottom;
+      setIsScrolledAwayFromBottom(!isAtBottom);
+    };
+    restoreScrollPosition();
+    const animationFrame = window.requestAnimationFrame(restoreScrollPosition);
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [active, isLoadingTimeline]);
+
+  useLayoutEffect(() => {
+    const messages = messagesRef.current;
+    if (!active || messages === null || !shouldStickToBottomRef.current) return;
 
     const scrollToBottom = (): void => {
       if (shouldStickToBottomRef.current) scrollConversationToBottom(messages);
@@ -1464,7 +1537,7 @@ export function ConversationWorkspace({
     scrollToBottom();
     const animationFrame = window.requestAnimationFrame(scrollToBottom);
     return () => window.cancelAnimationFrame(animationFrame);
-  }, [isLoadingTimeline, modelActivity, operationError, taskList, timeline]);
+  }, [active, composerOverlayHeight, isLoadingTimeline, modelActivity, operationError, taskList, timeline]);
 
   const handleCopyMessage = useCallback(async (
     message: ConversationMessageItem,
@@ -2288,6 +2361,10 @@ export function ConversationWorkspace({
     () => getConversationRunDurationInsertIndexes(displayTimeline),
     [displayTimeline],
   );
+  const repeatedAssistantFailureMessageIds = useMemo(
+    () => getRepeatedAssistantFailureMessageIds(displayTimeline),
+    [displayTimeline],
+  );
   const modelActivityInsertIndex = modelActivity === null
     ? -1
     : (() => {
@@ -2344,6 +2421,12 @@ export function ConversationWorkspace({
     }
     return avatars;
   }, [agentProfiles, relatedSessions, session]);
+  const subagentConversationIds = useMemo(
+    () => new Set([session, ...relatedSessions]
+      .filter((candidate) => candidate.threadKind === "subagent")
+      .map((candidate) => candidate.id)),
+    [relatedSessions, session],
+  );
   const pathScope = resolveConversationPathScope(project, session, teams);
   const pathAgent = session.agentId === null
     ? undefined
@@ -2415,7 +2498,7 @@ export function ConversationWorkspace({
                 size="compact"
               />
             ) : (
-              <Bot aria-hidden="true" size={14} />
+              <SubagentAvatar icon={session.avatarIcon} seed={session.id} size="compact" />
             )}
             <h1 id={headingId}>{session.title}</h1>
           </button>
@@ -2430,9 +2513,6 @@ export function ConversationWorkspace({
 
       <div
         className="conversation-workspace__surface"
-        data-has-task-list={String(taskList !== null)}
-        data-has-pending-messages={String(pendingMessages.length > 0)}
-        data-has-subagent-approvals={String(subagentApprovals.length > 0)}
       >
         <div
           ref={messagesRef}
@@ -2467,54 +2547,60 @@ export function ConversationWorkspace({
                     && item.kind !== "tool_batch" ? (
                     <ModelActivityIndicator activity={modelActivity} />
                   ) : null}
-                  <div
-                    className="contents"
-                    data-conversation-timeline-item={item.id}
-                  >
-                    <TimelineItem
-                      item={item}
-                      agentAvatar={item.kind === "agent_message"
-                        ? conversationAgentAvatars.get(item.senderConversationId)
-                          ?? agentProfiles.find((agent) =>
-                            item.senderTitle === agent.name
-                            || item.senderTitle.startsWith(`${agent.name} ·`)
-                          )?.avatar
-                          ?? null
-                        : null}
-                      teamManaged={teamManaged}
-                      activeRunId={activeRunId}
-                      latestActiveToolId={latestActiveToolId}
-                      modelActivity={modelActivity !== null
-                        && modelActivityInsertIndex === index
-                        && item.kind === "tool_batch"
-                        ? modelActivity
-                        : null}
-                      approvalErrors={approvalErrors}
-                      approvingToolId={approvingToolId}
-                      copiedMessageId={copiedMessageId}
-                      editingMessageId={editingMessageId}
-                      forkingMessageId={forkingMessageId}
-                      canForkMessage={item.kind === "message"
-                        && forkableAssistantMessageIds.has(item.id)
-                        && onForkConversation !== undefined
-                        && !isFinishedSubagent}
-                      canShowCompletionTime={item.kind === "message"
-                        && forkableAssistantMessageIds.has(item.id)}
-                      canCopyMessage={item.kind === "message" && (
-                        item.role === "user"
-                          ? item.content.length > 0
-                          : forkableAssistantMessageIds.has(item.id)
-                      )}
-                      latestUserMessageId={teamManaged ? null : latestUserMessageId}
-                      onChangeApproval={handleChangeApproval}
-                      onCopyMessage={handleCopyMessage}
-                      onEditMessage={handleEditMessage}
-                      onForkMessage={handleForkMessage}
-                      onOpenProjectFile={onOpenProjectFile}
-                      onSessionSelected={onSessionSelected}
-                      liveToolOutputs={liveToolOutputs}
-                    />
-                  </div>
+                  {repeatedAssistantFailureMessageIds.has(item.id) ? null : (
+                    <div
+                      className="contents"
+                      data-conversation-timeline-item={item.id}
+                    >
+                      <TimelineItem
+                        item={item}
+                        agentAvatar={item.kind === "agent_message"
+                          ? conversationAgentAvatars.get(item.senderConversationId)
+                            ?? agentProfiles.find((agent) =>
+                              item.senderTitle === agent.name
+                              || item.senderTitle.startsWith(`${agent.name} ·`)
+                            )?.avatar
+                            ?? null
+                          : null}
+                        agentAvatarSeed={item.kind === "agent_message"
+                          && subagentConversationIds.has(item.senderConversationId)
+                          ? item.senderConversationId
+                          : null}
+                        teamManaged={teamManaged}
+                        activeRunId={activeRunId}
+                        latestActiveToolId={latestActiveToolId}
+                        modelActivity={modelActivity !== null
+                          && modelActivityInsertIndex === index
+                          && item.kind === "tool_batch"
+                          ? modelActivity
+                          : null}
+                        approvalErrors={approvalErrors}
+                        approvingToolId={approvingToolId}
+                        copiedMessageId={copiedMessageId}
+                        editingMessageId={editingMessageId}
+                        forkingMessageId={forkingMessageId}
+                        canForkMessage={item.kind === "message"
+                          && forkableAssistantMessageIds.has(item.id)
+                          && onForkConversation !== undefined
+                          && !isFinishedSubagent}
+                        canShowCompletionTime={item.kind === "message"
+                          && forkableAssistantMessageIds.has(item.id)}
+                        canCopyMessage={item.kind === "message" && (
+                          item.role === "user"
+                            ? item.content.length > 0
+                            : forkableAssistantMessageIds.has(item.id)
+                        )}
+                        latestUserMessageId={teamManaged ? null : latestUserMessageId}
+                        onChangeApproval={handleChangeApproval}
+                        onCopyMessage={handleCopyMessage}
+                        onEditMessage={handleEditMessage}
+                        onForkMessage={handleForkMessage}
+                        onOpenProjectFile={onOpenProjectFile}
+                        onSessionSelected={onSessionSelected}
+                        liveToolOutputs={liveToolOutputs}
+                      />
+                    </div>
+                  )}
                   {submittedTeamWorkItems(item).map((workItem) => (
                     <CollaborationProjectionGraph
                       agentClient={agentClient}
@@ -2546,9 +2632,28 @@ export function ConversationWorkspace({
             </>
           )}
           {operationError !== null ? <ConversationErrorItem content={operationError} /> : null}
+          <div
+            aria-hidden="true"
+            className="w-full shrink-0"
+            data-conversation-composer-clearance
+            style={{ height: `${composerOverlayHeight}px` }}
+          />
         </div>
 
-        <div className="conversation-workspace__composer-overlay">
+        {isScrolledAwayFromBottom ? (
+          <IconButton
+            className="absolute left-1/2 z-[5] -translate-x-1/2 rounded-full border border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-foreground)] shadow-md hover:bg-[var(--app-hover)]"
+            label="回到对话底部"
+            size="compact"
+            style={{ bottom: `${composerOverlayHeight + 5}px` }}
+            variant="quiet"
+            onClick={handleScrollToBottom}
+          >
+            <ArrowDown aria-hidden="true" size={16} />
+          </IconButton>
+        ) : null}
+
+        <div ref={composerOverlayRef} className="conversation-workspace__composer-overlay">
           {taskList !== null ? (
             <ConversationTaskListPanel
               allowClose={teamManaged || !isFinishedSubagent}
@@ -3067,6 +3172,7 @@ export function ConversationWorkspace({
               </div>
             </div>
           </div>
+          {showContextUsage ? <ProviderCacheStatus usage={contextUsage} /> : null}
           </form>
         </div>
       </div>
@@ -3175,16 +3281,12 @@ function handleRunEvent(
         status: "thinking",
       });
       return;
-    case "model.request_retrying":
-      updateTimeline(completeStreamingAssistantMessages);
-      setModelActivity({
-        attempt: event.attempt,
-        anchorTimelineItemId: timelineRef.current.at(-1)?.id ?? null,
-        ...(event.reason === undefined ? {} : { reason: event.reason }),
-        retryInMs: event.retryInMs,
-        runId: event.runId,
-        status: "retrying"
-      });
+    case "model.retry_updated":
+      updateTimeline((current) => upsertTimelineItem(
+        completeStreamingAssistantMessages(current),
+        event.retry,
+      ));
+      setModelActivity((current) => current?.runId === event.runId ? null : current);
       return;
     case "assistant.reasoning_delta": {
       if (event.kind === "content") {
@@ -3290,10 +3392,6 @@ function ModelActivityIndicator({ activity }: { activity: ModelActivity }): Reac
 
   if (label === null) return null;
 
-  if (activity.status === "retrying") {
-    return <RetryActivityIndicator activity={activity} label={label} />;
-  }
-
   return (
     <div
       aria-live="polite"
@@ -3303,46 +3401,6 @@ function ModelActivityIndicator({ activity }: { activity: ModelActivity }): Reac
     >
       <span className="conversation-model-activity__label" title={label}>{label}</span>
     </div>
-  );
-}
-
-function RetryActivityIndicator({
-  activity,
-  label,
-}: {
-  activity: ModelActivity;
-  label: string;
-}): ReactElement {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const hasReason = activity.reason !== undefined && activity.reason.trim().length > 0;
-  const toggleLabel = isExpanded ? "收起重试详情" : "展开重试详情";
-
-  return (
-    <section
-      aria-live="polite"
-      className="conversation-model-activity"
-      data-status="retrying"
-      role="status"
-    >
-      <button
-        aria-expanded={isExpanded}
-        aria-label={hasReason ? toggleLabel : label}
-        className="conversation-model-activity__summary"
-        disabled={!hasReason}
-        title={hasReason ? toggleLabel : label}
-        type="button"
-        onClick={() => setIsExpanded((current) => !current)}
-      >
-        <WifiOff aria-hidden="true" size={15} />
-        <span className="conversation-model-activity__label" title={label}>{label}</span>
-        {hasReason ? <ChevronRight aria-hidden="true" size={14} /> : null}
-      </button>
-      {isExpanded && hasReason ? (
-        <p className="conversation-model-activity__detail">
-          {stripLegacyErrorInstanceId(activity.reason ?? "")}
-        </p>
-      ) : null}
-    </section>
   );
 }
 
@@ -3365,11 +3423,7 @@ function RunProgressIndicator({ progress }: { progress: RunProgress }): ReactEle
 
 function modelActivityLabel(activity: ModelActivity): string | null {
   const preview = activity.preview?.trim();
-  return activity.status === "retrying"
-    ? `正在重新连接 ${activity.attempt ?? 1}/5 · ${Math.ceil((activity.retryInMs ?? 1_000) / 1_000)} 秒后重试`
-    : preview === undefined || preview.length === 0
-      ? null
-      : preview;
+  return preview === undefined || preview.length === 0 ? null : preview;
 }
 
 function beginRunProgress(
@@ -3378,12 +3432,21 @@ function beginRunProgress(
   anchorTimelineItemId: string | null,
 ): void {
   const startedAt = Date.now();
-  setRunProgresses((current) => current.some((progress) => progress.runId === runId)
-    ? current
-    : [
+  setRunProgresses((current) => {
+    if (current.some((progress) => progress.runId === runId)) return current;
+    const pending = runId === null
+      ? undefined
+      : current.findLast((progress) => progress.runId === null);
+    if (pending !== undefined) {
+      return current.map((progress) => progress === pending
+        ? { ...progress, anchorTimelineItemId, runId }
+        : progress);
+    }
+    return [
       ...current,
       { anchorTimelineItemId, outputStartedAt: null, runId, startedAt },
-    ]);
+    ];
+  });
 }
 
 function confirmRunProgress(
@@ -4025,6 +4088,7 @@ export function getConversationRunDurationInsertIndexes(
     kind: string;
     role?: string | undefined;
     runId?: string | null | undefined;
+    status?: string | undefined;
   }[],
 ): ReadonlyMap<number, readonly number[]> {
   const durationsByInsertIndex = new Map<number, number[]>();
@@ -4039,18 +4103,51 @@ export function getConversationRunDurationInsertIndexes(
       runStartIndex = index + 1;
       continue;
     }
-    if (item.kind !== "message" || item.role !== "assistant" || item.durationMs == null) {
-      continue;
-    }
+    const isCompletedAssistant = item.kind === "message" && item.role === "assistant";
+    const isTerminalRetry = item.kind === "model_retry" && item.status !== "retrying";
+    if ((!isCompletedAssistant && !isTerminalRetry) || item.durationMs == null) continue;
     const runId = item.runId ?? `legacy-turn:${runStartIndex}`;
     if (completedRunIds.has(runId)) continue;
     completedRunIds.add(runId);
-    const durations = durationsByInsertIndex.get(runStartIndex) ?? [];
-    durations.push(item.durationMs);
-    durationsByInsertIndex.set(runStartIndex, durations);
+    const currentDuration = durationsByInsertIndex.get(runStartIndex)?.[0] ?? 0;
+    durationsByInsertIndex.set(runStartIndex, [currentDuration + item.durationMs]);
   }
 
   return durationsByInsertIndex;
+}
+
+export function getRepeatedAssistantFailureMessageIds(
+  timeline: readonly {
+    content?: string | undefined;
+    id: string;
+    kind: string;
+    role?: string | undefined;
+    runId?: string | null | undefined;
+    status?: string | undefined;
+  }[],
+): ReadonlySet<string> {
+  const repeatedIds = new Set<string>();
+
+  for (let index = 1; index < timeline.length; index += 1) {
+    const previous = timeline[index - 1];
+    const current = timeline[index];
+    if (
+      previous?.kind === "message"
+      && previous.role === "assistant"
+      && previous.status === "failed"
+      && typeof previous.runId === "string"
+      && current?.kind === "message"
+      && current.role === "assistant"
+      && current.status === "failed"
+      && typeof current.runId === "string"
+      && current.runId !== previous.runId
+      && current.content?.trim() === previous.content?.trim()
+    ) {
+      repeatedIds.add(current.id);
+    }
+  }
+
+  return repeatedIds;
 }
 
 export function getConversationRunProgressInsertIndex(
@@ -4154,9 +4251,103 @@ function AssistantReasoningBlock({
   );
 }
 
+export function modelRetryStatusLabel(
+  retry: Pick<ConversationModelRetryItem, "attempt" | "maxAttempts" | "retryInMs" | "status">,
+  remainingRetryInMs: number | null = retry.retryInMs,
+): string {
+  if (retry.status === "completed") return `连接已恢复 · 重试 ${retry.attempt} 次`;
+  if (retry.status === "failed") {
+    return `重新连接失败 · 已重试 ${retry.attempt}/${retry.maxAttempts}`;
+  }
+  if (remainingRetryInMs !== null && remainingRetryInMs <= 0) {
+    return `正在重新连接 ${retry.attempt}/${retry.maxAttempts} · 即将重试`;
+  }
+  const retrySeconds = Math.ceil((remainingRetryInMs ?? 1_000) / 1_000);
+  return `正在重新连接 ${retry.attempt}/${retry.maxAttempts} · ${retrySeconds} 秒后重试`;
+}
+
+function ModelRetryTimelineItem({ item }: { item: ConversationModelRetryItem }): ReactElement {
+  const contentId = useId();
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [countdownNowMs, setCountdownNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (item.status !== "retrying" || item.retryInMs === null) return undefined;
+    const intervalId = window.setInterval(() => setCountdownNowMs(Date.now()), 1_000);
+    return () => window.clearInterval(intervalId);
+  }, [item.retryInMs, item.status, item.updatedAt]);
+  const retryUpdatedAtMs = Date.parse(item.updatedAt);
+  const remainingRetryInMs = item.status === "retrying" && item.retryInMs !== null
+    ? Number.isNaN(retryUpdatedAtMs)
+      ? item.retryInMs
+      : Math.max(0, Math.min(item.retryInMs, retryUpdatedAtMs + item.retryInMs - countdownNowMs))
+    : item.retryInMs;
+  const label = modelRetryStatusLabel(item, remainingRetryInMs);
+  const statusClassName = item.status === "failed"
+    ? "text-[var(--app-status-danger-fg)]"
+    : item.status === "completed"
+      ? "text-[var(--app-status-success-fg)]"
+      : "text-[var(--app-status-info-fg)]";
+  const detailsLabel = isExpanded ? "收起重试详情" : "展开重试详情";
+
+  return (
+    <section
+      aria-live={item.status === "retrying" ? "polite" : undefined}
+      className="w-full max-w-[var(--conversation-content-max-width)] shrink-0 self-center text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]"
+      data-status={item.status}
+    >
+      <div className="flex min-h-[30px] min-w-0 items-center gap-[7px] py-0.5">
+        <RefreshCw
+          aria-hidden="true"
+          className={`shrink-0 ${statusClassName} ${item.status === "retrying" ? "animate-spin" : ""}`}
+          size={15}
+        />
+        <button
+          aria-controls={contentId}
+          aria-expanded={isExpanded}
+          aria-label={`${detailsLabel}：${label}`}
+          className="inline-flex min-w-0 flex-[0_1_auto] cursor-pointer items-center overflow-hidden border-0 bg-transparent p-0 text-left text-[var(--app-muted-foreground)] transition-colors hover:text-[var(--app-foreground)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1 [font:inherit]"
+          title={detailsLabel}
+          type="button"
+          onClick={() => setIsExpanded((current) => !current)}
+        >
+          <span className="min-w-0 truncate">
+            模型请求重试 · <span className={`font-medium ${statusClassName}`}>{label}</span>
+          </span>
+        </button>
+        <button
+          aria-controls={contentId}
+          aria-expanded={isExpanded}
+          aria-label={detailsLabel}
+          className="grid size-[21px] shrink-0 place-items-center rounded-[var(--app-radius)] border-0 bg-transparent p-0 text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)] hover:text-[var(--app-foreground)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-[-1px]"
+          title={detailsLabel}
+          type="button"
+          onClick={() => setIsExpanded((current) => !current)}
+        >
+          <ChevronRight
+            aria-hidden="true"
+            className={`transition-transform ${isExpanded ? "rotate-90" : ""}`}
+            size={15}
+          />
+        </button>
+      </div>
+      {isExpanded ? (
+        <div
+          className="ml-[7px] border-l border-[var(--app-border)] pl-[22px]"
+          id={contentId}
+        >
+          <p className="m-0 py-1.5 text-[length:var(--app-font-size-body)] leading-5 text-[var(--app-foreground)]">
+            {stripLegacyErrorInstanceId(item.reason)}
+          </p>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function TimelineItem({
   item,
   agentAvatar,
+  agentAvatarSeed,
   teamManaged,
   activeRunId,
   latestActiveToolId,
@@ -4180,6 +4371,7 @@ function TimelineItem({
 }: {
   item: TimelineDisplayItem;
   agentAvatar: AgentProfile["avatar"] | null;
+  agentAvatarSeed: string | null;
   teamManaged: boolean;
   activeRunId: string | null;
   latestActiveToolId: string | null;
@@ -4205,6 +4397,10 @@ function TimelineItem({
   onSessionSelected: ((sessionId: string) => void) | undefined;
   liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
 }): ReactElement | null {
+  if (item.kind === "model_retry") {
+    return <ModelRetryTimelineItem item={item} />;
+  }
+
   if (item.kind === "tool_batch") {
     const hasFailure = item.tools.some((tool) =>
       toolItemHasFailure(tool) || approvalErrors[tool.id] !== undefined
@@ -4255,10 +4451,12 @@ function TimelineItem({
           type="button"
           onClick={() => onSessionSelected?.(item.senderConversationId)}
         >
-          {agentAvatar === null ? (
-            <Bot aria-hidden="true" className="shrink-0" size={15} />
-          ) : (
+          {agentAvatar !== null ? (
             <AgentAvatar avatar={agentAvatar} size="compact" />
+          ) : agentAvatarSeed !== null ? (
+            <SubagentAvatar icon={null} seed={agentAvatarSeed} size="compact" />
+          ) : (
+            <Bot aria-hidden="true" className="shrink-0" size={15} />
           )}
           <span className="min-w-0 truncate">
             {item.senderTitle}
@@ -4669,8 +4867,6 @@ function ToolBatchTimelineItem({
   const hasFailure = item.tools.some((tool) =>
     toolItemHasFailure(tool) || approvalErrors[tool.id] !== undefined
   );
-  const executionMode = toolBatchExecutionMode(item.tools);
-  const hasRunningTool = item.tools.some((tool) => tool.status === "running");
   const label = modelActivity === null
     ? toolBatchLabel(item.tools, teamManaged)
     : modelActivityLabel(modelActivity) ?? toolBatchLabel(item.tools, teamManaged);
@@ -4680,13 +4876,17 @@ function ToolBatchTimelineItem({
     <section className="tool-activity-batch" data-status={hasFailure ? "failed" : undefined}>
       <header className="tool-activity-batch__header">
         <span className="tool-activity-batch__identity">
-          <ToolTypeIcon name={representativeToolName(item.tools)} />
-          <span>{label}</span>
-          {executionMode === "parallel" ? (
-            <span className="tool-activity-batch__execution">
-              {hasRunningTool ? "并行执行中" : "并行执行"}
-            </span>
-          ) : null}
+          <button
+            aria-expanded={isExpanded}
+            aria-label={`${toggleLabel}：${label}`}
+            className="inline-flex min-w-0 flex-[0_1_auto] cursor-pointer items-center gap-[7px] overflow-hidden border-0 bg-transparent p-0 text-left text-[var(--app-muted-foreground)] transition-colors hover:text-[var(--app-foreground)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1 [font:inherit]"
+            title={toggleLabel}
+            type="button"
+            onClick={() => setIsExpanded((current) => !current)}
+          >
+            <ToolTypeIcon name={representativeToolName(item.tools)} />
+            <span>{label}</span>
+          </button>
           {hasFailure ? <span className="tool-activity-batch__status">有失败项</span> : null}
           <button
             aria-expanded={isExpanded}
@@ -4774,8 +4974,10 @@ function ToolTimelineItem({
           <ToolTypeIcon name={item.name} />
           <ToolActivityLabel
             item={item}
+            isExpanded={isExpanded}
             teamManaged={teamManaged}
             onOpenProjectFile={onOpenProjectFile}
+            onToggle={() => setIsExpanded((current) => !current)}
           />
           {effectiveStatus === "running" ? <ToolExecutionTimer /> : null}
           {effectiveStatus !== "completed" ? (
@@ -5081,30 +5283,66 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
 
 function ToolActivityLabel({
   item,
+  isExpanded,
   teamManaged,
   onOpenProjectFile,
+  onToggle,
 }: {
   item: ConversationToolItem;
+  isExpanded: boolean;
   teamManaged: boolean;
   onOpenProjectFile: ((path: string) => void) | undefined;
+  onToggle: () => void;
 }): ReactElement {
   const summary = fileChangeSummary(item);
-  if (summary === null) return <span>{toolActivityLabel(item, teamManaged)}</span>;
+  const label = toolActivityLabel(item, teamManaged);
+  const toggleLabel = isExpanded ? "收起调用详情" : "展开调用详情";
+  const toggleClassName = "min-w-0 flex-[0_1_auto] cursor-pointer overflow-hidden border-0 bg-transparent p-0 text-left text-ellipsis whitespace-nowrap text-[var(--app-muted-foreground)] transition-colors hover:text-[var(--app-foreground)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1 [font:inherit]";
+  const fileLinkClassName = "inline-flex min-w-0 cursor-pointer items-center gap-1 overflow-hidden border-0 bg-transparent p-0 text-inherit transition-colors hover:text-[var(--app-accent)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-2 [font:inherit]";
+  if (summary === null) {
+    return (
+      <button
+        aria-expanded={isExpanded}
+        aria-label={`${toggleLabel}：${label}`}
+        className={toggleClassName}
+        title={toggleLabel}
+        type="button"
+        onClick={onToggle}
+      >
+        {label}
+      </button>
+    );
+  }
 
   return (
     <span className="tool-timeline-item__activity-label">
-      <span>{summary.action}</span>
+      <button
+        aria-expanded={isExpanded}
+        aria-label={`${toggleLabel}：${label}`}
+        className={toggleClassName}
+        title={toggleLabel}
+        type="button"
+        onClick={onToggle}
+      >
+        {summary.action}
+      </button>
       {onOpenProjectFile === undefined ? (
-        <span title={summary.path}>{fileNameFromPath(summary.path)}</span>
+        <span className="inline-flex min-w-0 items-center gap-1 overflow-hidden" title={summary.path}>
+          <FileTypeIcon className="shrink-0" path={summary.path} size={14} />
+          <span className="truncate">{fileNameFromPath(summary.path)}</span>
+        </span>
       ) : (
         <button
           aria-label={`在侧边工作区打开文件 ${summary.path}`}
-          className="tool-timeline-item__file-link"
+          className={fileLinkClassName}
           title={`在侧边工作区打开 ${summary.path}`}
           type="button"
           onClick={() => onOpenProjectFile(summary.path)}
         >
-          {fileNameFromPath(summary.path)}
+          <FileTypeIcon className="shrink-0" path={summary.path} size={14} />
+          <span className="min-w-0 truncate">
+            {fileNameFromPath(summary.path)}
+          </span>
         </button>
       )}
       {summary.additions === null || summary.deletions === null ? null : (
@@ -5785,9 +6023,11 @@ function SubagentToolResult({
         {result.tasks.map((task) => (
           <li key={task.id}>
             <span className="tool-subagent-result__identity">
-              {task.avatarIcon === null ? null : (
-                <AgentAvatar avatar={{ icon: task.avatarIcon, kind: "icon" }} size="compact" />
-              )}
+              <SubagentAvatar
+                icon={task.avatarIcon}
+                seed={task.childConversationId}
+                size="compact"
+              />
               <span className="tool-search-results__path">{task.name}</span>
             </span>
             <span className="tool-search-results__excerpt">
@@ -5839,38 +6079,50 @@ function FileChangeResult({
     const changeType = fileChangeType(toolName, presentation);
 
     return (
-      <section className="tool-file-change" data-change-type={changeType}>
-        <div className="tool-file-change__surface">
-          <header className="tool-file-change__header">
-            {onOpenProjectFile === undefined ? (
-              <span className="tool-file-change__path" title={presentation.path}>
+      <section
+        className="tool-timeline-item__payload tool-structured-result tool-file-change"
+        data-change-type={changeType}
+      >
+        <header className="tool-file-change__header">
+          {onOpenProjectFile === undefined ? (
+            <span
+              className="tool-file-change__path inline-flex items-center gap-1"
+              title={presentation.path}
+            >
+              <FileTypeIcon className="shrink-0" path={presentation.path} size={14} />
+              <span className="min-w-0 truncate">
                 {fileNameFromPath(presentation.path)}
               </span>
-            ) : (
-              <button
-                aria-label={`在侧边工作区打开文件 ${presentation.path}`}
-                className="tool-file-change__path"
-                title={`在侧边工作区打开 ${presentation.path}`}
-                type="button"
-                onClick={() => onOpenProjectFile(presentation.path)}
-              >
-                {fileNameFromPath(presentation.path)}
-              </button>
-            )}
-            <span className="tool-file-change__summary">
-              <span data-kind="addition">+{presentation.additions}</span>
-              <span data-kind="deletion">-{presentation.deletions}</span>
             </span>
-            <IconButton
-              className="tool-file-change__copy"
-              label={copied ? "已复制变更内容" : "复制变更内容"}
-              size="compact"
-              variant="quiet"
-              onClick={() => void copyDiff(diff, setCopied)}
+          ) : (
+            <button
+              aria-label={`在侧边工作区打开文件 ${presentation.path}`}
+              className="tool-file-change__path inline-flex items-center gap-1"
+              title={`在侧边工作区打开 ${presentation.path}`}
+              type="button"
+              onClick={() => onOpenProjectFile(presentation.path)}
             >
-              <Copy aria-hidden="true" size={15} />
-            </IconButton>
-          </header>
+              <FileTypeIcon className="shrink-0" path={presentation.path} size={14} />
+              <span className="min-w-0 truncate">
+                {fileNameFromPath(presentation.path)}
+              </span>
+            </button>
+          )}
+          <span className="tool-file-change__summary">
+            <span data-kind="addition">+{presentation.additions}</span>
+            <span data-kind="deletion">-{presentation.deletions}</span>
+          </span>
+          <IconButton
+            className="tool-file-change__copy"
+            label={copied ? "已复制变更内容" : "复制变更内容"}
+            size="compact"
+            variant="quiet"
+            onClick={() => void copyDiff(diff, setCopied)}
+          >
+            <Copy aria-hidden="true" size={15} />
+          </IconButton>
+        </header>
+        <div className="tool-structured-result__content">
           <DiffView presentation={presentation} />
         </div>
         {error === null ? null : <ToolErrorNotice message={error} />}
@@ -5960,7 +6212,32 @@ function ToolResultNotice({
 }
 
 function ToolErrorNotice({ message }: { message: string }): ReactElement {
-  return <ConversationErrorQuote content={message} scope="tool" />;
+  const presentation = describeConversationError(message, "tool");
+
+  return (
+    <section
+      className="tool-timeline-item__payload tool-structured-result"
+      data-status="failed"
+      role="alert"
+    >
+      <p className="tool-timeline-item__payload-label flex items-center gap-1.5">
+        <CircleAlert
+          aria-hidden="true"
+          className="text-[var(--app-status-danger-fg)]"
+          size={14}
+        />
+        <span className="text-[var(--app-status-danger-fg)]">失败原因</span>
+      </p>
+      <div className="tool-structured-result__content">
+        <p
+          className="m-0 max-h-40 overflow-auto whitespace-pre-wrap px-2 py-2 text-[length:var(--app-font-size-control)] leading-5 text-[var(--app-foreground)] [overflow-wrap:anywhere]"
+          data-tool-error-detail
+        >
+          {presentation.detail}
+        </p>
+      </div>
+    </section>
+  );
 }
 
 function ToolRawCallDialog({

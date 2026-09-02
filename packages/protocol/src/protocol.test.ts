@@ -124,6 +124,25 @@ describe("protocol bootstrap contract", () => {
     expect(settings.permissionPolicies["browser-control"]).toBe("ask");
   });
 
+  it("accepts the persisted Agent conversation-selector preference", () => {
+    const settings = structuredClone(DEFAULT_APPLICATION_SETTINGS);
+    const firstAgent = settings.agentDirectory.agents[0];
+    expect(firstAgent).toBeDefined();
+    if (firstAgent === undefined) return;
+
+    const parsed = applicationSettingsSchema.parse({
+      ...settings,
+      agentDirectory: {
+        ...settings.agentDirectory,
+        agents: settings.agentDirectory.agents.map((agent, index) => (
+          index === 0 ? { ...agent, conversationSelectable: false } : agent
+        )),
+      },
+    });
+
+    expect(parsed.agentDirectory.agents[0]?.conversationSelectable).toBe(false);
+  });
+
   it("ships a focused six-role development team with mandatory specialist delegation", () => {
     const team = DEFAULT_APPLICATION_SETTINGS.agentDirectory.teams.find(
       (candidate) => candidate.id === "default-team",
@@ -724,6 +743,36 @@ describe("protocol bootstrap contract", () => {
     });
   });
 
+  it("carries a durable model retry timeline update", () => {
+    const conversationId = "00000000-0000-4000-8000-000000000001";
+    const runId = "00000000-0000-4000-8000-000000000002";
+    expect(conversationRunEventSchema.parse({
+      conversationId,
+      retry: {
+        attempt: 2,
+        conversationId,
+        createdAt: "2026-09-02T00:00:00.000Z",
+        id: "00000000-0000-4000-8000-000000000003",
+        kind: "model_retry",
+        maxAttempts: 5,
+        reason: "HTTP 402: Insufficient Balance",
+        retryInMs: 2_000,
+        runId,
+        status: "retrying",
+        updatedAt: "2026-09-02T00:00:02.000Z",
+      },
+      runId,
+      type: "model.retry_updated",
+    })).toMatchObject({
+      retry: {
+        attempt: 2,
+        kind: "model_retry",
+        status: "retrying",
+      },
+      type: "model.retry_updated",
+    });
+  });
+
   it("validates the project team navigator visibility preference", () => {
     const projectId = "00000000-0000-4000-8000-000000000001";
     expect(setProjectTeamsInNavigatorInputSchema.parse({
@@ -827,9 +876,30 @@ describe("protocol bootstrap contract", () => {
         includedMessageCount: 3,
         omittedMessageCount: 0,
         outputReserveTokens: 8192,
+        providerCache: {
+          cumulative: {
+            cacheCreationInputTokens: 100,
+            cachedInputTokens: 1_200,
+            hitRate: 0.6,
+            inputTokens: 2_000,
+            reportedRequestCount: 2,
+            requestCount: 3,
+          },
+          latest: {
+            cacheCreationInputTokens: 0,
+            cachedInputTokens: 700,
+            hitRate: 0.7,
+            inputTokens: 1_000,
+            outputTokens: 240,
+            trendDelta: 0.1,
+          },
+        },
         skillReserveTokens: 20,
-      }).estimatedInputTokens,
-    ).toBe(260);
+      }).providerCache,
+    ).toMatchObject({
+      cumulative: { hitRate: 0.6, reportedRequestCount: 2 },
+      latest: { hitRate: 0.7, outputTokens: 240 },
+    });
   });
 
   it("validates global context compression thresholds", () => {

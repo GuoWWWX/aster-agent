@@ -70,7 +70,7 @@ Electron Bootstrap
 - 图状态及 reducer：模型消息、模型调用计数、Runtime 回合数、上下文是否已初始化、成功工具标记和激活 Skill 快照。
 - `createAgent` 的 `model -> tools -> model` 条件循环和完成边；最大模型调用次数由 `modelCallLimitMiddleware` 按同一 `thread_id` 计数。
 - `createMiddleware.beforeAgent` 在 Run 图线程首次进入时调用 Runtime 的 Context Builder，写入本轮初始上下文；同一线程后续 Queue/Steer 或审批恢复不会重复追加上下文。
-- 自定义 `wrapModelCall` Middleware 执行可取消、可观测的模型重试；Runtime 只提供重试判定、退避、等待和事件/终态回调。
+- 自定义 `wrapModelCall` Middleware 为每次语义模型请求生成稳定 `requestId`，执行可取消、可观测的模型重试；Runtime 提供重试判定、退避、等待以及 `onRetry/onSuccess/onFailure` 回调，并用同一个 ID 更新持久 `model_retry` Timeline 事实。
 - 通过 `interrupt()` 暂停等待审批；通过 `new Command({ resume })` 恢复同一 `thread_id`。图执行边界同时接受 `invoke()` 返回的 `__interrupt__` 和上游直接抛出的顶层 `GraphInterrupt`，两者归一到相同的 `onInterrupt` 回调。
 - 在每个安全节点边界保存 Checkpoint。当前应用重启只恢复尚未开始执行的 queued Run；已进入图的 running Run 保守标记失败，不跨进程重放副作用。
 - 为 Subagent/团队未来扩展保留子图和并行 `Send` 的能力，但本批不宣称完整团队 Supervisor 已实现。
@@ -112,7 +112,7 @@ Queue/Steer 在模型已经返回无工具结果后到达时，Executor 会在�
 | Checkpoint | LangGraph `BaseCheckpointSaver` 合同 + `NodeSqliteCheckpointSaver` | 使用框架合同，自有存储适配 |
 | 工具审批 | LangGraph `interrupt/Command` + Runtime 的 Diff/命令审批事实 | 使用框架执行控制；不使用通用 HITL Middleware |
 | 工具错误 | ToolNode 消息合同 + Runtime 持久化失败 Tool 行和事件 | 组合使用；通用错误 Middleware 不能替代审计事实 |
-| 模型重试 | LangGraph Executor 的自定义 `wrapModelCall` Middleware；Runtime 提供流式感知、重试判定、退避等待、UI 事件和终态回调 | 不使用 LangChain 内置重试；需要保留已有文本后禁止重放、空响应策略和脱敏合同 |
+| 模型重试 | LangGraph Executor 的自定义 `wrapModelCall` Middleware；Runtime 提供流式感知、重试判定、退避等待和持久 `model_retry` 生命周期回调 | 不使用 LangChain 内置重试；需要保留已有文本后禁止重放、空响应策略、真实脱敏错误和单卡片终态合同 |
 | 上下文压缩 | 项目 ContextManager + LangChain 消息转换 | 不使用内置摘要；必须保留原始历史、增量摘要、相关历史、附件和 Skill 统一预算 |
 | Skill | SkillRuntime + Graph State 快照 + beforeAgent 初始上下文 / beforeModel 临时注入 | 框架保存恢复状态，正文解析和预算由项目实现 |
 | Subagent、跨 Agent 通信 | 每个执行 Run 仍使用 `createAgent`；对话、消息、队列和唤醒写业务 SQLite | 不使用短生命周期内存子 Agent 替代持久化业务对话 |

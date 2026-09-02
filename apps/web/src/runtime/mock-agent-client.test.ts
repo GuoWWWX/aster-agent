@@ -554,8 +554,12 @@ describe("MockAgentClient", () => {
     await expect(client.listConversationForks({ conversationId: conversation.id }))
       .resolves.toEqual([]);
     const forkTimeline = await client.listConversationTimeline({ conversationId: fork.id });
-    expect(forkTimeline.map((item) => item.kind === "tool" ? item.name : item.content)).toEqual(
-      firstTimeline.map((item) => item.kind === "tool" ? item.name : item.content),
+    expect(forkTimeline.map((item) => item.kind === "tool"
+      ? item.name
+      : item.kind === "model_retry" ? item.reason : item.content)).toEqual(
+      firstTimeline.map((item) => item.kind === "tool"
+        ? item.name
+        : item.kind === "model_retry" ? item.reason : item.content),
     );
     expect(forkTimeline.every((item) => item.conversationId === fork.id)).toBe(true);
     expect(forkTimeline.every((item) => item.runId !== null)).toBe(true);
@@ -574,8 +578,12 @@ describe("MockAgentClient", () => {
     const nestedTimeline = await client.listConversationTimeline({
       conversationId: nestedFork.id,
     });
-    expect(nestedTimeline.map((item) => item.kind === "tool" ? item.name : item.content)).toEqual(
-      firstTimeline.map((item) => item.kind === "tool" ? item.name : item.content),
+    expect(nestedTimeline.map((item) => item.kind === "tool"
+      ? item.name
+      : item.kind === "model_retry" ? item.reason : item.content)).toEqual(
+      firstTimeline.map((item) => item.kind === "tool"
+        ? item.name
+        : item.kind === "model_retry" ? item.reason : item.content),
     );
     expect(nestedTimeline.map((item) => item.id)).not.toEqual(
       forkTimeline.map((item) => item.id),

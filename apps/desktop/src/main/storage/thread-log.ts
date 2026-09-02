@@ -26,6 +26,7 @@ const threadLogEventTypeSchema = z.enum([
   "conversation_created",
   "context_checkpoint",
   "legacy_snapshot_imported",
+  "model_retry_updated",
   "pending_message_cancelled",
   "pending_messages_updated",
   "run_queued",

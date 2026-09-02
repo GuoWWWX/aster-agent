@@ -770,6 +770,7 @@ function buildTeamConversationActivities(
     (timelines.get(member.conversation.id) ?? []).flatMap((timelineItem) => {
       if (
         timelineItem.kind === "tool"
+        || timelineItem.kind === "model_retry"
         || (timelineItem.kind === "agent_message" && timelineItem.messageType === "task_result")
       ) return [];
       const content = timelineItem.content.trim();

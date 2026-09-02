@@ -108,7 +108,8 @@ describe("LangGraphExecutor", () => {
 
   it("retries transient model failures inside middleware without consuming extra graph turns", async () => {
     let calls = 0;
-    const retries: Array<{ attempt: number; delayMs: number }> = [];
+    const retries: Array<{ attempt: number; delayMs: number; requestId: string }> = [];
+    let completedRetry: { attempt: number; requestId: string } | null = null;
     const callbacks = callbacksFor([result("done")]);
     callbacks.callModel = () => {
       calls += 1;
@@ -123,8 +124,11 @@ describe("LangGraphExecutor", () => {
       modelRetry: {
         getDelay: (attempt) => attempt * 10,
         maxRetries: 2,
-        onRetry: ({ attempt, delayMs }) => {
-          retries.push({ attempt, delayMs });
+        onRetry: ({ attempt, delayMs, requestId }) => {
+          retries.push({ attempt, delayMs, requestId });
+        },
+        onSuccess: (input) => {
+          completedRetry = input;
         },
         shouldRetry: (error) => error instanceof Error && error.message === "transient",
         wait: () => Promise.resolve(),
@@ -134,10 +138,12 @@ describe("LangGraphExecutor", () => {
     });
 
     expect(calls).toBe(3);
-    expect(retries).toEqual([
+    expect(retries.map(({ attempt, delayMs }) => ({ attempt, delayMs }))).toEqual([
       { attempt: 1, delayMs: 10 },
       { attempt: 2, delayMs: 20 },
     ]);
+    expect(retries[0]?.requestId).toBe(retries[1]?.requestId);
+    expect(completedRetry).toEqual({ attempt: 2, requestId: retries[0]?.requestId });
     expect(state.turns).toBe(1);
     expect(state.lastResult?.content).toBe("done");
   });

@@ -4,11 +4,15 @@ import type {
   ConversationRunEvent,
   ConversationSummary,
   ModelReasoningOption,
+  ProjectEntry,
 } from "@agent/protocol";
 
 import {
   isAutoOpenedSideConversation,
+  isProjectPreviewImagePath,
+  projectImageNavigation,
   shouldDeleteSidebarChat,
+  shouldCollapseRightSidebarAfterClosingTabs,
   shouldLoadSideConversations,
   nextTerminalTabName,
   nextWorkspaceTabName,
@@ -248,5 +252,74 @@ describe("right sidebar workspace tab scrolling", () => {
 
     expect(tabs.scrollLeft).toBe(0);
     expect(preventDefault).not.toHaveBeenCalled();
+  });
+});
+
+describe("right sidebar tab closing", () => {
+  const openTabs = [{ id: "file:a" }, { id: "terminal:b" }, { id: "chat:c" }];
+
+  it("collapses after every open tab closes successfully", () => {
+    expect(shouldCollapseRightSidebarAfterClosingTabs(
+      openTabs,
+      new Set(openTabs.map((tab) => tab.id)),
+    )).toBe(true);
+  });
+
+  it("stays open when any tab remains or no tab was open", () => {
+    expect(shouldCollapseRightSidebarAfterClosingTabs(
+      openTabs,
+      new Set(["file:a", "terminal:b"]),
+    )).toBe(false);
+    expect(shouldCollapseRightSidebarAfterClosingTabs([], new Set())).toBe(false);
+  });
+});
+
+describe("right sidebar image files", () => {
+  it("recognizes image formats supported by the project preview channel", () => {
+    for (const path of [
+      "asset.apng",
+      "asset.AVIF",
+      "asset.bmp",
+      "asset.gif",
+      "asset.ico",
+      "asset.jfif",
+      "asset.jpeg",
+      "asset.jpg",
+      "asset.png",
+      "asset.svg",
+      "asset.webp",
+    ]) {
+      expect(isProjectPreviewImagePath(path), path).toBe(true);
+    }
+
+    expect(isProjectPreviewImagePath("asset.pdf")).toBe(false);
+    expect(isProjectPreviewImagePath("asset.tiff")).toBe(false);
+  });
+
+  it("navigates only between sibling images in the file-tree order", () => {
+    const entries: ProjectEntry[] = [
+      { kind: "directory", name: "nested", path: "assets/nested" },
+      { kind: "file", name: "first.png", path: "assets/first.png" },
+      { kind: "file", name: "notes.md", path: "assets/notes.md" },
+      { kind: "file", name: "second.jpg", path: "assets/second.jpg" },
+      { kind: "file", name: "third.webp", path: "assets/third.webp" },
+    ];
+
+    expect(projectImageNavigation(entries, "assets/second.jpg")).toEqual({
+      currentIndex: 1,
+      next: entries[4],
+      previous: entries[1],
+      total: 3,
+    });
+    expect(projectImageNavigation(entries, "assets/first.png")).toMatchObject({
+      currentIndex: 0,
+      previous: null,
+      total: 3,
+    });
+    expect(projectImageNavigation(entries, "assets/third.webp")).toMatchObject({
+      currentIndex: 2,
+      next: null,
+      total: 3,
+    });
   });
 });

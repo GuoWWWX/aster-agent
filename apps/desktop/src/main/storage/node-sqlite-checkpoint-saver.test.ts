@@ -88,4 +88,28 @@ describe("NodeSqliteCheckpointSaver", () => {
     await expect(saver.getTuple({ configurable: { thread_id: "" } })).rejects.toThrow();
     saver.close();
   });
+
+  it("accepts nested LangGraph checkpoint namespaces longer than ordinary identifiers", async () => {
+    const saver = new NodeSqliteCheckpointSaver(":memory:");
+    const namespace = Array.from(
+      { length: 12 },
+      (_, index) => `middleware-${index}:00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+    ).join("|");
+    expect(namespace.length).toBeGreaterThan(512);
+
+    const config = await saver.put(
+      { configurable: { checkpoint_ns: namespace, thread_id: "nested-run" } },
+      checkpoint("00000000000000000000000001", "nested"),
+      metadata,
+      {},
+    );
+
+    await expect(saver.getTuple(config)).resolves.toMatchObject({
+      checkpoint: { channel_values: { value: "nested" } },
+    });
+    await expect(saver.getTuple({
+      configurable: { checkpoint_ns: "x".repeat(8_193), thread_id: "nested-run" },
+    })).rejects.toThrow("checkpoint_ns");
+    saver.close();
+  });
 });

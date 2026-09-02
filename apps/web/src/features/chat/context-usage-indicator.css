@@ -1,30 +1,26 @@
-/* CSS trigger #2: component state is exposed through data attributes and the ring uses a pseudo-element. */
-.context-usage-indicator__trigger {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 0;
-  border-radius: var(--app-radius);
-  outline: none;
-  background: transparent;
-  color: #16a34a;
-  padding: 0;
-}
-
-.context-usage-indicator__trigger:hover {
-  background: var(--app-hover);
-}
-
-.context-usage-indicator__trigger:focus-visible {
-  outline: 2px solid var(--app-focus-ring);
-  outline-offset: -1px;
-}
-
 .context-usage-indicator__trigger[data-pressure="warning"],
 .context-usage-indicator__content [data-pressure="warning"] {
   color: #d97706;
+}
+
+.provider-cache-status__label--short {
+  display: none;
+}
+
+@container (max-width: 560px) {
+  .provider-cache-status__label--full {
+    display: none;
+  }
+
+  .provider-cache-status__label--short {
+    display: inline;
+  }
+}
+
+@container (max-width: 360px) {
+  .provider-cache-status__label--short {
+    display: none;
+  }
 }
 
 .context-usage-indicator__trigger[data-pressure="critical"],

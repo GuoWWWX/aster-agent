@@ -62,6 +62,7 @@ export const agentPermissionsSchema = z
 export const agentProfileSchema = z.object({
   avatar: agentAvatarSchema,
   capabilityScope: agentCapabilityScopeSchema,
+  conversationSelectable: z.boolean().optional(),
   description: z.string().max(2_000),
   enabled: z.boolean(),
   id: configurationIdSchema,

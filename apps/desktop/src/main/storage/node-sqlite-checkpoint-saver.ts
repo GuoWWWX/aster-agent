@@ -25,6 +25,7 @@ const requireNodeBuiltin = createRequire(__filename);
 const { DatabaseSync } = requireNodeBuiltin("node:sqlite") as SqliteModule;
 
 const MAX_KEY_LENGTH = 512;
+const MAX_NAMESPACE_LENGTH = 8_192;
 
 function asString(row: DatabaseRow, key: string): string {
   const value = row[key];
@@ -67,11 +68,16 @@ function requiredThreadId(config: RunnableConfig): string {
 
 function checkpointNamespace(config: RunnableConfig): string {
   const namespace = configurableValue(config, "checkpoint_ns") ?? "";
-  return safeKey("checkpoint_ns", namespace, true);
+  return safeKey("checkpoint_ns", namespace, true, MAX_NAMESPACE_LENGTH);
 }
 
-function safeKey(name: string, value: string, allowEmpty = false): string {
-  if ((!allowEmpty && value.length === 0) || value.length > MAX_KEY_LENGTH) {
+function safeKey(
+  name: string,
+  value: string,
+  allowEmpty = false,
+  maxLength = MAX_KEY_LENGTH,
+): string {
+  if ((!allowEmpty && value.length === 0) || value.length > maxLength) {
     throw new Error(`Checkpoint ${name} is empty or too long.`);
   }
   return value;
@@ -213,7 +219,9 @@ export class NodeSqliteCheckpointSaver extends BaseCheckpointSaver {
     const requestedNamespace = configurableValue(config, "checkpoint_ns");
     const requestedCheckpointId = configurableValue(config, "checkpoint_id");
     if (requestedThreadId !== undefined) safeKey("thread_id", requestedThreadId);
-    if (requestedNamespace !== undefined) safeKey("checkpoint_ns", requestedNamespace, true);
+    if (requestedNamespace !== undefined) {
+      safeKey("checkpoint_ns", requestedNamespace, true, MAX_NAMESPACE_LENGTH);
+    }
     if (requestedCheckpointId !== undefined) safeKey("checkpoint_id", requestedCheckpointId);
     const beforeId = options.before === undefined
       ? undefined

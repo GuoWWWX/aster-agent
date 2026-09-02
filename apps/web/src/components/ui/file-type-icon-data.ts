@@ -5,13 +5,12 @@ import fileTypeHtml from "@iconify-icons/vscode-icons/file-type-html";
 import fileTypeImage from "@iconify-icons/vscode-icons/file-type-image";
 import fileTypeJs from "@iconify-icons/vscode-icons/file-type-js";
 import fileTypeJson from "@iconify-icons/vscode-icons/file-type-json";
-import fileTypeMarkdown from "@iconify-icons/vscode-icons/file-type-markdown";
-import fileTypePdf from "@iconify-icons/vscode-icons/file-type-pdf2";
 import fileTypePython from "@iconify-icons/vscode-icons/file-type-python";
 import fileTypeReactJs from "@iconify-icons/vscode-icons/file-type-reactjs";
 import fileTypeReactTs from "@iconify-icons/vscode-icons/file-type-reactts";
 import fileTypeShell from "@iconify-icons/vscode-icons/file-type-shell";
 import fileTypeSql from "@iconify-icons/vscode-icons/file-type-sql";
+import fileTypeTextBase from "@iconify-icons/vscode-icons/file-type-text";
 import fileTypeTypescript from "@iconify-icons/vscode-icons/file-type-typescript";
 import fileTypeVue from "@iconify-icons/vscode-icons/file-type-vue";
 import fileTypeXml from "@iconify-icons/vscode-icons/file-type-xml";
@@ -30,6 +29,23 @@ const IMAGE_EXTENSIONS = new Set([
   "svg",
   "webp",
 ]);
+
+function documentFileIcon({
+  accent,
+  kind,
+}: {
+  accent: string;
+  kind: "md" | "pdf" | "txt";
+}) {
+  return {
+    ...fileTypeTextBase,
+    body: `<g data-document-kind="${kind}">${fileTypeTextBase.body.replaceAll("#829ec2", accent)}</g>`,
+  };
+}
+
+const fileTypeText = documentFileIcon({ accent: "#829ec2", kind: "txt" });
+const fileTypeMarkdown = documentFileIcon({ accent: "#755838", kind: "md" });
+const fileTypePdf = documentFileIcon({ accent: "#dc2626", kind: "pdf" });
 
 function officeFileIcon({
   accent,
@@ -99,7 +115,7 @@ const RECOGNIZED_FILE_EXTENSIONS = new Set([
   "bash", "cjs", "class", "css", "csv", "doc", "docm", "docx", "dot", "dotm", "dotx",
   "htm", "html", "java", "js", "json", "jsonc", "jsx", "less", "md", "mdx", "mjs",
   "mts", "pdf", "pot", "potm", "potx", "pps", "ppsm", "ppsx", "ppt", "pptm", "pptx",
-  "ps1", "py", "rtf", "sass", "scss", "sh", "sql", "ts", "tsv", "tsx", "vue", "xls", "xlsb",
+  "ps1", "py", "rtf", "sass", "scss", "sh", "sql", "ts", "tsv", "tsx", "txt", "vue", "xls", "xlsb",
   "xlsm", "xlsx", "xml", "yaml", "yml", "zsh",
 ]);
 
@@ -158,6 +174,8 @@ function iconForPath(path: string) {
       return fileTypeShell;
     case "sql":
       return fileTypeSql;
+    case "txt":
+      return fileTypeText;
     case "pdf":
       return fileTypePdf;
     case "docm":

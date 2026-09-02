@@ -435,11 +435,20 @@ export function buildManagedContext(input: BuildManagedContextInput): ManagedCon
       relevantMessage = candidate;
     }
   }
-  const messages = [
-    ...(summaryMessage === null ? [] : [summaryMessage]),
-    ...retained.map(toModelMessage),
-    ...(relevantMessage === null ? [] : [relevantMessage]),
-  ];
+  const retainedMessages = retained.map(toModelMessage);
+  const newestUserIndex = retainedMessages.findLastIndex((message) => message.role === "user");
+  const messages = relevantMessage === null || newestUserIndex < 0
+    ? [
+        ...(summaryMessage === null ? [] : [summaryMessage]),
+        ...retainedMessages,
+        ...(relevantMessage === null ? [] : [relevantMessage]),
+      ]
+    : [
+        ...(summaryMessage === null ? [] : [summaryMessage]),
+        ...retainedMessages.slice(0, newestUserIndex),
+        relevantMessage,
+        ...retainedMessages.slice(newestUserIndex),
+      ];
   return {
     compactionCandidates,
     messages,

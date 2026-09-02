@@ -20,6 +20,7 @@ import type {
   ModelMessage,
   ModelProviderAdapter,
   ModelProviderState,
+  ModelProviderTokenUsage,
   ModelToolCall,
   ModelToolDefinition,
   ModelTurnResult,
@@ -733,6 +734,36 @@ function readFinishReason(message: LangChainAssistantMessage): string | null {
     ?? stringValue(metadata.status);
 }
 
+function nonNegativeTokenCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.trunc(value)
+    : undefined;
+}
+
+function providerTokenUsage(
+  message: LangChainAssistantMessage,
+): ModelProviderTokenUsage | undefined {
+  const metadata = isRecord(message) ? message.usage_metadata : undefined;
+  if (!isRecord(metadata)) return undefined;
+  const inputTokens = nonNegativeTokenCount(metadata.input_tokens);
+  if (inputTokens === undefined) return undefined;
+  const outputTokens = nonNegativeTokenCount(metadata.output_tokens) ?? 0;
+  const totalTokens = nonNegativeTokenCount(metadata.total_tokens)
+    ?? inputTokens + outputTokens;
+  const inputDetails = isRecord(metadata.input_token_details)
+    ? metadata.input_token_details
+    : null;
+  const cachedInputTokens = nonNegativeTokenCount(inputDetails?.cache_read);
+  const cacheCreationInputTokens = nonNegativeTokenCount(inputDetails?.cache_creation);
+  return {
+    ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
+    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+    inputTokens,
+    outputTokens,
+    totalTokens,
+  };
+}
+
 function providerState(
   input: CompleteTurnInput,
   message: LangChainAssistantMessage,
@@ -740,7 +771,13 @@ function providerState(
   const additionalKwargs = jsonSnapshot(message.additional_kwargs);
   const content = jsonSnapshot(message.content);
   const responseMetadata = jsonSnapshot(message.response_metadata);
-  if (content === undefined && additionalKwargs === undefined && responseMetadata === undefined) {
+  const usage = providerTokenUsage(message);
+  if (
+    content === undefined
+    && additionalKwargs === undefined
+    && responseMetadata === undefined
+    && usage === undefined
+  ) {
     return undefined;
   }
   return {
@@ -753,6 +790,7 @@ function providerState(
       responseMetadata,
       version: LANGCHAIN_PROVIDER_STATE_VERSION,
     },
+    ...(usage === undefined ? {} : { usage }),
   };
 }
 

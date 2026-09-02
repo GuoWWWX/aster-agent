@@ -8,6 +8,7 @@ import {
   DEFAULT_AGENT_DIRECTORY_CONFIGURATION,
   type ConversationAttachment,
   type ConversationAgentMessageItem,
+  type ConversationRunEvent,
   type ConversationTaskList,
   type ConversationToolItem,
 } from "@agent/protocol";
@@ -56,6 +57,7 @@ afterEach(() => {
   act(() => root?.unmount());
   root = null;
   document.body.replaceChildren();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -112,6 +114,493 @@ describe("Conversation timeline location", () => {
     } else {
       Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView);
     }
+  });
+});
+
+describe("Conversation scroll navigation", () => {
+  it("opens uncached conversations at the latest message and restores a cached position", async () => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "切换对话滚动位置测试" });
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([]);
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const renderWorkspace = async (active: boolean): Promise<void> => {
+      await act(async () => {
+        root?.render(
+          <TooltipProvider>
+            <ConversationWorkspace
+              active={active}
+              agentClient={client}
+              project={null}
+              session={target}
+            />
+          </TooltipProvider>,
+        );
+        await flushConversationWorkspace();
+      });
+    };
+
+    await renderWorkspace(false);
+    const messages = container.querySelector<HTMLElement>(
+      '.conversation-workspace__messages[aria-label="对话记录"]',
+    );
+    expect(messages).not.toBeNull();
+    if (messages === null) return;
+    Object.defineProperties(messages, {
+      clientHeight: { configurable: true, value: 600 },
+      scrollHeight: { configurable: true, value: 1_200, writable: true },
+      scrollTop: { configurable: true, value: 0, writable: true },
+    });
+
+    await renderWorkspace(true);
+    expect(messages.scrollTop).toBe(1_200);
+
+    messages.scrollTop = 240;
+    act(() => {
+      messages.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    expect(container.querySelector('button[aria-label="回到对话底部"]')).not.toBeNull();
+    await renderWorkspace(false);
+    messages.scrollTop = 0;
+
+    await renderWorkspace(true);
+    expect(messages.scrollTop).toBe(240);
+
+    messages.scrollTop = 600;
+    act(() => {
+      messages.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await renderWorkspace(false);
+    Object.defineProperty(messages, "scrollHeight", {
+      configurable: true,
+      value: 1_800,
+      writable: true,
+    });
+    messages.scrollTop = 0;
+
+    await renderWorkspace(true);
+    expect(messages.scrollTop).toBe(1_800);
+  });
+
+  it("shows a centered return button away from the bottom and scrolls to the latest message", async () => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "滚动到底部测试" });
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([]);
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace agentClient={client} project={null} session={target} />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+
+    const messages = container.querySelector<HTMLElement>(
+      '.conversation-workspace__messages[aria-label="对话记录"]',
+    );
+    expect(messages).not.toBeNull();
+    if (messages === null) return;
+    Object.defineProperties(messages, {
+      clientHeight: { configurable: true, value: 600 },
+      scrollHeight: { configurable: true, value: 1_200 },
+      scrollTop: { configurable: true, value: 500, writable: true },
+    });
+    const scrollTo = vi.fn();
+    Object.defineProperty(messages, "scrollTo", {
+      configurable: true,
+      value: scrollTo,
+    });
+
+    expect(container.querySelector('button[aria-label="回到对话底部"]')).toBeNull();
+    act(() => {
+      messages.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+
+    const returnButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="回到对话底部"]',
+    );
+    expect(returnButton).not.toBeNull();
+    expect(returnButton?.className).toContain("left-1/2");
+    expect(returnButton?.className).toContain("rounded-full");
+
+    act(() => returnButton?.click());
+    expect(scrollTo).toHaveBeenCalledWith({ behavior: "smooth", left: 0, top: 1_200 });
+
+    messages.scrollTop = 600;
+    act(() => {
+      messages.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    expect(container.querySelector('button[aria-label="回到对话底部"]')).toBeNull();
+  });
+});
+
+describe("Tool activity disclosure", () => {
+  it("toggles a command batch and command detail from their muted summary text", async () => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "命令测试" });
+    const batchId = "00000000-0000-4000-8000-000000000010";
+    const commands = ["ping -n 1 www.baidu.com", "ping -n 1 www.qq.com", "ping -n 1 www.wikipedia.org"]
+      .map((command, index): ConversationToolItem => ({
+        arguments: JSON.stringify({ command }),
+        batchId,
+        conversationId: PARENT_ID,
+        createdAt: `2026-08-30T00:00:0${index}.000Z`,
+        diff: null,
+        executionMode: "parallel",
+        id: `00000000-0000-4000-8000-00000000001${index + 1}`,
+        kind: "tool",
+        name: "run_command",
+        result: null,
+        runId: RUN_ID,
+        status: "completed",
+      }));
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue(commands);
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace agentClient={client} project={null} session={target} />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+
+    const batchSummary = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.includes("运行 3 条命令") === true,
+    );
+    expect(batchSummary?.getAttribute("aria-expanded")).toBe("false");
+    expect(batchSummary?.className).toContain("text-[var(--app-muted-foreground)]");
+    expect(batchSummary?.className).toContain("hover:text-[var(--app-foreground)]");
+    expect(container.textContent).not.toContain("并行执行");
+
+    act(() => batchSummary?.click());
+    expect(batchSummary?.getAttribute("aria-expanded")).toBe("true");
+
+    const commandSummary = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "已运行 ping -n 1 www.baidu.com",
+    );
+    expect(commandSummary?.getAttribute("aria-expanded")).toBe("false");
+    expect(commandSummary?.className).toContain("text-[var(--app-muted-foreground)]");
+    expect(commandSummary?.className).toContain("hover:text-[var(--app-foreground)]");
+
+    act(() => commandSummary?.click());
+    expect(commandSummary?.getAttribute("aria-expanded")).toBe("true");
+    act(() => commandSummary?.click());
+    expect(commandSummary?.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("renders a failed tool result like a compact normal tool payload", async () => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "工具失败样式测试" });
+    const errorDetail = "提交的数据无效：字段 icon Invalid option: expected one of bot, sparkles, compass";
+    const failedTool: ConversationToolItem = {
+      arguments: JSON.stringify({ icon: "unknown-icon", name: "头像验收" }),
+      batchId: null,
+      conversationId: PARENT_ID,
+      createdAt: "2026-09-02T12:00:00.000Z",
+      diff: null,
+      executionMode: "serial",
+      id: TOOL_ID,
+      kind: "tool",
+      name: "spawn_subagent",
+      result: JSON.stringify({ error: errorDetail, ok: false }),
+      runId: RUN_ID,
+      status: "failed",
+    };
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([failedTool]);
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace agentClient={client} project={null} session={target} />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+
+    const detailToggle = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="展开调用详情"]',
+    );
+    act(() => detailToggle?.click());
+
+    const errorResult = container.querySelector<HTMLElement>(
+      '.tool-timeline-item__payload[role="alert"][data-status="failed"]',
+    );
+    expect(errorResult).not.toBeNull();
+    expect(errorResult?.className).toContain("tool-structured-result");
+    expect(errorResult?.textContent).toContain("失败原因");
+    expect(errorResult?.textContent).toContain(errorDetail);
+    expect(errorResult?.querySelector(".tool-structured-result__content")).not.toBeNull();
+    expect(errorResult?.querySelector("svg")?.getAttribute("class"))
+      .toContain("text-[var(--app-status-danger-fg)]");
+    expect(errorResult?.querySelector(".tool-timeline-item__payload-label span")?.className)
+      .toContain("text-[var(--app-status-danger-fg)]");
+    expect(errorResult?.querySelector("[data-tool-error-detail]")?.className).toContain("max-h-40");
+    expect(container.querySelector('.conversation-error-quote[data-scope="tool"]')).toBeNull();
+  });
+
+  it("shows a file icon and opens a changed file from the result header", async () => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "文件修改结果测试" });
+    const onOpenProjectFile = vi.fn();
+    const path = "src/BubbleSort.java";
+    const fileTool: ConversationToolItem = {
+      arguments: JSON.stringify({ path }),
+      batchId: null,
+      conversationId: PARENT_ID,
+      createdAt: "2026-09-02T12:00:00.000Z",
+      diff: [
+        `--- ${path}`,
+        `+++ ${path}`,
+        "@@ -1 +1,2 @@",
+        " class BubbleSort {}",
+        "+// sorted",
+      ].join("\n"),
+      executionMode: "serial",
+      id: TOOL_ID,
+      kind: "tool",
+      name: "replace_in_file",
+      result: JSON.stringify({ ok: true, value: { path } }),
+      runId: RUN_ID,
+      status: "completed",
+    };
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([fileTool]);
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace
+            agentClient={client}
+            onOpenProjectFile={onOpenProjectFile}
+            project={null}
+            session={target}
+          />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+
+    act(() => container.querySelector<HTMLButtonElement>(
+      'button[aria-label="展开调用详情"]',
+    )?.click());
+
+    const fileButtons = container.querySelectorAll<HTMLButtonElement>(
+      `button[aria-label="在侧边工作区打开文件 ${path}"]`,
+    );
+    expect(fileButtons).toHaveLength(2);
+    const resultHeaderButton = fileButtons[1];
+    expect(resultHeaderButton?.className).toContain("inline-flex");
+    expect(resultHeaderButton?.querySelector(".file-type-icon--java")).not.toBeNull();
+    expect(fileButtons[0]?.querySelector("span.truncate")?.className).not.toContain("border-b");
+    const fileResult = resultHeaderButton?.closest(".tool-file-change");
+    expect(fileResult?.className).toContain("tool-timeline-item__payload");
+    expect(fileResult?.className).toContain("tool-structured-result");
+    expect(fileResult?.querySelector(".tool-file-change__surface")).toBeNull();
+    expect(fileResult?.querySelector(".tool-structured-result__content > .tool-diff-view"))
+      .not.toBeNull();
+
+    act(() => resultHeaderButton?.click());
+    expect(onOpenProjectFile).toHaveBeenCalledWith(path);
+  });
+});
+
+describe("Model request retry timeline", () => {
+  it("shows retry progress immediately and keeps the terminal failure in the conversation", async () => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "模型重试测试" });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const height = this.classList.contains("conversation-workspace__composer-overlay") ? 196 : 0;
+      return {
+        bottom: height,
+        height,
+        left: 0,
+        right: 0,
+        toJSON: () => ({}),
+        top: 0,
+        width: 0,
+        x: 0,
+        y: 0,
+      };
+    });
+    let runEventListener: ((event: ConversationRunEvent) => void) | null = null;
+    vi.spyOn(client, "onConversationRunEvent").mockImplementation((listener) => {
+      runEventListener = listener;
+      return () => {
+        runEventListener = null;
+      };
+    });
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([]);
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace agentClient={client} project={null} session={target} />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+
+    const retry = {
+      attempt: 1,
+      conversationId: PARENT_ID,
+      createdAt: "2026-09-02T00:00:00.000Z",
+      id: "00000000-0000-4000-8000-000000000007",
+      kind: "model_retry" as const,
+      maxAttempts: 5,
+      reason: "接口错误：HTTP 402：Insufficient Balance",
+      retryInMs: 1_000,
+      runId: RUN_ID,
+      status: "retrying" as const,
+      updatedAt: "2026-09-02T00:00:01.000Z",
+    };
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(retry.updatedAt));
+    act(() => {
+      runEventListener?.({
+        conversationId: PARENT_ID,
+        retry,
+        runId: RUN_ID,
+        type: "model.retry_updated",
+      });
+    });
+
+    expect(container.textContent).toContain("模型请求重试");
+    expect(container.textContent).toContain("正在重新连接 1/5 · 1 秒后重试");
+    expect(container.textContent).not.toContain("HTTP 402");
+    const retrySummaryButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="展开重试详情："]',
+    );
+    expect(retrySummaryButton?.className).toContain("flex-[0_1_auto]");
+    expect(retrySummaryButton?.className).not.toContain("flex-1");
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(container.textContent).toContain("正在重新连接 1/5 · 即将重试");
+    expect(container.querySelector('button[aria-label="查看重试原因"]')).toBeNull();
+    expect(retrySummaryButton?.getAttribute("aria-expanded")).toBe("false");
+
+    act(() => retrySummaryButton?.click());
+    expect(retrySummaryButton?.getAttribute("aria-expanded")).toBe("true");
+    expect(container.textContent).toContain("HTTP 402");
+
+    act(() => {
+      vi.setSystemTime(new Date("2026-09-02T00:00:03.000Z"));
+      runEventListener?.({
+        conversationId: PARENT_ID,
+        retry: {
+          ...retry,
+          attempt: 2,
+          retryInMs: 2_000,
+          updatedAt: "2026-09-02T00:00:03.000Z",
+        },
+        runId: RUN_ID,
+        type: "model.retry_updated",
+      });
+    });
+
+    expect(container.textContent).toContain("正在重新连接 2/5 · 2 秒后重试");
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(container.textContent).toContain("正在重新连接 2/5 · 1 秒后重试");
+    expect(container.querySelectorAll('[data-status="retrying"]')).toHaveLength(1);
+
+    act(() => {
+      runEventListener?.({
+        conversationId: PARENT_ID,
+        retry: {
+          ...retry,
+          attempt: 5,
+          retryInMs: null,
+          status: "failed",
+          updatedAt: "2026-09-02T00:00:36.000Z",
+        },
+        runId: RUN_ID,
+        type: "model.retry_updated",
+      });
+    });
+
+    expect(container.textContent).toContain("重新连接失败 · 已重试 5/5");
+    const terminalRetry = container.querySelector<HTMLElement>('[data-status="failed"]');
+    expect(terminalRetry).not.toBeNull();
+    expect(terminalRetry?.className).toContain("shrink-0");
+    expect(terminalRetry?.className).not.toContain("bg-[var(--app-panel)]");
+    expect(container.querySelector<HTMLElement>("[data-conversation-composer-clearance]")?.style.height)
+      .toBe("196px");
+  });
+});
+
+describe("Run progress indicator", () => {
+  it("reuses the pending indicator when run.started arrives before message submission resolves", async () => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "运行进度测试" });
+    let runEventListener: ((event: ConversationRunEvent) => void) | null = null;
+    vi.spyOn(client, "onConversationRunEvent").mockImplementation((listener) => {
+      runEventListener = listener;
+      return () => {
+        runEventListener = null;
+      };
+    });
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([]);
+    vi.spyOn(client, "sendConversationMessage").mockImplementation(() => new Promise(() => {}));
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace agentClient={client} project={null} session={target} />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+
+    const composer = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入任务"]');
+    // React tracks the instance setter, so the test must call the native setter with the textarea as receiver.
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value",
+    )?.set;
+    act(() => {
+      valueSetter?.call(composer, "检查重复分隔线");
+      composer?.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    });
+    act(() => container.querySelector<HTMLFormElement>("form")?.requestSubmit());
+
+    expect(container.querySelectorAll(".conversation-run-progress")).toHaveLength(1);
+
+    act(() => {
+      runEventListener?.({
+        conversationId: PARENT_ID,
+        modelId: "test-model",
+        runId: RUN_ID,
+        type: "run.started",
+      });
+    });
+
+    expect(container.querySelectorAll(".conversation-run-progress")).toHaveLength(1);
   });
 });
 

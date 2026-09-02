@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { conversationToolItemSchema } from "@agent/protocol";
+import { conversationModelRetryItemSchema, conversationToolItemSchema } from "@agent/protocol";
 
 import { AgentDatabase } from "./agent-database.js";
 import { ConversationAttachmentStore } from "./conversation-attachment-store.js";
@@ -209,11 +209,24 @@ describe("EventProjector", () => {
       runId: run.runId,
       toolCalls: [{ arguments: "{}", id: "call-directory", name: "list_directory" }],
     });
+    const providerState = {
+      apiFormat: "openai-chat-completions" as const,
+      baseUrl: "https://example.test/v1",
+      modelId: "test-model",
+      payload: { responseId: "response-1" },
+      usage: {
+        cachedInputTokens: 80,
+        inputTokens: 100,
+        outputTokens: 10,
+        totalTokens: 110,
+      },
+    };
     threadLog.append(creation.conversation.id, {
       payload: {
         content: "先调用目录工具。",
         messageId: assistant?.id ?? crypto.randomUUID(),
         modelId: "test-model",
+        providerState,
         runId: run.runId,
         timelineMessage: assistant,
         toolCalls: [{ arguments: "{}", id: "call-directory", name: "list_directory" }],
@@ -271,7 +284,11 @@ describe("EventProjector", () => {
     ]);
     expect(recovered.listContextMessages(creation.conversation.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ content: "检查恢复链路", role: "user" }),
-      expect.objectContaining({ content: "先调用目录工具。", role: "assistant" }),
+      expect.objectContaining({
+        content: "先调用目录工具。",
+        providerState,
+        role: "assistant",
+      }),
       expect.objectContaining({ content: "{\"entries\":[]}", role: "tool", toolCallId: "call-directory" }),
     ]));
     source.close();
@@ -651,6 +668,90 @@ describe("EventProjector", () => {
       coveredThroughSequence: 3,
       summary: "已读取配置，等待下一步。",
     });
+    source.close();
+    recovered.close();
+  });
+
+  it("updates and recovers one durable model retry timeline item", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-model-retry-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const threadLog = new ThreadLog(path.join(directory, "conversations"));
+    const creation = source.prepareConversationCreation(null);
+    const projector = new EventProjector(source, threadLog);
+    projector.projectBusinessEvent(creation.conversation.id, threadLog.append(
+      creation.conversation.id,
+      { payload: creation, type: "conversation_created" },
+    ));
+    const queued = source.prepareRunWithUserMessage(
+      creation.conversation.id,
+      "重试记录需要持久化",
+      "test-model",
+    );
+    projector.projectBusinessEvent(creation.conversation.id, threadLog.append(
+      creation.conversation.id,
+      {
+        payload: {
+          content: queued.userMessage.content,
+          createdAt: queued.runCreatedAt,
+          executionSnapshot: queued.executionSnapshot,
+          message: queued.userMessage,
+          messageId: queued.userMessage.id,
+          modelContent: queued.modelContent,
+          modelId: queued.modelId,
+          runId: queued.runId,
+          title: queued.nextTitle,
+        },
+        type: "run_queued",
+      },
+    ));
+    const createdAt = new Date().toISOString();
+    const retrying = conversationModelRetryItemSchema.parse({
+      attempt: 1,
+      conversationId: creation.conversation.id,
+      createdAt,
+      id: crypto.randomUUID(),
+      kind: "model_retry",
+      maxAttempts: 5,
+      reason: "HTTP 402: Insufficient Balance",
+      retryInMs: 1_000,
+      runId: queued.runId,
+      status: "retrying",
+      updatedAt: createdAt,
+    });
+    projector.projectBusinessEvent(creation.conversation.id, threadLog.append(
+      creation.conversation.id,
+      { payload: { retry: retrying, writeAhead: true }, type: "model_retry_updated" },
+    ));
+    const failed = conversationModelRetryItemSchema.parse({
+      ...retrying,
+      attempt: 5,
+      retryInMs: null,
+      status: "failed",
+      updatedAt: new Date().toISOString(),
+    });
+    projector.projectBusinessEvent(creation.conversation.id, threadLog.append(
+      creation.conversation.id,
+      { payload: { retry: failed, writeAhead: true }, type: "model_retry_updated" },
+    ));
+
+    expect(source.listTimeline(creation.conversation.id)).toEqual([
+      expect.objectContaining({ content: "重试记录需要持久化", role: "user" }),
+      expect.objectContaining({
+        attempt: 5,
+        id: retrying.id,
+        kind: "model_retry",
+        reason: "HTTP 402: Insufficient Balance",
+        status: "failed",
+      }),
+    ]);
+
+    const recovered = new AgentDatabase(":memory:");
+    new EventProjector(recovered, threadLog).projectAllConversationLogs();
+    expect(recovered.listTimeline(creation.conversation.id)).toEqual([
+      expect.objectContaining({ content: "重试记录需要持久化", role: "user" }),
+      expect.objectContaining({ id: retrying.id, kind: "model_retry", status: "failed" }),
+    ]);
     source.close();
     recovered.close();
   });
@@ -1167,14 +1268,41 @@ describe("EventProjector", () => {
       payload: { runId: run.runId },
       type: "run_started",
     });
+    const retry = conversationModelRetryItemSchema.parse({
+      attempt: 2,
+      conversationId: creation.conversation.id,
+      createdAt: "2026-09-02T10:00:00.000Z",
+      id: crypto.randomUUID(),
+      kind: "model_retry",
+      maxAttempts: 5,
+      reason: "HTTP 402: Insufficient Balance",
+      retryInMs: 2_000,
+      runId: run.runId,
+      status: "retrying",
+      updatedAt: "2026-09-02T10:00:01.000Z",
+    });
+    threadLog.append(creation.conversation.id, {
+      payload: { retry },
+      type: "model_retry_updated",
+    });
 
     const recovered = new AgentDatabase(":memory:");
     new EventProjector(recovered, threadLog).projectAllConversationLogs();
     expect(recovered.getConversation(creation.conversation.id).lastRunStatus).toBe("running");
+    expect(recovered.listTimeline(creation.conversation.id)).toContainEqual(expect.objectContaining({
+      id: retry.id,
+      status: "retrying",
+    }));
 
     recovered.interruptRecoveredThreadLogRuns();
     expect(recovered.getConversation(creation.conversation.id).lastRunStatus).toBe("failed");
     expect(recovered.listQueuedRunRecoveries()).toEqual([]);
+    expect(recovered.listTimeline(creation.conversation.id)).toContainEqual(expect.objectContaining({
+      id: retry.id,
+      reason: retry.reason,
+      retryInMs: null,
+      status: "failed",
+    }));
     source.close();
     recovered.close();
   });

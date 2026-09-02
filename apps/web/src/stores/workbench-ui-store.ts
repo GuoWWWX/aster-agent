@@ -33,6 +33,32 @@ export type AgentPromptWorkspaceTarget = {
   title: string;
 };
 
+export type ActiveSettingsWorkspaceTarget =
+  | { kind: "agent-prompt"; target: AgentPromptWorkspaceTarget }
+  | { kind: "configuration"; target: ConfigurationWorkspaceTarget };
+
+export function resolveActiveSettingsWorkspaceTarget(
+  activeActivity: ActivityView,
+  settingsSection: SettingsSection,
+  agentPromptWorkspaceTarget: AgentPromptWorkspaceTarget | null,
+  configurationWorkspaceTarget: ConfigurationWorkspaceTarget | null,
+): ActiveSettingsWorkspaceTarget | null {
+  if (activeActivity !== "settings") return null;
+  if (settingsSection === "agents" && agentPromptWorkspaceTarget !== null) {
+    return { kind: "agent-prompt", target: agentPromptWorkspaceTarget };
+  }
+  if (
+    configurationWorkspaceTarget !== null
+    && (
+      (settingsSection === "mcp" && configurationWorkspaceTarget.kind === "mcp")
+      || (settingsSection === "skills" && configurationWorkspaceTarget.kind === "skill")
+    )
+  ) {
+    return { kind: "configuration", target: configurationWorkspaceTarget };
+  }
+  return null;
+}
+
 export const PROJECT_NAVIGATOR_WIDTH_RANGE = {
   min: 220,
   max: 420,
@@ -59,6 +85,9 @@ type WorkbenchUiState = {
   filePanelWidthsByConversationId: Record<string, number>;
   isFilePanelOpen: boolean;
   isProjectNavigatorOpen: boolean;
+  isSettingsFilePanelOpen: boolean;
+  closeAgentPromptWorkspace: (agentId?: string) => void;
+  closeConfigurationWorkspace: (target?: Pick<ConfigurationWorkspaceTarget, "configurationId" | "kind">) => void;
   notifyConfigurationWorkspaceChanged: () => void;
   openAgentPromptWorkspace: (target: AgentPromptWorkspaceTarget) => void;
   openConfigurationWorkspace: (target: ConfigurationWorkspaceTarget) => void;
@@ -71,6 +100,7 @@ type WorkbenchUiState = {
   hydrateAppearance: (appearance: ApplicationAppearanceConfiguration) => void;
   setProjectNavigatorOpen: (isOpen: boolean) => void;
   setProjectNavigatorWidth: (width: number) => void;
+  setSettingsFilePanelOpen: (isOpen: boolean) => void;
   setSettings: () => void;
   setSettingsSection: (settingsSection: SettingsSection) => void;
   setTerminalConfiguration: (terminalConfiguration: TerminalConfiguration) => void;
@@ -79,6 +109,7 @@ type WorkbenchUiState = {
   themeMode: ThemeMode;
   toggleFilePanel: () => void;
   toggleProjectNavigator: () => void;
+  toggleSettingsFilePanel: () => void;
   toggleThemeMode: () => void;
 };
 
@@ -95,18 +126,37 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
   filePanelWidthsByConversationId: {},
   isFilePanelOpen: true,
   isProjectNavigatorOpen: true,
+  isSettingsFilePanelOpen: false,
+  closeAgentPromptWorkspace: (agentId) => set((state) => (
+    state.agentPromptWorkspaceTarget !== null
+    && (agentId === undefined || state.agentPromptWorkspaceTarget.agentId === agentId)
+      ? { agentPromptWorkspaceTarget: null }
+      : state
+  )),
+  closeConfigurationWorkspace: (target) => set((state) => (
+    state.configurationWorkspaceTarget !== null
+    && (
+      target === undefined
+      || (
+        state.configurationWorkspaceTarget.configurationId === target.configurationId
+        && state.configurationWorkspaceTarget.kind === target.kind
+      )
+    )
+      ? { configurationWorkspaceTarget: null }
+      : state
+  )),
   notifyConfigurationWorkspaceChanged: () => set((state) => ({
     configurationWorkspaceRevision: state.configurationWorkspaceRevision + 1,
   })),
   openAgentPromptWorkspace: (agentPromptWorkspaceTarget) => set({
     agentPromptWorkspaceTarget,
     configurationWorkspaceTarget: null,
-    isFilePanelOpen: true,
+    isSettingsFilePanelOpen: true,
   }),
   openConfigurationWorkspace: (configurationWorkspaceTarget) => set({
     agentPromptWorkspaceTarget: null,
     configurationWorkspaceTarget,
-    isFilePanelOpen: true,
+    isSettingsFilePanelOpen: true,
   }),
   projectNavigatorWidth: 288,
   settingsSection: "general",
@@ -151,6 +201,7 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
         PROJECT_NAVIGATOR_WIDTH_RANGE,
       ),
     }),
+  setSettingsFilePanelOpen: (isSettingsFilePanelOpen) => set({ isSettingsFilePanelOpen }),
   setSettings: () => set({ activeActivity: "settings" }),
   setSettingsSection: (settingsSection) => set({ settingsSection }),
   setTerminalConfiguration: (terminalConfiguration) => set({ terminalConfiguration }),
@@ -161,6 +212,8 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
     set((state) => ({ isFilePanelOpen: !state.isFilePanelOpen })),
   toggleProjectNavigator: () =>
     set((state) => ({ isProjectNavigatorOpen: !state.isProjectNavigatorOpen })),
+  toggleSettingsFilePanel: () =>
+    set((state) => ({ isSettingsFilePanelOpen: !state.isSettingsFilePanelOpen })),
   toggleThemeMode: () =>
     set((state) => ({ themeMode: state.themeMode === "light" ? "dark" : "light" })),
 }));

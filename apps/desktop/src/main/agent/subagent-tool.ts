@@ -70,6 +70,18 @@ const waitArgumentsSchema = z.object({
     .describe("Use any to wait for one task to finish, or all to wait for every task."),
 }).strict();
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function omitUnsupportedSpawnIcon(value: unknown): unknown {
+  if (!isRecord(value) || value.icon === undefined) return value;
+  if (agentAvatarIconSchema.safeParse(value.icon).success) return value;
+  const normalized = { ...value };
+  delete normalized.icon;
+  return normalized;
+}
+
 type SubagentToolExecution = {
   content: string;
   isError: boolean;
@@ -133,7 +145,7 @@ export class SubagentTool {
   public getDefinitions(): ModelToolDefinition[] {
     return [
       {
-        description: "Start an independent one-shot Subagent for one bounded task. Give it a short name and optionally choose a dedicated icon from the declared enum. You may also select a configured Agent or team member with agentId. The tool returns immediately; use wait_for_subagents only when the current work depends on its result. The Subagent becomes read-only after completion. Its concise result is delivered automatically, while the full conversation remains available through read_agent_conversation.",
+        description: "Start an independent one-shot Subagent for one bounded task. Give it a short name. Usually omit icon so the app generates a stable identity; only pass an exact value from the declared enum when a specific icon matters. An unsupported optional icon is ignored instead of blocking creation. You may also select a configured Agent or team member with agentId. The tool returns immediately; use wait_for_subagents only when the current work depends on its result. The Subagent becomes read-only after completion. Its concise result is delivered automatically, while the full conversation remains available through read_agent_conversation.",
         name: SPAWN_SUBAGENT_TOOL_NAME,
         parameters: modelToolParameters(spawnArgumentsSchema),
       },
@@ -186,7 +198,7 @@ export class SubagentTool {
       const argumentsValue = parseToolArguments(input.arguments);
       switch (input.toolName) {
         case SPAWN_SUBAGENT_TOOL_NAME: {
-          const parsed = spawnArgumentsSchema.parse(argumentsValue);
+          const parsed = spawnArgumentsSchema.parse(omitUnsupportedSpawnIcon(argumentsValue));
           return success({
             task: toToolTask(this.database, input.spawn(
               parsed.task,

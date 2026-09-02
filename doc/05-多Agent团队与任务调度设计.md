@@ -84,7 +84,7 @@ AI Team Instance（用户显式创建、长期存在）
 
 ### 3.2 Ephemeral Subagent
 
-临时 Subagent 服务于一个有边界的任务，完成后释放模型和进程资源，但保留独立 Agent Thread、用户可见消息、工具与审批事件、摘要和 Artifact。典型场景：
+临时 Subagent 服务于一个有边界的任务，完成后释放模型和进程资源，但保留独立 Agent Thread、用户可见消息、工具与审批事件、摘要和 Artifact。它不复制父对话历史；初始模型上下文只接收 `spawn_subagent.task` 及其中显式携带的背景。典型场景：
 
 - 搜索代码并定位实现。
 - 调查某个错误的可能原因。
@@ -134,7 +134,7 @@ AI Team Instance（用户显式创建、长期存在）
 
 Agent 模型默认继承创建它的父对话当前模型，也可以由 Profile、创建请求、ModelRouter 或用户指定。当前 Main Agent 可先调用 `list_models` 获取不含凭据的已配置模型目录、已启用思考选项和带时间的健康状态，再向 `spawn_subagent` 显式传入 `providerId`、`modelId` 和可选思考选项；未传时保持继承。Subagent 的选择不反向更新“最近一次用户选择”。用户通过对话或模型选择器的明确设置具有最高优先级；自动路由不能解除用户锁定。完整规则见[模型接入、MCP、Skill 与 Agent 对话设计](./08-模型接入、MCP、Skill与Agent对话设计.md)。
 
-`spawn_subagent` 还接受独立于任务正文的简短 `name` 和可选 `icon`。`icon` 只能使用 Agent Profile 共用的稳定枚举；未提供时优先使用所选 Agent 的预设图标，否则按子 Conversation ID 选择稳定回退。名称和图标进入子对话身份投影，便于在父对话树和工具结果中区分并行 Subagent。
+`spawn_subagent` 还接受独立于任务正文的简短 `name` 和可选 `icon`。合法 `icon` 继续使用 Agent Profile 共用的稳定枚举；非法值作为未提供处理，装饰参数不能阻断任务创建。未显式指定时优先使用所选 Agent 的预设图标，否则由 Renderer 根据子 Conversation ID 生成稳定的 5×5 对称 Identicon。它看似随机但可重复生成，不使用任务正文、不保存图片；名称与最终身份在父对话树、侧边 Tab 和工具结果中保持一致。
 
 ## 4. 任务分级与是否组队
 
@@ -183,6 +183,8 @@ Team Lead 或单个执行 Agent 可以根据任务复杂度主动把一个 `Work
 ## 5. 持续任务收件箱
 
 用户可以在项目普通对话中以 `@团队` 指明目标团队，由当前模型调用 `submit_team_work_item` 交办需求；也可以在团队页点击“新建任务”，显式选择一个已有的全局/项目 TeamInstance 和项目后直接创建并发布。项目实例锁定自己的项目，全局实例才允许跨项目选择；页面直投绝不按模板静默创建实例。两个入口复用同一 WorkItem 提交、实例/项目校验和调度链路，区别只在是否持久化来源 Conversation ID。每次投递先形成独立 `WorkItem`，持久化项目、模型快照和权限模式，不会直接打断正在运行的 Agent；开始执行后，它才建立自己的 Team Lead 执行对话和其下的成员对话树。团队页提供全局项目筛选，并在列表与详情中持续显示项目归属，不能把直投任务变成无项目的第二套数据。
+
+来源主 Conversation 在交办后不等待团队完成，可以继续处理其他内容。模型只有在用户询问进度或当前任务确实依赖团队结果时才调用 `get_team_work_item_status`；省略 `workItemId` 时最多恢复该来源最近 20 个 WorkItem 的 ID 和状态，指定 ID 时只返回有界任务计数、最多 20 个参与者状态、最近输出摘录及截断后的阻塞/结果摘要。工具按 `sourceConversationId` 隔离，不能读取其他来源 Conversation 的 WorkItem，也不得持续轮询。
 
 ```text
 inbox
@@ -313,6 +315,8 @@ Worker 必须返回结构化结果：状态、摘要、证据、改动、验证�
 真实通信仍以 `conversation_agent_messages` 为事实源。消息提交成功后，Runtime 把同一执行树内的发送与接收 Conversation 关联到当前 WorkItem；Main 将活动计划、真实成员谱系和消息方向聚合为统一 `TeamCollaborationProjection`。计划内已发生路线为 `observed`，没有计划边但合法发生的路线为 `ad_hoc`，终态 WorkItem 中从未发生的计划路线为 `skipped`。投影不含 Agent 间消息正文；每个节点只补充 Conversation 的受控图标，以及最近 Assistant 输出的 280 字符以内尾部摘录和 Run ID，供卡片展示并与实时增量衔接。应用重启后，关系可从计划表与消息表重建，最新输出可从原生 Timeline 恢复。
 
 同一投影当前显示在四处：需求看板卡片使用静态微缩图；来源主对话在成功的 `submit_team_work_item` 工具结果后直接显示主协作图；“任务与验收”显示嵌入图；“执行规划”显示完整画布。来源主对话的图标题优先使用实际 TeamInstance 名称，缺失时回退到 Team 模板名称或“Agent 团队”，并使用 960 px 最大宽度与容器内响应式收缩；其他三个位置维持各自既定尺寸。所有节点显示 Agent 的受控图标；除看板微缩图外，节点卡片底部保留两行最新输出区域，运行中直接合并 `assistant.delta`，完成后显示持久终态摘录。节点可跳转到其原生 Conversation，四个容器不复制 Timeline 或另建可写业务状态。已发生和计划外路线使用方向虚线表达数据流，但只在发送方 Conversation 处于 `running` 时播放流动动画；发送方停止后保留虚线关系并立即静止，`prefers-reduced-motion` 时也停止动画。〔FACT｜`packages/protocol/src/team-collaboration.ts`；`apps/desktop/src/main/storage/agent-database.ts`；`apps/web/src/features/team/collaboration/collaboration-graph.tsx`〕
+
+协作画布是 Renderer 对 `TeamCollaborationProjection` 的视图，不作为系统提示词或历史消息发送给来源模型，节点坐标、连线和缩放状态不占用模型上下文。模型按需查询时由 Main 从同一持久事实生成更小的状态 DTO，不回传画布坐标、边、完整需求、事件流或成员完整 Timeline。
 
 ## 10. 状态与持久化
 

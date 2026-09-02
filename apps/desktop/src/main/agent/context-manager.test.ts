@@ -144,10 +144,11 @@ describe("context manager", () => {
     expect(plan.usage.omittedMessageCount).toBe(2);
   });
 
-  it("appends keyword-retrieved history after the chronological context", () => {
+  it("places keyword-retrieved history before the newest user turn", () => {
     const source = [
-      message(1, "user", "当前问题"),
-      message(2, "assistant", "当前回答"),
+      message(1, "user", "上一轮问题"),
+      message(2, "assistant", "上一轮回答"),
+      message(3, "user", "当前问题"),
     ];
     const plan = buildManagedContext({
       checkpoint: null,
@@ -164,14 +165,15 @@ describe("context manager", () => {
     });
 
     expect(plan.messages.slice(0, 2).map((item) => item.content)).toEqual([
-      "当前问题",
-      "当前回答",
+      "上一轮问题",
+      "上一轮回答",
     ]);
-    const related = plan.messages.at(-1);
+    const related = plan.messages.at(-2);
     expect(related?.role).toBe("system");
     expect(related?.content).toContain("Relevant history");
     expect(related?.content).toContain("登录页表单校验");
     expect(related?.content).toContain("复用现有校验组件");
+    expect(plan.messages.at(-1)?.content).toBe("当前问题");
     expect(plan.usage.estimatedReferenceTokens).toBeGreaterThan(0);
   });
 

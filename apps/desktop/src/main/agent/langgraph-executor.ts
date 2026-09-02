@@ -65,8 +65,17 @@ export type AgentGraphModelRetry = {
     attempt: number;
     delayMs: number;
     error: unknown;
+    requestId: string;
   }): Promise<void> | void;
-  onFailure?(error: unknown): Promise<void> | void;
+  onFailure?(input: {
+    attempt: number;
+    error: unknown;
+    requestId: string;
+  }): Promise<void> | void;
+  onSuccess?(input: {
+    attempt: number;
+    requestId: string;
+  }): Promise<void> | void;
   shouldFailEmptyResponse?(): boolean;
   createEmptyResponseError?(): Error;
 };
@@ -586,6 +595,7 @@ export class LangGraphExecutor {
       },
       wrapModelCall: async (request, handler) => {
         const messages = addContextMessages(request.messages, contextMessages);
+        const requestId = crypto.randomUUID();
         let retryAttempt = 0;
         while (true) {
           input.signal.throwIfAborted();
@@ -618,12 +628,20 @@ export class LangGraphExecutor {
                   if (!modelCallState.receivedTextDelta && retryAttempt < retry.maxRetries) {
                     retryAttempt += 1;
                     const delayMs = retry.getDelay(retryAttempt);
-                    await retry.onRetry({ attempt: retryAttempt, delayMs, error: null });
+                    await retry.onRetry({
+                      attempt: retryAttempt,
+                      delayMs,
+                      error: null,
+                      requestId,
+                    });
                     await retry.wait(delayMs, input.signal);
                     continue;
                   }
                 }
               }
+            }
+            if (retryAttempt > 0) {
+              await input.modelRetry?.onSuccess?.({ attempt: retryAttempt, requestId });
             }
             return response;
           } catch (error) {
@@ -634,12 +652,12 @@ export class LangGraphExecutor {
               || !retry.shouldRetry(error)
               || retryAttempt >= retry.maxRetries
             ) {
-              await retry?.onFailure?.(error);
+              await retry?.onFailure?.({ attempt: retryAttempt, error, requestId });
               throw error;
             }
             retryAttempt += 1;
             const delayMs = retry.getDelay(retryAttempt);
-            await retry.onRetry({ attempt: retryAttempt, delayMs, error });
+            await retry.onRetry({ attempt: retryAttempt, delayMs, error, requestId });
             await retry.wait(delayMs, input.signal);
           } finally {
             modelCallHooks.current = undefined;
