@@ -160,8 +160,53 @@ describe("main agent errors", () => {
     );
 
     expect(toMainAgentError(error, { operation: "agent.run" })).toMatchObject({
+      code: "MODEL_RUN_LIMIT_REACHED",
+      message: "模型长时间没有自行结束，已在最终保护边界停止。当前结果已保留，可发送“继续”接着处理。",
+      retryable: false,
+    });
+  });
+
+  it("classifies an oversized tool batch as an invalid model response", () => {
+    const error = Object.assign(new Error("Too many tool calls."), {
+      code: "TOOL_CALL_LIMIT_EXCEEDED",
+    });
+
+    expect(toMainAgentError(error, { operation: "agent.run" })).toMatchObject({
       code: "MODEL_RESPONSE_INVALID",
       retryable: true,
+    });
+  });
+
+  it("treats depleted model balance as a deterministic failure", () => {
+    expect(toMainAgentError(
+      new ModelRequestError(402, "Insufficient Balance"),
+      { operation: "agent.run" },
+    )).toMatchObject({
+      code: "MODEL_RATE_LIMITED",
+      message: "模型额度或余额不足，请充值、切换模型或更换供应商后再试。",
+      retryable: false,
+    });
+  });
+
+  it("classifies provider status through a framework error cause chain", () => {
+    const wrapped = new Error("Middleware execution failed", {
+      cause: new ModelRequestError(429, "Too Many Requests"),
+    });
+
+    expect(toMainAgentError(wrapped, { operation: "agent.run" })).toMatchObject({
+      code: "MODEL_RATE_LIMITED",
+      retryable: true,
+    });
+  });
+
+  it("does not expose an internal Chinese error as the user-facing message", () => {
+    expect(toMainAgentError(
+      new Error("软件内部错误：Graph executor state was corrupted."),
+      { operation: "agent.run" },
+    )).toMatchObject({
+      code: "INTERNAL_ERROR",
+      message: "软件内部发生错误，请重试。",
+      retryable: false,
     });
   });
 

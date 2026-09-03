@@ -37,6 +37,7 @@ export const IPC_CHANNELS = {
   conversationGetContextUsage: "conversation.get_context_usage",
   conversationChooseAttachments: "conversation.choose_attachments",
   conversationImportAttachmentBytes: "conversation.import_attachment_bytes",
+  conversationReadAttachmentPreview: "conversation.read_attachment_preview",
   conversationListDraftAttachments: "conversation.list_draft_attachments",
   conversationRemoveAttachment: "conversation.remove_attachment",
   conversationSendMessage: "conversation.send_message",

@@ -4,6 +4,7 @@ import {
   clipboard,
   dialog,
   ipcMain as electronIpcMain,
+  type IpcMainEvent,
   type IpcMainInvokeEvent
 } from "electron";
 import {
@@ -24,6 +25,7 @@ import {
   conversationContextUsageIpcArgumentsSchema,
   conversationContextUsageSchema,
   conversationAttachmentListSchema,
+  conversationAttachmentPreviewSchema,
   importConversationAttachmentBytesIpcArgumentsSchema,
   conversationListResponseSchema,
   conversationMessageSubmissionSchema,
@@ -86,6 +88,7 @@ import {
   publishTeamWorkItemIpcArgumentsSchema,
   readProjectFileIpcArgumentsSchema,
   readProjectPreviewImageIpcArgumentsSchema,
+  readConversationAttachmentPreviewIpcArgumentsSchema,
   readConfigurationWorkspaceFileIpcArgumentsSchema,
   reorderConversationsIpcArgumentsSchema,
   reorderPendingConversationMessagesIpcArgumentsSchema,
@@ -210,7 +213,7 @@ function getRuntimeInfo() {
 }
 
 function getTrustedWindow(
-  event: IpcMainInvokeEvent,
+  event: Pick<IpcMainInvokeEvent, "sender">,
   getMainWindow: () => BrowserWindow | undefined
 ): BrowserWindow {
   const mainWindow = getMainWindow();
@@ -357,6 +360,14 @@ export function registerMainIpcHandlers(
     );
     return true;
   });
+  const handleManagedBrowserBounds = (event: IpcMainEvent, ...args: unknown[]): void => {
+    void runIpcHandler(IPC_CHANNELS.managedBrowserSetBounds, () => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = managedBrowserBoundsIpcArgumentsSchema.parse(args);
+      managedBrowser.setBounds(input);
+    }).catch(() => undefined);
+  };
+  electronIpcMain.on(IPC_CHANNELS.managedBrowserSetBounds, handleManagedBrowserBounds);
   const disposeWorkspaceBrowserTabCloseListener = workspaceBrowserTabs.onCloseRequested((request) => {
     const window = getMainWindow();
     if (window === undefined || window.isDestroyed()) return false;
@@ -789,6 +800,17 @@ export function registerMainIpcHandlers(
   );
 
   ipcMain.handle(
+    IPC_CHANNELS.conversationReadAttachmentPreview,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = readConversationAttachmentPreviewIpcArgumentsSchema.parse(args);
+      return conversationAttachmentPreviewSchema.parse(
+        attachments.readImagePreview(input.conversationId, input.attachmentId),
+      );
+    },
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.conversationListDraftAttachments,
     (event, ...args: unknown[]) => {
       getTrustedWindow(event, getMainWindow);
@@ -1089,11 +1111,11 @@ export function registerMainIpcHandlers(
 
   ipcMain.handle(
     IPC_CHANNELS.conversationDeletePendingMessage,
-    (event, ...args: unknown[]) => {
+    async (event, ...args: unknown[]) => {
       getTrustedWindow(event, getMainWindow);
       const [input] = pendingConversationMessageReferenceIpcArgumentsSchema.parse(args);
       return conversationPendingMessageListSchema.parse(
-        agentRuntime.deletePendingMessage(input.pendingMessageId, (runEvent) =>
+        await agentRuntime.deletePendingMessage(input.pendingMessageId, (runEvent) =>
           sendConversationRunEvent(getMainWindow, runEvent)
         )
       );
@@ -1412,13 +1434,6 @@ export function registerMainIpcHandlers(
     return managedBrowserSnapshotSchema.parse(await managedBrowser.capture(input));
   });
 
-  ipcMain.handle(IPC_CHANNELS.managedBrowserSetBounds, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = managedBrowserBoundsIpcArgumentsSchema.parse(args);
-    managedBrowser.setBounds(input);
-    return voidIpcResponseSchema.parse(undefined);
-  });
-
   ipcMain.handle(IPC_CHANNELS.managedBrowserClose, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = managedBrowserReferenceIpcArgumentsSchema.parse(args);
@@ -1578,6 +1593,7 @@ export function registerMainIpcHandlers(
     disposeWorkspaceBrowserTabListener();
     disposeWorkspaceBrowserTabCloseListener();
     disposeManagedBrowserListener();
+    electronIpcMain.removeListener(IPC_CHANNELS.managedBrowserSetBounds, handleManagedBrowserBounds);
     ipcMain.dispose();
     throw error;
   }
@@ -1601,6 +1617,7 @@ export function registerMainIpcHandlers(
     disposeWorkspaceBrowserTabListener();
     disposeWorkspaceBrowserTabCloseListener();
     disposeManagedBrowserListener();
+    electronIpcMain.removeListener(IPC_CHANNELS.managedBrowserSetBounds, handleManagedBrowserBounds);
     workspaceTerminalTabs.dispose();
     workspaceBrowserTabs.dispose();
     ipcMain.dispose();

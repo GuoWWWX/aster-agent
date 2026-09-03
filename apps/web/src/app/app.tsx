@@ -1,3 +1,4 @@
+import { Scale } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
 import type {
@@ -9,19 +10,31 @@ import type {
 
 import { AppShell } from "../components/layout/app-shell.js";
 import { MediaPreviewDialogHost } from "../components/media/image-viewer.js";
-import { WorkspaceContent } from "../features/chat/workspace-content.js";
+import {
+  resolveConversationPathIconKind,
+  resolveConversationPathScope,
+  WorkspaceContent,
+} from "../features/chat/workspace-content.js";
+import {
+  closeConversationTab,
+  openConversationTab,
+} from "../features/chat/conversation-tabs.js";
 import {
   ProjectNavigator,
   type ProjectNavigatorLocateRequest,
 } from "../features/projects/project-navigator.js";
 import { useProjectSessions } from "../features/projects/use-project-sessions.js";
 import { useProjectTree } from "../features/projects/use-project-tree.js";
+import { AgentAvatar, SubagentAvatar } from "../features/team/agent-avatar.js";
 import {
   RightSidebarWorkspace,
   type ProjectFileOpenRequest,
   type TeamMemberOpenRequest,
 } from "../features/workspace/right-sidebar-workspace.js";
-import type { ProjectSession } from "../features/projects/project-session-model.js";
+import {
+  isProjectSessionRunning,
+  type ProjectSession,
+} from "../features/projects/project-session-model.js";
 import { useWorkbenchUiStore } from "../stores/workbench-ui-store.js";
 import { useAgentDirectoryStore } from "../stores/agent-directory-store.js";
 import { useApplicationSettingsStore } from "../stores/application-settings-store.js";
@@ -102,6 +115,7 @@ export function App(): ReactElement {
     agentClient,
     projectTree.activeProject?.id ?? null,
   );
+  const [openConversationIds, setOpenConversationIds] = useState<string[]>([]);
   const [navigatorLocateRequest, setNavigatorLocateRequest] =
     useState<ProjectNavigatorLocateRequest | null>(null);
   const [fileOpenRequest, setFileOpenRequest] = useState<ProjectFileOpenRequest | null>(null);
@@ -112,6 +126,54 @@ export function App(): ReactElement {
     setFilePanelOpen(true);
   }, [setFilePanelOpen]);
   const applicationSettingsSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+  useEffect(() => {
+    const activeSessionId = projectSessions.activeSessionId;
+    if (activeSessionId === null) return;
+    setOpenConversationIds((current) => openConversationTab(current, activeSessionId));
+  }, [projectSessions.activeSessionId]);
+
+  useEffect(() => {
+    const availableIds = new Set(
+      projectSessions.sessions
+        .filter((session) => !session.isArchived)
+        .map((session) => session.id),
+    );
+    setOpenConversationIds((current) => current.filter((id) => availableIds.has(id)));
+  }, [projectSessions.sessions]);
+
+  const conversationTabs = useMemo(() => {
+    const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
+    const projectsById = new Map(projectTree.projects.map((project) => [project.id, project]));
+    return openConversationIds.flatMap((id) => {
+      const session = projectSessions.sessions.find((candidate) => candidate.id === id);
+      if (session === undefined || session.isArchived) return [];
+
+      const isRunning = isProjectSessionRunning(session);
+      const project = session.projectId === null
+        ? null
+        : projectsById.get(session.projectId) ?? null;
+      const scope = resolveConversationPathScope(project, session, teams);
+      const iconKind = resolveConversationPathIconKind(scope.kind, session);
+      const agent = session.agentId === null ? undefined : agentsById.get(session.agentId);
+      const icon = iconKind === "team_lead"
+        ? <Scale aria-label="Team Lead 对话" size={14} />
+        : iconKind === "agent" && agent !== undefined
+          ? <AgentAvatar avatar={agent.avatar} size="compact" status={isRunning ? "running" : "standby"} />
+          : iconKind === "agent" && session.avatarIcon !== null && session.avatarIcon !== undefined
+            ? <AgentAvatar avatar={{ icon: session.avatarIcon, kind: "icon" }} size="compact" status={isRunning ? "running" : "standby"} />
+            : iconKind === "subagent"
+              ? <SubagentAvatar icon={session.avatarIcon} seed={session.id} size="compact" status={isRunning ? "running" : "standby"} />
+              : undefined;
+
+      return [{
+        id: session.id,
+        ...(icon === undefined ? {} : { icon }),
+        isRunning,
+        title: session.title,
+      }];
+    });
+  }, [agents, openConversationIds, projectSessions.sessions, projectTree.projects, teams]);
 
   useEffect(() => {
     let disposed = false;
@@ -399,6 +461,33 @@ export function App(): ReactElement {
     projectSessions.selectSession(sessionId);
   }
 
+  function closeConversationTitlebarTab(conversationId: string): void {
+    const result = closeConversationTab(
+      openConversationIds,
+      conversationId,
+      projectSessions.activeSessionId,
+    );
+    setOpenConversationIds(result.openIds);
+    if (result.nextActiveId === null) {
+      projectSessions.clearSessionSelection();
+    } else if (result.nextActiveId !== projectSessions.activeSessionId) {
+      selectSession(result.nextActiveId);
+    }
+  }
+
+  function closeOtherConversationTitlebarTabs(conversationId: string): void {
+    if (!openConversationIds.includes(conversationId)) return;
+    setOpenConversationIds([conversationId]);
+    if (projectSessions.activeSessionId !== conversationId) {
+      selectSession(conversationId);
+    }
+  }
+
+  function closeAllConversationTitlebarTabs(): void {
+    setOpenConversationIds([]);
+    projectSessions.clearSessionSelection();
+  }
+
   function locateInProjectNavigator(kind: "project" | "session", id: string): void {
     setNavigatorLocateRequest((current) => ({
       id,
@@ -457,6 +546,11 @@ export function App(): ReactElement {
       <AppShell
         activeConversationId={projectSessions.activeSessionId}
         agentClient={agentClient}
+        conversationTabs={conversationTabs}
+        onCloseAllConversationTabs={closeAllConversationTitlebarTabs}
+        onCloseConversationTab={closeConversationTitlebarTab}
+        onCloseOtherConversationTabs={closeOtherConversationTitlebarTabs}
+        onSelectConversationTab={selectSession}
         projectNavigator={
         <ProjectNavigator
           activeSessionId={projectSessions.activeSessionId}
@@ -530,6 +624,7 @@ export function App(): ReactElement {
           isAddingProject={projectTree.isAddingProject}
           isCreatingSession={projectSessions.isCreatingSession}
           projects={projectTree.projects}
+          protectedSessionIds={openConversationIds}
           sessions={projectSessions.sessions}
           teamInstances={teamInstances}
           onAddProject={() => projectTree.addProject()}

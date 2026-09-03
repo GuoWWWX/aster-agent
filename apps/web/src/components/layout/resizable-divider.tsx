@@ -7,6 +7,7 @@ import {
 } from "react";
 
 import { cn } from "../../lib/cn.js";
+import { emitLivePanelResize } from "./live-panel-resize.js";
 import "./resizable-divider.css";
 
 export const RESIZABLE_PANEL_COLLAPSE_THRESHOLD = 24;
@@ -48,6 +49,7 @@ type ResizableDividerProps = {
   collapsed?: boolean;
   collapseThreshold?: number;
   direction: ResizeDirection;
+  liveResizeId?: string;
   max: number;
   min: number;
   onCollapsedChange: (isCollapsed: boolean) => void;
@@ -63,6 +65,7 @@ export function ResizableDivider({
   collapsed = false,
   collapseThreshold = RESIZABLE_PANEL_COLLAPSE_THRESHOLD,
   direction,
+  liveResizeId,
   max,
   min,
   onCollapsedChange,
@@ -84,6 +87,7 @@ export function ResizableDivider({
     event.preventDefault();
     const divider = event.currentTarget;
     let baseWidth = collapsed ? min : size;
+    let latestWidth = baseWidth;
     let origin = event.clientX;
     let collapsedDuringDrag = collapsed;
 
@@ -92,6 +96,9 @@ export function ResizableDivider({
     divider.dataset.resizing = "true";
     onDraggingChange?.(true);
     document.body.dataset.resizingPanel = "true";
+    if (liveResizeId !== undefined) {
+      emitLivePanelResize({ id: liveResizeId, phase: "start", size: baseWidth });
+    }
 
     const stop = (): void => {
       isDraggingRef.current = false;
@@ -102,6 +109,9 @@ export function ResizableDivider({
       window.removeEventListener("pointercancel", stop);
       cleanupRef.current = null;
       onDraggingChange?.(false);
+      if (liveResizeId !== undefined) {
+        emitLivePanelResize({ id: liveResizeId, phase: "end", size: latestWidth });
+      }
     };
 
     const move = (moveEvent: PointerEvent): void => {
@@ -120,14 +130,22 @@ export function ResizableDivider({
         collapsedDuringDrag,
       );
       if (transition === "collapse") {
+        latestWidth = min;
         onResize(min);
+        if (liveResizeId !== undefined) {
+          emitLivePanelResize({ id: liveResizeId, phase: "move", size: latestWidth });
+        }
         collapsedDuringDrag = true;
         onCollapsedChange(true);
         return;
       }
 
       if (transition === "expand") {
+        latestWidth = min;
         onResize(min);
+        if (liveResizeId !== undefined) {
+          emitLivePanelResize({ id: liveResizeId, phase: "move", size: latestWidth });
+        }
         collapsedDuringDrag = false;
         origin = moveEvent.clientX;
         baseWidth = min;
@@ -139,7 +157,11 @@ export function ResizableDivider({
         return;
       }
 
-      onResize(clampResizablePanelWidth(nextWidth, min, max));
+      latestWidth = clampResizablePanelWidth(nextWidth, min, max);
+      onResize(latestWidth);
+      if (liveResizeId !== undefined) {
+        emitLivePanelResize({ id: liveResizeId, phase: "move", size: latestWidth });
+      }
     };
 
     cleanupRef.current = stop;

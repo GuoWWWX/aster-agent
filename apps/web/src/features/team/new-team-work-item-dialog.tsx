@@ -112,7 +112,7 @@ export function NewTeamWorkItemDialog({
       <DialogTrigger asChild>
         <button
           aria-label="新建团队任务"
-          className="inline-flex h-[30px] items-center gap-[5px] rounded-[var(--app-radius)] bg-[var(--app-accent)] px-[10px] text-[length:var(--app-font-size-control)] font-semibold text-white shadow-sm hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
+          className="inline-flex h-[30px] items-center gap-[5px] rounded-[var(--app-radius)] bg-[var(--app-primary-action)] px-[10px] text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-primary-action-foreground)] shadow-sm hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
           disabled={projects.length === 0 || teamInstances.length === 0}
           type="button"
         >
@@ -222,7 +222,7 @@ export function NewTeamWorkItemDialog({
             </button>
             <button
               aria-label="创建并发布团队任务"
-              className="inline-flex h-[32px] items-center gap-[5px] rounded-[var(--app-radius)] bg-[var(--app-accent)] px-[12px] text-[length:var(--app-font-size-control)] font-semibold text-white hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex h-[32px] items-center gap-[5px] rounded-[var(--app-radius)] bg-[var(--app-primary-action)] px-[12px] text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-primary-action-foreground)] hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
               disabled={!canSubmit}
               type="submit"
             >

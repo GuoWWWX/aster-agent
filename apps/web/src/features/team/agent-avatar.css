@@ -92,43 +92,36 @@
 }
 
 [data-theme="dark"] .agent-profile-avatar[data-tone="blue"] {
-  border-color: rgba(96, 165, 250, 0.42);
-  background: rgba(37, 99, 235, 0.18);
-  color: #bfdbfe;
+  background: rgba(37, 99, 235, 0.24);
 }
 
 [data-theme="dark"] .agent-profile-avatar[data-tone="cyan"] {
-  border-color: rgba(34, 211, 238, 0.4);
-  background: rgba(8, 145, 178, 0.18);
-  color: #a5f3fc;
+  background: rgba(8, 145, 178, 0.24);
 }
 
 [data-theme="dark"] .agent-profile-avatar[data-tone="emerald"] {
-  border-color: rgba(52, 211, 153, 0.4);
-  background: rgba(5, 150, 105, 0.18);
-  color: #a7f3d0;
+  background: rgba(5, 150, 105, 0.24);
 }
 
 [data-theme="dark"] .agent-profile-avatar[data-tone="amber"] {
-  border-color: rgba(251, 191, 36, 0.42);
-  background: rgba(180, 83, 9, 0.2);
-  color: #fde68a;
+  background: rgba(180, 83, 9, 0.24);
 }
 
 [data-theme="dark"] .agent-profile-avatar[data-tone="rose"] {
-  border-color: rgba(251, 113, 133, 0.42);
-  background: rgba(190, 18, 60, 0.18);
-  color: #fecdd3;
+  background: rgba(190, 18, 60, 0.24);
 }
 
 [data-theme="dark"] .agent-profile-avatar[data-tone="violet"] {
-  border-color: rgba(167, 139, 250, 0.42);
-  background: rgba(124, 58, 237, 0.2);
-  color: #ddd6fe;
+  background: rgba(124, 58, 237, 0.24);
+}
+
+[data-theme="dark"] .agent-profile-avatar[data-tone] {
+  border-color: rgba(241, 243, 244, 0.4);
+  color: #d9dcdf;
 }
 
 [data-theme="dark"] .agent-profile-avatar[data-status="running"] {
-  border-color: rgba(96, 165, 250, 0.62);
-  background: rgba(59, 130, 246, 0.26);
-  color: #dbeafe;
+  border-color: rgba(241, 243, 244, 0.4);
+  background: rgba(59, 130, 246, 0.3);
+  color: #d9dcdf;
 }

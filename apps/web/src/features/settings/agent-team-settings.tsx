@@ -554,7 +554,7 @@ function AgentConfigurationPane({
   return (
     <aside className="agent-configuration-pane" aria-label={`${agent.name} 配置`}>
       <div className="management-detail-heading">
-        <AgentAvatar avatar={agent.avatar} size="large" status={agent.status} />
+        <AgentAvatar avatar={agent.avatar} status={agent.status} />
         <div>
           <h2>{agent.name}</h2>
         </div>

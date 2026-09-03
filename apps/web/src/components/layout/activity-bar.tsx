@@ -38,7 +38,12 @@ export function ActivityBar(): ReactElement {
   const themeLabel = themeMode === "dark" ? "切换为浅色主题" : "切换为深色主题";
 
   return (
-    <aside className="activity-bar" aria-label="主导航" data-slot="activity-bar">
+    <aside
+      className="activity-bar"
+      aria-label="主导航"
+      data-app-drag-region="true"
+      data-slot="activity-bar"
+    >
       <nav className="activity-bar__navigation" aria-label="工作区视图">
         {ACTIVITY_ITEMS.map((item) => {
           const ItemIcon = item.icon;
@@ -50,7 +55,7 @@ export function ActivityBar(): ReactElement {
               aria-pressed={isActive}
               label={item.label}
               size="activity"
-              variant={isActive ? "active" : "quiet"}
+              variant={isActive ? "selected" : "quiet"}
               onClick={() => setActiveActivity(item.id)}
             >
               <ItemIcon aria-hidden="true" size={18} strokeWidth={1.8} />
@@ -59,7 +64,11 @@ export function ActivityBar(): ReactElement {
         })}
       </nav>
 
-      <div className="activity-bar__spacer" />
+      <div
+        aria-hidden="true"
+        className="activity-bar__spacer"
+        data-app-drag-region="true"
+      />
 
       <div className="activity-bar__footer">
         <IconButton
@@ -74,7 +83,7 @@ export function ActivityBar(): ReactElement {
           aria-pressed={activeActivity === "settings"}
           label="设置"
           size="activity"
-          variant={activeActivity === "settings" ? "active" : "quiet"}
+          variant={activeActivity === "settings" ? "selected" : "quiet"}
           onClick={setSettings}
         >
           <Settings aria-hidden="true" size={18} strokeWidth={1.8} />

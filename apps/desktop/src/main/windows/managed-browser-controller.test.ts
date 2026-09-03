@@ -270,6 +270,16 @@ describe("ManagedBrowserController", () => {
       { message: "navigation failed", sessionId: session.sessionId, type: "error" },
     ]);
     expect(page.close).toHaveBeenCalledOnce();
+
+    expect(() => controller.setBounds({
+      height: 600,
+      sessionId: session.sessionId,
+      visible: true,
+      width: 800,
+      x: 400,
+      y: 80,
+    })).not.toThrow();
+    expect(page.setBounds).toHaveBeenCalledOnce();
   });
 
   it("applies download settings and clears data across open tabs", async () => {

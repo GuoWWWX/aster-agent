@@ -12,6 +12,7 @@ import {
   forkConversationInputSchema,
   pendingConversationMessageReferenceInputSchema,
   reorderPendingConversationMessagesInputSchema,
+  readConversationAttachmentPreviewInputSchema,
   removeConversationAttachmentInputSchema,
   createConversationInputSchema,
   discoverModelsInputSchema,
@@ -202,6 +203,10 @@ export const conversationContextUsageIpcArgumentsSchema = z.tuple([
 
 export const removeConversationAttachmentIpcArgumentsSchema = z.tuple([
   removeConversationAttachmentInputSchema
+]);
+
+export const readConversationAttachmentPreviewIpcArgumentsSchema = z.tuple([
+  readConversationAttachmentPreviewInputSchema,
 ]);
 
 export const importConversationAttachmentBytesIpcArgumentsSchema = z.tuple([

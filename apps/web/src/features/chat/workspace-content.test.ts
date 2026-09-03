@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type {
+  ConversationAgentMessageItem,
+  ConversationMessageItem,
   ConversationModelRetryItem,
   ConversationModelSelection,
   ConversationToolItem,
@@ -12,17 +14,26 @@ import {
   collectSubagentPendingApprovals,
   commandTerminalClipboardText,
   commandTerminalHeaderLabel,
+  contextCompactionLabel,
+  contextCompactionDurationMs,
+  contextCompactionTooltip,
   fileChangeSummary,
   formatToolPayload,
   formatConversationTime,
   formatRunDuration,
+  forceableContextCompactionId,
   getConversationRunProgressInsertIndex,
   getConversationRunDurationInsertIndexes,
+  getModelActivityInsertIndex,
   getRepeatedAssistantFailureMessageIds,
   getFinalCompletedAssistantMessageIds,
   getLatestActiveToolId,
   groupToolBatches,
+  groupRunActivities,
+  isRunningContextCompaction,
   modelRetryStatusLabel,
+  projectSubagentMessagesForParentTimeline,
+  projectTimelineForActiveRun,
   describeConversationError,
   representativeToolName,
   reasoningEndpointColor,
@@ -35,6 +46,7 @@ import {
   submittedTeamWorkItems,
   toolBatchLabel,
   toolBatchExecutionMode,
+  stripLeadingThinkingSummary,
 } from "./workspace-content.js";
 
 describe("Team WorkItem collaboration graph placement", () => {
@@ -234,6 +246,352 @@ function tool(
   };
 }
 
+function assistantMessage(
+  id: string,
+  content: string,
+  options: {
+    durationMs?: number | null;
+    modelId?: string;
+    reasoningContent?: string;
+    status?: ConversationMessageItem["status"];
+  } = {},
+): ConversationMessageItem {
+  return {
+    attachments: [],
+    completedAt: "2026-01-01T00:00:30.000Z",
+    content,
+    conversationId: "00000000-0000-4000-8000-000000000001",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    durationMs: options.durationMs ?? null,
+    id,
+    kind: "message",
+    modelId: options.modelId ?? "deepseek-v4-flash",
+    ...(options.reasoningContent === undefined
+      ? {}
+      : { reasoningContent: options.reasoningContent }),
+    role: "assistant",
+    runId: "00000000-0000-4000-8000-000000000002",
+    status: options.status ?? "completed",
+  };
+}
+
+function subagentTaskResult(): ConversationAgentMessageItem {
+  return {
+    content: "Subagent 已完成 Ping。",
+    conversationId: "00000000-0000-4000-8000-000000000001",
+    createdAt: "2026-01-01T00:00:30.000Z",
+    id: "00000000-0000-4000-8000-taskresult00",
+    kind: "agent_message",
+    messageType: "task_result",
+    readAt: null,
+    replyInstruction: null,
+    runId: "00000000-0000-4000-8000-000000000003",
+    senderConversationId: "00000000-0000-4000-8000-000000000004",
+    senderTitle: "Ping Subagent",
+    status: "unread",
+    taskId: "00000000-0000-4000-8000-000000000005",
+  };
+}
+
+describe("run activity projection", () => {
+  it("hides legacy Subagent messages and removes their receipt divider before grouping", () => {
+    const legacyNotification = {
+      ...subagentTaskResult(),
+      content: "已执行 ping，结果正常。",
+      messageType: "notification" as const,
+    };
+    const finalAnswer = assistantMessage(
+      "assistant-final",
+      "Subagent 已完成 Ping。\n\n---\n\n解析 IP：198.18.0.211。",
+      { durationMs: 89_000 },
+    );
+    const projected = projectSubagentMessagesForParentTimeline(
+      [tool("spawn_subagent"), legacyNotification, finalAnswer],
+      new Set([legacyNotification.senderConversationId]),
+    );
+
+    expect(projected).toHaveLength(2);
+    expect(projected[1]).toMatchObject({
+      content: "Subagent 已完成 Ping。\n\n解析 IP：198.18.0.211。",
+      id: finalAnswer.id,
+    });
+    expect(groupRunActivities(projected)[0]).toMatchObject({
+      durationMs: 89_000,
+      kind: "run_activity",
+    });
+  });
+
+  it("preserves normal Agent messages and intentional Markdown dividers", () => {
+    const persistentAgentMessage = {
+      ...subagentTaskResult(),
+      content: "长期 Agent 已完成。",
+      messageType: "message" as const,
+      senderConversationId: "00000000-0000-4000-8000-000000000099",
+    };
+    const finalAnswer = assistantMessage(
+      "assistant-final",
+      "第一部分。\n\n---\n\n第二部分。",
+      { durationMs: 10_000 },
+    );
+
+    expect(projectSubagentMessagesForParentTimeline(
+      [persistentAgentMessage, finalAnswer],
+      new Set(["00000000-0000-4000-8000-000000000004"]),
+    )).toEqual([persistentAgentMessage, finalAnswer]);
+  });
+
+  it("keeps interleaved DeepSeek reasoning and tools in one work process", () => {
+    const firstReasoning = assistantMessage("assistant-reasoning-1", "", {
+      reasoningContent: "先读取配置。",
+    });
+    const secondReasoning = assistantMessage("assistant-reasoning-2", "", {
+      reasoningContent: "配置已读取，继续检查日志。",
+    });
+    const finalAnswer = assistantMessage("assistant-final", "问题已经处理。", {
+      durationMs: 30_000,
+      reasoningContent: "汇总工具结果。",
+    });
+    const firstTool = tool("read_file");
+    const secondTool = {
+      ...tool("search_text"),
+      id: "00000000-0000-4000-8000-second000000",
+    };
+
+    const projected = groupRunActivities([
+      firstReasoning,
+      firstTool,
+      secondReasoning,
+      secondTool,
+      finalAnswer,
+    ]);
+
+    expect(projected).toHaveLength(2);
+    expect(projected[0]).toMatchObject({
+      durationMs: 30_000,
+      kind: "run_activity",
+      runId: firstReasoning.runId,
+    });
+    expect(projected[0]?.kind === "run_activity"
+      ? projected[0].items.map((item) => item.kind)
+      : []).toEqual([
+      "activity_reasoning",
+      "tool",
+      "activity_reasoning",
+      "tool",
+      "activity_reasoning",
+    ]);
+    expect(projected[1]).toMatchObject({
+      content: "问题已经处理。",
+      durationMs: null,
+      id: "assistant-final",
+      kind: "message",
+    });
+    expect(projected[1]?.kind === "message" ? projected[1].reasoningContent : null)
+      .toBeUndefined();
+  });
+
+  it("moves tool preambles into the work process but keeps the final answer outside", () => {
+    const preamble = assistantMessage("assistant-preamble", "我先检查一下项目。", {
+      reasoningContent: "需要读取目录。",
+    });
+    const finalAnswer = assistantMessage("assistant-final", "检查完成。", {
+      durationMs: 12_000,
+    });
+
+    const projected = groupRunActivities([preamble, tool("read_file"), finalAnswer]);
+
+    expect(projected[0]?.kind === "run_activity"
+      ? projected[0].items.map((item) => item.kind)
+      : []).toEqual(["activity_reasoning", "activity_progress", "tool"]);
+    expect(projected[0]?.kind === "run_activity"
+      ? projected[0].items[1]
+      : null).toMatchObject({ content: "我先检查一下项目。" });
+    expect(projected[1]).toMatchObject({ content: "检查完成。", kind: "message" });
+  });
+
+  it("hides a leading tagged thinking summary from completed work history", () => {
+    const taggedSummary = assistantMessage(
+      "assistant-tagged-reasoning",
+      "<thinking>Reading backend command surface</thinking>",
+    );
+    const finalAnswer = assistantMessage("assistant-final", "检查完成。", {
+      durationMs: 12_000,
+    });
+
+    const projected = groupRunActivities([taggedSummary, tool("read_file"), finalAnswer]);
+
+    expect(projected[0]?.kind === "run_activity"
+      ? projected[0].items.map((item) => item.kind)
+      : []).toEqual(["tool"]);
+    expect(JSON.stringify(projected)).not.toContain("Reading backend command surface");
+    expect(JSON.stringify(projected)).not.toContain("<thinking>");
+    expect(stripLeadingThinkingSummary(
+      "<think>先检查项目</think>\n\n最终回答",
+    )).toBe("最终回答");
+    expect(stripLeadingThinkingSummary(
+      "<thinking>只是一段摘要</thinking>",
+    )).toBe("");
+  });
+
+  it("keeps a plain answer unchanged when the run has no reasoning or tools", () => {
+    const finalAnswer = assistantMessage("assistant-final", "直接回答。", {
+      durationMs: 5_000,
+    });
+
+    expect(groupRunActivities([finalAnswer])).toEqual([finalAnswer]);
+  });
+
+  it("moves a tool-only run duration onto its work process", () => {
+    const finalAnswer = assistantMessage("assistant-final", "命令执行完成。", {
+      durationMs: 8_000,
+    });
+
+    const projected = groupRunActivities([tool("run_command"), finalAnswer]);
+
+    expect(projected[0]).toMatchObject({ durationMs: 8_000, kind: "run_activity" });
+    expect(projected[1]).toMatchObject({
+      content: "命令执行完成。",
+      durationMs: null,
+      kind: "message",
+    });
+  });
+
+  it("combines a Subagent continuation duration into the existing work process", () => {
+    const firstAnswer = assistantMessage("assistant-first", "Subagent 已完成 Ping。", {
+      durationMs: 89_000,
+    });
+    const continuationAnswer = {
+      ...assistantMessage("assistant-continuation", "解析 IP：198.18.0.211。", {
+        durationMs: 4_000,
+      }),
+      runId: "00000000-0000-4000-8000-000000000006",
+    };
+
+    const projected = groupRunActivities([
+      tool("spawn_subagent"),
+      firstAnswer,
+      subagentTaskResult(),
+      continuationAnswer,
+    ]);
+
+    expect(projected[0]).toMatchObject({
+      durationMs: 93_000,
+      kind: "run_activity",
+    });
+    expect(projected[1]).toMatchObject({ durationMs: null, id: "assistant-first" });
+    expect(projected[3]).toMatchObject({
+      durationMs: null,
+      id: "assistant-continuation",
+    });
+    expect([...getConversationRunDurationInsertIndexes(projected).entries()]).toEqual([]);
+  });
+
+  it("combines an automatic continuation's activity into one work process", () => {
+    const firstRunId = "00000000-0000-4000-8000-000000000002";
+    const continuationRunId = "00000000-0000-4000-8000-000000000006";
+    const firstAnswer = assistantMessage("assistant-first", "Subagent 正在后台执行。", {
+      durationMs: 9_000,
+    });
+    const continuationReasoning = {
+      ...assistantMessage("assistant-continuation-reasoning", "", {
+        reasoningContent: "收到 Subagent 结果，继续核对。",
+      }),
+      runId: continuationRunId,
+    };
+    const continuationTool = {
+      ...tool("read_file"),
+      id: "00000000-0000-4000-8000-continuationtool",
+      runId: continuationRunId,
+    };
+    const continuationAnswer = {
+      ...assistantMessage("assistant-continuation", "结果已经核对完成。", {
+        durationMs: 4_000,
+      }),
+      runId: continuationRunId,
+    };
+
+    const projected = groupRunActivities([
+      { ...tool("spawn_subagent"), runId: firstRunId },
+      firstAnswer,
+      subagentTaskResult(),
+      continuationReasoning,
+      continuationTool,
+      continuationAnswer,
+    ]);
+
+    expect(projected.filter((item) => item.kind === "run_activity")).toHaveLength(1);
+    expect(projected[0]).toMatchObject({
+      durationMs: 13_000,
+      kind: "run_activity",
+      runId: firstRunId,
+      runIds: [firstRunId, continuationRunId],
+    });
+    expect(projected[0]?.kind === "run_activity"
+      ? projected[0].items.map((item) => item.kind)
+      : []).toEqual(["tool", "activity_reasoning", "tool"]);
+    expect(projected.at(-1)).toMatchObject({
+      content: "结果已经核对完成。",
+      durationMs: null,
+      kind: "message",
+    });
+  });
+
+  it("hides legacy GPT-5.6 reasoning summaries from completed work processes", () => {
+    const summary = assistantMessage("assistant-summary", "", {
+      modelId: "gpt-5.6-terra",
+      reasoningContent: "Preparing subagent to ping Alibaba site",
+    });
+    const finalAnswer = assistantMessage("assistant-final", "任务完成。", {
+      durationMs: 10_000,
+      modelId: "gpt-5.6-terra",
+    });
+
+    const projected = groupRunActivities([summary, tool("spawn_subagent"), finalAnswer]);
+
+    expect(projected[0]?.kind === "run_activity"
+      ? projected[0].items.map((item) => item.kind)
+      : []).toEqual(["tool"]);
+    expect(projected[1]).toMatchObject({ content: "任务完成。", kind: "message" });
+  });
+
+  it("hides a legacy GPT-5.6 summary even when the run used no tools", () => {
+    const finalAnswer = assistantMessage("assistant-final", "直接回答。", {
+      durationMs: 4_000,
+      modelId: "gpt-5.6-terra",
+      reasoningContent: "Drafting concise response",
+    });
+
+    const projected = groupRunActivities([finalAnswer]);
+
+    expect(projected).toHaveLength(1);
+    expect(projected[0]).toMatchObject({
+      content: "直接回答。",
+      durationMs: 4_000,
+      kind: "message",
+    });
+    expect(projected[0]?.kind === "message" ? projected[0].reasoningContent : null)
+      .toBeUndefined();
+  });
+
+  it("keeps context compaction as a standalone divider outside the work process", () => {
+    const compaction = {
+      ...tool("compact_context"),
+      result: JSON.stringify({ compressedMessageCount: 6, trigger: "automatic" }),
+    };
+    const finalAnswer = assistantMessage("assistant-final", "继续回答。", {
+      durationMs: 7_000,
+      reasoningContent: "完整思考",
+    });
+
+    const projected = groupRunActivities([compaction, tool("read_file"), finalAnswer]);
+
+    expect(projected).toHaveLength(3);
+    expect(projected[0]).toMatchObject({ kind: "tool", name: "compact_context" });
+    expect(projected[1]).toMatchObject({ kind: "run_activity" });
+    expect(projected[2]).toMatchObject({ content: "继续回答。", kind: "message" });
+  });
+});
+
 describe("run progress duration", () => {
   it("restores the running indicator when an active conversation is reopened", () => {
     expect(createRestoredRunProgresses(null, 1_000)).toEqual([]);
@@ -252,6 +610,89 @@ describe("run progress duration", () => {
     expect(formatRunDuration(startedAt, 61_000)).toBe("1分 1秒");
     expect(formatRunDuration(startedAt, 3_661_000)).toBe("1小时 1分 1秒");
     expect(formatRunDuration(startedAt, 90_061_000)).toBe("1天 1小时 1分 1秒");
+  });
+
+  it("uses the compaction divider as the run timer while compression is active", () => {
+    const running = {
+      ...tool("compact_context"),
+      createdAt: "2026-09-03T12:00:00.000Z",
+      status: "running" as const,
+    };
+    const completed = {
+      ...running,
+      result: JSON.stringify({ compressedMessageCount: 7, durationMs: 72_000 }),
+      status: "completed" as const,
+    };
+
+    expect(isRunningContextCompaction(running)).toBe(true);
+    expect(isRunningContextCompaction(completed)).toBe(false);
+    expect(contextCompactionDurationMs(running, Date.parse("2026-09-03T12:01:05.000Z")))
+      .toBe(65_000);
+    expect(contextCompactionDurationMs(completed, Date.parse("2026-09-03T12:02:00.000Z")))
+      .toBe(72_000);
+    expect(contextCompactionDurationMs({ ...completed, result: null }, Date.now())).toBeNull();
+    expect(contextCompactionTooltip(completed, Date.parse("2026-09-03T12:02:00.000Z")))
+      .toBe("已处理 7 条历史消息 · 用时 1分 12秒");
+  });
+
+  it("reports failed and cancelled compaction without claiming record impact", () => {
+    const compaction = tool("compact_context");
+
+    expect(contextCompactionLabel({ ...compaction, status: "failed" }))
+      .toBe("上下文压缩失败");
+    expect(contextCompactionLabel({
+      ...compaction,
+      arguments: JSON.stringify({ trigger: "manual" }),
+      status: "cancelled",
+    }))
+      .toBe("上下文压缩已暂停");
+    expect(contextCompactionLabel({ ...compaction, status: "cancelled" }))
+      .toBe("上下文压缩已取消");
+  });
+
+  it("keeps completed compaction compact and moves details into its tooltip", () => {
+    const completed = {
+      ...tool("compact_context"),
+      result: JSON.stringify({
+        compressedMessageCount: 23,
+        durationMs: 65_000,
+        trigger: "manual",
+      }),
+      status: "completed" as const,
+    };
+    const failed = {
+      ...tool("compact_context"),
+      result: JSON.stringify({
+        durationMs: 9_000,
+        error: { message: "模型上下文长度超出限制。" },
+        trigger: "manual",
+      }),
+      status: "failed" as const,
+    };
+
+    expect(contextCompactionLabel(completed)).toBe("已压缩");
+    expect(contextCompactionTooltip(completed)).toBe("已处理 23 条历史消息 · 用时 1分 5秒");
+    expect(contextCompactionTooltip(failed))
+      .toBe("模型上下文长度超出限制。 · 用时 9秒");
+  });
+
+  it("offers force compaction only until the user sends another message", () => {
+    const failed = { ...tool("compact_context"), status: "failed" as const };
+    const paused = {
+      ...tool("compact_context", { arguments: JSON.stringify({ trigger: "manual" }) }),
+      status: "cancelled" as const,
+    };
+
+    expect(forceableContextCompactionId([failed], null)).toBe(failed.id);
+    expect(forceableContextCompactionId([paused], null)).toBe(paused.id);
+    expect(forceableContextCompactionId([failed], "active-run")).toBeNull();
+    expect(forceableContextCompactionId([
+      failed,
+      {
+        ...assistantMessage("next-user", "继续对话"),
+        role: "user" as const,
+      },
+    ], null)).toBeNull();
   });
 
   it("keeps model retry progress and terminal status explicit", () => {
@@ -296,6 +737,25 @@ describe("run progress duration", () => {
     ];
 
     expect(getConversationRunProgressInsertIndex(timeline, "tool-2")).toBe(3);
+  });
+
+  it("places resumed model activity below the retry it supersedes", () => {
+    const timeline = [
+      { id: "user-1", kind: "message", role: "user", runId: null },
+      { id: "retry-1", kind: "model_retry", runId: "run-1" },
+    ];
+
+    expect(getModelActivityInsertIndex(timeline, "run-1", "user-1")).toBe(2);
+    expect(getModelActivityInsertIndex(timeline, "run-2", "user-1")).toBe(1);
+  });
+
+  it("finds a tool anchor inside a combined work process", () => {
+    const timeline = [
+      { id: "user-1", kind: "message", role: "user" },
+      { id: "run-activity-1", items: [{ id: "tool-1" }], kind: "run_activity" },
+    ];
+
+    expect(getConversationRunProgressInsertIndex(timeline, "tool-1")).toBe(1);
   });
 
   it("inserts a completed run duration before its tool calls", () => {
@@ -407,6 +867,13 @@ describe("tool detail auto expansion", () => {
       { id: "tool-2", kind: "tool", status: "failed" },
     ])).toBeNull();
   });
+
+  it("does not reopen an older running tool after the newest call completes", () => {
+    expect(getLatestActiveToolId([
+      { id: "tool-1", kind: "tool", status: "running" },
+      { id: "tool-2", kind: "tool", status: "completed" },
+    ])).toBeNull();
+  });
 });
 
 describe("conversation message time", () => {
@@ -504,7 +971,7 @@ describe("conversation error display", () => {
     expect(visible).not.toContain('"id"');
   });
 
-  it("classifies model failures into a quote title and full detail", () => {
+  it("separates a model failure's user message from its technical detail", () => {
     const presentation = describeConversationError(
       "模型服务暂时不可用，请稍后再试。 接口错误：HTTP 502：gateway timeout。",
     );
@@ -512,7 +979,41 @@ describe("conversation error display", () => {
     expect(presentation.category).toBe("provider");
     expect(presentation.title).toBe("模型服务返回错误");
     expect(presentation.summary).toBe("模型服务返回错误");
+    expect(presentation.message).toBe("模型服务暂时不可用，请稍后再试。");
+    expect(presentation.technicalDetail).toBe("接口错误：HTTP 502：gateway timeout。");
     expect(presentation.detail).toContain("HTTP 502");
+  });
+
+  it("does not let a hidden Subagent result split an automatic continuation", () => {
+    const indexes = getConversationRunDurationInsertIndexes([
+      { kind: "message", role: "user" },
+      { kind: "agent_message", messageType: "task_result" },
+      { durationMs: 11_000, kind: "message", role: "assistant", runId: "run-1" },
+    ]);
+
+    expect([...indexes.entries()]).toEqual([[1, [11_000]]]);
+  });
+
+  it("presents legacy LangGraph recursion failures as a controlled run limit", () => {
+    const presentation = describeConversationError(
+      "软件内部发生错误，请重试。 内部错误详情：GraphRecursionError: Recursion limit of 25 reached without hitting a stop condition.",
+    );
+
+    expect(presentation.category).toBe("limit");
+    expect(presentation.title).toBe("执行达到安全上限");
+    expect(presentation.message).toContain("请缩小任务范围或补充停止条件");
+    expect(presentation.technicalDetail).toContain("GraphRecursionError");
+    expect(presentation.message).not.toContain("GraphRecursionError");
+  });
+
+  it("keeps internal implementation details out of the visible error message", () => {
+    const presentation = describeConversationError(
+      "软件内部发生错误，请重试。 内部错误详情：SqliteError: database is locked",
+    );
+
+    expect(presentation.category).toBe("internal");
+    expect(presentation.message).toBe("软件内部发生错误，请稍后重试。如果持续出现，请重新启动软件。");
+    expect(presentation.technicalDetail).toContain("SqliteError");
   });
 
   it("keeps tool failures under the tool scope", () => {
@@ -523,6 +1024,7 @@ describe("conversation error display", () => {
 
     expect(presentation.category).toBe("tool");
     expect(presentation.title).toBe("工具调用失败");
+    expect(presentation.message).toContain("进程退出代码");
     expect(presentation.detail).toContain("进程退出代码");
   });
 
@@ -548,6 +1050,41 @@ describe("conversation error display", () => {
 });
 
 describe("tool batch execution mode", () => {
+  it("uses one live activity slot while the model resumes reasoning", () => {
+    const first = tool("read_file");
+    const second = {
+      ...tool("run_command"),
+      id: "00000000-0000-4000-8000-second000000",
+      status: "running" as const,
+    };
+
+    expect(projectTimelineForActiveRun([first, second], first.runId, false))
+      .toEqual([]);
+  });
+
+  it("shows only currently active tools in the live activity slot", () => {
+    const first = tool("read_file");
+    const second = {
+      ...tool("run_command"),
+      id: "00000000-0000-4000-8000-second000000",
+      status: "running" as const,
+    };
+
+    expect(projectTimelineForActiveRun([first, second], first.runId, true))
+      .toEqual([second]);
+  });
+
+  it("restores every tool after the run finishes", () => {
+    const first = tool("read_file");
+    const second = {
+      ...tool("run_command"),
+      id: "00000000-0000-4000-8000-second000000",
+    };
+
+    expect(projectTimelineForActiveRun([first, second], null, false))
+      .toEqual([first, second]);
+  });
+
   it("groups consecutive tools into one collapsible batch", () => {
     const first = tool("run_command");
     const second = {

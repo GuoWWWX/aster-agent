@@ -8,6 +8,7 @@ import {
   DEFAULT_AGENT_DIRECTORY_CONFIGURATION,
   type ConversationAttachment,
   type ConversationAgentMessageItem,
+  type ConversationPendingMessage,
   type ConversationRunEvent,
   type ConversationTaskList,
   type ConversationToolItem,
@@ -46,6 +47,12 @@ function session(input: Partial<ProjectSession> & Pick<ProjectSession, "id" | "t
 }
 
 let root: Root | null = null;
+
+function expandWorkProcess(container: HTMLElement): void {
+  act(() => container.querySelector<HTMLButtonElement>(
+    'button[title="展开工作过程"]',
+  )?.click());
+}
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -240,6 +247,164 @@ describe("Conversation scroll navigation", () => {
 });
 
 describe("Tool activity disclosure", () => {
+  it("keeps reasoning before and after a tool in one reasoning disclosure", async () => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "连续思考测试" });
+    const assistantMessage = (
+      id: string,
+      content: string,
+      reasoningContent?: string,
+    ) => ({
+      attachments: [],
+      completedAt: "2026-09-03T00:00:10.000Z",
+      content,
+      conversationId: PARENT_ID,
+      createdAt: "2026-09-03T00:00:00.000Z",
+      durationMs: content.length > 0 ? 8_000 : null,
+      id,
+      kind: "message" as const,
+      modelId: "deepseek-v4-flash",
+      ...(reasoningContent === undefined ? {} : { reasoningContent }),
+      role: "assistant" as const,
+      runId: RUN_ID,
+      status: "completed" as const,
+    });
+    const inspectedTool: ConversationToolItem = {
+      arguments: "{}",
+      batchId: null,
+      conversationId: PARENT_ID,
+      createdAt: "2026-09-03T00:00:04.000Z",
+      diff: null,
+      id: TOOL_ID,
+      kind: "tool",
+      name: "list_agent_conversations",
+      result: "[]",
+      runId: RUN_ID,
+      status: "completed",
+    };
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([
+      assistantMessage("reasoning-before-tool", "", "先检查可用的 Agent 对话。"),
+      inspectedTool,
+      assistantMessage("reasoning-after-tool", "", "已经取得结果，继续形成结论。"),
+      assistantMessage("final-answer", "工具顺序测试完成。"),
+    ]);
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace agentClient={client} project={null} session={target} />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+
+    expandWorkProcess(container);
+    const reasoningButtons = container.querySelectorAll<HTMLButtonElement>(
+      'button[title="展开思考过程"]',
+    );
+    expect(reasoningButtons).toHaveLength(1);
+    expect(reasoningButtons[0]?.querySelector(".lucide-eye")).not.toBeNull();
+    expect(reasoningButtons[0]?.closest("section")?.className).not.toContain("border");
+    act(() => reasoningButtons[0]?.click());
+    const reasoningBlock = reasoningButtons[0]?.closest("section");
+    expect(reasoningButtons[0]?.nextElementSibling?.id).toBe(
+      reasoningButtons[0]?.getAttribute("aria-controls"),
+    );
+    expect(reasoningBlock?.textContent).toContain("先检查可用的 Agent 对话。");
+    expect(reasoningBlock?.textContent).toContain("已查看 Agent 对话");
+    expect(reasoningBlock?.textContent).toContain("已经取得结果，继续形成结论。");
+  });
+
+  it("keeps only the newest running tool open and closes it when it completes", async () => {
+    const client = new MockAgentClient();
+    const target = session({
+      activeRunId: RUN_ID,
+      id: PARENT_ID,
+      title: "工具自动展开测试",
+    });
+    const firstTool: ConversationToolItem = {
+      arguments: JSON.stringify({ path: "src/first.ts" }),
+      batchId: null,
+      conversationId: PARENT_ID,
+      createdAt: "2026-09-04T00:00:00.000Z",
+      diff: null,
+      id: TOOL_ID,
+      kind: "tool",
+      name: "read_file",
+      result: null,
+      runId: RUN_ID,
+      status: "running",
+    };
+    const secondTool: ConversationToolItem = {
+      ...firstTool,
+      arguments: JSON.stringify({ query: "second-query" }),
+      createdAt: "2026-09-04T00:00:01.000Z",
+      id: "00000000-0000-4000-8000-000000000014",
+      name: "search_text",
+    };
+    let runEventListener: ((event: ConversationRunEvent) => void) | null = null;
+    vi.spyOn(client, "onConversationRunEvent").mockImplementation((listener) => {
+      runEventListener = listener;
+      return () => {
+        runEventListener = null;
+      };
+    });
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([firstTool]);
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace agentClient={client} project={null} session={target} />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+
+    expect(container.querySelectorAll('button[aria-label="收起调用详情"]')).toHaveLength(1);
+    expect(container.textContent).toContain("first.ts");
+    expect(container.textContent).not.toContain("执行中");
+    expect(container.querySelector(
+      'article[data-status="running"] .tool-timeline-item__label-text',
+    )?.textContent).toContain("first.ts");
+
+    act(() => {
+      runEventListener?.({
+        conversationId: PARENT_ID,
+        runId: RUN_ID,
+        tool: secondTool,
+        type: "tool.started",
+      });
+    });
+
+    const newestExpandedToggle = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="收起调用详情"]',
+    );
+    expect(container.querySelectorAll('button[aria-label="收起调用详情"]')).toHaveLength(1);
+    expect(newestExpandedToggle?.closest("article")?.textContent).toContain("second-query");
+    expect(newestExpandedToggle?.closest("article")?.textContent).not.toContain("first.ts");
+
+    act(() => {
+      runEventListener?.({
+        conversationId: PARENT_ID,
+        runId: RUN_ID,
+        tool: {
+          ...secondTool,
+          result: JSON.stringify({ ok: true, value: { matches: [] } }),
+          status: "completed",
+        },
+        type: "tool.completed",
+      });
+    });
+
+    expect(container.querySelectorAll('button[aria-label="收起调用详情"]')).toHaveLength(0);
+  });
+
   it("toggles a command batch and command detail from their muted summary text", async () => {
     const client = new MockAgentClient();
     const target = session({ id: PARENT_ID, title: "命令测试" });
@@ -273,6 +438,7 @@ describe("Tool activity disclosure", () => {
       await flushConversationWorkspace();
     });
 
+    expandWorkProcess(container);
     const batchSummary = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
       (button) => button.textContent?.includes("运行 3 条命令") === true,
     );
@@ -329,6 +495,7 @@ describe("Tool activity disclosure", () => {
       await flushConversationWorkspace();
     });
 
+    expandWorkProcess(container);
     const detailToggle = container.querySelector<HTMLButtonElement>(
       'button[aria-label="展开调用详情"]',
     );
@@ -394,6 +561,7 @@ describe("Tool activity disclosure", () => {
       await flushConversationWorkspace();
     });
 
+    expandWorkProcess(container);
     act(() => container.querySelector<HTMLButtonElement>(
       'button[aria-label="展开调用详情"]',
     )?.click());
@@ -604,6 +772,129 @@ describe("Run progress indicator", () => {
   });
 });
 
+describe("Pending message queue", () => {
+  it("shows attachment previews and reorders rows from the drag handle", async () => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "待发送队列测试" });
+    const imageAttachmentId = "00000000-0000-4000-8000-000000000017";
+    const pendingMessages: ConversationPendingMessage[] = [
+      {
+        attachmentIds: [imageAttachmentId],
+        content: "带图片的消息",
+        conversationId: PARENT_ID,
+        createdAt: "2026-09-03T12:00:00.000Z",
+        deliveryMode: "queue",
+        id: "00000000-0000-4000-8000-000000000018",
+        referencedConversationIds: [],
+        referencedProjectPaths: [],
+      },
+      {
+        attachmentIds: [],
+        content: "第二条消息",
+        conversationId: PARENT_ID,
+        createdAt: "2026-09-03T12:01:00.000Z",
+        deliveryMode: "queue",
+        id: "00000000-0000-4000-8000-000000000019",
+        referencedConversationIds: [],
+        referencedProjectPaths: [],
+      },
+    ];
+    vi.spyOn(client, "listConversationPendingMessages").mockResolvedValue(pendingMessages);
+    vi.spyOn(client, "readConversationAttachmentPreview")
+      .mockResolvedValue({ data: "AQID", mimeType: "image/png" });
+    const reorder = vi.spyOn(client, "reorderConversationPendingMessages")
+      .mockResolvedValue([pendingMessages[1]!, pendingMessages[0]!]);
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace agentClient={client} project={null} session={target} />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+
+    const queue = container.querySelector<HTMLElement>(".conversation-pending-queue");
+    const rows = Array.from(container.querySelectorAll<HTMLElement>(
+      ".conversation-pending-queue__item",
+    ));
+    expect(queue).not.toBeNull();
+    expect(rows).toHaveLength(2);
+    expect(container.querySelector(".conversation-pending-queue__position")).toBeNull();
+    expect(container.querySelector('[aria-label="上移"]')).toBeNull();
+    expect(container.querySelector('[aria-label="下移"]')).toBeNull();
+    const preview = rows[0]?.querySelector<HTMLImageElement>(
+      'img[src="data:image/png;base64,AQID"]',
+    );
+    expect(preview).not.toBeNull();
+    expect(
+      preview?.closest(".conversation-pending-queue__attachments")?.nextElementSibling?.textContent,
+    ).toBe("带图片的消息");
+
+    const firstRow = rows[0];
+    const secondRow = rows[1];
+    const handle = firstRow?.querySelector<HTMLElement>(
+      '.conversation-pending-queue__drag-handle',
+    );
+    if (firstRow === undefined || secondRow === undefined || handle === null || handle === undefined) {
+      throw new Error("Expected draggable pending message rows.");
+    }
+    vi.spyOn(firstRow, "getBoundingClientRect").mockReturnValue({
+      bottom: 38,
+      height: 38,
+      left: 0,
+      right: 480,
+      top: 0,
+      width: 480,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(secondRow, "getBoundingClientRect").mockReturnValue({
+      bottom: 76,
+      height: 38,
+      left: 0,
+      right: 480,
+      top: 38,
+      width: 480,
+      x: 0,
+      y: 38,
+      toJSON: () => ({}),
+    });
+    const dataTransfer = {
+      dropEffect: "none",
+      effectAllowed: "none",
+      setData: vi.fn(),
+      setDragImage: vi.fn(),
+    };
+    const dispatchDragEvent = (element: HTMLElement, type: string, clientY: number): void => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperties(event, {
+        clientX: { value: 12 },
+        clientY: { value: clientY },
+        dataTransfer: { value: dataTransfer },
+      });
+      element.dispatchEvent(event);
+    };
+
+    act(() => dispatchDragEvent(handle, "dragstart", 10));
+    act(() => dispatchDragEvent(secondRow, "dragover", 70));
+    expect(secondRow.dataset.dropPosition).toBe("after");
+    await act(async () => {
+      dispatchDragEvent(secondRow, "drop", 70);
+      await flushConversationWorkspace();
+    });
+
+    expect(reorder).toHaveBeenCalledWith({
+      conversationId: PARENT_ID,
+      pendingMessageIds: [pendingMessages[1]!.id, pendingMessages[0]!.id],
+    });
+  });
+});
+
 describe("Subagent approval queue", () => {
   it("shows the configured Agent identity above the message bubble", async () => {
     const configuredAgent = {
@@ -667,6 +958,7 @@ describe("Subagent approval queue", () => {
     );
     expect(source).not.toBeNull();
     expect(source?.closest(".chat-message")).toBeNull();
+    expect(source?.parentElement?.matches('.chat-message-group[data-role="user"]')).toBe(true);
     expect(source?.nextElementSibling?.matches(".chat-message")).toBe(true);
     expect(source?.querySelector(".agent-profile-avatar .lucide-hammer")).not.toBeNull();
     expect(source?.textContent).toBe("Implementer · 默认团队");
@@ -776,6 +1068,211 @@ describe("Subagent approval queue", () => {
       '.conversation-attachment--image-preview img[src="blob:clipboard-image-preview"]',
     )).not.toBeNull();
     expect(container.textContent).not.toContain("clipboard.png");
+
+    const previewEvents: Event[] = [];
+    const handlePreview = (event: Event): void => {
+      previewEvents.push(event);
+    };
+    window.addEventListener("md-king:open-media-preview", handlePreview);
+    act(() => container.querySelector<HTMLButtonElement>(
+      '[aria-label="预览图片 clipboard.png"]',
+    )?.click());
+    window.removeEventListener("md-king:open-media-preview", handlePreview);
+    const previewEvent = previewEvents[0] as CustomEvent<{
+      alt?: string;
+      src: string;
+    }> | undefined;
+    expect(previewEvent?.detail).toEqual({
+      alt: "clipboard.png",
+      src: "blob:clipboard-image-preview",
+      title: "clipboard.png",
+    });
+  });
+
+  it("renders sent user attachments above message content and edits their final selection", async () => {
+    const client = new MockAgentClient();
+    const status = await client.saveModelConfiguration({
+      apiKey: "test-key",
+      apiFormat: "openai-chat-completions",
+      baseUrl: "https://fixture.invalid/v1",
+      models: [{
+        contextWindow: 128_000,
+        displayName: "Attachment preview model",
+        modelId: "attachment-preview-model",
+        reasoningOptions: [],
+      }],
+      providerName: "Test",
+    });
+    if (status.providerId === null || status.modelId === null) {
+      throw new Error("Mock model configuration did not return a selected model.");
+    }
+    const sourceSession = session({
+      id: PARENT_ID,
+      modelSelection: {
+        modelId: status.modelId,
+        providerId: status.providerId,
+        reasoning: null,
+      },
+      title: "已发送附件预览测试",
+    });
+    const imageAttachment = attachment({
+      conversationId: sourceSession.id,
+      id: "00000000-0000-4000-8000-000000000013",
+      kind: "image",
+      messageId: MESSAGE_ID,
+      mimeType: "image/png",
+      name: "screenshot.png",
+    });
+    const fileAttachment = attachment({
+      conversationId: sourceSession.id,
+      id: "00000000-0000-4000-8000-000000000014",
+      messageId: MESSAGE_ID,
+      name: "very-long-document-name-for-horizontal-overflow.txt",
+    });
+    const addedAttachment = attachment({
+      conversationId: sourceSession.id,
+      id: "00000000-0000-4000-8000-000000000015",
+      name: "added-while-editing.txt",
+    });
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([{
+      attachments: [imageAttachment, fileAttachment],
+      content: "",
+      conversationId: sourceSession.id,
+      createdAt: "2026-09-03T01:08:00.000Z",
+      id: MESSAGE_ID,
+      kind: "message",
+      modelId: status.modelId,
+      role: "user",
+      runId: RUN_ID,
+      status: "completed",
+    }]);
+    const readPreview = vi.spyOn(client, "readConversationAttachmentPreview")
+      .mockResolvedValue({ data: "AQID", mimeType: "image/png" });
+    const capabilities = await client.getCapabilities();
+    vi.spyOn(client, "getCapabilities").mockResolvedValue({
+      ...capabilities,
+      mode: "desktop",
+    });
+    const chooseAttachments = vi.spyOn(client, "chooseConversationAttachments")
+      .mockResolvedValue([addedAttachment]);
+    const replaceMessage = vi.spyOn(client, "replaceLatestConversationMessage")
+      .mockResolvedValue({
+        runId: "00000000-0000-4000-8000-000000000016",
+        userMessage: {
+          attachments: [imageAttachment, addedAttachment],
+          content: "",
+          conversationId: sourceSession.id,
+          createdAt: "2026-09-03T01:09:00.000Z",
+          id: MESSAGE_ID,
+          kind: "message",
+          modelId: status.modelId,
+          role: "user",
+          runId: "00000000-0000-4000-8000-000000000016",
+          status: "completed",
+        },
+      });
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace
+            agentClient={client}
+            project={null}
+            relatedSessions={[sourceSession]}
+            session={sourceSession}
+          />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+
+    const messageAttachments = container.querySelector<HTMLElement>(
+      ".conversation-attachments--message",
+    );
+    const messageBubble = container.querySelector<HTMLElement>(
+      '.chat-message[data-role="user"]',
+    );
+    expect(messageBubble?.textContent).toBe("");
+    expect(messageBubble?.querySelector(".conversation-attachments--message")).toBeNull();
+    expect(messageAttachments?.nextElementSibling).toBe(messageBubble);
+    expect(messageAttachments?.querySelector<HTMLImageElement>(
+      'img[src="data:image/png;base64,AQID"]',
+    )).not.toBeNull();
+    expect(messageAttachments?.querySelector(".conversation-attachment--file-card"))
+      .not.toBeNull();
+    expect(readPreview).toHaveBeenCalledWith({
+      attachmentId: imageAttachment.id,
+      conversationId: sourceSession.id,
+    });
+
+    if (messageAttachments !== null) {
+      Object.defineProperties(messageAttachments, {
+        clientWidth: { configurable: true, value: 200 },
+        scrollLeft: { configurable: true, value: 0, writable: true },
+        scrollWidth: { configurable: true, value: 500 },
+      });
+      const wheelEvent = new Event("wheel", { bubbles: true, cancelable: true });
+      Object.defineProperties(wheelEvent, {
+        deltaX: { value: 0 },
+        deltaY: { value: 40 },
+      });
+      act(() => {
+        messageAttachments.dispatchEvent(wheelEvent);
+      });
+      expect(messageAttachments.scrollLeft).toBe(40);
+      expect(wheelEvent.defaultPrevented).toBe(true);
+    }
+
+    const editButton = container.querySelector<HTMLButtonElement>(
+      '[aria-label="编辑并重新生成"]',
+    );
+    await act(async () => {
+      editButton?.click();
+      await flushConversationWorkspace();
+    });
+
+    const editingAttachments = container.querySelector(
+      ".conversation-attachments--draft",
+    );
+    expect(editingAttachments?.querySelectorAll(".conversation-attachment")).toHaveLength(2);
+    expect(editingAttachments?.querySelector<HTMLImageElement>(
+      'img[src="data:image/png;base64,AQID"]',
+    )).not.toBeNull();
+    expect(editingAttachments?.querySelectorAll('[aria-label^="移除附件"]')).toHaveLength(2);
+
+    const removeFile = editingAttachments?.querySelector<HTMLButtonElement>(
+      '[aria-label="移除附件 very-long-document-name-for-horizontal-overflow.txt"]',
+    );
+    act(() => removeFile?.click());
+    expect(container.querySelector(".conversation-attachments--draft")?.textContent)
+      .not.toContain("very-long-document-name-for-horizontal-overflow.txt");
+
+    const addButton = container.querySelector<HTMLButtonElement>(
+      '[aria-label="添加文件或图片，也可直接粘贴"]',
+    );
+    await act(async () => {
+      addButton?.click();
+      await flushConversationWorkspace();
+    });
+    expect(chooseAttachments).toHaveBeenCalledWith({ conversationId: sourceSession.id });
+    expect(container.textContent).toContain("added-while-editing.txt");
+
+    const saveButton = container.querySelector<HTMLButtonElement>(
+      '[aria-label="保存并重新生成"]',
+    );
+    await act(async () => {
+      saveButton?.click();
+      await flushConversationWorkspace();
+    });
+    expect(replaceMessage).toHaveBeenCalledWith(expect.objectContaining({
+      attachmentIds: [imageAttachment.id, addedAttachment.id],
+      content: "",
+      conversationId: sourceSession.id,
+      messageId: MESSAGE_ID,
+    }));
   });
 
   it("shows a child's pending approval above the parent composer and submits it", async () => {
@@ -1019,6 +1516,84 @@ describe("Subagent approval queue", () => {
     expect(closeTaskList).toHaveBeenCalledWith({ conversationId: conversation.id });
   });
 
+  it("highlights active composer queries and offers enabled Skills through slash commands", async () => {
+    const client = new MockAgentClient();
+    const status = await client.saveModelConfiguration({
+      apiKey: "test-key",
+      apiFormat: "openai-chat-completions",
+      baseUrl: "https://fixture.invalid/v1",
+      models: [{
+        contextWindow: 128_000,
+        displayName: "DeepSeek V4 Flash",
+        modelId: "deepseek-v4-flash",
+        reasoningOptions: [],
+      }],
+      providerName: "DeepSeek",
+    });
+    if (status.providerId === null || status.modelId === null) {
+      throw new Error("Mock model configuration did not return a selected model.");
+    }
+    vi.spyOn(client, "getIntegrationConfiguration").mockResolvedValue({
+      mcpServers: [],
+      skillDirectories: [],
+      skills: [{
+        description: "检查实现中的缺陷与回归风险",
+        enabled: true,
+        entryPath: "C:/skills/code-review/SKILL.md",
+        id: "code-review",
+        mcpDependencies: [],
+        name: "代码审查",
+        scope: "user",
+        version: "1.0.0",
+      }],
+      version: 1,
+    });
+    const conversation = await client.createConversation({
+      modelSelection: {
+        modelId: status.modelId,
+        providerId: status.providerId,
+        reasoning: null,
+      },
+      projectId: null,
+    });
+    const target = session({
+      id: conversation.id,
+      modelSelection: conversation.modelSelection,
+      title: "Skill 斜杠菜单测试",
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace agentClient={client} project={null} session={target} />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+
+    const textarea = container.querySelector<HTMLTextAreaElement>('[aria-label="输入任务"]');
+    act(() => {
+      setNativeTextValue(textarea, "/code");
+      textarea?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      await flushConversationWorkspace();
+    });
+
+    expect(textarea?.dataset.queryActive).toBe("true");
+    const skillOption = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+      .find((option) => option.textContent?.includes("/code-review · 代码审查") === true);
+    expect(skillOption).toBeDefined();
+
+    act(() => skillOption?.click());
+
+    expect(textarea?.value).toBe("/code-review ");
+    expect(textarea?.dataset.queryActive).toBeUndefined();
+  });
+
   it("offers Teams through @ mentions without a direct composer handoff control", async () => {
     const client = new MockAgentClient();
     const status = await client.saveModelConfiguration({
@@ -1087,6 +1662,7 @@ describe("Subagent approval queue", () => {
       setNativeTextValue(textarea, "@默认");
       textarea?.dispatchEvent(new Event("input", { bubbles: true }));
     });
+    expect(textarea?.dataset.queryActive).toBe("true");
     const teamMention = [...container.querySelectorAll<HTMLButtonElement>(
       '[role="option"]',
     )].find((option) => option.textContent?.includes(team.name) === true);

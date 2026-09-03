@@ -73,6 +73,7 @@ import {
   getProjectSessions,
   getPinnedSessions,
   getTemporarySessions,
+  isProjectSessionRunning as isSessionRunning,
   type ProjectSession,
   type TeamInstanceNavigatorGroup,
 } from "./project-session-model.js";
@@ -148,6 +149,78 @@ type NavigatorDialog =
   | { kind: "rename-project"; project: ProjectSummary }
   | { kind: "rename-session"; session: ProjectSession }
   | { kind: "rename-team-instance"; instance: TeamInstanceView };
+
+type NavigatorExpansionState = {
+  collapsedProjectIds: string[];
+  expandedProjectIds: string[];
+  expandedSessionIds: string[];
+  expandedTeamIds: string[];
+  pinnedGroupExpanded: boolean;
+  projectsGroupExpanded: boolean;
+  teamsGroupExpanded: boolean;
+  temporaryGroupExpanded: boolean;
+};
+
+const NAVIGATOR_EXPANSION_STORAGE_KEY = "agent-workbench.project-navigator-expansion.v1";
+const DEFAULT_NAVIGATOR_EXPANSION_STATE: NavigatorExpansionState = {
+  collapsedProjectIds: [],
+  expandedProjectIds: [],
+  expandedSessionIds: [],
+  expandedTeamIds: [],
+  pinnedGroupExpanded: true,
+  projectsGroupExpanded: true,
+  teamsGroupExpanded: true,
+  temporaryGroupExpanded: false,
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readBoolean(
+  record: Record<string, unknown>,
+  key: string,
+  fallback: boolean,
+): boolean {
+  const value = record[key];
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function readStringArray(record: Record<string, unknown>, key: string): string[] {
+  const value = record[key];
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? value
+    : [];
+}
+
+function loadNavigatorExpansionState(): NavigatorExpansionState {
+  try {
+    const value: unknown = JSON.parse(
+      window.localStorage.getItem(NAVIGATOR_EXPANSION_STORAGE_KEY) ?? "null",
+    );
+    if (!isRecord(value)) return DEFAULT_NAVIGATOR_EXPANSION_STATE;
+    return {
+      collapsedProjectIds: readStringArray(value, "collapsedProjectIds"),
+      expandedProjectIds: readStringArray(value, "expandedProjectIds"),
+      expandedSessionIds: readStringArray(value, "expandedSessionIds"),
+      expandedTeamIds: readStringArray(value, "expandedTeamIds"),
+      pinnedGroupExpanded: readBoolean(value, "pinnedGroupExpanded", true),
+      projectsGroupExpanded: readBoolean(value, "projectsGroupExpanded", true),
+      teamsGroupExpanded: readBoolean(value, "teamsGroupExpanded", true),
+      temporaryGroupExpanded: readBoolean(value, "temporaryGroupExpanded", false),
+    };
+  } catch {
+    return DEFAULT_NAVIGATOR_EXPANSION_STATE;
+  }
+}
+
+function saveNavigatorExpansionState(state: NavigatorExpansionState): void {
+  try {
+    window.localStorage.setItem(NAVIGATOR_EXPANSION_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Keep tree disclosure usable when renderer storage is unavailable.
+  }
+}
 
 type NavigatorDragItem = {
   groupKey: string;
@@ -308,21 +381,30 @@ export function ProjectNavigator({
 }: ProjectNavigatorProps): ReactElement {
   const activeProjectId = tree.activeProject?.id ?? null;
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  const [initialExpansionState] = useState(loadNavigatorExpansionState);
   const [expandedProjectIds, setExpandedProjectIds] = useState<ReadonlySet<string>>(
-    () => new Set(),
+    () => new Set(initialExpansionState.expandedProjectIds),
   );
   const [expandedSessionIds, setExpandedSessionIds] = useState<ReadonlySet<string>>(
-    () => new Set(),
+    () => new Set(initialExpansionState.expandedSessionIds),
   );
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<ReadonlySet<string>>(
-    () => new Set(),
+    () => new Set(initialExpansionState.collapsedProjectIds),
   );
-  const [isProjectsGroupExpanded, setIsProjectsGroupExpanded] = useState(true);
-  const [isTeamsGroupExpanded, setIsTeamsGroupExpanded] = useState(true);
-  const [isPinnedGroupExpanded, setIsPinnedGroupExpanded] = useState(true);
-  const [isTemporaryGroupExpanded, setIsTemporaryGroupExpanded] = useState(true);
+  const [isProjectsGroupExpanded, setIsProjectsGroupExpanded] = useState(
+    initialExpansionState.projectsGroupExpanded,
+  );
+  const [isTeamsGroupExpanded, setIsTeamsGroupExpanded] = useState(
+    initialExpansionState.teamsGroupExpanded,
+  );
+  const [isPinnedGroupExpanded, setIsPinnedGroupExpanded] = useState(
+    initialExpansionState.pinnedGroupExpanded,
+  );
+  const [isTemporaryGroupExpanded, setIsTemporaryGroupExpanded] = useState(
+    initialExpansionState.temporaryGroupExpanded,
+  );
   const [expandedTeamIds, setExpandedTeamIds] = useState<ReadonlySet<string>>(
-    () => new Set(),
+    () => new Set(initialExpansionState.expandedTeamIds),
   );
   const [query, setQuery] = useState("");
   const [sortOpen, setSortOpen] = useState(false);
@@ -343,6 +425,28 @@ export function ProjectNavigator({
     () => new Map(tree.projects.map((project) => [project.id, project.name])),
     [tree.projects],
   );
+
+  useEffect(() => {
+    saveNavigatorExpansionState({
+      collapsedProjectIds: [...collapsedProjectIds],
+      expandedProjectIds: [...expandedProjectIds],
+      expandedSessionIds: [...expandedSessionIds],
+      expandedTeamIds: [...expandedTeamIds],
+      pinnedGroupExpanded: isPinnedGroupExpanded,
+      projectsGroupExpanded: isProjectsGroupExpanded,
+      teamsGroupExpanded: isTeamsGroupExpanded,
+      temporaryGroupExpanded: isTemporaryGroupExpanded,
+    });
+  }, [
+    collapsedProjectIds,
+    expandedProjectIds,
+    expandedSessionIds,
+    expandedTeamIds,
+    isPinnedGroupExpanded,
+    isProjectsGroupExpanded,
+    isTeamsGroupExpanded,
+    isTemporaryGroupExpanded,
+  ]);
 
   function startDrag(
     event: DragEvent<HTMLElement>,
@@ -949,6 +1053,8 @@ export function ProjectNavigator({
                         normalizedQuery.length > 0 || expandedSessionIds.has(session.id)
                       }
                       onArchive={(archived) => void onSetSessionArchived(session.id, archived)}
+                      onArchiveChild={(childSession) =>
+                        void onSetSessionArchived(childSession.id, true)}
                       onContextMenu={(event) => openContextMenu(event, { kind: "session", session })}
                       onDragEnd={finishDrag}
                       onDragOver={(event) => updateDropIndicator(event, {
@@ -1163,6 +1269,8 @@ export function ProjectNavigator({
                               }
                               group={group}
                               key={group.instance.id}
+                              onArchive={() =>
+                                void onSetTeamInstanceArchived(group.instance.id, true)}
                               onContextMenu={(event) => openContextMenu(event, {
                                 instance: group.instance,
                                 kind: "team-instance",
@@ -1228,6 +1336,10 @@ export function ProjectNavigator({
                                 onArchive={(archived) =>
                                   void onSetSessionArchived(session.id, archived)
                                 }
+                                onArchiveChild={(childSession) =>
+                                  void onSetSessionArchived(childSession.id, true)}
+                                onArchiveTeam={(instance) =>
+                                  void onSetTeamInstanceArchived(instance.id, true)}
                                 onContextMenu={(event) =>
                                   openContextMenu(event, { kind: "session", session })
                                 }
@@ -1325,6 +1437,8 @@ export function ProjectNavigator({
                         }
                         group={group}
                         key={group.instance.id}
+                        onArchive={() =>
+                          void onSetTeamInstanceArchived(group.instance.id, true)}
                         projectName={
                           group.instance.projectId === null
                             ? null
@@ -1418,6 +1532,8 @@ export function ProjectNavigator({
                         normalizedQuery.length > 0 || expandedSessionIds.has(session.id)
                       }
                       onArchive={(archived) => void onSetSessionArchived(session.id, archived)}
+                      onArchiveChild={(childSession) =>
+                        void onSetSessionArchived(childSession.id, true)}
                       onContextMenu={(event) => openContextMenu(event, { kind: "session", session })}
                       onDragEnd={finishDrag}
                       onDragOver={(event) => updateDropIndicator(event, {
@@ -1578,6 +1694,7 @@ function TeamInstanceTreeItem({
   dropPosition,
   expanded,
   group,
+  onArchive,
   onContextMenu,
   onDragEnd,
   onDragOver,
@@ -1593,6 +1710,7 @@ function TeamInstanceTreeItem({
   dropPosition?: "after" | "before" | null;
   expanded: boolean;
   group: TeamInstanceNavigatorGroup;
+  onArchive?: () => void;
   onContextMenu: (event: MouseEvent) => void;
   onDragEnd?: () => void;
   onDragOver?: (event: DragEvent<HTMLDivElement>) => void;
@@ -1646,6 +1764,19 @@ function TeamInstanceTreeItem({
             </span>
           </button>
           <div className="project-navigator__session-actions">
+            {onArchive === undefined ? null : (
+              <button
+                aria-label={`归档团队 ${group.instance.name}`}
+                title="归档团队"
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onArchive();
+                }}
+              >
+                <Archive aria-hidden="true" size={13} />
+              </button>
+            )}
             <button aria-label={`更多 ${group.instance.name}`} title="更多" type="button" onClick={(event) => {
               event.stopPropagation();
               onContextMenu(event);
@@ -1713,12 +1844,6 @@ type SessionButtonProps = {
   onSelect: (sessionId: string) => void;
 };
 
-function isSessionRunning(session: ProjectSession): boolean {
-  return (session.activeSideConversationCount ?? 0) > 0
-    || (session.activeSubagentCount ?? 0) > 0
-    || session.activeRunId !== null;
-}
-
 function hasUnreadSessionResult(session: ProjectSession): boolean {
   return session.hasUnreadSideConversationResult === true
     || (session.hasUnreadResult
@@ -1774,6 +1899,8 @@ function SessionTreeItem({
   subagents,
   subagentsExpanded,
   teamGroups = [],
+  onArchiveChild,
+  onArchiveTeam,
   onCreateTeam,
   onOpenTeamMember,
   onOpenTeamMenu,
@@ -1787,6 +1914,8 @@ function SessionTreeItem({
   subagents: readonly ProjectSession[];
   subagentsExpanded: boolean;
   teamGroups?: readonly TeamInstanceNavigatorGroup[];
+  onArchiveChild: (session: ProjectSession) => void;
+  onArchiveTeam?: (instance: TeamInstanceView) => void;
   onCreateTeam?: () => void;
   onOpenTeamMember?: (
     teamInstanceId: string,
@@ -1843,6 +1972,9 @@ function SessionTreeItem({
                     expanded={expandedTeamIds.has(group.instance.id)}
                     group={group}
                     key={group.instance.id}
+                    {...(onArchiveTeam === undefined
+                      ? {}
+                      : { onArchive: () => onArchiveTeam(group.instance) })}
                     onContextMenu={(event) => onOpenTeamMenu(event, group.instance)}
                     onOpenMember={(agentId, session) =>
                       onOpenTeamMember(group.instance.id, agentId, session)}
@@ -1857,6 +1989,7 @@ function SessionTreeItem({
                 key={subagent.id}
                 located={locatedSessionId === subagent.id}
                 session={subagent}
+                onArchive={() => onArchiveChild(subagent)}
                 onSelect={buttonProps.onSelect}
               />
             ))}
@@ -1870,39 +2003,59 @@ function SubagentSessionButton({
   active,
   located,
   session,
+  onArchive,
   onSelect,
 }: {
   active: boolean;
   located: boolean;
   session: ProjectSession;
+  onArchive: () => void;
   onSelect: (sessionId: string) => void;
 }): ReactElement {
+  const isRunning = isSessionRunning(session);
+  const isManagedTeamWorkItemConversation = session.teamWorkItemId !== null
+    && session.teamWorkItemId !== undefined;
   const statusLabel = sessionStatusLabel(session);
   return (
-    <button
-      aria-current={active ? "page" : undefined}
-      className="project-navigator__session project-navigator__session--subagent"
-      data-active={active}
-      data-located={located}
-      data-navigator-key={`session:${session.id}`}
-      data-run-status={session.lastRunStatus ?? "idle"}
-      title={statusLabel === null ? session.title : `${session.title} · ${statusLabel}`}
-      type="button"
-      onClick={() => onSelect(session.id)}
-    >
-      {session.threadKind === "team_lead" ? (
-        <Scale aria-label="Team Lead 对话" size={14} />
-      ) : (
-        <SubagentAvatar
-          icon={session.avatarIcon}
-          seed={session.id}
-          size="compact"
-          status={isSessionRunning(session) ? "running" : "standby"}
-        />
-      )}
-      <span className="project-navigator__session-title">{session.title}</span>
-      <SessionStatusIndicator session={session} />
-    </button>
+    <div className="project-navigator__session-shell">
+      <button
+        aria-current={active ? "page" : undefined}
+        className="project-navigator__session project-navigator__session--subagent"
+        data-active={active}
+        data-located={located}
+        data-navigator-key={`session:${session.id}`}
+        data-run-status={session.lastRunStatus ?? "idle"}
+        title={statusLabel === null ? session.title : `${session.title} · ${statusLabel}`}
+        type="button"
+        onClick={() => onSelect(session.id)}
+      >
+        {session.threadKind === "team_lead" ? (
+          <Scale aria-label="Team Lead 对话" size={14} />
+        ) : (
+          <SubagentAvatar
+            icon={session.avatarIcon}
+            seed={session.id}
+            size="compact"
+            status={isRunning ? "running" : "standby"}
+          />
+        )}
+        <span className="project-navigator__session-title">{session.title}</span>
+        <SessionStatusIndicator session={session} />
+      </button>
+      <div className="project-navigator__session-actions">
+        <button
+          aria-label={`归档 ${session.title}`}
+          disabled={isRunning || isManagedTeamWorkItemConversation}
+          title={isManagedTeamWorkItemConversation
+            ? "团队执行对话由 WorkItem 生命周期保留"
+            : isRunning ? "运行中的对话不能归档" : "归档"}
+          type="button"
+          onClick={onArchive}
+        >
+          <Archive aria-hidden="true" size={13} />
+        </button>
+      </div>
+    </div>
   );
 }
 

@@ -103,6 +103,12 @@ export type StoredPendingMessage = {
   message: ConversationPendingMessage;
 };
 
+export type CancelledPendingMessageAttachmentCleanup = {
+  attachments: StoredConversationAttachment[];
+  conversationId: string;
+  pendingMessageId: string;
+};
+
 export type PreparedPendingMessage = StoredPendingMessage;
 
 export type PreparedPendingMessageConsumption = {
@@ -122,6 +128,14 @@ export type ConversationContextCheckpoint = {
   createdAt: string;
   summary: string;
   updatedAt: string;
+};
+
+export type ConversationTurnSummary = {
+  conversationId: string;
+  coveredThroughSequence: number;
+  createdAt: string;
+  runId: string;
+  summary: string;
 };
 
 export type ThreadLogProjectionEvent = {
@@ -243,8 +257,8 @@ export function agentMessageModelContent(message: ConversationAgentMessageItem):
       `Subagent conversation: ${message.senderTitle}`,
       `Subagent conversationId: ${message.senderConversationId}`,
       ...(message.taskId === null ? [] : [`Task ID: ${message.taskId}`]),
-      "This is the completion summary from a one-shot Subagent. The full process remains in its separate conversation; use read_agent_conversation within budget for details, and do not ask the completed Subagent to continue.",
-      "Result summary:",
+      "This is a private completion result from a one-shot Subagent, not a user-visible chat message. Synthesize the result into your own response without exposing this delivery envelope or presenting a standalone message from the Subagent. Do not list or read the child conversation merely to retrieve this normal result. Read it only if this result is explicitly truncated and omitted detail blocks the task, or if the user asks to audit the child process. Do not ask the completed Subagent to continue.",
+      "Completion receipt:",
       message.content
     ].join("\n");
   }
@@ -435,6 +449,7 @@ export type LatestUserMessageReplacementSource = {
 };
 
 type ReplaceLatestUserMessageInput = {
+  attachmentIds: readonly string[];
   content: string;
   conversationId: string;
   executionSnapshot?: RunExecutionSnapshot;
@@ -477,6 +492,24 @@ const RUN_STATUS_TRANSITIONS: Readonly<Record<
   running: ["completed", "failed", "cancelled"],
 };
 const MAX_SUBAGENT_RESULT_SUMMARY_LENGTH = 2_000;
+const SUBAGENT_RESULT_SUMMARY_TRUNCATION = "\n\n[完成回执已截断，可读取完整子对话]";
+
+function subagentResultSummaryContent(input: {
+  content: string;
+  status: "completed" | "failed" | "cancelled";
+}): string {
+  const divider = input.status === "completed"
+    ? /\n\s*---+\s*(?:\n|$)/u.exec(input.content)
+    : null;
+  const extracted = divider?.index === undefined
+    ? input.content
+    : input.content.slice(0, divider.index).trimEnd();
+  const summary = extracted.trim().length === 0 ? input.content : extracted;
+  if (summary.length <= MAX_SUBAGENT_RESULT_SUMMARY_LENGTH) return summary;
+  const contentBudget = MAX_SUBAGENT_RESULT_SUMMARY_LENGTH
+    - SUBAGENT_RESULT_SUMMARY_TRUNCATION.length;
+  return `${summary.slice(0, contentBudget).trimEnd()}${SUBAGENT_RESULT_SUMMARY_TRUNCATION}`;
+}
 
 type SqliteModule = typeof import("node:sqlite");
 type SqliteDatabase = InstanceType<SqliteModule["DatabaseSync"]>;
@@ -598,7 +631,7 @@ function contextSearchRuns(query: string): string[] {
   return [...new Set(
     (query.match(/[\p{Script=Han}]+|[\p{L}\p{N}_./\\:@#-]+/gu) ?? [])
       .map((run) => run.trim())
-      .filter((run) => run.length >= 2),
+      .filter((run) => run.length >= 1),
   )];
 }
 
@@ -613,7 +646,7 @@ function contextSearchTerms(query: string): string[] {
   const terms: string[] = [];
   const append = (term: string): void => {
     const normalized = term.trim();
-    if (normalized.length < 2 || terms.includes(normalized)) return;
+    if (normalized.length < 1 || terms.includes(normalized)) return;
     terms.push(normalized);
   };
   for (const run of runs.filter(isDistinctiveContextTerm)) append(run);
@@ -4622,6 +4655,30 @@ export class AgentDatabase {
       .get(filePath, filePath) !== undefined;
   }
 
+  public isConversationAttachmentFileReferencedOutside(
+    filePath: string,
+    excludedAttachmentIds: readonly string[],
+  ): boolean {
+    if (excludedAttachmentIds.length === 0) {
+      return this.database
+        .prepare(
+          `SELECT 1 AS present FROM conversation_attachments
+           WHERE stored_path = ? OR extracted_text_path = ?
+           LIMIT 1`,
+        )
+        .get(filePath, filePath) !== undefined;
+    }
+    const placeholders = excludedAttachmentIds.map(() => "?").join(", ");
+    return this.database
+      .prepare(
+        `SELECT 1 AS present FROM conversation_attachments
+         WHERE (stored_path = ? OR extracted_text_path = ?)
+           AND id NOT IN (${placeholders})
+         LIMIT 1`,
+      )
+      .get(filePath, filePath, ...excludedAttachmentIds) !== undefined;
+  }
+
   public createSubagentTask(input: {
     childConversationId: string;
     parentConversationId: string;
@@ -4801,9 +4858,10 @@ export class AgentDatabase {
       : task.status === "cancelled"
         ? `Subagent 任务已取消：${task.error?.trim() || "未提供原因。"}`
         : `Subagent 任务失败：${task.error?.trim() || "未提供错误信息。"}`;
-    const content = fullContent.length <= MAX_SUBAGENT_RESULT_SUMMARY_LENGTH
-      ? fullContent
-      : `${fullContent.slice(0, MAX_SUBAGENT_RESULT_SUMMARY_LENGTH - 28)}\n\n[摘要已截断，可读取完整子对话]`;
+    const content = subagentResultSummaryContent({
+      content: fullContent,
+      status: task.status,
+    });
     const message = conversationAgentMessageItemSchema.parse({
       content,
       conversationId: target.id,
@@ -5337,15 +5395,72 @@ export class AgentDatabase {
         )
         .run(now, now, pendingMessageId);
       if (result.changes !== 1) throw new Error("Pending conversation message was not found.");
-      this.database
-        .prepare(
-          `UPDATE conversation_attachments SET pending_message_id = NULL
-           WHERE pending_message_id = ? AND message_id IS NULL`
-        )
-        .run(pendingMessageId);
       this.touchConversation(record.message.conversationId, now);
     });
     return this.listPendingMessages(record.message.conversationId);
+  }
+
+  public listCancelledPendingMessageAttachmentCleanups(
+    pendingMessageId?: string,
+  ): CancelledPendingMessageAttachmentCleanup[] {
+    const rows = this.database
+      .prepare(
+        `SELECT id, conversation_id, payload_json
+         FROM conversation_pending_messages
+         WHERE status = 'cancelled'
+           AND (? IS NULL OR id = ?)
+         ORDER BY sequence ASC`,
+      )
+      .all(pendingMessageId ?? null, pendingMessageId ?? null) as DatabaseRow[];
+    return rows.flatMap((row) => {
+      const id = asString(row, "id");
+      const conversationId = asString(row, "conversation_id");
+      const input = sendConversationMessageInputSchema.parse(
+        parseJson(asString(row, "payload_json"), "cancelled pending conversation message"),
+      );
+      const attachmentIds = [...new Set(input.attachmentIds ?? [])];
+      if (attachmentIds.length === 0) return [];
+      const placeholders = attachmentIds.map(() => "?").join(", ");
+      const contextAttachmentIds = new Set(
+        this.listContextMessages(conversationId).flatMap((message) => message.attachmentIds),
+      );
+      const attachments = this.listStoredAttachments(
+        `conversation_id = ? AND id IN (${placeholders})
+         AND message_id IS NULL
+         AND (pending_message_id = ? OR pending_message_id IS NULL)`,
+        [conversationId, ...attachmentIds, id],
+      ).filter((attachment) => !contextAttachmentIds.has(attachment.id));
+      return attachments.length === 0
+        ? []
+        : [{ attachments, conversationId, pendingMessageId: id }];
+    });
+  }
+
+  public completeCancelledPendingMessageAttachmentCleanup(
+    pendingMessageId: string,
+    attachmentIds: readonly string[],
+  ): void {
+    if (attachmentIds.length === 0) return;
+    const placeholders = attachmentIds.map(() => "?").join(", ");
+    this.withTransaction(() => {
+      const pending = this.database
+        .prepare(
+          `SELECT status FROM conversation_pending_messages
+           WHERE id = ?`,
+        )
+        .get(pendingMessageId) as DatabaseRow | undefined;
+      if (pending === undefined || asString(pending, "status") !== "cancelled") {
+        throw new Error("Pending conversation message is not cancelled.");
+      }
+      this.database
+        .prepare(
+          `DELETE FROM conversation_attachments
+           WHERE id IN (${placeholders})
+             AND message_id IS NULL
+             AND (pending_message_id = ? OR pending_message_id IS NULL)`,
+        )
+        .run(...attachmentIds, pendingMessageId);
+    });
   }
 
   public consumePendingMessageIntoRun(
@@ -5796,10 +5911,19 @@ export class AgentDatabase {
     if (previousRunId === null) {
       throw new Error("The selected user message is not associated with a run.");
     }
+    const attachments = this.listLatestUserMessageReplacementAttachments(
+      input.conversationId,
+      source.message.id,
+      input.attachmentIds,
+    );
     const runId = randomUUID();
     const now = new Date().toISOString();
     const userMessage = conversationMessageItemSchema.parse({
       ...source.message,
+      attachments: attachments.map((attachment) => ({
+        ...toPublicConversationAttachment(attachment),
+        messageId: source.message.id,
+      })),
       content: input.content,
       createdAt: now,
       runId,
@@ -5843,8 +5967,17 @@ export class AgentDatabase {
       if (modelRecord === null) {
         throw new Error("The selected user message is missing from the model context.");
       }
+      const attachments = this.listLatestUserMessageReplacementAttachments(
+        input.conversationId,
+        timelineRecord.message.id,
+        input.attachmentIds,
+      );
       const message = conversationMessageItemSchema.parse({
         ...timelineRecord.message,
+        attachments: attachments.map((attachment) => ({
+          ...toPublicConversationAttachment(attachment),
+          messageId: timelineRecord.message.id,
+        })),
         content: input.content,
         createdAt: now,
         runId,
@@ -5875,11 +6008,12 @@ export class AgentDatabase {
       }
       const modelUpdate = this.database.prepare(
         `UPDATE model_messages
-         SET run_id = ?, content = ?, created_at = ?
+         SET run_id = ?, content = ?, attachment_ids_json = ?, created_at = ?
          WHERE id = ? AND conversation_id = ? AND run_id = ?`,
       ).run(
         runId,
         input.modelContent,
+        JSON.stringify(input.attachmentIds),
         now,
         modelRecord.id,
         input.conversationId,
@@ -5887,6 +6021,20 @@ export class AgentDatabase {
       );
       if (modelUpdate.changes !== 1) {
         throw new Error("The latest user model message could not be replaced.");
+      }
+      const draftAttachmentIds = attachments
+        .filter((attachment) => attachment.messageId === null)
+        .map((attachment) => attachment.id);
+      if (draftAttachmentIds.length > 0) {
+        const placeholders = draftAttachmentIds.map(() => "?").join(", ");
+        const attachmentUpdate = this.database.prepare(
+          `UPDATE conversation_attachments SET message_id = ?
+           WHERE conversation_id = ? AND message_id IS NULL
+             AND pending_message_id IS NULL AND id IN (${placeholders})`,
+        ).run(input.messageId, input.conversationId, ...draftAttachmentIds);
+        if (attachmentUpdate.changes !== draftAttachmentIds.length) {
+          throw new Error("One or more replacement attachments are no longer drafts.");
+        }
       }
       this.database.prepare(
         `DELETE FROM conversation_context_checkpoints
@@ -6160,6 +6308,27 @@ export class AgentDatabase {
     this.touchConversation(validated.conversationId, new Date().toISOString());
   }
 
+  /** Persist a runtime-owned timeline activity without adding a model-visible ToolMessage. */
+  public upsertRuntimeActivity(tool: ConversationToolItem): void {
+    const validated = conversationToolItemSchema.parse(tool);
+    this.getConversation(validated.conversationId);
+    this.withTransaction(() => {
+      this.insertThreadLogTimeline(validated);
+      this.database
+        .prepare(
+          `UPDATE conversation_timeline SET payload_json = ?, created_at = ?
+           WHERE id = ? AND conversation_id = ? AND kind = 'tool'`,
+        )
+        .run(
+          JSON.stringify(validated),
+          validated.createdAt,
+          validated.id,
+          validated.conversationId,
+        );
+      this.touchConversation(validated.conversationId, new Date().toISOString());
+    });
+  }
+
   /**
    * A Run cannot leave an actionable approval behind after it reaches a
    * terminal state. Returning the updated rows lets AgentRuntime write the
@@ -6233,7 +6402,31 @@ export class AgentDatabase {
     return row === undefined ? null : this.toStoredContextMessage(row);
   }
 
+  /** Translate a ThreadLog conversation-local message position to SQLite's global sequence. */
+  public resolveContextCheckpointSequence(
+    conversationId: string,
+    contextSequence: number,
+  ): number {
+    this.getConversation(conversationId);
+    if (!Number.isSafeInteger(contextSequence) || contextSequence <= 0) {
+      throw new Error("Context message sequence must be a positive integer.");
+    }
+    const row = this.database
+      .prepare(
+        `SELECT sequence FROM model_messages
+         WHERE conversation_id = ?
+         ORDER BY sequence ASC
+         LIMIT 1 OFFSET ?`,
+      )
+      .get(conversationId, contextSequence - 1) as DatabaseRow | undefined;
+    if (row === undefined) {
+      throw new Error("ThreadLog checkpoint boundary has no stored database message.");
+    }
+    return asNumber(row, "sequence");
+  }
+
   public searchContextMessages(input: {
+    beforeSequence?: number;
     conversationId: string;
     excludeSequences?: readonly number[];
     limit?: number;
@@ -6247,12 +6440,23 @@ export class AgentDatabase {
     if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 100) {
       throw new Error("Context search limit must be between 1 and 100.");
     }
+    const beforeSequence = input.beforeSequence;
+    if (
+      beforeSequence !== undefined
+      && (!Number.isSafeInteger(beforeSequence) || beforeSequence <= 0)
+    ) {
+      throw new Error("Context search beforeSequence must be a positive safe integer.");
+    }
     const excluded = [...new Set(input.excludeSequences ?? [])].filter(
       (sequence) => Number.isSafeInteger(sequence) && sequence > 0,
     );
     const exclusionSql = excluded.length === 0
       ? ""
       : ` AND model_messages.sequence NOT IN (${excluded.map(() => "?").join(", ")})`;
+    const beforeSql = beforeSequence === undefined
+      ? ""
+      : " AND model_messages.sequence < ?";
+    const beforeParameters = beforeSequence === undefined ? [] : [beforeSequence];
     const candidateLimit = Math.min(100, Math.max(limit, limit * 4));
     const ftsQuery = ftsQueryForTerms(terms);
     const columns = `model_messages.sequence, model_messages.run_id, model_messages.role,
@@ -6268,11 +6472,18 @@ export class AgentDatabase {
             AND model_messages.conversation_id = model_message_search.conversation_id
            WHERE model_message_search.conversation_id = ?
              AND model_message_search MATCH ?
+             ${beforeSql}
              ${exclusionSql}
            ORDER BY bm25(model_message_search) ASC, model_messages.sequence DESC
            LIMIT ?`,
         )
-        .all(input.conversationId, ftsQuery, ...excluded, candidateLimit) as DatabaseRow[];
+        .all(
+          input.conversationId,
+          ftsQuery,
+          ...beforeParameters,
+          ...excluded,
+          candidateLimit,
+        ) as DatabaseRow[];
       const strongMatches = rankStrongContextMatches(
         rows.map((row) => this.toStoredContextMessage(row)),
         distinctiveTerms,
@@ -6290,6 +6501,7 @@ export class AgentDatabase {
          FROM model_messages
          WHERE model_messages.conversation_id = ?
            AND (${likeConditions.join(" OR ")})
+           ${beforeSql}
            ${exclusionSql}
          ORDER BY model_messages.sequence DESC
          LIMIT ?`,
@@ -6297,6 +6509,7 @@ export class AgentDatabase {
       .all(
         input.conversationId,
         ...terms.map(likePattern),
+        ...beforeParameters,
         ...excluded,
         candidateLimit,
       ) as DatabaseRow[];
@@ -6678,6 +6891,11 @@ export class AgentDatabase {
           projected = true;
           continue;
         }
+        if (event.type === "runtime_activity_updated" && event.payload.writeAhead === true) {
+          this.materializeThreadLogRuntimeActivity(conversationId, event);
+          projected = true;
+          continue;
+        }
         if (event.type === "context_checkpoint" && event.payload.writeAhead === true) {
           this.materializeThreadLogContextCheckpoint(conversationId, event);
           projected = true;
@@ -7017,6 +7235,11 @@ export class AgentDatabase {
           continue;
         }
 
+        if (event.type === "runtime_activity_updated") {
+          this.materializeThreadLogRuntimeActivity(conversationId, event);
+          continue;
+        }
+
         if (event.type === "context_checkpoint") {
           const coveredThroughSequence = payload.coveredThroughSequence;
           const summary = readProjectionString(payload, "summary");
@@ -7184,8 +7407,9 @@ export class AgentDatabase {
         runCreatedAt,
         runCreatedAt,
         executionSnapshot.success ? serializeRunExecutionSnapshot(executionSnapshot.data) : null,
-      );
+    );
     this.insertThreadLogTimeline(message);
+    this.bindThreadLogMessageAttachments(message);
     this.insertThreadLogModelMessage({
       attachmentIds: message.attachments.map((attachment) => attachment.id),
       content: readProjectionString(payload, "modelContent") ?? message.content,
@@ -7251,7 +7475,7 @@ export class AgentDatabase {
     );
   }
 
-  /** Preserve a cancelled pending-message audit row while releasing its drafts. */
+  /** Preserve a cancelled pending-message audit row and its retryable attachment cleanup marker. */
   private materializeThreadLogPendingMessageCancellation(
     conversationId: string,
     event: ThreadLogProjectionEvent,
@@ -7280,12 +7504,6 @@ export class AgentDatabase {
     } else if (currentStatus !== "cancelled") {
       throw new Error("ThreadLog pending message cancellation state is invalid.");
     }
-    this.database
-      .prepare(
-        `UPDATE conversation_attachments SET pending_message_id = NULL
-         WHERE pending_message_id = ? AND message_id IS NULL`,
-      )
-      .run(pendingMessageId);
     this.touchConversation(conversationId, event.createdAt);
   }
 
@@ -7317,6 +7535,135 @@ export class AgentDatabase {
     }
     this.upsertModelRetryInTransaction(parsed.data);
     this.touchConversation(conversationId, parsed.data.updatedAt);
+  }
+
+  public listContextMessagesForRun(runId: string): StoredContextMessage[] {
+    const rows = this.database
+      .prepare(
+        `SELECT sequence, run_id, role, content, tool_calls_json, tool_call_id,
+                attachment_ids_json, provider_state_json
+         FROM model_messages
+         WHERE run_id = ?
+         ORDER BY sequence ASC`,
+      )
+      .all(runId) as DatabaseRow[];
+    return rows.map((row) => this.toStoredContextMessage(row));
+  }
+
+  public getLatestConversationTurnSummary(
+    conversationId: string,
+    coveredThroughSequence: number,
+  ): ConversationTurnSummary | null {
+    this.getConversation(conversationId);
+    if (!Number.isSafeInteger(coveredThroughSequence) || coveredThroughSequence <= 0) {
+      throw new Error("Turn summary boundary must be a positive safe integer.");
+    }
+    const row = this.database
+      .prepare(
+        `SELECT conversation_id, run_id, covered_through_sequence, summary, created_at
+         FROM conversation_turn_summaries
+         WHERE conversation_id = ? AND covered_through_sequence <= ?
+         ORDER BY covered_through_sequence DESC
+         LIMIT 1`,
+      )
+      .get(conversationId, coveredThroughSequence) as DatabaseRow | undefined;
+    if (row === undefined) return null;
+    return {
+      conversationId: asString(row, "conversation_id"),
+      coveredThroughSequence: asNumber(row, "covered_through_sequence"),
+      createdAt: asString(row, "created_at"),
+      runId: asString(row, "run_id"),
+      summary: asString(row, "summary"),
+    };
+  }
+
+  public getConversationTurnSummary(runId: string): ConversationTurnSummary | null {
+    const row = this.database
+      .prepare(
+        `SELECT conversation_id, run_id, covered_through_sequence, summary, created_at
+         FROM conversation_turn_summaries
+         WHERE run_id = ?`,
+      )
+      .get(runId) as DatabaseRow | undefined;
+    if (row === undefined) return null;
+    return {
+      conversationId: asString(row, "conversation_id"),
+      coveredThroughSequence: asNumber(row, "covered_through_sequence"),
+      createdAt: asString(row, "created_at"),
+      runId: asString(row, "run_id"),
+      summary: asString(row, "summary"),
+    };
+  }
+
+  public saveConversationTurnSummary(input: {
+    conversationId: string;
+    coveredThroughSequence: number;
+    runId: string;
+    summary: string;
+  }): ConversationTurnSummary {
+    this.getConversation(input.conversationId);
+    const summary = input.summary.trim();
+    if (!Number.isSafeInteger(input.coveredThroughSequence) || input.coveredThroughSequence <= 0) {
+      throw new Error("Turn summary boundary must be a positive safe integer.");
+    }
+    if (summary.length === 0 || summary.length > 100_000) {
+      throw new Error("Turn summary has an invalid length.");
+    }
+    const boundary = this.database
+      .prepare(
+        `SELECT sequence FROM model_messages
+         WHERE conversation_id = ? AND run_id = ? AND sequence = ?`,
+      )
+      .get(
+        input.conversationId,
+        input.runId,
+        input.coveredThroughSequence,
+      ) as DatabaseRow | undefined;
+    if (boundary === undefined) {
+      throw new Error("Turn summary boundary must belong to its Run.");
+    }
+    const createdAt = new Date().toISOString();
+    this.database
+      .prepare(
+        `INSERT INTO conversation_turn_summaries
+           (run_id, conversation_id, covered_through_sequence, summary, created_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(run_id) DO UPDATE SET
+           covered_through_sequence = excluded.covered_through_sequence,
+           summary = excluded.summary`,
+      )
+      .run(
+        input.runId,
+        input.conversationId,
+        input.coveredThroughSequence,
+        summary,
+        createdAt,
+      );
+    return this.getLatestConversationTurnSummary(
+      input.conversationId,
+      input.coveredThroughSequence,
+    ) ?? (() => {
+      throw new Error("Turn summary could not be persisted.");
+    })();
+  }
+
+  /** Runtime activities are durable UI audit rows, never model-context messages. */
+  private materializeThreadLogRuntimeActivity(
+    conversationId: string,
+    event: ThreadLogProjectionEvent,
+  ): void {
+    const tool = readProjectionTool(event.payload, "tool");
+    if (tool === null || tool.conversationId !== conversationId) {
+      throw new Error("ThreadLog runtime activity update is invalid.");
+    }
+    this.insertThreadLogTimeline(tool);
+    this.database
+      .prepare(
+        `UPDATE conversation_timeline SET payload_json = ?, created_at = ?
+         WHERE id = ? AND conversation_id = ? AND kind = 'tool'`,
+      )
+      .run(JSON.stringify(tool), tool.createdAt, tool.id, conversationId);
+    this.touchConversation(conversationId, event.createdAt);
   }
 
   /** Persist the Tool timeline item before its handler is allowed to run. */
@@ -8634,6 +8981,24 @@ export class AgentDatabase {
         },
         version: 19,
       },
+      {
+        name: "conversation-turn-summaries",
+        up: (database) => {
+          database.exec(`
+            CREATE TABLE IF NOT EXISTS conversation_turn_summaries (
+              run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+              conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+              covered_through_sequence INTEGER NOT NULL,
+              summary TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS conversation_turn_summaries_boundary
+              ON conversation_turn_summaries(conversation_id, covered_through_sequence DESC);
+          `);
+        },
+        version: 20,
+      },
     ]);
   }
 
@@ -8799,6 +9164,17 @@ export class AgentDatabase {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS conversation_turn_summaries (
+        run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        covered_through_sequence INTEGER NOT NULL,
+        summary TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS conversation_turn_summaries_boundary
+        ON conversation_turn_summaries(conversation_id, covered_through_sequence DESC);
 
       CREATE TABLE IF NOT EXISTS conversation_deletion_tasks (
         id TEXT PRIMARY KEY,
@@ -9218,6 +9594,21 @@ export class AgentDatabase {
       id: asString(row, "id"),
       sequence: asNumber(row, "sequence"),
     };
+  }
+
+  private listLatestUserMessageReplacementAttachments(
+    conversationId: string,
+    messageId: string,
+    attachmentIds: readonly string[],
+  ): StoredConversationAttachment[] {
+    const attachments = this.listConversationAttachmentsByIds(conversationId, attachmentIds);
+    if (attachments.some((attachment) => (
+      attachment.pendingMessageId !== null
+      || (attachment.messageId !== null && attachment.messageId !== messageId)
+    ))) {
+      throw new Error("A replacement can only use its original attachments or current drafts.");
+    }
+    return attachments;
   }
 
   private countUserMessages(conversationId: string): number {

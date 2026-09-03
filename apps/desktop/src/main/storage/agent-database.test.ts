@@ -47,10 +47,42 @@ describe("AgentDatabase", () => {
       .get() as Record<string, unknown>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(19);
-    expect(firstRow.name).toBe("team-work-item-soft-delete");
+    expect(firstRow.version).toBe(20);
+    expect(firstRow.name).toBe("conversation-turn-summaries");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(19);
+    expect(migrationCount.count).toBe(20);
+  });
+
+  it("adds hidden turn summaries when upgrading an existing version 19 database", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "agent.sqlite");
+    const current = new AgentDatabase(databasePath);
+    current.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      DROP TABLE conversation_turn_summaries;
+      DELETE FROM schema_migrations WHERE version = 20;
+    `);
+    legacy.close();
+
+    const migrated = new AgentDatabase(databasePath);
+    const conversation = migrated.createConversation(null);
+    const run = migrated.createRunWithUserMessage(conversation.id, "旧库升级", "test-model");
+    migrated.finishRun(run.runId, "completed", null);
+    const boundary = migrated.listContextMessages(conversation.id).at(-1)?.sequence;
+    if (boundary === undefined) throw new Error("Expected a context message boundary.");
+    migrated.saveConversationTurnSummary({
+      conversationId: conversation.id,
+      coveredThroughSequence: boundary,
+      runId: run.runId,
+      summary: "升级后摘要可保存",
+    });
+
+    expect(migrated.getConversationTurnSummary(run.runId)?.summary)
+      .toBe("升级后摘要可保存");
+    migrated.close();
   });
 
   it("preserves legacy Team execution scope when migrating version 12 data", async () => {
@@ -145,6 +177,47 @@ describe("AgentDatabase", () => {
     database.close();
   });
 
+  it("limits context search to messages before a sequence cursor", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const oldRun = database.createRunWithUserMessage(
+      conversation.id,
+      "CURSOR-DB 旧记录",
+      "test-model",
+    );
+    database.finishRun(oldRun.runId, "completed", null);
+    const recentRun = database.createRunWithUserMessage(
+      conversation.id,
+      "CURSOR-DB 新记录",
+      "test-model",
+    );
+    database.finishRun(recentRun.runId, "completed", null);
+    const recentSequence = database.listContextMessages(conversation.id)
+      .find((message) => message.runId === recentRun.runId)
+      ?.sequence;
+    if (recentSequence === undefined) throw new Error("Expected recent message.");
+
+    const matches = database.searchContextMessages({
+      beforeSequence: recentSequence,
+      conversationId: conversation.id,
+      query: "CURSOR-DB",
+    });
+    const shortQueryMatches = database.searchContextMessages({
+      beforeSequence: recentSequence,
+      conversationId: conversation.id,
+      query: "DB",
+    });
+
+    expect(matches.map((message) => message.content)).toEqual(["CURSOR-DB 旧记录"]);
+    expect(shortQueryMatches.map((message) => message.content)).toEqual(["CURSOR-DB 旧记录"]);
+    expect(() => database.searchContextMessages({
+      beforeSequence: 0,
+      conversationId: conversation.id,
+      query: "CURSOR-DB",
+    })).toThrow("beforeSequence must be a positive safe integer");
+    database.close();
+  });
+
   it("persists full reasoning for display without adding it to model-visible text", () => {
     const database = new AgentDatabase(":memory:");
     const conversation = database.createConversation(null);
@@ -206,6 +279,7 @@ describe("AgentDatabase", () => {
     );
     reopenedDatabase.finishRun(editableRun.runId, "completed", null);
     const replacement = reopenedDatabase.replaceLatestUserMessage({
+      attachmentIds: [],
       content: "新词",
       conversationId: conversation.id,
       messageId: editableRun.userMessage.id,
@@ -357,7 +431,7 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 19",
+      "newer than supported version 20",
     );
   });
 
@@ -1712,6 +1786,7 @@ describe("AgentDatabase", () => {
       { version: 17 },
       { version: 18 },
       { version: 19 },
+      { version: 20 },
     ]);
     metadata.close();
   });
@@ -2105,6 +2180,7 @@ describe("AgentDatabase", () => {
     database.saveContextCheckpoint(conversation.id, lastSequence, "包含旧回答的摘要");
 
     const creation = database.replaceLatestUserMessage({
+      attachmentIds: [],
       content: "修改后的任务",
       conversationId: conversation.id,
       messageId: second.userMessage.id,
@@ -2138,12 +2214,68 @@ describe("AgentDatabase", () => {
     });
     database.finishRun(creation.runId, "cancelled", null);
     expect(() => database.replaceLatestUserMessage({
+      attachmentIds: [],
       content: "不允许改旧消息",
       conversationId: conversation.id,
       messageId: first.userMessage.id,
       modelContent: "不允许改旧消息",
       modelId: "test-model",
     })).toThrow("latest sent user message");
+    database.close();
+  });
+
+  it("replaces the latest user message attachment selection with original and draft attachments", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const originalAttachmentId = crypto.randomUUID();
+    const addedAttachmentId = crypto.randomUUID();
+    const createAttachment = (id: string, name: string): void => {
+      database.createConversationAttachment({
+        contextTokens: 8,
+        conversationId: conversation.id,
+        createdAt: new Date().toISOString(),
+        extractedTextPath: null,
+        id,
+        kind: "file",
+        messageId: null,
+        mimeType: "text/plain",
+        name,
+        pendingMessageId: null,
+        projectPath: null,
+        sizeBytes: 16,
+        source: "upload",
+        storedPath: `D:\\managed\\${name}`,
+        truncated: false,
+      });
+    };
+    createAttachment(originalAttachmentId, "original.txt");
+    createAttachment(addedAttachmentId, "added.txt");
+    const original = database.createRunWithUserMessage(
+      conversation.id,
+      "原消息",
+      "test-model",
+      [originalAttachmentId],
+    );
+    database.finishRun(original.runId, "completed", null);
+
+    const replacement = database.replaceLatestUserMessage({
+      attachmentIds: [addedAttachmentId],
+      content: "修改后的消息",
+      conversationId: conversation.id,
+      messageId: original.userMessage.id,
+      modelContent: "修改后的消息",
+      modelId: "test-model",
+    });
+
+    expect(replacement.userMessage.attachments).toEqual([
+      expect.objectContaining({ id: addedAttachmentId, messageId: original.userMessage.id }),
+    ]);
+    expect(database.listModelMessages(conversation.id).at(-1)?.attachmentIds)
+      .toEqual([addedAttachmentId]);
+    expect(database.getConversationAttachment(conversation.id, addedAttachmentId).messageId)
+      .toBe(original.userMessage.id);
+    expect(database.getConversationAttachment(conversation.id, originalAttachmentId).messageId)
+      .toBe(original.userMessage.id);
     database.close();
   });
 
@@ -2286,6 +2418,47 @@ describe("AgentDatabase", () => {
     reopenedDatabase.completeConversationDeletionTask(deletionTask.id);
     expect(reopenedDatabase.getContextCheckpoint(conversation.id)).toBeNull();
     reopenedDatabase.close();
+  });
+
+  it("persists hidden turn summaries by their covered message boundary", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const firstRun = database.createRunWithUserMessage(
+      conversation.id,
+      "第一轮问题",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "第一轮回答",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: firstRun.runId,
+      toolCalls: [],
+    });
+    database.finishRun(firstRun.runId, "completed", null);
+    const firstBoundary = database.listContextMessages(conversation.id).at(-1)?.sequence;
+    if (firstBoundary === undefined) throw new Error("Expected the first turn boundary.");
+
+    database.saveConversationTurnSummary({
+      conversationId: conversation.id,
+      coveredThroughSequence: firstBoundary,
+      runId: firstRun.runId,
+      summary: '{"goals":["完成第一轮"]}',
+    });
+
+    expect(database.getLatestConversationTurnSummary(
+      conversation.id,
+      firstBoundary,
+    )).toMatchObject({
+      conversationId: conversation.id,
+      coveredThroughSequence: firstBoundary,
+      runId: firstRun.runId,
+      summary: '{"goals":["完成第一轮"]}',
+    });
+    expect(database.listContextMessagesForRun(firstRun.runId).map((message) => message.content))
+      .toEqual(["第一轮问题", "第一轮回答"]);
+    database.close();
   });
 
   it("persists model provider state across reopen and conversation forks", async () => {
@@ -3310,7 +3483,11 @@ describe("AgentDatabase", () => {
       }),
     ]));
     database.finishRun(childRun.runId, "completed", null);
-    const fullResult = `检查完成，没有发现问题。\n${"详细检查记录".repeat(400)}`;
+    const fullResult = [
+      "检查完成，没有发现问题；目标测试已经通过。",
+      "---",
+      "这里是只保留在 Subagent 对话中的详细检查记录。",
+    ].join("\n");
     database.completeSubagentTaskByRun({
       error: null,
       result: fullResult,
@@ -3326,8 +3503,8 @@ describe("AgentDatabase", () => {
       senderConversationId: child.id,
       taskId: task.id,
     });
-    expect(message?.content).toContain("检查完成，没有发现问题。");
-    expect(message?.content).toContain("摘要已截断，可读取完整子对话");
+    expect(message?.content).toBe("检查完成，没有发现问题；目标测试已经通过。");
+    expect(message?.content).not.toContain("详细检查记录");
     expect(message?.content.length).toBeLessThanOrEqual(2_000);
     expect(message?.content).not.toBe(fullResult);
     expect(database.getSubagentTask(task.id)).toMatchObject({
@@ -3349,6 +3526,38 @@ describe("AgentDatabase", () => {
       targetConversationId: child.id,
     })).toThrow("read-only");
     expect(database.deliverSubagentTaskResult(task.id)).toBeNull();
+    database.close();
+  });
+
+  it("bounds a Subagent completion result when it has no explicit receipt divider", () => {
+    const database = new AgentDatabase(":memory:");
+    const parent = database.createConversation(null);
+    const parentRun = database.createRunWithUserMessage(parent.id, "委派任务", "test-model");
+    const child = database.forkConversation(parent.id);
+    const childRun = database.createRunWithUserMessage(child.id, "执行任务", "test-model");
+    const task = database.createSubagentTask({
+      childConversationId: child.id,
+      parentConversationId: parent.id,
+      sourceRunId: parentRun.runId,
+      task: "执行任务",
+      title: "执行任务",
+    });
+    database.assignSubagentTaskRun(task.id, childRun.runId);
+    database.finishRun(childRun.runId, "completed", null);
+    const fullResult = `直接回答。${"详细内容".repeat(600)}`;
+    database.completeSubagentTaskByRun({
+      error: null,
+      result: fullResult,
+      status: "completed",
+      targetRunId: childRun.runId,
+    });
+
+    const message = database.deliverSubagentTaskResult(task.id);
+
+    expect(message?.content).toContain("直接回答。");
+    expect(message?.content).toContain("完成回执已截断，可读取完整子对话");
+    expect(message?.content.length).toBeLessThanOrEqual(2_000);
+    expect(database.getSubagentTask(task.id).result).toBe(fullResult);
     database.close();
   });
 
@@ -3450,9 +3659,16 @@ describe("AgentDatabase", () => {
     expect(remaining.map((message) => message.id)).toEqual([third.id, first.id]);
     expect(database.getConversationAttachment(conversation.id, attachmentId)).toMatchObject({
       messageId: null,
-      pendingMessageId: null,
+      pendingMessageId: second.id,
     });
-    expect(database.listDraftConversationAttachments(conversation.id)).toHaveLength(1);
+    expect(database.listDraftConversationAttachments(conversation.id)).toEqual([]);
+    expect(database.listCancelledPendingMessageAttachmentCleanups(second.id)).toEqual([
+      expect.objectContaining({
+        attachments: [expect.objectContaining({ id: attachmentId })],
+        conversationId: conversation.id,
+        pendingMessageId: second.id,
+      }),
+    ]);
     database.close();
   });
 

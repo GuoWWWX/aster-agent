@@ -25,6 +25,7 @@ export type ContextCompilerInput = {
   includeImageData: boolean;
   outputReserveTokens: number;
   estimatedSkillCatalogTokens: number;
+  forceCompaction?: boolean;
   /** Capacity reserved for the mutable task list that can appear mid-Run. */
   reservedTaskListTokens?: number;
   reservedSkillTokens: number;
@@ -55,14 +56,16 @@ export class ContextCompiler {
       ? this.database.listContextMessages(input.conversationId)
       : [];
     const sourceMessages = threadContext?.messages ?? databaseMessages;
-    const storedMessages = sanitizeStoredModelMessages(sourceMessages).map((message) => ({
-      ...message,
-      attachments: this.attachments?.toModelAttachments(
-        input.conversationId,
-        message.attachmentIds,
-        input.includeImageData,
-      ) ?? [],
-    }));
+    const storedMessages = sanitizeStoredModelMessages(sourceMessages)
+      .filter((message) => !isRuntimeControlMessage(message))
+      .map((message) => ({
+        ...message,
+        attachments: this.attachments?.toModelAttachments(
+          input.conversationId,
+          message.attachmentIds,
+          input.includeImageData,
+        ) ?? [],
+      }));
     const latestUserMessage = [...storedMessages].reverse().find((message) => message.role === "user");
     const latestDatabaseUserMessage = threadContext === null
       ? [...databaseMessages].reverse().find((message) => message.role === "user") ?? null
@@ -99,6 +102,7 @@ export class ContextCompiler {
       estimatedSystemTokens: estimateMessageTokens(input.systemMessage).contentTokens,
       estimatedSkillCatalogTokens: input.estimatedSkillCatalogTokens,
       estimatedToolDefinitionTokens: estimateContextTokens(JSON.stringify(input.toolDefinitions)),
+      ...(input.forceCompaction === undefined ? {} : { forceCompaction: input.forceCompaction }),
       outputReserveTokens: input.outputReserveTokens,
       relevantMessages,
       reservedSkillTokens: input.reservedSkillTokens,
@@ -151,7 +155,9 @@ function sanitizeStoredModelMessages<T extends StoredContextMessage>(messages: r
       });
       if (message.content.trim().length === 0 && toolCalls.length === 0) return [];
       const sanitized = { ...message, toolCalls };
-      if (toolCalls.length !== message.toolCalls.length) delete sanitized.providerState;
+      if (toolCalls.length === 0 || toolCalls.length !== message.toolCalls.length) {
+        delete sanitized.providerState;
+      }
       return [sanitized];
     }
     if (message.role === "tool") {
@@ -162,4 +168,8 @@ function sanitizeStoredModelMessages<T extends StoredContextMessage>(messages: r
     }
     return [message];
   });
+}
+
+function isRuntimeControlMessage(message: StoredContextMessage): boolean {
+  return message.role === "user" && message.content.trim().toLowerCase() === "/compact";
 }

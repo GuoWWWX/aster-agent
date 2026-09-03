@@ -91,7 +91,7 @@ export type ModelTurnResult = {
 
 export type ModelReasoningDelta = {
   delta: string;
-  kind: "summary" | "content";
+  kind: "summary" | "content" | "progress";
   reset: boolean;
 };
 

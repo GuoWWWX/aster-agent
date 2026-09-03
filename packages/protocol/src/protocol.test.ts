@@ -13,6 +13,7 @@ import {
   contextCompressionThresholdSchema,
   conversationContextUsageInputSchema,
   conversationContextUsageSchema,
+  conversationAttachmentPreviewSchema,
   conversationMessageItemSchema,
   conversationRunEventSchema,
   conversationSummarySchema,
@@ -38,6 +39,7 @@ import {
   runtimeInfoSchema,
   resolveContextCompressionThresholdTokens,
   replaceLatestConversationMessageInputSchema,
+  readConversationAttachmentPreviewInputSchema,
   renameTeamInstanceInputSchema,
   reorderTeamInstancesInputSchema,
   saveModelConfigurationInputSchema,
@@ -638,18 +640,27 @@ describe("protocol bootstrap contract", () => {
   it("validates replacement of the latest sent user message", () => {
     const conversationId = "00000000-0000-4000-8000-000000000001";
     const messageId = "00000000-0000-4000-8000-000000000002";
+    const attachmentId = "00000000-0000-4000-8000-000000000003";
 
     expect(replaceLatestConversationMessageInputSchema.parse({
+      attachmentIds: [attachmentId],
       content: "修改后的任务",
       conversationId,
       messageId,
       permissionMode: "ask_before_changes",
     })).toEqual({
+      attachmentIds: [attachmentId],
       content: "修改后的任务",
       conversationId,
       messageId,
       permissionMode: "ask_before_changes",
     });
+    expect(replaceLatestConversationMessageInputSchema.parse({
+      attachmentIds: [attachmentId],
+      content: "",
+      conversationId,
+      messageId,
+    })).toMatchObject({ attachmentIds: [attachmentId], content: "" });
     expect(() => replaceLatestConversationMessageInputSchema.parse({
       content: "",
       conversationId,
@@ -743,6 +754,24 @@ describe("protocol bootstrap contract", () => {
     });
   });
 
+  it("carries a transient model progress update", () => {
+    expect(conversationRunEventSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      delta: "已确认问题位置，准备修改文件",
+      kind: "progress",
+      messageId: "00000000-0000-4000-8000-000000000003",
+      modelId: "test-model",
+      reset: true,
+      runId: "00000000-0000-4000-8000-000000000002",
+      type: "assistant.reasoning_delta"
+    })).toMatchObject({
+      delta: "已确认问题位置，准备修改文件",
+      kind: "progress",
+      reset: true,
+      type: "assistant.reasoning_delta"
+    });
+  });
+
   it("carries a durable model retry timeline update", () => {
     const conversationId = "00000000-0000-4000-8000-000000000001";
     const runId = "00000000-0000-4000-8000-000000000002";
@@ -830,6 +859,30 @@ describe("protocol bootstrap contract", () => {
       content: "",
       conversationId,
     })).toThrow("text, an attachment, or a project file reference");
+  });
+
+  it("validates bounded conversation attachment image previews", () => {
+    const input = {
+      attachmentId: "00000000-0000-4000-8000-000000000002",
+      conversationId: "00000000-0000-4000-8000-000000000001",
+    };
+    expect(readConversationAttachmentPreviewInputSchema.parse(input)).toEqual(input);
+    expect(conversationAttachmentPreviewSchema.parse({
+      data: "AQID",
+      mimeType: "image/png",
+    })).toEqual({ data: "AQID", mimeType: "image/png" });
+    expect(() => readConversationAttachmentPreviewInputSchema.parse({
+      ...input,
+      attachmentId: "not-an-id",
+    })).toThrow();
+    expect(() => conversationAttachmentPreviewSchema.parse({
+      data: "not base64",
+      mimeType: "image/png",
+    })).toThrow();
+    expect(() => conversationAttachmentPreviewSchema.parse({
+      data: "AQI",
+      mimeType: "image/png",
+    })).toThrow("complete quartets");
   });
 
   it("accepts unique project file references and rejects invalid paths", () => {

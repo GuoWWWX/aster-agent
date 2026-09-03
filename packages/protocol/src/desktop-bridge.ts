@@ -4,6 +4,7 @@ import type {
   ConversationContextUsage,
   ConversationContextUsageInput,
   ConversationAttachment,
+  ConversationAttachmentPreview,
   ConversationMessageSubmission,
   ConversationPendingMessage,
   ConversationReferenceInput,
@@ -26,6 +27,7 @@ import type {
   RemoveConversationAttachmentInput,
   PendingConversationMessageReferenceInput,
   ReorderPendingConversationMessagesInput,
+  ReadConversationAttachmentPreviewInput,
   SetConversationArchivedInput,
   SetConversationModelSelectionInput,
   SetConversationProjectInput,
@@ -166,6 +168,9 @@ export interface DesktopBridge {
   importConversationAttachmentBytes(
     input: ImportConversationAttachmentBytesInput
   ): Promise<ConversationAttachment[]>;
+  readConversationAttachmentPreview(
+    input: ReadConversationAttachmentPreviewInput
+  ): Promise<ConversationAttachmentPreview>;
   listDraftConversationAttachments(
     input: ConversationReferenceInput
   ): Promise<ConversationAttachment[]>;

@@ -8,7 +8,7 @@
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
   background: var(--app-panel);
-  color: #94a3b8;
+  color: var(--app-subtle-foreground);
   padding: 0 8px;
 }
 
@@ -35,7 +35,7 @@
 }
 
 .app-search-field input::placeholder {
-  color: #94a3b8;
+  color: var(--app-subtle-foreground);
   opacity: 1;
 }
 

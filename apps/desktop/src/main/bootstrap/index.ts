@@ -285,6 +285,7 @@ async function initializeServices(): Promise<DesktopServices> {
       error,
     );
   }
+  await attachments.resumeCancelledPendingMessageAttachmentCleanup();
 
   const agentRuntime = new AgentRuntime(
     database,
@@ -310,6 +311,7 @@ async function initializeServices(): Promise<DesktopServices> {
     workspaceTerminalTabs,
     terminalSessions,
     browserToolPlugin,
+    { generateTurnSummaries: true },
   );
   const teamWorkItems = new TeamWorkItemRuntime(
     database,

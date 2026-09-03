@@ -286,7 +286,9 @@ export class ManagedBrowserController {
 
   public setBounds(input: ManagedBrowserBoundsInput): void {
     const window = this.requireWindow();
-    const page = this.requireSession(input.sessionId).page;
+    const session = this.sessions.get(input.sessionId);
+    if (session === undefined) return;
+    const page = session.page;
     if (!input.visible || input.width === 0 || input.height === 0) {
       page.setVisible(false);
       return;

@@ -181,7 +181,7 @@
 }
 
 .configuration-file-workspace__tree-row[data-selected="true"] {
-  box-shadow: inset 2px 0 0 var(--app-accent);
+  box-shadow: inset 2px 0 0 var(--app-selection-border);
 }
 
 .configuration-file-workspace__tree-toggle,

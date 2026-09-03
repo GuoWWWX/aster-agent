@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import type { StoredContextMessage } from "../storage/agent-database.js";
 import {
   buildManagedContext,
-  parseContextSummary
+  createContextCompactionMessages,
+  parseContextSummary,
+  selectCompactionRetryBatch,
 } from "./context-manager.js";
 
 function message(
@@ -113,6 +115,66 @@ describe("context manager", () => {
     expect(plan.messages.some((item) => item.content.startsWith("第3轮-"))).toBe(true);
     expect(plan.messages.some((item) => item.content.startsWith("第4轮-"))).toBe(true);
     expect(plan.messages.some((item) => item.content.startsWith("第1轮-"))).toBe(false);
+  });
+
+  it("offers eligible old turns for an explicit compaction below the automatic threshold", () => {
+    const source = [1, 2, 3].flatMap((turn) => [
+      message(turn * 10, "user", `第${turn}轮`, { runId: `run-${turn}` }),
+      message(turn * 10 + 1, "assistant", `第${turn}轮完成`, { runId: `run-${turn}` }),
+    ]);
+
+    const plan = buildManagedContext({
+      checkpoint: null,
+      compressionMode: "tokens",
+      compressionThresholdTokens: 100_000,
+      estimatedSystemTokens: 100,
+      estimatedToolDefinitionTokens: 100,
+      forceCompaction: true,
+      outputReserveTokens: 500,
+      sourceMessages: source,
+    });
+
+    expect(plan.compactionCandidates.map((item) => item.runId)).toEqual(["run-1", "run-1"]);
+    expect(plan.compactionCandidates.some((item) => item.runId === "run-2")).toBe(false);
+    expect(plan.compactionCandidates.some((item) => item.runId === "run-3")).toBe(false);
+  });
+
+  it("keeps final answers while bounding tool output sent to the compaction model", () => {
+    const request = createContextCompactionMessages(null, [
+      message(1, "user", "检查构建失败原因", { runId: "run-1" }),
+      message(2, "assistant", "", {
+        runId: "run-1",
+        toolCalls: [{ arguments: "{}", id: "call-1", name: "run_command" }],
+      }),
+      message(3, "tool", `output-start\n${"noise\n".repeat(1_000)}ERROR build failed\noutput-end`, {
+        runId: "run-1",
+        toolCallId: "call-1",
+      }),
+      message(4, "assistant", "构建失败是由缺少依赖造成的。", { runId: "run-1" }),
+    ]);
+    const serializedHistory = request[1]?.content ?? "";
+
+    expect(serializedHistory).toContain("构建失败是由缺少依赖造成的。");
+    expect(serializedHistory).toContain("ERROR build failed");
+    expect(serializedHistory).toContain("Tool output shortened for context compaction");
+    expect(serializedHistory).not.toContain("noise\n".repeat(900));
+  });
+
+  it("retries compaction with a smaller complete-turn prefix", () => {
+    const messages = [
+      message(1, "user", "第一轮", { runId: "run-1" }),
+      message(2, "assistant", "第一轮回答", { runId: "run-1" }),
+      message(3, "user", "第一轮插队补充", { runId: "run-1" }),
+      message(4, "assistant", "第一轮补充回答", { runId: "run-1" }),
+      message(5, "user", "第二轮", { runId: "run-2" }),
+      message(6, "assistant", "第二轮回答", { runId: "run-2" }),
+      message(7, "user", "第三轮", { runId: "run-3" }),
+      message(8, "assistant", "第三轮回答", { runId: "run-3" }),
+    ];
+
+    expect(selectCompactionRetryBatch(messages).map((item) => item.sequence))
+      .toEqual([1, 2, 3, 4, 5, 6]);
+    expect(selectCompactionRetryBatch(messages.slice(0, 2))).toEqual([]);
   });
 
   it("replaces covered source messages with the persisted checkpoint", () => {

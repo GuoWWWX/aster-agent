@@ -106,6 +106,79 @@ describe("LangGraphExecutor", () => {
     ]);
   });
 
+  it("keeps mutable runtime context behind stable history across model turns", async () => {
+    const modelRequests: string[][] = [];
+    let beforeModelCount = 0;
+    const callbacks = callbacksFor([
+      result("", [{ arguments: "{}", id: "call-1", name: "update_task_list" }]),
+      result("done"),
+    ]);
+    callbacks.beforeAgent = () => Promise.resolve({
+      messages: [
+        {
+          attachments: [],
+          content: "stable system",
+          role: "system",
+          toolCallId: null,
+          toolCalls: [],
+        },
+        { ...userMessage, content: "large stable history" },
+      ],
+    });
+    callbacks.beforeModel = () => {
+      beforeModelCount += 1;
+      return Promise.resolve({
+        contextMessages: [
+          {
+            attachments: [],
+            content: "active skill",
+            role: "system",
+            toolCallId: null,
+            toolCalls: [],
+          },
+          {
+            attachments: [],
+            content: `current task list v${beforeModelCount}`,
+            role: "user",
+            toolCallId: null,
+            toolCalls: [],
+          },
+        ],
+        hasFollowUpInput: false,
+        messages: [],
+      });
+    };
+    callbacks.callModel = (messages) => {
+      modelRequests.push(messages.map((message) => message.content));
+      return Promise.resolve(modelRequests.length === 1
+        ? result("", [{ arguments: "{}", id: "call-1", name: "update_task_list" }])
+        : result("done"));
+    };
+
+    await new LangGraphExecutor().invoke({
+      callbacks,
+      initialMessages: [],
+      maxSteps: 4,
+      signal: new AbortController().signal,
+      threadId: "cache-stable-runtime-context-run",
+    });
+
+    expect(modelRequests[0]).toEqual([
+      "stable system",
+      "active skill",
+      "large stable history",
+      "current task list v1",
+    ]);
+    expect(modelRequests[1]).toEqual([
+      "stable system",
+      "active skill",
+      "large stable history",
+      "",
+      "tool:update_task_list",
+      "current task list v2",
+    ]);
+  });
+
   it("retries transient model failures inside middleware without consuming extra graph turns", async () => {
     let calls = 0;
     const retries: Array<{ attempt: number; delayMs: number; requestId: string }> = [];

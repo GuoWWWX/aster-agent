@@ -12,6 +12,7 @@ import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
 import {
   isGemini3ReasoningModel,
+  isGpt56ReasoningModel,
   type ModelApiFormat,
 } from "@agent/protocol";
 
@@ -935,9 +936,10 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
     let latest: LangChainAssistantMessage | null = null;
     let reasoningContent = "";
     let reasoningStarted = false;
-    const reasoningKind = this.apiFormat === "openai-responses" || this.apiFormat === "anthropic-messages"
-      ? "summary"
-      : "content";
+    const reasoningKind = this.apiFormat === "openai-chat-completions"
+      && !isGpt56ReasoningModel(input.configuration.modelId)
+      ? "content"
+      : "summary";
     try {
       const stream = await boundModel.stream(messages, {
         maxRetries: 0,

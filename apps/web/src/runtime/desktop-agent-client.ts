@@ -9,6 +9,7 @@ import type {
   ConversationContextUsage,
   ConversationContextUsageInput,
   ConversationAttachment,
+  ConversationAttachmentPreview,
   ConversationMessageSubmission,
   ConversationPendingMessage,
   ContextCompressionConfiguration,
@@ -57,6 +58,7 @@ import type {
   ProjectReferenceInput,
   ReadProjectFileInput,
   ReadProjectPreviewImageInput,
+  ReadConversationAttachmentPreviewInput,
   ReadConfigurationWorkspaceFileInput,
   ReorderConversationsInput,
   ReplaceLatestConversationMessageInput,
@@ -243,6 +245,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
     input: ImportConversationAttachmentBytesInput,
   ): Promise<ConversationAttachment[]> {
     return this.desktopBridge.importConversationAttachmentBytes(input);
+  }
+
+  public readConversationAttachmentPreview(
+    input: ReadConversationAttachmentPreviewInput,
+  ): Promise<ConversationAttachmentPreview> {
+    return this.desktopBridge.readConversationAttachmentPreview(input);
   }
 
   public listDraftConversationAttachments(

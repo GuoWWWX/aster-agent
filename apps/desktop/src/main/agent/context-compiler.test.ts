@@ -102,6 +102,98 @@ describe("ContextCompiler", () => {
     database.close();
   });
 
+  it("keeps provider replay for tool results but removes it from completed final replies", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const first = database.createRunWithUserMessage(
+      conversation.id,
+      "读取配置并给出结论",
+      "test-model",
+    );
+    const toolCall = {
+      arguments: '{"path":"config.json"}',
+      id: "call-read-config",
+      name: "read_file",
+    };
+    const toolProviderState = {
+      apiFormat: "openai-responses" as const,
+      baseUrl: "https://example.test/v1",
+      modelId: "test-model",
+      payload: [{ id: "reasoning-tool", type: "reasoning" }],
+    };
+    const finalProviderState = {
+      ...toolProviderState,
+      payload: [{ id: "reasoning-final", type: "reasoning" }],
+    };
+    database.appendAssistantTurn({
+      content: "我先读取配置。",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      providerState: toolProviderState,
+      runId: first.runId,
+      toolCalls: [toolCall],
+    });
+    const tool = {
+      arguments: toolCall.arguments,
+      batchId: null,
+      conversationId: conversation.id,
+      createdAt: new Date().toISOString(),
+      diff: null,
+      id: crypto.randomUUID(),
+      kind: "tool" as const,
+      name: toolCall.name,
+      result: '{"theme":"dark"}',
+      runId: first.runId,
+      status: "completed" as const,
+    };
+    database.appendToolStarted({ ...tool, result: null, status: "running" });
+    database.completeTool({
+      providerCallId: toolCall.id,
+      result: tool.result,
+      tool,
+    });
+    database.appendAssistantTurn({
+      content: "配置使用深色主题。",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      providerState: finalProviderState,
+      runId: first.runId,
+      toolCalls: [],
+    });
+    database.finishRun(first.runId, "completed", null);
+    database.createRunWithUserMessage(conversation.id, "继续处理新问题", "test-model");
+
+    const context = new ContextCompiler(database, null).compile({
+      contextCompressionConfiguration: {
+        mode: "tokens",
+        percentageThreshold: 80,
+        tokenThreshold: 10_000,
+      },
+      contextWindowTokens: 20_000,
+      conversationId: conversation.id,
+      includeImageData: false,
+      estimatedSkillCatalogTokens: 0,
+      outputReserveTokens: 1_000,
+      reservedSkillTokens: 0,
+      systemMessage: {
+        attachments: [], content: "系统指令", role: "system", toolCallId: null, toolCalls: [],
+      },
+      toolDefinitions: [],
+    });
+
+    const toolAssistant = context.messages.find((message) =>
+      message.role === "assistant" && message.toolCalls.length > 0
+    );
+    const finalAssistant = context.messages.find((message) =>
+      message.role === "assistant" && message.content === "配置使用深色主题。"
+    );
+    expect(toolAssistant?.providerState).toEqual(toolProviderState);
+    expect(finalAssistant?.providerState).toBeUndefined();
+    database.close();
+  });
+
   it("prefers the canonical JSONL history while retaining SQLite for search", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-context-log-"));
     const database = new AgentDatabase(":memory:");

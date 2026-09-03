@@ -31,6 +31,7 @@ const DEFAULT_ERRORS: Record<AgentErrorCode, Omit<ErrorClassification, "code">> 
   MODEL_PROVIDER_UNAVAILABLE: { message: "模型服务暂时不可用，自动重试仍未成功，请稍后再试。", retryable: true },
   MODEL_RATE_LIMITED: { message: "模型额度不足或请求过于频繁，请检查余额后重试。", retryable: true },
   MODEL_RESPONSE_INVALID: { message: "模型返回了无法处理的响应，请重试或切换模型。", retryable: true },
+  MODEL_RUN_LIMIT_REACHED: { message: "模型长时间没有自行结束，已在最终保护边界停止。当前结果已保留，可发送“继续”接着处理。", retryable: false },
   MODEL_TIMEOUT: { message: "模型请求超时，请检查网络后重试。", retryable: true },
   NETWORK_UNAVAILABLE: { message: "网络连接失败，请检查网络和模型服务地址。", retryable: true },
   PATH_OUTSIDE_WORKSPACE: { message: "目标路径超出了当前项目目录。", retryable: false },
@@ -49,9 +50,18 @@ function errorMessage(reason: unknown): string {
 }
 
 function errorStatus(reason: unknown): number | null {
-  if (reason === null || typeof reason !== "object") return null;
-  const status = (reason as { status?: unknown }).status;
-  return typeof status === "number" && Number.isInteger(status) ? status : null;
+  const seen = new Set<object>();
+  let current: unknown = reason;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (current === null || typeof current !== "object" || seen.has(current)) return null;
+    seen.add(current);
+    const record = current as { cause?: unknown; status?: unknown };
+    if (typeof record.status === "number" && Number.isInteger(record.status)) {
+      return record.status;
+    }
+    current = record.cause;
+  }
+  return null;
 }
 
 function errorCode(reason: unknown): string | null {
@@ -128,6 +138,14 @@ function classificationForCode(code: AgentErrorCode): ErrorClassification {
   return { code, ...DEFAULT_ERRORS[code] };
 }
 
+function quotaBalanceClassification(): ErrorClassification {
+  return {
+    code: "MODEL_RATE_LIMITED",
+    message: "模型额度或余额不足，请充值、切换模型或更换供应商后再试。",
+    retryable: false,
+  };
+}
+
 function providerErrorDetail(
   message: string,
   status: number | null,
@@ -182,11 +200,13 @@ function classifyError(
     };
   }
   if (isGraphRecursionLimit(reason)) {
-    return classificationForCode("MODEL_RESPONSE_INVALID");
+    return classificationForCode("MODEL_RUN_LIMIT_REACHED");
+  }
+  if (nodeCode === "MODEL_CALL_LIMIT_EXCEEDED") {
+    return classificationForCode("MODEL_RUN_LIMIT_REACHED");
   }
   if (
     nodeCode === "MODEL_RESPONSE_INVALID"
-    || nodeCode === "MODEL_CALL_LIMIT_EXCEEDED"
     || nodeCode === "MODEL_TOOL_CALLS_INVALID"
     || nodeCode === "TOOL_CALL_LIMIT_EXCEEDED"
   ) {
@@ -200,7 +220,13 @@ function classifyError(
   }
   if (name === "ModelRequestError" || status !== null) {
     if (status === 401 || status === 403) return classificationForCode("MODEL_AUTH_FAILED");
-    if (status === 402 || status === 429) return classificationForCode("MODEL_RATE_LIMITED");
+    if (
+      status === 402
+      || (status === 400 && /insufficient[_\s-]?(?:quota|balance|credit)|(?:额度|余额)(?:不足|耗尽)/iu.test(message))
+    ) {
+      return quotaBalanceClassification();
+    }
+    if (status === 429) return classificationForCode("MODEL_RATE_LIMITED");
     if (status === 408 || status === 504) return classificationForCode("MODEL_TIMEOUT");
     if (status !== null && status >= 500) return classificationForCode("MODEL_PROVIDER_UNAVAILABLE");
     return classificationForCode("MODEL_RESPONSE_INVALID");
@@ -304,7 +330,9 @@ export function toMainAgentError(
         ? sanitizedMessage.slice(0, 1_000)
         : classification.message
     )
-    : /[\u3400-\u9fff]/u.test(sanitizedMessage)
+    : classification.code !== "INTERNAL_ERROR"
+      && classification.code !== "MODEL_RUN_LIMIT_REACHED"
+      && /[\u3400-\u9fff]/u.test(sanitizedMessage)
       ? sanitizedMessage.slice(0, 1_000)
       : classification.message;
 

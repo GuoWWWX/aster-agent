@@ -93,6 +93,19 @@ describe("conversation timeline streaming state", () => {
     })).toEqual([]);
   });
 
+  it("keeps model progress updates out of the persisted message timeline", () => {
+    expect(appendAssistantReasoningDelta([], {
+      conversationId,
+      delta: "已找到问题，准备修改文件",
+      kind: "progress",
+      messageId: "progress-message",
+      modelId: "claude-test-model",
+      reset: true,
+      runId,
+      type: "assistant.reasoning_delta",
+    })).toEqual([]);
+  });
+
   it("completes the active text segment when output moves to a tool", () => {
     expect(completeStreamingAssistantMessages([
       assistantMessage("first", "第一段"),

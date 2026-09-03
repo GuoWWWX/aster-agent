@@ -511,6 +511,31 @@ describe("LangChainModelAdapter", () => {
     }));
   });
 
+  it("treats GPT-5.6 Chat reasoning content as a transient summary", async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse([
+      'data: {"choices":[{"delta":{"role":"assistant","reasoning_content":"Preparing changes"},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\n',
+      "data: [DONE]\n\n",
+    ]));
+    const reasoningDeltas: unknown[] = [];
+
+    const result = await new LangChainModelAdapter("openai-chat-completions", request)
+      .completeTurn(inputFor("openai-chat-completions", {
+        configuration: {
+          ...inputFor("openai-chat-completions").configuration,
+          modelId: "gpt-5.6-terra",
+        },
+        onReasoningDelta: (event) => reasoningDeltas.push(event),
+      }));
+
+    expect(result).not.toHaveProperty("reasoningContent");
+    expect(reasoningDeltas).toEqual([{
+      delta: "Preparing changes",
+      kind: "summary",
+      reset: true,
+    }]);
+  });
+
   it("replays OpenAI Chat reasoning from the previous AI SDK provider state", async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse([
       'data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\n',
@@ -1060,7 +1085,7 @@ describe("LangChainModelAdapter", () => {
     expect(first.content).toBe("");
     expect(reasoningDeltas).toEqual([{
       delta: "Inspecting files",
-      kind: "content",
+      kind: "summary",
       reset: true,
     }]);
 

@@ -48,7 +48,10 @@ export function activeTaskListContextMessage(
   return {
     attachments: [],
     content: taskListContextContent(taskList),
-    role: "system",
+    // Keep mutable state at the request tail. A secondary system message would
+    // have to precede history for Anthropic compatibility and would invalidate
+    // the provider's cached prefix whenever task progress changes.
+    role: "user",
     toolCallId: null,
     toolCalls: [],
   };

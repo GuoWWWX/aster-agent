@@ -844,7 +844,8 @@ describe("EventProjector", () => {
     projector.projectBusinessEvent(creation.conversation.id, cancellationEvent);
     expect(source.listPendingMessages(creation.conversation.id)).toEqual([]);
     expect(source.getConversationAttachment(creation.conversation.id, attachmentId).pendingMessageId)
-      .toBeNull();
+      .toBe(pending.message.id);
+    expect(source.listDraftConversationAttachments(creation.conversation.id)).toEqual([]);
     source.close();
   });
 
@@ -1183,7 +1184,26 @@ describe("EventProjector", () => {
       type: "run_finished",
     });
     projector.projectEvent(creation.conversation.id, finishedEvent);
+    const attachmentId = crypto.randomUUID();
+    source.createConversationAttachment({
+      contextTokens: 8,
+      conversationId: creation.conversation.id,
+      createdAt: new Date().toISOString(),
+      extractedTextPath: null,
+      id: attachmentId,
+      kind: "file",
+      messageId: null,
+      mimeType: "text/plain",
+      name: "replacement.txt",
+      pendingMessageId: null,
+      projectPath: null,
+      sizeBytes: 16,
+      source: "upload",
+      storedPath: path.join(directory, "replacement.txt"),
+      truncated: false,
+    });
     const replacement = source.prepareLatestUserMessageReplacement({
+      attachmentIds: [attachmentId],
       content: "修正后的任务",
       conversationId: creation.conversation.id,
       messageId: first.userMessage.id,
@@ -1215,8 +1235,14 @@ describe("EventProjector", () => {
       }),
     ]);
     expect(source.listContextMessages(creation.conversation.id)).toEqual([
-      expect.objectContaining({ content: "修正后的任务", runId: replacement.runId }),
+      expect.objectContaining({
+        attachmentIds: [attachmentId],
+        content: "修正后的任务",
+        runId: replacement.runId,
+      }),
     ]);
+    expect(source.getConversationAttachment(creation.conversation.id, attachmentId).messageId)
+      .toBe(first.userMessage.id);
 
     const recovered = new AgentDatabase(":memory:");
     new EventProjector(recovered, threadLog).projectAllConversationLogs();

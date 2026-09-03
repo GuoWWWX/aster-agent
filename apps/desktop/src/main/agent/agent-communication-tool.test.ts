@@ -6,6 +6,22 @@ import { agentMessageModelContent } from "../storage/agent-database.js";
 import { AgentCommunicationTool } from "./agent-communication-tool.js";
 
 describe("AgentCommunicationTool", () => {
+  it("separates universal conversation reads from coordination tools", () => {
+    const database = new AgentDatabase(":memory:");
+    const tool = new AgentCommunicationTool(database);
+
+    expect(tool.getConversationReadDefinitions().map((definition) => definition.name)).toEqual([
+      "list_agent_conversations",
+      "read_agent_conversation",
+    ]);
+    expect(tool.getCoordinationDefinitions().map((definition) => definition.name)).toEqual([
+      "send_agent_message",
+      "set_team_collaboration_plan",
+      "wait_for_agent_message",
+    ]);
+    database.close();
+  });
+
   it("accepts empty JSON arguments for no-parameter operations", async () => {
     const database = new AgentDatabase(":memory:");
     const conversation = database.createConversation(null);
@@ -76,6 +92,323 @@ describe("AgentCommunicationTool", () => {
 
     expect(result.isError).toBe(false);
     expect(result.content).toContain("历史问题");
+    expect(JSON.parse(result.content)).toMatchObject({
+      value: {
+        historyScope: "all",
+        requestedHistoryScope: "compressed",
+      },
+    });
+    database.close();
+  });
+
+  it("allows an Agent to query its own conversation history", async () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const run = database.createRunWithUserMessage(
+      conversation.id,
+      "SELF-HISTORY-731 的用户问题",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "SELF-HISTORY-731 的模型回答",
+      conversationId: conversation.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: run.runId,
+      toolCalls: [],
+    });
+    database.finishRun(run.runId, "completed", null);
+    const tool = new AgentCommunicationTool(database);
+
+    const result = await tool.execute({
+      arguments: JSON.stringify({
+        query: "SELF-HISTORY-731",
+      }),
+      conversationId: conversation.id,
+      runId: crypto.randomUUID(),
+      signal: new AbortController().signal,
+      toolName: "read_agent_conversation",
+    });
+
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain("SELF-HISTORY-731 的用户问题");
+    expect(result.content).toContain("SELF-HISTORY-731 的模型回答");
+    database.close();
+  });
+
+  it("defaults to checkpoint-covered history and can opt into all history", async () => {
+    const database = new AgentDatabase(":memory:");
+    const current = database.createConversation(null);
+    const source = database.createConversation(null);
+    const coveredRun = database.createRunWithUserMessage(
+      source.id,
+      "COVERED-HISTORY-419 的用户问题",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "COVERED-HISTORY-419 的模型回答",
+      conversationId: source.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: coveredRun.runId,
+      toolCalls: [],
+    });
+    database.finishRun(coveredRun.runId, "completed", null);
+    const coveredThroughSequence = database.listContextMessages(source.id).at(-1)?.sequence;
+    if (coveredThroughSequence === undefined) throw new Error("Expected covered messages.");
+    database.saveContextCheckpoint(source.id, coveredThroughSequence, "已压缩旧历史。");
+    const recentRun = database.createRunWithUserMessage(
+      source.id,
+      "RECENT-HISTORY-420 的用户问题",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "RECENT-HISTORY-420 的模型回答",
+      conversationId: source.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: recentRun.runId,
+      toolCalls: [],
+    });
+    database.finishRun(recentRun.runId, "completed", null);
+    const tool = new AgentCommunicationTool(database);
+    const common = {
+      conversationId: current.id,
+      runId: crypto.randomUUID(),
+      signal: new AbortController().signal,
+      toolName: "read_agent_conversation",
+    } as const;
+
+    const coveredResult = await tool.execute({
+      ...common,
+      arguments: JSON.stringify({
+        conversationId: source.id,
+        query: "COVERED-HISTORY-419",
+      }),
+    });
+    const defaultRecentResult = await tool.execute({
+      ...common,
+      arguments: JSON.stringify({
+        conversationId: source.id,
+        query: "RECENT-HISTORY-420",
+      }),
+    });
+    const allHistoryResult = await tool.execute({
+      ...common,
+      arguments: JSON.stringify({
+        conversationId: source.id,
+        historyScope: "all",
+        query: "RECENT-HISTORY-420",
+      }),
+    });
+
+    expect(coveredResult.content).toContain("COVERED-HISTORY-419 的用户问题");
+    expect(defaultRecentResult.content).not.toContain("RECENT-HISTORY-420 的用户问题");
+    expect(allHistoryResult.content).toContain("RECENT-HISTORY-420 的用户问题");
+    expect(JSON.parse(coveredResult.content)).toMatchObject({
+      value: {
+        checkpointCoveredThroughSequence: coveredThroughSequence,
+        historyScope: "compressed",
+        requestedHistoryScope: "compressed",
+      },
+    });
+    expect(JSON.parse(allHistoryResult.content)).toMatchObject({
+      value: {
+        historyScope: "all",
+        requestedHistoryScope: "all",
+      },
+    });
+    database.close();
+  });
+
+  it("reads persisted Subagent and archived conversations by id", async () => {
+    const database = new AgentDatabase(":memory:");
+    const current = database.createConversation(null);
+    const parent = database.createConversation(null);
+    const parentRun = database.createRunWithUserMessage(parent.id, "父任务", "test-model");
+    database.finishRun(parentRun.runId, "completed", null);
+    const subagent = database.forkConversation(parent.id);
+    const subagentRun = database.createRunWithUserMessage(subagent.id, "子任务证据", "test-model");
+    database.createSubagentTask({
+      childConversationId: subagent.id,
+      parentConversationId: parent.id,
+      sourceRunId: parentRun.runId,
+      task: "子任务证据",
+      title: "证据检查",
+    });
+    database.finishRun(subagentRun.runId, "completed", null);
+    const archived = database.createConversation(null);
+    const archivedRun = database.createRunWithUserMessage(
+      archived.id,
+      "归档对话证据",
+      "test-model",
+    );
+    database.finishRun(archivedRun.runId, "completed", null);
+    database.setConversationArchived(archived.id, true);
+    const tool = new AgentCommunicationTool(database);
+    const common = {
+      conversationId: current.id,
+      runId: crypto.randomUUID(),
+      signal: new AbortController().signal,
+      toolName: "read_agent_conversation",
+    } as const;
+
+    const subagentResult = await tool.execute({
+      ...common,
+      arguments: JSON.stringify({ conversationId: subagent.id, maxTokens: 512 }),
+    });
+    const archivedResult = await tool.execute({
+      ...common,
+      arguments: JSON.stringify({ conversationId: archived.id, maxTokens: 512 }),
+    });
+
+    expect(database.getConversation(subagent.id).threadKind).toBe("subagent");
+    expect(subagentResult.isError).toBe(false);
+    expect(subagentResult.content).toContain("子任务证据");
+    expect(archivedResult.isError).toBe(false);
+    expect(archivedResult.content).toContain("归档对话证据");
+    database.close();
+  });
+
+  it("searches a bounded Agent conversation snapshot by query", async () => {
+    const database = new AgentDatabase(":memory:");
+    const current = database.createConversation(null);
+    const source = database.createConversation(null);
+    const evidence = database.createRunWithUserMessage(
+      source.id,
+      "auth rotation alpha 917 的验证证据位于旧消息。",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "auth rotation alpha 917 需要保留旧版密钥直到验证完成。",
+      conversationId: source.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: evidence.runId,
+      toolCalls: [],
+    });
+    database.finishRun(evidence.runId, "completed", null);
+    const coveredThroughSequence = database.listContextMessages(source.id).at(-1)?.sequence;
+    if (coveredThroughSequence === undefined) throw new Error("Expected source messages.");
+    database.saveContextCheckpoint(source.id, coveredThroughSequence, "旧记录已压缩。");
+    for (let index = 0; index < 12; index += 1) {
+      const recent = database.createRunWithUserMessage(
+        source.id,
+        `无关的新消息 ${index} ${"占用读取预算".repeat(40)}`,
+        "test-model",
+      );
+      database.finishRun(recent.runId, "completed", null);
+    }
+    database.renameConversation(source.id, "来源会话");
+    const tool = new AgentCommunicationTool(database);
+    const common = {
+      conversationId: current.id,
+      runId: crypto.randomUUID(),
+      signal: new AbortController().signal,
+      toolName: "read_agent_conversation",
+    } as const;
+
+    const defaultResult = await tool.execute({
+      ...common,
+      arguments: JSON.stringify({ conversationId: source.id, maxTokens: 512 }),
+    });
+    const searchedResult = await tool.execute({
+      ...common,
+      arguments: JSON.stringify({
+        conversationId: source.id,
+        maxTokens: 512,
+        query: "auth rotation alpha 917",
+      }),
+    });
+
+    expect(defaultResult.content).toContain("auth rotation alpha 917");
+    expect(defaultResult.content).not.toContain("无关的新消息");
+    expect(searchedResult.isError).toBe(false);
+    expect(searchedResult.content).toContain("auth rotation alpha 917");
+    expect(searchedResult.content).toContain("保留旧版密钥");
+    expect(JSON.parse(searchedResult.content)).toMatchObject({
+      value: { query: "auth rotation alpha 917" },
+    });
+    database.close();
+  });
+
+  it("finds a one-character message through a one-character query", async () => {
+    const database = new AgentDatabase(":memory:");
+    const current = database.createConversation(null);
+    const source = database.createConversation(null);
+    const run = database.createRunWithUserMessage(source.id, "甲", "test-model");
+    database.appendAssistantTurn({
+      content: "这是单字问题的回答。",
+      conversationId: source.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: run.runId,
+      toolCalls: [],
+    });
+    database.finishRun(run.runId, "completed", null);
+    const tool = new AgentCommunicationTool(database);
+
+    const result = await tool.execute({
+      arguments: JSON.stringify({
+        conversationId: source.id,
+        maxTokens: 512,
+        query: "甲",
+      }),
+      conversationId: current.id,
+      runId: crypto.randomUUID(),
+      signal: new AbortController().signal,
+      toolName: "read_agent_conversation",
+    });
+
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain("[User]\\n甲");
+    expect(result.content).toContain("这是单字问题的回答");
+    database.close();
+  });
+
+  it("continues a conversation search before a message sequence", async () => {
+    const database = new AgentDatabase(":memory:");
+    const current = database.createConversation(null);
+    const source = database.createConversation(null);
+    const oldRun = database.createRunWithUserMessage(source.id, "CURSOR-441 旧问题", "test-model");
+    database.appendAssistantTurn({
+      content: "CURSOR-441 旧回答",
+      conversationId: source.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: oldRun.runId,
+      toolCalls: [],
+    });
+    database.finishRun(oldRun.runId, "completed", null);
+    const recentRun = database.createRunWithUserMessage(source.id, "CURSOR-441 新问题", "test-model");
+    database.finishRun(recentRun.runId, "completed", null);
+    const recentSequence = database.listContextMessages(source.id)
+      .find((message) => message.runId === recentRun.runId)
+      ?.sequence;
+    if (recentSequence === undefined) throw new Error("Expected recent message.");
+    const tool = new AgentCommunicationTool(database);
+
+    const result = await tool.execute({
+      arguments: JSON.stringify({
+        beforeSequence: recentSequence,
+        conversationId: source.id,
+        maxTokens: 12_288,
+        query: "CURSOR-441",
+      }),
+      conversationId: current.id,
+      runId: crypto.randomUUID(),
+      signal: new AbortController().signal,
+      toolName: "read_agent_conversation",
+    });
+
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain("CURSOR-441 旧回答");
+    expect(result.content).not.toContain("CURSOR-441 新问题");
+    expect(JSON.parse(result.content)).toMatchObject({
+      value: {
+        pagination: { beforeSequence: recentSequence, conversationId: source.id },
+      },
+    });
     database.close();
   });
 

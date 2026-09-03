@@ -6,6 +6,7 @@ import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { z } from "zod";
 import {
   approveToolChangeInputSchema,
+  agentPermissionToolSchema,
   agentPermissionRuleSchema,
   CONTEXT_MESSAGE_OVERHEAD_TOKENS,
   DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
@@ -15,6 +16,7 @@ import {
   conversationToolItemSchema,
   estimateContextTokens,
   formatAgentError,
+  isReasoningOptionSupportedByApiFormat,
   isReasoningOptionEnabled,
   modelReasoningOptionKey,
   resolveContextCompressionThresholdTokens,
@@ -65,7 +67,7 @@ import {
   type ModelTurnResult
 } from "../model/model-contracts.js";
 import { ModelAdapterRegistry } from "../model/model-adapter-registry.js";
-import { ModelRequestError } from "../model/model-request-error.js";
+import { ModelRequestError, ModelResponseError } from "../model/model-request-error.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
 import {
   AgentDatabase,
@@ -104,7 +106,8 @@ import {
 import {
   createContextCompactionMessages,
   type ManagedContextSourceMessage,
-  parseContextSummary
+  parseContextSummary,
+  selectCompactionRetryBatch,
 } from "./context-manager.js";
 import { ContextCompiler } from "./context-compiler.js";
 import {
@@ -147,16 +150,158 @@ import {
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { parseToolArguments } from "../model/tool-arguments.js";
 
-const MAX_AGENT_LOOPS = 8;
+// This is an emergency circuit breaker, not a normal task budget. Ordinary
+// runs should stop because the model finishes, not because this limit is low.
+const MAX_AGENT_LOOPS = 64;
+const FINAL_TOOL_CAPABLE_MODEL_TURN = MAX_AGENT_LOOPS - 2;
+const FINAL_MODEL_TURN = MAX_AGENT_LOOPS - 1;
 const MAX_TOOL_CALLS_PER_MODEL_TURN = 32;
 const MAX_CONTEXT_COMPACTIONS_PER_RUN = 3;
 const MAX_MODEL_RECONNECT_ATTEMPTS = 5;
 const MAX_AGENT_MESSAGE_AUTO_DEPTH = 4;
 const MAX_OUTPUT_TOKENS = 8_192;
-const MAX_SUMMARY_OUTPUT_TOKENS = 4_096;
+const MAX_SUMMARY_OUTPUT_TOKENS = 2_048;
+const TURN_SUMMARY_COMPONENT_BASE_TOKENS = 448;
+const TURN_SUMMARY_COMPONENT_MIN_TOKENS = 320;
+const TURN_SUMMARY_COMPONENT_STEP_TOKENS = 48;
+const LOCAL_TURN_SUMMARY_FIELD_CHARACTERS = 720;
 const MODEL_RETRY_INITIAL_DELAY_MS = 1_000;
 const MODEL_RETRY_MAX_DELAY_MS = 16_000;
 const DEFAULT_PERMISSION_MODE: ConversationPermissionMode = "ask_before_changes";
+const CONTEXT_COMPACTION_ACTIVITY_NAME = "compact_context";
+const CONTEXT_COMPACTION_REASONING: ModelReasoningOption = {
+  kind: "effort",
+  value: "none",
+};
+
+function contextCompactionReasoning(
+  configuration: ModelConfiguration,
+): ModelReasoningOption | undefined {
+  return isReasoningOptionSupportedByApiFormat(
+    configuration.apiFormat,
+    CONTEXT_COMPACTION_REASONING,
+    configuration.modelId,
+  )
+    ? CONTEXT_COMPACTION_REASONING
+    : undefined;
+}
+
+function isManualContextCompactionCommand(content: string): boolean {
+  return content.trim().toLowerCase() === "/compact";
+}
+
+function boundedTurnSummaryText(content: string): string {
+  const normalized = content.trim().replace(/\s+/gu, " ");
+  if (normalized.length <= LOCAL_TURN_SUMMARY_FIELD_CHARACTERS) return normalized;
+  return `${normalized.slice(0, LOCAL_TURN_SUMMARY_FIELD_CHARACTERS - 1).trimEnd()}…`;
+}
+
+function stripSteerEnvelope(content: string): string {
+  const marker = "[End runtime steer note]";
+  const markerIndex = content.indexOf(marker);
+  return markerIndex < 0 ? content : content.slice(markerIndex + marker.length).trimStart();
+}
+
+function labelTurnSummaryMessage(
+  message: ManagedContextSourceMessage,
+): ManagedContextSourceMessage {
+  const prefix = message.role === "user"
+    ? message.content.startsWith("[Runtime steer note]")
+      ? "[Steer input]"
+      : "[User input]"
+    : message.role === "assistant"
+      ? "[Assistant result]"
+      : "[Tool evidence]";
+  const content = message.role === "user"
+    ? stripSteerEnvelope(message.content)
+    : message.content;
+  return { ...message, content: `${prefix}\n${content}` };
+}
+
+export function createTurnSummarySourceMessages(
+  messages: readonly ManagedContextSourceMessage[],
+  agentInputs: readonly (
+    Pick<
+      ConversationAgentMessageItem,
+      "content" | "senderConversationId" | "senderTitle"
+    > & Partial<Pick<ConversationAgentMessageItem, "messageType">>
+  )[],
+): ManagedContextSourceMessage[] {
+  const userInputs = messages
+    .filter((message) => message.role === "user")
+    .map(labelTurnSummaryMessage);
+  const boundary = messages.at(-1);
+  const agentMessages = agentInputs.map((message, index): ManagedContextSourceMessage => ({
+    attachmentIds: [],
+    attachments: [],
+    content: [
+      `[Agent input: ${message.senderTitle} · ${message.senderConversationId}${
+        message.messageType === undefined ? "" : ` · ${message.messageType}`
+      }]`,
+      message.content,
+    ].join("\n"),
+    role: "user",
+    runId: boundary?.runId ?? null,
+    sequence: (boundary?.sequence ?? 0) + index + 1,
+    toolCallId: null,
+    toolCalls: [],
+  }));
+  const resultsAndEvidence = messages
+    .filter((message) => message.role !== "user")
+    .map(labelTurnSummaryMessage);
+  return [...userInputs, ...agentMessages, ...resultsAndEvidence];
+}
+
+function createLocalTurnSummary(messages: readonly ManagedContextSourceMessage[]): string {
+  const requirements = messages
+    .filter((message) => message.role === "user")
+    .map((message) => boundedTurnSummaryText(message.content))
+    .filter((content) => content.length > 0)
+    .slice(-4);
+  const taskStatus = messages
+    .filter((message) => message.role === "assistant")
+    .map((message) => boundedTurnSummaryText(message.content))
+    .filter((content) => content.length > 0)
+    .slice(-2);
+  const toolEvidence = messages
+    .filter((message) => message.role === "tool")
+    .map((message) => boundedTurnSummaryText(message.content))
+    .filter((content) => content.length > 0)
+    .slice(-2);
+  return JSON.stringify({
+    artifactRefs: [],
+    commands: [],
+    constraints: [],
+    decisions: [],
+    errors: [],
+    filesChanged: [],
+    filesRead: [],
+    goals: requirements,
+    pendingWork: [],
+    rejectedApproaches: [],
+    requirements,
+    taskStatus: [...taskStatus, ...toolEvidence],
+    testResults: [],
+  });
+}
+
+export function shouldGenerateModelTurnSummary(
+  messages: readonly ManagedContextSourceMessage[],
+): boolean {
+  const roleTokens = (["user", "assistant", "tool"] as const).map((role) => messages
+    .filter((message) => message.role === role)
+    .reduce((total, message) => total + estimateContextTokens(message.content), 0));
+  const populatedComponentCount = roleTokens.filter((tokens) => tokens > 0).length;
+  if (populatedComponentCount === 0) return false;
+  const componentThreshold = Math.max(
+    TURN_SUMMARY_COMPONENT_MIN_TOKENS,
+    TURN_SUMMARY_COMPONENT_BASE_TOKENS
+      - (populatedComponentCount - 1) * TURN_SUMMARY_COMPONENT_STEP_TOKENS,
+  );
+  const totalTokens = roleTokens.reduce((total, tokens) => total + tokens, 0);
+  return roleTokens.some((tokens) => tokens > componentThreshold)
+    || totalTokens > componentThreshold * 2;
+}
 
 class ToolCallLimitError extends Error {
   public readonly code = "TOOL_CALL_LIMIT_EXCEEDED";
@@ -166,7 +311,7 @@ class ToolCallLimitError extends Error {
     limit: number,
   ) {
     super(
-      `模型本轮返回了 ${count} 个工具调用，超过安全上限 ${limit}。请拆分为多个模型轮次后重试。`,
+      `模型本轮一次返回了 ${count} 个工具调用，超过单轮可处理数量 ${limit}。请分批调用工具后重试。`,
     );
     this.name = "ToolCallLimitError";
   }
@@ -498,7 +643,7 @@ function conversationIdentityContext(
           ? "You are an independent Agent."
           : `You are a standing Agent in team ${conversation.teamId}.`;
       case "subagent":
-        return `You are a temporary Subagent derived from parent conversation ${conversation.parentConversationId ?? "unknown"}. Parent conversation history is not inherited. Work only from the assigned task message and context explicitly included in it, return verifiable results, and do not recursively create teams.`;
+        return `You are a temporary Subagent derived from parent conversation ${conversation.parentConversationId ?? "unknown"}. Parent conversation history is not inherited. Work only from the assigned task message and context explicitly included in it. For substantive work, start the final answer with a concise completion receipt covering the outcome, verification, and unresolved risks, add a standalone Markdown --- line, then keep supporting detail below it. For a trivial answer, reply directly without forcing the divider. The runtime privately delivers only the completion receipt to the parent for synthesis and keeps the full final answer in this conversation. You may use list_agent_conversations and read_agent_conversation when the assigned task genuinely requires evidence from another conversation, but do not send ordinary Agent messages, wait for Agent messages, or recursively create teams.`;
     }
   })();
   if (agent === null) return [identity];
@@ -517,9 +662,10 @@ function isAbortError(error: unknown): boolean {
 }
 
 function isRetryableModelError(error: unknown): boolean {
+  if (error instanceof ModelResponseError) return true;
+
   if (error instanceof ModelRequestError) {
-    if ([402, 408, 425, 429].includes(error.status) || error.status >= 500) return true;
-    return error.status === 400 && /insufficient[_\s-]?(?:quota|balance|credit)|(?:额度|余额)(?:不足|耗尽)/iu.test(error.message);
+    return [408, 425, 429].includes(error.status) || error.status >= 500;
   }
 
   return (error instanceof Error || error instanceof DOMException)
@@ -532,17 +678,9 @@ function isToolApprovalInterrupt(value: unknown): value is ToolApprovalInterrupt
   return record.kind === "tool_approval"
     && typeof record.conversationId === "string"
     && typeof record.pattern === "string"
-    && typeof record.permissionTool === "string"
+    && agentPermissionToolSchema.safeParse(record.permissionTool).success
     && typeof record.runId === "string"
-    && typeof record.toolId === "string"
-    && [
-      "apply_patch",
-      "delete_file",
-      "external_read",
-      "replace_in_file",
-      "run_command",
-      "write_file",
-    ].includes(record.permissionTool);
+    && typeof record.toolId === "string";
 }
 
 function hasToolNodeMessages(value: unknown): value is { messages: unknown[] } {
@@ -732,6 +870,11 @@ export class AgentRuntime {
 
   private readonly agentMessagesToReplyByRun = new Map<string, ConversationAgentMessageItem[]>();
 
+  private readonly agentInputsForSummaryByRun = new Map<
+    string,
+    ConversationAgentMessageItem[]
+  >();
+
   private readonly activeSkillRefsByRun = new Map<string, Map<string, SkillSnapshotRef>>();
 
   /** Reused when ToolNode re-enters a tool after an interrupt resume. */
@@ -785,6 +928,8 @@ export class AgentRuntime {
 
   private readonly browserToolPlugin: BrowserToolPlugin | null;
 
+  private readonly generateTurnSummaries: boolean;
+
   private readonly toolHandlers: ToolHandlerRegistry<RuntimeToolContext>;
 
   public constructor(
@@ -810,6 +955,7 @@ export class AgentRuntime {
     workspaceTerminalTabs: WorkspaceTerminalTabPort | null = null,
     terminalSessions: TerminalSessionPort | null = null,
     browserToolPlugin: BrowserToolPlugin | null = null,
+    features: { generateTurnSummaries?: boolean } = {},
   ) {
     this.modelGateway = new ModelGateway(model);
     this.taskListTool = new TaskListTool(database);
@@ -829,6 +975,7 @@ export class AgentRuntime {
       ? null
       : new WorkspaceTerminalTool(workspaceTerminalTabs, terminalSessions, this.tools);
     this.browserToolPlugin = browserToolPlugin;
+    this.generateTurnSummaries = features.generateTurnSummaries === true;
     this.attachmentTool = attachments === null
       ? null
       : new ConversationAttachmentTool(attachments);
@@ -941,6 +1088,18 @@ export class AgentRuntime {
         execute: ({ context, rawArguments, toolName }) => this.agentCommunicationTool.execute({
           arguments: rawArguments,
           conversationId: context.conversationId,
+          runId: context.runId,
+          signal: context.signal,
+          toolName,
+        }),
+        getDefinitions: () => this.agentCommunicationTool.getConversationReadDefinitions(),
+        getExecutionPolicy: ({ toolName }) => this.agentCommunicationTool.getExecutionPolicy(toolName),
+        isAvailable: ({ conversationId }) => conversationId !== undefined,
+      },
+      {
+        execute: ({ context, rawArguments, toolName }) => this.agentCommunicationTool.execute({
+          arguments: rawArguments,
+          conversationId: context.conversationId,
           onMessagesRead: (messageIds) => this.appendAgentMessageReadThreadLog(
             context.conversationId,
             messageIds,
@@ -950,9 +1109,9 @@ export class AgentRuntime {
           signal: context.signal,
           toolName,
         }),
-        getDefinitions: () => this.agentCommunicationTool.getDefinitions(),
+        getDefinitions: () => this.agentCommunicationTool.getCoordinationDefinitions(),
         getExecutionPolicy: ({ toolName }) => this.agentCommunicationTool.getExecutionPolicy(toolName),
-        isAvailable: () => true,
+        isAvailable: ({ conversationId }) => this.canUseAgentCommunication(conversationId),
       },
       {
         execute: ({ context, rawArguments, toolName }) => this.subagentTool.execute({
@@ -1268,9 +1427,11 @@ export class AgentRuntime {
     }
 
     const { messageId, ...messageInput } = input;
+    const attachmentIds = input.attachmentIds
+      ?? source.message.attachments.map((attachment) => attachment.id);
     const sendInput: SendConversationMessageInput = {
       ...messageInput,
-      attachmentIds: source.message.attachments.map((attachment) => attachment.id),
+      attachmentIds,
     };
     const initialPrepared = this.prepareConversationMessage(sendInput);
     const preserveStoredReferences = input.referencedConversationIds === undefined
@@ -1299,6 +1460,7 @@ export class AgentRuntime {
     const creation = useWriteAheadRun
       ? (() => {
           const replacement = this.database.prepareLatestUserMessageReplacement({
+            attachmentIds,
             content: input.content,
             conversationId: input.conversationId,
             executionSnapshot,
@@ -1330,6 +1492,7 @@ export class AgentRuntime {
           };
         })()
       : this.database.replaceLatestUserMessage({
+          attachmentIds,
           content: input.content,
           conversationId: input.conversationId,
           executionSnapshot,
@@ -1453,10 +1616,10 @@ export class AgentRuntime {
     return this.database.listPendingMessages(conversationId);
   }
 
-  public deletePendingMessage(
+  public async deletePendingMessage(
     pendingMessageId: string,
     emit: RunEventEmitter
-  ): ConversationPendingMessage[] {
+  ): Promise<ConversationPendingMessage[]> {
     const conversationId = this.database.getPendingMessageRecord(
       pendingMessageId
     ).message.conversationId;
@@ -1468,6 +1631,13 @@ export class AgentRuntime {
     } else {
       this.database.deletePendingMessage(pendingMessageId);
       this.appendPendingMessagesThreadLog(conversationId);
+    }
+    if (this.attachments !== null) {
+      try {
+        await this.attachments.cleanupCancelledPendingMessageAttachments(pendingMessageId);
+      } catch (error) {
+        console.error("Cancelled pending-message attachments will be cleaned up after restart.", error);
+      }
     }
     this.emitPendingMessages(conversationId, emit);
     return this.database.listPendingMessages(conversationId);
@@ -1586,6 +1756,7 @@ export class AgentRuntime {
       budgetTokens: resolveConversationReferenceBudget(compressionThresholdTokens),
       currentConversationId: input.conversationId,
       database: this.database,
+      query: input.content,
       referencedConversationIds: input.referencedConversationIds ?? [],
     });
     const projectFileReferences = this.projectFileReferenceContent(
@@ -1757,6 +1928,7 @@ export class AgentRuntime {
         contextCompressionConfiguration,
         prepared.permissionMode,
         prepared.reasoning,
+        input.content,
         controller,
         emit,
       );
@@ -2108,12 +2280,15 @@ export class AgentRuntime {
     contextCompressionConfiguration: ContextCompressionThreshold,
     permissionMode: ConversationPermissionMode,
     reasoning: ModelReasoningOption | undefined,
+    requestContent: string,
     controller: AbortController,
     emit: RunEventEmitter
   ): Promise<void> {
     let activeAssistantContent = "";
     let activeAssistantContentPersisted = false;
     let modelRetryFailurePersisted = false;
+    const manualCompactionRun = isManualContextCompactionCommand(requestContent);
+    let holdPendingAfterManualCompactionPause = false;
     try {
       this.activeSkillRefsByRun.set(runId, new Map());
       if (this.threadLog !== null && this.eventProjector !== null) {
@@ -2141,6 +2316,46 @@ export class AgentRuntime {
         runId,
       };
       const workspace = this.resolveConversationWorkspace(conversation);
+      if (manualCompactionRun) {
+        await this.prepareContext(
+          conversationId,
+          workspace,
+          permissionMode,
+          configuration.contextWindow ?? 0,
+          contextCompressionConfiguration,
+          configuration,
+          controller.signal,
+          runId,
+          emit,
+          true,
+        );
+        this.completeRunAndNotifySubagent({
+          assistant: null,
+          conversationId,
+          emit,
+          error: null,
+          result: null,
+          runId,
+          status: "completed",
+        });
+        this.finishRunAndNotifyAgentSenders({
+          conversationId,
+          emit,
+          error: null,
+          result: null,
+          runId,
+          status: "completed",
+        });
+        this.emit(emit, {
+          agentError: null,
+          conversationId,
+          error: null,
+          runId,
+          status: "completed",
+          type: "run.finished",
+        });
+        return;
+      }
       let hasSuccessfulToolExecution = false;
       let lastAssistantContent = "";
       let lastAssistantMessageId: string = randomUUID();
@@ -2160,6 +2375,8 @@ export class AgentRuntime {
               contextCompressionConfiguration,
               configuration,
               controller.signal,
+              runId,
+              emit,
             );
             const preparedUserMessageContents = new Map<string, number>();
             for (const message of preparedContext.messages) {
@@ -2224,6 +2441,32 @@ export class AgentRuntime {
           },
           callModel: async (modelMessages, turn, hooks?: AgentGraphModelCallHooks) => {
             controller.signal.throwIfAborted();
+            const isFinalModelTurn = turn >= FINAL_MODEL_TURN;
+            const runBudgetMessage: ModelMessage | null = turn === FINAL_TOOL_CAPABLE_MODEL_TURN
+              ? {
+                  attachments: [],
+                  content: [
+                    "[Runtime budget notice] This is the last model turn that may call tools.",
+                    "Run only essential final tools and close any active task list in this same tool batch.",
+                    "The next model turn must provide the final answer without tools.",
+                  ].join(" "),
+                  role: "user",
+                  toolCallId: null,
+                  toolCalls: [],
+                }
+              : isFinalModelTurn
+                ? {
+                    attachments: [],
+                    content: [
+                      "[Runtime finalization] The tool budget is exhausted.",
+                      "Do not request or describe more tool calls.",
+                      "Answer now from the available evidence and state any unfinished or blocked work accurately.",
+                    ].join(" "),
+                    role: "user",
+                    toolCallId: null,
+                    toolCalls: [],
+                  }
+                : null;
             const messageId = modelMessageIdsByTurn.get(turn) ?? randomUUID();
             if (!modelMessageIdsByTurn.has(turn)) {
               modelMessageIdsByTurn.set(turn, messageId);
@@ -2237,7 +2480,10 @@ export class AgentRuntime {
               emit,
               maxOutputTokens: MAX_OUTPUT_TOKENS,
               messageId,
-              messages: [...modelMessages],
+              messages: [
+                ...modelMessages,
+                ...(runBudgetMessage === null ? [] : [runBudgetMessage]),
+              ],
               onTextDelta: (delta) => {
                 hooks?.onTextDelta?.();
                 activeAssistantContent += delta;
@@ -2245,10 +2491,12 @@ export class AgentRuntime {
               reasoning,
               signal: controller.signal,
               runId,
-              tools: this.toolHandlers.getDefinitions({
-                conversationId,
-                projectId: workspace?.id,
-              })
+              tools: isFinalModelTurn
+                ? []
+                : this.toolHandlers.getDefinitions({
+                    conversationId,
+                    projectId: workspace?.id,
+                  })
             });
             if (result.content.length > 0) activeAssistantContent = result.content;
             const toolCalls = result.toolCalls.map((toolCall) => ({
@@ -2416,6 +2664,9 @@ export class AgentRuntime {
         runId,
         status: "completed",
       });
+      const turnSummaryAgentInputs = [
+        ...(this.agentInputsForSummaryByRun.get(runId) ?? []),
+      ];
       this.finishRunAndNotifyAgentSenders({
         conversationId,
         emit,
@@ -2433,8 +2684,16 @@ export class AgentRuntime {
         status: "completed",
         type: "run.finished"
       });
+      void this.generateAndPersistTurnSummary({
+        agentInputs: turnSummaryAgentInputs,
+        configuration,
+        conversationId,
+        runId,
+        signal: controller.signal,
+      });
     } catch (error) {
       const cancelled = controller.signal.aborted || isAbortError(error);
+      holdPendingAfterManualCompactionPause = cancelled && manualCompactionRun;
       const status = cancelled ? "cancelled" : "failed";
       const agentError = toMainAgentError(error, {
         operation: "agent.run",
@@ -2500,6 +2759,7 @@ export class AgentRuntime {
       }
       this.agentMessageDepthByRun.delete(runId);
       this.agentMessagesToReplyByRun.delete(runId);
+      this.agentInputsForSummaryByRun.delete(runId);
       this.activeSkillRefsByRun.delete(runId);
       for (const key of this.startedToolsByRunCall.keys()) {
         if (key.startsWith(`${runId}:`)) this.startedToolsByRunCall.delete(key);
@@ -2527,7 +2787,7 @@ export class AgentRuntime {
         }
       }
       const { wasReplacing } = this.runCoordinator.complete(runId);
-      if (!wasReplacing) {
+      if (!wasReplacing && !holdPendingAfterManualCompactionPause) {
         this.startNextPendingRun(conversationId, emit);
         this.startUnreadAgentMessageRun(conversationId, 0, emit);
       }
@@ -2615,6 +2875,11 @@ export class AgentRuntime {
     const conversation = this.database.getConversation(conversationId);
     return conversation.threadKind !== "team_lead"
       && !this.database.isTeamMemberConversation(conversation.id);
+  }
+
+  private canUseAgentCommunication(conversationId: string | undefined): boolean {
+    if (conversationId === undefined) return false;
+    return this.database.getConversation(conversationId).threadKind !== "subagent";
   }
 
   private teamWorkerContext(conversation: ConversationSummary): string[] {
@@ -2802,6 +3067,7 @@ export class AgentRuntime {
         structuredClone(contextCompressionConfiguration),
         input.permissionMode,
         reasoning,
+        input.task,
         controller,
         input.emit,
       );
@@ -2976,6 +3242,10 @@ export class AgentRuntime {
     runId: string,
     messages: readonly ConversationAgentMessageItem[],
   ): void {
+    const summaryInputs = this.agentInputsForSummaryByRun.get(runId) ?? [];
+    const summaryInputIds = new Set(summaryInputs.map((message) => message.id));
+    summaryInputs.push(...messages.filter((message) => !summaryInputIds.has(message.id)));
+    this.agentInputsForSummaryByRun.set(runId, summaryInputs);
     const eligible = messages.filter((message) => message.messageType === "message");
     if (eligible.length === 0) return;
     const tracked = this.agentMessagesToReplyByRun.get(runId) ?? [];
@@ -3138,6 +3408,7 @@ export class AgentRuntime {
           contextCompressionConfiguration,
           permissionMode,
           reasoning,
+          "",
           controller,
           emit,
         );
@@ -4357,7 +4628,8 @@ export class AgentRuntime {
     permissionMode: ConversationPermissionMode,
     contextWindowTokens: number,
     contextCompressionConfiguration: ContextCompressionThreshold,
-    includeImageData = false
+    includeImageData = false,
+    forceCompaction = false,
   ): BuiltContext {
     const conversation = this.database.getConversation(conversationId);
     const agent = this.database.getConversationAgentBinding(conversationId);
@@ -4414,6 +4686,7 @@ export class AgentRuntime {
       estimatedSkillCatalogTokens: skillCatalogPrompt === null
         ? 0
         : estimateContextTokens(skillCatalogPrompt),
+      forceCompaction,
       reservedSkillTokens,
       reservedTaskListTokens,
       systemMessage,
@@ -4437,7 +4710,10 @@ export class AgentRuntime {
     contextWindowTokens: number,
     contextCompressionConfiguration: ContextCompressionThreshold,
     configuration: ModelConfiguration,
-    signal: AbortSignal
+    signal: AbortSignal,
+    runId: string,
+    emit: RunEventEmitter,
+    forceCompaction = false,
   ): Promise<BuiltContext> {
     let context = this.buildContext(
       conversationId,
@@ -4445,8 +4721,52 @@ export class AgentRuntime {
       permissionMode,
       contextWindowTokens,
       contextCompressionConfiguration,
-      true
+      true,
+      forceCompaction,
     );
+    let activity: ConversationToolItem | null = null;
+    let compressedMessageCount = 0;
+    let compactionPassCount = 0;
+    let compactionFailed = false;
+    let compactionFailure: { code: string; message: string } | null = null;
+    if (context.compactionCandidates.length > 0) {
+      activity = conversationToolItemSchema.parse({
+        arguments: JSON.stringify({ trigger: forceCompaction ? "manual" : "automatic" }),
+        batchId: null,
+        conversationId,
+        createdAt: new Date().toISOString(),
+        diff: null,
+        executionMode: "serial",
+        id: randomUUID(),
+        kind: "tool",
+        name: CONTEXT_COMPACTION_ACTIVITY_NAME,
+        result: null,
+        runId,
+        status: "running",
+      });
+      this.persistContextCompactionActivity(activity, emit);
+    } else if (forceCompaction) {
+      const createdAt = new Date().toISOString();
+      this.persistContextCompactionActivity(conversationToolItemSchema.parse({
+        arguments: JSON.stringify({ trigger: "manual" }),
+        batchId: null,
+        conversationId,
+        createdAt,
+        diff: null,
+        executionMode: "serial",
+        id: randomUUID(),
+        kind: "tool",
+        name: CONTEXT_COMPACTION_ACTIVITY_NAME,
+        result: JSON.stringify({
+          compactionPassCount: 0,
+          compressedMessageCount: 0,
+          durationMs: 0,
+          trigger: "manual",
+        }),
+        runId,
+        status: "completed",
+      }), emit);
+    }
     for (
       let attempt = 0;
       attempt < MAX_CONTEXT_COMPACTIONS_PER_RUN && context.compactionCandidates.length > 0;
@@ -4455,31 +4775,36 @@ export class AgentRuntime {
       signal.throwIfAborted();
       const checkpoint = this.database.getContextCheckpoint(conversationId);
       try {
-        const rawSummary = this.contextCompactor === null
-          ? await this.compactContextWithModel({
-              configuration,
-              messages: context.compactionCandidates,
-              previousSummary: checkpoint?.summary ?? null,
-              signal
-            })
-          : await this.contextCompactor.compact({
-              configuration,
-              messages: context.compactionCandidates,
-              previousSummary: checkpoint?.summary ?? null,
-              signal
-            });
-        const summary = parseContextSummary(rawSummary);
         const lastCandidate = context.compactionCandidates.at(-1);
         if (lastCandidate === undefined) break;
+        const resolved = await this.resolveContextCompactionSummary({
+          configuration,
+          conversationId,
+          forceCompaction,
+          messages: context.compactionCandidates,
+          previousSummary: checkpoint?.summary ?? null,
+          signal,
+        });
+        const summary = resolved.summary;
+        const coveredThroughSequence = this.threadLog === null
+          ? resolved.coveredThroughSequence
+          : this.database.resolveContextCheckpointSequence(
+              conversationId,
+              resolved.coveredThroughSequence,
+            );
         const savedCheckpoint = this.threadLog !== null && this.eventProjector !== null
           ? (() => {
               const preparedCheckpoint = this.database.prepareContextCheckpoint(
                 conversationId,
-                lastCandidate.sequence,
+                coveredThroughSequence,
                 summary,
               );
               this.appendWriteAheadThreadLog(conversationId, {
-                payload: { ...preparedCheckpoint, writeAhead: true },
+                payload: {
+                  ...preparedCheckpoint,
+                  coveredThroughContextSequence: resolved.coveredThroughSequence,
+                  writeAhead: true,
+                },
                 type: "context_checkpoint",
               });
               return this.database.getContextCheckpoint(conversationId) ?? (() => {
@@ -4488,13 +4813,16 @@ export class AgentRuntime {
             })()
           : this.database.saveContextCheckpoint(
               conversationId,
-              lastCandidate.sequence,
+              coveredThroughSequence,
               summary,
             );
+        compactionPassCount += 1;
+        compressedMessageCount += resolved.compressedMessageCount;
         if (this.threadLog === null || this.eventProjector === null) {
           this.appendShadowThreadLog(conversationId, {
             payload: {
-              coveredThroughSequence: lastCandidate.sequence,
+              coveredThroughContextSequence: resolved.coveredThroughSequence,
+              coveredThroughSequence,
               createdAt: savedCheckpoint.createdAt,
               summary,
               updatedAt: savedCheckpoint.updatedAt,
@@ -4508,17 +4836,84 @@ export class AgentRuntime {
           permissionMode,
           contextWindowTokens,
           contextCompressionConfiguration,
-          true
+          true,
+          forceCompaction,
         );
       } catch (error) {
-        if (signal.aborted || isAbortError(error)) throw error;
+        if (signal.aborted || isAbortError(error)) {
+          if (activity !== null) {
+            this.persistContextCompactionActivity(conversationToolItemSchema.parse({
+              ...activity,
+              result: JSON.stringify({
+                compactionPassCount,
+                compressedMessageCount,
+                durationMs: Math.max(0, Date.now() - Date.parse(activity.createdAt)),
+                resumable: forceCompaction,
+                trigger: forceCompaction ? "manual" : "automatic",
+              }),
+              status: "cancelled",
+              }), emit);
+          }
+          throw error;
+        }
+        const agentError = toMainAgentError(error, {
+          operation: "context.compaction",
+          redactValues: [configuration.apiKey],
+        });
+        reportMainError(agentError, error, [configuration.apiKey]);
+        compactionFailure = {
+          code: agentError.code,
+          message: agentError.message,
+        };
+        compactionFailed = true;
         break;
       }
+    }
+    if (activity !== null) {
+      this.persistContextCompactionActivity(conversationToolItemSchema.parse({
+        ...activity,
+        result: JSON.stringify({
+          compactionPassCount,
+          compressedMessageCount,
+          durationMs: Math.max(0, Date.now() - Date.parse(activity.createdAt)),
+          ...(compactionFailure === null ? {} : { error: compactionFailure }),
+          trigger: forceCompaction ? "manual" : "automatic",
+        }),
+        status: compactionFailed ? "failed" : "completed",
+      }), emit);
     }
     return context;
   }
 
-  private async compactContextWithModel(input: ContextCompactionInput): Promise<string> {
+  private persistContextCompactionActivity(
+    tool: ConversationToolItem,
+    emit: RunEventEmitter,
+  ): void {
+    const event = {
+      payload: { runId: tool.runId, tool, toolId: tool.id },
+      type: "runtime_activity_updated" as const,
+    };
+    if (this.threadLog !== null && this.eventProjector !== null) {
+      this.appendWriteAheadThreadLog(tool.conversationId, {
+        ...event,
+        payload: { ...event.payload, writeAhead: true },
+      });
+    } else {
+      this.database.upsertRuntimeActivity(tool);
+      this.appendShadowThreadLog(tool.conversationId, event);
+    }
+    this.emit(emit, {
+      conversationId: tool.conversationId,
+      runId: tool.runId,
+      tool,
+      type: tool.status === "running" ? "tool.started" : "tool.completed",
+    });
+  }
+
+  private async compactContextWithModel(
+    input: ContextCompactionInput,
+    maxReconnectAttempts = MAX_MODEL_RECONNECT_ATTEMPTS,
+  ): Promise<string> {
     let reconnectAttempt = 0;
     while (true) {
       input.signal.throwIfAborted();
@@ -4531,7 +4926,7 @@ export class AgentRuntime {
           onTextDelta: () => {
             receivedTextDelta = true;
           },
-          reasoning: undefined,
+          reasoning: contextCompactionReasoning(input.configuration),
           signal: input.signal,
           tools: []
         });
@@ -4543,13 +4938,142 @@ export class AgentRuntime {
         if (
           receivedTextDelta ||
           !isRetryableModelError(error) ||
-          reconnectAttempt >= MAX_MODEL_RECONNECT_ATTEMPTS
+          reconnectAttempt >= maxReconnectAttempts
         ) {
           throw error;
         }
         reconnectAttempt += 1;
         await this.waitForRetry(modelRetryDelay(reconnectAttempt), input.signal);
       }
+    }
+  }
+
+  private async resolveContextCompactionSummary(input: ContextCompactionInput & {
+    conversationId: string;
+    forceCompaction: boolean;
+  }): Promise<{
+    compressedMessageCount: number;
+    coveredThroughSequence: number;
+    summary: string;
+  }> {
+    const lastCandidate = input.messages.at(-1);
+    if (lastCandidate === undefined) {
+      throw new Error("Context compaction requires at least one completed message.");
+    }
+    const summarizedMessages: ManagedContextSourceMessage[] = [];
+    for (let index = 0; index < input.messages.length;) {
+      const first = input.messages[index];
+      if (first === undefined) break;
+      let end = index + 1;
+      while (end < input.messages.length && input.messages[end]?.runId === first.runId) end += 1;
+      const turn = input.messages.slice(index, end);
+      const boundary = turn.at(-1);
+      const prepared = first.runId === null
+        ? null
+        : this.database.getConversationTurnSummary(first.runId);
+      if (prepared === null || boundary === undefined) {
+        summarizedMessages.push(...turn);
+      } else {
+        summarizedMessages.push({
+          attachmentIds: [],
+          attachments: [],
+          content: `[Completed turn summary]\n${prepared.summary}`,
+          role: "assistant",
+          runId: first.runId,
+          sequence: boundary.sequence,
+          toolCallId: null,
+          toolCalls: [],
+        });
+      }
+      index = end;
+    }
+
+    const compact = async (
+      messages: readonly ManagedContextSourceMessage[],
+    ): Promise<string> => {
+      const rawSummary = this.contextCompactor === null
+        ? await this.compactContextWithModel({ ...input, messages })
+        : await this.contextCompactor.compact({ ...input, messages });
+      input.signal.throwIfAborted();
+      return parseContextSummary(rawSummary);
+    };
+    let currentMessages = summarizedMessages;
+    let lastError: unknown = null;
+    while (currentMessages.length > 0) {
+      try {
+        const currentBoundary = currentMessages.at(-1) ?? lastCandidate;
+        return {
+          compressedMessageCount: input.messages.filter(
+            (message) => message.sequence <= currentBoundary.sequence,
+          ).length,
+          coveredThroughSequence: currentBoundary.sequence,
+          summary: await compact(currentMessages),
+        };
+      } catch (error) {
+        lastError = error;
+        const retryMessages = selectCompactionRetryBatch(currentMessages);
+        if (retryMessages.length === 0) break;
+        currentMessages = retryMessages;
+        if (!input.forceCompaction) {
+          const retryBoundary = currentMessages.at(-1);
+          if (retryBoundary === undefined) break;
+          return {
+            compressedMessageCount: input.messages.filter(
+              (message) => message.sequence <= retryBoundary.sequence,
+            ).length,
+            coveredThroughSequence: retryBoundary.sequence,
+            summary: await compact(currentMessages),
+          };
+        }
+      }
+    }
+    throw lastError;
+  }
+
+  private async generateAndPersistTurnSummary(input: {
+    agentInputs: readonly ConversationAgentMessageItem[];
+    configuration: ModelConfiguration;
+    conversationId: string;
+    runId: string;
+    signal: AbortSignal;
+  }): Promise<void> {
+    if (!this.generateTurnSummaries) return;
+    try {
+      const messages = this.database.listContextMessagesForRun(input.runId);
+      const boundary = messages.at(-1);
+      if (boundary === undefined) return;
+      const summaryMessages = createTurnSummarySourceMessages(
+        messages,
+        input.agentInputs,
+      );
+      const requiresModelSummary = shouldGenerateModelTurnSummary(summaryMessages);
+      const summary = !requiresModelSummary
+        ? createLocalTurnSummary(summaryMessages)
+        : parseContextSummary(this.contextCompactor === null
+            ? await this.compactContextWithModel({
+                configuration: input.configuration,
+                messages: summaryMessages,
+                previousSummary: null,
+                signal: input.signal,
+              }, 0)
+            : await this.contextCompactor.compact({
+                configuration: input.configuration,
+                messages: summaryMessages,
+                previousSummary: null,
+                signal: input.signal,
+              }));
+      this.database.saveConversationTurnSummary({
+        conversationId: input.conversationId,
+        coveredThroughSequence: boundary.sequence,
+        runId: input.runId,
+        summary,
+      });
+    } catch (error) {
+      const agentError = toMainAgentError(error, {
+        operation: "context.turn_summary",
+        redactValues: [input.configuration.apiKey],
+      });
+      reportMainError(agentError, error, [input.configuration.apiKey]);
     }
   }
 

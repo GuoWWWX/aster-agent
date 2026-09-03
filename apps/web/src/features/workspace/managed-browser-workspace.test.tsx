@@ -4,10 +4,12 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ManagedBrowserSession } from "@agent/protocol";
+import type { ManagedBrowserBoundsInput, ManagedBrowserSession } from "@agent/protocol";
 
+import { emitLivePanelResize } from "../../components/layout/live-panel-resize.js";
 import { TooltipProvider } from "../../components/ui/tooltip.js";
-import { MockAgentClient } from "../../runtime/index.js";
+import { MockAgentClient, type AgentClient } from "../../runtime/index.js";
+import { createManagedBrowserBoundsDispatcher } from "./managed-browser-bounds-dispatcher.js";
 import {
   ManagedBrowserWorkspace,
   type ManagedBrowserWorkspaceMenuRequest,
@@ -72,6 +74,71 @@ function renderBrowser(
 }
 
 describe("ManagedBrowserWorkspace", () => {
+  it("keeps only the newest pending bounds while a native-view update is in flight", async () => {
+    const resolvers: Array<() => void> = [];
+    const dispatch = vi.fn(() => new Promise<void>((resolve) => {
+      resolvers.push(resolve);
+    }));
+    const dispatcher = createManagedBrowserBoundsDispatcher(dispatch);
+    const bounds = (x: number, width: number): ManagedBrowserBoundsInput => ({
+      height: 600,
+      sessionId: SESSION.sessionId,
+      visible: true,
+      width,
+      x,
+      y: 100,
+    });
+
+    dispatcher.push(bounds(900, 900));
+    dispatcher.push(bounds(1_000, 800));
+    dispatcher.push(bounds(1_100, 700));
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenLastCalledWith(bounds(900, 900));
+
+    resolvers.shift()?.();
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(2));
+    expect(dispatch).toHaveBeenLastCalledWith(bounds(1_100, 700));
+
+    resolvers.shift()?.();
+    await Promise.resolve();
+    dispatcher.push(bounds(1_100, 700));
+    expect(dispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it("resizes the real native page directly from the right-panel drag width", async () => {
+    const client = new MockAgentClient();
+    const setBounds = vi.spyOn(client as AgentClient, "setManagedBrowserBounds").mockResolvedValue();
+    const container = renderBrowser(client);
+    const surface = container.querySelector<HTMLElement>("[data-managed-browser-surface]");
+    expect(surface).not.toBeNull();
+    vi.spyOn(surface!, "getBoundingClientRect").mockReturnValue({
+      bottom: 700,
+      height: 600,
+      left: 600,
+      right: 1_400,
+      toJSON: () => ({}),
+      top: 100,
+      width: 800,
+      x: 600,
+      y: 100,
+    });
+
+    act(() => {
+      emitLivePanelResize({ id: "right-workspace", phase: "start", size: 800 });
+      emitLivePanelResize({ id: "right-workspace", phase: "move", size: 1_000 });
+    });
+
+    await vi.waitFor(() => expect(setBounds).toHaveBeenCalledWith({
+      height: 600,
+      sessionId: SESSION.sessionId,
+      visible: true,
+      width: 1_000,
+      x: 400,
+      y: 100,
+    }));
+  });
+
   it("selects the complete address when the address field first receives focus", () => {
     const client = new MockAgentClient();
     const commandManagedBrowser = vi.spyOn(client, "commandManagedBrowser").mockResolvedValue();

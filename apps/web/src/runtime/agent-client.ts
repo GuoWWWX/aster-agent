@@ -9,6 +9,7 @@ import type {
   ConversationContextUsage,
   ConversationContextUsageInput,
   ConversationAttachment,
+  ConversationAttachmentPreview,
   ConversationMessageSubmission,
   ConversationPendingMessage,
   ContextCompressionConfiguration,
@@ -58,6 +59,7 @@ import type {
   ProjectReferenceInput,
   ReadProjectFileInput,
   ReadProjectPreviewImageInput,
+  ReadConversationAttachmentPreviewInput,
   ReadConfigurationWorkspaceFileInput,
   ReorderConversationsInput,
   ReplaceLatestConversationMessageInput,
@@ -170,6 +172,9 @@ export interface AgentClient {
   importConversationAttachmentBytes(
     input: ImportConversationAttachmentBytesInput,
   ): Promise<ConversationAttachment[]>;
+  readConversationAttachmentPreview(
+    input: ReadConversationAttachmentPreviewInput,
+  ): Promise<ConversationAttachmentPreview>;
   listDraftConversationAttachments(
     input: ConversationReferenceInput,
   ): Promise<ConversationAttachment[]>;

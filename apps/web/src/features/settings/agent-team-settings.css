@@ -129,7 +129,7 @@
 }
 
 .team-metric svg {
-  color: var(--app-accent);
+  color: var(--app-muted-foreground);
 }
 
 .team-metric span {
@@ -877,7 +877,7 @@
 
 .capability-inherited-note svg {
   flex: 0 0 auto;
-  color: var(--app-accent);
+  color: var(--app-muted-foreground);
 }
 
 .capability-picker-grid {
@@ -961,9 +961,9 @@
 }
 
 [data-theme="dark"] .management-choice-row button[aria-pressed="true"] {
-  border-color: rgba(96, 165, 250, 0.48);
-  background: rgba(59, 130, 246, 0.2);
-  color: #bfdbfe;
+  border-color: var(--app-selection-border);
+  background: var(--app-selection);
+  color: var(--app-selection-foreground);
 }
 
 [data-theme="dark"] .management-toggle[data-enabled="true"] {

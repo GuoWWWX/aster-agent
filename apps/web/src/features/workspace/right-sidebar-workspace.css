@@ -48,7 +48,7 @@
 .right-sidebar-workspace__tab-shell[data-active="true"] {
   background: var(--app-panel);
   color: var(--app-foreground);
-  box-shadow: inset 0 2px 0 var(--app-accent);
+  box-shadow: inset 0 2px 0 var(--app-selection-border);
 }
 
 .right-sidebar-workspace__tab-shell:hover {
@@ -337,7 +337,7 @@
   border-radius: var(--app-radius);
   outline: none;
   background: transparent;
-  color: #64748b;
+  color: var(--app-muted-foreground);
   padding: 3px 4px;
   text-align: left;
   cursor: pointer;
@@ -367,7 +367,7 @@
 
 .right-sidebar-file__directory-icon {
   flex: 0 0 auto;
-  color: #64748b;
+  color: var(--app-muted-foreground);
 }
 
 .right-sidebar-file__directory,
@@ -389,11 +389,11 @@
 }
 
 .right-sidebar-file__path-separator {
-  color: #94a3b8;
+  color: var(--app-subtle-foreground);
 }
 
 .right-sidebar-file__name {
-  color: #64748b;
+  color: var(--app-muted-foreground);
   font-size: var(--app-font-size-control);
   font-weight: 400;
 }

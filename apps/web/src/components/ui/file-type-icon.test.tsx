@@ -6,16 +6,18 @@ import {
 } from "./file-type-icon-data.js";
 
 describe("FileTypeIcon", () => {
-  it("uses compact folded paper icons for document files", () => {
+  it("uses theme-aware extension badges for text document files", () => {
     expect(isRecognizedFileTypePath("notes.txt")).toBe(true);
     expect(isRecognizedFileTypePath("NOTES.TXT")).toBe(true);
     expect(fileTypeIconMarkup("notes.txt")).toContain('data-document-kind="txt"');
-    expect(fileTypeIconMarkup("notes.txt")).toContain('d="M22.038 2H6.375');
-    expect(fileTypeIconMarkup("notes.txt")).not.toContain("<rect");
-    expect(fileTypeIconMarkup("notes.txt")).not.toContain(">txt</text>");
+    expect(fileTypeIconMarkup("notes.txt")).toContain("<rect");
+    expect(fileTypeIconMarkup("notes.txt")).toContain('fill="currentColor"');
+    expect(fileTypeIconMarkup("notes.txt")).toContain(">TXT</text>");
     expect(fileTypeIconMarkup("README.md")).toContain('data-document-kind="md"');
-    expect(fileTypeIconMarkup("README.mdx")).toContain('data-document-kind="md"');
-    expect(fileTypeIconMarkup("README.md")).toContain("#755838");
+    expect(fileTypeIconMarkup("README.md")).toContain(">MD</text>");
+    expect(fileTypeIconMarkup("README.mdx")).toContain('data-document-kind="mdx"');
+    expect(fileTypeIconMarkup("README.mdx")).toContain(">MDX</text>");
+    expect(fileTypeIconMarkup("README.md")).not.toContain("#755838");
     expect(fileTypeIconMarkup("guide.pdf")).toContain('data-document-kind="pdf"');
     expect(fileTypeIconMarkup("guide.pdf")).toContain("#dc2626");
   });
@@ -39,6 +41,19 @@ describe("FileTypeIcon", () => {
     expect(fileTypeIconMarkup("data/report.xlsx")).not.toBe(fileTypeIconMarkup("data/report.xls"));
     expect(fileTypeIconMarkup("data/report.xlsx")).not.toBe(fileTypeIconMarkup("data/report.csv"));
     expect(fileTypeIconMarkup("slides/report.pptx")).not.toBe(fileTypeIconMarkup("slides/report.ppt"));
+  });
+
+  it("uses a dedicated Rust icon instead of the generic file icon", () => {
+    expect(isRecognizedFileTypePath("src/core/convert.rs")).toBe(true);
+    expect(fileTypeIconMarkup("src/core/convert.rs")).not.toBe(fileTypeIconMarkup("src/core/convert.unknown"));
+    expect(fileTypeIconMarkup("src/core/convert.rs")).toContain("<svg");
+  });
+
+  it("uses a dedicated Git icon for .gitignore files", () => {
+    expect(isRecognizedFileTypePath(".gitignore")).toBe(true);
+    expect(isRecognizedFileTypePath("nested/.GITIGNORE")).toBe(true);
+    expect(fileTypeIconMarkup(".gitignore")).toContain("#dd4c35");
+    expect(fileTypeIconMarkup(".gitignore")).not.toBe(fileTypeIconMarkup(".unknown"));
   });
 
   it("does not classify an ordinary website as a file path", () => {

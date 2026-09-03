@@ -14,6 +14,7 @@ import {
 import type {
   DesktopBridge,
   ConversationContextUsageInput,
+  ReadConversationAttachmentPreviewInput,
   ImportConversationAttachmentBytesInput,
   RemoveConversationAttachmentInput,
   CancelRunInput,
@@ -191,6 +192,12 @@ export function createDesktopBridge(): DesktopBridge {
     importConversationAttachmentBytes(input: ImportConversationAttachmentBytesInput) {
       return invoke<BridgeResult<"importConversationAttachmentBytes">>(
         IPC_CHANNELS.conversationImportAttachmentBytes,
+        input,
+      );
+    },
+    readConversationAttachmentPreview(input: ReadConversationAttachmentPreviewInput) {
+      return invoke<BridgeResult<"readConversationAttachmentPreview">>(
+        IPC_CHANNELS.conversationReadAttachmentPreview,
         input,
       );
     },
@@ -417,8 +424,9 @@ export function createDesktopBridge(): DesktopBridge {
     captureManagedBrowser(input: ManagedBrowserReferenceInput) {
       return invoke<BridgeResult<"captureManagedBrowser">>(IPC_CHANNELS.managedBrowserCapture, input);
     },
-    async setManagedBrowserBounds(input: ManagedBrowserBoundsInput) {
-      await invoke<void>(IPC_CHANNELS.managedBrowserSetBounds, input);
+    setManagedBrowserBounds(input: ManagedBrowserBoundsInput) {
+      ipcRenderer.send(IPC_CHANNELS.managedBrowserSetBounds, input);
+      return Promise.resolve();
     },
     async closeManagedBrowser(input: ManagedBrowserReferenceInput) {
       await invoke<void>(IPC_CHANNELS.managedBrowserClose, input);

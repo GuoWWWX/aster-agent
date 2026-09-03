@@ -21,6 +21,11 @@ describe("prompt assets", () => {
     expect(BASE_SYSTEM_PROMPT).toContain(
       "A terminal tab opened manually by the user is not automatically owned by this conversation",
     );
+    expect(BASE_SYSTEM_PROMPT).toContain("successful empty result when nothing matches");
+    expect(BASE_SYSTEM_PROMPT).toContain("Choose the editing tool by operation, independent of model or provider");
+    expect(BASE_SYSTEM_PROMPT).toContain("prefer `replace_in_file`");
+    expect(BASE_SYSTEM_PROMPT).toContain("standard unified diff beginning with `--- a/<path>`");
+    expect(BASE_SYSTEM_PROMPT).toContain("batch all changed steps into one complete update");
     expect(BASE_SYSTEM_PROMPT).toContain("returns only a bounded completion receipt");
     expect(BASE_SYSTEM_PROMPT).not.toMatch(/\p{Script=Han}/u);
     expect(BASE_SYSTEM_PROMPT).not.toMatch(/\r/u);
@@ -31,6 +36,7 @@ describe("prompt assets", () => {
     expect(CONTEXT_COMPACTION_PROMPT).toContain("# Output Contract");
     expect(CONTEXT_COMPACTION_PROMPT).toContain("# Preservation Rules");
     expect(CONTEXT_COMPACTION_PROMPT).toContain("`artifactRefs`");
+    expect(CONTEXT_COMPACTION_PROMPT).toContain("[Agent input: ...]");
     expect(CONTEXT_COMPACTION_PROMPT).not.toMatch(/\p{Script=Han}/u);
   });
 });

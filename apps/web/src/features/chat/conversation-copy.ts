@@ -46,7 +46,8 @@ export function formatConversationRunMarkdown(
     ? []
     : timeline.filter(
       (item): item is ConversationMessageItem | ConversationToolItem =>
-        item.runId === runId && (item.kind === "message" || item.kind === "tool"),
+        item.runId === runId
+        && (item.kind === "message" || (item.kind === "tool" && item.name !== "compact_context")),
     );
   const assistantItems = runItems.filter(
     (item): item is ConversationMessageItem =>

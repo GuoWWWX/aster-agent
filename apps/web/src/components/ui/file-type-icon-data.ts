@@ -1,6 +1,7 @@
 import defaultFile from "@iconify-icons/vscode-icons/default-file";
 import fileTypeCss from "@iconify-icons/vscode-icons/file-type-css";
 import fileTypeDocker from "@iconify-icons/vscode-icons/file-type-docker";
+import fileTypeGit from "@iconify-icons/vscode-icons/file-type-git";
 import fileTypeHtml from "@iconify-icons/vscode-icons/file-type-html";
 import fileTypeImage from "@iconify-icons/vscode-icons/file-type-image";
 import fileTypeJs from "@iconify-icons/vscode-icons/file-type-js";
@@ -8,6 +9,7 @@ import fileTypeJson from "@iconify-icons/vscode-icons/file-type-json";
 import fileTypePython from "@iconify-icons/vscode-icons/file-type-python";
 import fileTypeReactJs from "@iconify-icons/vscode-icons/file-type-reactjs";
 import fileTypeReactTs from "@iconify-icons/vscode-icons/file-type-reactts";
+import fileTypeRust from "@iconify-icons/vscode-icons/file-type-rust";
 import fileTypeShell from "@iconify-icons/vscode-icons/file-type-shell";
 import fileTypeSql from "@iconify-icons/vscode-icons/file-type-sql";
 import fileTypeTextBase from "@iconify-icons/vscode-icons/file-type-text";
@@ -35,7 +37,7 @@ function documentFileIcon({
   kind,
 }: {
   accent: string;
-  kind: "md" | "pdf" | "txt";
+  kind: "pdf";
 }) {
   return {
     ...fileTypeTextBase,
@@ -43,8 +45,23 @@ function documentFileIcon({
   };
 }
 
-const fileTypeText = documentFileIcon({ accent: "#829ec2", kind: "txt" });
-const fileTypeMarkdown = documentFileIcon({ accent: "#755838", kind: "md" });
+function documentExtensionIcon({
+  kind,
+  label,
+}: {
+  kind: "md" | "mdx" | "txt";
+  label: string;
+}) {
+  return {
+    width: 16,
+    height: 16,
+    body: `<g data-document-kind="${kind}"><rect x="1.25" y="2.25" width="13.5" height="11.5" rx="2.25" fill="currentColor" fill-opacity=".12" stroke="currentColor" stroke-opacity=".82" stroke-width="1.25"/><text x="8" y="9.9" fill="currentColor" font-family="Arial, sans-serif" font-size="${label.length > 2 ? 4.4 : 5.2}" font-weight="700" text-anchor="middle">${label}</text></g>`,
+  };
+}
+
+const fileTypeText = documentExtensionIcon({ kind: "txt", label: "TXT" });
+const fileTypeMarkdown = documentExtensionIcon({ kind: "md", label: "MD" });
+const fileTypeMarkdownX = documentExtensionIcon({ kind: "mdx", label: "MDX" });
 const fileTypePdf = documentFileIcon({ accent: "#dc2626", kind: "pdf" });
 
 function officeFileIcon({
@@ -115,7 +132,7 @@ const RECOGNIZED_FILE_EXTENSIONS = new Set([
   "bash", "cjs", "class", "css", "csv", "doc", "docm", "docx", "dot", "dotm", "dotx",
   "htm", "html", "java", "js", "json", "jsonc", "jsx", "less", "md", "mdx", "mjs",
   "mts", "pdf", "pot", "potm", "potx", "pps", "ppsm", "ppsx", "ppt", "pptm", "pptx",
-  "ps1", "py", "rtf", "sass", "scss", "sh", "sql", "ts", "tsv", "tsx", "txt", "vue", "xls", "xlsb",
+  "ps1", "py", "rs", "rtf", "sass", "scss", "sh", "sql", "ts", "tsv", "tsx", "txt", "vue", "xls", "xlsb",
   "xlsm", "xlsx", "xml", "yaml", "yml", "zsh",
 ]);
 
@@ -129,12 +146,14 @@ function iconForPath(path: string) {
   const extension = name.split(".").at(-1) ?? "";
 
   if (IMAGE_EXTENSIONS.has(extension)) return fileTypeImage;
+  if (name === ".gitignore") return fileTypeGit;
   if (name === "dockerfile" || extension === "dockerfile") return fileTypeDocker;
 
   switch (extension) {
     case "md":
-    case "mdx":
       return fileTypeMarkdown;
+    case "mdx":
+      return fileTypeMarkdownX;
     case "json":
     case "jsonc":
       return fileTypeJson;
@@ -167,6 +186,8 @@ function iconForPath(path: string) {
       return fileTypeXml;
     case "py":
       return fileTypePython;
+    case "rs":
+      return fileTypeRust;
     case "sh":
     case "bash":
     case "zsh":
@@ -232,7 +253,7 @@ export function fileTypeIconPresentation(path: string, javaDeclarationKind?: Jav
 
 export function isRecognizedFileTypePath(path: string): boolean {
   const name = normalizedFileName(path);
-  if (name === "dockerfile") return true;
+  if (name === ".gitignore" || name === "dockerfile") return true;
   const extension = name.split(".").at(-1) ?? "";
   return RECOGNIZED_FILE_EXTENSIONS.has(extension);
 }

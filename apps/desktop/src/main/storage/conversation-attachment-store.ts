@@ -13,8 +13,10 @@ import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 
 import {
+  conversationAttachmentPreviewSchema,
   estimateContextTokens,
-  type ConversationAttachment
+  type ConversationAttachment,
+  type ConversationAttachmentPreview,
 } from "@agent/protocol";
 import { fileTypeFromBuffer, fileTypeFromFile } from "file-type";
 import mammoth from "mammoth";
@@ -200,6 +202,20 @@ export class ConversationAttachmentStore {
     return this.database.listDraftConversationAttachments(conversationId);
   }
 
+  public readImagePreview(
+    conversationId: string,
+    attachmentId: string,
+  ): ConversationAttachmentPreview {
+    const attachment = this.database.getConversationAttachment(conversationId, attachmentId);
+    if (attachment.kind !== "image") {
+      throw new Error("Only image attachments can be previewed.");
+    }
+    return conversationAttachmentPreviewSchema.parse({
+      data: readFileSync(attachment.storedPath).toString("base64"),
+      mimeType: attachment.mimeType,
+    });
+  }
+
   /**
    * Derives managed paths from an immutable Attachment reference during
    * ThreadLog recovery. Paths stay out of JSONL; the store layout is the
@@ -233,6 +249,51 @@ export class ConversationAttachmentStore {
         : [attachment.extractedTextPath])
     ]);
     await Promise.all([...filePaths].map((filePath) => this.removeFile(filePath)));
+  }
+
+  public async cleanupCancelledPendingMessageAttachments(
+    pendingMessageId?: string,
+  ): Promise<void> {
+    const cleanups = this.database.listCancelledPendingMessageAttachmentCleanups(
+      pendingMessageId,
+    );
+    for (const cleanup of cleanups) {
+      const attachmentIds = cleanup.attachments.map((attachment) => attachment.id);
+      const filePaths = new Set(cleanup.attachments.flatMap((attachment) => [
+        attachment.storedPath,
+        ...(attachment.extractedTextPath === null ? [] : [attachment.extractedTextPath]),
+      ]));
+      for (const filePath of filePaths) {
+        if (!this.isManagedPath(filePath)) {
+          throw new Error("Pending attachment cleanup cannot delete a file outside managed storage.");
+        }
+        if (this.database.isConversationAttachmentFileReferencedOutside(filePath, attachmentIds)) {
+          continue;
+        }
+        await this.removeFile(filePath);
+      }
+      this.database.completeCancelledPendingMessageAttachmentCleanup(
+        cleanup.pendingMessageId,
+        attachmentIds,
+      );
+      await rmdir(path.join(this.rootPath, cleanup.conversationId)).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY" && error.code !== "EEXIST") {
+            throw error;
+          }
+        },
+      );
+    }
+  }
+
+  public async resumeCancelledPendingMessageAttachmentCleanup(): Promise<void> {
+    for (const cleanup of this.database.listCancelledPendingMessageAttachmentCleanups()) {
+      try {
+        await this.cleanupCancelledPendingMessageAttachments(cleanup.pendingMessageId);
+      } catch (error) {
+        console.error("Cancelled pending-message attachment cleanup remains retryable.", error);
+      }
+    }
   }
 
   public async deleteUnreferencedConversationFiles(

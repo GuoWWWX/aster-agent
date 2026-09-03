@@ -334,12 +334,22 @@ function addContextMessages(
   contextMessages: readonly ModelMessage[],
 ): BaseMessage[] {
   if (contextMessages.length === 0) return [...messages];
-  const context = contextMessages.map(toLangChainMessage);
+  const leadingContext = contextMessages
+    .filter((message) => message.role === "system")
+    .map(toLangChainMessage);
+  const trailingContext = contextMessages
+    .filter((message) => message.role !== "system")
+    .map(toLangChainMessage);
   const firstSystemIndex = messages.findIndex((message) => message.getType() === "system");
-  if (firstSystemIndex < 0) return [...context, ...messages];
+  if (firstSystemIndex < 0) return [...leadingContext, ...messages, ...trailingContext];
   const system = messages[firstSystemIndex];
-  if (system === undefined) return [...context, ...messages];
-  return [system, ...context, ...messages.filter((_message, index) => index !== firstSystemIndex)];
+  if (system === undefined) return [...leadingContext, ...messages, ...trailingContext];
+  return [
+    system,
+    ...leadingContext,
+    ...messages.filter((_message, index) => index !== firstSystemIndex),
+    ...trailingContext,
+  ];
 }
 
 function stateForCallback(state: RuntimeState, lastResult: ModelTurnResult | null): AgentGraphState {

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { IPC_CHANNELS } from "@agent/protocol";
 
 import {
   createIpcHandlerRegistrar,
@@ -6,6 +7,10 @@ import {
 } from "./ipc-handler-registrar.js";
 
 describe("IPC handler registrar", () => {
+  it("keeps high-frequency browser bounds off the invoke handler registry", () => {
+    expect(DESKTOP_IPC_HANDLER_CHANNELS).not.toContain(IPC_CHANNELS.managedBrowserSetBounds);
+  });
+
   it("disposes the same desktop channels that it registers", () => {
     const handledChannels: string[] = [];
     const removedChannels: string[] = [];

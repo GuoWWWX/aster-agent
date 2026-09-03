@@ -1,8 +1,9 @@
 import { ImageIcon, Loader2 } from "lucide-react";
 import { useEffect, useRef, useState, type WheelEvent } from "react";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog.js";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog.js";
 import { cn } from "../../lib/cn.js";
 import { svgDataUrl } from "../../lib/svg-image.js";
+import { ImagePreviewViewer } from "./image-preview-viewer.js";
 
 export { svgDataUrl };
 
@@ -107,12 +108,27 @@ export function ImageDocumentViewer({ src, alt, path }: { src?: string; alt: str
 export function MediaPreviewDialog({ open, onOpenChange, src, alt, title }: { open: boolean; onOpenChange: (open: boolean) => void; src?: string; alt?: string; title?: string }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[85vh] w-[82vw] max-w-[1440px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1440px] max-[640px]:h-[90dvh] max-[640px]:w-[calc(100vw-1.5rem)]" aria-describedby={undefined}>
-        <DialogHeader className="shrink-0 border-b border-slate-200 px-4 py-3 pr-12 dark:border-zinc-800">
-          <DialogTitle className="truncate text-sm font-semibold">{title ?? alt ?? "图片预览"}</DialogTitle>
-          <DialogDescription className="sr-only">图片预览</DialogDescription>
-        </DialogHeader>
-        {src ? <ImageViewer src={src} {...(alt === undefined ? {} : { alt })} className="flex-1" /> : null}
+      <DialogContent
+        aria-describedby={undefined}
+        className="left-0 top-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col overflow-hidden rounded-none bg-transparent p-0 shadow-none sm:max-w-none [&_[data-slot=dialog-close]]:right-4 [&_[data-slot=dialog-close]]:top-4 [&_[data-slot=dialog-close]]:z-30 [&_[data-slot=dialog-close]]:size-10 [&_[data-slot=dialog-close]]:rounded-full [&_[data-slot=dialog-close]]:bg-black/60 [&_[data-slot=dialog-close]]:text-zinc-200 [&_[data-slot=dialog-close]]:backdrop-blur-md [&_[data-slot=dialog-close]]:hover:bg-black/80 [&_[data-slot=dialog-close]]:hover:text-white"
+        overlayClassName="bg-black/85 backdrop-blur-[2px]"
+      >
+        <DialogTitle className="sr-only">{title ?? alt ?? "图片预览"}</DialogTitle>
+        <DialogDescription className="sr-only">可缩放的图片预览</DialogDescription>
+        {src ? (
+          <ImagePreviewViewer
+            key={src}
+            appearance="overlay"
+            currentIndex={0}
+            dataUrl={src}
+            fileName={alt ?? title ?? "图片预览"}
+            hasNext={false}
+            hasPrevious={false}
+            total={1}
+            onNext={() => undefined}
+            onPrevious={() => undefined}
+          />
+        ) : null}
       </DialogContent>
     </Dialog>
   );

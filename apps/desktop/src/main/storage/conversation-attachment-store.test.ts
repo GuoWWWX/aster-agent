@@ -1,6 +1,7 @@
 import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ProjectRegistry } from "../projects/project-registry.js";
@@ -28,13 +29,14 @@ async function createFixture() {
   const managedRoot = path.join(directory, "managed");
   await mkdir(projectRoot, { recursive: true });
 
-  const database = new AgentDatabase(path.join(directory, "agent.sqlite"));
+  const databasePath = path.join(directory, "agent.sqlite");
+  const database = new AgentDatabase(databasePath);
   databases.push(database);
   const projects = new ProjectRegistry(database);
   const project = await projects.registerDirectory(projectRoot);
   const conversation = database.createConversation(project.id);
   const store = new ConversationAttachmentStore(database, projects, managedRoot);
-  return { conversation, database, managedRoot, projectRoot, store };
+  return { conversation, database, databasePath, managedRoot, projectRoot, store };
 }
 
 function createPdfFixture(): Buffer {
@@ -100,6 +102,15 @@ describe("ConversationAttachmentStore", () => {
       projectPath: null,
       source: "upload"
     });
+    const preview = store.readImagePreview(conversation.id, attachments[1]!.id);
+    expect(preview.mimeType).toBe("image/png");
+    expect(Buffer.from(preview.data, "base64").subarray(1, 4).toString("ascii"))
+      .toBe("PNG");
+    expect(() => store.readImagePreview(conversation.id, attachments[0]!.id))
+      .toThrow("Only image attachments");
+    const unrelatedConversation = database.createConversation(null);
+    expect(() => store.readImagePreview(unrelatedConversation.id, attachments[1]!.id))
+      .toThrow("not found");
 
     const modelAttachments = store.toModelAttachments(
       conversation.id,
@@ -248,6 +259,115 @@ describe("ConversationAttachmentStore", () => {
     await store.removeDraft(conversation.id, attachment.id);
 
     expect(database.listDraftConversationAttachments(conversation.id)).toEqual([]);
+    await expect(access(storedPath)).rejects.toThrow();
+  });
+
+  it("deletes cancelled queued attachments instead of restoring them as drafts", async () => {
+    const { conversation, database, store } = await createFixture();
+    const attachment = await store.importBytes(conversation.id, {
+      bytes: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nksAAAAASUVORK5CYII=",
+        "base64",
+      ),
+      mimeType: "image/png",
+      name: "queued.png",
+    });
+    const pending = database.enqueuePendingMessage({
+      attachmentIds: [attachment.id],
+      content: "稍后发送这张图",
+      conversationId: conversation.id,
+      deliveryMode: "queue",
+    });
+    const storedPath = database.getConversationAttachment(
+      conversation.id,
+      attachment.id,
+    ).storedPath;
+
+    database.deletePendingMessage(pending.id);
+
+    expect(database.listDraftConversationAttachments(conversation.id)).toEqual([]);
+    await store.cleanupCancelledPendingMessageAttachments(pending.id);
+    expect(() => database.getConversationAttachment(conversation.id, attachment.id))
+      .toThrow("not found");
+    await expect(access(storedPath)).rejects.toThrow();
+  });
+
+  it("keeps a shared snapshot file while deleting only the cancelled queue reference", async () => {
+    const { conversation, database, store } = await createFixture();
+    const attachment = await store.importBytes(conversation.id, {
+      bytes: Buffer.from("shared attachment"),
+      mimeType: "text/plain",
+      name: "shared.txt",
+    });
+    const pending = database.enqueuePendingMessage({
+      attachmentIds: [attachment.id],
+      content: "稍后发送共享附件",
+      conversationId: conversation.id,
+      deliveryMode: "queue",
+    });
+    const stored = database.getConversationAttachment(conversation.id, attachment.id);
+    const otherConversation = database.createConversation(null);
+    database.createConversationAttachment({
+      ...stored,
+      conversationId: otherConversation.id,
+      id: crypto.randomUUID(),
+      messageId: null,
+      pendingMessageId: null,
+    });
+
+    database.deletePendingMessage(pending.id);
+    await store.cleanupCancelledPendingMessageAttachments(pending.id);
+
+    expect(() => database.getConversationAttachment(conversation.id, attachment.id))
+      .toThrow("not found");
+    await expect(access(stored.storedPath)).resolves.toBeUndefined();
+  });
+
+  it("cleans legacy cancelled queue attachments that were detached into drafts", async () => {
+    const fixture = await createFixture();
+    const attachment = await fixture.store.importBytes(fixture.conversation.id, {
+      bytes: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nksAAAAASUVORK5CYII=",
+        "base64",
+      ),
+      mimeType: "image/png",
+      name: "legacy-queued.png",
+    });
+    const pending = fixture.database.enqueuePendingMessage({
+      attachmentIds: [attachment.id],
+      content: "旧版待发送图片",
+      conversationId: fixture.conversation.id,
+      deliveryMode: "queue",
+    });
+    fixture.database.deletePendingMessage(pending.id);
+    const storedPath = fixture.database.getConversationAttachment(
+      fixture.conversation.id,
+      attachment.id,
+    ).storedPath;
+    fixture.database.close();
+    databases.splice(databases.indexOf(fixture.database), 1);
+
+    const legacyDatabase = new DatabaseSync(fixture.databasePath);
+    legacyDatabase.prepare(
+      "UPDATE conversation_attachments SET pending_message_id = NULL WHERE id = ?",
+    ).run(attachment.id);
+    legacyDatabase.close();
+
+    const reopened = new AgentDatabase(fixture.databasePath);
+    databases.push(reopened);
+    const reopenedStore = new ConversationAttachmentStore(
+      reopened,
+      new ProjectRegistry(reopened),
+      fixture.managedRoot,
+    );
+    expect(reopened.listDraftConversationAttachments(fixture.conversation.id))
+      .toEqual([expect.objectContaining({ id: attachment.id })]);
+
+    await reopenedStore.resumeCancelledPendingMessageAttachmentCleanup();
+
+    expect(reopened.listDraftConversationAttachments(fixture.conversation.id)).toEqual([]);
+    expect(() => reopened.getConversationAttachment(fixture.conversation.id, attachment.id))
+      .toThrow("not found");
     await expect(access(storedPath)).rejects.toThrow();
   });
 

@@ -120,6 +120,26 @@ export const conversationAttachmentSchema = z
 
 export const conversationAttachmentListSchema = z.array(conversationAttachmentSchema);
 
+export const readConversationAttachmentPreviewInputSchema = z
+  .object({
+    attachmentId: z.string().uuid(),
+    conversationId: conversationIdSchema,
+  })
+  .strict();
+
+export const conversationAttachmentPreviewSchema = z
+  .object({
+    data: z.string()
+      .min(4)
+      .max(Math.ceil(MAX_ATTACHMENT_BYTES * 4 / 3) + 4)
+      .regex(/^[A-Za-z0-9+/]*={0,2}$/u)
+      .refine((value) => value.length % 4 === 0, {
+        message: "Attachment preview base64 must contain complete quartets.",
+      }),
+    mimeType: z.string().trim().min(1).max(255),
+  })
+  .strict();
+
 export const removeConversationAttachmentInputSchema = z
   .object({
     attachmentId: z.string().uuid(),
@@ -868,7 +888,8 @@ export const sendTeamMessageInputSchema = z
 
 export const replaceLatestConversationMessageInputSchema = z
   .object({
-    content: z.string().trim().min(1).max(MAX_MESSAGE_LENGTH),
+    attachmentIds: z.array(z.string().uuid()).max(MAX_CONVERSATION_ATTACHMENTS).optional(),
+    content: z.string().trim().max(MAX_MESSAGE_LENGTH),
     conversationId: conversationIdSchema,
     messageId: timelineItemIdSchema,
     modelId: z.string().trim().min(1).max(200).optional(),
@@ -898,6 +919,13 @@ export const replaceLatestConversationMessageInputSchema = z
         code: "custom",
         message: "Referenced conversations must be unique.",
         path: ["referencedConversationIds"]
+      });
+    }
+    if (value.content.length === 0 && (value.attachmentIds?.length ?? 0) === 0) {
+      context.addIssue({
+        code: "custom",
+        message: "A replacement message must contain text or an attachment.",
+        path: ["content"]
       });
     }
   });
@@ -997,7 +1025,7 @@ const assistantReasoningDeltaEventSchema = z
   .object({
     conversationId: conversationIdSchema,
     delta: z.string().min(1).max(MAX_MESSAGE_LENGTH),
-    kind: z.enum(["summary", "content"]),
+    kind: z.enum(["summary", "content", "progress"]),
     messageId: timelineItemIdSchema,
     modelId: z.string().min(1).max(200),
     reset: z.boolean(),
@@ -1113,6 +1141,9 @@ export const conversationRunEventSchema = z.discriminatedUnion("type", [
 export type ConversationSummary = z.infer<typeof conversationSummarySchema>;
 export type ConversationModelSelection = z.infer<typeof conversationModelSelectionSchema>;
 export type ConversationAttachment = z.infer<typeof conversationAttachmentSchema>;
+export type ConversationAttachmentPreview = z.infer<
+  typeof conversationAttachmentPreviewSchema
+>;
 export type ConversationThreadKind = z.infer<typeof conversationThreadKindSchema>;
 export type ConversationAgentBinding = z.infer<typeof conversationAgentBindingSchema>;
 export type ConversationTaskStatus = z.infer<typeof conversationTaskStatusSchema>;
@@ -1154,6 +1185,9 @@ export type ReorderConversationsInput = z.infer<
 >;
 export type RemoveConversationAttachmentInput = z.infer<
   typeof removeConversationAttachmentInputSchema
+>;
+export type ReadConversationAttachmentPreviewInput = z.infer<
+  typeof readConversationAttachmentPreviewInputSchema
 >;
 export type ImportConversationAttachmentBytesInput = z.infer<
   typeof importConversationAttachmentBytesInputSchema

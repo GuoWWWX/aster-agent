@@ -31,6 +31,7 @@ import {
   type ConversationContextUsage,
   type ConversationContextUsageInput,
   type ConversationAttachment,
+  type ConversationAttachmentPreview,
   type ConversationMessageSubmission,
   type ConversationPendingMessage,
   type ConfigurationWorkspaceDirectoryListing,
@@ -986,6 +987,10 @@ export class MockAgentClient implements AgentClient {
     return Promise.reject(
       new Error("Conversation attachments are unavailable in the browser preview."),
     );
+  }
+
+  public readConversationAttachmentPreview(): Promise<ConversationAttachmentPreview> {
+    return Promise.reject(new Error("Conversation attachment previews are unavailable in the mock host."));
   }
 
   public listDraftConversationAttachments(): Promise<ConversationAttachment[]> {
@@ -2191,6 +2196,7 @@ export class MockAgentClient implements AgentClient {
     if (latestUser.runId !== null && this.activeRuns.has(latestUser.runId)) {
       await this.cancelRun({ runId: latestUser.runId });
     }
+    const originalAttachments = structuredClone(latestUser.attachments);
     timeline.splice(latestUserIndex);
     const submission = await this.sendConversationMessage({
       content: input.content,
@@ -2210,6 +2216,12 @@ export class MockAgentClient implements AgentClient {
       throw new Error("The replacement message could not start in the mock runtime.");
     }
     submission.userMessage.id = input.messageId;
+    const selectedAttachmentIds = new Set(
+      input.attachmentIds ?? originalAttachments.map((attachment) => attachment.id),
+    );
+    submission.userMessage.attachments = originalAttachments.filter(
+      (attachment) => selectedAttachmentIds.has(attachment.id),
+    );
     return submission;
   }
 

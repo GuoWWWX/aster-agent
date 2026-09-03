@@ -154,6 +154,15 @@ describe("ProjectToolRegistry", () => {
     expect(runCommand?.description).toContain("default choice for ordinary commands");
     expect(runCommand?.description).toContain("does not open a visible terminal tab");
     expect(runCommand?.description).toContain("create_terminal");
+    expect(runCommand?.description).toContain("nonzero final exit code marks the command failed");
+    expect(tools.getDefinitions().find((tool) => tool.name === "search_text")?.description)
+      .toContain("successful empty result when nothing matches");
+    expect(tools.getDefinitions().find((tool) => tool.name === "apply_patch")?.description)
+      .toContain("not the marker-based patch protocol");
+    expect(tools.getDefinitions().find((tool) => tool.name === "apply_patch")?.description)
+      .toContain("--- a/src/x.ts\\n+++ b/src/x.ts");
+    expect(tools.getDefinitions().find((tool) => tool.name === "replace_in_file")?.description)
+      .toContain("Preferred editor for one exact change");
 
     expect(tools.getExecutionPolicy("read_file", JSON.stringify({ path: "src/index.ts" }), false))
       .toEqual({ group: "read", kind: "parallel" });
@@ -192,6 +201,7 @@ describe("ProjectToolRegistry", () => {
     };
 
     expect(tools.getCommandDefinitions().map((tool) => tool.name)).toEqual([
+      "list_background_commands",
       "wait_for_commands",
       "stop_command",
       "run_command",
@@ -328,6 +338,7 @@ describe("ProjectToolRegistry", () => {
     expect(tools.getDefinitions().map((tool) => tool.name)).toEqual([
       "list_project_operations",
       "wait_for_project_operation",
+      "list_background_commands",
       "wait_for_commands",
       "stop_command",
       "list_directory",
@@ -686,6 +697,109 @@ describe("ProjectToolRegistry", () => {
     );
   });
 
+  it("accepts a standard unified diff with GPT/Codex wrapper markers", async () => {
+    const { project, tools } = await createFixture();
+    const proposal = await tools.execute(
+      "apply_patch",
+      JSON.stringify({
+        patch: [
+          "*** Begin Patch",
+          "--- a/src/index.ts",
+          "+++ b/src/index.ts",
+          "@@ -1,2 +1,2 @@",
+          "-alpha",
+          "+first",
+          " beta alpha",
+          "*** End Patch",
+        ].join("\n"),
+      }),
+      project.id,
+      new AbortController().signal,
+    );
+
+    if (proposal.kind !== "change") throw new Error(proposal.content);
+    await tools.applyPreparedChange(proposal.change, project.id, new AbortController().signal);
+    await expect(readFile(path.join(project.rootPath, "src", "index.ts"), "utf8")).resolves.toBe(
+      "first\nbeta alpha\n",
+    );
+  });
+
+  it("repairs GPT-generated hunk counts when the patch body and file context are valid", async () => {
+    const { project, tools } = await createFixture();
+    const proposal = await tools.execute(
+      "apply_patch",
+      JSON.stringify({
+        patch: [
+          "*** Begin Patch",
+          "--- a/src/index.ts",
+          "+++ b/src/index.ts",
+          "@@ -1,20 +1,40 @@",
+          "-alpha",
+          "+first",
+          " beta alpha",
+          "*** End Patch",
+        ].join("\n"),
+      }),
+      project.id,
+      new AbortController().signal,
+    );
+
+    if (proposal.kind !== "change") throw new Error(proposal.content);
+    await tools.applyPreparedChange(proposal.change, project.id, new AbortController().signal);
+    await expect(readFile(path.join(project.rootPath, "src", "index.ts"), "utf8")).resolves.toBe(
+      "first\nbeta alpha\n",
+    );
+  });
+
+  it("reports the unsupported GPT/Codex patch directive precisely", async () => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute(
+      "apply_patch",
+      JSON.stringify({
+        patch: [
+          "*** Begin Patch",
+          "*** Update File: src/index.ts",
+          "@@",
+          "-alpha",
+          "+first",
+          "*** End Patch",
+        ].join("\n"),
+      }),
+      project.id,
+      new AbortController().signal,
+    );
+
+    expect(result.kind).toBe("completed");
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("*** Update File:");
+    expect(result.content).toContain("标准 ---/+++ diff");
+  });
+
+  it("reports a mismatched GPT-generated hunk instead of blaming file headers", async () => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute(
+      "apply_patch",
+      JSON.stringify({
+        patch: [
+          "--- a/src/index.ts",
+          "+++ b/src/index.ts",
+          "@@ -1,2 +1,2 @@",
+          "-alpha",
+          "+first",
+          " missing context",
+          "*** End Patch",
+        ].join("\n"),
+      }),
+      project.id,
+      new AbortController().signal,
+    );
+
+    expect(result.kind).toBe("completed");
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("@@ 块的行数声明或上下文");
+    expect(result.content).not.toContain("文件头开头");
+  });
+
   it("directs Codex-style new-file patches to write_file", async () => {
     const { project, tools } = await createFixture();
     const result = await tools.execute(
@@ -835,6 +949,34 @@ describe("ProjectToolRegistry", () => {
     expect(result.content).toContain("src/index.ts:1:alpha");
   });
 
+  it("keeps UTF-8 ripgrep output intact through a PowerShell pipeline", async () => {
+    if (process.platform !== "win32") return;
+
+    const { project, tools } = await createFixture();
+    await writeFile(path.join(project.rootPath, "中文文件.txt"), "命中内容\n", "utf8");
+    const proposal = await tools.execute(
+      "run_command",
+      JSON.stringify({
+        command: 'rg -n "命中内容" . | Select-Object -First 1',
+      }),
+      project.id,
+      new AbortController().signal,
+    );
+    if (proposal.kind !== "command") throw new Error(proposal.content);
+
+    const result = await tools.executePreparedCommand(
+      proposal.command,
+      project.id,
+      new AbortController().signal,
+    );
+
+    // Select-Object may close the native pipe early and leave rg with exit 1;
+    // the command stays failed, but its retained output must not be mojibake.
+    expect(result.isError, result.content).toBe(true);
+    expect(result.content).toContain("中文文件.txt:1:命中内容");
+    expect(result.content).not.toContain("涓");
+  });
+
   it("decodes native Windows terminal output with the default terminal", async () => {
     if (process.platform !== "win32") return;
 
@@ -968,6 +1110,88 @@ describe("ProjectToolRegistry", () => {
     expect(stopped.content).toContain('"status":"cancelled"');
     expect(waited.content).toContain('"waitStatus":"finished"');
     expect(waited.content).toContain('"status":"cancelled"');
+  });
+
+  it("lists active background services with names and command ids for their owning conversation", async () => {
+    if (process.platform !== "win32") return;
+
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const owner = {
+      conversationId: "conversation-background-services",
+      conversationTitle: "后台服务",
+      runId: "run-background-services",
+    };
+    const proposal = await tools.execute(
+      "run_command",
+      JSON.stringify({
+        command: "Start-Sleep -Seconds 30",
+        serviceName: "Vite development server",
+        timeoutMs: 60_000,
+        yieldTimeMs: 0,
+      }),
+      project.id,
+      signal,
+      owner,
+    );
+    if (proposal.kind !== "command") throw new Error("Expected a prepared command.");
+    const started = await tools.executePreparedCommand(proposal.command, project.id, signal, owner);
+    const startedPayload = JSON.parse(started.content) as {
+      value?: { commandId?: unknown };
+    };
+    const commandId = startedPayload.value?.commandId;
+    if (typeof commandId !== "string") throw new Error("Background command id was not returned.");
+
+    const active = await tools.execute(
+      "list_background_commands",
+      JSON.stringify({}),
+      project.id,
+      signal,
+      owner,
+    );
+    const otherConversation = await tools.execute(
+      "list_background_commands",
+      JSON.stringify({}),
+      project.id,
+      signal,
+      { ...owner, conversationId: "other-conversation" },
+    );
+    await tools.execute(
+      "stop_command",
+      JSON.stringify({ commandId }),
+      project.id,
+      signal,
+      owner,
+    );
+    const afterStop = await tools.execute(
+      "list_background_commands",
+      JSON.stringify({}),
+      project.id,
+      signal,
+      owner,
+    );
+
+    expect(JSON.parse(active.content)).toMatchObject({
+      ok: true,
+      value: {
+        commands: [{
+          command: "Start-Sleep -Seconds 30",
+          commandId,
+          serviceName: "Vite development server",
+          status: "running",
+          timeoutMs: 60_000,
+          workingDirectory: project.rootPath,
+        }],
+      },
+    });
+    expect(JSON.parse(otherConversation.content)).toMatchObject({
+      ok: true,
+      value: { commands: [] },
+    });
+    expect(JSON.parse(afterStop.content)).toMatchObject({
+      ok: true,
+      value: { commands: [] },
+    });
   });
 
   it("keeps independent read tools responsive on a large workspace", async () => {
