@@ -18,6 +18,7 @@ import {
   FolderOpen,
   FolderPlus,
   GitFork,
+  Globe2,
   GripVertical,
   LoaderCircle,
   List,
@@ -32,6 +33,7 @@ import {
   Send,
   SendHorizontal,
   ShieldCheck,
+  Images,
   Sparkles,
   SlidersHorizontal,
   Square,
@@ -93,6 +95,7 @@ import type {
 } from "@agent/protocol";
 import {
   agentAvatarIconSchema,
+  conversationAttachmentListSchema,
   DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
   isGpt56ReasoningModel,
   isReasoningOptionEnabled,
@@ -151,6 +154,8 @@ import { TeamWorkspace } from "../team/team-workspace.js";
 import { CollaborationProjectionGraph } from "../team/collaboration/collaboration-graph.js";
 import { useConversationWorkspaceCache } from "./conversation-workspace-cache.js";
 import { formatConversationRunMarkdown } from "./conversation-copy.js";
+import { ConversationFindBar } from "./conversation-find-bar.js";
+import { ConversationTurnNavigator } from "./conversation-turn-navigator.js";
 import {
   ContextUsageIndicator,
   ProviderCacheStatus,
@@ -181,6 +186,7 @@ type WorkspaceContentProps = {
   canAddProjects: boolean;
   isAddingProject: boolean;
   isCreatingSession: boolean;
+  locateTimelineItem?: { conversationId: string; id: string; requestId: number } | null;
   projects: readonly ProjectSummary[];
   protectedSessionIds?: readonly string[];
   sessions: readonly ProjectSession[];
@@ -263,10 +269,15 @@ type RunActivityProgressItem = {
 
 type RunActivityTextItem = RunActivityProgressItem | RunActivityReasoningItem;
 
+type RunActivityItem =
+  | ConversationModelRetryItem
+  | ConversationToolItem
+  | RunActivityTextItem;
+
 type RunActivityTimelineItem = {
   durationMs: number | null;
   id: string;
-  items: Array<ConversationToolItem | RunActivityTextItem>;
+  items: RunActivityItem[];
   kind: "run_activity";
   runId: string;
   runIds: string[];
@@ -686,6 +697,7 @@ export function WorkspaceContent({
   canAddProjects,
   isAddingProject,
   isCreatingSession,
+  locateTimelineItem = null,
   projects,
   onAddProject,
   onCreateProjectSession,
@@ -762,6 +774,9 @@ export function WorkspaceContent({
               agentClient={agentClient}
               canAddProjects={canAddProjects}
               isAddingProject={isAddingProject}
+              locateTimelineItem={locateTimelineItem?.conversationId === session.id
+                ? { id: locateTimelineItem.id, requestId: locateTimelineItem.requestId }
+                : null}
               onLocateProject={onLocateProject}
               onLocateSession={onLocateSession}
               onOpenProjectFile={projectId === null || onOpenProjectFile === undefined
@@ -2731,6 +2746,16 @@ export function ConversationWorkspace({
       <div
         className="conversation-workspace__surface"
       >
+        <ConversationFindBar active={active} containerRef={messagesRef} revision={timeline} />
+        <ConversationTurnNavigator
+          bottomOffsetPx={composerOverlayHeight + 12}
+          containerRef={messagesRef}
+          hidden={compact}
+          timeline={timeline}
+          onNavigateStart={() => {
+            shouldStickToBottomRef.current = false;
+          }}
+        />
         <div
           ref={messagesRef}
           className="conversation-workspace__messages"
@@ -3334,8 +3359,8 @@ export function ConversationWorkspace({
                     className="conversation-workspace__permission-select-content"
                     side="top"
                   >
-                    <SelectItem value="read_only">只读</SelectItem>
-                    <SelectItem value="ask_before_changes">修改前询问</SelectItem>
+                    <SelectItem value="read_only">规划</SelectItem>
+                    <SelectItem value="ask_before_changes">请求审批</SelectItem>
                     <SelectItem value="full_access">完全访问</SelectItem>
                   </SelectContent>
                 </Select>
@@ -3689,7 +3714,19 @@ function RunProgressIndicator({ progress }: { progress: RunProgress }): ReactEle
 
 function modelActivityLabel(activity: ModelActivity): string {
   const preview = activity.preview?.trim();
-  return preview === undefined || preview.length === 0 ? "正在推理" : preview;
+  return preview === undefined || preview.length === 0
+    ? "正在推理"
+    : normalizeModelActivityPreview(preview);
+}
+
+export function normalizeModelActivityPreview(preview: string): string {
+  return preview
+    .trim()
+    .replace(/([\p{L}\p{N}])[*_]{3,}(?=[\p{L}\p{N}])/gu, "$1 · ")
+    .replace(/(^|[\s([{])(?:\*{1,3}|_{1,3})(?=\S)/gu, "$1")
+    .replace(/([\p{L}\p{N})\]}])(?:\*{1,3}|_{1,3})(?=$|[\s.,!?;:)\]}])/gu, "$1")
+    .replace(/[\t ]*·[\t ]*/gu, " · ")
+    .replace(/[\t ]{2,}/gu, " ");
 }
 
 function beginRunProgress(
@@ -4137,30 +4174,18 @@ function SubagentApprovalQueue({
                 onClick={() => void onChangeApproval(approval.tool, true)}
               >
                 <Check aria-hidden="true" size={13} />
-                {isApproving ? "提交中" : "仅本次允许"}
+                {isApproving ? "提交中" : "允许一次"}
               </button>
               {isExternalRead ? null : (
                 <button
                   className="inline-flex min-h-7 items-center gap-1 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-transparent px-2 text-[var(--app-foreground)] hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={isApproving}
-                  title="仅允许该 Subagent 对话后续同类操作"
+                  title="仅允许该 Subagent 对话后续完全相同的命令或同一工具与路径"
                   type="button"
                   onClick={() => void onChangeApproval(approval.tool, true, "session")}
                 >
                   <Check aria-hidden="true" size={13} />
-                  允许该 Subagent 会话
-                </button>
-              )}
-              {isExternalRead ? null : (
-                <button
-                  className="inline-flex min-h-7 items-center gap-1 rounded-[var(--app-radius)] bg-[var(--app-accent)] px-2 text-[var(--app-accent-foreground)] hover:opacity-90 focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={isApproving}
-                  title="保存到该 Subagent 当前绑定 Agent 的权限规则"
-                  type="button"
-                  onClick={() => void onChangeApproval(approval.tool, true, "agent")}
-                >
-                  <ShieldCheck aria-hidden="true" size={13} />
-                  Agent 一直允许
+                  本 Subagent 允许相同操作
                 </button>
               )}
             </div>
@@ -4521,6 +4546,12 @@ export function groupRunActivities(
 
   for (const [index, item] of timeline.entries()) {
     if (item.runId === null) continue;
+    if (item.kind === "model_retry") {
+      const activity = activityFor(item.runId, index);
+      activity.items.push(item);
+      if (item.durationMs != null) activity.durationMs = item.durationMs;
+      continue;
+    }
     if (item.kind === "tool") {
       if (item.name === "compact_context") continue;
       activityFor(item.runId, index).items.push(item);
@@ -4602,7 +4633,7 @@ export function groupRunActivities(
         : item);
       continue;
     }
-    if (item.kind === "tool") continue;
+    if (item.kind === "tool" || item.kind === "model_retry") continue;
     if (item.kind !== "message" || item.role !== "assistant") {
       projected.push(item);
       continue;
@@ -4904,6 +4935,11 @@ export function getConversationRunProgressInsertIndex(
 export function getModelActivityInsertIndex(
   timeline: readonly {
     id: string;
+    items?: readonly {
+      id: string;
+      kind: string;
+      runId?: string | null | undefined;
+    }[] | undefined;
     kind: string;
     role?: string | undefined;
     runId?: string | null | undefined;
@@ -4913,9 +4949,16 @@ export function getModelActivityInsertIndex(
 ): number {
   if (runId !== null) {
     const latestRetryIndex = timeline.findLastIndex((item) =>
-      item.kind === "model_retry" && item.runId === runId
+      (item.kind === "model_retry" && item.runId === runId)
+      || item.items?.some((entry) =>
+        entry.kind === "model_retry" && entry.runId === runId
+      ) === true
     );
-    if (latestRetryIndex >= 0) return latestRetryIndex + 1;
+    if (latestRetryIndex >= 0) {
+      return timeline[latestRetryIndex]?.kind === "model_retry"
+        ? latestRetryIndex + 1
+        : latestRetryIndex;
+    }
   }
 
   return getConversationRunProgressInsertIndex(timeline, fallbackAnchorTimelineItemId);
@@ -5167,6 +5210,7 @@ function TimelineItem({
   if (item.kind === "run_activity") {
     return (
       <RunActivityTimelineItem
+        agentClient={agentClient}
         key={`${item.id}:${String(activeRunId !== null && item.runIds.includes(activeRunId))}`}
         item={item}
         teamManaged={teamManaged}
@@ -5189,6 +5233,7 @@ function TimelineItem({
     );
     return (
       <ToolBatchTimelineItem
+        agentClient={agentClient}
         key={`${item.id}:${String(hasFailure)}:${latestActiveToolId ?? "idle"}`}
         item={item}
         teamManaged={teamManaged}
@@ -5216,6 +5261,7 @@ function TimelineItem({
     }
     return (
       <ToolTimelineItem
+        agentClient={agentClient}
         key={`${item.id}:${approvalErrors[item.id] === undefined ? String(toolItemHasFailure(item)) : "approval_failed"}:${latestActiveToolId ?? "idle"}`}
         item={item}
         teamManaged={teamManaged}
@@ -5774,10 +5820,14 @@ function toolItemHasFailure(item: ConversationToolItem): boolean {
   return false;
 }
 
-type RunActivityDisplayItem = ConversationToolItem | RunActivityTextItem | ToolBatchTimelineItem;
+type RunActivityDisplayItem =
+  | ConversationModelRetryItem
+  | ConversationToolItem
+  | RunActivityTextItem
+  | ToolBatchTimelineItem;
 
 function groupRunActivityItems(
-  items: Array<ConversationToolItem | RunActivityTextItem>,
+  items: RunActivityItem[],
 ): RunActivityDisplayItem[] {
   const grouped: RunActivityDisplayItem[] = [];
   let tools: ConversationToolItem[] = [];
@@ -5812,6 +5862,7 @@ function groupRunActivityItems(
 }
 
 function RunActivityTimelineItem({
+  agentClient,
   item,
   teamManaged,
   activeRunId,
@@ -5824,6 +5875,7 @@ function RunActivityTimelineItem({
   onChangeApproval,
   liveToolOutputs,
 }: {
+  agentClient: AgentClient;
   item: RunActivityTimelineItem;
   teamManaged: boolean;
   activeRunId: string | null;
@@ -5866,6 +5918,9 @@ function RunActivityTimelineItem({
   );
   const toggleLabel = isExpanded ? "收起工作过程" : "展开工作过程";
   const activityContent = displayItems.map((entry) => {
+    if (entry.kind === "model_retry") {
+      return <ModelRetryTimelineItem item={entry} key={entry.id} />;
+    }
     if (entry.kind === "activity_reasoning") {
       return (
         <div
@@ -5889,11 +5944,12 @@ function RunActivityTimelineItem({
     if (entry.kind === "tool_batch") {
       return (
         <ToolBatchTimelineItem
+          agentClient={agentClient}
           activeRunId={activeRunId}
           approvalErrors={approvalErrors}
           approvingToolId={approvingToolId}
           item={entry}
-          key={entry.id}
+          key={`${entry.id}:${latestActiveToolId ?? "idle"}`}
           latestActiveToolId={latestActiveToolId}
           liveToolOutputs={liveToolOutputs}
           modelActivity={null}
@@ -5905,11 +5961,12 @@ function RunActivityTimelineItem({
     }
     return (
       <ToolTimelineItem
+        agentClient={agentClient}
         approvalActionable={entry.runId === activeRunId}
         approvalError={approvalErrors[entry.id] ?? null}
         isApproving={approvingToolId === entry.id}
         item={entry}
-        key={`${entry.id}:${String(toolItemHasFailure(entry))}`}
+        key={`${entry.id}:${String(toolItemHasFailure(entry))}:${latestActiveToolId ?? "idle"}`}
         latestActiveToolId={latestActiveToolId}
         liveOutput={liveToolOutputs[entry.id]}
         onChangeApproval={onChangeApproval}
@@ -5965,6 +6022,7 @@ function RunActivityTimelineItem({
 }
 
 function ToolBatchTimelineItem({
+  agentClient,
   item,
   teamManaged,
   activeRunId,
@@ -5976,6 +6034,7 @@ function ToolBatchTimelineItem({
   onChangeApproval,
   liveToolOutputs,
 }: {
+  agentClient: AgentClient;
   item: Extract<TimelineDisplayItem, { kind: "tool_batch" }>;
   teamManaged: boolean;
   activeRunId: string | null;
@@ -5994,9 +6053,6 @@ function ToolBatchTimelineItem({
   const shouldAutoExpand = latestActiveToolId !== null
     && item.tools.some((tool) => tool.id === latestActiveToolId);
   const [isExpanded, setIsExpanded] = useState(shouldAutoExpand);
-  useEffect(() => {
-    setIsExpanded(shouldAutoExpand);
-  }, [shouldAutoExpand]);
   const hasFailure = item.tools.some((tool) =>
     toolItemHasFailure(tool) || approvalErrors[tool.id] !== undefined
   );
@@ -6037,7 +6093,8 @@ function ToolBatchTimelineItem({
         <div className="tool-activity-batch__items">
           {item.tools.map((tool) => (
             <ToolTimelineItem
-              key={`${tool.id}:${approvalErrors[tool.id] === undefined ? String(toolItemHasFailure(tool)) : "approval_failed"}`}
+              agentClient={agentClient}
+              key={`${tool.id}:${approvalErrors[tool.id] === undefined ? String(toolItemHasFailure(tool)) : "approval_failed"}:${latestActiveToolId ?? "idle"}`}
               item={tool}
               teamManaged={teamManaged}
               latestActiveToolId={latestActiveToolId}
@@ -6241,6 +6298,7 @@ function ContextCompactionTimelineItem({
 }
 
 function ToolTimelineItem({
+  agentClient,
   item,
   teamManaged,
   latestActiveToolId,
@@ -6252,6 +6310,7 @@ function ToolTimelineItem({
   onChangeApproval,
   liveOutput,
 }: {
+  agentClient: AgentClient;
   item: ConversationToolItem;
   teamManaged: boolean;
   latestActiveToolId: string | null;
@@ -6270,6 +6329,7 @@ function ToolTimelineItem({
   const isCommand = item.name === "run_command";
   const isExternalRead = item.name === "read_external_file";
   const isFileDeletion = item.name === "delete_file";
+  const terminalApprovalLabel = workspaceTerminalApprovalLabel(item);
   const isExpiredApproval = item.status === "awaiting_approval" && !approvalActionable;
   const effectiveStatus = isExpiredApproval
     ? "cancelled"
@@ -6279,9 +6339,6 @@ function ToolTimelineItem({
   const shouldAutoExpand = item.id === latestActiveToolId;
   const [isExpanded, setIsExpanded] = useState(shouldAutoExpand);
   const [isRawCallOpen, setIsRawCallOpen] = useState(false);
-  useEffect(() => {
-    setIsExpanded(shouldAutoExpand);
-  }, [shouldAutoExpand]);
   const detailsLabel = isExpanded ? "收起调用详情" : "展开调用详情";
 
   return (
@@ -6328,6 +6385,7 @@ function ToolTimelineItem({
       </header>
       {isExpanded ? (
         <ToolDetail
+          agentClient={agentClient}
           item={item}
           teamManaged={teamManaged}
           onOpenProjectFile={onOpenProjectFile}
@@ -6342,13 +6400,13 @@ function ToolTimelineItem({
       ) : item.status === "awaiting_approval" ? (
         <footer className="tool-timeline-item__approval">
           <span>
-            {isExternalRead
+            {terminalApprovalLabel ?? (isExternalRead
               ? "读取工作区外文件前需要确认"
               : isCommand
               ? "等待确认后执行命令"
               : isFileDeletion
                 ? "等待确认后删除文件"
-                : "等待确认后写入文件"}
+                : "等待确认后写入文件")}
           </span>
           <span className="tool-timeline-item__approval-actions">
             <button
@@ -6365,30 +6423,17 @@ function ToolTimelineItem({
               onClick={() => void onChangeApproval(item, true)}
             >
               <Check aria-hidden="true" size={14} />
-              {isApproving
-                ? "提交中"
-                : "本次允许"}
+              {isApproving ? "提交中" : "允许一次"}
             </button>
             {isExternalRead ? null : (
               <button
                 disabled={isApproving}
-                title="当前对话后续同类操作自动允许"
+                title="当前对话后续完全相同的命令或同一工具与路径自动允许"
                 type="button"
                 onClick={() => void onChangeApproval(item, true, "session")}
               >
                 <Check aria-hidden="true" size={14} />
-                本会话允许
-              </button>
-            )}
-            {isExternalRead ? null : (
-              <button
-                disabled={isApproving}
-                title="保存到当前 Agent 的权限规则"
-                type="button"
-                onClick={() => void onChangeApproval(item, true, "agent")}
-              >
-                <ShieldCheck aria-hidden="true" size={14} />
-                Agent 一直允许
+                本对话允许相同操作
               </button>
             )}
           </span>
@@ -6431,6 +6476,11 @@ function ToolExecutionTimer(): ReactElement {
 function ToolTypeIcon({ name }: { name: string }): ReactElement {
   switch (name) {
     case "run_command":
+    case "terminal_control":
+    case "create_terminal":
+    case "open_terminal":
+    case "execute_terminal_command":
+    case "read_terminal_output":
       return <Terminal aria-hidden="true" size={15} />;
     case "wait_for_commands":
     case "wait_for_project_operation":
@@ -6450,8 +6500,12 @@ function ToolTypeIcon({ name }: { name: string }): ReactElement {
       return <Search aria-hidden="true" size={15} />;
     case "find_files":
       return <FileSearch aria-hidden="true" size={15} />;
+    case "browser_control":
+      return <Globe2 aria-hidden="true" size={15} />;
     case "read_attachment":
       return <Paperclip aria-hidden="true" size={15} />;
+    case "view_attachments":
+      return <Images aria-hidden="true" size={15} />;
     case "write_file":
     case "replace_in_file":
       return <Pencil aria-hidden="true" size={15} />;
@@ -6497,6 +6551,25 @@ function toolStatusLabel(status: ConversationToolItem["status"]): string {
   }
 }
 
+function workspaceTerminalApprovalLabel(item: ConversationToolItem): string | null {
+  if (item.name === "create_terminal" || item.name === "open_terminal") {
+    return "等待确认后打开侧边终端";
+  }
+  if (item.name === "execute_terminal_command") return "等待确认后向侧边终端发送命令";
+  if (item.name !== "terminal_control") return null;
+  const argumentsValue = parseToolPayload(item.arguments);
+  switch (argumentsValue?.action) {
+    case "create":
+      return "等待确认后打开侧边终端";
+    case "write":
+      return "等待确认后向侧边终端发送命令";
+    case "close":
+      return "等待确认后关闭侧边终端";
+    default:
+      return "等待确认后操作侧边终端";
+  }
+}
+
 function toolActivityLabel(item: ConversationToolItem, teamManaged = false): string {
   const argumentsValue = parseToolPayload(item.arguments);
   const path = typeof argumentsValue?.path === "string" ? argumentsValue.path : null;
@@ -6506,12 +6579,52 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
     case "run_command": {
       const command = typeof argumentsValue?.command === "string" ? argumentsValue.command : null;
       const commandResult = item.result === null ? null : parseCommandResult(item.result);
+      const mode = argumentsValue?.mode === "service"
+        || commandResult?.mode === "service"
+        || (argumentsValue?.mode === undefined && typeof argumentsValue?.serviceName === "string")
+        ? "service"
+        : "batch";
+      const serviceName = typeof argumentsValue?.serviceName === "string"
+        ? argumentsValue.serviceName
+        : command;
+      if (mode === "service") {
+        if (commandResult?.status === "running") {
+          return serviceName === null ? "服务已启动" : `已启动 ${serviceName}`;
+        }
+        if (commandResult?.status === "completed") {
+          return serviceName === null ? "服务已结束" : `${serviceName} 已结束`;
+        }
+        return serviceName === null ? "启动后台服务" : `启动 ${serviceName}`;
+      }
       if (commandResult?.status === "running") {
         return command === null ? "命令正在后台运行" : `后台运行 ${command}`;
       }
       return command === null
         ? (completed ? "已运行命令" : "运行命令")
         : `${completed ? "已运行" : "运行"} ${command}`;
+    }
+    case "terminal_control": {
+      const action = typeof argumentsValue?.action === "string" ? argumentsValue.action : null;
+      switch (action) {
+        case "create":
+          return completed ? "侧边终端已打开" : "打开侧边终端";
+        case "list":
+          return completed ? "已查看侧边终端" : "查看侧边终端";
+        case "write": {
+          const command = typeof argumentsValue?.command === "string"
+            ? argumentsValue.command
+            : null;
+          return command === null
+            ? (completed ? "命令已发送到侧边终端" : "向侧边终端发送命令")
+            : `${completed ? "已发送" : "发送"} ${command}`;
+        }
+        case "read":
+          return completed ? "已读取侧边终端输出" : "读取侧边终端输出";
+        case "close":
+          return completed ? "侧边终端已关闭" : "关闭侧边终端";
+        default:
+          return completed ? "侧边终端操作已完成" : "操作侧边终端";
+      }
     }
     case "wait_for_commands": {
       const commandIds = Array.isArray(argumentsValue?.commandIds) ? argumentsValue.commandIds : [];
@@ -6535,6 +6648,12 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
         : `${completed ? "已读取" : "读取"} ${path}`;
     case "read_attachment":
       return completed ? "已读取附件" : "读取附件";
+    case "view_attachments": {
+      const attachmentIds = Array.isArray(argumentsValue?.attachment_ids)
+        ? argumentsValue.attachment_ids
+        : [];
+      return `${completed ? "已查看" : "查看"} ${attachmentIds.length} 个附件`;
+    }
     case "list_directory":
       return path === null || path.length === 0 ? "查看工作区目录" : `查看 ${path}`;
     case "search_text": {
@@ -6548,6 +6667,33 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
     case "find_files": {
       const pattern = typeof argumentsValue?.pattern === "string" ? argumentsValue.pattern : null;
       return pattern === null ? "查找文件" : `查找 ${pattern}`;
+    }
+    case "browser_control": {
+      const action = typeof argumentsValue?.action === "string" ? argumentsValue.action : null;
+      switch (action) {
+        case "open":
+          return completed ? "网页已打开" : "打开网页";
+        case "observe":
+          return completed ? "已查看页面" : "查看页面";
+        case "navigate":
+          return completed ? "已跳转网页" : "跳转网页";
+        case "click":
+          return completed ? "已点击页面元素" : "点击页面元素";
+        case "fill":
+          return completed ? "已填写页面" : "填写页面";
+        case "select":
+          return completed ? "已选择页面选项" : "选择页面选项";
+        case "key":
+          return completed ? "已向页面发送按键" : "向页面发送按键";
+        case "scroll":
+          return completed ? "已滚动页面" : "滚动页面";
+        case "wait":
+          return completed ? "页面等待结束" : "等待页面";
+        case "close":
+          return completed ? "网页已关闭" : "关闭网页";
+        default:
+          return completed ? "浏览器操作已完成" : "操作浏览器";
+      }
     }
     case "write_file": {
       const overwrites = argumentsValue?.overwrite === true;
@@ -6692,6 +6838,18 @@ const TOOL_BATCH_CATEGORIES: readonly ToolBatchCategory[] = [
     priority: 100,
   },
   {
+    iconToolName: "terminal_control",
+    label: (count) => `操作 ${count} 次侧边终端`,
+    names: [
+      "terminal_control",
+      "create_terminal",
+      "open_terminal",
+      "execute_terminal_command",
+      "read_terminal_output",
+    ],
+    priority: 95,
+  },
+  {
     iconToolName: "run_command",
     label: (count) => `运行 ${count} 条命令`,
     names: ["run_command", "wait_for_commands", "stop_command"],
@@ -6700,7 +6858,7 @@ const TOOL_BATCH_CATEGORIES: readonly ToolBatchCategory[] = [
   {
     iconToolName: "read_file",
     label: (count) => `读取 ${count} 个文件`,
-    names: ["read_file", "read_external_file", "read_attachment"],
+    names: ["read_file", "read_external_file", "read_attachment", "view_attachments"],
     priority: 80,
   },
   {
@@ -6714,6 +6872,12 @@ const TOOL_BATCH_CATEGORIES: readonly ToolBatchCategory[] = [
     label: (count) => `协调 ${count} 项项目操作`,
     names: ["list_project_operations", "wait_for_project_operation"],
     priority: 60,
+  },
+  {
+    iconToolName: "browser_control",
+    label: (count) => `操作 ${count} 次浏览器`,
+    names: ["browser_control"],
+    priority: 55,
   },
   {
     iconToolName: "create_task_list",
@@ -6783,11 +6947,13 @@ export function toolBatchExecutionMode(
 }
 
 function ToolDetail({
+  agentClient,
   item,
   teamManaged,
   liveOutput,
   onOpenProjectFile,
 }: {
+  agentClient: AgentClient;
   item: ConversationToolItem;
   teamManaged: boolean;
   liveOutput?: LiveToolOutput;
@@ -6842,6 +7008,16 @@ function ToolDetail({
 
   if (item.name === "read_attachment") {
     return <AttachmentReadResult payload={item.result} status={item.status} />;
+  }
+
+  if (item.name === "view_attachments") {
+    return (
+      <AttachmentViewResult
+        agentClient={agentClient}
+        payload={item.result}
+        status={item.status}
+      />
+    );
   }
 
   if (item.name === "search_text") {
@@ -7138,6 +7314,33 @@ function AttachmentReadResult({
       {result.truncated ? (
         <p className="tool-directory-listing__notice">附件后面仍有内容，可继续按偏移量读取。</p>
       ) : null}
+    </StructuredToolResult>
+  );
+}
+
+function AttachmentViewResult({
+  agentClient,
+  payload,
+  status,
+}: {
+  agentClient: AgentClient;
+  payload: string | null;
+  status: ConversationToolItem["status"];
+}): ReactElement {
+  const attachments = payload === null ? null : parseAttachmentViewResult(payload);
+  if (attachments === null) return <ToolResultNotice result={payload} status={status} />;
+
+  return (
+    <StructuredToolResult summary={`查看 ${attachments.length} 个附件`}>
+      <AttachmentStrip variant="message">
+        {attachments.map((attachment) => (
+          <AttachmentChip
+            agentClient={agentClient}
+            attachment={attachment}
+            key={attachment.id}
+          />
+        ))}
+      </AttachmentStrip>
     </StructuredToolResult>
   );
 }
@@ -8161,11 +8364,18 @@ function parseAttachmentReadResult(payload: string): {
     : null;
 }
 
+export function parseAttachmentViewResult(payload: string): ConversationAttachment[] | null {
+  const result = parseToolValue(payload);
+  const parsed = conversationAttachmentListSchema.safeParse(result?.attachments);
+  return parsed.success ? parsed.data : null;
+}
+
 type CommandResultPayload = {
   command: string | null;
   commandId: string | null;
   completedAt: string | null;
   exitCode: number | null;
+  mode: "batch" | "service" | null;
   stderr: string;
   startedAt: string | null;
   status: "running" | "completed" | "failed" | "cancelled" | null;
@@ -8200,6 +8410,7 @@ function parseCommandResultValue(result: Record<string, unknown> | null): Comman
       commandId: typeof result.commandId === "string" ? result.commandId : null,
       completedAt: typeof result.completedAt === "string" ? result.completedAt : null,
       exitCode: result.exitCode,
+      mode: result.mode === "batch" || result.mode === "service" ? result.mode : null,
       stderr: result.stderr,
       startedAt: typeof result.startedAt === "string" ? result.startedAt : null,
       status: isCommandSessionStatus(result.status) ? result.status : null,
@@ -8286,7 +8497,9 @@ function commandTerminalOutput(
 
 function commandTerminalOutputValue(result: CommandResultPayload): string {
   const lines = [result.stdout, result.stderr].filter((value) => value.length > 0);
-  if (result.status === "running" && lines.length === 0) lines.push("[命令正在后台运行]");
+  if (result.status === "running" && lines.length === 0) {
+    lines.push(result.mode === "service" ? "[服务正在后台运行]" : "[命令正在后台运行]");
+  }
   if (result.status === "cancelled") lines.push("[命令已停止]");
   if (result.timedOut) lines.push("[命令执行超时]");
   if (result.truncated) lines.push("[输出已截断]");

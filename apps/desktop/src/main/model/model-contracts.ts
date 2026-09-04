@@ -55,7 +55,7 @@ export type ModelMessageAttachment = {
   name: string;
   projectPath: string | null;
   readState: "full" | "metadata_only" | "preview";
-  source: "project" | "upload";
+  source: "browser" | "project" | "upload";
   truncated: boolean;
 } & (
   | { content: string; kind: "text" }
@@ -65,9 +65,11 @@ export type ModelMessageAttachment = {
 export function modelImageAttachmentCaption(
   attachment: Pick<ModelMessageAttachment, "id" | "name" | "projectPath" | "source">
 ): string {
-  const location = attachment.projectPath === null
-    ? "用户上传图片"
-    : `项目图片 ${attachment.projectPath}`;
+  const location = attachment.source === "browser"
+    ? "浏览器工具截图"
+    : attachment.projectPath === null
+      ? "用户上传图片"
+      : `项目图片 ${attachment.projectPath}`;
   return [
     `[图片附件 ${attachment.name}]`,
     `attachment_id: ${attachment.id}`,

@@ -169,8 +169,10 @@ export const applicationAppearanceConfigurationSchema = z.object({
 }).strict();
 
 export const conversationSendShortcutSchema = z.enum(["enter", "ctrl_enter"]);
+export const approvalReviewerSchema = z.enum(["user", "auto_review"]);
 
 export const applicationGeneralConfigurationSchema = z.object({
+  approvalReviewer: approvalReviewerSchema.default("user"),
   defaultPermissionMode: conversationPermissionModeSchema.default("ask_before_changes"),
   defaultMessageDeliveryMode: conversationMessageDeliveryModeSchema,
   sendShortcut: conversationSendShortcutSchema.default("enter"),
@@ -181,6 +183,7 @@ export const applicationSettingsSchema = z.object({
   agentDirectory: agentDirectoryConfigurationSchema,
   appearance: applicationAppearanceConfigurationSchema,
   general: applicationGeneralConfigurationSchema.default({
+    approvalReviewer: "user",
     defaultPermissionMode: "ask_before_changes",
     defaultMessageDeliveryMode: "queue",
     sendShortcut: "enter",
@@ -206,6 +209,7 @@ export type ApplicationPermissionPolicies = z.infer<typeof applicationPermission
 export type ApplicationAppearanceConfiguration = z.infer<typeof applicationAppearanceConfigurationSchema>;
 export type ApplicationGeneralConfiguration = z.infer<typeof applicationGeneralConfigurationSchema>;
 export type ConversationSendShortcut = z.infer<typeof conversationSendShortcutSchema>;
+export type ApprovalReviewer = z.infer<typeof approvalReviewerSchema>;
 export type ApplicationSettings = z.infer<typeof applicationSettingsSchema>;
 
 export const DEFAULT_AGENT_DIRECTORY_CONFIGURATION: AgentDirectoryConfiguration = {
@@ -456,6 +460,7 @@ export const DEFAULT_APPLICATION_SETTINGS: ApplicationSettings = {
     themeMode: "light",
   },
   general: {
+    approvalReviewer: "user",
     defaultPermissionMode: "ask_before_changes",
     defaultMessageDeliveryMode: "queue",
     sendShortcut: "enter",

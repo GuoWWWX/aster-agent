@@ -153,7 +153,7 @@ describe("ProjectToolRegistry", () => {
     const runCommand = tools.getDefinitions().find((tool) => tool.name === "run_command");
     expect(runCommand?.description).toContain("default choice for ordinary commands");
     expect(runCommand?.description).toContain("does not open a visible terminal tab");
-    expect(runCommand?.description).toContain("create_terminal");
+    expect(runCommand?.description).toContain("terminal_control");
     expect(runCommand?.description).toContain("nonzero final exit code marks the command failed");
     expect(tools.getDefinitions().find((tool) => tool.name === "search_text")?.description)
       .toContain("successful empty result when nothing matches");
@@ -860,6 +860,37 @@ describe("ProjectToolRegistry", () => {
     expect(payload.value.workingDirectory).toBe(project.rootPath);
   });
 
+  it("waits for a batch command to finish even when yieldTimeMs is zero", async () => {
+    if (process.platform !== "win32") return;
+
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const proposal = await tools.execute(
+      "run_command",
+      JSON.stringify({
+        command: 'Write-Output "batch-start"; Start-Sleep -Milliseconds 250; Write-Output "batch-finished"',
+        yieldTimeMs: 0,
+      }),
+      project.id,
+      signal,
+    );
+    if (proposal.kind !== "command") throw new Error(proposal.content);
+
+    const result = await tools.executePreparedCommand(proposal.command, project.id, signal);
+    const payload = JSON.parse(result.content) as {
+      value?: { mode?: unknown; status?: unknown; stdout?: unknown; timeoutMs?: unknown };
+    };
+
+    expect(result.isError).toBe(false);
+    expect(payload.value).toMatchObject({
+      mode: "batch",
+      status: "completed",
+      timeoutMs: 30 * 60_000,
+    });
+    expect(payload.value?.stdout).toContain("batch-start");
+    expect(payload.value?.stdout).toContain("batch-finished");
+  });
+
   it("streams command output before the command completes", async () => {
     const { project, tools } = await createFixture();
     const signal = new AbortController().signal;
@@ -872,6 +903,7 @@ describe("ProjectToolRegistry", () => {
       "run_command",
       JSON.stringify({
         command: 'Write-Output "stream-first"; Start-Sleep -Milliseconds 1000; [Console]::Error.WriteLine("stream-error")',
+        mode: "service",
         timeoutMs: 10_000,
         yieldTimeMs: 0,
       }),
@@ -970,9 +1002,9 @@ describe("ProjectToolRegistry", () => {
       new AbortController().signal,
     );
 
-    // Select-Object may close the native pipe early and leave rg with exit 1;
-    // the command stays failed, but its retained output must not be mojibake.
-    expect(result.isError, result.content).toBe(true);
+    // Depending on PowerShell and rg versions, Select-Object may either let rg
+    // exit cleanly or close the pipe early. In both cases, retained UTF-8 output
+    // must not be mojibake.
     expect(result.content).toContain("中文文件.txt:1:命中内容");
     expect(result.content).not.toContain("涓");
   });
@@ -984,7 +1016,7 @@ describe("ProjectToolRegistry", () => {
     const proposal = await tools.execute(
       "run_command",
       JSON.stringify({
-        command: 'Write-Output "中文终端"; ping 127.0.0.1 -n 1',
+        command: 'Write-Output "中文终端"; ping -?',
         timeoutMs: 10_000,
       }),
       project.id,
@@ -1019,6 +1051,7 @@ describe("ProjectToolRegistry", () => {
         "run_command",
         JSON.stringify({
           command: "Start-Sleep -Milliseconds 150; Write-Output command-one",
+          mode: "service",
           parallel: true,
           timeoutMs: 10_000,
           yieldTimeMs: 0,
@@ -1031,6 +1064,7 @@ describe("ProjectToolRegistry", () => {
         "run_command",
         JSON.stringify({
           command: "Start-Sleep -Milliseconds 100; Write-Output command-two",
+          mode: "service",
           parallel: true,
           timeoutMs: 10_000,
           yieldTimeMs: 0,
@@ -1082,6 +1116,7 @@ describe("ProjectToolRegistry", () => {
       "run_command",
       JSON.stringify({
         command: "Start-Sleep -Seconds 5; Write-Output should-not-complete",
+        mode: "service",
         timeoutMs: 10_000,
         yieldTimeMs: 0,
       }),
@@ -1177,6 +1212,7 @@ describe("ProjectToolRegistry", () => {
         commands: [{
           command: "Start-Sleep -Seconds 30",
           commandId,
+          mode: "service",
           serviceName: "Vite development server",
           status: "running",
           timeoutMs: 60_000,
@@ -1192,6 +1228,51 @@ describe("ProjectToolRegistry", () => {
       ok: true,
       value: { commands: [] },
     });
+  });
+
+  it("releases the project operation lock after a service starts", async () => {
+    if (process.platform !== "win32") return;
+
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const owner = {
+      conversationId: "conversation-service-lock",
+      conversationTitle: "后台服务不占锁",
+      runId: "run-service-lock",
+    };
+    const proposal = await tools.execute(
+      "run_command",
+      JSON.stringify({
+        command: "Start-Sleep -Seconds 30",
+        mode: "service",
+        serviceName: "test service",
+        yieldTimeMs: 0,
+      }),
+      project.id,
+      signal,
+      owner,
+    );
+    if (proposal.kind !== "command") throw new Error(proposal.content);
+    const started = await tools.executePreparedCommand(proposal.command, project.id, signal, owner);
+    const payload = JSON.parse(started.content) as {
+      value?: { commandId?: unknown; status?: unknown; timeoutMs?: unknown };
+    };
+    if (typeof payload.value?.commandId !== "string") throw new Error("Expected a service ID.");
+
+    expect(payload.value).toMatchObject({ status: "running", timeoutMs: null });
+    await expect(tools.writeUserFile({
+      content: "written while service is active\n",
+      expectedContent: null,
+      path: "service-write.txt",
+      projectId: project.id,
+    }, signal)).resolves.toMatchObject({ path: "service-write.txt" });
+    await tools.execute(
+      "stop_command",
+      JSON.stringify({ commandId: payload.value.commandId }),
+      project.id,
+      signal,
+      owner,
+    );
   });
 
   it("keeps independent read tools responsive on a large workspace", async () => {

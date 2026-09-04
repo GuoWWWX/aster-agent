@@ -19,7 +19,7 @@ import { rgPath } from "@vscode/ripgrep";
 import { applyPatch, createTwoFilesPatch, parsePatch } from "diff";
 import { z } from "zod";
 
-import type { ModelToolDefinition } from "../model/model-contracts.js";
+import type { ModelMessageAttachment, ModelToolDefinition } from "../model/model-contracts.js";
 import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
 import { toolErrorContent } from "../errors/tool-error.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
@@ -200,14 +200,16 @@ const runCommandArgumentsSchema = z
   .object({
     command: z.string().trim().min(1).max(MAX_COMMAND_LENGTH)
       .describe("One non-interactive command for the configured project shell."),
+    mode: z.enum(["batch", "service"]).default("batch")
+      .describe("batch waits for a finite command such as a build or test to exit; service returns after its startup observation window and keeps the process running."),
     parallel: z.boolean().default(true)
       .describe("Run alongside other independent commands from the same model turn by default; set false when this command depends on another command or shared mutable state."),
-    timeoutMs: z.number().int().min(1_000).max(MAX_COMMAND_TIMEOUT_MS).default(60_000)
-      .describe("Maximum execution time in milliseconds before the process is terminated."),
+    timeoutMs: z.number().int().min(1_000).max(MAX_COMMAND_TIMEOUT_MS).optional()
+      .describe("Optional execution limit in milliseconds. batch defaults to 30 minutes; service has no automatic timeout when omitted."),
     serviceName: z.string().trim().min(1).max(MAX_SERVICE_NAME_LENGTH).optional()
-      .describe("Human-readable name for a long-running service, such as Vite development server. Use this whenever the command is expected to continue in the background."),
+      .describe("Human-readable name for a service command, such as Vite development server."),
     yieldTimeMs: z.number().int().min(0).max(MAX_COMMAND_YIELD_MS).default(10_000)
-      .describe("How long to wait for a quick result before returning a commandId."),
+      .describe("For service mode only, how long to stream startup output before returning its commandId."),
   })
   .strict();
 
@@ -237,6 +239,7 @@ export type ToolExecutionResult = {
   kind: "completed";
   content: string;
   isError: boolean;
+  modelAttachments?: ModelMessageAttachment[];
   status?: "rejected";
 };
 
@@ -250,9 +253,10 @@ export type PreparedFileChange = {
 
 export type PreparedCommand = {
   command: string;
+  mode: "batch" | "service";
   parallel: boolean;
   serviceName?: string | undefined;
-  timeoutMs: number;
+  timeoutMs: number | null;
   yieldTimeMs: number;
 };
 
@@ -303,6 +307,7 @@ type CommandSession = {
   error: string | null;
   exitCode: number | null;
   conversationId: string;
+  mode: "batch" | "service";
   projectId: string | undefined;
   outputEncoding: TerminalOutputEncoding;
   serviceName: string;
@@ -314,7 +319,7 @@ type CommandSession = {
   stdoutByteLength: number;
   terminal: TerminalLaunch;
   terminate: (cancelled: boolean) => void;
-  timeoutMs: number;
+  timeoutMs: number | null;
   timedOut: boolean;
   truncated: boolean;
   workingDirectory: string;
@@ -568,7 +573,7 @@ export class ProjectToolRegistry {
       },
       {
         description:
-          `Run one non-interactive ${commandEnvironment} command. This is the default choice for ordinary commands, builds, checks, and tests; it returns output to the conversation and does not open a visible terminal tab. Any nonzero final exit code marks the command failed even when stdout contains useful data, so keep expected-negative probes separate from unrelated checks and prefer search_text/find_files when no match is acceptable. When the user explicitly requests a visible, right-side, or interactive terminal, or the task genuinely requires an ongoing PTY, use create_terminal and execute_terminal_command instead when available. Project conversations run this command in the authorized workspace root; temporary conversations run it in an isolated temporary directory. The bundled rg command is always available. Short commands return normally; a command still running after yieldTimeMs returns a commandId for wait_for_commands. Give an expected long-running command a concise serviceName so list_background_commands can recover its ID later. timeoutMs is the command's execution limit; yieldTimeMs only controls when a still-running command is handed back. Independent commands returned in the same model turn run in parallel by default whenever the permission mode allows commands; set parallel=false when this command depends on another command or shared mutable state. In ask-before-changes mode each command still requires its own approval, and approved independent commands can overlap.`,
+          `Run one non-interactive ${commandEnvironment} command. This is the default choice for ordinary commands and does not open a visible terminal tab. Use the default mode=batch for every finite command, including long builds, checks, tests, packaging, and migrations: batch streams progress but does not return to the model until the process really exits, and it defaults to a 30-minute execution limit. Use mode=service only for a process intentionally expected to stay alive, such as a development server or watcher: startup output streams in the same tool item, then the tool returns a commandId after yieldTimeMs while the service continues without an automatic timeout unless timeoutMs is explicitly provided. Give service mode a concise serviceName so list_background_commands can recover its ID later. Never use this tool for SSH, a REPL, password prompts, or any command requiring later input; use terminal_control for those interactive PTY sessions. Any nonzero final exit code marks the command failed even when stdout contains useful data, so keep expected-negative probes separate from unrelated checks and prefer search_text/find_files when no match is acceptable. Project conversations run in the authorized workspace root; temporary conversations run in an isolated temporary directory. The bundled rg command is always available. Independent commands returned in the same model turn run in parallel by default whenever the permission mode allows commands; set parallel=false when this command depends on another command or shared mutable state. In ask-before-changes mode each command still requires its own approval, and approved independent commands can overlap.`,
         name: "run_command",
         parameters: modelToolParameters(runCommandArgumentsSchema)
       }
@@ -1041,10 +1046,13 @@ export class ProjectToolRegistry {
             onOutput,
           );
           this.commandSessions.set(commandId, session);
-          await session.completion;
+          if (command.mode === "batch") await session.completion;
           return session;
         },
       );
+      if (command.mode === "batch") {
+        return this.commandExecutionResult(await operation);
+      }
       const settled = operation.then(
         (value) => ({ kind: "settled" as const, value }),
         (error: unknown) => ({ error, kind: "failed" as const }),
@@ -1199,15 +1207,27 @@ export class ProjectToolRegistry {
 
   private prepareCommand(rawArguments: unknown): ToolExecution {
     const input = runCommandArgumentsSchema.parse(rawArguments);
+    const modeWasProvided = rawArguments !== null
+      && typeof rawArguments === "object"
+      && Object.hasOwn(rawArguments, "mode");
+    const mode = !modeWasProvided && input.serviceName !== undefined
+      ? "service"
+      : input.mode;
+    const command: PreparedCommand = {
+      ...input,
+      mode,
+      timeoutMs: input.timeoutMs ?? (mode === "batch" ? MAX_COMMAND_TIMEOUT_MS : null),
+    };
     return {
-      command: input,
+      command,
       content: JSON.stringify({
         ok: true,
         value: {
-          command: input.command,
-          serviceName: input.serviceName ?? this.defaultServiceName(input.command),
+          command: command.command,
+          mode: command.mode,
+          serviceName: command.serviceName ?? this.defaultServiceName(command.command),
           status: "awaiting_approval",
-          timeoutMs: input.timeoutMs,
+          timeoutMs: command.timeoutMs,
         }
       }),
       isError: false,
@@ -1326,6 +1346,7 @@ export class ProjectToolRegistry {
       conversationId,
       error: null,
       exitCode: null,
+      mode: command.mode,
       outputEncoding,
       projectId,
       serviceName: command.serviceName ?? this.defaultServiceName(command.command),
@@ -1403,7 +1424,7 @@ export class ProjectToolRegistry {
       }
     };
     const cleanup = (): void => {
-      clearTimeout(timer);
+      if (timer !== null) clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
     };
     const finish = (
@@ -1422,10 +1443,12 @@ export class ProjectToolRegistry {
     };
     const onAbort = (): void => session.terminate(true);
 
-    const timer = setTimeout(() => {
-      session.timedOut = true;
-      session.terminate(false);
-    }, command.timeoutMs);
+    const timer = command.timeoutMs === null
+      ? null
+      : setTimeout(() => {
+          session.timedOut = true;
+          session.terminate(false);
+        }, command.timeoutMs);
     signal.addEventListener("abort", onAbort, { once: true });
     child.stdout.on("data", (chunk: Buffer) => appendOutput("stdout", chunk));
     child.stderr.on("data", (chunk: Buffer) => appendOutput("stderr", chunk));
@@ -1474,6 +1497,7 @@ export class ProjectToolRegistry {
       .map((session) => ({
         command: session.command,
         commandId: session.commandId,
+        mode: session.mode,
         serviceName: session.serviceName,
         startedAt: session.startedAt,
         status: session.status,
@@ -1493,6 +1517,7 @@ export class ProjectToolRegistry {
       completedAt: session.completedAt,
       error: session.error,
       exitCode: session.exitCode,
+      mode: session.mode,
       serviceName: session.serviceName,
       startedAt: session.startedAt,
       status: session.status,
@@ -1553,6 +1578,13 @@ export class ProjectToolRegistry {
     }
     session.terminate(true);
     return this.success({ command: this.commandSessionSnapshot(session) });
+  }
+
+  public dispose(): void {
+    for (const session of this.commandSessions.values()) {
+      session.terminate(true);
+    }
+    this.commandSessions.clear();
   }
 
   private async readEditableFile(
@@ -1832,7 +1864,8 @@ export class ProjectToolRegistry {
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
     for (const operation of completed.slice(0, Math.max(0, completed.length - 100))) {
       this.projectOperations.delete(operation.operationId);
-      this.commandSessions.delete(operation.operationId);
+      const session = this.commandSessions.get(operation.operationId);
+      if (session?.status !== "running") this.commandSessions.delete(operation.operationId);
     }
   }
 

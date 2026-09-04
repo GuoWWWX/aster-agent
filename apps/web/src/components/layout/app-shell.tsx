@@ -33,6 +33,7 @@ type AppShellProps = {
   onCloseAllConversationTabs?: () => void;
   onCloseConversationTab?: (conversationId: string) => void;
   onCloseOtherConversationTabs?: (conversationId: string) => void;
+  onOpenGlobalSearch?: () => void;
   onSelectConversationTab?: (conversationId: string) => void;
 };
 
@@ -46,6 +47,7 @@ export function AppShell({
   onCloseAllConversationTabs,
   onCloseConversationTab,
   onCloseOtherConversationTabs,
+  onOpenGlobalSearch,
   onSelectConversationTab,
 }: AppShellProps): ReactElement {
   const [isFilePanelResizing, setFilePanelResizing] = useState(false);
@@ -172,7 +174,7 @@ export function AppShell({
         data-active-activity={activeActivity}
         data-full-page={String(!isConversationWorkspace)}
       >
-        <ActivityBar />
+        <ActivityBar {...(onOpenGlobalSearch === undefined ? {} : { onOpenGlobalSearch })} />
         {isConversationWorkspace && isProjectNavigatorOpen ? (
           <div
             className="workbench-sidebar workbench-sidebar--left"

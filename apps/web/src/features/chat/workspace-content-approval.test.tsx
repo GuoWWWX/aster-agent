@@ -463,6 +463,79 @@ describe("Tool activity disclosure", () => {
     expect(commandSummary?.getAttribute("aria-expanded")).toBe("false");
   });
 
+  it("shows image thumbnails and file cards below a completed attachment-view tool", async () => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "历史附件回看测试" });
+    const imageAttachment = attachment({
+      conversationId: PARENT_ID,
+      id: "00000000-0000-4000-8000-000000000041",
+      kind: "image",
+      messageId: MESSAGE_ID,
+      mimeType: "image/png",
+      name: "history.png",
+    });
+    const documentAttachment = attachment({
+      conversationId: PARENT_ID,
+      id: "00000000-0000-4000-8000-000000000042",
+      messageId: MESSAGE_ID,
+      mimeType: "application/pdf",
+      name: "history.pdf",
+    });
+    const tool: ConversationToolItem = {
+      arguments: JSON.stringify({
+        attachment_ids: [imageAttachment.id, documentAttachment.id],
+      }),
+      batchId: null,
+      conversationId: PARENT_ID,
+      createdAt: "2026-09-04T01:00:00.000Z",
+      diff: null,
+      executionMode: "parallel",
+      id: TOOL_ID,
+      kind: "tool",
+      name: "view_attachments",
+      result: JSON.stringify({
+        ok: true,
+        value: { attachments: [imageAttachment, documentAttachment] },
+      }),
+      runId: RUN_ID,
+      status: "completed",
+    };
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool]);
+    const readPreview = vi.spyOn(client, "readConversationAttachmentPreview")
+      .mockResolvedValue({ data: "AQID", mimeType: "image/png" });
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace agentClient={client} project={null} session={target} />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+
+    expandWorkProcess(container);
+    act(() => container.querySelector<HTMLButtonElement>(
+      'button[aria-label="展开调用详情"]',
+    )?.click());
+    await act(async () => flushConversationWorkspace());
+
+    const attachmentStrip = container.querySelector(
+      ".tool-structured-result .conversation-attachments--message",
+    );
+    expect(attachmentStrip?.querySelector<HTMLImageElement>(
+      'img[src="data:image/png;base64,AQID"]',
+    )).not.toBeNull();
+    expect(attachmentStrip?.querySelector(".conversation-attachment--file-card")?.textContent)
+      .toContain("history.pdf");
+    expect(readPreview).toHaveBeenCalledWith({
+      attachmentId: imageAttachment.id,
+      conversationId: PARENT_ID,
+    });
+  });
+
   it("renders a failed tool result like a compact normal tool payload", async () => {
     const client = new MockAgentClient();
     const target = session({ id: PARENT_ID, title: "工具失败样式测试" });
@@ -589,7 +662,11 @@ describe("Tool activity disclosure", () => {
 describe("Model request retry timeline", () => {
   it("shows retry progress immediately and keeps the terminal failure in the conversation", async () => {
     const client = new MockAgentClient();
-    const target = session({ id: PARENT_ID, title: "模型重试测试" });
+    const target = session({
+      activeRunId: RUN_ID,
+      id: PARENT_ID,
+      title: "模型重试测试",
+    });
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
       this: HTMLElement,
     ) {
@@ -658,6 +735,8 @@ describe("Model request retry timeline", () => {
     const retrySummaryButton = container.querySelector<HTMLButtonElement>(
       'button[aria-label^="展开重试详情："]',
     );
+    const retryTimelineItem = retrySummaryButton?.closest("section") ?? null;
+    expect(retryTimelineItem?.closest(".conversation-run-activity")).not.toBeNull();
     expect(retrySummaryButton?.className).toContain("flex-[0_1_auto]");
     expect(retrySummaryButton?.className).not.toContain("flex-1");
     act(() => {
@@ -687,6 +766,9 @@ describe("Model request retry timeline", () => {
     });
 
     expect(container.textContent).toContain("正在重新连接 2/5 · 2 秒后重试");
+    expect(container.querySelector<HTMLElement>(
+      'section[data-status="retrying"]',
+    )).toBe(retryTimelineItem);
     act(() => {
       vi.advanceTimersByTime(1_000);
     });
@@ -709,8 +791,10 @@ describe("Model request retry timeline", () => {
     });
 
     expect(container.textContent).toContain("重新连接失败 · 已重试 5/5");
-    const terminalRetry = container.querySelector<HTMLElement>('[data-status="failed"]');
+    const terminalRetry = [...container.querySelectorAll<HTMLElement>('[data-status="failed"]')]
+      .find((element) => element.textContent?.includes("重新连接失败") === true) ?? null;
     expect(terminalRetry).not.toBeNull();
+    expect(terminalRetry).toBe(retryTimelineItem);
     expect(terminalRetry?.className).toContain("shrink-0");
     expect(terminalRetry?.className).not.toContain("bg-[var(--app-panel)]");
     expect(container.querySelector<HTMLElement>("[data-conversation-composer-clearance]")?.style.height)
@@ -1326,7 +1410,7 @@ describe("Subagent approval queue", () => {
     expect(container.textContent).toContain("运行 ping -n 4 github.com");
 
     const allowButton = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.includes("仅本次允许") === true,
+      (button) => button.textContent?.includes("允许一次") === true,
     );
     await act(async () => {
       allowButton?.click();

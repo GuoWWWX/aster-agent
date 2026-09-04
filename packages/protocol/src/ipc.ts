@@ -7,6 +7,7 @@ import {
   approveToolChangeInputSchema,
   cancelRunInputSchema,
   conversationContextUsageInputSchema,
+  conversationSearchInputSchema,
   conversationReferenceInputSchema,
   importConversationAttachmentBytesInputSchema,
   forkConversationInputSchema,
@@ -179,6 +180,10 @@ export const setConversationPinnedIpcArgumentsSchema = z.tuple([
 
 export const conversationReferenceIpcArgumentsSchema = z.tuple([
   conversationReferenceInputSchema
+]);
+
+export const conversationSearchIpcArgumentsSchema = z.tuple([
+  conversationSearchInputSchema,
 ]);
 
 export const forkConversationIpcArgumentsSchema = z.tuple([

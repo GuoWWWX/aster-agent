@@ -65,7 +65,7 @@ describe("ConversationAttachmentTool", () => {
   it("returns a bounded text range and an empty range past the end", async () => {
     const { conversation, textAttachment, tool } = await createFixture();
 
-    expect(JSON.parse(tool.execute(conversation.id, JSON.stringify({
+    expect(JSON.parse(tool.execute("read_attachment", conversation.id, JSON.stringify({
       attachment_id: textAttachment.id,
       limit: 4,
       offset: 3
@@ -80,7 +80,7 @@ describe("ConversationAttachmentTool", () => {
         truncated: true
       }
     });
-    expect(JSON.parse(tool.execute(conversation.id, JSON.stringify({
+    expect(JSON.parse(tool.execute("read_attachment", conversation.id, JSON.stringify({
       attachment_id: textAttachment.id,
       offset: 99
     })).content)).toMatchObject({
@@ -93,7 +93,7 @@ describe("ConversationAttachmentTool", () => {
     const { conversation, textAttachment, tool } = await createFixture();
     const results = await Promise.all(
       Array.from({ length: 32 }, (_, index) =>
-        Promise.resolve(tool.execute(conversation.id, JSON.stringify({
+        Promise.resolve(tool.execute("read_attachment", conversation.id, JSON.stringify({
           attachment_id: textAttachment.id,
           limit: 1,
           offset: index % 10,
@@ -121,14 +121,14 @@ describe("ConversationAttachmentTool", () => {
   it("rejects invalid identifiers, invalid ranges, and image attachments", async () => {
     const { conversation, imageAttachment, tool } = await createFixture();
 
-    expect(tool.execute(conversation.id, "{\"attachment_id\":\"invalid\"}")).toMatchObject({
+    expect(tool.execute("read_attachment", conversation.id, "{\"attachment_id\":\"invalid\"}")).toMatchObject({
       isError: true
     });
-    expect(tool.execute(conversation.id, JSON.stringify({
+    expect(tool.execute("read_attachment", conversation.id, JSON.stringify({
       attachment_id: imageAttachment.id,
       offset: -1
     }))).toMatchObject({ isError: true });
-    const imageResult = tool.execute(conversation.id, JSON.stringify({
+    const imageResult = tool.execute("read_attachment", conversation.id, JSON.stringify({
       attachment_id: imageAttachment.id
     }));
     expect(imageResult.isError).toBe(true);
@@ -145,5 +145,39 @@ describe("ConversationAttachmentTool", () => {
       ok: false
     });
     expect(imagePayload.error).toContain("提交的数据无效");
+  });
+
+  it("returns one or more attachment previews while exposing image bytes only to the model", async () => {
+    const { conversation, imageAttachment, textAttachment, tool } = await createFixture();
+
+    const result = tool.execute("view_attachments", conversation.id, JSON.stringify({
+      attachment_ids: [imageAttachment.id, textAttachment.id],
+    }));
+    const payload = JSON.parse(result.content) as {
+      value: { attachments: Array<{ id: string; kind: string; name: string }> };
+    };
+
+    expect(result.isError).toBe(false);
+    expect(payload.value.attachments).toEqual([
+      expect.objectContaining({ id: imageAttachment.id, kind: "image", name: "pixel.png" }),
+      expect.objectContaining({ id: textAttachment.id, kind: "file", name: "notes.txt" }),
+    ]);
+    expect(result.modelAttachments).toHaveLength(1);
+    expect(result.modelAttachments?.[0]).toMatchObject({
+      id: imageAttachment.id,
+      kind: "image",
+    });
+    const viewedAttachment = result.modelAttachments?.[0];
+    expect(viewedAttachment?.kind === "image" ? typeof viewedAttachment.data : null)
+      .toBe("string");
+  });
+
+  it("rejects unknown attachment tools and oversized view batches", async () => {
+    const { conversation, imageAttachment, tool } = await createFixture();
+
+    expect(tool.execute("unknown", conversation.id, "{}")).toMatchObject({ isError: true });
+    expect(tool.execute("view_attachments", conversation.id, JSON.stringify({
+      attachment_ids: Array.from({ length: 5 }, () => imageAttachment.id),
+    }))).toMatchObject({ isError: true });
   });
 });

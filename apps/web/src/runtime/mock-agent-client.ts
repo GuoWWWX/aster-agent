@@ -26,6 +26,8 @@ import {
   type ApproveToolChangeInput,
   type CancelRunInput,
   type ConversationReferenceInput,
+  type ConversationSearchInput,
+  type ConversationSearchResult,
   type ForkConversationInput,
   type ConversationRunEvent,
   type ConversationContextUsage,
@@ -1280,6 +1282,10 @@ export class MockAgentClient implements AgentClient {
     return () => undefined;
   }
 
+  public onWorkspaceTerminalTabCloseRequested(): () => void {
+    return () => undefined;
+  }
+
   public confirmWorkspaceBrowserTabOpened(): Promise<void> {
     return Promise.resolve();
   }
@@ -1344,6 +1350,30 @@ export class MockAgentClient implements AgentClient {
     }
 
     return Promise.resolve([...timeline]);
+  }
+
+  public searchConversations(input: ConversationSearchInput): Promise<ConversationSearchResult[]> {
+    const query = input.query.toLocaleLowerCase();
+    const results: ConversationSearchResult[] = [];
+    for (const conversation of this.conversations) {
+      for (const item of this.timelines.get(conversation.id) ?? []) {
+        if (item.kind !== "message" && item.kind !== "agent_message") continue;
+        if (!item.content.toLocaleLowerCase().includes(query)) continue;
+        results.push({
+          content: item.content.slice(0, 320),
+          conversationId: conversation.id,
+          conversationTitle: conversation.title,
+          createdAt: item.createdAt,
+          itemId: item.id,
+          parentConversationId: conversation.parentConversationId,
+          projectId: conversation.projectId,
+          role: item.kind === "agent_message" ? "agent" : item.role,
+          threadKind: conversation.threadKind,
+        });
+        if (results.length >= input.limit) return Promise.resolve(results);
+      }
+    }
+    return Promise.resolve(results);
   }
 
   public listConversationPendingMessages(

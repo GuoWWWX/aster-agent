@@ -1,5 +1,6 @@
 import {
   DEFAULT_APPLICATION_SETTINGS,
+  type ApprovalReviewer,
   type ApplicationGeneralConfiguration,
   type ApplicationPermissionPolicies,
   type ConversationMessageDeliveryMode,
@@ -10,6 +11,7 @@ import {
 import { create } from "zustand";
 
 type ApplicationSettingsState = {
+  approvalReviewer: ApprovalReviewer;
   defaultMessageDeliveryMode: ConversationMessageDeliveryMode;
   defaultPermissionMode: ConversationPermissionMode;
   isHydrated: boolean;
@@ -19,6 +21,7 @@ type ApplicationSettingsState = {
   hydrateGeneralConfiguration: (configuration: ApplicationGeneralConfiguration) => void;
   hydratePermissionPolicies: (permissionPolicies: ApplicationPermissionPolicies) => void;
   setDefaultMessageDeliveryMode: (mode: ConversationMessageDeliveryMode) => void;
+  setApprovalReviewer: (reviewer: ApprovalReviewer) => void;
   setDefaultPermissionMode: (mode: ConversationPermissionMode) => void;
   setSendShortcut: (shortcut: ConversationSendShortcut) => void;
   setShowContextUsage: (showContextUsage: boolean) => void;
@@ -29,6 +32,7 @@ type ApplicationSettingsState = {
 };
 
 export const useApplicationSettingsStore = create<ApplicationSettingsState>()((set) => ({
+  approvalReviewer: DEFAULT_APPLICATION_SETTINGS.general.approvalReviewer,
   defaultMessageDeliveryMode:
     DEFAULT_APPLICATION_SETTINGS.general.defaultMessageDeliveryMode,
   defaultPermissionMode: DEFAULT_APPLICATION_SETTINGS.general.defaultPermissionMode,
@@ -37,6 +41,7 @@ export const useApplicationSettingsStore = create<ApplicationSettingsState>()((s
   sendShortcut: DEFAULT_APPLICATION_SETTINGS.general.sendShortcut,
   showContextUsage: DEFAULT_APPLICATION_SETTINGS.general.showContextUsage,
   hydrateGeneralConfiguration: (configuration) => set({
+    approvalReviewer: configuration.approvalReviewer,
     defaultMessageDeliveryMode: configuration.defaultMessageDeliveryMode,
     defaultPermissionMode: configuration.defaultPermissionMode,
     isHydrated: true,
@@ -50,6 +55,7 @@ export const useApplicationSettingsStore = create<ApplicationSettingsState>()((s
   setDefaultMessageDeliveryMode: (defaultMessageDeliveryMode) => set({
     defaultMessageDeliveryMode,
   }),
+  setApprovalReviewer: (approvalReviewer) => set({ approvalReviewer }),
   setDefaultPermissionMode: (defaultPermissionMode) => set({ defaultPermissionMode }),
   setSendShortcut: (sendShortcut) => set({ sendShortcut }),
   setShowContextUsage: (showContextUsage) => set({ showContextUsage }),

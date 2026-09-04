@@ -73,9 +73,11 @@ type BrowserHistoryEntry = {
   visitedAt: string;
 };
 type BrowserMenuOverlay = {
+  activeMatchOrdinal: number;
   anchorX: number;
   anchorY: number;
   kind: ManagedBrowserMenuSurface["kind"];
+  matches: number;
   query: string;
   renderVersion: number;
   sessionId: string;
@@ -83,13 +85,22 @@ type BrowserMenuOverlay = {
 };
 type BrowserMenuCommandInput = Extract<
   ManagedBrowserCommandInput,
-  { command: "showDownloads" | "showMenu" }
+  { command: "showDownloads" | "showFind" | "showMenu" }
 >;
+
+type BrowserFindResult = { activeMatchOrdinal: number; matches: number };
+type BrowserPageShortcuts = { onFind: () => void; onGlobalSearch: () => void };
 
 const MAX_BROWSER_OBSERVATION_ELEMENTS = 200;
 const MAX_BROWSER_OBSERVATION_TEXT_CHARS = 24_000;
 
 const browserAutomationElementSchema = z.object({
+  bounds: z.object({
+    height: z.number().nonnegative(),
+    width: z.number().nonnegative(),
+    x: z.number(),
+    y: z.number(),
+  }).strict(),
   id: z.string().min(1).max(120),
   name: z.string().max(800),
   role: z.string().max(80),
@@ -103,6 +114,20 @@ const managedBrowserObservationSchema = z.object({
   textTruncated: z.boolean(),
   title: z.string().max(1_024),
   url: z.string().max(8_192),
+  viewport: z.object({
+    height: z.number().int().positive(),
+    width: z.number().int().positive(),
+  }).strict(),
+}).strict();
+
+const browserAutomationPointSchema = z.object({
+  x: z.number().finite().nonnegative(),
+  y: z.number().finite().nonnegative(),
+}).strict();
+
+const browserAutomationViewportSchema = z.object({
+  height: z.number().int().positive(),
+  width: z.number().int().positive(),
 }).strict();
 
 export type ManagedBrowserAutomationElement = z.infer<typeof browserAutomationElementSchema>;
@@ -113,18 +138,36 @@ export function managedBrowserZoomFactor(zoomPercent: number): number {
 }
 
 export type ManagedBrowserInteraction =
-  | { kind: "click"; elementId: string }
+  | {
+      button: "left" | "middle" | "right";
+      clickCount: 1 | 2;
+      elementId?: string;
+      kind: "click";
+      x?: number;
+      y?: number;
+    }
+  | { elementId?: string; kind: "move"; x?: number; y?: number }
+  | { button: "left" | "middle" | "right"; kind: "mouseDown"; x: number; y: number }
+  | { button: "left" | "middle" | "right"; kind: "mouseUp"; x: number; y: number }
+  | { button: "left" | "middle" | "right"; kind: "drag"; path: Array<{ x: number; y: number }> }
   | { kind: "fill"; elementId: string; text: string }
   | { kind: "select"; elementId: string; value: string }
-  | { kind: "key"; key: string }
-  | { kind: "scroll"; deltaX: number; deltaY: number };
+  | { kind: "type"; text: string }
+  | { key: string; kind: "key"; modifiers: Array<"alt" | "control" | "meta" | "shift"> }
+  | { kind: "scroll"; deltaX: number; deltaY: number; x?: number; y?: number };
 
 export type ManagedBrowserAutomationPort = {
+  back(input: ManagedBrowserReferenceInput): void;
+  capture(input: ManagedBrowserReferenceInput): Promise<ManagedBrowserSnapshot>;
   close(input: ManagedBrowserReferenceInput): void;
+  forward(input: ManagedBrowserReferenceInput): void;
+  getSession(input: ManagedBrowserReferenceInput): ManagedBrowserSession;
   interact(input: ManagedBrowserInteraction & ManagedBrowserReferenceInput): Promise<void>;
   navigate(input: ManagedBrowserNavigateInput): Promise<void>;
   observe(input: ManagedBrowserReferenceInput): Promise<ManagedBrowserObservation>;
   open(input: ManagedBrowserOpenInput): Promise<ManagedBrowserSession>;
+  reload(input: ManagedBrowserReferenceInput): Promise<void>;
+  stop(input: ManagedBrowserReferenceInput): void;
 };
 
 type ManagedBrowserPage = {
@@ -136,9 +179,10 @@ type ManagedBrowserPage = {
   getDownloads(): readonly BrowserDownload[];
   getHistory(): readonly BrowserHistoryEntry[];
   getState(): BrowserPageState;
-  findInPage(query: string): void;
+  findInPage(query: string, options?: { findNext?: boolean; forward?: boolean }): void;
   load(url: string): Promise<void>;
   onError(listener: (message: string) => void): () => void;
+  onFindResult(listener: (result: BrowserFindResult) => void): () => void;
   onStateChanged(listener: () => void): () => void;
   openDevTools(): void;
   interact?(input: ManagedBrowserInteraction): Promise<void>;
@@ -159,10 +203,12 @@ type ManagedBrowserPage = {
   zoomOut(): void;
 };
 
-type BrowserPageFactory = (window: BrowserWindow) => ManagedBrowserPage;
+type BrowserPageFactory = (window: BrowserWindow, shortcuts: BrowserPageShortcuts) => ManagedBrowserPage;
 
 type ActiveBrowserSession = {
+  bounds: Rectangle | null;
   disposeError: () => void;
+  disposeFindResult: () => void;
   disposeState: () => void;
   page: ManagedBrowserPage;
 };
@@ -181,14 +227,26 @@ export class ManagedBrowserController {
 
   public async open(input: ManagedBrowserOpenInput): Promise<ManagedBrowserSession> {
     const window = this.requireWindow();
-    const page = this.createPage(window);
-    const configuration = this.browserConfiguration.getConfiguration();
     const sessionId = randomUUID();
+    const page = this.createPage(window, {
+      onFind: () => this.showFindForSession(sessionId),
+      onGlobalSearch: () => {
+        if (this.sessions.has(sessionId)) this.emit({ sessionId, type: "openGlobalSearch" });
+      },
+    });
+    const configuration = this.browserConfiguration.getConfiguration();
     const disposeState = page.onStateChanged(() => this.emitState(sessionId));
     const disposeError = page.onError((message) => {
       this.emit({ message, sessionId, type: "error" });
     });
-    this.sessions.set(sessionId, { disposeError, disposeState, page });
+    const disposeFindResult = page.onFindResult((result) => this.updateFindResult(sessionId, result));
+    this.sessions.set(sessionId, {
+      bounds: null,
+      disposeError,
+      disposeFindResult,
+      disposeState,
+      page,
+    });
     try {
       await page.showStartPage();
       await page.setColorScheme(this.colorScheme);
@@ -241,6 +299,9 @@ export class ManagedBrowserController {
       case "showDownloads":
         this.showDownloads(input);
         return;
+      case "showFind":
+        this.showBrowserMenuOverlay(input, "find");
+        return;
       case "setColorScheme":
         this.colorScheme = input.colorScheme;
         nativeTheme.themeSource = input.colorScheme;
@@ -272,6 +333,26 @@ export class ManagedBrowserController {
     );
   }
 
+  public back(input: ManagedBrowserReferenceInput): void {
+    this.requireSession(input.sessionId).page.back();
+  }
+
+  public forward(input: ManagedBrowserReferenceInput): void {
+    this.requireSession(input.sessionId).page.forward();
+  }
+
+  public getSession(input: ManagedBrowserReferenceInput): ManagedBrowserSession {
+    return this.sessionState(input.sessionId);
+  }
+
+  public async reload(input: ManagedBrowserReferenceInput): Promise<void> {
+    await this.requireSession(input.sessionId).page.reload();
+  }
+
+  public stop(input: ManagedBrowserReferenceInput): void {
+    this.requireSession(input.sessionId).page.stop();
+  }
+
   public async observe(input: ManagedBrowserReferenceInput): Promise<ManagedBrowserObservation> {
     const page = this.requireSession(input.sessionId).page;
     if (page.observe === undefined) throw new Error("The managed browser automation surface is unavailable.");
@@ -296,12 +377,14 @@ export class ManagedBrowserController {
     const [contentWidth = 1, contentHeight = 1] = window.getContentSize();
     const x = Math.min(input.x, Math.max(0, contentWidth - 1));
     const y = Math.min(Math.max(TITLEBAR_HEIGHT, input.y), Math.max(TITLEBAR_HEIGHT, contentHeight - 1));
-    page.setBounds({
+    const bounds = {
       height: Math.max(1, Math.min(input.height, contentHeight - y)),
       width: Math.max(1, Math.min(input.width, contentWidth - x)),
       x,
       y,
-    });
+    };
+    page.setBounds(bounds);
+    session.bounds = bounds;
     page.setVisible(true);
   }
 
@@ -311,6 +394,7 @@ export class ManagedBrowserController {
     if (this.browserMenuOverlay?.sessionId === input.sessionId) this.closeBrowserMenuOverlay();
     this.sessions.delete(input.sessionId);
     session.disposeError();
+    session.disposeFindResult();
     session.disposeState();
     session.page.close();
   }
@@ -357,6 +441,30 @@ export class ManagedBrowserController {
     this.showBrowserMenuOverlay(input, "downloads");
   }
 
+  private showFindForSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return;
+    const bounds = session.bounds;
+    this.showBrowserMenuOverlay({
+      command: "showFind",
+      sessionId,
+      x: bounds === null ? 420 : bounds.x + bounds.width,
+      y: bounds === null ? TITLEBAR_HEIGHT : bounds.y,
+    }, "find");
+  }
+
+  private updateFindResult(sessionId: string, result: BrowserFindResult): void {
+    const overlay = this.browserMenuOverlay;
+    if (overlay?.sessionId !== sessionId || overlay.kind !== "find") return;
+    overlay.activeMatchOrdinal = result.activeMatchOrdinal;
+    overlay.matches = result.matches;
+    if (overlay.view.webContents.isDestroyed()) return;
+    void overlay.view.webContents.executeJavaScript(
+      `window.updateFindResult?.(${JSON.stringify(result.activeMatchOrdinal)}, ${JSON.stringify(result.matches)});`,
+      true,
+    ).catch(() => undefined);
+  }
+
   private showBrowserMenuOverlay(
     input: BrowserMenuCommandInput,
     kind: BrowserMenuOverlay["kind"],
@@ -376,9 +484,11 @@ export class ManagedBrowserController {
     view.setVisible(false);
     window.contentView.addChildView(view);
     const overlay: BrowserMenuOverlay = {
+      activeMatchOrdinal: 0,
       anchorX: input.x,
       anchorY: input.y,
       kind,
+      matches: 0,
       query: "",
       renderVersion: 0,
       sessionId: input.sessionId,
@@ -392,16 +502,10 @@ export class ManagedBrowserController {
       if (action !== null) this.handleBrowserMenuAction(overlay, action);
     });
     view.webContents.on("console-message", (details) => {
-      if (!details.sourceId.startsWith("data:text/html")
-        || details.message !== MANAGED_BROWSER_MENU_ACTION_SIGNAL) return;
-      void view.webContents.executeJavaScript(
-        "document.documentElement.dataset.menuAction ?? ''",
-        true,
-      ).then((value: unknown) => {
-        if (this.browserMenuOverlay !== overlay || typeof value !== "string") return;
-        const action = parseManagedBrowserMenuAction(value);
-        if (action !== null) this.handleBrowserMenuAction(overlay, action);
-      }).catch(() => undefined);
+      const signal = `${MANAGED_BROWSER_MENU_ACTION_SIGNAL}:`;
+      if (!details.sourceId.startsWith("data:text/html") || !details.message.startsWith(signal)) return;
+      const action = parseManagedBrowserMenuAction(details.message.slice(signal.length));
+      if (action !== null) this.handleBrowserMenuAction(overlay, action);
     });
     view.webContents.once("did-finish-load", () => {
       if (this.browserMenuOverlay !== overlay || view.webContents.isDestroyed()) return;
@@ -431,7 +535,24 @@ export class ManagedBrowserController {
         return;
       case "findQuery":
         overlay.query = input.query?.slice(0, 500) ?? "";
-        if (overlay.query.length > 0) page.findInPage(overlay.query);
+        overlay.activeMatchOrdinal = 0;
+        overlay.matches = 0;
+        this.updateFindResult(overlay.sessionId, { activeMatchOrdinal: 0, matches: 0 });
+        if (overlay.query.length > 0) page.findInPage(overlay.query, { findNext: false, forward: true });
+        else page.stopFindInPage();
+        return;
+      case "findNext":
+      case "findPrevious":
+        if (overlay.query.length > 0) {
+          page.findInPage(overlay.query, {
+            findNext: true,
+            forward: input.action === "findNext",
+          });
+        }
+        return;
+      case "globalSearch":
+        this.closeBrowserMenuOverlay();
+        this.emit({ sessionId: overlay.sessionId, type: "openGlobalSearch" });
         return;
       case "print":
         this.closeBrowserMenuOverlay();
@@ -523,7 +644,12 @@ export class ManagedBrowserController {
         ? { downloads: page.getDownloads(), kind: "downloads" }
         : overlay.kind === "history"
           ? { entries: page.getHistory(), kind: "history" }
-          : { kind: "find", query: overlay.query };
+          : {
+              activeMatchOrdinal: overlay.activeMatchOrdinal,
+              kind: "find",
+              matches: overlay.matches,
+              query: overlay.query,
+            };
     const requestedSize = managedBrowserMenuSize(surface);
     const [contentWidth = 0, contentHeight = 0] = window.getContentSize();
     const width = Math.min(requestedSize.width, Math.max(1, contentWidth));
@@ -755,7 +881,7 @@ function isLikelyBrowserHost(value: string): boolean {
   }
 }
 
-function createElectronBrowserPage(window: BrowserWindow): ManagedBrowserPage {
+function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPageShortcuts): ManagedBrowserPage {
   const view = new WebContentsView({
     webPreferences: {
       contextIsolation: true,
@@ -773,11 +899,96 @@ function createElectronBrowserPage(window: BrowserWindow): ManagedBrowserPage {
   const history: BrowserHistoryEntry[] = [];
   const stateListeners = new Set<() => void>();
   const errorListeners = new Set<(message: string) => void>();
+  const findResultListeners = new Set<(result: BrowserFindResult) => void>();
   let askForDownloadLocation = false;
   let closed = false;
   let colorScheme: "light" | "dark" = nativeTheme.shouldUseDarkColors ? "dark" : "light";
   let zoomPercent = 100;
   let observationSequence = 0;
+  const viewport = async (): Promise<{ height: number; width: number }> =>
+    browserAutomationViewportSchema.parse(await webContents.executeJavaScript(
+      "({ height: window.innerHeight, width: window.innerWidth })",
+      true,
+    ));
+  const checkedPoint = async (point: { x: number; y: number }): Promise<{ x: number; y: number }> => {
+    const value = browserAutomationPointSchema.parse(point);
+    const size = await viewport();
+    if (value.x >= size.width || value.y >= size.height) {
+      throw new Error(`Browser coordinate (${value.x}, ${value.y}) is outside the ${size.width}x${size.height} viewport.`);
+    }
+    return value;
+  };
+  const elementPoint = async (elementId: string): Promise<{ x: number; y: number }> =>
+    browserAutomationPointSchema.parse(await webContents.executeJavaScript(
+      browserElementPointScript(elementId),
+      true,
+    ));
+  const sendElectronMouseInput = async (
+    method: string,
+    parameters: Record<string, unknown>,
+  ): Promise<void> => {
+    if (method !== "Input.dispatchMouseEvent") throw new Error(`Unsupported browser input method: ${method}`);
+    const point = await checkedPoint({ x: Number(parameters.x), y: Number(parameters.y) });
+    const button = parameters.button === "left"
+      || parameters.button === "middle"
+      || parameters.button === "right"
+      ? parameters.button
+      : undefined;
+    const clickCount = typeof parameters.clickCount === "number" ? parameters.clickCount : 0;
+    window.focus();
+    webContents.focus();
+    switch (parameters.type) {
+      case "mouseMoved":
+        webContents.sendInputEvent({
+          ...(button === undefined ? {} : { button }),
+          type: "mouseMove",
+          ...point,
+        });
+        return;
+      case "mousePressed":
+        webContents.sendInputEvent({ button: button ?? "left", clickCount, type: "mouseDown", ...point });
+        return;
+      case "mouseReleased":
+        webContents.sendInputEvent({ button: button ?? "left", clickCount, type: "mouseUp", ...point });
+        return;
+      case "mouseWheel":
+        webContents.sendInputEvent({
+          deltaX: Number(parameters.deltaX ?? 0),
+          deltaY: Number(parameters.deltaY ?? 0),
+          type: "mouseWheel",
+          ...point,
+        });
+        return;
+      default:
+        throw new Error(`Unsupported browser mouse event: ${String(parameters.type)}`);
+    }
+  };
+  const withAutomationDebugger = async (
+    action: (send: (method: string, parameters: Record<string, unknown>) => Promise<void>) => Promise<void>,
+  ): Promise<void> => {
+    const browserDebugger = webContents.debugger;
+    if (!browserDebugger.isAttached()) {
+      try {
+        browserDebugger.attach("1.3");
+      } catch {
+        await action(sendElectronMouseInput);
+        return;
+      }
+    }
+    await action(async (method, parameters) => {
+      await browserDebugger.sendCommand(method, parameters);
+    });
+  };
+  const movePointer = async (
+    send: (method: string, parameters: Record<string, unknown>) => Promise<void>,
+    point: { x: number; y: number },
+    button?: "left" | "middle" | "right",
+  ): Promise<void> => send("Input.dispatchMouseEvent", {
+    ...(button === undefined ? {} : { button }),
+    type: "mouseMoved",
+    x: point.x,
+    y: point.y,
+  });
   const applyZoomPercent = (percent: number): void => {
     zoomPercent = Math.min(500, Math.max(25, Math.round(percent)));
     webContents.setZoomFactor(managedBrowserZoomFactor(zoomPercent));
@@ -859,6 +1070,19 @@ function createElectronBrowserPage(window: BrowserWindow): ManagedBrowserPage {
     applyZoomPercent(adjacentZoomPercent(zoomPercent, direction));
     emitState();
   });
+  webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown" || (!input.control && !input.meta) || input.alt) return;
+    if (input.key.toLocaleLowerCase() !== "f") return;
+    event.preventDefault();
+    if (input.shift) shortcuts.onGlobalSearch();
+    else shortcuts.onFind();
+  });
+  webContents.on("found-in-page", (_event, result) => {
+    if (!result.finalUpdate) return;
+    for (const listener of findResultListeners) {
+      listener({ activeMatchOrdinal: result.activeMatchOrdinal, matches: result.matches });
+    }
+  });
   webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
     if (!isMainFrame || errorCode === -3) return;
     emitError(`${errorDescription}（${validatedUrl}）`);
@@ -888,13 +1112,17 @@ function createElectronBrowserPage(window: BrowserWindow): ManagedBrowserPage {
       if (webContents.navigationHistory.canGoBack()) webContents.navigationHistory.goBack();
     },
     capture: async () => {
-      const image = await webContents.capturePage();
-      const { height, width } = image.getSize();
+      const sourceImage = await webContents.capturePage();
+      const size = await viewport();
+      const sourceSize = sourceImage.getSize();
+      const image = sourceSize.width === size.width && sourceSize.height === size.height
+        ? sourceImage
+        : sourceImage.resize({ height: size.height, quality: "best", width: size.width });
       return managedBrowserSnapshotSchema.parse({
-        data: image.toJPEG(88).toString("base64"),
-        height,
+        data: image.toJPEG(76).toString("base64"),
+        height: size.height,
         mimeType: "image/jpeg",
-        width,
+        width: size.width,
       });
     },
     clearBrowsingData: async () => {
@@ -910,6 +1138,7 @@ function createElectronBrowserPage(window: BrowserWindow): ManagedBrowserPage {
       closed = true;
       stateListeners.clear();
       errorListeners.clear();
+      findResultListeners.clear();
       webContents.session.removeListener("will-download", handleDownload);
       window.contentView.removeChildView(view);
       if (webContents.debugger.isAttached()) webContents.debugger.detach();
@@ -918,8 +1147,8 @@ function createElectronBrowserPage(window: BrowserWindow): ManagedBrowserPage {
     forward: () => {
       if (webContents.navigationHistory.canGoForward()) webContents.navigationHistory.goForward();
     },
-    findInPage: (query) => {
-      if (query.length > 0) webContents.findInPage(query);
+    findInPage: (query, options) => {
+      if (query.length > 0) webContents.findInPage(query, options);
     },
     getDownloads: () => downloads.map((download) => ({ ...download })),
     getHistory: () => history.map((entry) => ({ ...entry })),
@@ -938,6 +1167,10 @@ function createElectronBrowserPage(window: BrowserWindow): ManagedBrowserPage {
       errorListeners.add(listener);
       return () => errorListeners.delete(listener);
     },
+    onFindResult: (listener) => {
+      findResultListeners.add(listener);
+      return () => findResultListeners.delete(listener);
+    },
     onStateChanged: (listener) => {
       stateListeners.add(listener);
       return () => stateListeners.delete(listener);
@@ -948,18 +1181,111 @@ function createElectronBrowserPage(window: BrowserWindow): ManagedBrowserPage {
     },
     interact: async (input) => {
       switch (input.kind) {
-        case "scroll":
-          await webContents.executeJavaScript(
-            `window.scrollBy(${JSON.stringify(input.deltaX)}, ${JSON.stringify(input.deltaY)});`,
-            true,
-          );
+        case "scroll": {
+          const size = await viewport();
+          const point = await checkedPoint({
+            x: input.x ?? Math.floor(size.width / 2),
+            y: input.y ?? Math.floor(size.height / 2),
+          });
+          await withAutomationDebugger(async (send) => {
+            await send("Input.dispatchMouseEvent", {
+              deltaX: input.deltaX,
+              deltaY: input.deltaY,
+              type: "mouseWheel",
+              x: point.x,
+              y: point.y,
+            });
+          });
           return;
-        case "key":
-          await webContents.executeJavaScript(browserKeyScript(input.key), true);
+        }
+        case "key": {
+          window.focus();
+          webContents.focus();
+          const event = { keyCode: input.key, modifiers: input.modifiers };
+          webContents.sendInputEvent({ ...event, type: "keyDown" });
+          if (input.key.length === 1 && !input.modifiers.some((modifier) => modifier !== "shift")) {
+            webContents.sendInputEvent({ ...event, type: "char" });
+          }
+          webContents.sendInputEvent({ ...event, type: "keyUp" });
           return;
-        case "click":
-          await webContents.executeJavaScript(browserElementActionScript(input.elementId, "click"), true);
+        }
+        case "type":
+          window.focus();
+          webContents.focus();
+          await webContents.insertText(input.text);
           return;
+        case "click": {
+          const point = input.elementId === undefined
+            ? await checkedPoint({ x: input.x ?? -1, y: input.y ?? -1 })
+            : await elementPoint(input.elementId);
+          await withAutomationDebugger(async (send) => {
+            await movePointer(send, point);
+            for (let clickCount = 1; clickCount <= input.clickCount; clickCount += 1) {
+              await send("Input.dispatchMouseEvent", {
+                button: input.button,
+                clickCount,
+                type: "mousePressed",
+                x: point.x,
+                y: point.y,
+              });
+              await send("Input.dispatchMouseEvent", {
+                button: input.button,
+                clickCount,
+                type: "mouseReleased",
+                x: point.x,
+                y: point.y,
+              });
+            }
+          });
+          return;
+        }
+        case "move": {
+          const point = input.elementId === undefined
+            ? await checkedPoint({ x: input.x ?? -1, y: input.y ?? -1 })
+            : await elementPoint(input.elementId);
+          await withAutomationDebugger(async (send) => movePointer(send, point));
+          return;
+        }
+        case "mouseDown":
+        case "mouseUp": {
+          const point = await checkedPoint(input);
+          await withAutomationDebugger(async (send) => {
+            await movePointer(send, point);
+            await send("Input.dispatchMouseEvent", {
+              button: input.button,
+              clickCount: 1,
+              type: input.kind === "mouseDown" ? "mousePressed" : "mouseReleased",
+              x: point.x,
+              y: point.y,
+            });
+          });
+          return;
+        }
+        case "drag": {
+          const path = await Promise.all(input.path.map((point) => checkedPoint(point)));
+          const first = path[0];
+          const last = path.at(-1);
+          if (first === undefined || last === undefined) throw new Error("A drag path requires at least two points.");
+          await withAutomationDebugger(async (send) => {
+            await movePointer(send, first);
+            await send("Input.dispatchMouseEvent", {
+              button: input.button,
+              clickCount: 1,
+              type: "mousePressed",
+              x: first.x,
+              y: first.y,
+            });
+            for (const point of path.slice(1)) await movePointer(send, point, input.button);
+            await send("Input.dispatchMouseEvent", {
+              button: input.button,
+              clickCount: 1,
+              type: "mouseReleased",
+              x: last.x,
+              y: last.y,
+            });
+          });
+          return;
+        }
         case "fill":
           await webContents.executeJavaScript(
             browserElementActionScript(input.elementId, "fill", input.text),
@@ -1204,12 +1530,14 @@ function browserObservationScript(sequence: number): string {
       element.getAttribute("aria-label") || element.getAttribute("title") || element.innerText || element.textContent || ""
     ).replace(/\\s+/g, " ").trim().slice(0, 1200);
     const candidates = Array.from(document.querySelectorAll(
-      "a, button, input, textarea, select, summary, [contenteditable='true'], [role='button'], [role='link'], [role='checkbox'], [role='radio'], [role='tab'], [role='menuitem']"
+      "a, button, input, textarea, select, summary, label, [contenteditable='true'], [onclick], [tabindex]:not([tabindex='-1']), [role='button'], [role='link'], [role='checkbox'], [role='radio'], [role='switch'], [role='tab'], [role='menuitem'], [role='option'], [role='slider'], [role='treeitem']"
     )).filter(isVisible).slice(0, maxElements);
     const elements = candidates.map((element, index) => {
       const id = "agent-${sequence}-" + index;
       element.setAttribute("data-agent-browser-ref", id);
+      const rect = element.getBoundingClientRect();
       return {
+        bounds: { height: rect.height, width: rect.width, x: rect.x, y: rect.y },
         id,
         name: String(element.getAttribute("name") || "").slice(0, 800),
         role: String(element.getAttribute("role") || element.tagName.toLowerCase()).slice(0, 80),
@@ -1224,13 +1552,14 @@ function browserObservationScript(sequence: number): string {
       textTruncated: bodyText.length > maxText,
       title: String(document.title || "").slice(0, 1024),
       url: String(location.href || "").slice(0, 8192),
+      viewport: { height: window.innerHeight, width: window.innerWidth },
     };
   })()`;
 }
 
 function browserElementActionScript(
   elementId: string,
-  action: "click" | "fill" | "select",
+  action: "fill" | "select",
   value?: string,
 ): string {
   return `(() => {
@@ -1239,28 +1568,32 @@ function browserElementActionScript(
       (candidate) => candidate.getAttribute("data-agent-browser-ref") === id,
     );
     if (!(element instanceof HTMLElement)) throw new Error("Browser element reference is stale. Observe the page again.");
+    if (element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true") {
+      throw new Error("The browser element is disabled.");
+    }
     element.scrollIntoView({ block: "center", inline: "nearest" });
     element.focus({ preventScroll: true });
     const action = ${JSON.stringify(action)};
     const value = ${JSON.stringify(value ?? "")};
-    if (action === "click") {
-      if (element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true") {
-        throw new Error("The browser element is disabled.");
-      }
-      element.click();
-      return;
-    }
     if (action === "select") {
       if (!(element instanceof HTMLSelectElement)) throw new Error("The selected browser element is not a select control.");
       const option = Array.from(element.options).find((candidate) => candidate.value === value);
       if (option === undefined) throw new Error("The requested select option is unavailable.");
-      element.value = value;
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+      if (setter === undefined) throw new Error("The selected browser element cannot be updated.");
+      setter.call(element, value);
       element.dispatchEvent(new Event("input", { bubbles: true }));
       element.dispatchEvent(new Event("change", { bubbles: true }));
       return;
     }
-    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-      element.value = value;
+    if (element instanceof HTMLInputElement) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      if (setter === undefined) throw new Error("The selected browser element cannot be updated.");
+      setter.call(element, value);
+    } else if (element instanceof HTMLTextAreaElement) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      if (setter === undefined) throw new Error("The selected browser element cannot be updated.");
+      setter.call(element, value);
     } else if (element.isContentEditable) {
       element.textContent = value;
     } else {
@@ -1271,16 +1604,23 @@ function browserElementActionScript(
   })()`;
 }
 
-function browserKeyScript(key: string): string {
+function browserElementPointScript(elementId: string): string {
   return `(() => {
-    const key = ${JSON.stringify(key)};
-    const target = document.activeElement instanceof HTMLElement ? document.activeElement : document.body;
-    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key });
-    const accepted = target.dispatchEvent(event);
-    if (key === "Enter" && accepted && target instanceof HTMLInputElement && target.form instanceof HTMLFormElement) {
-      target.form.requestSubmit();
+    const id = ${JSON.stringify(elementId)};
+    const element = Array.from(document.querySelectorAll("[data-agent-browser-ref]")).find(
+      (candidate) => candidate.getAttribute("data-agent-browser-ref") === id,
+    );
+    if (!(element instanceof HTMLElement)) throw new Error("Browser element reference is stale. Observe the page again.");
+    if (element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true") {
+      throw new Error("The browser element is disabled.");
     }
-    target.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key }));
+    element.scrollIntoView({ block: "center", inline: "nearest" });
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) throw new Error("The browser element is not visible.");
+    return {
+      x: Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2)),
+      y: Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2)),
+    };
   })()`;
 }
 

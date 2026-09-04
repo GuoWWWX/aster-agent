@@ -34,6 +34,8 @@ import {
   pluginCatalogEntrySchema,
   pluginCatalogListSchema,
   conversationReferenceIpcArgumentsSchema,
+  conversationSearchIpcArgumentsSchema,
+  conversationSearchResponseSchema,
   forkConversationIpcArgumentsSchema,
   conversationRunEventSchema,
   conversationSummarySchema,
@@ -139,6 +141,7 @@ import {
   terminalSessionSchema,
   terminalSessionWriteIpcArgumentsSchema,
   workspaceTerminalTabOpenedIpcArgumentsSchema,
+  workspaceTerminalTabCloseRequestSchema,
   workspaceTerminalTabOpenRequestSchema,
   skillDocumentReferenceIpcArgumentsSchema,
   skillDocumentSaveIpcArgumentsSchema,
@@ -357,6 +360,15 @@ export function registerMainIpcHandlers(
     window.webContents.send(
       IPC_CHANNELS.workspaceBrowserOpenRequested,
       workspaceBrowserTabOpenRequestSchema.parse(request),
+    );
+    return true;
+  });
+  const disposeWorkspaceTerminalTabCloseListener = workspaceTerminalTabs.onCloseRequested((request) => {
+    const window = getMainWindow();
+    if (window === undefined || window.isDestroyed()) return false;
+    window.webContents.send(
+      IPC_CHANNELS.workspaceTerminalCloseRequested,
+      workspaceTerminalTabCloseRequestSchema.parse(request),
     );
     return true;
   });
@@ -708,6 +720,12 @@ export function registerMainIpcHandlers(
       );
     }
   );
+
+  ipcMain.handle(IPC_CHANNELS.conversationSearch, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = conversationSearchIpcArgumentsSchema.parse(args);
+    return conversationSearchResponseSchema.parse(database.searchConversations(input));
+  });
 
   ipcMain.handle(
     IPC_CHANNELS.conversationGetTaskList,
@@ -1590,6 +1608,7 @@ export function registerMainIpcHandlers(
     disposeApplicationSettingsListener();
     disposeTerminalSessionListener();
     disposeWorkspaceTerminalTabListener();
+    disposeWorkspaceTerminalTabCloseListener();
     disposeWorkspaceBrowserTabListener();
     disposeWorkspaceBrowserTabCloseListener();
     disposeManagedBrowserListener();
@@ -1614,6 +1633,7 @@ export function registerMainIpcHandlers(
     disposeApplicationSettingsListener();
     disposeTerminalSessionListener();
     disposeWorkspaceTerminalTabListener();
+    disposeWorkspaceTerminalTabCloseListener();
     disposeWorkspaceBrowserTabListener();
     disposeWorkspaceBrowserTabCloseListener();
     disposeManagedBrowserListener();

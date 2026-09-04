@@ -20,6 +20,7 @@ export function TooltipProvider({
 type TooltipAnchorProps = {
   children: ReactElement;
   content: ReactNode;
+  contentClassName?: string;
   disabled?: boolean;
   side?: ComponentProps<typeof TooltipPrimitive.Content>["side"];
 };
@@ -27,6 +28,7 @@ type TooltipAnchorProps = {
 export function TooltipAnchor({
   children,
   content,
+  contentClassName,
   disabled = false,
   side = "top",
 }: TooltipAnchorProps): ReactElement {
@@ -38,6 +40,7 @@ export function TooltipAnchor({
         <TooltipPrimitive.Content
           className={cn(
             "z-[120] max-w-64 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-2 py-1 text-[length:var(--app-font-size-caption)] font-medium leading-4 text-[var(--app-foreground)] shadow-md",
+            contentClassName,
           )}
           collisionPadding={5}
           side={side}

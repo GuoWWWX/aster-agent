@@ -209,7 +209,7 @@ LangGraph 的 Checkpoint 只负责图恢复，不替代现有业务状态：
 
 - 将 `executeRun` 的内部循环替换为 Graph invoke/stream。
 - 保持既有事件、消息、Tool 行、Queue/Steer、Subagent 和错误合同。
-- 使用 LangGraph `interrupt/Command` 承接逐次审批；恢复时按 interrupt namespace keyed resume，并缓存已完成 ToolCall 结果，避免节点重放副作用。返回式和异常式顶层 interrupt 使用同一恢复路径；running Run 仍按保守失败策略处理。
+- 使用 LangGraph `interrupt/Command` 承接需要用户确认的审批；启用 AI 审批时，Runtime 在进入 interrupt 前以无工具的独立模型请求审核具体操作，只有低/中风险明确允许才继续，高风险、不确定、无效响应和审核失败仍进入同一 interrupt。恢复时按 interrupt namespace keyed resume，并缓存已完成 ToolCall 结果，避免节点重放副作用。返回式和异常式顶层 interrupt 使用同一恢复路径；running Run 仍按保守失败策略处理。
 
 ### 阶段 4：Skill 与 Checkpoint（主链已完成）
 

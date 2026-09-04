@@ -78,6 +78,7 @@ import {
 function createFakePage() {
   let stateListener: (() => void) | undefined;
   let errorListener: ((message: string) => void) | undefined;
+  let findResultListener: ((result: { activeMatchOrdinal: number; matches: number }) => void) | undefined;
   const state = {
     canGoBack: false,
     canGoForward: false,
@@ -97,12 +98,14 @@ function createFakePage() {
     clearBrowsingData: vi.fn(() => Promise.resolve()),
     close: vi.fn(),
     emitError: (message: string) => errorListener?.(message),
+    emitFindResult: (result: { activeMatchOrdinal: number; matches: number }) => findResultListener?.(result),
     emitState: () => stateListener?.(),
     findInPage: vi.fn(),
     forward: vi.fn(),
     getDownloads: vi.fn(() => []),
     getHistory: vi.fn(() => []),
     getState: vi.fn(() => state),
+    interact: vi.fn(() => Promise.resolve()),
     load: vi.fn((url: string) => {
       state.url = url;
       return Promise.resolve();
@@ -111,10 +114,22 @@ function createFakePage() {
       errorListener = listener;
       return vi.fn();
     }),
+    onFindResult: vi.fn((listener: (result: { activeMatchOrdinal: number; matches: number }) => void) => {
+      findResultListener = listener;
+      return vi.fn();
+    }),
     onStateChanged: vi.fn((listener: () => void) => {
       stateListener = listener;
       return vi.fn();
     }),
+    observe: vi.fn(() => Promise.resolve({
+      elements: [],
+      text: "Example",
+      textTruncated: false,
+      title: "Example",
+      url: "https://example.com/",
+      viewport: { height: 600, width: 900 },
+    })),
     openDevTools: vi.fn(),
     print: vi.fn(() => Promise.resolve()),
     reload: vi.fn(() => Promise.resolve()),
@@ -371,6 +386,80 @@ describe("ManagedBrowserController", () => {
     expect(page.setColorScheme).toHaveBeenLastCalledWith("dark");
   });
 
+  it("forwards the bounded browser automation surface to the owned page", async () => {
+    const page = createFakePage();
+    const controller = new ManagedBrowserController(
+      () => createFakeWindow(),
+      { getConfiguration: () => browserConfiguration() },
+      () => page,
+    );
+    const session = await controller.open({});
+
+    await expect(controller.observe({ sessionId: session.sessionId })).resolves.toMatchObject({
+      title: "Example",
+      viewport: { height: 600, width: 900 },
+    });
+    await controller.interact({
+      button: "left",
+      clickCount: 2,
+      kind: "click",
+      sessionId: session.sessionId,
+      x: 100,
+      y: 120,
+    });
+    controller.back({ sessionId: session.sessionId });
+    controller.forward({ sessionId: session.sessionId });
+    await controller.reload({ sessionId: session.sessionId });
+    controller.stop({ sessionId: session.sessionId });
+
+    expect(page.interact).toHaveBeenCalledWith({
+      button: "left",
+      clickCount: 2,
+      kind: "click",
+      sessionId: session.sessionId,
+      x: 100,
+      y: 120,
+    });
+    expect(page.back).toHaveBeenCalledOnce();
+    expect(page.forward).toHaveBeenCalledOnce();
+    expect(page.reload).toHaveBeenCalledOnce();
+    expect(page.stop).toHaveBeenCalledOnce();
+  });
+
+  it("handles page-focus find and global-search shortcuts", async () => {
+    const page = createFakePage();
+    const window = createFakeWindow();
+    let shortcuts: { onFind: () => void; onGlobalSearch: () => void } | undefined;
+    const controller = new ManagedBrowserController(
+      () => window,
+      { getConfiguration: () => browserConfiguration() },
+      (_window, nextShortcuts) => {
+        shortcuts = nextShortcuts;
+        return page;
+      },
+    );
+    const events: ManagedBrowserEvent[] = [];
+    controller.onEvent((event) => events.push(event));
+    const session = await controller.open({});
+    controller.setBounds({
+      height: 600,
+      sessionId: session.sessionId,
+      visible: true,
+      width: 800,
+      x: 400,
+      y: 100,
+    });
+
+    shortcuts?.onFind();
+    shortcuts?.onGlobalSearch();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(electronMocks.overlayViews).toHaveLength(1);
+    const overlay = electronMocks.overlayViews[0] as { setBounds: ReturnType<typeof vi.fn> };
+    expect(overlay.setBounds).toHaveBeenCalledWith({ height: 56, width: 440, x: 760, y: 104 });
+    expect(events).toContainEqual({ sessionId: session.sessionId, type: "openGlobalSearch" });
+  });
+
   it("ignores a superseded menu data URL failure while the overlay rerenders", async () => {
     let rejectFirstLoad: ((reason: unknown) => void) | undefined;
     electronMocks.loadOverlayUrl
@@ -424,9 +513,8 @@ describe("ManagedBrowserController", () => {
         executeJavaScript: ReturnType<typeof vi.fn>;
       };
     };
-    overlay.webContents.executeJavaScript.mockResolvedValueOnce("aster-browser-menu:screenshot");
     overlay.webContents.emit("console-message", {
-      message: "aster-browser-menu-action",
+      message: "aster-browser-menu-action:aster-browser-menu:screenshot",
       sourceId: "data:text/html;charset=utf-8,menu",
     });
     await vi.waitFor(() => expect(page.saveScreenshot).toHaveBeenCalledOnce());

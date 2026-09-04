@@ -288,8 +288,7 @@ Agent Runtime 负责 Team Lead、任务调度、Agent 生命周期以及模型�
 list_files       read_file        search_text
 apply_patch      write_file       git_status
 git_diff         run_command      terminal_input
-browser_open     browser_snapshot browser_click
-browser_type     browser_wait     browser_screenshot
+browser_control  load_skill       read_skill_reference
 ```
 
 每个工具至少包含：工具标识、用途说明、输入 Schema、权限级别、超时、可取消性、结果大小限制和审计字段。

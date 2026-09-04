@@ -32,6 +32,8 @@ import {
   groupRunActivities,
   isRunningContextCompaction,
   modelRetryStatusLabel,
+  normalizeModelActivityPreview,
+  parseAttachmentViewResult,
   projectSubagentMessagesForParentTimeline,
   projectTimelineForActiveRun,
   describeConversationError,
@@ -48,6 +50,44 @@ import {
   toolBatchExecutionMode,
   stripLeadingThinkingSummary,
 } from "./workspace-content.js";
+
+describe("model activity preview", () => {
+  it("removes emphasis markers and separates adjacent reasoning summaries", () => {
+    expect(normalizeModelActivityPreview(
+      "**Analyzing repeated password prompts****Planning SSH command encoding tests**",
+    )).toBe("Analyzing repeated password prompts · Planning SSH command encoding tests");
+    expect(normalizeModelActivityPreview("***Inspecting files***")).toBe("Inspecting files");
+    expect(normalizeModelActivityPreview("Searching src/**/*.ts")).toBe("Searching src/**/*.ts");
+  });
+});
+
+describe("attachment view result", () => {
+  it("parses public attachment references returned by the image viewer tool", () => {
+    const attachment = {
+      contextTokens: 0,
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      createdAt: "2026-09-04T06:00:00.000Z",
+      id: "00000000-0000-4000-8000-000000000002",
+      kind: "image",
+      messageId: "00000000-0000-4000-8000-000000000003",
+      mimeType: "image/png",
+      name: "screen.png",
+      projectPath: null,
+      sizeBytes: 128,
+      source: "upload",
+      truncated: false,
+    } as const;
+
+    expect(parseAttachmentViewResult(JSON.stringify({
+      ok: true,
+      value: { attachments: [attachment] },
+    }))).toEqual([attachment]);
+    expect(parseAttachmentViewResult(JSON.stringify({
+      ok: true,
+      value: { attachments: [{ ...attachment, storedPath: "C:/private/screen.png" }] },
+    }))).toBeNull();
+  });
+});
 
 describe("Team WorkItem collaboration graph placement", () => {
   it("extracts a submitted WorkItem only from its successful tool result", () => {
@@ -388,6 +428,38 @@ describe("run activity projection", () => {
     });
     expect(projected[1]?.kind === "message" ? projected[1].reasoningContent : null)
       .toBeUndefined();
+  });
+
+  it("keeps a model retry at its original position inside the work process", () => {
+    const firstTool = tool("run_command");
+    const retry: ConversationModelRetryItem = {
+      attempt: 1,
+      conversationId: firstTool.conversationId,
+      createdAt: "2026-09-02T00:00:01.000Z",
+      id: "00000000-0000-4000-8000-retry000000",
+      kind: "model_retry",
+      maxAttempts: 5,
+      reason: "连接暂时中断",
+      retryInMs: null,
+      runId: firstTool.runId,
+      status: "completed",
+      updatedAt: "2026-09-02T00:00:02.000Z",
+    };
+    const secondTool = {
+      ...tool("read_file"),
+      id: "00000000-0000-4000-8000-second000000",
+    };
+    const finalAnswer = assistantMessage("assistant-final", "处理完成。", {
+      durationMs: 12_000,
+    });
+
+    const projected = groupRunActivities([firstTool, retry, secondTool, finalAnswer]);
+
+    expect(projected).toHaveLength(2);
+    expect(projected[0]?.kind === "run_activity"
+      ? projected[0].items.map((item) => item.kind)
+      : []).toEqual(["tool", "model_retry", "tool"]);
+    expect(projected[1]).toMatchObject({ content: "处理完成。", kind: "message" });
   });
 
   it("moves tool preambles into the work process but keeps the final answer outside", () => {
@@ -742,10 +814,15 @@ describe("run progress duration", () => {
   it("places resumed model activity below the retry it supersedes", () => {
     const timeline = [
       { id: "user-1", kind: "message", role: "user", runId: null },
-      { id: "retry-1", kind: "model_retry", runId: "run-1" },
+      {
+        id: "run-activity-1",
+        items: [{ id: "retry-1", kind: "model_retry", runId: "run-1" }],
+        kind: "run_activity",
+        runId: "run-1",
+      },
     ];
 
-    expect(getModelActivityInsertIndex(timeline, "run-1", "user-1")).toBe(2);
+    expect(getModelActivityInsertIndex(timeline, "run-1", "user-1")).toBe(1);
     expect(getModelActivityInsertIndex(timeline, "run-2", "user-1")).toBe(1);
   });
 
@@ -1157,6 +1234,17 @@ describe("tool batch summary", () => {
   it("uses team-member terminology for a managed team execution", () => {
     expect(toolBatchLabel([tool("spawn_subagent"), tool("wait_for_subagents")], true))
       .toBe("协调 2 次团队成员");
+  });
+
+  it("summarizes the unified browser tool as browser activity", () => {
+    expect(toolBatchLabel([tool("browser_control")])).toBe("操作 1 次浏览器");
+    expect(representativeToolName([tool("browser_control")])).toBe("browser_control");
+  });
+
+  it("keeps the persistent side-terminal tool separate from ordinary commands", () => {
+    expect(toolBatchLabel([tool("terminal_control"), tool("run_command")]))
+      .toBe("操作 1 次侧边终端，运行 1 条命令");
+    expect(representativeToolName([tool("terminal_control")])).toBe("terminal_control");
   });
 });
 

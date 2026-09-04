@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -71,6 +71,42 @@ function createPdfFixture(): Buffer {
 }
 
 describe("ConversationAttachmentStore", () => {
+  it("rebases legacy managed attachment paths without deleting the legacy snapshot", async () => {
+    const { conversation, database, managedRoot, store } = await createFixture();
+    const attachment = await store.importBytes(conversation.id, {
+      bytes: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nksAAAAASUVORK5CYII=",
+        "base64",
+      ),
+      mimeType: "image/png",
+      name: "legacy.png",
+    });
+    const [storage] = database.listConversationAttachmentStoragePaths();
+    if (storage === undefined) throw new Error("Expected an attachment storage row.");
+    const legacyRoot = path.join(path.dirname(managedRoot), "conversation-files");
+    const legacyStoredPath = path.join(
+      legacyRoot,
+      path.relative(managedRoot, storage.storedPath),
+    );
+    await mkdir(path.dirname(legacyStoredPath), { recursive: true });
+    await rename(storage.storedPath, legacyStoredPath);
+    database.updateConversationAttachmentStoragePaths({
+      extractedTextPath: null,
+      id: attachment.id,
+      storedPath: legacyStoredPath,
+    });
+
+    await store.migrateLegacyManagedRoots([legacyRoot]);
+
+    const migrated = database.getConversationAttachment(conversation.id, attachment.id);
+    expect(migrated.storedPath).toBe(path.join(
+      managedRoot,
+      path.relative(legacyRoot, legacyStoredPath),
+    ));
+    await expect(access(migrated.storedPath)).resolves.toBeUndefined();
+    await expect(access(legacyStoredPath)).resolves.toBeUndefined();
+  });
+
   it("snapshots project text and uploaded images, then binds them to one message", async () => {
     const { conversation, database, projectRoot, store } = await createFixture();
     const textPath = path.join(projectRoot, "notes.md");

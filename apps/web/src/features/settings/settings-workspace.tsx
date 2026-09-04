@@ -1,7 +1,6 @@
 import {
   Archive,
   ArchiveRestore,
-  BadgeCheck,
   Bot,
   Boxes,
   Braces,
@@ -15,7 +14,6 @@ import {
   FileJson2,
   FolderOpen,
   Globe2,
-  KeyRound,
   ListTree,
   LoaderCircle,
   MessageSquareText,
@@ -75,8 +73,6 @@ import {
   type TerminalOutputEncoding,
   type TerminalShell,
   type RuntimePlatform,
-  type ApplicationPermissionPolicies,
-  type PermissionPolicy,
   mcpServerConfigurationListSchema,
   mcpServerConfigurationSchema,
   isReasoningOptionEnabled,
@@ -125,13 +121,6 @@ import {
 import { AgentTeamSettings } from "./agent-team-settings.js";
 import { useQueuedAutoSave, type AutoSaveState } from "./use-queued-auto-save.js";
 import "./settings-workspace.css";
-
-type PermissionRule = {
-  action: string;
-  id: keyof ApplicationPermissionPolicies;
-  policy: PermissionPolicy;
-  scope: string;
-};
 
 type ConfiguredProvider = {
   apiFormat: ModelApiFormat;
@@ -254,24 +243,9 @@ const BROWSER_ZOOM_OPTIONS = [
   500,
 ] as const;
 
-const PERMISSION_RULES: readonly Omit<PermissionRule, "policy">[] = [
-  { id: "browser-control", action: "浏览器操作", scope: "模型创建的浏览器标签" },
-  { id: "workspace-read", action: "工作区读取", scope: "已授权项目" },
-  { id: "workspace-search", action: "代码搜索", scope: "已授权项目" },
-  { id: "patch-write", action: "应用 Patch", scope: "目标文件" },
-  { id: "command-run", action: "执行命令", scope: "工作目录" },
-  { id: "git-write", action: "Git 写操作", scope: "所有项目" },
-] as const;
-
 export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient }): ReactElement {
   const activeSection = useWorkbenchUiStore((state) => state.settingsSection);
   const setActiveSection = useWorkbenchUiStore((state) => state.setSettingsSection);
-  const permissionPolicies = useApplicationSettingsStore((state) => state.permissionPolicies);
-  const setPermissionPolicy = useApplicationSettingsStore((state) => state.setPermissionPolicy);
-  const permissions = useMemo(() => PERMISSION_RULES.map((permission) => ({
-    ...permission,
-    policy: permissionPolicies[permission.id],
-  })), [permissionPolicies]);
 
   return (
     <section className="settings-workspace" aria-labelledby="settings-workspace-heading">
@@ -320,12 +294,7 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
           {activeSection === "skills" ? (
             <SkillsSettings agentClient={agentClient} />
           ) : null}
-          {activeSection === "permissions" ? (
-            <PermissionsSettings
-              permissions={permissions}
-              onChange={setPermissionPolicy}
-            />
-          ) : null}
+          {activeSection === "permissions" ? <PermissionsSettings /> : null}
           {activeSection === "browser" ? (
             <BrowserSettings agentClient={agentClient} />
           ) : null}
@@ -454,8 +423,8 @@ function GeneralSettings(): ReactElement {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent align="end">
-                <SelectItem value="read_only">只读</SelectItem>
-                <SelectItem value="ask_before_changes">修改前询问</SelectItem>
+                <SelectItem value="read_only">规划</SelectItem>
+                <SelectItem value="ask_before_changes">请求审批</SelectItem>
                 <SelectItem value="full_access">完全访问</SelectItem>
               </SelectContent>
             </Select>
@@ -3598,54 +3567,84 @@ function formatArchivedConversationDate(archivedAt: string | null): string {
   }).format(new Date(archivedAt));
 }
 
-function PermissionsSettings({
-  onChange,
-  permissions,
-}: {
-  onChange: (permissionId: PermissionRule["id"], policy: PermissionRule["policy"]) => void;
-  permissions: PermissionRule[];
-}): ReactElement {
+function PermissionsSettings(): ReactElement {
+  const approvalReviewer = useApplicationSettingsStore((state) => state.approvalReviewer);
+  const setApprovalReviewer = useApplicationSettingsStore((state) => state.setApprovalReviewer);
+
   return (
-    <SettingsSectionHeader eyebrow="默认审批策略" title="权限">
-      <div className="settings-permission-list" role="list">
-        {permissions.map((permission) => (
-          <article key={permission.id} className="settings-permission-row" role="listitem">
-            <span className="settings-configuration-row__icon">
-              {permission.policy === "ask" ? (
-                <KeyRound aria-hidden="true" size={16} />
-              ) : permission.policy === "allow" ? (
-                <BadgeCheck aria-hidden="true" size={16} />
-              ) : (
-                <ShieldCheck aria-hidden="true" size={16} />
-              )}
-            </span>
+    <SettingsSectionHeader eyebrow="安全边界与审批" title="权限">
+      <div className="settings-general-category">
+        <h3>权限模式</h3>
+        <div className="settings-general-card">
+          <article className="settings-general-row">
             <div>
-              <strong>{permission.action}</strong>
-              <span>{permission.scope}</span>
+              <h4>规划</h4>
+              <p>允许读取和搜索，不执行命令或修改文件。</p>
             </div>
-            <Select
-              value={permission.policy}
-              onValueChange={(policy) =>
-                onChange(
-                  permission.id,
-                  policy as PermissionRule["policy"],
-                )
-              }
-            >
-              <SelectTrigger
-                aria-label={`${permission.action}默认策略`}
-                className="settings-permission-select"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent align="end">
-                <SelectItem value="allow">自动允许</SelectItem>
-                <SelectItem value="ask">每次审批</SelectItem>
-                <SelectItem value="unavailable">MVP 未提供</SelectItem>
-              </SelectContent>
-            </Select>
           </article>
-        ))}
+          <article className="settings-general-row">
+            <div>
+              <h4>请求审批</h4>
+              <p>读取和搜索直接进行；命令、文件修改和其他副作用操作进入审批。</p>
+            </div>
+          </article>
+          <article className="settings-general-row">
+            <div>
+              <h4>完全访问</h4>
+              <p>授权工作区内直接执行；路径边界、参数校验和危险操作保护仍然生效。</p>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <div className="settings-general-category">
+        <h3>请求审批的处理方式</h3>
+        <div className="settings-general-card">
+          <article className="settings-general-row">
+            <div>
+              <h4>{approvalReviewer === "user" ? "由我确认" : "AI 帮我审批"}</h4>
+              <p>
+                {approvalReviewer === "user"
+                  ? "每个需要审批的操作都交给你决定。"
+                  : "AI 只审核原本需要审批的操作；高风险、判断不清或审核失败时仍交给你。"}
+              </p>
+            </div>
+            <div className="settings-segmented" role="group" aria-label="审批处理方式">
+              <button
+                aria-pressed={approvalReviewer === "user"}
+                type="button"
+                onClick={() => setApprovalReviewer("user")}
+              >
+                由我确认
+              </button>
+              <button
+                aria-pressed={approvalReviewer === "auto_review"}
+                type="button"
+                onClick={() => setApprovalReviewer("auto_review")}
+              >
+                AI 帮我审批
+              </button>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <div className="settings-general-category">
+        <h3>审批范围</h3>
+        <div className="settings-general-card">
+          <article className="settings-general-row">
+            <div>
+              <h4>允许一次</h4>
+              <p>只允许审批卡中这一条具体工具调用。</p>
+            </div>
+          </article>
+          <article className="settings-general-row">
+            <div>
+              <h4>本对话允许相同操作</h4>
+              <p>只匹配完整命令或同一工具与路径，不会把一个 IP 自动扩大为所有 ping 命令。</p>
+            </div>
+          </article>
+        </div>
       </div>
     </SettingsSectionHeader>
   );

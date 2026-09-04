@@ -363,4 +363,26 @@ describe("AppShell", () => {
     act(() => renderShell("conversation-b"));
     expect(rightPanel()?.style.width).toBe("960px");
   });
+
+  it("opens global conversation search from the activity bar", () => {
+    const onOpenGlobalSearch = vi.fn();
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() => root?.render(
+      <TooltipProvider>
+        <AppShell
+          agentClient={new MockAgentClient()}
+          filePanel={<div />}
+          mainContent={<div />}
+          projectNavigator={<div />}
+          onOpenGlobalSearch={onOpenGlobalSearch}
+        />
+      </TooltipProvider>,
+    ));
+
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="搜索所有对话"]')?.click());
+
+    expect(onOpenGlobalSearch).toHaveBeenCalledOnce();
+  });
 });

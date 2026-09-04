@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 
 import type {
   ApplicationSettings,
+  ConversationSearchResult,
   CreateTeamInstanceInput,
   TeamInstanceView,
   TeamWorkItemView,
@@ -10,6 +11,7 @@ import type {
 
 import { AppShell } from "../components/layout/app-shell.js";
 import { MediaPreviewDialogHost } from "../components/media/image-viewer.js";
+import { GlobalConversationSearchDialog } from "../features/chat/global-conversation-search-dialog.js";
 import {
   resolveConversationPathIconKind,
   resolveConversationPathScope,
@@ -62,6 +64,7 @@ function applicationSettingsSnapshot(): ApplicationSettings {
       themeMode: workbench.themeMode,
     },
     general: {
+      approvalReviewer: applicationSettings.approvalReviewer,
       defaultPermissionMode: applicationSettings.defaultPermissionMode,
       defaultMessageDeliveryMode: applicationSettings.defaultMessageDeliveryMode,
       sendShortcut: applicationSettings.sendShortcut,
@@ -121,6 +124,12 @@ export function App(): ReactElement {
   const [fileOpenRequest, setFileOpenRequest] = useState<ProjectFileOpenRequest | null>(null);
   const [teamMemberOpenRequest, setTeamMemberOpenRequest] =
     useState<TeamMemberOpenRequest | null>(null);
+  const [isGlobalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const [conversationLocateRequest, setConversationLocateRequest] = useState<{
+    conversationId: string;
+    id: string;
+    requestId: number;
+  } | null>(null);
   const requestOpenProjectFile = useCallback((projectId: string, path: string): void => {
     setFileOpenRequest({ path, projectId });
     setFilePanelOpen(true);
@@ -132,6 +141,23 @@ export function App(): ReactElement {
     if (activeSessionId === null) return;
     setOpenConversationIds((current) => openConversationTab(current, activeSessionId));
   }, [projectSessions.activeSessionId]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!(event.ctrlKey || event.metaKey) || !event.shiftKey || event.altKey) return;
+      if (event.key.toLocaleLowerCase() !== "f") return;
+      event.preventDefault();
+      setGlobalSearchOpen(true);
+    };
+    const disposeBrowserEvents = agentClient.onManagedBrowserEvent((event) => {
+      if (event.type === "openGlobalSearch") setGlobalSearchOpen(true);
+    });
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      disposeBrowserEvents();
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [agentClient]);
 
   useEffect(() => {
     const availableIds = new Set(
@@ -541,6 +567,24 @@ export function App(): ReactElement {
     setActiveActivity("conversations");
   }, [projectSessions, projectTree, setActiveActivity]);
 
+  const selectGlobalSearchResult = useCallback((result: ConversationSearchResult): void => {
+    const session = projectSessions.sessions.find((candidate) => candidate.id === result.conversationId);
+    if (session === undefined) return;
+    setGlobalSearchOpen(false);
+    setActiveActivity("conversations");
+    if (result.parentConversationId !== null && result.threadKind !== "subagent") {
+      openTeamConversation(session, undefined, result.itemId);
+      return;
+    }
+    if (result.projectId !== null) projectTree.selectProject(result.projectId);
+    projectSessions.selectSession(result.conversationId);
+    setConversationLocateRequest((current) => ({
+      conversationId: result.conversationId,
+      id: result.itemId,
+      requestId: (current?.requestId ?? 0) + 1,
+    }));
+  }, [openTeamConversation, projectSessions, projectTree, setActiveActivity]);
+
   return (
     <>
       <AppShell
@@ -550,6 +594,7 @@ export function App(): ReactElement {
         onCloseAllConversationTabs={closeAllConversationTitlebarTabs}
         onCloseConversationTab={closeConversationTitlebarTab}
         onCloseOtherConversationTabs={closeOtherConversationTitlebarTabs}
+        onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
         onSelectConversationTab={selectSession}
         projectNavigator={
         <ProjectNavigator
@@ -626,6 +671,7 @@ export function App(): ReactElement {
           projects={projectTree.projects}
           protectedSessionIds={openConversationIds}
           sessions={projectSessions.sessions}
+          locateTimelineItem={conversationLocateRequest}
           teamInstances={teamInstances}
           onAddProject={() => projectTree.addProject()}
           onCreateProjectSession={(projectId) => {
@@ -663,6 +709,12 @@ export function App(): ReactElement {
           tree={projectTree}
         />
       }
+      />
+      <GlobalConversationSearchDialog
+        agentClient={agentClient}
+        open={isGlobalSearchOpen}
+        onOpenChange={setGlobalSearchOpen}
+        onSelect={selectGlobalSearchResult}
       />
       <MediaPreviewDialogHost />
     </>

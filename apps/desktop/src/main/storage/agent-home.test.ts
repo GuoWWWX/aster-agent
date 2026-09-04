@@ -19,13 +19,35 @@ afterEach(async () => {
 });
 
 describe("Agent home", () => {
-  it("uses a .agent directory below the current user's home when AGENT_HOME is unset", async () => {
+  it("uses a .aster directory below the current user's home when no home override is set", async () => {
     const homeDirectory = await mkdtemp(path.join(os.tmpdir(), "agent-home-user-"));
     temporaryDirectories.push(homeDirectory);
 
     expect(resolveAgentHomePath({ environment: {}, homeDirectory })).toBe(
-      path.join(homeDirectory, ".agent"),
+      path.join(homeDirectory, ".aster"),
     );
+  });
+
+  it("prefers ASTER_HOME while keeping AGENT_HOME as a compatibility alias", async () => {
+    const homeDirectory = await mkdtemp(path.join(os.tmpdir(), "aster-home-alias-"));
+    temporaryDirectories.push(homeDirectory);
+    const asterHome = path.join(homeDirectory, "aster");
+    const agentHome = path.join(homeDirectory, "agent");
+
+    expect(resolveAgentHomePath({
+      environment: { AGENT_HOME: agentHome, ASTER_HOME: asterHome },
+      homeDirectory,
+    })).toBe(asterHome);
+    expect(resolveAgentHomePath({ environment: { AGENT_HOME: agentHome }, homeDirectory }))
+      .toBe(agentHome);
+  });
+
+  it("names durable conversation snapshots attachments instead of temp files", async () => {
+    const homeDirectory = await mkdtemp(path.join(os.tmpdir(), "aster-home-paths-"));
+    temporaryDirectories.push(homeDirectory);
+    const paths = createAgentHomePaths(homeDirectory);
+
+    expect(paths.conversationFilesPath).toBe(path.join(homeDirectory, "attachments"));
   });
 
   it("requires an absolute AGENT_HOME path", () => {
@@ -94,6 +116,66 @@ describe("Agent home", () => {
     expect(result.paths).toEqual(createAgentHomePaths(configuredHomePath));
     expect(result.migratedEntries).toEqual(["application-settings.json"]);
     await expect(readFile(result.paths.applicationSettingsPath, "utf8")).resolves.toBe('{"version":1}');
+  });
+
+  it("migrates the former .agent conversation-files directory into .aster attachments", async () => {
+    const homeDirectory = await mkdtemp(path.join(os.tmpdir(), "aster-home-default-migration-"));
+    temporaryDirectories.push(homeDirectory);
+    const legacyAgentHomePath = path.join(homeDirectory, ".agent");
+    const legacyAttachmentPath = path.join(
+      legacyAgentHomePath,
+      "conversation-files",
+      "conversation-1",
+      "attachment.png",
+    );
+    await mkdir(path.dirname(legacyAttachmentPath), { recursive: true });
+    await writeFile(path.join(legacyAgentHomePath, "agent.sqlite"), "database", "utf8");
+    await writeFile(legacyAttachmentPath, "image", "utf8");
+
+    const result = await initializeAgentHome({
+      environment: {},
+      homeDirectory,
+      legacyRootPath: path.join(homeDirectory, "legacy-user-data"),
+    });
+
+    expect(result.paths.rootPath).toBe(path.join(homeDirectory, ".aster"));
+    await expect(readFile(result.paths.agentDatabasePath, "utf8")).resolves.toBe("database");
+    await expect(readFile(
+      path.join(result.paths.conversationFilesPath, "conversation-1", "attachment.png"),
+      "utf8",
+    )).resolves.toBe("image");
+    expect(result.legacyConversationFilesPaths).toContain(
+      path.join(legacyAgentHomePath, "conversation-files"),
+    );
+  });
+
+  it("migrates the former scoped-package Electron user data directory", async () => {
+    const homeDirectory = await mkdtemp(path.join(os.tmpdir(), "aster-home-package-migration-"));
+    temporaryDirectories.push(homeDirectory);
+    const legacyPackageRoot = path.join(homeDirectory, "@agent", "desktop");
+    const legacyAttachmentPath = path.join(
+      legacyPackageRoot,
+      "conversation-files",
+      "conversation-1",
+      "attachment.png",
+    );
+    await mkdir(path.dirname(legacyAttachmentPath), { recursive: true });
+    await writeFile(legacyAttachmentPath, "image", "utf8");
+
+    const result = await initializeAgentHome({
+      additionalLegacyRootPaths: [legacyPackageRoot],
+      environment: {},
+      homeDirectory,
+      legacyRootPath: path.join(homeDirectory, "Aster"),
+    });
+
+    await expect(readFile(
+      path.join(result.paths.conversationFilesPath, "conversation-1", "attachment.png"),
+      "utf8",
+    )).resolves.toBe("image");
+    expect(result.legacyConversationFilesPaths).toContain(
+      path.join(legacyPackageRoot, "conversation-files"),
+    );
   });
 
   it("does not overwrite an existing Agent home entry during a repeat migration", async () => {

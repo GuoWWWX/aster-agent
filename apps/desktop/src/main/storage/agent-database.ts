@@ -17,6 +17,8 @@ import {
   conversationPendingMessageSchema,
   conversationPermissionModeSchema,
   conversationRunStatusSchema,
+  conversationSearchInputSchema,
+  conversationSearchResponseSchema,
   modelApiFormatSchema,
   modelReasoningOptionSchema,
   providerIdSchema,
@@ -51,6 +53,8 @@ import {
   type ConversationModelSelection,
   type ConversationPendingMessage,
   type ConversationRunStatus,
+  type ConversationSearchInput,
+  type ConversationSearchResult,
   type ConversationAgentBinding,
   type ConversationSummary,
   type ConversationTask,
@@ -97,6 +101,11 @@ export type StoredConversationAttachment = ConversationAttachment & {
   pendingMessageId: string | null;
   storedPath: string;
 };
+
+export type ConversationAttachmentStoragePaths = Pick<
+  StoredConversationAttachment,
+  "extractedTextPath" | "id" | "storedPath"
+>;
 
 export type StoredPendingMessage = {
   input: SendConversationMessageInput;
@@ -681,6 +690,15 @@ function ftsQueryForTerms(terms: readonly string[]): string {
 
 function likePattern(term: string): string {
   return `%${term.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+}
+
+function conversationSearchSnippet(content: string, query: string, maxCharacters = 320): string {
+  const compact = content.replace(/\s+/gu, " ").trim();
+  if (compact.length <= maxCharacters) return compact;
+  const index = compact.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
+  const start = Math.max(0, (index < 0 ? 0 : index) - Math.floor(maxCharacters / 3));
+  const end = Math.min(compact.length, start + maxCharacters);
+  return `${start > 0 ? "…" : ""}${compact.slice(start, end).trim()}${end < compact.length ? "…" : ""}`;
 }
 
 function rankStrongContextMatches(
@@ -4612,6 +4630,34 @@ export class AgentDatabase {
     });
   }
 
+  public listConversationAttachmentStoragePaths(): ConversationAttachmentStoragePaths[] {
+    const rows = this.database.prepare(
+      `SELECT id, stored_path, extracted_text_path
+       FROM conversation_attachments
+       ORDER BY created_at ASC, rowid ASC`,
+    ).all() as DatabaseRow[];
+    return rows.map((row) => ({
+      extractedTextPath: asNullableString(row, "extracted_text_path"),
+      id: asString(row, "id"),
+      storedPath: asString(row, "stored_path"),
+    }));
+  }
+
+  public updateConversationAttachmentStoragePaths(input: {
+    extractedTextPath: string | null;
+    id: string;
+    storedPath: string;
+  }): void {
+    const result = this.database.prepare(
+      `UPDATE conversation_attachments
+       SET stored_path = ?, extracted_text_path = ?
+       WHERE id = ?`,
+    ).run(input.storedPath, input.extractedTextPath, input.id);
+    if (result.changes !== 1) {
+      throw new Error("Conversation attachment storage path was not found.");
+    }
+  }
+
   /** Returns renderer-safe immutable attachment references for ThreadLog events. */
   public listThreadLogAttachmentReferences(
     conversationId: string,
@@ -5398,6 +5444,45 @@ export class AgentDatabase {
       this.touchConversation(record.message.conversationId, now);
     });
     return this.listPendingMessages(record.message.conversationId);
+  }
+
+  public searchConversations(input: ConversationSearchInput): ConversationSearchResult[] {
+    const parsed = conversationSearchInputSchema.parse(input);
+    const rows = this.database
+      .prepare(
+        `SELECT conversation_timeline.payload_json,
+                conversations.title AS conversation_title,
+                conversations.project_id,
+                conversations.parent_conversation_id,
+                conversations.thread_kind
+         FROM conversation_timeline
+         JOIN conversations ON conversations.id = conversation_timeline.conversation_id
+         WHERE conversations.deletion_pending = 0
+           AND conversations.is_archived = 0
+           AND conversation_timeline.kind IN ('message', 'agent_message')
+           AND json_extract(conversation_timeline.payload_json, '$.content') LIKE ? ESCAPE '\\'
+         ORDER BY conversation_timeline.created_at DESC, conversation_timeline.sequence DESC
+         LIMIT ?`,
+      )
+      .all(likePattern(parsed.query), parsed.limit) as DatabaseRow[];
+
+    return conversationSearchResponseSchema.parse(rows.flatMap((row) => {
+      const item = conversationTimelineItemSchema.parse(
+        parseJson(asString(row, "payload_json"), "conversation search timeline item"),
+      );
+      if (item.kind !== "message" && item.kind !== "agent_message") return [];
+      return [{
+        content: conversationSearchSnippet(item.content, parsed.query),
+        conversationId: item.conversationId,
+        conversationTitle: asString(row, "conversation_title"),
+        createdAt: item.createdAt,
+        itemId: item.id,
+        parentConversationId: asNullableString(row, "parent_conversation_id"),
+        projectId: asNullableString(row, "project_id"),
+        role: item.kind === "agent_message" ? "agent" : item.role,
+        threadKind: asString(row, "thread_kind"),
+      }];
+    }));
   }
 
   public listCancelledPendingMessageAttachmentCleanups(
@@ -7088,6 +7173,14 @@ export class AgentDatabase {
           continue;
         }
 
+        if (event.type === "tool_approval_decided") {
+          const tool = readProjectionTool(payload, "tool");
+          if (tool !== null && tool.status === "running") {
+            this.markThreadLogToolRunning(conversationId, tool);
+          }
+          continue;
+        }
+
         if (event.type === "tool_approval_expired") {
           const tool = readProjectionTool(payload, "tool");
           if (tool !== null && tool.status === "cancelled") {
@@ -7903,7 +7996,7 @@ export class AgentDatabase {
   }
 
   /**
-   * Existing attachment snapshots are already stored under AGENT_HOME. The
+   * Existing attachment snapshots are already stored under ASTER_HOME. The
    * log only references their immutable IDs, so replay can re-bind drafts
    * without ever serializing a managed absolute path into JSONL.
    */
@@ -8012,6 +8105,31 @@ export class AgentDatabase {
         "UPDATE conversation_timeline SET payload_json = ? WHERE id = ?",
       )
       .run(JSON.stringify(awaiting), toolId);
+  }
+
+  private markThreadLogToolRunning(
+    conversationId: string,
+    tool: ConversationToolItem,
+  ): void {
+    if (tool.conversationId !== conversationId) {
+      throw new Error("ThreadLog approved Tool Call belongs to another Conversation.");
+    }
+    const row = this.database
+      .prepare(
+        `SELECT payload_json FROM conversation_timeline
+         WHERE id = ? AND conversation_id = ? AND kind = 'tool'`,
+      )
+      .get(tool.id, conversationId) as DatabaseRow | undefined;
+    if (row === undefined) {
+      throw new Error("ThreadLog tool approval decision has no matching Tool Call.");
+    }
+    const current = conversationToolItemSchema.parse(
+      parseJson(asString(row, "payload_json"), "tool"),
+    );
+    if (current.status !== "awaiting_approval") return;
+    this.database
+      .prepare("UPDATE conversation_timeline SET payload_json = ? WHERE id = ? AND kind = 'tool'")
+      .run(JSON.stringify(tool), tool.id);
   }
 
   private expireThreadLogToolApproval(

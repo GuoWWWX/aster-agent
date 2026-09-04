@@ -19,6 +19,8 @@ import type {
   CreateSkillDocumentInput,
   CreateConfigurationWorkspaceEntryInput,
   ConversationReferenceInput,
+  ConversationSearchInput,
+  ConversationSearchResult,
   ForkConversationInput,
   ConversationRunEvent,
   ConversationSummary,
@@ -97,6 +99,7 @@ import type {
   TerminalSessionWriteInput,
   WorkspaceTerminalTabOpenRequest,
   WorkspaceTerminalTabOpenedInput,
+  WorkspaceTerminalTabCloseRequest,
   WorkspaceBrowserTabOpenRequest,
   WorkspaceBrowserTabOpenedInput,
   WorkspaceBrowserTabCloseRequest,
@@ -127,6 +130,7 @@ export type ConversationRunEventListener = (event: ConversationRunEvent) => void
 export type ApplicationSettingsListener = (settings: ApplicationSettings) => void;
 export type TerminalSessionEventListener = (event: TerminalSessionEvent) => void;
 export type WorkspaceTerminalTabOpenRequestListener = (request: WorkspaceTerminalTabOpenRequest) => void;
+export type WorkspaceTerminalTabCloseRequestListener = (request: WorkspaceTerminalTabCloseRequest) => void;
 export type WorkspaceBrowserTabOpenRequestListener = (request: WorkspaceBrowserTabOpenRequest) => void;
 export type WorkspaceBrowserTabCloseRequestListener = (request: WorkspaceBrowserTabCloseRequest) => void;
 export type ManagedBrowserEventListener = (event: ManagedBrowserEvent) => void;
@@ -218,6 +222,9 @@ export interface AgentClient {
   onWorkspaceTerminalTabOpenRequested(
     listener: WorkspaceTerminalTabOpenRequestListener,
   ): () => void;
+  onWorkspaceTerminalTabCloseRequested(
+    listener: WorkspaceTerminalTabCloseRequestListener,
+  ): () => void;
   confirmWorkspaceBrowserTabOpened(input: WorkspaceBrowserTabOpenedInput): Promise<void>;
   onWorkspaceBrowserTabOpenRequested(listener: WorkspaceBrowserTabOpenRequestListener): () => void;
   onWorkspaceBrowserTabCloseRequested(listener: WorkspaceBrowserTabCloseRequestListener): () => void;
@@ -234,6 +241,7 @@ export interface AgentClient {
   listConversationTimeline(
     input: ConversationReferenceInput,
   ): Promise<ConversationTimelineItem[]>;
+  searchConversations(input: ConversationSearchInput): Promise<ConversationSearchResult[]>;
   listConversationPendingMessages(
     input: ConversationReferenceInput,
   ): Promise<ConversationPendingMessage[]>;

@@ -136,6 +136,28 @@ export class ConversationAttachmentStore {
     private readonly rootPath: string
   ) {}
 
+  public async migrateLegacyManagedRoots(legacyRoots: readonly string[]): Promise<void> {
+    const roots = [...new Set(legacyRoots.map((root) => path.resolve(root)))]
+      .filter((root) => root !== path.resolve(this.rootPath));
+    if (roots.length === 0) return;
+
+    for (const attachment of this.database.listConversationAttachmentStoragePaths()) {
+      const storedPath = await this.migrateLegacyManagedFile(attachment.storedPath, roots);
+      const extractedTextPath = attachment.extractedTextPath === null
+        ? null
+        : await this.migrateLegacyManagedFile(attachment.extractedTextPath, roots);
+      if (
+        storedPath === attachment.storedPath
+        && extractedTextPath === attachment.extractedTextPath
+      ) continue;
+      this.database.updateConversationAttachmentStoragePaths({
+        extractedTextPath,
+        id: attachment.id,
+        storedPath,
+      });
+    }
+  }
+
   public async importFiles(
     conversationId: string,
     sourcePaths: readonly string[]
@@ -336,11 +358,39 @@ export class ConversationAttachmentStore {
   public toModelAttachments(
     conversationId: string,
     attachmentIds: readonly string[],
-    includeImageData: boolean
+    includeImageData: boolean,
+    describeImages = false,
   ): ModelMessageAttachment[] {
     return this.database
       .listConversationAttachmentsByIds(conversationId, attachmentIds)
-      .map((attachment) => this.toModelAttachment(attachment, includeImageData));
+      .map((attachment) => this.toModelAttachment(
+        attachment,
+        includeImageData,
+        describeImages,
+      ));
+  }
+
+  public viewAttachments(
+    conversationId: string,
+    attachmentIds: readonly string[],
+  ): {
+    attachments: ConversationAttachment[];
+    modelAttachments: ModelMessageAttachment[];
+  } {
+    const attachments = this.database.listConversationAttachmentsByIds(
+      conversationId,
+      attachmentIds,
+    );
+    return {
+      attachments: this.database.listThreadLogAttachmentReferences(
+        conversationId,
+        attachmentIds,
+      ),
+      modelAttachments: attachments.flatMap((attachment) => {
+        const modelAttachment = this.toModelAttachment(attachment, true, false);
+        return modelAttachment.kind === "image" ? [modelAttachment] : [];
+      }),
+    };
   }
 
   public readText(
@@ -528,9 +578,29 @@ export class ConversationAttachmentStore {
 
   private toModelAttachment(
     attachment: StoredConversationAttachment,
-    includeImageData: boolean
+    includeImageData: boolean,
+    describeImage: boolean,
   ): ModelMessageAttachment {
     if (attachment.kind === "image") {
+      if (describeImage) {
+        const content = [
+          "[历史图片未自动重复发送]",
+          modelImageAttachmentCaption(attachment),
+          "需要重新查看图片内容时调用 view_attachments。",
+        ].join("\n");
+        return {
+          content,
+          contextTokens: estimateContextTokens(content),
+          id: attachment.id,
+          kind: "text",
+          mimeType: attachment.mimeType,
+          name: attachment.name,
+          projectPath: attachment.projectPath,
+          readState: "metadata_only",
+          source: attachment.source,
+          truncated: false,
+        };
+      }
       return {
         contextTokens: attachment.contextTokens,
         data: includeImageData
@@ -611,5 +681,29 @@ export class ConversationAttachmentStore {
     await unlink(filePath).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;
     });
+  }
+
+  private async migrateLegacyManagedFile(
+    filePath: string,
+    legacyRoots: readonly string[],
+  ): Promise<string> {
+    const resolvedFilePath = path.resolve(filePath);
+    for (const legacyRoot of legacyRoots) {
+      const relativePath = path.relative(legacyRoot, resolvedFilePath);
+      if (
+        relativePath.length === 0
+        || relativePath === ".."
+        || relativePath.startsWith(`..${path.sep}`)
+        || path.isAbsolute(relativePath)
+      ) continue;
+      const migratedPath = path.join(this.rootPath, relativePath);
+      if (!existsSync(migratedPath)) {
+        if (!existsSync(resolvedFilePath)) return filePath;
+        await mkdir(path.dirname(migratedPath), { recursive: true });
+        await copyFile(resolvedFilePath, migratedPath);
+      }
+      return migratedPath;
+    }
+    return filePath;
   }
 }

@@ -110,6 +110,21 @@ export class SkillDocumentStore {
     return document;
   }
 
+  /** Installs one first-party Skill once while preserving later user edits and enablement. */
+  public ensureManagedDocument(content: string): SkillDocument {
+    const parsed = parseSkillMarkdown(content);
+    const rootPath = this.getManagedDirectoryPath();
+    const directory = path.join(rootPath, parsed.metadata.name);
+    const entryPath = path.join(directory, "SKILL.md");
+    if (existsSync(entryPath)) return this.readPath(entryPath);
+    if (existsSync(directory)) throw new Error("内置 Skill 目录存在，但缺少 SKILL.md。未覆盖现有目录。");
+    mkdirSync(directory, { recursive: false });
+    writeFileSync(entryPath, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    const document = this.toDocument(entryPath, content);
+    this.synchronizeDocuments([document]);
+    return document;
+  }
+
   public discoverDocuments(): SkillDiscoveryResult {
     const defaultDirectoryPath = this.getManagedDirectoryPath();
     const configuration = this.integrationConfiguration.getConfiguration();

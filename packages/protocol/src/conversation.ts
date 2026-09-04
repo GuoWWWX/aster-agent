@@ -483,6 +483,29 @@ export const conversationTimelineResponseSchema = z.array(
   conversationTimelineItemSchema
 );
 
+export const conversationSearchInputSchema = z
+  .object({
+    limit: z.number().int().min(1).max(100).default(50),
+    query: z.string().trim().min(1).max(500),
+  })
+  .strict();
+
+export const conversationSearchResultSchema = z
+  .object({
+    content: z.string().max(2_000),
+    conversationId: conversationIdSchema,
+    conversationTitle: z.string().trim().min(1).max(MAX_TITLE_LENGTH),
+    createdAt: isoTimestampSchema,
+    itemId: timelineItemIdSchema,
+    parentConversationId: conversationIdSchema.nullable(),
+    projectId: projectIdSchema.nullable(),
+    role: z.enum(["user", "assistant", "agent"]),
+    threadKind: conversationThreadKindSchema,
+  })
+  .strict();
+
+export const conversationSearchResponseSchema = z.array(conversationSearchResultSchema).max(100);
+
 export const conversationPermissionModeSchema = z.enum([
   "read_only",
   "ask_before_changes",
@@ -936,7 +959,7 @@ export const approveToolChangeInputSchema = z
   .object({
     approved: z.boolean(),
     runId: runIdSchema,
-    scope: z.enum(["once", "session", "agent"]).default("once"),
+    scope: z.enum(["once", "session"]).default("once"),
     toolId: timelineItemIdSchema
   })
   .strict();
@@ -1213,6 +1236,8 @@ export type ConversationToolExecutionMode = z.infer<
 export type ConversationTimelineItem = z.infer<
   typeof conversationTimelineItemSchema
 >;
+export type ConversationSearchInput = z.infer<typeof conversationSearchInputSchema>;
+export type ConversationSearchResult = z.infer<typeof conversationSearchResultSchema>;
 export type ConversationPermissionMode = z.infer<
   typeof conversationPermissionModeSchema
 >;

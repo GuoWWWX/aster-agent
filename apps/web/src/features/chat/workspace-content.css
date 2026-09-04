@@ -174,6 +174,25 @@
   padding: 24px max(16px, calc((100% - var(--conversation-content-max-width)) / 2)) 0;
 }
 
+.conversation-turn-navigator {
+  scrollbar-gutter: auto;
+  scrollbar-width: none;
+}
+
+.conversation-turn-navigator::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+[data-theme="dark"] .conversation-turn-tooltip {
+  background: var(--app-hover);
+}
+
+[data-theme="dark"] .conversation-turn-tooltip > svg {
+  fill: var(--app-hover);
+}
+
 .conversation-workspace__loading,
 .conversation-workspace__blank {
   display: inline-flex;
@@ -207,6 +226,15 @@
   color: var(--app-muted-foreground);
   font-size: var(--app-font-size-body);
   font-weight: 400;
+}
+
+::highlight(conversation-find-match) {
+  background: var(--app-find-match-bg);
+}
+
+::highlight(conversation-find-active) {
+  background: var(--app-find-active-bg);
+  color: var(--app-find-active-fg);
 }
 
 .conversation-run-duration {
@@ -904,6 +932,11 @@
   gap: 6px;
   color: var(--app-foreground);
   font-weight: 600;
+}
+
+.tool-timeline-item__identity > svg,
+.tool-activity-batch__identity button > svg {
+  flex: 0 0 auto;
 }
 
 .tool-timeline-item__identity span {

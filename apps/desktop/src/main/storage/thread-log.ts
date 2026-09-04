@@ -41,6 +41,7 @@ const threadLogEventTypeSchema = z.enum([
  "subagent_task_created",
   "task_list_updated",
   "tool_approval_decided",
+  "tool_approval_auto_reviewed",
   "tool_approval_expired",
   "tool_approval_requested",
   "tool_call_requested",

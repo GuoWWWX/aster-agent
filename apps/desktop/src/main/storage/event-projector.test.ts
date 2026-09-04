@@ -1412,6 +1412,77 @@ describe("EventProjector", () => {
     recovered.close();
   });
 
+  it("restores an approved Tool as running before its result arrives", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-approved-tool-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const threadLog = new ThreadLog(path.join(directory, "conversations"));
+    const creation = source.prepareConversationCreation(null);
+    source.projectConversationCreated(creation);
+    threadLog.append(creation.conversation.id, {
+      payload: creation,
+      type: "conversation_created",
+    });
+    const run = source.createRunWithUserMessage(
+      creation.conversation.id,
+      "批准后执行命令",
+      "test-model",
+    );
+    threadLog.append(creation.conversation.id, {
+      payload: {
+        content: run.userMessage.content,
+        message: run.userMessage,
+        messageId: run.userMessage.id,
+        modelContent: run.userMessage.content,
+        runId: run.runId,
+      },
+      type: "user_message",
+    });
+    threadLog.append(creation.conversation.id, {
+      payload: { modelId: "test-model", runId: run.runId },
+      type: "run_created",
+    });
+    threadLog.append(creation.conversation.id, {
+      payload: { runId: run.runId },
+      type: "run_started",
+    });
+    const tool = conversationToolItemSchema.parse({
+      arguments: '{"command":"npm test"}',
+      batchId: null,
+      conversationId: creation.conversation.id,
+      createdAt: new Date().toISOString(),
+      diff: null,
+      executionMode: "serial",
+      id: crypto.randomUUID(),
+      kind: "tool",
+      name: "run_command",
+      result: null,
+      runId: run.runId,
+      status: "running",
+    });
+    threadLog.append(creation.conversation.id, {
+      payload: { runId: run.runId, tool, toolCallId: "call-command" },
+      type: "tool_call_requested",
+    });
+    threadLog.append(creation.conversation.id, {
+      payload: { permissionTool: "run_command", runId: run.runId, toolId: tool.id },
+      type: "tool_approval_requested",
+    });
+    threadLog.append(creation.conversation.id, {
+      payload: { approved: true, runId: run.runId, scope: "once", tool, toolId: tool.id },
+      type: "tool_approval_decided",
+    });
+
+    const recovered = new AgentDatabase(":memory:");
+    new EventProjector(recovered, threadLog).projectAllConversationLogs();
+
+    expect(recovered.listTimeline(creation.conversation.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: tool.id, status: "running" }),
+    ]));
+    source.close();
+    recovered.close();
+  });
+
   it("rebuilds task-list and Subagent relations after dependent Conversations and Runs", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-subagent-recovery-"));
     temporaryDirectories.push(directory);

@@ -1003,6 +1003,51 @@ export function RightSidebarWorkspace({
   ]);
 
   useEffect(() => {
+    return agentClient.onWorkspaceTerminalTabCloseRequested((request) => {
+      if (
+        (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId))
+        || activeProject === null
+      ) {
+        return;
+      }
+      const closedTabIds = new Set(toolTabs
+        .filter((tab) => tab.kind === "terminal" && tab.session?.sessionId === request.sessionId)
+        .map((tab) => tab.id));
+      if (closedTabIds.size === 0) return;
+      const openTabs = [
+        ...fileTabs.filter((tab) => tab.kind === "file"),
+        ...toolTabs,
+        ...sideSessions
+          .filter((session) => openChatIds.has(session.id))
+          .map((session) => ({ id: `chat:${session.id}` })),
+      ];
+      const nextActiveTabId = activeSidebarTabIdAfterClosingTabs(
+        openTabs,
+        activeTabId,
+        closedTabIds,
+      );
+      setToolTabs((current) => current.filter((tab) => !closedTabIds.has(tab.id)));
+      if (activeTabId !== null && closedTabIds.has(activeTabId)) {
+        setActiveTabForCurrentSession(nextActiveTabId);
+        setIsFileBrowserOpen(false);
+        setIsTreeCollapsed(false);
+        if (nextActiveTabId === null) setFilePanelOpen(false);
+      }
+    });
+  }, [
+    activeProject,
+    activeSessionId,
+    activeTabId,
+    agentClient,
+    openChatIds,
+    setFilePanelOpen,
+    setActiveTabForCurrentSession,
+    sideSessions,
+    fileTabs,
+    toolTabs,
+  ]);
+
+  useEffect(() => {
     return agentClient.onWorkspaceBrowserTabOpenRequested((request) => {
       if (
         (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId))

@@ -10,6 +10,7 @@ import {
 
 import { AgentRuntime } from "../agent/agent-runtime.js";
 import { SkillRuntime } from "../agent/skill-runtime.js";
+import { BROWSER_USE_SKILL } from "../agent/prompts/prompt-assets.js";
 import { reportMainError, toMainAgentError } from "../errors/agent-error.js";
 import { registerMainIpcHandlers } from "../ipc/register-main-ipc.js";
 import { ModelCatalogStore } from "../model/model-catalog-store.js";
@@ -88,6 +89,7 @@ loadLocalEnvironment();
 const legacyUserDataPath = app.commandLine.hasSwitch("user-data-dir")
   ? path.join(app.getPath("appData"), app.getName())
   : app.getPath("userData");
+const legacyPackageUserDataPath = path.join(app.getPath("appData"), "@agent", "desktop");
 const electronUserDataPath = initializeElectronUserDataPath({
   environment: process.env,
   legacyRootPath: legacyUserDataPath,
@@ -104,6 +106,7 @@ function parseLocalEnvironmentFile(contents: string): Map<string, string> {
     "AGENT_MODEL_API_KEY",
     "AGENT_MODEL_ID",
     "AGENT_HOME",
+    "ASTER_HOME",
   ]);
 
   for (const line of contents.split(/\r?\n/)) {
@@ -154,6 +157,7 @@ function loadLocalEnvironment(): void {
 
 async function initializeServices(): Promise<DesktopServices> {
   const agentHome = await initializeAgentHome({
+    additionalLegacyRootPaths: [legacyPackageUserDataPath],
     environment: process.env,
     legacyRootPath: legacyUserDataPath,
     migrateLegacy: process.env.AGENT_HOME_SKIP_LEGACY_MIGRATION !== "1",
@@ -178,6 +182,7 @@ async function initializeServices(): Promise<DesktopServices> {
     projectRegistry,
     agentHome.paths.conversationFilesPath,
   );
+  await attachments.migrateLegacyManagedRoots(agentHome.legacyConversationFilesPaths);
   const threadLog = new ThreadLog(agentHome.paths.conversationsPath);
   const conversationDeletion = new ConversationDeletionService(
     database,
@@ -227,6 +232,11 @@ async function initializeServices(): Promise<DesktopServices> {
     integrationConfiguration,
     agentHome.paths.skillsPath,
   );
+  try {
+    skillDocuments.ensureManagedDocument(BROWSER_USE_SKILL);
+  } catch (error) {
+    console.warn("Built-in browser Skill could not be installed.", error);
+  }
   skillDocuments.discoverDocuments();
   const skillRuntime = new SkillRuntime(skillDocuments, integrationConfiguration);
   const configurationWorkspaces = new ConfigurationWorkspaceStore(
@@ -504,6 +514,7 @@ async function bootstrap(): Promise<void> {
     services?.graphCheckpointer.close();
     services?.managedBrowser.dispose();
     services?.terminalSessions.dispose();
+    services?.tools.dispose();
     services?.database.close();
     services = undefined;
   });

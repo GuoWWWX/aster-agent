@@ -13,6 +13,7 @@ const IPC_EVENT_CHANNELS: ReadonlySet<IpcChannel> = new Set([
   IPC_CHANNELS.managedBrowserSetBounds,
   IPC_CHANNELS.terminalSessionEvent,
   IPC_CHANNELS.workspaceTerminalOpenRequested,
+  IPC_CHANNELS.workspaceTerminalCloseRequested,
   IPC_CHANNELS.workspaceBrowserOpenRequested,
   IPC_CHANNELS.workspaceBrowserCloseRequested,
   IPC_CHANNELS.windowStateChanged,

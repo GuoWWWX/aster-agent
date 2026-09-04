@@ -12,6 +12,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type KeyboardEvent,
   type MouseEvent,
   type ReactElement,
 } from "react";
@@ -36,6 +37,7 @@ type BrowserToolbarCommand = Exclude<
   ManagedBrowserCommandInput["command"],
   | "setColorScheme"
   | "showDownloads"
+  | "showFind"
   | "showMenu"
   | "showWorkspaceAddMenu"
   | "showWorkspaceTabMenu"
@@ -138,6 +140,7 @@ export function ManagedBrowserWorkspace({
         }
         return;
       }
+      if (event.type === "openGlobalSearch") return;
       if (event.sessionId === sessionRef.current?.sessionId) setError(event.message);
     });
     return () => {
@@ -322,9 +325,23 @@ export function ManagedBrowserWorkspace({
       setError(getUserErrorMessage(reason, "网页打开失败。"));
     });
   };
+  const handleFindShortcut = (event: KeyboardEvent<HTMLElement>): void => {
+    if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) return;
+    if (event.key.toLocaleLowerCase() !== "f") return;
+    const current = sessionRef.current;
+    const bounds = surfaceRef.current?.getBoundingClientRect();
+    if (current === null || bounds === undefined) return;
+    event.preventDefault();
+    void agentClient.commandManagedBrowser({
+      command: "showFind",
+      sessionId: current.sessionId,
+      x: Math.max(0, Math.round(bounds.right)),
+      y: Math.max(0, Math.round(bounds.top)),
+    }).catch((reason: unknown) => setError(getUserErrorMessage(reason, "页面查找打开失败。")));
+  };
 
   return (
-    <section className="flex h-full min-h-0 w-full flex-col bg-[var(--app-panel)]" aria-label="内置浏览器">
+    <section className="flex h-full min-h-0 w-full flex-col bg-[var(--app-panel)]" aria-label="内置浏览器" data-managed-browser-workspace onKeyDownCapture={handleFindShortcut}>
       <form className="flex h-11 flex-none items-center gap-1 border-b border-[var(--app-border)] px-2" onSubmit={navigate}>
         <div className="flex shrink-0 items-center gap-0.5">
           <button aria-label="后退" className="grid size-7 place-items-center rounded-md hover:bg-[var(--app-hover)] disabled:opacity-40" disabled={!session?.canGoBack} type="button" onClick={() => command("back")}><ArrowLeft aria-hidden="true" size={15} /></button>

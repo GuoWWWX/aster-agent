@@ -56,6 +56,9 @@ export class ContextCompiler {
       ? this.database.listContextMessages(input.conversationId)
       : [];
     const sourceMessages = threadContext?.messages ?? databaseMessages;
+    const latestUserSequence = sourceMessages.findLast(
+      (message) => message.role === "user",
+    )?.sequence ?? null;
     const storedMessages = sanitizeStoredModelMessages(sourceMessages)
       .filter((message) => !isRuntimeControlMessage(message))
       .map((message) => ({
@@ -63,7 +66,8 @@ export class ContextCompiler {
         attachments: this.attachments?.toModelAttachments(
           input.conversationId,
           message.attachmentIds,
-          input.includeImageData,
+          input.includeImageData && message.sequence === latestUserSequence,
+          message.sequence !== latestUserSequence,
         ) ?? [],
       }));
     const latestUserMessage = [...storedMessages].reverse().find((message) => message.role === "user");

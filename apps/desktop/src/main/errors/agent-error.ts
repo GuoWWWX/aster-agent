@@ -199,6 +199,13 @@ function classifyError(
       retryable: true,
     };
   }
+  if (nodeCode === "TERMINAL_CONTEXT_MISMATCH") {
+    return {
+      code: "CONFLICT",
+      message: "终端仍在运行，但目标 SSH 会话未连接。请重新连接并确认远程提示符后再发送命令。",
+      retryable: true,
+    };
+  }
   if (isGraphRecursionLimit(reason)) {
     return classificationForCode("MODEL_RUN_LIMIT_REACHED");
   }

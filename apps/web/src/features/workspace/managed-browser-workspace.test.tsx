@@ -74,6 +74,30 @@ function renderBrowser(
 }
 
 describe("ManagedBrowserWorkspace", () => {
+  it("opens page find with Ctrl+F while the browser toolbar has focus", async () => {
+    const client = new MockAgentClient();
+    const command = vi.spyOn(client, "commandManagedBrowser").mockResolvedValue(undefined);
+    const container = renderBrowser(client);
+    const address = container.querySelector<HTMLInputElement>('[aria-label="网址或搜索内容"]');
+    if (address === null) throw new Error("Expected browser address input.");
+
+    void act(() => {
+      address.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        ctrlKey: true,
+        key: "f",
+      }));
+    });
+    await act(async () => Promise.resolve());
+
+    expect(command).toHaveBeenCalledWith({
+      command: "showFind",
+      sessionId: SESSION.sessionId,
+      x: 0,
+      y: 0,
+    });
+  });
+
   it("keeps only the newest pending bounds while a native-view update is in flight", async () => {
     const resolvers: Array<() => void> = [];
     const dispatch = vi.fn(() => new Promise<void>((resolve) => {

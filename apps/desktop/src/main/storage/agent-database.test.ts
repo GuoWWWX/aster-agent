@@ -177,6 +177,34 @@ describe("AgentDatabase", () => {
     database.close();
   });
 
+  it("searches visible conversation timeline messages across conversations", () => {
+    const database = new AgentDatabase(":memory:");
+    const firstConversation = database.createConversation(null);
+    const secondConversation = database.createConversation(null);
+    const firstRun = database.createRunWithUserMessage(
+      firstConversation.id,
+      "请排查全局搜索定位标记",
+      "test-model",
+    );
+    const assistantId = crypto.randomUUID();
+    database.appendAssistantTurn({
+      content: "已经修复全局搜索定位标记。",
+      conversationId: firstConversation.id,
+      messageId: assistantId,
+      modelId: "test-model",
+      runId: firstRun.runId,
+      toolCalls: [],
+    });
+    database.createRunWithUserMessage(secondConversation.id, "无关内容", "test-model");
+
+    const matches = database.searchConversations({ limit: 10, query: "定位标记" });
+
+    expect(matches).toHaveLength(2);
+    expect(matches.some((match) => match.itemId === assistantId)).toBe(true);
+    expect(matches.every((match) => match.conversationId === firstConversation.id)).toBe(true);
+    database.close();
+  });
+
   it("limits context search to messages before a sequence cursor", () => {
     const database = new AgentDatabase(":memory:");
     const conversation = database.createConversation(null);

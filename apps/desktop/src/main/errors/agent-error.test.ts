@@ -166,6 +166,19 @@ describe("main agent errors", () => {
     });
   });
 
+  it("classifies a lost nested SSH shell separately from a dead PTY", () => {
+    const error = Object.assign(
+      new Error("The terminal is alive, but the requested SSH shell is not connected."),
+      { code: "TERMINAL_CONTEXT_MISMATCH" },
+    );
+
+    expect(toMainAgentError(error, { operation: "tool:terminal_control" })).toMatchObject({
+      code: "CONFLICT",
+      message: "终端仍在运行，但目标 SSH 会话未连接。请重新连接并确认远程提示符后再发送命令。",
+      retryable: true,
+    });
+  });
+
   it("classifies an oversized tool batch as an invalid model response", () => {
     const error = Object.assign(new Error("Too many tool calls."), {
       code: "TOOL_CALL_LIMIT_EXCEEDED",

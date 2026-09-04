@@ -9,6 +9,7 @@ import {
   terminalSessionEventSchema,
   workspaceBrowserTabCloseRequestSchema,
   workspaceBrowserTabOpenRequestSchema,
+  workspaceTerminalTabCloseRequestSchema,
   workspaceTerminalTabOpenRequestSchema,
 } from "../../../../packages/protocol/src/developer-tools.js";
 import type {
@@ -22,6 +23,7 @@ import type {
   ApplicationSettings,
   BrowserConfiguration,
   ConversationReferenceInput,
+  ConversationSearchInput,
   ForkConversationInput,
   PendingConversationMessageReferenceInput,
   ReorderPendingConversationMessagesInput,
@@ -495,6 +497,12 @@ export function createDesktopBridge(): DesktopBridge {
         input
       );
     },
+    searchConversations(input: ConversationSearchInput) {
+      return invoke<BridgeResult<"searchConversations">>(
+        IPC_CHANNELS.conversationSearch,
+        input,
+      );
+    },
     listConversationPendingMessages(input: ConversationReferenceInput) {
       return invoke<BridgeResult<"listConversationPendingMessages">>(
         IPC_CHANNELS.conversationListPendingMessages,
@@ -566,6 +574,13 @@ export function createDesktopBridge(): DesktopBridge {
       };
       ipcRenderer.on(IPC_CHANNELS.workspaceTerminalOpenRequested, handle);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.workspaceTerminalOpenRequested, handle);
+    },
+    onWorkspaceTerminalTabCloseRequested(listener) {
+      const handle = (_event: IpcRendererEvent, value: unknown): void => {
+        listener(workspaceTerminalTabCloseRequestSchema.parse(value));
+      };
+      ipcRenderer.on(IPC_CHANNELS.workspaceTerminalCloseRequested, handle);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.workspaceTerminalCloseRequested, handle);
     },
     onWorkspaceBrowserTabOpenRequested(listener) {
       const handle = (_event: IpcRendererEvent, value: unknown): void => {

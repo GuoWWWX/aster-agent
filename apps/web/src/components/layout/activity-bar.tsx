@@ -2,6 +2,7 @@ import {
   ListTodo,
   MessageSquareText,
   Moon,
+  Search,
   Settings,
   Sun,
   UsersRound,
@@ -24,7 +25,7 @@ const ACTIVITY_ITEMS: readonly ActivityItem[] = [
   { id: "tasks", label: "任务", icon: ListTodo },
 ];
 
-export function ActivityBar(): ReactElement {
+export function ActivityBar({ onOpenGlobalSearch }: { onOpenGlobalSearch?: () => void }): ReactElement {
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
   const setActiveActivity = useWorkbenchUiStore(
     (state) => state.setActiveActivity,
@@ -62,6 +63,9 @@ export function ActivityBar(): ReactElement {
             </IconButton>
           );
         })}
+        <IconButton label="搜索所有对话" size="activity" variant="quiet" onClick={onOpenGlobalSearch}>
+          <Search aria-hidden="true" size={18} strokeWidth={1.8} />
+        </IconButton>
       </nav>
 
       <div
