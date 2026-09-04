@@ -15,7 +15,7 @@ type BrowserMenuHistoryEntry = {
 
 export type ManagedBrowserMenuSurface =
   | { kind: "downloads"; downloads: readonly BrowserMenuDownload[] }
-  | { kind: "find"; query: string }
+  | { activeMatchOrdinal: number; kind: "find"; matches: number; query: string }
   | { kind: "history"; entries: readonly BrowserMenuHistoryEntry[] }
   | { canFind: boolean; kind: "menu"; zoomPercent: number };
 
@@ -27,6 +27,9 @@ export type ManagedBrowserMenuAction = {
     | "downloads"
     | "find"
     | "findQuery"
+    | "findNext"
+    | "findPrevious"
+    | "globalSearch"
     | "history"
     | "navigateHistory"
     | "openDownload"
@@ -49,6 +52,9 @@ const ALLOWED_ACTIONS = new Set<ManagedBrowserMenuAction["action"]>([
   "downloads",
   "find",
   "findQuery",
+  "findNext",
+  "findPrevious",
+  "globalSearch",
   "history",
   "navigateHistory",
   "openDownload",
@@ -68,7 +74,7 @@ export function managedBrowserMenuSize(surface: ManagedBrowserMenuSurface): {
 } {
   switch (surface.kind) {
     case "find":
-      return { height: 56, width: 320 };
+      return { height: 56, width: 440 };
     case "downloads":
       return { height: Math.min(360, Math.max(142, 94 + surface.downloads.length * 48)), width: 300 };
     case "history":
@@ -179,9 +185,10 @@ export function buildManagedBrowserMenuHtml(
     .panel-item strong { font-size: 13px; font-weight: 600; }
     .panel-item small { color: var(--muted); font-size: 11px; }
     .empty { display: grid; min-height: 72px; place-items: center; color: var(--muted); font-size: 12px; }
-    .find-form { display: flex; height: 100%; align-items: center; gap: 5px; }
+    .find-form { display: flex; height: 100%; align-items: center; gap: 3px; }
     .find-form input { min-width: 0; height: 30px; flex: 1 1 auto; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-soft); color: var(--text); padding: 0 8px; outline: none; }
-    .find-form button { width: auto; min-height: 30px; flex: 0 0 auto; padding: 0 8px; text-align: center; }
+    .find-form button { display: grid; width: 28px; min-height: 28px; flex: 0 0 auto; place-items: center; padding: 0; text-align: center; font-size: 16px; }
+    .find-count { min-width: 48px; color: var(--muted); text-align: center; font-size: 11px; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body${bodyClass === undefined ? "" : ` class="${bodyClass}"`}>
@@ -190,7 +197,7 @@ export function buildManagedBrowserMenuHtml(
     const sendAction = (action, params = {}) => {
       const query = new URLSearchParams(params).toString();
       document.documentElement.dataset.menuAction = ${JSON.stringify(ACTION_PREFIX)} + action + (query ? "?" + query : "");
-      console.debug(${JSON.stringify(MANAGED_BROWSER_MENU_ACTION_SIGNAL)});
+      console.debug(${JSON.stringify(`${MANAGED_BROWSER_MENU_ACTION_SIGNAL}:`)} + document.documentElement.dataset.menuAction);
     };
     document.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-action]");
@@ -198,10 +205,34 @@ export function buildManagedBrowserMenuHtml(
       event.preventDefault();
       sendAction(button.dataset.action, button.dataset.index === undefined ? {} : { index: button.dataset.index });
     });
-    document.querySelector("form[data-find]")?.addEventListener("submit", (event) => {
+    const findForm = document.querySelector("form[data-find]");
+    findForm?.addEventListener("submit", (event) => {
       event.preventDefault();
-      sendAction("findQuery", { query: event.currentTarget.elements.query.value });
+      sendAction("findNext");
     });
+    const findInput = findForm?.elements.query;
+    findInput?.addEventListener("input", (event) => {
+      sendAction("findQuery", { query: event.currentTarget.value });
+    });
+    findInput?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      sendAction(event.shiftKey ? "findPrevious" : "findNext");
+    });
+    document.addEventListener("keydown", (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        sendAction("globalSearch");
+        return;
+      }
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      sendAction("back");
+    });
+    window.updateFindResult = (activeMatchOrdinal, matches) => {
+      const count = document.querySelector("[data-find-count]");
+      if (count) count.textContent = (matches > 0 ? activeMatchOrdinal : 0) + " / " + matches;
+    };
     document.querySelector("input[name=query]")?.focus();
   </script>
 </body>
@@ -237,7 +268,7 @@ function surfaceContent(surface: ManagedBrowserMenuSurface): string {
         "暂无浏览记录",
       );
     case "find":
-      return `<form class="find-form" data-find><input aria-label="在页面中查找" name="query" autocomplete="off" value="${escapeHtml(surface.query)}" placeholder="在页面中查找"><button type="submit">查找</button><button data-action="back" type="button">关闭</button></form>`;
+      return `<form class="find-form" data-find><input aria-label="在页面中查找" name="query" autocomplete="off" value="${escapeHtml(surface.query)}" placeholder="在页面中查找"><span class="find-count" data-find-count>${surface.matches > 0 ? surface.activeMatchOrdinal : 0} / ${surface.matches}</span><button aria-label="上一个匹配项" data-action="findPrevious" type="button">↑</button><button aria-label="下一个匹配项" data-action="findNext" type="button">↓</button><button aria-label="关闭查找" data-action="back" type="button">×</button></form>`;
   }
 }
 

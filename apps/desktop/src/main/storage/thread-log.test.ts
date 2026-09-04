@@ -154,6 +154,29 @@ describe("ThreadLog", () => {
     ]);
   });
 
+  it("keeps the explicit local checkpoint boundary before recent messages", async () => {
+    const log = await createThreadLog();
+    for (let index = 1; index <= 4; index += 1) {
+      log.append(conversationId, {
+        payload: { content: `消息 ${index}`, runId: `run-${index}` },
+        type: index % 2 === 1 ? "user_message" : "assistant_message",
+      });
+    }
+    log.append(conversationId, {
+      payload: {
+        coveredThroughContextSequence: 2,
+        coveredThroughSequence: 42,
+        summary: "只覆盖前两条",
+      },
+      type: "context_checkpoint",
+    });
+
+    expect(log.readContext(conversationId)?.checkpoint).toMatchObject({
+      coveredThroughSequence: 2,
+      summary: "只覆盖前两条",
+    });
+  });
+
   it("keeps one model-visible Agent message when delivery is retried", async () => {
     const log = await createThreadLog();
     const event = {
@@ -215,6 +238,7 @@ describe("ThreadLog", () => {
         content: "新问题和引用",
         role: "user",
         runId: "run-new",
+        sequence: 1,
       }),
     ]);
   });

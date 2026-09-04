@@ -19,7 +19,7 @@ import { rgPath } from "@vscode/ripgrep";
 import { applyPatch, createTwoFilesPatch, parsePatch } from "diff";
 import { z } from "zod";
 
-import type { ModelToolDefinition } from "../model/model-contracts.js";
+import type { ModelMessageAttachment, ModelToolDefinition } from "../model/model-contracts.js";
 import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
 import { toolErrorContent } from "../errors/tool-error.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
@@ -37,9 +37,11 @@ const MAX_COMMAND_OUTPUT_LENGTH = 200_000;
 const MAX_COMMAND_TIMEOUT_MS = 30 * 60_000;
 const MAX_COMMAND_WAIT_MS = 10 * 60_000;
 const MAX_COMMAND_YIELD_MS = 30_000;
+const MAX_SERVICE_NAME_LENGTH = 120;
 
 const PARALLEL_READ_TOOL_NAMES = new Set([
   "list_project_operations",
+  "list_background_commands",
   "list_directory",
   "read_file",
   "search_text",
@@ -47,6 +49,7 @@ const PARALLEL_READ_TOOL_NAMES = new Set([
 ]);
 
 const COMMAND_TOOL_NAMES = new Set([
+  "list_background_commands",
   "run_command",
   "wait_for_commands",
   "stop_command",
@@ -197,14 +200,20 @@ const runCommandArgumentsSchema = z
   .object({
     command: z.string().trim().min(1).max(MAX_COMMAND_LENGTH)
       .describe("One non-interactive command for the configured project shell."),
+    mode: z.enum(["batch", "service"]).default("batch")
+      .describe("batch waits for a finite command such as a build or test to exit; service returns after its startup observation window and keeps the process running."),
     parallel: z.boolean().default(true)
       .describe("Run alongside other independent commands from the same model turn by default; set false when this command depends on another command or shared mutable state."),
-    timeoutMs: z.number().int().min(1_000).max(MAX_COMMAND_TIMEOUT_MS).default(60_000)
-      .describe("Maximum execution time in milliseconds before the process is terminated."),
+    timeoutMs: z.number().int().min(1_000).max(MAX_COMMAND_TIMEOUT_MS).optional()
+      .describe("Optional execution limit in milliseconds. batch defaults to 30 minutes; service has no automatic timeout when omitted."),
+    serviceName: z.string().trim().min(1).max(MAX_SERVICE_NAME_LENGTH).optional()
+      .describe("Human-readable name for a service command, such as Vite development server."),
     yieldTimeMs: z.number().int().min(0).max(MAX_COMMAND_YIELD_MS).default(10_000)
-      .describe("How long to wait for a quick result before returning a commandId."),
+      .describe("For service mode only, how long to stream startup output before returning its commandId."),
   })
   .strict();
+
+const listBackgroundCommandsArgumentsSchema = z.object({}).strict();
 
 const waitForCommandsArgumentsSchema = z.object({
   commandIds: z.array(z.string().uuid()).min(1).max(20)
@@ -230,6 +239,7 @@ export type ToolExecutionResult = {
   kind: "completed";
   content: string;
   isError: boolean;
+  modelAttachments?: ModelMessageAttachment[];
   status?: "rejected";
 };
 
@@ -243,8 +253,10 @@ export type PreparedFileChange = {
 
 export type PreparedCommand = {
   command: string;
+  mode: "batch" | "service";
   parallel: boolean;
-  timeoutMs: number;
+  serviceName?: string | undefined;
+  timeoutMs: number | null;
   yieldTimeMs: number;
 };
 
@@ -295,8 +307,10 @@ type CommandSession = {
   error: string | null;
   exitCode: number | null;
   conversationId: string;
+  mode: "batch" | "service";
   projectId: string | undefined;
   outputEncoding: TerminalOutputEncoding;
+  serviceName: string;
   startedAt: string;
   status: CommandSessionStatus;
   stderrChunks: Buffer[];
@@ -305,10 +319,92 @@ type CommandSession = {
   stdoutByteLength: number;
   terminal: TerminalLaunch;
   terminate: (cancelled: boolean) => void;
+  timeoutMs: number | null;
   timedOut: boolean;
   truncated: boolean;
   workingDirectory: string;
 };
+
+function powershellUtf8Command(command: string): string {
+  const configureUtf8 = [
+    "$__agentUtf8 = New-Object System.Text.UTF8Encoding($false)",
+    "[Console]::InputEncoding = $__agentUtf8",
+    "[Console]::OutputEncoding = $__agentUtf8",
+    "$OutputEncoding = $__agentUtf8",
+  ].join("; ");
+  return `${configureUtf8}; ${command}`;
+}
+
+function normalizeModelUnifiedDiff(patch: string): string {
+  const lines = patch.split(/\r?\n/u);
+  if (lines[0]?.trim() === "*** Begin Patch") lines.shift();
+
+  let lastContentIndex = lines.length - 1;
+  while (lastContentIndex >= 0 && lines[lastContentIndex]?.trim().length === 0) {
+    lastContentIndex -= 1;
+  }
+  if (lines[lastContentIndex]?.trim() === "*** End Patch") {
+    lines.splice(lastContentIndex, 1);
+  }
+
+  const unsupportedDirective = lines.find((line) => (
+    /^\*\*\* (?:Add File:|Update File:|Delete File:)/u.test(line.trim())
+  ));
+  if (unsupportedDirective !== undefined) {
+    if (unsupportedDirective.trim().startsWith("*** Add File:")) {
+      throw new Error(
+        "检测到 GPT/Codex 的 *** Add File: 补丁指令；新建文件请使用 write_file。",
+      );
+    }
+    if (unsupportedDirective.trim().startsWith("*** Delete File:")) {
+      throw new Error(
+        "检测到 GPT/Codex 的 *** Delete File: 补丁指令；删除文件请使用 delete_file。",
+      );
+    }
+    throw new Error(
+      "检测到 GPT/Codex 的 *** Update File: 补丁指令；请保留修改内容并改为标准 ---/+++ diff，或对整段精确替换使用 replace_in_file。",
+    );
+  }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const header = lines[index]?.match(
+      /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/u,
+    );
+    if (header === null || header === undefined) continue;
+
+    let oldLineCount = 0;
+    let newLineCount = 0;
+    let bodyIndex = index + 1;
+    let hasInvalidBodyLine = false;
+    for (; bodyIndex < lines.length; bodyIndex += 1) {
+      const line = lines[bodyIndex] ?? "";
+      if (line.startsWith("@@ ") || line.startsWith("--- ")) break;
+      if (line.startsWith("\\ No newline at end of file")) continue;
+      if (line.startsWith(" ")) {
+        oldLineCount += 1;
+        newLineCount += 1;
+        continue;
+      }
+      if (line.startsWith("-")) {
+        oldLineCount += 1;
+        continue;
+      }
+      if (line.startsWith("+")) {
+        newLineCount += 1;
+        continue;
+      }
+      hasInvalidBodyLine = true;
+      break;
+    }
+
+    if (!hasInvalidBodyLine) {
+      lines[index] = `@@ -${header[1]},${oldLineCount} +${header[2]},${newLineCount} @@${header[3]}`;
+    }
+    index = bodyIndex - 1;
+  }
+
+  return lines.join("\n");
+}
 
 type ProjectOperationRecord = ProjectOperationOwner & {
   completedAt: string | null;
@@ -406,12 +502,18 @@ export class ProjectToolRegistry {
       },
       {
         description:
+          "List long-running background services started by run_command in this conversation and still active. Use this when a commandId is no longer available in the recent context. Returns each service name, commandId, launch command, working directory, start time, timeout and terminal without command output.",
+        name: "list_background_commands",
+        parameters: modelToolParameters(listBackgroundCommandsArgumentsSchema),
+      },
+      {
+        description:
           "Wait for one or more background commands returned by run_command. waitFor=any returns when one finishes; waitFor=all waits for every command. timeoutMs only bounds this wait and does not stop commands.",
         name: "wait_for_commands",
         parameters: modelToolParameters(waitForCommandsArgumentsSchema),
       },
       {
-        description: "Stop one running background command by the commandId returned from run_command.",
+        description: "Stop one running background command by the commandId returned from run_command. If the ID is no longer in recent context, call list_background_commands first instead of guessing or reusing an old ID.",
         name: "stop_command",
         parameters: modelToolParameters(stopCommandArgumentsSchema),
       },
@@ -435,13 +537,13 @@ export class ProjectToolRegistry {
       },
       {
         description:
-          "Search text inside the current authorized workspace with bundled ripgrep. Supports literal or regex matching, smart/sensitive/insensitive case handling, and include/exclude globs. maxResults bounds returned matches. Returns bounded structured matches while respecting project ignore files. Use run_command with rg directly when exact CLI output, context lines, counts, several expressions, or shell pipelines are more suitable.",
+          "Search text inside the current authorized workspace with bundled ripgrep. Supports literal or regex matching, smart/sensitive/insensitive case handling, and include/exclude globs. maxResults bounds returned matches. Returns a successful empty result when nothing matches and bounded structured matches otherwise, while respecting project ignore files. Prefer this over a shell pipeline for ordinary discovery and expected no-match checks. Use run_command with rg directly when exact CLI output, context lines, counts, or several expressions are required.",
         name: "search_text",
         parameters: modelToolParameters(searchTextArgumentsSchema)
       },
       {
         description:
-          "Find files with ripgrep by a glob pattern such as **/package.json or src/**/*.ts. maxResults bounds returned paths. Returns workspace-relative POSIX paths while respecting project ignore files.",
+          "Find files with ripgrep by a glob pattern such as **/package.json or src/**/*.ts. maxResults bounds returned paths. Returns a successful empty result when nothing matches and workspace-relative POSIX paths otherwise, while respecting project ignore files.",
         name: "find_files",
         parameters: modelToolParameters(findFilesArgumentsSchema)
       },
@@ -459,19 +561,19 @@ export class ProjectToolRegistry {
       },
       {
         description:
-          "Propose an exact text replacement in a UTF-8 project file. The original text must match exactly expectedReplacements times, so use read_file first.",
+          "Preferred editor for one exact change or a whole-section replacement in an existing UTF-8 project file. Read the file first, then pass the unchanged source as oldText and its replacement as newText. oldText must match exactly expectedReplacements times. Use apply_patch only when one file needs several separate localized edits.",
         name: "replace_in_file",
         parameters: modelToolParameters(replaceInFileArgumentsSchema)
       },
       {
         description:
-          "Modify exactly one existing UTF-8 file with a standard unified diff. The patch must start with --- a/path and +++ b/path headers and apply cleanly. Never use Codex-style *** Begin Patch, *** Add File, *** Update File, or *** End Patch markers. Use write_file for new files and delete_file for deletions.",
+          "Use only for several localized edits in exactly one existing UTF-8 file. This is a standard unified-diff tool, not the marker-based patch protocol. The patch must begin with --- a/path and +++ b/path, followed by complete @@ hunk headers and prefixed context/change lines; for example: --- a/src/x.ts\\n+++ b/src/x.ts\\n@@ -1,1 +1,1 @@\\n-old\\n+new. Do not send *** Update File, *** Add File, or *** Delete File directives. Harmless outer Begin/End wrapper lines and incorrect computable hunk counts are normalized, but file paths and source context are never guessed. Prefer replace_in_file for one exact or whole-section replacement; use write_file for new files and delete_file for deletions.",
         name: "apply_patch",
         parameters: modelToolParameters(applyPatchArgumentsSchema)
       },
       {
         description:
-          `Run one non-interactive ${commandEnvironment} command. This is the default choice for ordinary commands, builds, checks, and tests; it returns output to the conversation and does not open a visible terminal tab. When the user explicitly requests a visible, right-side, or interactive terminal, or the task genuinely requires an ongoing PTY, use create_terminal and execute_terminal_command instead when available. Project conversations run this command in the authorized workspace root; temporary conversations run it in an isolated temporary directory. The bundled rg command is always available. Short commands return normally; a command still running after yieldTimeMs returns a commandId for wait_for_commands. timeoutMs is the command's execution limit; yieldTimeMs only controls when a still-running command is handed back. Independent commands returned in the same model turn run in parallel by default whenever the permission mode allows commands; set parallel=false when this command depends on another command or shared mutable state. In ask-before-changes mode each command still requires its own approval, and approved independent commands can overlap.`,
+          `Run one non-interactive ${commandEnvironment} command. This is the default choice for ordinary commands and does not open a visible terminal tab. Use the default mode=batch for every finite command, including long builds, checks, tests, packaging, and migrations: batch streams progress but does not return to the model until the process really exits, and it defaults to a 30-minute execution limit. Use mode=service only for a process intentionally expected to stay alive, such as a development server or watcher: startup output streams in the same tool item, then the tool returns a commandId after yieldTimeMs while the service continues without an automatic timeout unless timeoutMs is explicitly provided. Give service mode a concise serviceName so list_background_commands can recover its ID later. Never use this tool for SSH, a REPL, password prompts, or any command requiring later input; use terminal_control for those interactive PTY sessions. Any nonzero final exit code marks the command failed even when stdout contains useful data, so keep expected-negative probes separate from unrelated checks and prefer search_text/find_files when no match is acceptable. Project conversations run in the authorized workspace root; temporary conversations run in an isolated temporary directory. The bundled rg command is always available. Independent commands returned in the same model turn run in parallel by default whenever the permission mode allows commands; set parallel=false when this command depends on another command or shared mutable state. In ask-before-changes mode each command still requires its own approval, and approved independent commands can overlap.`,
         name: "run_command",
         parameters: modelToolParameters(runCommandArgumentsSchema)
       }
@@ -544,6 +646,12 @@ export class ProjectToolRegistry {
     try {
       throwIfAborted(signal);
       const parsedArguments = parseToolArguments(rawArguments);
+      if (name === "list_background_commands") {
+        listBackgroundCommandsArgumentsSchema.parse(parsedArguments);
+        return this.success({
+          commands: this.listBackgroundCommands(projectId, owner.conversationId),
+        });
+      }
       if (name === "list_project_operations") {
         if (projectId === undefined) throw new Error("A workspace is required for project operation inspection.");
         listProjectOperationsArgumentsSchema.parse(parsedArguments);
@@ -938,10 +1046,13 @@ export class ProjectToolRegistry {
             onOutput,
           );
           this.commandSessions.set(commandId, session);
-          await session.completion;
+          if (command.mode === "batch") await session.completion;
           return session;
         },
       );
+      if (command.mode === "batch") {
+        return this.commandExecutionResult(await operation);
+      }
       const settled = operation.then(
         (value) => ({ kind: "settled" as const, value }),
         (error: unknown) => ({ error, kind: "failed" as const }),
@@ -1062,12 +1173,8 @@ export class ProjectToolRegistry {
     signal: AbortSignal
   ): Promise<ToolExecution> {
     const input = applyPatchArgumentsSchema.parse(rawArguments);
-    if (/^\*\*\* (?:Begin Patch|Add File:|Update File:|Delete File:|End Patch)/mu.test(input.patch)) {
-      throw new Error(
-        "apply_patch 仅接受以 --- 和 +++ 文件头开头的标准 unified diff；新建文件请使用 write_file，删除文件请使用 delete_file。"
-      );
-    }
-    const patches = parsePatch(input.patch);
+    const normalizedPatch = normalizeModelUnifiedDiff(input.patch);
+    const patches = parsePatch(normalizedPatch);
     if (patches.length !== 1) {
       throw new Error("apply_patch 每次只能修改一个已存在文件，并且补丁必须包含 --- 和 +++ 文件头。");
     }
@@ -1083,9 +1190,11 @@ export class ProjectToolRegistry {
     const filePath = await this.projects.resolveProjectPath(projectId, patchPath);
     const current = await this.readEditableFile(filePath, false);
     if (current === null) throw new Error("补丁目标文件不存在；新建文件请使用 write_file。");
-    const next = applyPatch(current, input.patch);
+    const next = applyPatch(current, normalizedPatch);
     if (next === false) {
-      throw new Error("补丁无法应用到当前文件；请重新读取文件后生成新补丁。");
+      throw new Error(
+        "补丁无法应用：@@ 块的行数声明或上下文与当前文件不匹配；请重新读取文件后生成新补丁，整段替换可改用 replace_in_file。",
+      );
     }
     throwIfAborted(signal);
     return this.change({
@@ -1098,11 +1207,28 @@ export class ProjectToolRegistry {
 
   private prepareCommand(rawArguments: unknown): ToolExecution {
     const input = runCommandArgumentsSchema.parse(rawArguments);
+    const modeWasProvided = rawArguments !== null
+      && typeof rawArguments === "object"
+      && Object.hasOwn(rawArguments, "mode");
+    const mode = !modeWasProvided && input.serviceName !== undefined
+      ? "service"
+      : input.mode;
+    const command: PreparedCommand = {
+      ...input,
+      mode,
+      timeoutMs: input.timeoutMs ?? (mode === "batch" ? MAX_COMMAND_TIMEOUT_MS : null),
+    };
     return {
-      command: input,
+      command,
       content: JSON.stringify({
         ok: true,
-        value: { command: input.command, status: "awaiting_approval", timeoutMs: input.timeoutMs }
+        value: {
+          command: command.command,
+          mode: command.mode,
+          serviceName: command.serviceName ?? this.defaultServiceName(command.command),
+          status: "awaiting_approval",
+          timeoutMs: command.timeoutMs,
+        }
       }),
       isError: false,
       kind: "command"
@@ -1125,7 +1251,7 @@ export class ProjectToolRegistry {
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            command,
+            powershellUtf8Command(command),
           ],
           displayName: process.platform === "win32" ? "Windows PowerShell" : "PowerShell",
           executable: resolveTerminalExecutable(
@@ -1137,7 +1263,13 @@ export class ProjectToolRegistry {
         };
       case "pwsh":
         return {
-          args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+          args: [
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            powershellUtf8Command(command),
+          ],
           displayName: "PWSH（PowerShell 7）",
           executable: resolveTerminalExecutable(
             configuration,
@@ -1214,8 +1346,10 @@ export class ProjectToolRegistry {
       conversationId,
       error: null,
       exitCode: null,
+      mode: command.mode,
       outputEncoding,
       projectId,
+      serviceName: command.serviceName ?? this.defaultServiceName(command.command),
       startedAt: new Date().toISOString(),
       status: "running",
       stderrByteLength: 0,
@@ -1235,6 +1369,7 @@ export class ProjectToolRegistry {
         }
         child.kill("SIGTERM");
       },
+      timeoutMs: command.timeoutMs,
       timedOut: false,
       truncated: false,
       workingDirectory,
@@ -1289,7 +1424,7 @@ export class ProjectToolRegistry {
       }
     };
     const cleanup = (): void => {
-      clearTimeout(timer);
+      if (timer !== null) clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
     };
     const finish = (
@@ -1308,10 +1443,12 @@ export class ProjectToolRegistry {
     };
     const onAbort = (): void => session.terminate(true);
 
-    const timer = setTimeout(() => {
-      session.timedOut = true;
-      session.terminate(false);
-    }, command.timeoutMs);
+    const timer = command.timeoutMs === null
+      ? null
+      : setTimeout(() => {
+          session.timedOut = true;
+          session.terminate(false);
+        }, command.timeoutMs);
     signal.addEventListener("abort", onAbort, { once: true });
     child.stdout.on("data", (chunk: Buffer) => appendOutput("stdout", chunk));
     child.stderr.on("data", (chunk: Buffer) => appendOutput("stderr", chunk));
@@ -1341,6 +1478,38 @@ export class ProjectToolRegistry {
     };
   }
 
+  private defaultServiceName(command: string): string {
+    const firstLine = command.split(/\r?\n/, 1)[0]?.replace(/\s+/g, " ").trim() ?? "Background command";
+    return firstLine.length <= MAX_SERVICE_NAME_LENGTH
+      ? firstLine
+      : `${firstLine.slice(0, MAX_SERVICE_NAME_LENGTH - 3)}...`;
+  }
+
+  private listBackgroundCommands(
+    projectId: string | undefined,
+    conversationId: string,
+  ): unknown[] {
+    return [...this.commandSessions.values()]
+      .filter((session) => session.status === "running"
+        && session.projectId === projectId
+        && session.conversationId === conversationId)
+      .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
+      .map((session) => ({
+        command: session.command,
+        commandId: session.commandId,
+        mode: session.mode,
+        serviceName: session.serviceName,
+        startedAt: session.startedAt,
+        status: session.status,
+        terminal: {
+          displayName: session.terminal.displayName,
+          shell: session.terminal.shell,
+        },
+        timeoutMs: session.timeoutMs,
+        workingDirectory: session.workingDirectory,
+      }));
+  }
+
   private commandSessionSnapshot(session: CommandSession): unknown {
     return {
       command: session.command,
@@ -1348,6 +1517,8 @@ export class ProjectToolRegistry {
       completedAt: session.completedAt,
       error: session.error,
       exitCode: session.exitCode,
+      mode: session.mode,
+      serviceName: session.serviceName,
       startedAt: session.startedAt,
       status: session.status,
       stderr: decodeTerminalOutput(Buffer.concat(session.stderrChunks), session.outputEncoding),
@@ -1357,6 +1528,7 @@ export class ProjectToolRegistry {
         outputEncoding: session.outputEncoding,
         shell: session.terminal.shell,
       },
+      timeoutMs: session.timeoutMs,
       timedOut: session.timedOut,
       truncated: session.truncated,
       workingDirectory: session.workingDirectory,
@@ -1406,6 +1578,13 @@ export class ProjectToolRegistry {
     }
     session.terminate(true);
     return this.success({ command: this.commandSessionSnapshot(session) });
+  }
+
+  public dispose(): void {
+    for (const session of this.commandSessions.values()) {
+      session.terminate(true);
+    }
+    this.commandSessions.clear();
   }
 
   private async readEditableFile(
@@ -1685,7 +1864,8 @@ export class ProjectToolRegistry {
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
     for (const operation of completed.slice(0, Math.max(0, completed.length - 100))) {
       this.projectOperations.delete(operation.operationId);
-      this.commandSessions.delete(operation.operationId);
+      const session = this.commandSessions.get(operation.operationId);
+      if (session?.status !== "running") this.commandSessions.delete(operation.operationId);
     }
   }
 

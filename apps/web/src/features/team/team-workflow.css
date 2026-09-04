@@ -236,7 +236,7 @@
 }
 
 .workflow-node[aria-selected="true"] {
-  border-color: var(--app-accent);
+  border-color: var(--app-selection-border);
   box-shadow: 0 0 0 2px var(--app-selection);
 }
 
@@ -665,7 +665,7 @@
 }
 
 .workflow-canvas-node[data-selected="true"] {
-  border-color: var(--app-accent);
+  border-color: var(--app-selection-border);
   box-shadow: 0 0 0 2px var(--app-selection);
 }
 
@@ -797,7 +797,7 @@
 
 .workflow-canvas-node__port:hover:not(:disabled),
 .workflow-canvas-node__port[aria-pressed="true"] {
-  background: var(--app-accent);
+  background: var(--app-selection);
   box-shadow: 0 0 0 3px var(--app-selection);
 }
 

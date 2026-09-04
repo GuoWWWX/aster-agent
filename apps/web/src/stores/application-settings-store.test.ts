@@ -7,6 +7,7 @@ import { useApplicationSettingsStore } from "./application-settings-store.js";
 describe("useApplicationSettingsStore", () => {
   beforeEach(() => {
     useApplicationSettingsStore.setState({
+      approvalReviewer: DEFAULT_APPLICATION_SETTINGS.general.approvalReviewer,
       defaultMessageDeliveryMode:
         DEFAULT_APPLICATION_SETTINGS.general.defaultMessageDeliveryMode,
       defaultPermissionMode: DEFAULT_APPLICATION_SETTINGS.general.defaultPermissionMode,
@@ -24,12 +25,14 @@ describe("useApplicationSettingsStore", () => {
     expect(useApplicationSettingsStore.getState().defaultMessageDeliveryMode).toBe("steer");
 
     useApplicationSettingsStore.getState().hydrateGeneralConfiguration({
+      approvalReviewer: "auto_review",
       defaultPermissionMode: "full_access",
       defaultMessageDeliveryMode: "queue",
       sendShortcut: "ctrl_enter",
       showContextUsage: false,
     });
     expect(useApplicationSettingsStore.getState()).toMatchObject({
+      approvalReviewer: "auto_review",
       defaultMessageDeliveryMode: "queue",
       defaultPermissionMode: "full_access",
       isHydrated: true,

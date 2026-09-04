@@ -2,6 +2,7 @@ import {
   ListTodo,
   MessageSquareText,
   Moon,
+  Search,
   Settings,
   Sun,
   UsersRound,
@@ -24,7 +25,7 @@ const ACTIVITY_ITEMS: readonly ActivityItem[] = [
   { id: "tasks", label: "任务", icon: ListTodo },
 ];
 
-export function ActivityBar(): ReactElement {
+export function ActivityBar({ onOpenGlobalSearch }: { onOpenGlobalSearch?: () => void }): ReactElement {
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
   const setActiveActivity = useWorkbenchUiStore(
     (state) => state.setActiveActivity,
@@ -38,7 +39,12 @@ export function ActivityBar(): ReactElement {
   const themeLabel = themeMode === "dark" ? "切换为浅色主题" : "切换为深色主题";
 
   return (
-    <aside className="activity-bar" aria-label="主导航" data-slot="activity-bar">
+    <aside
+      className="activity-bar"
+      aria-label="主导航"
+      data-app-drag-region="true"
+      data-slot="activity-bar"
+    >
       <nav className="activity-bar__navigation" aria-label="工作区视图">
         {ACTIVITY_ITEMS.map((item) => {
           const ItemIcon = item.icon;
@@ -50,16 +56,23 @@ export function ActivityBar(): ReactElement {
               aria-pressed={isActive}
               label={item.label}
               size="activity"
-              variant={isActive ? "active" : "quiet"}
+              variant={isActive ? "selected" : "quiet"}
               onClick={() => setActiveActivity(item.id)}
             >
               <ItemIcon aria-hidden="true" size={18} strokeWidth={1.8} />
             </IconButton>
           );
         })}
+        <IconButton label="搜索所有对话" size="activity" variant="quiet" onClick={onOpenGlobalSearch}>
+          <Search aria-hidden="true" size={18} strokeWidth={1.8} />
+        </IconButton>
       </nav>
 
-      <div className="activity-bar__spacer" />
+      <div
+        aria-hidden="true"
+        className="activity-bar__spacer"
+        data-app-drag-region="true"
+      />
 
       <div className="activity-bar__footer">
         <IconButton
@@ -74,7 +87,7 @@ export function ActivityBar(): ReactElement {
           aria-pressed={activeActivity === "settings"}
           label="设置"
           size="activity"
-          variant={activeActivity === "settings" ? "active" : "quiet"}
+          variant={activeActivity === "settings" ? "selected" : "quiet"}
           onClick={setSettings}
         >
           <Settings aria-hidden="true" size={18} strokeWidth={1.8} />

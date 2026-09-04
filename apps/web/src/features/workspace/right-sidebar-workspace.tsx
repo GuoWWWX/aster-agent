@@ -414,6 +414,34 @@ export function shouldCollapseRightSidebarAfterClosingTabs(
   return openTabs.length > 0 && openTabs.every((tab) => closedTabIds.has(tab.id));
 }
 
+export function activeSidebarTabIdAfterClosingTabs(
+  openTabs: ReadonlyArray<{ id: string }>,
+  activeTabId: string | null,
+  closedTabIds: ReadonlySet<string>,
+): string | null {
+  const remainingTabs = openTabs.filter((tab) => !closedTabIds.has(tab.id));
+  if (remainingTabs.length === 0) return null;
+  if (
+    activeTabId !== null
+    && openTabs.some((tab) => tab.id === activeTabId)
+    && !closedTabIds.has(activeTabId)
+  ) {
+    return activeTabId;
+  }
+
+  const activeIndex = openTabs.findIndex((tab) => tab.id === activeTabId);
+  if (activeIndex < 0) return remainingTabs[0]?.id ?? null;
+  for (let index = activeIndex + 1; index < openTabs.length; index += 1) {
+    const candidate = openTabs[index];
+    if (candidate !== undefined && !closedTabIds.has(candidate.id)) return candidate.id;
+  }
+  for (let index = activeIndex - 1; index >= 0; index -= 1) {
+    const candidate = openTabs[index];
+    if (candidate !== undefined && !closedTabIds.has(candidate.id)) return candidate.id;
+  }
+  return remainingTabs[0]?.id ?? null;
+}
+
 function fileTabId(projectId: string, path: string): string {
   return `file:${projectId}:${path}`;
 }
@@ -975,6 +1003,51 @@ export function RightSidebarWorkspace({
   ]);
 
   useEffect(() => {
+    return agentClient.onWorkspaceTerminalTabCloseRequested((request) => {
+      if (
+        (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId))
+        || activeProject === null
+      ) {
+        return;
+      }
+      const closedTabIds = new Set(toolTabs
+        .filter((tab) => tab.kind === "terminal" && tab.session?.sessionId === request.sessionId)
+        .map((tab) => tab.id));
+      if (closedTabIds.size === 0) return;
+      const openTabs = [
+        ...fileTabs.filter((tab) => tab.kind === "file"),
+        ...toolTabs,
+        ...sideSessions
+          .filter((session) => openChatIds.has(session.id))
+          .map((session) => ({ id: `chat:${session.id}` })),
+      ];
+      const nextActiveTabId = activeSidebarTabIdAfterClosingTabs(
+        openTabs,
+        activeTabId,
+        closedTabIds,
+      );
+      setToolTabs((current) => current.filter((tab) => !closedTabIds.has(tab.id)));
+      if (activeTabId !== null && closedTabIds.has(activeTabId)) {
+        setActiveTabForCurrentSession(nextActiveTabId);
+        setIsFileBrowserOpen(false);
+        setIsTreeCollapsed(false);
+        if (nextActiveTabId === null) setFilePanelOpen(false);
+      }
+    });
+  }, [
+    activeProject,
+    activeSessionId,
+    activeTabId,
+    agentClient,
+    openChatIds,
+    setFilePanelOpen,
+    setActiveTabForCurrentSession,
+    sideSessions,
+    fileTabs,
+    toolTabs,
+  ]);
+
+  useEffect(() => {
     return agentClient.onWorkspaceBrowserTabOpenRequested((request) => {
       if (
         (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId))
@@ -1014,10 +1087,24 @@ export function RightSidebarWorkspace({
         .filter((tab) => tab.kind === "managed-browser" && tab.session?.sessionId === request.sessionId)
         .map((tab) => tab.id));
       if (closedTabIds.size === 0) return;
+      const openTabs = [
+        ...fileTabs.filter((tab) => tab.kind === "file"),
+        ...toolTabs,
+        ...sideSessions
+          .filter((session) => openChatIds.has(session.id))
+          .map((session) => ({ id: `chat:${session.id}` })),
+      ];
+      const nextActiveTabId = activeSidebarTabIdAfterClosingTabs(
+        openTabs,
+        activeTabId,
+        closedTabIds,
+      );
       setToolTabs((current) => current.filter((tab) => !closedTabIds.has(tab.id)));
       if (activeTabId !== null && closedTabIds.has(activeTabId)) {
-        setActiveTabForCurrentSession(null);
+        setActiveTabForCurrentSession(nextActiveTabId);
         setIsFileBrowserOpen(false);
+        setIsTreeCollapsed(false);
+        if (nextActiveTabId === null) setFilePanelOpen(false);
       }
     });
   }, [
@@ -1026,7 +1113,10 @@ export function RightSidebarWorkspace({
     activeTabId,
     agentClient,
     openChatIds,
+    setFilePanelOpen,
     setActiveTabForCurrentSession,
+    sideSessions,
+    fileTabs,
     toolTabs,
   ]);
 
@@ -1914,6 +2004,7 @@ export function RightSidebarWorkspace({
     );
     if (tabIds.size === 0) return;
     const shouldCollapseRightSidebar = shouldCollapseRightSidebarAfterClosingTabs(tabs, tabIds);
+    const nextActiveTabId = activeSidebarTabIdAfterClosingTabs(tabs, activeTabId, tabIds);
 
     for (const tab of tabsToClose) {
       if (tab.kind === "agent-prompt") {
@@ -1949,13 +2040,16 @@ export function RightSidebarWorkspace({
       });
     }
 
-    if (
-      (activeTabId !== null && tabIds.has(activeTabId))
-      || shouldCollapseRightSidebar
-    ) {
+    if (shouldCollapseRightSidebar) {
       setActiveTabForCurrentSession(null);
       setIsFileBrowserOpen(false);
       setIsTreeCollapsed(false);
+    } else if (activeTabId !== null && tabIds.has(activeTabId)) {
+      setActiveTabForCurrentSession(nextActiveTabId);
+      setIsFileBrowserOpen(false);
+      setIsTreeCollapsed(false);
+      const nextActiveTab = tabs.find((tab) => tab.id === nextActiveTabId);
+      if (nextActiveTab?.kind === "chat") onSessionViewed(nextActiveTab.session.id);
     }
     setTabContextMenu(null);
     if (shouldCollapseRightSidebar) setFilePanelOpen(false);
@@ -2138,10 +2232,12 @@ export function RightSidebarWorkspace({
                     role="tab"
                     title={tab.kind === "file" || tab.kind === "configuration-file" ? tab.path : tab.name}
                     type="button"
-                    onClick={() => void activateTab(tab)}
+                    onClick={(event) => {
+                      if (event.button !== 0) return;
+                      void activateTab(tab);
+                    }}
                     onContextMenu={(event) => {
                       event.preventDefault();
-                      void activateTab(tab);
                       if (tab.kind === "managed-browser") {
                         showNativeWorkspaceTabMenu(tab, event);
                         return;

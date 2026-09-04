@@ -30,7 +30,7 @@
 
 .context-usage-indicator__trigger[data-pressure="unknown"],
 .context-usage-indicator__content [data-pressure="unknown"] {
-  color: #94a3b8;
+  color: var(--app-subtle-foreground);
 }
 
 .context-usage-indicator__ring {

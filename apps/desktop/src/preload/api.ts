@@ -9,11 +9,13 @@ import {
   terminalSessionEventSchema,
   workspaceBrowserTabCloseRequestSchema,
   workspaceBrowserTabOpenRequestSchema,
+  workspaceTerminalTabCloseRequestSchema,
   workspaceTerminalTabOpenRequestSchema,
 } from "../../../../packages/protocol/src/developer-tools.js";
 import type {
   DesktopBridge,
   ConversationContextUsageInput,
+  ReadConversationAttachmentPreviewInput,
   ImportConversationAttachmentBytesInput,
   RemoveConversationAttachmentInput,
   CancelRunInput,
@@ -21,6 +23,7 @@ import type {
   ApplicationSettings,
   BrowserConfiguration,
   ConversationReferenceInput,
+  ConversationSearchInput,
   ForkConversationInput,
   PendingConversationMessageReferenceInput,
   ReorderPendingConversationMessagesInput,
@@ -191,6 +194,12 @@ export function createDesktopBridge(): DesktopBridge {
     importConversationAttachmentBytes(input: ImportConversationAttachmentBytesInput) {
       return invoke<BridgeResult<"importConversationAttachmentBytes">>(
         IPC_CHANNELS.conversationImportAttachmentBytes,
+        input,
+      );
+    },
+    readConversationAttachmentPreview(input: ReadConversationAttachmentPreviewInput) {
+      return invoke<BridgeResult<"readConversationAttachmentPreview">>(
+        IPC_CHANNELS.conversationReadAttachmentPreview,
         input,
       );
     },
@@ -417,8 +426,9 @@ export function createDesktopBridge(): DesktopBridge {
     captureManagedBrowser(input: ManagedBrowserReferenceInput) {
       return invoke<BridgeResult<"captureManagedBrowser">>(IPC_CHANNELS.managedBrowserCapture, input);
     },
-    async setManagedBrowserBounds(input: ManagedBrowserBoundsInput) {
-      await invoke<void>(IPC_CHANNELS.managedBrowserSetBounds, input);
+    setManagedBrowserBounds(input: ManagedBrowserBoundsInput) {
+      ipcRenderer.send(IPC_CHANNELS.managedBrowserSetBounds, input);
+      return Promise.resolve();
     },
     async closeManagedBrowser(input: ManagedBrowserReferenceInput) {
       await invoke<void>(IPC_CHANNELS.managedBrowserClose, input);
@@ -485,6 +495,12 @@ export function createDesktopBridge(): DesktopBridge {
       return invoke<BridgeResult<"listConversationTimeline">>(
         IPC_CHANNELS.conversationListTimeline,
         input
+      );
+    },
+    searchConversations(input: ConversationSearchInput) {
+      return invoke<BridgeResult<"searchConversations">>(
+        IPC_CHANNELS.conversationSearch,
+        input,
       );
     },
     listConversationPendingMessages(input: ConversationReferenceInput) {
@@ -558,6 +574,13 @@ export function createDesktopBridge(): DesktopBridge {
       };
       ipcRenderer.on(IPC_CHANNELS.workspaceTerminalOpenRequested, handle);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.workspaceTerminalOpenRequested, handle);
+    },
+    onWorkspaceTerminalTabCloseRequested(listener) {
+      const handle = (_event: IpcRendererEvent, value: unknown): void => {
+        listener(workspaceTerminalTabCloseRequestSchema.parse(value));
+      };
+      ipcRenderer.on(IPC_CHANNELS.workspaceTerminalCloseRequested, handle);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.workspaceTerminalCloseRequested, handle);
     },
     onWorkspaceBrowserTabOpenRequested(listener) {
       const handle = (_event: IpcRendererEvent, value: unknown): void => {

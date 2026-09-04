@@ -111,4 +111,25 @@ describe("conversation workspace cache", () => {
 
     expect(retained.map((entry) => entry.session.id)).toEqual(["recent"]);
   });
+
+  it("protects every conversation represented by an open titlebar tab", () => {
+    const now = CONVERSATION_WORKSPACE_CACHE_TTL_MS + 100;
+    const entries = Array.from({ length: 10 }, (_, index) => ({
+      lastAccessedAt: index === 9 ? now - 1_000 : 0,
+      session: session(`conversation-${index}`),
+    }));
+
+    const retained = retainConversationWorkspace(
+      entries,
+      null,
+      now,
+      new Set(["conversation-0", "conversation-8"]),
+    );
+
+    expect(retained.map((entry) => entry.session.id)).toEqual([
+      "conversation-0",
+      "conversation-8",
+      "conversation-9",
+    ]);
+  });
 });

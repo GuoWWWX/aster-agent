@@ -460,4 +460,33 @@
   height: auto;
   border: 1px solid var(--agent-md-table-border);
   border-radius: var(--app-radius);
+  cursor: zoom-in;
+}
+
+.agent-markdown__labeled-divider {
+  display: grid;
+  grid-template-columns: minmax(16px, 1fr) auto minmax(16px, 1fr);
+  align-items: center;
+  gap: 9px;
+  margin: 13px 0;
+  color: var(--agent-md-muted);
+  font-size: var(--app-font-size-control);
+  line-height: 18px;
+  text-align: center;
+}
+
+.agent-markdown__labeled-divider::before,
+.agent-markdown__labeled-divider::after {
+  height: 1px;
+  background: var(--agent-md-divider);
+  content: "";
+}
+
+.agent-markdown__labeled-divider > span {
+  overflow-wrap: anywhere;
+}
+
+.agent-markdown img:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: 2px;
 }

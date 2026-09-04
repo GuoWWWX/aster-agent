@@ -901,7 +901,7 @@ function TeamWorkItemStatusPanel({
   const canPublish = isPublishableWorkItemStatus(item.status);
   const publishAction = canPublish ? (
     <button
-      className="ml-[5px] inline-flex h-[26px] shrink-0 items-center gap-[4px] rounded-[var(--app-radius-small)] bg-[var(--app-accent)] px-[8px] text-[length:var(--app-font-size-control)] font-semibold text-white shadow-sm hover:brightness-95 disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
+      className="ml-[5px] inline-flex h-[26px] shrink-0 items-center gap-[4px] rounded-[var(--app-radius-small)] bg-[var(--app-primary-action)] px-[8px] text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-primary-action-foreground)] shadow-sm hover:brightness-95 disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
       disabled={isPublishing}
       type="button"
       onClick={onPublish}

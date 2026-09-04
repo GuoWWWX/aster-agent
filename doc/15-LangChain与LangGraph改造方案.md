@@ -63,7 +63,7 @@ Electron Bootstrap
 - 在模型或工具节点外持久化用户可见消息、Tool 行、Run 终态和 Subagent 结果。
 - 通过既有 `ConversationRunEvent` 向 Renderer 发事件，保持协议不变。
 - 解析文件变更和命令审批；审批通过前不能产生副作用。
-- 维护项目工作区、路径安全、命令进程树、冲突等待和错误脱敏。
+- 维护项目工作区、路径安全、命令进程树、冲突等待和错误脱敏；框架递归/模型调用最终保护映射为不可自动重试的 `MODEL_RUN_LIMIT_REACHED`，单轮工具调用过量归为模型响应无效，不向 Renderer 暴露 LangGraph 原始异常。
 
 ### 3.2 LangGraph 负责的职责
 
@@ -86,7 +86,7 @@ START
        ├─ 有 tool call -> tools
        ├─ 无 tool call 且有待处理输入 -> 同一 thread 再次 invoke，从 beforeModel 开始
        ├─ 无 tool call 且无待处理输入 -> END
-       └─ 达到步骤上限 -> fail
+       └─ 到达最后保留轮 -> 禁用工具并从现有证据生成最终回答
   -> createAgent.tools
        ├─ 普通结果 -> model
        └─ 审批 interrupt -> Command({ resume }) 后从同一工具节点恢复
@@ -100,7 +100,7 @@ Queue/Steer 在模型已经返回无工具结果后到达时，Executor 会在�
 
 取消使用 Runtime 的 `AbortSignal` 传入 Graph、ChatModel 和工具；取消不会重放已经开始的副作用。Runtime 只提供上限配置和错误映射，不再维护第二个 Agent 工具循环。
 
-模型调用上限和图递归上限是两层不同的保护：`modelCallLimitMiddleware` 按同一 `thread_id` 统计真实模型调用，项目的 `MAX_AGENT_LOOPS` 映射为该限制；LangGraph 的 `recursionLimit` 统计 `createAgent` 内部所有图节点步数（包括 Middleware、模型和 ToolNode），不能直接把它当成模型轮数。当前 Executor 为每个 Run 设置 `max(25, maxSteps * 8 + 8)` 的图预算，给每轮的框架节点留出空间，避免默认 25 步在多 Tool Call 场景下提前触发；任一保护触发都会转换为受控的模型运行限制错误，不把原始 `GraphRecursionError` 泄露为“软件内部错误”。
+模型调用上限和图递归上限是两层不同的保护：`modelCallLimitMiddleware` 按同一 `thread_id` 统计真实模型调用，项目的 `MAX_AGENT_LOOPS` 映射为该限制；LangGraph 的 `recursionLimit` 统计 `createAgent` 内部所有图节点步数（包括 Middleware、模型和 ToolNode），不能直接把它当成模型轮数。该上限是异常失控保护，不是日常任务预算：普通 Run 最多允许 64 次模型调用，正常任务依靠模型自行结束。第 63 次是最后一个可使用工具的模型轮，要求把必要工具和任务清单收尾合并；第 64 次不再下发工具定义，只允许模型依据已有证据给出最终回答并如实说明未完成项。Executor 仍为每个 Run 设置 `max(25, maxSteps * 8 + 8)` 的图预算；只有模型长期不停止并违反最终回答边界，或图本身异常递归时，才映射为模型运行最终保护错误。
 
 ### 4.1 框架能力采用矩阵
 
@@ -137,7 +137,7 @@ Anthropic 的配置 `baseUrl` 延续项目原有的版本化格式（例如 `htt
 
 1. `maxRetries`、可重试错误和空响应规则由 Runtime 提供给 Graph Middleware；Provider SDK 不得隐式重放带副作用的回合。
 2. `AbortSignal` 必须贯穿 ChatModel stream；收到可见文本或 Tool Call 后不能自动重放该请求。
-3. Provider-specific reasoning、附件和原始响应只在 adapter 内转换；业务 Runtime 不判断供应商字段。
+3. Provider-specific reasoning、附件和原始响应只在 adapter 内转换；业务 Runtime 不判断供应商字段。Adapter 将可读输出归一为完整内容、摘要或面向用户的短进度，并把不可读签名/加密推理留在 Provider State 中原样重放。OpenAI Chat 兼容协议的 `reasoning_content` 本身没有内容类型标记：默认按兼容模型的完整内容处理，GPT-5.6 系列按其供应商摘要语义处理，不生成持久 `reasoningContent`。
 4. LangChain `AIMessage`/`ToolMessage` 只在图和 adapter 内使用；落库继续使用当前中立 `ModelMessage` 合同。
 5. 旧 `model-protocol-adapter.ts`、`openai-compatible-adapter.ts` 和 AI SDK adapter 在新 adapter 通过回归后删除，不保留生产双路回退。
 6. 新快照只写 LangChain 版本 2；迁移期只读转换 AI SDK 版本 1 的 Assistant Provider State。OpenAI Chat 的兼容端点字段 `reasoning_content` 由 Adapter 在序列化后的请求体中窄范围补回，其他 Provider 使用 LangChain 原生消息块。
@@ -209,7 +209,7 @@ LangGraph 的 Checkpoint 只负责图恢复，不替代现有业务状态：
 
 - 将 `executeRun` 的内部循环替换为 Graph invoke/stream。
 - 保持既有事件、消息、Tool 行、Queue/Steer、Subagent 和错误合同。
-- 使用 LangGraph `interrupt/Command` 承接逐次审批；恢复时按 interrupt namespace keyed resume，并缓存已完成 ToolCall 结果，避免节点重放副作用。返回式和异常式顶层 interrupt 使用同一恢复路径；running Run 仍按保守失败策略处理。
+- 使用 LangGraph `interrupt/Command` 承接需要用户确认的审批；启用 AI 审批时，Runtime 在进入 interrupt 前以无工具的独立模型请求审核具体操作，只有低/中风险明确允许才继续，高风险、不确定、无效响应和审核失败仍进入同一 interrupt。恢复时按 interrupt namespace keyed resume，并缓存已完成 ToolCall 结果，避免节点重放副作用。返回式和异常式顶层 interrupt 使用同一恢复路径；running Run 仍按保守失败策略处理。
 
 ### 阶段 4：Skill 与 Checkpoint（主链已完成）
 

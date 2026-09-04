@@ -554,7 +554,7 @@ function AgentConfigurationPane({
   return (
     <aside className="agent-configuration-pane" aria-label={`${agent.name} 配置`}>
       <div className="management-detail-heading">
-        <AgentAvatar avatar={agent.avatar} size="large" status={agent.status} />
+        <AgentAvatar avatar={agent.avatar} status={agent.status} />
         <div>
           <h2>{agent.name}</h2>
         </div>
@@ -875,7 +875,7 @@ function PermissionEditor({
         <div className="min-w-0">
           <h3 id={`agent-permissions-${agent.id}`}>权限规则</h3>
           <p className="m-0 max-w-full break-words text-[length:var(--app-font-size-control)] font-medium leading-[1.35] text-[var(--app-muted-foreground)]">
-            只保存明确允许的规则；未匹配的命令或敏感操作仍需审批。命令末尾可使用 * 做前缀匹配。
+            这里是手动维护的高级长期规则，审批卡不会自动添加。未匹配操作仍需审批；命令末尾可使用 * 做前缀匹配。
           </p>
         </div>
       </div>

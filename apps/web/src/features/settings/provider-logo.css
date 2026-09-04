@@ -42,6 +42,16 @@
   color: var(--app-accent);
 }
 
+[data-theme="dark"] .provider-logo--auto {
+  border-color: var(--app-border);
+  background: color-mix(
+    in srgb,
+    var(--app-muted-foreground) 8%,
+    var(--app-hover)
+  );
+  color: var(--app-muted-foreground);
+}
+
 .provider-logo--openai {
   background: #111827;
   color: #f8fafc;
@@ -143,72 +153,6 @@
 .provider-logo--one-api {
   background: #e0e7ff;
   color: #4338ca;
-}
-
-[data-theme="dark"] .provider-logo--openai,
-[data-theme="dark"] .provider-logo--xai {
-  background: #f8fafc;
-  color: #111827;
-}
-
-[data-theme="dark"] .provider-logo--anthropic {
-  background: #5a3d2b;
-  color: #f7e7d0;
-}
-
-[data-theme="dark"] .provider-logo--google {
-  background: #1e3a8a;
-  color: #bfdbfe;
-}
-
-[data-theme="dark"] .provider-logo--deepseek,
-[data-theme="dark"] .provider-logo--zhipu {
-  background: #1e3a8a;
-  color: #bfdbfe;
-}
-
-[data-theme="dark"] .provider-logo--qwen {
-  background: #78350f;
-  color: #fde68a;
-}
-
-[data-theme="dark"] .provider-logo--moonshot {
-  background: #4c1d95;
-  color: #ddd6fe;
-}
-
-[data-theme="dark"] .provider-logo--minimax,
-[data-theme="dark"] .provider-logo--huggingface {
-  background: #78350f;
-  color: #fde68a;
-}
-
-[data-theme="dark"] .provider-logo--baidu,
-[data-theme="dark"] .provider-logo--meta {
-  background: #1e3a8a;
-  color: #bfdbfe;
-}
-
-[data-theme="dark"] .provider-logo--mistral,
-[data-theme="dark"] .provider-logo--cloudflare {
-  background: #7c2d12;
-  color: #fed7aa;
-}
-
-[data-theme="dark"] .provider-logo--ollama {
-  background: #e5e7eb;
-  color: #111827;
-}
-
-[data-theme="dark"] .provider-logo--modelscope,
-[data-theme="dark"] .provider-logo--replicate {
-  background: #312e81;
-  color: #c7d2fe;
-}
-
-[data-theme="dark"] .provider-logo--nvidia {
-  background: #14532d;
-  color: #bbf7d0;
 }
 
 .provider-icon-picker__trigger {
@@ -324,23 +268,19 @@
   }
 }
 
-[data-theme="dark"] .provider-logo--siliconflow {
-  background: #14532d;
-  color: #bbf7d0;
+[data-theme="dark"] .provider-icon-picker__option[data-selected="true"] {
+  border-color: color-mix(
+    in srgb,
+    var(--app-muted-foreground) 28%,
+    var(--app-border)
+  );
+  background: color-mix(
+    in srgb,
+    var(--app-muted-foreground) 10%,
+    var(--app-panel)
+  );
 }
 
-[data-theme="dark"] .provider-logo--openrouter {
-  background: #7c2d12;
-  color: #fed7aa;
-}
-
-[data-theme="dark"] .provider-logo--aihubmix {
-  background: #831843;
-  color: #fbcfe8;
-}
-
-[data-theme="dark"] .provider-logo--new-api,
-[data-theme="dark"] .provider-logo--one-api {
-  background: #312e81;
-  color: #c7d2fe;
+[data-theme="dark"] .provider-icon-picker__option > svg {
+  color: var(--app-muted-foreground);
 }

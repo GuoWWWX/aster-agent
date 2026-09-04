@@ -232,8 +232,8 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
 }
 
 .project-tree__row[data-selected="true"] {
-  background: rgba(191, 219, 254, 0.55);
-  color: #16395f;
+  background: var(--app-selection);
+  color: var(--app-selection-foreground);
 }
 
 .project-tree__row[data-located="true"]:not([data-selected="true"]) {
@@ -254,7 +254,7 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
   border-radius: var(--app-radius);
   outline: none;
   background: transparent;
-  color: #64748b;
+  color: var(--app-muted-foreground);
   padding: 0;
 }
 
@@ -289,7 +289,7 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
 
 .project-tree__entry svg {
   flex: 0 0 auto;
-  color: #64748b;
+  color: var(--app-muted-foreground);
 }
 
 .project-tree__row[data-selected="true"] .project-tree__entry svg {
@@ -336,7 +336,7 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
   place-content: center;
   justify-items: center;
   gap: 8px;
-  color: #64748b;
+  color: var(--app-muted-foreground);
   padding: 24px;
   text-align: center;
 }
@@ -366,7 +366,7 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
   flex: 0 0 auto;
   overflow: hidden;
   border-top: 1px solid var(--app-border);
-  color: #94a3b8;
+  color: var(--app-subtle-foreground);
   font-size: var(--app-font-size-control);
   padding: 6px 8px;
   text-overflow: ellipsis;
@@ -484,13 +484,18 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
 }
 
 [data-theme="dark"] .project-tree__row[data-selected="true"] {
-  background: rgba(59, 130, 246, 0.28);
-  color: #f8fafc;
+  background: var(--app-selection);
+  color: var(--app-selection-foreground);
+}
+
+[data-theme="dark"] .project-tree__row[data-selected="true"] .project-tree__entry:hover,
+[data-theme="dark"] .project-tree__row[data-selected="true"] .project-tree__toggle:hover {
+  background: color-mix(in srgb, var(--app-muted-foreground) 10%, var(--app-selection));
 }
 
 [data-theme="dark"] .project-tree-panel__header[data-located="true"],
 [data-theme="dark"] .project-tree__row[data-located="true"]:not([data-selected="true"]) {
-  background: rgba(59, 130, 246, 0.14);
+  background: color-mix(in srgb, var(--app-muted-foreground) 20%, var(--app-panel));
 }
 
 [data-theme="dark"] .project-tree-panel__notice {

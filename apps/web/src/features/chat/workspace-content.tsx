@@ -1,5 +1,6 @@
 import {
   Bot,
+  ArchiveRestore,
   ArrowDown,
   ArrowUp,
   AtSign,
@@ -17,6 +18,8 @@ import {
   FolderOpen,
   FolderPlus,
   GitFork,
+  Globe2,
+  GripVertical,
   LoaderCircle,
   List,
   ListEnd,
@@ -30,6 +33,8 @@ import {
   Send,
   SendHorizontal,
   ShieldCheck,
+  Images,
+  Sparkles,
   SlidersHorizontal,
   Square,
   SquarePen,
@@ -54,6 +59,7 @@ import {
   type MouseEvent,
   type CSSProperties,
   type Dispatch,
+  type DragEvent,
   type ReactElement,
   type ReactNode,
   type SetStateAction,
@@ -83,20 +89,25 @@ import type {
   ModelRuntimeStatus,
   ProjectEntry,
   ProjectSummary,
+  SkillConfiguration,
   TeamInstanceScope,
   TeamInstanceView,
 } from "@agent/protocol";
 import {
   agentAvatarIconSchema,
+  conversationAttachmentListSchema,
   DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
+  isGpt56ReasoningModel,
   isReasoningOptionEnabled,
   modelReasoningOptionKey,
   redactErrorIdentifiers,
 } from "@agent/protocol";
 
 import { IconButton } from "../../components/ui/icon-button.js";
+import { TooltipAnchor } from "../../components/ui/tooltip.js";
 import { FileTypeIcon } from "../../components/ui/file-type-icon.js";
 import { AgentMarkdown } from "../../components/markdown/agent-markdown.js";
+import { requestMediaPreview } from "../../components/media/image-viewer.js";
 import {
   createDiffPresentation,
   DiffView,
@@ -143,6 +154,8 @@ import { TeamWorkspace } from "../team/team-workspace.js";
 import { CollaborationProjectionGraph } from "../team/collaboration/collaboration-graph.js";
 import { useConversationWorkspaceCache } from "./conversation-workspace-cache.js";
 import { formatConversationRunMarkdown } from "./conversation-copy.js";
+import { ConversationFindBar } from "./conversation-find-bar.js";
+import { ConversationTurnNavigator } from "./conversation-turn-navigator.js";
 import {
   ContextUsageIndicator,
   ProviderCacheStatus,
@@ -173,7 +186,9 @@ type WorkspaceContentProps = {
   canAddProjects: boolean;
   isAddingProject: boolean;
   isCreatingSession: boolean;
+  locateTimelineItem?: { conversationId: string; id: string; requestId: number } | null;
   projects: readonly ProjectSummary[];
+  protectedSessionIds?: readonly string[];
   sessions: readonly ProjectSession[];
   teamInstances?: readonly TeamInstanceView[];
   onAddProject: () => Promise<ProjectSummary | null>;
@@ -231,12 +246,46 @@ export function resolveConversationPathIconKind(
     : "agent";
 }
 
-type TimelineDisplayItem = ConversationTimelineItem | {
+type ToolBatchTimelineItem = {
   batchId: string;
   id: string;
   kind: "tool_batch";
   tools: ConversationToolItem[];
 };
+
+type RunActivityReasoningItem = {
+  content: string;
+  id: string;
+  kind: "activity_reasoning";
+  streaming: boolean;
+};
+
+type RunActivityProgressItem = {
+  content: string;
+  id: string;
+  kind: "activity_progress";
+  streaming: boolean;
+};
+
+type RunActivityTextItem = RunActivityProgressItem | RunActivityReasoningItem;
+
+type RunActivityItem =
+  | ConversationModelRetryItem
+  | ConversationToolItem
+  | RunActivityTextItem;
+
+type RunActivityTimelineItem = {
+  durationMs: number | null;
+  id: string;
+  items: RunActivityItem[];
+  kind: "run_activity";
+  runId: string;
+  runIds: string[];
+};
+
+type TimelineDisplayItem = ConversationTimelineItem
+  | RunActivityTimelineItem
+  | ToolBatchTimelineItem;
 
 type SubmittedTeamWorkItem = {
   id: string;
@@ -250,6 +299,8 @@ export function submittedTeamWorkItems(
 ): SubmittedTeamWorkItem[] {
   const tools = item.kind === "tool_batch"
     ? item.tools
+    : item.kind === "run_activity"
+      ? item.items.filter((entry): entry is ConversationToolItem => entry.kind === "tool")
     : item.kind === "tool" ? [item] : [];
   return tools.flatMap((tool) => {
     if (
@@ -300,7 +351,7 @@ type ModelActivity = {
   anchorTimelineItemId: string | null;
   preview?: string;
   runId: string | null;
-  status: "thinking";
+  status: "progress" | "thinking";
 };
 
 type LiveToolOutput = {
@@ -432,12 +483,17 @@ const MAX_SELECTED_PROJECT_FILE_MENTIONS = 10;
 const EMPTY_PROJECT_SESSIONS: readonly ProjectSession[] = [];
 
 const SLASH_COMMANDS = [
+  { description: "立即压缩较早的对话上下文", name: "compact", title: "压缩上下文" },
   { description: "先拆分步骤并创建任务清单", name: "plan", title: "规划任务" },
   { description: "审查实现中的缺陷、风险和回归", name: "review", title: "审查代码" },
   { description: "运行相关测试并根据结果修复", name: "test", title: "运行测试" },
 ] as const;
 
 type SlashCommand = (typeof SLASH_COMMANDS)[number];
+
+type SlashOption =
+  | { kind: "command"; value: SlashCommand }
+  | { kind: "skill"; value: SkillConfiguration };
 
 type ConversationReasoningControlProps = {
   disabled: boolean;
@@ -641,6 +697,7 @@ export function WorkspaceContent({
   canAddProjects,
   isAddingProject,
   isCreatingSession,
+  locateTimelineItem = null,
   projects,
   onAddProject,
   onCreateProjectSession,
@@ -655,6 +712,7 @@ export function WorkspaceContent({
   onSessionSelected,
   onSessionUpdated,
   onSessionViewed,
+  protectedSessionIds,
   sessions,
   teamInstances = [],
 }: WorkspaceContentProps): ReactElement {
@@ -662,6 +720,7 @@ export function WorkspaceContent({
   const retainedSessions = useConversationWorkspaceCache(
     activeActivity === "conversations" ? activeSession : null,
     sessions,
+    protectedSessionIds,
   );
 
   if (activeActivity === "team") {
@@ -715,6 +774,9 @@ export function WorkspaceContent({
               agentClient={agentClient}
               canAddProjects={canAddProjects}
               isAddingProject={isAddingProject}
+              locateTimelineItem={locateTimelineItem?.conversationId === session.id
+                ? { id: locateTimelineItem.id, requestId: locateTimelineItem.requestId }
+                : null}
               onLocateProject={onLocateProject}
               onLocateSession={onLocateSession}
               onOpenProjectFile={projectId === null || onOpenProjectFile === undefined
@@ -829,6 +891,7 @@ export function ConversationWorkspace({
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [forkingMessageId, setForkingMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingAttachments, setEditingAttachments] = useState<ConversationAttachment[] | null>(null);
   const messageDeliveryMode: ConversationMessageDeliveryMode = defaultMessageDeliveryMode;
   const [availableConversationMentions, setAvailableConversationMentions] =
     useState<ConversationMention[]>([]);
@@ -845,6 +908,7 @@ export function ConversationWorkspace({
     workspaceId: string;
   } | null>(null);
   const [slashQuery, setSlashQuery] = useState<MentionQuery | null>(null);
+  const [slashSkills, setSlashSkills] = useState<SkillConfiguration[]>([]);
   const [draftAttachments, setDraftAttachments] = useState<ConversationAttachment[]>([]);
   const [draftAttachmentPreviewUrls, setDraftAttachmentPreviewUrls] = useState<
     Record<string, string>
@@ -975,6 +1039,19 @@ export function ConversationWorkspace({
   const selectedAgent = enabledAgentProfiles.find((agent) => agent.id === selectedAgentId)
     ?? defaultAgent
     ?? enabledAgentProfiles[0];
+  const slashMenuOpen = slashQuery !== null;
+  useEffect(() => {
+    if (!slashMenuOpen) return;
+    let cancelled = false;
+    void agentClient.getIntegrationConfiguration().then((configuration) => {
+      if (!cancelled) setSlashSkills(configuration.skills);
+    }).catch(() => {
+      if (!cancelled) setSlashSkills([]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentClient, session.id, slashMenuOpen]);
   const inheritedSelection = session.modelSelection ?? modelStatus?.recentSelection ?? null;
   const defaultModel = modelOptions.find(
     (model) => model.providerId === inheritedSelection?.providerId
@@ -1080,6 +1157,12 @@ export function ConversationWorkspace({
     ),
     [referenceWorkspaceId, selectedProjectFileMentions],
   );
+  const composerAttachments = useMemo(() => {
+    if (editingMessageId === null) {
+      return editingPendingMessageId === null ? draftAttachments : [];
+    }
+    return editingAttachments ?? [];
+  }, [draftAttachments, editingAttachments, editingMessageId, editingPendingMessageId]);
   const latestUserMessageId = useMemo(() =>
     timeline.findLast((item) => item.kind === "message" && item.role === "user")?.id ?? null,
   [timeline]);
@@ -1592,6 +1675,7 @@ export function ConversationWorkspace({
     if (message.id !== latestUserMessageId || isFinishedSubagent) return;
     setEditingPendingMessageId(null);
     setEditingMessageId(message.id);
+    setEditingAttachments(message.attachments);
     setComposerValue(message.content);
     setMentionQuery(null);
     setSlashQuery(null);
@@ -1610,6 +1694,7 @@ export function ConversationWorkspace({
   const handleCancelEditing = useCallback((): void => {
     setEditingMessageId(null);
     setEditingPendingMessageId(null);
+    setEditingAttachments(null);
     setComposerValue("");
     setMentionQuery(null);
     setSlashQuery(null);
@@ -1623,6 +1708,7 @@ export function ConversationWorkspace({
     if (isFinishedSubagent) return;
     setEditingMessageId(null);
     setEditingPendingMessageId(message.id);
+    setEditingAttachments(null);
     setComposerValue(message.content);
     setMentionQuery(null);
     setSlashQuery(null);
@@ -1651,6 +1737,8 @@ export function ConversationWorkspace({
     const content = composerValue.trim();
     const hasNoSubmitContent = isEditingComposerMessage
       ? content.length === 0
+        && composerAttachments.length === 0
+        && activeProjectFileMentions.length === 0
       : content.length === 0
         && draftAttachments.length === 0
         && activeProjectFileMentions.length === 0;
@@ -1707,7 +1795,9 @@ export function ConversationWorkspace({
     setOperationError(null);
     try {
       if (editingMessageId !== null) {
+        const replacementAttachmentIds = composerAttachments.map((attachment) => attachment.id);
         const accepted = await agentClient.replaceLatestConversationMessage({
+          attachmentIds: replacementAttachmentIds,
           content,
           conversationId: session.id,
           messageId: editingMessageId,
@@ -1741,6 +1831,10 @@ export function ConversationWorkspace({
           status: "thinking",
         });
         setEditingMessageId(null);
+        setEditingAttachments(null);
+        setDraftAttachments((current) => current.filter(
+          (attachment) => !replacementAttachmentIds.includes(attachment.id),
+        ));
         void loadTimeline();
       } else {
         const accepted = await agentClient.sendConversationMessage({
@@ -1811,6 +1905,66 @@ export function ConversationWorkspace({
     }
   };
 
+  const handleForceContextCompaction = async (): Promise<void> => {
+    if (
+      activeRunId !== null
+      || isSending
+      || isFinishedSubagent
+      || (!isMockRuntime && modelStatus?.configured === false)
+    ) return;
+    setIsSending(true);
+    beginRunProgress(setRunProgresses, null, timelineRef.current.at(-1)?.id ?? null);
+    setModelActivity({
+      anchorTimelineItemId: timelineRef.current.at(-1)?.id ?? null,
+      runId: null,
+      status: "thinking",
+    });
+    setOperationError(null);
+    try {
+      const accepted = await agentClient.sendConversationMessage({
+        ...(selectedAgent === undefined
+          ? {}
+          : { agent: toConversationAgentBinding(selectedAgent) }),
+        content: "/compact",
+        conversationId: session.id,
+        deliveryMode: messageDeliveryMode,
+        ...(activeModel === undefined
+          ? {}
+          : { modelId: activeModel.modelId, providerId: activeModel.providerId }),
+        permissionMode,
+        ...(selectedReasoningOption === undefined ? {} : { reasoning: selectedReasoningOption }),
+      });
+      if (accepted.kind === "started") {
+        timelineRevisionRef.current += 1;
+        setTimeline((current) => {
+          const next = upsertTimelineItem(current, accepted.userMessage);
+          timelineRef.current = next;
+          return next;
+        });
+        setActiveRunId(accepted.runId);
+        confirmRunProgress(setRunProgresses, accepted.runId, accepted.userMessage.id);
+        setModelActivity({
+          anchorTimelineItemId: accepted.userMessage.id,
+          runId: accepted.runId,
+          status: "thinking",
+        });
+      } else {
+        setPendingMessages((current) => [
+          ...current.filter((message) => message.id !== accepted.pendingMessage.id),
+          accepted.pendingMessage,
+        ]);
+      }
+      void loadContextUsage();
+    } catch (error) {
+      discardPendingRunProgress(setRunProgresses);
+      setModelActivity(null);
+      setOperationError(getUserErrorMessage(error, "无法强制压缩上下文"));
+    } finally {
+      setIsSending(false);
+      refocusComposer();
+    }
+  };
+
   const handleChooseAttachments = useCallback(async (): Promise<void> => {
     if (isAddingAttachments || isSending || isFinishedSubagent) return;
     setIsAddingAttachments(true);
@@ -1820,12 +1974,30 @@ export function ConversationWorkspace({
         conversationId: session.id,
       });
       setDraftAttachments(attachments);
+      if (editingMessageId !== null) {
+        const previousDraftIds = new Set(draftAttachments.map((attachment) => attachment.id));
+        const addedAttachments = attachments.filter(
+          (attachment) => !previousDraftIds.has(attachment.id),
+        );
+        setEditingAttachments((current) => mergeConversationAttachments(
+          current ?? [],
+          addedAttachments,
+        ));
+      }
     } catch (error) {
       setOperationError(getUserErrorMessage(error, "无法添加附件"));
     } finally {
       setIsAddingAttachments(false);
     }
-  }, [agentClient, isAddingAttachments, isSending, isFinishedSubagent, session.id]);
+  }, [
+    agentClient,
+    draftAttachments,
+    editingMessageId,
+    isAddingAttachments,
+    isSending,
+    isFinishedSubagent,
+    session.id,
+  ]);
 
   const handlePasteAttachments = useCallback(
     (event: ReactClipboardEvent<HTMLTextAreaElement>): void => {
@@ -1837,13 +2009,13 @@ export function ConversationWorkspace({
         || isSending
         || isFinishedSubagent
         || isAddingAttachments
-        || isEditingComposerMessage
+        || editingPendingMessageId !== null
       ) {
         return;
       }
       event.preventDefault();
 
-      const remainingCount = MAX_DRAFT_ATTACHMENTS - draftAttachments.length;
+      const remainingCount = MAX_DRAFT_ATTACHMENTS - composerAttachments.length;
       if (files.length > remainingCount) {
         setOperationError(`每条消息最多添加 ${MAX_DRAFT_ATTACHMENTS} 个附件。`);
         return;
@@ -1859,6 +2031,7 @@ export function ConversationWorkspace({
       void (async () => {
         try {
           let attachments = draftAttachments;
+          const addedAttachments: ConversationAttachment[] = [];
           for (const [index, file] of files.entries()) {
             const previousAttachmentIds = new Set(attachments.map((attachment) => attachment.id));
             const importedAttachments = await agentClient.importConversationAttachmentBytes({
@@ -1875,9 +2048,18 @@ export function ConversationWorkspace({
             if (importedImage !== undefined) {
               rememberDraftAttachmentPreview(importedImage.id, URL.createObjectURL(file));
             }
+            addedAttachments.push(...importedAttachments.filter(
+              (attachment) => !previousAttachmentIds.has(attachment.id),
+            ));
             attachments = importedAttachments;
           }
           setDraftAttachments(attachments);
+          if (editingMessageId !== null) {
+            setEditingAttachments((current) => mergeConversationAttachments(
+              current ?? [],
+              addedAttachments,
+            ));
+          }
         } catch (error) {
           try {
             setDraftAttachments(await agentClient.listDraftConversationAttachments({
@@ -1894,9 +2076,11 @@ export function ConversationWorkspace({
     },
     [
       agentClient,
+      composerAttachments.length,
       draftAttachments,
+      editingMessageId,
+      editingPendingMessageId,
       isAddingAttachments,
-      isEditingComposerMessage,
       isFinishedSubagent,
       isMockRuntime,
       isSending,
@@ -1905,8 +2089,17 @@ export function ConversationWorkspace({
     ],
   );
 
-  const handleRemoveAttachment = useCallback(async (attachmentId: string): Promise<void> => {
+  const handleRemoveAttachment = useCallback(async (
+    attachment: ConversationAttachment,
+  ): Promise<void> => {
+    const attachmentId = attachment.id;
     if (removingAttachmentId !== null || isSending) return;
+    if (editingMessageId !== null && attachment.messageId !== null) {
+      setEditingAttachments((current) => (
+        current?.filter((candidate) => candidate.id !== attachmentId) ?? null
+      ));
+      return;
+    }
     setRemovingAttachmentId(attachmentId);
     setOperationError(null);
     try {
@@ -1917,13 +2110,23 @@ export function ConversationWorkspace({
       setDraftAttachments((current) =>
         current.filter((attachment) => attachment.id !== attachmentId)
       );
+      setEditingAttachments((current) => (
+        current?.filter((candidate) => candidate.id !== attachmentId) ?? null
+      ));
       forgetDraftAttachmentPreview(attachmentId);
     } catch {
       setOperationError("无法移除附件");
     } finally {
       setRemovingAttachmentId(null);
     }
-  }, [agentClient, forgetDraftAttachmentPreview, isSending, removingAttachmentId, session.id]);
+  }, [
+    agentClient,
+    editingMessageId,
+    forgetDraftAttachmentPreview,
+    isSending,
+    removingAttachmentId,
+    session.id,
+  ]);
 
   const mentionOptions = useMemo((): MentionOption[] => {
     if (mentionQuery === null || mentionQuery.query.length === 0) return [];
@@ -2017,11 +2220,31 @@ export function ConversationWorkspace({
   const slashOptions = useMemo(() => {
     if (slashQuery === null) return [];
     const query = slashQuery.query.toLocaleLowerCase();
-    return SLASH_COMMANDS.filter((command) =>
-      command.name.includes(query)
-      || command.title.toLocaleLowerCase().includes(query)
-    );
-  }, [slashQuery]);
+    const allowedSkillIds = selectedAgent?.capabilityScope === "custom"
+      ? new Set(selectedAgent.skillIds)
+      : null;
+    const commands: SlashOption[] = SLASH_COMMANDS
+      .filter((command) =>
+        command.name.includes(query)
+        || command.title.toLocaleLowerCase().includes(query)
+      )
+      .map((command) => ({ kind: "command", value: command }));
+    const skills: SlashOption[] = slashSkills
+      .filter((skill) =>
+        skill.enabled
+        && (allowedSkillIds === null || allowedSkillIds.has(skill.id))
+        && (skill.scope === "user"
+          || (skill.scope === "project" && session.projectId !== null)
+          || (skill.scope === "team" && session.teamId !== null))
+        && (
+          skill.id.toLocaleLowerCase().includes(query)
+          || skill.name.toLocaleLowerCase().includes(query)
+          || skill.description.toLocaleLowerCase().includes(query)
+        )
+      )
+      .map((skill) => ({ kind: "skill", value: skill }));
+    return [...commands, ...skills];
+  }, [selectedAgent, session.projectId, session.teamId, slashQuery, slashSkills]);
 
   const selectMention = useCallback((option: MentionOption): void => {
     if (mentionQuery === null) return;
@@ -2069,9 +2292,10 @@ export function ConversationWorkspace({
     });
   }, [composerValue, mentionQuery]);
 
-  const selectSlashCommand = useCallback((command: SlashCommand): void => {
+  const selectSlashOption = useCallback((option: SlashOption): void => {
     if (slashQuery === null) return;
-    const insertedText = `/${command.name} `;
+    const optionName = option.kind === "skill" ? option.value.id : option.value.name;
+    const insertedText = `/${optionName} `;
     const nextValue = `${composerValue.slice(0, slashQuery.start)}${insertedText}${composerValue.slice(slashQuery.end)}`;
     const nextCaret = slashQuery.start + insertedText.length;
     setComposerValue(nextValue);
@@ -2094,10 +2318,10 @@ export function ConversationWorkspace({
 
   const handleSlashCommandClick = useCallback(
     (event: MouseEvent<HTMLButtonElement>): void => {
-      const command = slashOptions[Number(event.currentTarget.dataset.optionIndex)];
-      if (command !== undefined) selectSlashCommand(command);
+      const option = slashOptions[Number(event.currentTarget.dataset.optionIndex)];
+      if (option !== undefined) selectSlashOption(option);
     },
-    [selectSlashCommand, slashOptions],
+    [selectSlashOption, slashOptions],
   );
 
   const handleComposerKeyDown = useCallback(
@@ -2130,7 +2354,7 @@ export function ConversationWorkspace({
         if (event.key === "Enter" && !event.shiftKey) {
           event.preventDefault();
           const selected = slashOptions[mentionSelectionIndex] ?? slashOptions[0];
-          if (selected !== undefined) selectSlashCommand(selected);
+          if (selected !== undefined) selectSlashOption(selected);
           return;
         }
       }
@@ -2155,7 +2379,7 @@ export function ConversationWorkspace({
       mentionQuery,
       mentionSelectionIndex,
       selectMention,
-      selectSlashCommand,
+      selectSlashOption,
       slashOptions,
       sendShortcut,
       slashQuery,
@@ -2208,28 +2432,32 @@ export function ConversationWorkspace({
     }
   }, [agentClient, loadDraftAttachments, pendingMessageActionId]);
 
-  const handleMovePendingMessage = useCallback(async (
+  const handleReorderPendingMessages = useCallback(async (
+    pendingMessageIds: readonly string[],
     pendingMessageId: string,
-    direction: -1 | 1,
   ): Promise<void> => {
     if (pendingMessageActionId !== null) return;
-    const currentIndex = pendingMessages.findIndex((message) => message.id === pendingMessageId);
-    const targetIndex = currentIndex + direction;
-    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= pendingMessages.length) return;
-    const next = [...pendingMessages];
-    const current = next[currentIndex];
-    const target = next[targetIndex];
-    if (current === undefined || target === undefined) return;
-    next[currentIndex] = target;
-    next[targetIndex] = current;
+    if (
+      pendingMessageIds.length !== pendingMessages.length
+      || pendingMessageIds.every((id, index) => id === pendingMessages[index]?.id)
+    ) return;
+    const messagesById = new Map(pendingMessages.map((message) => [message.id, message]));
+    const next = pendingMessageIds.flatMap((id) => {
+      const message = messagesById.get(id);
+      return message === undefined ? [] : [message];
+    });
+    if (next.length !== pendingMessages.length) return;
+    const previous = pendingMessages;
+    setPendingMessages(next);
     setPendingMessageActionId(pendingMessageId);
     setOperationError(null);
     try {
       setPendingMessages(await agentClient.reorderConversationPendingMessages({
         conversationId: session.id,
-        pendingMessageIds: next.map((message) => message.id),
+        pendingMessageIds: [...pendingMessageIds],
       }));
     } catch (error) {
+      setPendingMessages(previous);
       setOperationError(getUserErrorMessage(error, "无法调整排队顺序"));
     } finally {
       setPendingMessageActionId(null);
@@ -2329,9 +2557,22 @@ export function ConversationWorkspace({
   const hasActiveModelRun = activeRunId !== null;
   const isRunning = hasActiveModelRun || activeSubagentCount > 0;
   const shouldShowStopButton = hasActiveModelRun && !isEditingComposerMessage;
-  const displayTimeline = groupToolBatches(
-    timeline,
-    modelActivity?.anchorTimelineItemId ?? null,
+  const subagentConversationIds = useMemo(
+    () => new Set([session, ...relatedSessions]
+      .filter((candidate) => candidate.threadKind === "subagent")
+      .map((candidate) => candidate.id)),
+    [relatedSessions, session],
+  );
+  const displayTimeline = groupRunActivities(
+    projectSubagentMessagesForParentTimeline(timeline, subagentConversationIds),
+  );
+  const forceableCompactionId = forceableContextCompactionId(timeline, activeRunId);
+  const runningContextCompactionRunIds = new Set(
+    displayTimeline.flatMap((item) =>
+      item.kind === "tool" && isRunningContextCompaction(item) && item.runId !== null
+        ? [item.runId]
+        : [],
+    ),
   );
   useLayoutEffect(() => {
     if (
@@ -2365,18 +2606,6 @@ export function ConversationWorkspace({
     () => getRepeatedAssistantFailureMessageIds(displayTimeline),
     [displayTimeline],
   );
-  const modelActivityInsertIndex = modelActivity === null
-    ? -1
-    : (() => {
-      const anchorTimelineItemId = modelActivity.anchorTimelineItemId;
-      if (anchorTimelineItemId === null) {
-        return displayTimeline.length;
-      }
-      const anchorIndex = displayTimeline.findIndex((item) =>
-        timelineDisplayItemContains(item, anchorTimelineItemId),
-      );
-      return anchorIndex < 0 ? displayTimeline.length : anchorIndex + 1;
-    })();
   const runProgressesByInsertIndex = useMemo(() => {
     const progressByIndex = new Map<number, RunProgress[]>();
     for (const progress of runProgresses) {
@@ -2390,6 +2619,15 @@ export function ConversationWorkspace({
     }
     return progressByIndex;
   }, [displayTimeline, runProgresses]);
+  const modelActivityInsertIndex = modelActivity === null
+    ? -1
+    : getModelActivityInsertIndex(
+        displayTimeline,
+        modelActivity.runId,
+        runProgresses.find((progress) => progress.runId === modelActivity.runId)
+          ?.anchorTimelineItemId
+          ?? modelActivity.anchorTimelineItemId,
+      );
   const canChangeProject =
     !compact
     && !isLoadingTimeline
@@ -2421,12 +2659,6 @@ export function ConversationWorkspace({
     }
     return avatars;
   }, [agentProfiles, relatedSessions, session]);
-  const subagentConversationIds = useMemo(
-    () => new Set([session, ...relatedSessions]
-      .filter((candidate) => candidate.threadKind === "subagent")
-      .map((candidate) => candidate.id)),
-    [relatedSessions, session],
-  );
   const pathScope = resolveConversationPathScope(project, session, teams);
   const pathAgent = session.agentId === null
     ? undefined
@@ -2514,6 +2746,16 @@ export function ConversationWorkspace({
       <div
         className="conversation-workspace__surface"
       >
+        <ConversationFindBar active={active} containerRef={messagesRef} revision={timeline} />
+        <ConversationTurnNavigator
+          bottomOffsetPx={composerOverlayHeight + 12}
+          containerRef={messagesRef}
+          hidden={compact}
+          timeline={timeline}
+          onNavigateStart={() => {
+            shouldStickToBottomRef.current = false;
+          }}
+        />
         <div
           ref={messagesRef}
           className="conversation-workspace__messages"
@@ -2536,15 +2778,25 @@ export function ConversationWorkspace({
                       className="conversation-run-duration"
                       key={`${item.id}:duration:${durationIndex}`}
                     >
-                      <span>用时 {formatRunDuration(0, durationMs)}</span>
+                      <span>已处理 {formatRunDuration(0, durationMs)}</span>
                     </div>
                   ))}
-                  {(runProgressesByInsertIndex.get(index) ?? []).map((progress) => (
-                    <RunProgressIndicator key={progress.runId ?? "pending"} progress={progress} />
-                  ))}
+                  {(runProgressesByInsertIndex.get(index) ?? [])
+                    .filter((progress) =>
+                      (progress.runId === null || !runningContextCompactionRunIds.has(progress.runId))
+                      && (
+                        item.kind !== "run_activity"
+                        || progress.runId === null
+                        || !item.runIds.includes(progress.runId)
+                      )
+                    )
+                    .map((progress) => (
+                      <RunProgressIndicator key={progress.runId ?? "pending"} progress={progress} />
+                    ))}
                   {modelActivity !== null
                     && modelActivityInsertIndex === index
-                    && item.kind !== "tool_batch" ? (
+                    && item.kind !== "tool_batch"
+                    && item.kind !== "run_activity" ? (
                     <ModelActivityIndicator activity={modelActivity} />
                   ) : null}
                   {repeatedAssistantFailureMessageIds.has(item.id) ? null : (
@@ -2553,6 +2805,7 @@ export function ConversationWorkspace({
                       data-conversation-timeline-item={item.id}
                     >
                       <TimelineItem
+                        agentClient={agentClient}
                         item={item}
                         agentAvatar={item.kind === "agent_message"
                           ? conversationAgentAvatars.get(item.senderConversationId)
@@ -2571,8 +2824,14 @@ export function ConversationWorkspace({
                         latestActiveToolId={latestActiveToolId}
                         modelActivity={modelActivity !== null
                           && modelActivityInsertIndex === index
-                          && item.kind === "tool_batch"
+                          && (item.kind === "tool_batch" || item.kind === "run_activity")
                           ? modelActivity
+                          : null}
+                        runProgress={item.kind === "run_activity"
+                          ? runProgresses.find((progress) =>
+                              progress.runId !== null && item.runIds.includes(progress.runId)
+                            )
+                            ?? null
                           : null}
                         approvalErrors={approvalErrors}
                         approvingToolId={approvingToolId}
@@ -2590,11 +2849,14 @@ export function ConversationWorkspace({
                             ? item.content.length > 0
                             : forkableAssistantMessageIds.has(item.id)
                         )}
+                        canForceContextCompaction={item.kind === "tool"
+                          && item.id === forceableCompactionId}
                         latestUserMessageId={teamManaged ? null : latestUserMessageId}
                         onChangeApproval={handleChangeApproval}
                         onCopyMessage={handleCopyMessage}
                         onEditMessage={handleEditMessage}
                         onForkMessage={handleForkMessage}
+                        onForceContextCompaction={handleForceContextCompaction}
                         onOpenProjectFile={onOpenProjectFile}
                         onSessionSelected={onSessionSelected}
                         liveToolOutputs={liveToolOutputs}
@@ -2623,9 +2885,13 @@ export function ConversationWorkspace({
                   ))}
                 </Fragment>
               ))}
-              {(runProgressesByInsertIndex.get(displayTimeline.length) ?? []).map((progress) => (
-                <RunProgressIndicator key={progress.runId ?? "pending"} progress={progress} />
-              ))}
+              {(runProgressesByInsertIndex.get(displayTimeline.length) ?? [])
+                .filter((progress) =>
+                  progress.runId === null || !runningContextCompactionRunIds.has(progress.runId)
+                )
+                .map((progress) => (
+                  <RunProgressIndicator key={progress.runId ?? "pending"} progress={progress} />
+                ))}
               {modelActivity !== null && modelActivityInsertIndex === displayTimeline.length ? (
                 <ModelActivityIndicator activity={modelActivity} />
               ) : null}
@@ -2670,12 +2936,13 @@ export function ConversationWorkspace({
 
           {pendingMessages.length > 0 ? (
             <ConversationPendingMessageQueue
+              agentClient={agentClient}
               actioningMessageId={pendingMessageActionId}
               editingMessageId={editingPendingMessageId}
               messages={pendingMessages}
               onDelete={handleDeletePendingMessage}
               onEdit={handleEditPendingMessage}
-              onMove={handleMovePendingMessage}
+              onReorder={handleReorderPendingMessages}
               onPromote={handlePromotePendingMessage}
             />
           ) : null}
@@ -2748,20 +3015,21 @@ export function ConversationWorkspace({
                 />
               </div>
             ) : null}
-            {!isEditingComposerMessage && draftAttachments.length > 0 ? (
-              <div className="conversation-attachments conversation-attachments--draft">
-                {draftAttachments.map((attachment) => (
+            {composerAttachments.length > 0 ? (
+              <AttachmentStrip variant="draft">
+                {composerAttachments.map((attachment) => (
                   <AttachmentChip
+                    agentClient={agentClient}
                     key={attachment.id}
                     attachment={attachment}
                     isRemoving={removingAttachmentId === attachment.id}
                     {...(draftAttachmentPreviewUrls[attachment.id] === undefined
                       ? {}
                       : { previewUrl: draftAttachmentPreviewUrls[attachment.id] })}
-                    onRemove={() => void handleRemoveAttachment(attachment.id)}
+                    onRemove={() => void handleRemoveAttachment(attachment)}
                   />
                 ))}
-              </div>
+              </AttachmentStrip>
             ) : null}
             {selectedConversationMentions.length > 0
               || selectedTeamMentions.length > 0
@@ -2871,27 +3139,39 @@ export function ConversationWorkspace({
                 <div className="conversation-mention-menu" role="listbox" aria-label="斜杠命令">
                   {slashOptions.length === 0 ? (
                     <p>没有匹配的命令</p>
-                  ) : slashOptions.map((command, index) => (
+                  ) : slashOptions.map((option, index) => (
                     <button
                       aria-selected={index === mentionSelectionIndex}
                       className={index === mentionSelectionIndex ? "is-selected" : undefined}
                       data-option-index={index}
-                      key={command.name}
+                      key={`${option.kind}:${option.kind === "skill"
+                        ? option.value.id
+                        : option.value.name}`}
                       role="option"
                       type="button"
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={handleSlashCommandClick}
                     >
-                      {command.name === "plan" ? (
+                      {option.kind === "skill" ? (
+                        <Sparkles aria-hidden="true" size={15} />
+                      ) : option.value.name === "compact" ? (
+                        <ArchiveRestore aria-hidden="true" size={15} />
+                      ) : option.value.name === "plan" ? (
                         <ListTodo aria-hidden="true" size={15} />
-                      ) : command.name === "review" ? (
+                      ) : option.value.name === "review" ? (
                         <FileSearch aria-hidden="true" size={15} />
                       ) : (
                         <Terminal aria-hidden="true" size={15} />
                       )}
                       <span>
-                        <strong>/{command.name} · {command.title}</strong>
-                        <small>{command.description}</small>
+                        <strong>/{option.kind === "skill"
+                          ? option.value.id
+                          : option.value.name} · {option.kind === "skill"
+                            ? option.value.name
+                            : option.value.title}</strong>
+                        <small>{option.kind === "skill"
+                          ? `Skill · ${option.value.description || "使用这个 Skill 处理任务"}`
+                          : option.value.description}</small>
                       </span>
                     </button>
                   ))}
@@ -2900,6 +3180,9 @@ export function ConversationWorkspace({
               <textarea
                 ref={composerRef}
                 aria-label="输入任务"
+                data-query-active={mentionQuery !== null || slashQuery !== null
+                  ? "true"
+                  : undefined}
                 disabled={isSending || pendingMessageActionId !== null || isModelUnavailable || isFinishedSubagent}
                 placeholder={isFinishedSubagent
                   ? "Subagent 任务已结束，可查看完整过程"
@@ -2949,11 +3232,11 @@ export function ConversationWorkspace({
                     || isSending
                     || isFinishedSubagent
                     || isAddingAttachments
-                    || isEditingComposerMessage
-                    || draftAttachments.length >= MAX_DRAFT_ATTACHMENTS
+                    || editingPendingMessageId !== null
+                    || composerAttachments.length >= MAX_DRAFT_ATTACHMENTS
                   }
-                  label={isEditingComposerMessage
-                    ? "编辑消息时保留原附件"
+                  label={editingPendingMessageId !== null
+                    ? "排队消息暂不支持修改附件"
                     : isAddingAttachments
                       ? "正在添加附件"
                       : "添加文件或图片，也可直接粘贴"}
@@ -3076,8 +3359,8 @@ export function ConversationWorkspace({
                     className="conversation-workspace__permission-select-content"
                     side="top"
                   >
-                    <SelectItem value="read_only">只读</SelectItem>
-                    <SelectItem value="ask_before_changes">修改前询问</SelectItem>
+                    <SelectItem value="read_only">规划</SelectItem>
+                    <SelectItem value="ask_before_changes">请求审批</SelectItem>
                     <SelectItem value="full_access">完全访问</SelectItem>
                   </SelectContent>
                 </Select>
@@ -3130,6 +3413,8 @@ export function ConversationWorkspace({
                       : (
                     (isEditingComposerMessage
                       ? composerValue.trim().length === 0
+                        && composerAttachments.length === 0
+                        && activeProjectFileMentions.length === 0
                       : (
                         composerValue.trim().length === 0
                         && draftAttachments.length === 0
@@ -3307,7 +3592,7 @@ function handleRunEvent(
             : anchorTimelineItemId,
           preview: `${previousPreview}${event.delta}`.slice(-600),
           runId: event.runId,
-          status: "thinking"
+          status: event.kind === "progress" ? "progress" : "thinking"
         };
       });
       return;
@@ -3337,6 +3622,9 @@ function handleRunEvent(
     case "tool.completed":
     case "tool.started":
       setModelActivity((current) => current?.runId === event.runId ? null : current);
+      if (event.tool.name === "compact_context") {
+        removeRunProgress(setRunProgresses, event.runId);
+      }
       updateTimeline((current) => upsertTimelineItem(
         completeStreamingAssistantMessages(current),
         event.tool,
@@ -3387,15 +3675,16 @@ function handleRunEvent(
   }
 }
 
-function ModelActivityIndicator({ activity }: { activity: ModelActivity }): ReactElement | null {
+function ModelActivityIndicator({ activity }: { activity: ModelActivity }): ReactElement {
   const label = modelActivityLabel(activity);
-
-  if (label === null) return null;
+  const hasPreview = activity.preview !== undefined
+    && activity.preview.trim().length > 0;
 
   return (
     <div
       aria-live="polite"
       className="conversation-model-activity"
+      data-has-preview={String(hasPreview)}
       data-status={activity.status}
       role="status"
     >
@@ -3405,25 +3694,39 @@ function ModelActivityIndicator({ activity }: { activity: ModelActivity }): Reac
 }
 
 function RunProgressIndicator({ progress }: { progress: RunProgress }): ReactElement {
-  const outputStartedAt = progress.outputStartedAt;
-  const hasOutput = outputStartedAt !== null;
-  const label = hasOutput ? "正在回答" : "正在思考";
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const intervalId = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(intervalId);
+  }, []);
+  const label = `已处理 ${formatRunDuration(progress.startedAt, now)}`;
 
   return (
     <div
-      aria-live="polite"
+      aria-label={label}
       className="conversation-run-progress"
-      data-status={hasOutput ? "processed" : "thinking"}
-      role="status"
+      role="timer"
     >
       <span className="conversation-run-progress__label">{label}</span>
     </div>
   );
 }
 
-function modelActivityLabel(activity: ModelActivity): string | null {
+function modelActivityLabel(activity: ModelActivity): string {
   const preview = activity.preview?.trim();
-  return preview === undefined || preview.length === 0 ? null : preview;
+  return preview === undefined || preview.length === 0
+    ? "正在推理"
+    : normalizeModelActivityPreview(preview);
+}
+
+export function normalizeModelActivityPreview(preview: string): string {
+  return preview
+    .trim()
+    .replace(/([\p{L}\p{N}])[*_]{3,}(?=[\p{L}\p{N}])/gu, "$1 · ")
+    .replace(/(^|[\s([{])(?:\*{1,3}|_{1,3})(?=\S)/gu, "$1")
+    .replace(/([\p{L}\p{N})\]}])(?:\*{1,3}|_{1,3})(?=$|[\s.,!?;:)\]}])/gu, "$1")
+    .replace(/[\t ]*·[\t ]*/gu, " · ")
+    .replace(/[\t ]{2,}/gu, " ");
 }
 
 function beginRunProgress(
@@ -3529,23 +3832,135 @@ function mergePendingMessageUpdate(
   });
 }
 
+function reorderPendingMessageIds(
+  identifiers: readonly string[],
+  sourceId: string,
+  targetId: string,
+  position: "after" | "before",
+): string[] {
+  const reordered = identifiers.filter((identifier) => identifier !== sourceId);
+  const targetIndex = reordered.indexOf(targetId);
+  if (targetIndex < 0) return [...identifiers];
+  reordered.splice(position === "before" ? targetIndex : targetIndex + 1, 0, sourceId);
+  return reordered;
+}
+
+function setPendingMessageDragPreview(
+  event: DragEvent<HTMLElement>,
+  item: HTMLElement,
+): void {
+  const bounds = item.getBoundingClientRect();
+  const preview = item.cloneNode(true) as HTMLElement;
+  preview.classList.add("conversation-pending-queue__drag-preview");
+  preview.style.width = `${bounds.width}px`;
+  preview.style.height = `${bounds.height}px`;
+  document.body.append(preview);
+  event.dataTransfer.setDragImage(
+    preview,
+    Math.max(0, event.clientX - bounds.left),
+    Math.max(0, event.clientY - bounds.top),
+  );
+  window.setTimeout(() => preview.remove(), 0);
+}
+
+function PendingMessageAttachmentPreviews({
+  agentClient,
+  attachmentIds,
+  conversationId,
+}: {
+  agentClient: AgentClient;
+  attachmentIds: readonly string[];
+  conversationId: string;
+}): ReactElement | null {
+  const visibleAttachmentIds = useMemo(() => attachmentIds.slice(0, 3), [attachmentIds]);
+  const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all(visibleAttachmentIds.map(async (attachmentId) => {
+      try {
+        const preview = await agentClient.readConversationAttachmentPreview({
+          attachmentId,
+          conversationId,
+        });
+        return [attachmentId, `data:${preview.mimeType};base64,${preview.data}`] as const;
+      } catch {
+        return null;
+      }
+    })).then((previews) => {
+      if (cancelled) return;
+      setPreviewUrls(Object.fromEntries(previews.filter((preview) => preview !== null)));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentClient, conversationId, visibleAttachmentIds]);
+
+  if (attachmentIds.length === 0) return null;
+  return (
+    <span className="conversation-pending-queue__attachments" aria-label={`${attachmentIds.length} 个附件`}>
+      {visibleAttachmentIds.map((attachmentId) => {
+        const previewUrl = previewUrls[attachmentId];
+        return previewUrl === undefined ? (
+          <span className="conversation-pending-queue__attachment-fallback" key={attachmentId}>
+            <Paperclip aria-hidden="true" size={13} />
+          </span>
+        ) : (
+          <button
+            aria-label="预览待发送图片"
+            className="conversation-pending-queue__attachment-preview"
+            key={attachmentId}
+            type="button"
+            onClick={() => requestMediaPreview({
+              alt: "待发送图片",
+              src: previewUrl,
+              title: "待发送图片",
+            })}
+          >
+            <img alt="" src={previewUrl} />
+          </button>
+        );
+      })}
+      {attachmentIds.length > visibleAttachmentIds.length ? (
+        <small>+{attachmentIds.length - visibleAttachmentIds.length}</small>
+      ) : null}
+    </span>
+  );
+}
+
 function ConversationPendingMessageQueue({
+  agentClient,
   actioningMessageId,
   editingMessageId,
   messages,
   onDelete,
   onEdit,
-  onMove,
+  onReorder,
   onPromote,
 }: {
+  agentClient: AgentClient;
   actioningMessageId: string | null;
   editingMessageId: string | null;
   messages: readonly ConversationPendingMessage[];
   onDelete: (pendingMessageId: string) => Promise<void>;
   onEdit: (message: ConversationPendingMessage) => void;
-  onMove: (pendingMessageId: string, direction: -1 | 1) => Promise<void>;
+  onReorder: (
+    pendingMessageIds: readonly string[],
+    pendingMessageId: string,
+  ) => Promise<void>;
   onPromote: (pendingMessageId: string) => Promise<void>;
 }): ReactElement {
+  const [draggedMessageId, setDraggedMessageId] = useState<string | null>(null);
+  const [dropIndicator, setDropIndicator] = useState<{
+    id: string;
+    position: "after" | "before";
+  } | null>(null);
+
+  function finishDrag(): void {
+    setDraggedMessageId(null);
+    setDropIndicator(null);
+  }
+
   return (
     <section className="conversation-pending-queue" aria-label="待发送消息">
       <header>
@@ -3554,7 +3969,7 @@ function ConversationPendingMessageQueue({
         <span>{messages.length}</span>
       </header>
       <div className="conversation-pending-queue__items">
-        {messages.map((message, index) => {
+        {messages.map((message) => {
           const isActioning = actioningMessageId === message.id;
           const isEditing = editingMessageId === message.id;
           const fallback = message.attachmentIds.length > 0
@@ -3565,13 +3980,77 @@ function ConversationPendingMessageQueue({
           return (
             <article
               className="conversation-pending-queue__item"
+              data-dragging={String(draggedMessageId === message.id)}
               data-delivery-mode={message.deliveryMode}
               data-editing={String(isEditing)}
+              data-drop-position={dropIndicator?.id === message.id
+                ? dropIndicator.position
+                : undefined}
+              draggable={actioningMessageId === null}
               key={message.id}
+              onDragEnd={finishDrag}
+              onDragOver={(event) => {
+                if (draggedMessageId === null || draggedMessageId === message.id) {
+                  setDropIndicator(null);
+                  return;
+                }
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                const bounds = event.currentTarget.getBoundingClientRect();
+                setDropIndicator({
+                  id: message.id,
+                  position: event.clientY < bounds.top + bounds.height / 2 ? "before" : "after",
+                });
+              }}
+              onDragStart={(event) => {
+                if (
+                  actioningMessageId !== null
+                  || (event.target as Element).closest(
+                    ".conversation-pending-queue__drag-handle",
+                  ) === null
+                ) {
+                  event.preventDefault();
+                  return;
+                }
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", message.id);
+                setPendingMessageDragPreview(event, event.currentTarget);
+                setDraggedMessageId(message.id);
+                setDropIndicator(null);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                if (draggedMessageId === null || dropIndicator === null) {
+                  finishDrag();
+                  return;
+                }
+                const reordered = reorderPendingMessageIds(
+                  messages.map((current) => current.id),
+                  draggedMessageId,
+                  message.id,
+                  dropIndicator.position,
+                );
+                const sourceId = draggedMessageId;
+                finishDrag();
+                void onReorder(reordered, sourceId);
+              }}
             >
-              <span className="conversation-pending-queue__position">{index + 1}</span>
-              <span className="conversation-pending-queue__content" title={message.content || fallback}>
-                {message.content || fallback}
+              <span
+                aria-label="拖拽调整顺序"
+                className="conversation-pending-queue__drag-handle"
+                title="拖拽调整顺序"
+              >
+                <GripVertical aria-hidden="true" size={14} />
+              </span>
+              <span className="conversation-pending-queue__identity">
+                <PendingMessageAttachmentPreviews
+                  agentClient={agentClient}
+                  attachmentIds={message.attachmentIds}
+                  conversationId={message.conversationId}
+                />
+                <span className="conversation-pending-queue__content" title={message.content || fallback}>
+                  {message.content || fallback}
+                </span>
               </span>
               <span className="conversation-pending-queue__mode">
                 {message.deliveryMode === "steer" ? "等待介入" : "排队中"}
@@ -3581,26 +4060,6 @@ function ConversationPendingMessageQueue({
                   <LoaderCircle aria-hidden="true" className="conversation-workspace__spin" size={14} />
                 ) : (
                   <>
-                    <IconButton
-                      disabled={index === 0}
-                      label="上移"
-                      size="compact"
-                      type="button"
-                      variant="quiet"
-                      onClick={() => void onMove(message.id, -1)}
-                    >
-                      <ArrowUp aria-hidden="true" size={14} />
-                    </IconButton>
-                    <IconButton
-                      disabled={index === messages.length - 1}
-                      label="下移"
-                      size="compact"
-                      type="button"
-                      variant="quiet"
-                      onClick={() => void onMove(message.id, 1)}
-                    >
-                      <ArrowDown aria-hidden="true" size={14} />
-                    </IconButton>
                     <IconButton
                       disabled={isEditing}
                       label="编辑"
@@ -3715,30 +4174,18 @@ function SubagentApprovalQueue({
                 onClick={() => void onChangeApproval(approval.tool, true)}
               >
                 <Check aria-hidden="true" size={13} />
-                {isApproving ? "提交中" : "仅本次允许"}
+                {isApproving ? "提交中" : "允许一次"}
               </button>
               {isExternalRead ? null : (
                 <button
                   className="inline-flex min-h-7 items-center gap-1 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-transparent px-2 text-[var(--app-foreground)] hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={isApproving}
-                  title="仅允许该 Subagent 对话后续同类操作"
+                  title="仅允许该 Subagent 对话后续完全相同的命令或同一工具与路径"
                   type="button"
                   onClick={() => void onChangeApproval(approval.tool, true, "session")}
                 >
                   <Check aria-hidden="true" size={13} />
-                  允许该 Subagent 会话
-                </button>
-              )}
-              {isExternalRead ? null : (
-                <button
-                  className="inline-flex min-h-7 items-center gap-1 rounded-[var(--app-radius)] bg-[var(--app-accent)] px-2 text-[var(--app-accent-foreground)] hover:opacity-90 focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={isApproving}
-                  title="保存到该 Subagent 当前绑定 Agent 的权限规则"
-                  type="button"
-                  onClick={() => void onChangeApproval(approval.tool, true, "agent")}
-                >
-                  <ShieldCheck aria-hidden="true" size={13} />
-                  Agent 一直允许
+                  本 Subagent 允许相同操作
                 </button>
               )}
             </div>
@@ -3999,6 +4446,44 @@ function replaceTimelineFromMessage(
   });
 }
 
+export function projectSubagentMessagesForParentTimeline(
+  timeline: ConversationTimelineItem[],
+  subagentConversationIds: ReadonlySet<string>,
+): ConversationTimelineItem[] {
+  let removeReceiptDividerFromNextAssistant = false;
+  const projected: ConversationTimelineItem[] = [];
+
+  for (const item of timeline) {
+    if (
+      item.kind === "agent_message"
+      && subagentConversationIds.has(item.senderConversationId)
+    ) {
+      removeReceiptDividerFromNextAssistant = true;
+      continue;
+    }
+    if (item.kind === "message" && item.role === "user") {
+      removeReceiptDividerFromNextAssistant = false;
+    }
+    if (
+      removeReceiptDividerFromNextAssistant
+      && item.kind === "message"
+      && item.role === "assistant"
+    ) {
+      removeReceiptDividerFromNextAssistant = false;
+      projected.push({
+        ...item,
+        content: item.content
+          .replace(/(?:^|\r?\n)[ \t]*---[ \t]*(?=\r?\n|$)/u, "")
+          .replace(/(?:\r?\n){3,}/gu, "\n\n"),
+      });
+      continue;
+    }
+    projected.push(item);
+  }
+
+  return projected;
+}
+
 export function formatConversationTime(createdAt: string, now = new Date()): string {
   const timestamp = new Date(createdAt);
   if (Number.isNaN(timestamp.getTime())) return "";
@@ -4029,6 +4514,239 @@ function formatConversationDateTime(createdAt: string): string {
 
 function formatLocalClock(timestamp: Date): string {
   return `${String(timestamp.getHours()).padStart(2, "0")}:${String(timestamp.getMinutes()).padStart(2, "0")}`;
+}
+
+export function groupRunActivities(
+  timeline: ConversationTimelineItem[],
+): TimelineDisplayItem[] {
+  const lastRunItemIndex = new Map<string, number>();
+  for (const [index, item] of timeline.entries()) {
+    if (item.runId !== null) lastRunItemIndex.set(item.runId, index);
+  }
+
+  const activities = new Map<string, RunActivityTimelineItem & { firstIndex: number }>();
+  const activityFor = (
+    runId: string,
+    index: number,
+  ): RunActivityTimelineItem & { firstIndex: number } => {
+    const existing = activities.get(runId);
+    if (existing !== undefined) return existing;
+    const created: RunActivityTimelineItem & { firstIndex: number } = {
+      durationMs: null,
+      firstIndex: index,
+      id: `run-activity:${runId}`,
+      items: [],
+      kind: "run_activity",
+      runId,
+      runIds: [runId],
+    };
+    activities.set(runId, created);
+    return created;
+  };
+
+  for (const [index, item] of timeline.entries()) {
+    if (item.runId === null) continue;
+    if (item.kind === "model_retry") {
+      const activity = activityFor(item.runId, index);
+      activity.items.push(item);
+      if (item.durationMs != null) activity.durationMs = item.durationMs;
+      continue;
+    }
+    if (item.kind === "tool") {
+      if (item.name === "compact_context") continue;
+      activityFor(item.runId, index).items.push(item);
+      continue;
+    }
+    if (item.kind !== "message" || item.role !== "assistant") continue;
+
+    const reasoningContent = item.reasoningContent?.trim();
+    const visibleContent = stripLeadingThinkingSummary(item.content);
+    const isIntermediate = index < (lastRunItemIndex.get(item.runId) ?? index);
+    const hasReasoning = reasoningContent !== undefined
+      && reasoningContent.length > 0
+      && (item.modelId === null || !isGpt56ReasoningModel(item.modelId));
+    const hasProgress = isIntermediate && visibleContent.trim().length > 0;
+    const existingActivity = activities.get(item.runId);
+    if (!hasReasoning && !hasProgress && existingActivity === undefined) continue;
+
+    const activity = existingActivity ?? activityFor(item.runId, index);
+    if (item.durationMs != null) activity.durationMs = item.durationMs;
+    if (hasReasoning) {
+      activity.items.push({
+        content: item.reasoningContent ?? "",
+        id: `${item.id}:reasoning`,
+        kind: "activity_reasoning",
+        streaming: item.status === "streaming",
+      });
+    }
+    if (hasProgress) {
+      activity.items.push({
+        content: visibleContent,
+        id: `${item.id}:progress`,
+        kind: "activity_progress",
+        streaming: item.status === "streaming",
+      });
+    }
+  }
+
+  const projected: TimelineDisplayItem[] = [];
+  for (const [index, item] of timeline.entries()) {
+    if (item.kind === "tool" && item.name === "compact_context") {
+      projected.push(item);
+      continue;
+    }
+    const activity = item.runId === null ? undefined : activities.get(item.runId);
+    if (activity?.firstIndex === index) {
+      projected.push({
+        durationMs: activity.durationMs,
+        id: activity.id,
+        items: activity.items,
+        kind: activity.kind,
+        runId: activity.runId,
+        runIds: activity.runIds,
+      });
+    }
+    if (activity === undefined) {
+      const visibleContent = item.kind === "message" && item.role === "assistant"
+        ? stripLeadingThinkingSummary(item.content)
+        : null;
+      const isLegacyGptSummary = item.kind === "message"
+        && item.role === "assistant"
+        && item.modelId !== null
+        && isGpt56ReasoningModel(item.modelId)
+        && item.reasoningContent !== undefined;
+      if (
+        visibleContent !== null
+        && visibleContent.length === 0
+        && item.kind === "message"
+        && item.attachments.length === 0
+        && item.status !== "failed"
+      ) {
+        continue;
+      }
+      projected.push(item.kind === "message" && visibleContent !== null
+        ? {
+            ...item,
+            content: visibleContent,
+            ...(isLegacyGptSummary ? { reasoningContent: undefined } : {}),
+          }
+        : item);
+      continue;
+    }
+    if (item.kind === "tool" || item.kind === "model_retry") continue;
+    if (item.kind !== "message" || item.role !== "assistant") {
+      projected.push(item);
+      continue;
+    }
+
+    const isIntermediate = index < (lastRunItemIndex.get(item.runId ?? "") ?? index);
+    if (isIntermediate) {
+      if (item.attachments.length > 0) {
+        projected.push({
+          ...item,
+          content: "",
+          durationMs: null,
+          reasoningContent: undefined,
+        });
+      }
+      continue;
+    }
+    const visibleContent = stripLeadingThinkingSummary(item.content);
+    if (visibleContent.length === 0 && item.attachments.length === 0 && item.status !== "failed") {
+      continue;
+    }
+    projected.push({
+      ...item,
+      content: visibleContent,
+      durationMs: null,
+      reasoningContent: undefined,
+    });
+  }
+
+  return combineAutomaticContinuationDurations(projected);
+}
+
+function combineAutomaticContinuationDurations(
+  timeline: TimelineDisplayItem[],
+): TimelineDisplayItem[] {
+  const combined = [...timeline];
+  const mergedActivityIndexes = new Set<number>();
+  let turnStartIndex = 0;
+
+  const combineTurn = (turnEndIndex: number): void => {
+    const activityIndexes: number[] = [];
+    for (let index = turnStartIndex; index < turnEndIndex; index += 1) {
+      if (combined[index]?.kind === "run_activity") activityIndexes.push(index);
+    }
+    const firstActivityIndex = activityIndexes[0];
+    if (firstActivityIndex === undefined) return;
+
+    const completedRunIds = new Set<string>();
+    let combinedDurationMs = 0;
+    let hasDuration = false;
+    for (let index = turnStartIndex; index < turnEndIndex; index += 1) {
+      const item = combined[index];
+      if (item === undefined) continue;
+      const isCompletedAssistant = item.kind === "message" && item.role === "assistant";
+      const isTerminalRetry = item.kind === "model_retry" && item.status !== "retrying";
+      if (
+        item.kind !== "run_activity"
+        && !isCompletedAssistant
+        && !isTerminalRetry
+      ) continue;
+      if (item.durationMs == null) continue;
+      const runId = item.runId ?? `legacy-turn:${turnStartIndex}`;
+      if (completedRunIds.has(runId)) continue;
+      completedRunIds.add(runId);
+      combinedDurationMs += item.durationMs;
+      hasDuration = true;
+    }
+    for (let index = turnStartIndex; index < turnEndIndex; index += 1) {
+      const item = combined[index];
+      if (item === undefined) continue;
+      if (item.kind === "run_activity") {
+        combined[index] = {
+          ...item,
+          durationMs: hasDuration && index === firstActivityIndex
+            ? combinedDurationMs
+            : null,
+        };
+        continue;
+      }
+      const isCompletedAssistant = item.kind === "message" && item.role === "assistant";
+      const isTerminalRetry = item.kind === "model_retry" && item.status !== "retrying";
+      if ((isCompletedAssistant || isTerminalRetry) && item.durationMs != null) {
+        combined[index] = { ...item, durationMs: null };
+      }
+    }
+
+    if (activityIndexes.length < 2) return;
+    const firstActivity = combined[firstActivityIndex];
+    if (firstActivity?.kind !== "run_activity") return;
+    combined[firstActivityIndex] = {
+      ...firstActivity,
+      items: activityIndexes.flatMap((index) => {
+        const activity = combined[index];
+        return activity?.kind === "run_activity" ? activity.items : [];
+      }),
+      runIds: activityIndexes.flatMap((index) => {
+        const activity = combined[index];
+        return activity?.kind === "run_activity" ? activity.runIds : [];
+      }),
+    };
+    for (const index of activityIndexes.slice(1)) mergedActivityIndexes.add(index);
+  };
+
+  for (const [index, item] of combined.entries()) {
+    const startsVisibleTurn = (item.kind === "message" && item.role === "user")
+      || (item.kind === "agent_message" && item.messageType !== "task_result");
+    if (!startsVisibleTurn) continue;
+    combineTurn(index);
+    turnStartIndex = index + 1;
+  }
+  combineTurn(combined.length);
+
+  return combined.filter((_, index) => !mergedActivityIndexes.has(index));
 }
 
 export function groupToolBatches(
@@ -4069,6 +4787,36 @@ export function groupToolBatches(
   return grouped;
 }
 
+export function projectTimelineForActiveRun(
+  timeline: ConversationTimelineItem[],
+  activeRunId: string | null,
+  showToolActivity: boolean,
+): ConversationTimelineItem[] {
+  if (activeRunId === null) return timeline;
+
+  const currentRunTools = timeline.filter((item): item is ConversationToolItem =>
+    item.kind === "tool" && item.runId === activeRunId
+  );
+  if (currentRunTools.length === 0) return timeline;
+
+  const visibleTools = showToolActivity
+    ? currentRunTools.filter((tool) =>
+        tool.status === "running" || tool.status === "awaiting_approval"
+      )
+    : [];
+  if (showToolActivity && visibleTools.length === 0) {
+    const latestTool = currentRunTools.at(-1);
+    if (latestTool !== undefined) visibleTools.push(latestTool);
+  }
+  const visibleToolIds = new Set(visibleTools.map((tool) => tool.id));
+
+  return timeline.filter((item) =>
+    item.kind !== "tool"
+    || item.runId !== activeRunId
+    || visibleToolIds.has(item.id)
+  );
+}
+
 export function getLatestActiveToolId(
   timeline: readonly {
     id: string;
@@ -4076,16 +4824,23 @@ export function getLatestActiveToolId(
     status?: string | undefined;
   }[],
 ): string | null {
-  return timeline.findLast((item) =>
-    item.kind === "tool"
-    && (item.status === "running" || item.status === "awaiting_approval")
-  )?.id ?? null;
+  const latestTool = timeline.findLast((item) => item.kind === "tool");
+  return latestTool?.status === "running" || latestTool?.status === "awaiting_approval"
+    ? latestTool.id
+    : null;
+}
+
+export function stripLeadingThinkingSummary(content: string): string {
+  const match = /^\s*<(think|thinking)>([\s\S]*?)<\/\1>\s*/iu.exec(content);
+  if (match?.[2] === undefined) return content;
+  return content.slice(match[0].length).trimStart();
 }
 
 export function getConversationRunDurationInsertIndexes(
   timeline: readonly {
     durationMs?: number | null | undefined;
     kind: string;
+    messageType?: string | undefined;
     role?: string | undefined;
     runId?: string | null | undefined;
     status?: string | undefined;
@@ -4097,7 +4852,7 @@ export function getConversationRunDurationInsertIndexes(
 
   for (const [index, item] of timeline.entries()) {
     if (
-      item.kind === "agent_message"
+      (item.kind === "agent_message" && item.messageType !== "task_result")
       || (item.kind === "message" && item.role === "user")
     ) {
       runStartIndex = index + 1;
@@ -4153,6 +4908,7 @@ export function getRepeatedAssistantFailureMessageIds(
 export function getConversationRunProgressInsertIndex(
   timeline: readonly {
     id: string;
+    items?: readonly { id: string }[] | undefined;
     kind: string;
     role?: string | undefined;
     tools?: readonly { id: string }[] | undefined;
@@ -4163,6 +4919,7 @@ export function getConversationRunProgressInsertIndex(
     ? -1
     : timeline.findIndex((item) =>
       item.id === anchorTimelineItemId
+      || item.items?.some((entry) => entry.id === anchorTimelineItemId) === true
       || item.tools?.some((tool) => tool.id === anchorTimelineItemId) === true,
     );
   const searchStartIndex = anchorIndex < 0 ? timeline.length - 1 : anchorIndex;
@@ -4173,6 +4930,38 @@ export function getConversationRunProgressInsertIndex(
   }
 
   return 0;
+}
+
+export function getModelActivityInsertIndex(
+  timeline: readonly {
+    id: string;
+    items?: readonly {
+      id: string;
+      kind: string;
+      runId?: string | null | undefined;
+    }[] | undefined;
+    kind: string;
+    role?: string | undefined;
+    runId?: string | null | undefined;
+  }[],
+  runId: string | null,
+  fallbackAnchorTimelineItemId: string | null,
+): number {
+  if (runId !== null) {
+    const latestRetryIndex = timeline.findLastIndex((item) =>
+      (item.kind === "model_retry" && item.runId === runId)
+      || item.items?.some((entry) =>
+        entry.kind === "model_retry" && entry.runId === runId
+      ) === true
+    );
+    if (latestRetryIndex >= 0) {
+      return timeline[latestRetryIndex]?.kind === "model_retry"
+        ? latestRetryIndex + 1
+        : latestRetryIndex;
+    }
+  }
+
+  return getConversationRunProgressInsertIndex(timeline, fallbackAnchorTimelineItemId);
 }
 
 export function getFinalCompletedAssistantMessageIds(
@@ -4200,10 +4989,50 @@ export function getFinalCompletedAssistantMessageIds(
   }));
 }
 
-function timelineDisplayItemContains(item: TimelineDisplayItem, timelineItemId: string): boolean {
-  return item.kind === "tool_batch"
-    ? item.tools.some((tool) => tool.id === timelineItemId)
-    : item.id === timelineItemId;
+function ReasoningDisclosure({
+  children,
+  streaming,
+}: {
+  children: ReactNode;
+  streaming: boolean;
+}): ReactElement {
+  const contentId = useId();
+  const [isExpanded, setIsExpanded] = useState(streaming);
+
+  return (
+    <section className="my-[5px] min-w-0">
+      <button
+        aria-controls={contentId}
+        aria-expanded={isExpanded}
+        className="inline-flex min-h-[29px] max-w-full min-w-0 items-center gap-[6px] border-0 bg-transparent px-0 py-[2px] text-left text-[length:var(--app-font-size-control)] font-medium text-[var(--app-muted-foreground)] hover:text-[var(--app-foreground)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
+        title={isExpanded ? "收起思考过程" : "展开思考过程"}
+        type="button"
+        onClick={() => setIsExpanded((current) => !current)}
+      >
+        <BrainCircuit aria-hidden="true" className="shrink-0" size={14} />
+        <span className="min-w-0 flex-[0_1_auto] truncate">
+          {streaming ? "正在思考" : "思考过程"}
+        </span>
+        {streaming ? (
+          <span className="shrink-0 text-[length:var(--app-font-size-auxiliary)]">实时</span>
+        ) : null}
+        <Eye aria-hidden="true" className="shrink-0" size={15} />
+        <ChevronRight
+          aria-hidden="true"
+          className={`shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+          size={15}
+        />
+      </button>
+      {isExpanded ? (
+        <div
+          className="ml-5 flex min-w-0 flex-col gap-[5px] py-[5px] text-[length:var(--app-font-size-body)]"
+          id={contentId}
+        >
+          {children}
+        </div>
+      ) : null}
+    </section>
+  );
 }
 
 function AssistantReasoningBlock({
@@ -4213,41 +5042,10 @@ function AssistantReasoningBlock({
   content: string;
   streaming: boolean;
 }): ReactElement {
-  const contentId = useId();
-  const [isExpanded, setIsExpanded] = useState(streaming);
-
   return (
-    <section className="my-[5px] overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)]">
-      <button
-        aria-controls={contentId}
-        aria-expanded={isExpanded}
-        className="flex min-h-8 w-full min-w-0 items-center gap-[5px] px-2 text-left text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--app-focus-ring)]"
-        title={isExpanded ? "收起思考过程" : "展开思考过程"}
-        type="button"
-        onClick={() => setIsExpanded((current) => !current)}
-      >
-        <BrainCircuit aria-hidden="true" className="shrink-0" size={14} />
-        <span className="min-w-0 flex-1 truncate">
-          {streaming ? "正在思考" : "思考过程"}
-        </span>
-        {streaming ? (
-          <span className="shrink-0 text-[length:var(--app-font-size-auxiliary)]">实时</span>
-        ) : null}
-        {isExpanded ? (
-          <ChevronDown aria-hidden="true" className="shrink-0" size={14} />
-        ) : (
-          <ChevronRight aria-hidden="true" className="shrink-0" size={14} />
-        )}
-      </button>
-      {isExpanded ? (
-        <div
-          className="border-t border-[var(--app-border)] bg-[var(--app-panel)] px-3 py-2 text-[length:var(--app-font-size-body)]"
-          id={contentId}
-        >
-          <AgentMarkdown content={content} />
-        </div>
-      ) : null}
-    </section>
+    <ReasoningDisclosure streaming={streaming}>
+      <AgentMarkdown content={content} />
+    </ReasoningDisclosure>
   );
 }
 
@@ -4345,6 +5143,7 @@ function ModelRetryTimelineItem({ item }: { item: ConversationModelRetryItem }):
 }
 
 function TimelineItem({
+  agentClient,
   item,
   agentAvatar,
   agentAvatarSeed,
@@ -4352,9 +5151,11 @@ function TimelineItem({
   activeRunId,
   latestActiveToolId,
   modelActivity,
+  runProgress,
   approvalErrors,
   approvingToolId,
   canCopyMessage,
+  canForceContextCompaction,
   canForkMessage,
   canShowCompletionTime,
   copiedMessageId,
@@ -4365,10 +5166,12 @@ function TimelineItem({
   onCopyMessage,
   onEditMessage,
   onForkMessage,
+  onForceContextCompaction,
   onOpenProjectFile,
   onSessionSelected,
   liveToolOutputs,
 }: {
+  agentClient: AgentClient;
   item: TimelineDisplayItem;
   agentAvatar: AgentProfile["avatar"] | null;
   agentAvatarSeed: string | null;
@@ -4376,9 +5179,11 @@ function TimelineItem({
   activeRunId: string | null;
   latestActiveToolId: string | null;
   modelActivity: ModelActivity | null;
+  runProgress: RunProgress | null;
   approvalErrors: Readonly<Record<string, string>>;
   approvingToolId: string | null;
   canCopyMessage: boolean;
+  canForceContextCompaction: boolean;
   canForkMessage: boolean;
   canShowCompletionTime: boolean;
   copiedMessageId: string | null;
@@ -4393,6 +5198,7 @@ function TimelineItem({
   onCopyMessage: (message: ConversationMessageItem) => Promise<void>;
   onEditMessage: (message: ConversationMessageItem) => void;
   onForkMessage: (message: ConversationMessageItem) => Promise<void>;
+  onForceContextCompaction: () => Promise<void>;
   onOpenProjectFile: ((path: string) => void) | undefined;
   onSessionSelected: ((sessionId: string) => void) | undefined;
   liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
@@ -4401,12 +5207,33 @@ function TimelineItem({
     return <ModelRetryTimelineItem item={item} />;
   }
 
+  if (item.kind === "run_activity") {
+    return (
+      <RunActivityTimelineItem
+        agentClient={agentClient}
+        key={`${item.id}:${String(activeRunId !== null && item.runIds.includes(activeRunId))}`}
+        item={item}
+        teamManaged={teamManaged}
+        activeRunId={activeRunId}
+        latestActiveToolId={latestActiveToolId}
+        modelActivity={modelActivity}
+        runProgress={runProgress}
+        approvalErrors={approvalErrors}
+        approvingToolId={approvingToolId}
+        onOpenProjectFile={onOpenProjectFile}
+        onChangeApproval={onChangeApproval}
+        liveToolOutputs={liveToolOutputs}
+      />
+    );
+  }
+
   if (item.kind === "tool_batch") {
     const hasFailure = item.tools.some((tool) =>
       toolItemHasFailure(tool) || approvalErrors[tool.id] !== undefined
     );
     return (
       <ToolBatchTimelineItem
+        agentClient={agentClient}
         key={`${item.id}:${String(hasFailure)}:${latestActiveToolId ?? "idle"}`}
         item={item}
         teamManaged={teamManaged}
@@ -4423,8 +5250,18 @@ function TimelineItem({
   }
 
   if (item.kind === "tool") {
+    if (item.name === "compact_context") {
+      return (
+        <ContextCompactionTimelineItem
+          canForce={canForceContextCompaction}
+          item={item}
+          onForce={onForceContextCompaction}
+        />
+      );
+    }
     return (
       <ToolTimelineItem
+        agentClient={agentClient}
         key={`${item.id}:${approvalErrors[item.id] === undefined ? String(toolItemHasFailure(item)) : "approval_failed"}:${latestActiveToolId ?? "idle"}`}
         item={item}
         teamManaged={teamManaged}
@@ -4443,7 +5280,10 @@ function TimelineItem({
   if (item.kind === "agent_message") {
     if (item.messageType === "task_result") return null;
     return (
-      <div className="flex w-full max-w-[var(--conversation-content-max-width)] flex-col items-end gap-[5px] self-center">
+      <div
+        className="chat-message-group flex w-full max-w-[var(--conversation-content-max-width)] flex-col items-end gap-[5px] self-center"
+        data-role="user"
+      >
         <button
           aria-label={`打开来源对话 ${item.senderTitle}`}
           className="inline-flex min-w-0 max-w-full items-center gap-[6px] rounded-[var(--app-radius)] px-[2px] py-[1px] text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)] hover:text-[var(--app-foreground)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
@@ -4476,42 +5316,57 @@ function TimelineItem({
   const copied = copiedMessageId === item.id;
   const editing = editingMessageId === item.id;
   const isForking = forkingMessageId === item.id;
+  const renderedReasoningContent = item.reasoningContent?.trim() ?? "";
+  const renderedMessageContent = item.role === "assistant"
+    ? stripLeadingThinkingSummary(item.content)
+    : item.content;
   const canEdit = item.role === "user" && item.id === latestUserMessageId;
   const showMessageMeta = item.role === "user"
     || canShowCompletionTime
     || canCopyMessage
     || canForkMessage
     || canEdit;
+  const hasMessageBody = item.role === "assistant"
+    || renderedMessageContent.length > 0
+    || item.attachments.length > 0;
+  const messageAttachments = item.attachments.length > 0 ? (
+    <AttachmentStrip variant="message">
+      {item.attachments.map((attachment) => (
+        <AttachmentChip
+          agentClient={agentClient}
+          key={attachment.id}
+          attachment={attachment}
+        />
+      ))}
+    </AttachmentStrip>
+  ) : null;
 
   return (
     <div className="chat-message-group" data-role={item.role}>
-      <article className="chat-message" data-role={item.role} data-status={item.status}>
-        {item.role === "assistant" && item.status === "failed" ? (
-          <ConversationErrorContent content={item.content} />
-        ) : item.role === "assistant" ? (
-          <>
-            {item.reasoningContent?.trim().length ? (
-              <AssistantReasoningBlock
-                content={item.reasoningContent}
-                key={item.status}
-                streaming={item.status === "streaming"}
-              />
-            ) : null}
-            {item.content.length > 0 ? <AgentMarkdown content={item.content} /> : null}
-          </>
-        ) : (
-          <>
-            {item.attachments.length > 0 ? (
-              <div className="conversation-attachments conversation-attachments--message">
-                {item.attachments.map((attachment) => (
-                  <AttachmentChip key={attachment.id} attachment={attachment} />
-                ))}
-              </div>
-            ) : null}
-            {item.content.length > 0 ? <p>{item.content}</p> : null}
-          </>
-        )}
-      </article>
+      {item.role === "user" ? messageAttachments : null}
+      {hasMessageBody ? (
+        <article className="chat-message" data-role={item.role} data-status={item.status}>
+          {item.role === "assistant" && item.status === "failed" ? (
+            <ConversationErrorContent content={item.content} />
+          ) : item.role === "assistant" ? (
+            <>
+              {renderedReasoningContent.length > 0 ? (
+                <AssistantReasoningBlock
+                  content={renderedReasoningContent}
+                  key={item.status}
+                  streaming={item.status === "streaming"}
+                />
+              ) : null}
+              {renderedMessageContent.length > 0
+                ? <AgentMarkdown content={renderedMessageContent} />
+                : null}
+            </>
+          ) : (
+            renderedMessageContent.length > 0 ? <p>{renderedMessageContent}</p> : null
+          )}
+        </article>
+      ) : null}
+      {item.role === "assistant" ? messageAttachments : null}
       {showMessageMeta ? <div className="chat-message__meta">
         {item.role === "user" ? (
           <time dateTime={item.createdAt} title={formatConversationDateTime(item.createdAt)}>
@@ -4563,7 +5418,7 @@ function TimelineItem({
             label={editing ? "正在编辑" : "编辑并重新生成"}
             size="compact"
             type="button"
-            variant={editing ? "active" : "quiet"}
+            variant={editing ? "selected" : "quiet"}
             onClick={() => onEditMessage(item)}
           >
             <Pencil aria-hidden="true" size={14} />
@@ -4580,19 +5435,40 @@ function TimelineItem({
 }
 
 function AttachmentChip({
+  agentClient,
   attachment,
   isRemoving = false,
   onRemove,
   previewUrl,
 }: {
+  agentClient: AgentClient;
   attachment: ConversationAttachment;
   isRemoving?: boolean;
   onRemove?: () => void;
   previewUrl?: string;
 }): ReactElement {
+  const [storedPreviewUrl, setStoredPreviewUrl] = useState<string | null>(null);
   const sourceLabel = attachment.projectPath ?? "上传文件";
   const isDraft = onRemove !== undefined;
-  const showsImagePreview = isDraft && attachment.kind === "image" && previewUrl !== undefined;
+  useEffect(() => {
+    if (attachment.kind !== "image" || previewUrl !== undefined) return;
+    let cancelled = false;
+    void agentClient.readConversationAttachmentPreview({
+      attachmentId: attachment.id,
+      conversationId: attachment.conversationId,
+    }).then((preview) => {
+      if (!cancelled) {
+        setStoredPreviewUrl(`data:${preview.mimeType};base64,${preview.data}`);
+      }
+    }).catch(() => {
+      if (!cancelled) setStoredPreviewUrl(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentClient, attachment.conversationId, attachment.id, attachment.kind, previewUrl]);
+  const resolvedPreviewUrl = previewUrl ?? storedPreviewUrl ?? undefined;
+  const showsImagePreview = attachment.kind === "image" && resolvedPreviewUrl !== undefined;
   return (
     <span
       className={[
@@ -4600,27 +5476,32 @@ function AttachmentChip({
         isDraft ? "conversation-attachment--draft" : "",
         showsImagePreview
           ? "conversation-attachment--image-preview"
-          : isDraft
-            ? "conversation-attachment--file-card"
-            : "",
+          : "conversation-attachment--file-card",
       ].filter(Boolean).join(" ")}
       title={`${attachment.name} · ${sourceLabel} · ${formatFileSize(attachment.sizeBytes)}`}
     >
       {showsImagePreview ? (
-        <img alt="" aria-hidden="true" src={previewUrl} />
+        <button
+          aria-label={`预览图片 ${attachment.name}`}
+          className="conversation-attachment__image-button"
+          type="button"
+          onClick={() => requestMediaPreview({
+            alt: attachment.name,
+            src: resolvedPreviewUrl,
+            title: attachment.name,
+          })}
+        >
+          <img alt={attachment.name} src={resolvedPreviewUrl} />
+        </button>
       ) : (
         <>
-          {isDraft ? (
-            <span className="conversation-attachment__file-icon">
-              <FileTypeIcon path={attachment.name} size={28} />
-            </span>
-          ) : (
-            <FileTypeIcon path={attachment.name} size={15} />
-          )}
+          <span className="conversation-attachment__file-icon">
+            <FileTypeIcon path={attachment.name} size={28} />
+          </span>
           <span className="conversation-attachment__identity">
             <strong>{attachment.name}</strong>
             <small>
-              {isDraft ? attachmentTypeLabel(attachment) : formatFileSize(attachment.sizeBytes)}
+              {attachmentTypeLabel(attachment)} · {formatFileSize(attachment.sizeBytes)}
               {!isDraft && attachment.truncated ? " · 已按预览注入" : ""}
             </small>
           </span>
@@ -4629,6 +5510,7 @@ function AttachmentChip({
       {onRemove === undefined ? null : (
         <button
           aria-label={`移除附件 ${attachment.name}`}
+          className="conversation-attachment__remove-button"
           disabled={isRemoving}
           type="button"
           onClick={onRemove}
@@ -4642,6 +5524,61 @@ function AttachmentChip({
       )}
     </span>
   );
+}
+
+function AttachmentStrip({
+  children,
+  variant,
+}: {
+  children: ReactNode;
+  variant: "draft" | "message";
+}): ReactElement {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const container = containerRef.current;
+    if (container === null) return;
+    const handleWheel = (event: WheelEvent): void => {
+      handleHorizontalAttachmentWheel(container, event);
+    };
+    container.addEventListener("wheel", handleWheel, { passive: false });
+    return () => container.removeEventListener("wheel", handleWheel);
+  }, []);
+  return (
+    <div
+      ref={containerRef}
+      className={`conversation-attachments conversation-attachments--${variant}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+function handleHorizontalAttachmentWheel(
+  container: HTMLDivElement,
+  event: WheelEvent,
+): void {
+  if (container.scrollWidth <= container.clientWidth) return;
+  const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY)
+    ? event.deltaX
+    : event.deltaY;
+  if (delta === 0) return;
+  event.preventDefault();
+  container.scrollLeft += delta;
+}
+
+function mergeConversationAttachments(
+  current: readonly ConversationAttachment[],
+  additions: readonly ConversationAttachment[],
+): ConversationAttachment[] {
+  const seen = new Set(current.map((attachment) => attachment.id));
+  return [
+    ...current,
+    ...additions.filter((attachment) => {
+      if (seen.has(attachment.id)) return false;
+      seen.add(attachment.id);
+      return true;
+    }),
+  ];
 }
 
 function attachmentTypeLabel(attachment: ConversationAttachment): string {
@@ -4680,6 +5617,7 @@ type ConversationErrorScope = "model" | "operation" | "tool";
 type ConversationErrorCategory =
   | "authentication"
   | "internal"
+  | "limit"
   | "network"
   | "provider"
   | "quota"
@@ -4691,9 +5629,25 @@ type ConversationErrorCategory =
 export type ConversationErrorPresentation = {
   category: ConversationErrorCategory;
   detail: string;
+  message: string;
   summary: string;
+  technicalDetail: string | null;
   title: string;
 };
+
+function splitConversationErrorDetail(detail: string): {
+  message: string;
+  technicalDetail: string | null;
+} {
+  const marker = /(?:接口错误|网络错误详情|内部错误详情)：/u.exec(detail);
+  if (marker?.index === undefined) {
+    return { message: detail, technicalDetail: null };
+  }
+  return {
+    message: detail.slice(0, marker.index).trim(),
+    technicalDetail: detail.slice(marker.index).trim() || null,
+  };
+}
 
 export function describeConversationError(
   content: string,
@@ -4701,11 +5655,14 @@ export function describeConversationError(
 ): ConversationErrorPresentation {
   const detail = stripLegacyErrorInstanceId(content);
   const normalized = detail.toLowerCase();
+  const separated = splitConversationErrorDetail(detail);
   if (scope === "tool") {
     return {
       category: "tool",
       detail: detail || "工具调用没有返回可显示的错误详情。",
+      message: detail || "工具调用没有返回可显示的错误详情。",
       summary: summarizeErrorDetail(detail, "工具执行未完成"),
+      technicalDetail: null,
       title: "工具调用失败",
     };
   }
@@ -4713,8 +5670,22 @@ export function describeConversationError(
     return {
       category: "internal",
       detail: detail || "操作没有返回可显示的错误详情。",
+      message: detail || "操作没有返回可显示的错误详情。",
       summary: summarizeErrorDetail(detail, "操作未完成"),
+      technicalDetail: null,
       title: "操作失败",
+    };
+  }
+
+  if (/GraphRecursionError|GRAPH_RECURSION_LIMIT|Recursion limit of \d+ reached/iu.test(detail)) {
+    const message = "本轮执行达到安全上限，已停止继续运行。请缩小任务范围或补充停止条件后再试。";
+    return {
+      category: "limit",
+      detail: detail || message,
+      message,
+      summary: "执行达到安全上限",
+      technicalDetail: detail.length > 0 ? detail : null,
+      title: "执行达到安全上限",
     };
   }
 
@@ -4740,7 +5711,7 @@ export function describeConversationError(
               : /内部错误|软件内部|ipc|sqlite|database|module not found/iu.test(detail)
                 ? "internal"
                 : "unknown";
-  const labels: Record<Exclude<ConversationErrorCategory, "tool" | "unknown">, string> = {
+  const labels: Record<Exclude<ConversationErrorCategory, "limit" | "tool" | "unknown">, string> = {
     authentication: "模型认证失败",
     internal: "软件内部错误",
     network: "网络连接失败",
@@ -4749,14 +5720,22 @@ export function describeConversationError(
     response: "模型响应无法处理",
     timeout: "模型请求超时",
   };
+  const title = category === "unknown" ? "模型请求未完成" : labels[category];
+  const isInternal = category === "internal";
+  const message = isInternal
+    ? "软件内部发生错误，请稍后重试。如果持续出现，请重新启动软件。"
+    : separated.message || title;
+  const technicalDetail = isInternal
+    ? separated.technicalDetail ?? (detail.length > 0 && detail !== message ? detail : null)
+    : separated.technicalDetail;
 
   return {
     category,
     detail: detail || "模型请求没有返回可显示的错误详情。",
-    summary: category === "unknown"
-      ? summarizeErrorDetail(detail, "模型请求未完成")
-      : labels[category],
-    title: category === "unknown" ? "模型请求未完成" : labels[category],
+    message,
+    summary: category === "unknown" ? summarizeErrorDetail(detail, "模型请求未完成") : title,
+    technicalDetail,
+    title,
   };
 }
 
@@ -4785,18 +5764,25 @@ function ConversationErrorQuote({
 
   return (
     <div
-      className="agent-markdown conversation-error-quote"
+      className="conversation-error-quote"
       data-category={presentation.category}
       data-scope={scope}
       role="alert"
     >
-      <blockquote>
-        <p className="conversation-error-quote__heading">
-          <CircleAlert aria-hidden="true" size={15} />
-          <strong>{presentation.title}</strong>
-        </p>
-        <p className="conversation-error-quote__detail">{presentation.detail}</p>
-      </blockquote>
+      <CircleAlert aria-hidden="true" className="conversation-error-quote__icon" size={16} />
+      <div className="conversation-error-quote__body">
+        <strong className="conversation-error-quote__heading">{presentation.title}</strong>
+        <p className="conversation-error-quote__message">{presentation.message}</p>
+        {presentation.technicalDetail === null ? null : (
+          <details className="conversation-error-quote__technical">
+            <summary>
+              <ChevronRight aria-hidden="true" size={14} />
+              查看技术详情
+            </summary>
+            <pre>{presentation.technicalDetail}</pre>
+          </details>
+        )}
+      </div>
     </div>
   );
 }
@@ -4834,7 +5820,209 @@ function toolItemHasFailure(item: ConversationToolItem): boolean {
   return false;
 }
 
+type RunActivityDisplayItem =
+  | ConversationModelRetryItem
+  | ConversationToolItem
+  | RunActivityTextItem
+  | ToolBatchTimelineItem;
+
+function groupRunActivityItems(
+  items: RunActivityItem[],
+): RunActivityDisplayItem[] {
+  const grouped: RunActivityDisplayItem[] = [];
+  let tools: ConversationToolItem[] = [];
+
+  const flushTools = (): void => {
+    if (tools.length === 0) return;
+    const firstTool = tools[0];
+    if (firstTool === undefined) return;
+    if (tools.length === 1) {
+      grouped.push(firstTool);
+    } else {
+      grouped.push({
+        batchId: firstTool.batchId ?? firstTool.id,
+        id: `tool-batch:${firstTool.id}`,
+        kind: "tool_batch",
+        tools,
+      });
+    }
+    tools = [];
+  };
+
+  for (const item of items) {
+    if (item.kind === "tool") {
+      tools.push(item);
+      continue;
+    }
+    flushTools();
+    grouped.push(item);
+  }
+  flushTools();
+  return grouped;
+}
+
+function RunActivityTimelineItem({
+  agentClient,
+  item,
+  teamManaged,
+  activeRunId,
+  latestActiveToolId,
+  modelActivity,
+  runProgress,
+  approvalErrors,
+  approvingToolId,
+  onOpenProjectFile,
+  onChangeApproval,
+  liveToolOutputs,
+}: {
+  agentClient: AgentClient;
+  item: RunActivityTimelineItem;
+  teamManaged: boolean;
+  activeRunId: string | null;
+  latestActiveToolId: string | null;
+  modelActivity: ModelActivity | null;
+  runProgress: RunProgress | null;
+  approvalErrors: Readonly<Record<string, string>>;
+  approvingToolId: string | null;
+  onOpenProjectFile: ((path: string) => void) | undefined;
+  onChangeApproval: (
+    tool: ConversationToolItem,
+    approved: boolean,
+    scope?: ApproveToolChangeInput["scope"],
+  ) => Promise<void>;
+  liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
+}): ReactElement {
+  const isActive = activeRunId !== null && item.runIds.includes(activeRunId);
+  const [isExpanded, setIsExpanded] = useState(isActive);
+  const [now, setNow] = useState(() => Date.now());
+  const contentId = useId();
+  useEffect(() => {
+    if (runProgress === null) return;
+    const intervalId = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(intervalId);
+  }, [runProgress]);
+  const durationMs = runProgress === null
+    ? item.durationMs
+    : (item.durationMs ?? 0) + Math.max(0, now - runProgress.startedAt);
+  const label = durationMs === null
+    ? "工作过程"
+    : `已处理 ${formatRunDuration(0, durationMs)}`;
+  const displayItems = groupRunActivityItems(item.items);
+  const hasReasoning = displayItems.some((entry) => entry.kind === "activity_reasoning");
+  const reasoningStreaming = displayItems.some((entry) =>
+    entry.kind === "activity_reasoning" && entry.streaming
+  );
+  const hasFailure = item.items.some((entry) =>
+    entry.kind === "tool"
+    && (toolItemHasFailure(entry) || approvalErrors[entry.id] !== undefined)
+  );
+  const toggleLabel = isExpanded ? "收起工作过程" : "展开工作过程";
+  const activityContent = displayItems.map((entry) => {
+    if (entry.kind === "model_retry") {
+      return <ModelRetryTimelineItem item={entry} key={entry.id} />;
+    }
+    if (entry.kind === "activity_reasoning") {
+      return (
+        <div
+          className="min-w-0 py-[5px] text-[length:var(--app-font-size-body)] text-[var(--app-foreground)]"
+          key={entry.id}
+        >
+          <AgentMarkdown content={entry.content} />
+        </div>
+      );
+    }
+    if (entry.kind === "activity_progress") {
+      return (
+        <div
+          className="py-[5px] text-[length:var(--app-font-size-body)] text-[var(--app-foreground)]"
+          key={entry.id}
+        >
+          <AgentMarkdown content={entry.content} />
+        </div>
+      );
+    }
+    if (entry.kind === "tool_batch") {
+      return (
+        <ToolBatchTimelineItem
+          agentClient={agentClient}
+          activeRunId={activeRunId}
+          approvalErrors={approvalErrors}
+          approvingToolId={approvingToolId}
+          item={entry}
+          key={`${entry.id}:${latestActiveToolId ?? "idle"}`}
+          latestActiveToolId={latestActiveToolId}
+          liveToolOutputs={liveToolOutputs}
+          modelActivity={null}
+          onChangeApproval={onChangeApproval}
+          onOpenProjectFile={onOpenProjectFile}
+          teamManaged={teamManaged}
+        />
+      );
+    }
+    return (
+      <ToolTimelineItem
+        agentClient={agentClient}
+        approvalActionable={entry.runId === activeRunId}
+        approvalError={approvalErrors[entry.id] ?? null}
+        isApproving={approvingToolId === entry.id}
+        item={entry}
+        key={`${entry.id}:${String(toolItemHasFailure(entry))}:${latestActiveToolId ?? "idle"}`}
+        latestActiveToolId={latestActiveToolId}
+        liveOutput={liveToolOutputs[entry.id]}
+        onChangeApproval={onChangeApproval}
+        onOpenProjectFile={onOpenProjectFile}
+        teamManaged={teamManaged}
+        variant="activity"
+      />
+    );
+  });
+  const modelActivityContent = modelActivity?.runId !== null
+    && modelActivity?.runId !== undefined
+    && item.runIds.includes(modelActivity.runId)
+    ? <ModelActivityIndicator activity={modelActivity} />
+    : null;
+
+  return (
+    <section
+      className="conversation-run-activity flex w-full min-w-0 flex-col"
+      data-status={hasFailure ? "failed" : isActive ? "running" : "completed"}
+    >
+      <button
+        aria-controls={contentId}
+        aria-expanded={isExpanded}
+        className="flex w-full min-w-0 items-center gap-[5px] border-0 border-b border-solid border-[var(--app-border)] bg-transparent px-0 py-[6px] text-left text-[length:var(--app-font-size-body)] font-normal text-[var(--app-muted-foreground)] hover:text-[var(--app-foreground)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-2"
+        title={toggleLabel}
+        type="button"
+        onClick={() => setIsExpanded((current) => !current)}
+      >
+        <span>{label}</span>
+        <ChevronRight
+          aria-hidden="true"
+          className={`shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+          size={15}
+        />
+      </button>
+      {isExpanded ? (
+        <div className="flex min-w-0 flex-col gap-[5px] pt-[5px]" id={contentId}>
+          {hasReasoning ? (
+            <ReasoningDisclosure streaming={reasoningStreaming}>
+              {activityContent}
+              {modelActivityContent}
+            </ReasoningDisclosure>
+          ) : (
+            <>
+              {activityContent}
+              {modelActivityContent}
+            </>
+          )}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function ToolBatchTimelineItem({
+  agentClient,
   item,
   teamManaged,
   activeRunId,
@@ -4846,6 +6034,7 @@ function ToolBatchTimelineItem({
   onChangeApproval,
   liveToolOutputs,
 }: {
+  agentClient: AgentClient;
   item: Extract<TimelineDisplayItem, { kind: "tool_batch" }>;
   teamManaged: boolean;
   activeRunId: string | null;
@@ -4869,7 +6058,7 @@ function ToolBatchTimelineItem({
   );
   const label = modelActivity === null
     ? toolBatchLabel(item.tools, teamManaged)
-    : modelActivityLabel(modelActivity) ?? toolBatchLabel(item.tools, teamManaged);
+    : modelActivityLabel(modelActivity);
   const toggleLabel = isExpanded ? "收起本轮工具调用" : "展开本轮工具调用";
 
   return (
@@ -4904,7 +6093,8 @@ function ToolBatchTimelineItem({
         <div className="tool-activity-batch__items">
           {item.tools.map((tool) => (
             <ToolTimelineItem
-              key={`${tool.id}:${approvalErrors[tool.id] === undefined ? String(toolItemHasFailure(tool)) : "approval_failed"}`}
+              agentClient={agentClient}
+              key={`${tool.id}:${approvalErrors[tool.id] === undefined ? String(toolItemHasFailure(tool)) : "approval_failed"}:${latestActiveToolId ?? "idle"}`}
               item={tool}
               teamManaged={teamManaged}
               latestActiveToolId={latestActiveToolId}
@@ -4923,7 +6113,192 @@ function ToolBatchTimelineItem({
   );
 }
 
+export function contextCompactionLabel(item: ConversationToolItem): string {
+  if (item.status === "running") return "正在压缩上下文";
+  if (item.status === "failed") return "上下文压缩失败";
+  if (item.status === "cancelled") {
+    try {
+      const argumentsValue: unknown = JSON.parse(item.arguments);
+      if (
+        typeof argumentsValue === "object"
+        && argumentsValue !== null
+        && "trigger" in argumentsValue
+        && argumentsValue.trigger === "manual"
+      ) return "上下文压缩已暂停";
+    } catch {
+      // Older or partially written rows keep the generic cancellation label.
+    }
+    return "上下文压缩已取消";
+  }
+  return "已压缩";
+}
+
+export function isRunningContextCompaction(item: ConversationToolItem): boolean {
+  return item.name === "compact_context" && item.status === "running";
+}
+
+export function forceableContextCompactionId(
+  timeline: readonly ConversationTimelineItem[],
+  activeRunId: string | null,
+): string | null {
+  if (activeRunId !== null) return null;
+  const latestUserIndex = timeline.findLastIndex(
+    (item) => item.kind === "message" && item.role === "user",
+  );
+  const latestCompaction = timeline.slice(latestUserIndex + 1).findLast(
+    (item): item is ConversationToolItem => (
+      item.kind === "tool" && item.name === "compact_context"
+    ),
+  );
+  if (latestCompaction?.status === "failed") return latestCompaction.id;
+  if (
+    latestCompaction?.status === "cancelled"
+    && contextCompactionLabel(latestCompaction) === "上下文压缩已暂停"
+  ) return latestCompaction.id;
+  return null;
+}
+
+export function contextCompactionDurationMs(
+  item: ConversationToolItem,
+  now = Date.now(),
+): number | null {
+  if (item.status === "running") {
+    const startedAt = Date.parse(item.createdAt);
+    return Number.isFinite(startedAt) ? Math.max(0, now - startedAt) : null;
+  }
+  if (item.result === null) return null;
+  try {
+    const result: unknown = JSON.parse(item.result);
+    if (
+      typeof result === "object"
+      && result !== null
+      && "durationMs" in result
+      && typeof result.durationMs === "number"
+      && Number.isFinite(result.durationMs)
+    ) {
+      return Math.max(0, result.durationMs);
+    }
+  } catch {
+    // Older or partially written rows have no persisted duration.
+  }
+  return null;
+}
+
+export function contextCompactionTooltip(
+  item: ConversationToolItem,
+  now = Date.now(),
+): string {
+  const durationMs = contextCompactionDurationMs(item, now);
+  const duration = durationMs === null ? null : formatRunDuration(0, durationMs);
+  let compressedMessageCount: number | null = null;
+  let errorMessage: string | null = null;
+  if (item.result !== null) {
+    try {
+      const result: unknown = JSON.parse(item.result);
+      if (typeof result === "object" && result !== null) {
+        if (
+          "compressedMessageCount" in result
+          && typeof result.compressedMessageCount === "number"
+          && Number.isFinite(result.compressedMessageCount)
+        ) {
+          compressedMessageCount = Math.max(0, Math.floor(result.compressedMessageCount));
+        }
+        if (
+          "error" in result
+          && typeof result.error === "object"
+          && result.error !== null
+          && "message" in result.error
+          && typeof result.error.message === "string"
+          && result.error.message.trim().length > 0
+        ) {
+          errorMessage = result.error.message.trim();
+        }
+      }
+    } catch {
+      // Older or partially written rows fall back to status-only details.
+    }
+  }
+
+  let detail: string;
+  if (item.status === "running") {
+    detail = "正在压缩上下文";
+  } else if (item.status === "failed") {
+    detail = errorMessage ?? "上下文压缩未完成";
+  } else if (item.status === "cancelled") {
+    detail = contextCompactionLabel(item) === "上下文压缩已暂停"
+      ? "压缩已暂停，可以继续压缩"
+      : "上下文压缩已取消";
+  } else if (compressedMessageCount === 0) {
+    detail = "没有需要压缩的历史消息";
+  } else if (compressedMessageCount !== null) {
+    detail = `已处理 ${compressedMessageCount} 条历史消息`;
+  } else {
+    detail = "上下文压缩完成";
+  }
+  if (duration === null) return detail;
+  return `${detail} · ${item.status === "running" ? "已用时" : "用时"} ${duration}`;
+}
+
+function ContextCompactionTimelineItem({
+  canForce,
+  item,
+  onForce,
+}: {
+  canForce: boolean;
+  item: ConversationToolItem;
+  onForce: () => Promise<void>;
+}): ReactElement {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (item.status !== "running") return undefined;
+    const intervalId = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(intervalId);
+  }, [item.status]);
+  const label = contextCompactionLabel(item);
+  const durationMs = contextCompactionDurationMs(item, now);
+  const duration = durationMs === null ? null : formatRunDuration(0, durationMs);
+  const tooltip = contextCompactionTooltip(item, now);
+  const accessibleLabel = duration === null ? label : `${label} ${duration}`;
+  const actionLabel = item.status === "cancelled"
+    ? "继续压缩"
+    : "强制压缩：缩小历史范围后再次尝试";
+  return (
+    <div
+      aria-label={accessibleLabel}
+      aria-live={item.status === "running" ? "polite" : undefined}
+      className="context-compaction-divider"
+      data-status={item.status}
+      role={item.status === "running" ? "status" : "separator"}
+    >
+      <span aria-hidden="true" className="context-compaction-divider__line" />
+      <span className="context-compaction-divider__label">
+        <ArchiveRestore aria-hidden="true" size={15} />
+        <TooltipAnchor content={tooltip}>
+          <span className="context-compaction-divider__text" tabIndex={0}>{label}</span>
+        </TooltipAnchor>
+        {duration === null ? null : (
+          <span className="shrink-0 tabular-nums">{duration}</span>
+        )}
+        {canForce ? (
+          <TooltipAnchor content={actionLabel}>
+            <button
+              aria-label={actionLabel}
+              className="context-compaction-divider__force"
+              type="button"
+              onClick={() => void onForce()}
+            >
+              <RefreshCw aria-hidden="true" size={13} />
+            </button>
+          </TooltipAnchor>
+        ) : null}
+      </span>
+      <span aria-hidden="true" className="context-compaction-divider__line" />
+    </div>
+  );
+}
+
 function ToolTimelineItem({
+  agentClient,
   item,
   teamManaged,
   latestActiveToolId,
@@ -4935,6 +6310,7 @@ function ToolTimelineItem({
   onChangeApproval,
   liveOutput,
 }: {
+  agentClient: AgentClient;
   item: ConversationToolItem;
   teamManaged: boolean;
   latestActiveToolId: string | null;
@@ -4953,6 +6329,7 @@ function ToolTimelineItem({
   const isCommand = item.name === "run_command";
   const isExternalRead = item.name === "read_external_file";
   const isFileDeletion = item.name === "delete_file";
+  const terminalApprovalLabel = workspaceTerminalApprovalLabel(item);
   const isExpiredApproval = item.status === "awaiting_approval" && !approvalActionable;
   const effectiveStatus = isExpiredApproval
     ? "cancelled"
@@ -4980,7 +6357,7 @@ function ToolTimelineItem({
             onToggle={() => setIsExpanded((current) => !current)}
           />
           {effectiveStatus === "running" ? <ToolExecutionTimer /> : null}
-          {effectiveStatus !== "completed" ? (
+          {effectiveStatus !== "completed" && effectiveStatus !== "running" ? (
             <span className="tool-timeline-item__status-label">
               {toolStatusLabel(effectiveStatus)}
             </span>
@@ -5008,6 +6385,7 @@ function ToolTimelineItem({
       </header>
       {isExpanded ? (
         <ToolDetail
+          agentClient={agentClient}
           item={item}
           teamManaged={teamManaged}
           onOpenProjectFile={onOpenProjectFile}
@@ -5022,13 +6400,13 @@ function ToolTimelineItem({
       ) : item.status === "awaiting_approval" ? (
         <footer className="tool-timeline-item__approval">
           <span>
-            {isExternalRead
+            {terminalApprovalLabel ?? (isExternalRead
               ? "读取工作区外文件前需要确认"
               : isCommand
               ? "等待确认后执行命令"
               : isFileDeletion
                 ? "等待确认后删除文件"
-                : "等待确认后写入文件"}
+                : "等待确认后写入文件")}
           </span>
           <span className="tool-timeline-item__approval-actions">
             <button
@@ -5045,30 +6423,17 @@ function ToolTimelineItem({
               onClick={() => void onChangeApproval(item, true)}
             >
               <Check aria-hidden="true" size={14} />
-              {isApproving
-                ? "提交中"
-                : "本次允许"}
+              {isApproving ? "提交中" : "允许一次"}
             </button>
             {isExternalRead ? null : (
               <button
                 disabled={isApproving}
-                title="当前对话后续同类操作自动允许"
+                title="当前对话后续完全相同的命令或同一工具与路径自动允许"
                 type="button"
                 onClick={() => void onChangeApproval(item, true, "session")}
               >
                 <Check aria-hidden="true" size={14} />
-                本会话允许
-              </button>
-            )}
-            {isExternalRead ? null : (
-              <button
-                disabled={isApproving}
-                title="保存到当前 Agent 的权限规则"
-                type="button"
-                onClick={() => void onChangeApproval(item, true, "agent")}
-              >
-                <ShieldCheck aria-hidden="true" size={14} />
-                Agent 一直允许
+                本对话允许相同操作
               </button>
             )}
           </span>
@@ -5111,6 +6476,11 @@ function ToolExecutionTimer(): ReactElement {
 function ToolTypeIcon({ name }: { name: string }): ReactElement {
   switch (name) {
     case "run_command":
+    case "terminal_control":
+    case "create_terminal":
+    case "open_terminal":
+    case "execute_terminal_command":
+    case "read_terminal_output":
       return <Terminal aria-hidden="true" size={15} />;
     case "wait_for_commands":
     case "wait_for_project_operation":
@@ -5130,8 +6500,12 @@ function ToolTypeIcon({ name }: { name: string }): ReactElement {
       return <Search aria-hidden="true" size={15} />;
     case "find_files":
       return <FileSearch aria-hidden="true" size={15} />;
+    case "browser_control":
+      return <Globe2 aria-hidden="true" size={15} />;
     case "read_attachment":
       return <Paperclip aria-hidden="true" size={15} />;
+    case "view_attachments":
+      return <Images aria-hidden="true" size={15} />;
     case "write_file":
     case "replace_in_file":
       return <Pencil aria-hidden="true" size={15} />;
@@ -5177,6 +6551,25 @@ function toolStatusLabel(status: ConversationToolItem["status"]): string {
   }
 }
 
+function workspaceTerminalApprovalLabel(item: ConversationToolItem): string | null {
+  if (item.name === "create_terminal" || item.name === "open_terminal") {
+    return "等待确认后打开侧边终端";
+  }
+  if (item.name === "execute_terminal_command") return "等待确认后向侧边终端发送命令";
+  if (item.name !== "terminal_control") return null;
+  const argumentsValue = parseToolPayload(item.arguments);
+  switch (argumentsValue?.action) {
+    case "create":
+      return "等待确认后打开侧边终端";
+    case "write":
+      return "等待确认后向侧边终端发送命令";
+    case "close":
+      return "等待确认后关闭侧边终端";
+    default:
+      return "等待确认后操作侧边终端";
+  }
+}
+
 function toolActivityLabel(item: ConversationToolItem, teamManaged = false): string {
   const argumentsValue = parseToolPayload(item.arguments);
   const path = typeof argumentsValue?.path === "string" ? argumentsValue.path : null;
@@ -5186,12 +6579,52 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
     case "run_command": {
       const command = typeof argumentsValue?.command === "string" ? argumentsValue.command : null;
       const commandResult = item.result === null ? null : parseCommandResult(item.result);
+      const mode = argumentsValue?.mode === "service"
+        || commandResult?.mode === "service"
+        || (argumentsValue?.mode === undefined && typeof argumentsValue?.serviceName === "string")
+        ? "service"
+        : "batch";
+      const serviceName = typeof argumentsValue?.serviceName === "string"
+        ? argumentsValue.serviceName
+        : command;
+      if (mode === "service") {
+        if (commandResult?.status === "running") {
+          return serviceName === null ? "服务已启动" : `已启动 ${serviceName}`;
+        }
+        if (commandResult?.status === "completed") {
+          return serviceName === null ? "服务已结束" : `${serviceName} 已结束`;
+        }
+        return serviceName === null ? "启动后台服务" : `启动 ${serviceName}`;
+      }
       if (commandResult?.status === "running") {
         return command === null ? "命令正在后台运行" : `后台运行 ${command}`;
       }
       return command === null
         ? (completed ? "已运行命令" : "运行命令")
         : `${completed ? "已运行" : "运行"} ${command}`;
+    }
+    case "terminal_control": {
+      const action = typeof argumentsValue?.action === "string" ? argumentsValue.action : null;
+      switch (action) {
+        case "create":
+          return completed ? "侧边终端已打开" : "打开侧边终端";
+        case "list":
+          return completed ? "已查看侧边终端" : "查看侧边终端";
+        case "write": {
+          const command = typeof argumentsValue?.command === "string"
+            ? argumentsValue.command
+            : null;
+          return command === null
+            ? (completed ? "命令已发送到侧边终端" : "向侧边终端发送命令")
+            : `${completed ? "已发送" : "发送"} ${command}`;
+        }
+        case "read":
+          return completed ? "已读取侧边终端输出" : "读取侧边终端输出";
+        case "close":
+          return completed ? "侧边终端已关闭" : "关闭侧边终端";
+        default:
+          return completed ? "侧边终端操作已完成" : "操作侧边终端";
+      }
     }
     case "wait_for_commands": {
       const commandIds = Array.isArray(argumentsValue?.commandIds) ? argumentsValue.commandIds : [];
@@ -5215,6 +6648,12 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
         : `${completed ? "已读取" : "读取"} ${path}`;
     case "read_attachment":
       return completed ? "已读取附件" : "读取附件";
+    case "view_attachments": {
+      const attachmentIds = Array.isArray(argumentsValue?.attachment_ids)
+        ? argumentsValue.attachment_ids
+        : [];
+      return `${completed ? "已查看" : "查看"} ${attachmentIds.length} 个附件`;
+    }
     case "list_directory":
       return path === null || path.length === 0 ? "查看工作区目录" : `查看 ${path}`;
     case "search_text": {
@@ -5228,6 +6667,33 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
     case "find_files": {
       const pattern = typeof argumentsValue?.pattern === "string" ? argumentsValue.pattern : null;
       return pattern === null ? "查找文件" : `查找 ${pattern}`;
+    }
+    case "browser_control": {
+      const action = typeof argumentsValue?.action === "string" ? argumentsValue.action : null;
+      switch (action) {
+        case "open":
+          return completed ? "网页已打开" : "打开网页";
+        case "observe":
+          return completed ? "已查看页面" : "查看页面";
+        case "navigate":
+          return completed ? "已跳转网页" : "跳转网页";
+        case "click":
+          return completed ? "已点击页面元素" : "点击页面元素";
+        case "fill":
+          return completed ? "已填写页面" : "填写页面";
+        case "select":
+          return completed ? "已选择页面选项" : "选择页面选项";
+        case "key":
+          return completed ? "已向页面发送按键" : "向页面发送按键";
+        case "scroll":
+          return completed ? "已滚动页面" : "滚动页面";
+        case "wait":
+          return completed ? "页面等待结束" : "等待页面";
+        case "close":
+          return completed ? "网页已关闭" : "关闭网页";
+        default:
+          return completed ? "浏览器操作已完成" : "操作浏览器";
+      }
     }
     case "write_file": {
       const overwrites = argumentsValue?.overwrite === true;
@@ -5309,7 +6775,7 @@ function ToolActivityLabel({
         type="button"
         onClick={onToggle}
       >
-        {label}
+        <span className="tool-timeline-item__label-text">{label}</span>
       </button>
     );
   }
@@ -5324,12 +6790,14 @@ function ToolActivityLabel({
         type="button"
         onClick={onToggle}
       >
-        {summary.action}
+        <span className="tool-timeline-item__label-text">{summary.action}</span>
       </button>
       {onOpenProjectFile === undefined ? (
         <span className="inline-flex min-w-0 items-center gap-1 overflow-hidden" title={summary.path}>
           <FileTypeIcon className="shrink-0" path={summary.path} size={14} />
-          <span className="truncate">{fileNameFromPath(summary.path)}</span>
+          <span className="tool-timeline-item__label-text truncate">
+            {fileNameFromPath(summary.path)}
+          </span>
         </span>
       ) : (
         <button
@@ -5340,7 +6808,7 @@ function ToolActivityLabel({
           onClick={() => onOpenProjectFile(summary.path)}
         >
           <FileTypeIcon className="shrink-0" path={summary.path} size={14} />
-          <span className="min-w-0 truncate">
+          <span className="tool-timeline-item__label-text min-w-0 truncate">
             {fileNameFromPath(summary.path)}
           </span>
         </button>
@@ -5370,6 +6838,18 @@ const TOOL_BATCH_CATEGORIES: readonly ToolBatchCategory[] = [
     priority: 100,
   },
   {
+    iconToolName: "terminal_control",
+    label: (count) => `操作 ${count} 次侧边终端`,
+    names: [
+      "terminal_control",
+      "create_terminal",
+      "open_terminal",
+      "execute_terminal_command",
+      "read_terminal_output",
+    ],
+    priority: 95,
+  },
+  {
     iconToolName: "run_command",
     label: (count) => `运行 ${count} 条命令`,
     names: ["run_command", "wait_for_commands", "stop_command"],
@@ -5378,7 +6858,7 @@ const TOOL_BATCH_CATEGORIES: readonly ToolBatchCategory[] = [
   {
     iconToolName: "read_file",
     label: (count) => `读取 ${count} 个文件`,
-    names: ["read_file", "read_external_file", "read_attachment"],
+    names: ["read_file", "read_external_file", "read_attachment", "view_attachments"],
     priority: 80,
   },
   {
@@ -5392,6 +6872,12 @@ const TOOL_BATCH_CATEGORIES: readonly ToolBatchCategory[] = [
     label: (count) => `协调 ${count} 项项目操作`,
     names: ["list_project_operations", "wait_for_project_operation"],
     priority: 60,
+  },
+  {
+    iconToolName: "browser_control",
+    label: (count) => `操作 ${count} 次浏览器`,
+    names: ["browser_control"],
+    priority: 55,
   },
   {
     iconToolName: "create_task_list",
@@ -5461,11 +6947,13 @@ export function toolBatchExecutionMode(
 }
 
 function ToolDetail({
+  agentClient,
   item,
   teamManaged,
   liveOutput,
   onOpenProjectFile,
 }: {
+  agentClient: AgentClient;
   item: ConversationToolItem;
   teamManaged: boolean;
   liveOutput?: LiveToolOutput;
@@ -5520,6 +7008,16 @@ function ToolDetail({
 
   if (item.name === "read_attachment") {
     return <AttachmentReadResult payload={item.result} status={item.status} />;
+  }
+
+  if (item.name === "view_attachments") {
+    return (
+      <AttachmentViewResult
+        agentClient={agentClient}
+        payload={item.result}
+        status={item.status}
+      />
+    );
   }
 
   if (item.name === "search_text") {
@@ -5816,6 +7314,33 @@ function AttachmentReadResult({
       {result.truncated ? (
         <p className="tool-directory-listing__notice">附件后面仍有内容，可继续按偏移量读取。</p>
       ) : null}
+    </StructuredToolResult>
+  );
+}
+
+function AttachmentViewResult({
+  agentClient,
+  payload,
+  status,
+}: {
+  agentClient: AgentClient;
+  payload: string | null;
+  status: ConversationToolItem["status"];
+}): ReactElement {
+  const attachments = payload === null ? null : parseAttachmentViewResult(payload);
+  if (attachments === null) return <ToolResultNotice result={payload} status={status} />;
+
+  return (
+    <StructuredToolResult summary={`查看 ${attachments.length} 个附件`}>
+      <AttachmentStrip variant="message">
+        {attachments.map((attachment) => (
+          <AttachmentChip
+            agentClient={agentClient}
+            attachment={attachment}
+            key={attachment.id}
+          />
+        ))}
+      </AttachmentStrip>
     </StructuredToolResult>
   );
 }
@@ -6839,11 +8364,18 @@ function parseAttachmentReadResult(payload: string): {
     : null;
 }
 
+export function parseAttachmentViewResult(payload: string): ConversationAttachment[] | null {
+  const result = parseToolValue(payload);
+  const parsed = conversationAttachmentListSchema.safeParse(result?.attachments);
+  return parsed.success ? parsed.data : null;
+}
+
 type CommandResultPayload = {
   command: string | null;
   commandId: string | null;
   completedAt: string | null;
   exitCode: number | null;
+  mode: "batch" | "service" | null;
   stderr: string;
   startedAt: string | null;
   status: "running" | "completed" | "failed" | "cancelled" | null;
@@ -6878,6 +8410,7 @@ function parseCommandResultValue(result: Record<string, unknown> | null): Comman
       commandId: typeof result.commandId === "string" ? result.commandId : null,
       completedAt: typeof result.completedAt === "string" ? result.completedAt : null,
       exitCode: result.exitCode,
+      mode: result.mode === "batch" || result.mode === "service" ? result.mode : null,
       stderr: result.stderr,
       startedAt: typeof result.startedAt === "string" ? result.startedAt : null,
       status: isCommandSessionStatus(result.status) ? result.status : null,
@@ -6964,7 +8497,9 @@ function commandTerminalOutput(
 
 function commandTerminalOutputValue(result: CommandResultPayload): string {
   const lines = [result.stdout, result.stderr].filter((value) => value.length > 0);
-  if (result.status === "running" && lines.length === 0) lines.push("[命令正在后台运行]");
+  if (result.status === "running" && lines.length === 0) {
+    lines.push(result.mode === "service" ? "[服务正在后台运行]" : "[命令正在后台运行]");
+  }
   if (result.status === "cancelled") lines.push("[命令已停止]");
   if (result.timedOut) lines.push("[命令执行超时]");
   if (result.truncated) lines.push("[输出已截断]");

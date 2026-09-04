@@ -13,8 +13,10 @@ import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 
 import {
+  conversationAttachmentPreviewSchema,
   estimateContextTokens,
-  type ConversationAttachment
+  type ConversationAttachment,
+  type ConversationAttachmentPreview,
 } from "@agent/protocol";
 import { fileTypeFromBuffer, fileTypeFromFile } from "file-type";
 import mammoth from "mammoth";
@@ -134,6 +136,28 @@ export class ConversationAttachmentStore {
     private readonly rootPath: string
   ) {}
 
+  public async migrateLegacyManagedRoots(legacyRoots: readonly string[]): Promise<void> {
+    const roots = [...new Set(legacyRoots.map((root) => path.resolve(root)))]
+      .filter((root) => root !== path.resolve(this.rootPath));
+    if (roots.length === 0) return;
+
+    for (const attachment of this.database.listConversationAttachmentStoragePaths()) {
+      const storedPath = await this.migrateLegacyManagedFile(attachment.storedPath, roots);
+      const extractedTextPath = attachment.extractedTextPath === null
+        ? null
+        : await this.migrateLegacyManagedFile(attachment.extractedTextPath, roots);
+      if (
+        storedPath === attachment.storedPath
+        && extractedTextPath === attachment.extractedTextPath
+      ) continue;
+      this.database.updateConversationAttachmentStoragePaths({
+        extractedTextPath,
+        id: attachment.id,
+        storedPath,
+      });
+    }
+  }
+
   public async importFiles(
     conversationId: string,
     sourcePaths: readonly string[]
@@ -200,6 +224,20 @@ export class ConversationAttachmentStore {
     return this.database.listDraftConversationAttachments(conversationId);
   }
 
+  public readImagePreview(
+    conversationId: string,
+    attachmentId: string,
+  ): ConversationAttachmentPreview {
+    const attachment = this.database.getConversationAttachment(conversationId, attachmentId);
+    if (attachment.kind !== "image") {
+      throw new Error("Only image attachments can be previewed.");
+    }
+    return conversationAttachmentPreviewSchema.parse({
+      data: readFileSync(attachment.storedPath).toString("base64"),
+      mimeType: attachment.mimeType,
+    });
+  }
+
   /**
    * Derives managed paths from an immutable Attachment reference during
    * ThreadLog recovery. Paths stay out of JSONL; the store layout is the
@@ -233,6 +271,51 @@ export class ConversationAttachmentStore {
         : [attachment.extractedTextPath])
     ]);
     await Promise.all([...filePaths].map((filePath) => this.removeFile(filePath)));
+  }
+
+  public async cleanupCancelledPendingMessageAttachments(
+    pendingMessageId?: string,
+  ): Promise<void> {
+    const cleanups = this.database.listCancelledPendingMessageAttachmentCleanups(
+      pendingMessageId,
+    );
+    for (const cleanup of cleanups) {
+      const attachmentIds = cleanup.attachments.map((attachment) => attachment.id);
+      const filePaths = new Set(cleanup.attachments.flatMap((attachment) => [
+        attachment.storedPath,
+        ...(attachment.extractedTextPath === null ? [] : [attachment.extractedTextPath]),
+      ]));
+      for (const filePath of filePaths) {
+        if (!this.isManagedPath(filePath)) {
+          throw new Error("Pending attachment cleanup cannot delete a file outside managed storage.");
+        }
+        if (this.database.isConversationAttachmentFileReferencedOutside(filePath, attachmentIds)) {
+          continue;
+        }
+        await this.removeFile(filePath);
+      }
+      this.database.completeCancelledPendingMessageAttachmentCleanup(
+        cleanup.pendingMessageId,
+        attachmentIds,
+      );
+      await rmdir(path.join(this.rootPath, cleanup.conversationId)).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY" && error.code !== "EEXIST") {
+            throw error;
+          }
+        },
+      );
+    }
+  }
+
+  public async resumeCancelledPendingMessageAttachmentCleanup(): Promise<void> {
+    for (const cleanup of this.database.listCancelledPendingMessageAttachmentCleanups()) {
+      try {
+        await this.cleanupCancelledPendingMessageAttachments(cleanup.pendingMessageId);
+      } catch (error) {
+        console.error("Cancelled pending-message attachment cleanup remains retryable.", error);
+      }
+    }
   }
 
   public async deleteUnreferencedConversationFiles(
@@ -275,11 +358,39 @@ export class ConversationAttachmentStore {
   public toModelAttachments(
     conversationId: string,
     attachmentIds: readonly string[],
-    includeImageData: boolean
+    includeImageData: boolean,
+    describeImages = false,
   ): ModelMessageAttachment[] {
     return this.database
       .listConversationAttachmentsByIds(conversationId, attachmentIds)
-      .map((attachment) => this.toModelAttachment(attachment, includeImageData));
+      .map((attachment) => this.toModelAttachment(
+        attachment,
+        includeImageData,
+        describeImages,
+      ));
+  }
+
+  public viewAttachments(
+    conversationId: string,
+    attachmentIds: readonly string[],
+  ): {
+    attachments: ConversationAttachment[];
+    modelAttachments: ModelMessageAttachment[];
+  } {
+    const attachments = this.database.listConversationAttachmentsByIds(
+      conversationId,
+      attachmentIds,
+    );
+    return {
+      attachments: this.database.listThreadLogAttachmentReferences(
+        conversationId,
+        attachmentIds,
+      ),
+      modelAttachments: attachments.flatMap((attachment) => {
+        const modelAttachment = this.toModelAttachment(attachment, true, false);
+        return modelAttachment.kind === "image" ? [modelAttachment] : [];
+      }),
+    };
   }
 
   public readText(
@@ -467,9 +578,29 @@ export class ConversationAttachmentStore {
 
   private toModelAttachment(
     attachment: StoredConversationAttachment,
-    includeImageData: boolean
+    includeImageData: boolean,
+    describeImage: boolean,
   ): ModelMessageAttachment {
     if (attachment.kind === "image") {
+      if (describeImage) {
+        const content = [
+          "[历史图片未自动重复发送]",
+          modelImageAttachmentCaption(attachment),
+          "需要重新查看图片内容时调用 view_attachments。",
+        ].join("\n");
+        return {
+          content,
+          contextTokens: estimateContextTokens(content),
+          id: attachment.id,
+          kind: "text",
+          mimeType: attachment.mimeType,
+          name: attachment.name,
+          projectPath: attachment.projectPath,
+          readState: "metadata_only",
+          source: attachment.source,
+          truncated: false,
+        };
+      }
       return {
         contextTokens: attachment.contextTokens,
         data: includeImageData
@@ -550,5 +681,29 @@ export class ConversationAttachmentStore {
     await unlink(filePath).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;
     });
+  }
+
+  private async migrateLegacyManagedFile(
+    filePath: string,
+    legacyRoots: readonly string[],
+  ): Promise<string> {
+    const resolvedFilePath = path.resolve(filePath);
+    for (const legacyRoot of legacyRoots) {
+      const relativePath = path.relative(legacyRoot, resolvedFilePath);
+      if (
+        relativePath.length === 0
+        || relativePath === ".."
+        || relativePath.startsWith(`..${path.sep}`)
+        || path.isAbsolute(relativePath)
+      ) continue;
+      const migratedPath = path.join(this.rootPath, relativePath);
+      if (!existsSync(migratedPath)) {
+        if (!existsSync(resolvedFilePath)) return filePath;
+        await mkdir(path.dirname(migratedPath), { recursive: true });
+        await copyFile(resolvedFilePath, migratedPath);
+      }
+      return migratedPath;
+    }
+    return filePath;
   }
 }

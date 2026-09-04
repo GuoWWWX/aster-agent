@@ -23,6 +23,20 @@ async function createStores() {
 }
 
 describe("SkillDocumentStore", () => {
+  it("installs a bundled Skill once and preserves later user edits", async () => {
+    const { documents, integrations } = await createStores();
+    const bundled = "---\nname: browser-use\ndescription: Operate a browser.\n---\n\n# Browser\n";
+    const installed = documents.ensureManagedDocument(bundled);
+    await writeFile(installed.entryPath, bundled.replace("# Browser", "# Customized"), "utf8");
+
+    const existing = documents.ensureManagedDocument(bundled);
+
+    expect(existing.content).toContain("# Customized");
+    expect(integrations.getConfiguration().skills).toEqual([
+      expect.objectContaining({ id: "browser-use", name: "browser-use" }),
+    ]);
+  });
+
   it("creates a managed SKILL.md template", async () => {
     const { documents } = await createStores();
     const document = documents.createManagedDocument();

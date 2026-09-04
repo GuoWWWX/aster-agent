@@ -24,6 +24,10 @@ const TOOL_OUTPUT_TAIL_CHARACTERS = 4_000;
 const SUMMARY_INPUT_BUDGET_RATIO = 0.5;
 const MAX_RELEVANT_HISTORY_MESSAGES = 12;
 const MAX_RELEVANT_HISTORY_CHARACTERS = 12_000;
+const COMPACTION_TOOL_OUTPUT_CHARACTERS = 2_000;
+const COMPACTION_TOOL_OUTPUT_HEAD_CHARACTERS = 1_200;
+const COMPACTION_TOOL_OUTPUT_IMPORTANT_CHARACTERS = 400;
+const COMPACTION_TOOL_OUTPUT_TAIL_CHARACTERS = 400;
 
 const summaryListSchema = z.array(z.string().trim().min(1).max(4_000)).max(100);
 
@@ -64,6 +68,8 @@ type BuildManagedContextInput = {
   estimatedSkillCatalogTokens?: number;
   estimatedSystemTokens: number;
   estimatedToolDefinitionTokens: number;
+  /** Explicit user request to compact eligible old turns before the normal threshold. */
+  forceCompaction?: boolean;
   outputReserveTokens: number;
   /** Capacity reserved for Skill正文 that may be injected after tool loading. */
   reservedSkillTokens?: number;
@@ -170,6 +176,26 @@ function pruneToolOutput(message: ManagedContextSourceMessage): ManagedContextSo
   };
 }
 
+function compactionToolOutput(content: string): string {
+  if (content.length <= COMPACTION_TOOL_OUTPUT_CHARACTERS) return content;
+  const head = content.slice(0, COMPACTION_TOOL_OUTPUT_HEAD_CHARACTERS);
+  const tail = content.slice(-COMPACTION_TOOL_OUTPUT_TAIL_CHARACTERS);
+  const important = content
+    .split(/\r?\n/u)
+    .filter((line) =>
+      /error|failed|failure|exception|warning|stderr|exit\s*code|错误|失败|异常|警告/iu.test(line)
+    )
+    .join("\n")
+    .slice(0, COMPACTION_TOOL_OUTPUT_IMPORTANT_CHARACTERS);
+  return [
+    head,
+    `[Tool output shortened for context compaction: ${content.length - head.length - tail.length} characters omitted. The complete result remains in the local conversation log.]`,
+    important.length > 0 ? `[Important errors/warnings]\n${important}` : "",
+    "[Output tail]",
+    tail,
+  ].filter((part) => part.length > 0).join("\n");
+}
+
 function toModelMessage(message: ManagedContextSourceMessage): ModelMessage {
   return {
     attachments: message.attachments ?? [],
@@ -236,7 +262,14 @@ function relevantHistoryMessage(
 function splitTurns(messages: readonly ManagedContextSourceMessage[]): ManagedContextSourceMessage[][] {
   const turns: ManagedContextSourceMessage[][] = [];
   for (const message of messages) {
-    if (message.role === "user" || turns.length === 0) turns.push([]);
+    const previous = turns.at(-1)?.at(-1);
+    if (
+      turns.length === 0
+      || (
+        message.role === "user"
+        && (message.runId === null || message.runId !== previous?.runId)
+      )
+    ) turns.push([]);
     turns.at(-1)?.push(message);
   }
   return turns;
@@ -255,6 +288,20 @@ function selectCompactionBatch(
     selectedTokens += turnTokens;
   }
   return selected;
+}
+
+export function selectCompactionRetryBatch(
+  messages: readonly ManagedContextSourceMessage[],
+): ManagedContextSourceMessage[] {
+  const turns = messages.every((message) => message.runId !== null)
+    ? messages.reduce<ManagedContextSourceMessage[][]>((groups, message) => {
+        if (groups.at(-1)?.at(-1)?.runId !== message.runId) groups.push([]);
+        groups.at(-1)?.push(message);
+        return groups;
+      }, [])
+    : splitTurns(messages);
+  if (turns.length <= 1) return [];
+  return turns.slice(0, Math.ceil(turns.length / 2)).flat();
 }
 
 function selectNewestCompleteTurns(
@@ -373,13 +420,16 @@ export function buildManagedContext(input: BuildManagedContextInput): ManagedCon
 
   let workingMessages = [...uncoveredMessages];
   let compactionCandidates: ManagedContextSourceMessage[] = [];
-  if (rawTokens > input.compressionThresholdTokens) {
+  if (rawTokens > input.compressionThresholdTokens || input.forceCompaction === true) {
     const protectedStart = protectedTailStart(workingMessages);
     workingMessages = workingMessages.map((message, index) =>
       index < protectedStart ? pruneToolOutput(message) : message
     );
     const prunedTokens = fixedTokens + totalMessageTokens(workingMessages);
-    if (prunedTokens > input.compressionThresholdTokens && protectedStart > 0) {
+    if (
+      (prunedTokens > input.compressionThresholdTokens || input.forceCompaction === true)
+      && protectedStart > 0
+    ) {
       const summaryInputBudget = Math.max(
         4_096,
         Math.floor(
@@ -461,7 +511,7 @@ export function createContextCompactionMessages(
   messages: readonly ManagedContextSourceMessage[]
 ): ModelMessage[] {
   const history = messages.map((message) => JSON.stringify({
-    content: message.content,
+    content: message.role === "tool" ? compactionToolOutput(message.content) : message.content,
     attachments: (message.attachments ?? []).map((attachment) => ({
       contextTokens: attachment.contextTokens,
       id: attachment.id,

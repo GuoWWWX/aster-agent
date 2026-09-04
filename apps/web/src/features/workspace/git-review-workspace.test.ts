@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  EXPANDED_DIFF_CONTEXT_LINES,
   allGitChangePathsSelected,
   clampCommitPanelHeight,
   extendGitChangeSelection,
@@ -112,5 +113,12 @@ describe("Git change selection", () => {
     const cleared = toggleGitChangeGroupSelection(selected, groupPaths);
     expect([...cleared]).toEqual(["docs/readme.md"]);
     expect(allGitChangePathsSelected(cleared, groupPaths)).toBe(false);
+  });
+});
+
+describe("Git review diff context", () => {
+  it("keeps a single context expansion bounded for very large files", () => {
+    expect(EXPANDED_DIFF_CONTEXT_LINES).toBeGreaterThan(3);
+    expect(EXPANDED_DIFF_CONTEXT_LINES).toBeLessThanOrEqual(200);
   });
 });

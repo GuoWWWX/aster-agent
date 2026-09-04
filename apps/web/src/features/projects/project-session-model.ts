@@ -67,6 +67,12 @@ function hasActiveRun(session: ProjectSession): boolean {
   return session.activeRunId !== null;
 }
 
+export function isProjectSessionRunning(session: ProjectSession): boolean {
+  return (session.activeSideConversationCount ?? 0) > 0
+    || (session.activeSubagentCount ?? 0) > 0
+    || session.activeRunId !== null;
+}
+
 export function aggregateSideConversationState(
   sessions: readonly ProjectSession[],
 ): ProjectSession[] {

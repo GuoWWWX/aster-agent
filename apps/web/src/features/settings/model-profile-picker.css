@@ -249,6 +249,16 @@
   color: var(--app-accent);
 }
 
+[data-theme="dark"] .model-profile-picker__option[data-selected="true"] {
+  border-color: var(--app-selection-border);
+  background: var(--app-selection);
+  color: var(--app-selection-foreground);
+}
+
+[data-theme="dark"] .model-profile-picker__option-check > svg {
+  color: var(--app-selection-foreground);
+}
+
 .model-profile-picker__empty {
   margin: 0;
   color: var(--app-muted-foreground);

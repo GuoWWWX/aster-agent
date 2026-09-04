@@ -36,7 +36,7 @@ describe("managed browser menu", () => {
     expect(html).toContain("data-action=\"zoomOut\"");
     expect(html).toContain("data-action=\"zoomIn\"");
     expect(html).toContain("dataset.menuAction = \"aster-browser-menu:\"");
-    expect(html).toContain("console.debug(\"aster-browser-menu-action\")");
+    expect(html).toContain('console.debug("aster-browser-menu-action:"');
     expect(managedBrowserMenuSize({ canFind: true, kind: "menu", zoomPercent: 100 }))
       .toEqual({ height: 352, width: 224 });
   });
@@ -54,6 +54,27 @@ describe("managed browser menu", () => {
       .toEqual({ action: "findQuery", query: "hello world" });
     expect(parseManagedBrowserMenuAction("https://example.com/")).toBeNull();
     expect(parseManagedBrowserMenuAction("aster-browser-menu:openDownload?index=-1")).toBeNull();
+  });
+
+  it("renders page-find navigation, result count, and close controls", () => {
+    const html = buildManagedBrowserMenuHtml({
+      activeMatchOrdinal: 2,
+      kind: "find",
+      matches: 7,
+      query: "Aster",
+    }, "dark");
+
+    expect(html).toContain("2 / 7");
+    expect(html).toContain('data-action="findPrevious"');
+    expect(html).toContain('data-action="findNext"');
+    expect(html).toContain('aria-label="关闭查找"');
+    expect(html).toContain('event.key !== "Escape"');
+    expect(managedBrowserMenuSize({
+      activeMatchOrdinal: 0,
+      kind: "find",
+      matches: 0,
+      query: "",
+    })).toEqual({ height: 56, width: 440 });
   });
 
   it("keeps the download panel compact and separated from the page in light mode", () => {

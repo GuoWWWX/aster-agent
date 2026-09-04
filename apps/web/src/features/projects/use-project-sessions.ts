@@ -32,6 +32,7 @@ export type ProjectSessionsController = {
   reorderSessions(sessionIds: string[]): Promise<boolean>;
   sessions: ProjectSession[];
   clearOperationError(): void;
+  clearSessionSelection(): void;
   selectProject(projectId: string): void;
   selectSession(sessionId: string): void;
   setSessionArchived(sessionId: string, archived: boolean): Promise<boolean>;
@@ -366,6 +367,10 @@ export function useProjectSessions(
     activeSession,
     activeSessionId: activeSession?.id ?? null,
     clearOperationError: () => setOperationError(null),
+    clearSessionSelection: () => {
+      activeSessionIdRef.current = null;
+      setActiveSessionId(null);
+    },
     createProjectSession: (projectId = activeProjectId ?? undefined) =>
       projectId === undefined
         ? Promise.resolve()

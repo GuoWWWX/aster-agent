@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  workspaceTerminalTabCloseRequestSchema,
   workspaceTerminalTabOpenedInputSchema,
   workspaceTerminalTabOpenRequestSchema,
   type TerminalSession,
+  type WorkspaceTerminalTabCloseRequest,
   type WorkspaceTerminalTabOpenRequest,
   type WorkspaceTerminalTabOpenedInput,
 } from "@agent/protocol";
@@ -24,11 +26,16 @@ export type OpenedWorkspaceTerminalTab = {
 };
 
 export type WorkspaceTerminalTabPort = {
+  close(input: { conversationId: string; sessionId: string }): void;
   open(input: OpenWorkspaceTerminalTabInput): Promise<OpenedWorkspaceTerminalTab>;
 };
 
 export type WorkspaceTerminalTabOpenRequestListener = (
   request: WorkspaceTerminalTabOpenRequest,
+) => boolean;
+
+export type WorkspaceTerminalTabCloseRequestListener = (
+  request: WorkspaceTerminalTabCloseRequest,
 ) => boolean;
 
 type PendingOpenRequest = {
@@ -51,6 +58,8 @@ function abortError(signal: AbortSignal): Error {
  * The Renderer owns title de-duplication because it knows every open workspace tab.
  */
 export class WorkspaceTerminalTabController {
+  private readonly closeListeners = new Set<WorkspaceTerminalTabCloseRequestListener>();
+
   private readonly listeners = new Set<WorkspaceTerminalTabOpenRequestListener>();
 
   private readonly pending = new Map<string, PendingOpenRequest>();
@@ -58,6 +67,16 @@ export class WorkspaceTerminalTabController {
   public onOpenRequested(listener: WorkspaceTerminalTabOpenRequestListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  public onCloseRequested(listener: WorkspaceTerminalTabCloseRequestListener): () => void {
+    this.closeListeners.add(listener);
+    return () => this.closeListeners.delete(listener);
+  }
+
+  public close(input: { conversationId: string; sessionId: string }): void {
+    const request = workspaceTerminalTabCloseRequestSchema.parse(input);
+    for (const listener of this.closeListeners) listener(request);
   }
 
   public open(input: OpenWorkspaceTerminalTabInput): Promise<OpenedWorkspaceTerminalTab> {
@@ -132,5 +151,6 @@ export class WorkspaceTerminalTabController {
       pending.reject(new Error("The workspace terminal tab request was cancelled because the window closed."));
     }
     this.listeners.clear();
+    this.closeListeners.clear();
   }
 }

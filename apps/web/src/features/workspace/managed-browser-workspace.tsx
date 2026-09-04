@@ -12,6 +12,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type KeyboardEvent,
   type MouseEvent,
   type ReactElement,
 } from "react";
@@ -24,13 +25,19 @@ import type {
 } from "@agent/protocol";
 
 import { IconButton } from "../../components/ui/icon-button.js";
+import {
+  LIVE_PANEL_RESIZE_EVENT,
+  type LivePanelResizeDetail,
+} from "../../components/layout/live-panel-resize.js";
 import { getUserErrorMessage, type AgentClient } from "../../runtime/index.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
+import { createManagedBrowserBoundsDispatcher } from "./managed-browser-bounds-dispatcher.js";
 
 type BrowserToolbarCommand = Exclude<
   ManagedBrowserCommandInput["command"],
   | "setColorScheme"
   | "showDownloads"
+  | "showFind"
   | "showMenu"
   | "showWorkspaceAddMenu"
   | "showWorkspaceTabMenu"
@@ -76,11 +83,13 @@ export function ManagedBrowserWorkspace({
   onWorkspaceTabMenuAction: (action: ManagedBrowserWorkspaceTabAction) => void;
 }): ReactElement {
   const surfaceRef = useRef<HTMLDivElement>(null);
+  const scheduleBoundsRef = useRef<(() => void) | null>(null);
   const mountedRef = useRef(false);
   const onSessionChangedRef = useRef(onSessionChanged);
   const onWorkspaceAddMenuActionRef = useRef(onWorkspaceAddMenuAction);
   const onWorkspaceTabMenuActionRef = useRef(onWorkspaceTabMenuAction);
   const sessionRef = useRef(session);
+  const activeRef = useRef(active);
   const openingRef = useRef(false);
   const handledMenuRequestIdRef = useRef<number | null>(null);
   const [address, setAddress] = useState(session?.url ?? initialUrl);
@@ -131,6 +140,7 @@ export function ManagedBrowserWorkspace({
         }
         return;
       }
+      if (event.type === "openGlobalSearch") return;
       if (event.sessionId === sessionRef.current?.sessionId) setError(event.message);
     });
     return () => {
@@ -199,26 +209,73 @@ export function ManagedBrowserWorkspace({
   useEffect(() => {
     const surface = surfaceRef.current;
     if (surface === null) return undefined;
-    const updateBounds = (): void => {
+    let animationFrame: number | null = null;
+    const dispatcher = createManagedBrowserBoundsDispatcher((input) => (
+      agentClient.setManagedBrowserBounds(input)
+    ));
+    const measureBounds = (): void => {
       const current = sessionRef.current;
       if (current === null) return;
       const bounds = surface.getBoundingClientRect();
-      void agentClient.setManagedBrowserBounds({
+      dispatcher.push({
         height: Math.max(0, Math.round(bounds.height)),
         sessionId: current.sessionId,
-        visible: active,
+        visible: activeRef.current,
         width: Math.max(0, Math.round(bounds.width)),
         x: Math.max(0, Math.round(bounds.x)),
         y: Math.max(0, Math.round(bounds.y)),
-      }).catch(() => undefined);
+      });
     };
-    const observer = new ResizeObserver(updateBounds);
+    const scheduleBounds = (): void => {
+      if (animationFrame !== null) return;
+      animationFrame = window.requestAnimationFrame(() => {
+        animationFrame = null;
+        measureBounds();
+      });
+    };
+    let liveResizeBase: { bounds: DOMRect; size: number } | null = null;
+    const handleLiveResize = (event: Event): void => {
+      const detail = (event as CustomEvent<LivePanelResizeDetail>).detail;
+      if (detail.id !== "right-workspace") return;
+      if (detail.phase === "start") {
+        liveResizeBase = {
+          bounds: surface.getBoundingClientRect(),
+          size: detail.size,
+        };
+        return;
+      }
+      if (detail.phase === "end") {
+        liveResizeBase = null;
+        measureBounds();
+        return;
+      }
+      const current = sessionRef.current;
+      if (current === null || liveResizeBase === null) return;
+      const delta = detail.size - liveResizeBase.size;
+      dispatcher.push({
+        height: Math.max(0, Math.round(liveResizeBase.bounds.height)),
+        sessionId: current.sessionId,
+        visible: activeRef.current,
+        width: Math.max(0, Math.round(liveResizeBase.bounds.width + delta)),
+        x: Math.max(0, Math.round(liveResizeBase.bounds.x - delta)),
+        y: Math.max(0, Math.round(liveResizeBase.bounds.y)),
+      });
+    };
+    // ResizeObserver already runs after layout and before paint. Send its latest
+    // geometry immediately so the native view can join the same visual frame.
+    const observer = new ResizeObserver(measureBounds);
     observer.observe(surface);
-    window.addEventListener("resize", updateBounds);
-    updateBounds();
+    window.addEventListener(LIVE_PANEL_RESIZE_EVENT, handleLiveResize);
+    window.addEventListener("resize", scheduleBounds);
+    scheduleBoundsRef.current = scheduleBounds;
+    measureBounds();
     return () => {
+      scheduleBoundsRef.current = null;
       observer.disconnect();
-      window.removeEventListener("resize", updateBounds);
+      window.removeEventListener(LIVE_PANEL_RESIZE_EVENT, handleLiveResize);
+      window.removeEventListener("resize", scheduleBounds);
+      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
+      dispatcher.stop();
       const current = sessionRef.current;
       if (current !== null) {
         void agentClient.setManagedBrowserBounds({
@@ -231,7 +288,12 @@ export function ManagedBrowserWorkspace({
         }).catch(() => undefined);
       }
     };
-  }, [active, agentClient, session?.sessionId]);
+  }, [agentClient, session?.sessionId]);
+
+  useEffect(() => {
+    activeRef.current = active;
+    scheduleBoundsRef.current?.();
+  }, [active, session?.sessionId]);
 
   const command = (value: BrowserToolbarCommand): void => {
     const current = sessionRef.current;
@@ -263,9 +325,23 @@ export function ManagedBrowserWorkspace({
       setError(getUserErrorMessage(reason, "网页打开失败。"));
     });
   };
+  const handleFindShortcut = (event: KeyboardEvent<HTMLElement>): void => {
+    if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) return;
+    if (event.key.toLocaleLowerCase() !== "f") return;
+    const current = sessionRef.current;
+    const bounds = surfaceRef.current?.getBoundingClientRect();
+    if (current === null || bounds === undefined) return;
+    event.preventDefault();
+    void agentClient.commandManagedBrowser({
+      command: "showFind",
+      sessionId: current.sessionId,
+      x: Math.max(0, Math.round(bounds.right)),
+      y: Math.max(0, Math.round(bounds.top)),
+    }).catch((reason: unknown) => setError(getUserErrorMessage(reason, "页面查找打开失败。")));
+  };
 
   return (
-    <section className="flex h-full min-h-0 w-full flex-col bg-[var(--app-panel)]" aria-label="内置浏览器">
+    <section className="flex h-full min-h-0 w-full flex-col bg-[var(--app-panel)]" aria-label="内置浏览器" data-managed-browser-workspace onKeyDownCapture={handleFindShortcut}>
       <form className="flex h-11 flex-none items-center gap-1 border-b border-[var(--app-border)] px-2" onSubmit={navigate}>
         <div className="flex shrink-0 items-center gap-0.5">
           <button aria-label="后退" className="grid size-7 place-items-center rounded-md hover:bg-[var(--app-hover)] disabled:opacity-40" disabled={!session?.canGoBack} type="button" onClick={() => command("back")}><ArrowLeft aria-hidden="true" size={15} /></button>
@@ -286,7 +362,11 @@ export function ManagedBrowserWorkspace({
         </div>
       </form>
       {error !== null ? <div className="border-b border-red-500/20 bg-red-500/10 px-3 py-1.5 text-xs text-red-600 dark:text-red-400" role="alert">{error}</div> : null}
-      <div className="min-h-0 flex-1 bg-[var(--app-canvas)]" ref={surfaceRef} />
+      <div
+        className="min-h-0 flex-1 bg-[var(--app-canvas)]"
+        data-managed-browser-surface
+        ref={surfaceRef}
+      />
     </section>
   );
 }

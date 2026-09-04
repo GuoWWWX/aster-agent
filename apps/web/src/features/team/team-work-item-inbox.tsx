@@ -200,7 +200,7 @@ export function WorkItemInbox({
             key={item.id}
             aria-selected={item.id === selectedId}
             className={item.id === selectedId
-              ? "group relative min-w-0 border-b border-[var(--app-border)] border-l-2 border-l-[var(--app-accent)] bg-[var(--app-selection)]"
+              ? "group relative min-w-0 border-b border-[var(--app-border)] border-l-2 border-l-[var(--app-selection-border)] bg-[var(--app-selection)]"
               : "group relative min-w-0 border-b border-[var(--app-border)] border-l-2 border-l-transparent bg-[var(--app-panel)] hover:bg-[var(--app-hover)]"}
             data-status={item.status}
             role="option"
@@ -318,7 +318,7 @@ function InboxMetric({
     <button
       aria-selected={active}
       className={active
-        ? "grid min-w-0 place-items-center gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-accent)] bg-[var(--app-selection)] px-[4px] py-[9px] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
+        ? "grid min-w-0 place-items-center gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-selection-border)] bg-[var(--app-selection)] px-[4px] py-[9px] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
         : "grid min-w-0 place-items-center gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-[4px] py-[9px] hover:border-[var(--app-accent)] hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"}
       data-metric-tone={tone}
       role="tab"

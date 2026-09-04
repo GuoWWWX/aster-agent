@@ -60,11 +60,34 @@ describe("ProjectImageViewer", () => {
     expect(previousOverlay).not.toBeNull();
     expect(nextOverlay).not.toBeNull();
     expect(previousOverlay.className).toContain("rounded-full");
-    expect(previousOverlay.className).toContain("bg-[var(--app-panel-subtle)]");
+    expect(previousOverlay.className).toContain("opacity-0");
     expect(previousOverlay.querySelector("svg")?.getAttribute("width")).toBe("20");
+
+    const navigationZone = container.querySelector('[data-image-navigation-zone="true"]') as HTMLDivElement;
+    navigationZone.getBoundingClientRect = vi.fn(() => ({
+      bottom: 400,
+      height: 400,
+      left: 0,
+      right: 600,
+      top: 0,
+      width: 600,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    }));
+    act(() => {
+      navigationZone.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 20 }));
+    });
+    expect(previousOverlay.className).toContain("opacity-100");
+    expect(nextOverlay.className).toContain("opacity-0");
 
     act(() => {
       previousOverlay.click();
+      navigationZone.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 580 }));
+    });
+    expect(previousOverlay.className).toContain("opacity-0");
+    expect(nextOverlay.className).toContain("opacity-100");
+    act(() => {
       nextOverlay.click();
     });
 
@@ -149,7 +172,7 @@ describe("ProjectImageViewer", () => {
     expect(container.textContent).toContain("适应");
   });
 
-  it("zooms smoothly around the pointer while the wheel is over the image", () => {
+  it("only zooms around the pointer when Ctrl is held", () => {
     const animationFrames: FrameRequestCallback[] = [];
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
       animationFrames.push(callback);
@@ -209,11 +232,25 @@ describe("ProjectImageViewer", () => {
       image.dispatchEvent(new Event("load", { bubbles: true }));
     });
 
+    const plainWheelEvent = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 250,
+      clientY: 200,
+      deltaY: -100,
+    });
+    act(() => {
+      image.dispatchEvent(plainWheelEvent);
+    });
+    expect(plainWheelEvent.defaultPrevented).toBe(false);
+    expect(container.textContent).toContain("适应");
+
     const wheelEvent = new WheelEvent("wheel", {
       bubbles: true,
       cancelable: true,
       clientX: 250,
       clientY: 200,
+      ctrlKey: true,
       deltaY: -100,
     });
     act(() => {
@@ -224,5 +261,73 @@ describe("ProjectImageViewer", () => {
     expect(wheelEvent.defaultPrevented).toBe(true);
     expect(container.textContent).toContain("55%");
     expect(viewport.scrollLeft).toBeGreaterThan(0);
+  });
+
+  it("pans an enlarged image by dragging it with the primary pointer", () => {
+    act(() => {
+      root.render(
+        <TooltipProvider>
+          <ProjectImageViewer
+            currentIndex={0}
+            dataUrl="data:image/png;base64,AQID"
+            fileName="large.png"
+            hasNext={false}
+            hasPrevious={false}
+            total={1}
+            onNext={vi.fn()}
+            onPrevious={vi.fn()}
+          />
+        </TooltipProvider>,
+      );
+    });
+
+    const image = container.querySelector("img") as HTMLImageElement;
+    const viewport = container.querySelector('[role="group"]') as HTMLDivElement;
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 300 },
+      clientWidth: { configurable: true, value: 400 },
+      scrollHeight: { configurable: true, value: 900 },
+      scrollLeft: { configurable: true, value: 240, writable: true },
+      scrollTop: { configurable: true, value: 180, writable: true },
+      scrollWidth: { configurable: true, value: 1200 },
+    });
+    const setPointerCapture = vi.fn();
+    const releasePointerCapture = vi.fn();
+    Object.assign(image, {
+      hasPointerCapture: vi.fn(() => true),
+      releasePointerCapture,
+      setPointerCapture,
+    });
+    const pointerEvent = (
+      type: "pointerdown" | "pointermove" | "pointerup",
+      clientX: number,
+      clientY: number,
+    ): MouseEvent => {
+      const event = new MouseEvent(type, {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        clientX,
+        clientY,
+      });
+      Object.defineProperty(event, "pointerId", { value: 7 });
+      return event;
+    };
+
+    act(() => {
+      image.dispatchEvent(pointerEvent("pointerdown", 220, 180));
+      image.dispatchEvent(pointerEvent("pointermove", 160, 120));
+    });
+
+    expect(setPointerCapture).toHaveBeenCalledWith(7);
+    expect(viewport.scrollLeft).toBe(300);
+    expect(viewport.scrollTop).toBe(240);
+    expect(image.className).toContain("cursor-grabbing");
+
+    act(() => {
+      image.dispatchEvent(pointerEvent("pointerup", 160, 120));
+    });
+    expect(releasePointerCapture).toHaveBeenCalledWith(7);
+    expect(image.className).not.toContain("cursor-grabbing");
   });
 });

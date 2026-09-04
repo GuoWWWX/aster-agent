@@ -88,7 +88,7 @@
 .conversation-project-picker__projects button > svg,
 .conversation-project-picker__action > svg {
   flex: 0 0 auto;
-  color: #64748b;
+  color: var(--app-muted-foreground);
 }
 
 .conversation-project-picker__projects button > svg:last-child,

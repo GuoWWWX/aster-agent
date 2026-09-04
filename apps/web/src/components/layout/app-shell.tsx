@@ -9,6 +9,7 @@ import {
 } from "../../stores/workbench-ui-store.js";
 import { ActivityBar } from "./activity-bar.js";
 import { AppTitlebar } from "./app-titlebar.js";
+import type { AppTitlebarConversationTab } from "./app-titlebar.js";
 import { ResizableDivider } from "./resizable-divider.js";
 
 const TITLEBAR_CONTEXT = {
@@ -18,20 +19,36 @@ const TITLEBAR_CONTEXT = {
   team: "查看团队进度、Agent 状态与协作动态",
 } as const;
 
+const TITLEBAR_LEFT_CONTROL_WIDTH = 32;
+const WORKBENCH_MAIN_LEFT_INSET = 58;
+const WORKBENCH_NAVIGATOR_TO_MAIN_GAP = 5;
+
 type AppShellProps = {
   activeConversationId?: string | null;
   agentClient: AgentClient;
+  conversationTabs?: readonly AppTitlebarConversationTab[];
   filePanel: ReactNode;
   mainContent: ReactNode;
   projectNavigator: ReactNode;
+  onCloseAllConversationTabs?: () => void;
+  onCloseConversationTab?: (conversationId: string) => void;
+  onCloseOtherConversationTabs?: (conversationId: string) => void;
+  onOpenGlobalSearch?: () => void;
+  onSelectConversationTab?: (conversationId: string) => void;
 };
 
 export function AppShell({
   activeConversationId = null,
   agentClient,
+  conversationTabs = [],
   filePanel,
   mainContent,
   projectNavigator,
+  onCloseAllConversationTabs,
+  onCloseConversationTab,
+  onCloseOtherConversationTabs,
+  onOpenGlobalSearch,
+  onSelectConversationTab,
 }: AppShellProps): ReactElement {
   const [isFilePanelResizing, setFilePanelResizing] = useState(false);
   const isFilePanelOpen = useWorkbenchUiStore(
@@ -119,16 +136,36 @@ export function AppShell({
   const projectNavigatorStyle = {
     width: `${projectNavigatorWidth}px`,
   } as CSSProperties;
+  const conversationTabsLeadingWidth = WORKBENCH_MAIN_LEFT_INSET
+    + (isProjectNavigatorOpen
+      ? projectNavigatorWidth + WORKBENCH_NAVIGATOR_TO_MAIN_GAP
+      : 0)
+    - TITLEBAR_LEFT_CONTROL_WIDTH;
 
   return (
     <div className="app-shell" data-theme={themeMode}>
       <AppTitlebar
+        activeConversationId={activeConversationId}
         agentClient={agentClient}
+        conversationTabs={isConversationWorkspace ? conversationTabs : []}
+        conversationTabsLeadingWidth={conversationTabsLeadingWidth}
         contextText={TITLEBAR_CONTEXT[activeActivity]}
         isFilePanelOpen={activeFilePanelOpen}
         isProjectNavigatorOpen={isProjectNavigatorOpen}
         onToggleFilePanel={toggleActiveFilePanel}
         onToggleProjectNavigator={toggleProjectNavigator}
+        {...(onCloseAllConversationTabs === undefined ? {} : {
+          onCloseAllConversationTabs,
+        })}
+        {...(onCloseConversationTab === undefined ? {} : {
+          onCloseConversationTab,
+        })}
+        {...(onCloseOtherConversationTabs === undefined ? {} : {
+          onCloseOtherConversationTabs,
+        })}
+        {...(onSelectConversationTab === undefined ? {} : {
+          onSelectConversationTab,
+        })}
         showFilePanelControl={canShowFileWorkspace}
         showProjectNavigatorControl={isConversationWorkspace}
       />
@@ -137,7 +174,7 @@ export function AppShell({
         data-active-activity={activeActivity}
         data-full-page={String(!isConversationWorkspace)}
       >
-        <ActivityBar />
+        <ActivityBar {...(onOpenGlobalSearch === undefined ? {} : { onOpenGlobalSearch })} />
         {isConversationWorkspace && isProjectNavigatorOpen ? (
           <div
             className="workbench-sidebar workbench-sidebar--left"
@@ -168,6 +205,7 @@ export function AppShell({
           ariaLabel="调整右侧工作区宽度"
           className="workbench-resizable-divider--right"
           direction="from-end"
+          liveResizeId="right-workspace"
           max={FILE_PANEL_WIDTH_RANGE.max}
           min={FILE_PANEL_WIDTH_RANGE.min}
           size={activeFilePanelWidth}

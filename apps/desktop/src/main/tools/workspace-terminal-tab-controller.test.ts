@@ -45,4 +45,20 @@ describe("WorkspaceTerminalTabController", () => {
       session: SESSION,
     })).rejects.toThrow("workspace window is unavailable");
   });
+
+  it("notifies the Renderer when an Agent closes its terminal tab", () => {
+    const controller = new WorkspaceTerminalTabController();
+    const requests: unknown[] = [];
+    controller.onCloseRequested((request) => {
+      requests.push(request);
+      return true;
+    });
+
+    controller.close({ conversationId: CONVERSATION_ID, sessionId: SESSION.sessionId });
+
+    expect(requests).toEqual([{
+      conversationId: CONVERSATION_ID,
+      sessionId: SESSION.sessionId,
+    }]);
+  });
 });

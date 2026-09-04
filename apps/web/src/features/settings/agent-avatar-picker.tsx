@@ -176,7 +176,7 @@ export function AgentAvatarPicker({
                   key={option.id}
                   aria-label={option.label}
                   aria-selected={selected}
-                  className="group relative flex h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-1 text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)] outline-none transition-colors hover:border-[#93c5fd] hover:bg-[var(--app-hover)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] data-[selected=true]:border-[#60a5fa] data-[selected=true]:bg-[var(--app-selection)] data-[selected=true]:text-[var(--app-selection-foreground)]"
+                  className="group relative flex h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-1 text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)] outline-none transition-colors hover:border-[#93c5fd] hover:bg-[var(--app-hover)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] data-[selected=true]:border-[var(--app-selection-border)] data-[selected=true]:bg-[var(--app-selection)] data-[selected=true]:text-[var(--app-selection-foreground)]"
                   data-selected={selected}
                   role="option"
                   title={`${option.label} (${option.id})`}

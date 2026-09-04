@@ -33,7 +33,7 @@
 
 .task-summary span {
   overflow: hidden;
-  color: #64748b;
+  color: var(--app-muted-foreground);
   font-size: var(--app-font-size-control);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -84,7 +84,7 @@
   border-radius: var(--app-radius);
   outline: none;
   background: transparent;
-  color: #64748b;
+  color: var(--app-muted-foreground);
   padding: 0 7px;
   font-size: var(--app-font-size-control);
   white-space: nowrap;
@@ -153,7 +153,7 @@
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
   background: #f8fafc;
-  color: #64748b;
+  color: var(--app-muted-foreground);
 }
 
 .task-state-icon[data-status="running"] {
@@ -198,7 +198,7 @@
 
 .task-row__titleline span,
 .task-row__content > span:last-child {
-  color: #64748b;
+  color: var(--app-muted-foreground);
   font-size: var(--app-font-size-control);
 }
 
@@ -211,7 +211,7 @@
 }
 
 [data-priority="low"] {
-  color: #94a3b8 !important;
+  color: var(--app-subtle-foreground) !important;
 }
 
 .task-list__empty,
@@ -221,7 +221,7 @@
   place-content: center;
   justify-items: center;
   gap: 8px;
-  color: #64748b;
+  color: var(--app-muted-foreground);
   padding: 24px;
   font-size: var(--app-font-size-control);
   text-align: center;
@@ -290,7 +290,7 @@
 
 .task-detail__facts dt,
 .task-detail__dependencies h3 {
-  color: #64748b;
+  color: var(--app-muted-foreground);
   font-size: var(--app-font-size-control);
   font-weight: 600;
 }
@@ -330,7 +330,7 @@
 .task-detail__note {
   margin-top: 18px;
   border-top: 1px solid var(--app-border);
-  color: #64748b;
+  color: var(--app-muted-foreground);
   padding-top: 12px;
   font-size: var(--app-font-size-control);
   line-height: 1.55;
@@ -352,13 +352,13 @@
 }
 
 [data-theme="dark"] .task-filter[aria-selected="true"] {
-  background: rgba(59, 130, 246, 0.2);
-  color: #bfdbfe;
+  background: var(--app-selection);
+  color: var(--app-selection-foreground);
 }
 
 [data-theme="dark"] .task-row[data-selected="true"] {
-  background: rgba(59, 130, 246, 0.28);
-  color: #f8fafc;
+  background: var(--app-selection);
+  color: var(--app-selection-foreground);
 }
 
 [data-theme="dark"] .task-state-icon {

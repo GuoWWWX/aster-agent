@@ -251,6 +251,50 @@ describe("LangChainModelAdapter", () => {
     ]);
   });
 
+  it("sends only the latest browser screenshot bytes to the model", async () => {
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValue(createStreamResponse(successChunks("openai-chat-completions")));
+    const input = inputFor("openai-chat-completions");
+    const browserAttachment = (id: string, data: string) => ({
+      contextTokens: 1_024,
+      data,
+      id,
+      kind: "image" as const,
+      mimeType: "image/jpeg",
+      name: `${id}.jpg`,
+      projectPath: null,
+      readState: "full" as const,
+      source: "browser" as const,
+      truncated: false,
+    });
+    input.messages = [{
+      attachments: [browserAttachment("old-browser", "b2xk")],
+      content: "old screenshot",
+      role: "user",
+      toolCallId: null,
+      toolCalls: [],
+    }, {
+      attachments: [],
+      content: "continue",
+      role: "assistant",
+      toolCallId: null,
+      toolCalls: [],
+    }, {
+      attachments: [browserAttachment("new-browser", "bmV3")],
+      content: "new screenshot",
+      role: "user",
+      toolCallId: null,
+      toolCalls: [],
+    }];
+
+    await new LangChainModelAdapter("openai-chat-completions", request).completeTurn(input);
+
+    const serialized = JSON.stringify(recordBody(request));
+    expect(serialized).not.toContain("data:image/jpeg;base64,b2xk");
+    expect(serialized).toContain("Earlier browser screenshot superseded");
+    expect(serialized).toContain("data:image/jpeg;base64,bmV3");
+  });
+
   it("converts streamed assistant text and preserves provider metadata", async () => {
     const model = new FakeStreamingChatModel({
       sleep: 0,
@@ -509,6 +553,31 @@ describe("LangChainModelAdapter", () => {
       reasoning_content: "hidden thought",
       role: "assistant",
     }));
+  });
+
+  it("treats GPT-5.6 Chat reasoning content as a transient summary", async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse([
+      'data: {"choices":[{"delta":{"role":"assistant","reasoning_content":"Preparing changes"},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\n',
+      "data: [DONE]\n\n",
+    ]));
+    const reasoningDeltas: unknown[] = [];
+
+    const result = await new LangChainModelAdapter("openai-chat-completions", request)
+      .completeTurn(inputFor("openai-chat-completions", {
+        configuration: {
+          ...inputFor("openai-chat-completions").configuration,
+          modelId: "gpt-5.6-terra",
+        },
+        onReasoningDelta: (event) => reasoningDeltas.push(event),
+      }));
+
+    expect(result).not.toHaveProperty("reasoningContent");
+    expect(reasoningDeltas).toEqual([{
+      delta: "Preparing changes",
+      kind: "summary",
+      reset: true,
+    }]);
   });
 
   it("replays OpenAI Chat reasoning from the previous AI SDK provider state", async () => {
@@ -820,6 +889,27 @@ describe("LangChainModelAdapter", () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 
+  it("continues without browser screenshot bytes when the selected model has no vision support", async () => {
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { message: "This model does not support image" },
+      }), {
+        headers: { "Content-Type": "application/json" },
+        status: 400,
+      }))
+      .mockResolvedValueOnce(createStreamResponse(successChunks("openai-chat-completions")));
+    const input = multimodalInput("openai-chat-completions");
+    const image = input.messages[0]?.attachments[1];
+    if (image === undefined) throw new Error("Expected an image attachment.");
+    image.source = "browser";
+
+    await new LangChainModelAdapter("openai-chat-completions", request).completeTurn(input);
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(recordBody(request, 1))).not.toContain("image_url");
+    expect(JSON.stringify(recordBody(request, 1))).toContain("浏览器截图字节已省略");
+  });
+
   it("passes cancellation to the LangChain stream without remapping it", async () => {
     const controller = new AbortController();
     const abortError = new DOMException("The operation was aborted.", "AbortError");
@@ -1060,7 +1150,7 @@ describe("LangChainModelAdapter", () => {
     expect(first.content).toBe("");
     expect(reasoningDeltas).toEqual([{
       delta: "Inspecting files",
-      kind: "content",
+      kind: "summary",
       reset: true,
     }]);
 

@@ -12,6 +12,7 @@ import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
 import {
   isGemini3ReasoningModel,
+  isGpt56ReasoningModel,
   type ModelApiFormat,
 } from "@agent/protocol";
 
@@ -436,14 +437,52 @@ function orderToolResultsBeforeInterleavedMessages(
   return ordered;
 }
 
+function withoutSupersededBrowserScreenshots(messages: readonly ModelMessage[]): ModelMessage[] {
+  let latestBrowserImageIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.attachments.some(
+      (attachment) => attachment.kind === "image" && attachment.source === "browser",
+    )) {
+      latestBrowserImageIndex = index;
+      break;
+    }
+  }
+  if (latestBrowserImageIndex < 0) return [...messages];
+  return messages.map((message, messageIndex) => {
+    if (messageIndex >= latestBrowserImageIndex) return message;
+    if (!message.attachments.some(
+      (attachment) => attachment.kind === "image" && attachment.source === "browser",
+    )) return message;
+    return {
+      ...message,
+      attachments: message.attachments.map((attachment) => {
+        if (attachment.kind !== "image" || attachment.source !== "browser") return attachment;
+        return {
+          content: `[Earlier browser screenshot superseded by a newer capture]\n${modelImageAttachmentCaption(attachment)}`,
+          contextTokens: attachment.contextTokens,
+          id: attachment.id,
+          kind: "text" as const,
+          mimeType: attachment.mimeType,
+          name: attachment.name,
+          projectPath: attachment.projectPath,
+          readState: attachment.readState,
+          source: attachment.source,
+          truncated: attachment.truncated,
+        };
+      }),
+    };
+  });
+}
+
 function toLangChainMessages(
   messages: readonly ModelMessage[],
   input: CompleteTurnInput,
 ): BaseMessage[] {
+  const boundedMessages = withoutSupersededBrowserScreenshots(messages);
   const orderedMessages = input.configuration.apiFormat === "openai-chat-completions"
     || input.configuration.apiFormat === "openai-responses"
-    ? orderToolResultsBeforeInterleavedMessages(messages)
-    : messages;
+    ? orderToolResultsBeforeInterleavedMessages(boundedMessages)
+    : boundedMessages;
   return orderedMessages.map((message) => toLangChainMessage(message, input));
 }
 
@@ -865,19 +904,28 @@ function withoutHistoricalImageData(messages: ModelMessage[]): ModelMessage[] | 
     }
   }
   if (latestUserIndex < 0) return null;
-  if (messages[latestUserIndex]?.attachments.some((attachment) => attachment.kind === "image")) {
+  if (messages[latestUserIndex]?.attachments.some(
+    (attachment) => attachment.kind === "image" && attachment.source !== "browser",
+  )) {
     return null;
   }
 
   let changed = false;
   const result = messages.map((message, messageIndex) => {
-    if (messageIndex >= latestUserIndex) return message;
-    if (!message.attachments.some((attachment) => attachment.kind === "image")) return message;
+    if (!message.attachments.some((attachment) => (
+      attachment.kind === "image"
+      && (messageIndex < latestUserIndex || attachment.source === "browser")
+    ))) return message;
     changed = true;
     const attachments = message.attachments.map((attachment) => {
-      if (attachment.kind !== "image") return attachment;
+      if (
+        attachment.kind !== "image"
+        || (messageIndex >= latestUserIndex && attachment.source !== "browser")
+      ) return attachment;
       return {
-        content: `[历史图片未发送给当前模型]\n${modelImageAttachmentCaption(attachment)}`,
+        content: `${attachment.source === "browser"
+          ? "[当前模型不支持视觉输入，浏览器截图字节已省略]"
+          : "[历史图片未发送给当前模型]"}\n${modelImageAttachmentCaption(attachment)}`,
         contextTokens: attachment.contextTokens,
         id: attachment.id,
         kind: "text" as const,
@@ -935,9 +983,10 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
     let latest: LangChainAssistantMessage | null = null;
     let reasoningContent = "";
     let reasoningStarted = false;
-    const reasoningKind = this.apiFormat === "openai-responses" || this.apiFormat === "anthropic-messages"
-      ? "summary"
-      : "content";
+    const reasoningKind = this.apiFormat === "openai-chat-completions"
+      && !isGpt56ReasoningModel(input.configuration.modelId)
+      ? "content"
+      : "summary";
     try {
       const stream = await boundModel.stream(messages, {
         maxRetries: 0,

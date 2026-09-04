@@ -36,10 +36,12 @@ const threadLogEventTypeSchema = z.enum([
  "run_started",
  "run_finished",
  "run_superseded",
+ "runtime_activity_updated",
   "subagent_task_completed",
  "subagent_task_created",
   "task_list_updated",
   "tool_approval_decided",
+  "tool_approval_auto_reviewed",
   "tool_approval_expired",
   "tool_approval_requested",
   "tool_call_requested",
@@ -375,6 +377,7 @@ function applyContextEvent(context: ThreadLogContext, event: ThreadLogEvent): vo
       // A checkpoint may summarize the superseded branch. Retaining it would
       // reintroduce edited-away content into the next model request.
       context.checkpoint = null;
+      renumberContextMessages(context);
     }
     return;
   }
@@ -384,7 +387,10 @@ function applyContextEvent(context: ThreadLogContext, event: ThreadLogEvent): vo
     if (typeof supersededRunId === "string" && supersededRunId.length > 0) {
       const beforeCount = context.messages.length;
       context.messages = context.messages.filter((message) => message.runId !== supersededRunId);
-      if (context.messages.length !== beforeCount) context.checkpoint = null;
+      if (context.messages.length !== beforeCount) {
+        context.checkpoint = null;
+        renumberContextMessages(context);
+      }
     }
     const replacement = contextMessageForEvent(event, context.messages.length + 1);
     if (replacement !== null) context.messages.push(replacement);
@@ -400,14 +406,27 @@ function applyContextEvent(context: ThreadLogContext, event: ThreadLogEvent): vo
   if (event.type === "context_checkpoint") {
     const summary = event.payload.summary;
     if (typeof summary === "string" && summary.trim().length > 0) {
+      const coveredThroughContextSequence = event.payload.coveredThroughContextSequence;
       context.checkpoint = {
-        coveredThroughSequence: context.messages.at(-1)?.sequence ?? 0,
+        coveredThroughSequence:
+          typeof coveredThroughContextSequence === "number"
+          && Number.isSafeInteger(coveredThroughContextSequence)
+          && coveredThroughContextSequence > 0
+            ? coveredThroughContextSequence
+            : context.messages.at(-1)?.sequence ?? 0,
         createdAt: event.createdAt,
         summary,
         updatedAt: event.createdAt,
       };
     }
   }
+}
+
+function renumberContextMessages(context: ThreadLogContext): void {
+  context.messages = context.messages.map((message, index) => ({
+    ...message,
+    sequence: index + 1,
+  }));
 }
 
 function contextMessageForEvent(

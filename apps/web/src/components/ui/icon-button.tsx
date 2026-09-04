@@ -20,6 +20,8 @@ const iconButtonVariants = cva(
       variant: {
         active:
           "bg-[var(--app-accent)] text-[var(--app-accent-foreground)] hover:bg-[#1d4ed8]",
+        selected:
+          "bg-[var(--app-selection)] text-[var(--app-selection-foreground)]",
         destructive:
           "text-[var(--app-muted-foreground)] hover:bg-[var(--app-destructive)] hover:text-[var(--app-destructive-foreground)]",
         quiet:

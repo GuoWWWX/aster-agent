@@ -114,4 +114,15 @@ describe("formatConversationRunMarkdown", () => {
     expect(result).toContain("错误：请求失败");
     expect(result).not.toContain("abc-123");
   });
+
+  it("does not export runtime-only context compaction activity as a model tool", () => {
+    const compaction = tool("compact_context", {
+      result: JSON.stringify({ compressedMessageCount: 4, trigger: "automatic" }),
+    });
+
+    const result = formatConversationRunMarkdown([compaction], message("继续完成任务"));
+
+    expect(result).toBe("## 模型回复\n\n继续完成任务\n");
+    expect(result).not.toContain("compact_context");
+  });
 });

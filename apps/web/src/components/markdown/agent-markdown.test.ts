@@ -1,8 +1,12 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it } from "vitest";
+import { act, createElement, Fragment } from "react";
+import { createRoot } from "react-dom/client";
+import { describe, expect, it, vi } from "vitest";
 
-import { renderAgentMarkdown } from "./agent-markdown.js";
+import { MediaPreviewDialogHost } from "../media/image-viewer.js";
+import { TooltipProvider } from "../ui/tooltip.js";
+import { AgentMarkdown, renderAgentMarkdown } from "./agent-markdown.js";
 import agentMarkdownStyles from "./agent-markdown.css?inline";
 
 describe("AgentMarkdown", () => {
@@ -83,5 +87,76 @@ describe("AgentMarkdown", () => {
     expect(html.match(/class="agent-markdown__file-label"/gu)).toHaveLength(3);
     expect(html.match(/<\/span><\/a>/gu)).toHaveLength(3);
     expect(html).toContain('<a href="https://example.com"');
+  });
+
+  it("renders labeled dividers without changing ordinary horizontal rules", () => {
+    const html = renderAgentMarkdown([
+      "---",
+      "",
+      "--- 上下文已压缩",
+      "",
+      "```text",
+      "--- 代码里的文字",
+      "```",
+    ].join("\n"));
+
+    expect(html).toContain("<hr>");
+    expect(html).toContain('class="agent-markdown__labeled-divider"');
+    expect(html).toContain('aria-label="上下文已压缩"');
+    expect(html).toContain("<span>上下文已压缩</span>");
+    expect(html.match(/agent-markdown__labeled-divider/gu)).toHaveLength(1);
+    expect(html).toContain("--- 代码里的文字");
+  });
+
+  it("escapes labeled divider text", () => {
+    const html = renderAgentMarkdown("--- <img src=x onerror=alert(1)>");
+
+    expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+    expect(html).not.toContain("<img");
+  });
+
+  it("marks rendered images as keyboard-accessible previews", () => {
+    const html = renderAgentMarkdown("![运行结果](assets/result.png)");
+
+    expect(html).toContain('data-action="preview-image"');
+    expect(html).toContain('role="button"');
+    expect(html).toContain('tabindex="0"');
+    expect(html).toContain('aria-label="预览图片：运行结果"');
+  });
+
+  it("opens the shared overlay viewer when a Markdown image is clicked", () => {
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+    vi.stubGlobal("ResizeObserver", class {
+      disconnect(): void {}
+      observe(): void {}
+      unobserve(): void {}
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(createElement(
+        TooltipProvider,
+        null,
+        createElement(
+          Fragment,
+          null,
+          createElement(AgentMarkdown, { content: "![运行结果](data:image/png;base64,AQID)" }),
+          createElement(MediaPreviewDialogHost),
+        ),
+      ));
+    });
+    act(() => {
+      (container.querySelector("img[data-action='preview-image']") as HTMLImageElement).click();
+    });
+
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.body.querySelector('button[aria-label="放大图片"]')).not.toBeNull();
+    expect(document.body.querySelector('button[aria-label="使图片适应窗口"]')).not.toBeNull();
+
+    act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
   });
 });

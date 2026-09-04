@@ -157,6 +157,12 @@ export const workspaceTerminalTabOpenedInputSchema = z.object({
   resolvedName: terminalTabNameSchema,
 }).strict();
 
+/** Main asks the Renderer to close the terminal tab owned by an Agent session. */
+export const workspaceTerminalTabCloseRequestSchema = z.object({
+  conversationId: conversationIdSchema,
+  sessionId: sessionIdSchema,
+}).strict();
+
 export const terminalSessionEventSchema = z.discriminatedUnion("type", [
   z.object({
     data: z.string().max(262_144),
@@ -222,7 +228,7 @@ export const managedBrowserCommandInputSchema = z.discriminatedUnion("command", 
     sessionId: sessionIdSchema,
   }).strict(),
   z.object({
-    command: z.enum(["showDownloads", "showMenu"]),
+    command: z.enum(["showDownloads", "showFind", "showMenu"]),
     sessionId: sessionIdSchema,
     x: managedBrowserMenuCoordinateSchema,
     y: managedBrowserMenuCoordinateSchema,
@@ -304,6 +310,10 @@ export const managedBrowserEventSchema = z.discriminatedUnion("type", [
     type: z.literal("openSettings"),
   }).strict(),
   z.object({
+    sessionId: sessionIdSchema,
+    type: z.literal("openGlobalSearch"),
+  }).strict(),
+  z.object({
     action: managedBrowserWorkspaceAddActionSchema,
     sessionId: sessionIdSchema,
     type: z.literal("workspaceAddMenu"),
@@ -342,6 +352,7 @@ export type TerminalSessionResizeInput = z.infer<typeof terminalSessionResizeInp
 export type TerminalSessionWriteInput = z.infer<typeof terminalSessionWriteInputSchema>;
 export type WorkspaceTerminalTabOpenRequest = z.infer<typeof workspaceTerminalTabOpenRequestSchema>;
 export type WorkspaceTerminalTabOpenedInput = z.infer<typeof workspaceTerminalTabOpenedInputSchema>;
+export type WorkspaceTerminalTabCloseRequest = z.infer<typeof workspaceTerminalTabCloseRequestSchema>;
 export type WorkspaceBrowserTabOpenRequest = z.infer<typeof workspaceBrowserTabOpenRequestSchema>;
 export type WorkspaceBrowserTabOpenedInput = z.infer<typeof workspaceBrowserTabOpenedInputSchema>;
 export type WorkspaceBrowserTabCloseRequest = z.infer<typeof workspaceBrowserTabCloseRequestSchema>;

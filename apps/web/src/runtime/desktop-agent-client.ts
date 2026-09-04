@@ -9,6 +9,7 @@ import type {
   ConversationContextUsage,
   ConversationContextUsageInput,
   ConversationAttachment,
+  ConversationAttachmentPreview,
   ConversationMessageSubmission,
   ConversationPendingMessage,
   ContextCompressionConfiguration,
@@ -18,6 +19,8 @@ import type {
   CreateSkillDocumentInput,
   CreateConfigurationWorkspaceEntryInput,
   ConversationReferenceInput,
+  ConversationSearchInput,
+  ConversationSearchResult,
   ForkConversationInput,
   ConversationSummary,
   ConversationTaskList,
@@ -57,6 +60,7 @@ import type {
   ProjectReferenceInput,
   ReadProjectFileInput,
   ReadProjectPreviewImageInput,
+  ReadConversationAttachmentPreviewInput,
   ReadConfigurationWorkspaceFileInput,
   ReorderConversationsInput,
   ReplaceLatestConversationMessageInput,
@@ -122,6 +126,7 @@ import type {
   ManagedBrowserEventListener,
   TerminalSessionEventListener,
   WorkspaceTerminalTabOpenRequestListener,
+  WorkspaceTerminalTabCloseRequestListener,
   WorkspaceBrowserTabOpenRequestListener,
   WorkspaceBrowserTabCloseRequestListener,
   WindowStateListener,
@@ -243,6 +248,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
     input: ImportConversationAttachmentBytesInput,
   ): Promise<ConversationAttachment[]> {
     return this.desktopBridge.importConversationAttachmentBytes(input);
+  }
+
+  public readConversationAttachmentPreview(
+    input: ReadConversationAttachmentPreviewInput,
+  ): Promise<ConversationAttachmentPreview> {
+    return this.desktopBridge.readConversationAttachmentPreview(input);
   }
 
   public listDraftConversationAttachments(
@@ -391,6 +402,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.onWorkspaceTerminalTabOpenRequested(listener);
   }
 
+  public onWorkspaceTerminalTabCloseRequested(
+    listener: WorkspaceTerminalTabCloseRequestListener,
+  ): () => void {
+    return this.desktopBridge.onWorkspaceTerminalTabCloseRequested(listener);
+  }
+
   public confirmWorkspaceBrowserTabOpened(input: WorkspaceBrowserTabOpenedInput): Promise<void> {
     return this.desktopBridge.confirmWorkspaceBrowserTabOpened(input);
   }
@@ -451,6 +468,10 @@ export class DesktopAgentClientAdapter implements AgentClient {
     input: ConversationReferenceInput,
   ): Promise<ConversationTimelineItem[]> {
     return this.desktopBridge.listConversationTimeline(input);
+  }
+
+  public searchConversations(input: ConversationSearchInput): Promise<ConversationSearchResult[]> {
+    return this.desktopBridge.searchConversations(input);
   }
 
   public listConversationPendingMessages(

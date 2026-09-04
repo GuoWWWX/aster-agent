@@ -21,12 +21,23 @@ const toolNames = new Set([
   SET_TEAM_COLLABORATION_PLAN_TOOL_NAME,
   WAIT_FOR_AGENT_MESSAGE_TOOL_NAME,
 ]);
+const conversationReadToolNames = new Set([
+  LIST_AGENT_CONVERSATIONS_TOOL_NAME,
+  READ_AGENT_CONVERSATION_TOOL_NAME,
+]);
 
 const emptyArgumentsSchema = z.object({}).strict();
 const readConversationArgumentsSchema = z.object({
-  conversationId: z.string().uuid().describe("Target Agent conversation UUID. It must not be the current conversation."),
-  maxTokens: z.number().int().min(256).max(8_192).default(4_096)
+  beforeSequence: z.number().int().positive().optional()
+    .describe("Optional cursor returned by a previous read. Only messages before this sequence are considered."),
+  conversationId: z.string().uuid().optional()
+    .describe("Target Agent conversation UUID. Omit it to query the current conversation."),
+  historyScope: z.enum(["compressed", "all"]).default("compressed")
+    .describe("History range to query. compressed reads messages covered by the latest compression checkpoint and falls back to all history when no checkpoint exists; all reads the entire persisted history."),
+  maxTokens: z.number().int().min(256).max(12_288).default(4_096)
     .describe("Maximum estimated tokens allowed for this conversation snapshot."),
+  query: z.string().trim().min(1).max(500).optional()
+    .describe("Optional topic to retrieve from the target conversation. Relevant historical turns are prioritized while recent context remains bounded."),
 }).strict();
 const sendMessageArgumentsSchema = z.object({
   content: z.string().trim().min(1).max(20_000).describe("Message body to send to the target Agent."),
@@ -85,7 +96,7 @@ export class AgentCommunicationTool {
         parameters: modelToolParameters(emptyArgumentsSchema),
       },
       {
-        description: "Read a bounded snapshot of another Agent conversation at any time, including while it is running. It contains the latest compression checkpoint plus newer original messages, reports current status, and never exceeds maxTokens. Call again with a different budget when more detail is needed.",
+        description: "Read a bounded snapshot of the current or another Agent conversation at any time, including while it is running. Pass query to retrieve matching complete turns, including the user question, Agent answer, tool calls, and tool results. historyScope defaults to compressed history covered by the latest checkpoint, or all history when no checkpoint exists; pass all to search the entire persisted history. Continue older results with pagination.nextBeforeSequence as beforeSequence. It never exceeds maxTokens.",
         name: READ_AGENT_CONVERSATION_TOOL_NAME,
         parameters: modelToolParameters(readConversationArgumentsSchema),
       },
@@ -105,6 +116,18 @@ export class AgentCommunicationTool {
         parameters: modelToolParameters(waitForMessageArgumentsSchema),
       },
     ];
+  }
+
+  public getConversationReadDefinitions(): ModelToolDefinition[] {
+    return this.getDefinitions().filter((definition) =>
+      conversationReadToolNames.has(definition.name),
+    );
+  }
+
+  public getCoordinationDefinitions(): ModelToolDefinition[] {
+    return this.getDefinitions().filter((definition) =>
+      !conversationReadToolNames.has(definition.name),
+    );
   }
 
   public getExecutionPolicy(toolName: string): ToolExecutionPolicy {
@@ -153,18 +176,31 @@ export class AgentCommunicationTool {
         }
         case READ_AGENT_CONVERSATION_TOOL_NAME: {
           const parsed = readConversationArgumentsSchema.parse(argumentsValue);
+          const targetConversationId = parsed.conversationId ?? input.conversationId;
+          const checkpoint = this.database.getContextCheckpoint(targetConversationId);
+          const historyScope = parsed.historyScope === "compressed" && checkpoint === null
+            ? "all"
+            : parsed.historyScope;
           const reference = buildConversationReferenceBundle({
+            allowCurrentConversation: true,
+            ...(parsed.beforeSequence === undefined
+              ? {}
+              : { beforeSequence: parsed.beforeSequence }),
             budgetTokens: parsed.maxTokens,
             currentConversationId: input.conversationId,
             database: this.database,
-            referencedConversationIds: [parsed.conversationId],
+            historyScope,
+            ...(parsed.query === undefined ? {} : { query: parsed.query }),
+            referencedConversationIds: [targetConversationId],
           });
-          if (reference.referencedConversationIds.length === 0) {
-            throw new Error("An Agent cannot read its own conversation through this tool.");
-          }
-          const conversation = this.database.getConversation(parsed.conversationId);
+          const conversation = this.database.getConversation(targetConversationId);
           return success({
             ...reference,
+            checkpointCoveredThroughSequence: checkpoint?.coveredThroughSequence ?? null,
+            historyScope,
+            pagination: reference.pagination[0] ?? null,
+            ...(parsed.query === undefined ? {} : { query: parsed.query }),
+            requestedHistoryScope: parsed.historyScope,
             conversation: {
               activeSubagentCount: conversation.activeSubagentCount,
               activeRunId: conversation.activeRunId,

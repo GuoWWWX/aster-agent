@@ -7,11 +7,13 @@ import {
   approveToolChangeInputSchema,
   cancelRunInputSchema,
   conversationContextUsageInputSchema,
+  conversationSearchInputSchema,
   conversationReferenceInputSchema,
   importConversationAttachmentBytesInputSchema,
   forkConversationInputSchema,
   pendingConversationMessageReferenceInputSchema,
   reorderPendingConversationMessagesInputSchema,
+  readConversationAttachmentPreviewInputSchema,
   removeConversationAttachmentInputSchema,
   createConversationInputSchema,
   discoverModelsInputSchema,
@@ -180,6 +182,10 @@ export const conversationReferenceIpcArgumentsSchema = z.tuple([
   conversationReferenceInputSchema
 ]);
 
+export const conversationSearchIpcArgumentsSchema = z.tuple([
+  conversationSearchInputSchema,
+]);
+
 export const forkConversationIpcArgumentsSchema = z.tuple([
   forkConversationInputSchema
 ]);
@@ -202,6 +208,10 @@ export const conversationContextUsageIpcArgumentsSchema = z.tuple([
 
 export const removeConversationAttachmentIpcArgumentsSchema = z.tuple([
   removeConversationAttachmentInputSchema
+]);
+
+export const readConversationAttachmentPreviewIpcArgumentsSchema = z.tuple([
+  readConversationAttachmentPreviewInputSchema,
 ]);
 
 export const importConversationAttachmentBytesIpcArgumentsSchema = z.tuple([

@@ -25,14 +25,16 @@ export function DialogOverlay({
 export function DialogContent({
   children,
   className,
+  overlayClassName,
   showCloseButton = true,
   ...props
 }: ComponentProps<typeof DialogPrimitive.Content> & {
+  overlayClassName?: string;
   showCloseButton?: boolean;
 }): ReactElement {
   return (
     <DialogPortal>
-      <DialogOverlay />
+      <DialogOverlay className={overlayClassName} />
       <DialogPrimitive.Content
         className={cn(
           "fixed left-1/2 top-1/2 z-[101] grid w-[calc(100vw-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-[var(--app-radius)] bg-[var(--app-panel)] text-[var(--app-foreground)] shadow-2xl outline-none",

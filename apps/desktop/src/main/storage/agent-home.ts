@@ -4,23 +4,23 @@ import os from "node:os";
 import path from "node:path";
 
 const LEGACY_AGENT_ENTRIES = [
-  "agent.sqlite",
-  "agent.sqlite-shm",
-  "agent.sqlite-wal",
-  "application-settings.json",
-  "browser-settings.json",
-  "context-compression-settings.json",
-  "conversation-files",
-  "integration-settings.json",
-  "langgraph-checkpoints.sqlite",
-  "langgraph-checkpoints.sqlite-shm",
-  "langgraph-checkpoints.sqlite-wal",
-  "mcp",
-  "model-catalog.json",
-  "model-credentials.json",
-  "plugins",
-  "skills",
-  "terminal-settings.json",
+  { source: "agent.sqlite", target: "agent.sqlite" },
+  { source: "agent.sqlite-shm", target: "agent.sqlite-shm" },
+  { source: "agent.sqlite-wal", target: "agent.sqlite-wal" },
+  { source: "application-settings.json", target: "application-settings.json" },
+  { source: "browser-settings.json", target: "browser-settings.json" },
+  { source: "context-compression-settings.json", target: "context-compression-settings.json" },
+  { source: "conversation-files", target: "attachments" },
+  { source: "integration-settings.json", target: "integration-settings.json" },
+  { source: "langgraph-checkpoints.sqlite", target: "langgraph-checkpoints.sqlite" },
+  { source: "langgraph-checkpoints.sqlite-shm", target: "langgraph-checkpoints.sqlite-shm" },
+  { source: "langgraph-checkpoints.sqlite-wal", target: "langgraph-checkpoints.sqlite-wal" },
+  { source: "mcp", target: "mcp" },
+  { source: "model-catalog.json", target: "model-catalog.json" },
+  { source: "model-credentials.json", target: "model-credentials.json" },
+  { source: "plugins", target: "plugins" },
+  { source: "skills", target: "skills" },
+  { source: "terminal-settings.json", target: "terminal-settings.json" },
 ] as const;
 
 export type AgentHomePaths = {
@@ -42,6 +42,7 @@ export type AgentHomePaths = {
 };
 
 export type AgentHomeInitialization = {
+  legacyConversationFilesPaths: string[];
   migratedEntries: string[];
   paths: AgentHomePaths;
 };
@@ -50,14 +51,16 @@ export function resolveAgentHomePath(input: {
   environment?: NodeJS.ProcessEnv;
   homeDirectory?: string;
 } = {}): string {
-  const configuredPath = input.environment?.AGENT_HOME?.trim();
+  const configuredAsterHome = input.environment?.ASTER_HOME?.trim();
+  const configuredAgentHome = input.environment?.AGENT_HOME?.trim();
+  const configuredPath = configuredAsterHome || configuredAgentHome;
   if (configuredPath !== undefined && configuredPath.length > 0) {
     if (!path.isAbsolute(configuredPath)) {
-      throw new Error("AGENT_HOME 必须是绝对路径。");
+      throw new Error(`${configuredAsterHome ? "ASTER_HOME" : "AGENT_HOME"} 必须是绝对路径。`);
     }
     return path.resolve(configuredPath);
   }
-  return path.join(path.resolve(input.homeDirectory ?? os.homedir()), ".agent");
+  return path.join(path.resolve(input.homeDirectory ?? os.homedir()), ".aster");
 }
 
 export function initializeElectronUserDataPath(input: {
@@ -65,8 +68,9 @@ export function initializeElectronUserDataPath(input: {
   legacyRootPath: string;
 }): string {
   const legacyRootPath = path.resolve(input.legacyRootPath);
-  const configuredAgentHome = input.environment?.AGENT_HOME?.trim();
-  if (configuredAgentHome === undefined || configuredAgentHome.length === 0) {
+  const configuredHome = input.environment?.ASTER_HOME?.trim()
+    || input.environment?.AGENT_HOME?.trim();
+  if (configuredHome === undefined || configuredHome.length === 0) {
     return legacyRootPath;
   }
 
@@ -94,7 +98,7 @@ export function createAgentHomePaths(rootPath: string): AgentHomePaths {
     applicationSettingsPath: path.join(resolvedRootPath, "application-settings.json"),
     browserSettingsPath: path.join(resolvedRootPath, "browser-settings.json"),
     contextCompressionSettingsPath: path.join(resolvedRootPath, "context-compression-settings.json"),
-    conversationFilesPath: path.join(resolvedRootPath, "conversation-files"),
+    conversationFilesPath: path.join(resolvedRootPath, "attachments"),
     conversationsPath: path.join(resolvedRootPath, "conversations"),
     credentialsPath: path.join(resolvedRootPath, "model-credentials.json"),
     graphCheckpointPath: path.join(resolvedRootPath, "langgraph-checkpoints.sqlite"),
@@ -109,6 +113,7 @@ export function createAgentHomePaths(rootPath: string): AgentHomePaths {
 }
 
 export async function initializeAgentHome(input: {
+  additionalLegacyRootPaths?: readonly string[];
   environment?: NodeJS.ProcessEnv;
   homeDirectory?: string;
   legacyRootPath: string;
@@ -116,21 +121,40 @@ export async function initializeAgentHome(input: {
 }): Promise<AgentHomeInitialization> {
   const paths = createAgentHomePaths(resolveAgentHomePath(input));
   const legacyRootPath = path.resolve(input.legacyRootPath);
+  const legacyAgentHomePath = path.join(
+    path.resolve(input.homeDirectory ?? os.homedir()),
+    ".agent",
+  );
+  const hasConfiguredHome = (input.environment?.ASTER_HOME?.trim().length ?? 0) > 0
+    || (input.environment?.AGENT_HOME?.trim().length ?? 0) > 0;
+  const legacyRootPaths = [...new Set([
+    ...(hasConfiguredHome ? [] : [legacyAgentHomePath]),
+    ...(input.additionalLegacyRootPaths ?? []).map((rootPath) => path.resolve(rootPath)),
+    legacyRootPath,
+  ])]
+    .filter((candidatePath) => candidatePath !== paths.rootPath);
+  const legacyConversationFilesPaths = legacyRootPaths.map(
+    (rootPath) => path.join(rootPath, "conversation-files"),
+  );
   await mkdir(paths.rootPath, { recursive: true, mode: 0o700 });
 
-  if (input.migrateLegacy === false || legacyRootPath === paths.rootPath) {
-    return { migratedEntries: [], paths };
+  if (input.migrateLegacy === false) {
+    return { legacyConversationFilesPaths, migratedEntries: [], paths };
   }
 
   const migratedEntries: string[] = [];
-  for (const entry of LEGACY_AGENT_ENTRIES) {
-    const sourcePath = path.join(legacyRootPath, entry);
-    const targetPath = path.join(paths.rootPath, entry);
-    if (await pathExists(targetPath) || !await pathExists(sourcePath)) continue;
-    await cp(sourcePath, targetPath, { dereference: false, recursive: true });
-    migratedEntries.push(entry);
+  for (const legacyPath of legacyRootPaths) {
+    for (const entry of LEGACY_AGENT_ENTRIES) {
+      const sourcePath = path.join(legacyPath, entry.source);
+      const targetPath = path.join(paths.rootPath, entry.target);
+      if (await pathExists(targetPath) || !await pathExists(sourcePath)) continue;
+      await cp(sourcePath, targetPath, { dereference: false, recursive: true });
+      migratedEntries.push(entry.source === entry.target
+        ? entry.target
+        : `${entry.source} -> ${entry.target}`);
+    }
   }
-  return { migratedEntries, paths };
+  return { legacyConversationFilesPaths, migratedEntries, paths };
 }
 
 async function pathExists(candidatePath: string): Promise<boolean> {

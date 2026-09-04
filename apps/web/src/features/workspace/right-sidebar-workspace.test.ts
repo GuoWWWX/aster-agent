@@ -8,6 +8,7 @@ import type {
 } from "@agent/protocol";
 
 import {
+  activeSidebarTabIdAfterClosingTabs,
   isAutoOpenedSideConversation,
   isProjectPreviewImagePath,
   projectImageNavigation,
@@ -271,6 +272,46 @@ describe("right sidebar tab closing", () => {
       new Set(["file:a", "terminal:b"]),
     )).toBe(false);
     expect(shouldCollapseRightSidebarAfterClosingTabs([], new Set())).toBe(false);
+  });
+
+  it("keeps the current page when a background tab closes", () => {
+    expect(activeSidebarTabIdAfterClosingTabs(
+      openTabs,
+      "terminal:b",
+      new Set(["file:a"]),
+    )).toBe("terminal:b");
+  });
+
+  it("selects the following tab after closing an earlier active tab", () => {
+    expect(activeSidebarTabIdAfterClosingTabs(
+      openTabs,
+      "file:a",
+      new Set(["file:a"]),
+    )).toBe("terminal:b");
+  });
+
+  it("selects the previous tab after closing the last active tab", () => {
+    expect(activeSidebarTabIdAfterClosingTabs(
+      openTabs,
+      "chat:c",
+      new Set(["chat:c"]),
+    )).toBe("terminal:b");
+  });
+
+  it("selects the retained context-menu tab when closing all others", () => {
+    expect(activeSidebarTabIdAfterClosingTabs(
+      openTabs,
+      "file:a",
+      new Set(["file:a", "chat:c"]),
+    )).toBe("terminal:b");
+  });
+
+  it("returns no active tab after the final tab closes", () => {
+    expect(activeSidebarTabIdAfterClosingTabs(
+      openTabs,
+      "terminal:b",
+      new Set(openTabs.map((tab) => tab.id)),
+    )).toBeNull();
   });
 });
 

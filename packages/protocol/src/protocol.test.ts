@@ -13,8 +13,11 @@ import {
   contextCompressionThresholdSchema,
   conversationContextUsageInputSchema,
   conversationContextUsageSchema,
+  conversationAttachmentPreviewSchema,
   conversationMessageItemSchema,
   conversationRunEventSchema,
+  conversationSearchInputSchema,
+  conversationSearchResponseSchema,
   conversationSummarySchema,
   conversationTaskListSchema,
   createProjectEntryInputSchema,
@@ -38,6 +41,7 @@ import {
   runtimeInfoSchema,
   resolveContextCompressionThresholdTokens,
   replaceLatestConversationMessageInputSchema,
+  readConversationAttachmentPreviewInputSchema,
   renameTeamInstanceInputSchema,
   reorderTeamInstancesInputSchema,
   saveModelConfigurationInputSchema,
@@ -50,6 +54,7 @@ import {
   terminalSessionEventSchema,
   terminalSessionOpenInputSchema,
   workspaceBrowserTabOpenRequestSchema,
+  workspaceTerminalTabCloseRequestSchema,
   workspaceTerminalTabOpenedInputSchema,
   workspaceTerminalTabOpenRequestSchema,
 } from "./index.js";
@@ -95,9 +100,15 @@ describe("protocol bootstrap contract", () => {
     expect(approveToolChangeInputSchema.parse({
       approved: true,
       runId: "00000000-0000-4000-8000-000000000001",
+      scope: "session",
+      toolId: "00000000-0000-4000-8000-000000000002",
+    }).scope).toBe("session");
+    expect(() => approveToolChangeInputSchema.parse({
+      approved: true,
+      runId: "00000000-0000-4000-8000-000000000001",
       scope: "agent",
       toolId: "00000000-0000-4000-8000-000000000002",
-    }).scope).toBe("agent");
+    })).toThrow();
     expect(agentPermissionRuleSchema.parse({ tool: "run_command", pattern: "mvn package *" }))
       .toEqual({ pattern: "mvn package *", tool: "run_command" });
     expect(agentPermissionRuleSchema.parse({ tool: "browser_control", pattern: "navigate https://example.com/*" }))
@@ -122,6 +133,21 @@ describe("protocol bootstrap contract", () => {
     });
 
     expect(settings.permissionPolicies["browser-control"]).toBe("ask");
+    expect(settings.general.approvalReviewer).toBe("user");
+  });
+
+  it("accepts AI approval review independently from the permission mode", () => {
+    const settings = applicationSettingsSchema.parse({
+      ...DEFAULT_APPLICATION_SETTINGS,
+      general: {
+        ...DEFAULT_APPLICATION_SETTINGS.general,
+        approvalReviewer: "auto_review",
+        defaultPermissionMode: "ask_before_changes",
+      },
+    });
+
+    expect(settings.general.approvalReviewer).toBe("auto_review");
+    expect(settings.general.defaultPermissionMode).toBe("ask_before_changes");
   });
 
   it("accepts the persisted Agent conversation-selector preference", () => {
@@ -315,6 +341,13 @@ describe("protocol bootstrap contract", () => {
       .toThrow();
     expect(terminalSessionEventSchema.parse({ data: "ready\r\n", sessionId, type: "data" }))
       .toMatchObject({ type: "data" });
+    expect(workspaceTerminalTabCloseRequestSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000003",
+      sessionId,
+    })).toEqual({
+      conversationId: "00000000-0000-4000-8000-000000000003",
+      sessionId,
+    });
     expect(managedBrowserBoundsInputSchema.parse({
       height: 600,
       sessionId,
@@ -339,6 +372,16 @@ describe("protocol bootstrap contract", () => {
       x: 848,
       y: 112,
     })).toEqual({ command: "showDownloads", sessionId, x: 848, y: 112 });
+    expect(managedBrowserCommandInputSchema.parse({
+      command: "showFind",
+      sessionId,
+      x: 848,
+      y: 112,
+    })).toEqual({ command: "showFind", sessionId, x: 848, y: 112 });
+    expect(managedBrowserEventSchema.parse({
+      sessionId,
+      type: "openGlobalSearch",
+    })).toEqual({ sessionId, type: "openGlobalSearch" });
     expect(managedBrowserCommandInputSchema.parse({
       colorScheme: "light",
       command: "setColorScheme",
@@ -638,18 +681,27 @@ describe("protocol bootstrap contract", () => {
   it("validates replacement of the latest sent user message", () => {
     const conversationId = "00000000-0000-4000-8000-000000000001";
     const messageId = "00000000-0000-4000-8000-000000000002";
+    const attachmentId = "00000000-0000-4000-8000-000000000003";
 
     expect(replaceLatestConversationMessageInputSchema.parse({
+      attachmentIds: [attachmentId],
       content: "修改后的任务",
       conversationId,
       messageId,
       permissionMode: "ask_before_changes",
     })).toEqual({
+      attachmentIds: [attachmentId],
       content: "修改后的任务",
       conversationId,
       messageId,
       permissionMode: "ask_before_changes",
     });
+    expect(replaceLatestConversationMessageInputSchema.parse({
+      attachmentIds: [attachmentId],
+      content: "",
+      conversationId,
+      messageId,
+    })).toMatchObject({ attachmentIds: [attachmentId], content: "" });
     expect(() => replaceLatestConversationMessageInputSchema.parse({
       content: "",
       conversationId,
@@ -743,6 +795,43 @@ describe("protocol bootstrap contract", () => {
     });
   });
 
+  it("validates bounded conversation search requests and results", () => {
+    const conversationId = "00000000-0000-4000-8000-000000000001";
+    const itemId = "00000000-0000-4000-8000-000000000002";
+    expect(conversationSearchInputSchema.parse({ query: "缓存命中" }))
+      .toEqual({ limit: 50, query: "缓存命中" });
+    expect(conversationSearchResponseSchema.parse([{
+      content: "分析缓存命中率",
+      conversationId,
+      conversationTitle: "性能排查",
+      createdAt: "2026-09-04T00:00:00.000Z",
+      itemId,
+      parentConversationId: null,
+      projectId: null,
+      role: "assistant",
+      threadKind: "agent",
+    }])).toHaveLength(1);
+    expect(() => conversationSearchInputSchema.parse({ query: "" })).toThrow();
+  });
+
+  it("carries a transient model progress update", () => {
+    expect(conversationRunEventSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      delta: "已确认问题位置，准备修改文件",
+      kind: "progress",
+      messageId: "00000000-0000-4000-8000-000000000003",
+      modelId: "test-model",
+      reset: true,
+      runId: "00000000-0000-4000-8000-000000000002",
+      type: "assistant.reasoning_delta"
+    })).toMatchObject({
+      delta: "已确认问题位置，准备修改文件",
+      kind: "progress",
+      reset: true,
+      type: "assistant.reasoning_delta"
+    });
+  });
+
   it("carries a durable model retry timeline update", () => {
     const conversationId = "00000000-0000-4000-8000-000000000001";
     const runId = "00000000-0000-4000-8000-000000000002";
@@ -830,6 +919,30 @@ describe("protocol bootstrap contract", () => {
       content: "",
       conversationId,
     })).toThrow("text, an attachment, or a project file reference");
+  });
+
+  it("validates bounded conversation attachment image previews", () => {
+    const input = {
+      attachmentId: "00000000-0000-4000-8000-000000000002",
+      conversationId: "00000000-0000-4000-8000-000000000001",
+    };
+    expect(readConversationAttachmentPreviewInputSchema.parse(input)).toEqual(input);
+    expect(conversationAttachmentPreviewSchema.parse({
+      data: "AQID",
+      mimeType: "image/png",
+    })).toEqual({ data: "AQID", mimeType: "image/png" });
+    expect(() => readConversationAttachmentPreviewInputSchema.parse({
+      ...input,
+      attachmentId: "not-an-id",
+    })).toThrow();
+    expect(() => conversationAttachmentPreviewSchema.parse({
+      data: "not base64",
+      mimeType: "image/png",
+    })).toThrow();
+    expect(() => conversationAttachmentPreviewSchema.parse({
+      data: "AQI",
+      mimeType: "image/png",
+    })).toThrow("complete quartets");
   });
 
   it("accepts unique project file references and rejects invalid paths", () => {

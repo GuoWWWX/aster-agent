@@ -4,9 +4,12 @@ import type {
   ConversationContextUsage,
   ConversationContextUsageInput,
   ConversationAttachment,
+  ConversationAttachmentPreview,
   ConversationMessageSubmission,
   ConversationPendingMessage,
   ConversationReferenceInput,
+  ConversationSearchInput,
+  ConversationSearchResult,
   ForkConversationInput,
   ConversationRunEvent,
   ConversationSummary,
@@ -26,6 +29,7 @@ import type {
   RemoveConversationAttachmentInput,
   PendingConversationMessageReferenceInput,
   ReorderPendingConversationMessagesInput,
+  ReadConversationAttachmentPreviewInput,
   SetConversationArchivedInput,
   SetConversationModelSelectionInput,
   SetConversationProjectInput,
@@ -89,6 +93,7 @@ import type {
   TerminalSessionWriteInput,
   WorkspaceTerminalTabOpenRequest,
   WorkspaceTerminalTabOpenedInput,
+  WorkspaceTerminalTabCloseRequest,
   WorkspaceBrowserTabOpenRequest,
   WorkspaceBrowserTabOpenedInput,
   WorkspaceBrowserTabCloseRequest,
@@ -166,6 +171,9 @@ export interface DesktopBridge {
   importConversationAttachmentBytes(
     input: ImportConversationAttachmentBytesInput
   ): Promise<ConversationAttachment[]>;
+  readConversationAttachmentPreview(
+    input: ReadConversationAttachmentPreviewInput
+  ): Promise<ConversationAttachmentPreview>;
   listDraftConversationAttachments(
     input: ConversationReferenceInput
   ): Promise<ConversationAttachment[]>;
@@ -238,6 +246,9 @@ export interface DesktopBridge {
   onWorkspaceTerminalTabOpenRequested(
     listener: (request: WorkspaceTerminalTabOpenRequest) => void,
   ): () => void;
+  onWorkspaceTerminalTabCloseRequested(
+    listener: (request: WorkspaceTerminalTabCloseRequest) => void,
+  ): () => void;
   confirmWorkspaceBrowserTabOpened(input: WorkspaceBrowserTabOpenedInput): Promise<void>;
   onWorkspaceBrowserTabOpenRequested(
     listener: (request: WorkspaceBrowserTabOpenRequest) => void,
@@ -262,6 +273,7 @@ export interface DesktopBridge {
   listConversationTimeline(
     input: ConversationReferenceInput
   ): Promise<ConversationTimelineItem[]>;
+  searchConversations(input: ConversationSearchInput): Promise<ConversationSearchResult[]>;
   listConversationPendingMessages(
     input: ConversationReferenceInput
   ): Promise<ConversationPendingMessage[]>;

@@ -120,6 +120,26 @@ export const conversationAttachmentSchema = z
 
 export const conversationAttachmentListSchema = z.array(conversationAttachmentSchema);
 
+export const readConversationAttachmentPreviewInputSchema = z
+  .object({
+    attachmentId: z.string().uuid(),
+    conversationId: conversationIdSchema,
+  })
+  .strict();
+
+export const conversationAttachmentPreviewSchema = z
+  .object({
+    data: z.string()
+      .min(4)
+      .max(Math.ceil(MAX_ATTACHMENT_BYTES * 4 / 3) + 4)
+      .regex(/^[A-Za-z0-9+/]*={0,2}$/u)
+      .refine((value) => value.length % 4 === 0, {
+        message: "Attachment preview base64 must contain complete quartets.",
+      }),
+    mimeType: z.string().trim().min(1).max(255),
+  })
+  .strict();
+
 export const removeConversationAttachmentInputSchema = z
   .object({
     attachmentId: z.string().uuid(),
@@ -462,6 +482,29 @@ export const conversationTimelineItemSchema = z.discriminatedUnion("kind", [
 export const conversationTimelineResponseSchema = z.array(
   conversationTimelineItemSchema
 );
+
+export const conversationSearchInputSchema = z
+  .object({
+    limit: z.number().int().min(1).max(100).default(50),
+    query: z.string().trim().min(1).max(500),
+  })
+  .strict();
+
+export const conversationSearchResultSchema = z
+  .object({
+    content: z.string().max(2_000),
+    conversationId: conversationIdSchema,
+    conversationTitle: z.string().trim().min(1).max(MAX_TITLE_LENGTH),
+    createdAt: isoTimestampSchema,
+    itemId: timelineItemIdSchema,
+    parentConversationId: conversationIdSchema.nullable(),
+    projectId: projectIdSchema.nullable(),
+    role: z.enum(["user", "assistant", "agent"]),
+    threadKind: conversationThreadKindSchema,
+  })
+  .strict();
+
+export const conversationSearchResponseSchema = z.array(conversationSearchResultSchema).max(100);
 
 export const conversationPermissionModeSchema = z.enum([
   "read_only",
@@ -868,7 +911,8 @@ export const sendTeamMessageInputSchema = z
 
 export const replaceLatestConversationMessageInputSchema = z
   .object({
-    content: z.string().trim().min(1).max(MAX_MESSAGE_LENGTH),
+    attachmentIds: z.array(z.string().uuid()).max(MAX_CONVERSATION_ATTACHMENTS).optional(),
+    content: z.string().trim().max(MAX_MESSAGE_LENGTH),
     conversationId: conversationIdSchema,
     messageId: timelineItemIdSchema,
     modelId: z.string().trim().min(1).max(200).optional(),
@@ -900,6 +944,13 @@ export const replaceLatestConversationMessageInputSchema = z
         path: ["referencedConversationIds"]
       });
     }
+    if (value.content.length === 0 && (value.attachmentIds?.length ?? 0) === 0) {
+      context.addIssue({
+        code: "custom",
+        message: "A replacement message must contain text or an attachment.",
+        path: ["content"]
+      });
+    }
   });
 
 export const cancelRunInputSchema = z.object({ runId: runIdSchema }).strict();
@@ -908,7 +959,7 @@ export const approveToolChangeInputSchema = z
   .object({
     approved: z.boolean(),
     runId: runIdSchema,
-    scope: z.enum(["once", "session", "agent"]).default("once"),
+    scope: z.enum(["once", "session"]).default("once"),
     toolId: timelineItemIdSchema
   })
   .strict();
@@ -997,7 +1048,7 @@ const assistantReasoningDeltaEventSchema = z
   .object({
     conversationId: conversationIdSchema,
     delta: z.string().min(1).max(MAX_MESSAGE_LENGTH),
-    kind: z.enum(["summary", "content"]),
+    kind: z.enum(["summary", "content", "progress"]),
     messageId: timelineItemIdSchema,
     modelId: z.string().min(1).max(200),
     reset: z.boolean(),
@@ -1113,6 +1164,9 @@ export const conversationRunEventSchema = z.discriminatedUnion("type", [
 export type ConversationSummary = z.infer<typeof conversationSummarySchema>;
 export type ConversationModelSelection = z.infer<typeof conversationModelSelectionSchema>;
 export type ConversationAttachment = z.infer<typeof conversationAttachmentSchema>;
+export type ConversationAttachmentPreview = z.infer<
+  typeof conversationAttachmentPreviewSchema
+>;
 export type ConversationThreadKind = z.infer<typeof conversationThreadKindSchema>;
 export type ConversationAgentBinding = z.infer<typeof conversationAgentBindingSchema>;
 export type ConversationTaskStatus = z.infer<typeof conversationTaskStatusSchema>;
@@ -1155,6 +1209,9 @@ export type ReorderConversationsInput = z.infer<
 export type RemoveConversationAttachmentInput = z.infer<
   typeof removeConversationAttachmentInputSchema
 >;
+export type ReadConversationAttachmentPreviewInput = z.infer<
+  typeof readConversationAttachmentPreviewInputSchema
+>;
 export type ImportConversationAttachmentBytesInput = z.infer<
   typeof importConversationAttachmentBytesInputSchema
 >;
@@ -1179,6 +1236,8 @@ export type ConversationToolExecutionMode = z.infer<
 export type ConversationTimelineItem = z.infer<
   typeof conversationTimelineItemSchema
 >;
+export type ConversationSearchInput = z.infer<typeof conversationSearchInputSchema>;
+export type ConversationSearchResult = z.infer<typeof conversationSearchResultSchema>;
 export type ConversationPermissionMode = z.infer<
   typeof conversationPermissionModeSchema
 >;

@@ -21,7 +21,7 @@ describe("task-list context", () => {
       updatedAt: "2026-08-27T00:01:00.000Z",
     });
 
-    expect(context).toMatchObject({ role: "system", toolCalls: [] });
+    expect(context).toMatchObject({ role: "user", toolCalls: [] });
     expect(context?.content).toContain("[Current task list | live state]");
     expect(context?.content).toContain("[blocked]");
     expect(context?.content).toContain("Reason:");

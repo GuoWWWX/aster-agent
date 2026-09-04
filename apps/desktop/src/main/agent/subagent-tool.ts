@@ -145,7 +145,7 @@ export class SubagentTool {
   public getDefinitions(): ModelToolDefinition[] {
     return [
       {
-        description: "Start an independent one-shot Subagent for one bounded task. Give it a short name. Usually omit icon so the app generates a stable identity; only pass an exact value from the declared enum when a specific icon matters. An unsupported optional icon is ignored instead of blocking creation. You may also select a configured Agent or team member with agentId. The tool returns immediately; use wait_for_subagents only when the current work depends on its result. The Subagent becomes read-only after completion. Its concise result is delivered automatically, while the full conversation remains available through read_agent_conversation.",
+        description: "Start an independent one-shot Subagent for one bounded task. Give it a short name. Usually omit icon so the app generates a stable identity; only pass an exact value from the declared enum when a specific icon matters. An unsupported optional icon is ignored instead of blocking creation. You may also select a configured Agent or team member with agentId. The tool returns immediately; use wait_for_subagents only when the current work depends on its result. The Subagent becomes read-only after completion. Its concise completion receipt is delivered privately and automatically for the parent to synthesize; supporting detail remains in the child conversation. Do not list or read the child merely to retrieve a normal completion result.",
         name: SPAWN_SUBAGENT_TOOL_NAME,
         parameters: modelToolParameters(spawnArgumentsSchema),
       },
@@ -155,7 +155,7 @@ export class SubagentTool {
         parameters: modelToolParameters(emptyArgumentsSchema),
       },
       {
-        description: "List Subagent tasks created by this conversation and inspect their current status and final result.",
+        description: "List Subagent tasks created by this conversation to inspect status on explicit demand. Normal completion already delivers the final result automatically, so do not poll this tool merely to retrieve it.",
         name: LIST_SUBAGENTS_TOOL_NAME,
         parameters: modelToolParameters(emptyArgumentsSchema),
       },

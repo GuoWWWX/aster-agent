@@ -19,7 +19,8 @@ import type {
   ModelProviderAdapter,
   ModelTurnResult
 } from "../model/model-contracts.js";
-import { ModelRequestError } from "../model/model-request-error.js";
+import { ModelRequestError, ModelResponseError } from "../model/model-request-error.js";
+import { BrowserToolPlugin } from "../plugins/browser-tool-plugin.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
 import { IntegrationConfigurationStore } from "../settings/integration-configuration-store.js";
 import { SkillDocumentStore } from "../settings/skill-document-store.js";
@@ -31,12 +32,17 @@ import { ConversationAttachmentStore } from "../storage/conversation-attachment-
 import { EventProjector } from "../storage/event-projector.js";
 import { ThreadLog } from "../storage/thread-log.js";
 import { ProjectToolRegistry } from "../tools/project-tool-registry.js";
+import { WebSearchTool } from "../tools/web-search-tool.js";
+import { WorkspaceBrowserTabController } from "../tools/workspace-browser-tab-controller.js";
 import { WorkspaceTerminalTabController } from "../tools/workspace-terminal-tab-controller.js";
 import {
   AgentRuntime,
+  createTurnSummarySourceMessages,
+  shouldGenerateModelTurnSummary,
   type ContextCompactionInput,
   type ContextCompactor
 } from "./agent-runtime.js";
+import type { ManagedContextSourceMessage } from "./context-manager.js";
 import { SkillRuntime } from "./skill-runtime.js";
 
 const temporaryDirectories: string[] = [];
@@ -105,9 +111,9 @@ class OpenTerminalFixtureModel implements ModelProviderAdapter {
         content: "",
         finishReason: "tool_calls",
         toolCalls: [{
-          arguments: JSON.stringify({ name: "构建" }),
+          arguments: JSON.stringify({ action: "create", name: "构建" }),
           id: "call_open_terminal",
-          name: "open_terminal",
+          name: "terminal_control",
         }],
       });
     }
@@ -588,6 +594,15 @@ class ExhaustedRetryFixtureModel implements ModelProviderAdapter {
 
   public completeTurn(): Promise<ModelTurnResult> {
     this.requests += 1;
+    return Promise.reject(new ModelRequestError(429, "Too Many Requests"));
+  }
+}
+
+class DepletedBalanceFixtureModel implements ModelProviderAdapter {
+  public requests = 0;
+
+  public completeTurn(): Promise<ModelTurnResult> {
+    this.requests += 1;
     return Promise.reject(new ModelRequestError(402, "Insufficient Balance"));
   }
 }
@@ -603,6 +618,24 @@ class TimeoutThenSuccessfulFixtureModel implements ModelProviderAdapter {
 
     input.onTextDelta("超时后已恢复");
     return Promise.resolve({ content: "超时后已恢复", finishReason: "stop", toolCalls: [] });
+  }
+}
+
+class InvalidResponseThenSuccessfulFixtureModel implements ModelProviderAdapter {
+  public requests = 0;
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.requests += 1;
+    if (this.requests === 1) {
+      return Promise.reject(new ModelResponseError("Model returned an invalid tool call."));
+    }
+
+    input.onTextDelta("无效响应重试成功");
+    return Promise.resolve({
+      content: "无效响应重试成功",
+      finishReason: "stop",
+      toolCalls: [],
+    });
   }
 }
 
@@ -688,6 +721,87 @@ class RepeatingCommandFixtureModel implements ModelProviderAdapter {
     }
     input.onTextDelta("命令已执行");
     return Promise.resolve({ content: "命令已执行", finishReason: "stop", toolCalls: [] });
+  }
+}
+
+class BrowserOpenFixtureModel implements ModelProviderAdapter {
+  private turn = 0;
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.turn += 1;
+    if (this.turn === 1) {
+      return Promise.resolve({
+        content: "",
+        finishReason: "tool_calls",
+        toolCalls: [{
+          arguments: JSON.stringify({ action: "open", url: "https://example.test" }),
+          id: "call_browser_open",
+          name: "browser_control",
+        }],
+      });
+    }
+    input.onTextDelta("浏览器已打开");
+    return Promise.resolve({ content: "浏览器已打开", finishReason: "stop", toolCalls: [] });
+  }
+}
+
+class BrowserScreenshotFixtureModel implements ModelProviderAdapter {
+  public readonly requests: CompleteTurnInput[] = [];
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.requests.push({ ...input, messages: structuredClone(input.messages) });
+    if (this.requests.length === 1) {
+      return Promise.resolve({
+        content: "",
+        finishReason: "tool_calls",
+        toolCalls: [{
+          arguments: JSON.stringify({ action: "open", url: "https://example.test" }),
+          id: "call_browser_visual_open",
+          name: "browser_control",
+        }],
+      });
+    }
+    if (this.requests.length === 2) {
+      return Promise.resolve({
+        content: "",
+        finishReason: "tool_calls",
+        toolCalls: [{
+          arguments: JSON.stringify({
+            action: "screenshot",
+            browserId: "00000000-0000-4000-8000-000000000003",
+          }),
+          id: "call_browser_screenshot",
+          name: "browser_control",
+        }],
+      });
+    }
+    input.onTextDelta("截图已查看");
+    return Promise.resolve({ content: "截图已查看", finishReason: "stop", toolCalls: [] });
+  }
+}
+
+class ExhaustToolBudgetFixtureModel implements ModelProviderAdapter {
+  public readonly requests: CompleteTurnInput[] = [];
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.requests.push({ ...input, messages: [...input.messages], tools: [...input.tools] });
+    if (input.tools.length === 0) {
+      input.onTextDelta("已根据现有证据完成回答");
+      return Promise.resolve({
+        content: "已根据现有证据完成回答",
+        finishReason: "stop",
+        toolCalls: [],
+      });
+    }
+    return Promise.resolve({
+      content: "",
+      finishReason: "tool_calls",
+      toolCalls: [{
+        arguments: JSON.stringify({ path: "" }),
+        id: `call_budget_directory_${this.requests.length}`,
+        name: "list_directory",
+      }],
+    });
   }
 }
 
@@ -1301,8 +1415,128 @@ class FixtureContextCompactor implements ContextCompactor {
   }
 }
 
+class AutoReviewCommandFixtureModel implements ModelProviderAdapter {
+  public reviewRequests = 0;
+  private mainTurns = 0;
+
+  public constructor(
+    private readonly command: string,
+    private readonly review: { decision: "allow" | "ask"; reason: string; risk: "low" | "medium" | "high" | "critical" },
+  ) {}
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    if (input.messages[0]?.content.includes("security reviewer for a local coding Agent")) {
+      this.reviewRequests += 1;
+      return Promise.resolve({
+        content: JSON.stringify(this.review),
+        finishReason: "stop",
+        toolCalls: [],
+      });
+    }
+    this.mainTurns += 1;
+    if (this.mainTurns === 1) {
+      return Promise.resolve({
+        content: "",
+        finishReason: "tool_calls",
+        toolCalls: [{
+          arguments: JSON.stringify({ command: this.command, timeoutMs: 10_000 }),
+          id: "call_auto_review_command",
+          name: "run_command",
+        }],
+      });
+    }
+    input.onTextDelta("命令已执行");
+    return Promise.resolve({ content: "命令已执行", finishReason: "stop", toolCalls: [] });
+  }
+}
+
+class BlockingContextCompactor extends FixtureContextCompactor {
+  public readonly started: Promise<void>;
+  private readonly gate: Promise<void>;
+  private releaseGate: () => void = () => undefined;
+  private resolveStarted: () => void = () => undefined;
+
+  public constructor() {
+    super();
+    this.started = new Promise((resolve) => {
+      this.resolveStarted = resolve;
+    });
+    this.gate = new Promise((resolve) => {
+      this.releaseGate = resolve;
+    });
+  }
+
+  public override async compact(input: ContextCompactionInput): Promise<string> {
+    const firstRequest = this.requests.length === 0;
+    const result = super.compact(input);
+    if (firstRequest) {
+      this.resolveStarted();
+      await this.gate;
+    }
+    return result;
+  }
+
+  public continue(): void {
+    this.releaseGate();
+  }
+}
+
+class PausableContextCompactor extends FixtureContextCompactor {
+  public readonly firstRequestStarted: Promise<void>;
+  private resolveFirstRequestStarted: () => void = () => undefined;
+
+  public constructor() {
+    super();
+    this.firstRequestStarted = new Promise((resolve) => {
+      this.resolveFirstRequestStarted = resolve;
+    });
+  }
+
+  public override compact(input: ContextCompactionInput): Promise<string> {
+    if (this.requests.length > 0) return super.compact(input);
+    this.requests.push({ ...input, messages: [...input.messages] });
+    this.resolveFirstRequestStarted();
+    return new Promise((_, reject) => {
+      const rejectOnAbort = (): void => reject(
+        input.signal.reason instanceof Error
+          ? input.signal.reason
+          : new DOMException("The operation was aborted.", "AbortError"),
+      );
+      if (input.signal.aborted) {
+        rejectOnAbort();
+        return;
+      }
+      input.signal.addEventListener("abort", rejectOnAbort, { once: true });
+    });
+  }
+}
+
+class ModelBackedContextCompactorFixture implements ModelProviderAdapter {
+  public readonly requests: CompleteTurnInput[] = [];
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.requests.push({ ...input, messages: [...input.messages] });
+    const content = JSON.stringify({
+      artifactRefs: [],
+      commands: [],
+      constraints: [],
+      decisions: [],
+      errors: [],
+      filesChanged: [],
+      filesRead: [],
+      goals: ["继续当前任务"],
+      pendingWork: [],
+      rejectedApproaches: [],
+      requirements: [],
+      taskStatus: ["上下文已压缩"],
+      testResults: [],
+    });
+    return Promise.resolve({ content, finishReason: "stop", toolCalls: [] });
+  }
+}
+
 describe("AgentRuntime", () => {
-  it("registers open_terminal for a project conversation and returns the resolved tab name", async () => {
+  it("registers terminal_control for a project conversation and returns the resolved tab name", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-open-terminal-"));
     temporaryDirectories.push(root);
     const database = new AgentDatabase(":memory:");
@@ -1371,7 +1605,8 @@ describe("AgentRuntime", () => {
       });
     });
 
-    expect(model.requests[0]?.tools.some((tool) => tool.name === "open_terminal")).toBe(true);
+    expect(model.requests[0]?.tools.some((tool) => tool.name === "terminal_control")).toBe(true);
+    expect(model.requests[0]?.tools.some((tool) => tool.name === "open_terminal")).toBe(false);
     const toolMessage = model.requests[1]?.messages.find((message) => (
       message.role === "tool" && message.toolCallId === "call_open_terminal"
     ));
@@ -1379,7 +1614,7 @@ describe("AgentRuntime", () => {
     expect(toolMessage?.content).toContain('"terminalId":"00000000-0000-4000-8000-000000000003"');
     expect(terminalSessions.open).toHaveBeenCalledOnce();
     expect(database.listTimeline(conversation.id)).toContainEqual(expect.objectContaining({
-      name: "open_terminal",
+      name: "terminal_control",
       status: "completed",
     }));
     database.close();
@@ -1683,8 +1918,27 @@ describe("AgentRuntime", () => {
     if (first.kind !== "started") throw new Error("Expected the first run to start.");
     firstRunId = first.runId;
     await model.firstRequestStarted;
+    const replacementAttachmentId = crypto.randomUUID();
+    database.createConversationAttachment({
+      contextTokens: 8,
+      conversationId: conversation.id,
+      createdAt: new Date().toISOString(),
+      extractedTextPath: null,
+      id: replacementAttachmentId,
+      kind: "file",
+      messageId: null,
+      mimeType: "text/plain",
+      name: "replacement.txt",
+      pendingMessageId: null,
+      projectPath: null,
+      sizeBytes: 16,
+      source: "upload",
+      storedPath: path.join(root, "replacement.txt"),
+      truncated: false,
+    });
 
     const replacement = await runtime.replaceLatestMessage({
+      attachmentIds: [replacementAttachmentId],
       content: "修改后的任务",
       conversationId: conversation.id,
       messageId: first.userMessage.id,
@@ -1703,6 +1957,7 @@ describe("AgentRuntime", () => {
     }));
     expect(database.listTimeline(conversation.id)).toEqual([
       expect.objectContaining({
+        attachments: [expect.objectContaining({ id: replacementAttachmentId })],
         content: "修改后的任务",
         id: first.userMessage.id,
         role: "user",
@@ -1725,7 +1980,11 @@ describe("AgentRuntime", () => {
       "run_terminal",
     ]);
     expect(threadLog.readContext(conversation.id)?.messages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ content: "修改后的任务", runId: replacement.runId }),
+      expect.objectContaining({
+        attachmentIds: [replacementAttachmentId],
+        content: "修改后的任务",
+        runId: replacement.runId,
+      }),
       expect.objectContaining({ content: "修改后的回答", runId: replacement.runId }),
     ]));
     expect(threadLog.readContext(conversation.id)?.messages.some((message) =>
@@ -2312,6 +2571,7 @@ describe("AgentRuntime", () => {
       "close_task_list",
       "create_task_list",
       "list_agent_conversations",
+      "list_background_commands",
       "list_models",
       "list_subagents",
       "read_agent_conversation",
@@ -2506,6 +2766,15 @@ describe("AgentRuntime", () => {
     expect(model.requests[2]?.messages[0]?.content).toContain(
       `temporary Subagent derived from parent conversation ${lead.id}`,
     );
+    expect(model.requests[2]?.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "list_agent_conversations",
+      "read_agent_conversation",
+    ]));
+    expect(model.requests[2]?.tools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
+      "send_agent_message",
+      "set_team_collaboration_plan",
+      "wait_for_agent_message",
+    ]));
     expect(database.getConversation(subagent.id)).toMatchObject({
       agentId: "explorer",
       parentConversationId: lead.id,
@@ -3152,6 +3421,121 @@ describe("AgentRuntime", () => {
     expect(modelContent).not.toContain("压缩前问题");
     expect(database.listTimeline(current.id)[0]).toMatchObject({
       content: "结合引用给我结论",
+      role: "user",
+    });
+    database.close();
+  });
+
+  it("reserves the final bounded model turn for an answer without tools", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-final-turn-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const model = new ExhaustToolBudgetFixtureModel();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+    );
+
+    const finished = await new Promise<Extract<ConversationRunEvent, { type: "run.finished" }>>(
+      (resolve) => {
+        runtime.sendMessage({ content: "持续检查直到预算结束", conversationId: conversation.id }, (event) => {
+          if (event.type === "run.finished") resolve(event);
+        });
+      },
+    );
+
+    expect(finished.status).toBe("completed");
+    expect(model.requests).toHaveLength(64);
+    expect(model.requests.at(-2)?.tools.length).toBeGreaterThan(0);
+    expect(model.requests.at(-2)?.messages.at(-1)?.content).toContain(
+      "last model turn that may call tools",
+    );
+    expect(model.requests.at(-1)?.tools).toEqual([]);
+    expect(model.requests.at(-1)?.messages.at(-1)?.content).toContain(
+      "tool budget is exhausted",
+    );
+    expect(database.listTimeline(conversation.id)).toContainEqual(expect.objectContaining({
+      content: "已根据现有证据完成回答",
+      role: "assistant",
+    }));
+    database.close();
+  });
+
+  it("uses the current request to retrieve older matching turns from a referenced conversation", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const current = database.createConversation(null);
+    const source = database.createConversation(null);
+    const relevantRun = database.createRunWithUserMessage(
+      source.id,
+      "记录 ATLAS-4821 的发布约束",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "ATLAS-4821 只能在维护窗口发布。",
+      conversationId: source.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: relevantRun.runId,
+      toolCalls: [],
+    });
+    database.finishRun(relevantRun.runId, "completed", null);
+    const coveredThroughSequence = database.listContextMessages(source.id).at(-1)?.sequence;
+    if (coveredThroughSequence === undefined) throw new Error("Expected source messages.");
+    database.saveContextCheckpoint(source.id, coveredThroughSequence, "此前对话已压缩。");
+    const recentRun = database.createRunWithUserMessage(
+      source.id,
+      `最近的无关问题-${"x".repeat(2_000)}`,
+      "test-model",
+    );
+    database.finishRun(recentRun.runId, "completed", null);
+    const model = new ContinuousConversationFixtureModel();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          contextWindow: 8_000,
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+    );
+
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage({
+        content: "请从引用对话中找出 ATLAS-4821 的发布约束",
+        conversationId: current.id,
+        referencedConversationIds: [source.id],
+      }, (event) => {
+        if (event.type === "run.finished") resolve();
+      });
+    });
+
+    const modelContent = model.requests[0]?.messages.at(-1)?.content ?? "";
+    expect(modelContent).toContain("ATLAS-4821 只能在维护窗口发布");
+    expect(modelContent).toContain("[History relevant to the current request]");
+    expect(database.listTimeline(current.id)[0]).toMatchObject({
+      content: "请从引用对话中找出 ATLAS-4821 的发布约束",
       role: "user",
     });
     database.close();
@@ -3870,6 +4254,18 @@ describe("AgentRuntime", () => {
     expect(childRequest?.messages.some((message) =>
       JSON.stringify(message.providerState)?.includes("call_spawn_subagent") === true
     )).toBe(false);
+    expect(childRequest?.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "list_agent_conversations",
+      "read_agent_conversation",
+    ]));
+    expect(childRequest?.tools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
+      "send_agent_message",
+      "wait_for_agent_message",
+    ]));
+    expect(childRequest?.messages[0]?.content).toContain(
+      "The runtime privately delivers only the completion receipt to the parent for synthesis",
+    );
+    expect(childRequest?.messages[0]?.content).toContain("standalone Markdown --- line");
     expect(database.getConversation(parent.id).activeRunId).not.toBeNull();
     model.completeChild();
     await finished;
@@ -4028,6 +4424,12 @@ describe("AgentRuntime", () => {
     const consolidationRequest = model.requests.find((request) => request.messages.some((message) =>
       message.content.includes("[Subagent task result]"),
     ));
+    expect(consolidationRequest?.messages.find((message) =>
+      message.content.includes("[Subagent task result]"),
+    )?.content).toContain("not a user-visible chat message");
+    expect(consolidationRequest?.messages[0]?.content).toContain(
+      "never expose the internal delivery envelope",
+    );
     expect(consolidationRequest?.configuration.modelId).toBe(parentSelection.modelId);
     expect(configurationCalls).toContainEqual({
       modelId: parentSelection.modelId,
@@ -4416,6 +4818,98 @@ describe("AgentRuntime", () => {
       .toBe(false);
     expect(requestMessages.some((message) => message.content.includes("回退当前轮次-4-")))
       .toBe(true);
+    const activity = database.listTimeline(conversation.id).find(
+      (item): item is ConversationToolItem => item.kind === "tool" && item.name === "compact_context",
+    );
+    expect(activity?.status).toBe("failed");
+    expect(JSON.parse(activity?.result ?? "{}")).toMatchObject({
+      compressedMessageCount: 0,
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "软件内部发生错误，请重试。",
+      },
+      trigger: "automatic",
+    });
+    database.close();
+  });
+
+  it("keeps the active task and consumes steer input sent while compaction is running", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    for (let turn = 1; turn <= 3; turn += 1) {
+      const run = database.createRunWithUserMessage(
+        conversation.id,
+        `旧轮次-${turn}-${"x".repeat(20_000)}`,
+        "test-model",
+      );
+      database.appendAssistantTurn({
+        content: `旧轮次-${turn}-回答`,
+        conversationId: conversation.id,
+        messageId: crypto.randomUUID(),
+        modelId: "test-model",
+        runId: run.runId,
+        toolCalls: [],
+      });
+      database.finishRun(run.runId, "completed", null);
+    }
+    const model = new ContinuousConversationFixtureModel();
+    const compactor = new BlockingContextCompactor();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          contextWindow: 100_000,
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      {
+        getConfiguration: () => ({
+          mode: "tokens",
+          percentageThreshold: 80,
+          tokenThreshold: 24_000,
+          version: 1,
+        }),
+      },
+      compactor,
+    );
+    const finished = new Promise<void>((resolve) => {
+      runtime.sendMessage({
+        content: "当前任务必须在压缩后继续执行",
+        conversationId: conversation.id,
+      }, (event) => {
+        if (event.type === "run.finished") resolve();
+      });
+    });
+
+    await compactor.started;
+    const steered = runtime.sendMessage({
+      content: "插队补充：最终答案必须包含验收结论",
+      conversationId: conversation.id,
+      deliveryMode: "steer",
+    }, () => undefined);
+    expect(steered).toMatchObject({ kind: "pending" });
+    compactor.continue();
+    await finished;
+
+    const requestContents = model.requests[0]?.messages.map((message) => message.content) ?? [];
+    expect(requestContents.some((content) => content.includes("当前任务必须在压缩后继续执行")))
+      .toBe(true);
+    expect(requestContents.some((content) => content.includes("插队补充：最终答案必须包含验收结论")))
+      .toBe(true);
+    expect(database.listTimeline(conversation.id).some((item) => (
+      item.kind === "message"
+      && item.role === "user"
+      && item.content === "插队补充：最终答案必须包含验收结论"
+    ))).toBe(true);
     database.close();
   });
 
@@ -4764,7 +5258,7 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
-  it("persists the final provider error in the retry timeline without a generic failure message", async () => {
+  it("persists the final rate-limit error in the retry timeline without a generic failure message", async () => {
     const database = new AgentDatabase(":memory:");
     const projects = new ProjectRegistry(database);
     const conversation = database.createConversation(null);
@@ -4789,7 +5283,7 @@ describe("AgentRuntime", () => {
     const finished = new Promise<Extract<ConversationRunEvent, { type: "run.finished" }>>(
       (resolve) => {
         runtime.sendMessage(
-          { content: "额度不足时持续显示重试记录", conversationId: conversation.id },
+          { content: "限流时持续显示重试记录", conversationId: conversation.id },
           (event) => {
             events.push(event);
             if (event.type === "run.finished") resolve(event);
@@ -4809,11 +5303,11 @@ describe("AgentRuntime", () => {
       retryInMs: null,
       status: "failed",
     });
-    expect(failedRetryEvent.retry.reason).toContain("HTTP 402");
+    expect(failedRetryEvent.retry.reason).toContain("HTTP 429");
     const failedTimeline = database.listTimeline(conversation.id);
     expect(failedTimeline).toHaveLength(2);
     expect(failedTimeline[0]).toMatchObject({
-      content: "额度不足时持续显示重试记录",
+      content: "限流时持续显示重试记录",
       role: "user",
     });
     const failedRetry = failedTimeline[1];
@@ -4823,7 +5317,590 @@ describe("AgentRuntime", () => {
     expect(failedRetry).toMatchObject({ attempt: 5, status: "failed" });
     expect(typeof failedRetry.completedAt).toBe("string");
     expect(typeof failedRetry.durationMs).toBe("number");
-    expect(failedRetry.reason).toContain("HTTP 402");
+    expect(failedRetry.reason).toContain("HTTP 429");
+    database.close();
+  });
+
+  it("runs /compact locally and records one visible compaction lifecycle", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    for (let turn = 1; turn <= 3; turn += 1) {
+      const run = database.createRunWithUserMessage(
+        conversation.id,
+        `短轮次-${turn}`,
+        "test-model",
+      );
+      database.appendAssistantTurn({
+        content: `短轮次-${turn}-回答`,
+        conversationId: conversation.id,
+        messageId: crypto.randomUUID(),
+        modelId: "test-model",
+        runId: run.runId,
+        toolCalls: [],
+      });
+      database.finishRun(run.runId, "completed", null);
+    }
+    const model = new ContinuousConversationFixtureModel();
+    const compactor = new FixtureContextCompactor();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          contextWindow: 200_000,
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      {
+        getConfiguration: () => ({
+          mode: "tokens",
+          percentageThreshold: 80,
+          tokenThreshold: 100_000,
+          version: 1,
+        }),
+      },
+      compactor,
+    );
+    const events: ConversationRunEvent[] = [];
+
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage({ content: "/compact", conversationId: conversation.id }, (event) => {
+        events.push(event);
+        if (event.type === "run.finished") resolve();
+      });
+    });
+
+    expect(model.requests).toHaveLength(0);
+    expect(compactor.requests).toHaveLength(1);
+    const activity = database.listTimeline(conversation.id).find(
+      (item): item is ConversationToolItem => item.kind === "tool" && item.name === "compact_context",
+    );
+    expect(activity?.status).toBe("completed");
+    const compactionResult = JSON.parse(activity?.result ?? "{}") as Record<string, unknown>;
+    expect(compactionResult).toMatchObject({
+      compactionPassCount: 1,
+      compressedMessageCount: 2,
+      trigger: "manual",
+    });
+    expect(typeof compactionResult.durationMs).toBe("number");
+    expect(events.some((event) => event.type === "tool.started")).toBe(true);
+    expect(events.some((event) => event.type === "tool.completed")).toBe(true);
+    expect(database.getContextCheckpoint(conversation.id)).not.toBeNull();
+
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage({ content: "继续任务", conversationId: conversation.id }, (event) => {
+        if (event.type === "run.finished") resolve();
+      });
+    });
+    expect(model.requests[0]?.messages.some((message) => message.content.trim() === "/compact"))
+      .toBe(false);
+    database.close();
+  });
+
+  it("pauses manual compaction without releasing queued input and resumes from its checkpoint", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    for (let turn = 1; turn <= 3; turn += 1) {
+      const run = database.createRunWithUserMessage(
+        conversation.id,
+        `暂停前轮次-${turn}`,
+        "test-model",
+      );
+      database.appendAssistantTurn({
+        content: `暂停前轮次-${turn}-回答`,
+        conversationId: conversation.id,
+        messageId: crypto.randomUUID(),
+        modelId: "test-model",
+        runId: run.runId,
+        toolCalls: [],
+      });
+      database.finishRun(run.runId, "completed", null);
+    }
+    const model = new ContinuousConversationFixtureModel();
+    const compactor = new PausableContextCompactor();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          contextWindow: 200_000,
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      {
+        getConfiguration: () => ({
+          mode: "tokens",
+          percentageThreshold: 80,
+          tokenThreshold: 100_000,
+          version: 1,
+        }),
+      },
+      compactor,
+    );
+    let firstRunId = "";
+    const firstFinished = new Promise<Extract<ConversationRunEvent, { type: "run.finished" }>>(
+      (resolve) => {
+        const accepted = runtime.sendMessage({
+          content: "/compact",
+          conversationId: conversation.id,
+        }, (event) => {
+          if (event.type === "run.finished") resolve(event);
+        });
+        if (accepted.kind === "started") firstRunId = accepted.runId;
+      },
+    );
+
+    await compactor.firstRequestStarted;
+    runtime.sendMessage({
+      content: "普通补充消息",
+      conversationId: conversation.id,
+      deliveryMode: "queue",
+    }, () => undefined);
+    runtime.sendMessage({
+      content: "插队补充消息",
+      conversationId: conversation.id,
+      deliveryMode: "steer",
+    }, () => undefined);
+    runtime.cancelRun(firstRunId);
+
+    await expect(firstFinished).resolves.toMatchObject({ status: "cancelled" });
+    expect(model.requests).toHaveLength(0);
+    expect(database.listPendingMessages(conversation.id).map((message) => message.content))
+      .toEqual(["普通补充消息", "插队补充消息"]);
+    expect(database.listTimeline(conversation.id).find((item) => (
+      item.kind === "tool" && item.name === "compact_context"
+    ))).toMatchObject({ status: "cancelled" });
+
+    const completedRuns: string[] = [];
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage({ content: "/compact", conversationId: conversation.id }, (event) => {
+        if (event.type !== "run.finished") return;
+        completedRuns.push(event.runId);
+        if (model.requests.length === 2) resolve();
+      });
+    });
+
+    expect(compactor.requests).toHaveLength(2);
+    expect(model.requests).toHaveLength(2);
+    expect(model.requests[0]?.messages.some((message) => (
+      message.content.includes("插队补充消息")
+    ))).toBe(true);
+    expect(model.requests[1]?.messages.some((message) => (
+      message.content.includes("普通补充消息")
+    ))).toBe(true);
+    expect(database.listPendingMessages(conversation.id)).toHaveLength(0);
+    expect(completedRuns).toHaveLength(3);
+    database.close();
+  });
+
+  it("stores short completed turns locally and compacts their hidden summaries", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const model = new ContinuousConversationFixtureModel();
+    const compactor = new FixtureContextCompactor();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          contextWindow: 200_000,
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      {
+        getConfiguration: () => ({
+          mode: "tokens",
+          percentageThreshold: 80,
+          tokenThreshold: 100_000,
+          version: 1,
+        }),
+      },
+      compactor,
+      null,
+      null,
+      null,
+      null,
+      new WebSearchTool(),
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      { generateTurnSummaries: true },
+    );
+    const send = (content: string): Promise<void> => new Promise((resolve) => {
+      runtime.sendMessage({ content, conversationId: conversation.id }, (event) => {
+        if (event.type === "run.finished") resolve();
+      });
+    });
+
+    await send("第一轮");
+    await send("第二轮");
+    await send("第三轮");
+    expect(compactor.requests).toHaveLength(0);
+    const lastBoundary = database.listContextMessages(conversation.id).at(-1)?.sequence;
+    if (lastBoundary === undefined) throw new Error("Expected completed turns.");
+    expect(database.getLatestConversationTurnSummary(conversation.id, lastBoundary)?.summary)
+      .toContain("第三轮");
+
+    await send("/compact");
+
+    expect(compactor.requests).toHaveLength(1);
+    expect(compactor.requests[0]?.messages[0]?.content).toContain("Completed turn summary");
+    expect(compactor.requests[0]?.messages).toHaveLength(1);
+    expect(database.getContextCheckpoint(conversation.id)?.summary)
+      .toContain("已压缩到消息");
+    database.close();
+  });
+
+  it("generates a long-turn summary after the visible run has already finished", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const compactor = new BlockingContextCompactor();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          contextWindow: 200_000,
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      new ContinuousConversationFixtureModel(),
+      undefined,
+      {
+        getConfiguration: () => ({
+          mode: "tokens",
+          percentageThreshold: 80,
+          tokenThreshold: 100_000,
+          version: 1,
+        }),
+      },
+      compactor,
+      null,
+      null,
+      null,
+      null,
+      new WebSearchTool(),
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      { generateTurnSummaries: true },
+    );
+    const finished = new Promise<Extract<ConversationRunEvent, { type: "run.finished" }>>(
+      (resolve) => {
+        runtime.sendMessage({
+          content: `长输入-${"x".repeat(4_000)}`,
+          conversationId: conversation.id,
+        }, (event) => {
+          if (event.type === "run.finished") resolve(event);
+        });
+      },
+    );
+
+    await expect(finished).resolves.toMatchObject({ status: "completed" });
+    await compactor.started;
+    expect(database.getLatestConversationTurnSummary(conversation.id, Number.MAX_SAFE_INTEGER))
+      .toBeNull();
+    compactor.continue();
+    await vi.waitFor(() => {
+      expect(database.getLatestConversationTurnSummary(conversation.id, Number.MAX_SAFE_INTEGER))
+        .not.toBeNull();
+    });
+    expect(compactor.requests[0]?.messages[0]?.content).toContain("[User input]");
+    database.close();
+  });
+
+  it("labels user, steer, Agent, assistant, and tool sources before summarizing a turn", () => {
+    const source = (
+      role: ManagedContextSourceMessage["role"],
+      content: string,
+      sequence: number,
+    ): ManagedContextSourceMessage => ({
+      attachmentIds: [],
+      attachments: [],
+      content,
+      role,
+      runId: "run-1",
+      sequence,
+      toolCallId: role === "tool" ? "call-1" : null,
+      toolCalls: [],
+    });
+    const messages = createTurnSummarySourceMessages([
+      source("user", "普通用户要求", 1),
+      source("user", [
+        "[Runtime steer note]",
+        "runtime metadata",
+        "[End runtime steer note]",
+        "插队补充要求",
+      ].join("\n"), 2),
+      source("assistant", "最终处理结果", 3),
+      source("tool", "工具返回事实", 4),
+    ], [{
+      content: "来自另一个 Agent 的协作信息",
+      messageType: "agent_result",
+      senderConversationId: "conversation-agent",
+      senderTitle: "审查 Agent",
+    }]);
+
+    expect(messages.map((message) => message.content)).toEqual([
+      "[User input]\n普通用户要求",
+      "[Steer input]\n插队补充要求",
+      "[Agent input: 审查 Agent · conversation-agent · agent_result]\n来自另一个 Agent 的协作信息",
+      "[Assistant result]\n最终处理结果",
+      "[Tool evidence]\n工具返回事实",
+    ]);
+    expect(shouldGenerateModelTurnSummary(messages)).toBe(false);
+    expect(shouldGenerateModelTurnSummary([
+      source("user", "x".repeat(1_700), 1),
+      source("assistant", "y".repeat(1_700), 2),
+    ])).toBe(true);
+    expect(shouldGenerateModelTurnSummary([
+      source("user", "x".repeat(1_200), 1),
+      source("assistant", "y".repeat(1_200), 2),
+    ])).toBe(false);
+    expect(shouldGenerateModelTurnSummary(createTurnSummarySourceMessages([], [{
+      content: "来自 Agent 的长输入".repeat(600),
+      senderConversationId: "conversation-agent",
+      senderTitle: "审查 Agent",
+    }]))).toBe(true);
+  });
+
+  it("uses a short non-reasoning model request for context compaction", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    for (let turn = 1; turn <= 3; turn += 1) {
+      const run = database.createRunWithUserMessage(
+        conversation.id,
+        `历史轮次-${turn}`,
+        "gpt-5.6-terra",
+      );
+      database.appendAssistantTurn({
+        content: `历史轮次-${turn}-完成`,
+        conversationId: conversation.id,
+        messageId: crypto.randomUUID(),
+        modelId: "gpt-5.6-terra",
+        runId: run.runId,
+        toolCalls: [],
+      });
+      database.finishRun(run.runId, "completed", null);
+    }
+    const model = new ModelBackedContextCompactorFixture();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-responses",
+          baseUrl: "https://example.test/v1",
+          contextWindow: 200_000,
+          modelId: "gpt-5.6-terra",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      {
+        getConfiguration: () => ({
+          mode: "tokens",
+          percentageThreshold: 80,
+          tokenThreshold: 100_000,
+          version: 1,
+        }),
+      },
+    );
+
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage({ content: "/compact", conversationId: conversation.id }, (event) => {
+        if (event.type === "run.finished") resolve();
+      });
+    });
+
+    expect(model.requests).toHaveLength(1);
+    expect(model.requests[0]).toMatchObject({
+      maxOutputTokens: 2_048,
+      reasoning: { kind: "effort", value: "none" },
+      tools: [],
+    });
+    database.close();
+  });
+
+  it("persists a ThreadLog compaction checkpoint when SQLite sequences are globally offset", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-compact-thread-log-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const unrelated = database.createConversation(null);
+    const unrelatedRun = database.createRunWithUserMessage(
+      unrelated.id,
+      "占用较早的数据库消息序号",
+      "test-model",
+    );
+    database.appendAssistantTurn({
+      content: "较早对话已完成",
+      conversationId: unrelated.id,
+      messageId: crypto.randomUUID(),
+      modelId: "test-model",
+      runId: unrelatedRun.runId,
+      toolCalls: [],
+    });
+    database.finishRun(unrelatedRun.runId, "completed", null);
+
+    const conversation = database.createConversation(null);
+    const threadLog = new ThreadLog(path.join(root, "conversations"));
+    const model = new ContinuousConversationFixtureModel();
+    const compactor = new FixtureContextCompactor();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          contextWindow: 200_000,
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      {
+        getConfiguration: () => ({
+          mode: "tokens",
+          percentageThreshold: 80,
+          tokenThreshold: 100_000,
+          version: 1,
+        }),
+      },
+      compactor,
+      null,
+      null,
+      null,
+      undefined,
+      undefined,
+      null,
+      threadLog,
+      new EventProjector(database, threadLog),
+    );
+    const send = (content: string): Promise<void> => new Promise((resolve) => {
+      runtime.sendMessage({ content, conversationId: conversation.id }, (event) => {
+        if (event.type === "run.finished") resolve();
+      });
+    });
+
+    await send("第一轮");
+    await send("第二轮");
+    await send("第三轮");
+    await send("/compact");
+
+    const activity = database.listTimeline(conversation.id).find(
+      (item): item is ConversationToolItem => item.kind === "tool" && item.name === "compact_context",
+    );
+    expect(activity?.status).toBe("completed");
+    expect(JSON.parse(activity?.result ?? "{}")).toMatchObject({
+      compressedMessageCount: 2,
+      trigger: "manual",
+    });
+    const checkpoint = database.getContextCheckpoint(conversation.id);
+    expect(checkpoint).not.toBeNull();
+    expect(checkpoint?.coveredThroughSequence).toBe(
+      database.listContextMessages(conversation.id)[1]?.sequence,
+    );
+    await send("第四轮");
+    const nextRequestContents = model.requests.at(-1)?.messages.map((message) => message.content) ?? [];
+    expect(nextRequestContents.some((content) => content.includes("已压缩到消息 2"))).toBe(true);
+    expect(nextRequestContents).not.toContain("第一轮");
+    expect(nextRequestContents).toEqual(expect.arrayContaining(["第二轮", "第三轮", "第四轮"]));
+    database.close();
+  });
+
+  it("does not automatically retry a depleted model balance", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const model = new DepletedBalanceFixtureModel();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      () => Promise.resolve(),
+    );
+    const events: ConversationRunEvent[] = [];
+    const finished = new Promise<Extract<ConversationRunEvent, { type: "run.finished" }>>(
+      (resolve) => {
+        runtime.sendMessage(
+          { content: "余额不足不自动重试", conversationId: conversation.id },
+          (event) => {
+            events.push(event);
+            if (event.type === "run.finished") resolve(event);
+          },
+        );
+      },
+    );
+
+    await expect(finished).resolves.toMatchObject({
+      agentError: { code: "MODEL_RATE_LIMITED", retryable: false },
+      status: "failed",
+    });
+    expect(model.requests).toBe(1);
+    expect(events.filter((event) => event.type === "model.retry_updated")).toHaveLength(0);
+    expect(database.listTimeline(conversation.id)).toEqual([
+      expect.objectContaining({ content: "余额不足不自动重试", role: "user" }),
+      expect.objectContaining({ role: "assistant", status: "failed" }),
+    ]);
     database.close();
   });
 
@@ -4931,6 +6008,52 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
+  it("retries an invalid model response before any output is emitted", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const model = new InvalidResponseThenSuccessfulFixtureModel();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      () => Promise.resolve(),
+    );
+    const events: ConversationRunEvent[] = [];
+    const finished = new Promise<Extract<ConversationRunEvent, { type: "run.finished" }>>(
+      (resolve) => {
+        runtime.sendMessage(
+          { content: "重试无效响应", conversationId: conversation.id },
+          (event) => {
+            events.push(event);
+            if (event.type === "run.finished") resolve(event);
+          },
+        );
+      },
+    );
+
+    await expect(finished).resolves.toMatchObject({ error: null, status: "completed" });
+    expect(model.requests).toBe(2);
+    expect(events.filter((event) => event.type === "model.retry_updated").map((event) => ({
+      attempt: event.retry.attempt,
+      status: event.retry.status,
+    }))).toEqual([
+      { attempt: 1, status: "retrying" },
+      { attempt: 1, status: "completed" },
+    ]);
+    database.close();
+  });
+
   it("does not repeat a model request after it has streamed text", async () => {
     const database = new AgentDatabase(":memory:");
     const projects = new ProjectRegistry(database);
@@ -5004,6 +6127,7 @@ describe("AgentRuntime", () => {
       undefined,
       null,
       threadLog,
+      new EventProjector(database, threadLog),
     );
     const events: ConversationRunEvent[] = [];
     const finished = new Promise<void>((resolve) => {
@@ -5029,6 +6153,13 @@ describe("AgentRuntime", () => {
       .listTimeline(conversation.id)
       .find((item) => item.kind === "tool" && item.name === "run_command");
     expect(events.map((event) => event.type)).toContain("tool.approval_requested");
+    const approvalEventIndex = events.findIndex((event) => event.type === "tool.approval_requested");
+    const resumedEventIndex = events.findIndex((event, index) =>
+      index > approvalEventIndex
+      && event.type === "tool.started"
+      && event.tool.status === "running"
+    );
+    expect(resumedEventIndex).toBeGreaterThan(approvalEventIndex);
     const outputEvents = events.filter((event) => event.type === "tool.output_delta");
     expect(outputEvents.length).toBeGreaterThan(0);
     expect(outputEvents.some((event) => event.type === "tool.output_delta" && event.delta.includes("agent-command-ok")))
@@ -5045,6 +6176,216 @@ describe("AgentRuntime", () => {
       .toBeGreaterThan(logEventTypes.indexOf("tool_approval_requested"));
     expect(logEventTypes.indexOf("tool_result"))
       .toBeGreaterThan(logEventTypes.indexOf("tool_approval_decided"));
+    const approvalDecision = threadLog.read(conversation.id)?.events.find(
+      (event) => event.type === "tool_approval_decided",
+    );
+    expect(approvalDecision?.payload).toMatchObject({
+      approved: true,
+      tool: { id: command.id, status: "running" },
+    });
+    database.close();
+  });
+
+  it("resumes a browser approval interrupt without rejecting its permission tool", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-browser-approval-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const browserId = "00000000-0000-4000-8000-000000000003";
+    const browser = {
+      back: vi.fn(),
+      capture: vi.fn(),
+      close: vi.fn(),
+      forward: vi.fn(),
+      getSession: vi.fn(),
+      interact: vi.fn().mockResolvedValue(undefined),
+      navigate: vi.fn().mockResolvedValue(undefined),
+      observe: vi.fn().mockResolvedValue({
+        elements: [],
+        text: "Example",
+        textTruncated: false,
+        title: "Example",
+        url: "https://example.test/",
+        viewport: { height: 600, width: 800 },
+      }),
+      open: vi.fn().mockResolvedValue({
+        canGoBack: false,
+        canGoForward: false,
+        isLoading: false,
+        sessionId: browserId,
+        title: "Example",
+        url: "https://example.test/",
+        zoomPercent: 100,
+      }),
+      reload: vi.fn(),
+      stop: vi.fn(),
+    };
+    const tabs = new WorkspaceBrowserTabController();
+    tabs.onOpenRequested((request) => {
+      tabs.confirmOpened({ requestId: request.requestId, resolvedName: "Example" });
+      return true;
+    });
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      new BrowserOpenFixtureModel(),
+      undefined,
+      undefined,
+      null,
+      null,
+      null,
+      null,
+      null,
+      undefined,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      new BrowserToolPlugin(browser, tabs),
+    );
+    const events: ConversationRunEvent[] = [];
+    const finished = new Promise<Extract<ConversationRunEvent, { type: "run.finished" }>>(
+      (resolve) => {
+        runtime.sendMessage(
+          {
+            content: "打开测试页面",
+            conversationId: conversation.id,
+            permissionMode: "ask_before_changes",
+          },
+          (event) => {
+            events.push(event);
+            if (event.type === "tool.approval_requested") {
+              runtime.approveToolChange({ approved: true, runId: event.runId, toolId: event.tool.id });
+            }
+            if (event.type === "run.finished") resolve(event);
+          },
+        );
+      },
+    );
+
+    await expect(finished).resolves.toMatchObject({ status: "completed" });
+    expect(events.map((event) => event.type)).toContain("tool.approval_requested");
+    expect(browser.open).toHaveBeenCalledOnce();
+    expect(database.listTimeline(conversation.id)).toContainEqual(
+      expect.objectContaining({ kind: "tool", name: "browser_control", status: "completed" }),
+    );
+    database.close();
+  });
+
+  it("returns browser screenshots to the next model turn as bounded vision input", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-browser-screenshot-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const browserId = "00000000-0000-4000-8000-000000000003";
+    const session = {
+      canGoBack: false,
+      canGoForward: false,
+      isLoading: false,
+      sessionId: browserId,
+      title: "Example",
+      url: "https://example.test/",
+      zoomPercent: 100,
+    };
+    const browser = {
+      back: vi.fn(),
+      capture: vi.fn().mockResolvedValue({
+        data: "YnJvd3Nlci1waXhlbHM=",
+        height: 600,
+        mimeType: "image/jpeg" as const,
+        width: 800,
+      }),
+      close: vi.fn(),
+      forward: vi.fn(),
+      getSession: vi.fn(() => session),
+      interact: vi.fn(),
+      navigate: vi.fn(),
+      observe: vi.fn(),
+      open: vi.fn().mockResolvedValue(session),
+      reload: vi.fn(),
+      stop: vi.fn(),
+    };
+    const tabs = new WorkspaceBrowserTabController();
+    tabs.onOpenRequested((request) => {
+      tabs.confirmOpened({ requestId: request.requestId, resolvedName: "Example" });
+      return true;
+    });
+    const model = new BrowserScreenshotFixtureModel();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      undefined,
+      null,
+      null,
+      null,
+      null,
+      null,
+      undefined,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      new BrowserToolPlugin(browser, tabs),
+    );
+    const finished = new Promise<Extract<ConversationRunEvent, { type: "run.finished" }>>(
+      (resolve) => {
+        runtime.sendMessage({
+          content: "打开页面并查看截图",
+          conversationId: conversation.id,
+          permissionMode: "ask_before_changes",
+        }, (event) => {
+          if (event.type === "tool.approval_requested") {
+            runtime.approveToolChange({ approved: true, runId: event.runId, toolId: event.tool.id });
+          }
+          if (event.type === "run.finished") resolve(event);
+        });
+      },
+    );
+
+    await expect(finished).resolves.toMatchObject({ status: "completed" });
+    expect(browser.capture).toHaveBeenCalledWith({ sessionId: browserId });
+    expect(model.requests[2]?.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        attachments: [expect.objectContaining({
+          data: "YnJvd3Nlci1waXhlbHM=",
+          kind: "image",
+          source: "browser",
+        })],
+        role: "user",
+      }),
+    ]));
     database.close();
   });
 
@@ -5205,7 +6546,7 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
-  it("persists Agent approval and keeps a session grant scoped to one conversation", async () => {
+  it("keeps an exact session grant scoped to one conversation", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-permission-scope-"));
     temporaryDirectories.push(root);
     const database = new AgentDatabase(":memory:");
@@ -5237,9 +6578,9 @@ describe("AgentRuntime", () => {
       projects,
       new ProjectToolRegistry(projects),
       new RepeatingCommandFixtureModel([
-        "Write-Output agent-command-ok",
         "Write-Output temporary-session-ok",
         "Write-Output temporary-session-ok",
+        "Write-Output different-target",
         "Write-Output temporary-session-ok",
       ]),
       undefined,
@@ -5252,24 +6593,6 @@ describe("AgentRuntime", () => {
       undefined,
       settings,
     );
-    const firstConversationEvents: ConversationRunEvent[] = [];
-    await new Promise<void>((resolve) => {
-      runtime.sendMessage({
-        content: "保存 Agent 命令权限",
-        conversationId: conversation.id,
-        permissionMode: "ask_before_changes",
-      }, (event) => {
-        firstConversationEvents.push(event);
-        if (event.type === "tool.approval_requested") {
-          runtime.approveToolChange({ approved: true, runId: event.runId, scope: "agent", toolId: event.tool.id });
-        }
-        if (event.type === "run.finished") resolve();
-      });
-    });
-    expect(firstConversationEvents.filter((event) => event.type === "tool.approval_requested")).toHaveLength(1);
-    expect(settings.getConfiguration().agentDirectory.agents.find((agent) => agent.id === profile.id)?.permissions.allow)
-      .toContainEqual({ pattern: "Write-Output agent-command-ok", tool: "run_command" });
-
     const sessionEvents: ConversationRunEvent[] = [];
     await new Promise<void>((resolve) => {
       runtime.sendMessage({
@@ -5298,6 +6621,24 @@ describe("AgentRuntime", () => {
     expect(sessionEvents.filter((event) => event.type === "tool.approval_requested")).toHaveLength(1);
     expect(subsequentEvents.filter((event) => event.type === "tool.approval_requested")).toHaveLength(0);
 
+    const differentCommandEvents: ConversationRunEvent[] = [];
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage({
+        content: "同一对话中的另一条命令仍需审批",
+        conversationId: conversation.id,
+        permissionMode: "ask_before_changes",
+      }, (event) => {
+        differentCommandEvents.push(event);
+        if (event.type === "tool.approval_requested") {
+          runtime.approveToolChange({ approved: false, runId: event.runId, toolId: event.tool.id });
+        }
+        if (event.type === "run.finished") resolve();
+      });
+    });
+    expect(differentCommandEvents.filter(
+      (event) => event.type === "tool.approval_requested",
+    )).toHaveLength(1);
+
     const otherEvents: ConversationRunEvent[] = [];
     await new Promise<void>((resolve) => {
       runtime.sendMessage({
@@ -5313,6 +6654,140 @@ describe("AgentRuntime", () => {
       });
     });
     expect(otherEvents.filter((event) => event.type === "tool.approval_requested")).toHaveLength(1);
+    database.close();
+  });
+
+  it("lets AI review approve a low-risk command without creating a broad grant", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-auto-review-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const profile = DEFAULT_APPLICATION_SETTINGS.agentDirectory.agents[0];
+    if (profile === undefined) throw new Error("Default Agent profile is missing.");
+    const settings = createPermissionSettingsProvider(profile.id);
+    settings.saveConfiguration({
+      ...settings.getConfiguration(),
+      general: {
+        ...settings.getConfiguration().general,
+        approvalReviewer: "auto_review",
+      },
+    });
+    const model = new AutoReviewCommandFixtureModel(
+      "Write-Output auto-review-ok",
+      { decision: "allow", reason: "只在本地输出文本。", risk: "low" },
+    );
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      undefined,
+      null,
+      null,
+      null,
+      null,
+      null,
+      undefined,
+      settings,
+    );
+    const events: ConversationRunEvent[] = [];
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage({
+        content: "在本地输出测试文字",
+        conversationId: conversation.id,
+        permissionMode: "ask_before_changes",
+      }, (event) => {
+        events.push(event);
+        if (event.type === "run.finished") resolve();
+      });
+    });
+
+    expect(model.reviewRequests).toBe(1);
+    expect(events.filter((event) => event.type === "tool.approval_requested")).toHaveLength(0);
+    expect(database.listTimeline(conversation.id).find(
+      (item) => item.kind === "tool" && item.name === "run_command",
+    )).toMatchObject({ status: "completed" });
+    database.close();
+  });
+
+  it("keeps destructive commands behind user approval even with AI review enabled", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-auto-review-dangerous-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const profile = DEFAULT_APPLICATION_SETTINGS.agentDirectory.agents[0];
+    if (profile === undefined) throw new Error("Default Agent profile is missing.");
+    const settings = createPermissionSettingsProvider(profile.id);
+    settings.saveConfiguration({
+      ...settings.getConfiguration(),
+      general: {
+        ...settings.getConfiguration().general,
+        approvalReviewer: "auto_review",
+      },
+    });
+    const model = new AutoReviewCommandFixtureModel(
+      "git reset --hard",
+      { decision: "allow", reason: "不应使用这条返回。", risk: "low" },
+    );
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      undefined,
+      null,
+      null,
+      null,
+      null,
+      null,
+      undefined,
+      settings,
+    );
+    const events: ConversationRunEvent[] = [];
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage({
+        content: "测试危险命令审批",
+        conversationId: conversation.id,
+        permissionMode: "ask_before_changes",
+      }, (event) => {
+        events.push(event);
+        if (event.type === "tool.approval_requested") {
+          runtime.approveToolChange({
+            approved: false,
+            runId: event.runId,
+            toolId: event.tool.id,
+          });
+        }
+        if (event.type === "run.finished") resolve();
+      });
+    });
+
+    expect(model.reviewRequests).toBe(0);
+    expect(events.filter((event) => event.type === "tool.approval_requested")).toHaveLength(1);
     database.close();
   });
 
@@ -5866,8 +7341,12 @@ describe("AgentRuntime", () => {
     expect(finished?.type).toBe("run.finished");
     if (finished?.type !== "run.finished") throw new Error("Expected a finished run event.");
     expect(finished.status).toBe("failed");
-    expect(finished.agentError).toMatchObject({ code: "MODEL_RESPONSE_INVALID" });
-    expect(finished.error).toContain("32");
+    expect(finished.agentError).toMatchObject({
+      code: "MODEL_RESPONSE_INVALID",
+      retryable: true,
+    });
+    expect(finished.error).toContain("超过单轮可处理数量 32");
+    expect(finished.error).not.toContain("ToolCallLimitError");
     expect(events.filter((event) => event.type === "tool.started")).toHaveLength(0);
     expect(database.listTimeline(conversation.id).filter((item) => item.kind === "tool"))
       .toHaveLength(0);

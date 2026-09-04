@@ -140,6 +140,7 @@ type RuntimeState = z.infer<typeof runtimeStateSchema> & {
 
 type RuntimeToolBatch = {
   activeSkills: SkillSnapshotRef[];
+  followUpMessages: ModelMessage[];
   messages: Map<string, ModelMessage>;
   successful: boolean;
 };
@@ -189,7 +190,7 @@ function isModelMessageAttachment(value: unknown): value is ModelMessageAttachme
     || (value.projectPath !== null && typeof value.projectPath !== "string")
     || (value.readState !== "full" && value.readState !== "metadata_only" && value.readState !== "preview")
     || typeof value.truncated !== "boolean"
-    || (value.source !== "project" && value.source !== "upload")
+    || (value.source !== "browser" && value.source !== "project" && value.source !== "upload")
   ) return false;
   if (value.kind === "text") return typeof value.content === "string";
   return value.kind === "image" && (value.data === null || typeof value.data === "string");
@@ -334,12 +335,22 @@ function addContextMessages(
   contextMessages: readonly ModelMessage[],
 ): BaseMessage[] {
   if (contextMessages.length === 0) return [...messages];
-  const context = contextMessages.map(toLangChainMessage);
+  const leadingContext = contextMessages
+    .filter((message) => message.role === "system")
+    .map(toLangChainMessage);
+  const trailingContext = contextMessages
+    .filter((message) => message.role !== "system")
+    .map(toLangChainMessage);
   const firstSystemIndex = messages.findIndex((message) => message.getType() === "system");
-  if (firstSystemIndex < 0) return [...context, ...messages];
+  if (firstSystemIndex < 0) return [...leadingContext, ...messages, ...trailingContext];
   const system = messages[firstSystemIndex];
-  if (system === undefined) return [...context, ...messages];
-  return [system, ...context, ...messages.filter((_message, index) => index !== firstSystemIndex)];
+  if (system === undefined) return [...leadingContext, ...messages, ...trailingContext];
+  return [
+    system,
+    ...leadingContext,
+    ...messages.filter((_message, index) => index !== firstSystemIndex),
+    ...trailingContext,
+  ];
 }
 
 function stateForCallback(state: RuntimeState, lastResult: ModelTurnResult | null): AgentGraphState {
@@ -417,6 +428,7 @@ class RuntimeToolCoordinator {
         }
         return {
           activeSkills: result.activeSkills ?? [],
+          followUpMessages: result.messages.filter((message) => message.role !== "tool"),
           messages,
           successful: result.successful,
         };
@@ -675,7 +687,8 @@ export class LangGraphExecutor {
         const batch = await coordinator.execute({ calls, state: request.state });
         const result = batch.messages.get(fallback.id);
         if (result === undefined) throw new Error(`Tool execution did not return ${fallback.id}.`);
-        if (calls[0]?.id !== fallback.id) {
+        const isLastCall = calls.at(-1)?.id === fallback.id;
+        if (!isLastCall) {
           const toolMessage = toLangChainMessage(result);
           if (!ToolMessage.isInstance(toolMessage)) throw new Error("Runtime returned a non-tool message.");
           return toolMessage;
@@ -685,7 +698,10 @@ export class LangGraphExecutor {
             activeSkills: batch.activeSkills,
             hasSuccessfulToolExecution:
               request.state.hasSuccessfulToolExecution || batch.successful,
-            messages: [toLangChainMessage(result)],
+            messages: [
+              toLangChainMessage(result),
+              ...batch.followUpMessages.map(toLangChainMessage),
+            ],
           },
         });
       },
