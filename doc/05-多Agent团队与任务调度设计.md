@@ -31,7 +31,7 @@ OpenAI Agents SDK 区分两种模式：
 
 Claude Code 将两者区分为：
 
-- Subagent：独立上下文完成一个支线任务，返回摘要，适合搜索、调查、验证和单次实现。
+- Subagent：用独立上下文完成一个有边界的支线任务，返回摘要，并允许负责人在同一子对话中要求返工，适合搜索、调查、验证和实现。
 - Agent Team：多个独立会话通过共享任务列表和 mailbox 协作，适合真正并行且需要互相沟通的工作。
 
 这一区分适合本产品。不能把每次文件搜索都升级成完整团队，也不能把需要多轮协作的长期任务塞进一次性工具调用。
@@ -68,7 +68,7 @@ AI Team Instance（用户显式创建、长期存在）
 └─ Work Items
    └─ Tasks / Task DAG
       ├─ Short path（Team Lead + 1 位专业成员）
-      ├─ Ephemeral Subagent（仅普通 Agent 的一次性支线）
+      ├─ Ephemeral Subagent（仅普通 Agent 的可复用临时支线）
       └─ Coordinated Workers（持久 Agent 对话与消息协作）
 ```
 
@@ -84,7 +84,7 @@ AI Team Instance（用户显式创建、长期存在）
 
 ### 3.2 Ephemeral Subagent
 
-临时 Subagent 服务于一个有边界的任务，完成后释放模型和进程资源，但保留独立 Agent Thread、用户可见消息、工具与审批事件、摘要和 Artifact。它不复制父对话历史；初始模型上下文只接收 `spawn_subagent.task` 及其中显式携带的背景。典型场景：
+临时 Subagent 服务于一项有边界的工作。每轮完成后释放模型和进程资源，但保留独立 Agent Thread、用户可见消息、工具与审批事件、摘要和 Artifact；负责人可以通过 `send_agent_message` 在同一 Thread 继续验证或返工，确认满意后用 `end_subagent` 将其转为只读。删除只由用户触发。它不复制父对话历史；初始模型上下文只接收 `spawn_subagent.task` 及其中显式携带的背景。典型场景：
 
 - 搜索代码并定位实现。
 - 调查某个错误的可能原因。
@@ -124,7 +124,7 @@ AI Team Instance（用户显式创建、长期存在）
 
 ### 3.6 Agent 逻辑对话与模型
 
-每个 Team Lead、持久团队成员和临时 Subagent 都有独立的逻辑对话 Thread。它是 SQLite 中的对话与事件归属，不是独占的 OS 线程、Node `worker_threads` 或进程。创建 TeamInstance 时建立该实例自己的 `team_lead` 根 Thread 和配置成员的持久 `agent` Thread；全局实例可被任意项目主对话选择，项目实例只对同项目主对话可见，对话实例只对所属来源对话可见。后续 WorkItem 始终复用所选实例的身份与消息谱系。Team Lead 通过 `send_agent_message` 与 `wait_for_agent_message` 分派、等待和汇总，成员消息与任务分派记录共同构成可审计事实；团队内禁止把成员创建为 `subagent_tasks`。团队面板只读取这些持久关系和消息分派，不嵌入或复制成员 Timeline。用户点击成员时，成员消息、工具、审批、Artifact 和结果使用其原生 Conversation；运行中的输入只可作为同一 Run 的 `steer`，不能更换 Agent 或开启一个独立 Run。没有运行的成员要继续工作时使用 WorkItem 的返工/验收流程。临时 Subagent 完成后 Thread 仍可查看；用户继续对话时创建新 Run，不修改历史 Run。〔FACT｜`apps/desktop/src/main/teams/team-work-item-runtime.ts`；`apps/desktop/src/main/agent/agent-runtime.ts`；`apps/web/src/features/workspace/right-sidebar-workspace.tsx`〕
+每个 Team Lead、持久团队成员和临时 Subagent 都有独立的逻辑对话 Thread。它是 SQLite 中的对话与事件归属，不是独占的 OS 线程、Node `worker_threads` 或进程。创建 TeamInstance 时建立该实例自己的 `team_lead` 根 Thread 和配置成员的持久 `agent` Thread；全局实例可被任意项目主对话选择，项目实例只对同项目主对话可见，对话实例只对所属来源对话可见。后续 WorkItem 始终复用所选实例的身份与消息谱系。Team Lead 通过 `send_agent_message` 与 `wait_for_agent_message` 分派、等待和汇总，成员消息与任务分派记录共同构成可审计事实；团队内禁止把成员创建为 `subagent_tasks`。团队面板只读取这些持久关系和消息分派，不嵌入或复制成员 Timeline。用户点击成员时，成员消息、工具、审批、Artifact 和结果使用其原生 Conversation；运行中的输入只可作为同一 Run 的 `steer`，不能更换 Agent 或开启一个独立 Run。没有运行的成员要继续工作时使用 WorkItem 的返工/验收流程。临时 Subagent 每轮完成后 Thread 仍可查看和复用；后续消息创建新 Run，不修改历史 Run，并沿用上一轮冻结的权限模式。〔FACT｜`apps/desktop/src/main/teams/team-work-item-runtime.ts`；`apps/desktop/src/main/agent/agent-runtime.ts`；`apps/web/src/features/workspace/right-sidebar-workspace.tsx`〕
 
 持久 Agent 的“完整对话”和“跨 Agent 回执”是两个边界：成员在最终回答开头按 `replyInstruction` 写简述，以单独一行 Markdown `---` 分隔详细结果；完整回答只写入成员 Thread，`expectReply=true` 仅向发送方投递分隔线前最多 1000 字符的完成回执、终态和成员 Conversation ID。发送方可随时用 `list_agent_conversations` 查看成员状态，并按自己选择的 `maxTokens` 调用 `read_agent_conversation` 查询自己或运行中、已完成、已归档成员对话。默认范围是最新 Checkpoint 已覆盖的原始历史，没有 Checkpoint 时回退到全部历史；需要跨越 Checkpoint 时显式使用 `historyScope=all`。已知要核验的事实通过可选 `query` 关键词检索，命中后返回所属完整 Run，需要更早结果时将 `pagination.nextBeforeSequence` 作为 `beforeSequence` 继续读取。回执、状态查询和主动读取都不创建第二份成员 Timeline，也不把完整成员输出复制进 Team Lead 上下文。
 
@@ -134,7 +134,7 @@ AI Team Instance（用户显式创建、长期存在）
 
 Agent 模型默认继承创建它的父对话当前模型，也可以由 Profile、创建请求、ModelRouter 或用户指定。当前 Main Agent 可先调用 `list_models` 获取不含凭据的已配置模型目录、已启用思考选项和带时间的健康状态，再向 `spawn_subagent` 显式传入 `providerId`、`modelId` 和可选思考选项；未传时保持继承。Subagent 的选择不反向更新“最近一次用户选择”。用户通过对话或模型选择器的明确设置具有最高优先级；自动路由不能解除用户锁定。完整规则见[模型接入、MCP、Skill 与 Agent 对话设计](./08-模型接入、MCP、Skill与Agent对话设计.md)。
 
-`spawn_subagent` 还接受独立于任务正文的简短 `name` 和可选 `icon`。合法 `icon` 继续使用 Agent Profile 共用的稳定枚举；非法值作为未提供处理，装饰参数不能阻断任务创建。未显式指定时优先使用所选 Agent 的预设图标，否则由 Renderer 根据子 Conversation ID 生成稳定的 5×5 对称 Identicon。它看似随机但可重复生成，不使用任务正文、不保存图片；名称与最终身份在父对话树、侧边 Tab 和工具结果中保持一致。
+`spawn_subagent` 还接受独立于任务正文的简短 `name` 和可选 `icon`。合法 `icon` 继续使用 Agent Profile 共用的稳定枚举；非法值作为未提供处理，装饰参数不能阻断任务创建。未显式指定时由 Renderer 根据子 Conversation ID 生成稳定的 5×5 对称 Identicon；绑定 Agent Profile 只影响名称、角色、指令和模型能力，不覆盖这份独立像素身份。Identicon 看似随机但可重复生成，不使用任务正文、不保存图片；名称与最终身份在父对话标题栏的 Subagent 下拉、右侧 Tab 和工具结果中保持一致，左侧项目对话树不再重复列出临时 Subagent。父对话工作过程中的创建工具行显示该 Subagent 的像素头像、名称和“创建中 / 已创建 / 创建失败 / 已取消”动作；父对话输入区上方的待审批投影同样显示来源头像、名称和操作摘要。点击这两处身份区域都在右侧打开对应原生 Conversation，不替换主对话；工具行自己的展开按钮只负责显示调用详情。标题栏中的活跃头像速览与完整列表下拉是两个独立控件：速览只显示最多四个正在运行的头像和活跃总数，悬停或键盘聚焦时展开头像间距，点击头像直接打开对应对话；没有运行中 Subagent 时显示弱化的通用图标和数字 `0`；单独的下拉箭头查看全部状态。下拉按“正在运行 / 完成工作 / 已结束”分组；最近一轮失败以红点留在“完成工作”，完成为绿点，已结束为灰点。Main Agent 通过 `end_subagent` 结束已验收工作，用户通过删除按钮移除非运行中的 Conversation；关闭右侧标签只隐藏标签。
 
 ## 4. 任务分级与是否组队
 

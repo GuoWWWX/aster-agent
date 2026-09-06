@@ -197,6 +197,12 @@ export type ProjectFileOpenRequest = {
   projectId: string;
 };
 
+export type GitReviewOpenRequest = {
+  path: string | null;
+  projectId: string;
+  requestId: number;
+};
+
 export type TeamMemberOpenRequest = {
   conversation: ProjectSession;
   requestId: number;
@@ -223,6 +229,7 @@ function toProjectSession(conversation: ConversationSummary): ProjectSession {
     teamWorkItemId: conversation.teamWorkItemId,
     threadKind: conversation.threadKind,
     title: conversation.title,
+    updatedAt: conversation.updatedAt,
     workspaceRootPath: conversation.workspaceRootPath,
   };
 }
@@ -307,13 +314,14 @@ export function isAutoOpenedSideConversation(
     && !isDirectTeamMemberConversation(conversation, sourceConversation, team);
 }
 
-/** Team executions are retained for audit; closing only hides their side tab. */
+/** Durable Agent work is retained for audit; closing its side tab only hides the tab. */
 export function shouldDeleteSidebarChat(
   conversation: SidebarConversation,
   sourceConversation: SidebarConversationSource | null = null,
   team: TeamMembership | null = null,
 ): boolean {
-  return !isManagedTeamMember(conversation)
+  return conversation.threadKind !== "subagent"
+    && !isManagedTeamMember(conversation)
     && !isDirectTeamMemberConversation(conversation, sourceConversation, team);
 }
 
@@ -588,6 +596,7 @@ export function RightSidebarWorkspace({
   activeSession,
   agentClient,
   fileOpenRequest,
+  gitReviewOpenRequest = null,
   teamMemberOpenRequest,
   onLocateProject,
   onLocateSession,
@@ -599,6 +608,7 @@ export function RightSidebarWorkspace({
   activeSession: ProjectSession | null;
   agentClient: AgentClient;
   fileOpenRequest: ProjectFileOpenRequest | null;
+  gitReviewOpenRequest?: GitReviewOpenRequest | null;
   teamMemberOpenRequest: TeamMemberOpenRequest | null;
   onLocateProject: (projectId: string) => void;
   onLocateSession: (sessionId: string) => void;
@@ -611,8 +621,12 @@ export function RightSidebarWorkspace({
   const agentProfiles = useAgentDirectoryStore((state) => state.agents);
   const teams = useAgentDirectoryStore((state) => state.teams);
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
+  const activeSessionId = activeSession?.id ?? null;
   const settingsSection = useWorkbenchUiStore((state) => state.settingsSection);
-  const setConversationFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
+  const setGlobalFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
+  const setFilePanelOpenForConversation = useWorkbenchUiStore(
+    (state) => state.setFilePanelOpenForConversation,
+  );
   const setSettingsFilePanelOpen = useWorkbenchUiStore(
     (state) => state.setSettingsFilePanelOpen,
   );
@@ -647,8 +661,18 @@ export function RightSidebarWorkspace({
       setSettingsFilePanelOpen(isOpen);
       return;
     }
-    setConversationFilePanelOpen(isOpen);
-  }, [activeActivity, setConversationFilePanelOpen, setSettingsFilePanelOpen]);
+    if (activeActivity === "conversations" && activeSessionId !== null) {
+      setFilePanelOpenForConversation(activeSessionId, isOpen);
+      return;
+    }
+    setGlobalFilePanelOpen(isOpen);
+  }, [
+    activeActivity,
+    activeSessionId,
+    setFilePanelOpenForConversation,
+    setGlobalFilePanelOpen,
+    setSettingsFilePanelOpen,
+  ]);
   const reloadProjectDirectory = tree.reloadDirectory;
   const notifyConfigurationWorkspaceChanged = useWorkbenchUiStore(
     (state) => state.notifyConfigurationWorkspaceChanged,
@@ -681,6 +705,7 @@ export function RightSidebarWorkspace({
   const fileSaveQueuesRef = useRef(new Map<string, Promise<boolean>>());
   const fileLoadRequestIdsRef = useRef(new Map<string, number>());
   const handledFileOpenRequestRef = useRef<ProjectFileOpenRequest | null>(null);
+  const handledGitReviewOpenRequestIdRef = useRef<number | null>(null);
   const managedBrowserMenuRequestIdRef = useRef(0);
   const handledTeamMemberOpenRequestIdRef = useRef<number | null>(null);
   const teamMemberOpenRequestRef = useRef(teamMemberOpenRequest);
@@ -700,7 +725,6 @@ export function RightSidebarWorkspace({
     workspaceTabs.addEventListener("wheel", handleWheel, { passive: false });
     return () => workspaceTabs.removeEventListener("wheel", handleWheel);
   }, []);
-  const activeSessionId = activeSession?.id ?? null;
   const activeTeam = activeSession?.teamId === null || activeSession === null
     ? null
     : teams.find((team) => team.id === activeSession.teamId) ?? null;
@@ -1928,7 +1952,7 @@ export function RightSidebarWorkspace({
     setIsTreeCollapsed(false);
   }
 
-  function openGitReview(): void {
+  const openGitReview = useCallback((): void => {
     if (!capabilities.git || activeProject === null) return;
     const id = `git-review:${activeProject.id}`;
     const now = Date.now();
@@ -1945,7 +1969,18 @@ export function RightSidebarWorkspace({
     setFilePanelOpen(true);
     setIsFileBrowserOpen(false);
     setMenuOpen(false);
-  }
+  }, [activeProject, capabilities.git, setActiveTabForCurrentSession, setFilePanelOpen]);
+
+  useEffect(() => {
+    if (
+      gitReviewOpenRequest === null
+      || gitReviewOpenRequest.projectId !== activeProject?.id
+      || handledGitReviewOpenRequestIdRef.current === gitReviewOpenRequest.requestId
+      || !capabilities.git
+    ) return;
+    handledGitReviewOpenRequestIdRef.current = gitReviewOpenRequest.requestId;
+    openGitReview();
+  }, [activeProject?.id, capabilities.git, gitReviewOpenRequest, openGitReview]);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent): void => {
@@ -2387,6 +2422,13 @@ export function RightSidebarWorkspace({
                     agentClient={agentClient}
                     gitReviewCache={gitReviewCache}
                     projectId={tab.projectId}
+                    requestedFile={gitReviewOpenRequest?.projectId === tab.projectId
+                      && gitReviewOpenRequest.path !== null
+                      ? {
+                          path: gitReviewOpenRequest.path,
+                          requestId: gitReviewOpenRequest.requestId,
+                        }
+                      : null}
                   />
                 ) : tab.kind === "terminal" ? (
                   <TerminalWorkspace

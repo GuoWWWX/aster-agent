@@ -98,6 +98,23 @@ describe("context manager", () => {
     expect(plan.compactionCandidates).toEqual([]);
   });
 
+  it("keeps large tool results bounded even before conversation compaction is needed", () => {
+    const largeOutput = `begin\n${"ordinary output\n".repeat(1_500)}ERROR failed build\nend`;
+    const plan = build([
+      message(1, "user", "运行构建"),
+      message(2, "assistant", "", {
+        toolCalls: [{ arguments: "{}", id: "call-current", name: "run_command" }],
+      }),
+      message(3, "tool", largeOutput, { toolCallId: "call-current" }),
+    ], 100_000);
+
+    const toolResult = plan.messages.find((item) => item.role === "tool");
+    expect(toolResult?.content).toContain("Tool output pruned");
+    expect(toolResult?.content).toContain("ERROR failed build");
+    expect(toolResult?.content.length).toBeLessThan(largeOutput.length);
+    expect(plan.compactionCandidates).toEqual([]);
+  });
+
   it("offers only complete old turns for compaction and protects the latest two", () => {
     const source = [1, 2, 3, 4].flatMap((turn) => [
       message(turn * 10, "user", `第${turn}轮-${"x".repeat(8_000)}`, { runId: `run-${turn}` }),
@@ -115,6 +132,49 @@ describe("context manager", () => {
     expect(plan.messages.some((item) => item.content.startsWith("第3轮-"))).toBe(true);
     expect(plan.messages.some((item) => item.content.startsWith("第4轮-"))).toBe(true);
     expect(plan.messages.some((item) => item.content.startsWith("第1轮-"))).toBe(false);
+  });
+
+  it("can compact completed tool iterations inside one long-running user turn", () => {
+    const source = [
+      message(1, "user", "持续完成这个任务", { runId: "run-long" }),
+      message(2, "assistant", "", {
+        runId: "run-long",
+        toolCalls: [{ arguments: "{}", id: "call-1", name: "read_file" }],
+      }),
+      message(3, "tool", "a".repeat(8_000), { runId: "run-long", toolCallId: "call-1" }),
+      message(4, "assistant", "", {
+        runId: "run-long",
+        toolCalls: [{ arguments: "{}", id: "call-2", name: "read_file" }],
+      }),
+      message(5, "tool", "b".repeat(8_000), { runId: "run-long", toolCallId: "call-2" }),
+      message(6, "assistant", "", {
+        runId: "run-long",
+        toolCalls: [{ arguments: "{}", id: "call-3", name: "read_file" }],
+      }),
+      message(7, "tool", "c".repeat(8_000), { runId: "run-long", toolCallId: "call-3" }),
+    ];
+
+    const plan = build(source, 5_000);
+
+    // The summary input budget fits the first complete iteration, not both.
+    expect(plan.compactionCandidates.map((item) => item.sequence)).toEqual([1, 2, 3]);
+    expect(plan.compactionCandidates.some((item) => item.toolCallId === "call-3")).toBe(false);
+  });
+
+  it("retries a large single-run summary with fewer complete tool iterations", () => {
+    const source = [message(1, "user", "任务要求", { runId: "long-run" })];
+    for (let index = 0; index < 4; index += 1) {
+      source.push(
+        message(2 + index * 2, "assistant", "", {
+          runId: "long-run", toolCalls: [{ id: `call-${index}`, name: "read_file", arguments: "{}" }],
+        }),
+        message(3 + index * 2, "tool", "evidence", { runId: "long-run", toolCallId: `call-${index}` }),
+      );
+    }
+    const retry = selectCompactionRetryBatch(source);
+    expect(retry.map((item) => item.sequence)).toEqual([1, 2, 3, 4, 5]);
+    expect(retry.filter((item) => item.role === "tool").map((item) => item.toolCallId))
+      .toEqual(retry.flatMap((item) => item.toolCalls.map((call) => call.id)));
   });
 
   it("offers eligible old turns for an explicit compaction below the automatic threshold", () => {

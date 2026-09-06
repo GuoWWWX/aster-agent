@@ -13,6 +13,7 @@ import {
   contextCompressionThresholdSchema,
   conversationContextUsageInputSchema,
   conversationContextUsageSchema,
+  conversationAgentMessageItemSchema,
   conversationAttachmentPreviewSchema,
   conversationMessageItemSchema,
   conversationRunEventSchema,
@@ -60,6 +61,45 @@ import {
 } from "./index.js";
 
 describe("protocol bootstrap contract", () => {
+  it("accepts ended Subagents and defaults legacy Agent message file changes", () => {
+    const now = "2026-09-05T00:00:00.000Z";
+    expect(conversationSummarySchema.parse({
+      activeRunId: null,
+      createdAt: now,
+      id: "00000000-0000-4000-8000-000000000001",
+      lastRunStatus: "completed",
+      projectId: null,
+      subagentTaskStatus: "ended",
+      title: "已结束助手",
+      updatedAt: now,
+    }).subagentTaskStatus).toBe("ended");
+    const message = conversationAgentMessageItemSchema.parse({
+      content: "完成",
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      createdAt: now,
+      id: "00000000-0000-4000-8000-000000000002",
+      kind: "agent_message",
+      readAt: null,
+      runId: null,
+      senderConversationId: "00000000-0000-4000-8000-000000000003",
+      senderTitle: "执行助手",
+      status: "unread",
+    });
+    expect(message.fileChanges).toEqual([]);
+    expect(conversationRunEventSchema.parse({
+      conversationId: message.conversationId,
+      message,
+      type: "agent_message.received",
+    })).toMatchObject({
+      message: { id: message.id },
+      type: "agent_message.received",
+    });
+    expect(() => conversationRunEventSchema.parse({
+      conversationId: message.conversationId,
+      type: "agent_message.received",
+    })).toThrow();
+  });
+
   it("accepts an optional Team project association while editing", () => {
     const teamInstanceId = "00000000-0000-4000-8000-000000000001";
     const projectId = "00000000-0000-4000-8000-000000000002";
@@ -640,6 +680,19 @@ describe("protocol bootstrap contract", () => {
 
     expect(taskList.tasks.map((task) => task.status)).toEqual(["blocked", "failed"]);
     expect(taskList.tasks.map((task) => task.reason)).toEqual(["等待用户确认写入", "构建命令退出"]);
+  });
+
+  it("accepts multiple running tasks in one conversation task list", () => {
+    const taskList = conversationTaskListSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      tasks: [
+        { id: "00000000-0000-4000-8000-000000000002", status: "running", title: "调查问题" },
+        { id: "00000000-0000-4000-8000-000000000003", status: "running", title: "补充测试" },
+      ],
+      updatedAt: "2026-09-05T00:00:00.000Z",
+    });
+
+    expect(taskList.tasks.map((task) => task.status)).toEqual(["running", "running"]);
   });
 
   it("keeps task lists saved before task reasons compatible", () => {

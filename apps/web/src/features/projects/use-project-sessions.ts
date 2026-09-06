@@ -60,6 +60,7 @@ function toProjectSession(conversation: ConversationSummary): ProjectSession {
     teamWorkItemId: conversation.teamWorkItemId,
     threadKind: conversation.threadKind,
     title: conversation.title,
+    updatedAt: conversation.updatedAt,
     workspaceRootPath: conversation.workspaceRootPath,
   };
 }

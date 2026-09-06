@@ -6,6 +6,7 @@ import { TooltipAnchor } from "../../components/ui/tooltip.js";
 const QUESTION_SUMMARY_CHARACTERS = 58;
 const ANSWER_SUMMARY_CHARACTERS = 110;
 const TURN_MARKER_GAP_PX = 10;
+const TURN_RAIL_AUTO_SCROLL_EDGE_PX = 24;
 const NAVIGATOR_MIN_SURFACE_WIDTH_PX = 824;
 const TURN_MARKER_WIDTHS_PX = [32, 24, 16] as const;
 
@@ -146,6 +147,54 @@ export function conversationTurnIndexAtRailPosition({
   return Math.max(0, Math.min(index, turnCount - 1));
 }
 
+export function conversationTurnDragMarkerTopPixels({
+  clientY,
+  railClientHeight,
+  railScrollTop,
+  railTop,
+  turnCount,
+}: {
+  clientY: number;
+  railClientHeight: number;
+  railScrollTop: number;
+  railTop: number;
+  turnCount: number;
+}): number {
+  if (turnCount <= 0) return 0;
+  const contentHeight = Math.max(railClientHeight, turnCount * TURN_MARKER_GAP_PX);
+  const firstMarkerTop = contentHeight / 2 + conversationTurnOffsetPixels(0, turnCount);
+  const lastMarkerTop = contentHeight / 2
+    + conversationTurnOffsetPixels(turnCount - 1, turnCount);
+  const pointerTop = railScrollTop
+    + Math.max(0, Math.min(clientY - railTop, railClientHeight));
+  return Math.max(firstMarkerTop, Math.min(pointerTop, lastMarkerTop));
+}
+
+export function conversationTurnRailScrollTopForPointer({
+  clientY,
+  railClientHeight,
+  railScrollHeight,
+  railScrollTop,
+  railTop,
+}: {
+  clientY: number;
+  railClientHeight: number;
+  railScrollHeight: number;
+  railScrollTop: number;
+  railTop: number;
+}): number {
+  const maxScrollTop = Math.max(0, railScrollHeight - railClientHeight);
+  if (maxScrollTop === 0) return 0;
+  const localY = clientY - railTop;
+  const edgeSize = Math.min(TURN_RAIL_AUTO_SCROLL_EDGE_PX, railClientHeight / 2);
+  const scrollDelta = localY < edgeSize
+    ? localY - edgeSize
+    : localY > railClientHeight - edgeSize
+      ? localY - (railClientHeight - edgeSize)
+      : 0;
+  return Math.max(0, Math.min(railScrollTop + scrollDelta, maxScrollTop));
+}
+
 export function isConversationTurnNavigatorNarrow(width: number): boolean {
   return width > 0 && width < NAVIGATOR_MIN_SURFACE_WIDTH_PX;
 }
@@ -176,6 +225,7 @@ export function ConversationTurnNavigator({
   const [visibleTurnIds, setVisibleTurnIds] = useState<ReadonlySet<string>>(new Set());
   const [hiddenByWidth, setHiddenByWidth] = useState(false);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const [dragMarker, setDragMarker] = useState<{ index: number; topPx: number } | null>(null);
 
   useEffect(() => {
     if (hidden || turns.length === 0) return undefined;
@@ -234,16 +284,43 @@ export function ConversationTurnNavigator({
     const rail = railRef.current;
     const root = containerRef.current;
     if (rail === null || root === null) return;
+    const railRect = rail.getBoundingClientRect();
+    const previousRailScrollTop = rail.scrollTop;
+    const nextRailScrollTop = conversationTurnRailScrollTopForPointer({
+      clientY,
+      railClientHeight: rail.clientHeight,
+      railScrollHeight: rail.scrollHeight,
+      railScrollTop: rail.scrollTop,
+      railTop: railRect.top,
+    });
+    rail.scrollTop = nextRailScrollTop;
     const index = conversationTurnIndexAtRailPosition({
       clientY,
       railClientHeight: rail.clientHeight,
       railScrollTop: rail.scrollTop,
-      railTop: rail.getBoundingClientRect().top,
+      railTop: railRect.top,
       turnCount: turns.length,
     });
-    if (index === null || lastDraggedIndexRef.current === index) return;
-    lastDraggedIndexRef.current = index;
+    if (index === null) return;
+    setDragMarker({
+      index,
+      topPx: conversationTurnDragMarkerTopPixels({
+        clientY,
+        railClientHeight: rail.clientHeight,
+        railScrollTop: rail.scrollTop,
+        railTop: railRect.top,
+        turnCount: turns.length,
+      }),
+    });
     setHoveredIndex(index);
+    if (
+      dragPointerRef.current !== null
+      && nextRailScrollTop !== previousRailScrollTop
+    ) {
+      scheduleDragNavigation(clientY);
+    }
+    if (lastDraggedIndexRef.current === index) return;
+    lastDraggedIndexRef.current = index;
     const turn = turns[index];
     const anchor = turn === undefined
       ? null
@@ -268,11 +345,13 @@ export function ConversationTurnNavigator({
       dragFrameRef.current = null;
     }
     pendingDragClientYRef.current = null;
-    if (clientY !== null) navigateToRailPosition(clientY);
-    suppressNextClickRef.current = dragPointerRef.current?.moved ?? false;
+    const moved = dragPointerRef.current?.moved ?? false;
     dragPointerRef.current = null;
+    if (clientY !== null) navigateToRailPosition(clientY);
+    suppressNextClickRef.current = moved;
     dragAnchorsRef.current = null;
     lastDraggedIndexRef.current = null;
+    setDragMarker(null);
     setHoveredIndex(null);
   };
 
@@ -300,13 +379,16 @@ export function ConversationTurnNavigator({
         style={{ height: `max(100%, ${turns.length * TURN_MARKER_GAP_PX}px)` }}
       >
         {turns.map((turn, index) => {
-          const active = visibleTurnIds.has(turn.id);
+          const active = dragMarker === null
+            ? visibleTurnIds.has(turn.id)
+            : dragMarker.index === index;
           const offset = conversationTurnOffsetPixels(index, turns.length);
           return (
             <TooltipAnchor
               key={turn.id}
+              contentClassName="!w-fit !max-w-96 overflow-hidden !bg-[var(--app-panel-subtle)] !px-2.5 !py-2 !text-[length:var(--app-font-size-control)] !leading-[1.4]"
+              open={hoveredIndex === index}
               side="right"
-              contentClassName="conversation-turn-tooltip !w-fit !max-w-96 overflow-hidden !px-2.5 !py-2 !text-[length:var(--app-font-size-control)] !leading-[1.4]"
               content={(
                 <span className="grid min-w-0 max-w-[22rem] gap-1 overflow-hidden text-left">
                   <strong className="block min-w-0 truncate whitespace-nowrap font-semibold text-[var(--app-foreground)]">
@@ -322,7 +404,11 @@ export function ConversationTurnNavigator({
                 aria-current={active ? "true" : undefined}
                 aria-label={`跳到提问：${turn.question}`}
                 className="group absolute left-0 flex h-[10px] w-10 -translate-y-1/2 cursor-ns-resize items-center border-0 bg-transparent p-0 focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
-                style={{ top: `calc(50% + ${offset}px)` }}
+                style={{
+                  top: dragMarker?.index === index
+                    ? `${dragMarker.topPx}px`
+                    : `calc(50% + ${offset}px)`,
+                }}
                 type="button"
                 onBlur={() => {
                   if (dragPointerRef.current === null) setHoveredIndex(null);

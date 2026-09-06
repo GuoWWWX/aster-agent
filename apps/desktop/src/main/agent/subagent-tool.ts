@@ -21,11 +21,13 @@ const SPAWN_SUBAGENT_TOOL_NAME = "spawn_subagent";
 const LIST_MODELS_TOOL_NAME = "list_models";
 const LIST_SUBAGENTS_TOOL_NAME = "list_subagents";
 const WAIT_FOR_SUBAGENTS_TOOL_NAME = "wait_for_subagents";
+const END_SUBAGENT_TOOL_NAME = "end_subagent";
 const toolNames = new Set([
   SPAWN_SUBAGENT_TOOL_NAME,
   LIST_MODELS_TOOL_NAME,
   LIST_SUBAGENTS_TOOL_NAME,
   WAIT_FOR_SUBAGENTS_TOOL_NAME,
+  END_SUBAGENT_TOOL_NAME,
 ]);
 
 const spawnArgumentsSchema = z.object({
@@ -60,6 +62,10 @@ const spawnArgumentsSchema = z.object({
   }
 });
 const emptyArgumentsSchema = z.object({}).strict();
+const endArgumentsSchema = z.object({
+  conversationId: z.string().uuid()
+    .describe("Child conversation UUID returned by spawn_subagent."),
+}).strict();
 const waitArgumentsSchema = z.object({
   taskIds: z.array(z.string().uuid()).min(1).max(32)
     .refine((ids) => new Set(ids).size === ids.length, "Task identifiers must be unique.")
@@ -97,7 +103,10 @@ type TaskWaiter = {
 };
 
 function isTerminal(task: SubagentTask): boolean {
-  return task.status === "completed" || task.status === "failed" || task.status === "cancelled";
+  return task.status === "completed"
+    || task.status === "failed"
+    || task.status === "cancelled"
+    || task.status === "ended";
 }
 
 function success(value: unknown): SubagentToolExecution {
@@ -114,13 +123,20 @@ function boundedText(value: string | null, limit: number): string | null {
 }
 
 function toToolTask(database: AgentDatabase, task: SubagentTask): Record<string, unknown> {
+  const conversation = database.getConversation(task.childConversationId);
   return {
-    avatarIcon: database.getConversation(task.childConversationId).avatarIcon ?? null,
+    avatarIcon: conversation.avatarIcon ?? null,
     childConversationId: task.childConversationId,
     completedAt: task.completedAt,
     createdAt: task.createdAt,
     error: boundedText(task.error, 4_000),
     id: task.id,
+    lastRunStatus: conversation.lastRunStatus,
+    lifecycleStatus: task.status === "ended"
+      ? "ended"
+      : conversation.activeRunId === null
+        ? "completed"
+        : "working",
     name: task.title,
     result: boundedText(task.result, 8_000),
     status: task.status,
@@ -145,7 +161,7 @@ export class SubagentTool {
   public getDefinitions(): ModelToolDefinition[] {
     return [
       {
-        description: "Start an independent one-shot Subagent for one bounded task. Give it a short name. Usually omit icon so the app generates a stable identity; only pass an exact value from the declared enum when a specific icon matters. An unsupported optional icon is ignored instead of blocking creation. You may also select a configured Agent or team member with agentId. The tool returns immediately; use wait_for_subagents only when the current work depends on its result. The Subagent becomes read-only after completion. Its concise completion receipt is delivered privately and automatically for the parent to synthesize; supporting detail remains in the child conversation. Do not list or read the child merely to retrieve a normal completion result.",
+        description: "Start an independent reusable Subagent with one bounded first task. Give it a short name. Usually omit icon so the app generates a stable identity; only pass an exact value from the declared enum when a specific icon matters. An unsupported optional icon is ignored instead of blocking creation. You may also select a configured Agent or team member with agentId. The tool returns immediately; use wait_for_subagents only when the current work depends on its result. After a run completes, use send_agent_message with its childConversationId for follow-up work in the same context, or end_subagent when no follow-up is needed. Its concise completion receipt is delivered privately and automatically for the parent to synthesize; supporting detail remains in the child conversation. Do not list or read the child merely to retrieve a normal completion result.",
         name: SPAWN_SUBAGENT_TOOL_NAME,
         parameters: modelToolParameters(spawnArgumentsSchema),
       },
@@ -155,7 +171,7 @@ export class SubagentTool {
         parameters: modelToolParameters(emptyArgumentsSchema),
       },
       {
-        description: "List Subagent tasks created by this conversation to inspect status on explicit demand. Normal completion already delivers the final result automatically, so do not poll this tool merely to retrieve it.",
+        description: "List Subagents created by this conversation and inspect their lifecycle status: working, completed and reusable, or explicitly ended. Normal completion already delivers the final result automatically, so do not poll this tool merely to retrieve it.",
         name: LIST_SUBAGENTS_TOOL_NAME,
         parameters: modelToolParameters(emptyArgumentsSchema),
       },
@@ -163,6 +179,11 @@ export class SubagentTool {
         description: "Wait for any or all selected Subagent tasks. Use this only when their result blocks the current work. A timeout is not a failure; the Subagents continue in the background and completion will still reactivate this conversation.",
         name: WAIT_FOR_SUBAGENTS_TOOL_NAME,
         parameters: modelToolParameters(waitArgumentsSchema),
+      },
+      {
+        description: "End one completed Subagent after its work is accepted and no follow-up is needed. Ending makes that Subagent conversation read-only but does not delete its history or workspace files. A running Subagent cannot be ended; only the user can delete a Subagent from the UI.",
+        name: END_SUBAGENT_TOOL_NAME,
+        parameters: modelToolParameters(endArgumentsSchema),
       },
     ];
   }
@@ -174,6 +195,7 @@ export class SubagentTool {
         return { group: "read", kind: "parallel" };
       case SPAWN_SUBAGENT_TOOL_NAME:
       case WAIT_FOR_SUBAGENTS_TOOL_NAME:
+      case END_SUBAGENT_TOOL_NAME:
         return { kind: "serial" };
       default:
         throw new Error(`Unknown Subagent tool: ${toolName}`);
@@ -183,6 +205,7 @@ export class SubagentTool {
   public async execute(input: {
     arguments: string;
     conversationId: string;
+    end: (childConversationId: string) => SubagentTask;
     onResultMessagesRead?: (messageIds: readonly string[]) => void;
     signal: AbortSignal;
     spawn: (
@@ -261,6 +284,10 @@ export class SubagentTool {
             status: result.status,
             tasks: result.tasks.map((task) => toToolTask(this.database, task)),
           });
+        }
+        case END_SUBAGENT_TOOL_NAME: {
+          const parsed = endArgumentsSchema.parse(argumentsValue);
+          return success({ task: toToolTask(this.database, input.end(parsed.conversationId)) });
         }
         default:
           throw new Error(`Unknown Subagent tool: ${input.toolName}`);

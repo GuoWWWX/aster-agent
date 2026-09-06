@@ -56,7 +56,8 @@ describe("ContextCompiler", () => {
         [currentImage.id],
       );
 
-      const context = new ContextCompiler(database, attachments).compile({
+      const compiler = new ContextCompiler(database, attachments);
+      const compile = (includeImageData: boolean) => compiler.compile({
         contextCompressionConfiguration: {
           mode: "tokens",
           percentageThreshold: 80,
@@ -64,7 +65,7 @@ describe("ContextCompiler", () => {
         },
         contextWindowTokens: 30_000,
         conversationId: conversation.id,
-        includeImageData: true,
+        includeImageData,
         estimatedSkillCatalogTokens: 0,
         outputReserveTokens: 1_000,
         reservedSkillTokens: 0,
@@ -73,6 +74,11 @@ describe("ContextCompiler", () => {
         },
         toolDefinitions: [],
       });
+      const context = compile(true);
+      const estimate = compile(false);
+      expect(estimate.usage.estimatedAttachmentTokens).toBe(context.usage.estimatedAttachmentTokens);
+      expect(estimate.usage.estimatedInputTokens).toBe(context.usage.estimatedInputTokens);
+      expect(estimate.transientMessages[0]?.attachments[0]).toMatchObject({ kind: "image", data: null });
       const users = context.messages.filter((message) => message.role === "user");
 
       expect(users[0]?.attachments).toEqual([
@@ -80,10 +86,15 @@ describe("ContextCompiler", () => {
       ]);
       expect(users[0]?.attachments[0]?.kind === "text" && users[0].attachments[0].content)
         .toContain("view_attachments");
-      const currentAttachment = users.at(-1)?.attachments[0];
+      expect(users[1]?.attachments).toEqual([
+        expect.objectContaining({ kind: "text", name: "current.png", readState: "metadata_only" }),
+      ]);
+      expect(users).toHaveLength(2);
+      const currentAttachment = context.transientMessages[0]?.attachments[0];
       expect(currentAttachment).toMatchObject({ kind: "image", name: "current.png" });
       expect(currentAttachment?.kind === "image" ? typeof currentAttachment.data : null)
         .toBe("string");
+      expect(context.transientMessages[0]?.content).toContain("Current user image attachments");
     } finally {
       database.close();
       await rm(root, { force: true, recursive: true });

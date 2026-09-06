@@ -109,7 +109,7 @@ type McpRuntimeAvailability = {
 type SkillContextMessage = {
   attachments: [];
   content: string;
-  role: "system";
+  role: "user";
   toolCallId: null;
   toolCalls: [];
 };
@@ -312,7 +312,7 @@ export class SkillRuntime {
     return {
       attachments: [],
       content,
-      role: "system",
+      role: "user",
       toolCallId: null,
       toolCalls: [],
     };

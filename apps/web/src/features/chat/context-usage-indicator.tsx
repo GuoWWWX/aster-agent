@@ -71,7 +71,7 @@ export function ContextUsageIndicator({
       <PopoverTrigger asChild>
         <button
           aria-label={buttonLabel}
-          className="context-usage-indicator__trigger inline-flex size-7 shrink-0 items-center justify-center rounded-[var(--app-radius)] text-emerald-600 outline-none transition-colors hover:bg-[var(--app-hover)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+          className="context-usage-indicator__trigger inline-flex size-6 shrink-0 items-center justify-center rounded-[var(--app-radius)] text-emerald-600 outline-none transition-colors hover:bg-[var(--app-hover)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
           data-pressure={pressure}
           title={buttonLabel}
           type="button"
@@ -169,7 +169,7 @@ export function ProviderCacheStatus({
       <PopoverTrigger asChild>
         <button
           aria-label={accessibleLabel}
-          className="pointer-events-auto mx-auto -mb-2 flex min-h-4 w-fit max-w-[calc(100%_-_32px)] items-center justify-center gap-1.5 overflow-hidden whitespace-nowrap rounded-[var(--app-radius)] px-1 py-0.5 text-[length:var(--app-font-size-caption)] tabular-nums text-[var(--app-muted-foreground)] outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)]"
+          className="pointer-events-auto mx-auto flex min-h-4 w-fit max-w-[calc(100%_-_32px)] items-center justify-center gap-1.5 overflow-hidden whitespace-nowrap rounded-[var(--app-radius)] px-1 py-0.5 text-[length:var(--app-font-size-body)] font-normal tabular-nums text-[var(--app-muted-foreground)] outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)]"
           title={accessibleLabel}
           type="button"
         >
@@ -185,9 +185,9 @@ export function ProviderCacheStatus({
                   data-tone={metric.tone}
                 >
                   <ProviderMetricLabel metric={metric} />
-                  <strong className={`font-semibold ${providerCacheToneTextClassName(metric.tone)}`}>
+                  <span className={providerCacheToneTextClassName(metric.tone)}>
                     {metric.value}
-                  </strong>
+                  </span>
                 </span>
               ) : (
                 <span
@@ -199,21 +199,19 @@ export function ProviderCacheStatus({
                     <ArrowUp
                       aria-hidden="true"
                       className={providerCacheToneTextClassName(metric.tone)}
-                      size={12}
-                      strokeWidth={2.25}
+                      size={13}
+                      strokeWidth={2}
                     />
                   ) : (
                     <ArrowDown
                       aria-hidden="true"
                       className={providerCacheToneTextClassName(metric.tone)}
-                      size={12}
-                      strokeWidth={2.25}
+                      size={13}
+                      strokeWidth={2}
                     />
                   )}
                   <ProviderMetricLabel metric={metric} />
-                  <span
-                    className="font-semibold text-[var(--app-foreground)]"
-                  >
+                  <span className="font-normal text-[var(--app-foreground)]">
                     {metric.value}
                   </span>
                 </span>
@@ -511,11 +509,11 @@ function providerCacheTone(
 function providerCacheToneTextClassName(
   tone: ProviderCacheInlineMetric["tone"],
 ): string {
-  if (tone === "success") return "text-[var(--app-status-success-fg)]";
-  if (tone === "good") return "text-green-500 dark:text-green-300";
+  if (tone === "success") return "text-emerald-600 dark:text-emerald-400";
+  if (tone === "good") return "text-emerald-600 dark:text-emerald-400";
   if (tone === "caution") return "text-amber-500 dark:text-amber-300";
   if (tone === "warning") return "text-orange-600 dark:text-orange-400";
-  if (tone === "danger") return "text-[var(--app-status-danger-fg)]";
+  if (tone === "danger") return "text-red-600 dark:text-red-400";
   return "text-[var(--app-status-neutral-fg)]";
 }
 

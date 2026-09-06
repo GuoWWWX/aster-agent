@@ -78,6 +78,8 @@ type BuildManagedContextInput = {
   /** Keyword-retrieved history, appended as a dynamic suffix. */
   relevantMessages?: readonly ManagedContextSourceMessage[];
   sourceMessages: readonly ManagedContextSourceMessage[];
+  /** Request-only tail messages that are not persisted as conversation history. */
+  transientMessages?: readonly ModelMessage[];
 };
 
 function estimateMessageTokens(
@@ -114,6 +116,10 @@ function totalMessageTokens(
   }, 0);
 }
 
+export function estimateModelMessagesTokens(messages: readonly ModelMessage[]): number {
+  return totalMessageTokens(messages);
+}
+
 function messageCharacters(
   message: Pick<ModelMessage, "attachments" | "content" | "toolCalls">
 ): number {
@@ -134,8 +140,19 @@ function protectedTailStart(messages: readonly ManagedContextSourceMessage[]): n
   const userMessageIndexes = messages.flatMap((message, index) =>
     message.role === "user" ? [index] : []
   );
-  if (userMessageIndexes.length < PROTECTED_USER_TURNS) return 0;
-  return userMessageIndexes.at(-PROTECTED_USER_TURNS) ?? 0;
+  if (userMessageIndexes.length >= PROTECTED_USER_TURNS) {
+    const protectedStart = userMessageIndexes.at(-PROTECTED_USER_TURNS) ?? 0;
+    if (protectedStart > 0) return protectedStart;
+  }
+  const latestUserIndex = userMessageIndexes.at(-1) ?? -1;
+  const activeToolIterationIndexes = messages.flatMap((message, index) =>
+    index > latestUserIndex && message.role === "assistant" && message.toolCalls.length > 0
+      ? [index]
+      : []
+  );
+  return activeToolIterationIndexes.length >= 2
+    ? activeToolIterationIndexes.at(-1) ?? 0
+    : 0;
 }
 
 function importantToolOutput(content: string): string {
@@ -148,17 +165,12 @@ function importantToolOutput(content: string): string {
   return important.slice(0, TOOL_OUTPUT_IMPORTANT_CHARACTERS);
 }
 
-function pruneToolOutput(message: ManagedContextSourceMessage): ManagedContextSourceMessage {
-  if (
-    message.role !== "tool" ||
-    message.content.length <= TOOL_OUTPUT_PRUNE_THRESHOLD_CHARACTERS
-  ) {
-    return message;
-  }
-  const head = message.content.slice(0, TOOL_OUTPUT_HEAD_CHARACTERS);
-  const tail = message.content.slice(-TOOL_OUTPUT_TAIL_CHARACTERS);
+function boundedToolOutput(content: string): string {
+  if (content.length <= TOOL_OUTPUT_PRUNE_THRESHOLD_CHARACTERS) return content;
+  const head = content.slice(0, TOOL_OUTPUT_HEAD_CHARACTERS);
+  const tail = content.slice(-TOOL_OUTPUT_TAIL_CHARACTERS);
   const important = importantToolOutput(
-    message.content.slice(
+    content.slice(
       TOOL_OUTPUT_HEAD_CHARACTERS,
       -TOOL_OUTPUT_TAIL_CHARACTERS
     )
@@ -166,14 +178,31 @@ function pruneToolOutput(message: ManagedContextSourceMessage): ManagedContextSo
   const retainedCharacters = head.length + important.length + tail.length;
   const marker = [
     "",
-    `[Tool output pruned: approximately ${Math.max(0, message.content.length - retainedCharacters)} characters omitted. The complete result remains in the local conversation log.]`,
+    `[Tool output pruned: approximately ${Math.max(0, content.length - retainedCharacters)} characters omitted. The complete result remains in the local conversation log.]`,
     important.length > 0 ? `[Important errors/warnings]\n${important}` : "",
     "[Output tail]"
   ].filter((part) => part.length > 0).join("\n");
+  return `${head}\n${marker}\n${tail}`;
+}
+
+function pruneToolOutput(message: ManagedContextSourceMessage): ManagedContextSourceMessage {
+  if (message.role !== "tool") return message;
+  const content = boundedToolOutput(message.content);
+  if (content === message.content) return message;
   return {
     ...message,
-    content: `${head}\n${marker}\n${tail}`
+    content,
   };
+}
+
+export function normalizeModelFacingToolOutputs(
+  messages: readonly ModelMessage[],
+): ModelMessage[] {
+  return messages.map((message) => {
+    if (message.role !== "tool") return message;
+    const content = boundedToolOutput(message.content);
+    return content === message.content ? message : { ...message, content };
+  });
 }
 
 function compactionToolOutput(content: string): string {
@@ -275,13 +304,34 @@ function splitTurns(messages: readonly ManagedContextSourceMessage[]): ManagedCo
   return turns;
 }
 
+function splitToolIterations(
+  messages: readonly ManagedContextSourceMessage[],
+): ManagedContextSourceMessage[][] {
+  const groups: ManagedContextSourceMessage[][] = [[]];
+  const pendingCalls = new Set<string>();
+  let hasToolCalls = false;
+  for (const message of messages) {
+    if (message.role === "assistant" && message.toolCalls.length > 0) {
+      if (hasToolCalls && pendingCalls.size === 0) groups.push([]);
+      hasToolCalls = true;
+      for (const call of message.toolCalls) pendingCalls.add(call.id);
+    }
+    groups.at(-1)?.push(message);
+    if (message.role === "tool" && message.toolCallId !== null) pendingCalls.delete(message.toolCallId);
+  }
+  return groups;
+}
+
 function selectCompactionBatch(
   candidates: readonly ManagedContextSourceMessage[],
   inputBudgetTokens: number
 ): ManagedContextSourceMessage[] {
   const selected: ManagedContextSourceMessage[] = [];
   let selectedTokens = 0;
-  for (const turn of splitTurns(candidates)) {
+  const batches = splitTurns(candidates).flatMap((turn) =>
+    totalMessageTokens(turn) > inputBudgetTokens ? splitToolIterations(turn) : [turn]
+  );
+  for (const turn of batches) {
     const turnTokens = totalMessageTokens(turn);
     if (selected.length > 0 && selectedTokens + turnTokens > inputBudgetTokens) break;
     selected.push(...turn);
@@ -300,8 +350,9 @@ export function selectCompactionRetryBatch(
         return groups;
       }, [])
     : splitTurns(messages);
-  if (turns.length <= 1) return [];
-  return turns.slice(0, Math.ceil(turns.length / 2)).flat();
+  const batches = turns.length <= 1 ? splitToolIterations(messages) : turns;
+  if (batches.length <= 1) return [];
+  return batches.slice(0, Math.ceil(batches.length / 2)).flat();
 }
 
 function selectNewestCompleteTurns(
@@ -351,7 +402,8 @@ function calculateUsage(
   }
   let estimatedToolTokens = 0;
   let estimatedAttachmentTokens = 0;
-  for (const message of retained) {
+  const transientMessages = input.transientMessages ?? [];
+  for (const message of [...retained, ...transientMessages]) {
     const estimate = estimateMessageTokens({
       attachments: message.attachments ?? [],
       content: message.content,
@@ -393,8 +445,10 @@ function calculateUsage(
         0
       ) +
       (summaryMessage === null ? 0 : messageCharacters(summaryMessage)) +
-      (relevantMessage === null ? 0 : messageCharacters(relevantMessage)),
-    includedMessageCount: retained.length + (relevantMessage === null ? 0 : 1),
+      (relevantMessage === null ? 0 : messageCharacters(relevantMessage)) +
+      transientMessages.reduce((total, message) => total + messageCharacters(message), 0),
+    includedMessageCount:
+      retained.length + transientMessages.length + (relevantMessage === null ? 0 : 1),
     omittedMessageCount: input.sourceMessages.length - retained.length,
     outputReserveTokens: input.outputReserveTokens,
     skillReserveTokens: reservedSkillTokens
@@ -409,22 +463,20 @@ export function buildManagedContext(input: BuildManagedContextInput): ManagedCon
   const summaryMessage = checkpointMessage(input.checkpoint);
   const reservedSkillTokens = Math.max(0, input.reservedSkillTokens ?? 0);
   const reservedTaskListTokens = Math.max(0, input.reservedTaskListTokens ?? 0);
+  const transientMessages = [...(input.transientMessages ?? [])];
   const fixedTokens =
     input.estimatedSystemTokens +
     input.estimatedToolDefinitionTokens +
     input.outputReserveTokens +
     reservedSkillTokens +
     reservedTaskListTokens +
+    totalMessageTokens(transientMessages) +
     (summaryMessage === null ? 0 : totalMessageTokens([summaryMessage]));
-  const rawTokens = fixedTokens + totalMessageTokens(uncoveredMessages);
-
-  let workingMessages = [...uncoveredMessages];
+  const workingMessages = uncoveredMessages.map(pruneToolOutput);
+  const rawTokens = fixedTokens + totalMessageTokens(workingMessages);
   let compactionCandidates: ManagedContextSourceMessage[] = [];
   if (rawTokens > input.compressionThresholdTokens || input.forceCompaction === true) {
     const protectedStart = protectedTailStart(workingMessages);
-    workingMessages = workingMessages.map((message, index) =>
-      index < protectedStart ? pruneToolOutput(message) : message
-    );
     const prunedTokens = fixedTokens + totalMessageTokens(workingMessages);
     if (
       (prunedTokens > input.compressionThresholdTokens || input.forceCompaction === true)

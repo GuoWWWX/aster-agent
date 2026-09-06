@@ -10,6 +10,7 @@ describe("workbench prompt workspace", () => {
     useWorkbenchUiStore.setState({
       agentPromptWorkspaceTarget: null,
       configurationWorkspaceTarget: null,
+      filePanelOpenByConversationId: {},
       isFilePanelOpen: false,
       isSettingsFilePanelOpen: false,
     });
@@ -105,5 +106,16 @@ describe("workbench prompt workspace", () => {
       agentTarget,
       null,
     )).toBeNull();
+  });
+
+  it("stores right workspace visibility independently for each conversation", () => {
+    useWorkbenchUiStore.getState().setFilePanelOpenForConversation("conversation-a", true);
+    useWorkbenchUiStore.getState().setFilePanelOpenForConversation("conversation-b", false);
+
+    expect(useWorkbenchUiStore.getState().filePanelOpenByConversationId).toEqual({
+      "conversation-a": true,
+      "conversation-b": false,
+    });
+    expect(useWorkbenchUiStore.getState().isFilePanelOpen).toBe(false);
   });
 });

@@ -81,6 +81,7 @@ type WorkbenchUiState = {
   agentPromptWorkspaceTarget: AgentPromptWorkspaceTarget | null;
   configurationWorkspaceRevision: number;
   configurationWorkspaceTarget: ConfigurationWorkspaceTarget | null;
+  filePanelOpenByConversationId: Record<string, boolean>;
   filePanelWidth: number;
   filePanelWidthsByConversationId: Record<string, number>;
   isFilePanelOpen: boolean;
@@ -94,6 +95,7 @@ type WorkbenchUiState = {
   projectNavigatorWidth: number;
   settingsSection: SettingsSection;
   setFilePanelOpen: (isOpen: boolean) => void;
+  setFilePanelOpenForConversation: (conversationId: string, isOpen: boolean) => void;
   setFilePanelWidth: (width: number) => void;
   setFilePanelWidthForConversation: (conversationId: string, width: number) => void;
   setActiveActivity: (activity: ActivityView) => void;
@@ -122,6 +124,7 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
   agentPromptWorkspaceTarget: null,
   configurationWorkspaceRevision: 0,
   configurationWorkspaceTarget: null,
+  filePanelOpenByConversationId: {},
   filePanelWidth: 520,
   filePanelWidthsByConversationId: {},
   isFilePanelOpen: true,
@@ -161,6 +164,12 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
   projectNavigatorWidth: 288,
   settingsSection: "general",
   setFilePanelOpen: (isFilePanelOpen) => set({ isFilePanelOpen }),
+  setFilePanelOpenForConversation: (conversationId, isOpen) => set((state) => ({
+    filePanelOpenByConversationId: {
+      ...state.filePanelOpenByConversationId,
+      [conversationId]: isOpen,
+    },
+  })),
   setFilePanelWidth: (filePanelWidth) =>
     set({
       filePanelWidth: clampWorkbenchPanelWidth(

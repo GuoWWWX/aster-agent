@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   DEFAULT_AGENT_DIRECTORY_CONFIGURATION,
+  serializeAgentError,
   type ConversationAttachment,
+  type ConversationContextUsage,
   type ConversationAgentMessageItem,
   type ConversationPendingMessage,
   type ConversationRunEvent,
@@ -16,6 +18,7 @@ import {
 
 import { MockAgentClient } from "../../runtime/index.js";
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
+import { useApplicationSettingsStore } from "../../stores/application-settings-store.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 import { TooltipProvider } from "../../components/ui/tooltip.js";
 import type { ProjectSession } from "../projects/project-session-model.js";
@@ -66,6 +69,78 @@ afterEach(() => {
   document.body.replaceChildren();
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+describe("Conversation cache status", () => {
+  it("keeps the last usage through failures and empty refreshes, then displays the next result", async () => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "缓存统计" });
+    const previousSetting = useApplicationSettingsStore.getState().showContextUsage;
+    useApplicationSettingsStore.setState({ showContextUsage: true });
+    let listener: (event: ConversationRunEvent) => void = () => undefined;
+    vi.spyOn(client, "onConversationRunEvent").mockImplementation((next) => {
+      listener = next;
+      return () => undefined;
+    });
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([]);
+    const empty: ConversationContextUsage = {
+      compressionMode: "percentage", compressionThresholdTokens: 80_000,
+      estimatedAttachmentTokens: 0, estimatedConversationTokens: 0, estimatedInputTokens: 100,
+      estimatedReferenceTokens: 0, estimatedSkillCatalogTokens: 0, estimatedSystemTokens: 100,
+      estimatedTaskListTokens: 0, estimatedToolDefinitionTokens: 0, estimatedToolTokens: 0,
+      historyCharacters: 0, includedMessageCount: 0, omittedMessageCount: 0,
+      outputReserveTokens: 8_192, skillReserveTokens: 0,
+    };
+    const withUsage = (hitRate: number): ConversationContextUsage => ({
+      ...empty,
+      providerCache: {
+        cumulative: { cacheCreationInputTokens: 0, cachedInputTokens: hitRate * 100,
+          hitRate, inputTokens: 100, reportedRequestCount: 1, requestCount: 1 },
+        latest: { cacheCreationInputTokens: 0, cachedInputTokens: hitRate * 100,
+          hitRate, inputTokens: 100, outputTokens: 10, trendDelta: null },
+      },
+    });
+    const load = vi.spyOn(client, "getConversationContextUsage").mockResolvedValue(empty);
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const render = (current: ProjectSession) => (
+      <TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={current} /></TooltipProvider>
+    );
+    const finish = async (status: "completed" | "failed") => {
+      await act(async () => {
+        listener({ type: "run.finished", conversationId: PARENT_ID, runId: RUN_ID,
+          status, error: status === "failed" ? "请求失败" : null });
+        await flushConversationWorkspace();
+      });
+    };
+    const metric = () => container.querySelector('[data-cache-metric="本次命中率"]');
+    try {
+      await act(async () => { root?.render(render(target)); await flushConversationWorkspace(); });
+      expect(metric()?.textContent).toContain("--");
+      load.mockResolvedValue(withUsage(0.8));
+      await finish("completed");
+      expect(metric()?.textContent).toContain("80%");
+      load.mockRejectedValue(new Error("IPC unavailable"));
+      await finish("failed");
+      expect(metric()?.textContent).toContain("80%");
+      load.mockResolvedValue(empty);
+      await finish("failed");
+      expect(metric()?.textContent).toContain("80%");
+      load.mockResolvedValue(withUsage(0));
+      await finish("completed");
+      expect(metric()?.textContent).toContain("0%");
+      expect(metric()?.textContent).not.toContain("80%");
+      load.mockResolvedValue(empty);
+      await act(async () => {
+        root?.render(render(session({ id: CHILD_ID, title: "新对话" })));
+        await flushConversationWorkspace();
+      });
+      expect(metric()?.textContent).toContain("--");
+    } finally {
+      useApplicationSettingsStore.setState({ showContextUsage: previousSetting });
+    }
+  });
 });
 
 describe("Conversation timeline location", () => {
@@ -121,6 +196,159 @@ describe("Conversation timeline location", () => {
     } else {
       Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView);
     }
+  });
+});
+
+describe("Agent message live delivery", () => {
+  it("shows a parent message in an already-open Subagent conversation", async () => {
+    const client = new MockAgentClient();
+    const child = session({
+      id: CHILD_ID,
+      parentConversationId: PARENT_ID,
+      threadKind: "subagent",
+      title: "实时返工",
+    });
+    let runEventListener: ((event: ConversationRunEvent) => void) | null = null;
+    vi.spyOn(client, "onConversationRunEvent").mockImplementation((listener) => {
+      runEventListener = listener;
+      return () => {
+        runEventListener = null;
+      };
+    });
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([]);
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace agentClient={client} project={null} session={child} />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+
+    const message: ConversationAgentMessageItem = {
+      content: "请在原上下文中继续优化。",
+      conversationId: CHILD_ID,
+      createdAt: "2026-09-05T01:00:00.000Z",
+      fileChanges: [],
+      id: MESSAGE_ID,
+      kind: "agent_message",
+      messageType: "message",
+      readAt: null,
+      replyInstruction: "简要汇报修改结果。",
+      runId: RUN_ID,
+      senderConversationId: PARENT_ID,
+      senderTitle: "主对话",
+      status: "unread",
+      taskId: null,
+    };
+    act(() => {
+      runEventListener?.({
+        conversationId: CHILD_ID,
+        message,
+        type: "agent_message.received",
+      });
+    });
+
+    expect(container.textContent).toContain("请在原上下文中继续优化。");
+    act(() => {
+      runEventListener?.({
+        conversationId: CHILD_ID,
+        modelId: "test-model",
+        runId: RUN_ID,
+        type: "run.started",
+      });
+      runEventListener?.({
+        conversationId: CHILD_ID,
+        runId: RUN_ID,
+        type: "model.request_started",
+      });
+      runEventListener?.({
+        conversationId: CHILD_ID,
+        delta: "正在检查现有实现。",
+        messageId: "00000000-0000-4000-8000-000000000017",
+        modelId: "test-model",
+        runId: RUN_ID,
+        type: "assistant.delta",
+      });
+    });
+    expect(container.querySelector(".conversation-run-progress")).not.toBeNull();
+    expect(container.textContent).toContain("正在检查现有实现。");
+  });
+});
+
+describe("Subagent creation activity", () => {
+  it("shows the created identity and opens its conversation in the side workspace", async () => {
+    const client = new MockAgentClient();
+    const parent = session({ id: PARENT_ID, title: "主对话" });
+    const child = session({
+      avatarIcon: "bug",
+      id: CHILD_ID,
+      parentConversationId: PARENT_ID,
+      threadKind: "subagent",
+      title: "像素头像验收",
+    });
+    const spawnTool: ConversationToolItem = {
+      arguments: JSON.stringify({ icon: "bug", name: "像素头像验收", task: "检查头像" }),
+      batchId: null,
+      conversationId: PARENT_ID,
+      createdAt: "2026-09-05T00:00:00.000Z",
+      diff: null,
+      executionMode: "serial",
+      id: TOOL_ID,
+      kind: "tool",
+      name: "spawn_subagent",
+      result: JSON.stringify({
+        ok: true,
+        value: {
+          task: {
+            avatarIcon: "bug",
+            childConversationId: CHILD_ID,
+            error: null,
+            id: "00000000-0000-4000-8000-000000000007",
+            name: "像素头像验收",
+            result: null,
+            status: "running",
+            title: "像素头像验收",
+          },
+        },
+      }),
+      runId: RUN_ID,
+      status: "completed",
+    };
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([spawnTool]);
+    const onOpenTeamConversation = vi.fn();
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace
+            agentClient={client}
+            onOpenTeamConversation={onOpenTeamConversation}
+            project={null}
+            relatedSessions={[parent, child]}
+            session={parent}
+          />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+    expandWorkProcess(container);
+
+    const openButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="在侧边打开 Subagent 对话：像素头像验收"]',
+    );
+    expect(openButton?.textContent).toContain("像素头像验收");
+    expect(openButton?.textContent).toContain("已创建");
+
+    act(() => openButton?.click());
+    expect(onOpenTeamConversation).toHaveBeenCalledWith(child, PARENT_ID);
   });
 });
 
@@ -1004,6 +1232,7 @@ describe("Subagent approval queue", () => {
       content: "你好，团队测试通过。",
       conversationId: PARENT_ID,
       createdAt: "2026-08-30T00:00:00.000Z",
+      fileChanges: [],
       id: TOOL_ID,
       kind: "agent_message",
       messageType: "agent_result",
@@ -1359,7 +1588,147 @@ describe("Subagent approval queue", () => {
     }));
   });
 
-  it("shows a child's pending approval above the parent composer and submits it", async () => {
+  it("shows a child's pending approval above the parent composer and grants it for that conversation", async () => {
+    const parent = session({ id: PARENT_ID, title: "主对话" });
+    const child = session({
+      activeRunId: RUN_ID,
+      avatarIcon: null,
+      id: CHILD_ID,
+      parentConversationId: PARENT_ID,
+      threadKind: "subagent",
+      title: "Ping GitHub",
+    });
+    const approval: ConversationToolItem = {
+      arguments: '{"command":"ping -n 4 github.com"}',
+      batchId: null,
+      conversationId: CHILD_ID,
+      createdAt: "2026-08-28T00:00:00.000Z",
+      diff: null,
+      id: TOOL_ID,
+      kind: "tool",
+      name: "run_command",
+      result: null,
+      runId: RUN_ID,
+      status: "awaiting_approval",
+    };
+    const client = new MockAgentClient();
+    vi.spyOn(client, "listConversationTimeline").mockImplementation(({ conversationId }) =>
+      Promise.resolve(conversationId === CHILD_ID ? [approval] : [])
+    );
+    const approve = vi.spyOn(client, "approveToolChange").mockResolvedValue();
+    const onOpenTeamConversation = vi.fn();
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace
+            agentClient={client}
+            onOpenTeamConversation={onOpenTeamConversation}
+            project={null}
+            relatedSessions={[parent, child]}
+            session={parent}
+          />
+        </TooltipProvider>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Subagent 等待审批");
+    expect(container.textContent).toContain("Ping GitHub");
+    const sourceButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="在侧边打开 Subagent 审批来源：Ping GitHub"]',
+    );
+    expect(sourceButton).not.toBeNull();
+    expect(sourceButton?.querySelector('[data-subagent-avatar="generated"]')).not.toBeNull();
+    act(() => sourceButton?.click());
+    expect(onOpenTeamConversation).toHaveBeenCalledWith(child, PARENT_ID);
+    expect(container.textContent).toContain("运行 ping -n 4 github.com");
+
+    const allowButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("本对话允许") === true,
+    );
+    await act(async () => {
+      allowButton?.click();
+      await Promise.resolve();
+    });
+
+    expect(approve).toHaveBeenCalledWith({
+      approved: true,
+      runId: RUN_ID,
+      scope: "session",
+      toolId: TOOL_ID,
+    });
+    expect(container.textContent).not.toContain("Subagent 等待审批");
+  });
+
+  it("removes a child approval when it is approved from the child conversation", async () => {
+    const parent = session({ id: PARENT_ID, title: "主对话" });
+    const child = session({
+      activeRunId: RUN_ID,
+      id: CHILD_ID,
+      parentConversationId: PARENT_ID,
+      threadKind: "subagent",
+      title: "Ping GitHub",
+    });
+    const approval: ConversationToolItem = {
+      arguments: '{"command":"ping -n 4 github.com"}',
+      batchId: null,
+      conversationId: CHILD_ID,
+      createdAt: "2026-08-28T00:00:00.000Z",
+      diff: null,
+      id: TOOL_ID,
+      kind: "tool",
+      name: "run_command",
+      result: null,
+      runId: RUN_ID,
+      status: "awaiting_approval",
+    };
+    const client = new MockAgentClient();
+    let runEventListener: ((event: ConversationRunEvent) => void) | null = null;
+    vi.spyOn(client, "onConversationRunEvent").mockImplementation((listener) => {
+      runEventListener = listener;
+      return () => {
+        runEventListener = null;
+      };
+    });
+    vi.spyOn(client, "listConversationTimeline").mockImplementation(({ conversationId }) =>
+      Promise.resolve(conversationId === CHILD_ID ? [approval] : [])
+    );
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace
+            agentClient={client}
+            project={null}
+            relatedSessions={[parent, child]}
+            session={parent}
+          />
+        </TooltipProvider>,
+      );
+      await flushConversationWorkspace();
+    });
+
+    expect(container.textContent).toContain("Subagent 等待审批");
+    act(() => {
+      runEventListener?.({
+        conversationId: CHILD_ID,
+        runId: RUN_ID,
+        tool: { ...approval, status: "running" },
+        type: "tool.started",
+      });
+    });
+    expect(container.textContent).not.toContain("Subagent 等待审批");
+  });
+
+  it("removes a stale child approval after Main reports that it expired", async () => {
     const parent = session({ id: PARENT_ID, title: "主对话" });
     const child = session({
       activeRunId: RUN_ID,
@@ -1385,7 +1754,15 @@ describe("Subagent approval queue", () => {
     vi.spyOn(client, "listConversationTimeline").mockImplementation(({ conversationId }) =>
       Promise.resolve(conversationId === CHILD_ID ? [approval] : [])
     );
-    const approve = vi.spyOn(client, "approveToolChange").mockResolvedValue();
+    vi.spyOn(client, "approveToolChange").mockRejectedValue(new Error(
+      `Error invoking remote method 'conversation.approve_tool_change': Error: ${serializeAgentError({
+      code: "APPROVAL_EXPIRED",
+      id: "00000000-0000-4000-8000-000000000099",
+      message: "该审批已失效，请查看工具的最新状态。",
+      retryable: false,
+      })}`,
+    ));
+    const refreshSessions = vi.fn().mockResolvedValue(undefined);
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -1395,6 +1772,7 @@ describe("Subagent approval queue", () => {
         <TooltipProvider>
           <ConversationWorkspace
             agentClient={client}
+            onRefreshSessions={refreshSessions}
             project={null}
             relatedSessions={[parent, child]}
             session={parent}
@@ -1405,24 +1783,36 @@ describe("Subagent approval queue", () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain("Subagent 等待审批");
-    expect(container.textContent).toContain("Ping GitHub");
-    expect(container.textContent).toContain("运行 ping -n 4 github.com");
-
     const allowButton = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.includes("允许一次") === true,
+      (button) => button.textContent?.includes("本对话允许") === true,
     );
     await act(async () => {
       allowButton?.click();
       await Promise.resolve();
+      await Promise.resolve();
     });
 
-    expect(approve).toHaveBeenCalledWith({
-      approved: true,
-      runId: RUN_ID,
-      scope: "once",
-      toolId: TOOL_ID,
+    expect(container.textContent).not.toContain("Subagent 等待审批");
+    expect(container.textContent).not.toContain("该审批已失效");
+    expect(refreshSessions).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ConversationWorkspace
+            agentClient={client}
+            onRefreshSessions={refreshSessions}
+            project={null}
+            relatedSessions={[{ ...parent }, { ...child }]}
+            session={parent}
+          />
+        </TooltipProvider>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
     });
+
+    expect(container.textContent).not.toContain("Subagent 等待审批");
   });
 
   it("keeps a managed Team WorkItem conversation controllable from its side Tab", async () => {
@@ -1505,7 +1895,7 @@ describe("Subagent approval queue", () => {
     expect(cancel).toHaveBeenCalledWith({ runId: RUN_ID });
   });
 
-  it("keeps a stopped Team task list compact, closable, and out of the running state", async () => {
+  it("keeps the main task list running while Subagents work and makes it closable after they stop", async () => {
     const client = new MockAgentClient();
     const status = await client.saveModelConfiguration({
       apiKey: "test-key",
@@ -1535,12 +1925,20 @@ describe("Subagent approval queue", () => {
       conversationId: conversation.id,
       createdAt: "2026-08-29T00:00:00.000Z",
       status: "active",
-      tasks: [{
-        id: TOOL_ID,
-        reason: null,
-        status: "running",
-        title: "核对任务状态",
-      }],
+      tasks: [
+        {
+          id: TOOL_ID,
+          reason: null,
+          status: "running",
+          title: "核对任务状态",
+        },
+        {
+          id: "00000000-0000-4000-8000-000000000099",
+          reason: null,
+          status: "running",
+          title: "整理验证结果",
+        },
+      ],
       updatedAt: "2026-08-29T00:00:00.000Z",
     };
     vi.spyOn(client, "getConversationTaskList").mockResolvedValue(taskList);
@@ -1553,6 +1951,11 @@ describe("Subagent approval queue", () => {
       teamWorkItemId: WORK_ITEM_ID,
       title: "Team Lead · 已停止任务",
     });
+    const activeDelegation = {
+      ...stopped,
+      activeSubagentCount: 2,
+      lastRunStatus: "completed" as const,
+    };
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -1583,12 +1986,27 @@ describe("Subagent approval queue", () => {
     );
 
     await act(async () => {
-      root?.render(renderWorkspace(stopped));
+      root?.render(renderWorkspace(activeDelegation));
       await flushConversationWorkspace();
     });
 
     expect(container.querySelector(".conversation-task-list")).not.toBeNull();
+    expect(container.querySelector(".conversation-task-list .conversation-workspace__spin")).not.toBeNull();
+    expect(container.querySelector(".conversation-task-list__summary")?.textContent)
+      .toContain("2 项进行中");
+
+    act(() => root?.unmount());
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(renderWorkspace(stopped));
+      await flushConversationWorkspace();
+    });
+
     expect(container.querySelector(".conversation-task-list .conversation-workspace__spin")).toBeNull();
+    expect(container.querySelector(".conversation-task-list__summary")?.textContent)
+      .toContain("0/2 已完成");
+    expect(container.querySelector(".conversation-task-list__summary")?.textContent)
+      .toContain("任务已停止");
     const closeButton = container.querySelector('[aria-label="关闭任务清单"]') as HTMLButtonElement;
     expect(closeButton).not.toBeNull();
 

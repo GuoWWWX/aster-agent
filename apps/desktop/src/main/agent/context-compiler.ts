@@ -6,7 +6,11 @@ import {
   type ConversationContextUsage,
 } from "@agent/protocol";
 
-import type { ModelMessage, ModelToolDefinition } from "../model/model-contracts.js";
+import type {
+  ModelMessageAttachment,
+  ModelMessage,
+  ModelToolDefinition,
+} from "../model/model-contracts.js";
 import { AgentDatabase, type StoredContextMessage } from "../storage/agent-database.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
 import { ThreadLog } from "../storage/thread-log.js";
@@ -15,6 +19,7 @@ import { buildManagedContext, type ManagedContextSourceMessage } from "./context
 export type CompiledContext = {
   compactionCandidates: ManagedContextSourceMessage[];
   messages: ModelMessage[];
+  transientMessages: ModelMessage[];
   usage: ConversationContextUsage;
 };
 
@@ -32,6 +37,23 @@ export type ContextCompilerInput = {
   systemMessage: ModelMessage;
   toolDefinitions: readonly ModelToolDefinition[];
 };
+
+export function transientImageContextMessage(
+  attachments: readonly ModelMessageAttachment[],
+): ModelMessage | null {
+  const images = attachments.filter((attachment) => attachment.kind === "image");
+  if (images.length === 0) return null;
+  return {
+    attachments: [...images],
+    content: [
+      "[Current user image attachments]",
+      "These images belong to the immediately preceding user request and are transient model input.",
+    ].join("\n"),
+    role: "user",
+    toolCallId: null,
+    toolCalls: [],
+  };
+}
 
 export class ContextCompiler {
   public constructor(
@@ -59,6 +81,16 @@ export class ContextCompiler {
     const latestUserSequence = sourceMessages.findLast(
       (message) => message.role === "user",
     )?.sequence ?? null;
+    const latestUserAttachmentIds = sourceMessages.findLast(
+      (message) => message.sequence === latestUserSequence,
+    )?.attachmentIds ?? [];
+    const currentImageAttachments = this.attachments?.toModelAttachments(
+      input.conversationId,
+      latestUserAttachmentIds,
+      input.includeImageData,
+    ) ?? [];
+    const transientImageMessage = transientImageContextMessage(currentImageAttachments);
+    const transientMessages = transientImageMessage === null ? [] : [transientImageMessage];
     const storedMessages = sanitizeStoredModelMessages(sourceMessages)
       .filter((message) => !isRuntimeControlMessage(message))
       .map((message) => ({
@@ -66,8 +98,8 @@ export class ContextCompiler {
         attachments: this.attachments?.toModelAttachments(
           input.conversationId,
           message.attachmentIds,
-          input.includeImageData && message.sequence === latestUserSequence,
-          message.sequence !== latestUserSequence,
+          false,
+          true,
         ) ?? [],
       }));
     const latestUserMessage = [...storedMessages].reverse().find((message) => message.role === "user");
@@ -114,10 +146,12 @@ export class ContextCompiler {
         ? {}
         : { reservedTaskListTokens: input.reservedTaskListTokens }),
       sourceMessages: storedMessages,
+      transientMessages,
     });
     return {
       compactionCandidates: managed.compactionCandidates,
       messages: [input.systemMessage, ...managed.messages],
+      transientMessages,
       usage: managed.usage,
     };
   }

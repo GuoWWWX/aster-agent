@@ -31,6 +31,7 @@ export type ProjectSession = {
   teamWorkItemId?: ConversationSummary["teamWorkItemId"];
   threadKind: ConversationThreadKind;
   title: string;
+  updatedAt?: string;
   workspaceRootPath: string | null;
 };
 

@@ -135,29 +135,412 @@
   color: var(--app-accent);
 }
 
-.runtime-badge {
+.conversation-header-controls {
   display: inline-flex;
-  height: 21px;
+  min-width: 0;
   flex: 0 0 auto;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
+}
+
+.conversation-header-control {
+  display: inline-flex;
+  height: 26px;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
+  outline: none;
+  background: transparent;
   color: var(--app-muted-foreground);
-  padding: 0 7px;
+  padding: 0 6px;
+  font-size: var(--app-font-size-control);
+  cursor: pointer;
+}
+
+.conversation-header-control:hover {
+  background: var(--app-hover);
+  color: var(--app-foreground);
+}
+
+.conversation-header-control:focus-visible {
+  box-shadow: 0 0 0 2px var(--app-focus-ring);
+}
+
+.conversation-header-control--subagent-menu {
+  width: 24px;
+  justify-content: center;
+  border-color: transparent;
+  padding: 0;
+}
+
+.conversation-header-control__chevron {
+  flex: 0 0 auto;
+  transition: transform 120ms ease;
+}
+
+.conversation-header-control[data-open="true"] .conversation-header-control__chevron {
+  transform: rotate(180deg);
+}
+
+.conversation-header-subagents {
+  display: inline-flex;
+  height: 26px;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  padding: 0 2px;
+}
+
+.conversation-header-subagents__avatars {
+  display: flex;
+  align-items: center;
+}
+
+.conversation-header-subagents__placeholder {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-panel-subtle);
+  color: var(--app-subtle-foreground);
+}
+
+.conversation-header-subagents__avatar {
+  display: inline-flex;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: var(--app-radius);
+  outline: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  transition: margin-left 120ms ease;
+}
+
+.conversation-header-subagents__avatar + .conversation-header-subagents__avatar {
+  margin-left: -6px;
+}
+
+.conversation-header-subagents:hover
+  .conversation-header-subagents__avatar + .conversation-header-subagents__avatar,
+.conversation-header-subagents:focus-within
+  .conversation-header-subagents__avatar + .conversation-header-subagents__avatar {
+  margin-left: 2px;
+}
+
+.conversation-header-subagents__avatar:focus-visible {
+  box-shadow: 0 0 0 2px var(--app-focus-ring);
+}
+
+.conversation-header-subagents .agent-profile-avatar {
+  box-shadow: 0 0 0 1px var(--app-panel);
+}
+
+.conversation-header-control__count {
+  color: var(--app-foreground);
+  font-weight: 600;
+}
+
+.conversation-header-control--git {
+  max-width: min(310px, 38vw);
+}
+
+.conversation-header-control__branch {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--app-foreground);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-header-control__git-totals,
+.conversation-header-popover__file small {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.conversation-header-control [data-kind="addition"],
+.conversation-header-popover [data-kind="addition"] {
+  color: #059669;
+}
+
+.conversation-header-control [data-kind="deletion"],
+.conversation-header-popover [data-kind="deletion"] {
+  color: #dc2626;
+}
+
+.conversation-header-popover {
+  width: min(360px, calc(100vw - 20px));
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-large);
+  background: var(--app-panel);
+  color: var(--app-foreground);
+  padding: 5px;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
+}
+
+.conversation-header-popover--subagents {
+  width: min(320px, calc(100vw - 20px));
+}
+
+.conversation-header-popover__group + .conversation-header-popover__group {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--app-border);
+}
+
+.conversation-header-popover__group h2 {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  padding: 4px 6px;
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-caption);
+  font-weight: 600;
+}
+
+.conversation-header-popover__group h2 span {
+  color: var(--app-subtle-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.conversation-header-popover__subagent {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1px;
+  border: 0;
+  border-radius: var(--app-radius);
+  outline: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.conversation-header-popover__subagent:hover {
+  background: var(--app-hover);
+}
+
+.conversation-header-popover__subagent-open {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: var(--app-radius);
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.conversation-header-popover__subagent-open:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--app-focus-ring);
+}
+
+.conversation-header-popover__subagent-avatar {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.conversation-header-popover__subagent-status {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--app-panel);
+  border-radius: var(--app-radius-pill);
+  background: var(--app-subtle-foreground);
+}
+
+.conversation-header-popover__subagent-avatar[data-subagent-status="working"]
+  .conversation-header-popover__subagent-status {
+  background: var(--app-accent);
+}
+
+.conversation-header-popover__subagent-avatar[data-subagent-status="failed"]
+  .conversation-header-popover__subagent-status {
+  background: var(--app-destructive);
+}
+
+.conversation-header-popover__subagent-avatar[data-subagent-status="completed"]
+  .conversation-header-popover__subagent-status {
+  background: var(--app-status-success-fg);
+}
+
+.conversation-header-popover__subagent-avatar[data-subagent-status="ended"]
+  .conversation-header-popover__subagent-status {
+  background: var(--app-subtle-foreground);
+}
+
+.conversation-header-popover__subagent-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.conversation-header-popover__subagent strong,
+.conversation-header-popover__subagent small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-header-popover__subagent strong {
   font-size: var(--app-font-size-control);
   font-weight: 600;
 }
 
-.runtime-badge[data-running="true"] {
-  border-color: rgba(37, 99, 235, 0.36);
-  background: rgba(219, 234, 254, 0.54);
-  color: #1d4ed8;
+.conversation-header-popover__subagent small {
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-auxiliary);
 }
 
-.runtime-badge[data-configured="false"] {
-  border-color: rgba(245, 158, 11, 0.44);
-  color: #b45309;
+.conversation-header-popover__subagent-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding-right: 3px;
+}
+
+.conversation-header-popover__heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 6px 7px;
+  border-bottom: 1px solid var(--app-border);
+  font-size: var(--app-font-size-control);
+}
+
+.conversation-header-popover__heading > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--app-muted-foreground);
+}
+
+.conversation-header-popover__heading strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-header-popover__files {
+  max-height: 244px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.conversation-header-popover__file {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px;
+  border: 0;
+  border-radius: var(--app-radius);
+  outline: none;
+  background: transparent;
+  color: var(--app-foreground);
+  font: inherit;
+  font-size: var(--app-font-size-body);
+  text-align: left;
+  cursor: pointer;
+}
+
+.conversation-header-popover__file:hover:not(:disabled) {
+  background: var(--app-hover);
+}
+
+.conversation-header-popover__file:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--app-focus-ring);
+}
+
+.conversation-header-popover__file:disabled {
+  cursor: default;
+}
+
+.conversation-header-popover__file > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-header-popover__file small {
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-control);
+}
+
+.conversation-header-popover__error {
+  margin: 5px 6px 0;
+  color: var(--app-destructive);
+  font-size: var(--app-font-size-control);
+}
+
+.conversation-header-popover__empty {
+  margin: 0;
+  padding: 14px 8px;
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-control);
+  text-align: center;
+}
+
+.conversation-header-popover__open {
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--app-border);
+  outline: none;
+  background: transparent;
+  color: var(--app-accent);
+  padding: 7px 6px 4px;
+  font-size: var(--app-font-size-control);
+  text-align: center;
+  cursor: pointer;
+}
+
+.conversation-header-popover__open:hover:not(:disabled) {
+  color: var(--app-foreground);
+}
+
+.conversation-header-popover__open:disabled {
+  color: var(--app-subtle-foreground);
+  cursor: default;
+}
+
+@media (max-width: 720px) {
+  .conversation-header-control__git-totals {
+    display: none;
+  }
+
+  .conversation-header-control--git {
+    max-width: 180px;
+  }
 }
 
 .conversation-workspace__messages {
@@ -183,14 +566,6 @@
   display: none;
   width: 0;
   height: 0;
-}
-
-[data-theme="dark"] .conversation-turn-tooltip {
-  background: var(--app-hover);
-}
-
-[data-theme="dark"] .conversation-turn-tooltip > svg {
-  fill: var(--app-hover);
 }
 
 .conversation-workspace__loading,
@@ -318,7 +693,7 @@
   max-width: 720px;
   margin: 2px 0 0 22px;
   color: var(--app-muted-foreground);
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
   font-weight: 400;
   line-height: 1.5;
   overflow-wrap: anywhere;
@@ -378,6 +753,7 @@
   min-width: 0;
   flex: 0 0 auto;
   color: var(--app-foreground);
+  font-size: var(--app-font-size-body);
   line-height: 1.55;
 }
 
@@ -439,7 +815,7 @@
   border-radius: var(--app-radius-large);
   background: var(--app-panel-subtle);
   color: var(--app-foreground);
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
 }
 
 .conversation-attachments--draft .conversation-attachment {
@@ -531,7 +907,7 @@
 }
 
 .conversation-attachment__identity strong {
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
   font-weight: 650;
 }
 
@@ -696,7 +1072,7 @@
 .conversation-error-quote__technical {
   margin-top: 6px;
   color: var(--app-foreground);
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
 }
 
 .conversation-error-quote__technical summary {
@@ -788,7 +1164,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 2px 0;
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
 }
 
 .tool-activity-batch__identity {
@@ -818,15 +1194,15 @@
 .tool-timeline-item__status-label {
   flex: 0 0 auto !important;
   color: var(--app-destructive);
-  font-size: var(--app-font-size-auxiliary);
-  font-weight: 600;
+  font-size: var(--app-font-size-body);
+  font-weight: 400;
 }
 
 .tool-activity-batch__execution {
   flex: 0 0 auto !important;
   color: var(--app-accent);
-  font-size: var(--app-font-size-auxiliary);
-  font-weight: 600;
+  font-size: var(--app-font-size-body);
+  font-weight: 400;
 }
 
 .tool-activity-batch__toggle {
@@ -893,7 +1269,7 @@
 
 .tool-activity-row .tool-timeline-item__header-actions {
   gap: 1px;
-  font-size: var(--app-font-size-auxiliary);
+  font-size: var(--app-font-size-body);
 }
 
 .tool-activity-row .tool-timeline-item__raw-button,
@@ -920,7 +1296,7 @@
   background: var(--app-panel-subtle);
   color: var(--app-muted-foreground);
   padding: 5px 9px;
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
 }
 
 .tool-timeline-item__identity {
@@ -985,7 +1361,7 @@ button.tool-file-change__path:focus-visible {
 .tool-execution-timer {
   flex: 0 0 auto !important;
   color: var(--app-muted-foreground);
-  font-size: var(--app-font-size-auxiliary);
+  font-size: var(--app-font-size-body);
   font-variant-numeric: tabular-nums;
   font-weight: 500;
 }
@@ -1073,7 +1449,7 @@ button.tool-file-change__path:focus-visible {
   background: var(--app-panel);
   color: var(--app-muted-foreground);
   padding: 6px 9px;
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
   font-weight: 600;
 }
 
@@ -1101,7 +1477,7 @@ button.tool-file-change__path:focus-visible {
 
 .tool-read-facts dt {
   color: var(--app-muted-foreground);
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
 }
 
 .tool-read-facts dd {
@@ -1109,7 +1485,7 @@ button.tool-file-change__path:focus-visible {
   margin: 0;
   overflow-wrap: anywhere;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
 }
 
 .tool-directory-listing {
@@ -1128,7 +1504,7 @@ button.tool-file-change__path:focus-visible {
   align-items: center;
   gap: 7px;
   padding: 5px 9px;
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
 }
 
 .tool-directory-listing li:hover {
@@ -1158,7 +1534,7 @@ button.tool-file-change__path:focus-visible {
   margin: 0;
   color: var(--app-muted-foreground);
   padding: 8px 9px;
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
 }
 
 .tool-directory-listing__notice {
@@ -1188,7 +1564,7 @@ button.tool-file-change__path:focus-visible {
 .tool-search-results__path {
   overflow-wrap: anywhere;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
   font-weight: 600;
 }
 
@@ -1206,7 +1582,7 @@ button.tool-file-change__path:focus-visible {
 .tool-search-results__excerpt {
   overflow-wrap: anywhere;
   color: var(--app-muted-foreground);
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
 }
 
 .tool-timeline-item__payload pre {
@@ -1217,7 +1593,7 @@ button.tool-file-change__path:focus-visible {
   color: var(--app-foreground);
   padding: 8px 9px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
   line-height: 1.5;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
@@ -1228,7 +1604,7 @@ button.tool-file-change__path:focus-visible {
   background: var(--app-muted);
   color: var(--app-muted-foreground);
   padding: 8px 9px;
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
   line-height: 1.5;
 }
 
@@ -1249,7 +1625,7 @@ button.tool-file-change__path:focus-visible {
   background: var(--app-panel);
   color: var(--app-muted-foreground);
   padding-left: 9px;
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
   font-weight: 600;
 }
 
@@ -1275,7 +1651,7 @@ button.tool-file-change__path:focus-visible {
   color: var(--app-foreground);
   padding: 8px 9px;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
   line-height: 1.55;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
@@ -1317,7 +1693,7 @@ button.tool-file-change__path:focus-visible {
   flex: 1 1 auto;
   overflow: hidden;
   color: var(--app-foreground);
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1340,8 +1716,8 @@ button.tool-file-change__path:hover {
   display: inline-flex;
   flex: 0 0 auto;
   gap: 5px;
-  font-size: var(--app-font-size-control);
-  font-weight: 700;
+  font-size: var(--app-font-size-body);
+  font-weight: 400;
 }
 
 .tool-file-change__summary [data-kind="addition"] {
@@ -1445,7 +1821,7 @@ button.tool-file-change__path:hover {
   background: #f8fbff;
   color: var(--app-muted-foreground);
   padding: 6px 9px;
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
 }
 
 .tool-timeline-item__approval-actions {
@@ -1464,7 +1840,7 @@ button.tool-file-change__path:hover {
   background: var(--app-panel);
   color: var(--app-foreground);
   padding: 3px 7px;
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
 }
 
 .tool-timeline-item__approval button:last-child {
@@ -2082,7 +2458,7 @@ button.tool-file-change__path:hover {
   column-gap: 10px;
   color: var(--app-muted-foreground);
   padding: 5px 0;
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
 }
 
 .context-compaction-divider__line {
@@ -2244,6 +2620,7 @@ button.tool-file-change__path:hover {
   background: transparent;
   color: var(--app-foreground);
   padding: 10px 12px 5px;
+  font-size: var(--app-font-size-body);
   line-height: 18px;
 }
 
@@ -2317,7 +2694,7 @@ button.tool-file-change__path:hover {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 3px;
+  gap: 1px;
 }
 
 .conversation-workspace__send-button {
@@ -2336,7 +2713,7 @@ button.tool-file-change__path:hover {
   box-shadow: none;
   color: var(--app-muted-foreground);
   padding: 0 5px;
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
   font-weight: 500;
 }
 
@@ -2422,7 +2799,7 @@ button.tool-file-change__path:hover {
 .conversation-workspace__model-divider {
   flex: 0 0 auto;
   color: var(--app-subtle-foreground);
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
 }
 
 .conversation-workspace__reasoning-trigger {
@@ -2441,7 +2818,7 @@ button.tool-file-change__path:hover {
   color: var(--app-muted-foreground);
   padding: 0 5px;
   font: inherit;
-  font-size: var(--app-font-size-control);
+  font-size: var(--app-font-size-body);
   font-weight: 500;
   outline: none;
   white-space: nowrap;
@@ -2921,12 +3298,6 @@ button.tool-file-change__path:hover {
 [data-theme="dark"] .agent-avatar {
   border-color: rgba(96, 165, 250, 0.4);
   background: rgba(59, 130, 246, 0.18);
-}
-
-[data-theme="dark"] .runtime-badge[data-running="true"] {
-  border-color: rgba(96, 165, 250, 0.42);
-  background: rgba(30, 58, 138, 0.32);
-  color: #bfdbfe;
 }
 
 [data-theme="dark"] .tool-timeline-item {

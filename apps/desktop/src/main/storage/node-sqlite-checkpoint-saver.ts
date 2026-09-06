@@ -180,6 +180,39 @@ export class NodeSqliteCheckpointSaver extends BaseCheckpointSaver {
           },
           version: 1,
         },
+        {
+          name: "langgraph-writes-before-checkpoint",
+          up: (database) => {
+            database.exec(`
+              DROP TABLE IF EXISTS langgraph_checkpoint_writes_v2;
+              CREATE TABLE langgraph_checkpoint_writes_v2 (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL,
+                checkpoint_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                write_idx INTEGER NOT NULL,
+                channel TEXT NOT NULL,
+                value_type TEXT NOT NULL,
+                value_blob BLOB NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, write_idx)
+              );
+              INSERT INTO langgraph_checkpoint_writes_v2
+                (thread_id, checkpoint_ns, checkpoint_id, task_id, write_idx,
+                 channel, value_type, value_blob, created_at)
+              SELECT thread_id, checkpoint_ns, checkpoint_id, task_id, write_idx,
+                     channel, value_type, value_blob, created_at
+              FROM langgraph_checkpoint_writes;
+              DROP TABLE langgraph_checkpoint_writes;
+              ALTER TABLE langgraph_checkpoint_writes_v2 RENAME TO langgraph_checkpoint_writes;
+              CREATE INDEX langgraph_checkpoint_writes_order
+                ON langgraph_checkpoint_writes(
+                  thread_id, checkpoint_ns, checkpoint_id, task_id, write_idx
+                );
+            `);
+          },
+          version: 2,
+        },
       ]);
     } catch (error) {
       this.database.close();
@@ -332,7 +365,12 @@ export class NodeSqliteCheckpointSaver extends BaseCheckpointSaver {
            (thread_id, checkpoint_ns, checkpoint_id, task_id, write_idx,
             channel, value_type, value_blob, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(thread_id, checkpoint_ns, checkpoint_id, task_id, write_idx) DO NOTHING`,
+         ON CONFLICT(thread_id, checkpoint_ns, checkpoint_id, task_id, write_idx) DO UPDATE SET
+           channel = excluded.channel,
+           value_type = excluded.value_type,
+           value_blob = excluded.value_blob,
+           created_at = excluded.created_at
+         WHERE excluded.write_idx < 0`,
       );
       const now = new Date().toISOString();
       for (const write of serialized) {
@@ -354,6 +392,7 @@ export class NodeSqliteCheckpointSaver extends BaseCheckpointSaver {
   public deleteThread(threadId: string): Promise<void> {
     const safeThreadId = safeKey("thread_id", threadId);
     transaction(this.database, () => {
+      this.database.prepare("DELETE FROM langgraph_checkpoint_writes WHERE thread_id = ?").run(safeThreadId);
       this.database.prepare("DELETE FROM langgraph_checkpoints WHERE thread_id = ?").run(safeThreadId);
     });
     return Promise.resolve();
@@ -363,8 +402,16 @@ export class NodeSqliteCheckpointSaver extends BaseCheckpointSaver {
     const safeThreadIds = [...new Set(threadIds)].map((threadId) => safeKey("thread_id", threadId));
     if (safeThreadIds.length === 0) return Promise.resolve();
     transaction(this.database, () => {
-      const statement = this.database.prepare("DELETE FROM langgraph_checkpoints WHERE thread_id = ?");
-      for (const threadId of safeThreadIds) statement.run(threadId);
+      const deleteWrites = this.database.prepare(
+        "DELETE FROM langgraph_checkpoint_writes WHERE thread_id = ?",
+      );
+      const deleteCheckpoints = this.database.prepare(
+        "DELETE FROM langgraph_checkpoints WHERE thread_id = ?",
+      );
+      for (const threadId of safeThreadIds) {
+        deleteWrites.run(threadId);
+        deleteCheckpoints.run(threadId);
+      }
     });
     return Promise.resolve();
   }

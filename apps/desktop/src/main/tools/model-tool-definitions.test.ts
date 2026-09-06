@@ -128,7 +128,7 @@ describe("model tool definitions", () => {
     }
     expect(endLineDescription).toContain("400");
 
-    const taskItems = property(definitions, "create_task_list", "tasks").items;
+    const taskItems = property(definitions, "update_task_list", "tasks").items;
     if (!isRecord(taskItems) || !isRecord(taskItems.properties)) {
       throw new Error("Missing task item schema.");
     }

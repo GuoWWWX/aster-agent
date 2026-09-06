@@ -85,7 +85,7 @@ describe("SkillRuntime", () => {
       id: loaded.id,
       version: loaded.version,
     }], { projectId: undefined });
-    expect(message?.role).toBe("system");
+    expect(message?.role).toBe("user");
     expect(message?.content).toContain("Use evidence and report exact paths");
   });
 

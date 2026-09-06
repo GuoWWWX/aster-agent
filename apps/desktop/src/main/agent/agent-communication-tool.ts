@@ -101,7 +101,7 @@ export class AgentCommunicationTool {
         parameters: modelToolParameters(readConversationArgumentsSchema),
       },
       {
-        description: "Send a persistent message to another Agent conversation. A running recipient receives it before the next model turn; an idle recipient starts automatically. With expectReply=true, the recipient returns only a bounded completion receipt and keeps its full answer in its own conversation; use replyInstruction to request receipt focus. Use expectReply=false for progress updates or notifications.",
+        description: "Send a persistent message to another Agent conversation or to a reusable completed Subagent. A running recipient receives it before the next model turn; an idle recipient starts automatically. An explicitly ended Subagent is read-only. With expectReply=true, the recipient returns only a bounded completion receipt and keeps its full answer in its own conversation; use replyInstruction to request receipt focus. Use expectReply=false for progress updates or notifications.",
         name: SEND_AGENT_MESSAGE_TOOL_NAME,
         parameters: modelToolParameters(sendMessageArgumentsSchema),
       },

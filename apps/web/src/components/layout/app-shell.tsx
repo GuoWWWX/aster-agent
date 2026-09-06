@@ -62,6 +62,11 @@ export function AppShell({
     (state) => state.isProjectNavigatorOpen,
   );
   const filePanelWidth = useWorkbenchUiStore((state) => state.filePanelWidth);
+  const conversationFilePanelOpen = useWorkbenchUiStore((state) =>
+    activeConversationId === null
+      ? false
+      : state.filePanelOpenByConversationId[activeConversationId] ?? false
+  );
   const conversationFilePanelWidth = useWorkbenchUiStore((state) =>
     activeConversationId === null
       ? undefined
@@ -71,6 +76,9 @@ export function AppShell({
     (state) => state.projectNavigatorWidth,
   );
   const setFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
+  const setFilePanelOpenForConversation = useWorkbenchUiStore(
+    (state) => state.setFilePanelOpenForConversation,
+  );
   const setSettingsFilePanelOpen = useWorkbenchUiStore(
     (state) => state.setSettingsFilePanelOpen,
   );
@@ -85,12 +93,6 @@ export function AppShell({
     (state) => state.setProjectNavigatorWidth,
   );
   const themeMode = useWorkbenchUiStore((state) => state.themeMode);
-  const toggleFilePanel = useWorkbenchUiStore(
-    (state) => state.toggleFilePanel,
-  );
-  const toggleSettingsFilePanel = useWorkbenchUiStore(
-    (state) => state.toggleSettingsFilePanel,
-  );
   const toggleProjectNavigator = useWorkbenchUiStore(
     (state) => state.toggleProjectNavigator,
   );
@@ -117,18 +119,25 @@ export function AppShell({
     configurationWorkspaceTarget,
   );
   const isSettingsWorkspace = activeSettingsWorkspaceTarget !== null;
-  const canShowFileWorkspace = isConversationWorkspace
+  const canShowFileWorkspace = (isConversationWorkspace && activeConversationId !== null)
     || activeActivity === "team"
     || isSettingsWorkspace;
   const activeFilePanelOpen = activeActivity === "settings"
     ? isSettingsFilePanelOpen
-    : isFilePanelOpen;
-  const setActiveFilePanelOpen = activeActivity === "settings"
-    ? setSettingsFilePanelOpen
-    : setFilePanelOpen;
-  const toggleActiveFilePanel = activeActivity === "settings"
-    ? toggleSettingsFilePanel
-    : toggleFilePanel;
+    : isConversationWorkspace
+      ? conversationFilePanelOpen
+      : isFilePanelOpen;
+  const setActiveFilePanelOpen = (isOpen: boolean): void => {
+    if (activeActivity === "settings") {
+      setSettingsFilePanelOpen(isOpen);
+      return;
+    }
+    if (isConversationWorkspace && activeConversationId !== null) {
+      setFilePanelOpenForConversation(activeConversationId, isOpen);
+      return;
+    }
+    setFilePanelOpen(isOpen);
+  };
   const activeFilePanelWidth = isConversationWorkspace && activeConversationId !== null
     ? conversationFilePanelWidth ?? filePanelWidth
     : filePanelWidth;
@@ -152,7 +161,7 @@ export function AppShell({
         contextText={TITLEBAR_CONTEXT[activeActivity]}
         isFilePanelOpen={activeFilePanelOpen}
         isProjectNavigatorOpen={isProjectNavigatorOpen}
-        onToggleFilePanel={toggleActiveFilePanel}
+        onToggleFilePanel={() => setActiveFilePanelOpen(!activeFilePanelOpen)}
         onToggleProjectNavigator={toggleProjectNavigator}
         {...(onCloseAllConversationTabs === undefined ? {} : {
           onCloseAllConversationTabs,

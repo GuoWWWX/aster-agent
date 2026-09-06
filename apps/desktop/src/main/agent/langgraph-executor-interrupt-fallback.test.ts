@@ -52,6 +52,7 @@ describe("LangGraphExecutor interrupt fallback", () => {
       value: { kind: "tool_approval" },
     }]);
     expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke.mock.calls[1]?.[0]).toMatchObject({ resume: true });
     expect(result.hasSuccessfulToolExecution).toBe(true);
   });
 });

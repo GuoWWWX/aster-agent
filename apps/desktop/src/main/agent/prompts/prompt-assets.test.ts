@@ -29,7 +29,10 @@ describe("prompt assets", () => {
     expect(BASE_SYSTEM_PROMPT).toContain("Choose the editing tool by operation, independent of model or provider");
     expect(BASE_SYSTEM_PROMPT).toContain("prefer `replace_in_file`");
     expect(BASE_SYSTEM_PROMPT).toContain("standard unified diff beginning with `--- a/<path>`");
-    expect(BASE_SYSTEM_PROMPT).toContain("batch all changed steps into one complete update");
+    expect(BASE_SYSTEM_PROMPT).toContain("combining changes into one call");
+    expect(BASE_SYSTEM_PROMPT).toContain("`update_task_list` creates or updates");
+    expect(BASE_SYSTEM_PROMPT).not.toContain("create_task_list");
+    expect(BASE_SYSTEM_PROMPT).not.toContain("at most one running");
     expect(BASE_SYSTEM_PROMPT).toContain("returns only a bounded completion receipt");
     expect(BASE_SYSTEM_PROMPT).toContain("load the `browser-use` Skill when it is present");
     expect(BASE_SYSTEM_PROMPT).not.toMatch(/\p{Script=Han}/u);
