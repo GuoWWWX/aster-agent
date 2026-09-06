@@ -7,7 +7,6 @@ import { z } from "zod";
 import {
   approveToolChangeInputSchema,
   agentPermissionToolSchema,
-  agentPermissionRuleSchema,
   CONTEXT_MESSAGE_OVERHEAD_TOKENS,
   DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
   conversationContextUsageInputSchema,
@@ -106,11 +105,16 @@ import {
 } from "../tools/project-tool-registry.js";
 import {
   createContextCompactionMessages,
+  estimateModelMessagesTokens,
   type ManagedContextSourceMessage,
+  normalizeModelFacingToolOutputs,
   parseContextSummary,
   selectCompactionRetryBatch,
 } from "./context-manager.js";
-import { ContextCompiler } from "./context-compiler.js";
+import {
+  ContextCompiler,
+  transientImageContextMessage,
+} from "./context-compiler.js";
 import {
   activeTaskListContextMessage,
   activeTaskListContextTokens,
@@ -536,7 +540,16 @@ type ToolApprovalInterrupt = {
   toolId: string;
 };
 
+type ToolApprovalResume = {
+  approved: boolean;
+};
+
 type PermissionDecision = "allow" | "ask" | "deny";
+
+type SessionPermissionGrant = {
+  candidate: string;
+  tool: AgentPermissionTool;
+};
 
 const automaticApprovalReviewSchema = z.object({
   decision: z.enum(["allow", "ask"]),
@@ -631,6 +644,15 @@ function permissionRuleMatches(
   return normalizedCandidate === prefix || normalizedCandidate.startsWith(`${prefix} `);
 }
 
+function sessionPermissionGrantMatches(
+  grant: SessionPermissionGrant,
+  tool: AgentPermissionTool,
+  candidate: string,
+): boolean {
+  return grant.tool === tool
+    && grant.candidate === normalizePermissionCandidate(tool, candidate);
+}
+
 type LangChainToolResultEnvelope = {
   activeSkills: SkillSnapshotRef[];
   content: string;
@@ -658,8 +680,25 @@ type PreparedConversationMessage = {
 type BuiltContext = {
   compactionCandidates: ManagedContextSourceMessage[];
   messages: ModelMessage[];
+  transientMessages: ModelMessage[];
   usage: ConversationContextUsage;
 };
+
+function modelRequestMessageBudget(context: BuiltContext): number {
+  const preparedMessageTokens = estimateModelMessagesTokens(
+    normalizeModelFacingToolOutputs([...context.messages, ...context.transientMessages]),
+  );
+  const unusedContextTokens = Math.max(
+    0,
+    context.usage.compressionThresholdTokens
+      - context.usage.estimatedInputTokens
+      - context.usage.outputReserveTokens,
+  );
+  return preparedMessageTokens
+    + context.usage.skillReserveTokens
+    + context.usage.estimatedTaskListTokens
+    + unusedContextTokens;
+}
 
 export type ContextCompactionInput = {
   configuration: ModelConfiguration;
@@ -695,7 +734,7 @@ function conversationIdentityContext(
           ? "You are an independent Agent."
           : `You are a standing Agent in team ${conversation.teamId}.`;
       case "subagent":
-        return `You are a temporary Subagent derived from parent conversation ${conversation.parentConversationId ?? "unknown"}. Parent conversation history is not inherited. Work only from the assigned task message and context explicitly included in it. For substantive work, start the final answer with a concise completion receipt covering the outcome, verification, and unresolved risks, add a standalone Markdown --- line, then keep supporting detail below it. For a trivial answer, reply directly without forcing the divider. The runtime privately delivers only the completion receipt to the parent for synthesis and keeps the full final answer in this conversation. You may use list_agent_conversations and read_agent_conversation when the assigned task genuinely requires evidence from another conversation, but do not send ordinary Agent messages, wait for Agent messages, or recursively create teams.`;
+        return `You are a reusable Subagent derived from parent conversation ${conversation.parentConversationId ?? "unknown"}. Parent conversation history is not inherited, but your own conversation context is preserved across follow-up runs until the parent explicitly ends you. Work only from the assigned task and later follow-up messages. For substantive work, start the final answer with a concise completion receipt covering the outcome, verification, and unresolved risks, add a standalone Markdown --- line, then keep supporting detail below it. For a trivial answer, reply directly without forcing the divider. The runtime privately delivers only the completion receipt to the parent for synthesis and keeps the full final answer in this conversation. You may use list_agent_conversations and read_agent_conversation when the assigned task genuinely requires evidence from another conversation, but do not send ordinary Agent messages, wait for Agent messages, or recursively create teams.`;
     }
   })();
   if (agent === null) return [identity];
@@ -969,7 +1008,7 @@ export class AgentRuntime {
   private readonly pendingChangeApprovals = new Map<string, PendingChangeApproval>();
 
   /** Session grants intentionally survive Runs but disappear on app restart. */
-  private readonly sessionPermissionGrants = new Map<string, AgentPermissionRule[]>();
+  private readonly sessionPermissionGrants = new Map<string, SessionPermissionGrant[]>();
 
   /** Marks decisions that the replayed interrupt must consume without re-notifying the UI. */
   private readonly resumedApprovalDecisions = new Map<string, { approved: boolean; runId: string }>();
@@ -1185,6 +1224,22 @@ export class AgentRuntime {
             context.conversationId,
             messageIds,
           ),
+          end: (childConversationId) => {
+            const task = this.database.endSubagent(context.conversationId, childConversationId);
+            this.appendShadowThreadLog(context.conversationId, {
+              payload: { task },
+              type: "subagent_task_ended",
+            });
+            this.emit(context.emit, {
+              conversation: this.database.getConversation(context.conversationId),
+              type: "conversation.updated",
+            });
+            this.emit(context.emit, {
+              conversation: this.database.getConversation(childConversationId),
+              type: "conversation.updated",
+            });
+            return task;
+          },
           signal: context.signal,
           spawn: (task, name, icon, agentId, modelSelection) => this.spawnSubagent({
             agentId,
@@ -1407,12 +1462,8 @@ export class AgentRuntime {
     ) {
       throw new Error("Managed Team WorkItem conversations can only be continued through their WorkItem lifecycle.");
     }
-    if (
-      conversation.subagentTaskStatus === "completed"
-      || conversation.subagentTaskStatus === "failed"
-      || conversation.subagentTaskStatus === "cancelled"
-    ) {
-      throw new Error("This Subagent task has ended and its conversation is read-only.");
+    if (conversation.subagentTaskStatus === "ended") {
+      throw new Error("This Subagent has ended and its conversation is read-only.");
     }
     if (input.agent !== undefined) {
       this.database.bindConversationAgent(input.conversationId, input.agent);
@@ -1463,12 +1514,8 @@ export class AgentRuntime {
     if (conversation.teamWorkItemId !== null) {
       throw new Error("Managed Team WorkItem conversations cannot be edited outside their WorkItem lifecycle.");
     }
-    if (
-      conversation.subagentTaskStatus === "completed"
-      || conversation.subagentTaskStatus === "failed"
-      || conversation.subagentTaskStatus === "cancelled"
-    ) {
-      throw new Error("This Subagent task has ended and its conversation is read-only.");
+    if (conversation.subagentTaskStatus === "ended") {
+      throw new Error("This Subagent has ended and its conversation is read-only.");
     }
     let source = this.database.getLatestUserMessageReplacementSource(
       input.conversationId,
@@ -2037,6 +2084,7 @@ export class AgentRuntime {
     conversationId: string,
     runId: string,
     messages: ModelMessage[],
+    imageMessages: ModelMessage[],
     emit: RunEventEmitter
   ): boolean {
     const records = this.database.listPendingMessageRecords(conversationId, "steer");
@@ -2084,17 +2132,27 @@ export class AgentRuntime {
           type: "user_message",
         });
       }
+      const stableAttachments = this.attachments?.toModelAttachments(
+        conversationId,
+        record.message.attachmentIds,
+        false,
+        true,
+      ) ?? [];
       messages.push({
-        attachments: this.attachments?.toModelAttachments(
-          conversationId,
-          record.message.attachmentIds,
-          true
-        ) ?? [],
+        attachments: stableAttachments,
         content: modelInputContent,
         role: "user",
         toolCallId: null,
         toolCalls: []
       });
+      const transientImageMessage = transientImageContextMessage(
+        this.attachments?.toModelAttachments(
+          conversationId,
+          record.message.attachmentIds,
+          true,
+        ) ?? [],
+      );
+      if (transientImageMessage !== null) imageMessages.push(transientImageMessage);
     }
     this.appendPendingMessagesThreadLog(conversationId);
     this.emitPendingMessages(conversationId, emit);
@@ -2197,14 +2255,18 @@ export class AgentRuntime {
       input.referencedProjectPaths ?? [],
     );
     const projectFileReferenceTokens = estimateContextTokens(projectFileReferences);
-    const providerUsages = this.database.listModelMessages(input.conversationId)
+    const modelMessages = this.database.listModelMessages(input.conversationId);
+    const latestUsageState = modelMessages.findLast((message) =>
+      message.role === "assistant" && message.providerState?.usage !== undefined
+    )?.providerState;
+    const providerUsages = modelMessages
       .flatMap((message) => {
         const state = message.role === "assistant" ? message.providerState : undefined;
         if (
           state?.usage === undefined
-          || state.apiFormat !== configuration.apiFormat
-          || state.baseUrl !== configuration.baseUrl
-          || state.modelId !== configuration.modelId
+          || state.apiFormat !== latestUsageState?.apiFormat
+          || state.baseUrl !== latestUsageState.baseUrl
+          || state.modelId !== latestUsageState.modelId
         ) {
           return [];
         }
@@ -2341,7 +2403,7 @@ export class AgentRuntime {
         approved,
         runId: entry.value.runId,
       });
-      return approved;
+      return { approved } satisfies ToolApprovalResume;
     } finally {
       this.pendingChangeApprovals.delete(entry.value.toolId);
     }
@@ -2444,6 +2506,9 @@ export class AgentRuntime {
       let lastAssistantMessageId: string = randomUUID();
       let lastAssistantResult: ModelTurnResult | null = null;
       let followUpInputForGraph = false;
+      let preparedModelContext: BuiltContext | null = null;
+      let currentImageMessages: ModelMessage[] = [];
+      let lastRuntimeContextRefreshTurn = -1;
       const modelMessageIdsByTurn = new Map<number, string>();
       const agentMessageIdsPreparedInInitialContext = new Set<string>();
       const graphResult = await this.graphExecutor.invoke({
@@ -2461,6 +2526,8 @@ export class AgentRuntime {
               runId,
               emit,
             );
+            preparedModelContext = preparedContext;
+            currentImageMessages = preparedContext.transientMessages;
             const preparedUserMessageContents = new Map<string, number>();
             for (const message of preparedContext.messages) {
               if (message.role !== "user") continue;
@@ -2478,7 +2545,7 @@ export class AgentRuntime {
             }
             return { messages: preparedContext.messages };
           },
-          beforeModel: (state) => {
+          beforeModel: async (state) => {
             const additions: ModelMessage[] = [];
             const incomingAgentMessages = this.database.listUnreadAgentMessages(conversationId);
             if (incomingAgentMessages.length > 0) {
@@ -2501,7 +2568,11 @@ export class AgentRuntime {
               );
             }
             const steerMessages: ModelMessage[] = [];
-            this.consumePendingSteerMessages(conversationId, runId, steerMessages, emit);
+            const steerImageMessages: ModelMessage[] = [];
+            const consumedSteer = this.consumePendingSteerMessages(
+              conversationId, runId, steerMessages, steerImageMessages, emit,
+            );
+            if (consumedSteer) currentImageMessages = steerImageMessages;
             additions.push(...steerMessages);
             const activeSkillContext = this.skillRuntime?.buildActiveContext(
               state.activeSkills,
@@ -2511,16 +2582,48 @@ export class AgentRuntime {
             const taskListContext = activeTaskListContextMessage(
               this.database.getTaskList(conversationId),
             );
-            return Promise.resolve({
-              contextMessages: [
+            const contextMessages = [
                 ...(activeSkillContext === null || activeSkillContext === undefined
                   ? []
                   : [activeSkillContext]),
                 ...(taskListContext === null ? [] : [taskListContext]),
-              ],
+                ...currentImageMessages,
+              ];
+            const currentContext = preparedModelContext;
+            if (currentContext !== null && state.turns > lastRuntimeContextRefreshTurn) {
+              const modelMessageBudget = modelRequestMessageBudget(currentContext);
+              const requestTokens = estimateModelMessagesTokens(normalizeModelFacingToolOutputs([
+                ...state.messages,
+                ...additions,
+                ...contextMessages,
+              ]));
+              if (requestTokens > modelMessageBudget) {
+                lastRuntimeContextRefreshTurn = state.turns;
+                const refreshedContext = await this.prepareContext(
+                  conversationId,
+                  workspace,
+                  permissionMode,
+                  configuration.contextWindow ?? 0,
+                  contextCompressionConfiguration,
+                  configuration,
+                  controller.signal,
+                  runId,
+                  emit,
+                );
+                preparedModelContext = refreshedContext;
+                return {
+                  contextMessages,
+                  hasFollowUpInput: false,
+                  messages: [],
+                  replaceMessages: refreshedContext.messages,
+                };
+              }
+            }
+            return {
+              contextMessages,
               hasFollowUpInput: false,
               messages: additions,
-            });
+            };
           },
           callModel: async (modelMessages, turn, hooks?: AgentGraphModelCallHooks) => {
             controller.signal.throwIfAborted();
@@ -3032,9 +3135,7 @@ export class AgentRuntime {
     this.projects.inheritConversationWorkspace(parent.id, child.id);
     const selectedAgent = this.resolveSubagentAgent(parent, input.agentId);
     if (selectedAgent !== null) this.database.bindConversationAgent(child.id, selectedAgent);
-    const avatarIcon = input.icon
-      ?? (input.agentId === undefined ? undefined : selectedAgent?.avatarIcon ?? undefined);
-    if (avatarIcon !== undefined) this.database.setConversationAvatarIcon(child.id, avatarIcon);
+    this.database.setConversationAvatarIcon(child.id, input.icon ?? null);
     const title = input.name?.trim()
       || `${selectedAgent?.name ?? "Subagent"} · ${input.task.replace(/\s+/gu, " ").slice(0, 80)}`;
     this.database.renameConversation(child.id, title);
@@ -3304,6 +3405,7 @@ export class AgentRuntime {
         const content = agentResultReceiptContent(input);
         const message = this.database.sendAgentMessage({
           content,
+          fileChanges: this.database.listRunFileChanges(input.conversationId, input.runId),
           messageType: "agent_result",
           runId: input.runId,
           senderConversationId: input.conversationId,
@@ -3342,6 +3444,13 @@ export class AgentRuntime {
     emit: RunEventEmitter,
   ): void {
     this.appendAgentMessageThreadLog(message);
+    if (message.messageType !== "task_result") {
+      this.emit(emit, {
+        conversationId: message.conversationId,
+        message,
+        type: "agent_message.received",
+      });
+    }
     const teamWorkItem = this.database.getRunningTeamWorkItemByExecutionTreeConversation(
       message.senderConversationId,
     );
@@ -3435,7 +3544,12 @@ export class AgentRuntime {
       const reasoning = selection?.reasoning === null
         ? undefined
         : resolveConfiguredReasoning(selection?.reasoning, configuration);
-      const permissionMode = managedWorkItem?.permissionMode ?? DEFAULT_PERMISSION_MODE;
+      const previousSubagentSnapshot = targetConversation.threadKind === "subagent"
+        ? this.database.getLatestRunExecutionSnapshot(conversationId)
+        : null;
+      const permissionMode = managedWorkItem?.permissionMode
+        ?? previousSubagentSnapshot?.permissionMode
+        ?? DEFAULT_PERMISSION_MODE;
       const contextCompressionConfiguration = structuredClone(
         resolveContextCompressionConfiguration(
           configuration,
@@ -4306,7 +4420,7 @@ export class AgentRuntime {
     candidate: string,
   ): boolean {
     const sessionRules = this.sessionPermissionGrants.get(conversationId) ?? [];
-    if (sessionRules.some((rule) => permissionRuleMatches(rule, tool, candidate))) return true;
+    if (sessionRules.some((rule) => sessionPermissionGrantMatches(rule, tool, candidate))) return true;
     const agent = this.agentForConversation(conversationId);
     return agent?.permissions.allow.some((rule) => permissionRuleMatches(rule, tool, candidate)) ?? false;
   }
@@ -4483,14 +4597,16 @@ export class AgentRuntime {
     if (pending.permissionTool === "external_read") {
       throw new Error("工作区外文件读取只能本次允许，不能保存为会话或 Agent 永久规则。");
     }
-    const rule = agentPermissionRuleSchema.parse({
-      pattern: pending.pattern,
+    const grant: SessionPermissionGrant = {
+      candidate: normalizePermissionCandidate(pending.permissionTool, pending.pattern),
       tool: pending.permissionTool,
-    });
+    };
     if (scope === "session") {
       const current = this.sessionPermissionGrants.get(pending.conversationId) ?? [];
-      if (!current.some((candidate) => candidate.tool === rule.tool && candidate.pattern === rule.pattern)) {
-        this.sessionPermissionGrants.set(pending.conversationId, [...current, rule]);
+      if (!current.some((candidate) => (
+        candidate.tool === grant.tool && candidate.candidate === grant.candidate
+      ))) {
+        this.sessionPermissionGrants.set(pending.conversationId, [...current, grant]);
       }
       if (this.sessionPermissionGrants.size > 500) {
         const oldest = this.sessionPermissionGrants.keys().next().value;
@@ -4517,7 +4633,7 @@ export class AgentRuntime {
     };
     const resumed = this.resumedApprovalDecisions.get(input.tool.id);
     if (resumed !== undefined && resumed.runId === input.runId) {
-      const approved = interrupt<ToolApprovalInterrupt, boolean>(interruptValue);
+      const { approved } = interrupt<ToolApprovalInterrupt, ToolApprovalResume>(interruptValue);
       this.resumedApprovalDecisions.delete(input.tool.id);
       return approved;
     }
@@ -4548,7 +4664,7 @@ export class AgentRuntime {
       tool: input.tool,
       type: "tool.approval_requested",
     });
-    return interrupt<ToolApprovalInterrupt, boolean>(interruptValue);
+    return interrupt<ToolApprovalInterrupt, ToolApprovalResume>(interruptValue).approved;
   }
 
   private async resolveApprovedAction(input: {
@@ -4945,6 +5061,7 @@ export class AgentRuntime {
     return {
       compactionCandidates: compiled.compactionCandidates,
       messages: compiled.messages,
+      transientMessages: compiled.transientMessages,
       usage: conversationContextUsageSchema.parse(compiled.usage)
     };
   }

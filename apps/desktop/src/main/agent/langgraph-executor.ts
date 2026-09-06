@@ -2,6 +2,7 @@ import {
   AIMessage,
   BaseMessage,
   HumanMessage,
+  RemoveMessage,
   SystemMessage,
   ToolMessage,
   coerceMessageLikeToMessage,
@@ -9,8 +10,15 @@ import {
 } from "@langchain/core/messages";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { ChatGeneration, ChatResult } from "@langchain/core/outputs";
+import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons";
 import { DynamicStructuredTool } from "@langchain/core/tools";
-import { Command, isGraphInterrupt, isInterrupted, MemorySaver } from "@langchain/langgraph";
+import {
+  Command,
+  isGraphInterrupt,
+  isInterrupted,
+  MemorySaver,
+  REMOVE_ALL_MESSAGES,
+} from "@langchain/langgraph";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import {
   MIDDLEWARE_BRAND,
@@ -28,6 +36,7 @@ import type {
   ModelToolDefinition,
   ModelTurnResult,
 } from "../model/model-contracts.js";
+import { normalizeModelFacingToolOutputs } from "./context-manager.js";
 import type { SkillSnapshotRef } from "./skill-runtime.js";
 
 export type AgentGraphState = {
@@ -45,6 +54,7 @@ export type AgentGraphModelPreparation = {
   contextMessages?: ModelMessage[];
   messages: ModelMessage[];
   hasFollowUpInput: boolean;
+  replaceMessages?: ModelMessage[];
 };
 
 export type AgentGraphInitialPreparation = {
@@ -590,7 +600,13 @@ export class LangGraphExecutor {
         return {
           activeSkills: state.activeSkills,
           hasFollowUpInput: prepared.hasFollowUpInput,
-          messages: prepared.messages.map(toLangChainMessage),
+          messages: prepared.replaceMessages === undefined
+            ? prepared.messages.map(toLangChainMessage)
+            : [
+                new RemoveMessage({ id: REMOVE_ALL_MESSAGES }),
+                ...prepared.replaceMessages.map(toLangChainMessage),
+                ...prepared.messages.map(toLangChainMessage),
+              ],
         };
       },
       afterModel: {
@@ -606,7 +622,9 @@ export class LangGraphExecutor {
         },
       },
       wrapModelCall: async (request, handler) => {
-        const messages = addContextMessages(request.messages, contextMessages);
+        const messages = normalizeModelFacingToolOutputs(
+          modelMessagesFromState(addContextMessages(request.messages, contextMessages)),
+        ).map(toLangChainMessage);
         const requestId = crypto.randomUUID();
         let retryAttempt = 0;
         while (true) {
@@ -741,7 +759,10 @@ export class LangGraphExecutor {
       let result: unknown;
       let interrupts: readonly LangGraphInterrupt[] | null = null;
       try {
-        result = await agent.invoke(graphInput, config);
+        result = await AsyncLocalStorageProviderSingleton.runWithConfig(
+          config,
+          () => agent.invoke(graphInput, config),
+        );
       } catch (error) {
         if (isFrameworkModelCallLimitError(error) || isFrameworkGraphRecursionError(error)) {
           throw new AgentModelCallLimitError(input.maxSteps, error);
@@ -777,12 +798,14 @@ export class LangGraphExecutor {
       }
       const resume = await input.onInterrupt(interrupts);
       input.signal.throwIfAborted();
-      const [interrupt] = interrupts;
-      if (interrupt === undefined) {
-        throw new Error("LangGraph returned an empty interrupt list.");
+      if (interrupts.length !== 1) {
+        throw new Error("LangGraph returned an unsupported number of interrupts.");
       }
       graphInput = new Command({
-        resume: { [interrupt.id]: resume },
+        // This executor deliberately handles one approval at a time. A scalar
+        // resume follows LangGraph's single-interrupt path and replays the
+        // interrupted ToolNode instead of addressing a task-level resume map.
+        resume,
       });
     }
   }

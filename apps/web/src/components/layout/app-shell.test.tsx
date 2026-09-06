@@ -15,6 +15,7 @@ beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   useWorkbenchUiStore.setState({
     activeActivity: "conversations",
+    filePanelOpenByConversationId: {},
     filePanelWidth: 520,
     filePanelWidthsByConversationId: {},
     isFilePanelOpen: true,
@@ -237,6 +238,42 @@ describe("AppShell", () => {
     expect(mountCount).toBe(1);
   });
 
+  it("keeps untouched conversations collapsed and restores each conversation's open state", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    function renderShell(activeConversationId: string): void {
+      root?.render(
+        <TooltipProvider>
+          <AppShell
+            activeConversationId={activeConversationId}
+            agentClient={new MockAgentClient()}
+            filePanel={<div>右侧工作区</div>}
+            mainContent={<div>主工作区</div>}
+            projectNavigator={<div>项目导航</div>}
+          />
+        </TooltipProvider>,
+      );
+    }
+
+    act(() => renderShell("conversation-a"));
+    const rightPanel = (): HTMLElement | null =>
+      container.querySelector(".workbench-sidebar--right");
+    expect(rightPanel()?.hidden).toBe(true);
+
+    act(() => container.querySelector<HTMLButtonElement>(
+      '[aria-label="展开右侧工作区"]',
+    )?.click());
+    expect(rightPanel()?.hidden).toBe(false);
+
+    act(() => renderShell("conversation-b"));
+    expect(rightPanel()?.hidden).toBe(true);
+
+    act(() => renderShell("conversation-a"));
+    expect(rightPanel()?.hidden).toBe(false);
+  });
+
   it("shows the global right workspace control on the team page without a placeholder left icon", () => {
     useWorkbenchUiStore.setState({ activeActivity: "team", isFilePanelOpen: true });
     const container = document.createElement("div");
@@ -298,7 +335,10 @@ describe("AppShell", () => {
     act(() => useWorkbenchUiStore.getState().setActiveActivity("conversations"));
     expect(rightPanel()?.hidden).toBe(true);
 
-    act(() => useWorkbenchUiStore.getState().setFilePanelOpen(true));
+    act(() => useWorkbenchUiStore.getState().setFilePanelOpenForConversation(
+      "conversation-a",
+      true,
+    ));
     expect(rightPanel()?.hidden).toBe(false);
 
     act(() => useWorkbenchUiStore.getState().setActiveActivity("settings"));
@@ -312,6 +352,12 @@ describe("AppShell", () => {
   });
 
   it("restores the right workspace width for each conversation", () => {
+    useWorkbenchUiStore.setState({
+      filePanelOpenByConversationId: {
+        "conversation-a": true,
+        "conversation-b": true,
+      },
+    });
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);

@@ -94,12 +94,14 @@ import type {
   TeamInstanceView,
 } from "@agent/protocol";
 import {
+  AgentClientError,
   agentAvatarIconSchema,
   conversationAttachmentListSchema,
   DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
   isGpt56ReasoningModel,
   isReasoningOptionEnabled,
   modelReasoningOptionKey,
+  parseSerializedAgentError,
   redactErrorIdentifiers,
 } from "@agent/protocol";
 
@@ -155,6 +157,7 @@ import { CollaborationProjectionGraph } from "../team/collaboration/collaboratio
 import { useConversationWorkspaceCache } from "./conversation-workspace-cache.js";
 import { formatConversationRunMarkdown } from "./conversation-copy.js";
 import { ConversationFindBar } from "./conversation-find-bar.js";
+import { ConversationHeaderControls } from "./conversation-header-controls.js";
 import { ConversationTurnNavigator } from "./conversation-turn-navigator.js";
 import {
   ContextUsageIndicator,
@@ -198,6 +201,7 @@ type WorkspaceContentProps = {
   onLocateProject: (projectId: string) => void;
   onLocateSession: (sessionId: string) => void;
   onOpenProjectFile?: (projectId: string, path: string) => void;
+  onOpenGitReview?: (projectId: string, path?: string) => void;
   onOpenTeamConversation: (
     conversation: ProjectSession,
     sourceConversationId?: string,
@@ -205,6 +209,7 @@ type WorkspaceContentProps = {
   ) => void;
   onNavigateToTeamConversation?: (conversationId: string) => void;
   onProjectSelected: (projectId: string) => void;
+  onRefreshSessions?: () => Promise<void>;
   onSessionSelected: (sessionId: string) => void;
   onSessionUpdated: (conversation: ConversationSummary) => void;
   onSessionViewed: (sessionId: string) => void;
@@ -421,13 +426,14 @@ function readAttachmentFileAsBase64(file: Blob): Promise<string> {
 }
 
 export type SubagentPendingApproval = {
+  childAvatarIcon: AgentAvatarIcon | null;
   childConversationId: string;
   childTitle: string;
   tool: ConversationToolItem;
 };
 
 export function collectSubagentPendingApprovals(
-  subagents: readonly Pick<ProjectSession, "activeRunId" | "id" | "title">[],
+  subagents: readonly Pick<ProjectSession, "activeRunId" | "avatarIcon" | "id" | "title">[],
   timelines: ReadonlyMap<string, readonly ConversationTimelineItem[]>,
 ): SubagentPendingApproval[] {
   return subagents.flatMap((subagent) => {
@@ -436,7 +442,12 @@ export function collectSubagentPendingApprovals(
       item.kind === "tool"
       && item.runId === subagent.activeRunId
       && item.status === "awaiting_approval"
-        ? [{ childConversationId: subagent.id, childTitle: subagent.title, tool: item }]
+        ? [{
+            childAvatarIcon: subagent.avatarIcon ?? null,
+            childConversationId: subagent.id,
+            childTitle: subagent.title,
+            tool: item,
+          }]
         : []
     );
   });
@@ -706,9 +717,11 @@ export function WorkspaceContent({
   onLocateProject,
   onLocateSession,
   onOpenProjectFile,
+  onOpenGitReview,
   onOpenTeamConversation,
   onNavigateToTeamConversation,
   onProjectSelected,
+  onRefreshSessions,
   onSessionSelected,
   onSessionUpdated,
   onSessionViewed,
@@ -784,6 +797,9 @@ export function WorkspaceContent({
                 : (path) => {
                     onOpenProjectFile?.(projectId, path);
                   }}
+              onOpenGitReview={projectId === null || onOpenGitReview === undefined
+                ? undefined
+                : (path) => onOpenGitReview(projectId, path)}
               onOpenTeamConversation={onOpenTeamConversation}
               {...(onNavigateToTeamConversation === undefined ? {} : {
                 onNavigateToTeamConversation,
@@ -791,6 +807,7 @@ export function WorkspaceContent({
               onForkConversation={onForkConversation}
               onAddProject={onAddProject}
               onProjectSelected={onProjectSelected}
+              {...(onRefreshSessions === undefined ? {} : { onRefreshSessions })}
                onSessionSelected={onSessionSelected}
                onSessionUpdated={onSessionUpdated}
                onViewed={() => onSessionViewed(session.id)}
@@ -819,10 +836,12 @@ export function ConversationWorkspace({
   onLocateProject,
   onLocateSession,
   onOpenProjectFile,
+  onOpenGitReview,
   onOpenTeamConversation,
   onNavigateToTeamConversation,
   onForkConversation,
   onProjectSelected,
+  onRefreshSessions,
   onSessionSelected,
   onSessionUpdated,
   onViewed,
@@ -843,6 +862,7 @@ export function ConversationWorkspace({
   onLocateProject?: (projectId: string) => void;
   onLocateSession?: (sessionId: string) => void;
   onOpenProjectFile?: ((path: string) => void) | undefined;
+  onOpenGitReview?: ((path?: string) => void) | undefined;
   onOpenTeamConversation?: (
     conversation: ProjectSession,
     sourceConversationId?: string,
@@ -851,6 +871,7 @@ export function ConversationWorkspace({
   onNavigateToTeamConversation?: (conversationId: string) => void;
   onForkConversation?: (conversationId: string, throughMessageId: string) => Promise<void>;
   onProjectSelected?: (projectId: string) => void;
+  onRefreshSessions?: () => Promise<void>;
   onSessionSelected?: (sessionId: string) => void;
   onSessionUpdated?: (conversation: ConversationSummary) => void;
   onViewed?: () => void;
@@ -918,6 +939,10 @@ export function ConversationWorkspace({
     useState<ContextCompressionConfiguration>(DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION);
   const [contextUsage, setContextUsage] =
     useState<ConversationContextUsage | null>(null);
+  const [lastProviderUsage, setLastProviderUsage] = useState<{
+    conversationId: string;
+    usage: ConversationContextUsage;
+  } | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isChangingWorkspace, setIsChangingWorkspace] = useState(false);
   const [isChangingProject, setIsChangingProject] = useState(false);
@@ -965,6 +990,7 @@ export function ConversationWorkspace({
   const timelineLoadRequestIdRef = useRef(0);
   const timelineRevisionRef = useRef(0);
   const [subagentApprovals, setSubagentApprovals] = useState<SubagentPendingApproval[]>([]);
+  const dismissedSubagentApprovalIdsRef = useRef(new Set<string>());
   const subagentSessions = useMemo(
     () => relatedSessions.filter((candidate) =>
       candidate.parentConversationId === session.id
@@ -1011,11 +1037,7 @@ export function ConversationWorkspace({
       URL.revokeObjectURL(url);
     });
   }, []);
-  const isFinishedSubagent = !teamManaged && (
-    session.subagentTaskStatus === "completed"
-    || session.subagentTaskStatus === "failed"
-    || session.subagentTaskStatus === "cancelled"
-  );
+  const isEndedSubagent = !teamManaged && session.subagentTaskStatus === "ended";
   const isEditingComposerMessage = editingMessageId !== null || editingPendingMessageId !== null;
   const modelOptions: readonly ModelProfile[] =
     modelStatus?.models.length
@@ -1063,6 +1085,8 @@ export function ConversationWorkspace({
     (model) => modelKey(model) === selectedModelKey,
   ) ?? defaultModel;
   const activeModelKey = activeModel === undefined ? "" : modelKey(activeModel);
+  const usageModelId = activeModel?.modelId;
+  const usageProviderId = activeModel?.providerId;
   const activeReasoningOptions = (activeModel?.reasoningOptions ?? [])
     .filter(isReasoningOptionEnabled);
   const selectedReasoningOption = activeReasoningOptions.find(
@@ -1185,9 +1209,8 @@ export function ConversationWorkspace({
       const nextUsage = await agentClient.getConversationContextUsage({
         attachmentIds: draftAttachments.map((attachment) => attachment.id),
         conversationId: session.id,
-        ...(activeModel === undefined
-          ? {}
-          : { modelId: activeModel.modelId, providerId: activeModel.providerId }),
+        ...(usageModelId === undefined ? {} : { modelId: usageModelId }),
+        ...(usageProviderId === undefined ? {} : { providerId: usageProviderId }),
         permissionMode,
         ...(selectedConversationMentions.length === 0
           ? {}
@@ -1202,6 +1225,9 @@ export function ConversationWorkspace({
       });
       if (contextUsageRequestRef.current === requestId) {
         setContextUsage(nextUsage);
+        if (nextUsage.providerCache?.latest != null) {
+          setLastProviderUsage({ conversationId: session.id, usage: nextUsage });
+        }
       }
     } catch {
       if (contextUsageRequestRef.current === requestId) {
@@ -1209,7 +1235,8 @@ export function ConversationWorkspace({
       }
     }
   }, [
-    activeModel,
+    usageModelId,
+    usageProviderId,
     activeProjectFileMentions,
     agentClient,
     draftAttachments,
@@ -1271,7 +1298,7 @@ export function ConversationWorkspace({
       setSubagentApprovals(collectSubagentPendingApprovals(
         activeSubagents,
         new Map(entries),
-      ));
+      ).filter((approval) => !dismissedSubagentApprovalIdsRef.current.has(approval.tool.id)));
     });
 
     return () => {
@@ -1475,13 +1502,17 @@ export function ConversationWorkspace({
         setSubagentApprovals((current) => [
           ...current.filter((approval) => approval.tool.id !== event.tool.id),
           {
+            childAvatarIcon: sourceSubagent.avatarIcon ?? null,
             childConversationId: sourceSubagent.id,
             childTitle: sourceSubagent.title,
             tool: event.tool,
           },
         ]);
       }
-      if (event.type === "tool.completed" && sourceSubagent !== undefined) {
+      if (
+        (event.type === "tool.started" || event.type === "tool.completed")
+        && sourceSubagent !== undefined
+      ) {
         setSubagentApprovals((current) =>
           current.filter((approval) => approval.tool.id !== event.tool.id)
         );
@@ -1531,7 +1562,12 @@ export function ConversationWorkspace({
         void loadTimeline();
         void loadTaskList();
       }
-      if (event.type !== "assistant.delta" && event.type !== "assistant.reasoning_delta") {
+      if (
+        event.type !== "assistant.delta"
+        && event.type !== "assistant.reasoning_delta"
+        && event.type !== "tool.output_delta"
+        && event.type !== "model.retry_updated"
+      ) {
         void loadContextUsage();
       }
     });
@@ -1672,7 +1708,7 @@ export function ConversationWorkspace({
   ]);
 
   const handleEditMessage = useCallback((message: ConversationMessageItem): void => {
-    if (message.id !== latestUserMessageId || isFinishedSubagent) return;
+    if (message.id !== latestUserMessageId || isEndedSubagent) return;
     setEditingPendingMessageId(null);
     setEditingMessageId(message.id);
     setEditingAttachments(message.attachments);
@@ -1689,7 +1725,7 @@ export function ConversationWorkspace({
       composer.focus();
       composer.setSelectionRange(composer.value.length, composer.value.length);
     });
-  }, [isFinishedSubagent, latestUserMessageId]);
+  }, [isEndedSubagent, latestUserMessageId]);
 
   const handleCancelEditing = useCallback((): void => {
     setEditingMessageId(null);
@@ -1705,7 +1741,7 @@ export function ConversationWorkspace({
   }, []);
 
   const handleEditPendingMessage = useCallback((message: ConversationPendingMessage): void => {
-    if (isFinishedSubagent) return;
+    if (isEndedSubagent) return;
     setEditingMessageId(null);
     setEditingPendingMessageId(message.id);
     setEditingAttachments(null);
@@ -1722,7 +1758,7 @@ export function ConversationWorkspace({
       composer.focus();
       composer.setSelectionRange(composer.value.length, composer.value.length);
     });
-  }, [isFinishedSubagent]);
+  }, [isEndedSubagent]);
 
   const refocusComposer = (): void => {
     window.setTimeout(() => {
@@ -1746,7 +1782,7 @@ export function ConversationWorkspace({
       hasNoSubmitContent ||
       pendingMessageActionId !== null ||
       isSending ||
-      isFinishedSubagent ||
+      isEndedSubagent ||
       (editingPendingMessageId === null
         && !isMockRuntime
         && modelStatus?.configured === false)
@@ -1909,7 +1945,7 @@ export function ConversationWorkspace({
     if (
       activeRunId !== null
       || isSending
-      || isFinishedSubagent
+      || isEndedSubagent
       || (!isMockRuntime && modelStatus?.configured === false)
     ) return;
     setIsSending(true);
@@ -1966,7 +2002,7 @@ export function ConversationWorkspace({
   };
 
   const handleChooseAttachments = useCallback(async (): Promise<void> => {
-    if (isAddingAttachments || isSending || isFinishedSubagent) return;
+    if (isAddingAttachments || isSending || isEndedSubagent) return;
     setIsAddingAttachments(true);
     setOperationError(null);
     try {
@@ -1995,7 +2031,7 @@ export function ConversationWorkspace({
     editingMessageId,
     isAddingAttachments,
     isSending,
-    isFinishedSubagent,
+    isEndedSubagent,
     session.id,
   ]);
 
@@ -2007,7 +2043,7 @@ export function ConversationWorkspace({
       if (
         isMockRuntime
         || isSending
-        || isFinishedSubagent
+        || isEndedSubagent
         || isAddingAttachments
         || editingPendingMessageId !== null
       ) {
@@ -2081,7 +2117,7 @@ export function ConversationWorkspace({
       editingMessageId,
       editingPendingMessageId,
       isAddingAttachments,
-      isFinishedSubagent,
+      isEndedSubagent,
       isMockRuntime,
       isSending,
       rememberDraftAttachmentPreview,
@@ -2485,7 +2521,25 @@ export function ConversationWorkspace({
           scope,
           toolId: tool.id,
         });
+        dismissedSubagentApprovalIdsRef.current.add(tool.id);
+        setSubagentApprovals((current) => current.filter(
+          (approval) => approval.tool.id !== tool.id,
+        ));
       } catch (error) {
+        const errorCode = error instanceof AgentClientError
+          ? error.code
+          : parseSerializedAgentError(error)?.code;
+        if (errorCode === "APPROVAL_EXPIRED") {
+          dismissedSubagentApprovalIdsRef.current.add(tool.id);
+          setSubagentApprovals((current) => current.filter(
+            (approval) => approval.tool.id !== tool.id,
+          ));
+          await Promise.all([
+            loadTimeline(),
+            onRefreshSessions?.(),
+          ]);
+          return;
+        }
         setApprovalErrors((current) => ({
           ...current,
           [tool.id]: getUserErrorMessage(error, "无法提交文件变更决定"),
@@ -2494,7 +2548,7 @@ export function ConversationWorkspace({
         setApprovingToolId(null);
       }
     },
-    [agentClient, approvingToolId],
+    [agentClient, approvingToolId, loadTimeline, onRefreshSessions],
   );
 
   const handleCloseTaskList = useCallback(async (): Promise<void> => {
@@ -2633,12 +2687,12 @@ export function ConversationWorkspace({
     && !isLoadingTimeline
     && displayTimeline.length === 0
     && draftAttachments.length === 0
-    && !isFinishedSubagent
+    && !isEndedSubagent
     && onAddProject !== undefined
     && onSessionUpdated !== undefined;
   const canChangeAgent =
     !isLoadingTimeline
-    && !isFinishedSubagent
+    && !isEndedSubagent
     && !teamManaged;
   const taskFileChanges = summarizeTaskFileChanges(
     timeline,
@@ -2735,12 +2789,29 @@ export function ConversationWorkspace({
             <h1 id={headingId}>{session.title}</h1>
           </button>
         </div>
-        <RuntimeBadge
-          isConfigured={isMockRuntime || !isModelUnavailable}
-          isMockRuntime={isMockRuntime}
-          isRunning={isRunning}
-          modelDisplayName={modelDisplayName}
-        />
+        {compact ? null : (
+          <ConversationHeaderControls
+            agentClient={agentClient}
+            project={project}
+            subagents={subagentSessions}
+            onDeleteSubagent={async (subagent) => {
+              try {
+                await agentClient.deleteConversation({ conversationId: subagent.id });
+                await onRefreshSessions?.();
+              } catch (error) {
+                const errorCode = error instanceof AgentClientError
+                  ? error.code
+                  : parseSerializedAgentError(error)?.code;
+                if (errorCode !== "ARTIFACT_NOT_FOUND") {
+                  throw error;
+                }
+                await onRefreshSessions?.();
+              }
+            }}
+            {...(onOpenGitReview === undefined ? {} : { onOpenGitReview })}
+            onOpenSubagent={(subagent) => onOpenTeamConversation?.(subagent, session.id)}
+          />
+        )}
       </header>
 
       <div
@@ -2841,7 +2912,7 @@ export function ConversationWorkspace({
                         canForkMessage={item.kind === "message"
                           && forkableAssistantMessageIds.has(item.id)
                           && onForkConversation !== undefined
-                          && !isFinishedSubagent}
+                          && !isEndedSubagent}
                         canShowCompletionTime={item.kind === "message"
                           && forkableAssistantMessageIds.has(item.id)}
                         canCopyMessage={item.kind === "message" && (
@@ -2857,6 +2928,16 @@ export function ConversationWorkspace({
                         onEditMessage={handleEditMessage}
                         onForkMessage={handleForkMessage}
                         onForceContextCompaction={handleForceContextCompaction}
+                        {...(onOpenTeamConversation === undefined ? {} : {
+                          onOpenSubagent: (conversationId: string) => {
+                            const conversation = relatedSessions.find(
+                              (candidate) => candidate.id === conversationId,
+                            );
+                            if (conversation !== undefined) {
+                              onOpenTeamConversation(conversation, session.id);
+                            }
+                          },
+                        })}
                         onOpenProjectFile={onOpenProjectFile}
                         onSessionSelected={onSessionSelected}
                         liveToolOutputs={liveToolOutputs}
@@ -2922,11 +3003,11 @@ export function ConversationWorkspace({
         <div ref={composerOverlayRef} className="conversation-workspace__composer-overlay">
           {taskList !== null ? (
             <ConversationTaskListPanel
-              allowClose={teamManaged || !isFinishedSubagent}
+              allowClose={teamManaged || !isEndedSubagent}
               expanded={isTaskListExpanded}
               fileChanges={taskFileChanges}
-              isActioning={taskListAction !== null || isFinishedSubagent}
-              isRunActive={hasActiveModelRun}
+              isActioning={taskListAction !== null || isEndedSubagent}
+              isRunActive={isRunning}
               lastRunStatus={session.lastRunStatus}
               taskList={taskList}
               onClose={() => void handleCloseTaskList()}
@@ -2953,9 +3034,20 @@ export function ConversationWorkspace({
               approvals={subagentApprovals}
               approvingToolId={approvingToolId}
               onChangeApproval={handleChangeApproval}
-              {...(onSessionSelected === undefined
+              {...(onOpenTeamConversation === undefined && onSessionSelected === undefined
                 ? {}
-                : { onOpenSubagent: onSessionSelected })}
+                : {
+                    onOpenSubagent: (conversationId: string) => {
+                      const conversation = relatedSessions.find(
+                        (candidate) => candidate.id === conversationId,
+                      );
+                      if (conversation !== undefined && onOpenTeamConversation !== undefined) {
+                        onOpenTeamConversation(conversation, session.id);
+                        return;
+                      }
+                      onSessionSelected?.(conversationId);
+                    },
+                  })}
             />
           ) : null}
 
@@ -2977,10 +3069,10 @@ export function ConversationWorkspace({
                 </IconButton>
               </div>
             ) : null}
-            {isFinishedSubagent ? (
+            {isEndedSubagent ? (
               <div className="conversation-workspace__readonly" role="status">
                 <Bot aria-hidden="true" size={14} />
-                <span>Subagent 任务已结束，可查看完整过程</span>
+                <span>Subagent 已结束，可查看完整过程</span>
               </div>
             ) : null}
             {canChangeProject ? (
@@ -3183,9 +3275,9 @@ export function ConversationWorkspace({
                 data-query-active={mentionQuery !== null || slashQuery !== null
                   ? "true"
                   : undefined}
-                disabled={isSending || pendingMessageActionId !== null || isModelUnavailable || isFinishedSubagent}
-                placeholder={isFinishedSubagent
-                  ? "Subagent 任务已结束，可查看完整过程"
+                disabled={isSending || pendingMessageActionId !== null || isModelUnavailable || isEndedSubagent}
+                placeholder={isEndedSubagent
+                  ? "Subagent 已结束，可查看完整过程"
                   : isModelUnavailable
                   ? "请先在设置中配置模型"
                   : selectedAgent === undefined
@@ -3230,7 +3322,7 @@ export function ConversationWorkspace({
                   disabled={
                     isMockRuntime
                     || isSending
-                    || isFinishedSubagent
+                    || isEndedSubagent
                     || isAddingAttachments
                     || editingPendingMessageId !== null
                     || composerAttachments.length >= MAX_DRAFT_ATTACHMENTS
@@ -3258,7 +3350,7 @@ export function ConversationWorkspace({
                 {project === null && !isMockRuntime && onSessionUpdated !== undefined ? (
                   <span className="conversation-workspace__workspace-control">
                     <IconButton
-                      disabled={isRunning || isSending || isChangingWorkspace || isFinishedSubagent}
+                      disabled={isRunning || isSending || isChangingWorkspace || isEndedSubagent}
                       label={session.workspaceRootPath === null ? "添加工作目录" : "更换工作目录"}
                       size="compact"
                       type="button"
@@ -3271,7 +3363,7 @@ export function ConversationWorkspace({
                       <>
                         <button
                           className="conversation-workspace__workspace-path"
-                          disabled={isRunning || isSending || isChangingWorkspace || isFinishedSubagent}
+                          disabled={isRunning || isSending || isChangingWorkspace || isEndedSubagent}
                           title={session.workspaceRootPath}
                           type="button"
                           onClick={() => void handleSelectWorkspace()}
@@ -3280,7 +3372,7 @@ export function ConversationWorkspace({
                           <span>{fileNameFromPath(session.workspaceRootPath)}</span>
                         </button>
                         <IconButton
-                          disabled={isRunning || isSending || isChangingWorkspace || isFinishedSubagent}
+                          disabled={isRunning || isSending || isChangingWorkspace || isEndedSubagent}
                           label="移除工作目录"
                           size="compact"
                           type="button"
@@ -3340,7 +3432,7 @@ export function ConversationWorkspace({
                   </Select>
                 )}
                 <Select
-                  disabled={isFinishedSubagent || isSavingTeamPermission}
+                  disabled={isEndedSubagent || isSavingTeamPermission}
                   value={permissionMode}
                   onValueChange={selectPermissionMode}
                 >
@@ -3387,7 +3479,7 @@ export function ConversationWorkspace({
                       <button
                         aria-label="模型"
                         className="conversation-workspace__composer-select conversation-workspace__composer-select--model"
-                        disabled={isFinishedSubagent || activeModelKey.length === 0}
+                        disabled={isEndedSubagent || activeModelKey.length === 0}
                         title={modelDisplayName}
                         type="button"
                       >
@@ -3398,7 +3490,7 @@ export function ConversationWorkspace({
                   />
                   <span aria-hidden="true" className="conversation-workspace__model-divider">·</span>
                   <ConversationReasoningControl
-                    disabled={isFinishedSubagent || activeModelKey.length === 0}
+                    disabled={isEndedSubagent || activeModelKey.length === 0}
                     fallbackOption={session.modelSelection?.reasoning ?? null}
                     options={activeReasoningOptions}
                     selectedKey={effectiveReasoningOptionKey}
@@ -3423,13 +3515,13 @@ export function ConversationWorkspace({
                         || isSending
                         || pendingMessageActionId !== null
                         || isModelUnavailable
-                        || isFinishedSubagent
+                        || isEndedSubagent
                       )
                   }
                   label={shouldShowStopButton
                     ? isCancelling ? "正在停止任务" : "停止任务"
-                    : isFinishedSubagent
-                      ? "Subagent 任务已结束"
+                    : isEndedSubagent
+                      ? "Subagent 已结束"
                       : isSending
                         ? isEditingComposerMessage ? "正在保存修改" : "正在发送任务"
                         : editingMessageId !== null
@@ -3457,7 +3549,13 @@ export function ConversationWorkspace({
               </div>
             </div>
           </div>
-          {showContextUsage ? <ProviderCacheStatus usage={contextUsage} /> : null}
+          {showContextUsage ? (
+            <ProviderCacheStatus
+              usage={lastProviderUsage?.conversationId === session.id
+                ? lastProviderUsage.usage
+                : null}
+            />
+          ) : null}
           </form>
         </div>
       </div>
@@ -3553,6 +3651,12 @@ function handleRunEvent(
   };
 
   switch (event.type) {
+    case "agent_message.received":
+      updateTimeline((current) => upsertTimelineItem(
+        completeStreamingAssistantMessages(current),
+        event.message,
+      ));
+      return;
     case "model.request_started":
       updateTimeline(completeStreamingAssistantMessages);
       beginRunProgress(
@@ -4138,21 +4242,28 @@ function SubagentApprovalQueue({
             className="border-t border-[var(--app-border)] px-2.5 py-2"
             key={approval.tool.id}
           >
-            <div className="flex min-w-0 items-center gap-[5px]">
+            <div className="flex min-w-0 items-center">
               <button
-                className="flex min-w-0 items-center gap-[5px] rounded-[var(--app-radius-small)] px-1 py-0.5 text-left hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] disabled:cursor-default disabled:hover:bg-transparent"
+                aria-label={`在侧边打开 Subagent 审批来源：${approval.childTitle}`}
+                className="flex min-w-0 flex-1 items-center gap-[5px] rounded-[var(--app-radius-small)] px-1 py-0.5 text-left hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] disabled:cursor-default disabled:hover:bg-transparent"
                 disabled={onOpenSubagent === undefined}
                 title={`打开 Subagent：${approval.childTitle}`}
                 type="button"
                 onClick={() => onOpenSubagent?.(approval.childConversationId)}
               >
-                <Bot aria-hidden="true" className="shrink-0 text-[var(--app-muted-foreground)]" size={14} />
-                <span className="truncate font-medium">{approval.childTitle}</span>
-                <ChevronRight aria-hidden="true" className="shrink-0 text-[var(--app-muted-foreground)]" size={13} />
+                <SubagentAvatar
+                  icon={approval.childAvatarIcon}
+                  seed={approval.childConversationId}
+                  size="compact"
+                />
+                <span className="max-w-[40%] shrink-0 truncate font-medium">
+                  {approval.childTitle}
+                </span>
+                <span aria-hidden="true" className="shrink-0 text-[var(--app-muted-foreground)]">·</span>
+                <span className="min-w-0 flex-1 truncate text-[var(--app-muted-foreground)]">
+                  {toolActivityLabel(approval.tool)}
+                </span>
               </button>
-              <span className="min-w-0 flex-1 truncate text-[var(--app-muted-foreground)]">
-                {toolActivityLabel(approval.tool)}
-              </span>
             </div>
             {approvalError === undefined ? null : (
               <p className="mt-[5px] text-[var(--app-destructive)]">{approvalError}</p>
@@ -4180,12 +4291,12 @@ function SubagentApprovalQueue({
                 <button
                   className="inline-flex min-h-7 items-center gap-1 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-transparent px-2 text-[var(--app-foreground)] hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={isApproving}
-                  title="仅允许该 Subagent 对话后续完全相同的命令或同一工具与路径"
+                  title="当前对话后续遇到完全相同的命令或同一工具与路径时自动允许"
                   type="button"
                   onClick={() => void onChangeApproval(approval.tool, true, "session")}
                 >
                   <Check aria-hidden="true" size={13} />
-                  本 Subagent 允许相同操作
+                  本对话允许
                 </button>
               )}
             </div>
@@ -4218,12 +4329,12 @@ function ConversationTaskListPanel({
   onToggle: () => void;
 }): ReactElement {
   const [isChangesExpanded, setIsChangesExpanded] = useState(false);
-  const runningIndex = taskList.tasks.findIndex((task) => task.status === "running");
+  const runningCount = taskList.tasks.filter((task) => task.status === "running").length;
   const blockedIndex = taskList.tasks.findIndex((task) => task.status === "blocked");
   const failedIndex = taskList.tasks.findIndex((task) => task.status === "failed");
   const completedCount = taskList.tasks.filter((task) => task.status === "completed").length;
   const isCompleted = completedCount === taskList.tasks.length;
-  const inactiveRunningStatus = runningIndex < 0 || isRunActive
+  const inactiveRunningStatus = runningCount === 0 || isRunActive
     ? null
     : lastRunStatus === "cancelled"
       ? "stopped"
@@ -4237,16 +4348,6 @@ function ConversationTaskListPanel({
       : blockedIndex >= 0
         ? "blocked"
         : inactiveRunningStatus ?? "active";
-  const currentStep =
-    runningIndex >= 0
-      ? runningIndex + 1
-      : failedIndex >= 0
-        ? failedIndex + 1
-        : blockedIndex >= 0
-          ? blockedIndex + 1
-      : completedCount === taskList.tasks.length
-        ? taskList.tasks.length
-        : Math.min(taskList.tasks.length, completedCount + 1);
   const summaryId = `conversation-task-list-${taskList.conversationId}`;
   const changesId = `${summaryId}-changes`;
 
@@ -4355,7 +4456,7 @@ function ConversationTaskListPanel({
               <ListTodo aria-hidden="true" className="conversation-task-list__summary-status" size={15} strokeWidth={1.9} />
             ) : summaryStatus === "stopped" || summaryStatus === "interrupted" ? (
               <X aria-hidden="true" className="conversation-task-list__summary-status" size={15} />
-            ) : runningIndex >= 0 ? (
+            ) : runningCount > 0 ? (
               <LoaderCircle
                 aria-hidden="true"
                 className="conversation-task-list__summary-status conversation-workspace__spin"
@@ -4364,7 +4465,7 @@ function ConversationTaskListPanel({
             ) : (
               <ListTodo aria-hidden="true" size={15} strokeWidth={1.9} />
             )}
-            <span>{`第 ${currentStep}/${taskList.tasks.length} 步`}</span>
+            <span>{`${completedCount}/${taskList.tasks.length} 已完成`}</span>
             <span className="conversation-task-list__summary-divider" aria-hidden="true">·</span>
             <span>{
               isCompleted
@@ -4379,7 +4480,9 @@ function ConversationTaskListPanel({
                         ? "任务已中断"
                         : summaryStatus === "paused"
                           ? "任务待继续"
-                          : "任务清单"
+                          : runningCount > 0
+                            ? `${runningCount} 项进行中`
+                            : "任务清单"
             }</span>
             <ChevronDown aria-hidden="true" className="conversation-task-list__chevron" size={15} />
           </button>
@@ -5167,6 +5270,7 @@ function TimelineItem({
   onEditMessage,
   onForkMessage,
   onForceContextCompaction,
+  onOpenSubagent,
   onOpenProjectFile,
   onSessionSelected,
   liveToolOutputs,
@@ -5199,6 +5303,7 @@ function TimelineItem({
   onEditMessage: (message: ConversationMessageItem) => void;
   onForkMessage: (message: ConversationMessageItem) => Promise<void>;
   onForceContextCompaction: () => Promise<void>;
+  onOpenSubagent?: (conversationId: string) => void;
   onOpenProjectFile: ((path: string) => void) | undefined;
   onSessionSelected: ((sessionId: string) => void) | undefined;
   liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
@@ -5220,6 +5325,7 @@ function TimelineItem({
         runProgress={runProgress}
         approvalErrors={approvalErrors}
         approvingToolId={approvingToolId}
+        onOpenSubagent={onOpenSubagent}
         onOpenProjectFile={onOpenProjectFile}
         onChangeApproval={onChangeApproval}
         liveToolOutputs={liveToolOutputs}
@@ -5242,6 +5348,7 @@ function TimelineItem({
         modelActivity={modelActivity}
         approvalErrors={approvalErrors}
         approvingToolId={approvingToolId}
+        onOpenSubagent={onOpenSubagent}
         onOpenProjectFile={onOpenProjectFile}
         onChangeApproval={onChangeApproval}
         liveToolOutputs={liveToolOutputs}
@@ -5269,6 +5376,7 @@ function TimelineItem({
         approvalActionable={item.runId === activeRunId}
         approvalError={approvalErrors[item.id] ?? null}
         isApproving={approvingToolId === item.id}
+        onOpenSubagent={onOpenSubagent}
         onOpenProjectFile={onOpenProjectFile}
         variant="activity"
         onChangeApproval={onChangeApproval}
@@ -5871,6 +5979,7 @@ function RunActivityTimelineItem({
   runProgress,
   approvalErrors,
   approvingToolId,
+  onOpenSubagent,
   onOpenProjectFile,
   onChangeApproval,
   liveToolOutputs,
@@ -5884,6 +5993,7 @@ function RunActivityTimelineItem({
   runProgress: RunProgress | null;
   approvalErrors: Readonly<Record<string, string>>;
   approvingToolId: string | null;
+  onOpenSubagent: ((conversationId: string) => void) | undefined;
   onOpenProjectFile: ((path: string) => void) | undefined;
   onChangeApproval: (
     tool: ConversationToolItem,
@@ -5954,6 +6064,7 @@ function RunActivityTimelineItem({
           liveToolOutputs={liveToolOutputs}
           modelActivity={null}
           onChangeApproval={onChangeApproval}
+          onOpenSubagent={onOpenSubagent}
           onOpenProjectFile={onOpenProjectFile}
           teamManaged={teamManaged}
         />
@@ -5970,6 +6081,7 @@ function RunActivityTimelineItem({
         latestActiveToolId={latestActiveToolId}
         liveOutput={liveToolOutputs[entry.id]}
         onChangeApproval={onChangeApproval}
+        onOpenSubagent={onOpenSubagent}
         onOpenProjectFile={onOpenProjectFile}
         teamManaged={teamManaged}
         variant="activity"
@@ -6030,6 +6142,7 @@ function ToolBatchTimelineItem({
   modelActivity,
   approvalErrors,
   approvingToolId,
+  onOpenSubagent,
   onOpenProjectFile,
   onChangeApproval,
   liveToolOutputs,
@@ -6042,6 +6155,7 @@ function ToolBatchTimelineItem({
   modelActivity: ModelActivity | null;
   approvalErrors: Readonly<Record<string, string>>;
   approvingToolId: string | null;
+  onOpenSubagent: ((conversationId: string) => void) | undefined;
   onOpenProjectFile: ((path: string) => void) | undefined;
   onChangeApproval: (
     tool: ConversationToolItem,
@@ -6101,6 +6215,7 @@ function ToolBatchTimelineItem({
               approvalActionable={tool.runId === activeRunId}
               approvalError={approvalErrors[tool.id] ?? null}
               isApproving={approvingToolId === tool.id}
+              onOpenSubagent={onOpenSubagent}
               onOpenProjectFile={onOpenProjectFile}
               variant="activity"
               onChangeApproval={onChangeApproval}
@@ -6306,6 +6421,7 @@ function ToolTimelineItem({
   approvalError,
   isApproving,
   variant = "card",
+  onOpenSubagent,
   onOpenProjectFile,
   onChangeApproval,
   liveOutput,
@@ -6318,6 +6434,7 @@ function ToolTimelineItem({
   approvalError: string | null;
   isApproving: boolean;
   variant?: "activity" | "card";
+  onOpenSubagent: ((conversationId: string) => void) | undefined;
   onOpenProjectFile: ((path: string) => void) | undefined;
   onChangeApproval: (
     tool: ConversationToolItem,
@@ -6348,11 +6465,13 @@ function ToolTimelineItem({
     >
       <header className="tool-timeline-item__header">
         <span className="tool-timeline-item__identity">
-          <ToolTypeIcon name={item.name} />
+          {item.name === "spawn_subagent" ? null : <ToolTypeIcon name={item.name} />}
           <ToolActivityLabel
+            effectiveStatus={effectiveStatus}
             item={item}
             isExpanded={isExpanded}
             teamManaged={teamManaged}
+            onOpenSubagent={onOpenSubagent}
             onOpenProjectFile={onOpenProjectFile}
             onToggle={() => setIsExpanded((current) => !current)}
           />
@@ -6388,6 +6507,7 @@ function ToolTimelineItem({
           agentClient={agentClient}
           item={item}
           teamManaged={teamManaged}
+          onOpenSubagent={onOpenSubagent}
           onOpenProjectFile={onOpenProjectFile}
           {...(liveOutput === undefined ? {} : { liveOutput })}
         />
@@ -6433,7 +6553,7 @@ function ToolTimelineItem({
                 onClick={() => void onChangeApproval(item, true, "session")}
               >
                 <Check aria-hidden="true" size={14} />
-                本对话允许相同操作
+                本对话允许
               </button>
             )}
           </span>
@@ -6748,15 +6868,19 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
 }
 
 function ToolActivityLabel({
+  effectiveStatus,
   item,
   isExpanded,
   teamManaged,
+  onOpenSubagent,
   onOpenProjectFile,
   onToggle,
 }: {
+  effectiveStatus: ConversationToolItem["status"];
   item: ConversationToolItem;
   isExpanded: boolean;
   teamManaged: boolean;
+  onOpenSubagent: ((conversationId: string) => void) | undefined;
   onOpenProjectFile: ((path: string) => void) | undefined;
   onToggle: () => void;
 }): ReactElement {
@@ -6765,6 +6889,44 @@ function ToolActivityLabel({
   const toggleLabel = isExpanded ? "收起调用详情" : "展开调用详情";
   const toggleClassName = "min-w-0 flex-[0_1_auto] cursor-pointer overflow-hidden border-0 bg-transparent p-0 text-left text-ellipsis whitespace-nowrap text-[var(--app-muted-foreground)] transition-colors hover:text-[var(--app-foreground)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1 [font:inherit]";
   const fileLinkClassName = "inline-flex min-w-0 cursor-pointer items-center gap-1 overflow-hidden border-0 bg-transparent p-0 text-inherit transition-colors hover:text-[var(--app-accent)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-2 [font:inherit]";
+  const spawnedSubagent = spawnSubagentActivity(item, effectiveStatus);
+  if (spawnedSubagent !== null) {
+    const canOpen = spawnedSubagent.childConversationId !== null
+      && onOpenSubagent !== undefined;
+    return (
+      <button
+        {...(canOpen ? {} : { "aria-expanded": isExpanded })}
+        aria-label={canOpen
+          ? `在侧边打开 Subagent 对话：${spawnedSubagent.name}`
+          : `${toggleLabel}：${spawnedSubagent.name}`}
+        className="inline-flex min-w-0 flex-[0_1_auto] cursor-pointer items-center gap-[6px] overflow-hidden border-0 bg-transparent p-0 text-left text-[var(--app-muted-foreground)] transition-colors hover:text-[var(--app-foreground)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1 [font:inherit]"
+        title={canOpen ? `在侧边打开 ${spawnedSubagent.name}` : toggleLabel}
+        type="button"
+        onClick={() => {
+          if (
+            spawnedSubagent.childConversationId !== null
+            && onOpenSubagent !== undefined
+          ) {
+            onOpenSubagent(spawnedSubagent.childConversationId);
+            return;
+          }
+          onToggle();
+        }}
+      >
+        <SubagentAvatar
+          icon={spawnedSubagent.avatarIcon}
+          seed={spawnedSubagent.childConversationId ?? item.id}
+          size="compact"
+        />
+        <span className="min-w-0 truncate font-medium text-[var(--app-foreground)]">
+          {spawnedSubagent.name}
+        </span>
+        <span className="shrink-0 text-[var(--app-muted-foreground)]">
+          {spawnedSubagent.action}
+        </span>
+      </button>
+    );
+  }
   if (summary === null) {
     return (
       <button
@@ -6951,12 +7113,14 @@ function ToolDetail({
   item,
   teamManaged,
   liveOutput,
+  onOpenSubagent,
   onOpenProjectFile,
 }: {
   agentClient: AgentClient;
   item: ConversationToolItem;
   teamManaged: boolean;
   liveOutput?: LiveToolOutput;
+  onOpenSubagent: ((conversationId: string) => void) | undefined;
   onOpenProjectFile: ((path: string) => void) | undefined;
 }): ReactElement {
   if (item.name === "run_command") {
@@ -7057,6 +7221,7 @@ function ToolDetail({
   ) {
     return (
       <SubagentToolResult
+        onOpenSubagent={onOpenSubagent}
         payload={item.result}
         status={item.status}
         teamManaged={teamManaged}
@@ -7528,10 +7693,12 @@ function AgentMessageToolResult({
 }
 
 function SubagentToolResult({
+  onOpenSubagent,
   payload,
   status,
   teamManaged,
 }: {
+  onOpenSubagent: ((conversationId: string) => void) | undefined;
   payload: string | null;
   status: ConversationToolItem["status"];
   teamManaged: boolean;
@@ -7547,17 +7714,26 @@ function SubagentToolResult({
       <ul className="tool-search-results">
         {result.tasks.map((task) => (
           <li key={task.id}>
-            <span className="tool-subagent-result__identity">
-              <SubagentAvatar
-                icon={task.avatarIcon}
-                seed={task.childConversationId}
-                size="compact"
-              />
-              <span className="tool-search-results__path">{task.name}</span>
-            </span>
-            <span className="tool-search-results__excerpt">
-              {subagentTaskStatusLabel(task.status)} · {task.childConversationId}
-            </span>
+            <button
+              aria-label={`在侧边打开 Subagent 对话：${task.name}`}
+              className="flex w-full min-w-0 cursor-pointer flex-col items-start gap-[2px] border-0 bg-transparent p-0 text-left text-inherit hover:text-[var(--app-accent)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-2 disabled:cursor-default disabled:text-inherit"
+              disabled={onOpenSubagent === undefined}
+              title={`在侧边打开 ${task.name}`}
+              type="button"
+              onClick={() => onOpenSubagent?.(task.childConversationId)}
+            >
+              <span className="tool-subagent-result__identity">
+                <SubagentAvatar
+                  icon={task.avatarIcon}
+                  seed={task.childConversationId}
+                  size="compact"
+                />
+                <span className="tool-search-results__path">{task.name}</span>
+              </span>
+              <span className="tool-search-results__excerpt">
+                {subagentTaskStatusLabel(task.status)}
+              </span>
+            </button>
             {task.result !== null || task.error !== null ? (
               <span className="tool-search-results__excerpt">
                 {task.result ?? task.error}
@@ -7825,49 +8001,6 @@ function ToolPayload({ label, payload }: { label: string; payload: string }): Re
       <p className="tool-timeline-item__payload-label">{label}</p>
       <pre>{formatToolPayload(payload)}</pre>
     </section>
-  );
-}
-
-export function runtimeBadgeLabel(
-  isMockRuntime: boolean,
-  modelDisplayName: string,
-): string {
-  return isMockRuntime ? "浏览器预览" : modelDisplayName;
-}
-
-function RuntimeBadge({
-  isConfigured,
-  isMockRuntime,
-  isRunning,
-  modelDisplayName,
-}: {
-  isConfigured: boolean;
-  isMockRuntime: boolean;
-  isRunning: boolean;
-  modelDisplayName: string;
-}): ReactElement {
-  const label = runtimeBadgeLabel(isMockRuntime, modelDisplayName);
-
-  return (
-    <span
-      className="runtime-badge"
-      data-configured={String(isConfigured)}
-      data-running={String(isRunning)}
-      title={isRunning ? `${label} · 正在运行` : label}
-    >
-      {isRunning ? (
-        <>
-          <LoaderCircle
-            aria-hidden="true"
-            className="conversation-workspace__spin"
-            size={12}
-          />
-          正在运行
-        </>
-      ) : (
-        label
-      )}
-    </span>
   );
 }
 
@@ -8195,6 +8328,45 @@ type SubagentToolTaskPayload = {
   title: string;
 };
 
+type SpawnSubagentActivity = {
+  action: "创建中" | "已创建" | "创建失败" | "已取消";
+  avatarIcon: AgentAvatarIcon | null;
+  childConversationId: string | null;
+  name: string;
+};
+
+export function spawnSubagentActivity(
+  item: ConversationToolItem,
+  status: ConversationToolItem["status"] = item.status,
+): SpawnSubagentActivity | null {
+  if (item.name !== "spawn_subagent") return null;
+
+  const result = item.result === null ? null : parseSubagentToolResult(item.result);
+  const task = result?.tasks[0];
+  const argumentsValue = parseToolPayload(item.arguments);
+  const argumentIcon = argumentsValue?.icon === undefined
+    ? null
+    : agentAvatarIconSchema.safeParse(argumentsValue.icon);
+  const action = status === "failed"
+    ? "创建失败"
+    : status === "cancelled"
+      ? "已取消"
+      : status === "completed"
+        ? "已创建"
+        : "创建中";
+
+  return {
+    action,
+    avatarIcon: task?.avatarIcon
+      ?? (argumentIcon !== null && argumentIcon.success ? argumentIcon.data : null),
+    childConversationId: task?.childConversationId ?? null,
+    name: task?.name
+      ?? (typeof argumentsValue?.name === "string" && argumentsValue.name.trim().length > 0
+        ? argumentsValue.name.trim()
+        : "Subagent"),
+  };
+}
+
 function parseSubagentToolResult(payload: string): {
   tasks: SubagentToolTaskPayload[];
   waitStatus: string | null;
@@ -8251,6 +8423,8 @@ function subagentTaskStatusLabel(status: string): string {
       return "失败";
     case "cancelled":
       return "已取消";
+    case "ended":
+      return "已结束";
     default:
       return status;
   }

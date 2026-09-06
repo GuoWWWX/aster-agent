@@ -227,7 +227,7 @@ Graph 使用 `CallbackChatModel` 作为桥接模型。它把 LangGraph 的模型
 - `web_search`：受界限的网页搜索；
 - Skill：`load_skill`、`read_skill_reference`；
 - Agent 协作：发送消息、读取对话、等待消息；
-- Subagent：创建、查询和等待一次性子任务；
+- Subagent：创建、查询、等待和显式结束可复用的临时执行者；后续任务复用 Agent 消息工具；
 - 任务清单和附件。
 
 工具执行还要经过工作区路径安全、参数校验、权限模式、取消信号、结果大小限制、审计和错误映射。框架的 ToolNode 只负责标准调度，不能绕过 Runtime wrapper。

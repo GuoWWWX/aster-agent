@@ -197,11 +197,13 @@ export function GitReviewWorkspace({
   agentClient,
   gitReviewCache,
   projectId,
+  requestedFile = null,
 }: {
   active: boolean;
   agentClient: AgentClient;
   gitReviewCache: GitReviewCache;
   projectId: string;
+  requestedFile?: { path: string; requestId: number } | null;
 }): ReactElement {
   const [dialog, setDialog] = useState<ReviewDialog>(null);
   const [branchName, setBranchName] = useState("");
@@ -229,6 +231,7 @@ export function GitReviewWorkspace({
   const commitMessageRef = useRef<HTMLTextAreaElement | null>(null);
   const commitPanelResizeCleanupRef = useRef<(() => void) | null>(null);
   const diffRequestRef = useRef(0);
+  const handledRequestedFileIdRef = useRef<number | null>(null);
   const selectedPathRef = useRef<string | null>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const changeButtonRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -281,6 +284,16 @@ export function GitReviewWorkspace({
       }
     }
   }, [gitReviewCache, projectId, requestDiff]);
+
+  useEffect(() => {
+    if (
+      !active
+      || requestedFile === null
+      || handledRequestedFileIdRef.current === requestedFile.requestId
+    ) return;
+    handledRequestedFileIdRef.current = requestedFile.requestId;
+    void loadDiff(requestedFile.path);
+  }, [active, loadDiff, requestedFile]);
 
   const applySnapshot = useCallback((next: GitReviewSnapshot): void => {
     setSnapshot(next);

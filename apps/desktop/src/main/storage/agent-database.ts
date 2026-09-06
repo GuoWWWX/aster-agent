@@ -53,6 +53,7 @@ import {
   type ConversationModelSelection,
   type ConversationPendingMessage,
   type ConversationRunStatus,
+  type ConversationRunFileChange,
   type ConversationSearchInput,
   type ConversationSearchResult,
   type ConversationAgentBinding,
@@ -251,6 +252,7 @@ export type ConversationDeletionTask = {
 
 export type SendAgentMessageInput = {
   content: string;
+  fileChanges?: readonly ConversationRunFileChange[];
   messageType?: "message" | "notification" | "agent_result" | "task_result";
   replyInstruction?: string | null;
   runId: string;
@@ -259,6 +261,46 @@ export type SendAgentMessageInput = {
   targetConversationId: string;
 };
 
+function agentMessageFileChangeLines(message: ConversationAgentMessageItem): string[] {
+  if (message.fileChanges.length === 0) return [];
+  return [
+    "Built-in file changes recorded for this run:",
+    ...message.fileChanges.map((change) => `- ${change.toolName}: ${change.path}`),
+    "This bounded list does not include file changes made indirectly by shell commands.",
+  ];
+}
+
+function runFileChangesFromTool(tool: ConversationToolItem): ConversationRunFileChange[] {
+  if (tool.status !== "completed") return [];
+  if (
+    tool.name !== "write_file"
+    && tool.name !== "replace_in_file"
+    && tool.name !== "delete_file"
+    && tool.name !== "apply_patch"
+  ) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(tool.arguments) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+    const record = parsed as Record<string, unknown>;
+    if (tool.name === "apply_patch") {
+      if (typeof record.patch !== "string") return [];
+      return [...record.patch.matchAll(/^(?:--- a\/|\+\+\+ b\/)([^\t\r\n]+)$/gmu)]
+        .map((match) => match[1]?.trim())
+        .filter((path): path is string => path !== undefined && path.length > 0)
+        .map((path) => ({ path, toolName: "apply_patch" as const }));
+    }
+    if (typeof record.path !== "string" || record.path.trim().length === 0) return [];
+    return [{
+      path: record.path.trim(),
+      toolName: tool.name,
+    }];
+  } catch {
+    return [];
+  }
+}
+
 export function agentMessageModelContent(message: ConversationAgentMessageItem): string {
   if (message.messageType === "task_result") {
     return [
@@ -266,7 +308,8 @@ export function agentMessageModelContent(message: ConversationAgentMessageItem):
       `Subagent conversation: ${message.senderTitle}`,
       `Subagent conversationId: ${message.senderConversationId}`,
       ...(message.taskId === null ? [] : [`Task ID: ${message.taskId}`]),
-      "This is a private completion result from a one-shot Subagent, not a user-visible chat message. Synthesize the result into your own response without exposing this delivery envelope or presenting a standalone message from the Subagent. Do not list or read the child conversation merely to retrieve this normal result. Read it only if this result is explicitly truncated and omitted detail blocks the task, or if the user asks to audit the child process. Do not ask the completed Subagent to continue.",
+      "This is a private completion result from a reusable Subagent, not a user-visible chat message. Synthesize the result into your own response without exposing this delivery envelope or presenting a standalone message from the Subagent. Do not list or read the child conversation merely to retrieve this normal result. Read it only if this result is explicitly truncated and omitted detail blocks the task, or if the user asks to audit the child process. If more work is required, continue the same Subagent with send_agent_message so it retains its conversation context. End it only after you judge its scope complete and no follow-up is needed.",
+      ...agentMessageFileChangeLines(message),
       "Completion receipt:",
       message.content
     ].join("\n");
@@ -278,6 +321,7 @@ export function agentMessageModelContent(message: ConversationAgentMessageItem):
       `Executor conversationId: ${message.senderConversationId}`,
       ...(message.taskId === null ? [] : [`Original collaboration message ID: ${message.taskId}`]),
       "This is a bounded completion receipt, not the executor's full answer. Full details remain only in the executor conversation; use read_agent_conversation with a chosen maxTokens budget when needed. Do not reply again unless follow-up work is required.",
+      ...agentMessageFileChangeLines(message),
       "Completion receipt:",
       message.content,
     ].join("\n");
@@ -303,7 +347,7 @@ export function agentMessageModelContent(message: ConversationAgentMessageItem):
   ].join("\n");
 }
 
-export type SubagentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type SubagentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "ended";
 
 export type SubagentTask = {
   childConversationId: string;
@@ -404,7 +448,7 @@ const threadLogSubagentTaskSchema = z.object({
   result: z.string().nullable(),
   resultMessageId: z.string().uuid().nullable(),
   sourceRunId: z.string().uuid(),
-  status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
+  status: z.enum(["queued", "running", "completed", "failed", "cancelled", "ended"]),
   targetRunId: z.string().uuid().nullable(),
   task: z.string(),
   title: z.string(),
@@ -1066,7 +1110,7 @@ function toConversation(row: DatabaseRow): ConversationSummary {
 
 function toSubagentTask(row: DatabaseRow): SubagentTask {
   const status = asString(row, "status");
-  if (!["queued", "running", "completed", "failed", "cancelled"].includes(status)) {
+  if (!["queued", "running", "completed", "failed", "cancelled", "ended"].includes(status)) {
     throw new Error("Stored Subagent task status is invalid.");
   }
   return {
@@ -1295,7 +1339,14 @@ export class AgentDatabase {
             ORDER BY created_at DESC, rowid DESC LIMIT 1) AS last_run_status
           ,(SELECT COUNT(*) FROM subagent_tasks
             WHERE parent_conversation_id = conversations.id
-              AND status IN ('queued', 'running')) AS active_subagent_count
+              AND (
+                status IN ('queued', 'running')
+                OR EXISTS (
+                  SELECT 1 FROM runs AS active_subagent_runs
+                  WHERE active_subagent_runs.conversation_id = subagent_tasks.child_conversation_id
+                    AND active_subagent_runs.status IN ('queued', 'running')
+                )
+              )) AS active_subagent_count
            ,(SELECT status FROM subagent_tasks
              WHERE child_conversation_id = conversations.id LIMIT 1) AS subagent_task_status
            ,team_execution_tree_projection.work_item_id AS team_work_item_id
@@ -1361,7 +1412,14 @@ export class AgentDatabase {
             ORDER BY created_at DESC, rowid DESC LIMIT 1) AS last_run_status
           ,(SELECT COUNT(*) FROM subagent_tasks
             WHERE parent_conversation_id = conversations.id
-              AND status IN ('queued', 'running')) AS active_subagent_count
+              AND (
+                status IN ('queued', 'running')
+                OR EXISTS (
+                  SELECT 1 FROM runs AS active_subagent_runs
+                  WHERE active_subagent_runs.conversation_id = subagent_tasks.child_conversation_id
+                    AND active_subagent_runs.status IN ('queued', 'running')
+                )
+              )) AS active_subagent_count
            ,(SELECT status FROM subagent_tasks
              WHERE child_conversation_id = conversations.id LIMIT 1) AS subagent_task_status
            ,team_execution_tree_projection.work_item_id AS team_work_item_id
@@ -3626,7 +3684,7 @@ export class AgentDatabase {
     conversationId: string,
     rawAvatarIcon: unknown,
   ): ConversationSummary {
-    const avatarIcon = agentAvatarIconSchema.parse(rawAvatarIcon);
+    const avatarIcon = agentAvatarIconSchema.nullable().parse(rawAvatarIcon);
     this.getConversation(conversationId);
     this.database
       .prepare("UPDATE conversations SET avatar_icon = ?, updated_at = ? WHERE id = ?")
@@ -4111,7 +4169,14 @@ export class AgentDatabase {
             ORDER BY created_at DESC, rowid DESC LIMIT 1) AS last_run_status
           ,(SELECT COUNT(*) FROM subagent_tasks
             WHERE parent_conversation_id = conversations.id
-              AND status IN ('queued', 'running')) AS active_subagent_count
+              AND (
+                status IN ('queued', 'running')
+                OR EXISTS (
+                  SELECT 1 FROM runs AS active_subagent_runs
+                  WHERE active_subagent_runs.conversation_id = subagent_tasks.child_conversation_id
+                    AND active_subagent_runs.status IN ('queued', 'running')
+                )
+              )) AS active_subagent_count
            ,(SELECT status FROM subagent_tasks
              WHERE child_conversation_id = conversations.id LIMIT 1) AS subagent_task_status
            ,team_execution_tree_projection.work_item_id AS team_work_item_id
@@ -4805,6 +4870,64 @@ export class AgentDatabase {
     return rows.map(toSubagentTask);
   }
 
+  public endSubagent(parentConversationId: string, childConversationId: string): SubagentTask {
+    return this.withTransaction(() => {
+      const task = this.database
+        .prepare(
+          `SELECT * FROM subagent_tasks
+           WHERE parent_conversation_id = ? AND child_conversation_id = ? LIMIT 1`,
+        )
+        .get(parentConversationId, childConversationId) as DatabaseRow | undefined;
+      if (task === undefined) {
+        throw new Error("The Subagent conversation does not belong to this parent conversation.");
+      }
+      const current = toSubagentTask(task);
+      if (current.status === "ended") return current;
+      const child = this.getConversation(childConversationId);
+      if (child.activeRunId !== null || current.status === "queued" || current.status === "running") {
+        throw new Error("A running Subagent cannot be ended.");
+      }
+      const now = new Date().toISOString();
+      const update = this.database.prepare(
+        `UPDATE subagent_tasks SET status = 'ended', updated_at = ?
+         WHERE id = ? AND status NOT IN ('queued', 'running', 'ended')`,
+      ).run(now, current.id);
+      if (update.changes !== 1) {
+        throw new Error("The Subagent state changed before it could be ended.");
+      }
+      this.database.prepare(
+        "UPDATE conversations SET updated_at = ? WHERE id = ?",
+      ).run(now, childConversationId);
+      return this.getSubagentTask(current.id);
+    });
+  }
+
+  public listRunFileChanges(
+    conversationId: string,
+    runId: string,
+  ): ConversationRunFileChange[] {
+    const run = this.database.prepare(
+      "SELECT 1 AS present FROM runs WHERE id = ? AND conversation_id = ?",
+    ).get(runId, conversationId);
+    if (run === undefined) throw new Error("The Run does not belong to the conversation.");
+    const rows = this.database.prepare(
+      `SELECT payload_json FROM conversation_timeline
+       WHERE conversation_id = ? AND run_id = ? AND kind = 'tool'
+       ORDER BY sequence ASC`,
+    ).all(conversationId, runId) as DatabaseRow[];
+    const changesByPath = new Map<string, ConversationRunFileChange>();
+    for (const row of rows) {
+      const parsed = conversationToolItemSchema.safeParse(
+        parseJson(asString(row, "payload_json"), "tool timeline item"),
+      );
+      if (!parsed.success) continue;
+      for (const change of runFileChangesFromTool(parsed.data)) {
+        changesByPath.set(change.path, change);
+      }
+    }
+    return [...changesByPath.values()].slice(0, 50);
+  }
+
   /** Counts queued/running tasks across an execution tree, including nested delegation. */
   public countActiveSubagentTasksInExecutionTree(rootConversationId: string): number {
     this.getConversation(rootConversationId);
@@ -4820,7 +4943,14 @@ export class AgentDatabase {
        SELECT COUNT(*) AS count
        FROM subagent_tasks
        WHERE parent_conversation_id IN (SELECT conversation_id FROM execution_tree)
-         AND status IN ('queued', 'running')`,
+         AND (
+           status IN ('queued', 'running')
+           OR EXISTS (
+             SELECT 1 FROM runs AS active_subagent_runs
+             WHERE active_subagent_runs.conversation_id = subagent_tasks.child_conversation_id
+               AND active_subagent_runs.status IN ('queued', 'running')
+           )
+         )`,
     ).get(rootConversationId) as DatabaseRow;
     return asNumber(row, "count");
   }
@@ -4912,6 +5042,9 @@ export class AgentDatabase {
       content,
       conversationId: target.id,
       createdAt: now,
+      fileChanges: task.targetRunId === null
+        ? []
+        : this.listRunFileChanges(sender.id, task.targetRunId),
       id: randomUUID(),
       kind: "agent_message",
       messageType: "task_result",
@@ -4996,18 +5129,15 @@ export class AgentDatabase {
     if (target.isArchived && input.messageType !== "agent_result") {
       throw new Error("An archived conversation cannot receive Agent messages.");
     }
-    if (
-      target.subagentTaskStatus === "completed"
-      || target.subagentTaskStatus === "failed"
-      || target.subagentTaskStatus === "cancelled"
-    ) {
-      throw new Error("A finished Subagent conversation is read-only.");
+    if (target.subagentTaskStatus === "ended") {
+      throw new Error("An ended Subagent conversation is read-only.");
     }
     const now = new Date().toISOString();
     const message = conversationAgentMessageItemSchema.parse({
       content: input.content,
       conversationId: target.id,
       createdAt: now,
+      fileChanges: input.fileChanges ?? [],
       id: randomUUID(),
       kind: "agent_message",
       messageType: input.messageType ?? "message",
@@ -5170,12 +5300,6 @@ export class AgentDatabase {
   ): ConversationTaskList {
     this.getConversation(conversationId);
     const previous = this.getTaskList(conversationId);
-    if (previous === null) {
-      throw new Error("No active task list exists for this conversation. Create one first.");
-    }
-    if (previous.status !== "active") {
-      throw new Error("The task list is closed. Create a new task list before updating it.");
-    }
     return this.saveActiveTaskList(conversationId, tasks, previous);
   }
 
@@ -6742,6 +6866,36 @@ export class AgentDatabase {
     };
   }
 
+  public getLatestRunExecutionSnapshot(conversationId: string): RunExecutionSnapshot | null {
+    this.getConversation(conversationId);
+    const row = this.database.prepare(
+      `SELECT execution_snapshot_json FROM runs
+       WHERE conversation_id = ? AND execution_snapshot_json IS NOT NULL
+       ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    ).get(conversationId) as DatabaseRow | undefined;
+    return row === undefined
+      ? null
+      : parseRunExecutionSnapshot(asNullableString(row, "execution_snapshot_json"));
+  }
+
+  public getProjectedThreadLogEventId(
+    conversationId: string,
+    sequence: number,
+  ): string | null {
+    this.getConversation(conversationId);
+    if (!Number.isSafeInteger(sequence) || sequence < 1) {
+      throw new Error("ThreadLog event sequence must be a positive integer.");
+    }
+    const row = this.database
+      .prepare(
+        `SELECT event_id
+         FROM thread_log_event_index
+         WHERE conversation_id = ? AND sequence = ?`,
+      )
+      .get(conversationId, sequence) as DatabaseRow | undefined;
+    return row === undefined ? null : asString(row, "event_id");
+  }
+
   /** Clears only the derived event index before a Conversation log is rebuilt. */
   public resetThreadLogProjection(conversationId: string): void {
     this.getConversation(conversationId);
@@ -7283,6 +7437,7 @@ export class AgentDatabase {
         if (
           event.type === "subagent_task_created"
           || event.type === "subagent_task_completed"
+          || event.type === "subagent_task_ended"
         ) {
           const task = threadLogSubagentTaskSchema.safeParse(payload.task);
           if (!task.success || task.data.parentConversationId !== conversationId) continue;
@@ -9117,6 +9272,17 @@ export class AgentDatabase {
         },
         version: 20,
       },
+      {
+        name: "subagent-pixel-avatar-identity",
+        up: (database) => {
+          database.exec(`
+            UPDATE conversations
+            SET avatar_icon = NULL
+            WHERE thread_kind = 'subagent';
+          `);
+        },
+        version: 21,
+      },
     ]);
   }
 
@@ -9763,6 +9929,13 @@ export class AgentDatabase {
   private withCurrentAgentMessageSenderTitle(
     message: ConversationAgentMessageItem,
   ): ConversationAgentMessageItem {
+    const senderIsReadable = this.database
+      .prepare(
+        `SELECT 1 AS present FROM conversations
+         WHERE id = ? AND deletion_pending = 0 LIMIT 1`,
+      )
+      .get(message.senderConversationId) !== undefined;
+    if (!senderIsReadable) return message;
     const senderTitle = this.agentMessageSenderTitle(
       this.getConversation(message.senderConversationId),
     );

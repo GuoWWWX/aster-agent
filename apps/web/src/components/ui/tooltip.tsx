@@ -22,6 +22,7 @@ type TooltipAnchorProps = {
   content: ReactNode;
   contentClassName?: string;
   disabled?: boolean;
+  open?: boolean;
   side?: ComponentProps<typeof TooltipPrimitive.Content>["side"];
 };
 
@@ -30,11 +31,12 @@ export function TooltipAnchor({
   content,
   contentClassName,
   disabled = false,
+  open,
   side = "top",
 }: TooltipAnchorProps): ReactElement {
   const trigger = disabled ? <span className="inline-flex">{children}</span> : children;
   return (
-    <TooltipPrimitive.Root>
+    <TooltipPrimitive.Root {...(open === undefined ? {} : { open })}>
       <TooltipPrimitive.Trigger asChild>{trigger}</TooltipPrimitive.Trigger>
       <TooltipPrimitive.Portal>
         <TooltipPrimitive.Content

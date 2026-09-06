@@ -71,7 +71,7 @@ Electron Bootstrap
 - `createAgent` 的 `model -> tools -> model` 条件循环和完成边；最大模型调用次数由 `modelCallLimitMiddleware` 按同一 `thread_id` 计数。
 - `createMiddleware.beforeAgent` 在 Run 图线程首次进入时调用 Runtime 的 Context Builder，写入本轮初始上下文；同一线程后续 Queue/Steer 或审批恢复不会重复追加上下文。
 - 自定义 `wrapModelCall` Middleware 为每次语义模型请求生成稳定 `requestId`，执行可取消、可观测的模型重试；Runtime 提供重试判定、退避、等待以及 `onRetry/onSuccess/onFailure` 回调，并用同一个 ID 更新持久 `model_retry` Timeline 事实。
-- 通过 `interrupt()` 暂停等待审批；通过 `new Command({ resume })` 恢复同一 `thread_id`。图执行边界同时接受 `invoke()` 返回的 `__interrupt__` 和上游直接抛出的顶层 `GraphInterrupt`，两者归一到相同的 `onInterrupt` 回调。
+- 通过 `interrupt()` 暂停等待审批；通过 `new Command({ resume })` 恢复同一 `thread_id`。每个 Run 的图调用先建立独立的 LangChain 异步配置上下文，避免从父 ToolNode 调度的 Subagent 继承父图内部配置并把自己的审批断点写到错误线程。图执行边界同时接受 `invoke()` 返回的 `__interrupt__` 和上游直接抛出的顶层 `GraphInterrupt`，两者归一到相同的 `onInterrupt` 回调。
 - 在每个安全节点边界保存 Checkpoint。当前应用重启只恢复尚未开始执行的 queued Run；已进入图的 running Run 保守标记失败，不跨进程重放副作用。
 - 为 Subagent/团队未来扩展保留子图和并行 `Send` 的能力，但本批不宣称完整团队 Supervisor 已实现。
 
@@ -179,6 +179,7 @@ LangGraph 的 Checkpoint 只负责图恢复，不替代现有业务状态：
 - `thread_id` 使用稳定的 `runId`/图线程标识，不能使用模型提供的任意值。
 - `NodeSqliteCheckpointSaver` 实现 LangGraph `BaseCheckpointSaver` 的 `getTuple/list/put/putWrites/deleteThread` 合同。
 - Checkpoint 表和 writes 表使用独立命名空间或独立数据库文件，迁移由项目 `DatabaseMigrationRunner` 管理。
+- `putWrites` 必须允许在对应 Checkpoint 行落库前保存 interrupt、resume 等中间写入；writes 表不能用指向 Checkpoint 表的数据库外键强制错误的调用顺序，二者由相同的 `thread_id + checkpoint_ns + checkpoint_id` 逻辑键关联，并由 `deleteThread` 同时清理。普通节点写入保持首次结果以避免重放副作用，`interrupt/resume/error/scheduled` 等负索引特殊写入必须按 LangGraph Checkpointer 合同覆盖旧值，否则新的审批决定会被旧恢复值吞掉并错误跳过原 Tool Call。
 - 业务数据库先提交可见事实，再发事件；图 Checkpoint 只在节点安全边界写入，恢复时重新读取并校验业务 Run 状态。
 - 已完成、取消或失败的 Run 清理对应图线程；历史 UI 消息和审计事实不删除。
 - 删除/归档流程把 Checkpoint 文件或行纳入现有可恢复清理任务，不能只删业务行。
@@ -209,7 +210,7 @@ LangGraph 的 Checkpoint 只负责图恢复，不替代现有业务状态：
 
 - 将 `executeRun` 的内部循环替换为 Graph invoke/stream。
 - 保持既有事件、消息、Tool 行、Queue/Steer、Subagent 和错误合同。
-- 使用 LangGraph `interrupt/Command` 承接需要用户确认的审批；启用 AI 审批时，Runtime 在进入 interrupt 前以无工具的独立模型请求审核具体操作，只有低/中风险明确允许才继续，高风险、不确定、无效响应和审核失败仍进入同一 interrupt。恢复时按 interrupt namespace keyed resume，并缓存已完成 ToolCall 结果，避免节点重放副作用。返回式和异常式顶层 interrupt 使用同一恢复路径；running Run 仍按保守失败策略处理。
+- 使用 LangGraph `interrupt/Command` 承接需要用户确认的审批；启用 AI 审批时，Runtime 在进入 interrupt 前以无工具的独立模型请求审核具体操作，只有低/中风险明确允许才继续，高风险、不确定、无效响应和审核失败仍进入同一 interrupt。执行器明确一次只支持一个待恢复 interrupt，并以标量 `Command({ resume })` 重放原 ToolNode；不能使用按 interrupt ID 的任务级恢复映射后直接进入模型节点。每次 `agent.invoke` 还必须显式隔离 LangChain 的异步配置上下文，父 Agent 与 Subagent 即使在同一异步调用链中启动，也只能读写各自 `thread_id` 的 Checkpoint。已完成 ToolCall 结果继续缓存以避免节点重放副作用。返回式和异常式顶层 interrupt 使用同一恢复路径；running Run 仍按保守失败策略处理。
 
 ### 阶段 4：Skill 与 Checkpoint（主链已完成）
 

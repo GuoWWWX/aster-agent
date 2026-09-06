@@ -47,10 +47,10 @@ describe("AgentDatabase", () => {
       .get() as Record<string, unknown>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(20);
-    expect(firstRow.name).toBe("conversation-turn-summaries");
+    expect(firstRow.version).toBe(21);
+    expect(firstRow.name).toBe("subagent-pixel-avatar-identity");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(20);
+    expect(migrationCount.count).toBe(21);
   });
 
   it("adds hidden turn summaries when upgrading an existing version 19 database", async () => {
@@ -63,7 +63,7 @@ describe("AgentDatabase", () => {
     const legacy = new DatabaseSync(databasePath);
     legacy.exec(`
       DROP TABLE conversation_turn_summaries;
-      DELETE FROM schema_migrations WHERE version = 20;
+      DELETE FROM schema_migrations WHERE version >= 20;
     `);
     legacy.close();
 
@@ -459,7 +459,7 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 20",
+      "newer than supported version 21",
     );
   });
 
@@ -1815,6 +1815,7 @@ describe("AgentDatabase", () => {
       { version: 18 },
       { version: 19 },
       { version: 20 },
+      { version: 21 },
     ]);
     metadata.close();
   });
@@ -2004,11 +2005,32 @@ describe("AgentDatabase", () => {
 
     expect(database.setConversationAvatarIcon(conversation.id, "bug").avatarIcon).toBe("bug");
     expect(() => database.setConversationAvatarIcon(conversation.id, "<svg />")).toThrow();
+    expect(database.setConversationAvatarIcon(conversation.id, null).avatarIcon).toBeNull();
+    expect(database.setConversationAvatarIcon(conversation.id, "bug").avatarIcon).toBe("bug");
     database.close();
 
     const reopened = new AgentDatabase(databasePath);
     expect(reopened.getConversation(conversation.id).avatarIcon).toBe("bug");
     reopened.close();
+  });
+
+  it("migrates persisted Subagent profile avatars back to generated pixel identities", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-subagent-avatar-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "agent.sqlite");
+    const database = new AgentDatabase(databasePath);
+    const parent = database.createConversation(null);
+    const subagent = database.forkConversation(parent.id, "subagent");
+    database.setConversationAvatarIcon(subagent.id, "bot");
+    database.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec("DELETE FROM schema_migrations WHERE version = 21;");
+    legacy.close();
+
+    const migrated = new AgentDatabase(databasePath);
+    expect(migrated.getConversation(subagent.id).avatarIcon).toBeNull();
+    migrated.close();
   });
 
   it("derives an Assistant reply completion time and total Run duration for the timeline", () => {
@@ -2748,6 +2770,8 @@ describe("AgentDatabase", () => {
       undefined,
       executionSnapshot,
     );
+    expect(first.getLatestRunExecutionSnapshot(conversation.id)?.permissionMode)
+      .toBe("ask_before_changes");
     first.close();
 
     const reopened = new AgentDatabase(databasePath);
@@ -2854,20 +2878,20 @@ describe("AgentDatabase", () => {
       { status: "pending", title: "重复创建" },
       { status: "pending", title: "重复创建后的步骤" }
     ])).toThrow("active task list already exists");
-    expect(() => firstDatabase.updateTaskList(conversation.id, [
+    const parallelTasks = firstDatabase.updateTaskList(conversation.id, [
       { status: "running", title: "步骤一" },
       { status: "running", title: "步骤二" }
-    ])).toThrow("only have one running task");
+    ]);
+    expect(parallelTasks.tasks.map((task) => task.status)).toEqual(["running", "running"]);
     firstDatabase.close();
 
     const reopenedDatabase = new AgentDatabase(databasePath);
     expect(reopenedDatabase.getTaskList(conversation.id)?.tasks).toMatchObject([
-      { status: "completed", title: "分析需求" },
-      { reason: "等待用户批准修改", status: "blocked", title: "实现功能" },
-      { status: "pending", title: "验证结果" }
+      { status: "running", title: "步骤一" },
+      { status: "running", title: "步骤二" }
     ]);
     expect(reopenedDatabase.getTaskList(conversation.id)?.tasks.map((task) => task.status))
-      .toEqual(["completed", "blocked", "pending"]);
+      .toEqual(["running", "running"]);
     reopenedDatabase.closeTaskList(conversation.id);
     expect(reopenedDatabase.getTaskList(conversation.id)).toBeNull();
     reopenedDatabase.close();
@@ -2986,6 +3010,26 @@ describe("AgentDatabase", () => {
       expect(timelineMessage.status).toBe("read");
       expect(typeof timelineMessage.readAt).toBe("string");
     }
+    database.close();
+  });
+
+  it("keeps historical Agent messages readable after the sender is deleted", () => {
+    const database = new AgentDatabase(":memory:");
+    const sender = database.createConversation(null);
+    const target = database.createConversation(null);
+    database.renameConversation(sender.id, "已清理的发送方");
+    const message = database.sendAgentMessage({
+      content: "这条历史消息必须继续可见。",
+      messageType: "notification",
+      runId: crypto.randomUUID(),
+      senderConversationId: sender.id,
+      targetConversationId: target.id,
+    });
+
+    const deletionTask = database.createConversationDeletionTask(sender.id);
+    database.completeConversationDeletionTask(deletionTask.id);
+
+    expect(database.listTimeline(target.id)).toContainEqual(message);
     database.close();
   });
 
@@ -3504,12 +3548,69 @@ describe("AgentDatabase", () => {
     });
     database.assignSubagentTaskRun(task.id, childRun.runId);
     expect(database.getConversation(parent.id).activeSubagentCount).toBe(1);
+    expect(() => database.endSubagent(parent.id, child.id)).toThrow("running Subagent");
     expect(database.listConversations()).toEqual(expect.arrayContaining([
       expect.objectContaining({
         activeSubagentCount: 1,
         id: parent.id,
       }),
     ]));
+    const fileTool = {
+      arguments: JSON.stringify({
+        expectedReplacements: 1,
+        newText: "export const ready = true;",
+        oldText: "export const ready = false;",
+        path: "src/status.ts",
+      }),
+      batchId: null,
+      conversationId: child.id,
+      createdAt: new Date().toISOString(),
+      diff: "--- a/src/status.ts\n+++ b/src/status.ts",
+      id: "00000000-0000-4000-8000-000000000217",
+      kind: "tool" as const,
+      name: "replace_in_file",
+      result: "updated",
+      runId: childRun.runId,
+      status: "completed" as const,
+    };
+    database.appendToolStarted({ ...fileTool, result: null, status: "running" });
+    database.completeTool({
+      providerCallId: "replace-status",
+      result: fileTool.result,
+      tool: fileTool,
+    });
+    const patchTool = {
+      arguments: JSON.stringify({
+        patch: [
+          "--- a/src/first.ts",
+          "+++ b/src/first.ts",
+          "@@ -1 +1 @@",
+          "-old",
+          "+new",
+          "--- a/src/second.ts",
+          "+++ b/src/second.ts",
+          "@@ -1 +1 @@",
+          "-old",
+          "+new",
+        ].join("\n"),
+      }),
+      batchId: null,
+      conversationId: child.id,
+      createdAt: new Date().toISOString(),
+      diff: null,
+      id: "00000000-0000-4000-8000-000000000218",
+      kind: "tool" as const,
+      name: "apply_patch",
+      result: "updated",
+      runId: childRun.runId,
+      status: "completed" as const,
+    };
+    database.appendToolStarted({ ...patchTool, result: null, status: "running" });
+    database.completeTool({
+      providerCallId: "patch-two-files",
+      result: patchTool.result,
+      tool: patchTool,
+    });
     database.finishRun(childRun.runId, "completed", null);
     const fullResult = [
       "检查完成，没有发现问题；目标测试已经通过。",
@@ -3533,6 +3634,20 @@ describe("AgentDatabase", () => {
     });
     expect(message?.content).toBe("检查完成，没有发现问题；目标测试已经通过。");
     expect(message?.content).not.toContain("详细检查记录");
+    expect(message?.fileChanges).toEqual([
+      {
+        path: "src/status.ts",
+        toolName: "replace_in_file",
+      },
+      {
+        path: "src/first.ts",
+        toolName: "apply_patch",
+      },
+      {
+        path: "src/second.ts",
+        toolName: "apply_patch",
+      },
+    ]);
     expect(message?.content.length).toBeLessThanOrEqual(2_000);
     expect(message?.content).not.toBe(fullResult);
     expect(database.getSubagentTask(task.id)).toMatchObject({
@@ -3541,14 +3656,35 @@ describe("AgentDatabase", () => {
     });
     expect(database.getConversation(child.id).subagentTaskStatus).toBe("completed");
     expect(database.getConversation(parent.id).activeSubagentCount).toBe(0);
+    const continuationRun = database.createRunForAgentMessage(child.id, "test-model");
+    expect(database.getConversation(parent.id).activeSubagentCount).toBe(1);
+    database.finishRun(continuationRun.runId, "completed", null);
+    expect(database.getConversation(parent.id).activeSubagentCount).toBe(0);
     expect(database.listContextMessages(parent.id).at(-1)?.content).toContain(
       "[Subagent task result]",
+    );
+    expect(database.listContextMessages(parent.id).at(-1)?.content).toContain(
+      "- replace_in_file: src/status.ts",
+    );
+    expect(database.listContextMessages(parent.id).at(-1)?.content).toContain(
+      "- apply_patch: src/second.ts",
     );
     expect(database.listTimeline(parent.id).some((item) =>
       item.kind === "agent_message" && item.messageType === "task_result"
     )).toBe(false);
-    expect(() => database.sendAgentMessage({
+    const followUp = database.sendAgentMessage({
       content: "继续处理",
+      runId: parentRun.runId,
+      senderConversationId: parent.id,
+      targetConversationId: child.id,
+    });
+    expect(followUp.conversationId).toBe(child.id);
+    database.markAgentMessagesRead([followUp.id]);
+    expect(database.endSubagent(parent.id, child.id)).toMatchObject({ status: "ended" });
+    expect(database.endSubagent(parent.id, child.id)).toMatchObject({ status: "ended" });
+    expect(database.getConversation(child.id).subagentTaskStatus).toBe("ended");
+    expect(() => database.sendAgentMessage({
+      content: "再次继续处理",
       runId: parentRun.runId,
       senderConversationId: parent.id,
       targetConversationId: child.id,

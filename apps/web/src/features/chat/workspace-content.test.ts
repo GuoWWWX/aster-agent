@@ -42,8 +42,8 @@ import {
   resolveConversationPathIconKind,
   resolveConversationPathScope,
   resolveInitialConversationModelSelection,
-  runtimeBadgeLabel,
   resolveSubmittedTeamGraphTitle,
+  spawnSubagentActivity,
   stripLegacyErrorInstanceId,
   submittedTeamWorkItems,
   toolBatchLabel,
@@ -214,11 +214,17 @@ describe("Subagent approvals", () => {
       runId: "00000000-0000-4000-8000-000000000098",
     };
     const approvals = collectSubagentPendingApprovals(
-      [{ activeRunId: activeTool.runId, id: activeTool.conversationId, title: "Ping GitHub" }],
+      [{
+        activeRunId: activeTool.runId,
+        avatarIcon: null,
+        id: activeTool.conversationId,
+        title: "Ping GitHub",
+      }],
       new Map([[activeTool.conversationId, [activeTool, staleTool]]]),
     );
 
     expect(approvals).toEqual([{
+      childAvatarIcon: null,
       childConversationId: activeTool.conversationId,
       childTitle: "Ping GitHub",
       tool: activeTool,
@@ -320,6 +326,7 @@ function subagentTaskResult(): ConversationAgentMessageItem {
     content: "Subagent 已完成 Ping。",
     conversationId: "00000000-0000-4000-8000-000000000001",
     createdAt: "2026-01-01T00:00:30.000Z",
+    fileChanges: [],
     id: "00000000-0000-4000-8000-taskresult00",
     kind: "agent_message",
     messageType: "task_result",
@@ -914,16 +921,6 @@ describe("run progress duration", () => {
   });
 });
 
-describe("runtime model badge", () => {
-  it("shows the active conversation model instead of the application default", () => {
-    expect(runtimeBadgeLabel(false, "deepseek-v4-flash")).toBe("deepseek-v4-flash");
-  });
-
-  it("keeps the preview runtime label", () => {
-    expect(runtimeBadgeLabel(true, "deepseek-v4-flash")).toBe("浏览器预览");
-  });
-});
-
 describe("tool detail auto expansion", () => {
   it("expands only the latest running or approval-blocked tool", () => {
     expect(getLatestActiveToolId([
@@ -1245,6 +1242,52 @@ describe("tool batch summary", () => {
     expect(toolBatchLabel([tool("terminal_control"), tool("run_command")]))
       .toBe("操作 1 次侧边终端，运行 1 条命令");
     expect(representativeToolName([tool("terminal_control")])).toBe("terminal_control");
+  });
+});
+
+describe("spawn Subagent activity", () => {
+  it("uses the created conversation identity returned by the tool", () => {
+    const activity = spawnSubagentActivity({
+      ...tool("spawn_subagent", {
+        arguments: JSON.stringify({ icon: "search", name: "临时名称", task: "检查头像" }),
+      }),
+      result: JSON.stringify({
+        ok: true,
+        value: {
+          task: {
+            avatarIcon: "bug",
+            childConversationId: "00000000-0000-4000-8000-000000000301",
+            error: null,
+            id: "00000000-0000-4000-8000-000000000302",
+            name: "像素头像验收",
+            result: null,
+            status: "running",
+            title: "像素头像验收",
+          },
+        },
+      }),
+    });
+
+    expect(activity).toEqual({
+      action: "已创建",
+      avatarIcon: "bug",
+      childConversationId: "00000000-0000-4000-8000-000000000301",
+      name: "像素头像验收",
+    });
+  });
+
+  it("uses requested identity while creation is still running", () => {
+    expect(spawnSubagentActivity({
+      ...tool("spawn_subagent", {
+        arguments: JSON.stringify({ icon: "search", name: "资料检索", task: "查资料" }),
+      }),
+      status: "running",
+    })).toEqual({
+      action: "创建中",
+      avatarIcon: "search",
+      childConversationId: null,
+      name: "资料检索",
+    });
   });
 });
 

@@ -67,7 +67,7 @@ describe("ProjectNavigator", () => {
     expect(container.querySelector(`button[aria-label="展开 ${project.name}"]`)).not.toBeNull();
   });
 
-  it("archives idle Agent and Team children from their hover action rows", () => {
+  it("keeps Subagents out of the conversation tree while retaining conversation teams", () => {
     const project = createProject();
     const parent: ProjectSession = {
       ...createProjectSession(project.id, [], "parent-conversation"),
@@ -93,7 +93,6 @@ describe("ProjectNavigator", () => {
       teamId: team.id,
       updatedAt: "2026-09-03T00:00:00.000Z",
     };
-    const onSetSessionArchived = vi.fn(() => Promise.resolve(true));
     const onSetTeamInstanceArchived = vi.fn(() => Promise.resolve(true));
     const container = document.createElement("div");
     document.body.append(container);
@@ -128,7 +127,7 @@ describe("ProjectNavigator", () => {
           onReorderTeamInstances={() => Promise.resolve(true)}
           onSelectProject={() => undefined}
           onSelectSession={() => undefined}
-          onSetSessionArchived={onSetSessionArchived}
+          onSetSessionArchived={() => Promise.resolve(true)}
           onSetSessionPinned={() => Promise.resolve(true)}
           onSetTeamInstanceArchived={onSetTeamInstanceArchived}
         />
@@ -136,23 +135,19 @@ describe("ProjectNavigator", () => {
     ));
 
     const expandButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="展开 父对话 的协作成员"]',
+      'button[aria-label="展开 父对话 的对话团队"]',
     );
     act(() => expandButton?.click());
 
-    const archiveAgentButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="归档 子智能体"]',
-    );
     const archiveTeamButton = container.querySelector<HTMLButtonElement>(
       'button[aria-label="归档团队 对话团队"]',
     );
-    expect(archiveAgentButton).not.toBeNull();
+    expect(container.querySelector(`[data-navigator-key="session:${child.id}"]`)).toBeNull();
+    expect(container.textContent).not.toContain("子智能体");
     expect(archiveTeamButton).not.toBeNull();
 
-    act(() => archiveAgentButton?.click());
     act(() => archiveTeamButton?.click());
 
-    expect(onSetSessionArchived).toHaveBeenCalledWith(child.id, true);
     expect(onSetTeamInstanceArchived).toHaveBeenCalledWith(teamInstance.id, true);
   });
 });

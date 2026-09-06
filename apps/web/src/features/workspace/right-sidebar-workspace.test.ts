@@ -120,6 +120,18 @@ describe("right sidebar side session state", () => {
     }))).toBe(true);
   });
 
+  it("only hides a standalone Subagent when its side tab closes", () => {
+    const subagent = {
+      ...sideConversation("00000000-0000-4000-8000-000000000008", "model-a", {
+        kind: "effort",
+        value: "medium",
+      }),
+      threadKind: "subagent" as const,
+    };
+
+    expect(shouldDeleteSidebarChat(subagent)).toBe(false);
+  });
+
   it("does not try to load side chats for a managed Team WorkItem conversation", () => {
     const managedMember = {
       ...sideConversation("00000000-0000-4000-8000-000000000005", "model-a", {

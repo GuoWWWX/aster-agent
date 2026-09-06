@@ -91,6 +91,34 @@ describe("EventProjector", () => {
     ]));
   });
 
+  it("clears a stale event index when its Conversation log no longer exists", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-missing-log-"));
+    temporaryDirectories.push(directory);
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    database.projectThreadLogEvents(conversation.id, [{
+      createdAt: new Date().toISOString(),
+      eventId: crypto.randomUUID(),
+      payload: { content: "没有来源日志的旧索引" },
+      sequence: 1,
+      type: "user_message",
+    }]);
+    const projector = new EventProjector(
+      database,
+      new ThreadLog(path.join(directory, "conversations")),
+    );
+
+    expect(projector.projectConversation(conversation.id)).toEqual({
+      cursor: null,
+      projectedEventCount: 0,
+    });
+    expect(projector.verifyConversation(conversation.id)).toEqual({
+      indexedEventCount: 0,
+      isConsistent: true,
+      logEventCount: 0,
+    });
+  });
+
   it("skips a persisted deletion-pending Conversation even when its JSONL still exists", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-pending-delete-"));
     temporaryDirectories.push(directory);
@@ -140,6 +168,49 @@ describe("EventProjector", () => {
       cursor: { lastSequence: 2 },
     });
     expect(projector.verifyConversation(conversation.id)).toMatchObject({
+      indexedEventCount: 2,
+      isConsistent: true,
+      logEventCount: 2,
+    });
+  });
+
+  it("rebuilds a stale event index when a Conversation log was reseeded", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-reseeded-"));
+    temporaryDirectories.push(directory);
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const threadLog = new ThreadLog(path.join(directory, "conversations"));
+    const projector = new EventProjector(database, threadLog);
+    const staleFirst = threadLog.append(conversation.id, {
+      payload: { content: "旧日志" },
+      type: "user_message",
+    });
+    threadLog.append(conversation.id, {
+      payload: { content: "旧回复" },
+      type: "assistant_message",
+    });
+    projector.projectConversation(conversation.id);
+
+    threadLog.quarantine(conversation.id);
+    threadLog.append(conversation.id, {
+      payload: { content: "重新生成的日志" },
+      type: "user_message",
+    });
+    const replacementTail = threadLog.append(conversation.id, {
+      payload: { content: "重新生成的回复" },
+      type: "assistant_message",
+    });
+    database.resetThreadLogProjection(conversation.id);
+    database.projectThreadLogEvents(conversation.id, [staleFirst, replacementTail]);
+
+    expect(projector.projectConversation(conversation.id)).toMatchObject({
+      projectedEventCount: 2,
+      cursor: {
+        lastEventId: replacementTail.eventId,
+        lastSequence: 2,
+      },
+    });
+    expect(projector.verifyConversation(conversation.id)).toEqual({
       indexedEventCount: 2,
       isConsistent: true,
       logEventCount: 2,
@@ -1573,6 +1644,11 @@ describe("EventProjector", () => {
       payload: { messageId: resultMessage.id },
       type: "agent_message_read",
     });
+    const endedTask = source.endSubagent(parentCreation.conversation.id, child.id);
+    threadLog.append(parentCreation.conversation.id, {
+      payload: { task: endedTask },
+      type: "subagent_task_ended",
+    });
 
     const recovered = new AgentDatabase(":memory:");
     new EventProjector(recovered, threadLog).projectAllConversationLogs();
@@ -1586,7 +1662,7 @@ describe("EventProjector", () => {
         id: startedTask.id,
         resultMessageId: resultMessage.id,
         sourceRunId: parentRun.runId,
-        status: "completed",
+        status: "ended",
         targetRunId: childRun.runId,
       }),
     ]);

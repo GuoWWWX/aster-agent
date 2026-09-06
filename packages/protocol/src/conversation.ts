@@ -189,7 +189,8 @@ export const conversationSummarySchema = z
       "running",
       "completed",
       "failed",
-      "cancelled"
+      "cancelled",
+      "ended"
     ]).nullable().optional(),
     teamId: z.string().trim().min(1).max(200).nullable().default(null),
     teamWorkItemId: z.string().uuid().nullable().default(null),
@@ -233,16 +234,7 @@ export const conversationTaskSchema = z
 const conversationTaskCollectionSchema = z
   .array(conversationTaskSchema)
   .min(1)
-  .max(20)
-  .superRefine((tasks, context) => {
-    if (tasks.filter((task) => task.status === "running").length > 1) {
-      context.addIssue({
-        code: "custom",
-        message: "A task list can only have one running task.",
-        path: []
-      });
-    }
-  });
+  .max(20);
 
 export const conversationTaskListSchema = z
   .object({
@@ -454,11 +446,17 @@ export const conversationAgentMessageTypeSchema = z.enum([
   "task_result",
 ]);
 
+export const conversationRunFileChangeSchema = z.object({
+  path: z.string().trim().min(1).max(4_096),
+  toolName: z.enum(["write_file", "replace_in_file", "delete_file", "apply_patch"]),
+}).strict();
+
 export const conversationAgentMessageItemSchema = z
   .object({
     content: z.string().trim().min(1).max(20_000),
     conversationId: conversationIdSchema,
     createdAt: isoTimestampSchema,
+    fileChanges: z.array(conversationRunFileChangeSchema).max(50).default([]),
     id: timelineItemIdSchema,
     kind: z.literal("agent_message"),
     messageType: conversationAgentMessageTypeSchema.default("message"),
@@ -1057,6 +1055,14 @@ const assistantReasoningDeltaEventSchema = z
   })
   .strict();
 
+const agentMessageReceivedEventSchema = z
+  .object({
+    conversationId: conversationIdSchema,
+    message: conversationAgentMessageItemSchema,
+    type: z.literal("agent_message.received")
+  })
+  .strict();
+
 const taskListUpdatedEventSchema = z
   .object({
     conversationId: conversationIdSchema,
@@ -1151,6 +1157,7 @@ export const conversationRunEventSchema = z.discriminatedUnion("type", [
   modelRetryUpdatedEventSchema,
   assistantReasoningDeltaEventSchema,
   assistantDeltaEventSchema,
+  agentMessageReceivedEventSchema,
   taskListUpdatedEventSchema,
   pendingMessagesUpdatedEventSchema,
   toolStartedEventSchema,
@@ -1221,6 +1228,7 @@ export type ConversationMessageItem = z.infer<
 export type ConversationAgentMessageItem = z.infer<
   typeof conversationAgentMessageItemSchema
 >;
+export type ConversationRunFileChange = z.infer<typeof conversationRunFileChangeSchema>;
 export type ConversationAgentMessageStatus = z.infer<
   typeof conversationAgentMessageStatusSchema
 >;

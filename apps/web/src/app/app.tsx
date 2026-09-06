@@ -30,6 +30,7 @@ import { useProjectTree } from "../features/projects/use-project-tree.js";
 import { AgentAvatar, SubagentAvatar } from "../features/team/agent-avatar.js";
 import {
   RightSidebarWorkspace,
+  type GitReviewOpenRequest,
   type ProjectFileOpenRequest,
   type TeamMemberOpenRequest,
 } from "../features/workspace/right-sidebar-workspace.js";
@@ -106,7 +107,9 @@ export function App(): ReactElement {
   const setTerminalConfiguration = useWorkbenchUiStore(
     (state) => state.setTerminalConfiguration,
   );
-  const setFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
+  const setFilePanelOpenForConversation = useWorkbenchUiStore(
+    (state) => state.setFilePanelOpenForConversation,
+  );
   const setActiveActivity = useWorkbenchUiStore((state) => state.setActiveActivity);
   const agents = useAgentDirectoryStore((state) => state.agents);
   const teams = useAgentDirectoryStore((state) => state.teams);
@@ -122,6 +125,7 @@ export function App(): ReactElement {
   const [navigatorLocateRequest, setNavigatorLocateRequest] =
     useState<ProjectNavigatorLocateRequest | null>(null);
   const [fileOpenRequest, setFileOpenRequest] = useState<ProjectFileOpenRequest | null>(null);
+  const [gitReviewOpenRequest, setGitReviewOpenRequest] = useState<GitReviewOpenRequest | null>(null);
   const [teamMemberOpenRequest, setTeamMemberOpenRequest] =
     useState<TeamMemberOpenRequest | null>(null);
   const [isGlobalSearchOpen, setGlobalSearchOpen] = useState(false);
@@ -132,8 +136,18 @@ export function App(): ReactElement {
   } | null>(null);
   const requestOpenProjectFile = useCallback((projectId: string, path: string): void => {
     setFileOpenRequest({ path, projectId });
-    setFilePanelOpen(true);
-  }, [setFilePanelOpen]);
+    const conversationId = projectSessions.activeSessionId;
+    if (conversationId !== null) setFilePanelOpenForConversation(conversationId, true);
+  }, [projectSessions.activeSessionId, setFilePanelOpenForConversation]);
+  const requestOpenGitReview = useCallback((projectId: string, path?: string): void => {
+    setGitReviewOpenRequest((current) => ({
+      path: path ?? null,
+      projectId,
+      requestId: (current?.requestId ?? 0) + 1,
+    }));
+    const conversationId = projectSessions.activeSessionId;
+    if (conversationId !== null) setFilePanelOpenForConversation(conversationId, true);
+  }, [projectSessions.activeSessionId, setFilePanelOpenForConversation]);
   const applicationSettingsSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
@@ -458,7 +472,7 @@ export function App(): ReactElement {
     }
     if (member.projectId !== null) projectTree.selectProject(member.projectId);
     projectSessions.selectSession(sourceConversationId);
-    setFilePanelOpen(true);
+    setFilePanelOpenForConversation(sourceConversationId, true);
     setActiveActivity("conversations");
     setTeamMemberOpenRequest((current) => ({
       conversation: member,
@@ -471,7 +485,7 @@ export function App(): ReactElement {
       kind: "session",
       requestId: (current?.requestId ?? 0) + 1,
     }));
-  }, [projectSessions, projectTree, setActiveActivity, setFilePanelOpen]);
+  }, [projectSessions, projectTree, setActiveActivity, setFilePanelOpenForConversation]);
 
   function selectSession(sessionId: string): void {
     const session = projectSessions.sessions.find(
@@ -548,14 +562,14 @@ export function App(): ReactElement {
       ?? conversation.id;
     if (conversation.projectId !== null) projectTree.selectProject(conversation.projectId);
     projectSessions.selectSession(ownerConversationId);
-    setFilePanelOpen(true);
+    setFilePanelOpenForConversation(ownerConversationId, true);
     setTeamMemberOpenRequest((current) => ({
       conversation,
       requestId: (current?.requestId ?? 0) + 1,
       sourceConversationId: ownerConversationId,
       timelineItemId: timelineItemId ?? null,
     }));
-  }, [projectSessions, projectTree, setFilePanelOpen]);
+  }, [projectSessions, projectTree, setFilePanelOpenForConversation]);
 
   const navigateToTeamConversation = useCallback((conversationId: string): void => {
     const session = projectSessions.sessions.find((candidate) => candidate.id === conversationId);
@@ -684,9 +698,11 @@ export function App(): ReactElement {
           onLocateProject={(projectId) => locateInProjectNavigator("project", projectId)}
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}
           onOpenProjectFile={requestOpenProjectFile}
+          onOpenGitReview={requestOpenGitReview}
           onOpenTeamConversation={openTeamConversation}
           onNavigateToTeamConversation={navigateToTeamConversation}
           onProjectSelected={(projectId) => projectTree.selectProject(projectId)}
+          onRefreshSessions={() => projectSessions.refreshSessions()}
           onSessionSelected={(sessionId) => {
             setNavigatorLocateRequest(null);
             selectSession(sessionId);
@@ -701,6 +717,7 @@ export function App(): ReactElement {
           activeSession={projectSessions.activeSession}
           agentClient={agentClient}
           fileOpenRequest={fileOpenRequest}
+          gitReviewOpenRequest={gitReviewOpenRequest}
           teamMemberOpenRequest={teamMemberOpenRequest}
           onLocateProject={(projectId) => locateInProjectNavigator("project", projectId)}
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}

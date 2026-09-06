@@ -65,7 +65,7 @@
 - Team Lead 原本准备让谁和谁协作？
 - 刚才是哪一个 Agent 向哪一个 Agent 发送了什么类型的消息？
 - 当前真实执行是否偏离了最初计划？
-- 一次性 Subagent、持久成员和 Team Lead 的关系有什么区别？
+- 临时可复用 Subagent、持久成员和 Team Lead 的关系有什么区别？
 - 用户在来源对话、看板和验收页看到的是不是同一份实时事实？
 
 ### 1.3 设计目标
@@ -98,7 +98,7 @@
 ### 3.1 本期范围
 
 - 每个 WorkItem 一张协作计划图，支持计划版本。
-- Team Lead、持久团队成员和一次性 Subagent 三类节点。
+- Team Lead、持久团队成员和临时可复用 Subagent 三类节点。
 - 计划边、已发生边、活动脉冲、临时偏差边和历史边。
 - 四个 UI 入口及其信息密度差异。
 - 节点/边详情、过滤、计划/实际对比和按时间回放。
@@ -149,7 +149,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | Team Lead | WorkItem 根执行 Conversation | 左侧起点、负责人徽标 | 保留并显示汇总状态 |
 | 持久成员 | 团队配置中的长期成员 Conversation | 实线边框、岗位名、运行状态 | 保留在图中，可在后续 WorkItem 复用 |
-| 一次性 Subagent | 单次分支任务 Conversation | 虚线边框、“临时”标记 | 置灰但保留父子谱系，可折叠 |
+| 临时 Subagent | 有边界工作对应的可复用 Conversation | 虚线边框、“临时”标记 | 每轮完成后保留，显式结束后置灰并可折叠 |
 | 计划占位节点 | 已规划岗位但尚未绑定实际 Conversation | 空心边框、“待分配”标记 | 绑定后在原位置替换，不新建重复节点 |
 
 节点点击统一打开右侧详情；若已绑定 Conversation，则复用现有成员侧边 Tab。节点头像优先使用该 Conversation 持久化的受控 Agent 图标，缺失时回退到名称首字；非微缩卡片只显示两行最新 Assistant 输出摘录，不在图中复制完整 Timeline。〔FACT〕
@@ -310,7 +310,7 @@ sequenceDiagram
 
 - 计划可以先绑定稳定 `agentId`，实际 Conversation 创建后再补充 `conversationId`。
 - 绑定必须保留原节点 ID 和坐标，避免 UI 跳动。
-- 一次性 Subagent 通过父任务谱系创建，只能附着在其真实父节点下。
+- 临时 Subagent 通过父任务谱系创建，只能附着在其真实父节点下。
 
 ### FR-06 四处同步
 
@@ -351,7 +351,7 @@ sequenceDiagram
 3. 成员向 Team Lead 回复时显示独立反向边或匹配已计划的反向边；同一对 Agent 的双向边使用平行直线和相反箭头，不能合成无方向线，也不使用绕行回弧。
 4. 未规划的成员之间发送合法消息时，消息成功投递且出现红色计划外边。
 5. 发布 v2 后，v1 仍可回放；v1 时间段的消息计数不迁移到 v2。
-6. 一次性 Subagent 完成后节点变灰并可折叠，父子关系和历史消息计数仍可查看。
+6. 临时 Subagent 每轮完成后保留为可返工节点；Main Agent 显式结束后节点变灰并可折叠，父子关系和历史消息计数仍可查看。
 7. 点击任务与验收图中的持久成员，来源主对话保持不变，右侧打开该成员原生 Conversation Tab。
 8. 看板存在 30 个 WorkItem 时，未选中卡片没有持续动画；滚动和点击无明显卡顿。
 9. 1024 × 680 与 1440 × 900、light/dark 均无重叠、不可解释空白或状态只靠颜色表达。
@@ -647,7 +647,7 @@ features/team/collaboration/
 
 - **采纳**：WorkItem 计划边 + 真实消息投影。
 - **拒绝**：Agent 建立连接后一直存在的独立 Channel 实体。
-- **原因**：现有消息已经具备 sender/target/状态/时间；新增 Channel 会制造开启、关闭、恢复和权限语义，却不能自然表达一次性 Subagent 和计划修订。〔INFER〕
+- **原因**：现有消息已经具备 sender/target/状态/时间；新增 Channel 会制造开启、关闭、恢复和权限语义，却不能自然表达临时 Subagent 和计划修订。〔INFER〕
 
 ### ADR-02 计划与实际分层
 
@@ -709,7 +709,7 @@ features/team/collaboration/
 | --- | --- |
 | Protocol | 计划/投影 Schema 正反例、版本、上限、未知字段拒绝 |
 | Repository | 首版发布、并发修订、旧版失效、事务回滚、旧库 Migration |
-| Projection | 计划内/计划外、双向、版本时间边界、一次性 Subagent、未读聚合 |
+| Projection | 计划内/计划外、双向、版本时间边界、临时 Subagent、未读聚合 |
 | IPC | Sender 校验、WorkItem 归属、响应 Schema、提交后事件顺序 |
 | Agent 工具 | 只能修改当前受管 WorkItem、非法节点/边拒绝、失败不阻塞消息 |
 | React 单测 | 四种密度、空/错/加载、节点跳转、脉冲去重、reduced motion |

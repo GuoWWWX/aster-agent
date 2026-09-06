@@ -72,6 +72,46 @@ describe("LangGraphExecutor", () => {
     ]);
   });
 
+  it("bounds a new large tool result before sending the next model request", async () => {
+    const largeOutput = `begin\n${"ordinary output\n".repeat(1_500)}ERROR failed build\nend`;
+    const modelRequests: ModelMessage[][] = [];
+    const callbacks = callbacksFor(
+      [
+        result("", [{ arguments: "{}", id: "call-large", name: "run_command" }]),
+        result("done"),
+      ],
+      (calls) => Promise.resolve({
+        messages: calls.map((call) => ({
+          attachments: [],
+          content: largeOutput,
+          role: "tool" as const,
+          toolCallId: call.id,
+          toolCalls: [],
+        })),
+        successful: true,
+      }),
+    );
+    callbacks.callModel = (messages) => {
+      modelRequests.push([...messages]);
+      return Promise.resolve(modelRequests.length === 1
+        ? result("", [{ arguments: "{}", id: "call-large", name: "run_command" }])
+        : result("done"));
+    };
+
+    await new LangGraphExecutor().invoke({
+      callbacks,
+      initialMessages: [userMessage],
+      maxSteps: 4,
+      signal: new AbortController().signal,
+      threadId: "bounded-live-tool-output-run",
+    });
+
+    const toolResult = modelRequests[1]?.find((message) => message.role === "tool");
+    expect(toolResult?.content).toContain("Tool output pruned");
+    expect(toolResult?.content).toContain("ERROR failed build");
+    expect(toolResult?.content.length).toBeLessThan(largeOutput.length);
+  });
+
   it("prepares the initial context once and keeps it across a queued follow-up", async () => {
     let beforeAgentCount = 0;
     let beforeModelCount = 0;
@@ -132,7 +172,7 @@ describe("LangGraphExecutor", () => {
           {
             attachments: [],
             content: "active skill",
-            role: "system",
+            role: "user",
             toolCallId: null,
             toolCalls: [],
           },
@@ -165,17 +205,72 @@ describe("LangGraphExecutor", () => {
 
     expect(modelRequests[0]).toEqual([
       "stable system",
-      "active skill",
       "large stable history",
+      "active skill",
       "current task list v1",
     ]);
     expect(modelRequests[1]).toEqual([
       "stable system",
-      "active skill",
       "large stable history",
       "",
       "tool:update_task_list",
+      "active skill",
       "current task list v2",
+    ]);
+  });
+
+  it("can replace accumulated graph messages at a safe model boundary", async () => {
+    const modelRequests: string[][] = [];
+    let beforeModelCount = 0;
+    const callbacks = callbacksFor([
+      result("", [{ arguments: "{}", id: "call-1", name: "read_file" }]),
+      result("done"),
+    ]);
+    callbacks.beforeAgent = () => Promise.resolve({
+      messages: [
+        { ...userMessage, content: "original request" },
+      ],
+    });
+    callbacks.beforeModel = () => {
+      beforeModelCount += 1;
+      return Promise.resolve(beforeModelCount === 1
+        ? { hasFollowUpInput: false, messages: [] }
+        : {
+            hasFollowUpInput: false,
+            messages: [],
+            replaceMessages: [
+              {
+                attachments: [],
+                content: "runtime checkpoint",
+                role: "system",
+                toolCallId: null,
+                toolCalls: [],
+              },
+              { ...userMessage, content: "latest evidence" },
+            ],
+          });
+    };
+    callbacks.callModel = (messages) => {
+      modelRequests.push(messages.map((message) => message.content));
+      return Promise.resolve(modelRequests.length === 1
+        ? result("", [{ arguments: "{}", id: "call-1", name: "read_file" }])
+        : result("done"));
+    };
+
+    const state = await new LangGraphExecutor().invoke({
+      callbacks,
+      initialMessages: [],
+      maxSteps: 4,
+      signal: new AbortController().signal,
+      threadId: "replace-runtime-context-run",
+    });
+
+    expect(modelRequests[0]).toEqual(["original request"]);
+    expect(modelRequests[1]).toEqual(["runtime checkpoint", "latest evidence"]);
+    expect(state.messages.map((message) => message.content)).toEqual([
+      "runtime checkpoint",
+      "latest evidence",
+      "done",
     ]);
   });
 
@@ -432,6 +527,7 @@ describe("LangGraphExecutor", () => {
 
   it("resumes sequential interrupts in one tool node without replaying the approval callback", async () => {
     let interruptCount = 0;
+    const saver = new NodeSqliteCheckpointSaver(":memory:");
     const callbacks = callbacksFor(
       [
         result("", [{ arguments: "{}", id: "call-approval", name: "write_file" }]),
@@ -453,20 +549,25 @@ describe("LangGraphExecutor", () => {
       },
     );
 
-    const state = await new LangGraphExecutor().invoke({
-      callbacks,
-      initialMessages: [userMessage],
-      maxSteps: 4,
-      onInterrupt: () => {
-        interruptCount += 1;
-        return Promise.resolve(true);
-      },
-      signal: new AbortController().signal,
-      threadId: "sequential-approval-run",
-    });
+    try {
+      const state = await new LangGraphExecutor().invoke({
+        callbacks,
+        checkpointer: saver,
+        initialMessages: [userMessage],
+        maxSteps: 4,
+        onInterrupt: () => {
+          interruptCount += 1;
+          return Promise.resolve(true);
+        },
+        signal: new AbortController().signal,
+        threadId: "sequential-approval-run",
+      });
 
-    expect(interruptCount).toBe(2);
-    expect(state.hasSuccessfulToolExecution).toBe(true);
-    expect(state.messages.some((message) => message.content === "approved:true")).toBe(true);
+      expect(interruptCount).toBe(2);
+      expect(state.hasSuccessfulToolExecution).toBe(true);
+      expect(state.messages.some((message) => message.content === "approved:true")).toBe(true);
+    } finally {
+      saver.close();
+    }
   });
 });

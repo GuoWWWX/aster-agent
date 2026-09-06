@@ -206,9 +206,11 @@ describe("providerCacheInlineMetrics", () => {
     expect(trigger?.className).toContain("flex");
     expect(trigger?.className).not.toContain("inline-flex");
     expect(trigger?.className).toContain("mx-auto");
+    expect(trigger?.className).not.toContain("-mb-2");
     expect(trigger?.className).toContain("justify-center");
     expect(trigger?.className).toContain("whitespace-nowrap");
-    expect(trigger?.className).toContain("text-[length:var(--app-font-size-caption)]");
+    expect(trigger?.className).toContain("text-[length:var(--app-font-size-body)]");
+    expect(trigger?.className).toContain("font-normal");
     expect(trigger?.className).not.toContain("bg-[var(--app-status-success-bg)]");
     expect(trigger?.getAttribute("aria-label")).toContain("本次发送 1.0K");
     expect(trigger?.getAttribute("title")).toBe(trigger?.getAttribute("aria-label"));
@@ -223,6 +225,11 @@ describe("providerCacheInlineMetrics", () => {
     expect(trigger?.textContent).not.toContain("pp");
     expect(trigger?.querySelector('[data-token-direction="up"][data-tone="success"]')).not.toBeNull();
     expect(trigger?.querySelector('[data-token-direction="down"][data-tone="danger"]')).not.toBeNull();
+    expect(trigger?.querySelector("strong")).toBeNull();
+    expect(trigger?.querySelector('[data-token-direction="up"] svg')?.getAttribute("class"))
+      .toContain("text-emerald-600");
+    expect(trigger?.querySelector('[data-token-direction="down"] svg')?.getAttribute("class"))
+      .toContain("text-red-600");
     expect(trigger?.querySelector('[data-cache-metric="本次命中率"][data-tone="success"]')).not.toBeNull();
     expect(trigger?.querySelector('[data-cache-metric="平均命中率"][data-tone="good"]')).not.toBeNull();
     expect(trigger?.querySelector('[data-cache-metric]')?.className).not.toContain("bg-");

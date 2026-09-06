@@ -4,7 +4,6 @@ import {
   ArrowDownAZ,
   ArrowDownUp,
   ArrowDownZA,
-  Bot,
   Check,
   ChevronDown,
   ChevronRight,
@@ -68,7 +67,6 @@ import {
   SelectValue,
 } from "../../components/ui/select.js";
 import {
-  groupSubagentSessionsByParent,
   getTeamInstanceNavigatorGroups,
   getProjectSessions,
   getPinnedSessions,
@@ -78,7 +76,7 @@ import {
   type TeamInstanceNavigatorGroup,
 } from "./project-session-model.js";
 import type { ProjectTreeController } from "./use-project-tree.js";
-import { AgentAvatar, SubagentAvatar } from "../team/agent-avatar.js";
+import { AgentAvatar } from "../team/agent-avatar.js";
 import "./project-navigator.css";
 
 type ProjectNavigatorProps = {
@@ -264,32 +262,11 @@ function sortNavigatorItems<Item>(
   });
 }
 
-function getVisibleSubagents(
-  session: ProjectSession,
-  subagentsByParent: ReadonlyMap<string, readonly ProjectSession[]>,
-  normalizedQuery: string,
-): readonly ProjectSession[] {
-  const subagents = (subagentsByParent.get(session.id) ?? []).filter(
-    (subagent) => subagent.teamId === null,
-  );
-  if (
-    normalizedQuery.length === 0
-    || session.title.toLocaleLowerCase().includes(normalizedQuery)
-  ) {
-    return subagents;
-  }
-  return subagents.filter((subagent) =>
-    subagent.title.toLocaleLowerCase().includes(normalizedQuery),
-  );
-}
-
 function sessionTreeMatchesQuery(
   session: ProjectSession,
-  subagentsByParent: ReadonlyMap<string, readonly ProjectSession[]>,
   normalizedQuery: string,
 ): boolean {
-  return session.title.toLocaleLowerCase().includes(normalizedQuery)
-    || getVisibleSubagents(session, subagentsByParent, normalizedQuery).length > 0;
+  return session.title.toLocaleLowerCase().includes(normalizedQuery);
 }
 
 function teamGroupMatchesQuery(
@@ -609,10 +586,6 @@ export function ProjectNavigator({
       || (projectId === activeProjectId && !collapsedProjectIds.has(projectId));
   }
 
-  const subagentSessionsByParent = useMemo(
-    () => groupSubagentSessionsByParent(sessions, teamWorkItems),
-    [sessions, teamWorkItems],
-  );
   const teamInstanceGroups = useMemo(
     () => getTeamInstanceNavigatorGroups(
       teamInstances,
@@ -637,12 +610,12 @@ export function ProjectNavigator({
     () =>
       sortNavigatorItems(
         getPinnedSessions(sessions).filter((session) =>
-          sessionTreeMatchesQuery(session, subagentSessionsByParent, normalizedQuery),
+          sessionTreeMatchesQuery(session, normalizedQuery),
         ),
         sortOption,
         (session) => session.title,
       ),
-    [normalizedQuery, sessions, sortOption, subagentSessionsByParent],
+    [normalizedQuery, sessions, sortOption],
   );
   const visibleTemporarySessions = useMemo(
     () =>
@@ -650,12 +623,12 @@ export function ProjectNavigator({
         getTemporarySessions(sessions).filter(
           (session) =>
             !session.isPinned &&
-            sessionTreeMatchesQuery(session, subagentSessionsByParent, normalizedQuery),
+            sessionTreeMatchesQuery(session, normalizedQuery),
         ),
         sortOption,
         (session) => session.title,
       ),
-    [normalizedQuery, sessions, sortOption, subagentSessionsByParent],
+    [normalizedQuery, sessions, sortOption],
   );
   const visibleProjects = useMemo(
     () =>
@@ -677,7 +650,6 @@ export function ProjectNavigator({
               !session.isPinned &&
               sessionTreeMatchesQuery(
                 session,
-                subagentSessionsByParent,
                 normalizedQuery,
               ),
           );
@@ -689,7 +661,7 @@ export function ProjectNavigator({
           const nameComparison = navigatorLabelCollator.compare(left.name, right.name);
           return sortOption === "name-descending" ? -nameComparison : nameComparison;
         }),
-    [normalizedQuery, sessions, sortOption, subagentSessionsByParent, teamInstanceGroups, tree.projects],
+    [normalizedQuery, sessions, sortOption, teamInstanceGroups, tree.projects],
   );
   const visibleTeamGroups = useMemo(
     () => sortNavigatorItems(
@@ -941,7 +913,11 @@ export function ProjectNavigator({
                 setIsProjectsGroupExpanded(true);
                 setIsTeamsGroupExpanded(true);
                 setExpandedProjectIds(new Set(tree.projects.map((project) => project.id)));
-                setExpandedSessionIds(new Set(subagentSessionsByParent.keys()));
+                setExpandedSessionIds(new Set(teamInstanceGroups.flatMap((group) =>
+                  group.instance.scope === "conversation"
+                    && group.instance.sourceConversationId !== null
+                    ? [group.instance.sourceConversationId]
+                    : [])));
                 setExpandedTeamIds(new Set(teamInstanceGroups.map((group) => group.instance.id)));
                 setCollapsedProjectIds(new Set());
                 setIsPinnedGroupExpanded(true);
@@ -1028,9 +1004,6 @@ export function ProjectNavigator({
                       key={session.id}
                       active={session.id === activeSessionId}
                       activeSessionId={activeSessionId}
-                      locatedSessionId={
-                        locateRequest?.kind === "session" ? locateRequest.id : null
-                      }
                       located={locateRequest?.kind === "session" && locateRequest.id === session.id}
                       draggable={
                         sortOption === "custom"
@@ -1044,17 +1017,10 @@ export function ProjectNavigator({
                           : null
                       }
                       session={session}
-                      subagents={getVisibleSubagents(
-                        session,
-                        subagentSessionsByParent,
-                        normalizedQuery,
-                      )}
                       subagentsExpanded={
                         normalizedQuery.length > 0 || expandedSessionIds.has(session.id)
                       }
                       onArchive={(archived) => void onSetSessionArchived(session.id, archived)}
-                      onArchiveChild={(childSession) =>
-                        void onSetSessionArchived(childSession.id, true)}
                       onContextMenu={(event) => openContextMenu(event, { kind: "session", session })}
                       onDragEnd={finishDrag}
                       onDragOver={(event) => updateDropIndicator(event, {
@@ -1146,7 +1112,6 @@ export function ProjectNavigator({
                       : projectSessions.filter((session) =>
                           sessionTreeMatchesQuery(
                             session,
-                            subagentSessionsByParent,
                             normalizedQuery,
                           ),
                         );
@@ -1303,9 +1268,6 @@ export function ProjectNavigator({
                                 key={session.id}
                                 active={session.id === activeSessionId}
                                 activeSessionId={activeSessionId}
-                                locatedSessionId={
-                                  locateRequest?.kind === "session" ? locateRequest.id : null
-                                }
                                 located={locateRequest?.kind === "session" && locateRequest.id === session.id}
                                 draggable={
                                   sortOption === "custom"
@@ -1324,11 +1286,6 @@ export function ProjectNavigator({
                                   && group.instance.sourceConversationId === session.id
                                   && teamGroupMatchesQuery(group, normalizedQuery),
                                 )}
-                                subagents={getVisibleSubagents(
-                                  session,
-                                  subagentSessionsByParent,
-                                  normalizedQuery,
-                                )}
                                 subagentsExpanded={
                                   normalizedQuery.length > 0
                                   || expandedSessionIds.has(session.id)
@@ -1336,8 +1293,6 @@ export function ProjectNavigator({
                                 onArchive={(archived) =>
                                   void onSetSessionArchived(session.id, archived)
                                 }
-                                onArchiveChild={(childSession) =>
-                                  void onSetSessionArchived(childSession.id, true)}
                                 onArchiveTeam={(instance) =>
                                   void onSetTeamInstanceArchived(instance.id, true)}
                                 onContextMenu={(event) =>
@@ -1507,9 +1462,6 @@ export function ProjectNavigator({
                       key={session.id}
                       active={session.id === activeSessionId}
                       activeSessionId={activeSessionId}
-                      locatedSessionId={
-                        locateRequest?.kind === "session" ? locateRequest.id : null
-                      }
                       located={locateRequest?.kind === "session" && locateRequest.id === session.id}
                       draggable={
                         sortOption === "custom"
@@ -1523,17 +1475,10 @@ export function ProjectNavigator({
                           : null
                       }
                       session={session}
-                      subagents={getVisibleSubagents(
-                        session,
-                        subagentSessionsByParent,
-                        normalizedQuery,
-                      )}
                       subagentsExpanded={
                         normalizedQuery.length > 0 || expandedSessionIds.has(session.id)
                       }
                       onArchive={(archived) => void onSetSessionArchived(session.id, archived)}
-                      onArchiveChild={(childSession) =>
-                        void onSetSessionArchived(childSession.id, true)}
                       onContextMenu={(event) => openContextMenu(event, { kind: "session", session })}
                       onDragEnd={finishDrag}
                       onDragOver={(event) => updateDropIndicator(event, {
@@ -1895,11 +1840,8 @@ function SessionStatusIndicator({ session }: { session: ProjectSession }): React
 function SessionTreeItem({
   activeSessionId,
   expandedTeamIds = new Set<string>(),
-  locatedSessionId,
-  subagents,
   subagentsExpanded,
   teamGroups = [],
-  onArchiveChild,
   onArchiveTeam,
   onCreateTeam,
   onOpenTeamMember,
@@ -1910,11 +1852,8 @@ function SessionTreeItem({
 }: SessionButtonProps & {
   activeSessionId: string | null;
   expandedTeamIds?: ReadonlySet<string>;
-  locatedSessionId: string | null;
-  subagents: readonly ProjectSession[];
   subagentsExpanded: boolean;
   teamGroups?: readonly TeamInstanceNavigatorGroup[];
-  onArchiveChild: (session: ProjectSession) => void;
   onArchiveTeam?: (instance: TeamInstanceView) => void;
   onCreateTeam?: () => void;
   onOpenTeamMember?: (
@@ -1926,18 +1865,16 @@ function SessionTreeItem({
   onToggleTeam?: (instanceId: string) => void;
   onToggleSubagents: () => void;
 }): ReactElement {
-  const runningSubagentCount = subagents.filter(isSessionRunning).length;
-  const hasExpandableContent = subagents.length > 0
-    || teamGroups.length > 0;
+  const hasExpandableContent = teamGroups.length > 0;
   return (
     <div className="project-navigator__session-branch">
       <div className="project-navigator__session-branch-row">
         {hasExpandableContent ? (
           <button
             aria-expanded={subagentsExpanded}
-            aria-label={`${subagentsExpanded ? "收起" : "展开"} ${buttonProps.session.title} 的协作成员`}
+            aria-label={`${subagentsExpanded ? "收起" : "展开"} ${buttonProps.session.title} 的对话团队`}
             className="project-navigator__session-toggle"
-            title={`${subagents.length} 个协作成员，${teamGroups.length} 个对话团队${runningSubagentCount > 0 ? `，${runningSubagentCount} 个正在运行` : ""}`}
+            title={`${teamGroups.length} 个对话团队`}
             type="button"
             onClick={onToggleSubagents}
           >
@@ -1953,12 +1890,10 @@ function SessionTreeItem({
         <SessionButton
           {...buttonProps}
           {...(onCreateTeam === undefined ? {} : { onCreateTeam })}
-          runningSubagentCount={runningSubagentCount}
-          subagentCount={subagents.length}
         />
       </div>
       {subagentsExpanded && hasExpandableContent ? (
-        <div className="project-navigator__subagents" role="group" aria-label="协作成员与对话团队">
+        <div className="project-navigator__subagents" role="group" aria-label="对话团队">
           {onCreateTeam === undefined
             || onOpenTeamMember === undefined
             || onOpenTeamMenu === undefined
@@ -1983,78 +1918,8 @@ function SessionTreeItem({
                 ))}
               </>
             )}
-          {subagents.map((subagent) => (
-              <SubagentSessionButton
-                active={subagent.id === activeSessionId}
-                key={subagent.id}
-                located={locatedSessionId === subagent.id}
-                session={subagent}
-                onArchive={() => onArchiveChild(subagent)}
-                onSelect={buttonProps.onSelect}
-              />
-            ))}
         </div>
       ) : null}
-    </div>
-  );
-}
-
-function SubagentSessionButton({
-  active,
-  located,
-  session,
-  onArchive,
-  onSelect,
-}: {
-  active: boolean;
-  located: boolean;
-  session: ProjectSession;
-  onArchive: () => void;
-  onSelect: (sessionId: string) => void;
-}): ReactElement {
-  const isRunning = isSessionRunning(session);
-  const isManagedTeamWorkItemConversation = session.teamWorkItemId !== null
-    && session.teamWorkItemId !== undefined;
-  const statusLabel = sessionStatusLabel(session);
-  return (
-    <div className="project-navigator__session-shell">
-      <button
-        aria-current={active ? "page" : undefined}
-        className="project-navigator__session project-navigator__session--subagent"
-        data-active={active}
-        data-located={located}
-        data-navigator-key={`session:${session.id}`}
-        data-run-status={session.lastRunStatus ?? "idle"}
-        title={statusLabel === null ? session.title : `${session.title} · ${statusLabel}`}
-        type="button"
-        onClick={() => onSelect(session.id)}
-      >
-        {session.threadKind === "team_lead" ? (
-          <Scale aria-label="Team Lead 对话" size={14} />
-        ) : (
-          <SubagentAvatar
-            icon={session.avatarIcon}
-            seed={session.id}
-            size="compact"
-            status={isRunning ? "running" : "standby"}
-          />
-        )}
-        <span className="project-navigator__session-title">{session.title}</span>
-        <SessionStatusIndicator session={session} />
-      </button>
-      <div className="project-navigator__session-actions">
-        <button
-          aria-label={`归档 ${session.title}`}
-          disabled={isRunning || isManagedTeamWorkItemConversation}
-          title={isManagedTeamWorkItemConversation
-            ? "团队执行对话由 WorkItem 生命周期保留"
-            : isRunning ? "运行中的对话不能归档" : "归档"}
-          type="button"
-          onClick={onArchive}
-        >
-          <Archive aria-hidden="true" size={13} />
-        </button>
-      </div>
     </div>
   );
 }
@@ -2067,8 +1932,6 @@ function SessionButton({
   dropPosition,
   located,
   session,
-  runningSubagentCount,
-  subagentCount,
   onArchive,
   onContextMenu,
   onCreateTeam,
@@ -2079,8 +1942,6 @@ function SessionButton({
   onPin,
   onSelect,
 }: SessionButtonProps & {
-  runningSubagentCount: number;
-  subagentCount: number;
   onCreateTeam?: () => void;
 }): ReactElement {
   const isRunning = isSessionRunning(session);
@@ -2118,16 +1979,6 @@ function SessionButton({
           <MessageSquareText aria-hidden="true" size={14} />
         )}
         <span className="project-navigator__session-title">{session.title}</span>
-        {subagentCount > 0 ? (
-          <span
-            className="project-navigator__subagent-count"
-            data-running={runningSubagentCount > 0}
-            title={`${subagentCount} 个协作成员`}
-          >
-            <Bot aria-hidden="true" size={11} />
-            {subagentCount}
-          </span>
-        ) : null}
         <SessionStatusIndicator session={session} />
       </button>
       <div className="project-navigator__session-actions">

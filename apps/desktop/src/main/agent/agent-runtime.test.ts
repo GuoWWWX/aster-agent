@@ -27,9 +27,11 @@ import { SkillDocumentStore } from "../settings/skill-document-store.js";
 import {
   AgentDatabase,
   agentMessageModelContent,
+  type RunExecutionSnapshot,
 } from "../storage/agent-database.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
 import { EventProjector } from "../storage/event-projector.js";
+import { NodeSqliteCheckpointSaver } from "../storage/node-sqlite-checkpoint-saver.js";
 import { ThreadLog } from "../storage/thread-log.js";
 import { ProjectToolRegistry } from "../tools/project-tool-registry.js";
 import { WebSearchTool } from "../tools/web-search-tool.js";
@@ -139,7 +141,7 @@ class SkillFixtureModel implements ModelProviderAdapter {
       });
     }
     const activeSkillMessage = input.messages.find((message) =>
-      message.role === "system" && message.content.includes("只在当前任务中使用证据。"),
+      message.role === "user" && message.content.includes("只在当前任务中使用证据。"),
     );
     if (activeSkillMessage === undefined) {
       return Promise.reject(new Error("Active Skill instructions were not injected."));
@@ -684,6 +686,30 @@ class CommandFixtureModel implements ModelProviderAdapter {
       return Promise.resolve({
         content: "",
         finishReason: "tool_calls",
+        providerState: {
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          payload: {
+            additionalKwargs: {
+              tool_calls: [{
+                function: {
+                  arguments: JSON.stringify({
+                    command: "Write-Output agent-command-ok",
+                    timeoutMs: 10_000,
+                  }),
+                  name: "run_command",
+                },
+                id: "call_command",
+                index: 0,
+                type: "function",
+              }],
+            },
+            content: "",
+            responseMetadata: { finish_reason: "tool_calls" },
+            version: 2,
+          },
+        },
         toolCalls: [{
           arguments: JSON.stringify({ command: "Write-Output agent-command-ok", timeoutMs: 10_000 }),
           id: "call_command",
@@ -693,6 +719,55 @@ class CommandFixtureModel implements ModelProviderAdapter {
     }
     input.onTextDelta("命令已执行");
     return Promise.resolve({ content: "命令已执行", finishReason: "stop", toolCalls: [] });
+  }
+}
+
+class ApprovalResumeFixtureModel implements ModelProviderAdapter {
+  public readonly requests: CompleteTurnInput[] = [];
+  private toolCall = 0;
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.requests.push({ ...input, messages: structuredClone(input.messages) });
+    const completedCommand = input.messages.some((message) =>
+      message.role === "tool" && message.toolCallId?.startsWith("call_approval_resume_") === true
+    );
+    if (completedCommand) {
+      input.onTextDelta("命令已执行");
+      return Promise.resolve({ content: "命令已执行", finishReason: "stop", toolCalls: [] });
+    }
+    this.toolCall += 1;
+    const toolCallId = `call_approval_resume_${this.toolCall}`;
+    const argumentsPayload = JSON.stringify({
+      command: "Write-Output approval-resume-ok",
+      timeoutMs: 10_000,
+    });
+    return Promise.resolve({
+      content: "",
+      finishReason: "tool_calls",
+      providerState: {
+        apiFormat: "openai-chat-completions",
+        baseUrl: "https://example.test/v1",
+        modelId: "test-model",
+        payload: {
+          additionalKwargs: {
+            tool_calls: [{
+              function: { arguments: argumentsPayload, name: "run_command" },
+              id: toolCallId,
+              index: 0,
+              type: "function",
+            }],
+          },
+          content: "",
+          responseMetadata: { finish_reason: "tool_calls" },
+          version: 2,
+        },
+      },
+      toolCalls: [{
+        arguments: argumentsPayload,
+        id: toolCallId,
+        name: "run_command",
+      }],
+    });
   }
 }
 
@@ -888,7 +963,7 @@ class TaskListFixtureModel implements ModelProviderAdapter {
             ]
           }),
           id: "call_task_list_initial",
-          name: "create_task_list"
+          name: "update_task_list"
         }]
       });
     }
@@ -961,7 +1036,7 @@ class IncompleteTaskListFixtureModel implements ModelProviderAdapter {
             ],
           }),
           id: "call_incomplete_task_list",
-          name: "create_task_list",
+          name: "update_task_list",
         }],
       });
     }
@@ -982,6 +1057,29 @@ class ContinuousConversationFixtureModel implements ModelProviderAdapter {
     const response = this.requests.length === 1 ? "第一轮已收到" : "第二轮已收到";
     input.onTextDelta(response);
     return Promise.resolve({ content: response, finishReason: "stop", toolCalls: [] });
+  }
+}
+
+class RuntimeContextRefreshFixtureModel implements ModelProviderAdapter {
+  public readonly requests: CompleteTurnInput[] = [];
+
+  public constructor(private readonly toolTurns = 3) {}
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.requests.push({ ...input, messages: [...input.messages] });
+    if (this.requests.length <= this.toolTurns) {
+      return Promise.resolve({
+        content: "",
+        finishReason: "tool_calls",
+        toolCalls: [{
+          arguments: JSON.stringify({ path: "large.txt" }),
+          id: `call_large_${this.requests.length}`,
+          name: "read_file",
+        }],
+      });
+    }
+    input.onTextDelta("已完成长任务");
+    return Promise.resolve({ content: "已完成长任务", finishReason: "stop", toolCalls: [] });
   }
 }
 
@@ -1299,7 +1397,7 @@ class SubagentLifecycleFixtureModel implements ModelProviderAdapter {
 
   public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
     this.requests.push({ ...input, messages: [...input.messages] });
-    const isSubagent = input.messages[0]?.content.includes("You are a temporary Subagent derived from parent conversation") === true;
+    const isSubagent = input.messages[0]?.content.includes("You are a reusable Subagent derived from parent conversation") === true;
     if (isSubagent) {
       this.resolveChildRequestStarted();
       return new Promise((resolve) => {
@@ -1383,6 +1481,95 @@ class SubagentLifecycleFixtureModel implements ModelProviderAdapter {
     }
     this.releaseChildRequest();
     this.releaseChildRequest = null;
+  }
+}
+
+class SubagentApprovalResumeFixtureModel implements ModelProviderAdapter {
+  public readonly requests: CompleteTurnInput[] = [];
+  private parentTurn = 0;
+
+  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.requests.push({ ...input, messages: structuredClone(input.messages) });
+    const isSubagent = input.messages[0]?.content.includes(
+      "You are a reusable Subagent derived from parent conversation",
+    ) === true;
+    if (isSubagent) {
+      if (input.messages.some((message) => (
+        message.role === "tool" && message.toolCallId === "call_subagent_approval_command"
+      ))) {
+        input.onTextDelta("Subagent 命令已完成");
+        return Promise.resolve({
+          content: "Subagent 命令已完成",
+          finishReason: "stop",
+          toolCalls: [],
+        });
+      }
+      const argumentsPayload = JSON.stringify({
+        command: "Write-Output subagent-approval-ok",
+        mode: "batch",
+        timeoutMs: 10_000,
+      });
+      return Promise.resolve({
+        content: "",
+        finishReason: "tool_calls",
+        providerState: {
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          payload: {
+            additionalKwargs: {
+              tool_calls: [{
+                function: { arguments: argumentsPayload, name: "run_command" },
+                id: "call_subagent_approval_command",
+                index: 0,
+                type: "function",
+              }],
+            },
+            content: "",
+            responseMetadata: { finish_reason: "tool_calls" },
+            version: 2,
+          },
+        },
+        toolCalls: [{
+          arguments: argumentsPayload,
+          id: "call_subagent_approval_command",
+          name: "run_command",
+        }],
+      });
+    }
+
+    this.parentTurn += 1;
+    if (this.parentTurn === 1) {
+      return Promise.resolve({
+        content: "",
+        finishReason: "tool_calls",
+        toolCalls: [{
+          arguments: JSON.stringify({ name: "命令检查", task: "执行一条测试命令" }),
+          id: "call_spawn_approval_subagent",
+          name: "spawn_subagent",
+        }],
+      });
+    }
+    if (this.parentTurn === 2) {
+      const taskResult = input.messages.findLast((message) =>
+        message.role === "tool" && message.toolCallId === "call_spawn_approval_subagent"
+      );
+      const taskId = taskResult === undefined
+        ? null
+        : (JSON.parse(taskResult.content) as { value?: { task?: { id?: unknown } } }).value?.task?.id;
+      if (typeof taskId !== "string") throw new Error("Spawned Subagent task id was not returned.");
+      return Promise.resolve({
+        content: "",
+        finishReason: "tool_calls",
+        toolCalls: [{
+          arguments: JSON.stringify({ taskIds: [taskId], timeoutMs: 10_000, waitFor: "all" }),
+          id: "call_wait_approval_subagent",
+          name: "wait_for_subagents",
+        }],
+      });
+    }
+    input.onTextDelta("父任务已完成");
+    return Promise.resolve({ content: "父任务已完成", finishReason: "stop", toolCalls: [] });
   }
 }
 
@@ -2214,7 +2401,7 @@ describe("AgentRuntime", () => {
     expect(model.requests[0]?.tools.map((tool) => tool.name)).toContain("load_skill");
     expect(model.requests[0]?.messages[0]?.content).toContain("review | review");
     expect(model.requests[1]?.messages.some((message) =>
-      message.role === "system" && message.content.includes("只在当前任务中使用证据。"),
+      message.role === "user" && message.content.includes("只在当前任务中使用证据。"),
     )).toBe(true);
     const timeline = database.listTimeline(conversation.id);
     const persistedContent = timeline.flatMap((item) => {
@@ -2569,7 +2756,7 @@ describe("AgentRuntime", () => {
 
     expect(requests[0]?.tools.map((tool) => tool.name)).toEqual([
       "close_task_list",
-      "create_task_list",
+      "end_subagent",
       "list_agent_conversations",
       "list_background_commands",
       "list_models",
@@ -2764,7 +2951,7 @@ describe("AgentRuntime", () => {
       "You are a standing Agent in team default-team",
     );
     expect(model.requests[2]?.messages[0]?.content).toContain(
-      `temporary Subagent derived from parent conversation ${lead.id}`,
+      `reusable Subagent derived from parent conversation ${lead.id}`,
     );
     expect(model.requests[2]?.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
       "list_agent_conversations",
@@ -3327,6 +3514,14 @@ describe("AgentRuntime", () => {
     });
 
     appendUsage(500, 500, 0, "other-model");
+    // Composer selection still points to test-model; display the model that actually answered.
+    expect(runtime.getContextUsage({
+      conversationId: conversation.id,
+      permissionMode: "read_only",
+    }).providerCache).toMatchObject({
+      latest: { inputTokens: 500, cachedInputTokens: 500, hitRate: 1 },
+      cumulative: { inputTokens: 500, cachedInputTokens: 500, requestCount: 1 },
+    });
     appendUsage(50, undefined, undefined);
 
     expect(runtime.getContextUsage({
@@ -3661,6 +3856,98 @@ describe("AgentRuntime", () => {
       candidate.content === agentMessageModelContent(message),
     )).toHaveLength(1);
     expect(database.listUnreadAgentMessages(target.id)).toEqual([]);
+  });
+
+  it("continues a completed Subagent in the same conversation with its previous permission mode", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const parent = database.createConversation(null);
+    const parentRun = database.createRunWithUserMessage(parent.id, "委派检查", "test-model");
+    database.finishRun(parentRun.runId, "completed", null);
+    const child = database.forkConversation(parent.id, "subagent");
+    const executionSnapshot: RunExecutionSnapshot = {
+      apiFormat: "openai-chat-completions",
+      baseUrl: "https://example.test/v1",
+      contextCompressionConfiguration: {
+        mode: "percentage",
+        percentageThreshold: 80,
+        tokenThreshold: 100_000,
+      },
+      contextWindow: 8_000,
+      modelId: "test-model",
+      permissionMode: "full_access",
+      plugins: [],
+      providerId: null,
+      reasoning: null,
+      reasoningOptions: [],
+      toolManifest: [],
+    };
+    const childRun = database.createRunWithUserMessage(
+      child.id,
+      "检查实现",
+      "test-model",
+      [],
+      undefined,
+      executionSnapshot,
+    );
+    const task = database.createSubagentTask({
+      childConversationId: child.id,
+      parentConversationId: parent.id,
+      sourceRunId: parentRun.runId,
+      task: "检查实现",
+      title: "实现检查",
+    });
+    database.assignSubagentTaskRun(task.id, childRun.runId);
+    database.finishRun(childRun.runId, "completed", null);
+    database.completeSubagentTaskByRun({
+      error: null,
+      result: "首轮完成",
+      status: "completed",
+      targetRunId: childRun.runId,
+    });
+    const initialResult = database.deliverSubagentTaskResult(task.id);
+    if (initialResult === null) throw new Error("Expected the first Subagent result.");
+    database.markAgentMessagesRead([initialResult.id]);
+    database.sendAgentMessage({
+      content: "请修正验证遗漏并再次汇报",
+      runId: parentRun.runId,
+      senderConversationId: parent.id,
+      targetConversationId: child.id,
+    });
+    const model = new ContinuousConversationFixtureModel();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          contextWindow: 8_000,
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+    );
+    const finishedConversations = new Set<string>();
+    const finished = new Promise<void>((resolve) => {
+      runtime.resumePendingMessages((event) => {
+        if (event.type !== "run.finished") return;
+        finishedConversations.add(event.conversationId);
+        if (finishedConversations.has(parent.id) && finishedConversations.has(child.id)) resolve();
+      });
+    });
+
+    await finished;
+
+    expect(database.getLatestRunExecutionSnapshot(child.id)?.permissionMode).toBe("full_access");
+    expect(model.requests[0]?.messages.some((message) =>
+      message.content.includes("请修正验证遗漏并再次汇报")
+    )).toBe(true);
+    expect(database.getConversation(child.id).subagentTaskStatus).toBe("completed");
+    database.close();
   });
 
   it("consumes queued messages in the reordered sequence and keeps edits in place", async () => {
@@ -4048,8 +4335,10 @@ describe("AgentRuntime", () => {
       threadLog,
     );
     const completedConversations = new Set<string>();
+    const emittedEvents: ConversationRunEvent[] = [];
     await new Promise<void>((resolve) => {
       runtime.sendMessage({ content: "开始处理", conversationId: target.id }, (event) => {
+        emittedEvents.push(event);
         if (event.type !== "run.finished") return;
         completedConversations.add(event.conversationId);
         if (completedConversations.has(sender.id) && completedConversations.has(target.id)) {
@@ -4087,6 +4376,15 @@ describe("AgentRuntime", () => {
     expect(agentMessageEvents.filter((event) =>
       String(event.payload.content).includes("收到，会继续处理。"),
     )).toHaveLength(1);
+    const receivedEvent = emittedEvents.find((event) => event.type === "agent_message.received");
+    expect(receivedEvent).toMatchObject({
+      conversationId: sender.id,
+      message: {
+        content: "收到，会继续处理。",
+        senderConversationId: target.id,
+      },
+      type: "agent_message.received",
+    });
     expect(threadLog.readContext(sender.id)?.messages.some((message) =>
       message.role === "user" && message.content.includes("收到，会继续处理。"),
     )).toBe(true);
@@ -4241,7 +4539,7 @@ describe("AgentRuntime", () => {
 
     await Promise.all([model.childRequestStarted, model.waitRequested]);
     const childRequest = model.requests.find((request) =>
-      request.messages[0]?.content.includes("You are a temporary Subagent derived from parent conversation") === true
+      request.messages[0]?.content.includes("You are a reusable Subagent derived from parent conversation") === true
     );
     expect(childRequest).toBeDefined();
     expect(childRequest?.configuration.modelId).toBe("alternate-model");
@@ -4263,7 +4561,7 @@ describe("AgentRuntime", () => {
       "wait_for_agent_message",
     ]));
     expect(childRequest?.messages[0]?.content).toContain(
-      "The runtime privately delivers only the completion receipt to the parent for synthesis",
+      "the parent explicitly ends you",
     );
     expect(childRequest?.messages[0]?.content).toContain("standalone Markdown --- line");
     expect(database.getConversation(parent.id).activeRunId).not.toBeNull();
@@ -4310,6 +4608,7 @@ describe("AgentRuntime", () => {
     expect(parentTimeline.some((item) =>
       item.kind === "agent_message" && item.messageType === "task_result"
     )).toBe(false);
+    expect(database.endSubagent(parent.id, task.childConversationId)).toMatchObject({ status: "ended" });
     expect(() => runtime.sendMessage({
       content: "继续执行另一个任务",
       conversationId: task.childConversationId,
@@ -4327,6 +4626,14 @@ describe("AgentRuntime", () => {
       reasoning: { kind: "effort" as const, value: "high" as const },
     };
     const parent = database.createConversation(null, { modelSelection: parentSelection });
+    database.bindConversationAgent(parent.id, {
+      avatarIcon: "bot",
+      id: "default-agent",
+      instructions: "Use the configured Agent behavior.",
+      isDefault: true,
+      name: "Default Agent",
+      role: "General execution",
+    });
     const model = new SubagentLifecycleFixtureModel(false, undefined, undefined, null);
     const configurationCalls: Array<{ modelId: string | undefined; providerId: string | undefined }> = [];
     const runtime = new AgentRuntime(
@@ -4399,7 +4706,10 @@ describe("AgentRuntime", () => {
     const task = database.listSubagentTasks(parent.id)[0];
     if (task === undefined) throw new Error("Subagent task was not created.");
     expect(task.status).toBe("completed");
-    expect(database.getConversation(task.childConversationId).avatarIcon).toBeNull();
+    expect(database.getConversation(task.childConversationId)).toMatchObject({
+      agentId: "default-agent",
+      avatarIcon: null,
+    });
     expect(database.getConversation(parent.id).activeSubagentCount).toBe(0);
     expect(parentConversationUpdates).toContainEqual({
       activeRunId: null,
@@ -4672,6 +4982,66 @@ describe("AgentRuntime", () => {
     )).toBe(true);
     expect(database.getContextCheckpoint(conversation.id)?.summary).toContain("继续当前任务");
     expect(database.listModelMessages(conversation.id)).toHaveLength(8);
+    database.close();
+  });
+
+  it("refreshes and compacts persisted context while one tool-heavy Run is still active", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-live-context-"));
+    temporaryDirectories.push(root);
+    writeFileSync(path.join(root, "large.txt"), "evidence\n".repeat(1_500), "utf8");
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const model = new RuntimeContextRefreshFixtureModel(12);
+    const compactor = new FixtureContextCompactor();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          contextWindow: 100_000,
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      {
+        getConfiguration: () => ({
+          mode: "tokens",
+          percentageThreshold: 80,
+          tokenThreshold: 5_000,
+          version: 1,
+        }),
+      },
+      compactor,
+    );
+
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage({
+        content: "持续读取证据并完成任务",
+        conversationId: conversation.id,
+        permissionMode: "read_only",
+      }, (event) => {
+        if (event.type === "run.finished") resolve();
+      });
+    });
+
+    expect(model.requests).toHaveLength(13);
+    expect(compactor.requests.length).toBeGreaterThan(0);
+    expect(Math.max(...model.requests.map((request) =>
+      request.messages.filter((message) => message.role === "tool").length
+    ))).toBeLessThanOrEqual(2);
+    expect(compactor.requests[0]?.messages.some((message) => message.role === "tool")).toBe(true);
+    expect(database.getContextCheckpoint(conversation.id)?.summary).toContain("继续当前任务");
+    expect(model.requests.at(-1)?.messages.some((message) =>
+      message.role === "system" && message.content.includes("structured compression checkpoint")
+    )).toBe(true);
     database.close();
   });
 
@@ -6103,6 +6473,7 @@ describe("AgentRuntime", () => {
     const project = await projects.registerDirectory(root);
     const conversation = database.createConversation(project.id);
     const threadLog = new ThreadLog(path.join(root, "conversations"));
+    const graphCheckpointer = new NodeSqliteCheckpointSaver(":memory:");
     const runtime = new AgentRuntime(
       database,
       {
@@ -6123,7 +6494,7 @@ describe("AgentRuntime", () => {
       null,
       null,
       null,
-      null,
+      graphCheckpointer,
       undefined,
       null,
       threadLog,
@@ -6140,7 +6511,12 @@ describe("AgentRuntime", () => {
         (event) => {
           events.push(event);
           if (event.type === "tool.approval_requested") {
-            runtime.approveToolChange({ approved: true, runId: event.runId, toolId: event.tool.id });
+            setTimeout(() => runtime.approveToolChange({
+              approved: true,
+              runId: event.runId,
+              scope: "session",
+              toolId: event.tool.id,
+            }), 50);
           }
           if (event.type === "run.finished") resolve();
         }
@@ -6148,6 +6524,7 @@ describe("AgentRuntime", () => {
     });
 
     await finished;
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
     const command = database
       .listTimeline(conversation.id)
@@ -6183,6 +6560,231 @@ describe("AgentRuntime", () => {
       approved: true,
       tool: { id: command.id, status: "running" },
     });
+    graphCheckpointer.close();
+    database.close();
+  });
+
+  it("resumes the approved command ToolCall instead of asking the model to recreate it", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-approval-resume-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const threadLog = new ThreadLog(path.join(root, "conversations"));
+    const graphCheckpointer = new NodeSqliteCheckpointSaver(path.join(root, "checkpoints.sqlite"));
+    const model = new ApprovalResumeFixtureModel();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      undefined,
+      null,
+      null,
+      null,
+      null,
+      graphCheckpointer,
+      undefined,
+      null,
+      threadLog,
+      new EventProjector(database, threadLog),
+    );
+    const events: ConversationRunEvent[] = [];
+    const finished = new Promise<void>((resolve) => {
+      runtime.sendMessage(
+        {
+          content: "执行测试命令",
+          conversationId: conversation.id,
+          permissionMode: "ask_before_changes",
+        },
+        (event) => {
+          events.push(event);
+          if (event.type === "tool.approval_requested") {
+            setTimeout(() => runtime.approveToolChange({
+              approved: true,
+              runId: event.runId,
+              scope: "session",
+              toolId: event.tool.id,
+            }), 100);
+          }
+          if (event.type === "run.finished") resolve();
+        },
+      );
+    });
+
+    await finished;
+
+    const commandItems = database.listTimeline(conversation.id).filter(
+      (item) => item.kind === "tool" && item.name === "run_command",
+    );
+    expect(model.requests).toHaveLength(2);
+    expect(commandItems).toHaveLength(1);
+    expect(commandItems[0]).toMatchObject({ status: "completed" });
+    expect(model.requests[1]?.messages.some((message) =>
+      message.role === "tool" && message.toolCallId === "call_approval_resume_1"
+    )).toBe(true);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    graphCheckpointer.close();
+    database.close();
+  });
+
+  it("resumes the original Subagent command after approval from the parent event stream", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-subagent-approval-resume-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const parent = database.createConversation(project.id);
+    const threadLog = new ThreadLog(path.join(root, "conversations"));
+    const graphCheckpointer = new NodeSqliteCheckpointSaver(path.join(root, "checkpoints.sqlite"));
+    const model = new SubagentApprovalResumeFixtureModel();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      undefined,
+      null,
+      null,
+      null,
+      null,
+      graphCheckpointer,
+      undefined,
+      null,
+      threadLog,
+      new EventProjector(database, threadLog),
+    );
+    const finished = new Promise<void>((resolve) => {
+      runtime.sendMessage({
+        content: "创建 Subagent 并执行命令",
+        conversationId: parent.id,
+        permissionMode: "ask_before_changes",
+      }, (event) => {
+        if (event.type === "tool.approval_requested") {
+          setTimeout(() => runtime.approveToolChange({
+            approved: true,
+            runId: event.runId,
+            scope: "once",
+            toolId: event.tool.id,
+          }), 100);
+        }
+        if (event.type === "run.finished" && event.conversationId === parent.id) resolve();
+      });
+    });
+
+    await finished;
+
+    const task = database.listSubagentTasks(parent.id)[0];
+    if (task === undefined) throw new Error("Subagent task was not created.");
+    const commandItems = database.listTimeline(task.childConversationId).filter(
+      (item) => item.kind === "tool" && item.name === "run_command",
+    );
+    expect(commandItems).toHaveLength(1);
+    expect(commandItems[0]).toMatchObject({ status: "completed" });
+    expect(commandItems[0]?.kind === "tool" ? commandItems[0].result : null)
+      .toContain("subagent-approval-ok");
+    const childRequests = model.requests.filter((request) => request.messages[0]?.content.includes(
+      "You are a reusable Subagent derived from parent conversation",
+    ) === true);
+    expect(childRequests).toHaveLength(2);
+    expect(childRequests[1]?.messages.some((message) =>
+      message.role === "tool" && message.toolCallId === "call_subagent_approval_command"
+    )).toBe(true);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    graphCheckpointer.close();
+    database.close();
+  });
+
+  it("resumes concurrently approved command ToolCalls on their original graph threads", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-concurrent-approval-resume-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const projectRoots = Array.from({ length: 3 }, (_value, index) => path.join(root, `project-${index}`));
+    await Promise.all(projectRoots.map((projectRoot) => mkdir(projectRoot)));
+    const registeredProjects = await Promise.all(
+      projectRoots.map((projectRoot) => projects.registerDirectory(projectRoot)),
+    );
+    const conversations = registeredProjects.map((project) => database.createConversation(project.id));
+    const threadLog = new ThreadLog(path.join(root, "conversations"));
+    const graphCheckpointer = new NodeSqliteCheckpointSaver(path.join(root, "checkpoints.sqlite"));
+    const model = new ApprovalResumeFixtureModel();
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      model,
+      undefined,
+      undefined,
+      null,
+      null,
+      null,
+      null,
+      graphCheckpointer,
+      undefined,
+      null,
+      threadLog,
+      new EventProjector(database, threadLog),
+    );
+
+    await Promise.all(conversations.map((conversation) => new Promise<void>((resolve) => {
+      runtime.sendMessage({
+        content: `执行测试命令 ${conversation.id}`,
+        conversationId: conversation.id,
+        permissionMode: "ask_before_changes",
+      }, (event) => {
+        if (event.type === "tool.approval_requested") {
+          setTimeout(() => runtime.approveToolChange({
+            approved: true,
+            runId: event.runId,
+            scope: "once",
+            toolId: event.tool.id,
+          }), 100);
+        }
+        if (event.type === "run.finished") resolve();
+      });
+    })));
+
+    expect(model.requests).toHaveLength(6);
+    for (const conversation of conversations) {
+      const commandItems = database.listTimeline(conversation.id).filter(
+        (item) => item.kind === "tool" && item.name === "run_command",
+      );
+      expect(commandItems).toHaveLength(1);
+      expect(commandItems[0]).toMatchObject({ status: "completed" });
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    graphCheckpointer.close();
     database.close();
   });
 
@@ -6654,6 +7256,112 @@ describe("AgentRuntime", () => {
       });
     });
     expect(otherEvents.filter((event) => event.type === "tool.approval_requested")).toHaveLength(1);
+    database.close();
+  });
+
+  it("keeps image data at the request tail across tools without changing next-run history", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-image-prefix-"));
+    temporaryDirectories.push(root);
+    writeFileSync(path.join(root, "large.txt"), "image evidence", "utf8");
+    const database = new AgentDatabase(":memory:");
+    try {
+      const projects = new ProjectRegistry(database);
+      const project = await projects.registerDirectory(root);
+      const conversation = database.createConversation(project.id);
+      const attachments = new ConversationAttachmentStore(database, projects, path.join(root, "managed"));
+      const attachment = await attachments.importBytes(conversation.id, {
+        bytes: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nksAAAAASUVORK5CYII=", "base64"),
+        mimeType: "image/png",
+        name: "current.png",
+      });
+      const model = new RuntimeContextRefreshFixtureModel(1);
+      const runtime = new AgentRuntime(
+        database,
+        { getConfiguration: () => ({
+          apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+          contextWindow: 100_000, modelId: "test-model", reasoningOptions: [],
+        }) },
+        projects, new ProjectToolRegistry(projects), model, undefined, undefined, null, attachments,
+      );
+      const send = (content: string, attachmentIds: string[]) => new Promise<void>((resolve) => {
+        runtime.sendMessage({ content, conversationId: conversation.id, attachmentIds }, (event) => {
+          if (event.type === "run.finished") resolve();
+        });
+      });
+      await send("查看图片并读取证据", [attachment.id]);
+      expect(model.requests).toHaveLength(2);
+      const afterTools = model.requests[1]?.messages ?? [];
+      expect(afterTools.at(-1)?.attachments[0]?.kind).toBe("image");
+      const stablePrefix = afterTools.slice(0, -1);
+      expect(stablePrefix.some((message) => message.role === "tool")).toBe(true);
+      expect(stablePrefix.flatMap((message) => message.attachments).every((item) => item.kind !== "image")).toBe(true);
+      await send("接着解释结果", []);
+      expect(model.requests).toHaveLength(3);
+      const nextRun = model.requests[2]?.messages ?? [];
+      expect(nextRun.slice(0, stablePrefix.length)).toEqual(stablePrefix);
+      expect(nextRun.flatMap((message) => message.attachments).some((item) => item.kind === "image")).toBe(false);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("treats wildcard characters in an exact session grant as command text", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-permission-literal-wildcard-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const runtime = new AgentRuntime(
+      database,
+      {
+        getConfiguration: () => ({
+          apiKey: "secret",
+          apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1",
+          modelId: "test-model",
+          reasoningOptions: [],
+        }),
+      },
+      projects,
+      new ProjectToolRegistry(projects),
+      new RepeatingCommandFixtureModel(["Write-Output '*'", "Write-Output '*'"]),
+    );
+
+    const firstEvents: ConversationRunEvent[] = [];
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage({
+        content: "允许包含星号的原始命令",
+        conversationId: conversation.id,
+        permissionMode: "ask_before_changes",
+      }, (event) => {
+        firstEvents.push(event);
+        if (event.type === "tool.approval_requested") {
+          expect(() => runtime.approveToolChange({
+            approved: true,
+            runId: event.runId,
+            scope: "session",
+            toolId: event.tool.id,
+          })).not.toThrow();
+        }
+        if (event.type === "run.finished") resolve();
+      });
+    });
+
+    const subsequentEvents: ConversationRunEvent[] = [];
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage({
+        content: "复用包含星号的原始命令授权",
+        conversationId: conversation.id,
+        permissionMode: "ask_before_changes",
+      }, (event) => {
+        subsequentEvents.push(event);
+        if (event.type === "run.finished") resolve();
+      });
+    });
+
+    expect(firstEvents.filter((event) => event.type === "tool.approval_requested")).toHaveLength(1);
+    expect(subsequentEvents.filter((event) => event.type === "tool.approval_requested")).toHaveLength(0);
     database.close();
   });
 

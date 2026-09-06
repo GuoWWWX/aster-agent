@@ -12,7 +12,7 @@ const MAX_CONTEXT_TASK_REASON_CHARACTERS = 240;
 const TASK_LIST_CONTEXT_HEADER = [
   "[Current task list | live state]",
   "This is the only authoritative task state for this conversation and is refreshed before every model call. Do not replace it with task state from older tool results, chat history, or compression summaries.",
-  "To change it, call update_task_list with the complete list. At most one step may be running. A blocked or failed step requires a short reason. Call create_task_list only when no list exists, and close_task_list after all steps finish.",
+  "Call update_task_list with the complete list to create or update it. Multiple tasks may be running at once. A blocked or failed task requires a short reason. Call close_task_list after all tasks finish.",
 ].join("\n");
 
 function contextTaskTitle(title: string): string {

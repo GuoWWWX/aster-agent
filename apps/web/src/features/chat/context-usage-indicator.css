@@ -36,15 +36,15 @@
 .context-usage-indicator__ring {
   position: relative;
   display: block;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   background: conic-gradient(currentcolor var(--context-usage-progress), #dbe3ee 0);
 }
 
 .context-usage-indicator__ring::after {
   position: absolute;
-  inset: 4px;
+  inset: 3px;
   border-radius: inherit;
   background: var(--app-panel);
   content: "";

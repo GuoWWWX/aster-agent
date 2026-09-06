@@ -41,11 +41,18 @@ export class EventProjector {
   public projectConversation(conversationId: string): ThreadLogProjectionResult {
     const log = this.threadLog.read(conversationId);
     if (log === null) {
+      if (
+        this.database.hasConversation(conversationId)
+        && this.database.getThreadLogProjectionCursor(conversationId) !== null
+      ) {
+        this.database.resetThreadLogProjection(conversationId);
+      }
       return {
         cursor: this.database.getThreadLogProjectionCursor(conversationId),
         projectedEventCount: 0,
       };
     }
+    this.resetStaleProjectionIfNeeded(conversationId, log.events);
     this.projectConversationCreationIfNeeded(conversationId, log.events);
     if (this.attachmentPathResolver !== null) {
       this.database.projectThreadLogAttachmentReferences(
@@ -173,6 +180,23 @@ export class EventProjector {
     } satisfies PreparedConversationCreation;
     this.database.projectConversationCreated(creation);
     return true;
+  }
+
+  private resetStaleProjectionIfNeeded(
+    conversationId: string,
+    events: readonly ThreadLogEvent[],
+  ): void {
+    if (!this.database.hasConversation(conversationId)) return;
+    const cursor = this.database.getThreadLogProjectionCursor(conversationId);
+    if (cursor === null) return;
+    const firstEvent = events[0];
+    const indexedFirstEventId = this.database.getProjectedThreadLogEventId(conversationId, 1);
+    const indexedTail = events[cursor.lastSequence - 1];
+    if (
+      firstEvent?.eventId === indexedFirstEventId
+      && indexedTail?.eventId === cursor.lastEventId
+    ) return;
+    this.database.resetThreadLogProjection(conversationId);
   }
 
   private restoreLegacySnapshotIfPresent(

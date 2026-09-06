@@ -48,6 +48,9 @@ describe("SubagentTool", () => {
     const listResult = await tool.execute({
       arguments: "{}",
       conversationId: parent.id,
+      end: () => {
+        throw new Error("End is not used while listing models.");
+      },
       signal: new AbortController().signal,
       spawn: () => {
         throw new Error("Spawn is not used while listing models.");
@@ -78,6 +81,9 @@ describe("SubagentTool", () => {
         task: "检查实现",
       }),
       conversationId: parent.id,
+      end: () => {
+        throw new Error("End is not used while spawning.");
+      },
       signal: new AbortController().signal,
       spawn: (_task, name, icon, _agentId, selection) => {
         selectedModelId = selection?.modelId;
@@ -126,6 +132,9 @@ describe("SubagentTool", () => {
         task: "回复一句友好问候",
       }),
       conversationId: parent.id,
+      end: () => {
+        throw new Error("End is not used while spawning.");
+      },
       signal: new AbortController().signal,
       spawn: (_task, _name, icon) => {
         selectedIcon = icon;
@@ -160,6 +169,9 @@ describe("SubagentTool", () => {
     const tool = new SubagentTool(database);
     const input = {
       conversationId: conversation.id,
+      end: () => {
+        throw new Error("End is not used while listing Subagents.");
+      },
       signal: new AbortController().signal,
       spawn: () => {
         throw new Error("Spawn is not used by this test.");
@@ -169,6 +181,49 @@ describe("SubagentTool", () => {
 
     await expect(tool.execute({ ...input, arguments: "" })).resolves.toMatchObject({ isError: false });
     await expect(tool.execute({ ...input, arguments: "{}" })).resolves.toMatchObject({ isError: false });
+    database.close();
+  });
+
+  it("ends a completed reusable Subagent without deleting its conversation", async () => {
+    const database = new AgentDatabase(":memory:");
+    const parent = database.createConversation(null);
+    const parentRun = database.createRunWithUserMessage(parent.id, "委派", "test-model");
+    const child = database.forkConversation(parent.id);
+    const childRun = database.createRunWithUserMessage(child.id, "检查", "test-model");
+    const task = database.createSubagentTask({
+      childConversationId: child.id,
+      parentConversationId: parent.id,
+      sourceRunId: parentRun.runId,
+      task: "检查",
+      title: "检查助手",
+    });
+    database.assignSubagentTaskRun(task.id, childRun.runId);
+    database.finishRun(childRun.runId, "completed", null);
+    database.completeSubagentTaskByRun({
+      error: null,
+      result: "检查完成",
+      status: "completed",
+      targetRunId: childRun.runId,
+    });
+    const tool = new SubagentTool(database);
+
+    const result = await tool.execute({
+      arguments: JSON.stringify({ conversationId: child.id }),
+      conversationId: parent.id,
+      end: (conversationId) => database.endSubagent(parent.id, conversationId),
+      signal: new AbortController().signal,
+      spawn: () => {
+        throw new Error("Spawn is not used while ending a Subagent.");
+      },
+      toolName: "end_subagent",
+    });
+
+    expect(JSON.parse(result.content)).toMatchObject({
+      ok: true,
+      value: { task: { lifecycleStatus: "ended", status: "ended" } },
+    });
+    expect(database.getConversation(child.id).subagentTaskStatus).toBe("ended");
+    expect(() => database.getConversation(child.id)).not.toThrow();
     database.close();
   });
 
@@ -196,6 +251,9 @@ describe("SubagentTool", () => {
         waitFor: "all",
       }),
       conversationId: parent.id,
+      end: () => {
+        throw new Error("End is not used while waiting.");
+      },
       signal: new AbortController().signal,
       spawn: () => {
         throw new Error("Spawn is not used by this test.");

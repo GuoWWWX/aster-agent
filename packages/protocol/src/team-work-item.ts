@@ -96,7 +96,7 @@ export const teamWorkItemExecutionAgentSchema = z.object({
   conversation: conversationSummarySchema,
   delegation: z.object({
     id: z.string().uuid(),
-    status: conversationRunStatusSchema,
+    status: z.union([conversationRunStatusSchema, z.literal("ended")]),
     title: z.string().trim().min(1).max(300),
   }).strict().nullable(),
   depth: z.number().int().nonnegative(),
