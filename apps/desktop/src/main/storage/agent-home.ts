@@ -3,6 +3,12 @@ import { cp, mkdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import {
+  APPLICATION_DATA_DIRECTORY_NAME,
+  APPLICATION_HOME_ENVIRONMENT_VARIABLE,
+  LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
+} from "@agent/protocol";
+
 const LEGACY_AGENT_ENTRIES = [
   { source: "db.sqlite", target: "db.sqlite" },
   { source: "db.sqlite-shm", target: "db.sqlite-shm" },
@@ -52,34 +58,49 @@ export type AgentHomeInitialization = {
 export function resolveAgentHomePath(input: {
   environment?: NodeJS.ProcessEnv;
   homeDirectory?: string;
+  preferredPath?: string;
 } = {}): string {
-  const configuredAsterHome = input.environment?.ASTER_HOME?.trim();
-  const configuredAgentHome = input.environment?.AGENT_HOME?.trim();
+  const configuredAsterHome = input.environment?.[APPLICATION_HOME_ENVIRONMENT_VARIABLE]?.trim();
+  const configuredAgentHome = input.environment?.[LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE]?.trim();
   const configuredPath = configuredAsterHome || configuredAgentHome;
   if (configuredPath !== undefined && configuredPath.length > 0) {
     if (!path.isAbsolute(configuredPath)) {
-      throw new Error(`${configuredAsterHome ? "ASTER_HOME" : "AGENT_HOME"} 必须是绝对路径。`);
+      throw new Error(`${configuredAsterHome
+        ? APPLICATION_HOME_ENVIRONMENT_VARIABLE
+        : LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE} 必须是绝对路径。`);
     }
     return path.resolve(configuredPath);
   }
-  return path.join(path.resolve(input.homeDirectory ?? os.homedir()), ".aster");
+  if (input.preferredPath !== undefined) {
+    if (!path.isAbsolute(input.preferredPath)) {
+      throw new Error("软件数据存储目录必须是绝对路径。");
+    }
+    return path.resolve(input.preferredPath);
+  }
+  return path.join(
+    path.resolve(input.homeDirectory ?? os.homedir()),
+    APPLICATION_DATA_DIRECTORY_NAME,
+  );
 }
 
 export function initializeElectronUserDataPath(input: {
   environment?: NodeJS.ProcessEnv;
   legacyRootPath: string;
+  preferredPath?: string;
 }): string {
   const legacyRootPath = path.resolve(input.legacyRootPath);
-  const configuredHome = input.environment?.ASTER_HOME?.trim()
-    || input.environment?.AGENT_HOME?.trim();
+  const configuredHome = input.environment?.[APPLICATION_HOME_ENVIRONMENT_VARIABLE]?.trim()
+    || input.environment?.[LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE]?.trim()
+    || input.preferredPath;
   if (configuredHome === undefined || configuredHome.length === 0) {
     return legacyRootPath;
   }
 
   const userDataPath = path.join(
-    resolveAgentHomePath(
-      input.environment === undefined ? {} : { environment: input.environment },
-    ),
+    resolveAgentHomePath({
+      ...(input.environment === undefined ? {} : { environment: input.environment }),
+      ...(input.preferredPath === undefined ? {} : { preferredPath: input.preferredPath }),
+    }),
     "electron-profile",
   );
   mkdirSync(userDataPath, { recursive: true, mode: 0o700 });
@@ -121,6 +142,7 @@ export async function initializeAgentHome(input: {
   homeDirectory?: string;
   legacyRootPath: string;
   migrateLegacy?: boolean;
+  preferredPath?: string;
 }): Promise<AgentHomeInitialization> {
   const paths = createAgentHomePaths(resolveAgentHomePath(input));
   const legacyRootPath = path.resolve(input.legacyRootPath);
@@ -128,8 +150,9 @@ export async function initializeAgentHome(input: {
     path.resolve(input.homeDirectory ?? os.homedir()),
     ".agent",
   );
-  const hasConfiguredHome = (input.environment?.ASTER_HOME?.trim().length ?? 0) > 0
-    || (input.environment?.AGENT_HOME?.trim().length ?? 0) > 0;
+  const hasConfiguredHome = (input.environment?.[APPLICATION_HOME_ENVIRONMENT_VARIABLE]?.trim().length ?? 0) > 0
+    || (input.environment?.[LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE]?.trim().length ?? 0) > 0
+    || input.preferredPath !== undefined;
   const legacyRootPaths = [...new Set([
     ...(hasConfiguredHome ? [] : [legacyAgentHomePath]),
     ...(input.additionalLegacyRootPaths ?? []).map((rootPath) => path.resolve(rootPath)),

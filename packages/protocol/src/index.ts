@@ -1,6 +1,19 @@
 export { capabilitySetSchema } from "./capability.js";
 export type { CapabilitySet } from "./capability.js";
 export {
+  APPLICATION_DATA_DIRECTORY_NAME,
+  APPLICATION_DISPLAY_NAME,
+  APPLICATION_HOME_ENVIRONMENT_VARIABLE,
+  APPLICATION_STORAGE_ID,
+  LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
+} from "./application-metadata.js";
+export {
+  applicationStorageLocationSchema,
+  applicationStorageLocationSourceSchema,
+  type ApplicationStorageLocation,
+  type ApplicationStorageLocationSource,
+} from "./application-storage.js";
+export {
   AgentClientError,
   agentErrorCodeSchema,
   agentErrorSchema,

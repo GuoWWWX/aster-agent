@@ -5,6 +5,8 @@ import {
 } from "electron";
 import path from "node:path";
 
+import { APPLICATION_DISPLAY_NAME } from "@agent/protocol";
+
 const WINDOW_BACKGROUND_COLOR = "#18181b";
 const WINDOW_MIN_HEIGHT = 720;
 const WINDOW_MIN_WIDTH = 960;
@@ -41,7 +43,7 @@ export function createMainWindow(): BrowserWindow {
     minHeight: WINDOW_MIN_HEIGHT,
     minWidth: WINDOW_MIN_WIDTH,
     show: false,
-    title: "Aster",
+    title: APPLICATION_DISPLAY_NAME,
     width: WINDOW_START_WIDTH,
     webPreferences
   };

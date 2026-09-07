@@ -3,6 +3,7 @@ import type {
   AddTeamWorkItemCommentInput,
   DeleteTeamWorkItemInput,
   ApplicationSettings,
+  ApplicationStorageLocation,
   BrowserConfiguration,
   ApproveToolChangeInput,
   CancelRunInput,
@@ -339,6 +340,18 @@ export class DesktopAgentClientAdapter implements AgentClient {
 
   public getApplicationSettings(): Promise<ApplicationSettings> {
     return this.desktopBridge.getApplicationSettings();
+  }
+
+  public getApplicationStorageLocation(): Promise<ApplicationStorageLocation> {
+    return this.desktopBridge.getApplicationStorageLocation();
+  }
+
+  public chooseApplicationStorageLocation(): Promise<ApplicationStorageLocation | null> {
+    return this.desktopBridge.chooseApplicationStorageLocation();
+  }
+
+  public resetApplicationStorageLocation(): Promise<ApplicationStorageLocation> {
+    return this.desktopBridge.resetApplicationStorageLocation();
   }
 
   public getIntegrationConfiguration(): Promise<IntegrationConfiguration> {

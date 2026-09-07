@@ -21,6 +21,7 @@ import type {
   CancelRunInput,
   ApproveToolChangeInput,
   ApplicationSettings,
+  ApplicationStorageLocation,
   BrowserConfiguration,
   ConversationReferenceInput,
   ConversationSearchInput,
@@ -362,6 +363,21 @@ export function createDesktopBridge(): DesktopBridge {
     getApplicationSettings() {
       return invoke<BridgeResult<"getApplicationSettings">>(
         IPC_CHANNELS.applicationSettingsGetConfiguration,
+      );
+    },
+    getApplicationStorageLocation() {
+      return invoke<ApplicationStorageLocation>(
+        IPC_CHANNELS.applicationSettingsGetStorageLocation,
+      );
+    },
+    chooseApplicationStorageLocation() {
+      return invoke<ApplicationStorageLocation | null>(
+        IPC_CHANNELS.applicationSettingsChooseStorageLocation,
+      );
+    },
+    resetApplicationStorageLocation() {
+      return invoke<ApplicationStorageLocation>(
+        IPC_CHANNELS.applicationSettingsResetStorageLocation,
       );
     },
     getModelCatalog() {

@@ -1,9 +1,13 @@
 import { app, BrowserWindow, nativeTheme } from "electron";
 import { existsSync, readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import {
+  APPLICATION_HOME_ENVIRONMENT_VARIABLE,
+  APPLICATION_STORAGE_ID,
   ARCHIVED_CONVERSATION_RETENTION_DAYS,
+  LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
   conversationRunEventSchema,
   IPC_CHANNELS,
 } from "@agent/protocol";
@@ -22,6 +26,7 @@ import {
 import { ProjectRegistry } from "../projects/project-registry.js";
 import { PluginCatalog, migrateLegacyPluginSettings } from "../plugins/plugin-catalog.js";
 import { AgentDatabase } from "../storage/agent-database.js";
+import { ApplicationStorageLocationStore } from "../storage/application-storage-location-store.js";
 import {
   initializeAgentHome,
   initializeElectronUserDataPath,
@@ -53,6 +58,7 @@ import { ManagedBrowserController } from "../windows/managed-browser-controller.
 
 type DesktopServices = {
   agentRuntime: AgentRuntime;
+  applicationStorageLocation: ApplicationStorageLocationStore;
   applicationSettings: ApplicationSettingsStore;
   browserConfiguration: BrowserConfigurationStore;
   attachments: ConversationAttachmentStore;
@@ -87,6 +93,19 @@ let archivedConversationCleanupTimer: ReturnType<typeof setInterval> | undefined
 
 const ARCHIVED_CONVERSATION_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 loadLocalEnvironment();
+const applicationStorageLocation = new ApplicationStorageLocationStore({
+  configurationPath: path.join(
+    app.getPath("appData"),
+    APPLICATION_STORAGE_ID,
+    "storage-location.json",
+  ),
+  environment: process.env,
+  homeDirectory: os.homedir(),
+});
+const startupStorageLocation = applicationStorageLocation.getLocation();
+const preferredStoragePath = startupStorageLocation.source === "custom"
+  ? startupStorageLocation.activePath
+  : undefined;
 const legacyUserDataPath = app.commandLine.hasSwitch("user-data-dir")
   ? path.join(app.getPath("appData"), app.getName())
   : app.getPath("userData");
@@ -94,6 +113,7 @@ const legacyPackageUserDataPath = path.join(app.getPath("appData"), "@agent", "d
 const electronUserDataPath = initializeElectronUserDataPath({
   environment: process.env,
   legacyRootPath: legacyUserDataPath,
+  ...(preferredStoragePath === undefined ? {} : { preferredPath: preferredStoragePath }),
 });
 if (path.resolve(app.getPath("userData")) !== path.resolve(electronUserDataPath)) {
   app.setPath("userData", electronUserDataPath);
@@ -106,8 +126,8 @@ function parseLocalEnvironmentFile(contents: string): Map<string, string> {
     "AGENT_MODEL_BASE_URL",
     "AGENT_MODEL_API_KEY",
     "AGENT_MODEL_ID",
-    "AGENT_HOME",
-    "ASTER_HOME",
+    LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
+    APPLICATION_HOME_ENVIRONMENT_VARIABLE,
   ]);
 
   for (const line of contents.split(/\r?\n/)) {
@@ -162,6 +182,7 @@ async function initializeServices(): Promise<DesktopServices> {
     environment: process.env,
     legacyRootPath: legacyUserDataPath,
     migrateLegacy: process.env.AGENT_HOME_SKIP_LEGACY_MIGRATION !== "1",
+    ...(preferredStoragePath === undefined ? {} : { preferredPath: preferredStoragePath }),
   });
   const settings = new SettingsJsoncFile(agentHome.paths.settingsPath);
   settings.ensureFile();
@@ -356,6 +377,7 @@ async function initializeServices(): Promise<DesktopServices> {
 
   return {
     agentRuntime,
+    applicationStorageLocation,
     applicationSettings,
     browserConfiguration,
     attachments,

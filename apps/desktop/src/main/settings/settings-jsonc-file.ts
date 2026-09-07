@@ -1,5 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 
+import { APPLICATION_DISPLAY_NAME } from "@agent/protocol";
+
 import {
   applyEdits,
   modify,
@@ -22,7 +24,7 @@ const FORMATTING_OPTIONS: FormattingOptions = {
 };
 
 const DEFAULT_DOCUMENT = `{
-  // Aster 全局配置。支持 JSONC 注释和尾逗号。
+  // ${APPLICATION_DISPLAY_NAME} 全局配置。支持 JSONC 注释和尾逗号。
   "version": 1,
 }
 `;
@@ -96,11 +98,11 @@ function parseDocument(configurationPath: string, content: string): SettingsDocu
     );
   }
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`Aster settings must be a JSONC object: ${configurationPath}`);
+    throw new Error(`${APPLICATION_DISPLAY_NAME} settings must be a JSONC object: ${configurationPath}`);
   }
   const version = (value as Record<string, unknown>).version;
   if (version !== 1) {
-    throw new Error(`Unsupported Aster settings version: ${String(version)}`);
+    throw new Error(`Unsupported ${APPLICATION_DISPLAY_NAME} settings version: ${String(version)}`);
   }
   return value as SettingsDocument;
 }

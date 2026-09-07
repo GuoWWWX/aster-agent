@@ -11,6 +11,8 @@ import {
   acceptTeamWorkItemIpcArgumentsSchema,
   addProjectResponseSchema,
   approveToolChangeIpcArgumentsSchema,
+  APPLICATION_DISPLAY_NAME,
+  applicationStorageLocationSchema,
   applicationSettingsIpcArgumentsSchema,
   applicationSettingsSchema,
   browserConfigurationIpcArgumentsSchema,
@@ -172,6 +174,7 @@ import { WorkspaceTerminalTabController } from "../tools/workspace-terminal-tab-
 import { WorkspaceBrowserTabController } from "../tools/workspace-browser-tab-controller.js";
 import { ManagedBrowserController } from "../windows/managed-browser-controller.js";
 import { AgentDatabase } from "../storage/agent-database.js";
+import { ApplicationStorageLocationStore } from "../storage/application-storage-location-store.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
 import { ConversationLifecycleService } from "../storage/conversation-lifecycle-service.js";
 import { ConversationDeletionService } from "../storage/conversation-deletion-service.js";
@@ -252,6 +255,7 @@ function subscribeToWindowState(window: BrowserWindow): void {
 
 type MainIpcDependencies = {
   agentRuntime: AgentRuntime;
+  applicationStorageLocation: ApplicationStorageLocationStore;
   applicationSettings: ApplicationSettingsStore;
   browserConfiguration: BrowserConfigurationStore;
   attachments: ConversationAttachmentStore;
@@ -297,6 +301,7 @@ export function registerMainIpcHandlers(
   getMainWindow: () => BrowserWindow | undefined,
   {
     agentRuntime,
+    applicationStorageLocation,
     applicationSettings,
     browserConfiguration,
     attachments,
@@ -1269,6 +1274,48 @@ export function registerMainIpcHandlers(
       getTrustedWindow(event, getMainWindow);
       const [input] = applicationSettingsIpcArgumentsSchema.parse(args);
       return applicationSettingsSchema.parse(applicationSettings.saveConfiguration(input));
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.applicationSettingsGetStorageLocation,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      parseNoArguments(args);
+      return applicationStorageLocationSchema.parse(
+        applicationStorageLocation.getLocation(),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.applicationSettingsChooseStorageLocation,
+    async (event, ...args: unknown[]) => {
+      const window = getTrustedWindow(event, getMainWindow);
+      parseNoArguments(args);
+      const current = applicationStorageLocation.getLocation();
+      if (!current.canChange) return current;
+      const selection = await dialog.showOpenDialog(window, {
+        defaultPath: current.configuredPath,
+        properties: ["openDirectory"],
+        title: `选择 ${APPLICATION_DISPLAY_NAME} 数据存储目录`,
+      });
+      const selectedPath = selection.filePaths[0];
+      if (selection.canceled || selectedPath === undefined) return null;
+      return applicationStorageLocationSchema.parse(
+        applicationStorageLocation.selectLocation(selectedPath),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.applicationSettingsResetStorageLocation,
+    (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      parseNoArguments(args);
+      return applicationStorageLocationSchema.parse(
+        applicationStorageLocation.resetLocation(),
+      );
     },
   );
 

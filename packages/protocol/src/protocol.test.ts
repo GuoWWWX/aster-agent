@@ -6,6 +6,7 @@ import {
   agentAvatarIconSchema,
   agentPermissionRuleSchema,
   applicationSettingsSchema,
+  applicationStorageLocationSchema,
   approveToolChangeInputSchema,
   browserConfigurationSchema,
   clipboardWriteTextIpcArgumentsSchema,
@@ -290,6 +291,28 @@ describe("protocol bootstrap contract", () => {
     })).toThrow();
   });
 
+  it("validates application storage location state", () => {
+    expect(applicationStorageLocationSchema.parse({
+      activePath: "C:\\Users\\demo\\.aster",
+      canChange: true,
+      configuredPath: "D:\\AsterData",
+      configurationError: false,
+      defaultPath: "C:\\Users\\demo\\.aster",
+      restartRequired: true,
+      source: "custom",
+    })).toMatchObject({ source: "custom", restartRequired: true });
+
+    expect(() => applicationStorageLocationSchema.parse({
+      activePath: "",
+      canChange: true,
+      configuredPath: "D:\\AsterData",
+      configurationError: false,
+      defaultPath: "C:\\Users\\demo\\.aster",
+      restartRequired: true,
+      source: "custom",
+    })).toThrow();
+  });
+
   it("validates a persisted Conversation permission preference", () => {
     expect(setConversationPermissionModeInputSchema.parse({
       conversationId: "00000000-0000-4000-8000-000000000002",
@@ -321,6 +344,8 @@ describe("protocol bootstrap contract", () => {
 
     expect(runtime.platform).toBe("win32");
     expect(IPC_CHANNELS.windowToggleMaximize).toBe("window.toggle_maximize");
+    expect(IPC_CHANNELS.applicationSettingsChooseStorageLocation)
+      .toBe("application_settings.choose_storage_location");
   });
 
   it("rejects undeclared capability fields", () => {

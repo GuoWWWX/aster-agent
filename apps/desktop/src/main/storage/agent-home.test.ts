@@ -42,6 +42,24 @@ describe("Agent home", () => {
       .toBe(agentHome);
   });
 
+  it("uses the selected storage path below environment overrides", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "aster-home-selected-"));
+    temporaryDirectories.push(root);
+    const selectedPath = path.join(root, "selected");
+    const environmentPath = path.join(root, "environment");
+
+    expect(resolveAgentHomePath({
+      environment: {},
+      homeDirectory: path.join(root, "home"),
+      preferredPath: selectedPath,
+    })).toBe(selectedPath);
+    expect(resolveAgentHomePath({
+      environment: { ASTER_HOME: environmentPath },
+      homeDirectory: path.join(root, "home"),
+      preferredPath: selectedPath,
+    })).toBe(environmentPath);
+  });
+
   it("uses the unified database and durable conversation workspace paths", async () => {
     const homeDirectory = await mkdtemp(path.join(os.tmpdir(), "aster-home-paths-"));
     temporaryDirectories.push(homeDirectory);
@@ -150,6 +168,18 @@ describe("Agent home", () => {
     expect(result.legacyConversationFilesPaths).toContain(
       path.join(legacyAgentHomePath, "conversation-files"),
     );
+  });
+
+  it("keeps Electron user data beside a user-selected storage root", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "aster-electron-selected-"));
+    temporaryDirectories.push(root);
+    const selectedPath = path.join(root, "selected");
+
+    expect(initializeElectronUserDataPath({
+      environment: {},
+      legacyRootPath: path.join(root, "legacy"),
+      preferredPath: selectedPath,
+    })).toBe(path.join(selectedPath, "electron-profile"));
   });
 
   it("returns former checkpoint databases for import into db.sqlite", async () => {

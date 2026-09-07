@@ -2,6 +2,8 @@ import {
   createSkillMarkdown,
   DEFAULT_BROWSER_CONFIGURATION,
   DEFAULT_APPLICATION_SETTINGS,
+  APPLICATION_DATA_DIRECTORY_NAME,
+  APPLICATION_DISPLAY_NAME,
   CONTEXT_MESSAGE_OVERHEAD_TOKENS,
   DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
   DEFAULT_MODEL_CATALOG,
@@ -16,6 +18,7 @@ import {
   type SkillDocument,
   type SkillDiscoveryResult,
   type ApplicationSettings,
+  type ApplicationStorageLocation,
   type AddTeamWorkItemCommentInput,
   type DeleteTeamWorkItemInput,
   type BrowserConfiguration,
@@ -167,7 +170,7 @@ const MOCK_RESPONSE_DELAY_MS = 800;
 const MOCK_PROJECT: ProjectSummary = {
   id: "00000000-0000-4000-8000-000000000001",
   isPinned: false,
-  name: "Aster",
+  name: APPLICATION_DISPLAY_NAME,
   rootPath: "D:\\Code\\Project\\202608\\Agent",
 };
 
@@ -321,6 +324,16 @@ export class MockAgentClient implements AgentClient {
   private applicationSettings: ApplicationSettings = structuredClone(
     DEFAULT_APPLICATION_SETTINGS,
   );
+
+  private applicationStorageLocation: ApplicationStorageLocation = {
+    activePath: `C:\\Users\\demo\\${APPLICATION_DATA_DIRECTORY_NAME}`,
+    canChange: true,
+    configuredPath: `C:\\Users\\demo\\${APPLICATION_DATA_DIRECTORY_NAME}`,
+    configurationError: false,
+    defaultPath: `C:\\Users\\demo\\${APPLICATION_DATA_DIRECTORY_NAME}`,
+    restartRequired: false,
+    source: "default",
+  };
 
   private readonly modelApiKeys = new Map<string, string>();
 
@@ -1223,6 +1236,25 @@ export class MockAgentClient implements AgentClient {
 
   public getApplicationSettings(): Promise<ApplicationSettings> {
     return Promise.resolve(structuredClone(this.applicationSettings));
+  }
+
+  public getApplicationStorageLocation(): Promise<ApplicationStorageLocation> {
+    return Promise.resolve(structuredClone(this.applicationStorageLocation));
+  }
+
+  public chooseApplicationStorageLocation(): Promise<ApplicationStorageLocation | null> {
+    return Promise.resolve(null);
+  }
+
+  public resetApplicationStorageLocation(): Promise<ApplicationStorageLocation> {
+    this.applicationStorageLocation = {
+      ...this.applicationStorageLocation,
+      configuredPath: this.applicationStorageLocation.defaultPath,
+      restartRequired:
+        this.applicationStorageLocation.activePath !== this.applicationStorageLocation.defaultPath,
+      source: "default",
+    };
+    return this.getApplicationStorageLocation();
   }
 
   public getIntegrationConfiguration(): Promise<IntegrationConfiguration> {

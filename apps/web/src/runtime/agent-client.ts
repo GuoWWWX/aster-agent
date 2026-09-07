@@ -3,6 +3,7 @@ import type {
   AddTeamWorkItemCommentInput,
   DeleteTeamWorkItemInput,
   ApplicationSettings,
+  ApplicationStorageLocation,
   BrowserConfiguration,
   ApproveToolChangeInput,
   CancelRunInput,
@@ -206,6 +207,9 @@ export interface AgentClient {
   getModelStatus(): Promise<ModelRuntimeStatus>;
   getContextCompressionConfiguration(): Promise<ContextCompressionConfiguration>;
   getApplicationSettings(): Promise<ApplicationSettings>;
+  getApplicationStorageLocation(): Promise<ApplicationStorageLocation>;
+  chooseApplicationStorageLocation(): Promise<ApplicationStorageLocation | null>;
+  resetApplicationStorageLocation(): Promise<ApplicationStorageLocation>;
   getIntegrationConfiguration(): Promise<IntegrationConfiguration>;
   getBrowserConfiguration(): Promise<BrowserConfiguration>;
   clearBrowserData(): Promise<void>;

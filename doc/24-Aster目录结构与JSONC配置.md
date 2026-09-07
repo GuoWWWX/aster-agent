@@ -4,9 +4,9 @@
 
 ## 1. 数据根目录
 
-`<ASTER_HOME>` 默认是 `<用户主目录>/.aster`，Windows 如 `C:\Users\<用户名>\.aster`。可用绝对路径环境变量 `ASTER_HOME` 指定；兼容旧变量 `AGENT_HOME`，两者同时设置时前者优先。
+`<ASTER_HOME>` 默认是 `<用户主目录>/.aster`，Windows 如 `C:\Users\<用户名>\.aster`。设置页可选择自定义目录，重启后生效；也可用绝对路径环境变量 `ASTER_HOME` 指定，兼容旧变量 `AGENT_HOME`。
 
-这是用户数据目录，不是安装目录或项目代码目录。根目录由启动环境决定，不放进自身的配置文件。〔FACT｜`apps/desktop/src/main/storage/agent-home.ts:50`〕
+解析优先级是 `ASTER_HOME`、`AGENT_HOME`、用户选择、默认目录。环境变量存在时设置页只读。用户选择保存在 Electron `appData/aster-agent/storage-location.json`；该稳定启动指针不放进可移动的数据目录，否则启动前无法定位 `settings.jsonc`。显示名、默认目录名、环境变量名和稳定 ID 统一定义在 `packages/protocol/src/application-metadata.ts`。〔FACT｜`apps/desktop/src/main/storage/application-storage-location-store.ts`〕
 
 ```text
 <ASTER_HOME>/
@@ -30,6 +30,7 @@
 - 项目名称、根目录、置顶和排序仍存 `projects` 表，不再复制进配置文件。项目代码、`.git/`、用户下载/另存的文件位于各自目录；本方案不自动创建项目内 `.aster/settings.jsonc` 或覆盖项目权限。
 - 目录按需创建。全部 SQL 数据已只用一个 `db.sqlite`；最终保留表见[第 21 篇](./21-数据库实体关系图.md)。迁移期间仍有可重建的对话投影表。运行时可能出现 `db.sqlite-wal`、`db.sqlite-shm`，它们是同一数据库的辅助文件，不是另一个数据库，不要在运行中手动删除。
 - Electron 状态沿用现有规则：显式设置管理根目录时用 `electron-profile/`，否则仍在 Electron 默认 `userData`。网站 Cookie、缓存、页面 `localStorage`、本机标签/面板状态不是模型配置，也不混入 JSONL。〔FACT｜`apps/desktop/src/main/storage/agent-home.ts:65`〕
+- 切换目录不在运行中搬动已打开的 SQLite、JSONL 或 Electron Profile。重启后使用新目录；原目录保留且不自动删除或复制，用户可切回。恢复默认只修改启动指针。
 
 ### 1.1 工作目录的选择
 
@@ -243,6 +244,8 @@ MCP 的 `command`、`args`、`env`、`headers`、`url` 等服务定义统一在 
 插件迁移从旧库备份读取全部开关（包括 `false`）。按 ID 仅补齐 JSONC 缺失项，已有用户设置优先；保留暂时缺失插件的设置。原子保存并重新读取核对后，新 `db.sqlite` 不再创建插件目录表。旧库作为备份保持不变；重试不覆盖新设置，也不再次启用被禁用插件。
 
 备份配置用 `settings.jsonc` 加技能/插件/MCP 资源；备份对话需 JSONL、附件、产物及其已有的默认工作目录；项目、团队和执行恢复统一备份 `db.sqlite`。项目代码和用户绑定目录另行备份。SQLite 使用一致性备份或停机复制，不单独复制运行中的主库文件。需要完整恢复桌面状态时另备份实际 Electron `userData`；临时缓存和已轮转的诊断日志不作为业务恢复依据。
+
+`storage-location.json` 只是机器级启动指针，不属于可移动数据备份。把数据目录迁移到另一台机器后，在目标机器设置页重新选择该目录即可。
 
 ## 6. 关联定义
 
