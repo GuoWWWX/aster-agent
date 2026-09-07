@@ -62,6 +62,7 @@ export class EventProjector {
       );
     }
     this.restoreLegacySnapshotIfPresent(conversationId, log.events);
+    this.database.restoreThreadLogConversationProperties(conversationId, log.events);
     this.database.restoreThreadLogBusinessEvents(conversationId, log.events);
     const cursor = this.database.getThreadLogProjectionCursor(conversationId);
     const events = log.events.filter((event) => event.sequence > (cursor?.lastSequence ?? 0));

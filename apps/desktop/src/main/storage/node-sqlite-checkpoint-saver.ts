@@ -131,7 +131,10 @@ export class NodeSqliteCheckpointSaver extends BaseCheckpointSaver {
 
   private closed = false;
 
-  public constructor(databasePath: string) {
+  public constructor(
+    databasePath: string,
+    options: { initializeSchema?: boolean } = {},
+  ) {
     super();
     if (databasePath !== ":memory:") {
       mkdirSync(path.dirname(path.resolve(databasePath)), { recursive: true });
@@ -140,7 +143,10 @@ export class NodeSqliteCheckpointSaver extends BaseCheckpointSaver {
     this.database.exec("PRAGMA foreign_keys = ON;");
     if (databasePath !== ":memory:") this.database.exec("PRAGMA journal_mode = WAL;");
     try {
-      new DatabaseMigrationRunner(this.database).run([
+      if (options.initializeSchema === false) {
+        this.assertSchemaExists();
+      } else {
+        new DatabaseMigrationRunner(this.database).run([
         {
           name: "langgraph-checkpoint-v1",
           up: (database) => {
@@ -213,10 +219,27 @@ export class NodeSqliteCheckpointSaver extends BaseCheckpointSaver {
           },
           version: 2,
         },
-      ]);
+        ]);
+      }
     } catch (error) {
       this.database.close();
       throw error;
+    }
+  }
+
+  private assertSchemaExists(): void {
+    const rows = this.database.prepare(
+      `SELECT name FROM sqlite_master
+       WHERE type = 'table' AND name IN (
+         'langgraph_checkpoints', 'langgraph_checkpoint_writes'
+       )`,
+    ).all() as DatabaseRow[];
+    const tableNames = new Set(rows.map((row) => asString(row, "name")));
+    if (
+      !tableNames.has("langgraph_checkpoints")
+      || !tableNames.has("langgraph_checkpoint_writes")
+    ) {
+      throw new Error("The unified Aster database is missing LangGraph checkpoint tables.");
     }
   }
 

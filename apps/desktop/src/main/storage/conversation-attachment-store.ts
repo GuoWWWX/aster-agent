@@ -204,7 +204,7 @@ export class ConversationAttachmentStore {
       ?? EXTENSION_MIME_TYPES[extension]
       ?? (TEXT_EXTENSIONS.has(extension) ? "text/plain" : "application/octet-stream");
     const id = randomUUID();
-    const directory = path.join(this.rootPath, conversationId);
+    const directory = this.getAttachmentDirectory(conversationId);
     await mkdir(directory, { recursive: true });
     const storedPath = path.join(directory, `${id}${extension}`);
     await writeFile(storedPath, input.bytes);
@@ -247,7 +247,7 @@ export class ConversationAttachmentStore {
     extractedTextPath: string | null;
     storedPath: string;
   } {
-    const directory = path.join(this.rootPath, attachment.conversationId);
+    const directory = this.getAttachmentDirectory(attachment.conversationId);
     const extension = path.extname(attachment.name).toLowerCase();
     const storedPath = path.join(directory, `${attachment.id}${extension}`);
     const extractedTextPath = path.join(directory, `${attachment.id}.extracted.txt`);
@@ -298,7 +298,7 @@ export class ConversationAttachmentStore {
         cleanup.pendingMessageId,
         attachmentIds,
       );
-      await rmdir(path.join(this.rootPath, cleanup.conversationId)).catch(
+      await rmdir(this.getAttachmentDirectory(cleanup.conversationId)).catch(
         (error: NodeJS.ErrnoException) => {
           if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY" && error.code !== "EEXIST") {
             throw error;
@@ -335,7 +335,7 @@ export class ConversationAttachmentStore {
     }
 
     const directories = new Set([
-      ...conversationIds.map((conversationId) => path.join(this.rootPath, conversationId)),
+      ...conversationIds.map((conversationId) => this.getAttachmentDirectory(conversationId)),
       ...managedFiles.map((filePath) => path.dirname(filePath)),
     ]);
     for (const directory of directories) {
@@ -349,10 +349,13 @@ export class ConversationAttachmentStore {
 
   private isManagedPath(filePath: string): boolean {
     const relativePath = path.relative(this.rootPath, path.resolve(filePath));
+    const segments = relativePath.split(path.sep);
     return relativePath.length > 0
       && relativePath !== ".."
       && !relativePath.startsWith(`..${path.sep}`)
-      && !path.isAbsolute(relativePath);
+      && !path.isAbsolute(relativePath)
+      && segments.length >= 3
+      && segments[1] === "attachments";
   }
 
   public toModelAttachments(
@@ -447,7 +450,7 @@ export class ConversationAttachmentStore {
     const mimeType = detectedType?.mime
       ?? EXTENSION_MIME_TYPES[extension]
       ?? (TEXT_EXTENSIONS.has(extension) ? "text/plain" : "application/octet-stream");
-    const directory = path.join(this.rootPath, conversationId);
+    const directory = this.getAttachmentDirectory(conversationId);
     await mkdir(directory, { recursive: true });
     const storedPath = path.join(directory, `${id}${extension}`);
     await copyFile(absoluteSourcePath, storedPath);
@@ -696,7 +699,16 @@ export class ConversationAttachmentStore {
         || relativePath.startsWith(`..${path.sep}`)
         || path.isAbsolute(relativePath)
       ) continue;
-      const migratedPath = path.join(this.rootPath, relativePath);
+      const [conversationId, ...fileSegments] = relativePath.split(path.sep);
+      if (conversationId === undefined || fileSegments.length === 0) return filePath;
+      const attachmentFileSegments = fileSegments[0] === "attachments"
+        ? fileSegments.slice(1)
+        : fileSegments;
+      if (attachmentFileSegments.length === 0) return filePath;
+      const migratedPath = path.join(
+        this.getAttachmentDirectory(conversationId),
+        ...attachmentFileSegments,
+      );
       if (!existsSync(migratedPath)) {
         if (!existsSync(resolvedFilePath)) return filePath;
         await mkdir(path.dirname(migratedPath), { recursive: true });
@@ -705,5 +717,9 @@ export class ConversationAttachmentStore {
       return migratedPath;
     }
     return filePath;
+  }
+
+  private getAttachmentDirectory(conversationId: string): string {
+    return path.join(this.rootPath, conversationId, "attachments");
   }
 }

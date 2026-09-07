@@ -8,11 +8,19 @@ import {
   type ApplicationSettings,
 } from "@agent/protocol";
 import { readJsonConfiguration, writeJsonConfiguration } from "./json-configuration-file.js";
+import { SettingsJsoncFile } from "./settings-jsonc-file.js";
 
 export class ApplicationSettingsStore {
   private readonly listeners = new Set<(configuration: ApplicationSettings) => void>();
+  private readonly configurationPath: string | null;
+  private readonly legacyConfigurationPath: string | null;
+  private readonly settings: SettingsJsoncFile | null;
 
-  public constructor(private readonly configurationPath: string) {}
+  public constructor(configuration: string | SettingsJsoncFile, legacyConfigurationPath?: string) {
+    this.configurationPath = typeof configuration === "string" ? configuration : null;
+    this.legacyConfigurationPath = legacyConfigurationPath ?? null;
+    this.settings = typeof configuration === "string" ? null : configuration;
+  }
 
   public onChanged(listener: (configuration: ApplicationSettings) => void): () => void {
     this.listeners.add(listener);
@@ -20,6 +28,25 @@ export class ApplicationSettingsStore {
   }
 
   public ensureFile(): void {
+    if (this.settings !== null) {
+      this.settings.ensureFile();
+      if (!this.settings.has("general")) {
+        const initial = this.legacyConfigurationPath !== null
+          && existsSync(this.legacyConfigurationPath)
+          ? readJsonConfiguration(
+              this.legacyConfigurationPath,
+              applicationSettingsSchema,
+              DEFAULT_APPLICATION_SETTINGS,
+            )
+          : DEFAULT_APPLICATION_SETTINGS;
+        this.saveConfiguration(initial);
+      }
+      const current = this.getConfiguration();
+      const migrated = migrateLegacyDefaultDevelopmentTeam(current);
+      if (migrated !== current) this.saveConfiguration(migrated);
+      return;
+    }
+    if (this.configurationPath === null) throw new Error("Application settings path is missing.");
     if (!existsSync(this.configurationPath)) {
       this.saveConfiguration(DEFAULT_APPLICATION_SETTINGS);
       return;
@@ -30,6 +57,24 @@ export class ApplicationSettingsStore {
   }
 
   public getConfiguration(): ApplicationSettings {
+    if (this.settings !== null) {
+      return applicationSettingsSchema.parse({
+        agentDirectory: {
+          agents: this.settings.readValue("agents")
+            ?? DEFAULT_APPLICATION_SETTINGS.agentDirectory.agents,
+          teams: this.settings.readValue("teams")
+            ?? DEFAULT_APPLICATION_SETTINGS.agentDirectory.teams,
+        },
+        appearance: this.settings.readValue("appearance")
+          ?? DEFAULT_APPLICATION_SETTINGS.appearance,
+        general: this.settings.readValue("general")
+          ?? DEFAULT_APPLICATION_SETTINGS.general,
+        permissionPolicies: this.settings.readValue("permissionPolicies")
+          ?? DEFAULT_APPLICATION_SETTINGS.permissionPolicies,
+        version: 1,
+      });
+    }
+    if (this.configurationPath === null) throw new Error("Application settings path is missing.");
     return readJsonConfiguration(
       this.configurationPath,
       applicationSettingsSchema,
@@ -38,7 +83,21 @@ export class ApplicationSettingsStore {
   }
 
   public saveConfiguration(input: ApplicationSettings): ApplicationSettings {
-    const saved = writeJsonConfiguration(this.configurationPath, applicationSettingsSchema, input);
+    const parsed = applicationSettingsSchema.parse(input);
+    let saved: ApplicationSettings;
+    if (this.settings === null) {
+      if (this.configurationPath === null) throw new Error("Application settings path is missing.");
+      saved = writeJsonConfiguration(this.configurationPath, applicationSettingsSchema, parsed);
+    } else {
+      this.settings.writeValues([
+        { key: "general", value: parsed.general },
+        { key: "appearance", value: parsed.appearance },
+        { key: "permissionPolicies", value: parsed.permissionPolicies },
+        { key: "agents", value: parsed.agentDirectory.agents },
+        { key: "teams", value: parsed.agentDirectory.teams },
+      ]);
+      saved = structuredClone(parsed);
+    }
     for (const listener of this.listeners) {
       try {
         listener(structuredClone(saved));

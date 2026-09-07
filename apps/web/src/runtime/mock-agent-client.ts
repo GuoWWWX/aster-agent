@@ -88,6 +88,7 @@ import {
   type UpdatePendingConversationMessageInput,
   type SetConversationArchivedInput,
   type SetConversationModelSelectionInput,
+  type SetConversationPermissionModeInput,
   type SetConversationProjectInput,
   type SetConversationPinnedInput,
   type SetProjectPinnedInput,
@@ -443,6 +444,7 @@ export class MockAgentClient implements AgentClient {
       lastRunStatus: null,
       modelSelection: input.modelSelection ?? this.modelStatus.recentSelection,
       parentConversationId: null,
+      permissionMode: "ask_before_changes",
       pinOrder: null,
       projectId,
       teamId: input.teamId ?? null,
@@ -763,6 +765,7 @@ export class MockAgentClient implements AgentClient {
       lastRunStatus: null,
       modelSelection: source.modelSelection,
       parentConversationId: isSiblingFork ? null : source.id,
+      permissionMode: source.permissionMode ?? "ask_before_changes",
       pinOrder: null,
       projectId: source.projectId,
       teamId: source.teamId,
@@ -1896,6 +1899,20 @@ export class MockAgentClient implements AgentClient {
     return Promise.resolve({ ...conversation });
   }
 
+  public setConversationPermissionMode(
+    input: SetConversationPermissionModeInput,
+  ): Promise<ConversationSummary> {
+    const conversation = this.conversations.find(
+      (candidate) => candidate.id === input.conversationId,
+    );
+    if (conversation === undefined) {
+      return Promise.reject(new Error("Conversation was not found."));
+    }
+    conversation.permissionMode = input.permissionMode;
+    conversation.updatedAt = new Date().toISOString();
+    return Promise.resolve({ ...conversation });
+  }
+
   public renameProject(input: RenameProjectInput): Promise<ProjectSummary> {
     if (this.project?.id !== input.projectId) {
       return Promise.reject(new Error("The mock project is unavailable."));
@@ -2077,6 +2094,8 @@ export class MockAgentClient implements AgentClient {
       conversation.agentId = input.agent.id;
       conversation.avatarIcon = input.agent.avatarIcon ?? null;
     }
+    conversation.permissionMode = input.permissionMode ?? conversation.permissionMode
+      ?? "ask_before_changes";
 
     const now = new Date().toISOString();
     const runId = this.createIdentifier();

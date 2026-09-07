@@ -230,6 +230,7 @@ describe("project session model", () => {
       lastRunStatus: null,
       modelSelection: null,
       parentConversationId: null,
+      permissionMode: "ask_before_changes",
       pinOrder: null,
       projectId: null,
       teamId: null,

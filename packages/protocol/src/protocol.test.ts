@@ -48,6 +48,7 @@ import {
   saveModelConfigurationInputSchema,
   setDefaultModelInputSchema,
   setConversationModelSelectionInputSchema,
+  setConversationPermissionModeInputSchema,
   testModelConnectionInputSchema,
   setConversationProjectInputSchema,
   setProjectTeamsInNavigatorInputSchema,
@@ -286,6 +287,17 @@ describe("protocol bootstrap contract", () => {
     expect(() => setConversationModelSelectionInputSchema.parse({
       conversationId: "00000000-0000-4000-8000-000000000002",
       modelSelection: { ...selection, providerId: "invalid" },
+    })).toThrow();
+  });
+
+  it("validates a persisted Conversation permission preference", () => {
+    expect(setConversationPermissionModeInputSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000002",
+      permissionMode: "full_access",
+    }).permissionMode).toBe("full_access");
+    expect(() => setConversationPermissionModeInputSchema.parse({
+      conversationId: "00000000-0000-4000-8000-000000000002",
+      permissionMode: "allow_once",
     })).toThrow();
   });
 

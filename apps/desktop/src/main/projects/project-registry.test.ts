@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -114,6 +114,27 @@ describe("ProjectRegistry", () => {
     }));
     registry.unmountConversationWorkspace(conversationId);
     expect(() => registry.getProject(conversationId)).toThrow("not registered");
+  });
+
+  it("creates a persistent default workspace lazily for a conversation without a project", async () => {
+    const rootPath = await mkdtemp(path.join(tmpdir(), "aster-conversation-workspaces-"));
+    temporaryRoots.push(rootPath);
+    const workspacesPath = path.join(rootPath, "workspaces");
+    const conversationId = "00000000-0000-4000-8000-000000000019";
+    const registry = new ProjectRegistry(undefined, workspacesPath);
+
+    const workspace = registry.registerDefaultConversationWorkspace(conversationId);
+    await expect(stat(workspace.rootPath)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const listing = await registry.listEntries({
+      directoryPath: "",
+      projectId: conversationId,
+    });
+
+    expect(workspace.rootPath).toBe(path.join(workspacesPath, conversationId));
+    expect(listing.entries).toEqual([]);
+    expect((await stat(workspace.rootPath)).isDirectory()).toBe(true);
+    expect(registry.listProjects()).toEqual([]);
   });
 
   it("inherits an authorized workspace for a side conversation", async () => {

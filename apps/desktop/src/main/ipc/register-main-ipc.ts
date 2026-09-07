@@ -114,6 +114,7 @@ import {
   setDefaultModelIpcArgumentsSchema,
   setConversationArchivedIpcArgumentsSchema,
   setConversationModelSelectionIpcArgumentsSchema,
+  setConversationPermissionModeIpcArgumentsSchema,
   setConversationProjectIpcArgumentsSchema,
   setConversationPinnedIpcArgumentsSchema,
   setProjectPinnedIpcArgumentsSchema,
@@ -595,7 +596,7 @@ export function registerMainIpcHandlers(
         selectedDirectory
       );
       return conversationWorkspaceSelectionResponseSchema.parse(
-        database.setConversationWorkspaceRoot(conversation.id, workspace.rootPath)
+        conversationLifecycle.setConversationWorkspaceRoot(conversation.id, workspace.rootPath)
       );
     }
   );
@@ -605,7 +606,7 @@ export function registerMainIpcHandlers(
     (event, ...args: unknown[]) => {
       getTrustedWindow(event, getMainWindow);
       const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
-      const conversation = database.setConversationWorkspaceRoot(
+      const conversation = conversationLifecycle.setConversationWorkspaceRoot(
         input.conversationId,
         null
       );
@@ -644,21 +645,21 @@ export function registerMainIpcHandlers(
     getTrustedWindow(event, getMainWindow);
     const [input] = renameConversationIpcArgumentsSchema.parse(args);
     return conversationSummarySchema.parse(
-      database.renameConversation(input.conversationId, input.title)
+      conversationLifecycle.renameConversation(input.conversationId, input.title)
     );
   });
 
   ipcMain.handle(IPC_CHANNELS.conversationReorder, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = reorderConversationsIpcArgumentsSchema.parse(args);
-    database.reorderConversations(input.conversationIds);
+    conversationLifecycle.reorderConversations(input.conversationIds);
     return conversationListResponseSchema.parse(database.listConversations());
   });
 
   ipcMain.handle(IPC_CHANNELS.conversationSetProject, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = setConversationProjectIpcArgumentsSchema.parse(args);
-    const conversation = database.setConversationProject(
+    const conversation = conversationLifecycle.setConversationProject(
       input.conversationId,
       input.projectId
     );
@@ -674,7 +675,7 @@ export function registerMainIpcHandlers(
     const selection = credentials.resolveSelection(input.modelSelection);
     const current = database.getConversation(input.conversationId);
     const conversation = current.teamWorkItemId === null
-      ? database.setConversationModelSelection(input.conversationId, selection)
+      ? conversationLifecycle.setConversationModelSelection(input.conversationId, selection)
       : teamWorkItems.updateModelSelection(input.conversationId, selection);
     if (current.threadKind !== "subagent" && current.teamWorkItemId === null) {
       credentials.setRecentSelection(selection);
@@ -682,11 +683,22 @@ export function registerMainIpcHandlers(
     return conversationSummarySchema.parse(conversation);
   });
 
+  ipcMain.handle(IPC_CHANNELS.conversationSetPermissionMode, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = setConversationPermissionModeIpcArgumentsSchema.parse(args);
+    return conversationSummarySchema.parse(
+      conversationLifecycle.setConversationPermissionMode(
+        input.conversationId,
+        input.permissionMode,
+      ),
+    );
+  });
+
   ipcMain.handle(IPC_CHANNELS.conversationSetArchived, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = setConversationArchivedIpcArgumentsSchema.parse(args);
     const conversation = conversationSummarySchema.parse(
-      database.setConversationArchived(input.conversationId, input.archived)
+      conversationLifecycle.setConversationArchived(input.conversationId, input.archived)
     );
     sendConversationRunEvent(getMainWindow, {
       conversation,
@@ -699,7 +711,7 @@ export function registerMainIpcHandlers(
     getTrustedWindow(event, getMainWindow);
     const [input] = setConversationPinnedIpcArgumentsSchema.parse(args);
     return conversationSummarySchema.parse(
-      database.setConversationPinned(input.conversationId, input.pinned)
+      conversationLifecycle.setConversationPinned(input.conversationId, input.pinned)
     );
   });
 

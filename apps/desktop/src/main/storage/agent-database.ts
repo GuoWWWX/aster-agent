@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import path from "node:path";
 import { DatabaseMigrationRunner } from "./database-migration-runner.js";
 import { z } from "zod";
 import {
@@ -85,6 +87,7 @@ import type {
   ModelProviderTokenUsage,
   ModelToolCall,
 } from "../model/model-contracts.js";
+import { conversationPropertiesChangedPayloadSchema } from "./conversation-properties-event.js";
 
 export type { ModelProviderState, ModelToolCall } from "../model/model-contracts.js";
 
@@ -199,17 +202,6 @@ export type TeamExecutionConversationRecord = {
   sourceConversationId: string | null;
   teamId: string;
   teamInstanceId: string;
-};
-
-export type PluginCatalogRecord = {
-  contentHash: string;
-  enabled: boolean;
-  id: string;
-  manifestJson: string;
-  name: string;
-  rootPath: string;
-  updatedAt: string;
-  version: string;
 };
 
 export type PreparedConversationCreation = {
@@ -1096,6 +1088,7 @@ function toConversation(row: DatabaseRow): ConversationSummary {
             : parseJson(selectedReasoningJson, "conversation model reasoning"),
         }),
     parentConversationId: asNullableString(row, "parent_conversation_id"),
+    permissionMode: conversationPermissionModeSchema.parse(asString(row, "permission_mode")),
     pinOrder: asNullableNumber(row, "pin_order"),
     projectId: asNullableString(row, "project_id"),
     subagentTaskStatus: asNullableString(row, "subagent_task_status"),
@@ -1210,8 +1203,10 @@ function toPublicConversationAttachment(
 
 export class AgentDatabase {
   private readonly database: SqliteDatabase;
+  private readonly databasePath: string;
 
   public constructor(databasePath: string) {
+    this.databasePath = databasePath;
     this.database = new DatabaseSync(databasePath);
     this.database.exec("PRAGMA foreign_keys = ON;");
     if (databasePath !== ":memory:") {
@@ -1228,6 +1223,62 @@ export class AgentDatabase {
 
   public close(): void {
     this.database.close();
+  }
+
+  /**
+   * Imports the former standalone LangGraph databases into db.sqlite.
+   * INSERT OR IGNORE makes startup migration repeatable without replacing
+   * checkpoints that have already been written to the unified database.
+   */
+  public importLegacyCheckpointDatabases(databasePaths: readonly string[]): void {
+    for (const databasePath of databasePaths) {
+      if (!existsSync(databasePath)) continue;
+      if (
+        this.databasePath !== ":memory:"
+        && path.resolve(databasePath) === path.resolve(this.databasePath)
+      ) continue;
+
+      this.database.prepare("ATTACH DATABASE ? AS legacy_checkpoints").run(databasePath);
+      try {
+        const rows = this.database.prepare(
+          `SELECT name FROM legacy_checkpoints.sqlite_master
+           WHERE type = 'table' AND name IN (
+             'langgraph_checkpoints', 'langgraph_checkpoint_writes'
+           )`,
+        ).all() as DatabaseRow[];
+        const tableNames = new Set(rows.map((row) => asString(row, "name")));
+        if (
+          !tableNames.has("langgraph_checkpoints")
+          || !tableNames.has("langgraph_checkpoint_writes")
+        ) {
+          throw new Error(`Legacy checkpoint database has an incompatible schema: ${databasePath}`);
+        }
+
+        this.withTransaction(() => {
+          this.database.exec(`
+            INSERT OR IGNORE INTO langgraph_checkpoints (
+              thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id,
+              checkpoint_type, checkpoint_blob, metadata_type, metadata_blob, created_at
+            )
+            SELECT
+              thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id,
+              checkpoint_type, checkpoint_blob, metadata_type, metadata_blob, created_at
+            FROM legacy_checkpoints.langgraph_checkpoints;
+
+            INSERT OR IGNORE INTO langgraph_checkpoint_writes (
+              thread_id, checkpoint_ns, checkpoint_id, task_id, write_idx,
+              channel, value_type, value_blob, created_at
+            )
+            SELECT
+              thread_id, checkpoint_ns, checkpoint_id, task_id, write_idx,
+              channel, value_type, value_blob, created_at
+            FROM legacy_checkpoints.langgraph_checkpoint_writes;
+          `);
+        });
+      } finally {
+        this.database.exec("DETACH DATABASE legacy_checkpoints;");
+      }
+    }
   }
 
   /**
@@ -1325,7 +1376,7 @@ export class AgentDatabase {
       .prepare(
         `${teamWorkItemExecutionTreeCte}
          SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
-            selected_provider_id, selected_model_id, selected_reasoning_json,
+            selected_provider_id, selected_model_id, selected_reasoning_json, permission_mode,
             thread_kind, agent_id, avatar_icon, team_id, title, created_at, conversations.updated_at,
             conversations.archived_at,
             conversations.has_unread_result, conversations.is_archived,
@@ -1398,7 +1449,7 @@ export class AgentDatabase {
       .prepare(
         `${teamWorkItemExecutionTreeCte}
          SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
-            selected_provider_id, selected_model_id, selected_reasoning_json,
+            selected_provider_id, selected_model_id, selected_reasoning_json, permission_mode,
             thread_kind, agent_id, avatar_icon, team_id, title, created_at, conversations.updated_at,
             conversations.archived_at,
             conversations.has_unread_result, conversations.is_archived,
@@ -3429,75 +3480,6 @@ export class AgentDatabase {
       .get(conversationId) !== undefined;
   }
 
-  /** Plugin files are discovered on disk; this table is their queryable catalog. */
-  public syncPluginCatalog(records: readonly Omit<PluginCatalogRecord, "enabled" | "updatedAt">[]): void {
-    const now = new Date().toISOString();
-    this.withTransaction(() => {
-      const retainedIds = new Set(records.map((record) => record.id));
-      for (const record of records) {
-        this.database
-          .prepare(
-            `INSERT INTO plugin_catalog (
-              id, root_path, name, version, content_hash, manifest_json, enabled, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-              root_path = excluded.root_path,
-              name = excluded.name,
-              version = excluded.version,
-              content_hash = excluded.content_hash,
-              manifest_json = excluded.manifest_json,
-              updated_at = excluded.updated_at`,
-          )
-          .run(
-            record.id,
-            record.rootPath,
-            record.name,
-            record.version,
-            record.contentHash,
-            record.manifestJson,
-            now,
-            now,
-          );
-      }
-      if (retainedIds.size === 0) {
-        this.database.exec("DELETE FROM plugin_catalog");
-      } else {
-        this.database
-          .prepare(`DELETE FROM plugin_catalog WHERE id NOT IN (${[...retainedIds].map(() => "?").join(", ")})`)
-          .run(...retainedIds);
-      }
-    });
-  }
-
-  public listPluginCatalog(): PluginCatalogRecord[] {
-    const rows = this.database
-      .prepare(
-        `SELECT id, root_path, name, version, content_hash, manifest_json, enabled, updated_at
-         FROM plugin_catalog ORDER BY name COLLATE NOCASE ASC, id ASC`,
-      )
-      .all() as DatabaseRow[];
-    return rows.map((row) => ({
-      contentHash: asString(row, "content_hash"),
-      enabled: asBoolean(row, "enabled"),
-      id: asString(row, "id"),
-      manifestJson: asString(row, "manifest_json"),
-      name: asString(row, "name"),
-      rootPath: asString(row, "root_path"),
-      updatedAt: asString(row, "updated_at"),
-      version: asString(row, "version"),
-    }));
-  }
-
-  public setPluginEnabled(pluginId: string, enabled: boolean): PluginCatalogRecord {
-    const changed = this.database
-      .prepare("UPDATE plugin_catalog SET enabled = ?, updated_at = ? WHERE id = ?")
-      .run(Number(enabled), new Date().toISOString(), pluginId);
-    if (changed.changes === 0) throw new Error("Plugin was not found.");
-    const plugin = this.listPluginCatalog().find((candidate) => candidate.id === pluginId);
-    if (plugin === undefined) throw new Error("Plugin was not found.");
-    return plugin;
-  }
-
   public createConversation(
     projectId: string | null,
     options: Omit<CreateConversationInput, "projectId"> = {}
@@ -3554,6 +3536,7 @@ export class AgentDatabase {
       lastRunStatus: null,
       modelSelection: options.modelSelection ?? null,
       parentConversationId: parent?.id ?? null,
+      permissionMode: "ask_before_changes",
       pinOrder: null,
       projectId,
       subagentTaskStatus: null,
@@ -3592,9 +3575,10 @@ export class AgentDatabase {
           `INSERT INTO conversations
             (id, project_id, parent_conversation_id, workspace_root_path,
              selected_provider_id, selected_model_id, selected_reasoning_json,
+             permission_mode,
              thread_kind, agent_id, avatar_icon, agent_name, agent_role, agent_is_default,
              agent_instructions, team_id, title, created_at, updated_at, sort_order)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`
         )
         .run(
           conversation.id,
@@ -3606,6 +3590,7 @@ export class AgentDatabase {
           conversation.modelSelection === null || conversation.modelSelection.reasoning === null
             ? null
             : JSON.stringify(conversation.modelSelection.reasoning),
+          conversation.permissionMode ?? "ask_before_changes",
           conversation.threadKind,
           conversation.agentId,
           conversation.avatarIcon ?? null,
@@ -3757,6 +3742,23 @@ export class AgentDatabase {
     return this.getConversation(conversationId);
   }
 
+  public setConversationPermissionMode(
+    conversationId: string,
+    rawPermissionMode: unknown,
+  ): ConversationSummary {
+    const permissionMode = conversationPermissionModeSchema.parse(rawPermissionMode);
+    const conversation = this.getConversation(conversationId);
+    if (conversation.permissionMode === permissionMode) return conversation;
+    this.database
+      .prepare(
+        `UPDATE conversations
+         SET permission_mode = ?, updated_at = ?
+         WHERE id = ? AND deletion_pending = 0`,
+      )
+      .run(permissionMode, new Date().toISOString(), conversationId);
+    return this.getConversation(conversationId);
+  }
+
   public forkConversation(
     sourceConversationId: string,
     kind: "side" | "sibling" | "subagent" = "subagent",
@@ -3794,6 +3796,7 @@ export class AgentDatabase {
       lastRunStatus: null,
       modelSelection: source.modelSelection,
       parentConversationId,
+      permissionMode: source.permissionMode ?? "ask_before_changes",
       pinOrder: null,
       projectId: source.projectId,
       subagentTaskStatus: null,
@@ -3813,9 +3816,10 @@ export class AgentDatabase {
           `INSERT INTO conversations
              (id, project_id, parent_conversation_id, workspace_root_path,
               selected_provider_id, selected_model_id, selected_reasoning_json,
+              permission_mode,
               thread_kind, agent_id, avatar_icon, agent_name, agent_role, agent_is_default,
               agent_instructions, team_id, title, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           conversation.id,
@@ -3827,6 +3831,7 @@ export class AgentDatabase {
           conversation.modelSelection === null || conversation.modelSelection.reasoning === null
             ? null
             : JSON.stringify(conversation.modelSelection.reasoning),
+          conversation.permissionMode ?? "ask_before_changes",
           conversation.threadKind,
           inheritedAgent?.id ?? null,
           inheritedAgent?.avatarIcon ?? null,
@@ -4155,7 +4160,7 @@ export class AgentDatabase {
       .prepare(
         `${teamWorkItemExecutionTreeCte}
          SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
-            selected_provider_id, selected_model_id, selected_reasoning_json,
+            selected_provider_id, selected_model_id, selected_reasoning_json, permission_mode,
             thread_kind, agent_id, avatar_icon, team_id, title, created_at, conversations.updated_at,
             conversations.archived_at,
             conversations.has_unread_result, conversations.is_archived,
@@ -7090,6 +7095,11 @@ export class AgentDatabase {
     let projected = false;
     this.withTransaction(() => {
       for (const event of events) {
+        if (event.type === "conversation_properties_changed") {
+          this.materializeThreadLogConversationProperties(conversationId, event);
+          projected = true;
+          continue;
+        }
         if (event.type === "run_queued") {
           this.materializeThreadLogQueuedRun(conversationId, event);
           projected = true;
@@ -7157,6 +7167,77 @@ export class AgentDatabase {
       }
     });
     return projected;
+  }
+
+  /**
+   * Replays the latest durable mutable-property snapshot even when message and
+   * run projections already exist. Conversation metadata must not depend on an
+   * empty SQLite projection to be recoverable from its JSONL source.
+   */
+  public restoreThreadLogConversationProperties(
+    conversationId: string,
+    events: readonly ThreadLogProjectionEvent[],
+  ): boolean {
+    const propertyEvents = events.filter(
+      (event) => event.type === "conversation_properties_changed",
+    );
+    if (propertyEvents.length === 0) return false;
+    this.withTransaction(() => {
+      for (const event of propertyEvents) {
+        this.materializeThreadLogConversationProperties(conversationId, event);
+      }
+    });
+    return true;
+  }
+
+  private materializeThreadLogConversationProperties(
+    conversationId: string,
+    event: ThreadLogProjectionEvent,
+  ): void {
+    const payload = conversationPropertiesChangedPayloadSchema.parse(event.payload);
+    const { agent, properties } = payload;
+    if ((agent?.id ?? null) !== properties.agentId) {
+      throw new Error("ThreadLog Conversation Agent snapshot does not match agentId.");
+    }
+    this.assertProjectExistsWhenPresent(properties.projectId);
+    const selection = properties.modelSelection;
+    const result = this.database
+      .prepare(
+        `UPDATE conversations
+         SET project_id = ?, workspace_root_path = ?,
+             selected_provider_id = ?, selected_model_id = ?, selected_reasoning_json = ?,
+             permission_mode = ?,
+             agent_id = ?, avatar_icon = ?, agent_name = ?, agent_role = ?,
+             agent_is_default = ?, agent_instructions = ?, title = ?,
+             is_archived = ?, archived_at = ?, is_pinned = ?, pin_order = ?, updated_at = ?
+         WHERE id = ? AND deletion_pending = 0`,
+      )
+      .run(
+        properties.projectId,
+        properties.workspaceRootPath,
+        selection?.providerId ?? null,
+        selection?.modelId ?? null,
+        selection?.reasoning === null || selection === null
+          ? null
+          : JSON.stringify(selection.reasoning),
+        properties.permissionMode,
+        properties.agentId,
+        properties.avatarIcon ?? null,
+        agent?.name ?? null,
+        agent?.role ?? null,
+        Number(agent?.isDefault ?? false),
+        agent?.instructions ?? null,
+        properties.title,
+        Number(properties.isArchived),
+        properties.archivedAt,
+        Number(properties.isPinned),
+        properties.pinOrder ?? null,
+        properties.updatedAt,
+        conversationId,
+      );
+    if (result.changes !== 1) {
+      throw new Error("ThreadLog Conversation property target was not found.");
+    }
   }
 
   /**
@@ -9283,6 +9364,64 @@ export class AgentDatabase {
         },
         version: 21,
       },
+      {
+        name: "unified-langgraph-checkpoint-storage",
+        up: (database) => {
+          database.exec(`
+            CREATE TABLE IF NOT EXISTS langgraph_checkpoints (
+              thread_id TEXT NOT NULL,
+              checkpoint_ns TEXT NOT NULL,
+              checkpoint_id TEXT NOT NULL,
+              parent_checkpoint_id TEXT,
+              checkpoint_type TEXT NOT NULL,
+              checkpoint_blob BLOB NOT NULL,
+              metadata_type TEXT NOT NULL,
+              metadata_blob BLOB NOT NULL,
+              created_at TEXT NOT NULL,
+              PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+            );
+            CREATE INDEX IF NOT EXISTS langgraph_checkpoints_thread_order
+              ON langgraph_checkpoints(thread_id, checkpoint_ns, checkpoint_id DESC);
+
+            CREATE TABLE IF NOT EXISTS langgraph_checkpoint_writes (
+              thread_id TEXT NOT NULL,
+              checkpoint_ns TEXT NOT NULL,
+              checkpoint_id TEXT NOT NULL,
+              task_id TEXT NOT NULL,
+              write_idx INTEGER NOT NULL,
+              channel TEXT NOT NULL,
+              value_type TEXT NOT NULL,
+              value_blob BLOB NOT NULL,
+              created_at TEXT NOT NULL,
+              PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, write_idx)
+            );
+            CREATE INDEX IF NOT EXISTS langgraph_checkpoint_writes_order
+              ON langgraph_checkpoint_writes(
+                thread_id, checkpoint_ns, checkpoint_id, task_id, write_idx
+              );
+          `);
+        },
+        version: 22,
+      },
+      {
+        name: "plugin-settings-jsonc",
+        up: (database) => {
+          database.exec("DROP TABLE IF EXISTS plugin_catalog;");
+        },
+        version: 23,
+      },
+      {
+        name: "conversation-permission-mode",
+        up: (database) => {
+          const columns = database.prepare("PRAGMA table_info(conversations)").all() as DatabaseRow[];
+          if (!columns.some((column) => column.name === "permission_mode")) {
+            database.exec(
+              "ALTER TABLE conversations ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'ask_before_changes'",
+            );
+          }
+        },
+        version: 24,
+      },
     ]);
   }
 
@@ -9305,6 +9444,7 @@ export class AgentDatabase {
         selected_provider_id TEXT,
         selected_model_id TEXT,
         selected_reasoning_json TEXT,
+        permission_mode TEXT NOT NULL DEFAULT 'ask_before_changes',
         thread_kind TEXT NOT NULL DEFAULT 'agent',
         agent_id TEXT,
         avatar_icon TEXT,

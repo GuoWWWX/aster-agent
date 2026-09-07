@@ -78,6 +78,7 @@ import type {
   UpdatePendingConversationMessageInput,
   SetConversationArchivedInput,
   SetConversationModelSelectionInput,
+  SetConversationPermissionModeInput,
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SetProjectPinnedInput,
@@ -291,6 +292,9 @@ export interface AgentClient {
   setConversationArchived(input: SetConversationArchivedInput): Promise<ConversationSummary>;
   setConversationModelSelection(
     input: SetConversationModelSelectionInput
+  ): Promise<ConversationSummary>;
+  setConversationPermissionMode(
+    input: SetConversationPermissionModeInput
   ): Promise<ConversationSummary>;
   setConversationProject(input: SetConversationProjectInput): Promise<ConversationSummary>;
   setConversationPinned(input: SetConversationPinnedInput): Promise<ConversationSummary>;

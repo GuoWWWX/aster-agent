@@ -64,10 +64,14 @@ export function readJsonDocument(configurationPath: string): unknown {
 }
 
 export function writeJsonDocument(configurationPath: string, value: unknown): void {
+  writeTextDocument(configurationPath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+export function writeTextDocument(configurationPath: string, content: string): void {
   const temporaryPath = `${configurationPath}.${process.pid}.${randomUUID()}.tmp`;
   let failure: unknown = null;
   try {
-    writeFileSync(temporaryPath, JSON.stringify(value, null, 2), {
+    writeFileSync(temporaryPath, content, {
       encoding: "utf8",
       mode: 0o600,
     });

@@ -42,12 +42,14 @@ describe("Agent home", () => {
       .toBe(agentHome);
   });
 
-  it("names durable conversation snapshots attachments instead of temp files", async () => {
+  it("uses the unified database and durable conversation workspace paths", async () => {
     const homeDirectory = await mkdtemp(path.join(os.tmpdir(), "aster-home-paths-"));
     temporaryDirectories.push(homeDirectory);
     const paths = createAgentHomePaths(homeDirectory);
 
+    expect(paths.databasePath).toBe(path.join(homeDirectory, "db.sqlite"));
     expect(paths.conversationFilesPath).toBe(path.join(homeDirectory, "attachments"));
+    expect(paths.workspacesPath).toBe(path.join(homeDirectory, "workspaces"));
   });
 
   it("requires an absolute AGENT_HOME path", () => {
@@ -139,7 +141,8 @@ describe("Agent home", () => {
     });
 
     expect(result.paths.rootPath).toBe(path.join(homeDirectory, ".aster"));
-    await expect(readFile(result.paths.agentDatabasePath, "utf8")).resolves.toBe("database");
+    await expect(readFile(result.paths.databasePath, "utf8")).resolves.toBe("database");
+    expect(result.migratedEntries).toContain("agent.sqlite -> db.sqlite");
     await expect(readFile(
       path.join(result.paths.conversationFilesPath, "conversation-1", "attachment.png"),
       "utf8",
@@ -147,6 +150,25 @@ describe("Agent home", () => {
     expect(result.legacyConversationFilesPaths).toContain(
       path.join(legacyAgentHomePath, "conversation-files"),
     );
+  });
+
+  it("returns former checkpoint databases for import into db.sqlite", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "aster-home-checkpoint-migration-"));
+    temporaryDirectories.push(root);
+    const configuredHomePath = path.join(root, "configured");
+    const legacyRootPath = path.join(root, "legacy");
+    const checkpointPath = path.join(legacyRootPath, "langgraph-checkpoints.sqlite");
+    await mkdir(legacyRootPath, { recursive: true });
+    await writeFile(checkpointPath, "legacy checkpoint database", "utf8");
+
+    const result = await initializeAgentHome({
+      environment: { ASTER_HOME: configuredHomePath },
+      legacyRootPath,
+    });
+
+    expect(result.legacyCheckpointDatabasePaths).toEqual([checkpointPath]);
+    await expect(readFile(path.join(configuredHomePath, "langgraph-checkpoints.sqlite"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("migrates the former scoped-package Electron user data directory", async () => {

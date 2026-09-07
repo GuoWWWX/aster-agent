@@ -20,7 +20,7 @@ import {
   loadRenderer
 } from "../security/renderer-policy.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
-import { PluginCatalog } from "../plugins/plugin-catalog.js";
+import { PluginCatalog, migrateLegacyPluginSettings } from "../plugins/plugin-catalog.js";
 import { AgentDatabase } from "../storage/agent-database.js";
 import {
   initializeAgentHome,
@@ -40,6 +40,7 @@ import { BrowserConfigurationStore } from "../settings/browser-configuration-sto
 import { SkillDocumentStore } from "../settings/skill-document-store.js";
 import { ConfigurationWorkspaceStore } from "../settings/configuration-workspace-store.js";
 import { TerminalConfigurationStore } from "../settings/terminal-configuration-store.js";
+import { SettingsJsoncFile } from "../settings/settings-jsonc-file.js";
 import { TeamWorkItemRuntime } from "../teams/team-work-item-runtime.js";
 import { ProjectToolRegistry } from "../tools/project-tool-registry.js";
 import { GitReviewReader } from "../tools/git-review-reader.js";
@@ -162,27 +163,37 @@ async function initializeServices(): Promise<DesktopServices> {
     legacyRootPath: legacyUserDataPath,
     migrateLegacy: process.env.AGENT_HOME_SKIP_LEGACY_MIGRATION !== "1",
   });
-  const database = new AgentDatabase(agentHome.paths.agentDatabasePath);
-  const pluginCatalog = new PluginCatalog(database, agentHome.paths.pluginsPath);
+  const settings = new SettingsJsoncFile(agentHome.paths.settingsPath);
+  settings.ensureFile();
+  migrateLegacyPluginSettings(settings, agentHome.paths.databasePath);
+  const database = new AgentDatabase(agentHome.paths.databasePath);
+  database.importLegacyCheckpointDatabases(agentHome.legacyCheckpointDatabasePaths);
+  const pluginCatalog = new PluginCatalog(settings, agentHome.paths.pluginsPath);
   await pluginCatalog.synchronize();
   const graphCheckpointer = new NodeSqliteCheckpointSaver(
-    agentHome.paths.graphCheckpointPath,
+    agentHome.paths.databasePath,
+    { initializeSchema: false },
   );
   const credentials = new ModelCredentialStore(
+    settings,
     agentHome.paths.credentialsPath,
   );
   credentials.importFromEnvironment();
   const modelCatalog = new ModelCatalogStore(
+    settings,
     agentHome.paths.modelCatalogPath,
   );
   modelCatalog.ensureFile();
-  const projectRegistry = new ProjectRegistry(database);
+  const projectRegistry = new ProjectRegistry(database, agentHome.paths.workspacesPath);
   const attachments = new ConversationAttachmentStore(
     database,
     projectRegistry,
-    agentHome.paths.conversationFilesPath,
+    agentHome.paths.conversationsPath,
   );
-  await attachments.migrateLegacyManagedRoots(agentHome.legacyConversationFilesPaths);
+  await attachments.migrateLegacyManagedRoots([
+    agentHome.paths.conversationFilesPath,
+    ...agentHome.legacyConversationFilesPaths,
+  ]);
   const threadLog = new ThreadLog(agentHome.paths.conversationsPath);
   const conversationDeletion = new ConversationDeletionService(
     database,
@@ -211,9 +222,11 @@ async function initializeServices(): Promise<DesktopServices> {
     }
   }
   const integrationConfiguration = new IntegrationConfigurationStore(
+    settings,
     agentHome.paths.integrationSettingsPath,
   );
   const applicationSettings = new ApplicationSettingsStore(
+    settings,
     agentHome.paths.applicationSettingsPath,
   );
   applicationSettings.ensureFile();
@@ -225,6 +238,7 @@ async function initializeServices(): Promise<DesktopServices> {
     database.syncTeamDirectory(configuration.agentDirectory);
   });
   const contextCompression = new ContextCompressionConfigurationStore(
+    settings,
     agentHome.paths.contextCompressionSettingsPath,
   );
   contextCompression.ensureFile();
@@ -247,9 +261,11 @@ async function initializeServices(): Promise<DesktopServices> {
     integrationConfiguration.getConfiguration(),
   );
   const terminalConfiguration = new TerminalConfigurationStore(
+    settings,
     agentHome.paths.terminalSettingsPath,
   );
   const browserConfiguration = new BrowserConfigurationStore(
+    settings,
     agentHome.paths.browserSettingsPath,
   );
   const tools = new ProjectToolRegistry(projectRegistry, terminalConfiguration);
@@ -322,6 +338,7 @@ async function initializeServices(): Promise<DesktopServices> {
     terminalSessions,
     browserToolPlugin,
     { generateTurnSummaries: true },
+    conversationLifecycle,
   );
   const teamWorkItems = new TeamWorkItemRuntime(
     database,

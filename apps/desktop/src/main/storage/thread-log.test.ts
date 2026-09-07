@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -60,6 +60,7 @@ describe("ThreadLog", () => {
   it("rejects corruption before the final line", async () => {
     const log = await createThreadLog();
     const logPath = log.getPath(conversationId);
+    await mkdir(path.dirname(logPath), { recursive: true });
     await writeFile(logPath, [
       JSON.stringify({
         conversationId,
@@ -73,6 +74,24 @@ describe("ThreadLog", () => {
     ].join("\n"), "utf8");
 
     expect(() => log.read(conversationId)).toThrow();
+  });
+
+  it("moves a legacy flat log into the per-conversation directory", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-thread-log-legacy-"));
+    temporaryDirectories.push(directory);
+    const legacyPath = path.join(directory, `${conversationId}.jsonl`);
+    await writeFile(legacyPath, `${JSON.stringify({
+      conversationId,
+      createdAt: new Date().toISOString(),
+      type: "thread_header",
+      version: 1,
+    })}\n`, "utf8");
+
+    const log = new ThreadLog(directory);
+
+    expect(log.listConversationIds()).toEqual([conversationId]);
+    await expect(readFile(log.getPath(conversationId), "utf8")).resolves.toContain(conversationId);
+    await expect(readFile(legacyPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("reconstructs model-visible context from canonical message and tool events", async () => {

@@ -971,7 +971,7 @@ export function ConversationWorkspace({
   const [approvalErrors, setApprovalErrors] = useState<Record<string, string>>({});
   const [editingPendingMessageId, setEditingPendingMessageId] = useState<string | null>(null);
   const [permissionMode, setPermissionMode] =
-    useState<ConversationPermissionMode>(defaultPermissionMode);
+    useState<ConversationPermissionMode>(session.permissionMode ?? defaultPermissionMode);
   const [selectedModelKey, setSelectedModelKey] = useState(() => (
     initialModelSelection === null
       ? ""
@@ -1156,7 +1156,19 @@ export function ConversationWorkspace({
   const selectPermissionMode = useCallback((value: string): void => {
     const nextPermissionMode = value as ConversationPermissionMode;
     if (!teamManaged || session.teamWorkItemId === null || session.teamWorkItemId === undefined) {
+      if (nextPermissionMode === permissionMode) return;
       setPermissionMode(nextPermissionMode);
+      setOperationError(null);
+      void agentClient.setConversationPermissionMode({
+        conversationId: session.id,
+        permissionMode: nextPermissionMode,
+      }).then((conversation) => {
+        setPermissionMode(conversation.permissionMode ?? nextPermissionMode);
+        onSessionUpdated?.(conversation);
+      }).catch((error) => {
+        setPermissionMode(permissionMode);
+        setOperationError(getUserErrorMessage(error, "无法保存对话权限模式"));
+      });
       return;
     }
     if (nextPermissionMode === permissionMode || isSavingTeamPermission) return;
@@ -1172,7 +1184,15 @@ export function ConversationWorkspace({
     }).finally(() => {
       setIsSavingTeamPermission(false);
     });
-  }, [agentClient, isSavingTeamPermission, permissionMode, session.teamWorkItemId, teamManaged]);
+  }, [
+    agentClient,
+    isSavingTeamPermission,
+    onSessionUpdated,
+    permissionMode,
+    session.id,
+    session.teamWorkItemId,
+    teamManaged,
+  ]);
   const referenceWorkspaceId = project?.id
     ?? (session.workspaceRootPath === null ? null : session.id);
   const activeProjectFileMentions = useMemo(
@@ -1362,6 +1382,10 @@ export function ConversationWorkspace({
       disposed = true;
     };
   }, [agentClient, session.id, session.teamWorkItemId, teamManaged]);
+
+  useEffect(() => {
+    if (!teamManaged) setPermissionMode(session.permissionMode ?? defaultPermissionMode);
+  }, [defaultPermissionMode, session.id, session.permissionMode, teamManaged]);
 
   useEffect(() => {
     const awaitingApprovalToolIds = new Set(

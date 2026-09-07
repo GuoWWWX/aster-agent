@@ -25,6 +25,7 @@ import {
   replaceLatestConversationMessageInputSchema,
   setConversationArchivedInputSchema,
   setConversationModelSelectionInputSchema,
+  setConversationPermissionModeInputSchema,
   setConversationProjectInputSchema,
   setConversationPinnedInputSchema,
   saveModelConfigurationInputSchema,
@@ -168,6 +169,10 @@ export const setConversationProjectIpcArgumentsSchema = z.tuple([
 
 export const setConversationModelSelectionIpcArgumentsSchema = z.tuple([
   setConversationModelSelectionInputSchema
+]);
+
+export const setConversationPermissionModeIpcArgumentsSchema = z.tuple([
+  setConversationPermissionModeInputSchema
 ]);
 
 export const setConversationArchivedIpcArgumentsSchema = z.tuple([

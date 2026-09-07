@@ -107,7 +107,7 @@ export class TeamWorkItemRuntime {
     const leadAgent = this.teamAgentBinding(team.leadAgentId, team, directory);
     const expectedLeadTitle = `${leadAgent.name} · ${instance.name}`.slice(0, 200);
     if (lead.title !== expectedLeadTitle) {
-      lead = this.database.renameConversation(lead.id, expectedLeadTitle);
+      lead = this.renameConversation(lead.id, expectedLeadTitle);
     }
     if (input.agentId === team.leadAgentId) return { lead, member: lead };
     let member = this.database.listTeamMemberConversations(lead.id)
@@ -116,7 +116,7 @@ export class TeamWorkItemRuntime {
     const memberAgent = this.teamAgentBinding(input.agentId, team, directory);
     const expectedMemberTitle = `${memberAgent.name} · ${instance.name}`.slice(0, 200);
     if (member.title !== expectedMemberTitle) {
-      member = this.database.renameConversation(member.id, expectedMemberTitle);
+      member = this.renameConversation(member.id, expectedMemberTitle);
     }
     return { lead, member };
   }
@@ -158,12 +158,12 @@ export class TeamWorkItemRuntime {
         teamId: team.id,
         threadKind: "team_lead",
       });
-      lead = this.database.renameConversation(
+      lead = this.renameConversation(
         created.id,
         `${leadAgent.name} · ${team.name}`.slice(0, 200),
       );
     } else if (lead.isArchived) {
-      lead = this.database.setConversationArchived(lead.id, false);
+      lead = this.setConversationArchived(lead.id, false);
     }
     this.database.setTeamCoordinatorConversation(team.id, lead.id);
 
@@ -194,7 +194,7 @@ export class TeamWorkItemRuntime {
           teamId: team.id,
           threadKind: "agent",
         });
-        const renamed = this.database.renameConversation(
+        const renamed = this.renameConversation(
           created.id,
           `${memberAgent.name} · ${team.name}`.slice(0, 200),
         );
@@ -206,7 +206,7 @@ export class TeamWorkItemRuntime {
       }
     }
     if (member.isArchived) {
-      member = this.database.setConversationArchived(member.id, false);
+      member = this.setConversationArchived(member.id, false);
     }
     return { lead, member };
   }
@@ -224,7 +224,7 @@ export class TeamWorkItemRuntime {
       teamId: team.id,
       threadKind: "team_lead",
     });
-    const lead = this.database.renameConversation(
+    const lead = this.renameConversation(
       created.id,
       `${leadAgent.name} · ${instance.name}`.slice(0, 200),
     );
@@ -258,12 +258,18 @@ export class TeamWorkItemRuntime {
     const leadName = lead.agentId === null
       ? "Team Lead"
       : directory.agents.find((agent) => agent.id === lead.agentId)?.name ?? "Team Lead";
-    this.database.renameConversation(lead.id, `${leadName} · ${instance.name}`.slice(0, 200));
+    this.renameConversation(
+      lead.id,
+      `${leadName} · ${instance.name}`.slice(0, 200),
+    );
     for (const member of this.database.listTeamMemberConversations(lead.id)) {
       const memberName = member.agentId === null
         ? "Agent"
         : directory.agents.find((agent) => agent.id === member.agentId)?.name ?? "Agent";
-      this.database.renameConversation(member.id, `${memberName} · ${instance.name}`.slice(0, 200));
+      this.renameConversation(
+        member.id,
+        `${memberName} · ${instance.name}`.slice(0, 200),
+      );
     }
   }
 
@@ -579,7 +585,7 @@ export class TeamWorkItemRuntime {
           : { teamInstanceId: workItem.teamInstanceId }),
       });
       const executionTitle = `${agent.name} · ${workItem.instanceName ?? team.name}`.slice(0, 200);
-      this.database.renameConversation(conversation.id, executionTitle);
+      this.renameConversation(conversation.id, executionTitle);
       conversation = this.database.getConversation(conversation.id);
     }
     this.ensureTeamMemberConversations(workItem, team, directory, conversation);
@@ -661,7 +667,7 @@ export class TeamWorkItemRuntime {
         teamId: input.team.id,
         threadKind: "agent",
       });
-      this.database.renameConversation(
+      this.renameConversation(
         created.id,
         `${binding.name} · ${input.instanceName}`.slice(0, 200),
       );
@@ -801,6 +807,19 @@ export class TeamWorkItemRuntime {
       "",
       "请以这份最新内容为准，停止尚未开始且与新需求冲突的步骤；已经发生的副作用不得假装回滚。重新核对当前进度、任务清单和成员分工，然后继续执行。",
     ].join("\n");
+  }
+
+  private renameConversation(conversationId: string, title: string): ConversationSummary {
+    return this.conversationLifecycle.renameConversation?.(conversationId, title)
+      ?? this.database.renameConversation(conversationId, title);
+  }
+
+  private setConversationArchived(
+    conversationId: string,
+    archived: boolean,
+  ): ConversationSummary {
+    return this.conversationLifecycle.setConversationArchived?.(conversationId, archived)
+      ?? this.database.setConversationArchived(conversationId, archived);
   }
 
   private createWorkItemBoundary(workItem: TeamWorkItemView): string[] {

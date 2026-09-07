@@ -47,10 +47,75 @@ describe("AgentDatabase", () => {
       .get() as Record<string, unknown>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(21);
-    expect(firstRow.name).toBe("subagent-pixel-avatar-identity");
+    expect(firstRow.version).toBe(24);
+    expect(firstRow.name).toBe("conversation-permission-mode");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(21);
+    expect(migrationCount.count).toBe(24);
+  });
+
+  it("imports former standalone LangGraph checkpoints idempotently", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-checkpoint-import-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "db.sqlite");
+    const legacyPath = path.join(directory, "langgraph-checkpoints.sqlite");
+    const legacy = new DatabaseSync(legacyPath);
+    legacy.exec(`
+      CREATE TABLE langgraph_checkpoints (
+        thread_id TEXT NOT NULL,
+        checkpoint_ns TEXT NOT NULL,
+        checkpoint_id TEXT NOT NULL,
+        parent_checkpoint_id TEXT,
+        checkpoint_type TEXT NOT NULL,
+        checkpoint_blob BLOB NOT NULL,
+        metadata_type TEXT NOT NULL,
+        metadata_blob BLOB NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+      );
+      CREATE TABLE langgraph_checkpoint_writes (
+        thread_id TEXT NOT NULL,
+        checkpoint_ns TEXT NOT NULL,
+        checkpoint_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        write_idx INTEGER NOT NULL,
+        channel TEXT NOT NULL,
+        value_type TEXT NOT NULL,
+        value_blob BLOB NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, write_idx)
+      );
+    `);
+    legacy.prepare(
+      `INSERT INTO langgraph_checkpoints VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "conversation-1",
+      "",
+      "checkpoint-1",
+      null,
+      "json",
+      new Uint8Array([1]),
+      "json",
+      new Uint8Array([2]),
+      "2026-09-07T00:00:00.000Z",
+    );
+    legacy.close();
+
+    const database = new AgentDatabase(databasePath);
+    database.importLegacyCheckpointDatabases([legacyPath]);
+    database.importLegacyCheckpointDatabases([legacyPath]);
+    database.close();
+
+    const migrated = new DatabaseSync(databasePath);
+    const checkpointCount = migrated.prepare(
+      "SELECT COUNT(*) AS count FROM langgraph_checkpoints",
+    ).get() as Record<string, unknown>;
+    const migrationCount = migrated.prepare(
+      "SELECT COUNT(*) AS count FROM schema_migrations",
+    ).get() as Record<string, unknown>;
+    migrated.close();
+
+    expect(checkpointCount.count).toBe(1);
+    expect(migrationCount.count).toBe(24);
   });
 
   it("adds hidden turn summaries when upgrading an existing version 19 database", async () => {
@@ -459,7 +524,7 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 21",
+      "newer than supported version 24",
     );
   });
 
@@ -1636,36 +1701,6 @@ describe("AgentDatabase", () => {
     database.close();
   });
 
-  it("keeps Plugin discovery data queryable without resetting a user's enabled state", () => {
-    const database = new AgentDatabase(":memory:");
-    const record = {
-      contentHash: "a".repeat(64),
-      id: "example.plugin",
-      manifestJson: '{"version":1,"id":"example.plugin"}',
-      name: "Example Plugin",
-      rootPath: "C:\\Users\\example\\.agent\\plugins\\example",
-      version: "1.0.0",
-    };
-
-    database.syncPluginCatalog([record]);
-    expect(database.listPluginCatalog()).toEqual([
-      expect.objectContaining({ ...record, enabled: true }),
-    ]);
-
-    database.setPluginEnabled(record.id, false);
-    database.syncPluginCatalog([{ ...record, contentHash: "b".repeat(64) }]);
-    expect(database.listPluginCatalog()).toEqual([
-      expect.objectContaining({
-        ...record,
-        contentHash: "b".repeat(64),
-        enabled: false,
-      }),
-    ]);
-    database.syncPluginCatalog([]);
-    expect(database.listPluginCatalog()).toEqual([]);
-    database.close();
-  });
-
   it("renames and removes registered projects without touching their root path", () => {
     const database = new AgentDatabase(":memory:");
     const project = {
@@ -1816,6 +1851,9 @@ describe("AgentDatabase", () => {
       { version: 19 },
       { version: 20 },
       { version: 21 },
+      { version: 22 },
+      { version: 23 },
+      { version: 24 },
     ]);
     metadata.close();
   });
@@ -2025,7 +2063,7 @@ describe("AgentDatabase", () => {
     database.close();
 
     const legacy = new DatabaseSync(databasePath);
-    legacy.exec("DELETE FROM schema_migrations WHERE version = 21;");
+    legacy.exec("DELETE FROM schema_migrations WHERE version >= 21;");
     legacy.close();
 
     const migrated = new AgentDatabase(databasePath);

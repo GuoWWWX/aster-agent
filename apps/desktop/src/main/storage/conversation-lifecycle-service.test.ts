@@ -60,4 +60,62 @@ describe("ConversationLifecycleService", () => {
     });
     expect(database.getThreadLogProjectionCursor(conversation.id)?.lastSequence).toBe(1);
   });
+
+  it("records mutable properties in JSONL and restores the SQLite projection", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "conversation-properties-"));
+    temporaryDirectories.push(directory);
+    const database = new AgentDatabase(":memory:");
+    const threadLog = new ThreadLog(path.join(directory, "conversations"));
+    const projector = new EventProjector(database, threadLog);
+    const service = new ConversationLifecycleService(database, threadLog, projector);
+    const providerId = crypto.randomUUID();
+    const conversation = service.createConversation(null);
+
+    service.renameConversation(conversation.id, "JSONL 属性恢复");
+    service.setConversationModelSelection(conversation.id, {
+      modelId: "durable-model",
+      providerId,
+      reasoning: { kind: "effort", value: "medium" },
+    });
+    service.setConversationPermissionMode(conversation.id, "read_only");
+    service.setConversationPinned(conversation.id, true);
+
+    expect(threadLog.read(conversation.id)?.events.at(-1)).toMatchObject({
+      type: "conversation_properties_changed",
+      payload: {
+        changed: ["pin"],
+        properties: {
+          isPinned: true,
+          modelSelection: {
+            modelId: "durable-model",
+            providerId,
+          },
+          permissionMode: "read_only",
+          title: "JSONL 属性恢复",
+        },
+      },
+    });
+
+    database.renameConversation(conversation.id, "损坏的 SQLite 投影");
+    database.setConversationModelSelection(conversation.id, {
+      modelId: "wrong-model",
+      providerId,
+      reasoning: null,
+    });
+    database.setConversationPinned(conversation.id, false);
+    database.setConversationPermissionMode(conversation.id, "full_access");
+
+    projector.projectConversation(conversation.id);
+
+    expect(database.getConversation(conversation.id)).toMatchObject({
+      isPinned: true,
+      modelSelection: {
+        modelId: "durable-model",
+        providerId,
+        reasoning: { kind: "effort", value: "medium" },
+      },
+      permissionMode: "read_only",
+      title: "JSONL 属性恢复",
+    });
+  });
 });

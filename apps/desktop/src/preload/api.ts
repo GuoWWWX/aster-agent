@@ -88,6 +88,7 @@ import type {
   UpdatePendingConversationMessageInput,
   SetConversationArchivedInput,
   SetConversationModelSelectionInput,
+  SetConversationPermissionModeInput,
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SetProjectPinnedInput,
@@ -656,6 +657,12 @@ export function createDesktopBridge(): DesktopBridge {
     setConversationModelSelection(input: SetConversationModelSelectionInput) {
       return invoke<BridgeResult<"setConversationModelSelection">>(
         IPC_CHANNELS.conversationSetModelSelection,
+        input
+      );
+    },
+    setConversationPermissionMode(input: SetConversationPermissionModeInput) {
+      return invoke<BridgeResult<"setConversationPermissionMode">>(
+        IPC_CHANNELS.conversationSetPermissionMode,
         input
       );
     },

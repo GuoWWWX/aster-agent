@@ -90,6 +90,12 @@ export const conversationThreadKindSchema = z.enum([
   "subagent"
 ]);
 
+export const conversationPermissionModeSchema = z.enum([
+  "read_only",
+  "ask_before_changes",
+  "full_access"
+]);
+
 export const conversationAgentBindingSchema = z
   .object({
     avatarIcon: agentAvatarIconSchema.nullable().optional(),
@@ -182,6 +188,7 @@ export const conversationSummarySchema = z
     lastRunStatus: conversationRunStatusSchema.nullable(),
     modelSelection: conversationModelSelectionSchema.nullable().default(null),
     parentConversationId: conversationIdSchema.nullable().default(null),
+    permissionMode: conversationPermissionModeSchema.optional(),
     pinOrder: z.number().int().positive().nullable().optional(),
     projectId: projectIdSchema.nullable(),
     subagentTaskStatus: z.enum([
@@ -301,6 +308,13 @@ export const setConversationModelSelectionInputSchema = z
   .object({
     conversationId: conversationIdSchema,
     modelSelection: conversationModelSelectionSchema
+  })
+  .strict();
+
+export const setConversationPermissionModeInputSchema = z
+  .object({
+    conversationId: conversationIdSchema,
+    permissionMode: conversationPermissionModeSchema,
   })
   .strict();
 
@@ -503,12 +517,6 @@ export const conversationSearchResultSchema = z
   .strict();
 
 export const conversationSearchResponseSchema = z.array(conversationSearchResultSchema).max(100);
-
-export const conversationPermissionModeSchema = z.enum([
-  "read_only",
-  "ask_before_changes",
-  "full_access"
-]);
 
 export const conversationMessageDeliveryModeSchema = z.enum(["queue", "steer"]);
 
@@ -1194,6 +1202,9 @@ export type SetConversationProjectInput = z.infer<
 >;
 export type SetConversationModelSelectionInput = z.infer<
   typeof setConversationModelSelectionInputSchema
+>;
+export type SetConversationPermissionModeInput = z.infer<
+  typeof setConversationPermissionModeInputSchema
 >;
 export type ConversationReferenceInput = z.infer<
   typeof conversationReferenceInputSchema

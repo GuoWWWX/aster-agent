@@ -24,6 +24,7 @@ const threadLogEventTypeSchema = z.enum([
   "agent_message_read",
  "assistant_message",
   "conversation_created",
+  "conversation_properties_changed",
   "context_checkpoint",
   "legacy_snapshot_imported",
   "model_retry_updated",
@@ -122,7 +123,9 @@ export class ThreadLog {
 
   private readonly contextSnapshotCache = new Map<string, ThreadLogContext>();
 
-  public constructor(private readonly conversationsRootPath: string) {}
+  public constructor(private readonly conversationsRootPath: string) {
+    this.migrateLegacyLayout();
+  }
 
   public append(conversationId: string, input: ThreadLogEventInput): ThreadLogEvent {
     const parsedConversationId = z.string().uuid().parse(conversationId);
@@ -181,7 +184,11 @@ export class ThreadLog {
 
   public getPath(conversationId: string): string {
     const parsedConversationId = z.string().uuid().parse(conversationId);
-    return path.join(this.conversationsRootPath, `${parsedConversationId}.jsonl`);
+    return path.join(
+      this.conversationsRootPath,
+      parsedConversationId,
+      "conversation.jsonl",
+    );
   }
 
   public hasConversation(conversationId: string): boolean {
@@ -191,7 +198,10 @@ export class ThreadLog {
   public async deleteConversations(conversationIds: readonly string[]): Promise<void> {
     for (const conversationId of conversationIds) {
       const parsedConversationId = z.string().uuid().parse(conversationId);
-      await rm(this.getPath(parsedConversationId), { force: true });
+      await rm(path.dirname(this.getPath(parsedConversationId)), {
+        force: true,
+        recursive: true,
+      });
       this.lastSequenceByConversation.delete(parsedConversationId);
       this.contextReadCache.delete(parsedConversationId);
       this.contextSnapshotCache.delete(parsedConversationId);
@@ -218,9 +228,8 @@ export class ThreadLog {
   public listConversationIds(): string[] {
     if (!existsSync(this.conversationsRootPath)) return [];
     return readdirSync(this.conversationsRootPath, { withFileTypes: true }).flatMap((entry) => {
-      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) return [];
-      const conversationId = entry.name.slice(0, -".jsonl".length);
-      return z.string().uuid().safeParse(conversationId).success ? [conversationId] : [];
+      if (!entry.isDirectory() || !z.string().uuid().safeParse(entry.name).success) return [];
+      return existsSync(this.getPath(entry.name)) ? [entry.name] : [];
     });
   }
 
@@ -270,7 +279,7 @@ export class ThreadLog {
     const existing = this.read(conversationId);
     if (existing !== null) return existing;
 
-    mkdirSync(this.conversationsRootPath, { recursive: true, mode: 0o700 });
+    mkdirSync(path.dirname(this.getPath(conversationId)), { recursive: true, mode: 0o700 });
     const header = threadLogHeaderSchema.parse({
       conversationId,
       createdAt: new Date().toISOString(),
@@ -335,6 +344,23 @@ export class ThreadLog {
       return lastByte[0] === 0x0a;
     } finally {
       closeSync(descriptor);
+    }
+  }
+
+  private migrateLegacyLayout(): void {
+    if (!existsSync(this.conversationsRootPath)) return;
+    for (const entry of readdirSync(this.conversationsRootPath, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+      const conversationId = entry.name.slice(0, -".jsonl".length);
+      if (!z.string().uuid().safeParse(conversationId).success) continue;
+      const legacyPath = path.join(this.conversationsRootPath, entry.name);
+      const targetPath = this.getPath(conversationId);
+      mkdirSync(path.dirname(targetPath), { recursive: true, mode: 0o700 });
+      if (existsSync(targetPath)) {
+        renameSync(legacyPath, `${targetPath}.legacy-${Date.now()}-${randomUUID()}`);
+      } else {
+        renameSync(legacyPath, targetPath);
+      }
     }
   }
 }

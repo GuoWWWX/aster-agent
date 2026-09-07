@@ -79,8 +79,9 @@ import {
   type StoredPendingMessage,
   type SubagentTask
 } from "../storage/agent-database.js";
-import type { PluginCatalogRecord } from "../storage/agent-database.js";
+import type { PluginCatalogRecord } from "../plugins/plugin-catalog.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
+import { ConversationLifecycleService } from "../storage/conversation-lifecycle-service.js";
 import { EventProjector } from "../storage/event-projector.js";
 import { ThreadLog, type ThreadLogEventInput } from "../storage/thread-log.js";
 import { ThreadLogLegacyImporter } from "../storage/thread-log-legacy-importer.js";
@@ -1059,6 +1060,7 @@ export class AgentRuntime {
     terminalSessions: TerminalSessionPort | null = null,
     browserToolPlugin: BrowserToolPlugin | null = null,
     features: { generateTurnSummaries?: boolean } = {},
+    private readonly conversationLifecycle: ConversationLifecycleService | null = null,
   ) {
     this.modelGateway = new ModelGateway(model);
     this.taskListTool = new TaskListTool(database);
@@ -1466,8 +1468,11 @@ export class AgentRuntime {
       throw new Error("This Subagent has ended and its conversation is read-only.");
     }
     if (input.agent !== undefined) {
-      this.database.bindConversationAgent(input.conversationId, input.agent);
+      (this.conversationLifecycle ?? this.database)
+        .bindConversationAgent(input.conversationId, input.agent);
     }
+    (this.conversationLifecycle ?? this.database)
+      .setConversationPermissionMode(input.conversationId, input.permissionMode ?? DEFAULT_PERMISSION_MODE);
     const prepared = this.prepareConversationMessage(input);
     if (conversation.activeRunId !== null) {
       const pendingInput = {
@@ -1517,6 +1522,11 @@ export class AgentRuntime {
     if (conversation.subagentTaskStatus === "ended") {
       throw new Error("This Subagent has ended and its conversation is read-only.");
     }
+    (this.conversationLifecycle ?? this.database)
+      .setConversationPermissionMode(
+        input.conversationId,
+        input.permissionMode ?? conversation.permissionMode ?? DEFAULT_PERMISSION_MODE,
+      );
     let source = this.database.getLatestUserMessageReplacementSource(
       input.conversationId,
       input.messageId,
@@ -2067,7 +2077,8 @@ export class AgentRuntime {
     if (record === null) return;
     try {
       if (record.input.agent !== undefined) {
-        this.database.bindConversationAgent(conversationId, record.input.agent);
+        (this.conversationLifecycle ?? this.database)
+          .bindConversationAgent(conversationId, record.input.agent);
       }
       const prepared = this.prepareConversationMessage(record.input);
       this.startPreparedRun(prepared, emit, record.message.id);
@@ -3126,7 +3137,7 @@ export class AgentRuntime {
 
     const child = this.database.forkConversation(parent.id, "subagent");
     if (providerId !== undefined) {
-      this.database.setConversationModelSelection(child.id, {
+      (this.conversationLifecycle ?? this.database).setConversationModelSelection(child.id, {
         modelId: configuration.modelId,
         providerId,
         reasoning: reasoning ?? null,
@@ -3134,11 +3145,15 @@ export class AgentRuntime {
     }
     this.projects.inheritConversationWorkspace(parent.id, child.id);
     const selectedAgent = this.resolveSubagentAgent(parent, input.agentId);
-    if (selectedAgent !== null) this.database.bindConversationAgent(child.id, selectedAgent);
-    this.database.setConversationAvatarIcon(child.id, input.icon ?? null);
+    if (selectedAgent !== null) {
+      (this.conversationLifecycle ?? this.database).bindConversationAgent(child.id, selectedAgent);
+    }
+    (this.conversationLifecycle ?? this.database).setConversationAvatarIcon(child.id, input.icon ?? null);
+    (this.conversationLifecycle ?? this.database)
+      .setConversationPermissionMode(child.id, input.permissionMode);
     const title = input.name?.trim()
       || `${selectedAgent?.name ?? "Subagent"} · ${input.task.replace(/\s+/gu, " ").slice(0, 80)}`;
-    this.database.renameConversation(child.id, title);
+    (this.conversationLifecycle ?? this.database).renameConversation(child.id, title);
     this.threadLogLegacyImporter?.importConversationIfMissing(child.id);
 
     const executionSnapshot = createRunExecutionSnapshot({
@@ -4470,8 +4485,8 @@ export class AgentRuntime {
 
   private approvalReviewWorkspace(conversationId: string): string {
     const conversation = this.database.getConversation(conversationId);
-    if (conversation.projectId === null) return "Isolated temporary conversation workspace";
-    return this.projects.getProject(conversation.projectId).rootPath;
+    return this.resolveConversationWorkspace(conversation)?.rootPath
+      ?? "Conversation workspace unavailable";
   }
 
   private async resolvePermissionDecision(input: {
@@ -5508,7 +5523,13 @@ export class AgentRuntime {
         kind: "project"
       };
     }
-    if (conversation.workspaceRootPath === null) return null;
+    if (conversation.workspaceRootPath === null) {
+      if (!this.projects.hasDefaultConversationWorkspaceStorage()) return null;
+      return {
+        ...this.projects.registerDefaultConversationWorkspace(conversation.id),
+        kind: "conversation",
+      };
+    }
     return {
       ...this.projects.getProject(conversation.id),
       kind: "conversation"
