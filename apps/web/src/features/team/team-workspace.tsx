@@ -301,10 +301,11 @@ export function TeamWorkspace({
     }
     const entries = await Promise.all(currentExecution.agents.map(async (member) => {
       try {
-        const timeline = await agentClient.listConversationTimeline({
+        const page = await agentClient.listConversationTimelinePage({
           conversationId: member.conversation.id,
+          limit: 120,
         });
-        return [member.conversation.id, timeline] as const;
+        return [member.conversation.id, page.items] as const;
       } catch {
         return [member.conversation.id, [] as ConversationTimelineItem[]] as const;
       }

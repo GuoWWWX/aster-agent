@@ -139,7 +139,6 @@ export class ConversationAttachmentStore {
   public async migrateLegacyManagedRoots(legacyRoots: readonly string[]): Promise<void> {
     const roots = [...new Set(legacyRoots.map((root) => path.resolve(root)))]
       .filter((root) => root !== path.resolve(this.rootPath));
-    if (roots.length === 0) return;
 
     for (const attachment of this.database.listConversationAttachmentStoragePaths()) {
       const storedPath = await this.migrateLegacyManagedFile(attachment.storedPath, roots);
@@ -691,6 +690,15 @@ export class ConversationAttachmentStore {
     legacyRoots: readonly string[],
   ): Promise<string> {
     const resolvedFilePath = path.resolve(filePath);
+    const currentManagedPath = this.resolveCurrentManagedPath(resolvedFilePath);
+    if (currentManagedPath !== null && currentManagedPath !== resolvedFilePath) {
+      if (!existsSync(currentManagedPath)) {
+        if (!existsSync(resolvedFilePath)) return filePath;
+        await mkdir(path.dirname(currentManagedPath), { recursive: true });
+        await copyFile(resolvedFilePath, currentManagedPath);
+      }
+      return currentManagedPath;
+    }
     for (const legacyRoot of legacyRoots) {
       const relativePath = path.relative(legacyRoot, resolvedFilePath);
       if (
@@ -717,6 +725,18 @@ export class ConversationAttachmentStore {
       return migratedPath;
     }
     return filePath;
+  }
+
+  private resolveCurrentManagedPath(filePath: string): string | null {
+    const attachmentDirectory = path.dirname(filePath);
+    if (path.basename(attachmentDirectory) !== "attachments") return null;
+    const ownerConversationId = path.basename(path.dirname(attachmentDirectory));
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+      .test(ownerConversationId)) return null;
+    return path.join(
+      this.getAttachmentDirectory(ownerConversationId),
+      path.basename(filePath),
+    );
   }
 
   private getAttachmentDirectory(conversationId: string): string {

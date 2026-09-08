@@ -31,9 +31,10 @@ describe("GlobalConversationSearchDialog", () => {
       createdAt: "2026-09-04T00:00:00.000Z",
       itemId: "00000000-0000-4000-8000-000000000002",
       parentConversationId: null,
-      projectId: null,
-      role: "assistant",
-      threadKind: "agent",
+          projectId: null,
+          role: "assistant",
+          sequence: 1,
+          threadKind: "agent",
     };
     const client = new MockAgentClient();
     const search = vi.spyOn(client, "searchConversations").mockResolvedValue([result]);

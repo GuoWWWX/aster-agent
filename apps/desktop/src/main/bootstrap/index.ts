@@ -1,4 +1,4 @@
-import { app, BrowserWindow, nativeTheme } from "electron";
+import { app, BrowserWindow, dialog, nativeTheme } from "electron";
 import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -68,6 +68,7 @@ type DesktopServices = {
   pluginCatalog: PluginCatalog;
   credentials: ModelCredentialStore;
   database: AgentDatabase;
+  eventProjector: EventProjector;
   integrationConfiguration: IntegrationConfigurationStore;
   contextCompression: ContextCompressionConfigurationStore;
   graphCheckpointer: NodeSqliteCheckpointSaver;
@@ -216,6 +217,44 @@ async function initializeServices(): Promise<DesktopServices> {
     ...agentHome.legacyConversationFilesPaths,
   ]);
   const threadLog = new ThreadLog(agentHome.paths.conversationsPath);
+  const eventProjector = new EventProjector(
+    database,
+    threadLog,
+    (attachment) => attachments.resolveThreadLogPaths(attachment),
+  );
+  const conversationLifecycle = new ConversationLifecycleService(
+    database,
+    threadLog,
+    eventProjector,
+    credentials,
+  );
+  const threadLogLegacyImporter = new ThreadLogLegacyImporter(
+    database,
+    threadLog,
+    eventProjector,
+  );
+  try {
+    const alreadyFinalized = database.isJsonlConversationStorageFinalized();
+    if (!alreadyFinalized) {
+      threadLogLegacyImporter.recoverUnreadableConversationLogs();
+      threadLogLegacyImporter.importMissingConversationLogs();
+      database.activateVolatileConversationProjection();
+    }
+    eventProjector.projectAllConversationLogs({ releaseHistory: true });
+    if (!alreadyFinalized) database.finalizeJsonlConversationStorage();
+    for (const recovered of database.interruptRecoveredThreadLogRuns()) {
+      eventProjector.projectEvent(recovered.conversationId,
+        threadLog.append(recovered.conversationId, recovered.event));
+    }
+    eventProjector.checkpointInactiveConversations();
+    eventProjector.releaseInactiveConversationHistories();
+  } catch (error) {
+    reportMainError(
+      toMainAgentError(error, { operation: "thread_log.startup_projection" }),
+      error,
+    );
+    throw error;
+  }
   const conversationDeletion = new ConversationDeletionService(
     database,
     attachments,
@@ -299,40 +338,8 @@ async function initializeServices(): Promise<DesktopServices> {
     browserConfiguration,
   );
   const browserToolPlugin = new BrowserToolPlugin(managedBrowser, workspaceBrowserTabs);
-  const eventProjector = new EventProjector(
-    database,
-    threadLog,
-    (attachment) => attachments.resolveThreadLogPaths(attachment),
-  );
-  const conversationLifecycle = new ConversationLifecycleService(
-    database,
-    threadLog,
-    eventProjector,
-    credentials,
-  );
-  const threadLogLegacyImporter = new ThreadLogLegacyImporter(
-    database,
-    threadLog,
-    eventProjector,
-  );
-  try {
-    threadLogLegacyImporter.recoverUnreadableConversationLogs();
-    threadLogLegacyImporter.importMissingConversationLogs();
-    eventProjector.projectAllConversationLogs();
-    database.interruptRecoveredThreadLogRuns();
-    const inconsistent = eventProjector
-      .verifyAllConversationLogs()
-      .find((result) => !result.isConsistent);
-    if (inconsistent !== undefined) {
-      throw new Error("ThreadLog event index is inconsistent with its JSONL source.");
-    }
-  } catch (error) {
-    reportMainError(
-      toMainAgentError(error, { operation: "thread_log.startup_projection" }),
-      error,
-    );
-  }
   await attachments.resumeCancelledPendingMessageAttachmentCleanup();
+  eventProjector.releaseInactiveConversationHistories();
 
   const agentRuntime = new AgentRuntime(
     database,
@@ -391,6 +398,7 @@ async function initializeServices(): Promise<DesktopServices> {
     modelCatalog,
     pluginCatalog,
     database,
+    eventProjector,
     integrationConfiguration,
     projectRegistry,
     threadLogLegacyImporter,
@@ -533,6 +541,18 @@ async function bootstrap(): Promise<void> {
 
   await openMainWindow();
 
+  const credentialWarnings = services.credentials.getCredentialMigrationWarnings();
+  if (credentialWarnings.length > 0 && mainWindow !== undefined) {
+    void dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      message: "部分旧 API Key 无法恢复，请重新填写",
+      detail: `以下供应商的旧密钥无法解密：${credentialWarnings.join("、")}。\n供应商和模型配置已迁入 settings.jsonc，对应 apiKey 留空；旧文件已保留。请在设置中或 settings.jsonc 内填写明文 API Key。`,
+      buttons: ["知道了"],
+    }).catch((error: unknown) => reportMainError(
+      toMainAgentError(error, { operation: "model.credential_migration_notice" }), error,
+    ));
+  }
+
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       void openMainWindow().catch(reportStartupError);
@@ -549,6 +569,11 @@ async function bootstrap(): Promise<void> {
     if (archivedConversationCleanupTimer !== undefined) {
       clearInterval(archivedConversationCleanupTimer);
       archivedConversationCleanupTimer = undefined;
+    }
+    try {
+      services?.eventProjector.checkpointInactiveConversations();
+    } catch (error) {
+      reportMainError(toMainAgentError(error, { operation: "thread_log.shutdown_checkpoint" }), error);
     }
     services?.graphCheckpointer.close();
     services?.managedBrowser.dispose();

@@ -31,6 +31,7 @@ export const IPC_CHANNELS = {
   conversationSetPinned: "conversation.set_pinned",
   conversationDelete: "conversation.delete",
   conversationListTimeline: "conversation.list_timeline",
+  conversationListTimelinePage: "conversation.list_timeline_page",
   conversationSearch: "conversation.search",
   conversationGetTaskList: "conversation.get_task_list",
   conversationCloseTaskList: "conversation.close_task_list",

@@ -1,4 +1,4 @@
-import { app, type BrowserWindow, type WebContents } from "electron";
+import { app, shell, type BrowserWindow, type WebContents } from "electron";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -66,6 +66,17 @@ function denyPermissionCheck(): boolean {
   return false;
 }
 
+export function externalHttpUrl(value: string): string | null {
+  if (!/^https?:\/\//iu.test(value) || value.includes("\\")
+    || Array.from(value).some((character) => character.charCodeAt(0) < 32)) return null;
+  try {
+    const url = new URL(value);
+    return url.username || url.password ? null : url.href;
+  } catch {
+    return null;
+  }
+}
+
 export function applyRendererSecurityPolicy(window: BrowserWindow): RendererTarget {
   const target = getRendererTarget();
   const denyUnexpectedNavigation = (event: Electron.Event, navigationUrl: string): void => {
@@ -74,7 +85,15 @@ export function applyRendererSecurityPolicy(window: BrowserWindow): RendererTarg
     }
   };
 
-  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    const external = externalHttpUrl(url);
+    if (external !== null) {
+      void shell.openExternal(external).catch(() => {
+        console.warn("无法在系统浏览器中打开网页链接。");
+      });
+    }
+    return { action: "deny" };
+  });
   window.webContents.on("will-navigate", denyUnexpectedNavigation);
   window.webContents.on("will-redirect", denyUnexpectedNavigation);
   window.webContents.session.setPermissionCheckHandler(denyPermissionCheck);

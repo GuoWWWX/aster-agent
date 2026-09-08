@@ -2712,6 +2712,34 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
+  it("does not wake the parent for an application-interrupted Subagent notification", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const parent = database.createConversation(null);
+    const parentRun = database.createRunWithUserMessage(parent.id, "委派任务", "test-model");
+    const child = database.forkConversation(parent.id);
+    const childRun = database.createRunWithUserMessage(child.id, "执行任务", "test-model");
+    const task = database.createSubagentTask({ childConversationId: child.id,
+      parentConversationId: parent.id, sourceRunId: parentRun.runId, task: "执行任务", title: "测试任务" });
+    database.assignSubagentTaskRun(task.id, childRun.runId);
+    database.interruptRecoveredThreadLogRuns();
+    const model = new FixtureModel();
+    const complete = vi.spyOn(model, "completeTurn");
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({
+      apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+      modelId: "test-model", reasoningOptions: [],
+    }) }, projects, new ProjectToolRegistry(projects), model);
+    runtime.resumePendingMessages(() => undefined);
+    runtime.resumePendingMessages(() => undefined);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(complete).not.toHaveBeenCalled();
+    expect(database.getConversation(parent.id).activeRunId).toBeNull();
+    expect(database.listUnreadAgentMessages(parent.id)).toEqual([
+      expect.objectContaining({ autoWake: false, messageType: "task_result" }),
+    ]);
+    database.close();
+  });
+
   it("keeps project file tools unavailable while allowing temporary commands and planning", async () => {
     const database = new AgentDatabase(":memory:");
     const projects = new ProjectRegistry(database);
@@ -3450,6 +3478,7 @@ describe("AgentRuntime", () => {
       cachedInputTokens: number | undefined,
       cacheCreationInputTokens: number | undefined,
       modelId = "test-model",
+      baseUrl = "https://example.test/v1",
     ): void => {
       const run = database.createRunWithUserMessage(
         conversation.id,
@@ -3463,7 +3492,7 @@ describe("AgentRuntime", () => {
         modelId,
         providerState: {
           apiFormat: "openai-chat-completions",
-          baseUrl: "https://example.test/v1",
+          baseUrl,
           modelId,
           payload: {},
           usage: {
@@ -3528,6 +3557,7 @@ describe("AgentRuntime", () => {
       conversationId: conversation.id,
       permissionMode: "read_only",
     }).providerCache).toEqual({
+      lastReportedHitRate: 0.8,
       cumulative: {
         cacheCreationInputTokens: 20,
         cachedInputTokens: 130,
@@ -3545,7 +3575,54 @@ describe("AgentRuntime", () => {
         trendDelta: null,
       },
     });
+    appendUsage(100, 0, 0);
+    expect(runtime.getContextUsage({ conversationId: conversation.id, permissionMode: "read_only" })
+      .providerCache?.latest?.hitRate).toBe(0);
+    appendUsage(100, undefined, undefined);
+    expect(runtime.getContextUsage({ conversationId: conversation.id, permissionMode: "read_only" })
+      .providerCache?.lastReportedHitRate).toBe(0);
+    appendUsage(100, 54, 0);
+    expect(runtime.getContextUsage({ conversationId: conversation.id, permissionMode: "read_only" })
+      .providerCache?.latest?.hitRate).toBe(0.54);
+    appendUsage(100, undefined, undefined, "never-reported-model");
+    expect(runtime.getContextUsage({ conversationId: conversation.id, permissionMode: "read_only" })
+      .providerCache?.lastReportedHitRate).toBeUndefined();
+    appendUsage(100, undefined, undefined, "test-model", "https://another-provider.test/v1");
+    expect(runtime.getContextUsage({ conversationId: conversation.id, permissionMode: "read_only" })
+      .providerCache?.lastReportedHitRate).toBeUndefined();
     database.close();
+  });
+
+  it("recovers the last reported cache rate from JSONL after reopening", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-cache-reopen-"));
+    temporaryDirectories.push(directory);
+    const database = new AgentDatabase(":memory:");
+    try {
+      const conversation = database.createConversation(null);
+      const log = new ThreadLog(directory);
+      for (const cachedInputTokens of [80, undefined]) {
+        log.append(conversation.id, { type: "assistant_message", payload: {
+          content: "answer", runId: crypto.randomUUID(), modelId: "test-model",
+          providerState: { apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+            modelId: "test-model", payload: {}, usage: { inputTokens: 100, outputTokens: 10,
+              totalTokens: 110, ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }) } },
+        } });
+      }
+      const projects = new ProjectRegistry(database);
+      const runtime = new AgentRuntime(database, {
+        getConfiguration: () => ({ apiKey: "secret", apiFormat: "openai-chat-completions",
+          baseUrl: "https://example.test/v1", modelId: "test-model", reasoningOptions: [] }),
+      }, projects, new ProjectToolRegistry(projects), new ContinuousConversationFixtureModel(),
+      undefined, undefined, null, null, null, null, null, undefined, null, new ThreadLog(directory));
+      expect(runtime.getContextUsage({ conversationId: conversation.id, permissionMode: "read_only" })
+        .providerCache).toMatchObject({
+          lastReportedHitRate: 0.8,
+          latest: { inputTokens: 100, outputTokens: 10, hitRate: null },
+          cumulative: { hitRate: 0.8, reportedRequestCount: 1, requestCount: 2 },
+        });
+    } finally {
+      database.close();
+    }
   });
 
   it("injects a bounded referenced conversation without changing the user timeline", async () => {
@@ -4589,7 +4666,7 @@ describe("AgentRuntime", () => {
     ]));
     expect(threadLog.read(parent.id)?.events.map((event) => event.type)).toEqual(
       expect.arrayContaining([
-        "agent_message_read",
+        "agent_messages_consumed",
         "subagent_task_created",
         "subagent_task_completed",
       ]),
@@ -4736,7 +4813,7 @@ describe("AgentRuntime", () => {
     ));
     expect(consolidationRequest?.messages.find((message) =>
       message.content.includes("[Subagent task result]"),
-    )?.content).toContain("not a user-visible chat message");
+    )?.content).toContain("private completion receipt");
     expect(consolidationRequest?.messages[0]?.content).toContain(
       "never expose the internal delivery envelope",
     );

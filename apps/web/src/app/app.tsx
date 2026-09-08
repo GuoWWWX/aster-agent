@@ -19,7 +19,7 @@ import {
 } from "../features/chat/workspace-content.js";
 import {
   closeConversationTab,
-  openConversationTab,
+  reconcileConversationTabs,
 } from "../features/chat/conversation-tabs.js";
 import {
   ProjectNavigator,
@@ -122,6 +122,16 @@ export function App(): ReactElement {
     projectTree.activeProject?.id ?? null,
   );
   const [openConversationIds, setOpenConversationIds] = useState<string[]>([]);
+  const [previousTabSource, setPreviousTabSource] = useState<string | null>(null);
+  const availableConversationIds = projectSessions.sessions.filter((session) => !session.isArchived).map((session) => session.id);
+  const tabSource = `${projectSessions.activeSessionId ?? ""}:${availableConversationIds.join(",")}`;
+  // Reconcile only selection/membership changes, before committing child panes.
+  // Model deltas and status updates do not schedule a second effect render.
+  if (previousTabSource !== tabSource) {
+    setPreviousTabSource(tabSource);
+    const next = reconcileConversationTabs(openConversationIds, availableConversationIds, projectSessions.activeSessionId);
+    if (next !== openConversationIds) setOpenConversationIds(next);
+  }
   const [navigatorLocateRequest, setNavigatorLocateRequest] =
     useState<ProjectNavigatorLocateRequest | null>(null);
   const [fileOpenRequest, setFileOpenRequest] = useState<ProjectFileOpenRequest | null>(null);
@@ -151,12 +161,6 @@ export function App(): ReactElement {
   const applicationSettingsSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
-    const activeSessionId = projectSessions.activeSessionId;
-    if (activeSessionId === null) return;
-    setOpenConversationIds((current) => openConversationTab(current, activeSessionId));
-  }, [projectSessions.activeSessionId]);
-
-  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (!(event.ctrlKey || event.metaKey) || !event.shiftKey || event.altKey) return;
       if (event.key.toLocaleLowerCase() !== "f") return;
@@ -172,15 +176,6 @@ export function App(): ReactElement {
       window.removeEventListener("keydown", onKeyDown, true);
     };
   }, [agentClient]);
-
-  useEffect(() => {
-    const availableIds = new Set(
-      projectSessions.sessions
-        .filter((session) => !session.isArchived)
-        .map((session) => session.id),
-    );
-    setOpenConversationIds((current) => current.filter((id) => availableIds.has(id)));
-  }, [projectSessions.sessions]);
 
   const conversationTabs = useMemo(() => {
     const agentsById = new Map(agents.map((agent) => [agent.id, agent]));

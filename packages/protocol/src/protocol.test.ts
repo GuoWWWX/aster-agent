@@ -22,6 +22,7 @@ import {
   conversationSearchResponseSchema,
   conversationSummarySchema,
   conversationTaskListSchema,
+  conversationTimelinePageInputSchema,
   createProjectEntryInputSchema,
   createConversationInputSchema,
   DEFAULT_APPLICATION_SETTINGS,
@@ -63,6 +64,14 @@ import {
 } from "./index.js";
 
 describe("protocol bootstrap contract", () => {
+  it("accepts one timeline cursor and rejects mixed navigation modes", () => {
+    const conversationId = "00000000-0000-4000-8000-000000000001";
+    expect(conversationTimelinePageInputSchema.parse({ conversationId, afterSequence: 120 }).limit).toBe(120);
+    expect(conversationTimelinePageInputSchema.safeParse({ conversationId, aroundItemId: conversationId }).success).toBe(true);
+    expect(conversationTimelinePageInputSchema.safeParse({ conversationId, beforeSequence: 121, afterSequence: 1 }).success).toBe(false);
+    expect(conversationTimelinePageInputSchema.safeParse({ conversationId, aroundItemId: conversationId, beforeSequence: 121 }).success).toBe(false);
+  });
+
   it("accepts ended Subagents and defaults legacy Agent message file changes", () => {
     const now = "2026-09-05T00:00:00.000Z";
     expect(conversationSummarySchema.parse({
@@ -899,6 +908,7 @@ describe("protocol bootstrap contract", () => {
       parentConversationId: null,
       projectId: null,
       role: "assistant",
+      sequence: 1,
       threadKind: "agent",
     }])).toHaveLength(1);
     expect(() => conversationSearchInputSchema.parse({ query: "" })).toThrow();
@@ -1103,6 +1113,12 @@ describe("protocol bootstrap contract", () => {
       cumulative: { hitRate: 0.6, reportedRequestCount: 2 },
       latest: { hitRate: 0.7, outputTokens: 240 },
     });
+  });
+
+  it("validates the optional previous cache hit rate without treating zero as missing", () => {
+    const schema = conversationContextUsageSchema.shape.providerCache.unwrap().shape.lastReportedHitRate;
+    for (const value of [undefined, 0, 0.54, 1]) expect(schema.safeParse(value).success).toBe(true);
+    for (const value of [null, -1, 1.01, NaN, "0.8"]) expect(schema.safeParse(value).success).toBe(false);
   });
 
   it("validates global context compression thresholds", () => {

@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync } from "node:fs";
-import { cp, mkdir, stat } from "node:fs/promises";
+import { cp, mkdir, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { backup, DatabaseSync } from "node:sqlite";
 
 import {
   APPLICATION_DATA_DIRECTORY_NAME,
@@ -10,12 +12,6 @@ import {
 } from "@agent/protocol";
 
 const LEGACY_AGENT_ENTRIES = [
-  { source: "db.sqlite", target: "db.sqlite" },
-  { source: "db.sqlite-shm", target: "db.sqlite-shm" },
-  { source: "db.sqlite-wal", target: "db.sqlite-wal" },
-  { source: "agent.sqlite", target: "db.sqlite" },
-  { source: "agent.sqlite-shm", target: "db.sqlite-shm" },
-  { source: "agent.sqlite-wal", target: "db.sqlite-wal" },
   { source: "application-settings.json", target: "application-settings.json" },
   { source: "browser-settings.json", target: "browser-settings.json" },
   { source: "context-compression-settings.json", target: "context-compression-settings.json" },
@@ -178,6 +174,8 @@ export async function initializeAgentHome(input: {
   }
 
   const migratedEntries: string[] = [];
+  const migratedDatabase = await migrateLegacyDatabase(migrationRootPaths, paths.databasePath);
+  if (migratedDatabase !== null) migratedEntries.push(migratedDatabase);
   for (const legacyPath of migrationRootPaths) {
     for (const entry of LEGACY_AGENT_ENTRIES) {
       const sourcePath = path.join(legacyPath, entry.source);
@@ -195,6 +193,32 @@ export async function initializeAgentHome(input: {
     migratedEntries,
     paths,
   };
+}
+
+async function migrateLegacyDatabase(
+  legacyRootPaths: readonly string[],
+  targetPath: string,
+): Promise<string | null> {
+  if (await pathExists(targetPath)) return null;
+  for (const legacyRootPath of legacyRootPaths) {
+    for (const sourceName of ["db.sqlite", "agent.sqlite"] as const) {
+      const sourcePath = path.join(legacyRootPath, sourceName);
+      if (path.resolve(sourcePath) === path.resolve(targetPath) || !await pathExists(sourcePath)) {
+        continue;
+      }
+      const temporaryTargetPath = `${targetPath}.migrating-${randomUUID()}`;
+      const sourceDatabase = new DatabaseSync(sourcePath, { readOnly: true });
+      try {
+        await backup(sourceDatabase, temporaryTargetPath);
+        await rename(temporaryTargetPath, targetPath);
+      } finally {
+        sourceDatabase.close();
+        await rm(temporaryTargetPath, { force: true });
+      }
+      return sourceName === "db.sqlite" ? sourceName : `${sourceName} -> db.sqlite`;
+    }
+  }
+  return null;
 }
 
 async function existingPaths(candidatePaths: readonly string[]): Promise<string[]> {

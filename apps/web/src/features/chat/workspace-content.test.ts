@@ -8,6 +8,7 @@ import type {
   ConversationToolItem,
   ModelRuntimeStatus,
 } from "@agent/protocol";
+import { formatConversationRunMarkdown } from "./conversation-copy.js";
 
 import {
   createRestoredRunProgresses,
@@ -557,12 +558,35 @@ describe("run activity projection", () => {
       durationMs: 93_000,
       kind: "run_activity",
     });
-    expect(projected[1]).toMatchObject({ durationMs: null, id: "assistant-first" });
-    expect(projected[3]).toMatchObject({
+    expect(projected[1]).toMatchObject({
       durationMs: null,
       id: "assistant-continuation",
+      continuationMessages: [
+        expect.objectContaining({ id: "assistant-first" }),
+        expect.objectContaining({ id: "assistant-continuation" }),
+      ],
     });
+    expect(projected.filter((item) => item.kind === "message")).toHaveLength(1);
+    const copied = formatConversationRunMarkdown([
+      firstAnswer, { ...subagentTaskResult(), content: "private receipt" }, continuationAnswer,
+    ], continuationAnswer);
+    expect(copied).toContain(firstAnswer.content);
+    expect(copied).toContain(continuationAnswer.content);
+    expect(copied).not.toContain("private receipt");
     expect([...getConversationRunDurationInsertIndexes(projected).entries()]).toEqual([]);
+  });
+
+  it.each(["user", "message"])("does not combine across a new %s request", (boundary) => {
+    const first = assistantMessage("first", "before");
+    const last = { ...assistantMessage("last", "after"), runId: "other-run" };
+    const separator = boundary === "user"
+      ? { ...assistantMessage("user", "new request"), role: "user" as const, runId: "other-run" }
+      : { ...subagentTaskResult(), messageType: "message" as const };
+    const projected = groupRunActivities([tool("spawn_subagent"), first, separator, subagentTaskResult(), last]);
+    expect(projected.filter((item) => item.kind === "message" && item.role === "assistant"))
+      .toHaveLength(2);
+    const copied = formatConversationRunMarkdown([first, separator, subagentTaskResult(), last], last);
+    expect(copied).not.toContain("before");
   });
 
   it("combines an automatic continuation's activity into one work process", () => {
@@ -608,7 +632,7 @@ describe("run activity projection", () => {
     expect(projected[0]?.kind === "run_activity"
       ? projected[0].items.map((item) => item.kind)
       : []).toEqual(["tool", "activity_reasoning", "tool"]);
-    expect(projected.at(-1)).toMatchObject({
+    expect(projected.find((item) => item.kind === "message")).toMatchObject({
       content: "结果已经核对完成。",
       durationMs: null,
       kind: "message",

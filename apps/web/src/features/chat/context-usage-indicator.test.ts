@@ -144,6 +144,26 @@ describe("providerCacheLabel", () => {
 });
 
 describe("providerCacheInlineMetrics", () => {
+  it.each([0, 0.8])("labels a retained rate as previous without retaining old token counts (%s)", (previous) => {
+    const current = usage({ providerCache: {
+      lastReportedHitRate: previous,
+      cumulative: { cacheCreationInputTokens: 0, cachedInputTokens: 80, hitRate: 0.8,
+        inputTokens: 100, reportedRequestCount: 1, requestCount: 2 },
+      latest: { cacheCreationInputTokens: null, cachedInputTokens: null, hitRate: null,
+        inputTokens: 200, outputTokens: 69, trendDelta: null },
+    } });
+    expect(providerCacheLabel(current)).toBe(`上次缓存 ${previous * 100}%`);
+    expect(providerCacheInlineMetrics(current)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: "本次发送", value: "200" }),
+      expect.objectContaining({ label: "模型返回", value: "69" }),
+      expect.objectContaining({ label: "上次命中率", value: `${previous * 100}%` }),
+    ]));
+    if (current.providerCache?.latest) current.providerCache.latest.hitRate = 0.54;
+    expect(providerCacheInlineMetrics(current)[2]).toMatchObject({ label: "本次命中率", value: "54%" });
+    if (current.providerCache?.latest) current.providerCache.latest.hitRate = 0;
+    expect(providerCacheInlineMetrics(current)[2]).toMatchObject({ label: "本次命中率", value: "0%" });
+  });
+
   it("shows the latest input, output, cache rate, and weighted average with status tones", () => {
     expect(providerCacheInlineMetrics(usage({
       providerCache: {

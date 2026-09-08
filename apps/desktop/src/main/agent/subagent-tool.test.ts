@@ -1,9 +1,112 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { AgentDatabase, type SubagentTask } from "../storage/agent-database.js";
 import { SubagentTool } from "./subagent-tool.js";
 
 describe("SubagentTool", () => {
+  it.each(["timeout", "no_progress", "approval", "deleted", "cancelled"] as const)("handles %s without confusing wait completion with successful execution", async (scenario) => {
+    vi.useFakeTimers();
+    const db = new AgentDatabase(":memory:");
+    try {
+      const parent = db.createConversation(null);
+      const source = db.createRunWithUserMessage(parent.id, "委派", "test");
+      const child = db.forkConversation(parent.id, "subagent");
+      const run = db.createRunWithUserMessage(child.id, "检查", "test");
+      const task = db.createSubagentTask({ parentConversationId: parent.id, childConversationId: child.id,
+        sourceRunId: source.runId, title: "检查", task: "检查" });
+      db.assignSubagentTaskRun(task.id, run.runId);
+      if (scenario === "approval") {
+        db.appendToolStarted({ id: crypto.randomUUID(), kind: "tool", name: "run_command", arguments: "{}",
+          conversationId: child.id, runId: run.runId, status: "awaiting_approval", createdAt: new Date().toISOString(),
+          diff: null, result: null, batchId: null });
+        // Approval need not be among the most recent eight timeline entries.
+        for (let index = 0; index < 10; index++) db.appendAssistantTurn({ conversationId: child.id, runId: run.runId,
+          messageId: crypto.randomUUID(), modelId: "test", content: `进度 ${index}`, toolCalls: [] });
+      }
+      const tool = new SubagentTool(db, undefined, () => true);
+      const controller = new AbortController();
+      let settled = false;
+      const execution = tool.execute({ arguments: JSON.stringify({ taskIds: [task.id],
+        ...(scenario === "timeout" ? { timeoutMs: 1_000 } : {}) }), conversationId: parent.id,
+        signal: controller.signal, toolName: "wait_for_subagents",
+        end: () => { throw new Error("unused"); }, spawn: () => { throw new Error("unused"); } });
+      void execution.then(() => { settled = true; }, () => { settled = true; });
+      if (scenario === "approval") {
+        await vi.advanceTimersByTimeAsync(360_000);
+        expect(settled).toBe(false);
+        const rejected = expect(execution).rejects.toThrow();
+        controller.abort();
+        await rejected;
+      } else if (scenario === "deleted" || scenario === "cancelled") {
+        db.finishRun(run.runId, "cancelled", "用户取消");
+        if (scenario === "deleted") db.completeConversationDeletionTask(db.createConversationDeletionTask(child.id).id);
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(JSON.parse((await execution).content)).toMatchObject({ value: { status: "ready", tasks: [
+          { status: scenario === "deleted" ? "deleted" : "cancelled" },
+        ] } });
+      } else {
+        await vi.advanceTimersByTimeAsync(scenario === "timeout" ? 1_000 : 300_000);
+        expect(JSON.parse((await execution).content)).toMatchObject({ value: {
+          status: scenario === "timeout" ? "timeout" : "interrupted",
+        } });
+        expect(db.getConversation(child.id).activeRunId).toBe(run.runId);
+      }
+    } finally { vi.useRealTimers(); db.close(); }
+  });
+  it("pins a follow-up run, accepts an omitted timeout, and consumes its receipt rather than the previous result", async () => {
+    const db = new AgentDatabase(":memory:");
+    const parent = db.createConversation(null);
+    const source = db.createRunWithUserMessage(parent.id, "委派", "test");
+    const child = db.forkConversation(parent.id, "subagent");
+    const first = db.createRunWithUserMessage(child.id, "第一轮", "test");
+    const task = db.createSubagentTask({ parentConversationId: parent.id, childConversationId: child.id,
+      sourceRunId: source.runId, title: "检查", task: "检查" });
+    db.assignSubagentTaskRun(task.id, first.runId);
+    db.finishRun(first.runId, "completed", null);
+    db.completeSubagentTaskByRun({ targetRunId: first.runId, status: "completed", result: "旧结果", error: null });
+    const oldReceipt = db.deliverSubagentTaskResult(task.id)!;
+    db.markAgentMessagesRead([oldReceipt.id]);
+    const second = db.createRunWithUserMessage(child.id, "返工", "test");
+    const tool = new SubagentTool(db);
+    let settled = false;
+    const execution = tool.execute({ arguments: JSON.stringify({ taskIds: [task.id], waitFor: "all" }), conversationId: parent.id,
+      signal: new AbortController().signal, toolName: "wait_for_subagents",
+      end: () => { throw new Error("unused"); }, spawn: () => { throw new Error("unused"); } });
+    void execution.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    db.completeRun({ conversationId: child.id, runId: second.runId, status: "completed", result: null, assistant: null, error: null });
+    db.sendAgentMessage({ senderConversationId: child.id, targetConversationId: parent.id, runId: second.runId,
+      messageType: "agent_result", content: "未提供总结" });
+    const third = db.createRunWithUserMessage(child.id, "后续独立一轮", "test");
+    tool.notifyTaskCompleted(db.getSubagentTask(task.id));
+    expect(JSON.parse((await execution).content)).toMatchObject({ value: { status: "ready", tasks: [
+      { runId: second.runId, status: "completed", result: null, lifecycleStatus: "completed" },
+    ] } });
+    expect(db.listUnreadAgentMessages(parent.id)).toEqual([]);
+    expect(db.getConversation(child.id).activeRunId).toBe(third.runId);
+    db.close();
+  });
+
+  it("releases a no-timeout wait for a missing executor without cancelling its task", async () => {
+    const db = new AgentDatabase(":memory:");
+    const parent = db.createConversation(null);
+    const source = db.createRunWithUserMessage(parent.id, "委派", "test");
+    const child = db.forkConversation(parent.id, "subagent");
+    const run = db.createRunWithUserMessage(child.id, "执行", "test");
+    const task = db.createSubagentTask({ parentConversationId: parent.id, childConversationId: child.id,
+      sourceRunId: source.runId, title: "检查", task: "检查" });
+    db.assignSubagentTaskRun(task.id, run.runId);
+    const tool = new SubagentTool(db, undefined, () => false);
+    const read = vi.fn();
+    const result = await tool.execute({ arguments: JSON.stringify({ taskIds: [task.id] }), conversationId: parent.id,
+      signal: new AbortController().signal, toolName: "wait_for_subagents", onResultMessagesRead: read,
+      end: () => { throw new Error("unused"); }, spawn: () => { throw new Error("unused"); } });
+    expect(JSON.parse(result.content)).toMatchObject({ value: { status: "interrupted" } });
+    expect(read).not.toHaveBeenCalled();
+    expect(db.getConversation(child.id).activeRunId).toBe(run.runId);
+    db.close();
+  });
   it("lists recently healthy models and forwards an explicit Subagent selection", async () => {
     const database = new AgentDatabase(":memory:");
     const parent = database.createConversation(null);

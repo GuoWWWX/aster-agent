@@ -9,6 +9,7 @@ import type { ModelApiFormat } from "@agent/protocol";
 
 import type { CompleteTurnInput } from "./model-contracts.js";
 import { LangChainModelAdapter, toolDefinitions } from "./langchain-model-adapter.js";
+import { requestFingerprint } from "./request-fingerprint.js";
 
 type BoundToolConfig = {
   config?: { tools?: unknown };
@@ -190,7 +191,12 @@ describe("LangChainModelAdapter", () => {
     const originalFetch = globalThis.fetch;
     if (apiFormat === "google-gemini") globalThis.fetch = request;
     try {
-      await new LangChainModelAdapter(apiFormat, request).completeTurn(multimodalInput(apiFormat));
+      const result = await new LangChainModelAdapter(apiFormat, request).completeTurn(multimodalInput(apiFormat));
+      if (apiFormat !== "google-gemini") {
+        expect(result.providerState?.payload).toMatchObject({
+          requestFingerprint: requestFingerprint(request.mock.calls[0]?.[1]?.body),
+        });
+      }
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -325,7 +331,7 @@ describe("LangChainModelAdapter", () => {
     });
   });
 
-  it("preserves normalized provider cache token usage", async () => {
+  it.each([undefined, 0, 54, 80])("preserves normalized provider cache token usage (%s)", async (cached) => {
     const model = {
       async *stream() {
         await Promise.resolve();
@@ -334,7 +340,7 @@ describe("LangChainModelAdapter", () => {
           usage_metadata: {
             input_token_details: {
               cache_creation: 15,
-              cache_read: 80,
+              ...(cached === undefined ? {} : { cache_read: cached }),
             },
             input_tokens: 100,
             output_tokens: 10,
@@ -354,7 +360,7 @@ describe("LangChainModelAdapter", () => {
 
     expect(result.providerState?.usage).toEqual({
       cacheCreationInputTokens: 15,
-      cachedInputTokens: 80,
+      ...(cached === undefined ? {} : { cachedInputTokens: cached }),
       inputTokens: 100,
       outputTokens: 10,
       totalTokens: 110,
@@ -548,6 +554,7 @@ describe("LangChainModelAdapter", () => {
     }));
 
     const messages = recordBody(request, 1).messages;
+    expect(JSON.stringify(recordBody(request, 1))).not.toContain("requestFingerprint");
     if (!isUnknownArray(messages)) throw new Error("Expected an OpenAI messages array.");
     expect(messages).toContainEqual(expect.objectContaining({
       reasoning_content: "hidden thought",

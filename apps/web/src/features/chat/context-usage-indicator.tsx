@@ -284,6 +284,12 @@ function ProviderCacheDetails({
           {latest === null ? "暂无数据" : `最近一次 ${latestCacheLabel}`}
         </strong>
       </div>
+      <p className="my-1 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
+        本次指最近一次模型 API 请求，不是整轮任务。平均值按有缓存明细的输入 Token 加权。
+        {latest?.hitRate == null && cache?.lastReportedHitRate !== undefined
+          ? ` 本次未上报缓存明细，底部保留上次有效命中率 ${formatCachePercentage(cache.lastReportedHitRate)}。`
+          : null}
+      </p>
       {latest === null ? (
         <p className="mb-0 mt-1 text-[length:var(--app-font-size-auxiliary)] leading-5 text-[var(--app-muted-foreground)]">
           完成一次模型请求后显示真实缓存命中情况。
@@ -448,7 +454,10 @@ export function providerCacheLabel(
   if (usage === null || usage.providerCache?.latest === null || usage.providerCache === undefined) {
     return "缓存 --";
   }
-  const hitRate = usage.providerCache.latest.hitRate;
+  const hitRate = usage.providerCache.latest.hitRate ?? usage.providerCache.lastReportedHitRate ?? null;
+  if (usage.providerCache.latest.hitRate === null && hitRate !== null) {
+    return `上次缓存 ${formatCachePercentage(hitRate)}`;
+  }
   return hitRate === null
     ? "缓存未上报"
     : `缓存 ${formatCachePercentage(hitRate)}`;
@@ -459,6 +468,8 @@ export function providerCacheInlineMetrics(
 ): ProviderCacheInlineMetric[] {
   const latest = usage?.providerCache?.latest ?? null;
   const cumulative = usage?.providerCache?.cumulative;
+  const hitRate = latest?.hitRate ?? usage?.providerCache?.lastReportedHitRate ?? null;
+  const isPrevious = latest?.hitRate == null && hitRate !== null;
   return [
     {
       kind: "input",
@@ -476,12 +487,12 @@ export function providerCacheInlineMetrics(
     },
     {
       kind: "cache",
-      label: "本次命中率",
-      shortLabel: "命中",
-      tone: providerCacheTone(latest?.hitRate),
-      value: latest?.hitRate === null || latest === null
+      label: isPrevious ? "上次命中率" : "本次命中率",
+      shortLabel: isPrevious ? "上次命中" : "命中",
+      tone: providerCacheTone(hitRate),
+      value: hitRate === null
         ? "--"
-        : formatCachePercentage(latest.hitRate),
+        : formatCachePercentage(hitRate),
     },
     {
       kind: "cache",

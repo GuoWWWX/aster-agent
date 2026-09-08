@@ -1,6 +1,6 @@
 # Aster 目录结构与 JSONC 配置
 
-> 2026-09-07 · 目录、统一 JSONC、单库与对话目录迁移已实现；JSONL v2 和对话 SQLite 投影移除仍按第 22 篇继续迁移。
+> 2026-09-07 · 目录、统一 JSONC、单库与 JSONL 唯一持久化已实现；v2 记录格式和按需文件索引按第 22 篇继续演进。
 
 ## 1. 数据根目录
 
@@ -28,9 +28,11 @@
 
 - 普通、无项目、Subagent、侧边、团队成员对话都按 ID 平级存放。归属从 JSONL 属性和 SQL 关系读取，不从目录名推算；格式见[第 22 篇](./22-JSONL对话存储与归属设计.md)。
 - 项目名称、根目录、置顶和排序仍存 `projects` 表，不再复制进配置文件。项目代码、`.git/`、用户下载/另存的文件位于各自目录；本方案不自动创建项目内 `.aster/settings.jsonc` 或覆盖项目权限。
-- 目录按需创建。全部 SQL 数据已只用一个 `db.sqlite`；最终保留表见[第 21 篇](./21-数据库实体关系图.md)。迁移期间仍有可重建的对话投影表。运行时可能出现 `db.sqlite-wal`、`db.sqlite-shm`，它们是同一数据库的辅助文件，不是另一个数据库，不要在运行中手动删除。
+- 目录按需创建。全部持久 SQL 数据只用一个 `db.sqlite`；保留表见[第 21 篇](./21-数据库实体关系图.md)。对话查询投影使用进程内 `TEMP` 表，不写入数据库文件。运行时可能出现 `db.sqlite-wal`、`db.sqlite-shm`，它们是同一数据库的辅助文件，不是另一个数据库，不要在运行中手动删除。
 - Electron 状态沿用现有规则：显式设置管理根目录时用 `electron-profile/`，否则仍在 Electron 默认 `userData`。网站 Cookie、缓存、页面 `localStorage`、本机标签/面板状态不是模型配置，也不混入 JSONL。〔FACT｜`apps/desktop/src/main/storage/agent-home.ts:65`〕
 - 切换目录不在运行中搬动已打开的 SQLite、JSONL 或 Electron Profile。重启后使用新目录；原目录保留且不自动删除或复制，用户可切回。恢复默认只修改启动指针。
+- 首次导入旧数据库使用 SQLite 一致性备份合并 WAL 后原子发布 `db.sqlite`；目标库已存在时不再复制旧主库、WAL 或 SHM。旧检查点库按来源路径记录一次性导入标记，后续启动不会复活已删除记录。
+- 迁移管理根目录后，附件数据库路径按 `<conversationId>/attachments/<file>` 重新定位到新根；共享附件保留原拥有者 ID。缺失文件不会伪造成功迁移。
 
 ### 1.1 工作目录的选择
 
@@ -52,6 +54,8 @@
 ## 2. `settings.jsonc` 分区
 
 UTF-8，一个完整对象。支持 `//`、`/* ... */` 注释及尾逗号；不是 JSONL，不允许任意 JavaScript 表达式。只在根层保留一个配置格式 `version`，与 JSONL 的版本独立。
+
+读取旧或手写配置时按根分区补齐缺失默认值，不用“缺少 `general`”作为整份覆盖条件；已有 Agent、团队、外观、权限和注释保持原样。
 
 | 字段 | 类型 | 内容 |
 | --- | --- | --- |
@@ -237,7 +241,7 @@ MCP 的 `command`、`args`、`env`、`headers`、`url` 等服务定义统一在 
 | 旧 `agent.sqlite → plugin_catalog` | `id`、`enabled` 合入 `plugins`；名称、版本、路径、清单、哈希和扫描更新时间改为扫描计算 |
 | 旧 `agent.sqlite`、`langgraph-checkpoints.sqlite` | 统一为 `db.sqlite`；按目标结构转换后导入，只保留一份 `schema_migrations`，详见[单库迁移](./21-数据库实体关系图.md#91-单库生命周期与迁移) |
 
-迁移逐个校验旧格式，去掉各文件的外层版本号，保留 ID、能力、默认/最近选择、用户规则及可选字段。旧默认供应商/模型组合为 `defaultModelSelection`，原来未指定思考程度时写 `reasoning: null`。密钥只在本机解密；解密失败则保留旧文件并提示重新输入，不写入假成功结果。
+迁移逐个校验旧格式，去掉各文件的外层版本号，保留 ID、能力、默认/最近选择、用户规则及可选字段。旧默认供应商/模型组合为 `defaultModelSelection`，原来未指定思考程度时写 `reasoning: null`。仅导入旧密文时尝试本机解密；失败则保留旧文件、迁入供应商和模型元数据，将对应 `apiKey` 留空，并在本次启动进入主窗口后提示补填，不因解密失败阻止启动。JSONC 的明文 Key 读取和保存不调用系统加密接口。〔FACT｜`model-credential-store.ts`；`bootstrap/index.ts`〕
 
 新文件校验成功并原子落盘后才切换读取；已有 `settings.jsonc` 不得被旧文件覆盖。旧文件先保留备份，不同时双写，清理由用户确认。迁移后的明文文件按同样的访问限制保护。
 

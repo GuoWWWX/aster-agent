@@ -18,6 +18,84 @@ afterEach(async () => {
 });
 
 describe("AgentDatabase", () => {
+  it("keeps post-cutover task lists in memory and rolls them back with failed event batches", () => {
+    const database = new AgentDatabase(":memory:");
+    database.activateVolatileConversationProjection();
+    const conversation = database.createConversation(null);
+    database.finalizeJsonlConversationStorage();
+    try {
+      const original = database.createTaskList(conversation.id, [{ title: "first", status: "pending" }]);
+      original.tasks[0]!.title = "caller mutation";
+      const stored = database.getTaskList(conversation.id)!;
+      expect(stored.tasks[0]?.title).toBe("first");
+      const event = (sequence: number, type: string, payload: Record<string, unknown>) => ({
+        createdAt: new Date().toISOString(), eventId: crypto.randomUUID(), sequence, type, payload,
+      });
+      expect(() => database.restoreThreadLogBusinessEvents(conversation.id, [
+        event(1, "task_list_updated", { taskList: { ...stored, tasks: [{ ...stored.tasks[0], title: "should roll back" }] } }),
+        event(2, "run_queued", {}),
+      ])).toThrow();
+      expect(database.getTaskList(conversation.id)).toEqual(stored);
+      database.updateTaskList(conversation.id, [{ title: "first", status: "completed" }]);
+      expect(database.getTaskList(conversation.id)?.tasks[0]?.status).toBe("completed");
+      database.closeTaskList(conversation.id);
+      expect(database.getTaskList(conversation.id)).toBeNull();
+    } finally {
+      database.close();
+    }
+  });
+
+  it("removes durable Conversation tables after the JSONL cutover", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-jsonl-cutover-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "db.sqlite");
+    const database = new AgentDatabase(databasePath);
+    const conversation = database.createConversation(null);
+
+    database.activateVolatileConversationProjection();
+    database.projectConversationCreated({ agent: null, conversation });
+    database.finalizeJsonlConversationStorage();
+
+    expect(database.getConversation(conversation.id).id).toBe(conversation.id);
+    expect(database.isJsonlConversationStorageFinalized()).toBe(true);
+    database.close();
+
+    const persisted = new DatabaseSync(databasePath);
+    const conversationTables = persisted.prepare(
+      `SELECT name FROM sqlite_master
+       WHERE type IN ('table', 'view')
+         AND name IN (
+           'conversations', 'runs', 'conversation_timeline', 'model_messages',
+           'conversation_timeline_search', 'model_message_search',
+           'thread_log_event_index', 'thread_log_projection_cursors'
+         )`,
+    ).all();
+    const marker = persisted.prepare(
+      `SELECT 1 AS present FROM storage_imports
+       WHERE source_kind = 'jsonl-conversation-storage'
+         AND source_identity = 'conversation-jsonl-v1'`,
+    ).get();
+    const crossStoreForeignKeys = persisted.prepare(
+      `SELECT name, sql FROM sqlite_master
+       WHERE type = 'table'
+         AND (
+           sql LIKE '%REFERENCES conversations(%'
+           OR sql LIKE '%REFERENCES runs(%'
+           OR sql LIKE '%REFERENCES conversation_agent_messages(%'
+         )`,
+    ).all();
+    persisted.close();
+
+    expect(conversationTables).toEqual([]);
+    expect(crossStoreForeignKeys).toEqual([]);
+    expect(marker).toBeDefined();
+
+    const reopened = new AgentDatabase(databasePath);
+    expect(reopened.isJsonlConversationStorageFinalized()).toBe(true);
+    expect(reopened.listAllConversationIds()).toEqual([]);
+    reopened.close();
+  });
+
   it("records the current schema version and keeps it stable across restarts", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-"));
     temporaryDirectories.push(directory);
@@ -45,12 +123,35 @@ describe("AgentDatabase", () => {
     const migrationCount = secondMetadata
       .prepare("SELECT COUNT(*) AS count FROM schema_migrations")
       .get() as Record<string, unknown>;
+    const historyIndexes = secondMetadata
+      .prepare(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'index' AND name IN (
+           'conversation_timeline_conversation_sequence',
+           'model_messages_conversation_sequence',
+           'model_messages_run_sequence'
+         )
+         ORDER BY name`,
+      )
+      .all() as Array<Record<string, unknown>>;
+    const projectionCursorColumns = secondMetadata
+      .prepare("PRAGMA table_info(thread_log_projection_cursors)")
+      .all() as Array<Record<string, unknown>>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(24);
-    expect(firstRow.name).toBe("conversation-permission-mode");
+    expect(firstRow.version).toBe(28);
+    expect(firstRow.name).toBe("thread-log-projection-source-signature");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(24);
+    expect(migrationCount.count).toBe(28);
+    expect(historyIndexes.map((row) => row.name)).toEqual([
+      "conversation_timeline_conversation_sequence",
+      "model_messages_conversation_sequence",
+      "model_messages_run_sequence",
+    ]);
+    expect(projectionCursorColumns.map((column) => column.name)).toEqual(expect.arrayContaining([
+      "source_modified_at_ms",
+      "source_size_bytes",
+    ]));
   });
 
   it("imports former standalone LangGraph checkpoints idempotently", async () => {
@@ -102,6 +203,9 @@ describe("AgentDatabase", () => {
 
     const database = new AgentDatabase(databasePath);
     database.importLegacyCheckpointDatabases([legacyPath]);
+    const migratedDatabase = new DatabaseSync(databasePath);
+    migratedDatabase.prepare("DELETE FROM langgraph_checkpoints").run();
+    migratedDatabase.close();
     database.importLegacyCheckpointDatabases([legacyPath]);
     database.close();
 
@@ -114,8 +218,8 @@ describe("AgentDatabase", () => {
     ).get() as Record<string, unknown>;
     migrated.close();
 
-    expect(checkpointCount.count).toBe(1);
-    expect(migrationCount.count).toBe(24);
+    expect(checkpointCount.count).toBe(0);
+    expect(migrationCount.count).toBe(28);
   });
 
   it("adds hidden turn summaries when upgrading an existing version 19 database", async () => {
@@ -263,10 +367,59 @@ describe("AgentDatabase", () => {
     database.createRunWithUserMessage(secondConversation.id, "无关内容", "test-model");
 
     const matches = database.searchConversations({ limit: 10, query: "定位标记" });
+    const firstConversationMatches = database.searchConversations({
+      conversationId: firstConversation.id,
+      limit: 10,
+      query: "定位标记",
+    });
+    const olderMatches = database.searchConversations({
+      beforeSequence: matches[0]?.sequence,
+      conversationId: firstConversation.id,
+      limit: 10,
+      query: "定位标记",
+    });
 
     expect(matches).toHaveLength(2);
     expect(matches.some((match) => match.itemId === assistantId)).toBe(true);
     expect(matches.every((match) => match.conversationId === firstConversation.id)).toBe(true);
+    expect(firstConversationMatches).toEqual(matches);
+    expect(olderMatches).toHaveLength(1);
+    expect(olderMatches[0]?.sequence).toBeLessThan(matches[0]?.sequence ?? 0);
+    database.close();
+  });
+
+  it("loads the newest timeline page first and pages backward by sequence", () => {
+    const database = new AgentDatabase(":memory:");
+    const sender = database.createConversation(null);
+    const target = database.createConversation(null);
+    const run = database.createRunWithUserMessage(sender.id, "start", "test-model");
+    const messages = Array.from({ length: 25 }, (_, index) => database.sendAgentMessage({
+      content: `message-${index + 1}`,
+      runId: run.runId,
+      senderConversationId: sender.id,
+      targetConversationId: target.id,
+    }));
+
+    const latest = database.listTimelinePage({
+      conversationId: target.id,
+      limit: 20,
+    });
+    const older = database.listTimelinePage({
+      beforeSequence: latest.nextBeforeSequence ?? undefined,
+      conversationId: target.id,
+      limit: 20,
+    });
+
+    expect(latest).toMatchObject({
+      hasMore: true,
+      items: messages.slice(5),
+      nextBeforeSequence: 7,
+    });
+    expect(older).toMatchObject({
+      hasMore: false,
+      items: messages.slice(0, 5),
+      nextBeforeSequence: null,
+    });
     database.close();
   });
 
@@ -524,7 +677,7 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 24",
+      "newer than supported version 28",
     );
   });
 
@@ -1854,6 +2007,10 @@ describe("AgentDatabase", () => {
       { version: 22 },
       { version: 23 },
       { version: 24 },
+      { version: 25 },
+      { version: 26 },
+      { version: 27 },
+      { version: 28 },
     ]);
     metadata.close();
   });
@@ -3649,6 +3806,12 @@ describe("AgentDatabase", () => {
       result: patchTool.result,
       tool: patchTool,
     });
+    const markerTool = { ...patchTool,
+      id: "00000000-0000-4000-8000-000000000219",
+      arguments: JSON.stringify({ patch: "*** Begin Patch\n*** Update File: src/marker.ts\n@@\n-old\n+new\n*** End Patch" }),
+    };
+    database.appendToolStarted({ ...markerTool, result: null, status: "running" });
+    database.completeTool({ providerCallId: "patch-marker", result: markerTool.result, tool: markerTool });
     database.finishRun(childRun.runId, "completed", null);
     const fullResult = [
       "检查完成，没有发现问题；目标测试已经通过。",
@@ -3672,6 +3835,8 @@ describe("AgentDatabase", () => {
     });
     expect(message?.content).toBe("检查完成，没有发现问题；目标测试已经通过。");
     expect(message?.content).not.toContain("详细检查记录");
+    expect(database.listContextMessages(parent.id).at(-1)?.content)
+      .toContain("a passing build alone is not functional verification");
     expect(message?.fileChanges).toEqual([
       {
         path: "src/status.ts",
@@ -3683,6 +3848,10 @@ describe("AgentDatabase", () => {
       },
       {
         path: "src/second.ts",
+        toolName: "apply_patch",
+      },
+      {
+        path: "src/marker.ts",
         toolName: "apply_patch",
       },
     ]);
@@ -3791,7 +3960,7 @@ describe("AgentDatabase", () => {
     expect(typeof recoveredTask.resultMessageId).toBe("string");
     expect(reopened.listUndeliveredSubagentTasks()).toEqual([]);
     expect(reopened.listUnreadAgentMessages(parent.id)).toEqual([
-      expect.objectContaining({ messageType: "task_result", taskId: task.id }),
+      expect.objectContaining({ autoWake: false, messageType: "task_result", taskId: task.id }),
     ]);
     reopened.close();
   });

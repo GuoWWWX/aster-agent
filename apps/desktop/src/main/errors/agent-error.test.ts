@@ -10,6 +10,12 @@ import {
 } from "./agent-error.js";
 
 describe("main agent errors", () => {
+  it("does not infer a missing workspace from a filename in diagnostics", () => {
+    expect(toMainAgentError(new Error("error parsing glob 'pnpm-workspace.yaml': unclosed group"),
+      { operation: "tool:find_files" }).code).not.toBe("WORKSPACE_REQUIRED");
+    expect(toMainAgentError(new Error("A workspace is required for file inspection."),
+      { operation: "tool:read_file" }).code).toBe("WORKSPACE_REQUIRED");
+  });
   it("maps provider failures to a stable retryable error", () => {
     const error = toMainAgentError(
       new ModelRequestError(503, "Model request failed (503): upstream unavailable"),

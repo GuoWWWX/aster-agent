@@ -27,6 +27,40 @@ function finishTurn(
 }
 
 describe("conversation references", () => {
+  it.each(["FINAL-CHECK", "最终核查"])("keeps the final answer and paginates oversized matching run history: %s", (query) => {
+    const database = new AgentDatabase(":memory:");
+    try {
+      const current = database.createConversation(null);
+      const source = database.createConversation(null);
+      const run = database.createRunWithUserMessage(source.id, "FINAL-CHECK 核查目录", "test-model");
+      for (let index = 0; index < 6; index += 1) {
+        database.appendAssistantTurn({
+          content: `目录清单-${index}-${"目录文件 ".repeat(1500)}`,
+          conversationId: source.id, messageId: crypto.randomUUID(), modelId: "test-model",
+          runId: run.runId, toolCalls: [],
+        });
+      }
+      database.appendAssistantTurn({
+        content: "最终核查：入口已验证，未发现缺失文件。",
+        conversationId: source.id, messageId: crypto.randomUUID(), modelId: "test-model",
+        runId: run.runId, toolCalls: [],
+      });
+      database.finishRun(run.runId, "completed", null);
+      const input = { budgetTokens: 800, currentConversationId: current.id, database,
+        query, referencedConversationIds: [source.id] };
+      const reference = buildConversationReferenceBundle(input);
+      expect(reference.content).toContain("最终核查：入口已验证");
+      expect(reference.estimatedTokens).toBeLessThanOrEqual(800);
+      expect(reference.pagination[0]?.hasMore).toBe(true);
+      const cursor = reference.pagination[0]?.nextBeforeSequence;
+      if (cursor === undefined || cursor === null) throw new Error("Expected cursor for omitted history");
+      const next = buildConversationReferenceBundle({ ...input, beforeSequence: cursor });
+      expect(next.content).toContain("目录清单-5");
+      expect(next.content).not.toContain("最终核查：入口已验证");
+      expect(next.pagination[0]?.nextBeforeSequence).toBeLessThan(cursor);
+    } finally { database.close(); }
+  });
+
   it("uses the latest checkpoint and only messages after the covered sequence", () => {
     const database = new AgentDatabase(":memory:");
     const current = database.createConversation(null);
@@ -92,6 +126,25 @@ describe("conversation references", () => {
     });
     expect(nextPage.content).toContain("问题-7-");
     expect(nextPage.content).not.toContain("问题-8-");
+    database.close();
+  });
+
+  it("returns a truncated newest message when that message alone exceeds the budget", () => {
+    const database = new AgentDatabase(":memory:");
+    const current = database.createConversation(null);
+    const source = database.createConversation(null);
+    finishTurn(database, source.id, "短问题", `超长回答-${"x".repeat(20_000)}`);
+
+    const reference = buildConversationReferenceBundle({
+      budgetTokens: 400,
+      currentConversationId: current.id,
+      database,
+      referencedConversationIds: [source.id],
+    });
+
+    expect(reference.content).toContain("超长回答-");
+    expect(reference.content).toContain("Referenced content truncated");
+    expect(reference.estimatedTokens).toBeLessThanOrEqual(400);
     database.close();
   });
 

@@ -6,6 +6,27 @@ import { agentMessageModelContent } from "../storage/agent-database.js";
 import { AgentCommunicationTool } from "./agent-communication-tool.js";
 
 describe("AgentCommunicationTool", () => {
+  it("reads and searches one execution without leaking another run or conversation", async () => {
+    const database = new AgentDatabase(":memory:");
+    const parent = database.createConversation(null);
+    const child = database.forkConversation(parent.id, "subagent");
+    const old = database.createRunWithUserMessage(child.id, "FIRST-ONLY 旧任务", "test");
+    database.finishRun(old.runId, "completed", null);
+    const current = database.createRunWithUserMessage(child.id, "SECOND-ONLY 新任务", "test");
+    database.finishRun(current.runId, "completed", null);
+    const tool = new AgentCommunicationTool(database);
+    for (const query of [undefined, "SECOND-ONLY"]) {
+      const result = await tool.execute({ arguments: JSON.stringify({ conversationId: child.id, runId: current.runId, query }),
+        conversationId: parent.id, runId: crypto.randomUUID(), signal: new AbortController().signal, toolName: "read_agent_conversation" });
+      expect(result.isError).toBe(false);
+      expect(result.content).toContain("SECOND-ONLY");
+      expect((JSON.parse(result.content) as { value: { content: string } }).value.content).not.toContain("[User]\nFIRST-ONLY");
+    }
+    const wrongOwner = await tool.execute({ arguments: JSON.stringify({ conversationId: parent.id, runId: current.runId }),
+      conversationId: parent.id, runId: crypto.randomUUID(), signal: new AbortController().signal, toolName: "read_agent_conversation" });
+    expect(wrongOwner.content).not.toContain("SECOND-ONLY");
+    database.close();
+  });
   it("separates universal conversation reads from coordination tools", () => {
     const database = new AgentDatabase(":memory:");
     const tool = new AgentCommunicationTool(database);

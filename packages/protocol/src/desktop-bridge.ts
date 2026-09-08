@@ -15,6 +15,8 @@ import type {
   ConversationSummary,
   ConversationTaskList,
   ConversationTimelineItem,
+  ConversationTimelinePage,
+  ConversationTimelinePageInput,
   CreateConversationInput,
   EnsureTeamMemberConversationInput,
   DiscoverModelsInput,
@@ -278,6 +280,9 @@ export interface DesktopBridge {
   listConversationTimeline(
     input: ConversationReferenceInput
   ): Promise<ConversationTimelineItem[]>;
+  listConversationTimelinePage(
+    input: ConversationTimelinePageInput
+  ): Promise<ConversationTimelinePage>;
   searchConversations(input: ConversationSearchInput): Promise<ConversationSearchResult[]>;
   listConversationPendingMessages(
     input: ConversationReferenceInput

@@ -7,6 +7,7 @@ import {
   appendAssistantReasoningDelta,
   completeStreamingAssistantMessages,
   shouldApplyTimelineLoad,
+  shouldResetTimelinePaging,
 } from "./conversation-timeline-state.js";
 
 const conversationId = "00000000-0000-4000-8000-000000000001";
@@ -120,5 +121,15 @@ describe("conversation timeline streaming state", () => {
     expect(shouldApplyTimelineLoad(2, 2, 4, 4)).toBe(true);
     expect(shouldApplyTimelineLoad(1, 2, 4, 4)).toBe(false);
     expect(shouldApplyTimelineLoad(2, 2, 3, 4)).toBe(false);
+  });
+
+  it("resets paging when a refreshed latest page no longer overlaps loaded history", () => {
+    const first = assistantMessage("first", "较早消息", "completed");
+    const second = assistantMessage("second", "最新消息", "completed");
+    const replacement = assistantMessage("replacement", "跨过一整页后的消息", "completed");
+
+    expect(shouldResetTimelinePaging([first, second], [second])).toBe(false);
+    expect(shouldResetTimelinePaging([first, second], [replacement])).toBe(true);
+    expect(shouldResetTimelinePaging([first], [])).toBe(true);
   });
 });

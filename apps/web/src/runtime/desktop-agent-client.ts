@@ -26,6 +26,8 @@ import type {
   ConversationSummary,
   ConversationTaskList,
   ConversationTimelineItem,
+  ConversationTimelinePage,
+  ConversationTimelinePageInput,
   CreateProjectEntryInput,
   DeleteConfigurationWorkspaceEntryInput,
   CreateConversationInput,
@@ -482,6 +484,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
     input: ConversationReferenceInput,
   ): Promise<ConversationTimelineItem[]> {
     return this.desktopBridge.listConversationTimeline(input);
+  }
+
+  public listConversationTimelinePage(
+    input: ConversationTimelinePageInput,
+  ): Promise<ConversationTimelinePage> {
+    return this.desktopBridge.listConversationTimelinePage(input);
   }
 
   public searchConversations(input: ConversationSearchInput): Promise<ConversationSearchResult[]> {

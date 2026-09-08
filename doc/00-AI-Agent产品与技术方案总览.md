@@ -836,7 +836,7 @@ future web-server ──> agent-core / storage / tools
 - 第一阶段不引入 Java 后端，也不要求 Rust 执行层。
 - 文件、Shell、Git、浏览器和 MCP 都必须经过统一工具及权限边界。
 - 会话采用事件记录，支持审计和恢复。
-- 对话主存储采用 SQLite，大型结果使用 Artifact 文件目录，JSON 仅用于导入导出。
+- 对话属性与完整过程以每个 Conversation 的 JSONL 为唯一持久化来源；`db.sqlite` 不保存对话副本，大型结果使用 Artifact 文件目录。
 - 第一阶段先建立闭环和稳定性，不建设多人平台与插件市场。
 - Team Lead 长期存在并持续接单；简单任务直接处理，复杂任务才委派或组队。
 - Team 可登记多个 Project，但每个 Task 只有一个主 Project，跨项目需求拆成子任务。

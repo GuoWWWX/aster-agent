@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -149,7 +150,9 @@ describe("Agent home", () => {
       "attachment.png",
     );
     await mkdir(path.dirname(legacyAttachmentPath), { recursive: true });
-    await writeFile(path.join(legacyAgentHomePath, "agent.sqlite"), "database", "utf8");
+    const legacyDatabase = new DatabaseSync(path.join(legacyAgentHomePath, "agent.sqlite"));
+    legacyDatabase.exec("CREATE TABLE fixture (value TEXT NOT NULL); INSERT INTO fixture VALUES ('database')");
+    legacyDatabase.close();
     await writeFile(legacyAttachmentPath, "image", "utf8");
 
     const result = await initializeAgentHome({
@@ -159,7 +162,9 @@ describe("Agent home", () => {
     });
 
     expect(result.paths.rootPath).toBe(path.join(homeDirectory, ".aster"));
-    await expect(readFile(result.paths.databasePath, "utf8")).resolves.toBe("database");
+    const migratedDatabase = new DatabaseSync(result.paths.databasePath, { readOnly: true });
+    expect(migratedDatabase.prepare("SELECT value FROM fixture").get()).toEqual({ value: "database" });
+    migratedDatabase.close();
     expect(result.migratedEntries).toContain("agent.sqlite -> db.sqlite");
     await expect(readFile(
       path.join(result.paths.conversationFilesPath, "conversation-1", "attachment.png"),
@@ -168,6 +173,54 @@ describe("Agent home", () => {
     expect(result.legacyConversationFilesPaths).toContain(
       path.join(legacyAgentHomePath, "conversation-files"),
     );
+  });
+
+  it("does not copy legacy SQLite sidecars beside an existing current database", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "aster-home-sqlite-sidecars-"));
+    temporaryDirectories.push(root);
+    const legacyRootPath = path.join(root, "legacy");
+    const configuredHomePath = path.join(root, "configured");
+    await mkdir(legacyRootPath, { recursive: true });
+    await mkdir(configuredHomePath, { recursive: true });
+
+    const currentDatabase = new DatabaseSync(path.join(configuredHomePath, "db.sqlite"));
+    currentDatabase.exec("CREATE TABLE fixture (value TEXT NOT NULL); INSERT INTO fixture VALUES ('current')");
+    currentDatabase.close();
+    const legacyDatabase = new DatabaseSync(path.join(legacyRootPath, "agent.sqlite"));
+    legacyDatabase.exec("PRAGMA journal_mode = WAL; CREATE TABLE fixture (value TEXT NOT NULL); INSERT INTO fixture VALUES ('legacy')");
+
+    const result = await initializeAgentHome({
+      environment: { ASTER_HOME: configuredHomePath },
+      legacyRootPath,
+    });
+
+    const reopened = new DatabaseSync(result.paths.databasePath, { readOnly: true });
+    expect(reopened.prepare("SELECT value FROM fixture").get()).toEqual({ value: "current" });
+    reopened.close();
+    expect(result.migratedEntries).not.toContain("agent.sqlite -> db.sqlite");
+    legacyDatabase.close();
+  });
+
+  it("backs up a legacy WAL database into one self-contained current database", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "aster-home-sqlite-backup-"));
+    temporaryDirectories.push(root);
+    const legacyRootPath = path.join(root, "legacy");
+    const configuredHomePath = path.join(root, "configured");
+    await mkdir(legacyRootPath, { recursive: true });
+    const legacyDatabase = new DatabaseSync(path.join(legacyRootPath, "agent.sqlite"));
+    legacyDatabase.exec("PRAGMA journal_mode = WAL; CREATE TABLE fixture (value TEXT NOT NULL); INSERT INTO fixture VALUES ('legacy-wal')");
+
+    const result = await initializeAgentHome({
+      environment: { ASTER_HOME: configuredHomePath },
+      legacyRootPath,
+    });
+
+    const migratedDatabase = new DatabaseSync(result.paths.databasePath, { readOnly: true });
+    expect(migratedDatabase.prepare("SELECT value FROM fixture").get()).toEqual({
+      value: "legacy-wal",
+    });
+    migratedDatabase.close();
+    legacyDatabase.close();
   });
 
   it("keeps Electron user data beside a user-selected storage root", async () => {

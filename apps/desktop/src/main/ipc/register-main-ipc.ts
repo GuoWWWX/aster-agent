@@ -43,6 +43,8 @@ import {
   conversationSummarySchema,
   conversationTaskListResponseSchema,
   conversationTimelineResponseSchema,
+  conversationTimelinePageIpcArgumentsSchema,
+  conversationTimelinePageSchema,
   conversationWorkspaceSelectionResponseSchema,
   createConversationIpcArgumentsSchema,
   createTeamInstanceIpcArgumentsSchema,
@@ -178,6 +180,7 @@ import { ApplicationStorageLocationStore } from "../storage/application-storage-
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
 import { ConversationLifecycleService } from "../storage/conversation-lifecycle-service.js";
 import { ConversationDeletionService } from "../storage/conversation-deletion-service.js";
+import { EventProjector } from "../storage/event-projector.js";
 import { ThreadLogLegacyImporter } from "../storage/thread-log-legacy-importer.js";
 import { IntegrationConfigurationStore } from "../settings/integration-configuration-store.js";
 import { ApplicationSettingsStore } from "../settings/application-settings-store.js";
@@ -267,6 +270,7 @@ type MainIpcDependencies = {
   modelCatalog: ModelCatalogStore;
   pluginCatalog: PluginCatalog;
   database: AgentDatabase;
+  eventProjector: EventProjector;
   integrationConfiguration: IntegrationConfigurationStore;
   gitReview: GitReviewReader;
   managedBrowser: ManagedBrowserController;
@@ -313,6 +317,7 @@ export function registerMainIpcHandlers(
     modelCatalog,
     pluginCatalog,
     database,
+    eventProjector,
     integrationConfiguration,
     gitReview,
     managedBrowser,
@@ -623,6 +628,7 @@ export function registerMainIpcHandlers(
   ipcMain.handle(IPC_CHANNELS.conversationFork, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = forkConversationIpcArgumentsSchema.parse(args);
+    eventProjector.ensureConversationHistoryProjected(input.conversationId);
     const conversation = database.forkConversation(
       input.conversationId,
       input.throughMessageId === undefined ? "side" : "sibling",
@@ -729,19 +735,20 @@ export function registerMainIpcHandlers(
 
   ipcMain.handle(
     IPC_CHANNELS.conversationListTimeline,
-    (event, ...args: unknown[]) => {
+    async (event, ...args: unknown[]) => {
       getTrustedWindow(event, getMainWindow);
       const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
+      await eventProjector.prepareTimeline(input.conversationId);
       return conversationTimelineResponseSchema.parse(
-        database.listTimeline(input.conversationId)
+        eventProjector.listTimeline(input.conversationId)
       );
     }
   );
 
-  ipcMain.handle(IPC_CHANNELS.conversationSearch, (event, ...args: unknown[]) => {
+  ipcMain.handle(IPC_CHANNELS.conversationSearch, async (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = conversationSearchIpcArgumentsSchema.parse(args);
-    return conversationSearchResponseSchema.parse(database.searchConversations(input));
+    return conversationSearchResponseSchema.parse(await eventProjector.searchConversations(input));
   });
 
   ipcMain.handle(
@@ -781,7 +788,7 @@ export function registerMainIpcHandlers(
       getTrustedWindow(event, getMainWindow);
       const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
       return conversationSummarySchema.parse(
-        database.markConversationResultViewed(input.conversationId)
+        conversationLifecycle.markConversationResultViewed(input.conversationId)
       );
     }
   );
@@ -1192,7 +1199,8 @@ export function registerMainIpcHandlers(
     (event, ...args: unknown[]) => {
       getTrustedWindow(event, getMainWindow);
       const [input] = cancelRunIpcArgumentsSchema.parse(args);
-      agentRuntime.cancelRun(input.runId);
+      if ("conversationId" in input) agentRuntime.cancelConversation(input.conversationId);
+      else agentRuntime.cancelRun(input.runId);
       return voidIpcResponseSchema.parse(undefined);
     }
   );
@@ -1274,6 +1282,16 @@ export function registerMainIpcHandlers(
       getTrustedWindow(event, getMainWindow);
       const [input] = applicationSettingsIpcArgumentsSchema.parse(args);
       return applicationSettingsSchema.parse(applicationSettings.saveConfiguration(input));
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.conversationListTimelinePage,
+    async (event, ...args: unknown[]) => {
+      getTrustedWindow(event, getMainWindow);
+      const [input] = conversationTimelinePageIpcArgumentsSchema.parse(args);
+      await eventProjector.prepareTimeline(input.conversationId);
+      return conversationTimelinePageSchema.parse(eventProjector.listTimelinePage(input));
     },
   );
 

@@ -47,6 +47,8 @@ import {
   type ConversationSummary,
   type ConversationTaskList,
   type ConversationTimelineItem,
+  type ConversationTimelinePage,
+  type ConversationTimelinePageInput,
   type CreateProjectEntryInput,
   type CreateConfigurationWorkspaceEntryInput,
   type CreateConversationInput,
@@ -392,6 +394,19 @@ export class MockAgentClient implements AgentClient {
   }
 
   public cancelRun(input: CancelRunInput): Promise<void> {
+    if ("conversationId" in input) {
+      const ids = new Set([input.conversationId]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const child of this.conversations) {
+          if (child.threadKind === "subagent" && child.parentConversationId !== null
+            && ids.has(child.parentConversationId) && !ids.has(child.id)) { ids.add(child.id); changed = true; }
+        }
+      }
+      return Promise.all([...this.activeRuns].filter(([, run]) => ids.has(run.conversationId))
+        .map(([runId]) => this.cancelRun({ runId }))).then(() => undefined);
+    }
     const activeRun = this.activeRuns.get(input.runId);
     if (activeRun === undefined) {
       return Promise.resolve();
@@ -1387,6 +1402,32 @@ export class MockAgentClient implements AgentClient {
     return Promise.resolve([...timeline]);
   }
 
+  public listConversationTimelinePage(
+    input: ConversationTimelinePageInput,
+  ): Promise<ConversationTimelinePage> {
+    return this.listConversationTimeline(input).then((timeline) => {
+      let end = input.beforeSequence === undefined
+        ? timeline.length
+        : Math.max(0, input.beforeSequence - 1);
+      let start = Math.max(0, end - input.limit);
+      if (input.afterSequence !== undefined) {
+        start = input.afterSequence;
+        end = Math.min(timeline.length, start + input.limit);
+      } else if (input.aroundItemId !== undefined) {
+        const target = timeline.findIndex((item) => item.id === input.aroundItemId);
+        if (target < 0) throw new Error("Conversation timeline item was not found.");
+        start = Math.max(0, target - Math.floor(input.limit / 2));
+        end = Math.min(timeline.length, start + input.limit);
+      }
+      return {
+        hasMore: start > 0,
+        items: timeline.slice(start, end),
+        nextBeforeSequence: start > 0 ? start + 1 : null,
+        nextAfterSequence: end < timeline.length ? end : null,
+      };
+    });
+  }
+
   public searchConversations(input: ConversationSearchInput): Promise<ConversationSearchResult[]> {
     const query = input.query.toLocaleLowerCase();
     const results: ConversationSearchResult[] = [];
@@ -1403,6 +1444,7 @@ export class MockAgentClient implements AgentClient {
           parentConversationId: conversation.parentConversationId,
           projectId: conversation.projectId,
           role: item.kind === "agent_message" ? "agent" : item.role,
+          sequence: results.length + 1,
           threadKind: conversation.threadKind,
         });
         if (results.length >= input.limit) return Promise.resolve(results);

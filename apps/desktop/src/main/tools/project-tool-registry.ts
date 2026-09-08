@@ -21,11 +21,13 @@ import { applyPatch, createTwoFilesPatch, parsePatch } from "diff";
 import { z } from "zod";
 
 import type { ModelMessageAttachment, ModelToolDefinition } from "../model/model-contracts.js";
-import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
+import { modelToolParameters, parseToolArguments, ToolArgumentsError } from "../model/tool-arguments.js";
 import { toolErrorContent } from "../errors/tool-error.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
+import { parseCodexUpdatePatch } from "./codex-update-patch.js";
 import { resolveTerminalExecutable } from "./terminal-executable-resolver.js";
 import { findFilesWithRipgrep, searchTextWithRipgrep } from "./ripgrep-search.js";
+import { readTextLines } from "./read-text-lines.js";
 import type { ToolExecutionPolicy } from "./tool-execution-policy.js";
 
 const MAX_READ_FILE_BYTES = 250_000;
@@ -89,16 +91,26 @@ const listDirectoryArgumentsSchema = z
 
 const readFileArgumentsSchema = z
   .object({
-    endLine: z.number().int().positive().optional()
-      .describe(`Optional inclusive end line; the selected range may contain at most ${MAX_READ_LINES} lines.`),
     path: relativeProjectPathSchema.refine((value) => value.length > 0, {
       message: "A file path is required."
     }).describe("Project-relative POSIX file path."),
     startLine: z.number().int().positive().default(1)
-      .describe("One-based first line to return.")
+      .describe("One-based first line to return. Defaults to 1; use nextStartLine from a previous result to continue."),
+    lineCount: z.number().int().min(1).max(MAX_READ_LINES).optional()
+      .describe(`Preferred range limit: NUMBER OF LINES to read (1-${MAX_READ_LINES}), not an end line. Example: startLine=650, lineCount=220 reads lines 650-869. Do not combine with endLine. If both limits are omitted, read up to ${MAX_READ_LINES} lines.`),
+    endLine: z.number().int().positive().optional()
+      .describe(`Alternative to lineCount: one-based inclusive END LINE NUMBER. Example: startLine=650, endLine=869. Must be >= startLine and select at most ${MAX_READ_LINES} lines. Do not combine with lineCount; use lineCount when specifying how many lines to read.`),
   })
   .strict()
   .superRefine((value, context) => {
+    if (value.lineCount !== undefined && value.endLine !== undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "Choose either lineCount or endLine, not both. Remove endLine to read a number of lines, or remove lineCount to read through an inclusive end line.",
+        path: ["endLine"],
+      });
+      return;
+    }
     if (value.endLine === undefined || value.endLine >= value.startLine) {
       if (
         value.endLine !== undefined
@@ -114,7 +126,7 @@ const readFileArgumentsSchema = z
     }
     context.addIssue({
       code: "custom",
-      message: "endLine must be greater than or equal to startLine.",
+      message: `endLine is an absolute line number, not a count; it must be >= startLine (${value.startLine}). If ${value.endLine} means how many lines to read, replace endLine with lineCount (1-${MAX_READ_LINES}) and keep startLine.`,
       path: ["endLine"],
     });
   });
@@ -134,15 +146,15 @@ const searchTextArgumentsSchema = z
     caseMode: z.enum(["smart", "sensitive", "insensitive"]).default("smart")
       .describe("Case handling: smart follows query casing; sensitive or insensitive forces the mode."),
     excludeGlobs: z.array(z.string().trim().min(1).max(200)).max(20).default([])
-      .describe("Optional ripgrep exclude globs."),
+      .describe("Optional ripgrep exclude globs, matched against project-relative paths even when path selects a subdirectory."),
     includeGlobs: z.array(z.string().trim().min(1).max(200)).max(20).default([])
-      .describe("Optional ripgrep include globs."),
+      .describe("Optional ripgrep include globs, matched against project-relative paths even when path selects a subdirectory."),
     maxResults: z.number().int().min(1).max(100).default(50)
       .describe("Maximum number of matching lines to return."),
     mode: z.enum(["literal", "regex"]).default("literal")
       .describe("literal searches exact text; regex interprets query as a regular expression."),
     path: relativeProjectPathSchema.default("")
-      .describe("Optional project-relative POSIX directory path; empty means the project root."),
+      .describe("Project-relative POSIX file or directory path, e.g. src/main.ts or src. Empty searches the project root. A file path searches only that file."),
     query: z.string().min(1).max(200).describe("Literal text or regular expression to search for.")
   })
   .strict();
@@ -154,7 +166,7 @@ const findFilesArgumentsSchema = z
     path: relativeProjectPathSchema.default("")
       .describe("Optional project-relative POSIX directory path; empty means the project root."),
     pattern: z.string().min(1).max(200)
-      .describe("Ripgrep glob such as **/package.json or src/**/*.ts.")
+      .describe("Ripgrep glob relative to path, not the project root when path is set. Example: path=src-tauri, pattern=icons/icon.ico. With an empty path, use **/package.json or src/**/*.ts. Brace alternatives must be closed, e.g. {README.md,package.json}.")
   })
   .strict();
 
@@ -193,7 +205,7 @@ const replaceInFileArgumentsSchema = z
 const applyPatchArgumentsSchema = z
   .object({
     patch: z.string().min(1).max(MAX_EDIT_FILE_BYTES)
-      .describe("Standard unified diff with --- and +++ file headers for one existing file."),
+      .describe("Single existing-file patch: standard ---/+++ unified diff, or Begin Patch / Update File / @@ / End Patch with exact source context."),
   })
   .strict();
 
@@ -526,7 +538,7 @@ export class ProjectToolRegistry {
       },
       {
         description:
-          "Read a UTF-8 text file inside the current authorized workspace, optionally selecting a line range.",
+          "Read a UTF-8 text file inside the authorized workspace. Prefer startLine + lineCount (number of lines); alternatively use startLine + endLine (inclusive line number). Choose only one limit; omit both for up to 400 lines. Large files support partial reads, at most 250000 bytes per range. nextStartLine gives the next page; totalLines is null until EOF. Read a known path directly to verify it: find_files may omit ignored files.",
         name: "read_file",
         parameters: modelToolParameters(readFileArgumentsSchema)
       },
@@ -538,13 +550,13 @@ export class ProjectToolRegistry {
       },
       {
         description:
-          "Search text inside the current authorized workspace with bundled ripgrep. Supports literal or regex matching, smart/sensitive/insensitive case handling, and include/exclude globs. maxResults bounds returned matches. Returns a successful empty result when nothing matches and bounded structured matches otherwise, while respecting project ignore files. Prefer this over a shell pipeline for ordinary discovery and expected no-match checks. Use run_command with rg directly when exact CLI output, context lines, counts, or several expressions are required.",
+          "Search text in a file or directory inside the current authorized workspace with bundled ripgrep. Supports literal or regex matching, smart/sensitive/insensitive case handling, and include/exclude globs. maxResults bounds returned matches. Returns a successful empty result when nothing matches and bounded structured matches otherwise. Directory searches respect project ignore files; an explicit file path targets that file directly. Prefer this over a shell pipeline for ordinary discovery and expected no-match checks. Use run_command with rg directly when exact CLI output, context lines, counts, or several expressions are required.",
         name: "search_text",
         parameters: modelToolParameters(searchTextArgumentsSchema)
       },
       {
         description:
-          "Find files with ripgrep by a glob pattern such as **/package.json or src/**/*.ts. maxResults bounds returned paths. Returns a successful empty result when nothing matches and workspace-relative POSIX paths otherwise, while respecting project ignore files.",
+          "Find files with ripgrep. pattern is relative to the selected directory: path=src-tauri and pattern=icons/icon.ico. Results always use workspace-relative POSIX paths. maxResults bounds returned paths. Empty results mean no matches under the glob and ignore rules, not proof that a known file is missing; use read_file on the known path to verify.",
         name: "find_files",
         parameters: modelToolParameters(findFilesArgumentsSchema)
       },
@@ -568,7 +580,7 @@ export class ProjectToolRegistry {
       },
       {
         description:
-          "Use only for several localized edits in exactly one existing UTF-8 file. This is a standard unified-diff tool, not the marker-based patch protocol. The patch must begin with --- a/path and +++ b/path, followed by complete @@ hunk headers and prefixed context/change lines; for example: --- a/src/x.ts\\n+++ b/src/x.ts\\n@@ -1,1 +1,1 @@\\n-old\\n+new. Do not send *** Update File, *** Add File, or *** Delete File directives. Harmless outer Begin/End wrapper lines and incorrect computable hunk counts are normalized, but file paths and source context are never guessed. Prefer replace_in_file for one exact or whole-section replacement; use write_file for new files and delete_file for deletions.",
+          "Edit exactly one existing UTF-8 file. Accepts standard ---/+++ unified diff or *** Begin Patch / *** Update File: path / @@ hunks / *** End Patch. Prefix unchanged lines with a space, removals with -, additions with +. Update hunks require exact, unique source context; include enough surrounding lines. No multiple files, Move, Add or Delete directives. Read before editing. Prefer replace_in_file for one exact replacement; use write_file for new files and delete_file for deletion. All changes require normal approval and stale-content checks.",
         name: "apply_patch",
         parameters: modelToolParameters(applyPatchArgumentsSchema)
       },
@@ -732,26 +744,12 @@ export class ProjectToolRegistry {
   ): Promise<ToolExecutionResult> {
     const input = readFileArgumentsSchema.parse(rawArguments);
     const filePath = await this.projects.resolveProjectPath(projectId, input.path);
-    const fileInfo = await stat(filePath);
-    if (!fileInfo.isFile()) throw new Error("Requested path is not a file.");
-    if (fileInfo.size > MAX_READ_FILE_BYTES) {
-      throw new Error("Requested file exceeds the read size limit.");
-    }
-    throwIfAborted(signal);
-    const contents = await readFile(filePath, "utf8");
-    if (contents.includes("\u0000")) throw new Error("Requested file is not UTF-8 text.");
-    const lines = contents.split(/\r?\n/);
-    const startIndex = input.startLine - 1;
-    const endIndex = Math.min(
-      input.endLine ?? input.startLine + MAX_READ_LINES - 1,
-      lines.length
-    );
+    const range = await readTextLines(filePath, input.startLine,
+      input.endLine ?? input.startLine + (input.lineCount ?? MAX_READ_LINES) - 1, signal,
+      input.endLine === undefined ? "lineCount" : "endLine");
     return this.success({
-      content: lines.slice(startIndex, endIndex).join("\n"),
-      endLine: endIndex,
+      ...range,
       path: input.path,
-      startLine: input.startLine,
-      totalLines: lines.length
     });
   }
 
@@ -820,7 +818,12 @@ export class ProjectToolRegistry {
     const project = this.projects.getProject(projectId);
     const searchRoot = await this.projects.resolveProjectPath(projectId, input.path);
     const rootInfo = await stat(searchRoot);
-    if (!rootInfo.isDirectory()) throw new Error("Search path is not a directory.");
+    if (!rootInfo.isDirectory() && !rootInfo.isFile()) {
+      throw new ToolArgumentsError("Search path must be a regular file or directory.", [{
+        code: "invalid_type", path: ["path"],
+        message: "Provide a project-relative regular file or directory path; use an empty path for the project root.",
+      }]);
+    }
     const result = await searchTextWithRipgrep({
       caseMode: input.caseMode,
       excludeGlobs: input.excludeGlobs,
@@ -852,7 +855,9 @@ export class ProjectToolRegistry {
     const project = this.projects.getProject(projectId);
     const searchRoot = await this.projects.resolveProjectPath(projectId, input.path);
     const rootInfo = await stat(searchRoot);
-    if (!rootInfo.isDirectory()) throw new Error("Search path is not a directory.");
+    if (!rootInfo.isDirectory()) throw new ToolArgumentsError("Search path is not a directory.", [
+      { code: "invalid_type", path: ["path"], message: "find_files searches directories. To read a known file, use read_file; to search its contents, use search_text." },
+    ]);
 
     const result = await findFilesWithRipgrep({
       maxResults: input.maxResults,
@@ -1174,6 +1179,16 @@ export class ProjectToolRegistry {
     signal: AbortSignal
   ): Promise<ToolExecution> {
     const input = applyPatchArgumentsSchema.parse(rawArguments);
+    const update = parseCodexUpdatePatch(input.patch);
+    if (update !== null) {
+      const patchPath = this.toProjectRelativePatchPath(update.path);
+      const filePath = await this.projects.resolveProjectPath(projectId, patchPath);
+      const current = await this.readEditableFile(filePath, false);
+      if (current === null) throw new Error("补丁目标文件不存在；新建文件请使用 write_file。");
+      const next = update.apply(current);
+      throwIfAborted(signal);
+      return this.change({ content: next, expectedContent: current, operation: "apply_patch", path: patchPath });
+    }
     const normalizedPatch = normalizeModelUnifiedDiff(input.patch);
     const patches = parsePatch(normalizedPatch);
     if (patches.length !== 1) {

@@ -13,6 +13,15 @@ export function shouldApplyTimelineLoad(
   return requestId === latestRequestId && requestRevision === latestRevision;
 }
 
+export function shouldResetTimelinePaging(
+  current: readonly ConversationTimelineItem[],
+  latestPage: readonly ConversationTimelineItem[],
+): boolean {
+  if (current.length === 0) return false;
+  const currentIds = new Set(current.map((item) => item.id));
+  return !latestPage.some((item) => currentIds.has(item.id));
+}
+
 export function completeStreamingAssistantMessages(
   timeline: ConversationTimelineItem[],
   exceptMessageId?: string,

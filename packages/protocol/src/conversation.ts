@@ -467,6 +467,11 @@ export const conversationRunFileChangeSchema = z.object({
 
 export const conversationAgentMessageItemSchema = z
   .object({
+    autoWake: z.boolean().optional(),
+    consumedByRunId: runIdSchema.optional(),
+    executionStatus: z.enum(["completed", "failed", "cancelled"]).optional(),
+    summaryStatus: z.enum(["provided", "missing"]).optional(),
+    executionError: z.string().nullable().optional(),
     content: z.string().trim().min(1).max(20_000),
     conversationId: conversationIdSchema,
     createdAt: isoTimestampSchema,
@@ -495,8 +500,26 @@ export const conversationTimelineResponseSchema = z.array(
   conversationTimelineItemSchema
 );
 
+export const conversationTimelinePageInputSchema = z.object({
+  afterSequence: z.number().int().positive().optional(),
+  aroundItemId: z.string().uuid().optional(),
+  beforeSequence: z.number().int().positive().optional(),
+  conversationId: conversationIdSchema,
+  limit: z.number().int().min(20).max(200).default(120),
+}).strict().refine((input) => [input.afterSequence, input.aroundItemId, input.beforeSequence]
+  .filter((value) => value !== undefined).length <= 1, "Only one timeline cursor may be supplied.");
+
+export const conversationTimelinePageSchema = z.object({
+  hasMore: z.boolean(),
+  items: z.array(conversationTimelineItemSchema).max(200),
+  nextBeforeSequence: z.number().int().positive().nullable(),
+  nextAfterSequence: z.number().int().positive().nullable().optional(),
+}).strict();
+
 export const conversationSearchInputSchema = z
   .object({
+    beforeSequence: z.number().int().positive().optional(),
+    conversationId: conversationIdSchema.optional(),
     limit: z.number().int().min(1).max(100).default(50),
     query: z.string().trim().min(1).max(500),
   })
@@ -512,6 +535,7 @@ export const conversationSearchResultSchema = z
     parentConversationId: conversationIdSchema.nullable(),
     projectId: projectIdSchema.nullable(),
     role: z.enum(["user", "assistant", "agent"]),
+    sequence: z.number().int().positive(),
     threadKind: conversationThreadKindSchema,
   })
   .strict();
@@ -591,6 +615,7 @@ export const conversationContextUsageSchema = z
     outputReserveTokens: z.number().int().nonnegative(),
     providerCache: z
       .object({
+        lastReportedHitRate: z.number().min(0).max(1).optional(),
         cumulative: z
           .object({
             cacheCreationInputTokens: z.number().int().nonnegative(),
@@ -959,7 +984,10 @@ export const replaceLatestConversationMessageInputSchema = z
     }
   });
 
-export const cancelRunInputSchema = z.object({ runId: runIdSchema }).strict();
+export const cancelRunInputSchema = z.union([
+  z.object({ runId: runIdSchema }).strict(),
+  z.object({ conversationId: conversationIdSchema }).strict(),
+]);
 
 export const approveToolChangeInputSchema = z
   .object({
@@ -1255,6 +1283,10 @@ export type ConversationToolExecutionMode = z.infer<
 export type ConversationTimelineItem = z.infer<
   typeof conversationTimelineItemSchema
 >;
+export type ConversationTimelinePageInput = z.infer<
+  typeof conversationTimelinePageInputSchema
+>;
+export type ConversationTimelinePage = z.infer<typeof conversationTimelinePageSchema>;
 export type ConversationSearchInput = z.infer<typeof conversationSearchInputSchema>;
 export type ConversationSearchResult = z.infer<typeof conversationSearchResultSchema>;
 export type ConversationPermissionMode = z.infer<

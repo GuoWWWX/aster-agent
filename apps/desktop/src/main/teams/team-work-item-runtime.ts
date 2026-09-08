@@ -5,7 +5,6 @@ import type {
   DeleteTeamWorkItemInput,
   ConversationAgentBinding,
   ConversationModelSelection,
-  ConversationMessageItem,
   ConversationRunEvent,
   ConversationSummary,
   CreateTeamInstanceInput,
@@ -736,11 +735,7 @@ export class TeamWorkItemRuntime {
   }
 
   private lastAssistantResult(conversationId: string): string | null {
-    const message = this.database.listTimeline(conversationId)
-      .filter((item): item is ConversationMessageItem =>
-        item.kind === "message" && item.role === "assistant" && item.status === "completed")
-      .at(-1);
-    const content = message?.content.trim() ?? "";
+    const content = this.database.getLatestCompletedAssistantContent(conversationId)?.trim() ?? "";
     return content.length === 0 ? null : content.slice(0, 20_000);
   }
 

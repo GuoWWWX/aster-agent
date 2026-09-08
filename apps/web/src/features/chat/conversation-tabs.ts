@@ -28,3 +28,12 @@ export function closeConversationTab(
     openIds: remaining,
   };
 }
+
+export function reconcileConversationTabs(
+  openIds: string[], availableIds: readonly string[], activeId: string | null,
+): string[] {
+  const available = new Set(availableIds);
+  const next = openIds.filter((id) => available.has(id));
+  if (activeId !== null && available.has(activeId) && !next.includes(activeId)) next.push(activeId);
+  return next.length === openIds.length && next.every((id, index) => id === openIds[index]) ? openIds : next;
+}

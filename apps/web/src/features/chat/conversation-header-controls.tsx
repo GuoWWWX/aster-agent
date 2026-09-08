@@ -145,10 +145,11 @@ export function ConversationHeaderControls({
         if (subagent === undefined) return;
         let preview: string;
         try {
-          const timeline = await agentClient.listConversationTimeline({
+          const page = await agentClient.listConversationTimelinePage({
             conversationId: subagent.id,
+            limit: 40,
           });
-          preview = latestSubagentOutput(timeline, isActiveSubagent(subagent));
+          preview = latestSubagentOutput(page.items, isActiveSubagent(subagent));
         } catch {
           preview = isActiveSubagent(subagent) ? "正在处理…" : "暂无模型输出";
         }

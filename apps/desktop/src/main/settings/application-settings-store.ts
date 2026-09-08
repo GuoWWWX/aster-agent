@@ -30,17 +30,22 @@ export class ApplicationSettingsStore {
   public ensureFile(): void {
     if (this.settings !== null) {
       this.settings.ensureFile();
-      if (!this.settings.has("general")) {
-        const initial = this.legacyConfigurationPath !== null
-          && existsSync(this.legacyConfigurationPath)
-          ? readJsonConfiguration(
-              this.legacyConfigurationPath,
-              applicationSettingsSchema,
-              DEFAULT_APPLICATION_SETTINGS,
-            )
-          : DEFAULT_APPLICATION_SETTINGS;
-        this.saveConfiguration(initial);
-      }
+      const initial = this.legacyConfigurationPath !== null
+        && existsSync(this.legacyConfigurationPath)
+        ? readJsonConfiguration(
+            this.legacyConfigurationPath,
+            applicationSettingsSchema,
+            DEFAULT_APPLICATION_SETTINGS,
+          )
+        : DEFAULT_APPLICATION_SETTINGS;
+      const missingSections = [
+        { key: "general", value: initial.general },
+        { key: "appearance", value: initial.appearance },
+        { key: "permissionPolicies", value: initial.permissionPolicies },
+        { key: "agents", value: initial.agentDirectory.agents },
+        { key: "teams", value: initial.agentDirectory.teams },
+      ].filter(({ key }) => !this.settings?.has(key));
+      if (missingSections.length > 0) this.settings.writeValues(missingSections);
       const current = this.getConfiguration();
       const migrated = migrateLegacyDefaultDevelopmentTeam(current);
       if (migrated !== current) this.saveConfiguration(migrated);

@@ -63,6 +63,8 @@ import {
   type ConversationTask,
   type ConversationTaskList,
   type ConversationTimelineItem,
+  type ConversationTimelinePage,
+  type ConversationTimelinePageInput,
   type ConversationToolItem,
   type CreateConversationInput,
   type CreateTeamInstanceInput,
@@ -87,7 +89,11 @@ import type {
   ModelProviderTokenUsage,
   ModelToolCall,
 } from "../model/model-contracts.js";
-import { conversationPropertiesChangedPayloadSchema } from "./conversation-properties-event.js";
+import {
+  conversationPropertiesChangedPayloadSchema,
+  conversationMutablePropertiesSchema,
+  type ConversationPropertiesChangedPayload,
+} from "./conversation-properties-event.js";
 
 export type { ModelProviderState, ModelToolCall } from "../model/model-contracts.js";
 
@@ -151,6 +157,14 @@ export type ConversationTurnSummary = {
   summary: string;
 };
 
+const conversationTurnSummarySchema = z.object({
+  conversationId: z.string().uuid(),
+  coveredThroughSequence: z.number().int().positive(),
+  createdAt: z.string().datetime(),
+  runId: z.string().uuid(),
+  summary: z.string().min(1).max(100_000),
+}).strict();
+
 export type ThreadLogProjectionEvent = {
   createdAt: string;
   eventId: string;
@@ -163,6 +177,8 @@ export type ThreadLogProjectionCursor = {
   conversationId: string;
   lastEventId: string;
   lastSequence: number;
+  sourceModifiedAtMs: number | null;
+  sourceSizeBytes: number | null;
   updatedAt: string;
 };
 
@@ -211,11 +227,22 @@ export type PreparedConversationCreation = {
 
 export type ThreadLogLegacySnapshot = {
   agent: ConversationAgentBinding | null;
+  agentMessages: ThreadLogLegacyAgentMessage[];
+  attachmentRefs: ConversationAttachment[];
   checkpoint: ConversationContextCheckpoint | null;
   conversation: ConversationSummary;
   modelMessages: StoredContextMessage[];
+  pendingMessages: StoredPendingMessage[];
+  subagentTasks: SubagentTask[];
+  taskList: ConversationTaskList | null;
   timeline: ConversationTimelineItem[];
+  turnSummaries: ConversationTurnSummary[];
   runs: ThreadLogLegacyRun[];
+};
+
+export type ThreadLogLegacyAgentMessage = {
+  message: ConversationAgentMessageItem;
+  workItemId: string | null;
 };
 
 export type ThreadLogLegacyRun = {
@@ -244,6 +271,9 @@ export type ConversationDeletionTask = {
 
 export type SendAgentMessageInput = {
   content: string;
+  executionStatus?: "completed" | "failed" | "cancelled";
+  summaryStatus?: "provided" | "missing";
+  executionError?: string | null;
   fileChanges?: readonly ConversationRunFileChange[];
   messageType?: "message" | "notification" | "agent_result" | "task_result";
   replyInstruction?: string | null;
@@ -278,7 +308,7 @@ function runFileChangesFromTool(tool: ConversationToolItem): ConversationRunFile
     const record = parsed as Record<string, unknown>;
     if (tool.name === "apply_patch") {
       if (typeof record.patch !== "string") return [];
-      return [...record.patch.matchAll(/^(?:--- a\/|\+\+\+ b\/)([^\t\r\n]+)$/gmu)]
+      return [...record.patch.matchAll(/^(?:--- a\/|\+\+\+ b\/|\*\*\* Update File: )([^\t\r\n]+)$/gmu)]
         .map((match) => match[1]?.trim())
         .filter((path): path is string => path !== undefined && path.length > 0)
         .map((path) => ({ path, toolName: "apply_patch" as const }));
@@ -299,9 +329,12 @@ export function agentMessageModelContent(message: ConversationAgentMessageItem):
       "[Subagent task result]",
       `Subagent conversation: ${message.senderTitle}`,
       `Subagent conversationId: ${message.senderConversationId}`,
+      ...(message.runId === null ? [] : [`Run ID: ${message.runId}`]),
+      ...(message.executionStatus === undefined ? [] : [`Execution status: ${message.executionStatus}; summary: ${message.summaryStatus ?? "missing"}`]),
       ...(message.taskId === null ? [] : [`Task ID: ${message.taskId}`]),
-      "This is a private completion result from a reusable Subagent, not a user-visible chat message. Synthesize the result into your own response without exposing this delivery envelope or presenting a standalone message from the Subagent. Do not list or read the child conversation merely to retrieve this normal result. Read it only if this result is explicitly truncated and omitted detail blocks the task, or if the user asks to audit the child process. If more work is required, continue the same Subagent with send_agent_message so it retains its conversation context. End it only after you judge its scope complete and no follow-up is needed.",
+      "This is a private completion receipt from a reusable Subagent. Synthesize it into your response. When the summary is missing, truncated, or insufficient to assess the work, use read_agent_conversation with conversationId and runId to read or search this execution. Do not retrieve the full child history merely to repeat an adequate receipt. Continue the same Subagent with send_agent_message for follow-up. End it only after accepting its work and deciding no follow-up is needed.",
       ...agentMessageFileChangeLines(message),
+      "Assess the receipt against the original scope before accepting it. For code changes, inspect relevant changes when the receipt cannot establish preservation of existing behavior; a passing build alone is not functional verification. Request follow-up from the same Subagent if evidence is missing.",
       "Completion receipt:",
       message.content
     ].join("\n");
@@ -311,6 +344,8 @@ export function agentMessageModelContent(message: ConversationAgentMessageItem):
       "[Agent result]",
       `Executor conversation: ${message.senderTitle}`,
       `Executor conversationId: ${message.senderConversationId}`,
+      ...(message.runId === null ? [] : [`Run ID: ${message.runId}`]),
+      ...(message.executionStatus === undefined ? [] : [`Execution status: ${message.executionStatus}; summary: ${message.summaryStatus ?? "missing"}`]),
       ...(message.taskId === null ? [] : [`Original collaboration message ID: ${message.taskId}`]),
       "This is a bounded completion receipt, not the executor's full answer. Full details remain only in the executor conversation; use read_agent_conversation with a chosen maxTokens budget when needed. Do not reply again unless follow-up work is required.",
       ...agentMessageFileChangeLines(message),
@@ -454,6 +489,29 @@ const threadLogPendingMessagesSchema = z.object({
   }).strict()),
 }).strict();
 
+const threadLogStartupStateSchema = z.object({
+  format: z.literal(2),
+  executionPaused: z.boolean().default(false),
+  terminalResults: z.array(z.object({ runId: z.string().uuid(), result: z.string().nullable() }).strict()).default([]),
+  agent: conversationAgentBindingSchema.nullable(),
+  conversation: conversationSummarySchema,
+  sortOrder: z.number().int().nonnegative(),
+  attachmentRefs: z.array(conversationAttachmentSchema),
+  agentMessages: z.array(z.object({ message: conversationAgentMessageItemSchema, workItemId: z.string().uuid().nullable() }).strict()),
+  pendingMessages: threadLogPendingMessagesSchema.shape.pendingMessages,
+  subagentTasks: z.array(threadLogSubagentTaskSchema),
+  taskList: conversationTaskListSchema.nullable(),
+  runs: z.array(z.object({
+    id: z.string().uuid(), modelId: z.string(), status: conversationRunStatusSchema,
+    error: z.string().nullable(), executionSnapshotJson: z.string().nullable(),
+    createdAt: z.string().datetime(), updatedAt: z.string().datetime(),
+  }).strict()),
+  checkpoint: z.null(),
+  modelMessages: z.array(z.never()).max(0),
+  timeline: z.array(z.never()).max(0),
+  turnSummaries: z.array(z.never()).max(0),
+}).strict();
+
 export type CompletedRun = {
   assistantMessage: ConversationMessageItem | null;
   subagentResultMessage: ConversationAgentMessageItem | null;
@@ -558,6 +616,52 @@ function subagentResultSummaryContent(input: {
 
 type SqliteModule = typeof import("node:sqlite");
 type SqliteDatabase = InstanceType<SqliteModule["DatabaseSync"]>;
+
+const JSONL_CONVERSATION_STORAGE_IMPORT_KIND = "jsonl-conversation-storage";
+const JSONL_CONVERSATION_STORAGE_IMPORT_IDENTITY = "conversation-jsonl-v1";
+
+const PERSISTED_CONVERSATION_TABLES = [
+  "conversation_timeline_search",
+  "model_message_search",
+  "thread_log_projection_cursors",
+  "thread_log_event_index",
+  "conversation_turn_summaries",
+  "conversation_context_checkpoints",
+  "subagent_tasks",
+  "conversation_agent_messages",
+  "conversation_task_lists",
+  "conversation_attachments",
+  "conversation_pending_messages",
+  "model_messages",
+  "conversation_timeline",
+  "runs",
+  "conversations",
+] as const;
+
+const TEAM_TABLES_WITH_CONVERSATION_REFERENCES = [
+  "teams",
+  "team_work_items",
+  "team_execution_conversations",
+  "team_member_conversations",
+  "team_work_item_member_assignments",
+  "team_instances",
+  "team_collaboration_plans",
+  "team_collaboration_plan_nodes",
+  "team_work_item_collaboration_outputs",
+] as const;
+
+function quoteSqliteIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function terminalReceiptSummary(result: string | null): string | null {
+  if (result === null || result.length <= 1_000) return result;
+  return `${result.slice(0, 920)}\n[总结已截断；完整输出保留在本轮 JSONL，可按 runId 读取]`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 // Keep this builtin dynamic so tsup does not drop the `node:` prefix in CJS.
 const requireNodeBuiltin = createRequire(__filename);
@@ -686,7 +790,7 @@ function isDistinctiveContextTerm(term: string): boolean {
     || /[a-z][A-Z]|_/u.test(term);
 }
 
-function contextSearchTerms(query: string): string[] {
+export function contextSearchTerms(query: string): string[] {
   const runs = contextSearchRuns(query);
   const terms: string[] = [];
   const append = (term: string): void => {
@@ -713,15 +817,8 @@ function contextSearchTerms(query: string): string[] {
   return terms.slice(0, 24);
 }
 
-function distinctiveContextTerms(query: string): string[] {
+export function distinctiveContextTerms(query: string): string[] {
   return contextSearchRuns(query).filter(isDistinctiveContextTerm);
-}
-
-function ftsQueryForTerms(terms: readonly string[]): string {
-  return terms
-    .filter((term) => term.length >= 3)
-    .map((term) => `"${term.replaceAll('"', '""')}"`)
-    .join(" OR ");
 }
 
 function likePattern(term: string): string {
@@ -737,7 +834,7 @@ function conversationSearchSnippet(content: string, query: string, maxCharacters
   return `${start > 0 ? "…" : ""}${compact.slice(start, end).trim()}${end < compact.length ? "…" : ""}`;
 }
 
-function rankStrongContextMatches(
+export function rankStrongContextMatches(
   messages: readonly StoredContextMessage[],
   distinctiveTerms: readonly string[],
   terms: readonly string[],
@@ -1202,8 +1299,16 @@ function toPublicConversationAttachment(
 }
 
 export class AgentDatabase {
+  private readonly projectionCursors = new Map<string, ThreadLogProjectionCursor>();
+  private readonly executionPaused = new Set<string>();
+  private readonly terminalResults = new Map<string, string | null>();
+  private readonly taskLists = new Map<string, ConversationTaskList>();
+  private taskListRollback: Map<string, ConversationTaskList | undefined> | null = null;
+  private readonly projectionEvents = new Map<string, ThreadLogProjectionEvent[]>();
+  private readonly projectionEventOwners = new Map<string, string>();
   private readonly database: SqliteDatabase;
   private readonly databasePath: string;
+  private volatileConversationProjectionActive = false;
 
   public constructor(databasePath: string) {
     this.databasePath = databasePath;
@@ -1214,6 +1319,9 @@ export class AgentDatabase {
     }
     try {
       this.migrate();
+      if (this.isJsonlConversationStorageFinalized()) {
+        this.activateVolatileConversationProjection();
+      }
       this.interruptUnfinishedRuns();
     } catch (error) {
       this.database.close();
@@ -1223,6 +1331,143 @@ export class AgentDatabase {
 
   public close(): void {
     this.database.close();
+    this.executionPaused.clear();
+    this.terminalResults.clear();
+    this.projectionCursors.clear();
+    this.taskLists.clear();
+    this.projectionEvents.clear();
+    this.projectionEventOwners.clear();
+  }
+
+  public isOpen(): boolean { return this.database.isOpen; }
+
+  /**
+   * Conversation JSONL files are the only durable source after finalization.
+   * These TEMP tables are a process-local query projection and disappear when
+   * the database connection closes; db.sqlite never receives subsequent
+   * Conversation/message/Run writes.
+   */
+  public activateVolatileConversationProjection(): void {
+    if (this.volatileConversationProjectionActive) return;
+    this.database.exec("PRAGMA temp_store = MEMORY;");
+    this.createVolatileConversationProjectionSchema();
+    this.volatileConversationProjectionActive = true;
+  }
+
+  public isJsonlConversationStorageFinalized(): boolean {
+    const importsTable = this.database.prepare(
+      `SELECT 1 AS present FROM main.sqlite_master
+       WHERE type = 'table' AND name = 'storage_imports'`,
+    ).get();
+    if (importsTable === undefined) return false;
+    return this.database.prepare(
+      `SELECT 1 AS present FROM main.storage_imports
+       WHERE source_kind = ? AND source_identity = ?`,
+    ).get(
+      JSONL_CONVERSATION_STORAGE_IMPORT_KIND,
+      JSONL_CONVERSATION_STORAGE_IMPORT_IDENTITY,
+    ) !== undefined;
+  }
+
+  /**
+   * Completes the one-time SQLite-to-JSONL cutover after every legacy
+   * Conversation has been exported and successfully replayed into the TEMP
+   * projection. Team tables retain Conversation identifiers as ordinary TEXT
+   * references because their targets now live in JSONL, outside SQLite.
+   */
+  public finalizeJsonlConversationStorage(): void {
+    if (this.isJsonlConversationStorageFinalized()) return;
+    if (!this.volatileConversationProjectionActive) {
+      throw new Error("Volatile Conversation projection must be active before finalization.");
+    }
+
+    this.database.exec("PRAGMA foreign_keys = OFF;");
+    try {
+      this.database.exec("BEGIN IMMEDIATE;");
+      for (const tableName of TEAM_TABLES_WITH_CONVERSATION_REFERENCES) {
+        this.rebuildPersistentTableWithoutConversationForeignKeys(tableName);
+      }
+      for (const tableName of PERSISTED_CONVERSATION_TABLES) {
+        this.database.exec(`DROP TABLE IF EXISTS main.${quoteSqliteIdentifier(tableName)};`);
+      }
+      this.database.prepare(
+        `INSERT INTO main.storage_imports (source_kind, source_identity, completed_at)
+         VALUES (?, ?, ?)`,
+      ).run(
+        JSONL_CONVERSATION_STORAGE_IMPORT_KIND,
+        JSONL_CONVERSATION_STORAGE_IMPORT_IDENTITY,
+        new Date().toISOString(),
+      );
+      this.database.exec("COMMIT;");
+    } catch (error) {
+      this.database.exec("ROLLBACK;");
+      throw error;
+    } finally {
+      this.database.exec("PRAGMA foreign_keys = ON;");
+    }
+
+    const foreignKeyViolations = this.database.prepare("PRAGMA main.foreign_key_check;").all();
+    if (foreignKeyViolations.length > 0) {
+      throw new Error("JSONL Conversation storage migration left invalid SQLite relationships.");
+    }
+    if (this.databasePath !== ":memory:") {
+      this.database.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+      this.database.exec("VACUUM;");
+    }
+  }
+
+  private rebuildPersistentTableWithoutConversationForeignKeys(tableName: string): void {
+    const row = this.database.prepare(
+      `SELECT sql FROM main.sqlite_master WHERE type = 'table' AND name = ?`,
+    ).get(tableName) as DatabaseRow | undefined;
+    if (row === undefined) return;
+    const originalSql = asNullableString(row, "sql");
+    if (originalSql === null || !/\bREFERENCES\s+(conversations|runs|conversation_agent_messages)\b/i.test(originalSql)) {
+      return;
+    }
+
+    const replacementName = `__jsonl_${tableName}`;
+    const createPrefix = new RegExp(
+      `^(CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?)` +
+      `(?:${escapeRegExp(tableName)}|"${escapeRegExp(tableName)}"|\\[${escapeRegExp(tableName)}\\])`,
+      "i",
+    );
+    const createSql = originalSql
+      .replace(createPrefix, `$1${quoteSqliteIdentifier(replacementName)}`)
+      .replace(
+        /\s+REFERENCES\s+(?:conversations|runs|conversation_agent_messages)\s*\([^)]*\)(?:\s+ON\s+DELETE\s+(?:CASCADE|SET\s+NULL|RESTRICT|NO\s+ACTION))?/gi,
+        "",
+      );
+    if (createSql === originalSql) {
+      throw new Error(`Could not detach Conversation foreign keys from ${tableName}.`);
+    }
+
+    const columns = this.database.prepare(
+      `PRAGMA main.table_info(${quoteSqliteIdentifier(tableName)})`,
+    ).all() as DatabaseRow[];
+    const columnList = columns
+      .map((column) => quoteSqliteIdentifier(asString(column, "name")))
+      .join(", ");
+    const indexes = this.database.prepare(
+      `SELECT sql FROM main.sqlite_master
+       WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL
+       ORDER BY name ASC`,
+    ).all(tableName) as DatabaseRow[];
+
+    this.database.exec(`DROP TABLE IF EXISTS main.${quoteSqliteIdentifier(replacementName)};`);
+    this.database.exec(createSql);
+    this.database.exec(
+      `INSERT INTO main.${quoteSqliteIdentifier(replacementName)} (${columnList})
+       SELECT ${columnList} FROM main.${quoteSqliteIdentifier(tableName)};`,
+    );
+    this.database.exec(`DROP TABLE main.${quoteSqliteIdentifier(tableName)};`);
+    this.database.exec(
+      `ALTER TABLE main.${quoteSqliteIdentifier(replacementName)}
+       RENAME TO ${quoteSqliteIdentifier(tableName)};`,
+    );
+    for (const index of indexes) {
+      this.database.exec(asString(index, "sql"));
+    }
   }
 
   /**
@@ -1237,6 +1482,12 @@ export class AgentDatabase {
         this.databasePath !== ":memory:"
         && path.resolve(databasePath) === path.resolve(this.databasePath)
       ) continue;
+      const sourceIdentity = path.resolve(databasePath);
+      const alreadyImported = this.database.prepare(
+        `SELECT 1 AS present FROM storage_imports
+         WHERE source_kind = 'langgraph-checkpoints' AND source_identity = ?`,
+      ).get(sourceIdentity);
+      if (alreadyImported !== undefined) continue;
 
       this.database.prepare("ATTACH DATABASE ? AS legacy_checkpoints").run(databasePath);
       try {
@@ -1274,6 +1525,10 @@ export class AgentDatabase {
               channel, value_type, value_blob, created_at
             FROM legacy_checkpoints.langgraph_checkpoint_writes;
           `);
+          this.database.prepare(
+            `INSERT INTO storage_imports (source_kind, source_identity, completed_at)
+             VALUES ('langgraph-checkpoints', ?, ?)`,
+          ).run(sourceIdentity, new Date().toISOString());
         });
       } finally {
         this.database.exec("DETACH DATABASE legacy_checkpoints;");
@@ -1282,12 +1537,74 @@ export class AgentDatabase {
   }
 
   /**
-   * Bootstrap calls this after rebuilding a missing SQLite projection from
+   * Bootstrap calls this after rebuilding the volatile projection from
    * ThreadLog. Runs that had reached the model/tool execution boundary must
    * never be replayed automatically after a process stop.
    */
-  public interruptRecoveredThreadLogRuns(): void {
+  public interruptRecoveredThreadLogRuns(): {
+    conversationId: string;
+    event: import("./thread-log.js").ThreadLogEventInput;
+  }[] {
+    const events: ReturnType<AgentDatabase["interruptRecoveredThreadLogRuns"]> = [];
+    // A child may have durably finished before its parent receipt was appended.
+    const recoverableTasks = this.database.prepare("SELECT target_run_id FROM subagent_tasks WHERE status IN ('queued', 'running') AND target_run_id IS NOT NULL").all() as DatabaseRow[];
+    for (const task of recoverableTasks) {
+      const runId = asString(task, "target_run_id");
+      const conversationId = this.getRunConversationId(runId);
+      if (conversationId === null) continue;
+      const run = this.getConversationRunOutcome(conversationId, runId);
+      if (run !== null && (run.status === "completed" || run.status === "failed" || run.status === "cancelled")) {
+        const completed = this.completeSubagentTaskByRun({ targetRunId: runId, status: run.status, result: run.result, error: run.error });
+        if (completed !== null) events.push({ conversationId: completed.parentConversationId,
+          event: { type: "subagent_task_completed", payload: { task: completed } } });
+      }
+    }
+    const runs = this.database.prepare(
+      "SELECT id, conversation_id FROM runs WHERE status IN ('queued', 'running')",
+    ).all() as DatabaseRow[];
+    const tasks = this.database.prepare(
+      "SELECT id FROM subagent_tasks WHERE status IN ('queued', 'running')",
+    ).all() as DatabaseRow[];
     this.interruptUnfinishedRuns();
+    for (const row of runs) {
+      const runId = asString(row, "id");
+      const conversationId = asString(row, "conversation_id");
+      const run = this.database.prepare("SELECT status, error FROM runs WHERE id = ?").get(runId) as DatabaseRow;
+      if (run.status !== "failed") continue;
+      events.push({ conversationId, event: {
+        type: "run_finished", payload: { runId, status: "failed", error: run.error, result: null },
+      } });
+      const timeline = this.database.prepare(
+        "SELECT payload_json FROM conversation_timeline WHERE run_id = ? AND kind IN ('tool', 'model_retry')",
+      ).all(runId) as DatabaseRow[];
+      for (const item of timeline) {
+        const value = parseJson(asString(item, "payload_json"), "recovered timeline item");
+        const tool = conversationToolItemSchema.safeParse(value);
+        if (tool.success && tool.data.status === "cancelled") events.push({ conversationId, event: {
+          type: "tool_approval_expired", payload: { tool: tool.data },
+        } });
+        const retry = conversationModelRetryItemSchema.safeParse(value);
+        if (retry.success && retry.data.status === "failed") events.push({ conversationId, event: {
+          type: "model_retry_updated", payload: { retry: retry.data },
+        } });
+      }
+    }
+    for (const row of tasks) {
+      const task = this.getSubagentTask(asString(row, "id"));
+      events.push({ conversationId: task.parentConversationId, event: {
+        type: "subagent_task_completed", payload: { task },
+      } });
+      if (task.resultMessageId === null) continue;
+      const stored = this.database.prepare(
+        "SELECT payload_json FROM conversation_timeline WHERE id = ?",
+      ).get(task.resultMessageId) as DatabaseRow | undefined;
+      if (stored === undefined) continue;
+      const message = conversationAgentMessageItemSchema.parse(parseJson(asString(stored, "payload_json"), "recovered result"));
+      events.push({ conversationId: task.parentConversationId, event: {
+        type: "agent_message", payload: { message, content: message.content, modelContent: agentMessageModelContent(message) },
+      } });
+    }
+    return events;
   }
 
   public listProjects(): ProjectSummary[] {
@@ -3742,6 +4059,16 @@ export class AgentDatabase {
     return this.getConversation(conversationId);
   }
 
+  public getConversationSortOrder(conversationId: string): number {
+    const row = this.database
+      .prepare(
+        "SELECT sort_order FROM conversations WHERE id = ? AND deletion_pending = 0",
+      )
+      .get(conversationId) as DatabaseRow | undefined;
+    if (row === undefined) throw new Error("Conversation was not found.");
+    return asNumber(row, "sort_order");
+  }
+
   public setConversationPermissionMode(
     conversationId: string,
     rawPermissionMode: unknown,
@@ -4412,6 +4739,63 @@ export class AgentDatabase {
     return this.getConversation(conversationId);
   }
 
+  public isConversationExecutionPaused(conversationId: string): boolean {
+    return this.executionPaused.has(conversationId);
+  }
+
+  public setConversationExecutionPaused(conversationId: string, paused: boolean): void {
+    this.getConversation(conversationId);
+    if (paused) this.executionPaused.add(conversationId);
+    else this.executionPaused.delete(conversationId);
+  }
+
+  public getRunConversationId(runId: string): string | null {
+    const row = this.database.prepare("SELECT conversation_id FROM runs WHERE id = ?").get(runId) as DatabaseRow | undefined;
+    return row === undefined ? null : asString(row, "conversation_id");
+  }
+
+  public getConversationRunOutcome(conversationId: string, runId?: string) {
+    const row = (runId === undefined
+      ? this.database.prepare("SELECT id, status, error, updated_at FROM runs WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(conversationId)
+      : this.database.prepare("SELECT id, status, error, updated_at FROM runs WHERE conversation_id = ? AND id = ?").get(conversationId, runId)) as DatabaseRow | undefined;
+    if (row === undefined) return null;
+    const id = asString(row, "id");
+    const status = conversationRunStatusSchema.parse(row.status);
+    const progress = this.database.prepare(`SELECT id, kind, json_extract(payload_json, '$.status') AS status,
+      length(json_extract(payload_json, '$.content')) AS content_length,
+      length(json_extract(payload_json, '$.result')) AS result_length
+      FROM conversation_timeline WHERE run_id = ? ORDER BY sequence DESC LIMIT 8`).all(id);
+    const awaitingApproval = this.database.prepare(`SELECT 1 FROM conversation_timeline
+      WHERE run_id = ? AND kind = 'tool' AND json_extract(payload_json, '$.status') = 'awaiting_approval' LIMIT 1`).get(id) !== undefined;
+    let result = this.terminalResults.get(id) ?? null;
+    if (status === "completed" && !this.terminalResults.has(id)) {
+      const final = this.database.prepare(`SELECT json_extract(payload_json, '$.content') AS content
+        FROM conversation_timeline WHERE run_id = ? AND kind = 'message'
+          AND json_extract(payload_json, '$.role') = 'assistant' AND json_extract(payload_json, '$.status') = 'completed'
+        ORDER BY sequence DESC LIMIT 1`).get(id) as DatabaseRow | undefined;
+      result = final === undefined ? null : asNullableString(final, "content");
+    }
+    return {
+      runId: id, status, error: asNullableString(row, "error"),
+      result: status === "completed" ? result : null, awaitingApproval,
+      progress: JSON.stringify([row.updated_at, ...progress]),
+    };
+  }
+
+  private materializeCollaborationControl(conversationId: string, event: ThreadLogProjectionEvent): boolean {
+    if (event.type === "conversation_execution_paused") {
+      this.setConversationExecutionPaused(conversationId, z.boolean().parse(event.payload.paused));
+      return true;
+    }
+    if (event.type === "agent_messages_consumed") {
+      const payload = z.object({ runId: z.string().uuid(), messageIds: z.array(z.string().uuid()).max(50) }).strict().parse(event.payload);
+      if (this.getRunConversationId(payload.runId) !== conversationId) throw new Error("Result batch Run does not belong to the conversation.");
+      for (const id of payload.messageIds) this.markThreadLogAgentMessageRead(conversationId, id, event.createdAt, payload.runId);
+      return true;
+    }
+    return false;
+  }
+
   public createConversationDeletionTask(conversationId: string): ConversationDeletionTask {
     const existingTask = this.listIncompleteConversationDeletionTasks().find((task) =>
       task.conversationIds.includes(conversationId)
@@ -4584,12 +4968,123 @@ export class AgentDatabase {
   public completeConversationDeletionTask(taskId: string): void {
     const task = this.getConversationDeletionTask(taskId);
     if (task === null) return;
+    const placeholders = task.conversationIds.map(() => "?").join(", ");
+    const runIds = this.listRunIdsForConversations(task.conversationIds);
+    const runPlaceholders = runIds.map(() => "?").join(", ");
+    const agentMessageIds = (this.database.prepare(
+      `SELECT id FROM conversation_agent_messages
+       WHERE sender_conversation_id IN (${placeholders})
+          OR target_conversation_id IN (${placeholders})`,
+    ).all(...task.conversationIds, ...task.conversationIds) as DatabaseRow[])
+      .map((row) => asString(row, "id"));
+    const messagePlaceholders = agentMessageIds.map(() => "?").join(", ");
     this.withTransaction(() => {
-      this.database.prepare("DELETE FROM conversations WHERE id = ?")
-        .run(task.rootConversationId);
+      this.database.prepare(
+        `UPDATE teams SET coordinator_conversation_id = NULL
+         WHERE coordinator_conversation_id IN (${placeholders})`,
+      ).run(...task.conversationIds);
+      this.database.prepare(
+        `UPDATE team_work_items
+         SET source_conversation_id = CASE
+               WHEN source_conversation_id IN (${placeholders}) THEN NULL
+               ELSE source_conversation_id END,
+             execution_conversation_id = CASE
+               WHEN execution_conversation_id IN (${placeholders}) THEN NULL
+               ELSE execution_conversation_id END
+         WHERE source_conversation_id IN (${placeholders})
+            OR execution_conversation_id IN (${placeholders})`,
+      ).run(
+        ...task.conversationIds,
+        ...task.conversationIds,
+        ...task.conversationIds,
+        ...task.conversationIds,
+      );
+      if (runIds.length > 0) {
+        this.database.prepare(
+          `UPDATE team_work_items SET active_run_id = NULL
+           WHERE active_run_id IN (${runPlaceholders})`,
+        ).run(...runIds);
+        this.database.prepare(
+          `DELETE FROM team_work_item_collaboration_outputs
+           WHERE run_id IN (${runPlaceholders})`,
+        ).run(...runIds);
+      }
+      this.database.prepare(
+        `DELETE FROM team_execution_conversations
+         WHERE source_conversation_id IN (${placeholders})
+            OR conversation_id IN (${placeholders})`,
+      ).run(...task.conversationIds, ...task.conversationIds);
+      this.database.prepare(
+        `DELETE FROM team_member_conversations
+         WHERE team_execution_conversation_id IN (${placeholders})
+            OR conversation_id IN (${placeholders})`,
+      ).run(...task.conversationIds, ...task.conversationIds);
+      this.database.prepare(
+        `DELETE FROM team_work_item_member_assignments
+         WHERE member_conversation_id IN (${placeholders})`,
+      ).run(...task.conversationIds);
+      if (agentMessageIds.length > 0) {
+        this.database.prepare(
+          `DELETE FROM team_work_item_member_assignments
+           WHERE message_id IN (${messagePlaceholders})`,
+        ).run(...agentMessageIds);
+      }
+      this.database.prepare(
+        `DELETE FROM team_instances WHERE source_conversation_id IN (${placeholders})`,
+      ).run(...task.conversationIds);
+      this.database.prepare(
+        `UPDATE team_instances SET root_conversation_id = NULL
+         WHERE root_conversation_id IN (${placeholders})`,
+      ).run(...task.conversationIds);
+      this.database.prepare(
+        `DELETE FROM team_collaboration_plans
+         WHERE created_by_conversation_id IN (${placeholders})`,
+      ).run(...task.conversationIds);
+      this.database.prepare(
+        `UPDATE team_collaboration_plan_nodes SET conversation_id = NULL
+         WHERE conversation_id IN (${placeholders})`,
+      ).run(...task.conversationIds);
+      this.database.prepare(
+        `DELETE FROM team_work_item_collaboration_outputs
+         WHERE conversation_id IN (${placeholders})`,
+      ).run(...task.conversationIds);
+
+      this.database.prepare(
+        `DELETE FROM conversation_agent_messages
+         WHERE sender_conversation_id IN (${placeholders})
+            OR target_conversation_id IN (${placeholders})`,
+      ).run(...task.conversationIds, ...task.conversationIds);
+      this.database.prepare(
+        `DELETE FROM subagent_tasks
+         WHERE parent_conversation_id IN (${placeholders})
+            OR child_conversation_id IN (${placeholders})`,
+      ).run(...task.conversationIds, ...task.conversationIds);
+      for (const id of task.conversationIds) this.writeTaskListProjection(id, null);
+      for (const tableName of [
+        "conversation_timeline",
+        "model_messages",
+        "conversation_pending_messages",
+        "conversation_attachments",
+        "conversation_context_checkpoints",
+        "conversation_turn_summaries",
+        "runs",
+      ]) {
+        this.database.prepare(
+          `DELETE FROM ${quoteSqliteIdentifier(tableName)}
+           WHERE conversation_id IN (${placeholders})`,
+        ).run(...task.conversationIds);
+      }
+      this.database.prepare(
+        `DELETE FROM conversations WHERE id IN (${placeholders})`,
+      ).run(...task.conversationIds);
       this.database.prepare("DELETE FROM conversation_deletion_tasks WHERE id = ?")
         .run(task.id);
     });
+    for (const runId of runIds) this.terminalResults.delete(runId);
+    for (const id of task.conversationIds) {
+      this.executionPaused.delete(id);
+      this.clearThreadLogProjection(id);
+    }
   }
 
   private getConversationDeletionTask(taskId: string): ConversationDeletionTask | null {
@@ -4649,7 +5144,7 @@ export class AgentDatabase {
   public listDraftConversationAttachments(conversationId: string): ConversationAttachment[] {
     this.getConversation(conversationId);
     const contextAttachmentIds = new Set(
-      this.listContextMessages(conversationId).flatMap((message) => message.attachmentIds),
+      this.listContextAttachmentIds(conversationId),
     );
     // Side forks inherit model context without copying the visible timeline. Their
     // copied attachments therefore have no message_id, but they are not drafts.
@@ -4990,8 +5485,8 @@ export class AgentDatabase {
     return this.withTransaction(() => this.completeSubagentTaskByRunInTransaction(input));
   }
 
-  public deliverSubagentTaskResult(taskId: string): ConversationAgentMessageItem | null {
-    return this.withTransaction(() => this.deliverSubagentTaskResultInTransaction(taskId));
+  public deliverSubagentTaskResult(taskId: string, autoWake = true): ConversationAgentMessageItem | null {
+    return this.withTransaction(() => this.deliverSubagentTaskResultInTransaction(taskId, autoWake));
   }
 
   private completeSubagentTaskByRunInTransaction(input: {
@@ -5022,7 +5517,8 @@ export class AgentDatabase {
   }
 
   private deliverSubagentTaskResultInTransaction(
-    taskId: string
+    taskId: string,
+    autoWake = true,
   ): ConversationAgentMessageItem | null {
     const task = this.getSubagentTask(taskId);
     if (
@@ -5035,7 +5531,7 @@ export class AgentDatabase {
     const target = this.getConversation(task.parentConversationId);
     const now = new Date().toISOString();
     const fullContent = task.status === "completed"
-      ? task.result?.trim() || "Subagent 已完成任务，但未提供最终说明。"
+      ? task.result?.trim() || "Subagent 本轮执行已结束，未提供总结。可按 conversationId 和 runId 读取本轮记录，或要求该 Subagent 补充说明；结束不代表任务已验收。"
       : task.status === "cancelled"
         ? `Subagent 任务已取消：${task.error?.trim() || "未提供原因。"}`
         : `Subagent 任务失败：${task.error?.trim() || "未提供错误信息。"}`;
@@ -5044,6 +5540,10 @@ export class AgentDatabase {
       status: task.status,
     });
     const message = conversationAgentMessageItemSchema.parse({
+      ...(autoWake ? {} : { autoWake: false }),
+      executionStatus: task.status,
+      summaryStatus: task.result?.trim() ? "provided" : "missing",
+      executionError: task.error,
       content,
       conversationId: target.id,
       createdAt: now,
@@ -5088,40 +5588,72 @@ export class AgentDatabase {
          ORDER BY conversation_timeline.sequence ASC`
       )
       .all(conversationId) as DatabaseRow[];
-    return rows.map((row) => {
-      const item = conversationTimelineItemSchema.parse(
-        parseJson(asString(row, "payload_json"), "timeline item")
-      );
-      if (item.kind === "agent_message") {
-        return this.withCurrentAgentMessageSenderTitle(item);
-      }
-      const hasRunDuration = (item.kind === "message" && item.role === "assistant" && item.runId !== null)
-        || (item.kind === "model_retry" && item.status !== "retrying");
-      if (!hasRunDuration) {
-        return item;
-      }
+    return rows.map((row) => this.toConversationTimelineItem(row));
+  }
 
-      const runStatus = asNullableString(row, "run_status");
-      const runCreatedAt = asNullableString(row, "run_created_at");
-      const runCompletedAt = asNullableString(row, "run_completed_at");
-      if (
-        runStatus === null
-        || runCreatedAt === null
-        || runCompletedAt === null
-        || (runStatus !== "completed" && runStatus !== "failed" && runStatus !== "cancelled")
-      ) {
-        return item;
-      }
+  public listTimelinePage(input: ConversationTimelinePageInput): ConversationTimelinePage {
+    this.getConversation(input.conversationId);
+    const rows = this.database
+      .prepare(
+        `SELECT conversation_timeline.sequence, conversation_timeline.payload_json,
+                runs.created_at AS run_created_at,
+                runs.status AS run_status,
+                runs.updated_at AS run_completed_at
+         FROM conversation_timeline
+         LEFT JOIN runs ON runs.id = conversation_timeline.run_id
+         WHERE conversation_timeline.conversation_id = ?
+           AND (? IS NULL OR conversation_timeline.sequence < ?)
+         ORDER BY conversation_timeline.sequence DESC
+         LIMIT ?`,
+      )
+      .all(
+        input.conversationId,
+        input.beforeSequence ?? null,
+        input.beforeSequence ?? null,
+        input.limit + 1,
+      ) as DatabaseRow[];
+    const hasMore = rows.length > input.limit;
+    const selectedRows = rows.slice(0, input.limit);
+    const oldestSelectedRow = selectedRows.at(-1);
+    return {
+      hasMore,
+      items: selectedRows
+        .map((row) => this.toConversationTimelineItem(row))
+        .reverse(),
+      nextBeforeSequence: hasMore
+        && oldestSelectedRow !== undefined
+        ? asNumber(oldestSelectedRow, "sequence")
+        : null,
+    };
+  }
 
-      const durationMs = Math.max(
-        0,
-        Date.parse(runCompletedAt) - Date.parse(runCreatedAt),
-      );
-      return conversationTimelineItemSchema.parse({
-        ...item,
-        completedAt: runCompletedAt,
-        durationMs,
-      });
+  private toConversationTimelineItem(row: DatabaseRow): ConversationTimelineItem {
+    const item = conversationTimelineItemSchema.parse(
+      parseJson(asString(row, "payload_json"), "timeline item"),
+    );
+    if (item.kind === "agent_message") {
+      return this.withCurrentAgentMessageSenderTitle(item);
+    }
+    const hasRunDuration = (item.kind === "message" && item.role === "assistant" && item.runId !== null)
+      || (item.kind === "model_retry" && item.status !== "retrying");
+    if (!hasRunDuration) return item;
+
+    const runStatus = asNullableString(row, "run_status");
+    const runCreatedAt = asNullableString(row, "run_created_at");
+    const runCompletedAt = asNullableString(row, "run_completed_at");
+    if (
+      runStatus === null
+      || runCreatedAt === null
+      || runCompletedAt === null
+      || (runStatus !== "completed" && runStatus !== "failed" && runStatus !== "cancelled")
+    ) {
+      return item;
+    }
+
+    return conversationTimelineItemSchema.parse({
+      ...item,
+      completedAt: runCompletedAt,
+      durationMs: Math.max(0, Date.parse(runCompletedAt) - Date.parse(runCreatedAt)),
     });
   }
 
@@ -5141,6 +5673,9 @@ export class AgentDatabase {
     const message = conversationAgentMessageItemSchema.parse({
       content: input.content,
       conversationId: target.id,
+      ...(input.executionStatus === undefined ? {} : { executionStatus: input.executionStatus }),
+      ...(input.summaryStatus === undefined ? {} : { summaryStatus: input.summaryStatus }),
+      ...(input.executionError === undefined ? {} : { executionError: input.executionError }),
       createdAt: now,
       fileChanges: input.fileChanges ?? [],
       id: randomUUID(),
@@ -5235,7 +5770,25 @@ export class AgentDatabase {
     return rows.map((row) => asString(row, "target_conversation_id"));
   }
 
-  public markAgentMessagesRead(messageIds: readonly string[]): void {
+  /** Recover replies from durable consumption facts, including a crash before receipt delivery. */
+  public listAgentReplyRecoveries(): { trigger: ConversationAgentMessageItem; runId: string }[] {
+    const messages = (this.database.prepare("SELECT payload_json FROM conversation_agent_messages").all() as DatabaseRow[])
+      .map((row) => conversationAgentMessageItemSchema.parse(parseJson(asString(row, "payload_json"), "Agent message")));
+    const delivered = new Set(messages.filter((message) => message.messageType === "agent_result")
+      .map((message) => `${message.senderConversationId}:${message.runId}:${message.conversationId}`));
+    const pending = new Map<string, { trigger: ConversationAgentMessageItem; runId: string }>();
+    for (const trigger of messages) {
+      const runId = trigger.consumedByRunId;
+      if (trigger.messageType !== "message" || runId === undefined || !this.hasConversation(trigger.senderConversationId)) continue;
+      const key = `${trigger.conversationId}:${runId}:${trigger.senderConversationId}`;
+      if (delivered.has(key)) continue;
+      const row = this.database.prepare("SELECT status FROM runs WHERE id = ? AND conversation_id = ?").get(runId, trigger.conversationId) as DatabaseRow | undefined;
+      if (row !== undefined && (row.status === "completed" || row.status === "failed" || row.status === "cancelled")) pending.set(key, { trigger, runId });
+    }
+    return [...pending.values()];
+  }
+
+  public markAgentMessagesRead(messageIds: readonly string[], consumedByRunId?: string): void {
     if (messageIds.length === 0) return;
     const now = new Date().toISOString();
     this.withTransaction(() => {
@@ -5258,6 +5811,7 @@ export class AgentDatabase {
         if (current.status === "read") continue;
         const read = conversationAgentMessageItemSchema.parse({
           ...current,
+          ...(consumedByRunId === undefined ? {} : { consumedByRunId }),
           readAt: now,
           status: "read"
         });
@@ -5269,6 +5823,10 @@ export class AgentDatabase {
 
   public getTaskList(conversationId: string): ConversationTaskList | null {
     this.getConversation(conversationId);
+    if (this.volatileConversationProjectionActive) {
+      const taskList = this.taskLists.get(conversationId);
+      return taskList === undefined || taskList.status === "closed" ? null : structuredClone(taskList);
+    }
     const row = this.database
       .prepare(
         "SELECT payload_json FROM conversation_task_lists WHERE conversation_id = ?"
@@ -5316,12 +5874,10 @@ export class AgentDatabase {
     this.getConversation(conversationId);
     const now = new Date().toISOString();
     this.withTransaction(() => {
-      const result = this.database
-        .prepare("DELETE FROM conversation_task_lists WHERE conversation_id = ?")
-        .run(conversationId);
-      if (result.changes !== 1) {
+      if (this.getTaskList(conversationId) === null) {
         throw new Error("Task list was not found.");
       }
+      this.writeTaskListProjection(conversationId, null);
       this.touchConversation(conversationId, now);
     });
   }
@@ -5354,17 +5910,29 @@ export class AgentDatabase {
 
   private persistTaskList(taskList: ConversationTaskList, now: string): void {
     this.withTransaction(() => {
-      this.database
-        .prepare(
-          `INSERT INTO conversation_task_lists (conversation_id, payload_json, updated_at)
-           VALUES (?, ?, ?)
-           ON CONFLICT(conversation_id) DO UPDATE SET
-             payload_json = excluded.payload_json,
-             updated_at = excluded.updated_at`
-        )
-        .run(taskList.conversationId, JSON.stringify(taskList), now);
+      this.writeTaskListProjection(taskList.conversationId, taskList);
       this.touchConversation(taskList.conversationId, now);
     });
+  }
+
+  private writeTaskListProjection(conversationId: string, taskList: ConversationTaskList | null): void {
+    if (this.volatileConversationProjectionActive) {
+      if (this.taskListRollback !== null && !this.taskListRollback.has(conversationId)) {
+        this.taskListRollback.set(conversationId, this.taskLists.get(conversationId));
+      }
+      if (taskList === null) this.taskLists.delete(conversationId);
+      else this.taskLists.set(conversationId, structuredClone(taskList));
+      return;
+    }
+    // Pre-cutover databases still need their original table for the one-time JSONL export.
+    if (taskList === null) {
+      this.database.prepare("DELETE FROM conversation_task_lists WHERE conversation_id = ?").run(conversationId);
+    } else {
+      this.database.prepare(
+        `INSERT INTO conversation_task_lists (conversation_id, payload_json, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(conversation_id) DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at`,
+      ).run(conversationId, JSON.stringify(taskList), taskList.updatedAt);
+    }
   }
 
   public enqueuePendingMessage(rawInput: SendConversationMessageInput): ConversationPendingMessage {
@@ -5577,9 +6145,8 @@ export class AgentDatabase {
 
   public searchConversations(input: ConversationSearchInput): ConversationSearchResult[] {
     const parsed = conversationSearchInputSchema.parse(input);
-    const rows = this.database
-      .prepare(
-        `SELECT conversation_timeline.payload_json,
+    const rows = this.database.prepare(
+        `SELECT conversation_timeline.sequence, conversation_timeline.payload_json,
                 conversations.title AS conversation_title,
                 conversations.project_id,
                 conversations.parent_conversation_id,
@@ -5590,10 +6157,18 @@ export class AgentDatabase {
            AND conversations.is_archived = 0
            AND conversation_timeline.kind IN ('message', 'agent_message')
            AND json_extract(conversation_timeline.payload_json, '$.content') LIKE ? ESCAPE '\\'
-         ORDER BY conversation_timeline.created_at DESC, conversation_timeline.sequence DESC
+           AND (? IS NULL OR conversation_timeline.conversation_id = ?)
+           AND (? IS NULL OR conversation_timeline.sequence < ?)
+         ORDER BY conversation_timeline.sequence DESC
          LIMIT ?`,
-      )
-      .all(likePattern(parsed.query), parsed.limit) as DatabaseRow[];
+      ).all(
+        likePattern(parsed.query),
+        parsed.conversationId ?? null,
+        parsed.conversationId ?? null,
+        parsed.beforeSequence ?? null,
+        parsed.beforeSequence ?? null,
+        parsed.limit,
+      ) as DatabaseRow[];
 
     return conversationSearchResponseSchema.parse(rows.flatMap((row) => {
       const item = conversationTimelineItemSchema.parse(
@@ -5609,6 +6184,7 @@ export class AgentDatabase {
         parentConversationId: asNullableString(row, "parent_conversation_id"),
         projectId: asNullableString(row, "project_id"),
         role: item.kind === "agent_message" ? "agent" : item.role,
+        sequence: asNumber(row, "sequence"),
         threadKind: asString(row, "thread_kind"),
       }];
     }));
@@ -5636,7 +6212,7 @@ export class AgentDatabase {
       if (attachmentIds.length === 0) return [];
       const placeholders = attachmentIds.map(() => "?").join(", ");
       const contextAttachmentIds = new Set(
-        this.listContextMessages(conversationId).flatMap((message) => message.attachmentIds),
+        this.listContextAttachmentIds(conversationId),
       );
       const attachments = this.listStoredAttachments(
         `conversation_id = ? AND id IN (${placeholders})
@@ -6321,6 +6897,7 @@ export class AgentDatabase {
       if (runConversationId !== input.conversationId) {
         throw new Error("The Run does not belong to the conversation.");
       }
+      this.terminalResults.set(input.runId, terminalReceiptSummary(input.result));
 
       let assistantMessage: ConversationMessageItem | null = null;
       if (input.assistant?.kind === "turn") {
@@ -6597,11 +7174,158 @@ export class AgentDatabase {
     return rows.map((row) => this.toStoredContextMessage(row));
   }
 
+  /** Provider usage UI does not need message bodies or tool payloads. */
+  public listAssistantProviderStates(conversationId: string): ModelProviderState[] {
+    this.getConversation(conversationId);
+    const rows = this.database
+      .prepare(
+        `SELECT provider_state_json
+         FROM model_messages
+         WHERE conversation_id = ?
+           AND role = 'assistant'
+           AND provider_state_json IS NOT NULL
+         ORDER BY sequence ASC`,
+      )
+      .all(conversationId) as DatabaseRow[];
+    return rows.map((row) => parseJson<ModelProviderState>(
+      asString(row, "provider_state_json"),
+      "assistant provider state",
+    ));
+  }
+
+  public listContextAttachmentIds(conversationId: string): string[] {
+    this.getConversation(conversationId);
+    const rows = this.database
+      .prepare(
+        `SELECT attachment_ids_json
+         FROM model_messages
+         WHERE conversation_id = ? AND attachment_ids_json <> '[]'`,
+      )
+      .all(conversationId) as DatabaseRow[];
+    return [...new Set(rows.flatMap((row) =>
+      parseJson<unknown[]>(asString(row, "attachment_ids_json"), "context attachment ids")
+        .filter((value): value is string => typeof value === "string")
+    ))];
+  }
+
+  public getLatestConversationRequestContent(conversationId: string): string | null {
+    this.getConversation(conversationId);
+    const row = this.database
+      .prepare(
+        `SELECT payload_json
+         FROM conversation_timeline
+         WHERE conversation_id = ?
+           AND (
+             kind = 'agent_message'
+             OR (kind = 'message' AND json_extract(payload_json, '$.role') = 'user')
+           )
+         ORDER BY sequence DESC
+         LIMIT 1`,
+      )
+      .get(conversationId) as DatabaseRow | undefined;
+    if (row === undefined) return null;
+    const item = conversationTimelineItemSchema.parse(
+      parseJson(asString(row, "payload_json"), "latest conversation request"),
+    );
+    return item.kind === "message" || item.kind === "agent_message" ? item.content : null;
+  }
+
+  public getLatestCompletedAssistantContent(conversationId: string): string | null {
+    this.getConversation(conversationId);
+    const row = this.database
+      .prepare(
+        `SELECT payload_json
+         FROM conversation_timeline
+         WHERE conversation_id = ?
+           AND kind = 'message'
+           AND json_extract(payload_json, '$.role') = 'assistant'
+           AND json_extract(payload_json, '$.status') = 'completed'
+         ORDER BY sequence DESC
+         LIMIT 1`,
+      )
+      .get(conversationId) as DatabaseRow | undefined;
+    if (row === undefined) return null;
+    const item = conversationTimelineItemSchema.parse(
+      parseJson(asString(row, "payload_json"), "latest assistant result"),
+    );
+    return item.kind === "message" && item.role === "assistant" ? item.content : null;
+  }
+
+  /**
+   * Read a bounded newest-first window without materializing the whole
+   * conversation. Results are returned in chronological order so callers can
+   * pass them directly to context formatting code.
+   */
+  public listContextMessagesPage(input: {
+    afterSequence?: number;
+    beforeSequence?: number;
+    conversationId: string;
+    limit: number;
+  }): StoredContextMessage[] {
+    this.getConversation(input.conversationId);
+    if (!Number.isSafeInteger(input.limit) || input.limit <= 0 || input.limit > 1_000) {
+      throw new Error("Context message page limit must be between 1 and 1000.");
+    }
+    const afterSequence = input.afterSequence;
+    const beforeSequence = input.beforeSequence;
+    if (
+      afterSequence !== undefined
+      && (!Number.isSafeInteger(afterSequence) || afterSequence < 0)
+    ) {
+      throw new Error("Context message afterSequence must be a non-negative safe integer.");
+    }
+    if (
+      beforeSequence !== undefined
+      && (!Number.isSafeInteger(beforeSequence) || beforeSequence <= 0)
+    ) {
+      throw new Error("Context message beforeSequence must be a positive safe integer.");
+    }
+    const afterSql = afterSequence === undefined ? "" : " AND sequence > ?";
+    const beforeSql = beforeSequence === undefined ? "" : " AND sequence < ?";
+    const rows = this.database
+      .prepare(
+        `SELECT sequence, run_id, role, content, tool_calls_json, tool_call_id,
+                attachment_ids_json, provider_state_json
+         FROM model_messages
+         WHERE conversation_id = ?${afterSql}${beforeSql}
+         ORDER BY sequence DESC
+         LIMIT ?`,
+      )
+      .all(
+        input.conversationId,
+        ...(afterSequence === undefined ? [] : [afterSequence]),
+        ...(beforeSequence === undefined ? [] : [beforeSequence]),
+        input.limit,
+      ) as DatabaseRow[];
+    return rows.reverse().map((row) => this.toStoredContextMessage(row));
+  }
+
+  public countContextMessages(input: {
+    afterSequence?: number;
+    beforeSequence?: number;
+    conversationId: string;
+  }): number {
+    this.getConversation(input.conversationId);
+    const afterSql = input.afterSequence === undefined ? "" : " AND sequence > ?";
+    const beforeSql = input.beforeSequence === undefined ? "" : " AND sequence < ?";
+    const row = this.database
+      .prepare(
+        `SELECT COUNT(*) AS message_count
+         FROM model_messages
+         WHERE conversation_id = ?${afterSql}${beforeSql}`,
+      )
+      .get(
+        input.conversationId,
+        ...(input.afterSequence === undefined ? [] : [input.afterSequence]),
+        ...(input.beforeSequence === undefined ? [] : [input.beforeSequence]),
+      ) as DatabaseRow;
+    return asNumber(row, "message_count");
+  }
+
   /**
    * ContextCompiler uses the JSONL history as its chronological source. This
-   * bounded lookup only supplies the SQLite sequence needed to omit the
-   * current query from FTS retrieval; it deliberately avoids loading the
-   * whole materialized history on every model turn.
+   * bounded lookup supplies the volatile sequence needed to omit the current
+   * query without loading the whole materialized history on every model turn.
    */
   public getLatestContextUserMessage(conversationId: string): StoredContextMessage | null {
     const row = this.database
@@ -6616,7 +7340,7 @@ export class AgentDatabase {
     return row === undefined ? null : this.toStoredContextMessage(row);
   }
 
-  /** Translate a ThreadLog conversation-local message position to SQLite's global sequence. */
+  /** Translate a ThreadLog-local message position to the volatile timeline sequence. */
   public resolveContextCheckpointSequence(
     conversationId: string,
     contextSequence: number,
@@ -6672,41 +7396,9 @@ export class AgentDatabase {
       : " AND model_messages.sequence < ?";
     const beforeParameters = beforeSequence === undefined ? [] : [beforeSequence];
     const candidateLimit = Math.min(100, Math.max(limit, limit * 4));
-    const ftsQuery = ftsQueryForTerms(terms);
     const columns = `model_messages.sequence, model_messages.run_id, model_messages.role,
       model_messages.content, model_messages.tool_calls_json, model_messages.tool_call_id,
       model_messages.attachment_ids_json, model_messages.provider_state_json`;
-    if (ftsQuery.length > 0) {
-      const rows = this.database
-        .prepare(
-          `SELECT ${columns}
-           FROM model_message_search
-           JOIN model_messages
-             ON model_messages.sequence = model_message_search.sequence
-            AND model_messages.conversation_id = model_message_search.conversation_id
-           WHERE model_message_search.conversation_id = ?
-             AND model_message_search MATCH ?
-             ${beforeSql}
-             ${exclusionSql}
-           ORDER BY bm25(model_message_search) ASC, model_messages.sequence DESC
-           LIMIT ?`,
-        )
-        .all(
-          input.conversationId,
-          ftsQuery,
-          ...beforeParameters,
-          ...excluded,
-          candidateLimit,
-        ) as DatabaseRow[];
-      const strongMatches = rankStrongContextMatches(
-        rows.map((row) => this.toStoredContextMessage(row)),
-        distinctiveTerms,
-        terms,
-        limit,
-      );
-      if (strongMatches.length > 0) return strongMatches;
-    }
-
     const searchableText = "(model_messages.content || char(10) || model_messages.tool_calls_json)";
     const likeConditions = terms.map(() => `${searchableText} LIKE ? ESCAPE '\\'`);
     const rows = this.database
@@ -6856,19 +7548,27 @@ export class AgentDatabase {
     conversationId: string,
   ): ThreadLogProjectionCursor | null {
     this.getConversation(conversationId);
-    const row = this.database
-      .prepare(
-        `SELECT conversation_id, last_event_sequence, last_event_id, updated_at
-         FROM thread_log_projection_cursors WHERE conversation_id = ?`,
-      )
-      .get(conversationId) as DatabaseRow | undefined;
-    if (row === undefined) return null;
-    return {
-      conversationId: asString(row, "conversation_id"),
-      lastEventId: asString(row, "last_event_id"),
-      lastSequence: asNumber(row, "last_event_sequence"),
-      updatedAt: asString(row, "updated_at"),
-    };
+    const cursor = this.projectionCursors.get(conversationId);
+    return cursor === undefined ? null : { ...cursor };
+  }
+
+  public markThreadLogProjectionCurrent(
+    conversationId: string,
+    source: { modifiedAtMs: number; sizeBytes: number },
+  ): ThreadLogProjectionCursor {
+    this.getConversation(conversationId);
+    if (
+      !Number.isFinite(source.modifiedAtMs)
+      || !Number.isSafeInteger(source.sizeBytes)
+      || source.sizeBytes < 0
+    ) {
+      throw new Error("ThreadLog source signature is invalid.");
+    }
+    const current = this.projectionCursors.get(conversationId);
+    if (current === undefined) throw new Error("ThreadLog projection cursor does not exist.");
+    const next = { ...current, sourceSizeBytes: source.sizeBytes, sourceModifiedAtMs: source.modifiedAtMs, updatedAt: new Date().toISOString() };
+    this.projectionCursors.set(conversationId, next);
+    return { ...next };
   }
 
   public getLatestRunExecutionSnapshot(conversationId: string): RunExecutionSnapshot | null {
@@ -6891,27 +7591,21 @@ export class AgentDatabase {
     if (!Number.isSafeInteger(sequence) || sequence < 1) {
       throw new Error("ThreadLog event sequence must be a positive integer.");
     }
-    const row = this.database
-      .prepare(
-        `SELECT event_id
-         FROM thread_log_event_index
-         WHERE conversation_id = ? AND sequence = ?`,
-      )
-      .get(conversationId, sequence) as DatabaseRow | undefined;
-    return row === undefined ? null : asString(row, "event_id");
+    const events = this.projectionEvents.get(conversationId);
+    const first = events?.[0]?.sequence ?? 1;
+    return events?.[sequence - first]?.eventId ?? null;
   }
 
   /** Clears only the derived event index before a Conversation log is rebuilt. */
   public resetThreadLogProjection(conversationId: string): void {
     this.getConversation(conversationId);
-    this.withTransaction(() => {
-      this.database
-        .prepare("DELETE FROM thread_log_projection_cursors WHERE conversation_id = ?")
-        .run(conversationId);
-      this.database
-        .prepare("DELETE FROM thread_log_event_index WHERE conversation_id = ?")
-        .run(conversationId);
-    });
+    this.clearThreadLogProjection(conversationId);
+  }
+
+  private clearThreadLogProjection(conversationId: string): void {
+    for (const event of this.projectionEvents.get(conversationId) ?? []) this.projectionEventOwners.delete(event.eventId);
+    this.projectionEvents.delete(conversationId);
+    this.projectionCursors.delete(conversationId);
   }
 
   /**
@@ -6922,9 +7616,20 @@ export class AgentDatabase {
   public projectThreadLogEvents(
     conversationId: string,
     events: readonly ThreadLogProjectionEvent[],
+    source?: { modifiedAtMs: number; sizeBytes: number },
   ): ThreadLogProjectionCursor | null {
     this.getConversation(conversationId);
     if (events.length === 0) return this.getThreadLogProjectionCursor(conversationId);
+    if (
+      source !== undefined
+      && (
+        !Number.isFinite(source.modifiedAtMs)
+        || !Number.isSafeInteger(source.sizeBytes)
+        || source.sizeBytes < 0
+      )
+    ) {
+      throw new Error("ThreadLog source signature is invalid.");
+    }
 
     const current = this.getThreadLogProjectionCursor(conversationId);
     let expectedSequence = (current?.lastSequence ?? 0) + 1;
@@ -6943,77 +7648,31 @@ export class AgentDatabase {
 
     const lastEvent = events.at(-1);
     if (lastEvent === undefined) throw new Error("ThreadLog projection events are empty.");
-    const now = new Date().toISOString();
-    this.withTransaction(() => {
-      for (const event of events) {
-        const duplicate = this.database
-          .prepare(
-            `SELECT conversation_id, sequence, type, created_at, payload_json
-             FROM thread_log_event_index WHERE event_id = ?`,
-          )
-          .get(event.eventId) as DatabaseRow | undefined;
-        if (duplicate !== undefined) {
-          const matches =
-            asString(duplicate, "conversation_id") === conversationId
-            && asNumber(duplicate, "sequence") === event.sequence
-            && asString(duplicate, "type") === event.type
-            && asString(duplicate, "created_at") === event.createdAt
-            && asString(duplicate, "payload_json") === JSON.stringify(event.payload);
-          if (!matches) {
-            throw new Error("ThreadLog eventId conflicts with an existing event index row.");
-          }
-          continue;
-        }
-        this.database
-          .prepare(
-            `INSERT INTO thread_log_event_index
-               (event_id, conversation_id, sequence, type, created_at, payload_json)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            event.eventId,
-            conversationId,
-            event.sequence,
-            event.type,
-            event.createdAt,
-            JSON.stringify(event.payload),
-          );
+    const eventIds = new Set<string>();
+    for (const event of events) {
+      if (eventIds.has(event.eventId) || this.projectionEventOwners.has(event.eventId)) {
+        throw new Error("ThreadLog eventId conflicts with an existing event index row.");
       }
-      this.database
-        .prepare(
-          `INSERT INTO thread_log_projection_cursors
-             (conversation_id, last_event_sequence, last_event_id, updated_at)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT(conversation_id) DO UPDATE SET
-             last_event_sequence = excluded.last_event_sequence,
-             last_event_id = excluded.last_event_id,
-             updated_at = excluded.updated_at`,
-        )
-        .run(conversationId, lastEvent.sequence, lastEvent.eventId, now);
+      eventIds.add(event.eventId);
+    }
+    const stored = structuredClone(events);
+    const currentEvents = this.projectionEvents.get(conversationId) ?? [];
+    for (const event of stored) {
+      currentEvents.push(event);
+      this.projectionEventOwners.set(event.eventId, conversationId);
+    }
+    this.projectionEvents.set(conversationId, currentEvents);
+    this.projectionCursors.set(conversationId, {
+      conversationId, lastSequence: lastEvent.sequence, lastEventId: lastEvent.eventId,
+      sourceSizeBytes: source?.sizeBytes ?? null, sourceModifiedAtMs: source?.modifiedAtMs ?? null,
+      updatedAt: new Date().toISOString(),
     });
     return this.getThreadLogProjectionCursor(conversationId);
   }
 
   public listProjectedThreadLogEvents(conversationId: string): ThreadLogProjectionEvent[] {
     this.getConversation(conversationId);
-    const rows = this.database
-      .prepare(
-        `SELECT event_id, sequence, type, created_at, payload_json
-         FROM thread_log_event_index
-         WHERE conversation_id = ?
-         ORDER BY sequence ASC`,
-      )
-      .all(conversationId) as DatabaseRow[];
-    return rows.map((row) => ({
-      createdAt: asString(row, "created_at"),
-      eventId: asString(row, "event_id"),
-      payload: parseJson<Record<string, unknown>>(
-        asString(row, "payload_json"),
-        "ThreadLog event payload",
-      ),
-      sequence: asNumber(row, "sequence"),
-      type: asString(row, "type"),
-    }));
+    return structuredClone(this.projectionEvents.get(conversationId) ?? []);
   }
 
   /**
@@ -7030,6 +7689,18 @@ export class AgentDatabase {
     this.getConversation(conversationId);
     const byId = new Map<string, ConversationAttachment>();
     for (const event of events) {
+      if (event.type === "legacy_snapshot_imported" && Array.isArray(event.payload.timeline)) {
+        for (const item of event.payload.timeline) {
+          const message = conversationMessageItemSchema.safeParse(item);
+          if (!message.success) continue;
+          for (const attachment of message.data.attachments) {
+            // Legacy forks can display their parent's attachments. Restore each
+            // attachment from its owner's log, never reassign its ownership.
+            if (attachment.conversationId !== conversationId) continue;
+            byId.set(attachment.id, attachment);
+          }
+        }
+      }
       const message = threadLogUserMessage(event.payload, conversationId, event.createdAt);
       if (message !== null) {
         for (const attachment of message.attachments) {
@@ -7080,9 +7751,7 @@ export class AgentDatabase {
   }
 
   /**
-   * Materializes write-ahead business events for the JSONL-first migration
-   * seam. It is intentionally narrow: legacy shadow events still keep their
-   * existing SQLite-first path until their own atomic event contracts exist.
+   * Materializes write-ahead business events into the volatile query view.
    */
   public projectThreadLogBusinessEvents(
     conversationId: string,
@@ -7095,8 +7764,17 @@ export class AgentDatabase {
     let projected = false;
     this.withTransaction(() => {
       for (const event of events) {
+        if (this.materializeCollaborationControl(conversationId, event)) {
+          projected = true;
+          continue;
+        }
+        if (event.type === "conversation_result_viewed") {
+          this.markConversationResultViewed(conversationId);
+          projected = true;
+          continue;
+        }
         if (event.type === "conversation_properties_changed") {
-          this.materializeThreadLogConversationProperties(conversationId, event);
+          this.materializeThreadLogConversationProperties(conversationId, event.payload);
           projected = true;
           continue;
         }
@@ -7171,8 +7849,8 @@ export class AgentDatabase {
 
   /**
    * Replays the latest durable mutable-property snapshot even when message and
-   * run projections already exist. Conversation metadata must not depend on an
-   * empty SQLite projection to be recoverable from its JSONL source.
+   * run projections already exist. Conversation metadata must remain fully
+   * recoverable from its JSONL source.
    */
   public restoreThreadLogConversationProperties(
     conversationId: string,
@@ -7182,19 +7860,40 @@ export class AgentDatabase {
       (event) => event.type === "conversation_properties_changed",
     );
     if (propertyEvents.length === 0) return false;
+    const latestPropertyEvent = propertyEvents.at(-1);
+    if (latestPropertyEvent === undefined) return false;
+    const payload = structuredClone(
+      conversationPropertiesChangedPayloadSchema.parse(latestPropertyEvent.payload),
+    );
+    for (const event of events) {
+      if (event.sequence <= latestPropertyEvent.sequence) continue;
+      if (event.type !== "run_queued" && event.type !== "run_replaced") continue;
+      const title = readProjectionString(event.payload, "title");
+      if (title === null) continue;
+      payload.properties.title = title;
+      payload.properties.updatedAt = readProjectionIsoDate(event.payload, "createdAt")
+        ?? event.createdAt;
+    }
     this.withTransaction(() => {
-      for (const event of propertyEvents) {
-        this.materializeThreadLogConversationProperties(conversationId, event);
-      }
+      this.materializeThreadLogConversationProperties(conversationId, payload);
     });
     return true;
   }
 
+  public restoreConversationPropertySnapshot(
+    conversationId: string,
+    payload: ConversationPropertiesChangedPayload,
+  ): void {
+    this.withTransaction(() => {
+      this.materializeThreadLogConversationProperties(conversationId, payload);
+    });
+  }
+
   private materializeThreadLogConversationProperties(
     conversationId: string,
-    event: ThreadLogProjectionEvent,
+    rawPayload: unknown,
   ): void {
-    const payload = conversationPropertiesChangedPayloadSchema.parse(event.payload);
+    const payload = conversationPropertiesChangedPayloadSchema.parse(rawPayload);
     const { agent, properties } = payload;
     if ((agent?.id ?? null) !== properties.agentId) {
       throw new Error("ThreadLog Conversation Agent snapshot does not match agentId.");
@@ -7209,7 +7908,8 @@ export class AgentDatabase {
              permission_mode = ?,
              agent_id = ?, avatar_icon = ?, agent_name = ?, agent_role = ?,
              agent_is_default = ?, agent_instructions = ?, title = ?,
-             is_archived = ?, archived_at = ?, is_pinned = ?, pin_order = ?, updated_at = ?
+             is_archived = ?, archived_at = ?, is_pinned = ?, pin_order = ?,
+             sort_order = COALESCE(?, sort_order), updated_at = ?
          WHERE id = ? AND deletion_pending = 0`,
       )
       .run(
@@ -7232,6 +7932,7 @@ export class AgentDatabase {
         properties.archivedAt,
         Number(properties.isPinned),
         properties.pinOrder ?? null,
+        properties.sortOrder ?? null,
         properties.updatedAt,
         conversationId,
       );
@@ -7252,6 +7953,7 @@ export class AgentDatabase {
   public restoreThreadLogBusinessEvents(
     conversationId: string,
     events: readonly ThreadLogProjectionEvent[],
+    replayIntoExistingState = false,
   ): boolean {
     this.getConversation(conversationId);
     if (events.some((event) => event.type === "legacy_snapshot_imported")) return false;
@@ -7265,10 +7967,8 @@ export class AgentDatabase {
       )
       .get(conversationId, conversationId, conversationId, conversationId) as DatabaseRow;
     if (
-      asNumber(existing, "run_count") > 0
-      || asNumber(existing, "timeline_count") > 0
-      || asNumber(existing, "message_count") > 0
-      || asNumber(existing, "agent_message_count") > 0
+      !replayIntoExistingState && (asNumber(existing, "timeline_count") > 0
+      || asNumber(existing, "message_count") > 0)
     ) {
       return false;
     }
@@ -7277,6 +7977,15 @@ export class AgentDatabase {
     this.withTransaction(() => {
       for (const event of events) {
         const payload = event.payload;
+        if (this.materializeCollaborationControl(conversationId, event)) continue;
+        if (event.type === "conversation_result_viewed") {
+          this.markConversationResultViewed(conversationId);
+          continue;
+        }
+        if (event.type === "conversation_properties_changed") {
+          this.materializeThreadLogConversationProperties(conversationId, payload);
+          continue;
+        }
         if (event.type === "run_queued") {
           this.materializeThreadLogQueuedRun(conversationId, event);
           continue;
@@ -7430,7 +8139,25 @@ export class AgentDatabase {
           if (!this.hasConversation(message.senderConversationId)) {
             throw new Error("ThreadLog Agent message source conversation is unavailable.");
           }
-          this.persistAgentMessage(message);
+          const storedMessage = this.database.prepare(
+            "SELECT 1 AS present FROM conversation_agent_messages WHERE id = ?",
+          ).get(message.id);
+          if (storedMessage === undefined) {
+            this.persistAgentMessage(message);
+          } else {
+            this.insertThreadLogTimeline(message);
+            this.insertThreadLogModelMessage({
+              attachmentIds: [],
+              content: agentMessageModelContent(message),
+              conversationId,
+              createdAt: message.createdAt,
+              eventId: event.eventId,
+              role: "user",
+              runId: null,
+              toolCallId: null,
+              toolCalls: [],
+            });
+          }
           if (message.messageType === "task_result" && message.taskId !== null) {
             const linked = this.database
               .prepare(
@@ -7496,22 +8223,37 @@ export class AgentDatabase {
 
         if (event.type === "task_list_updated") {
           if (payload.taskList === null) {
-            this.database
-              .prepare("DELETE FROM conversation_task_lists WHERE conversation_id = ?")
-              .run(conversationId);
+            this.writeTaskListProjection(conversationId, null);
             continue;
           }
           const taskList = conversationTaskListSchema.safeParse(payload.taskList);
           if (!taskList.success || taskList.data.conversationId !== conversationId) continue;
-          this.database
-            .prepare(
-              `INSERT INTO conversation_task_lists (conversation_id, payload_json, updated_at)
-               VALUES (?, ?, ?)
-               ON CONFLICT(conversation_id) DO UPDATE SET
-                 payload_json = excluded.payload_json,
-                 updated_at = excluded.updated_at`,
-            )
-            .run(conversationId, JSON.stringify(taskList.data), taskList.data.updatedAt);
+          this.writeTaskListProjection(conversationId, taskList.data);
+          continue;
+        }
+
+        if (event.type === "user_message" && event.payload.writeAhead === true) {
+          this.materializeThreadLogPendingMessageConsumption(conversationId, event);
+          continue;
+        }
+
+        if (event.type === "turn_summary_updated") {
+          const turnSummary = conversationTurnSummarySchema.safeParse(payload.turnSummary);
+          if (!turnSummary.success || turnSummary.data.conversationId !== conversationId) continue;
+          this.database.prepare(
+            `INSERT INTO conversation_turn_summaries
+               (run_id, conversation_id, covered_through_sequence, summary, created_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(run_id) DO UPDATE SET
+               covered_through_sequence = excluded.covered_through_sequence,
+               summary = excluded.summary`,
+          ).run(
+            turnSummary.data.runId,
+            turnSummary.data.conversationId,
+            turnSummary.data.coveredThroughSequence,
+            turnSummary.data.summary,
+            turnSummary.data.createdAt,
+          );
           continue;
         }
 
@@ -7570,7 +8312,9 @@ export class AgentDatabase {
         }
 
         if (event.type === "context_checkpoint") {
-          const coveredThroughSequence = payload.coveredThroughSequence;
+          const coveredThroughSequence = typeof payload.coveredThroughContextSequence === "number"
+            ? this.resolveContextCheckpointSequence(conversationId, payload.coveredThroughContextSequence)
+            : payload.coveredThroughSequence;
           const summary = readProjectionString(payload, "summary");
           if (
             typeof coveredThroughSequence === "number"
@@ -7605,6 +8349,7 @@ export class AgentDatabase {
           if (runId === null || !status.success || status.data === "queued" || status.data === "running") {
             continue;
           }
+          this.terminalResults.set(runId, terminalReceiptSummary(readProjectionString(payload, "result")));
           this.database
             .prepare("UPDATE runs SET status = ?, error = ?, updated_at = ? WHERE id = ?")
             .run(status.data, readProjectionString(payload, "error"), event.createdAt, runId);
@@ -7767,7 +8512,10 @@ export class AgentDatabase {
     conversationId: string,
     event: ThreadLogProjectionEvent,
   ): void {
-    const coveredThroughSequence = event.payload.coveredThroughSequence;
+    const contextSequence = event.payload.coveredThroughContextSequence;
+    const coveredThroughSequence = typeof contextSequence === "number"
+      ? this.resolveContextCheckpointSequence(conversationId, contextSequence)
+      : event.payload.coveredThroughSequence;
     const summary = readProjectionString(event.payload, "summary");
     if (
       typeof coveredThroughSequence !== "number"
@@ -7866,7 +8614,8 @@ export class AgentDatabase {
     this.touchConversation(conversationId, parsed.data.updatedAt);
   }
 
-  public listContextMessagesForRun(runId: string): StoredContextMessage[] {
+  public listContextMessagesForRun(runId: string, conversationId?: string): StoredContextMessage[] {
+    if (conversationId !== undefined && this.getRunConversationId(runId) !== conversationId) return [];
     const rows = this.database
       .prepare(
         `SELECT sequence, run_id, role, content, tool_calls_json, tool_call_id,
@@ -8130,7 +8879,7 @@ export class AgentDatabase {
       .run(event.createdAt, runId);
   }
 
-  /** Materialize one non-Subagent terminal Run from its write-ahead fact. */
+  /** Materialize a terminal Run before delivering its collaboration receipt. */
   private materializeThreadLogTerminalRun(
     conversationId: string,
     event: ThreadLogProjectionEvent,
@@ -8152,6 +8901,7 @@ export class AgentDatabase {
     if (row === undefined || asString(row, "conversation_id") !== conversationId) {
       throw new Error("ThreadLog terminal Run does not belong to the conversation.");
     }
+    this.terminalResults.set(runId, terminalReceiptSummary(readProjectionString(payload, "result")));
     const currentStatus = conversationRunStatusSchema.parse(asString(row, "status"));
     if (currentStatus !== status.data) {
       if (!RUN_STATUS_TRANSITIONS[currentStatus].includes(status.data)) {
@@ -8283,6 +9033,7 @@ export class AgentDatabase {
     conversationId: string,
     messageId: string,
     readAt: string,
+    consumedByRunId?: string,
   ): void {
     const row = this.database
       .prepare(
@@ -8299,6 +9050,7 @@ export class AgentDatabase {
     if (current.status === "read") return;
     const read = conversationAgentMessageItemSchema.parse({
       ...current,
+      ...(consumedByRunId === undefined ? {} : { consumedByRunId }),
       readAt,
       status: "read",
     });
@@ -8413,19 +9165,17 @@ export class AgentDatabase {
   }
 
   private expirePendingToolApprovalsForTerminalRunsInTransaction(): void {
-    const terminalRunIds = new Set((this.database.prepare(
-      `SELECT id FROM runs WHERE status IN ('completed', 'failed', 'cancelled')`,
-    ).all() as DatabaseRow[]).map((row) => asString(row, "id")));
-    if (terminalRunIds.size === 0) return;
     const rows = this.database.prepare(
-      `SELECT payload_json FROM conversation_timeline
-       WHERE kind = 'tool'`,
+      `SELECT timeline.payload_json FROM conversation_timeline AS timeline
+       JOIN runs ON runs.id = timeline.run_id
+       WHERE timeline.kind = 'tool'
+         AND runs.status IN ('completed', 'failed', 'cancelled')
+         AND json_extract(timeline.payload_json, '$.status') = 'awaiting_approval'`,
     ).all() as DatabaseRow[];
     for (const row of rows) {
       const current = conversationToolItemSchema.parse(
         parseJson(asString(row, "payload_json"), "tool"),
       );
-      if (current.status !== "awaiting_approval" || !terminalRunIds.has(current.runId)) continue;
       const tool = conversationToolItemSchema.parse({
         ...current,
         result: "审批已失效：所属运行已经结束。",
@@ -8526,20 +9276,97 @@ export class AgentDatabase {
       );
   }
 
-  public exportThreadLogLegacySnapshot(conversationId: string): ThreadLogLegacySnapshot {
+  public exportThreadLogLegacySnapshot(conversationId: string, includeHistory = true): ThreadLogLegacySnapshot {
+    const attachmentIds = (this.database.prepare(
+      `SELECT id FROM conversation_attachments
+       WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC`,
+    ).all(conversationId) as DatabaseRow[]).map((row) => asString(row, "id"));
+    const agentMessages = (this.database.prepare(
+      `SELECT payload_json, work_item_id FROM conversation_agent_messages
+       WHERE target_conversation_id = ? ORDER BY created_at ASC, rowid ASC`,
+    ).all(conversationId) as DatabaseRow[]).map((row) => ({
+      message: conversationAgentMessageItemSchema.parse(
+        parseJson(asString(row, "payload_json"), "Agent message"),
+      ),
+      workItemId: asNullableString(row, "work_item_id"),
+    }));
+    const turnSummaries = includeHistory ? (this.database.prepare(
+      `SELECT conversation_id, run_id, covered_through_sequence, summary, created_at
+       FROM conversation_turn_summaries
+       WHERE conversation_id = ? ORDER BY covered_through_sequence ASC`,
+    ).all(conversationId) as DatabaseRow[]).map((row) => ({
+      conversationId: asString(row, "conversation_id"),
+      coveredThroughSequence: asNumber(row, "covered_through_sequence"),
+      createdAt: asString(row, "created_at"),
+      runId: asString(row, "run_id"),
+      summary: asString(row, "summary"),
+    })) : [];
     return {
       agent: this.getConversationAgentBinding(conversationId),
-      checkpoint: this.getContextCheckpoint(conversationId),
+      agentMessages,
+      attachmentRefs: this.listThreadLogAttachmentReferences(conversationId, attachmentIds),
+      checkpoint: includeHistory ? this.getContextCheckpoint(conversationId) : null,
       conversation: this.getConversation(conversationId),
-      modelMessages: this.listContextMessages(conversationId),
+      modelMessages: includeHistory ? this.listContextMessages(conversationId) : [],
+      pendingMessages: this.listPendingMessageRecords(conversationId),
       runs: this.listThreadLogLegacyRuns(conversationId),
-      timeline: this.listTimeline(conversationId),
+      subagentTasks: this.listSubagentTasks(conversationId),
+      taskList: this.getTaskList(conversationId),
+      timeline: includeHistory ? this.listTimeline(conversationId) : [],
+      turnSummaries,
     };
+  }
+
+  public exportThreadLogStartupState(conversationId: string): Record<string, unknown> | null {
+    if (this.getConversation(conversationId).activeRunId !== null) return null;
+    const snapshot = this.exportThreadLogLegacySnapshot(conversationId, false);
+    // Queued inputs and active children require the ordinary recovery path.
+    if (snapshot.pendingMessages.length > 0 || snapshot.subagentTasks.some((task) => task.status === "queued" || task.status === "running")) return null;
+    return threadLogStartupStateSchema.parse({ ...snapshot, format: 2,
+      terminalResults: snapshot.runs.filter((run) => this.terminalResults.has(run.id))
+        .map((run) => ({ runId: run.id, result: this.terminalResults.get(run.id) ?? null })),
+      executionPaused: this.isConversationExecutionPaused(conversationId), sortOrder: this.getConversationSortOrder(conversationId) });
+  }
+
+  public restoreThreadLogStartupState(conversationId: string, event: ThreadLogProjectionEvent): void {
+    const state = threadLogStartupStateSchema.parse(event.payload);
+    if (event.type !== "state_checkpoint" || state.conversation.id !== conversationId
+      || state.conversation.activeRunId !== null || state.runs.some((run) => run.status === "queued" || run.status === "running")
+      || state.agentMessages.some((record) => record.message.conversationId !== conversationId)
+      || state.subagentTasks.some((task) => task.parentConversationId !== conversationId)) {
+      throw new Error("ThreadLog startup checkpoint is not a valid inactive conversation state.");
+    }
+    this.restoreThreadLogLegacySnapshot(conversationId, state);
+    for (const result of state.terminalResults) {
+      if (this.getRunConversationId(result.runId) !== conversationId) throw new Error("Terminal result belongs to another conversation.");
+      this.terminalResults.set(result.runId, result.result);
+    }
+    this.setConversationExecutionPaused(conversationId, state.executionPaused);
+    this.restoreConversationPropertySnapshot(conversationId, conversationPropertiesChangedPayloadSchema.parse({
+      agent: state.agent, changed: ["title"], properties: conversationMutablePropertiesSchema.strip().parse({ ...state.conversation, sortOrder: state.sortOrder }),
+    }));
+    this.database.prepare("UPDATE conversations SET has_unread_result = ? WHERE id = ?")
+      .run(Number(state.conversation.hasUnreadResult), conversationId);
+    this.projectionCursors.set(conversationId, {
+      conversationId, lastSequence: event.sequence, lastEventId: event.eventId,
+      sourceSizeBytes: null, sourceModifiedAtMs: null, updatedAt: event.createdAt,
+    });
+  }
+
+  public canRestoreThreadLogStartupState(conversationId: string, event: ThreadLogProjectionEvent): boolean {
+    const result = threadLogStartupStateSchema.safeParse(event.payload);
+    if (!result.success || event.type !== "state_checkpoint") return false;
+    const state = result.data;
+    return state.conversation.id === conversationId && state.conversation.activeRunId === null
+      && state.runs.every((run) => run.status !== "queued" && run.status !== "running")
+      && state.agentMessages.every((record) => record.message.conversationId === conversationId)
+      && state.subagentTasks.every((task) => task.parentConversationId === conversationId)
+      && state.attachmentRefs.every((attachment) => attachment.conversationId === conversationId);
   }
 
   public restoreThreadLogLegacySnapshot(
     conversationId: string,
-    snapshot: Omit<ThreadLogLegacySnapshot, "agent" | "conversation">,
+    snapshot: Omit<ThreadLogLegacySnapshot, "agent" | "attachmentRefs" | "conversation">,
   ): void {
     this.getConversation(conversationId);
     if (
@@ -8581,6 +9408,74 @@ export class AgentDatabase {
         });
       }
       for (const item of snapshot.timeline) this.insertTimelineItem(item);
+      this.replaceThreadLogPendingMessages(conversationId, snapshot.pendingMessages, true);
+      this.writeTaskListProjection(conversationId, snapshot.taskList);
+      for (const task of snapshot.subagentTasks) {
+        this.database.prepare(
+          `INSERT INTO subagent_tasks
+             (id, parent_conversation_id, child_conversation_id, source_run_id,
+              target_run_id, title, task, status, result, error, result_message_id,
+              created_at, updated_at, completed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             target_run_id = excluded.target_run_id,
+             status = excluded.status,
+             result = excluded.result,
+             error = excluded.error,
+             result_message_id = excluded.result_message_id,
+             updated_at = excluded.updated_at,
+             completed_at = excluded.completed_at`
+        ).run(
+          task.id,
+          task.parentConversationId,
+          task.childConversationId,
+          task.sourceRunId,
+          task.targetRunId,
+          task.title,
+          task.task,
+          task.status,
+          task.result,
+          task.error,
+          task.resultMessageId,
+          task.createdAt,
+          task.updatedAt,
+          task.completedAt,
+        );
+      }
+      for (const record of snapshot.agentMessages) {
+        const message = record.message;
+        this.database.prepare(
+          `INSERT OR IGNORE INTO conversation_agent_messages
+             (id, sender_conversation_id, target_conversation_id, status,
+              payload_json, created_at, read_at, work_item_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          message.id,
+          message.senderConversationId,
+          message.conversationId,
+          message.status,
+          JSON.stringify(message),
+          message.createdAt,
+          message.readAt,
+          record.workItemId,
+        );
+      }
+      for (const summary of snapshot.turnSummaries) {
+        this.database.prepare(
+          `INSERT INTO conversation_turn_summaries
+             (run_id, conversation_id, covered_through_sequence, summary, created_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(run_id) DO UPDATE SET
+             covered_through_sequence = excluded.covered_through_sequence,
+             summary = excluded.summary`
+        ).run(
+          summary.runId,
+          summary.conversationId,
+          summary.coveredThroughSequence,
+          summary.summary,
+          summary.createdAt,
+        );
+      }
       if (snapshot.checkpoint !== null) {
         const originalIndex = snapshot.modelMessages.findIndex(
           (message) => message.sequence === snapshot.checkpoint?.coveredThroughSequence,
@@ -8643,6 +9538,195 @@ export class AgentDatabase {
       status: conversationRunStatusSchema.parse(asString(row, "status")),
       updatedAt: asString(row, "updated_at"),
     }));
+  }
+
+  /** Drop heavyweight history rows while retaining current Conversation state. */
+  public clearVolatileConversationHistory(conversationId: string): void {
+    this.getConversation(conversationId);
+    this.withTransaction(() => {
+      this.database.prepare(
+        "DELETE FROM conversation_timeline WHERE conversation_id = ?",
+      ).run(conversationId);
+      this.database.prepare(
+        "DELETE FROM model_messages WHERE conversation_id = ?",
+      ).run(conversationId);
+      this.database.prepare(
+        "DELETE FROM conversation_turn_summaries WHERE conversation_id = ?",
+      ).run(conversationId);
+    });
+    this.clearThreadLogProjection(conversationId);
+  }
+
+  private createVolatileConversationProjectionSchema(): void {
+    this.database.exec(`
+      CREATE TEMP TABLE conversations (
+        id TEXT PRIMARY KEY,
+        project_id TEXT,
+        parent_conversation_id TEXT,
+        workspace_root_path TEXT,
+        selected_provider_id TEXT,
+        selected_model_id TEXT,
+        selected_reasoning_json TEXT,
+        permission_mode TEXT NOT NULL DEFAULT 'ask_before_changes',
+        thread_kind TEXT NOT NULL DEFAULT 'agent',
+        agent_id TEXT,
+        avatar_icon TEXT,
+        agent_name TEXT,
+        agent_role TEXT,
+        agent_is_default INTEGER NOT NULL DEFAULT 0,
+        agent_instructions TEXT,
+        team_id TEXT,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        has_unread_result INTEGER NOT NULL DEFAULT 0,
+        is_archived INTEGER NOT NULL DEFAULT 0,
+        archived_at TEXT,
+        is_pinned INTEGER NOT NULL DEFAULT 0,
+        pin_order INTEGER,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        deletion_pending INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX temp.conversations_project_updated
+        ON conversations(project_id, updated_at DESC);
+      CREATE INDEX temp.conversations_parent_created
+        ON conversations(parent_conversation_id, created_at ASC);
+      CREATE INDEX temp.conversations_team_kind
+        ON conversations(team_id, thread_kind);
+
+      CREATE TEMP TABLE runs (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        execution_snapshot_json TEXT
+      );
+      CREATE INDEX temp.runs_conversation_status
+        ON runs(conversation_id, status);
+
+      CREATE TEMP TABLE conversation_timeline (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        conversation_id TEXT NOT NULL,
+        run_id TEXT,
+        kind TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX temp.conversation_timeline_conversation_sequence
+        ON conversation_timeline(conversation_id, sequence DESC);
+      CREATE INDEX temp.conversation_timeline_run_sequence
+        ON conversation_timeline(run_id, sequence DESC);
+
+      CREATE TEMP TABLE model_messages (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        conversation_id TEXT NOT NULL,
+        run_id TEXT,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        tool_calls_json TEXT NOT NULL,
+        tool_call_id TEXT,
+        attachment_ids_json TEXT NOT NULL DEFAULT '[]',
+        provider_state_json TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX temp.model_messages_conversation_sequence
+        ON model_messages(conversation_id, sequence DESC);
+      CREATE INDEX temp.model_messages_run_sequence
+        ON model_messages(run_id, sequence ASC);
+
+      CREATE TEMP TABLE conversation_pending_messages (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        conversation_id TEXT NOT NULL,
+        delivery_mode TEXT NOT NULL,
+        status TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        sort_order INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        consumed_at TEXT
+      );
+      CREATE INDEX temp.conversation_pending_messages_pending_order
+        ON conversation_pending_messages(conversation_id, status, sort_order, sequence);
+
+      CREATE TEMP TABLE conversation_attachments (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        message_id TEXT,
+        source TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        name TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        project_path TEXT,
+        stored_path TEXT NOT NULL,
+        extracted_text_path TEXT,
+        pending_message_id TEXT,
+        context_tokens INTEGER NOT NULL,
+        truncated INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX temp.conversation_attachments_conversation_message
+        ON conversation_attachments(conversation_id, message_id, created_at);
+
+      CREATE TEMP TABLE conversation_agent_messages (
+        id TEXT PRIMARY KEY,
+        sender_conversation_id TEXT NOT NULL,
+        target_conversation_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        read_at TEXT,
+        work_item_id TEXT
+      );
+      CREATE INDEX temp.conversation_agent_messages_target_status
+        ON conversation_agent_messages(target_conversation_id, status, created_at);
+      CREATE INDEX temp.conversation_agent_messages_work_item
+        ON conversation_agent_messages(work_item_id, created_at);
+
+      CREATE TEMP TABLE subagent_tasks (
+        id TEXT PRIMARY KEY,
+        parent_conversation_id TEXT NOT NULL,
+        child_conversation_id TEXT NOT NULL UNIQUE,
+        source_run_id TEXT NOT NULL,
+        target_run_id TEXT UNIQUE,
+        title TEXT NOT NULL,
+        task TEXT NOT NULL,
+        status TEXT NOT NULL,
+        result TEXT,
+        error TEXT,
+        result_message_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+      CREATE INDEX temp.subagent_tasks_parent_status
+        ON subagent_tasks(parent_conversation_id, status, created_at);
+
+      CREATE TEMP TABLE conversation_context_checkpoints (
+        conversation_id TEXT PRIMARY KEY,
+        covered_through_sequence INTEGER NOT NULL,
+        summary TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TEMP TABLE conversation_turn_summaries (
+        run_id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        covered_through_sequence INTEGER NOT NULL,
+        summary TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX temp.conversation_turn_summaries_boundary
+        ON conversation_turn_summaries(conversation_id, covered_through_sequence DESC);
+
+    `);
   }
 
   private migrate(): void {
@@ -9422,6 +10506,116 @@ export class AgentDatabase {
         },
         version: 24,
       },
+      {
+        name: "one-time-storage-imports",
+        up: (database) => {
+          database.exec(`
+            CREATE TABLE IF NOT EXISTS storage_imports (
+              source_kind TEXT NOT NULL,
+              source_identity TEXT NOT NULL,
+              completed_at TEXT NOT NULL,
+              PRIMARY KEY (source_kind, source_identity)
+            );
+          `);
+        },
+        version: 25,
+      },
+      {
+        name: "conversation-timeline-search",
+        up: (database) => {
+          database.exec(`
+            CREATE VIRTUAL TABLE IF NOT EXISTS conversation_timeline_search USING fts5(
+              search_text,
+              conversation_id UNINDEXED,
+              item_id UNINDEXED,
+              sequence UNINDEXED,
+              tokenize = 'trigram'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS conversation_timeline_search_insert
+            AFTER INSERT ON conversation_timeline
+            WHEN new.kind IN ('message', 'agent_message')
+            BEGIN
+              INSERT INTO conversation_timeline_search(
+                search_text, conversation_id, item_id, sequence
+              ) VALUES (
+                json_extract(new.payload_json, '$.content'),
+                new.conversation_id,
+                new.id,
+                new.sequence
+              );
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS conversation_timeline_search_delete
+            AFTER DELETE ON conversation_timeline
+            BEGIN
+              DELETE FROM conversation_timeline_search WHERE sequence = old.sequence;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS conversation_timeline_search_update
+            AFTER UPDATE OF payload_json, kind, conversation_id ON conversation_timeline
+            BEGIN
+              DELETE FROM conversation_timeline_search WHERE sequence = old.sequence;
+              INSERT INTO conversation_timeline_search(
+                search_text, conversation_id, item_id, sequence
+              )
+              SELECT
+                json_extract(new.payload_json, '$.content'),
+                new.conversation_id,
+                new.id,
+                new.sequence
+              WHERE new.kind IN ('message', 'agent_message');
+            END;
+
+            DELETE FROM conversation_timeline_search;
+            INSERT INTO conversation_timeline_search(
+              search_text, conversation_id, item_id, sequence
+            )
+            SELECT
+              json_extract(payload_json, '$.content'),
+              conversation_id,
+              id,
+              sequence
+            FROM conversation_timeline
+            WHERE kind IN ('message', 'agent_message');
+          `);
+        },
+        version: 26,
+      },
+      {
+        name: "conversation-history-pagination-indexes",
+        up: (database) => {
+          database.exec(`
+            CREATE INDEX IF NOT EXISTS conversation_timeline_conversation_sequence
+              ON conversation_timeline(conversation_id, sequence DESC);
+            CREATE INDEX IF NOT EXISTS model_messages_conversation_sequence
+              ON model_messages(conversation_id, sequence DESC);
+            CREATE INDEX IF NOT EXISTS model_messages_run_sequence
+              ON model_messages(run_id, sequence ASC);
+          `);
+        },
+        version: 27,
+      },
+      {
+        name: "thread-log-projection-source-signature",
+        up: (database) => {
+          const columns = database
+            .prepare("PRAGMA table_info(thread_log_projection_cursors)")
+            .all() as DatabaseRow[];
+          const columnNames = new Set(columns.map((column) => column.name));
+          if (!columnNames.has("source_size_bytes")) {
+            database.exec(
+              "ALTER TABLE thread_log_projection_cursors ADD COLUMN source_size_bytes INTEGER",
+            );
+          }
+          if (!columnNames.has("source_modified_at_ms")) {
+            database.exec(
+              "ALTER TABLE thread_log_projection_cursors ADD COLUMN source_modified_at_ms REAL",
+            );
+          }
+        },
+        version: 28,
+      },
     ]);
   }
 
@@ -9955,7 +11149,7 @@ export class AgentDatabase {
         )
         .run(now, now);
       for (const row of taskRows) {
-        this.deliverSubagentTaskResultInTransaction(asString(row, "id"));
+        this.deliverSubagentTaskResultInTransaction(asString(row, "id"), false);
       }
     });
   }
@@ -10267,13 +11461,20 @@ export class AgentDatabase {
 
   private withTransaction<T>(operation: () => T): T {
     this.database.exec("BEGIN IMMEDIATE;");
+    this.taskListRollback = this.volatileConversationProjectionActive ? new Map() : null;
     try {
       const result = operation();
       this.database.exec("COMMIT;");
       return result;
     } catch (error) {
       this.database.exec("ROLLBACK;");
+      for (const [id, previous] of this.taskListRollback ?? []) {
+        if (previous === undefined) this.taskLists.delete(id);
+        else this.taskLists.set(id, previous);
+      }
       throw error;
+    } finally {
+      this.taskListRollback = null;
     }
   }
 }

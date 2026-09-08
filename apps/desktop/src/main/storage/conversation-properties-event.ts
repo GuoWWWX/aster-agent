@@ -32,6 +32,8 @@ export const conversationMutablePropertiesSchema = conversationSummarySchema.pic
   workspaceRootPath: true,
 }).extend({
   permissionMode: conversationPermissionModeSchema,
+  /** Internal SQLite projection order; optional for ThreadLogs written before v1 migration. */
+  sortOrder: z.number().int().nonnegative().optional(),
 });
 
 export const conversationPropertiesChangedPayloadSchema = z.object({

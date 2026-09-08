@@ -24,6 +24,7 @@ import type {
   ApplicationStorageLocation,
   BrowserConfiguration,
   ConversationReferenceInput,
+  ConversationTimelinePageInput,
   ConversationSearchInput,
   ForkConversationInput,
   PendingConversationMessageReferenceInput,
@@ -674,6 +675,12 @@ export function createDesktopBridge(): DesktopBridge {
       return invoke<BridgeResult<"setConversationModelSelection">>(
         IPC_CHANNELS.conversationSetModelSelection,
         input
+      );
+    },
+    listConversationTimelinePage(input: ConversationTimelinePageInput) {
+      return invoke<BridgeResult<"listConversationTimelinePage">>(
+        IPC_CHANNELS.conversationListTimelinePage,
+        input,
       );
     },
     setConversationPermissionMode(input: SetConversationPermissionModeInput) {

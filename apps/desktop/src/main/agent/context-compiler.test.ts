@@ -1,7 +1,7 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { AgentDatabase } from "../storage/agent-database.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
@@ -287,7 +287,7 @@ describe("ContextCompiler", () => {
     database.close();
   });
 
-  it("prefers the canonical JSONL history while retaining SQLite for search", async () => {
+  it("compiles canonical JSONL without SQL history or full context reads and rejects corruption", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-context-log-"));
     const database = new AgentDatabase(":memory:");
     try {
@@ -304,9 +304,12 @@ describe("ContextCompiler", () => {
         type: "user_message",
       });
 
-      const context = new ContextCompiler(database, null, log).compile({
+      const fullRead = vi.spyOn(log, "readContext").mockImplementation(() => { throw new Error("full read forbidden"); });
+      const sqlSearch = vi.spyOn(database, "searchContextMessages").mockImplementation(() => { throw new Error("SQL search forbidden"); });
+      const compiler = new ContextCompiler(database, null, log);
+      const input = {
         contextCompressionConfiguration: {
-          mode: "tokens",
+          mode: "tokens" as const,
           percentageThreshold: 80,
           tokenThreshold: 10_000,
         },
@@ -317,13 +320,18 @@ describe("ContextCompiler", () => {
         outputReserveTokens: 1_000,
         reservedSkillTokens: 0,
         systemMessage: {
-          attachments: [], content: "系统指令", role: "system", toolCallId: null, toolCalls: [],
+          attachments: [], content: "系统指令", role: "system" as const, toolCallId: null, toolCalls: [],
         },
         toolDefinitions: [],
-      });
+      };
+      const context = compiler.compile(input);
 
       expect(context.messages.map((message) => message.content)).toContain("JSONL 中的规范模型输入");
       expect(context.messages.map((message) => message.content)).not.toContain("SQLite 中的旧输入");
+      expect(fullRead).not.toHaveBeenCalled();
+      expect(sqlSearch).not.toHaveBeenCalled();
+      await appendFile(log.getPath(conversation.id), '{"broken":true}\n');
+      expect(() => compiler.compile(input)).toThrow();
     } finally {
       database.close();
       await rm(directory, { force: true, recursive: true });
