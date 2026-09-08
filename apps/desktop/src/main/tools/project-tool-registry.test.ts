@@ -50,6 +50,115 @@ async function createLargeFixture(fileCount = 400) {
 }
 
 describe("ProjectToolRegistry", () => {
+  it("reads identical ranges using a line count or an inclusive end line", async () => {
+    const { project, tools } = await createFixture();
+    await writeFile(path.join(project.rootPath, "lines.txt"),
+      Array.from({ length: 1000 }, (_, index) => `line ${index + 1}`).join("\n"));
+    const read = (args: Record<string, unknown>) => tools.execute("read_file", JSON.stringify({
+      path: "lines.txt", startLine: 650, ...args,
+    }), project.id, new AbortController().signal);
+    const count = await read({ lineCount: 220 });
+    const end = await read({ endLine: 869 });
+    expect(count.isError).toBe(false);
+    expect(count.content).toBe(end.content);
+    expect(JSON.parse(count.content)).toMatchObject({ value: { startLine: 650, endLine: 869, nextStartLine: 870 } });
+    const defaults = await read({});
+    expect(defaults.isError).toBe(false);
+    expect(JSON.parse(defaults.content)).toMatchObject({ value: { endLine: 1000, nextStartLine: null } });
+    for (const lineCount of [1, 400]) {
+      const result = await read({ startLine: 1, lineCount });
+      expect(result.isError).toBe(false);
+      expect(JSON.parse(result.content)).toMatchObject({ value: { startLine: 1, endLine: lineCount, nextStartLine: lineCount + 1 } });
+    }
+    const firstPage = await tools.execute("read_file", JSON.stringify({ path: "lines.txt" }),
+      project.id, new AbortController().signal);
+    expect(JSON.parse(firstPage.content)).toMatchObject({ value: { startLine: 1, endLine: 400, nextStartLine: 401 } });
+  });
+
+  it.each([0, -1, 1.5, 401, null])("rejects invalid lineCount %s with a field issue", async (lineCount) => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("read_file", JSON.stringify({ path: "src/index.ts", lineCount }),
+      project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content)).toMatchObject({ recovery: { issues: [expect.objectContaining({ path: ["lineCount"] })] } });
+  });
+
+  it("rejects simultaneous count and end-line limits instead of silently choosing one", async () => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("read_file", JSON.stringify({
+      path: "src/index.ts", startLine: 1, lineCount: 2, endLine: 2,
+    }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("Choose either lineCount or endLine");
+  });
+
+  it("reports the count field when a count-based read exceeds the byte limit", async () => {
+    const { project, tools } = await createFixture();
+    await writeFile(path.join(project.rootPath, "huge-line.txt"), "x".repeat(260_000));
+    const result = await tools.execute("read_file", JSON.stringify({ path: "huge-line.txt", lineCount: 1 }),
+      project.id, new AbortController().signal);
+    expect(JSON.parse(result.content)).toMatchObject({ recovery: { issues: [expect.objectContaining({ path: ["lineCount"] })] } });
+  });
+
+  it("reads a small range from a large file without rejecting its total size", async () => {
+    const { project, tools } = await createFixture();
+    await writeFile(path.join(project.rootPath, "large.rs"),
+      Array.from({ length: 8000 }, (_, index) => `${index + 1}: ${"源码".repeat(12)}`).join("\r\n"));
+    const result = await tools.execute("read_file", JSON.stringify({
+      path: "large.rs", startLine: 7495, endLine: 7540,
+    }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toMatchObject({ value: {
+      startLine: 7495, endLine: 7540, totalLines: null, nextStartLine: 7541,
+      content: Array.from({ length: 46 }, (_, index) => `${index + 7495}: ${"源码".repeat(12)}`).join("\n"),
+    } });
+  });
+
+  it("resolves find_files patterns relative to the selected directory", async () => {
+    const { project, tools } = await createFixture();
+    await mkdir(path.join(project.rootPath, "src", "icons"));
+    await writeFile(path.join(project.rootPath, "src", "icons", "icon.ico"), "icon");
+    const result = await tools.execute("find_files", JSON.stringify({
+      path: "src", pattern: "icons/icon.ico",
+    }), project.id, new AbortController().signal);
+    expect(JSON.parse(result.content)).toMatchObject({ ok: true, value: { matches: ["src/icons/icon.ico"] } });
+  });
+
+  it("reports malformed workspace-named globs as pattern errors, not missing projects", async () => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("find_files", JSON.stringify({
+      pattern: "{README*,pnpm-workspace.yaml",
+    }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content)).toMatchObject({
+      agentError: { code: "VALIDATION_FAILED" },
+      recovery: { issues: [expect.objectContaining({ path: ["pattern"] })] },
+    });
+    expect(result.content).toContain("glob");
+  });
+
+  it("keeps parent ignore rules and project-relative results when searching a subdirectory", async () => {
+    const { project, tools } = await createFixture();
+    await writeFile(path.join(project.rootPath, ".gitignore"), "src/ignored/\n");
+    await mkdir(path.join(project.rootPath, "src", "ignored"));
+    await writeFile(path.join(project.rootPath, "src", "ignored", "hidden.ts"), "hidden");
+    const result = await tools.execute("find_files", JSON.stringify({ path: "src", pattern: "**/*.ts" }),
+      project.id, new AbortController().signal);
+    expect(JSON.parse(result.content)).toMatchObject({ ok: true, value: { matches: ["src/index.ts"] } });
+  });
+
+  it.each([
+    { includeGlobs: ["{pnpm-workspace.yaml"], query: "alpha", field: "includeGlobs" },
+    { mode: "regex", query: "[", field: "query" },
+  ])("returns actionable search syntax errors: $field", async ({ field, ...args }) => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("search_text", JSON.stringify(args), project.id, new AbortController().signal);
+    expect(JSON.parse(result.content)).toMatchObject({
+      agentError: { code: "VALIDATION_FAILED" },
+    });
+    expect(result.content).toContain(JSON.stringify([field]));
+  });
+
   it("keeps the one-shot command shell independent from side-terminal preferences", () => {
     const projects = new ProjectRegistry();
     const tools = new ProjectToolRegistry(projects, {
@@ -158,9 +267,9 @@ describe("ProjectToolRegistry", () => {
     expect(tools.getDefinitions().find((tool) => tool.name === "search_text")?.description)
       .toContain("successful empty result when nothing matches");
     expect(tools.getDefinitions().find((tool) => tool.name === "apply_patch")?.description)
-      .toContain("not the marker-based patch protocol");
+      .toContain("Update hunks require exact, unique source context");
     expect(tools.getDefinitions().find((tool) => tool.name === "apply_patch")?.description)
-      .toContain("--- a/src/x.ts\\n+++ b/src/x.ts");
+      .toContain("standard ---/+++ unified diff");
     expect(tools.getDefinitions().find((tool) => tool.name === "replace_in_file")?.description)
       .toContain("Preferred editor for one exact change");
 
@@ -398,7 +507,7 @@ describe("ProjectToolRegistry", () => {
   }> = [
     {
       input: { endLine: 1, path: "src/index.ts", startLine: 2 },
-      message: "endLine must be greater than or equal to startLine.",
+      message: "endLine is an absolute line number, not a count",
     },
     {
       input: { endLine: 402, path: "src/index.ts", startLine: 1 },
@@ -436,6 +545,29 @@ describe("ProjectToolRegistry", () => {
     expect(result.isError).toBe(false);
     expect(result.content).toContain('"line":1');
     expect(result.content).toContain('"line":2');
+  });
+
+  it("searches a single file without including neighboring files", async () => {
+    const { project, tools } = await createFixture();
+    await writeFile(path.join(project.rootPath, "src", "neighbor.ts"), "alpha\n", "utf8");
+    const result = await tools.execute("search_text", JSON.stringify({ path: "src/index.ts", query: "alpha" }),
+      project.id, new AbortController().signal);
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toMatchObject({ value: { matches: [
+      { path: "src/index.ts", line: 1 }, { path: "src/index.ts", line: 2 },
+    ] } });
+    const empty = await tools.execute("search_text", JSON.stringify({ path: "src/index.ts", query: "not-present" }),
+      project.id, new AbortController().signal);
+    expect(empty.isError).toBe(false);
+    expect(JSON.parse(empty.content)).toMatchObject({ value: { matches: [] } });
+  });
+
+  it.each(["missing.ts", "../outside.ts"])("rejects invalid search path %s without an internal error", async (searchPath) => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("search_text", JSON.stringify({ path: searchPath, query: "alpha" }),
+      project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(result.content).not.toContain('"code":"INTERNAL_ERROR"');
   });
 
   it("uses literal ripgrep search and respects project ignore files", async () => {
@@ -751,7 +883,7 @@ describe("ProjectToolRegistry", () => {
     );
   });
 
-  it("reports the unsupported GPT/Codex patch directive precisely", async () => {
+  it("prepares a Codex Update patch without writing before approval", async () => {
     const { project, tools } = await createFixture();
     const result = await tools.execute(
       "apply_patch",
@@ -769,10 +901,21 @@ describe("ProjectToolRegistry", () => {
       new AbortController().signal,
     );
 
-    expect(result.kind).toBe("completed");
+    expect(result.isError).toBe(false);
+    expect(result).toMatchObject({ kind: "change", change: {
+      content: "first\nbeta alpha\n", expectedContent: "alpha\nbeta alpha\n",
+    } });
+    expect(await readFile(path.join(project.rootPath, "src/index.ts"), "utf8"))
+      .toBe("alpha\nbeta alpha\n");
+  });
+
+  it.each(["../outside.ts", "src/missing.ts"])("rejects unsafe or absent Update target %s", async (target) => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("apply_patch", JSON.stringify({
+      patch: `*** Begin Patch\n*** Update File: ${target}\n@@\n-alpha\n+first\n*** End Patch`,
+    }), project.id, new AbortController().signal);
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("*** Update File:");
-    expect(result.content).toContain("标准 ---/+++ diff");
+    expect(result.kind).toBe("completed");
   });
 
   it("reports a mismatched GPT-generated hunk instead of blaming file headers", async () => {

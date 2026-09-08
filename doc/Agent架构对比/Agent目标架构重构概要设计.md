@@ -5,6 +5,8 @@
 > 结论先行：采用「**所有入口先归一为对话 + 每个对话一份 JSONL 规范事件日志 + SQLite 可重建查询投影 + 独立可恢复 Run**」的本地优先架构。
 > 标注规则：明确标出 `〔FACT〕` 的内容来自当前代码或现有设计文档；其余目标设计均为 `〔INFER｜目标架构提案〕`，需要在讨论中确认后才进入实现。
 
+> 存储方向更新（2026-09-07）：[JSONL 对话存储与归属设计](../22-JSONL对话存储与归属设计.md)改为属性和完整对话存 JSONL、列表用内存索引，不要求 SQLite 对话属性表或索引表；项目、团队与执行检查点统一在 `db.sqlite`，迁移记录只保留一份，见[最新目录设计](../24-Aster目录结构与JSONC配置.md)。下文 SQLite Projection 属于上一阶段方案，新方向尚未实施。
+
 ## 1. 要解决什么问题
 
 当前主链已经可运行：UI 经 IPC 进入 `AgentRuntime`，由 LangGraph 执行模型—工具循环；SQLite 保存业务事实，独立 SQLite 保存图恢复状态。〔FACT｜[Agent 运行时架构总览](../17-Agent运行时架构总览.md) §2-3〕
@@ -172,44 +174,20 @@ JSONL 写入由该对话的单写入队列串行化；每个事件都有稳定 `
 
 因此三者不是互相替代关系：JSONL 解决“事实和回放”，SQLite 解决“快速查询和关系”，Graph Checkpoint 解决“执行到哪个节点”。〔INFER｜目标架构提案〕
 
-现有实现中，业务历史和图 Checkpoint 已经分属两份 SQLite 文件；目标设计只是把业务历史的规范来源迁为 JSONL，保留 SQLite 的关系、事务和 FTS 优势。〔FACT｜[我们的 Agent 项目总体架构与上下文管理](./我们的Agent项目总体架构与上下文管理.md) §4〕
+现有实现中，业务历史和图 Checkpoint 分属两份 SQLite 文件。〔FACT｜[我们的 Agent 项目总体架构与上下文管理](./我们的Agent项目总体架构与上下文管理.md) §4〕最新目标合并为 `db.sqlite`，完整对话迁往 JSONL；不再保留本文旧方案中的对话 SQL 投影，详见第 21、22 篇。
 
-### 4.3 配置与核心数据根目录：统一使用 AGENT_HOME
+### 4.3 配置与核心数据根目录：ASTER_HOME / JSONC
 
-目标架构不把 Agent 配置和核心数据放在安装目录，也不再把 Electron 的 `userData` 当作规范 Agent 数据根目录。统一引入 `AGENT_HOME`：若启动参数或环境变量显式指定则使用指定目录，否则使用当前用户 Home 下的 `.agent`。Windows 默认即 `C:\Users\<用户名>\.agent`。这表示“当前用户的 Agent Home”，不是写死 C 盘。〔INFER｜目标架构提案〕
+2026-09-07 的目标方案以[Aster 目录结构与 JSONC 配置](../24-Aster目录结构与JSONC配置.md)为准：
 
-```text
-agentHome = AGENT_HOME（显式设置时）
-         ?? <os.homedir()>/.agent
-```
+- 默认 `<用户主目录>/.aster`，环境变量 `ASTER_HOME` 可覆盖，兼容 `AGENT_HOME`。
+- 应用、Agent、团队模板、供应商/模型和集成设置统一在 `settings.jsonc`；支持注释、明文 API Key，不再拆 `models.json` 和 `credentials.json`。
+- Main 校验并按字段修改 JSONC，保留注释与格式后原子替换。密钥不进入模型可读配置、日志或 Run/对话快照。
+- 对话使用 `conversations/<id>/conversation.jsonl`，附件和产物在同目录；项目及团队业务表见[目标 ER 图](../21-数据库实体关系图.md)。不自动在项目中创建第二份设置。
+- 应用数据库只用 `db.sqlite`，内含业务、清理与检查点表，共用唯一迁移序列；不再另设检查点数据库文件。
+- 已有对话保留自己的配置，新对话才应用继承/默认规则；Run 保存实际生效快照。Electron `userData` 的位置仍按现有启动规则处理。
 
-目标目录保持一层清晰结构：
-
-```text
-<AGENT_HOME>/
-  settings.json                         # 通用设置：界面、默认模型、权限、终端、压缩、集成
-  models.json                           # 自定义 Provider / Model 目录，不含明文密钥
-  credentials.json                      # 仅保存操作系统加密后的凭据载荷
-  conversations/<conversationId>.jsonl  # 每个 Conversation 一份规范事件日志
-  attachment-drafts/                    # 尚未发送的上传 / 粘贴草稿
-  attachments/                          # 已被消息引用的不可变附件
-  workspaces/                            # 未关联项目的 Conversation 隔离工作区
-  skills/
-  plugins/
-  mcp/
-  tmp/                                  # 单次操作临时文件，启动时可清理
-  agent.sqlite                          # 查询投影与跨对话关系
-  langgraph-checkpoints.sqlite          # 当前 Run 图恢复状态
-  logs/
-```
-
-首版只保留一个通用 `settings.json`，不继续为界面、终端、压缩和集成各建一份零散配置；模型目录和加密凭据因结构、安全和生命周期不同而独立。所有 JSON 都由 Main 的配置 Store 通过版本化 Schema 读取，并使用“临时文件 → 同目录原子替换”写入。API Key 明文既不进入 `settings.json`，也不进入 JSONL 或 SQLite。〔INFER｜目标架构提案〕
-
-项目若将来需要可跟随仓库共享的设置，可以显式创建 `<project>/.agent/settings.json`，只保存项目级模型偏好、工具规则或 Skill 引用；应用不得自动在每个项目下创建 `.agent` 目录。项目配置只有在项目已被用户信任后才加载，且不能包含会话 JSONL、附件、数据库、缓存或密钥。〔INFER｜目标架构提案〕
-
-配置生效顺序保持简单：Run 显式选择 > 已信任项目的 `.agent/settings.json` > `<AGENT_HOME>/settings.json` > 产品默认值。创建 Run 时只把最终生效的模型、权限、Skill / Plugin 版本等快照写入 `run_created`，不把整份配置文件复制进 Conversation JSONL。〔INFER｜目标架构提案〕
-
-Electron / Chromium 自己的 `Cache`、`GPUCache`、Cookie、Local Storage 等技术状态仍由 `app.getPath("userData")` 管理；它们不是 Agent 规范数据，也不参与 CLI 与 Desktop 共享。2026-08-27 的首个迁移批次已在启动时解析 `AGENT_HOME`，并将既有 `userData` 内的 Agent 管理数据**复制**到新根目录（不删除旧数据）；Electron 技术状态仍留在 `userData`。为了不把“改数据根目录”和“重写配置格式”混在同一批次，当前沿用 `application-settings.json`、`model-catalog.json` 等兼容文件名；合并为目标目录中的 `settings.json`、`models.json` 是后续独立迁移。〔FACT｜`apps/desktop/src/main/storage/agent-home.ts`；`apps/desktop/src/main/bootstrap/index.ts`〕
+当前仍使用多份 JSON 和 `safeStorage` 加密密钥；上述统一 JSONC 方案尚未实施。旧文件映射、示例及备份边界集中在第 24 篇，不在这里重复维护。
 
 ### 4.4 上传、拖入和粘贴的文件：保存快照，日志只引用
 
@@ -238,40 +216,12 @@ flowchart LR
 
 #### 4.4.1 文件到底放在哪里
 
-目标目录只保留一个简单约定，不为图片、Word、PDF 和工具产物分别建存储系统：
+目录以[第 24 篇](../24-Aster目录结构与JSONC配置.md#11-工作目录的选择)为准，不在这里维护第二套路径示例：
 
-```text
-<AGENT_HOME>/
-  conversations/
-    <conversationId>.jsonl
-  attachment-drafts/
-    <attachmentId>/source.<ext>       # 尚未发送，可按超时清理
-  attachments/
-    <attachmentId>/source.<ext>       # 用户上传或粘贴的不可变原始快照
-    <attachmentId>/extracted.txt      # 能提取文本时才生成
-    <attachmentId>/preview.<ext>      # 确有预览需要时才生成
-  workspaces/
-    <conversationId>/                 # 仅未关联项目的 Conversation 使用
-  agent.sqlite                        # 查询投影与跨对话关系
-  langgraph-checkpoints.sqlite        # 当前 Run 的图恢复状态
-```
-
-`source.<ext>` 的扩展名依据实际检测的 MIME 决定，用户看到的原始名称只作为显示元数据，不能参与目录拼接。首版不做内容去重；`attachmentId` 是稳定身份，物理位置由 `AttachmentStore` 根据它确定。这样不需要把绝对路径保存进 JSONL 或数据库，也不依赖 Windows Temp。分叉或其他 Conversation 引用同一附件时只复制引用，不复制字节。〔INFER｜目标架构提案〕
-
-项目工作区文件与对话附件是两种语义：工作区文件是可变文件，模型通过工作区相对路径和文件工具访问；用户把它“作为附件发送”时，系统仍创建当时版本的不可变快照。后续项目文件变化不会悄悄改变历史消息中的附件。**即使 Conversation 关联了项目，上传或粘贴的附件也不保存在 `<project>/.agent`、`.git` 或其他项目子目录中。**这样不会污染 Git 工作区、触发文件监听、意外提交隐私附件或因为项目移动而破坏历史消息。〔INFER｜目标架构提案〕
-
-项目对话与未关联项目的临时对话使用同一套附件逻辑，区别只在工具工作目录：
-
-| 内容 | 关联项目的 Conversation | 未关联项目的临时 Conversation |
-| --- | --- | --- |
-| Conversation JSONL | `<AGENT_HOME>/conversations/<conversationId>.jsonl` | 相同 |
-| 发送前粘贴 / 上传草稿 | `<AGENT_HOME>/attachment-drafts/<attachmentId>/` | 相同 |
-| 发送后的附件快照 | `<AGENT_HOME>/attachments/<attachmentId>/` | 相同 |
-| Agent 文件工具的工作目录 | 用户已授权的项目根目录 | `<AGENT_HOME>/workspaces/<conversationId>/` |
-| 是否自动把附件放进工作区 | 否；模型或用户明确需要时经 `copy_attachment` 复制 | 否；附件仍与工作文件分离，需要时再复制 |
-| Conversation 删除 | 引用清理后删除无引用附件；不删除项目 | 删除隔离工作区，并在引用清理后删除无引用附件 |
-
-未关联项目的 Conversation 不能直接使用系统共享 Temp 作为长期工作区：审批暂停、应用重启或后续继续对话时仍可能需要之前生成的文件。`<AGENT_HOME>/workspaces/<conversationId>` 是可恢复但受管的隔离工作区；只有真正的单次原子写临时文件才进入 `<AGENT_HOME>/tmp` 或操作系统 Temp，并在操作完成或启动恢复时清理。Conversation 归档时保留工作区，永久删除时通过持久清理任务幂等删除。〔INFER｜目标架构提案〕
+- 所有对话记录在 `conversations/<conversationId>/`；附件和产物分别在其 `attachments/`、`artifacts/`，不自动复制进项目工作区。
+- 有项目用项目目录；无项目时优先使用手动绑定目录，否则按需创建 `<ASTER_HOME>/workspaces/<conversationId>/`。默认工作区不新增项目记录，`projectId` 仍为 `null`。
+- 工作文件可修改，附件是导入时的快照；附件转交和读取规则见[第 22 篇](../22-JSONL对话存储与归属设计.md#21-附件)。
+- 默认工作区不是缓存：归档或改绑不自动清空，备份包含已有工作文件；永久删除明确清理范围，不删除用户项目或外部绑定目录。
 
 #### 4.4.2 从粘贴或上传到写入消息
 

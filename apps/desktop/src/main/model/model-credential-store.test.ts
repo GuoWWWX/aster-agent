@@ -15,6 +15,7 @@ vi.mock("electron", () => ({
 
 import { ModelCredentialStore } from "./model-credential-store.js";
 import { ModelResponseError } from "./model-request-error.js";
+import { SettingsJsoncFile } from "../settings/settings-jsonc-file.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -77,6 +78,94 @@ afterEach(async () => {
 });
 
 describe("ModelCredentialStore", () => {
+  it("stores editable API keys in settings.jsonc without an encrypted shadow field", async () => {
+    vi.spyOn(safeStorage, "isEncryptionAvailable").mockReturnValue(false);
+    const decrypt = vi.spyOn(safeStorage, "decryptString").mockImplementation(() => { throw new Error("must not decrypt JSONC"); });
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-model-settings-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "settings.jsonc");
+    const settings = new SettingsJsoncFile(configurationPath);
+    const store = new ModelCredentialStore(settings);
+
+    const status = store.saveConfiguration({
+      apiKey: "plain-test-key",
+      apiFormat: "openai-responses",
+      baseUrl: "https://example.test/v1",
+      models: [{
+        contextWindow: 128_000,
+        displayName: "测试模型",
+        modelId: "test-model",
+        reasoningOptions: [],
+      }],
+      providerName: "测试供应商",
+    });
+    const providerId = status.providerId;
+    if (providerId === null) throw new Error("Expected a configured provider.");
+
+    expect(store.getConfiguration(providerId, "test-model").apiKey).toBe("plain-test-key");
+    const content = await readFile(configurationPath, "utf8");
+    expect(content).toContain('"apiKey": "plain-test-key"');
+    expect(content).not.toContain("encryptedApiKey");
+    expect(decrypt).not.toHaveBeenCalled();
+  });
+
+  it("preserves an unreadable legacy key and migrates editable metadata without blocking startup", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-model-migration-failed-"));
+    temporaryDirectories.push(directory);
+    const legacyPath = path.join(directory, "model-credentials.json");
+    const settingsPath = path.join(directory, "settings.jsonc");
+    const legacy = new ModelCredentialStore(legacyPath);
+    legacy.saveConfiguration({
+      apiKey: "unrecoverable-test-key", apiFormat: "openai-responses", baseUrl: "https://example.test/v1",
+      models: [{ modelId: "test", displayName: "test", contextWindow: 0, reasoningOptions: [] }], providerName: "旧供应商",
+    });
+    const original = await readFile(legacyPath, "utf8");
+    vi.spyOn(safeStorage, "decryptString").mockImplementation(() => { throw new Error("ciphertext error"); });
+    const store = new ModelCredentialStore(new SettingsJsoncFile(settingsPath), legacyPath);
+    expect(() => store.importFromEnvironment()).not.toThrow();
+    expect(store.getConfiguration().apiKey).toBe("");
+    expect(store.getCredentialMigrationWarnings()).toEqual(["旧供应商"]);
+    expect(await readFile(legacyPath, "utf8")).toBe(original);
+    const content = await readFile(settingsPath, "utf8");
+    expect(content).toContain('"apiKey": ""');
+    expect(content).not.toContain("encryptedApiKey");
+    const restarted = new ModelCredentialStore(new SettingsJsoncFile(settingsPath), legacyPath);
+    expect(() => restarted.importFromEnvironment()).not.toThrow();
+  });
+
+  it("migrates the former encrypted model file into settings.jsonc", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-model-migration-"));
+    temporaryDirectories.push(directory);
+    const legacyPath = path.join(directory, "model-credentials.json");
+    const settingsPath = path.join(directory, "settings.jsonc");
+    const providerId = "00000000-0000-4000-8000-000000000077";
+    await writeFile(legacyPath, JSON.stringify({
+      defaultModelId: "legacy-model",
+      defaultProviderId: providerId,
+      providers: [{
+        apiFormat: "openai-chat-completions",
+        baseUrl: "https://legacy.example/v1",
+        encryptedApiKey: Buffer.from("legacy-key", "utf8").toString("base64"),
+        id: providerId,
+        models: [{
+          contextWindow: 128_000,
+          modelId: "legacy-model",
+          reasoningOptions: [],
+        }],
+        name: "旧供应商",
+      }],
+      recentSelection: null,
+      version: 6,
+    }), "utf8");
+    const store = new ModelCredentialStore(new SettingsJsoncFile(settingsPath), legacyPath);
+
+    store.importFromEnvironment();
+
+    expect(store.getConfiguration(providerId, "legacy-model").apiKey).toBe("legacy-key");
+    await expect(readFile(settingsPath, "utf8")).resolves.toContain('"apiKey": "legacy-key"');
+    await expect(readFile(legacyPath, "utf8")).resolves.toContain("encryptedApiKey");
+  });
+
   it("reads context metadata without decrypting the provider credential", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-credentials-"));
     temporaryDirectories.push(directory);

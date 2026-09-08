@@ -3,6 +3,7 @@ import type {
   AddTeamWorkItemCommentInput,
   DeleteTeamWorkItemInput,
   ApplicationSettings,
+  ApplicationStorageLocation,
   BrowserConfiguration,
   ApproveToolChangeInput,
   CancelRunInput,
@@ -26,6 +27,8 @@ import type {
   ConversationSummary,
   ConversationTaskList,
   ConversationTimelineItem,
+  ConversationTimelinePage,
+  ConversationTimelinePageInput,
   CreateProjectEntryInput,
   DeleteConfigurationWorkspaceEntryInput,
   CreateConversationInput,
@@ -78,6 +81,7 @@ import type {
   UpdatePendingConversationMessageInput,
   SetConversationArchivedInput,
   SetConversationModelSelectionInput,
+  SetConversationPermissionModeInput,
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SetProjectPinnedInput,
@@ -205,6 +209,9 @@ export interface AgentClient {
   getModelStatus(): Promise<ModelRuntimeStatus>;
   getContextCompressionConfiguration(): Promise<ContextCompressionConfiguration>;
   getApplicationSettings(): Promise<ApplicationSettings>;
+  getApplicationStorageLocation(): Promise<ApplicationStorageLocation>;
+  chooseApplicationStorageLocation(): Promise<ApplicationStorageLocation | null>;
+  resetApplicationStorageLocation(): Promise<ApplicationStorageLocation>;
   getIntegrationConfiguration(): Promise<IntegrationConfiguration>;
   getBrowserConfiguration(): Promise<BrowserConfiguration>;
   clearBrowserData(): Promise<void>;
@@ -241,6 +248,9 @@ export interface AgentClient {
   listConversationTimeline(
     input: ConversationReferenceInput,
   ): Promise<ConversationTimelineItem[]>;
+  listConversationTimelinePage(
+    input: ConversationTimelinePageInput,
+  ): Promise<ConversationTimelinePage>;
   searchConversations(input: ConversationSearchInput): Promise<ConversationSearchResult[]>;
   listConversationPendingMessages(
     input: ConversationReferenceInput,
@@ -291,6 +301,9 @@ export interface AgentClient {
   setConversationArchived(input: SetConversationArchivedInput): Promise<ConversationSummary>;
   setConversationModelSelection(
     input: SetConversationModelSelectionInput
+  ): Promise<ConversationSummary>;
+  setConversationPermissionMode(
+    input: SetConversationPermissionModeInput
   ): Promise<ConversationSummary>;
   setConversationProject(input: SetConversationProjectInput): Promise<ConversationSummary>;
   setConversationPinned(input: SetConversationPinnedInput): Promise<ConversationSummary>;

@@ -26,9 +26,10 @@ describe("prompt assets", () => {
     );
     expect(BASE_SYSTEM_PROMPT).toContain("Pass `expectedContext=ssh` with every later remote command");
     expect(BASE_SYSTEM_PROMPT).toContain("successful empty result when nothing matches");
-    expect(BASE_SYSTEM_PROMPT).toContain("Choose the editing tool by operation, independent of model or provider");
     expect(BASE_SYSTEM_PROMPT).toContain("prefer `replace_in_file`");
-    expect(BASE_SYSTEM_PROMPT).toContain("standard unified diff beginning with `--- a/<path>`");
+    expect(BASE_SYSTEM_PROMPT).toContain("standard `---/+++` unified diff");
+    expect(BASE_SYSTEM_PROMPT).toContain("`*** Update File: <path>`");
+    expect(BASE_SYSTEM_PROMPT).toContain("successful build alone does not verify functional behavior");
     expect(BASE_SYSTEM_PROMPT).toContain("combining changes into one call");
     expect(BASE_SYSTEM_PROMPT).toContain("`update_task_list` creates or updates");
     expect(BASE_SYSTEM_PROMPT).not.toContain("create_task_list");

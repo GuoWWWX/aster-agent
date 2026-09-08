@@ -19,6 +19,8 @@ export default defineConfig({
     js: ".cjs"
   }),
   platform: "node",
+  // Prefix-only builtins such as node:sqlite cannot be resolved as bare packages.
+  removeNodeProtocol: false,
   sourcemap: true,
   splitting: false,
   target: "node22"

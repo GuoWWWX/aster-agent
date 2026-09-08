@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import path from "node:path";
 
 import { rgPath } from "@vscode/ripgrep";
+import { ToolArgumentsError } from "../model/tool-arguments.js";
 
 const MAX_SEARCH_MATCH_TEXT_LENGTH = 800;
 const MAX_ERROR_OUTPUT_LENGTH = 4_000;
@@ -171,7 +173,18 @@ function parseJsonEvent(line: string): RipgrepJsonEvent | null {
   }
 }
 
-function errorForRipgrep(exitCode: number | null, stderr: string): Error {
+function errorForRipgrep(exitCode: number | null, stderr: string, globFields: string[]): Error {
+  // Parse errors are identified at the ripgrep boundary, before generic error classification.
+  if (/error parsing glob/iu.test(stderr)) {
+    return new ToolArgumentsError("Invalid search glob.", globFields.map((field) => ({
+      code: "invalid_glob", path: [field], message: stderr.slice(0, 280),
+    })));
+  }
+  if (/regex parse error/iu.test(stderr)) {
+    return new ToolArgumentsError("Invalid search regular expression.", [{
+      code: "invalid_regex", path: ["query"], message: "Invalid regular expression. Fix the syntax or use mode=literal to search exact text.",
+    }]);
+  }
   return new Error(stderr || `ripgrep exited with code ${exitCode ?? "unknown"}.`);
 }
 
@@ -234,7 +247,7 @@ export async function searchTextWithRipgrep(input: {
     },
   );
   if (result.exitCode !== null && result.exitCode > 1 && !result.stoppedEarly) {
-    throw errorForRipgrep(result.exitCode, result.stderr);
+    throw errorForRipgrep(result.exitCode, result.stderr, ["includeGlobs", "excludeGlobs"]);
   }
   return {
     matches,
@@ -278,14 +291,14 @@ export async function findFilesWithRipgrep(input: {
       input.pattern,
       ...SKIPPED_DIRECTORY_GLOBS.flatMap((glob) => ["--glob", glob]),
       "--",
-      input.path.length === 0 ? "." : input.path,
+      ".",
     ],
-    input.projectRoot,
+    path.resolve(input.projectRoot, input.path),
     input.signal,
     (line) => {
       const relativePath = normalizeRelativePath(line);
       if (relativePath.length === 0) return true;
-      matches.push(relativePath);
+      matches.push(path.posix.join(normalizeRelativePath(input.path), relativePath));
       if (matches.length >= input.maxResults) {
         truncated = true;
         return false;
@@ -295,7 +308,7 @@ export async function findFilesWithRipgrep(input: {
     "\0",
   );
   if (result.exitCode !== null && result.exitCode > 1 && !result.stoppedEarly) {
-    throw errorForRipgrep(result.exitCode, result.stderr);
+    throw errorForRipgrep(result.exitCode, result.stderr, ["pattern"]);
   }
   matches.sort((left, right) => left.localeCompare(right));
   return {

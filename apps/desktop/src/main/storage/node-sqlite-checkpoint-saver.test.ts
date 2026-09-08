@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { Checkpoint, CheckpointMetadata } from "@langchain/langgraph-checkpoint";
 
 import { NodeSqliteCheckpointSaver } from "./node-sqlite-checkpoint-saver.js";
+import { AgentDatabase } from "./agent-database.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -35,6 +36,27 @@ const metadata: CheckpointMetadata = {
 };
 
 describe("NodeSqliteCheckpointSaver", () => {
+  it("uses checkpoint tables created by the unified Aster database migration", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-unified-database-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "db.sqlite");
+    const database = new AgentDatabase(databasePath);
+    const saver = new NodeSqliteCheckpointSaver(databasePath, { initializeSchema: false });
+
+    await saver.put(
+      { configurable: { checkpoint_ns: "", thread_id: "unified-thread" } },
+      checkpoint("00000000000000000000000001", "unified"),
+      {} as CheckpointMetadata,
+      {},
+    );
+
+    expect((await saver.getTuple({
+      configurable: { checkpoint_ns: "", thread_id: "unified-thread" },
+    }))?.checkpoint.channel_values).toEqual({ value: "unified" });
+    saver.close();
+    database.close();
+  });
+
   it("persists checkpoints and pending writes across a reopen", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-langgraph-saver-"));
     temporaryDirectories.push(directory);

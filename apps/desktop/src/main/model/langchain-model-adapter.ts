@@ -33,6 +33,7 @@ import {
   summarizeModelErrorText,
 } from "./model-request-error.js";
 import { parseToolArguments } from "./tool-arguments.js";
+import { requestFingerprint, type RequestFingerprint } from "./request-fingerprint.js";
 
 const LANGCHAIN_PROVIDER_STATE_VERSION = 2;
 const AI_SDK_PROVIDER_STATE_VERSION = 1;
@@ -806,6 +807,7 @@ function providerTokenUsage(
 function providerState(
   input: CompleteTurnInput,
   message: LangChainAssistantMessage,
+  fingerprint?: RequestFingerprint,
 ): ModelProviderState | undefined {
   const additionalKwargs = jsonSnapshot(message.additional_kwargs);
   const content = jsonSnapshot(message.content);
@@ -828,6 +830,7 @@ function providerState(
       content,
       responseMetadata,
       version: LANGCHAIN_PROVIDER_STATE_VERSION,
+      ...(fingerprint === undefined ? {} : { requestFingerprint: fingerprint }),
     },
     ...(usage === undefined ? {} : { usage }),
   };
@@ -974,7 +977,11 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
     input: CompleteTurnInput,
     onProviderOutput: () => void = () => undefined,
   ): Promise<ModelTurnResult> {
-    const model = this.factory(input, this.request);
+    let fingerprint: RequestFingerprint | undefined;
+    const model = this.factory(input, (url, options) => {
+      fingerprint = requestFingerprint(options?.body);
+      return this.request(url, options);
+    });
     const boundModel = input.tools.length === 0 || model.bindTools === undefined
       ? model
       : bindModelTools(model, input);
@@ -1017,7 +1024,7 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
         throw new ModelResponseError("LangChain model returned no response chunks.");
       }
       const toolCalls = assistantToolCalls(latest).map(normalizeToolCall);
-      const savedProviderState = providerState(input, latest);
+      const savedProviderState = providerState(input, latest, fingerprint);
       return {
         content,
         finishReason: readFinishReason(latest),

@@ -1,4 +1,4 @@
-import { AgentDatabase, type ThreadLogLegacySnapshot } from "./agent-database.js";
+import { AgentDatabase } from "./agent-database.js";
 import { EventProjector } from "./event-projector.js";
 import { ThreadLog } from "./thread-log.js";
 
@@ -10,13 +10,6 @@ export type ThreadLogLegacyImportResult = {
 export type ThreadLogCorruptionRecoveryResult = {
   quarantinedConversationIds: string[];
 };
-
-function hasPersistedConversationHistory(snapshot: ThreadLogLegacySnapshot): boolean {
-  return snapshot.checkpoint !== null
-    || snapshot.modelMessages.length > 0
-    || snapshot.runs.length > 0
-    || snapshot.timeline.length > 0;
-}
 
 /**
  * One-time bridge for SQLite-first conversations. A presence check makes the
@@ -33,9 +26,8 @@ export class ThreadLogLegacyImporter {
   public importMissingConversationLogs(): ThreadLogLegacyImportResult {
     const importedConversationIds: string[] = [];
     const skippedConversationIds: string[] = [];
-    const relationConversationIds = this.relationshipConversationIds();
     for (const conversationId of this.database.listProjectableConversationIds()) {
-      if (!this.importConversationIfMissing(conversationId, relationConversationIds.has(conversationId))) {
+      if (!this.importConversationIfMissing(conversationId)) {
         skippedConversationIds.push(conversationId);
         continue;
       }
@@ -51,25 +43,26 @@ export class ThreadLogLegacyImporter {
    */
   public recoverUnreadableConversationLogs(): ThreadLogCorruptionRecoveryResult {
     const quarantinedConversationIds: string[] = [];
-    const relationConversationIds = this.relationshipConversationIds();
     for (const conversationId of this.database.listProjectableConversationIds()) {
+      if (this.eventProjector.isConversationProjectionCurrent(conversationId)) continue;
       try {
         this.threadLog.read(conversationId);
       } catch {
         this.threadLog.quarantine(conversationId);
         this.database.resetThreadLogProjection(conversationId);
-        this.importConversationIfMissing(conversationId, relationConversationIds.has(conversationId));
+        this.importConversationIfMissing(conversationId);
         quarantinedConversationIds.push(conversationId);
       }
     }
     return { quarantinedConversationIds };
   }
 
-  public importConversationIfMissing(conversationId: string, preserveChildRelation = false): boolean {
-    if (this.threadLog.hasConversation(conversationId)) return false;
+  public importConversationIfMissing(conversationId: string): boolean {
+    const creation = this.threadLog.readFirstEvent(conversationId, "conversation_created");
+    if (creation !== null
+      && this.threadLog.readFirstEvent(conversationId, "legacy_snapshot_imported") !== null) return false;
     const snapshot = this.database.exportThreadLogLegacySnapshot(conversationId);
-    if (!preserveChildRelation && !hasPersistedConversationHistory(snapshot)) return false;
-    this.threadLog.append(conversationId, {
+    if (creation === null) this.threadLog.append(conversationId, {
       payload: {
         agent: snapshot.agent,
         conversation: snapshot.conversation,
@@ -78,11 +71,17 @@ export class ThreadLogLegacyImporter {
     });
     this.threadLog.append(conversationId, {
       payload: {
+        agentMessages: snapshot.agentMessages,
+        attachmentRefs: snapshot.attachmentRefs,
         checkpoint: snapshot.checkpoint,
         importedAt: new Date().toISOString(),
         modelMessages: snapshot.modelMessages,
+        pendingMessages: snapshot.pendingMessages,
         runs: snapshot.runs,
+        subagentTasks: snapshot.subagentTasks,
+        taskList: snapshot.taskList,
         timeline: snapshot.timeline,
+        turnSummaries: snapshot.turnSummaries,
       },
       type: "legacy_snapshot_imported",
     });
@@ -90,14 +89,4 @@ export class ThreadLogLegacyImporter {
     return true;
   }
 
-  private relationshipConversationIds(): ReadonlySet<string> {
-    const relationshipConversationIds = new Set<string>();
-    for (const conversationId of this.database.listProjectableConversationIds()) {
-      const parentConversationId = this.database.getConversation(conversationId).parentConversationId;
-      if (parentConversationId === null) continue;
-      relationshipConversationIds.add(conversationId);
-      relationshipConversationIds.add(parentConversationId);
-    }
-    return relationshipConversationIds;
-  }
 }

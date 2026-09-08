@@ -15,6 +15,8 @@ import type {
   ConversationSummary,
   ConversationTaskList,
   ConversationTimelineItem,
+  ConversationTimelinePage,
+  ConversationTimelinePageInput,
   CreateConversationInput,
   EnsureTeamMemberConversationInput,
   DiscoverModelsInput,
@@ -32,6 +34,7 @@ import type {
   ReadConversationAttachmentPreviewInput,
   SetConversationArchivedInput,
   SetConversationModelSelectionInput,
+  SetConversationPermissionModeInput,
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SetTeamCoordinatorInput,
@@ -46,6 +49,7 @@ import type {
 import type { PluginCatalogEntry, SetPluginEnabledInput } from "./plugin.js";
 import type { ContextCompressionConfiguration } from "./context-compression.js";
 import type { ApplicationSettings } from "./application-settings.js";
+import type { ApplicationStorageLocation } from "./application-storage.js";
 import type { ModelCatalog } from "./model-catalog.js";
 import type {
   CreateProjectEntryInput,
@@ -229,6 +233,9 @@ export interface DesktopBridge {
   getModelStatus(): Promise<ModelRuntimeStatus>;
   getContextCompressionConfiguration(): Promise<ContextCompressionConfiguration>;
   getApplicationSettings(): Promise<ApplicationSettings>;
+  getApplicationStorageLocation(): Promise<ApplicationStorageLocation>;
+  chooseApplicationStorageLocation(): Promise<ApplicationStorageLocation | null>;
+  resetApplicationStorageLocation(): Promise<ApplicationStorageLocation>;
   getIntegrationConfiguration(): Promise<IntegrationConfiguration>;
   getBrowserConfiguration(): Promise<BrowserConfiguration>;
   clearBrowserData(): Promise<void>;
@@ -273,6 +280,9 @@ export interface DesktopBridge {
   listConversationTimeline(
     input: ConversationReferenceInput
   ): Promise<ConversationTimelineItem[]>;
+  listConversationTimelinePage(
+    input: ConversationTimelinePageInput
+  ): Promise<ConversationTimelinePage>;
   searchConversations(input: ConversationSearchInput): Promise<ConversationSearchResult[]>;
   listConversationPendingMessages(
     input: ConversationReferenceInput
@@ -306,6 +316,9 @@ export interface DesktopBridge {
   setConversationArchived(input: SetConversationArchivedInput): Promise<ConversationSummary>;
   setConversationModelSelection(
     input: SetConversationModelSelectionInput
+  ): Promise<ConversationSummary>;
+  setConversationPermissionMode(
+    input: SetConversationPermissionModeInput
   ): Promise<ConversationSummary>;
   setConversationProject(input: SetConversationProjectInput): Promise<ConversationSummary>;
   setConversationPinned(input: SetConversationPinnedInput): Promise<ConversationSummary>;

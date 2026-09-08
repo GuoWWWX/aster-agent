@@ -3,6 +3,7 @@ import type {
   AddTeamWorkItemCommentInput,
   DeleteTeamWorkItemInput,
   ApplicationSettings,
+  ApplicationStorageLocation,
   BrowserConfiguration,
   ApproveToolChangeInput,
   CancelRunInput,
@@ -25,6 +26,8 @@ import type {
   ConversationSummary,
   ConversationTaskList,
   ConversationTimelineItem,
+  ConversationTimelinePage,
+  ConversationTimelinePageInput,
   CreateProjectEntryInput,
   DeleteConfigurationWorkspaceEntryInput,
   CreateConversationInput,
@@ -78,6 +81,7 @@ import type {
   UpdatePendingConversationMessageInput,
   SetConversationArchivedInput,
   SetConversationModelSelectionInput,
+  SetConversationPermissionModeInput,
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SetProjectPinnedInput,
@@ -340,6 +344,18 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.getApplicationSettings();
   }
 
+  public getApplicationStorageLocation(): Promise<ApplicationStorageLocation> {
+    return this.desktopBridge.getApplicationStorageLocation();
+  }
+
+  public chooseApplicationStorageLocation(): Promise<ApplicationStorageLocation | null> {
+    return this.desktopBridge.chooseApplicationStorageLocation();
+  }
+
+  public resetApplicationStorageLocation(): Promise<ApplicationStorageLocation> {
+    return this.desktopBridge.resetApplicationStorageLocation();
+  }
+
   public getIntegrationConfiguration(): Promise<IntegrationConfiguration> {
     return this.desktopBridge.getIntegrationConfiguration();
   }
@@ -468,6 +484,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
     input: ConversationReferenceInput,
   ): Promise<ConversationTimelineItem[]> {
     return this.desktopBridge.listConversationTimeline(input);
+  }
+
+  public listConversationTimelinePage(
+    input: ConversationTimelinePageInput,
+  ): Promise<ConversationTimelinePage> {
+    return this.desktopBridge.listConversationTimelinePage(input);
   }
 
   public searchConversations(input: ConversationSearchInput): Promise<ConversationSearchResult[]> {
@@ -638,6 +660,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
     input: SetConversationModelSelectionInput,
   ): Promise<ConversationSummary> {
     return this.desktopBridge.setConversationModelSelection(input);
+  }
+
+  public setConversationPermissionMode(
+    input: SetConversationPermissionModeInput,
+  ): Promise<ConversationSummary> {
+    return this.desktopBridge.setConversationPermissionMode(input);
   }
 
   public renameProject(input: RenameProjectInput): Promise<ProjectSummary> {

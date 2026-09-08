@@ -70,8 +70,8 @@ const waitArgumentsSchema = z.object({
   taskIds: z.array(z.string().uuid()).min(1).max(32)
     .refine((ids) => new Set(ids).size === ids.length, "Task identifiers must be unique.")
     .describe("Unique task UUIDs returned by spawn_subagent."),
-  timeoutMs: z.number().int().min(1_000).max(600_000).default(30_000)
-    .describe("Maximum wait in milliseconds. A timeout does not stop the Subagent."),
+  timeoutMs: z.number().int().min(1_000).max(600_000).optional()
+    .describe("Optional maximum wait. Omit to wait until the condition is met. Timeout does not stop Subagents; cancellation, missing execution and stalled progress release the wait."),
   waitFor: z.enum(["any", "all"]).default("any")
     .describe("Use any to wait for one task to finish, or all to wait for every task."),
 }).strict();
@@ -95,12 +95,13 @@ type SubagentToolExecution = {
 };
 
 type TaskWaiter = {
-  onResultMessagesRead: ((messageIds: readonly string[]) => void) | undefined;
   parentConversationId: string;
-  resolve: (value: { status: "ready" | "timeout"; tasks: SubagentTask[] }) => void;
-  taskIds: string[];
-  waitFor: "any" | "all";
+  check: () => void;
+  interrupt: () => void;
 };
+
+type WaitResult = { status: "ready" | "timeout" | "interrupted"; tasks: SubagentTask[];
+  reason?: "execution_unavailable" | "no_progress" | "new_input" };
 
 function isTerminal(task: SubagentTask): boolean {
   return task.status === "completed"
@@ -122,7 +123,11 @@ function boundedText(value: string | null, limit: number): string | null {
   return `${value.slice(0, limit - 16)}\n[Content truncated]`;
 }
 
-function toToolTask(database: AgentDatabase, task: SubagentTask): Record<string, unknown> {
+function toToolTask(database: AgentDatabase, task: SubagentTask, frozen = false): Record<string, unknown> {
+  if (!database.hasConversation(task.childConversationId)) return {
+    id: task.id, childConversationId: task.childConversationId, runId: task.targetRunId,
+    name: task.title, status: "deleted", result: null, error: "子对话已删除。",
+  };
   const conversation = database.getConversation(task.childConversationId);
   return {
     avatarIcon: conversation.avatarIcon ?? null,
@@ -131,10 +136,11 @@ function toToolTask(database: AgentDatabase, task: SubagentTask): Record<string,
     createdAt: task.createdAt,
     error: boundedText(task.error, 4_000),
     id: task.id,
-    lastRunStatus: conversation.lastRunStatus,
+    runId: task.targetRunId,
+    lastRunStatus: frozen ? task.status : conversation.lastRunStatus,
     lifecycleStatus: task.status === "ended"
       ? "ended"
-      : conversation.activeRunId === null
+      : (frozen ? isTerminal(task) : conversation.activeRunId === null)
         ? "completed"
         : "working",
     name: task.title,
@@ -156,6 +162,7 @@ export class SubagentTool {
   public constructor(
     private readonly database: AgentDatabase,
     private readonly getModelStatus?: () => ModelRuntimeStatus,
+    private readonly isRunActive?: (runId: string) => boolean,
   ) {}
 
   public getDefinitions(): ModelToolDefinition[] {
@@ -282,7 +289,8 @@ export class SubagentTool {
           });
           return success({
             status: result.status,
-            tasks: result.tasks.map((task) => toToolTask(this.database, task)),
+            ...(result.reason === undefined ? {} : { reason: result.reason }),
+            tasks: result.tasks.map((task) => toToolTask(this.database, task, true)),
           });
         }
         case END_SUBAGENT_TOOL_NAME: {
@@ -304,18 +312,12 @@ export class SubagentTool {
 
   public notifyTaskCompleted(task: SubagentTask): void {
     for (const waiter of [...this.waiters]) {
-      if (
-        waiter.parentConversationId !== task.parentConversationId
-        || !waiter.taskIds.includes(task.id)
-      ) {
-        continue;
-      }
-      const tasks = this.readTasks(waiter.parentConversationId, waiter.taskIds);
-      if (!this.isReady(tasks, waiter.waitFor)) continue;
-      this.waiters.delete(waiter);
-      this.markResultsRead(tasks, waiter.onResultMessagesRead);
-      waiter.resolve({ status: "ready", tasks });
+      if (waiter.parentConversationId === task.parentConversationId) waiter.check();
     }
+  }
+
+  public interruptWait(conversationId: string): void {
+    for (const waiter of [...this.waiters]) if (waiter.parentConversationId === conversationId) waiter.interrupt();
   }
 
   private async waitForTasks(input: {
@@ -323,10 +325,28 @@ export class SubagentTool {
     parentConversationId: string;
     signal: AbortSignal;
     taskIds: string[];
-    timeoutMs: number;
+    timeoutMs?: number | undefined;
     waitFor: "any" | "all";
-  }): Promise<{ status: "ready" | "timeout"; tasks: SubagentTask[] }> {
-    const initial = this.readTasks(input.parentConversationId, input.taskIds);
+  }): Promise<WaitResult> {
+    const initial = this.readTasks(input.parentConversationId, input.taskIds).map((task) => {
+      const run = this.database.getConversationRunOutcome(task.childConversationId);
+      const sameRun = run === null || run.runId === task.targetRunId;
+      return { ...task, targetRunId: run?.runId ?? task.targetRunId,
+        status: run?.status ?? task.status, error: run?.error ?? (sameRun ? task.error : null),
+        result: run?.result ?? (sameRun ? task.result : null),
+        resultMessageId: sameRun ? task.resultMessageId : null };
+    });
+    const read = () => {
+      const originals = new Map(this.database.listSubagentTasks(input.parentConversationId).map((task) => [task.id, task]));
+      return initial.map((snapshot) => {
+      if (!this.database.hasConversation(snapshot.childConversationId)) return { ...snapshot, status: "cancelled" as const, error: "子对话已删除。" };
+      const run = this.database.getConversationRunOutcome(snapshot.childConversationId, snapshot.targetRunId ?? undefined);
+      const original = originals.get(snapshot.id);
+      if (run === null) return { ...snapshot, status: "cancelled" as const, error: "对应执行已不存在。" };
+      return { ...snapshot, status: run.status, result: run.result ?? (original?.targetRunId === snapshot.targetRunId ? original.result : null),
+        error: run.error, resultMessageId: original?.targetRunId === snapshot.targetRunId ? original.resultMessageId : null };
+      });
+    };
     if (this.isReady(initial, input.waitFor)) {
       this.markResultsRead(initial, input.onResultMessagesRead);
       return { status: "ready", tasks: initial };
@@ -334,33 +354,60 @@ export class SubagentTool {
     if (input.signal.aborted) throw this.abortError(input.signal);
 
     return new Promise((resolve, reject) => {
+      let settled = false;
       const cleanup = (): void => {
-        clearTimeout(timeout);
+        if (timeout !== undefined) clearTimeout(timeout);
+        clearInterval(watchdog);
         input.signal.removeEventListener("abort", onAbort);
         this.waiters.delete(waiter);
       };
-      const finish = (value: { status: "ready" | "timeout"; tasks: SubagentTask[] }): void => {
+      const finish = (value: WaitResult): void => {
+        if (settled) return;
+        settled = true;
         cleanup();
-        resolve(value);
+        try {
+          this.markResultsRead(value.tasks, input.onResultMessagesRead);
+          resolve(value);
+        } catch (error) { reject(error instanceof Error ? error : new Error(String(error))); }
       };
       const onAbort = (): void => {
+        if (settled) return;
+        settled = true;
         cleanup();
         reject(this.abortError(input.signal));
       };
-      const waiter: TaskWaiter = {
-        onResultMessagesRead: input.onResultMessagesRead,
-        parentConversationId: input.parentConversationId,
-        resolve: finish,
-        taskIds: input.taskIds,
-        waitFor: input.waitFor,
+      const progress = new Map<string, { value: string; at: number }>();
+      const check = () => {
+        try {
+          const tasks = read();
+          if (this.isReady(tasks, input.waitFor)) { finish({ status: "ready", tasks }); return; }
+          for (const task of tasks.filter((task) => !isTerminal(task))) {
+            if (task.targetRunId === null) continue;
+            const run = this.database.getConversationRunOutcome(task.childConversationId, task.targetRunId);
+            if (run === null) continue;
+            const previous = progress.get(task.targetRunId);
+            if (previous === undefined || previous.value !== run.progress || run.awaitingApproval) {
+              progress.set(task.targetRunId, { value: run.progress, at: Date.now() });
+            }
+            const unavailable = this.isRunActive !== undefined && !this.isRunActive(task.targetRunId);
+            if (unavailable || (!run.awaitingApproval && previous?.value === run.progress && Date.now() - previous.at >= 300_000)) {
+              finish({ status: "interrupted", tasks, reason: unavailable ? "execution_unavailable" : "no_progress" }); return;
+            }
+          }
+        } catch (error) { cleanup(); reject(error instanceof Error ? error : new Error(String(error))); }
       };
-      const timeout = setTimeout(() => {
-        const tasks = this.readTasks(input.parentConversationId, input.taskIds);
-        this.markResultsRead(tasks, input.onResultMessagesRead);
-        finish({ status: "timeout", tasks });
-      }, input.timeoutMs);
+      const release = (status: "interrupted" | "timeout") => {
+        try { finish({ status, tasks: read(), ...(status === "interrupted" ? { reason: "new_input" as const } : {}) }); }
+        catch (error) { cleanup(); reject(error instanceof Error ? error : new Error(String(error))); }
+      };
+      const waiter: TaskWaiter = { parentConversationId: input.parentConversationId, check,
+        interrupt: () => release("interrupted") };
+      const timeout = input.timeoutMs === undefined ? undefined : setTimeout(() => release("timeout"), input.timeoutMs);
+      const watchdog = setInterval(check, 1_000);
+      watchdog.unref();
       this.waiters.add(waiter);
       input.signal.addEventListener("abort", onAbort, { once: true });
+      check();
     });
   }
 
@@ -382,9 +429,18 @@ export class SubagentTool {
     tasks: readonly SubagentTask[],
     onResultMessagesRead: ((messageIds: readonly string[]) => void) | undefined,
   ): void {
-    const messageIds = tasks.flatMap((task) => task.resultMessageId === null ? [] : [task.resultMessageId]);
-    this.database.markAgentMessagesRead(messageIds);
-    if (messageIds.length > 0) onResultMessagesRead?.(messageIds);
+    const finished = tasks.filter(isTerminal);
+    const parentId = finished[0]?.parentConversationId;
+    const receipts = parentId === undefined ? [] : this.database.listUnreadAgentMessages(parentId).filter((message) =>
+      (message.messageType === "task_result" || message.messageType === "agent_result")
+      && finished.some((task) => task.childConversationId === message.senderConversationId && task.targetRunId === message.runId));
+    const messageIds = [...new Set([...finished.flatMap((task) => task.resultMessageId === null ? [] : [task.resultMessageId]),
+      ...receipts.map((message) => message.id)])];
+    if (messageIds.length === 0) return;
+    if (onResultMessagesRead !== undefined) {
+      for (let offset = 0; offset < messageIds.length; offset += 50) onResultMessagesRead(messageIds.slice(offset, offset + 50));
+    }
+    else this.database.markAgentMessagesRead(messageIds);
   }
 
   private abortError(signal: AbortSignal): Error {

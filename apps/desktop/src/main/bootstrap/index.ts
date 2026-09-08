@@ -1,9 +1,13 @@
-import { app, BrowserWindow, nativeTheme } from "electron";
+import { app, BrowserWindow, dialog, nativeTheme } from "electron";
 import { existsSync, readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import {
+  APPLICATION_HOME_ENVIRONMENT_VARIABLE,
+  APPLICATION_STORAGE_ID,
   ARCHIVED_CONVERSATION_RETENTION_DAYS,
+  LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
   conversationRunEventSchema,
   IPC_CHANNELS,
 } from "@agent/protocol";
@@ -20,8 +24,9 @@ import {
   loadRenderer
 } from "../security/renderer-policy.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
-import { PluginCatalog } from "../plugins/plugin-catalog.js";
+import { PluginCatalog, migrateLegacyPluginSettings } from "../plugins/plugin-catalog.js";
 import { AgentDatabase } from "../storage/agent-database.js";
+import { ApplicationStorageLocationStore } from "../storage/application-storage-location-store.js";
 import {
   initializeAgentHome,
   initializeElectronUserDataPath,
@@ -40,6 +45,7 @@ import { BrowserConfigurationStore } from "../settings/browser-configuration-sto
 import { SkillDocumentStore } from "../settings/skill-document-store.js";
 import { ConfigurationWorkspaceStore } from "../settings/configuration-workspace-store.js";
 import { TerminalConfigurationStore } from "../settings/terminal-configuration-store.js";
+import { SettingsJsoncFile } from "../settings/settings-jsonc-file.js";
 import { TeamWorkItemRuntime } from "../teams/team-work-item-runtime.js";
 import { ProjectToolRegistry } from "../tools/project-tool-registry.js";
 import { GitReviewReader } from "../tools/git-review-reader.js";
@@ -52,6 +58,7 @@ import { ManagedBrowserController } from "../windows/managed-browser-controller.
 
 type DesktopServices = {
   agentRuntime: AgentRuntime;
+  applicationStorageLocation: ApplicationStorageLocationStore;
   applicationSettings: ApplicationSettingsStore;
   browserConfiguration: BrowserConfigurationStore;
   attachments: ConversationAttachmentStore;
@@ -61,6 +68,7 @@ type DesktopServices = {
   pluginCatalog: PluginCatalog;
   credentials: ModelCredentialStore;
   database: AgentDatabase;
+  eventProjector: EventProjector;
   integrationConfiguration: IntegrationConfigurationStore;
   contextCompression: ContextCompressionConfigurationStore;
   graphCheckpointer: NodeSqliteCheckpointSaver;
@@ -86,6 +94,19 @@ let archivedConversationCleanupTimer: ReturnType<typeof setInterval> | undefined
 
 const ARCHIVED_CONVERSATION_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 loadLocalEnvironment();
+const applicationStorageLocation = new ApplicationStorageLocationStore({
+  configurationPath: path.join(
+    app.getPath("appData"),
+    APPLICATION_STORAGE_ID,
+    "storage-location.json",
+  ),
+  environment: process.env,
+  homeDirectory: os.homedir(),
+});
+const startupStorageLocation = applicationStorageLocation.getLocation();
+const preferredStoragePath = startupStorageLocation.source === "custom"
+  ? startupStorageLocation.activePath
+  : undefined;
 const legacyUserDataPath = app.commandLine.hasSwitch("user-data-dir")
   ? path.join(app.getPath("appData"), app.getName())
   : app.getPath("userData");
@@ -93,6 +114,7 @@ const legacyPackageUserDataPath = path.join(app.getPath("appData"), "@agent", "d
 const electronUserDataPath = initializeElectronUserDataPath({
   environment: process.env,
   legacyRootPath: legacyUserDataPath,
+  ...(preferredStoragePath === undefined ? {} : { preferredPath: preferredStoragePath }),
 });
 if (path.resolve(app.getPath("userData")) !== path.resolve(electronUserDataPath)) {
   app.setPath("userData", electronUserDataPath);
@@ -105,8 +127,8 @@ function parseLocalEnvironmentFile(contents: string): Map<string, string> {
     "AGENT_MODEL_BASE_URL",
     "AGENT_MODEL_API_KEY",
     "AGENT_MODEL_ID",
-    "AGENT_HOME",
-    "ASTER_HOME",
+    LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
+    APPLICATION_HOME_ENVIRONMENT_VARIABLE,
   ]);
 
   for (const line of contents.split(/\r?\n/)) {
@@ -161,29 +183,78 @@ async function initializeServices(): Promise<DesktopServices> {
     environment: process.env,
     legacyRootPath: legacyUserDataPath,
     migrateLegacy: process.env.AGENT_HOME_SKIP_LEGACY_MIGRATION !== "1",
+    ...(preferredStoragePath === undefined ? {} : { preferredPath: preferredStoragePath }),
   });
-  const database = new AgentDatabase(agentHome.paths.agentDatabasePath);
-  const pluginCatalog = new PluginCatalog(database, agentHome.paths.pluginsPath);
+  const settings = new SettingsJsoncFile(agentHome.paths.settingsPath);
+  settings.ensureFile();
+  migrateLegacyPluginSettings(settings, agentHome.paths.databasePath);
+  const database = new AgentDatabase(agentHome.paths.databasePath);
+  database.importLegacyCheckpointDatabases(agentHome.legacyCheckpointDatabasePaths);
+  const pluginCatalog = new PluginCatalog(settings, agentHome.paths.pluginsPath);
   await pluginCatalog.synchronize();
   const graphCheckpointer = new NodeSqliteCheckpointSaver(
-    agentHome.paths.graphCheckpointPath,
+    agentHome.paths.databasePath,
+    { initializeSchema: false },
   );
   const credentials = new ModelCredentialStore(
+    settings,
     agentHome.paths.credentialsPath,
   );
   credentials.importFromEnvironment();
   const modelCatalog = new ModelCatalogStore(
+    settings,
     agentHome.paths.modelCatalogPath,
   );
   modelCatalog.ensureFile();
-  const projectRegistry = new ProjectRegistry(database);
+  const projectRegistry = new ProjectRegistry(database, agentHome.paths.workspacesPath);
   const attachments = new ConversationAttachmentStore(
     database,
     projectRegistry,
-    agentHome.paths.conversationFilesPath,
+    agentHome.paths.conversationsPath,
   );
-  await attachments.migrateLegacyManagedRoots(agentHome.legacyConversationFilesPaths);
+  await attachments.migrateLegacyManagedRoots([
+    agentHome.paths.conversationFilesPath,
+    ...agentHome.legacyConversationFilesPaths,
+  ]);
   const threadLog = new ThreadLog(agentHome.paths.conversationsPath);
+  const eventProjector = new EventProjector(
+    database,
+    threadLog,
+    (attachment) => attachments.resolveThreadLogPaths(attachment),
+  );
+  const conversationLifecycle = new ConversationLifecycleService(
+    database,
+    threadLog,
+    eventProjector,
+    credentials,
+  );
+  const threadLogLegacyImporter = new ThreadLogLegacyImporter(
+    database,
+    threadLog,
+    eventProjector,
+  );
+  try {
+    const alreadyFinalized = database.isJsonlConversationStorageFinalized();
+    if (!alreadyFinalized) {
+      threadLogLegacyImporter.recoverUnreadableConversationLogs();
+      threadLogLegacyImporter.importMissingConversationLogs();
+      database.activateVolatileConversationProjection();
+    }
+    eventProjector.projectAllConversationLogs({ releaseHistory: true });
+    if (!alreadyFinalized) database.finalizeJsonlConversationStorage();
+    for (const recovered of database.interruptRecoveredThreadLogRuns()) {
+      eventProjector.projectEvent(recovered.conversationId,
+        threadLog.append(recovered.conversationId, recovered.event));
+    }
+    eventProjector.checkpointInactiveConversations();
+    eventProjector.releaseInactiveConversationHistories();
+  } catch (error) {
+    reportMainError(
+      toMainAgentError(error, { operation: "thread_log.startup_projection" }),
+      error,
+    );
+    throw error;
+  }
   const conversationDeletion = new ConversationDeletionService(
     database,
     attachments,
@@ -211,9 +282,11 @@ async function initializeServices(): Promise<DesktopServices> {
     }
   }
   const integrationConfiguration = new IntegrationConfigurationStore(
+    settings,
     agentHome.paths.integrationSettingsPath,
   );
   const applicationSettings = new ApplicationSettingsStore(
+    settings,
     agentHome.paths.applicationSettingsPath,
   );
   applicationSettings.ensureFile();
@@ -225,6 +298,7 @@ async function initializeServices(): Promise<DesktopServices> {
     database.syncTeamDirectory(configuration.agentDirectory);
   });
   const contextCompression = new ContextCompressionConfigurationStore(
+    settings,
     agentHome.paths.contextCompressionSettingsPath,
   );
   contextCompression.ensureFile();
@@ -247,9 +321,11 @@ async function initializeServices(): Promise<DesktopServices> {
     integrationConfiguration.getConfiguration(),
   );
   const terminalConfiguration = new TerminalConfigurationStore(
+    settings,
     agentHome.paths.terminalSettingsPath,
   );
   const browserConfiguration = new BrowserConfigurationStore(
+    settings,
     agentHome.paths.browserSettingsPath,
   );
   const tools = new ProjectToolRegistry(projectRegistry, terminalConfiguration);
@@ -262,40 +338,8 @@ async function initializeServices(): Promise<DesktopServices> {
     browserConfiguration,
   );
   const browserToolPlugin = new BrowserToolPlugin(managedBrowser, workspaceBrowserTabs);
-  const eventProjector = new EventProjector(
-    database,
-    threadLog,
-    (attachment) => attachments.resolveThreadLogPaths(attachment),
-  );
-  const conversationLifecycle = new ConversationLifecycleService(
-    database,
-    threadLog,
-    eventProjector,
-    credentials,
-  );
-  const threadLogLegacyImporter = new ThreadLogLegacyImporter(
-    database,
-    threadLog,
-    eventProjector,
-  );
-  try {
-    threadLogLegacyImporter.recoverUnreadableConversationLogs();
-    threadLogLegacyImporter.importMissingConversationLogs();
-    eventProjector.projectAllConversationLogs();
-    database.interruptRecoveredThreadLogRuns();
-    const inconsistent = eventProjector
-      .verifyAllConversationLogs()
-      .find((result) => !result.isConsistent);
-    if (inconsistent !== undefined) {
-      throw new Error("ThreadLog event index is inconsistent with its JSONL source.");
-    }
-  } catch (error) {
-    reportMainError(
-      toMainAgentError(error, { operation: "thread_log.startup_projection" }),
-      error,
-    );
-  }
   await attachments.resumeCancelledPendingMessageAttachmentCleanup();
+  eventProjector.releaseInactiveConversationHistories();
 
   const agentRuntime = new AgentRuntime(
     database,
@@ -322,6 +366,7 @@ async function initializeServices(): Promise<DesktopServices> {
     terminalSessions,
     browserToolPlugin,
     { generateTurnSummaries: true },
+    conversationLifecycle,
   );
   const teamWorkItems = new TeamWorkItemRuntime(
     database,
@@ -339,6 +384,7 @@ async function initializeServices(): Promise<DesktopServices> {
 
   return {
     agentRuntime,
+    applicationStorageLocation,
     applicationSettings,
     browserConfiguration,
     attachments,
@@ -352,6 +398,7 @@ async function initializeServices(): Promise<DesktopServices> {
     modelCatalog,
     pluginCatalog,
     database,
+    eventProjector,
     integrationConfiguration,
     projectRegistry,
     threadLogLegacyImporter,
@@ -494,6 +541,18 @@ async function bootstrap(): Promise<void> {
 
   await openMainWindow();
 
+  const credentialWarnings = services.credentials.getCredentialMigrationWarnings();
+  if (credentialWarnings.length > 0 && mainWindow !== undefined) {
+    void dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      message: "部分旧 API Key 无法恢复，请重新填写",
+      detail: `以下供应商的旧密钥无法解密：${credentialWarnings.join("、")}。\n供应商和模型配置已迁入 settings.jsonc，对应 apiKey 留空；旧文件已保留。请在设置中或 settings.jsonc 内填写明文 API Key。`,
+      buttons: ["知道了"],
+    }).catch((error: unknown) => reportMainError(
+      toMainAgentError(error, { operation: "model.credential_migration_notice" }), error,
+    ));
+  }
+
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       void openMainWindow().catch(reportStartupError);
@@ -510,6 +569,11 @@ async function bootstrap(): Promise<void> {
     if (archivedConversationCleanupTimer !== undefined) {
       clearInterval(archivedConversationCleanupTimer);
       archivedConversationCleanupTimer = undefined;
+    }
+    try {
+      services?.eventProjector.checkpointInactiveConversations();
+    } catch (error) {
+      reportMainError(toMainAgentError(error, { operation: "thread_log.shutdown_checkpoint" }), error);
     }
     services?.graphCheckpointer.close();
     services?.managedBrowser.dispose();

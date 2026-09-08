@@ -1,6 +1,19 @@
 export { capabilitySetSchema } from "./capability.js";
 export type { CapabilitySet } from "./capability.js";
 export {
+  APPLICATION_DATA_DIRECTORY_NAME,
+  APPLICATION_DISPLAY_NAME,
+  APPLICATION_HOME_ENVIRONMENT_VARIABLE,
+  APPLICATION_STORAGE_ID,
+  LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
+} from "./application-metadata.js";
+export {
+  applicationStorageLocationSchema,
+  applicationStorageLocationSourceSchema,
+  type ApplicationStorageLocation,
+  type ApplicationStorageLocationSource,
+} from "./application-storage.js";
+export {
   AgentClientError,
   agentErrorCodeSchema,
   agentErrorSchema,
@@ -53,6 +66,8 @@ export {
   conversationTaskSchema,
   conversationTaskStatusSchema,
   conversationTimelineItemSchema,
+  conversationTimelinePageInputSchema,
+  conversationTimelinePageSchema,
   conversationSearchInputSchema,
   conversationSearchResponseSchema,
   conversationSearchResultSchema,
@@ -96,6 +111,7 @@ export {
   setDefaultModelInputSchema,
   setConversationArchivedInputSchema,
   setConversationModelSelectionInputSchema,
+  setConversationPermissionModeInputSchema,
   setConversationProjectInputSchema,
   setConversationPinnedInputSchema,
   sendConversationMessageInputSchema,
@@ -135,6 +151,8 @@ export type {
   ConversationTaskListStatus,
   ConversationTaskStatus,
   ConversationTimelineItem,
+  ConversationTimelinePage,
+  ConversationTimelinePageInput,
   ConversationSearchInput,
   ConversationSearchResult,
   ConversationToolItem,
@@ -167,6 +185,7 @@ export type {
   SetDefaultModelInput,
   SetConversationArchivedInput,
   SetConversationModelSelectionInput,
+  SetConversationPermissionModeInput,
   SetConversationProjectInput,
   SetConversationPinnedInput,
   SendConversationMessageInput,
@@ -498,6 +517,7 @@ export {
   contextCompressionConfigurationIpcArgumentsSchema,
   deleteConfigurationWorkspaceEntryIpcArgumentsSchema,
   conversationReferenceIpcArgumentsSchema,
+  conversationTimelinePageIpcArgumentsSchema,
   conversationSearchIpcArgumentsSchema,
   forkConversationIpcArgumentsSchema,
   pendingConversationMessageReferenceIpcArgumentsSchema,
@@ -546,6 +566,7 @@ export {
   setDefaultModelIpcArgumentsSchema,
   setConversationArchivedIpcArgumentsSchema,
   setConversationModelSelectionIpcArgumentsSchema,
+  setConversationPermissionModeIpcArgumentsSchema,
   setConversationProjectIpcArgumentsSchema,
   setConversationPinnedIpcArgumentsSchema,
   setTeamInstanceArchivedIpcArgumentsSchema,

@@ -172,4 +172,66 @@ describe("conversation text search", () => {
     messages.remove();
     host.remove();
   });
+
+  it("reveals a persisted match that is not present in the loaded DOM page", async () => {
+    vi.useFakeTimers();
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+    const host = document.createElement("div");
+    const messages = document.createElement("div");
+    document.body.append(host, messages);
+    const messagesRef = createRef<HTMLDivElement>();
+    Object.defineProperty(messagesRef, "current", { value: messages });
+    const result = {
+      content: "旧记录里的定位词",
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      conversationTitle: "长对话",
+      createdAt: "2026-09-07T00:00:00.000Z",
+      itemId: "00000000-0000-4000-8000-000000000002",
+      parentConversationId: null,
+      projectId: null,
+      role: "assistant" as const,
+      sequence: 12,
+      threadKind: "agent" as const,
+    };
+    const search = vi.fn(() => Promise.resolve([result]));
+    const onReveal = vi.fn(() => Promise.resolve());
+    const reactRoot = createRoot(host);
+
+    try {
+      act(() => reactRoot.render(
+        <TooltipProvider>
+          <ConversationFindBar
+            active
+            containerRef={messagesRef}
+            revision="one"
+            onReveal={onReveal}
+            search={search}
+          />
+        </TooltipProvider>,
+      ));
+      act(() => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, ctrlKey: true, key: "f" }));
+      });
+      const input = host.querySelector<HTMLInputElement>('[aria-label="在当前对话中查找"]');
+      await act(async () => {
+        if (input === null) return;
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+          input,
+          "定位词",
+        );
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        await vi.advanceTimersByTimeAsync(130);
+      });
+      await act(async () => Promise.resolve());
+
+      expect(search).toHaveBeenCalledWith("定位词");
+      expect(onReveal).toHaveBeenCalledWith(result);
+      expect(host.textContent).toContain("1 / 1");
+    } finally {
+      act(() => reactRoot.unmount());
+      messages.remove();
+      host.remove();
+      vi.useRealTimers();
+    }
+  });
 });

@@ -271,7 +271,7 @@ function classifyError(
   if (/outside (?:the )?(?:registered )?(?:project root|workspace)/iu.test(message)) {
     return classificationForCode("PATH_OUTSIDE_WORKSPACE");
   }
-  if (/workspace|required for (?:file changes|command execution)|temporary conversations cannot access project tools/iu.test(message)) {
+  if (/^A (?:project )?workspace is required\b|^Project files can only be referenced from a conversation with a workspace\.|^Temporary conversations cannot access project tools\./iu.test(message)) {
     return classificationForCode("WORKSPACE_REQUIRED");
   }
   if (/file (?:was |has )?(?:changed|created after)/iu.test(message)) {

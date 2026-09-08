@@ -6,7 +6,7 @@ import { toolErrorContent } from "../errors/tool-error.js";
 import type { ModelToolDefinition } from "../model/model-contracts.js";
 import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
 import { AgentDatabase } from "../storage/agent-database.js";
-import { buildConversationReferenceBundle } from "./conversation-reference.js";
+import { buildConversationReferenceBundle, conversationHistoryForRun, type ConversationReferenceHistory } from "./conversation-reference.js";
 import type { ToolExecutionPolicy } from "../tools/tool-execution-policy.js";
 
 const LIST_AGENT_CONVERSATIONS_TOOL_NAME = "list_agent_conversations";
@@ -28,6 +28,8 @@ const conversationReadToolNames = new Set([
 
 const emptyArgumentsSchema = z.object({}).strict();
 const readConversationArgumentsSchema = z.object({
+  runId: z.string().uuid().optional()
+    .describe("Optional execution UUID from a receipt. Restricts reading and search to that run; includes uncompressed recent output."),
   beforeSequence: z.number().int().positive().optional()
     .describe("Optional cursor returned by a previous read. Only messages before this sequence are considered."),
   conversationId: z.string().uuid().optional()
@@ -86,7 +88,10 @@ export function isAgentCommunicationToolName(name: string): boolean {
 export class AgentCommunicationTool {
   private readonly messageWaiters = new Set<MessageWaiter>();
 
-  public constructor(private readonly database: AgentDatabase) {}
+  public constructor(
+    private readonly database: AgentDatabase,
+    private readonly history: ConversationReferenceHistory = database,
+  ) {}
 
   public getDefinitions(): ModelToolDefinition[] {
     return [
@@ -96,7 +101,7 @@ export class AgentCommunicationTool {
         parameters: modelToolParameters(emptyArgumentsSchema),
       },
       {
-        description: "Read a bounded snapshot of the current or another Agent conversation at any time, including while it is running. Pass query to retrieve matching complete turns, including the user question, Agent answer, tool calls, and tool results. historyScope defaults to compressed history covered by the latest checkpoint, or all history when no checkpoint exists; pass all to search the entire persisted history. Continue older results with pagination.nextBeforeSequence as beforeSequence. It never exceeds maxTokens.",
+        description: "Read a bounded snapshot of the current or another Agent conversation, even while running. Pass runId from a receipt to inspect that execution. query prioritizes matching turns; oversized turns retain their newest messages first, including the final answer, with earlier content available by pagination. historyScope defaults to compressed history covered by the latest checkpoint, or all history when no checkpoint exists; pass all to include recent history. Continue with pagination.nextBeforeSequence as beforeSequence, preserving runId and query. Each message may be excerpted to fit maxTokens; this is not an exhaustive file-existence check or full history export.",
         name: READ_AGENT_CONVERSATION_TOOL_NAME,
         parameters: modelToolParameters(readConversationArgumentsSchema),
       },
@@ -177,7 +182,9 @@ export class AgentCommunicationTool {
         case READ_AGENT_CONVERSATION_TOOL_NAME: {
           const parsed = readConversationArgumentsSchema.parse(argumentsValue);
           const targetConversationId = parsed.conversationId ?? input.conversationId;
-          const checkpoint = this.database.getContextCheckpoint(targetConversationId);
+          const history = parsed.runId === undefined ? this.history
+            : conversationHistoryForRun(this.history, targetConversationId, parsed.runId);
+          const checkpoint = history.getContextCheckpoint(targetConversationId);
           const historyScope = parsed.historyScope === "compressed" && checkpoint === null
             ? "all"
             : parsed.historyScope;
@@ -188,7 +195,7 @@ export class AgentCommunicationTool {
               : { beforeSequence: parsed.beforeSequence }),
             budgetTokens: parsed.maxTokens,
             currentConversationId: input.conversationId,
-            database: this.database,
+            database: history,
             historyScope,
             ...(parsed.query === undefined ? {} : { query: parsed.query }),
             referencedConversationIds: [targetConversationId],
@@ -201,6 +208,7 @@ export class AgentCommunicationTool {
             pagination: reference.pagination[0] ?? null,
             ...(parsed.query === undefined ? {} : { query: parsed.query }),
             requestedHistoryScope: parsed.historyScope,
+            ...(parsed.runId === undefined ? {} : { runId: parsed.runId }),
             conversation: {
               activeSubagentCount: conversation.activeSubagentCount,
               activeRunId: conversation.activeRunId,

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_APPLICATION_SETTINGS, type ApplicationSettings } from "@agent/protocol";
 
 import { ApplicationSettingsStore } from "./application-settings-store.js";
+import { SettingsJsoncFile } from "./settings-jsonc-file.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -18,6 +19,30 @@ afterEach(async () => {
 });
 
 describe("ApplicationSettingsStore", () => {
+  it("fills missing JSONC sections without replacing existing customized sections", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-app-settings-jsonc-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "settings.jsonc");
+    const customizedAgents = structuredClone(DEFAULT_APPLICATION_SETTINGS.agentDirectory.agents);
+    const firstAgent = customizedAgents[0];
+    if (firstAgent === undefined) throw new Error("Agent fixture is unavailable.");
+    firstAgent.name = "用户自定义名称";
+    await writeFile(configurationPath, `{
+  // 此处的用户配置和备注都必须保留。
+  "version": 1,
+  "agents": ${JSON.stringify(customizedAgents)},
+}
+`, "utf8");
+    const store = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+
+    store.ensureFile();
+
+    expect(store.getConfiguration().agentDirectory.agents[0]?.name).toBe("用户自定义名称");
+    await expect(readFile(configurationPath, "utf8")).resolves.toContain(
+      "// 此处的用户配置和备注都必须保留。",
+    );
+  });
+
   it("creates and reads the reusable application defaults", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-app-settings-"));
     temporaryDirectories.push(directory);

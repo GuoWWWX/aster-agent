@@ -26,7 +26,7 @@ async function createFixture() {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-deletion-"));
   temporaryDirectories.push(directory);
   const databasePath = path.join(directory, "agent.sqlite");
-  const managedRoot = path.join(directory, "managed");
+  const managedRoot = path.join(directory, "conversations");
   const projectRoot = path.join(directory, "project");
   await mkdir(projectRoot, { recursive: true });
   const database = new AgentDatabase(databasePath);
@@ -172,17 +172,36 @@ describe("ConversationDeletionService", () => {
       "test-model",
       [attachmentId],
     );
+    const assistantMessageId = "00000000-0000-4000-8000-000000000099";
+    fixture.database.appendAssistantTurn({
+      content: "附件已处理",
+      conversationId: conversation.id,
+      messageId: assistantMessageId,
+      modelId: "test-model",
+      runId: run.runId,
+      toolCalls: [],
+    });
     fixture.database.finishRun(run.runId, "completed", null);
-    const fork = fixture.database.forkConversation(conversation.id);
+    const fork = fixture.database.forkConversation(
+      conversation.id,
+      "sibling",
+      assistantMessageId,
+    );
+    fixture.threadLog.append(conversation.id, {
+      payload: { conversation },
+      type: "conversation_created",
+    });
     const service = new ConversationDeletionService(
       fixture.database,
       fixture.attachments,
       fixture.projects,
+      null,
+      fixture.threadLog,
     );
 
-    await service.requestDeletion(fork.id);
-    await expect(access(storedPath)).resolves.toBeUndefined();
     await service.requestDeletion(conversation.id);
+    await expect(access(storedPath)).resolves.toBeUndefined();
+    await service.requestDeletion(fork.id);
     await expect(access(storedPath)).rejects.toThrow();
   });
 

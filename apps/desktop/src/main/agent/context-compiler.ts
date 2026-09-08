@@ -63,17 +63,8 @@ export class ContextCompiler {
   ) {}
 
   public compile(input: ContextCompilerInput): CompiledContext {
-    let threadContext: ReturnType<ThreadLog["readContext"]>;
-    try {
-      threadContext = this.threadLog === null
-        ? null
-        : this.threadLog.readContext(input.conversationId);
-    } catch {
-      // Startup repairs unreadable logs into a SQLite snapshot. If corruption
-      // occurs while the app is running, preserve conversation availability
-      // until that repair path runs instead of failing the next model request.
-      threadContext = null;
-    }
+    // A corrupt canonical log must fail visibly, never silently use a stale SQL history.
+    const threadContext = this.threadLog?.readUncoveredContext(input.conversationId) ?? null;
     const databaseMessages = threadContext === null
       ? this.database.listContextMessages(input.conversationId)
       : [];
@@ -91,7 +82,10 @@ export class ContextCompiler {
     ) ?? [];
     const transientImageMessage = transientImageContextMessage(currentImageAttachments);
     const transientMessages = transientImageMessage === null ? [] : [transientImageMessage];
-    const storedMessages = sanitizeStoredModelMessages(sourceMessages)
+    const coveredMatches = threadContext === null ? [] : this.threadLog?.searchCoveredContext(
+      input.conversationId, sourceMessages.findLast((message) => message.role === "user")?.content ?? "",
+    ) ?? [];
+    const storedMessages = sanitizeStoredModelMessages([...coveredMatches, ...sourceMessages])
       .filter((message) => !isRuntimeControlMessage(message))
       .map((message) => ({
         ...message,
@@ -104,9 +98,11 @@ export class ContextCompiler {
       }));
     const latestUserMessage = [...storedMessages].reverse().find((message) => message.role === "user");
     const latestDatabaseUserMessage = threadContext === null
-      ? [...databaseMessages].reverse().find((message) => message.role === "user") ?? null
-      : this.database.getLatestContextUserMessage(input.conversationId);
-    const relevantMessages = latestUserMessage === undefined
+      ? [...databaseMessages].reverse().find((message) => message.role === "user") ?? null : null;
+    const coveredSequences = new Set(coveredMatches.map((message) => message.sequence));
+    const relevantMessages = threadContext !== null
+      ? storedMessages.filter((message) => coveredSequences.has(message.sequence))
+      : latestUserMessage === undefined
       ? []
       : this.database
         .searchContextMessages({
@@ -124,9 +120,8 @@ export class ContextCompiler {
         ))
         .filter((message): message is (typeof storedMessages)[number] => message !== undefined);
     const managed = buildManagedContext({
-      checkpoint: threadContext?.checkpoint === undefined || threadContext.checkpoint === null
-        ? this.database.getContextCheckpoint(input.conversationId)
-        : {
+      checkpoint: threadContext === null ? this.database.getContextCheckpoint(input.conversationId)
+        : threadContext.checkpoint === null ? null : {
           ...threadContext.checkpoint,
           conversationId: input.conversationId,
         },
@@ -152,7 +147,8 @@ export class ContextCompiler {
       compactionCandidates: managed.compactionCandidates,
       messages: [input.systemMessage, ...managed.messages],
       transientMessages,
-      usage: managed.usage,
+      usage: { ...managed.usage, omittedMessageCount: managed.usage.omittedMessageCount
+        + (threadContext === null ? 0 : threadContext.totalMessageCount - sourceMessages.length - coveredMatches.length) },
     };
   }
 }

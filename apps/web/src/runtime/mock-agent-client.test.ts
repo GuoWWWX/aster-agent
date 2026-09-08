@@ -810,11 +810,15 @@ describe("MockAgentClient", () => {
       conversationId: first.id,
       modelSelection: selection,
     })).resolves.toMatchObject({ modelSelection: selection });
+    await expect(client.setConversationPermissionMode({
+      conversationId: first.id,
+      permissionMode: "read_only",
+    })).resolves.toMatchObject({ permissionMode: "read_only" });
     await expect(client.createConversation({})).resolves.toMatchObject({
       modelSelection: selection,
     });
     const side = await client.forkConversation({ conversationId: first.id });
-    expect(side).toMatchObject({ modelSelection: selection });
+    expect(side).toMatchObject({ modelSelection: selection, permissionMode: "read_only" });
 
     const fallbackSelection = {
       modelId: "fallback-model",

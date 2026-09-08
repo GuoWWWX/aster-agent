@@ -71,6 +71,37 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("Automatic continuation answer", () => {
+  it("renders one answer with both source anchors and one copy action without private receipt rows", async () => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "续跑" });
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([
+      { attachments: [], content: "已安排子代理。", conversationId: PARENT_ID,
+        createdAt: "2026-09-08T00:00:00.000Z", id: MESSAGE_ID, kind: "message",
+        modelId: null, role: "assistant", runId: RUN_ID, status: "completed" },
+      { attachments: [], content: "已验证完成。", conversationId: PARENT_ID,
+        createdAt: "2026-09-08T00:01:00.000Z", id: TOOL_ID, kind: "message",
+        modelId: null, role: "assistant", runId: WORK_ITEM_ID, status: "completed" },
+    ]);
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(<TooltipProvider><ConversationWorkspace
+        agentClient={client} project={null} relatedSessions={[target]} session={target}
+      /></TooltipProvider>);
+      await flushConversationWorkspace();
+    });
+    const answers = container.querySelectorAll('.chat-message-group[data-role="assistant"]');
+    expect(answers).toHaveLength(1);
+    expect(answers[0]?.textContent).toContain("已安排子代理。");
+    expect(answers[0]?.textContent).toContain("已验证完成。");
+    expect(container.querySelector(`[data-conversation-timeline-item="${MESSAGE_ID}"]`)).not.toBeNull();
+    expect(container.querySelector(`[data-conversation-timeline-item="${TOOL_ID}"]`)).not.toBeNull();
+    expect(container.querySelectorAll('button[aria-label="复制完整回复"]')).toHaveLength(1);
+  });
+});
+
 describe("Conversation cache status", () => {
   it("keeps the last usage through failures and empty refreshes, then displays the next result", async () => {
     const client = new MockAgentClient();
@@ -144,6 +175,31 @@ describe("Conversation cache status", () => {
 });
 
 describe("Conversation timeline location", () => {
+  it("loads only the window around an unloaded search result", async () => {
+    const client = new MockAgentClient();
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue(Array.from({ length: 400 }, (_, index) => ({
+      attachments: [], content: `历史消息 ${index}`, conversationId: PARENT_ID,
+      createdAt: "2026-08-30T00:00:00.000Z", id: index === 100 ? MESSAGE_ID : crypto.randomUUID(),
+      kind: "message" as const, modelId: null, role: "user" as const, runId: null,
+      status: "completed" as const,
+    })));
+    const page = vi.spyOn(client, "listConversationTimelinePage");
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+        session={session({ id: PARENT_ID, title: "长历史" })}
+        locateTimelineItem={{ id: MESSAGE_ID, requestId: 1 }} /></TooltipProvider>);
+      await flushConversationWorkspace();
+    });
+    await act(async () => { await flushConversationWorkspace(); });
+    expect(page).toHaveBeenCalledTimes(2);
+    expect(page.mock.calls[1]?.[0]).toEqual({ conversationId: PARENT_ID, aroundItemId: MESSAGE_ID, limit: 120 });
+    expect(container.querySelector(`[data-conversation-timeline-item="${MESSAGE_ID}"]`)).not.toBeNull();
+    expect(container.textContent).not.toContain("历史消息 399");
+  });
+
   it("scrolls the requested message into view after the timeline loads", async () => {
     const client = new MockAgentClient();
     const target = session({ id: PARENT_ID, title: "Team Lead · 默认团队" });
@@ -352,6 +408,51 @@ describe("Subagent creation activity", () => {
   });
 });
 
+describe("Communication tool identities", () => {
+  it.each(["send_agent_message", "wait_for_agent_message", "read_agent_conversation"])(
+    "%s shows a clickable Subagent in both the activity and result", async (name) => {
+      const client = new MockAgentClient();
+      const parent = session({ id: PARENT_ID, title: "主对话" });
+      const child = session({ id: CHILD_ID, title: "核查助手", threadKind: "subagent", parentConversationId: PARENT_ID });
+      const tool: ConversationToolItem = {
+        arguments: JSON.stringify({ conversationId: CHILD_ID }), batchId: null,
+        conversationId: PARENT_ID, createdAt: "2026-09-05T00:00:00.000Z", diff: null,
+        executionMode: "serial", id: TOOL_ID, kind: "tool", name, runId: RUN_ID,
+        status: "completed",
+        result: JSON.stringify({ ok: true, value: name === "read_agent_conversation"
+          ? { content: "已核对启动脚本", estimatedTokens: 12 }
+          : { message: { content: "核对启动脚本", conversationId: name === "send_agent_message" ? CHILD_ID : PARENT_ID,
+            senderConversationId: name === "send_agent_message" ? PARENT_ID : CHILD_ID, senderTitle: "核查助手" } } }),
+      };
+      vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool]);
+      const onOpenTeamConversation = vi.fn();
+      const container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+      await act(async () => {
+        root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+          relatedSessions={[parent, child]} session={parent} onOpenTeamConversation={onOpenTeamConversation}
+        /></TooltipProvider>);
+        await flushConversationWorkspace();
+      });
+      expandWorkProcess(container);
+      const selector = 'button[aria-label="在侧边打开 Subagent：核查助手"]';
+      const activity = container.querySelector<HTMLButtonElement>(selector);
+      expect(activity).not.toBeNull();
+      expect(activity?.querySelector('[data-subagent-avatar="generated"]')).not.toBeNull();
+      act(() => activity?.click());
+      expect(onOpenTeamConversation).toHaveBeenCalledWith(child, PARENT_ID);
+      act(() => container.querySelector<HTMLButtonElement>('button[aria-label="展开调用详情"]')?.click());
+      const identities = container.querySelectorAll<HTMLButtonElement>(selector);
+      expect(identities).toHaveLength(2);
+      act(() => identities[1]?.click());
+      expect(onOpenTeamConversation).toHaveBeenCalledTimes(2);
+      expect(container.textContent).not.toContain(CHILD_ID);
+      expect(container.textContent).not.toContain(PARENT_ID);
+    },
+  );
+});
+
 describe("Conversation scroll navigation", () => {
   it("opens uncached conversations at the latest message and restores a cached position", async () => {
     const client = new MockAgentClient();
@@ -544,6 +645,30 @@ describe("Tool activity disclosure", () => {
     expect(reasoningBlock?.textContent).toContain("先检查可用的 Agent 对话。");
     expect(reasoningBlock?.textContent).toContain("已查看 Agent 对话");
     expect(reasoningBlock?.textContent).toContain("已经取得结果，继续形成结论。");
+  });
+
+  it.each([null, 8000])("renders partial file reads when totalLines is %s", async (totalLines) => {
+    const client = new MockAgentClient();
+    const target = session({ activeRunId: RUN_ID, id: PARENT_ID, title: "分段读取" });
+    const tool: ConversationToolItem = {
+      arguments: JSON.stringify({ path: "large.rs", startLine: 7495, endLine: 7540 }),
+      batchId: null, conversationId: PARENT_ID, createdAt: "2026-09-08T00:00:00.000Z",
+      diff: null, id: TOOL_ID, kind: "tool", name: "read_file", runId: RUN_ID, status: "running",
+      result: JSON.stringify({ ok: true, value: { path: "large.rs", content: "分段源码", startLine: 7495,
+        endLine: 7540, totalLines, nextStartLine: 7541 } }),
+    };
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool]);
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={target} /></TooltipProvider>);
+      await flushConversationWorkspace();
+    });
+    expect(container.textContent).toContain("第 7495-7540 行");
+    expect(container.textContent).toContain("分段源码");
+    if (totalLines === null) expect(container.textContent).not.toContain("，共");
+    else expect(container.textContent).toContain("共 8000 行");
   });
 
   it("keeps only the newest running tool open and closes it when it completes", async () => {
@@ -1888,11 +2013,12 @@ describe("Subagent approval queue", () => {
     expect((container.querySelector('[aria-label="权限模式"]') as HTMLButtonElement).disabled).toBe(false);
 
     const stopButton = container.querySelector('[aria-label="停止任务"]') as HTMLButtonElement;
-    act(() => {
+    await act(async () => {
       stopButton.click();
+      await flushConversationWorkspace();
     });
 
-    expect(cancel).toHaveBeenCalledWith({ runId: RUN_ID });
+    expect(cancel).toHaveBeenCalledWith({ conversationId: conversation.id });
   });
 
   it("keeps the main task list running while Subagents work and makes it closable after they stop", async () => {
@@ -1956,6 +2082,7 @@ describe("Subagent approval queue", () => {
       activeSubagentCount: 2,
       lastRunStatus: "completed" as const,
     };
+    const cancelDelegation = vi.spyOn(client, "cancelRun").mockResolvedValue();
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -1994,6 +2121,10 @@ describe("Subagent approval queue", () => {
     expect(container.querySelector(".conversation-task-list .conversation-workspace__spin")).not.toBeNull();
     expect(container.querySelector(".conversation-task-list__summary")?.textContent)
       .toContain("2 项进行中");
+    const delegationStop = container.querySelector<HTMLButtonElement>('[aria-label="停止任务"]');
+    expect(delegationStop).not.toBeNull();
+    await act(async () => { delegationStop?.click(); await flushConversationWorkspace(); });
+    expect(cancelDelegation).toHaveBeenCalledWith({ conversationId: conversation.id });
 
     act(() => root?.unmount());
     root = createRoot(container);

@@ -1,6 +1,8 @@
 import { parse, type DefaultTreeAdapterTypes } from "parse5";
 import { z } from "zod";
 
+import { APPLICATION_DISPLAY_NAME } from "@agent/protocol";
+
 import { toolErrorContent } from "../errors/tool-error.js";
 import type { ModelToolDefinition } from "../model/model-contracts.js";
 import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
@@ -61,7 +63,7 @@ async function searchDuckDuckGoLite(
   const response = await fetch(url, {
     headers: {
       accept: "text/html",
-      "user-agent": "Aster web_search/1.0",
+      "user-agent": `${APPLICATION_DISPLAY_NAME} web_search/1.0`,
     },
     signal: requestSignal,
   });

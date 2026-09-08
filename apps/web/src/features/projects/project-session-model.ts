@@ -24,6 +24,7 @@ export type ProjectSession = {
   lastRunStatus: ConversationRunStatus | null;
   modelSelection: ConversationSummary["modelSelection"];
   parentConversationId: string | null;
+  permissionMode?: ConversationSummary["permissionMode"];
   pinOrder?: number | null;
   projectId: string | null;
   subagentTaskStatus?: ConversationSummary["subagentTaskStatus"];
@@ -446,6 +447,7 @@ export function createProjectSession(
     lastRunStatus: null,
     modelSelection: null,
     parentConversationId: null,
+    permissionMode: "ask_before_changes",
     pinOrder: null,
     projectId,
     teamId: null,

@@ -80,6 +80,7 @@ import type {
   ConversationContextUsage,
   ConversationPermissionMode,
   ConversationRunEvent,
+  ConversationSearchResult,
   ConversationSummary,
   ConversationTaskList,
   ConversationTimelineItem,
@@ -152,10 +153,12 @@ import { SettingsWorkspace } from "../settings/settings-workspace.js";
 import { reasoningOptionDisplayName } from "../settings/model-reasoning-options.js";
 import { TaskWorkspace } from "../tasks/task-workspace.js";
 import { AgentAvatar, SubagentAvatar } from "../team/agent-avatar.js";
+import { ToolConversationContext, ToolConversationIdentity, toolConversationTarget } from "./tool-conversation-identity.js";
 import { TeamWorkspace } from "../team/team-workspace.js";
 import { CollaborationProjectionGraph } from "../team/collaboration/collaboration-graph.js";
 import { useConversationWorkspaceCache } from "./conversation-workspace-cache.js";
 import { formatConversationRunMarkdown } from "./conversation-copy.js";
+import { TerminalText } from "../../components/ui/terminal-text.js";
 import { ConversationFindBar } from "./conversation-find-bar.js";
 import { ConversationHeaderControls } from "./conversation-header-controls.js";
 import { ConversationTurnNavigator } from "./conversation-turn-navigator.js";
@@ -173,6 +176,7 @@ import {
   appendAssistantReasoningDelta,
   completeStreamingAssistantMessages,
   shouldApplyTimelineLoad,
+  shouldResetTimelinePaging,
 } from "./conversation-timeline-state.js";
 import {
   summarizeTaskFileChanges,
@@ -181,6 +185,8 @@ import {
 import "./workspace-content.css";
 
 const DEFAULT_COMPOSER_CLEARANCE_PX = 120;
+const TIMELINE_PAGE_SIZE = 120;
+const TIMELINE_PREFETCH_VIEWPORTS = 1.5;
 
 type WorkspaceContentProps = {
   activeProject: ProjectSummary | null;
@@ -288,7 +294,7 @@ type RunActivityTimelineItem = {
   runIds: string[];
 };
 
-type TimelineDisplayItem = ConversationTimelineItem
+type TimelineDisplayItem = (ConversationTimelineItem & { continuationMessages?: ConversationMessageItem[] })
   | RunActivityTimelineItem
   | ToolBatchTimelineItem;
 
@@ -971,7 +977,7 @@ export function ConversationWorkspace({
   const [approvalErrors, setApprovalErrors] = useState<Record<string, string>>({});
   const [editingPendingMessageId, setEditingPendingMessageId] = useState<string | null>(null);
   const [permissionMode, setPermissionMode] =
-    useState<ConversationPermissionMode>(defaultPermissionMode);
+    useState<ConversationPermissionMode>(session.permissionMode ?? defaultPermissionMode);
   const [selectedModelKey, setSelectedModelKey] = useState(() => (
     initialModelSelection === null
       ? ""
@@ -986,7 +992,15 @@ export function ConversationWorkspace({
   const [taskList, setTaskList] = useState<ConversationTaskList | null>(null);
   const [isTaskListExpanded, setIsTaskListExpanded] = useState(false);
   const [timeline, setTimeline] = useState<ConversationTimelineItem[]>([]);
+  const [timelineHasMore, setTimelineHasMore] = useState(false);
+  const [isLoadingOlderTimeline, setIsLoadingOlderTimeline] = useState(false);
   const timelineRef = useRef<ConversationTimelineItem[]>([]);
+  const timelineBeforeSequenceRef = useRef<number | null>(null);
+  const timelineAfterSequenceRef = useRef<number | null>(null);
+  const timelineRevealRequestRef = useRef(0);
+  const timelineLoadingOlderRef = useRef(false);
+  const timelineOlderLoadPromiseRef = useRef<Promise<void> | null>(null);
+  const timelinePagingInitializedRef = useRef(false);
   const timelineLoadRequestIdRef = useRef(0);
   const timelineRevisionRef = useRef(0);
   const [subagentApprovals, setSubagentApprovals] = useState<SubagentPendingApproval[]>([]);
@@ -1007,6 +1021,7 @@ export function ConversationWorkspace({
   const isReturningToBottomRef = useRef(false);
   const lastKnownScrollTopRef = useRef<number | null>(null);
   const locatedTimelineRequestIdRef = useRef<number | null>(null);
+  const locatedTimelineLoadRequestRef = useRef<number | null>(null);
   const shouldStickToBottomRef = useRef(true);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const copiedMessageTimeoutRef = useRef<number | null>(null);
@@ -1156,7 +1171,19 @@ export function ConversationWorkspace({
   const selectPermissionMode = useCallback((value: string): void => {
     const nextPermissionMode = value as ConversationPermissionMode;
     if (!teamManaged || session.teamWorkItemId === null || session.teamWorkItemId === undefined) {
+      if (nextPermissionMode === permissionMode) return;
       setPermissionMode(nextPermissionMode);
+      setOperationError(null);
+      void agentClient.setConversationPermissionMode({
+        conversationId: session.id,
+        permissionMode: nextPermissionMode,
+      }).then((conversation) => {
+        setPermissionMode(conversation.permissionMode ?? nextPermissionMode);
+        onSessionUpdated?.(conversation);
+      }).catch((error) => {
+        setPermissionMode(permissionMode);
+        setOperationError(getUserErrorMessage(error, "无法保存对话权限模式"));
+      });
       return;
     }
     if (nextPermissionMode === permissionMode || isSavingTeamPermission) return;
@@ -1172,7 +1199,15 @@ export function ConversationWorkspace({
     }).finally(() => {
       setIsSavingTeamPermission(false);
     });
-  }, [agentClient, isSavingTeamPermission, permissionMode, session.teamWorkItemId, teamManaged]);
+  }, [
+    agentClient,
+    isSavingTeamPermission,
+    onSessionUpdated,
+    permissionMode,
+    session.id,
+    session.teamWorkItemId,
+    teamManaged,
+  ]);
   const referenceWorkspaceId = project?.id
     ?? (session.workspaceRootPath === null ? null : session.id);
   const activeProjectFileMentions = useMemo(
@@ -1245,13 +1280,16 @@ export function ConversationWorkspace({
     session.id,
   ]);
 
-  const loadTimeline = useCallback(async (): Promise<void> => {
+  const loadTimeline = useCallback(async (forceLatest = false): Promise<void> => {
+    if (!forceLatest && timelineAfterSequenceRef.current !== null) return;
     const conversationId = session.id;
     const requestId = ++timelineLoadRequestIdRef.current;
     const timelineRevision = timelineRevisionRef.current;
+    let retryAfterConcurrentEvent = false;
     try {
-      const nextTimeline = await agentClient.listConversationTimeline({
+      const page = await agentClient.listConversationTimelinePage({
         conversationId,
+        limit: TIMELINE_PAGE_SIZE,
       });
       if (shouldApplyTimelineLoad(
         requestId,
@@ -1259,9 +1297,27 @@ export function ConversationWorkspace({
         timelineRevision,
         timelineRevisionRef.current,
       )) {
+        const initializesPaging = !timelinePagingInitializedRef.current;
+        const resetsPaging = forceLatest || shouldResetTimelinePaging(timelineRef.current, page.items);
         timelineRevisionRef.current += 1;
-        timelineRef.current = nextTimeline;
-        setTimeline(nextTimeline);
+        setTimeline((current) => {
+          const nextTimeline = resetsPaging
+            ? page.items
+            : mergeLatestTimelinePage(current, page.items);
+          timelineRef.current = nextTimeline;
+          return nextTimeline;
+        });
+        if (initializesPaging || resetsPaging) {
+          timelinePagingInitializedRef.current = true;
+          timelineBeforeSequenceRef.current = page.nextBeforeSequence;
+          timelineAfterSequenceRef.current = page.nextAfterSequence ?? null;
+          setTimelineHasMore(page.hasMore);
+        }
+      } else if (
+        requestId === timelineLoadRequestIdRef.current
+        && timelineRevision !== timelineRevisionRef.current
+      ) {
+        retryAfterConcurrentEvent = true;
       }
     } catch {
       if (requestId === timelineLoadRequestIdRef.current) {
@@ -1269,10 +1325,155 @@ export function ConversationWorkspace({
       }
     } finally {
       if (requestId === timelineLoadRequestIdRef.current) {
-        setIsLoadingTimeline(false);
+        if (retryAfterConcurrentEvent) {
+          void Promise.resolve().then(() => loadTimeline());
+        } else {
+          setIsLoadingTimeline(false);
+        }
       }
     }
   }, [agentClient, session.id]);
+
+  const loadOlderTimeline = useCallback(async (): Promise<void> => {
+    const existingLoad = timelineOlderLoadPromiseRef.current;
+    if (existingLoad !== null) return existingLoad;
+    const beforeSequence = timelineBeforeSequenceRef.current;
+    const messages = messagesRef.current;
+    if (
+      beforeSequence === null
+      || messages === null
+      || timelineLoadingOlderRef.current
+      || !timelineHasMore
+    ) return;
+    const operation = (async (): Promise<void> => {
+      timelineLoadingOlderRef.current = true;
+      setIsLoadingOlderTimeline(true);
+      const previousScrollHeight = messages.scrollHeight;
+      const previousScrollTop = messages.scrollTop;
+      const navigationRequest = timelineRevealRequestRef.current;
+      try {
+        const page = await agentClient.listConversationTimelinePage({
+          beforeSequence,
+          conversationId: session.id,
+          limit: TIMELINE_PAGE_SIZE,
+        });
+        if (navigationRequest !== timelineRevealRequestRef.current) return;
+        timelineBeforeSequenceRef.current = page.nextBeforeSequence;
+        setTimelineHasMore(page.hasMore);
+        timelineRevisionRef.current += 1;
+        setTimeline((current) => {
+          const next = prependTimelinePage(current, page.items);
+          timelineRef.current = next;
+          return next;
+        });
+        window.requestAnimationFrame(() => {
+          const currentMessages = messagesRef.current;
+          if (currentMessages !== messages) return;
+          currentMessages.scrollTop = previousScrollTop
+            + currentMessages.scrollHeight
+            - previousScrollHeight;
+        });
+      } catch {
+        setOperationError("无法加载更早的对话记录");
+      } finally {
+        timelineLoadingOlderRef.current = false;
+        setIsLoadingOlderTimeline(false);
+      }
+    })();
+    timelineOlderLoadPromiseRef.current = operation;
+    try {
+      await operation;
+    } finally {
+      if (timelineOlderLoadPromiseRef.current === operation) {
+        timelineOlderLoadPromiseRef.current = null;
+      }
+    }
+  }, [agentClient, session.id, timelineHasMore]);
+
+  const revealTimelineSearchResult = useCallback(async (
+    result: Pick<ConversationSearchResult, "conversationId" | "itemId">,
+  ): Promise<void> => {
+    const revealRequest = ++timelineRevealRequestRef.current;
+    const existingLoad = timelineOlderLoadPromiseRef.current;
+    if (existingLoad !== null) await existingLoad;
+    if (
+      revealRequest !== timelineRevealRequestRef.current
+      ||
+      result.conversationId !== session.id
+      || timelineRef.current.some((item) => item.id === result.itemId)
+    ) return;
+    const operation = (async (): Promise<void> => {
+      timelineLoadingOlderRef.current = true;
+      setIsLoadingOlderTimeline(true);
+      try {
+        ++timelineLoadRequestIdRef.current;
+        const page = await agentClient.listConversationTimelinePage({
+          aroundItemId: result.itemId, conversationId: session.id, limit: TIMELINE_PAGE_SIZE,
+        });
+        if (revealRequest !== timelineRevealRequestRef.current) return;
+        shouldStickToBottomRef.current = false;
+        timelineBeforeSequenceRef.current = page.nextBeforeSequence;
+        timelineAfterSequenceRef.current = page.nextAfterSequence ?? null;
+        setTimelineHasMore(page.hasMore);
+        timelineRevisionRef.current += 1;
+        timelineRef.current = page.items;
+        setTimeline(page.items);
+      } finally {
+        timelineLoadingOlderRef.current = false;
+        setIsLoadingOlderTimeline(false);
+      }
+    })();
+    timelineOlderLoadPromiseRef.current = operation;
+    try {
+      await operation;
+    } catch {
+      setOperationError("无法加载搜索结果所在的对话记录");
+    } finally {
+      if (timelineOlderLoadPromiseRef.current === operation) {
+        timelineOlderLoadPromiseRef.current = null;
+      }
+    }
+  }, [agentClient, session.id]);
+
+  const loadNewerTimeline = useCallback(async (): Promise<void> => {
+    const afterSequence = timelineAfterSequenceRef.current;
+    if (afterSequence === null || timelineLoadingOlderRef.current) return;
+    const operation = (async () => {
+      timelineLoadingOlderRef.current = true;
+      const navigationRequest = timelineRevealRequestRef.current;
+      try {
+        const page = await agentClient.listConversationTimelinePage({
+          afterSequence, conversationId: session.id, limit: TIMELINE_PAGE_SIZE,
+        });
+        if (navigationRequest !== timelineRevealRequestRef.current) return;
+        timelineAfterSequenceRef.current = page.nextAfterSequence ?? null;
+        timelineRevisionRef.current += 1;
+        setTimeline((current) => {
+          const next = mergeLatestTimelinePage(current, page.items);
+          timelineRef.current = next;
+          return next;
+        });
+      } catch {
+        setOperationError("无法加载后续的对话记录");
+      } finally {
+        timelineLoadingOlderRef.current = false;
+      }
+    })();
+    timelineOlderLoadPromiseRef.current = operation;
+    try { await operation; } finally {
+      if (timelineOlderLoadPromiseRef.current === operation) timelineOlderLoadPromiseRef.current = null;
+    }
+  }, [agentClient, session.id]);
+
+  const searchConversationTimeline = useCallback(
+    (query: string, beforeSequence?: number) => agentClient.searchConversations({
+      ...(beforeSequence === undefined ? {} : { beforeSequence }),
+      conversationId: session.id,
+      limit: 100,
+      query,
+    }),
+    [agentClient, session.id],
+  );
 
   useEffect(() => {
     let disposed = false;
@@ -1286,10 +1487,11 @@ export function ConversationWorkspace({
 
     void Promise.all(activeSubagents.map(async (subagent) => {
       try {
-        const childTimeline = await agentClient.listConversationTimeline({
+        const page = await agentClient.listConversationTimelinePage({
           conversationId: subagent.id,
+          limit: 200,
         });
-        return [subagent.id, childTimeline] as const;
+        return [subagent.id, page.items] as const;
       } catch {
         return [subagent.id, [] as ConversationTimelineItem[]] as const;
       }
@@ -1335,7 +1537,7 @@ export function ConversationWorkspace({
   }, [agentClient, session.id]);
 
   useEffect(() => {
-    void Promise.resolve().then(loadTimeline);
+    void Promise.resolve().then(() => loadTimeline());
   }, [loadTimeline]);
 
   useEffect(() => {
@@ -1362,6 +1564,10 @@ export function ConversationWorkspace({
       disposed = true;
     };
   }, [agentClient, session.id, session.teamWorkItemId, teamManaged]);
+
+  useEffect(() => {
+    if (!teamManaged) setPermissionMode(session.permissionMode ?? defaultPermissionMode);
+  }, [defaultPermissionMode, session.id, session.permissionMode, teamManaged]);
 
   useEffect(() => {
     const awaitingApprovalToolIds = new Set(
@@ -1547,7 +1753,7 @@ export function ConversationWorkspace({
       timelineRevisionRef.current += 1;
       handleRunEvent(
         event,
-        setTimeline,
+        timelineAfterSequenceRef.current === null ? setTimeline : () => undefined,
         setActiveRunId,
         setIsCancelling,
         timelineRef,
@@ -1584,7 +1790,7 @@ export function ConversationWorkspace({
     const messages = messagesRef.current;
     if (messages === null || !active) return;
     lastKnownScrollTopRef.current = messages.scrollTop;
-    const isAtBottom = isConversationScrolledToBottom(messages);
+    const isAtBottom = timelineAfterSequenceRef.current === null && isConversationScrolledToBottom(messages);
     if (isReturningToBottomRef.current) {
       isReturningToBottomRef.current = !isAtBottom;
       shouldStickToBottomRef.current = true;
@@ -1593,19 +1799,30 @@ export function ConversationWorkspace({
     }
     shouldStickToBottomRef.current = isAtBottom;
     setIsScrolledAwayFromBottom(!isAtBottom);
-  }, [active]);
+    const prefetchDistance = Math.max(
+      600,
+      messages.clientHeight * TIMELINE_PREFETCH_VIEWPORTS,
+    );
+    if (messages.scrollTop <= prefetchDistance) void loadOlderTimeline();
+    if (messages.scrollHeight - messages.clientHeight - messages.scrollTop <= prefetchDistance) void loadNewerTimeline();
+  }, [active, loadOlderTimeline, loadNewerTimeline]);
 
   const handleScrollToBottom = useCallback((): void => {
     const messages = messagesRef.current;
     if (messages === null) return;
     isReturningToBottomRef.current = true;
     shouldStickToBottomRef.current = true;
+    if (timelineAfterSequenceRef.current !== null) {
+      ++timelineRevealRequestRef.current;
+      void loadTimeline(true);
+      return;
+    }
     messages.scrollTo({
       behavior: "smooth",
       left: 0,
       top: messages.scrollHeight,
     });
-  }, []);
+  }, [loadTimeline]);
 
   useLayoutEffect(() => {
     const overlay = composerOverlayRef.current;
@@ -2423,19 +2640,20 @@ export function ConversationWorkspace({
   );
 
   const handleCancel = useCallback(async (): Promise<void> => {
-    if (activeRunId === null || isCancelling) {
+    if ((activeRunId === null && activeSubagentCount === 0) || isCancelling) {
       return;
     }
 
     setIsCancelling(true);
     setOperationError(null);
     try {
-      await agentClient.cancelRun({ runId: activeRunId });
+      await agentClient.cancelRun({ conversationId: session.id });
+      setIsCancelling(false);
     } catch {
       setIsCancelling(false);
       setOperationError("无法停止当前任务");
     }
-  }, [activeRunId, agentClient, isCancelling]);
+  }, [activeRunId, activeSubagentCount, agentClient, isCancelling, session.id]);
 
   const handlePromotePendingMessage = useCallback(async (pendingMessageId: string) => {
     if (pendingMessageActionId !== null) return;
@@ -2610,7 +2828,7 @@ export function ConversationWorkspace({
   const isModelUnavailable = !isMockRuntime && modelStatus?.configured === false;
   const hasActiveModelRun = activeRunId !== null;
   const isRunning = hasActiveModelRun || activeSubagentCount > 0;
-  const shouldShowStopButton = hasActiveModelRun && !isEditingComposerMessage;
+  const shouldShowStopButton = isRunning && !isEditingComposerMessage;
   const subagentConversationIds = useMemo(
     () => new Set([session, ...relatedSessions]
       .filter((candidate) => candidate.threadKind === "subagent")
@@ -2628,6 +2846,13 @@ export function ConversationWorkspace({
         : [],
     ),
   );
+  useEffect(() => {
+    if (locateTimelineItem === null || isLoadingTimeline
+      || locatedTimelineLoadRequestRef.current === locateTimelineItem.requestId) return;
+    locatedTimelineLoadRequestRef.current = locateTimelineItem.requestId;
+    void revealTimelineSearchResult({ conversationId: session.id, itemId: locateTimelineItem.id });
+  }, [isLoadingTimeline, locateTimelineItem, revealTimelineSearchResult, session.id]);
+
   useLayoutEffect(() => {
     if (
       locateTimelineItem === null
@@ -2713,6 +2938,17 @@ export function ConversationWorkspace({
     }
     return avatars;
   }, [agentProfiles, relatedSessions, session]);
+  const toolConversations = useMemo(() => ({
+    avatars: conversationAgentAvatars,
+    sessions: new Map([...relatedSessions, session].map((candidate) => [candidate.id, candidate])),
+    open: onOpenTeamConversation === undefined && onSessionSelected === undefined
+      ? undefined
+      : (target: ProjectSession) => {
+        if (target.id === session.id) return;
+        if (onOpenTeamConversation !== undefined) onOpenTeamConversation(target, session.id);
+        else onSessionSelected?.(target.id);
+      },
+  }), [conversationAgentAvatars, onOpenTeamConversation, onSessionSelected, relatedSessions, session]);
   const pathScope = resolveConversationPathScope(project, session, teams);
   const pathAgent = session.agentId === null
     ? undefined
@@ -2720,6 +2956,7 @@ export function ConversationWorkspace({
   const pathIconKind = resolveConversationPathIconKind(pathScope.kind, session);
 
   return (
+    <ToolConversationContext.Provider value={toolConversations}>
     <section
       className="conversation-workspace"
       aria-labelledby={headingId}
@@ -2817,7 +3054,13 @@ export function ConversationWorkspace({
       <div
         className="conversation-workspace__surface"
       >
-        <ConversationFindBar active={active} containerRef={messagesRef} revision={timeline} />
+        <ConversationFindBar
+          active={active}
+          containerRef={messagesRef}
+          revision={timeline}
+          onReveal={revealTimelineSearchResult}
+          search={searchConversationTimeline}
+        />
         <ConversationTurnNavigator
           bottomOffsetPx={composerOverlayHeight + 12}
           containerRef={messagesRef}
@@ -2833,6 +3076,12 @@ export function ConversationWorkspace({
           aria-label="对话记录"
           onScroll={handleMessagesScroll}
         >
+          {isLoadingOlderTimeline ? (
+            <div className="conversation-workspace__history-loading" role="status">
+              <LoaderCircle aria-hidden="true" size={14} />
+              <span>正在加载更早记录</span>
+            </div>
+          ) : null}
           {isLoadingTimeline ? (
             <div className="conversation-workspace__loading" role="status">
               <LoaderCircle aria-hidden="true" size={17} />
@@ -2873,7 +3122,8 @@ export function ConversationWorkspace({
                   {repeatedAssistantFailureMessageIds.has(item.id) ? null : (
                     <div
                       className="contents"
-                      data-conversation-timeline-item={item.id}
+                      data-conversation-timeline-item={item.kind === "message"
+                        && item.continuationMessages !== undefined ? undefined : item.id}
                     >
                       <TimelineItem
                         agentClient={agentClient}
@@ -3560,6 +3810,7 @@ export function ConversationWorkspace({
         </div>
       </div>
     </section>
+    </ToolConversationContext.Provider>
   );
 }
 
@@ -4533,6 +4784,28 @@ function upsertTimelineItem(
   return timeline.map((candidate) => (candidate.id === item.id ? item : candidate));
 }
 
+function mergeLatestTimelinePage(
+  current: ConversationTimelineItem[],
+  latest: ConversationTimelineItem[],
+): ConversationTimelineItem[] {
+  if (current.length === 0) return latest;
+  const latestIds = new Set(latest.map((item) => item.id));
+  const overlapIndex = current.findIndex((item) => latestIds.has(item.id));
+  if (overlapIndex >= 0) return [...current.slice(0, overlapIndex), ...latest];
+  return [
+    ...current.filter((item) => !latestIds.has(item.id)),
+    ...latest,
+  ];
+}
+
+function prependTimelinePage(
+  current: ConversationTimelineItem[],
+  older: ConversationTimelineItem[],
+): ConversationTimelineItem[] {
+  const olderIds = new Set(older.map((item) => item.id));
+  return [...older, ...current.filter((item) => !olderIds.has(item.id))];
+}
+
 function replaceTimelineFromMessage(
   timeline: ConversationTimelineItem[],
   replacement: ConversationMessageItem,
@@ -4849,7 +5122,37 @@ function combineAutomaticContinuationDurations(
   }
   combineTurn(combined.length);
 
-  return combined.filter((_, index) => !mergedActivityIndexes.has(index));
+  return combineContinuationAnswers(combined.filter((_, index) => !mergedActivityIndexes.has(index)));
+}
+
+function combineContinuationAnswers(timeline: TimelineDisplayItem[]): TimelineDisplayItem[] {
+  const result: TimelineDisplayItem[] = [];
+  let answerIndex = -1;
+  for (const item of timeline) {
+    if (item.kind === "agent_message" && item.messageType === "task_result") {
+      result.push(item);
+      continue;
+    }
+    const previous = result[answerIndex];
+    if (item.kind === "message" && item.role === "assistant"
+      && (item.status === "completed" || item.status === "streaming")) {
+      if (previous?.kind === "message" && previous.status === "completed"
+        && previous.runId !== item.runId) {
+        result[answerIndex] = {
+          ...item,
+          attachments: [...previous.attachments, ...item.attachments],
+          continuationMessages: [...(previous.continuationMessages ?? [previous]), item],
+        };
+      } else {
+        answerIndex = result.length;
+        result.push(item);
+      }
+      continue;
+    }
+    answerIndex = -1;
+    result.push(item);
+  }
+  return result;
 }
 
 export function groupToolBatches(
@@ -5458,6 +5761,11 @@ function TimelineItem({
             <ConversationErrorContent content={item.content} />
           ) : item.role === "assistant" ? (
             <>
+              {item.continuationMessages !== undefined ? item.continuationMessages.map((message) => (
+                <div key={message.id} data-conversation-timeline-item={message.id}>
+                  <AgentMarkdown content={stripLeadingThinkingSummary(message.content)} />
+                </div>
+              )) : <>
               {renderedReasoningContent.length > 0 ? (
                 <AssistantReasoningBlock
                   content={renderedReasoningContent}
@@ -5468,6 +5776,7 @@ function TimelineItem({
               {renderedMessageContent.length > 0
                 ? <AgentMarkdown content={renderedMessageContent} />
                 : null}
+              </>}
             </>
           ) : (
             renderedMessageContent.length > 0 ? <p>{renderedMessageContent}</p> : null
@@ -6886,9 +7195,19 @@ function ToolActivityLabel({
 }): ReactElement {
   const summary = fileChangeSummary(item);
   const label = toolActivityLabel(item, teamManaged);
+  const target = toolConversationTarget(item);
   const toggleLabel = isExpanded ? "收起调用详情" : "展开调用详情";
   const toggleClassName = "min-w-0 flex-[0_1_auto] cursor-pointer overflow-hidden border-0 bg-transparent p-0 text-left text-ellipsis whitespace-nowrap text-[var(--app-muted-foreground)] transition-colors hover:text-[var(--app-foreground)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1 [font:inherit]";
   const fileLinkClassName = "inline-flex min-w-0 cursor-pointer items-center gap-1 overflow-hidden border-0 bg-transparent p-0 text-inherit transition-colors hover:text-[var(--app-accent)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-2 [font:inherit]";
+  if (target !== null) {
+    const completed = effectiveStatus === "completed";
+    const action = item.name === "send_agent_message"
+      ? completed ? "消息已发送" : "发送消息"
+      : item.name === "read_agent_conversation"
+        ? completed ? "已读取对话" : "读取对话"
+        : completed ? "消息等待结束" : "等待消息";
+    return <ToolConversationIdentity target={target} action={action} />;
+  }
   const spawnedSubagent = spawnSubagentActivity(item, effectiveStatus);
   if (spawnedSubagent !== null) {
     const canOpen = spawnedSubagent.childConversationId !== null
@@ -7201,12 +7520,13 @@ function ToolDetail({
   }
 
   if (item.name === "read_agent_conversation") {
-    return <AgentConversationReadResult payload={item.result} status={item.status} />;
+    return <AgentConversationReadResult item={item} payload={item.result} status={item.status} />;
   }
 
   if (item.name === "send_agent_message" || item.name === "wait_for_agent_message") {
     return (
       <AgentMessageToolResult
+        item={item}
         mode={item.name === "send_agent_message" ? "sent" : "received"}
         payload={item.result}
         status={item.status}
@@ -7283,8 +7603,8 @@ function CommandTerminal({
       <div className="tool-structured-result__content">
         <pre>
           <code>
-            <span className="tool-command-terminal__prompt">$</span> {command}
-            {output.length === 0 ? null : `\n\n${output}`}
+            <span className="tool-command-terminal__prompt">$</span> <TerminalText text={command} kind="command" />
+            {output.length === 0 ? null : <>{"\n\n"}<TerminalText text={output} /></>}
           </code>
         </pre>
       </div>
@@ -7452,7 +7772,8 @@ function FileReadResult({
     <StructuredToolResult
       summary={
         <>
-          <span title={result.path}>{fileNameFromPath(result.path)}</span> · 第 {result.startLine}-{result.endLine} 行，共 {result.totalLines} 行
+          <span title={result.path}>{fileNameFromPath(result.path)}</span> · 第 {result.startLine}-{result.endLine} 行
+          {result.totalLines === null ? "" : `，共 ${result.totalLines} 行`}
         </>
       }
     >
@@ -7622,10 +7943,7 @@ function AgentConversationListResult({
         <ul className="tool-search-results">
           {result.map((conversation) => (
             <li key={conversation.conversationId}>
-              <span className="tool-search-results__path">{conversation.title}</span>
-              <span className="tool-search-results__excerpt">
-                {agentConversationKindLabel(conversation.threadKind)} · {conversation.conversationId}
-              </span>
+              <ToolConversationIdentity target={{ id: conversation.conversationId, title: conversation.title }} />
             </li>
           ))}
         </ul>
@@ -7635,54 +7953,56 @@ function AgentConversationListResult({
 }
 
 function AgentConversationReadResult({
+  item,
   payload,
   status,
 }: {
+  item: ConversationToolItem;
   payload: string | null;
   status: ConversationToolItem["status"];
 }): ReactElement {
   const result = payload === null ? null : parseAgentConversationReadResult(payload);
   if (result === null) return <ToolResultNotice result={payload} status={status} />;
+  const target = toolConversationTarget(item);
 
   return (
     <StructuredToolResult summary={`对话上下文 · 约 ${result.estimatedTokens} tokens`}>
+      {target === null ? null : <ToolConversationIdentity target={target} />}
       <pre>{result.content}</pre>
     </StructuredToolResult>
   );
 }
 
 function AgentMessageToolResult({
+  item,
   mode,
   payload,
   status,
 }: {
+  item: ConversationToolItem;
   mode: "received" | "sent";
   payload: string | null;
   status: ConversationToolItem["status"];
 }): ReactElement {
   const result = payload === null ? null : parseAgentMessageToolResult(payload);
+  const target = toolConversationTarget(item);
   if (result === null) return <ToolResultNotice result={payload} status={status} />;
   if (result.message === null) {
     return (
-      <StructuredToolResult summary="Agent 消息等待结束">
+      <StructuredToolResult summary="消息等待结束">
+        {target === null ? null : <ToolConversationIdentity target={target} />}
         <p className="tool-directory-listing__empty">等待期间没有收到新消息</p>
       </StructuredToolResult>
     );
   }
 
   return (
-    <StructuredToolResult summary={mode === "sent" ? "Agent 消息已发送" : "收到 Agent 消息"}>
+    <StructuredToolResult summary={mode === "sent" ? "消息已发送" : "收到消息"}>
       <dl className="tool-read-facts">
         <div>
           <dt>{mode === "sent" ? "目标对话" : "发送方"}</dt>
-          <dd>{mode === "sent" ? result.message.conversationId : result.message.senderTitle}</dd>
+          <dd>{target === null ? "对话不可用" : <ToolConversationIdentity target={target} />}</dd>
         </div>
-        {mode === "received" ? (
-          <div>
-            <dt>发送方 ID</dt>
-            <dd>{result.message.senderConversationId}</dd>
-          </div>
-        ) : null}
         <div>
           <dt>消息内容</dt>
           <dd>{result.message.content}</dd>
@@ -8436,17 +8756,6 @@ function fileNameFromPath(path: string): string {
   return separatorIndex < 0 ? normalizedPath || path : normalizedPath.slice(separatorIndex + 1);
 }
 
-function agentConversationKindLabel(kind: string): string {
-  switch (kind) {
-    case "team_lead":
-      return "团队负责人";
-    case "subagent":
-      return "Subagent";
-    default:
-      return "Agent 对话";
-  }
-}
-
 function fileChangeType(toolName: string, presentation: DiffPresentation): "created" | "deleted" | "updated" {
   if (toolName === "delete_file" || (presentation.additions === 0 && presentation.deletions > 0)) {
     return "deleted";
@@ -8494,14 +8803,14 @@ function parseFileReadResult(payload: string): {
   endLine: number;
   path: string;
   startLine: number;
-  totalLines: number;
+  totalLines: number | null;
 } | null {
   const result = parseToolValue(payload);
   return typeof result?.content === "string" &&
     typeof result.endLine === "number" &&
     typeof result.path === "string" &&
     typeof result.startLine === "number" &&
-    typeof result.totalLines === "number"
+    (result.totalLines === null || typeof result.totalLines === "number")
     ? {
       content: result.content,
       endLine: result.endLine,

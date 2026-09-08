@@ -29,6 +29,7 @@ import {
   readJsonDocument,
   writeJsonDocument,
 } from "../settings/json-configuration-file.js";
+import { SettingsJsoncFile } from "../settings/settings-jsonc-file.js";
 import { ModelAdapterRegistry } from "./model-adapter-registry.js";
 import type { ModelConfiguration, ModelContextConfiguration } from "./model-contracts.js";
 import { ModelResponseError } from "./model-request-error.js";
@@ -76,13 +77,17 @@ const storedProviderV4Schema = storedProviderV3Schema.extend({
 const storedProviderSchema = z.object({
   apiFormat: modelApiFormatSchema,
   baseUrl: z.string().url(),
-  encryptedApiKey: z.string().min(1),
+  encryptedApiKey: z.string(),
   id: z.string().uuid(),
   icon: modelProviderIconSchema.optional(),
   models: z.array(storedModelSchema).min(1).max(100),
   name: z.string().min(1).max(100),
   note: z.string().max(500).optional(),
   websiteUrl: z.string().url().optional()
+}).strict();
+
+const settingsProviderSchema = storedProviderSchema.omit({ encryptedApiKey: true }).extend({
+  apiKey: z.string(),
 }).strict();
 
 const storedConfigurationV1Schema = z
@@ -244,6 +249,25 @@ type SelectedStoredModel = {
   provider: StoredProvider;
 };
 
+const settingsModelConfigurationSchema = z.object({
+  defaultModelSelection: conversationModelSelectionSchema,
+  providers: z.array(settingsProviderSchema).min(1).max(100),
+  recentSelection: storedRecentSelectionSchema.nullable(),
+}).strict().superRefine((value, context) => {
+  const provider = value.providers.find(
+    (candidate) => candidate.id === value.defaultModelSelection.providerId,
+  );
+  if (provider === undefined || !provider.models.some(
+    (model) => model.modelId === value.defaultModelSelection.modelId,
+  )) {
+    context.addIssue({
+      code: "custom",
+      message: "The default model selection must reference a configured provider and model.",
+      path: ["defaultModelSelection"],
+    });
+  }
+});
+
 function normalizeBaseUrl(value: string): string {
   return new URL(value.trim()).toString().replace(/\/$/, "");
 }
@@ -381,20 +405,25 @@ function uniqueModels(models: readonly DiscoveredModel[]): DiscoveredModel[] {
 }
 
 export class ModelCredentialStore {
-  public constructor(private readonly configurationPath: string) {}
+  private readonly configurationPath: string | null;
+  private readonly legacyConfigurationPath: string | null;
+  private readonly settings: SettingsJsoncFile | null;
+  private credentialMigrationWarnings: string[] = [];
+
+  public constructor(configuration: string | SettingsJsoncFile, legacyConfigurationPath?: string) {
+    this.configurationPath = typeof configuration === "string" ? configuration : null;
+    this.legacyConfigurationPath = legacyConfigurationPath ?? null;
+    this.settings = typeof configuration === "string" ? null : configuration;
+  }
 
   public importFromEnvironment(): void {
-    if (existsSync(this.configurationPath)) {
-      return;
-    }
+    this.migrateLegacyConfiguration();
+    if (this.hasConfigurationSection()) return;
     const baseUrl = process.env.AGENT_MODEL_BASE_URL?.trim();
     const apiKey = process.env.AGENT_MODEL_API_KEY?.trim();
     const modelId = process.env.AGENT_MODEL_ID?.trim();
     if (baseUrl === undefined || apiKey === undefined || modelId === undefined) {
       return;
-    }
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error("Operating-system credential encryption is unavailable.");
     }
     const providerId = randomUUID();
     const stored = storedConfigurationV6Schema.parse({
@@ -403,7 +432,7 @@ export class ModelCredentialStore {
       providers: [{
         apiFormat: "openai-chat-completions",
         baseUrl: normalizeBaseUrl(baseUrl),
-        encryptedApiKey: safeStorage.encryptString(apiKey).toString("base64"),
+        encryptedApiKey: this.encodeApiKey(apiKey),
         id: providerId,
         models: [{
           contextWindow: 0,
@@ -421,14 +450,9 @@ export class ModelCredentialStore {
 
   public getConfiguration(providerId?: string, modelId?: string): ModelConfiguration {
     const selected = this.getSelectedModel(providerId, modelId);
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error("Operating-system credential decryption is unavailable.");
-    }
     return {
       ...this.toContextConfiguration(selected),
-      apiKey: safeStorage.decryptString(
-        Buffer.from(selected.provider.encryptedApiKey, "base64")
-      ),
+      apiKey: this.decodeApiKey(selected.provider.encryptedApiKey),
     };
   }
 
@@ -474,9 +498,15 @@ export class ModelCredentialStore {
   }
 
   public getPreferredSelection(): ConversationModelSelection | null {
-    if (!existsSync(this.configurationPath)) return null;
+    this.migrateLegacyConfiguration();
+    if (!this.hasConfigurationSection()) return null;
     const stored = this.readStoredConfiguration();
-    return this.normalizeSelection(stored, stored.recentSelection ?? {
+    const configuredDefault = this.settings === null
+      ? null
+      : conversationModelSelectionSchema.safeParse(
+          this.settings.readValue("defaultModelSelection"),
+        ).data ?? null;
+    return this.normalizeSelection(stored, stored.recentSelection ?? configuredDefault ?? {
       modelId: stored.defaultModelId,
       providerId: stored.defaultProviderId,
       reasoning: null,
@@ -512,13 +542,11 @@ export class ModelCredentialStore {
   }
 
   public getApiKey(providerId: string): string | null {
-    if (!existsSync(this.configurationPath)) return null;
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error("Operating-system credential decryption is unavailable.");
-    }
+    this.migrateLegacyConfiguration();
+    if (!this.hasConfigurationSection()) return null;
     const stored = this.readStoredConfiguration();
     const provider = this.getProvider(stored, providerId);
-    return safeStorage.decryptString(Buffer.from(provider.encryptedApiKey, "base64"));
+    return this.decodeApiKey(provider.encryptedApiKey);
   }
 
   public async discoverModels(
@@ -613,11 +641,9 @@ export class ModelCredentialStore {
   public saveConfiguration(
     input: SaveModelConfigurationInput
   ): ModelRuntimeStatus {
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error("Operating-system credential encryption is unavailable.");
-    }
     const providerId = input.providerId ?? randomUUID();
-    const existing = existsSync(this.configurationPath)
+    this.migrateLegacyConfiguration();
+    const existing = this.hasConfigurationSection()
       ? this.readStoredConfiguration()
       : null;
     const existingProvider = existing?.providers.find((provider) => provider.id === providerId);
@@ -632,7 +658,7 @@ export class ModelCredentialStore {
     const provider = storedProviderSchema.parse({
       apiFormat: input.apiFormat,
       baseUrl: normalizeBaseUrl(input.baseUrl),
-      encryptedApiKey: safeStorage.encryptString(input.apiKey).toString("base64"),
+      encryptedApiKey: this.encodeApiKey(input.apiKey),
       id: providerId,
       ...(input.providerIcon === undefined ? {} : { icon: input.providerIcon }),
       models: input.models.map((model) => ({
@@ -702,7 +728,8 @@ export class ModelCredentialStore {
   }
 
   public getStatus(): ModelRuntimeStatus {
-    if (!existsSync(this.configurationPath)) {
+    this.migrateLegacyConfiguration();
+    if (!this.hasConfigurationSection()) {
       return modelRuntimeStatusSchema.parse({
         baseUrl: null,
         configured: false,
@@ -733,10 +760,35 @@ export class ModelCredentialStore {
   }
 
   private readStoredConfiguration(): StoredConfiguration {
-    if (!existsSync(this.configurationPath)) {
+    if (this.settings !== null) {
+      const configuration = settingsModelConfigurationSchema.parse({
+        defaultModelSelection: this.settings.readValue("defaultModelSelection"),
+        providers: this.settings.readValue("providers"),
+        recentSelection: this.settings.readValue("recentSelection") ?? null,
+      });
+      return storedConfigurationV6Schema.parse({
+        defaultModelId: configuration.defaultModelSelection.modelId,
+        defaultProviderId: configuration.defaultModelSelection.providerId,
+        providers: configuration.providers.map(({ apiKey, ...provider }) => ({
+          ...provider,
+          encryptedApiKey: Buffer.from(apiKey, "utf8").toString("base64"),
+        })),
+        recentSelection: configuration.recentSelection,
+        version: 6,
+      });
+    }
+    if (this.configurationPath === null || !existsSync(this.configurationPath)) {
       throw new Error("No model provider is configured.");
     }
-    const parsed = readJsonDocument(this.configurationPath);
+    return this.readLegacyStoredConfiguration(this.configurationPath);
+  }
+
+  public getCredentialMigrationWarnings(): readonly string[] {
+    return [...this.credentialMigrationWarnings];
+  }
+
+  private readLegacyStoredConfiguration(configurationPath: string): StoredConfiguration {
+    const parsed = readJsonDocument(configurationPath);
     const current = storedConfigurationV6Schema.safeParse(parsed);
     if (current.success) return current.data;
 
@@ -870,6 +922,91 @@ export class ModelCredentialStore {
   }
 
   private writeStoredConfiguration(stored: StoredConfiguration): void {
+    if (this.settings !== null) {
+      const previousDefault = conversationModelSelectionSchema.safeParse(
+        this.settings.readValue("defaultModelSelection"),
+      ).data;
+      const defaultReasoning = previousDefault?.providerId === stored.defaultProviderId
+        && previousDefault.modelId === stored.defaultModelId
+        ? previousDefault.reasoning
+        : null;
+      this.settings.writeValues([
+        {
+          key: "providers",
+          value: stored.providers.map(({ encryptedApiKey, ...provider }) => ({
+            ...provider,
+            apiKey: Buffer.from(encryptedApiKey, "base64").toString("utf8"),
+          })),
+        },
+        {
+          key: "defaultModelSelection",
+          value: {
+            modelId: stored.defaultModelId,
+            providerId: stored.defaultProviderId,
+            reasoning: defaultReasoning,
+          },
+        },
+        { key: "recentSelection", value: stored.recentSelection },
+      ]);
+      return;
+    }
+    if (this.configurationPath === null) throw new Error("Model configuration path is missing.");
     writeJsonDocument(this.configurationPath, stored);
+  }
+
+  private hasConfigurationSection(): boolean {
+    if (this.settings !== null) {
+      const providers = this.settings.readValue("providers");
+      return Array.isArray(providers) && providers.length > 0;
+    }
+    return this.configurationPath !== null && existsSync(this.configurationPath);
+  }
+
+  private migrateLegacyConfiguration(): void {
+    if (
+      this.settings === null
+      || this.settings.has("providers")
+      || this.legacyConfigurationPath === null
+      || !existsSync(this.legacyConfigurationPath)
+    ) return;
+    const legacy = this.readLegacyStoredConfiguration(this.legacyConfigurationPath);
+    const warnings: string[] = [];
+    const migrated = storedConfigurationV6Schema.parse({
+      ...legacy,
+      providers: legacy.providers.map((provider) => {
+        let apiKey = "";
+        try {
+          if (provider.encryptedApiKey.length > 0) apiKey = this.decodeLegacyApiKey(provider.encryptedApiKey);
+        } catch {
+          // Preserve the original ciphertext file; an unavailable old OS key
+          // must not prevent editing the new plaintext JSONC configuration.
+          warnings.push(provider.name);
+        }
+        return { ...provider, encryptedApiKey: Buffer.from(apiKey, "utf8").toString("base64") };
+      }),
+    });
+    this.writeStoredConfiguration(migrated);
+    this.credentialMigrationWarnings = warnings;
+  }
+
+  private encodeApiKey(apiKey: string): string {
+    if (this.settings !== null) return Buffer.from(apiKey, "utf8").toString("base64");
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error("Operating-system credential encryption is unavailable.");
+    }
+    return safeStorage.encryptString(apiKey).toString("base64");
+  }
+
+  private decodeApiKey(encodedApiKey: string): string {
+    return this.settings === null
+      ? this.decodeLegacyApiKey(encodedApiKey)
+      : Buffer.from(encodedApiKey, "base64").toString("utf8");
+  }
+
+  private decodeLegacyApiKey(encodedApiKey: string): string {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error("Operating-system credential decryption is unavailable.");
+    }
+    return safeStorage.decryptString(Buffer.from(encodedApiKey, "base64"));
   }
 }

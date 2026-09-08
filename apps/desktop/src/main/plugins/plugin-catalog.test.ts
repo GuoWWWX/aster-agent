@@ -1,10 +1,11 @@
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { AgentDatabase } from "../storage/agent-database.js";
-import { PluginCatalog } from "./plugin-catalog.js";
+import { SettingsJsoncFile } from "../settings/settings-jsonc-file.js";
+import { PluginCatalog, migrateLegacyPluginSettings } from "./plugin-catalog.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -40,8 +41,8 @@ describe("PluginCatalog", () => {
     const rootPath = await mkdtemp(path.join(os.tmpdir(), "agent-plugin-"));
     temporaryDirectories.push(rootPath);
     const pluginPath = await writePlugin(rootPath);
-    const database = new AgentDatabase(":memory:");
-    const catalog = new PluginCatalog(database, rootPath);
+    const settings = new SettingsJsoncFile(path.join(rootPath, "settings.jsonc"));
+    const catalog = new PluginCatalog(settings, rootPath);
 
     const first = await catalog.synchronize();
     expect(first.rejected).toEqual([]);
@@ -61,7 +62,9 @@ describe("PluginCatalog", () => {
     const second = await catalog.synchronize();
     expect(second.plugins[0]).toMatchObject({ enabled: false, id: "example.plugin" });
     expect(second.plugins[0]?.contentHash).not.toBe(first.plugins[0]?.contentHash);
-    database.close();
+    expect(settings.readValue("plugins")).toEqual([
+      { enabled: false, id: "example.plugin" },
+    ]);
   });
 
   it("rejects invalid or unsafe manifests without preventing other packages from being cataloged", async () => {
@@ -79,14 +82,37 @@ describe("PluginCatalog", () => {
       templates: [],
       version: "1.0.0",
     }), "utf8");
-    const database = new AgentDatabase(":memory:");
-    const catalog = new PluginCatalog(database, rootPath);
+    const catalog = new PluginCatalog(
+      new SettingsJsoncFile(path.join(rootPath, "settings.jsonc")),
+      rootPath,
+    );
 
     const result = await catalog.synchronize();
     expect(result.plugins.map((plugin) => plugin.id)).toEqual(["example.plugin"]);
     expect(result.rejected).toEqual([
       expect.objectContaining({ directoryName: "unsafe-plugin" }),
     ]);
+  });
+
+  it("imports legacy Plugin enable flags before the SQL catalog is removed", async () => {
+    const rootPath = await mkdtemp(path.join(os.tmpdir(), "agent-plugin-migration-"));
+    temporaryDirectories.push(rootPath);
+    const databasePath = path.join(rootPath, "db.sqlite");
+    const database = new DatabaseSync(databasePath);
+    database.exec(`
+      CREATE TABLE plugin_catalog (
+        id TEXT PRIMARY KEY,
+        enabled INTEGER NOT NULL
+      );
+      INSERT INTO plugin_catalog (id, enabled) VALUES ('example.plugin', 0);
+    `);
     database.close();
+    const settings = new SettingsJsoncFile(path.join(rootPath, "settings.jsonc"));
+
+    migrateLegacyPluginSettings(settings, databasePath);
+
+    expect(settings.readValue("plugins")).toEqual([
+      { enabled: false, id: "example.plugin" },
+    ]);
   });
 });

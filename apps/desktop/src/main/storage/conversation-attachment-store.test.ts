@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -36,7 +36,7 @@ async function createFixture() {
   const project = await projects.registerDirectory(projectRoot);
   const conversation = database.createConversation(project.id);
   const store = new ConversationAttachmentStore(database, projects, managedRoot);
-  return { conversation, database, databasePath, managedRoot, projectRoot, store };
+  return { conversation, database, databasePath, managedRoot, projectRoot, projects, store };
 }
 
 function createPdfFixture(): Buffer {
@@ -105,6 +105,33 @@ describe("ConversationAttachmentStore", () => {
     ));
     await expect(access(migrated.storedPath)).resolves.toBeUndefined();
     await expect(access(legacyStoredPath)).resolves.toBeUndefined();
+  });
+
+  it("rebases managed attachment paths after the application data root is moved", async () => {
+    const { conversation, database, managedRoot, projectRoot, projects, store } = await createFixture();
+    const sourcePath = path.join(projectRoot, "portable.txt");
+    await writeFile(sourcePath, "portable attachment", "utf8");
+    const [attachment] = await store.importFiles(conversation.id, [sourcePath]);
+    if (attachment === undefined) throw new Error("Expected an imported attachment.");
+    const originalPath = database.getConversationAttachment(
+      conversation.id,
+      attachment.id,
+    ).storedPath;
+    const movedRoot = path.join(path.dirname(managedRoot), "moved-conversations");
+    await cp(managedRoot, movedRoot, { recursive: true });
+    await rename(managedRoot, `${managedRoot}-offline`);
+    const movedStore = new ConversationAttachmentStore(database, projects, movedRoot);
+
+    await movedStore.migrateLegacyManagedRoots([]);
+
+    const rebasedPath = database.getConversationAttachment(conversation.id, attachment.id).storedPath;
+    expect(rebasedPath).toBe(path.join(
+      movedRoot,
+      conversation.id,
+      "attachments",
+      path.basename(originalPath),
+    ));
+    await expect(access(rebasedPath)).resolves.toBeUndefined();
   });
 
   it("snapshots project text and uploaded images, then binds them to one message", async () => {

@@ -2,6 +2,8 @@ import {
   createSkillMarkdown,
   DEFAULT_BROWSER_CONFIGURATION,
   DEFAULT_APPLICATION_SETTINGS,
+  APPLICATION_DATA_DIRECTORY_NAME,
+  APPLICATION_DISPLAY_NAME,
   CONTEXT_MESSAGE_OVERHEAD_TOKENS,
   DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
   DEFAULT_MODEL_CATALOG,
@@ -16,6 +18,7 @@ import {
   type SkillDocument,
   type SkillDiscoveryResult,
   type ApplicationSettings,
+  type ApplicationStorageLocation,
   type AddTeamWorkItemCommentInput,
   type DeleteTeamWorkItemInput,
   type BrowserConfiguration,
@@ -44,6 +47,8 @@ import {
   type ConversationSummary,
   type ConversationTaskList,
   type ConversationTimelineItem,
+  type ConversationTimelinePage,
+  type ConversationTimelinePageInput,
   type CreateProjectEntryInput,
   type CreateConfigurationWorkspaceEntryInput,
   type CreateConversationInput,
@@ -88,6 +93,7 @@ import {
   type UpdatePendingConversationMessageInput,
   type SetConversationArchivedInput,
   type SetConversationModelSelectionInput,
+  type SetConversationPermissionModeInput,
   type SetConversationProjectInput,
   type SetConversationPinnedInput,
   type SetProjectPinnedInput,
@@ -166,7 +172,7 @@ const MOCK_RESPONSE_DELAY_MS = 800;
 const MOCK_PROJECT: ProjectSummary = {
   id: "00000000-0000-4000-8000-000000000001",
   isPinned: false,
-  name: "Aster",
+  name: APPLICATION_DISPLAY_NAME,
   rootPath: "D:\\Code\\Project\\202608\\Agent",
 };
 
@@ -321,6 +327,16 @@ export class MockAgentClient implements AgentClient {
     DEFAULT_APPLICATION_SETTINGS,
   );
 
+  private applicationStorageLocation: ApplicationStorageLocation = {
+    activePath: `C:\\Users\\demo\\${APPLICATION_DATA_DIRECTORY_NAME}`,
+    canChange: true,
+    configuredPath: `C:\\Users\\demo\\${APPLICATION_DATA_DIRECTORY_NAME}`,
+    configurationError: false,
+    defaultPath: `C:\\Users\\demo\\${APPLICATION_DATA_DIRECTORY_NAME}`,
+    restartRequired: false,
+    source: "default",
+  };
+
   private readonly modelApiKeys = new Map<string, string>();
 
   private nextProviderIdentifier = 1;
@@ -378,6 +394,19 @@ export class MockAgentClient implements AgentClient {
   }
 
   public cancelRun(input: CancelRunInput): Promise<void> {
+    if ("conversationId" in input) {
+      const ids = new Set([input.conversationId]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const child of this.conversations) {
+          if (child.threadKind === "subagent" && child.parentConversationId !== null
+            && ids.has(child.parentConversationId) && !ids.has(child.id)) { ids.add(child.id); changed = true; }
+        }
+      }
+      return Promise.all([...this.activeRuns].filter(([, run]) => ids.has(run.conversationId))
+        .map(([runId]) => this.cancelRun({ runId }))).then(() => undefined);
+    }
     const activeRun = this.activeRuns.get(input.runId);
     if (activeRun === undefined) {
       return Promise.resolve();
@@ -443,6 +472,7 @@ export class MockAgentClient implements AgentClient {
       lastRunStatus: null,
       modelSelection: input.modelSelection ?? this.modelStatus.recentSelection,
       parentConversationId: null,
+      permissionMode: "ask_before_changes",
       pinOrder: null,
       projectId,
       teamId: input.teamId ?? null,
@@ -763,6 +793,7 @@ export class MockAgentClient implements AgentClient {
       lastRunStatus: null,
       modelSelection: source.modelSelection,
       parentConversationId: isSiblingFork ? null : source.id,
+      permissionMode: source.permissionMode ?? "ask_before_changes",
       pinOrder: null,
       projectId: source.projectId,
       teamId: source.teamId,
@@ -1222,6 +1253,25 @@ export class MockAgentClient implements AgentClient {
     return Promise.resolve(structuredClone(this.applicationSettings));
   }
 
+  public getApplicationStorageLocation(): Promise<ApplicationStorageLocation> {
+    return Promise.resolve(structuredClone(this.applicationStorageLocation));
+  }
+
+  public chooseApplicationStorageLocation(): Promise<ApplicationStorageLocation | null> {
+    return Promise.resolve(null);
+  }
+
+  public resetApplicationStorageLocation(): Promise<ApplicationStorageLocation> {
+    this.applicationStorageLocation = {
+      ...this.applicationStorageLocation,
+      configuredPath: this.applicationStorageLocation.defaultPath,
+      restartRequired:
+        this.applicationStorageLocation.activePath !== this.applicationStorageLocation.defaultPath,
+      source: "default",
+    };
+    return this.getApplicationStorageLocation();
+  }
+
   public getIntegrationConfiguration(): Promise<IntegrationConfiguration> {
     return Promise.resolve(structuredClone(this.integrationConfiguration));
   }
@@ -1352,6 +1402,32 @@ export class MockAgentClient implements AgentClient {
     return Promise.resolve([...timeline]);
   }
 
+  public listConversationTimelinePage(
+    input: ConversationTimelinePageInput,
+  ): Promise<ConversationTimelinePage> {
+    return this.listConversationTimeline(input).then((timeline) => {
+      let end = input.beforeSequence === undefined
+        ? timeline.length
+        : Math.max(0, input.beforeSequence - 1);
+      let start = Math.max(0, end - input.limit);
+      if (input.afterSequence !== undefined) {
+        start = input.afterSequence;
+        end = Math.min(timeline.length, start + input.limit);
+      } else if (input.aroundItemId !== undefined) {
+        const target = timeline.findIndex((item) => item.id === input.aroundItemId);
+        if (target < 0) throw new Error("Conversation timeline item was not found.");
+        start = Math.max(0, target - Math.floor(input.limit / 2));
+        end = Math.min(timeline.length, start + input.limit);
+      }
+      return {
+        hasMore: start > 0,
+        items: timeline.slice(start, end),
+        nextBeforeSequence: start > 0 ? start + 1 : null,
+        nextAfterSequence: end < timeline.length ? end : null,
+      };
+    });
+  }
+
   public searchConversations(input: ConversationSearchInput): Promise<ConversationSearchResult[]> {
     const query = input.query.toLocaleLowerCase();
     const results: ConversationSearchResult[] = [];
@@ -1368,6 +1444,7 @@ export class MockAgentClient implements AgentClient {
           parentConversationId: conversation.parentConversationId,
           projectId: conversation.projectId,
           role: item.kind === "agent_message" ? "agent" : item.role,
+          sequence: results.length + 1,
           threadKind: conversation.threadKind,
         });
         if (results.length >= input.limit) return Promise.resolve(results);
@@ -1896,6 +1973,20 @@ export class MockAgentClient implements AgentClient {
     return Promise.resolve({ ...conversation });
   }
 
+  public setConversationPermissionMode(
+    input: SetConversationPermissionModeInput,
+  ): Promise<ConversationSummary> {
+    const conversation = this.conversations.find(
+      (candidate) => candidate.id === input.conversationId,
+    );
+    if (conversation === undefined) {
+      return Promise.reject(new Error("Conversation was not found."));
+    }
+    conversation.permissionMode = input.permissionMode;
+    conversation.updatedAt = new Date().toISOString();
+    return Promise.resolve({ ...conversation });
+  }
+
   public renameProject(input: RenameProjectInput): Promise<ProjectSummary> {
     if (this.project?.id !== input.projectId) {
       return Promise.reject(new Error("The mock project is unavailable."));
@@ -2077,6 +2168,8 @@ export class MockAgentClient implements AgentClient {
       conversation.agentId = input.agent.id;
       conversation.avatarIcon = input.agent.avatarIcon ?? null;
     }
+    conversation.permissionMode = input.permissionMode ?? conversation.permissionMode
+      ?? "ask_before_changes";
 
     const now = new Date().toISOString();
     const runId = this.createIdentifier();

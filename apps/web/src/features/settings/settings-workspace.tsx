@@ -47,11 +47,15 @@ import {
 
 import {
   ARCHIVED_CONVERSATION_RETENTION_DAYS,
+  APPLICATION_DISPLAY_NAME,
+  APPLICATION_HOME_ENVIRONMENT_VARIABLE,
   DEFAULT_BROWSER_CONFIGURATION,
   DEFAULT_TERMINAL_CONFIGURATION,
+  LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
   DEFAULT_MODEL_CATALOG,
   DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
   type ContextCompressionConfiguration,
+  type ApplicationStorageLocation,
   type BrowserConfiguration,
   type ContextCompressionThreshold,
   type ConversationPermissionMode,
@@ -283,7 +287,7 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
         </nav>
 
         <div className="settings-content">
-          {activeSection === "general" ? <GeneralSettings /> : null}
+          {activeSection === "general" ? <GeneralSettings agentClient={agentClient} /> : null}
           {activeSection === "models" ? (
             <ModelsSettings agentClient={agentClient} />
           ) : null}
@@ -311,7 +315,7 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
   );
 }
 
-function GeneralSettings(): ReactElement {
+function GeneralSettings({ agentClient }: { agentClient: AgentClient }): ReactElement {
   const defaultPermissionMode = useApplicationSettingsStore((state) => state.defaultPermissionMode);
   const defaultMessageDeliveryMode = useApplicationSettingsStore(
     (state) => state.defaultMessageDeliveryMode,
@@ -334,6 +338,51 @@ function GeneralSettings(): ReactElement {
   const setProjectNavigatorOpen = useWorkbenchUiStore(
     (state) => state.setProjectNavigatorOpen,
   );
+  const [storageLocation, setStorageLocation] = useState<ApplicationStorageLocation | null>(null);
+  const [storageLocationBusy, setStorageLocationBusy] = useState(false);
+  const [storageLocationError, setStorageLocationError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    void agentClient.getApplicationStorageLocation().then(
+      (location) => {
+        if (!disposed) setStorageLocation(location);
+      },
+      (error) => {
+        if (!disposed) setStorageLocationError(
+          getUserErrorMessage(error, "无法读取软件数据目录"),
+        );
+      },
+    );
+    return () => {
+      disposed = true;
+    };
+  }, [agentClient]);
+
+  const chooseStorageLocation = async (): Promise<void> => {
+    setStorageLocationBusy(true);
+    setStorageLocationError(null);
+    try {
+      const location = await agentClient.chooseApplicationStorageLocation();
+      if (location !== null) setStorageLocation(location);
+    } catch (error) {
+      setStorageLocationError(getUserErrorMessage(error, "无法选择软件数据目录"));
+    } finally {
+      setStorageLocationBusy(false);
+    }
+  };
+
+  const resetStorageLocation = async (): Promise<void> => {
+    setStorageLocationBusy(true);
+    setStorageLocationError(null);
+    try {
+      setStorageLocation(await agentClient.resetApplicationStorageLocation());
+    } catch (error) {
+      setStorageLocationError(getUserErrorMessage(error, "无法恢复默认数据目录"));
+    } finally {
+      setStorageLocationBusy(false);
+    }
+  };
 
   return (
     <SettingsSectionHeader
@@ -467,6 +516,73 @@ function GeneralSettings(): ReactElement {
             </label>
           </article>
         </div>
+      </section>
+
+      <section className="settings-general-category" aria-labelledby="storage-location-heading">
+        <h3 id="storage-location-heading">数据存储</h3>
+        <div className="settings-general-card">
+          <article className="settings-general-row">
+            <div className="min-w-0 flex-1">
+              <h4>{APPLICATION_DISPLAY_NAME} 数据目录</h4>
+              <p>保存配置、对话、附件、本地数据库和无项目对话的工作文件。</p>
+              <code
+                className="mt-[5px] block truncate rounded-[var(--app-radius-small)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] px-2 py-1 font-mono text-[length:var(--app-font-size-control)] text-[var(--app-foreground)]"
+                title={storageLocation?.activePath}
+              >
+                {storageLocation?.activePath ?? "正在读取…"}
+              </code>
+              {storageLocation?.restartRequired ? (
+                <p className="break-all text-[var(--app-status-warning-fg)]">
+                  重启后使用：{storageLocation.configuredPath}。原目录内容不会被删除或自动搬迁。
+                </p>
+              ) : null}
+              {storageLocation?.source === "environment" ? (
+                <p>
+                  当前由 {APPLICATION_HOME_ENVIRONMENT_VARIABLE} 或兼容的
+                  {` ${LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE}`} 环境变量控制。
+                </p>
+              ) : null}
+              {storageLocation?.configurationError ? (
+                <p className="text-[var(--app-destructive)]">
+                  目录设置无法读取，当前已回退到默认目录；重新选择或恢复默认可修复。
+                </p>
+              ) : null}
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-[5px]">
+              <button
+                className="settings-secondary-button"
+                disabled={storageLocationBusy || storageLocation === null || !storageLocation.canChange}
+                type="button"
+                onClick={() => void chooseStorageLocation()}
+              >
+                {storageLocationBusy ? (
+                  <LoaderCircle aria-hidden="true" className="settings-spin" size={14} />
+                ) : (
+                  <FolderOpen aria-hidden="true" size={14} />
+                )}
+                选择目录
+              </button>
+              <button
+                className="settings-secondary-button"
+                disabled={
+                  storageLocationBusy
+                  || storageLocation === null
+                  || !storageLocation.canChange
+                  || (storageLocation.source === "default"
+                    && !storageLocation.configurationError
+                    && !storageLocation.restartRequired)
+                }
+                type="button"
+                onClick={() => void resetStorageLocation()}
+              >
+                恢复默认
+              </button>
+            </div>
+          </article>
+        </div>
+        {storageLocationError === null ? null : (
+          <p className="settings-operation-error" role="alert">{storageLocationError}</p>
+        )}
       </section>
     </SettingsSectionHeader>
   );

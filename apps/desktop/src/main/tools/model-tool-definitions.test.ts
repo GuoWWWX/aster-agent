@@ -127,6 +127,13 @@ describe("model tool definitions", () => {
       throw new Error("Missing read_file.endLine description.");
     }
     expect(endLineDescription).toContain("400");
+    expect(property(definitions, "read_file", "lineCount")).toMatchObject({
+      type: "integer", minimum: 1, maximum: 400,
+    });
+    // A default here would inject lineCount even when the model chooses endLine.
+    expect(property(definitions, "read_file", "lineCount")).not.toHaveProperty("default");
+    expect(definition(definitions, "read_file").parameters.required).toEqual(["path"]);
+    expect(endLineDescription).toContain("lineCount");
 
     const taskItems = property(definitions, "update_task_list", "tasks").items;
     if (!isRecord(taskItems) || !isRecord(taskItems.properties)) {

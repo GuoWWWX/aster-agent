@@ -2,16 +2,20 @@ import { ArrowDown, ArrowUp, Search, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactElement,
   type RefObject,
 } from "react";
 
+import type { ConversationSearchResult } from "@agent/protocol";
+
 import { IconButton } from "../../components/ui/icon-button.js";
 
 const MATCH_HIGHLIGHT = "conversation-find-match";
 const ACTIVE_HIGHLIGHT = "conversation-find-active";
+const REMOTE_SEARCH_PAGE_SIZE = 100;
 const MAX_MATCHES = 500;
 
 type HighlightConstructor = new (...ranges: Range[]) => unknown;
@@ -96,17 +100,25 @@ export function scrollConversationMatchIntoView(root: HTMLElement, range: Range)
 export function ConversationFindBar({
   active,
   containerRef,
+  onReveal,
   revision,
+  search,
 }: {
   active: boolean;
   containerRef: RefObject<HTMLDivElement | null>;
+  onReveal?: (result: ConversationSearchResult) => Promise<void>;
   revision: unknown;
+  search?: (query: string, beforeSequence?: number) => Promise<ConversationSearchResult[]>;
 }): ReactElement | null {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isOpen, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [matches, setMatches] = useState<Range[]>([]);
+  const [searchResults, setSearchResults] = useState<ConversationSearchResult[]>([]);
+  const [searchResultsQuery, setSearchResultsQuery] = useState("");
+  const [searchHasMore, setSearchHasMore] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
+  const searchRequestIdRef = useRef(0);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -144,32 +156,106 @@ export function ConversationFindBar({
   }, [containerRef, isOpen, query, revision]);
 
   useEffect(() => {
+    const requestId = ++searchRequestIdRef.current;
+    if (!isOpen || query.length === 0 || search === undefined) {
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      void search(query).then((results) => {
+        if (requestId !== searchRequestIdRef.current) return;
+        setSearchResults(results);
+        setSearchResultsQuery(query);
+        setSearchHasMore(results.length === REMOTE_SEARCH_PAGE_SIZE);
+        setActiveIndex(0);
+      }).catch(() => {
+        if (requestId === searchRequestIdRef.current) {
+          setSearchResults([]);
+          setSearchResultsQuery(query);
+          setSearchHasMore(false);
+        }
+      });
+    }, 120);
+    return () => window.clearTimeout(timeout);
+  }, [isOpen, query, search]);
+
+  const visibleSearchResults = useMemo(
+    () => searchResultsQuery === query ? searchResults : [],
+    [query, searchResults, searchResultsQuery],
+  );
+
+  useEffect(() => {
+    const result = visibleSearchResults[activeIndex];
+    if (!isOpen || result === undefined || onReveal === undefined) return;
+    void onReveal(result);
+  }, [activeIndex, isOpen, onReveal, visibleSearchResults]);
+
+  useEffect(() => {
     clearHighlights();
     if (!isOpen || matches.length === 0) return;
     const api = highlightApi();
     if (api !== null) {
       api.registry.set(MATCH_HIGHLIGHT, new api.Highlight(...matches));
-      const activeMatch = matches[activeIndex];
+      const activeResult = visibleSearchResults[activeIndex];
+      const activeMatch = activeResult === undefined
+        ? matches[activeIndex]
+        : matches.find((range) => range.startContainer.parentElement?.closest<HTMLElement>(
+            "[data-conversation-timeline-item]",
+          )?.dataset.conversationTimelineItem === activeResult.itemId);
       if (activeMatch !== undefined) {
         api.registry.set(ACTIVE_HIGHLIGHT, new api.Highlight(activeMatch));
       }
     }
-    const activeMatch = matches[activeIndex];
+    const activeResult = visibleSearchResults[activeIndex];
+    const activeMatch = activeResult === undefined
+      ? matches[activeIndex]
+      : matches.find((range) => range.startContainer.parentElement?.closest<HTMLElement>(
+          "[data-conversation-timeline-item]",
+        )?.dataset.conversationTimelineItem === activeResult.itemId);
     const root = containerRef.current;
     if (activeMatch !== undefined && root !== null) {
       scrollConversationMatchIntoView(root, activeMatch);
     }
     return clearHighlights;
-  }, [activeIndex, containerRef, isOpen, matches]);
+  }, [activeIndex, containerRef, isOpen, matches, visibleSearchResults]);
 
   useEffect(() => clearHighlights, []);
 
   const move = (direction: -1 | 1): void => {
-    if (matches.length === 0) return;
-    setActiveIndex((current) => (current + direction + matches.length) % matches.length);
+    const matchCount = visibleSearchResults.length > 0
+      ? visibleSearchResults.length
+      : matches.length;
+    if (matchCount === 0) return;
+    if (
+      direction === 1
+      && visibleSearchResults.length > 0
+      && activeIndex === visibleSearchResults.length - 1
+      && searchHasMore
+      && search !== undefined
+    ) {
+      const beforeSequence = visibleSearchResults.at(-1)?.sequence;
+      if (beforeSequence === undefined) return;
+      const requestId = ++searchRequestIdRef.current;
+      void search(query, beforeSequence).then((results) => {
+        if (requestId !== searchRequestIdRef.current) return;
+        const knownItemIds = new Set(visibleSearchResults.map((result) => result.itemId));
+        const olderResults = results.filter((result) => !knownItemIds.has(result.itemId));
+        setSearchHasMore(results.length === REMOTE_SEARCH_PAGE_SIZE);
+        if (olderResults.length === 0) {
+          setActiveIndex(0);
+          return;
+        }
+        setSearchResults((current) => [...current, ...olderResults]);
+        setActiveIndex(visibleSearchResults.length);
+      }).catch(() => setSearchHasMore(false));
+      return;
+    }
+    setActiveIndex((current) => (current + direction + matchCount) % matchCount);
   };
 
   if (!active || !isOpen) return null;
+  const matchCount = visibleSearchResults.length > 0
+    ? visibleSearchResults.length
+    : matches.length;
   return (
     <div
       className="absolute right-3 top-2 z-40 flex h-9 w-[min(430px,calc(100%-24px))] items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-panel)] px-2 shadow-lg"
@@ -194,12 +280,14 @@ export function ConversationFindBar({
         }}
       />
       <span className="min-w-14 shrink-0 text-center text-xs tabular-nums text-[var(--app-muted-foreground)]">
-        {query.length === 0 || matches.length === 0 ? `0 / ${matches.length}` : `${activeIndex + 1} / ${matches.length}`}
+        {query.length === 0 || matchCount === 0
+          ? `0 / ${matchCount}`
+          : `${activeIndex + 1} / ${matchCount}${searchHasMore ? "+" : ""}`}
       </span>
-      <IconButton disabled={matches.length === 0} label="上一个匹配项" size="compact" variant="quiet" onClick={() => move(-1)}>
+      <IconButton disabled={matchCount === 0} label="上一个匹配项" size="compact" variant="quiet" onClick={() => move(-1)}>
         <ArrowUp aria-hidden="true" size={15} />
       </IconButton>
-      <IconButton disabled={matches.length === 0} label="下一个匹配项" size="compact" variant="quiet" onClick={() => move(1)}>
+      <IconButton disabled={matchCount === 0} label="下一个匹配项" size="compact" variant="quiet" onClick={() => move(1)}>
         <ArrowDown aria-hidden="true" size={15} />
       </IconButton>
       <IconButton label="关闭查找" size="compact" variant="quiet" onClick={close}>

@@ -8,6 +8,7 @@ import {
   cancelRunInputSchema,
   conversationContextUsageInputSchema,
   conversationSearchInputSchema,
+  conversationTimelinePageInputSchema,
   conversationReferenceInputSchema,
   importConversationAttachmentBytesInputSchema,
   forkConversationInputSchema,
@@ -25,6 +26,7 @@ import {
   replaceLatestConversationMessageInputSchema,
   setConversationArchivedInputSchema,
   setConversationModelSelectionInputSchema,
+  setConversationPermissionModeInputSchema,
   setConversationProjectInputSchema,
   setConversationPinnedInputSchema,
   saveModelConfigurationInputSchema,
@@ -170,6 +172,10 @@ export const setConversationModelSelectionIpcArgumentsSchema = z.tuple([
   setConversationModelSelectionInputSchema
 ]);
 
+export const setConversationPermissionModeIpcArgumentsSchema = z.tuple([
+  setConversationPermissionModeInputSchema
+]);
+
 export const setConversationArchivedIpcArgumentsSchema = z.tuple([
   setConversationArchivedInputSchema
 ]);
@@ -180,6 +186,10 @@ export const setConversationPinnedIpcArgumentsSchema = z.tuple([
 
 export const conversationReferenceIpcArgumentsSchema = z.tuple([
   conversationReferenceInputSchema
+]);
+
+export const conversationTimelinePageIpcArgumentsSchema = z.tuple([
+  conversationTimelinePageInputSchema,
 ]);
 
 export const conversationSearchIpcArgumentsSchema = z.tuple([

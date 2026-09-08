@@ -21,6 +21,7 @@ import {
 } from "electron";
 
 import {
+  APPLICATION_DISPLAY_NAME,
   managedBrowserEventSchema,
   managedBrowserSessionSchema,
   managedBrowserSnapshotSchema,
@@ -1321,7 +1322,7 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
       const image = await webContents.capturePage();
       const png = image.toPNG();
       const timestamp = new Date().toISOString().replaceAll(":", "-").replace(/\.\d{3}Z$/u, "");
-      const fileName = `Aster 截图 ${timestamp}.png`;
+      const fileName = `${APPLICATION_DISPLAY_NAME} 截图 ${timestamp}.png`;
       const savePath = resolveBrowserDownloadPath(fileName, downloads);
       await writeFile(savePath, png);
       downloads.unshift({

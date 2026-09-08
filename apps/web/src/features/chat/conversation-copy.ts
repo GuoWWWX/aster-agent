@@ -42,11 +42,24 @@ export function formatConversationRunMarkdown(
   assistantMessage: ConversationMessageItem,
 ): string {
   const runId = assistantMessage.runId;
+  const messageIndex = timeline.findIndex((item) => item.id === assistantMessage.id);
+  let turnStart = messageIndex;
+  while (turnStart > 0) {
+    const previous = timeline[turnStart - 1];
+    if ((previous?.kind === "message" && previous.role === "user")
+      || (previous?.kind === "agent_message" && previous.messageType !== "task_result")) break;
+    turnStart -= 1;
+  }
+  const turnItems = messageIndex < 0 ? [] : timeline.slice(turnStart, messageIndex + 1);
+  const includesContinuation = turnItems.some((item) =>
+    (item.kind === "agent_message" && item.messageType === "task_result")
+    || (item.kind === "message" && item.role === "assistant" && item.runId !== runId));
+  const source = includesContinuation ? turnItems : timeline;
   const runItems = runId === null
     ? []
-    : timeline.filter(
+    : source.filter(
       (item): item is ConversationMessageItem | ConversationToolItem =>
-        item.runId === runId
+        (includesContinuation || item.runId === runId)
         && (item.kind === "message" || (item.kind === "tool" && item.name !== "compact_context")),
     );
   const assistantItems = runItems.filter(
