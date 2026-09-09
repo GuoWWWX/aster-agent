@@ -16,6 +16,26 @@ const OPERATION_OWNER: ProjectOperationOwner = {
 };
 
 describe("WorkspaceTerminalTool", () => {
+  it("accepts null unused fields from strict-output providers without loosening action validation", async () => {
+    const sessions = { close: vi.fn(), isActive: vi.fn(() => true), open: vi.fn(), readOutput: vi.fn(), write: vi.fn() };
+    const tool = new WorkspaceTerminalTool(new WorkspaceTerminalTabController(), sessions, { executeApprovedCommandAction: vi.fn() });
+    const fields = { afterCursor: null, columns: null, command: null, expectedContext: null, maxChars: null, name: null, rows: null, terminalId: null, yieldTimeMs: null };
+    const execute = (args: Record<string, unknown>) => tool.execute({
+      conversationId: CONVERSATION_ID, operationOwner: OPERATION_OWNER, projectId: PROJECT_ID,
+      rawArguments: JSON.stringify(args), signal: new AbortController().signal, toolName: TERMINAL_CONTROL_TOOL_NAME,
+    });
+    expect(tool.getDefinitions()[0]?.parameters).toHaveProperty(
+      "properties.terminalId.anyOf", expect.arrayContaining([{ type: "null" }]),
+    );
+    expect(await execute({ ...fields, action: "create", name: "调试" })).toMatchObject({ kind: "approved_action" });
+    expect(await execute({ ...fields, action: "list" })).toMatchObject({ kind: "completed", isError: false });
+    expect(await execute({ ...fields, action: "write" })).toMatchObject({ kind: "completed", isError: true });
+    expect(await execute({ ...fields, action: "create", command: "echo wrong" })).toMatchObject({ kind: "completed", isError: true });
+    expect(await execute({ ...fields, action: "create", unknown: true })).toMatchObject({ kind: "completed", isError: true });
+    expect(sessions.open).not.toHaveBeenCalled();
+    expect(sessions.write).not.toHaveBeenCalled();
+  });
+
   it("creates one persistent PTY-backed side terminal, then writes and reads it", async () => {
     const controller = new WorkspaceTerminalTabController();
     const closedTabs: string[] = [];

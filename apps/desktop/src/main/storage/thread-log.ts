@@ -549,7 +549,7 @@ export class ThreadLog {
           target.locations.push({ record, legacyIndex: position - oldLength });
           message.content = "";
           message.toolCalls = [];
-          if (message.providerState?.usage !== undefined) {
+          if (message.providerState?.usage !== undefined || message.providerState?.firstTokenLatencyMs !== undefined) {
             message.providerState = { ...message.providerState, payload: null };
           } else {
             delete message.providerState;

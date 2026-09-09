@@ -9,7 +9,15 @@ import type { ConversationTimelineItem, ProjectSummary } from "@agent/protocol";
 import { TooltipProvider } from "../../components/ui/tooltip.js";
 import { MockAgentClient } from "../../runtime/index.js";
 import type { ProjectSession } from "../projects/project-session-model.js";
-import { ConversationHeaderControls } from "./conversation-header-controls.js";
+import { ConversationHeaderControls, gitStatusLabel } from "./conversation-header-controls.js";
+
+it.each([
+  ["??", "未跟踪"], [" M", "修改"], ["A ", "新增"], [" D", "删除"],
+  ["R ", "重命名"], ["C ", "复制"], [" T", "类型变更"], ["MM", "修改"],
+  ["AM", "新增 / 修改"], ["UU", "冲突"], ["AA", "冲突"], ["DD", "冲突"],
+])("translates Git status %s", (status, label) => {
+  expect(gitStatusLabel(status)).toBe(label);
+});
 
 const PROJECT_ID = "00000000-0000-4000-8000-000000000001";
 const PARENT_ID = "00000000-0000-4000-8000-000000000002";
@@ -112,18 +120,19 @@ describe("ConversationHeaderControls", () => {
     const client = new MockAgentClient();
     enableGit(client);
     vi.spyOn(client, "getGitReviewSnapshot").mockResolvedValue({
-      ahead: 0,
-      behind: 0,
+      ahead: 2,
+      behind: 1,
       branch: "feature/header-controls",
       branches: [],
       changes: [
         { additions: 12, deletions: 3, isStaged: false, originalPath: null, path: "apps/web/src/app.tsx", status: " M" },
         { additions: 5, deletions: 1, isStaged: true, originalPath: null, path: "doc/14-业务上下文.md", status: "M " },
+        { additions: null, deletions: null, isStaged: false, originalPath: null, path: "build/BubbleSort.class", status: "??" },
       ],
       isRepository: true,
       projectId: PROJECT_ID,
       refreshedAt: "2026-09-04T00:00:00.000Z",
-      upstream: null,
+      upstream: "origin/develop",
     });
     const onOpenGitReview = vi.fn();
     const container = renderControls(client, [], vi.fn(), onOpenGitReview);
@@ -141,13 +150,23 @@ describe("ConversationHeaderControls", () => {
     expect(trigger?.textContent).toContain("feature/header-controls");
     expect(trigger?.textContent).toContain("+17");
     expect(trigger?.textContent).toContain("−4");
+    expect(trigger?.textContent).not.toContain("· 3");
 
     await act(async () => {
       trigger?.click();
       await Promise.resolve();
     });
     expect(trigger?.dataset.open).toBe("true");
-    expect(document.body.textContent).toContain("apps/web/src/app.tsx");
+    expect(document.body.textContent).toContain("app.tsx");
+    expect(document.body.textContent).toContain("+17");
+    expect(document.body.textContent).toContain("−4");
+    expect(document.body.textContent).toContain("未暂存 · 2");
+    expect(document.body.textContent).toContain("二进制");
+    expect(document.body.textContent).toContain("未跟踪");
+    expect(document.body.textContent).not.toContain("??");
+    expect(document.body.textContent).toContain("↓ 1 待拉取 · ↑ 2 待推送");
+    expect(document.body.textContent).toContain("已暂存 · 1");
+    expect(document.body.textContent).toContain("切换分支 · 更新 · 提交 · 推送");
     const fileButton = document.body.querySelector<HTMLButtonElement>(
       '[aria-label="查看 apps/web/src/app.tsx 的文件差异"]',
     );

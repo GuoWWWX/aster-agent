@@ -619,7 +619,7 @@
 }
 
 .workflow-canvas__surface[data-drag-active="true"] {
-  outline: 2px dashed var(--app-muted-foreground);
+  outline: 2px solid var(--app-accent);
   outline-offset: -5px;
 }
 

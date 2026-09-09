@@ -57,11 +57,30 @@ async function createFixture() {
     conversation,
     imageAttachment,
     textAttachment,
+    store,
     tool: new ConversationAttachmentTool(store)
   };
 }
 
 describe("ConversationAttachmentTool", () => {
+  it("views uploaded, pasted and project images with paths in input order", async () => {
+    const { conversation, imageAttachment, store, tool } = await createFixture();
+    const pasted = await store.importBytes(conversation.id, { name: "paste.png", mimeType: "image/png", bytes: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nksAAAAASUVORK5CYII=", "base64") });
+    const projectImage = { projectId: conversation.projectId, path: "pixel.png", mimeType: "image/png" };
+    const result = await tool.viewImages(conversation.id, JSON.stringify({ paths: [
+      `attachments/${imageAttachment.id}.png`, "pixel.png", `attachments/${pasted.id}.png`,
+    ] }), () => Promise.resolve({ isError: false, content: JSON.stringify({ ok: true, value: { image: projectImage } }) }), new AbortController().signal);
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toMatchObject({ value: { items: [
+      { attachment: { id: imageAttachment.id } }, { image: projectImage }, { attachment: { id: pasted.id } },
+    ] } });
+    expect(result.modelAttachments).toHaveLength(2);
+    expect(result.modelAttachments?.[0]?.readPath).toBe(`attachments/${imageAttachment.id}.png`);
+    expect(JSON.stringify(tool.getDefinitions())).toContain('"paths"');
+    expect(tool.getDefinitions().find((item) => item.name === "view_attachments")?.parameters.required).toEqual(["paths"]);
+    const rejected = await tool.viewImages(conversation.id, JSON.stringify({ paths: ["attachments/00000000-0000-4000-8000-000000000001.png"] }), () => { throw new Error("Must not fall back to workspace"); }, new AbortController().signal);
+    expect(rejected.isError).toBe(true);
+  });
   it("returns a bounded text range and an empty range past the end", async () => {
     const { conversation, textAttachment, tool } = await createFixture();
 

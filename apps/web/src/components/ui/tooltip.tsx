@@ -41,7 +41,7 @@ export function TooltipAnchor({
       <TooltipPrimitive.Portal>
         <TooltipPrimitive.Content
           className={cn(
-            "z-[120] max-w-64 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-2 py-1 text-[length:var(--app-font-size-caption)] font-medium leading-4 text-[var(--app-foreground)] shadow-md",
+            "z-[120] max-w-64 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-tooltip-background)] px-2 py-1 text-[length:var(--app-font-size-caption)] font-medium leading-4 text-[var(--app-foreground)] shadow-md",
             contentClassName,
           )}
           collisionPadding={5}
@@ -49,7 +49,7 @@ export function TooltipAnchor({
           sideOffset={5}
         >
           {content}
-          <TooltipPrimitive.Arrow className="fill-[var(--app-panel)]" />
+          <TooltipPrimitive.Arrow className="fill-[var(--app-tooltip-background)]" />
         </TooltipPrimitive.Content>
       </TooltipPrimitive.Portal>
     </TooltipPrimitive.Root>

@@ -287,6 +287,7 @@ export class MockAgentClient implements AgentClient {
   private readonly timelines = new Map<string, ConversationTimelineItem[]>();
 
   private readonly pendingMessages = new Map<string, ConversationPendingMessage[]>();
+  private readonly pendingQueuePaused = new Map<string, boolean>();
 
   private readonly taskLists = new Map<string, ConversationTaskList>();
 
@@ -416,6 +417,7 @@ export class MockAgentClient implements AgentClient {
       clearTimeout(activeRun.timeout);
     }
     this.activeRuns.delete(input.runId);
+    void this.setConversationPendingQueuePaused({ conversationId: activeRun.conversationId, paused: true });
     const conversation = this.conversations.find(
       (candidate) => candidate.id === activeRun.conversationId,
     );
@@ -1459,6 +1461,17 @@ export class MockAgentClient implements AgentClient {
     return Promise.resolve(structuredClone(this.pendingMessages.get(input.conversationId) ?? []));
   }
 
+  public getConversationPendingQueuePaused(input: ConversationReferenceInput): Promise<boolean> {
+    return Promise.resolve(this.pendingQueuePaused.get(input.conversationId) ?? false);
+  }
+
+  public setConversationPendingQueuePaused(input: ConversationReferenceInput & { paused: boolean }): Promise<boolean> {
+    this.pendingQueuePaused.set(input.conversationId, input.paused);
+    this.emitConversationRunEvent({ type: "pending_messages.updated", conversationId: input.conversationId,
+      pendingMessages: structuredClone(this.pendingMessages.get(input.conversationId) ?? []), queuePaused: input.paused });
+    return Promise.resolve(input.paused);
+  }
+
   public markConversationResultViewed(
     input: ConversationReferenceInput,
   ): Promise<ConversationSummary> {
@@ -2035,6 +2048,10 @@ export class MockAgentClient implements AgentClient {
     return this.listProjects();
   }
 
+  public openProjectDirectory(): Promise<void> {
+    return Promise.reject(new Error("请在桌面应用中打开项目目录"));
+  }
+
   public removeProject(input: ProjectReferenceInput): Promise<void> {
     if (this.project?.id !== input.projectId) {
       return Promise.reject(new Error("The mock project is unavailable."));
@@ -2279,7 +2296,7 @@ export class MockAgentClient implements AgentClient {
           type: "run.finished",
         });
         const nextPending = this.pendingMessages.get(conversation.id)?.[0];
-        if (nextPending !== undefined) {
+        if (nextPending !== undefined && !this.pendingQueuePaused.get(conversation.id)) {
           const remaining = (this.pendingMessages.get(conversation.id) ?? []).slice(1);
           this.pendingMessages.set(conversation.id, remaining);
           this.emitConversationRunEvent({

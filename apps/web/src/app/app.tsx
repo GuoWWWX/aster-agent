@@ -10,6 +10,7 @@ import type {
 } from "@agent/protocol";
 
 import { AppShell } from "../components/layout/app-shell.js";
+import { moveTabId } from "../components/ui/tab-order.js";
 import { MediaPreviewDialogHost } from "../components/media/image-viewer.js";
 import { GlobalConversationSearchDialog } from "../features/chat/global-conversation-search-dialog.js";
 import {
@@ -605,8 +606,13 @@ export function App(): ReactElement {
         onCloseOtherConversationTabs={closeOtherConversationTitlebarTabs}
         onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
         onSelectConversationTab={selectSession}
+        onMoveConversationTab={(source, target, side) => {
+          setOpenConversationIds((current) => moveTabId(current, source, target, side));
+        }}
         projectNavigator={
         <ProjectNavigator
+          onCopyText={(text) => agentClient.writeClipboardText(text)}
+          onOpenProjectDirectory={(projectId) => agentClient.openProjectDirectory({ projectId })}
           activeSessionId={projectSessions.activeSessionId}
           agents={agents}
           isCreatingSession={projectSessions.isCreatingSession}

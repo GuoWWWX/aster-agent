@@ -4,7 +4,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
-import type { TerminalSession } from "@agent/protocol";
+import type { TerminalSession, TerminalSessionEvent } from "@agent/protocol";
 
 import { type AgentClient } from "../../runtime/index.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
@@ -37,6 +37,7 @@ export function TerminalWorkspace({
   const onSessionOpenedRef = useRef(onSessionOpened);
   const sessionRef = useRef(session);
   const openSessionRef = useRef<(() => void) | null>(null);
+  const resizeRef = useRef<(() => void) | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const terminalConfigurationRef = useRef(terminalConfiguration);
   const { fontFamily, fontSize, lineHeight } = terminalConfiguration;
@@ -71,6 +72,7 @@ export function TerminalWorkspace({
     terminal.options.fontSize = fontSize;
     terminal.options.lineHeight = lineHeight;
     terminal.refresh(0, Math.max(0, terminal.rows - 1));
+    resizeRef.current?.();
   }, [
     fontFamily,
     fontSize,
@@ -81,9 +83,13 @@ export function TerminalWorkspace({
     const container = containerRef.current;
     if (container === null) return undefined;
     const configuration = terminalConfigurationRef.current;
+    const colors = getComputedStyle(container);
     const terminal = new Terminal({
       allowProposedApi: false,
-      convertEol: true,
+      convertEol: false,
+      cols: sessionRef.current?.initialSize?.columns ?? 80,
+      rows: sessionRef.current?.initialSize?.rows ?? 24,
+      ...(sessionRef.current?.windowsPty === undefined ? {} : { windowsPty: sessionRef.current.windowsPty }),
       cursorBlink: true,
       fontFamily: configuration.fontFamily,
       fontSize: configuration.fontSize,
@@ -92,7 +98,9 @@ export function TerminalWorkspace({
       theme: {
         background: "#181818",
         foreground: "#e6e6e6",
-        selectionBackground: "#3a3a3a",
+        selectionBackground: colors.getPropertyValue("--app-text-selection").trim(),
+        selectionInactiveBackground: colors.getPropertyValue("--app-text-selection").trim(),
+        selectionForeground: colors.getPropertyValue("--app-text-selection-foreground").trim(),
       },
     });
     terminal.attachCustomKeyEventHandler(shouldHandleTerminalKeyEvent);
@@ -113,8 +121,9 @@ export function TerminalWorkspace({
       webglAddon?.dispose();
       webglAddon = null;
     }
-    terminal.writeln("\x1b[90m正在启动项目终端…\x1b[0m");
-
+    let replaying = true;
+    let outputCursor = 0;
+    const replayEvents: TerminalSessionEvent[] = [];
     const pendingOutput: string[] = [];
     let outputFrame: number | null = null;
     const flushOutput = (): void => {
@@ -128,9 +137,14 @@ export function TerminalWorkspace({
       if (outputFrame !== null) return;
       outputFrame = window.requestAnimationFrame(flushOutput);
     };
-    const disposeEvent = agentClient.onTerminalSessionEvent((event) => {
-      if (event.sessionId !== sessionRef.current?.sessionId) return;
-      if (event.type === "data") queueOutput(event.data);
+    const appendOutput = (data: string, nextCursor: number): void => {
+      if (nextCursor <= outputCursor) return;
+      const startCursor = nextCursor - data.length;
+      queueOutput(data.slice(Math.max(0, outputCursor - startCursor)));
+      outputCursor = nextCursor;
+    };
+    const applyEvent = (event: TerminalSessionEvent): void => {
+      if (event.type === "data") appendOutput(event.data, event.nextCursor);
       else {
         if (outputFrame !== null) {
           window.cancelAnimationFrame(outputFrame);
@@ -138,18 +152,48 @@ export function TerminalWorkspace({
         }
         terminal.writeln(`\r\n\x1b[90m进程已退出（${event.exitCode ?? "未知"}）\x1b[0m`);
       }
+    };
+    const disposeEvent = agentClient.onTerminalSessionEvent((event) => {
+      if (event.sessionId !== sessionRef.current?.sessionId) return;
+      if (replaying) replayEvents.push(event);
+      else applyEvent(event);
     });
-    const replayExistingOutput = (): void => {
+    const replayExistingOutput = async (): Promise<void> => {
       const current = sessionRef.current;
       if (current === null) return;
-      void agentClient.readTerminalSessionOutput({
-        afterCursor: 0,
-        maxChars: 65_536,
-        sessionId: current.sessionId,
-      }).then((output) => {
-        if (disposed || output.data.length === 0 || current.sessionId !== sessionRef.current?.sessionId) return;
-        terminal.write(output.data);
-      }).catch(() => undefined);
+      replaying = true;
+      outputCursor = 0;
+      terminal.reset();
+      if (current.windowsPty !== undefined) terminal.options.windowsPty = current.windowsPty;
+      if (current.initialSize !== undefined) {
+        terminal.resize(current.initialSize.columns, current.initialSize.rows);
+      }
+      try {
+        // The Main transcript retains at most 512k characters. Replay before fitting
+        // so ConPTY cursor/erase commands use the dimensions they were produced for.
+        for (let page = 0; page < 8; page += 1) {
+          const output = await agentClient.readTerminalSessionOutput({
+            afterCursor: outputCursor,
+            maxChars: 65_536,
+            sessionId: current.sessionId,
+          });
+          if (disposed || current.sessionId !== sessionRef.current?.sessionId) return;
+          const previousCursor = outputCursor;
+          appendOutput(output.data, output.nextCursor);
+          if (!output.truncated || output.nextCursor <= previousCursor) break;
+        }
+      } catch (reason) {
+        if (!disposed) onErrorRef.current(reason instanceof Error ? reason.message : "终端输出加载失败。");
+      } finally {
+        if (!disposed && current.sessionId === sessionRef.current?.sessionId) {
+          replaying = false;
+          for (const event of replayEvents.splice(0)) applyEvent(event);
+          if (outputFrame !== null) window.cancelAnimationFrame(outputFrame);
+          flushOutput();
+          // xterm.write parses asynchronously; resizing before it drains corrupts replays.
+          terminal.write("", () => { if (!disposed) resizeRef.current?.(); });
+        }
+      }
     };
     const inputDisposable = terminal.onData((data) => {
       const current = sessionRef.current;
@@ -161,7 +205,7 @@ export function TerminalWorkspace({
     });
     let disposed = false;
     let opening = false;
-    let resizeFrame: number | null = null;
+    let resizeTimer: number | null = null;
     let terminalSize: { columns: number; rows: number } | null = null;
     const open = async (): Promise<void> => {
       if (disposed || opening || sessionRef.current !== null) return;
@@ -183,8 +227,8 @@ export function TerminalWorkspace({
           return;
         }
         sessionRef.current = opened;
-        terminal.clear();
         onSessionOpenedRef.current(opened);
+        await replayExistingOutput();
         terminal.focus();
       } catch (reason) {
         onErrorRef.current(reason instanceof Error ? reason.message : "终端启动失败。");
@@ -195,14 +239,11 @@ export function TerminalWorkspace({
     openSessionRef.current = () => {
       if (activeRef.current && sessionRef.current === null) void open();
     };
-    openSessionRef.current();
-    replayExistingOutput();
-
     const resize = (): void => {
-      if (resizeFrame !== null) return;
-      resizeFrame = window.requestAnimationFrame(() => {
-        resizeFrame = null;
-        if (!activeRef.current) return;
+      if (resizeTimer !== null) window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        resizeTimer = null;
+        if (disposed || replaying || !activeRef.current) return;
         try {
           fitAddon.fit();
         } catch {
@@ -221,28 +262,35 @@ export function TerminalWorkspace({
             sessionId: current.sessionId,
           }).catch(() => undefined);
         }
-      });
+      }, 120);
     };
+    resizeRef.current = resize;
     const observer = new ResizeObserver(resize);
     observer.observe(container);
-    resize();
+    openSessionRef.current();
+    if (sessionRef.current !== null) void replayExistingOutput();
 
     return () => {
       disposed = true;
       observer.disconnect();
       if (outputFrame !== null) window.cancelAnimationFrame(outputFrame);
-      if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
+      if (resizeTimer !== null) window.clearTimeout(resizeTimer);
+      replayEvents.length = 0;
       pendingOutput.length = 0;
       inputDisposable.dispose();
       disposeEvent();
       openSessionRef.current = null;
+      resizeRef.current = null;
       terminalRef.current = null;
       terminal.dispose();
     };
   }, [agentClient, projectId]);
 
   useEffect(() => {
-    if (active) openSessionRef.current?.();
+    if (active) {
+      openSessionRef.current?.();
+      resizeRef.current?.();
+    }
   }, [active]);
 
   return (

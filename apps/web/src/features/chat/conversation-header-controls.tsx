@@ -14,6 +14,7 @@ import type {
 
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover.js";
 import { IconButton } from "../../components/ui/icon-button.js";
+import { FileTypeIcon } from "../../components/ui/file-type-icon.js";
 import type { AgentClient } from "../../runtime/index.js";
 import { SubagentAvatar } from "../team/agent-avatar.js";
 import type { ProjectSession } from "../projects/project-session-model.js";
@@ -291,8 +292,14 @@ export function ConversationHeaderControls({
           >
             <div className="conversation-header-popover__heading">
               <span><GitBranch aria-hidden="true" size={14} />当前分支</span>
-              <strong>{gitSnapshot?.branch ?? "未识别"}</strong>
+              <strong title={gitSnapshot?.branch ?? undefined}>{gitSnapshot?.branch ?? "未识别"}</strong>
             </div>
+            {gitSnapshot?.isRepository === true ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-1.5 py-1 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
+              <span>{gitSnapshot.changes.length} 个文件</span><GitTotals snapshot={gitSnapshot} />
+              <span title={gitSnapshot.upstream ?? "尚未设置上游分支"}>
+                {gitSnapshot.upstream === null ? "未跟踪远程分支" : `↓ ${gitSnapshot.behind} 待拉取 · ↑ ${gitSnapshot.ahead} 待推送`}
+              </span>
+            </div> : null}
             {gitSnapshot === null ? (
               <p className="conversation-header-popover__empty">正在读取 Git 状态…</p>
             ) : !gitSnapshot.isRepository ? (
@@ -301,30 +308,37 @@ export function ConversationHeaderControls({
               <p className="conversation-header-popover__empty">工作区没有文件变更</p>
             ) : (
               <div className="conversation-header-popover__files">
-                {gitSnapshot.changes.map((change) => (
+                {[false, true].map((staged) => <section key={String(staged)}>
+                  {gitSnapshot.changes.some((change) => change.isStaged === staged) ? <div className="px-1.5 py-1 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
+                    {staged ? "已暂存" : "未暂存"} · {gitSnapshot.changes.filter((change) => change.isStaged === staged).length}
+                  </div> : null}
+                {gitSnapshot.changes.filter((change) => change.isStaged === staged).map((change) => (
                   <button
                     aria-label={`查看 ${change.path} 的文件差异`}
                     className="conversation-header-popover__file"
                     disabled={onOpenGitReview === undefined}
                     key={change.path}
-                    title={change.path}
+                    title={`${change.path} · ${change.isStaged ? "已暂存" : "未暂存"} · ${gitStatusLabel(change.status)}`}
                     type="button"
                     onClick={() => {
                       setGitOpen(false);
                       onOpenGitReview?.(change.path);
                     }}
                   >
-                    <span title={change.path}>{change.path}</span>
+                    <FileTypeIcon className="shrink-0" path={change.path} size={14} />
+                    <span className="flex-1" title={change.path}>{change.path.split("/").at(-1)}</span>
+                    <small title={change.isStaged ? "已暂存" : "未暂存"}>{gitStatusLabel(change.status)}</small>
                     {change.additions === null || change.deletions === null ? (
                       <small>二进制</small>
                     ) : (
                       <small>
-                        <span data-kind="addition">+{change.additions}</span>
-                        <span data-kind="deletion">−{change.deletions}</span>
+                        {change.additions > 0 ? <span data-kind="addition">+{change.additions}</span> : null}
+                        {change.deletions > 0 ? <span data-kind="deletion">−{change.deletions}</span> : null}
                       </small>
                     )}
                   </button>
                 ))}
+                </section>)}
               </div>
             )}
             <button
@@ -338,6 +352,7 @@ export function ConversationHeaderControls({
               }}
             >
               打开完整 Git 审阅
+              <span className="block text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">切换分支 · 更新 · 提交 · 推送</span>
             </button>
           </PopoverContent>
         </Popover>
@@ -440,14 +455,23 @@ function canDeleteSubagent(subagent: ProjectSession): boolean {
   return !isActiveSubagent(subagent);
 }
 
+export function gitStatusLabel(status: string): string {
+  if (status === "??") return "未跟踪";
+  if (status.includes("U") || status === "AA" || status === "DD") return "冲突";
+  const labels = new Set(status.trim().split("").map((code) => ({
+    A: "新增", M: "修改", D: "删除", R: "重命名", C: "复制", T: "类型变更", "!": "已忽略",
+  })[code]));
+  return [...labels].filter(Boolean).join(" / ") || "变更";
+}
+
 function GitTotals({ snapshot }: { snapshot: GitReviewSnapshot }): ReactElement | null {
   const additions = snapshot.changes.reduce((total, change) => total + (change.additions ?? 0), 0);
   const deletions = snapshot.changes.reduce((total, change) => total + (change.deletions ?? 0), 0);
   if (additions === 0 && deletions === 0 && snapshot.changes.length === 0) return null;
   return (
     <span className="conversation-header-control__git-totals">
-      <span data-kind="addition">+{additions}</span>
-      <span data-kind="deletion">−{deletions}</span>
+      {additions > 0 ? <span data-kind="addition">+{additions}</span> : null}
+      {deletions > 0 ? <span data-kind="deletion">−{deletions}</span> : null}
     </span>
   );
 }

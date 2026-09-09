@@ -23,6 +23,33 @@ async function createStores() {
 }
 
 describe("SkillDocumentStore", () => {
+  it("classifies bundled skills and disables only identical duplicate entries", async () => {
+    const { directory, documents, integrations } = await createStores();
+    const content = "---\nname: browser-use\ndescription: Browser.\n---\n\n# Browser\n";
+    const oldPath = path.join(directory, "old", "browser-use", "SKILL.md");
+    const customPath = path.join(directory, "custom", "browser-use", "SKILL.md");
+    for (const entry of [oldPath, customPath]) await mkdir(path.dirname(entry), { recursive: true });
+    await writeFile(oldPath, content);
+    await writeFile(customPath, content.replace("# Browser", "# My browser"));
+    documents.importDocument(oldPath);
+    documents.importDocument(customPath);
+    const bundled = documents.ensureManagedDocument(content);
+    documents.discoverDocuments();
+    documents.ensureManagedDocument(content);
+    const skills = integrations.getConfiguration().skills;
+    expect(skills.find((skill) => skill.entryPath === oldPath)?.enabled).toBe(false);
+    expect(skills.find((skill) => skill.entryPath === customPath)?.enabled).toBe(true);
+    expect(skills.find((skill) => skill.entryPath === bundled.entryPath)?.origin).toBe("system");
+    expect(await readFile(oldPath, "utf8")).toBe(content);
+    const withResources = path.join(directory, "resources", "browser-use", "SKILL.md");
+    await mkdir(path.join(path.dirname(withResources), "references"), { recursive: true });
+    await writeFile(withResources, content);
+    documents.importDocument(withResources);
+    documents.ensureManagedDocument(content);
+    expect(integrations.getConfiguration().skills.find((skill) => skill.entryPath === withResources)?.enabled).toBe(true);
+    const personal = documents.createManagedDocument();
+    expect(integrations.getConfiguration().skills.find((skill) => skill.entryPath === personal.entryPath)?.origin).not.toBe("system");
+  });
   it("installs a bundled Skill once and preserves later user edits", async () => {
     const { documents, integrations } = await createStores();
     const bundled = "---\nname: browser-use\ndescription: Operate a browser.\n---\n\n# Browser\n";

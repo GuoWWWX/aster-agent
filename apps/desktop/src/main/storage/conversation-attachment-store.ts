@@ -395,6 +395,16 @@ export class ConversationAttachmentStore {
     };
   }
 
+  public viewImagePath(conversationId: string, imagePath: string) {
+    const match = /^attachments\/([0-9a-f-]{36})\.[a-z0-9]+$/iu.exec(imagePath);
+    if (match?.[1] === undefined) throw new Error("Invalid conversation attachment path.");
+    const attachment = this.database.getConversationAttachment(conversationId, match[1]);
+    if (imagePath !== `attachments/${path.basename(attachment.storedPath)}` || attachment.kind !== "image") {
+      throw new Error("Path is not an image belonging to this conversation.");
+    }
+    return this.viewAttachments(conversationId, [attachment.id]);
+  }
+
   public readText(
     conversationId: string,
     attachmentId: string,
@@ -587,8 +597,8 @@ export class ConversationAttachmentStore {
       if (describeImage) {
         const content = [
           "[历史图片未自动重复发送]",
-          modelImageAttachmentCaption(attachment),
-          "需要重新查看图片内容时调用 view_attachments。",
+          modelImageAttachmentCaption({ ...attachment, readPath: `attachments/${path.basename(attachment.storedPath)}` }),
+          "需要重新查看图片内容时调用 view_attachments，paths 使用上面的 path。",
         ].join("\n");
         return {
           content,
@@ -605,6 +615,7 @@ export class ConversationAttachmentStore {
       }
       return {
         contextTokens: attachment.contextTokens,
+        readPath: `attachments/${path.basename(attachment.storedPath)}`,
         data: includeImageData
           ? readFileSync(attachment.storedPath).toString("base64")
           : null,

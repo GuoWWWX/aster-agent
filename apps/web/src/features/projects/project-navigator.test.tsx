@@ -30,6 +30,73 @@ afterEach(() => {
 });
 
 describe("ProjectNavigator", () => {
+  it("shows the archive shortcut immediately before more and preserves its action", () => {
+    const project = createProject();
+    const session = createProjectSession(project.id, [], "archive-session");
+    const onSetSessionArchived = vi.fn().mockResolvedValue(true);
+    const onSelectSession = vi.fn();
+    const container = renderNavigator(project, [session], { onSetSessionArchived, onSelectSession });
+    const more = container.querySelector(`[aria-label="更多 ${session.title}"]`)!;
+    const archive = more.previousElementSibling as HTMLButtonElement;
+    expect(archive.getAttribute("aria-label")).toBe(`归档 ${session.title}`);
+    expect(archive.disabled).toBe(false);
+    act(() => archive.click());
+    expect(onSetSessionArchived).toHaveBeenCalledWith(session.id, true);
+    expect(onSelectSession).not.toHaveBeenCalled();
+  });
+  it("opens the target project directory and displays a dismissible failure", async () => {
+    const project = createProject();
+    const onOpenProjectDirectory = vi.fn().mockRejectedValue(new Error("missing"));
+    const container = renderNavigator(project, [], { onOpenProjectDirectory });
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="更多 Demo"]')?.click());
+    await act(async () => {
+      Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'))
+        .find((button) => button.textContent === "在资源管理器打开")?.click();
+      await Promise.resolve();
+    });
+    expect(onOpenProjectDirectory).toHaveBeenCalledWith(project.id);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("无法打开项目目录");
+    act(() => container.querySelector<HTMLButtonElement>('[role="status"] button')?.click());
+    expect(container.querySelector('[role="status"]')).toBeNull();
+  });
+  it("groups project actions in the rightmost menu and copies the root path", async () => {
+    const project = createProject();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const browserWriteText = vi.fn().mockRejectedValue(new Error("Write permission denied"));
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: browserWriteText } });
+    const container = renderNavigator(project, [], { onCopyText: writeText });
+    const actions = container.querySelector('[aria-label="更多 Demo"]')!.parentElement!;
+    expect(actions.lastElementChild?.getAttribute("aria-label")).toBe("更多 Demo");
+    expect(container.querySelector('[aria-label="在 Demo 中创建团队"]')).toBeNull();
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="更多 Demo"]')?.click());
+    const menu = document.querySelector('[role="menu"]')!;
+    for (const label of ["创建团队", "重命名", "复制项目路径", "在资源管理器打开", "移除项目"]) {
+      expect(menu.textContent).toContain(label);
+    }
+    await act(async () => {
+      Array.from(menu.querySelectorAll("button")).find((b) => b.textContent === "复制项目路径")?.click();
+      await Promise.resolve();
+    });
+    expect(writeText).toHaveBeenCalledWith(project.rootPath);
+    expect(browserWriteText).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+  });
+
+  it("opens conversation team creation from more without selecting the conversation", () => {
+    const project = createProject();
+    const session = createProjectSession(project.id, [], "menu-session");
+    const container = renderNavigator(project, [session]);
+    act(() => container.querySelector<HTMLButtonElement>(`[aria-label="更多 ${session.title}"]`)?.click());
+    const menu = document.querySelector('[role="menu"]')!;
+    for (const label of ["创建团队", "重命名", "置顶", "归档", "删除对话"]) expect(menu.textContent).toContain(label);
+    const more = container.querySelector(`[aria-label="更多 ${session.title}"]`)!;
+    expect(more.getAttribute("aria-expanded")).toBe("true");
+    expect(more.closest(".project-navigator__session-shell")?.getAttribute("data-menu-open")).toBe("true");
+    act(() => Array.from(menu.querySelectorAll("button")).find((b) => b.textContent === "创建团队")?.click());
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("创建对话团队");
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+  });
   it("defaults the temporary group to collapsed", () => {
     const project = createProject();
     const temporarySession = createProjectSession(null, [], "temporary-conversation");
@@ -112,7 +179,8 @@ describe("ProjectNavigator", () => {
           teams={[team]}
           teamWorkItems={[]}
           tree={createTreeController(project)}
-          onClearOperationError={() => undefined}
+         onClearOperationError={() => undefined}
+          onCopyText={() => Promise.resolve()}
           onCreateProjectSession={() => undefined}
           onCreateTeamInstance={() => Promise.resolve(true)}
           onCreateTemporarySession={() => undefined}
@@ -201,6 +269,7 @@ function createProject(): ProjectSummary {
 function renderNavigator(
   project: ProjectSummary,
   sessions: ProjectSession[],
+  overrides: Partial<Parameters<typeof ProjectNavigator>[0]> = {},
 ): HTMLDivElement {
   const container = document.createElement("div");
   document.body.append(container);
@@ -219,7 +288,8 @@ function renderNavigator(
         teams={DEFAULT_AGENT_DIRECTORY_CONFIGURATION.teams}
         teamWorkItems={[]}
         tree={createTreeController(project)}
-        onClearOperationError={() => undefined}
+       onClearOperationError={() => undefined}
+        onCopyText={() => Promise.resolve()}
         onCreateProjectSession={() => undefined}
         onCreateTeamInstance={() => Promise.resolve(true)}
         onCreateTemporarySession={() => undefined}
@@ -237,6 +307,7 @@ function renderNavigator(
         onSetSessionArchived={() => Promise.resolve(true)}
         onSetSessionPinned={() => Promise.resolve(true)}
         onSetTeamInstanceArchived={() => Promise.resolve(true)}
+        {...overrides}
       />
     </TooltipProvider>,
   ));

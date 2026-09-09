@@ -33,6 +33,36 @@ afterEach(() => {
 });
 
 describe("GitReviewWorkspace file requests", () => {
+  it("disables occupied branches and clears portals when the workspace hides", async () => {
+    const client = new MockAgentClient();
+    const writeClipboardText = vi.spyOn(client, "writeClipboardText").mockResolvedValue(undefined);
+    const snapshot: GitReviewSnapshot = {
+      ahead: 0, behind: 0, branch: "main", changes: [], isRepository: true,
+      projectId: PROJECT_ID, refreshedAt: new Date().toISOString(), upstream: null,
+      branches: [{ name: "busy", current: false, upstream: null, isWorktreeOccupied: true }],
+    };
+    const cache = new GitReviewCache({ getGitReviewSnapshot: vi.fn().mockResolvedValue(snapshot), getGitFileDiff: vi.fn() });
+    cache.replaceSnapshot(PROJECT_ID, snapshot);
+    const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    const render = async (active: boolean) => {
+      await act(async () => { root?.render(<TooltipProvider><GitReviewWorkspace active={active} agentClient={client} gitReviewCache={cache} projectId={PROJECT_ID} /></TooltipProvider>); await Promise.resolve(); });
+    };
+    await render(true);
+    act(() => container.querySelector<HTMLButtonElement>(".git-review-branch-trigger")?.click());
+    expect(document.querySelector("input[placeholder='搜索分支或操作']")).not.toBeNull();
+    const branch = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("其他工作区使用中"));
+    expect(branch?.disabled).toBe(true);
+    act(() => document.querySelector<HTMLButtonElement>('[aria-label="busy 分支操作"]')?.click());
+    const copyBranch = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "复制分支名称");
+    expect(copyBranch).toBeDefined();
+    await act(async () => { copyBranch?.click(); await Promise.resolve(); });
+    expect(writeClipboardText).toHaveBeenCalledWith("busy");
+    await render(false);
+    expect(document.querySelector("input[placeholder='搜索分支或操作']")).toBeNull();
+    await render(true);
+    expect(document.querySelector("input[placeholder='搜索分支或操作']")).toBeNull();
+  });
   it("selects the requested file diff when the Git review opens", async () => {
     const client = new MockAgentClient();
     const snapshot: GitReviewSnapshot = {

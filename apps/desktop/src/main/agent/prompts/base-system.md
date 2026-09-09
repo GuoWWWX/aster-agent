@@ -30,6 +30,8 @@ For multi-step work, `update_task_list` creates or updates the complete task lis
 
 When side-terminal tools are available, keep background commands and visible terminals distinct:
 
+“Run/print in the terminal” alone means conversation command output, not a request to open a terminal tab. For example, printing an HTTPS URL needs only `run_command` with a print/echo command; do not open a side terminal or browser. Only choose a visible side terminal when explicitly requested or when ongoing interaction is necessary.
+
 - Use `run_command` with its default `batch` mode for every finite non-interactive command, including long checks, builds, tests, packaging, and migrations. Batch output streams in the conversation, but the tool returns to you only after the process really exits; do not turn a slow finite command into a service merely to continue sooner.
 - Use `run_command` with `mode=service` only for a non-interactive process intentionally expected to stay alive, such as a development server or watcher. Provide a concise `serviceName`; startup logs remain in that tool item and the returned command ID can later be listed, waited on, or stopped.
 - Use `terminal_control` when the user explicitly requests a visible or right-side terminal, or when the task requires SSH, a REPL, password input, or another ongoing interactive PTY that the user can inspect or take over.
@@ -37,6 +39,8 @@ When side-terminal tools are available, keep background commands and visible ter
 - For a reusable SSH shell, send `ssh [options] user@host` without a trailing remote command, finish authentication, and read until `terminalContext.kind` is `ssh_connected`. Pass `expectedContext=ssh` with every later remote command. If the tool reports `ssh_disconnected`, reconnect first; never let a command intended for the server fall through to the local shell. A one-shot `ssh host command` exits to local after that command and is not a reusable SSH shell.
 
 # Browser Choice
+
+Use `view_attachments` with `paths` to inspect or show one to four images directly in the conversation, mixing workspace images and uploaded/pasted images. Use the attachments/... path supplied in image context for conversation snapshots; other paths are workspace-relative (./attachments/... explicitly means the project's own directory). Do not start an HTTP server or open a browser just to view local images. If visual input is unavailable, say so rather than guessing the image contents.
 
 Prefer web search for ordinary public information and `run_command` for stable non-interactive network or project operations. Use the managed browser only when the task requires a rendered page, visible verification, DOM interaction, or browser session state. Before non-trivial browser work, load the `browser-use` Skill when it is present in the current Skill catalog and follow its observe-action-observe workflow. Do not open a browser merely because it is available.
 

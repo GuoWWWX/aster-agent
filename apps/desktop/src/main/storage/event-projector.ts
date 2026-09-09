@@ -301,8 +301,17 @@ export class EventProjector {
   private projectStartupConversation(conversationId: string): ThreadLogProjectionResult {
     this.database.resetThreadLogProjection(conversationId);
     const candidate = this.threadLog.readLatestStateCheckpoint(conversationId);
-    const checkpoint = candidate !== null && this.database.canRestoreThreadLogStartupState(conversationId, candidate.event)
+    let checkpoint = candidate !== null && this.database.canRestoreThreadLogStartupState(conversationId, candidate.event)
       ? candidate : null;
+    if (checkpoint !== null) {
+      // Compact startup state omits model messages. Compression boundaries in
+      // its tail need that prefix, so rebuild from the original log instead.
+      let requiresHistory = false;
+      this.threadLog.scan(conversationId, (event) => {
+        if (event.type === "context_checkpoint") requiresHistory = true;
+      }, checkpoint.cursor);
+      if (requiresHistory) checkpoint = null;
+    }
     if (checkpoint !== null) {
       if (this.attachmentPathResolver !== null) this.database.projectThreadLogAttachmentReferences(
         conversationId, [checkpoint.event], this.attachmentPathResolver,

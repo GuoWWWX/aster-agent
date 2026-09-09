@@ -501,6 +501,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
   ): Promise<ConversationPendingMessage[]> {
     return this.desktopBridge.listConversationPendingMessages(input);
   }
+  public getConversationPendingQueuePaused(input: ConversationReferenceInput): Promise<boolean> {
+    return this.desktopBridge.getConversationPendingQueuePaused(input);
+  }
+  public setConversationPendingQueuePaused(input: ConversationReferenceInput & { paused: boolean }): Promise<boolean> {
+    return this.desktopBridge.setConversationPendingQueuePaused(input);
+  }
 
   public listConversations(): Promise<ConversationSummary[]> {
     return this.desktopBridge.listConversations();
@@ -606,6 +612,9 @@ export class DesktopAgentClientAdapter implements AgentClient {
 
   public removeProject(input: ProjectReferenceInput): Promise<void> {
     return this.desktopBridge.removeProject(input);
+  }
+  public openProjectDirectory(input: ProjectReferenceInput): Promise<void> {
+    return this.desktopBridge.openProjectDirectory(input);
   }
 
   public minimizeWindow(): Promise<void> {

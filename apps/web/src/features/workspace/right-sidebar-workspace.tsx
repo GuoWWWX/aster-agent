@@ -54,6 +54,8 @@ import { WorkbenchPanel } from "../../components/layout/panel.js";
 import { ResizableDivider } from "../../components/layout/resizable-divider.js";
 import { FileTypeIcon } from "../../components/ui/file-type-icon.js";
 import { IconButton } from "../../components/ui/icon-button.js";
+import { appendNewTabIds, moveTabId } from "../../components/ui/tab-order.js";
+import { useTabReorder } from "../../components/ui/use-tab-reorder.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover.js";
 import { getUserErrorMessage, type AgentClient } from "../../runtime/index.js";
 import {
@@ -622,6 +624,11 @@ export function RightSidebarWorkspace({
   const teams = useAgentDirectoryStore((state) => state.teams);
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
   const activeSessionId = activeSession?.id ?? null;
+  const sidebarVisible = useWorkbenchUiStore((state) => activeActivity === "settings"
+    ? state.isSettingsFilePanelOpen
+    : activeActivity === "conversations" && activeSessionId !== null
+      ? state.filePanelOpenByConversationId[activeSessionId] ?? false
+      : state.isFilePanelOpen);
   const settingsSection = useWorkbenchUiStore((state) => state.settingsSection);
   const setGlobalFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
   const setFilePanelOpenForConversation = useWorkbenchUiStore(
@@ -684,6 +691,10 @@ export function RightSidebarWorkspace({
   const [filePreviews, setFilePreviews] = useState<Record<string, FilePreviewState>>({});
   const [fileTabs, setFileTabs] = useState<FileTab[]>([]);
   const [toolTabs, setToolTabs] = useState<ToolTab[]>([]);
+  const [tabOrder, setTabOrder] = useState<string[]>([]);
+  const reorderTabProps = useTabReorder((source, target, side) => {
+    setTabOrder((current) => moveTabId(current, source, target, side));
+  });
   const [capabilities, setCapabilities] = useState({ git: false, managedBrowser: false, pty: false });
   const [isFileBrowserOpen, setIsFileBrowserOpen] = useState(false);
   const [isCreatingChat, setIsCreatingChat] = useState(false);
@@ -1721,7 +1732,7 @@ export function RightSidebarWorkspace({
     }
     return [];
   }, [activeActivity, activeSettingsWorkspaceTarget, fileTabs]);
-  const tabs = useMemo<SidebarTab[]>(
+  const unorderedTabs = useMemo<SidebarTab[]>(
     () => activeActivity === "settings"
       ? visibleFileTabs
       : [
@@ -1737,6 +1748,10 @@ export function RightSidebarWorkspace({
       ],
     [activeActivity, openSideSessions, toolTabs, visibleFileTabs],
   );
+  const nextTabOrder = appendNewTabIds(tabOrder, unorderedTabs.map((tab) => tab.id));
+  if (nextTabOrder !== tabOrder) setTabOrder(nextTabOrder);
+  const tabRanks = new Map(nextTabOrder.map((id, index) => [id, index]));
+  const tabs = [...unorderedTabs].sort((a, b) => tabRanks.get(a.id)! - tabRanks.get(b.id)!);
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
   const activeToolTabId = toolTabs.some((tab) => tab.id === activeTabId) ? activeTabId : null;
   const retainedToolTabIds = useMemo(
@@ -2032,6 +2047,7 @@ export function RightSidebarWorkspace({
 
   function commitCloseTabs(tabsToClose: SidebarTab[]): void {
     const tabIds = new Set(tabsToClose.map((tab) => tab.id));
+    setTabOrder((current) => current.filter((id) => !tabIds.has(id)));
     const sessionIds = new Set(
       tabsToClose
         .filter((tab): tab is Extract<SidebarTab, { kind: "chat" }> => tab.kind === "chat")
@@ -2248,6 +2264,7 @@ export function RightSidebarWorkspace({
           <div
             aria-label="已打开文件和侧边聊天"
             className="right-sidebar-workspace__tabs"
+            {...reorderTabProps.listProps}
             ref={workspaceTabsRef}
             role="tablist"
           >
@@ -2257,7 +2274,8 @@ export function RightSidebarWorkspace({
                 : undefined;
               return (
                 <div
-                  className="right-sidebar-workspace__tab-shell"
+                  className="right-sidebar-workspace__tab-shell reorderable-tab"
+                  {...reorderTabProps.tabProps(tab.id)}
                   data-active={String(activeTab?.id === tab.id)}
                   key={tab.id}
                 >
@@ -2418,7 +2436,7 @@ export function RightSidebarWorkspace({
               >
                 {tab.kind === "git-review" ? (
                   <GitReviewWorkspace
-                    active={isActive}
+                    active={isActive && sidebarVisible && activeActivity === "conversations"}
                     agentClient={agentClient}
                     gitReviewCache={gitReviewCache}
                     projectId={tab.projectId}

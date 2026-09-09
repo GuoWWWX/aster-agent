@@ -15,6 +15,7 @@ export type ModelProviderState = {
   baseUrl: string;
   modelId: string;
   payload: unknown;
+  firstTokenLatencyMs?: number;
   usage?: ModelProviderTokenUsage;
 };
 
@@ -49,6 +50,7 @@ export type ModelMessage = {
 };
 
 export type ModelMessageAttachment = {
+  readPath?: string | undefined;
   contextTokens: number;
   id: string;
   mimeType: string;
@@ -63,7 +65,7 @@ export type ModelMessageAttachment = {
 );
 
 export function modelImageAttachmentCaption(
-  attachment: Pick<ModelMessageAttachment, "id" | "name" | "projectPath" | "source">
+  attachment: Pick<ModelMessageAttachment, "id" | "name" | "projectPath" | "source" | "readPath">
 ): string {
   const location = attachment.source === "browser"
     ? "浏览器工具截图"
@@ -73,6 +75,7 @@ export function modelImageAttachmentCaption(
   return [
     `[图片附件 ${attachment.name}]`,
     `attachment_id: ${attachment.id}`,
+    ...(attachment.readPath === undefined ? [] : [`path: ${attachment.readPath}`]),
     `source: ${location}`
   ].join("\n");
 }
@@ -101,6 +104,7 @@ export type CompleteTurnInput = {
   configuration: ModelConfiguration;
   maxOutputTokens: number;
   messages: ModelMessage[];
+  onFirstToken?(latencyMs: number): void;
   onReasoningDelta?(event: ModelReasoningDelta): void;
   onTextDelta(delta: string): void;
   reasoning: ModelReasoningOption | undefined;

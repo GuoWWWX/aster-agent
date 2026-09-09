@@ -301,6 +301,37 @@ describe("LangChainModelAdapter", () => {
     expect(serialized).toContain("data:image/jpeg;base64,bmV3");
   });
 
+  it.each(["text", "reasoning", "tool", "empty"])("measures first effective %s output from HTTP dispatch", async (kind) => {
+    let now = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const onFirstToken = vi.fn();
+    const request = vi.fn(() => Promise.resolve(new Response()));
+    const adapter = new LangChainModelAdapter("openai-chat-completions", request, (_input, send) => ({
+      async *stream() {
+        now = 100; // Message preparation is excluded.
+        await send("https://example.test/v1/chat/completions", {});
+        now = 150;
+        yield new AIMessageChunk({ content: "" });
+        now = 350;
+        yield new AIMessageChunk({
+          content: kind === "text" ? "hello" : "",
+          ...(kind === "reasoning" ? { additional_kwargs: { reasoning_content: "thinking" } } : {}),
+          ...(kind === "tool" ? { tool_call_chunks: [{ index: 0, id: "call-1", name: "read_file", args: "{}" }] } : {}),
+        });
+        now = 900;
+        yield new AIMessageChunk({ content: "" });
+      },
+    }) as unknown as BaseChatModel);
+    try {
+      const result = await adapter.completeTurn(inputFor("openai-chat-completions", { onFirstToken }));
+      expect(result.providerState?.firstTokenLatencyMs).toBe(kind === "empty" ? undefined : 250);
+      expect(onFirstToken).toHaveBeenCalledTimes(kind === "empty" ? 0 : 1);
+      if (kind !== "empty") expect(onFirstToken).toHaveBeenCalledWith(250);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("converts streamed assistant text and preserves provider metadata", async () => {
     const model = new FakeStreamingChatModel({
       sleep: 0,

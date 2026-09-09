@@ -6,6 +6,7 @@ import {
 import path from "node:path";
 
 import { APPLICATION_DISPLAY_NAME } from "@agent/protocol";
+import { installTextContextMenu } from "./text-context-menu.js";
 
 const WINDOW_BACKGROUND_COLOR = "#18181b";
 const WINDOW_MIN_HEIGHT = 720;
@@ -53,6 +54,7 @@ export function createMainWindow(): BrowserWindow {
   }
 
   const window = new BrowserWindow(options);
+  installTextContextMenu(window);
 
   return window;
 }

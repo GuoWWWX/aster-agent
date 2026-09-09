@@ -978,8 +978,11 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
     onProviderOutput: () => void = () => undefined,
   ): Promise<ModelTurnResult> {
     let fingerprint: RequestFingerprint | undefined;
+    let requestStartedAt: number | undefined;
+    let firstTokenLatencyMs: number | undefined;
     const model = this.factory(input, (url, options) => {
       fingerprint = requestFingerprint(options?.body);
+      requestStartedAt = performance.now();
       return this.request(url, options);
     });
     const boundModel = input.tools.length === 0 || model.bindTools === undefined
@@ -1003,11 +1006,21 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
         if (input.signal.aborted) throw input.signal.reason;
         onProviderOutput();
         const text = textFromContent(chunk.content);
+        const reasoningDeltas = reasoningFromMessage(chunk);
+        const hasToolOutput = isRecord(chunk) && Array.isArray(chunk.tool_call_chunks)
+          && chunk.tool_call_chunks.some((call: unknown) => isRecord(call)
+            && ((typeof call.name === "string" && call.name.length > 0)
+              || (typeof call.args === "string" && call.args.length > 0)));
+        if (firstTokenLatencyMs === undefined && requestStartedAt !== undefined
+          && (text.length > 0 || reasoningDeltas.some((delta) => delta.length > 0) || hasToolOutput)) {
+          firstTokenLatencyMs = Math.max(0, Math.round(performance.now() - requestStartedAt));
+          input.onFirstToken?.(firstTokenLatencyMs);
+        }
         if (text.length > 0) {
           content += text;
           input.onTextDelta(text);
         }
-        for (const reasoning of reasoningFromMessage(chunk)) {
+        for (const reasoning of reasoningDeltas) {
           if (reasoningKind === "content") reasoningContent += reasoning;
           input.onReasoningDelta?.({
             delta: reasoning,
@@ -1025,6 +1038,9 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
       }
       const toolCalls = assistantToolCalls(latest).map(normalizeToolCall);
       const savedProviderState = providerState(input, latest, fingerprint);
+      if (savedProviderState !== undefined && firstTokenLatencyMs !== undefined) {
+        savedProviderState.firstTokenLatencyMs = firstTokenLatencyMs;
+      }
       return {
         content,
         finishReason: readFinishReason(latest),

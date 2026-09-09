@@ -39,4 +39,9 @@ describe("Desktop preload bridge", () => {
     );
     expect(electronMocks.invoke).not.toHaveBeenCalled();
   });
+  it("opens project directories through the project-id-only IPC", async () => {
+    const input = { projectId: "00000000-0000-4000-8000-000000000001" };
+    await createDesktopBridge().openProjectDirectory(input);
+    expect(electronMocks.invoke).toHaveBeenCalledWith(IPC_CHANNELS.projectOpenDirectory, input);
+  });
 });

@@ -65,7 +65,7 @@ export class GitReviewReader {
       this.runGit(repositoryRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
       this.runGit(repositoryRoot, [
         "for-each-ref",
-        "--format=%(refname:short)%09%(upstream:short)%09%(HEAD)",
+        "--format=%(refname:short)%09%(upstream:short)%09%(HEAD)%09%(worktreepath)",
         "refs/heads",
       ]),
       this.runGit(repositoryRoot, ["diff", "--numstat", "--no-renames", "-z", "HEAD", "--"]),
@@ -182,6 +182,9 @@ export class GitReviewReader {
         if (!branches.some((branch) => branch.name === input.branch)) {
           throw new Error("要切换的本地分支不存在。");
         }
+        if (branches.some((branch) => branch.name === input.branch && branch.isWorktreeOccupied)) {
+          throw new Error("该分支已被其他工作区使用，请在对应工作区操作，或从此分支新建分支。");
+        }
         await this.runChecked(repositoryRoot, ["switch", "--", input.branch], "无法切换分支");
         break;
       }
@@ -234,7 +237,7 @@ export class GitReviewReader {
   private async readBranches(workingDirectory: string): Promise<GitBranch[]> {
     const result = await this.runGit(workingDirectory, [
       "for-each-ref",
-      "--format=%(refname:short)%09%(upstream:short)%09%(HEAD)",
+      "--format=%(refname:short)%09%(upstream:short)%09%(HEAD)%09%(worktreepath)",
       "refs/heads",
     ]);
     assertGitSucceeded(result, "无法读取 Git 分支");
@@ -308,9 +311,9 @@ function nonEmpty(value: string): string | null {
 function parseBranches(output: string): GitBranch[] {
   return output.split(/\r?\n/u).flatMap((line) => {
     if (line.length === 0) return [];
-    const [name = "", upstream = "", marker = ""] = line.split("\t");
+    const [name = "", upstream = "", marker = "", worktreePath = ""] = line.split("\t");
     if (name.length === 0) return [];
-    return [{ current: marker === "*", name, upstream: nonEmpty(upstream) }];
+    return [{ current: marker === "*", isWorktreeOccupied: marker !== "*" && worktreePath.length > 0, name, upstream: nonEmpty(upstream) }];
   });
 }
 

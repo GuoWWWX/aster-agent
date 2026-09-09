@@ -3,10 +3,12 @@ import {
   BrowserWindow,
   clipboard,
   dialog,
+  shell,
   ipcMain as electronIpcMain,
   type IpcMainEvent,
   type IpcMainInvokeEvent
 } from "electron";
+import { openProjectDirectory } from "../projects/open-project-directory.js";
 import {
   acceptTeamWorkItemIpcArgumentsSchema,
   addProjectResponseSchema,
@@ -98,6 +100,8 @@ import {
   readConfigurationWorkspaceFileIpcArgumentsSchema,
   reorderConversationsIpcArgumentsSchema,
   reorderPendingConversationMessagesIpcArgumentsSchema,
+  setPendingQueuePausedIpcArgumentsSchema,
+  pendingQueuePausedResponseSchema,
   addTeamWorkItemCommentIpcArgumentsSchema,
   reorderProjectsIpcArgumentsSchema,
   reorderTeamInstancesIpcArgumentsSchema,
@@ -1138,6 +1142,24 @@ export function registerMainIpcHandlers(
     }
   );
 
+  ipcMain.handle(IPC_CHANNELS.conversationGetPendingQueuePaused, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
+    return pendingQueuePausedResponseSchema.parse(agentRuntime.isPendingQueuePaused(input.conversationId));
+  });
+  ipcMain.handle(IPC_CHANNELS.projectOpenDirectory, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = projectReferenceIpcArgumentsSchema.parse(args);
+    await openProjectDirectory(projectRegistry, input.projectId, (path) => shell.openPath(path));
+    return voidIpcResponseSchema.parse(undefined);
+  });
+  ipcMain.handle(IPC_CHANNELS.conversationSetPendingQueuePaused, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = setPendingQueuePausedIpcArgumentsSchema.parse(args);
+    return pendingQueuePausedResponseSchema.parse(agentRuntime.setPendingQueuePaused(
+      input.conversationId, input.paused, (runEvent) => sendConversationRunEvent(getMainWindow, runEvent),
+    ));
+  });
   ipcMain.handle(
     IPC_CHANNELS.conversationPromotePendingMessage,
     (event, ...args: unknown[]) => {

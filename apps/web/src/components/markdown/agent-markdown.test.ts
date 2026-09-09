@@ -10,6 +10,26 @@ import { AgentMarkdown, renderAgentMarkdown } from "./agent-markdown.js";
 import agentMarkdownStyles from "./agent-markdown.css?inline";
 
 describe("AgentMarkdown", () => {
+  it("uses a separate header, terminal command colors and copies only original code", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const container = document.createElement("div"); document.body.append(container);
+    const root = createRoot(container);
+    const source = "javac BubbleSort.java QuickSort.java\njava QuickSort\nping 127.0.0.1 -n 4\n";
+    act(() => root.render(createElement(AgentMarkdown, { content: "```bash\n" + source + "```" })));
+    expect(container.querySelector(".agent-markdown__code-header")?.textContent).toBe("Bash");
+    expect(container.querySelector("button .lucide-copy")).not.toBeNull();
+    expect(container.querySelector("pre button")).toBeNull();
+    expect(container.querySelector(".agent-markdown__shell-command")?.textContent).toBe("javac");
+    expect(container.querySelector(".agent-markdown__shell-parameter")?.textContent).toBe("-n");
+    expect([...container.querySelectorAll(".agent-markdown__shell-address")].map((node) => node.textContent)).toContain("127.0.0.1");
+    await act(async () => { container.querySelector<HTMLButtonElement>("[data-action='copy-code']")?.click(); await Promise.resolve(); });
+    expect(writeText).toHaveBeenCalledWith(source);
+    expect(container.querySelector("button")?.getAttribute("aria-label")).toBe("已复制");
+    expect(container.querySelector("button .lucide-check")).not.toBeNull();
+    act(() => root.unmount()); container.remove(); vi.unstubAllGlobals();
+  });
   it("restores md-king-compatible markers for ordered and nested unordered lists", () => {
     const style = document.createElement("style");
     style.textContent = agentMarkdownStyles;

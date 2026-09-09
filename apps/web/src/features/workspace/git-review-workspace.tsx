@@ -14,6 +14,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  X,
 } from "lucide-react";
 import {
   useCallback,
@@ -226,6 +227,15 @@ export function GitReviewWorkspace({
     gitReviewCache.peekSnapshot(projectId)
   ));
   const [toolbarMenuOpen, setToolbarMenuOpen] = useState(false);
+  const [overlayOwner, setOverlayOwner] = useState({ active, projectId });
+  if (overlayOwner.active !== active || overlayOwner.projectId !== projectId) {
+    setOverlayOwner({ active, projectId });
+    setBranchPickerOpen(false);
+    setBranchMenu(null);
+    setToolbarMenuOpen(false);
+    setBranchQuery("");
+    setDialog(null);
+  }
   const [trackedExpanded, setTrackedExpanded] = useState(true);
   const [untrackedExpanded, setUntrackedExpanded] = useState(true);
   const commitMessageRef = useRef<HTMLTextAreaElement | null>(null);
@@ -600,7 +610,7 @@ export function GitReviewWorkspace({
   return (
     <section ref={workspaceRef} className="git-review-workspace flex h-full min-h-0 w-full flex-col bg-[var(--app-panel)]" aria-label="Git 审阅">
       <header className="flex min-h-11 flex-none items-center gap-2 border-b border-[var(--app-border)] px-2.5">
-        <Popover open={branchPickerOpen} onOpenChange={(open) => {
+        <Popover open={active && branchPickerOpen} onOpenChange={(open) => {
           setBranchPickerOpen(open);
           if (!open) {
             setBranchMenu(null);
@@ -627,7 +637,7 @@ export function GitReviewWorkspace({
           </TooltipAnchor>
           <PopoverContent
             align="start"
-            className="w-[min(440px,var(--radix-popover-content-available-width))] overflow-visible rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] p-1.5 text-[var(--app-foreground)] shadow-lg"
+            className="w-[min(320px,var(--radix-popover-content-available-width))] overflow-visible rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] p-1.5 text-[var(--app-foreground)] shadow-lg"
             side="bottom"
             sideOffset={4}
           >
@@ -699,9 +709,10 @@ export function GitReviewWorkspace({
                   key={branch.name}
                   role="listitem"
                 >
-                  <TooltipAnchor content={branch.name}>
+                  <TooltipAnchor content={branch.isWorktreeOccupied ? `${branch.name}：已被其他工作区使用，可从此分支新建` : branch.name}>
                     <button
                       className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--app-focus-ring)]"
+                      disabled={isBusy || branch.isWorktreeOccupied === true}
                       type="button"
                       onClick={() => {
                         setBranchPickerOpen(false);
@@ -714,7 +725,7 @@ export function GitReviewWorkspace({
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-xs font-medium">{branch.name}</span>
                         <span className="block truncate text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">
-                          {branch.upstream ?? "尚未关联远程分支"}
+                          {branch.isWorktreeOccupied ? "其他工作区使用中" : branch.upstream ?? "尚未关联远程分支"}
                         </span>
                       </span>
                       {branch.current ? (
@@ -722,7 +733,7 @@ export function GitReviewWorkspace({
                       ) : null}
                     </button>
                   </TooltipAnchor>
-                  <Popover open={branchMenu === branch.name} onOpenChange={(open) => setBranchMenu(open ? branch.name : null)}>
+                  <Popover open={active && branchPickerOpen && branchMenu === branch.name} onOpenChange={(open) => setBranchMenu(open ? branch.name : null)}>
                     <PopoverTrigger asChild>
                       <IconButton className="mr-1 size-7 shrink-0" label={`${branch.name} 分支操作`}>
                         <Ellipsis aria-hidden="true" size={15} />
@@ -736,9 +747,9 @@ export function GitReviewWorkspace({
                       sideOffset={5}
                     >
                       <ReviewMenuButton
-                        disabled={branch.current || isBusy}
+                        disabled={branch.current || isBusy || branch.isWorktreeOccupied === true}
                         icon={<GitBranch aria-hidden="true" size={14} />}
-                        label={branch.current ? "当前已签出" : "签出此分支"}
+                        label={branch.current ? "当前已签出" : branch.isWorktreeOccupied ? "其他工作区使用中" : "签出此分支"}
                         onClick={() => {
                           setBranchMenu(null);
                           setBranchPickerOpen(false);
@@ -759,7 +770,7 @@ export function GitReviewWorkspace({
                         label="复制分支名称"
                         onClick={() => {
                           setBranchMenu(null);
-                          void navigator.clipboard.writeText(branch.name).catch((reason: unknown) => {
+                          void agentClient.writeClipboardText(branch.name).catch((reason: unknown) => {
                             setError(getUserErrorMessage(reason, "无法复制分支名称。"));
                           });
                         }}
@@ -816,7 +827,7 @@ export function GitReviewWorkspace({
             ? <LoaderCircle aria-hidden="true" className="animate-spin" size={15} />
             : <RefreshCw aria-hidden="true" size={15} />}
         </IconButton>
-        <Popover open={toolbarMenuOpen} onOpenChange={setToolbarMenuOpen}>
+        <Popover open={active && toolbarMenuOpen} onOpenChange={setToolbarMenuOpen}>
           <PopoverTrigger asChild>
             <IconButton className="git-review-toolbar-overflow" label="更多 Git 操作">
               <Ellipsis aria-hidden="true" size={16} />
@@ -878,8 +889,9 @@ export function GitReviewWorkspace({
       </header>
 
       {error !== null ? (
-        <div className="mx-2.5 mt-2 rounded-[var(--app-radius)] bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400" role="alert">
-          {error}
+        <div className="mx-2.5 mt-2 flex items-start gap-1 rounded-[var(--app-radius)] bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400" role="alert">
+          <span className="min-w-0 flex-1 break-words">{error}</span>
+          <IconButton className="shrink-0" label="关闭错误提示" size="compact" onClick={() => setError(null)}><X aria-hidden="true" size={14} /></IconButton>
         </div>
       ) : null}
 
@@ -1076,7 +1088,7 @@ export function GitReviewWorkspace({
         </div>
       )}
 
-      <Dialog open={dialog === "branch"} onOpenChange={(open) => setDialog(open ? "branch" : null)}>
+      <Dialog open={active && dialog === "branch"} onOpenChange={(open) => setDialog(open ? "branch" : null)}>
         <DialogContent className="gap-4 p-4">
           <DialogHeader>
             <DialogTitle>新建分支</DialogTitle>

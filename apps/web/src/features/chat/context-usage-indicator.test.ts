@@ -144,7 +144,16 @@ describe("providerCacheLabel", () => {
 });
 
 describe("providerCacheInlineMetrics", () => {
-  it.each([0, 0.8])("labels a retained rate as previous without retaining old token counts (%s)", (previous) => {
+  it.each([[undefined, "--"], [0, "0ms"], [250, "250ms"], [1250, "1.25s"]] as const)("formats first-token latency independently of usage: %s", (latency, value) => {
+    const current = usage({ providerCache: {
+      cumulative: { cacheCreationInputTokens: 0, cachedInputTokens: 0, hitRate: null,
+        inputTokens: 0, reportedRequestCount: 0, requestCount: 0 },
+      latest: null,
+      ...(latency === undefined ? {} : { firstTokenLatencyMs: latency }),
+    } });
+    expect(providerCacheInlineMetrics(current)[0]).toMatchObject({ label: "首字", value });
+  });
+  it.each([0, 0.8])("does not substitute a previous rate for missing current usage (%s)", (previous) => {
     const current = usage({ providerCache: {
       lastReportedHitRate: previous,
       cumulative: { cacheCreationInputTokens: 0, cachedInputTokens: 80, hitRate: 0.8,
@@ -154,14 +163,14 @@ describe("providerCacheInlineMetrics", () => {
     } });
     expect(providerCacheLabel(current)).toBe(`上次缓存 ${previous * 100}%`);
     expect(providerCacheInlineMetrics(current)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ label: "本次发送", value: "200" }),
-      expect.objectContaining({ label: "模型返回", value: "69" }),
-      expect.objectContaining({ label: "上次命中率", value: `${previous * 100}%` }),
+      expect.objectContaining({ label: "发送", value: "200" }),
+      expect.objectContaining({ label: "返回", value: "69" }),
+      expect.objectContaining({ label: "本次命中率", value: "--" }),
     ]));
     if (current.providerCache?.latest) current.providerCache.latest.hitRate = 0.54;
-    expect(providerCacheInlineMetrics(current)[2]).toMatchObject({ label: "本次命中率", value: "54%" });
+    expect(providerCacheInlineMetrics(current).find((metric) => metric.label === "本次命中率")).toMatchObject({ value: "54%" });
     if (current.providerCache?.latest) current.providerCache.latest.hitRate = 0;
-    expect(providerCacheInlineMetrics(current)[2]).toMatchObject({ label: "本次命中率", value: "0%" });
+    expect(providerCacheInlineMetrics(current).find((metric) => metric.label === "本次命中率")).toMatchObject({ value: "0%" });
   });
 
   it("shows the latest input, output, cache rate, and weighted average with status tones", () => {
@@ -185,8 +194,9 @@ describe("providerCacheInlineMetrics", () => {
         },
       },
     }))).toEqual([
-      { kind: "input", label: "本次发送", shortLabel: "发送", tone: "success", value: "1.0K" },
-      { kind: "output", label: "模型返回", shortLabel: "返回", tone: "danger", value: "120" },
+      { kind: "latency", label: "首字", shortLabel: "首字", tone: "neutral", value: "--" },
+      { kind: "input", label: "发送", shortLabel: "发送", tone: "success", value: "1.0K" },
+      { kind: "output", label: "返回", shortLabel: "返回", tone: "danger", value: "120" },
       { kind: "cache", label: "本次命中率", shortLabel: "命中", tone: "good", value: "80%" },
       { kind: "cache", label: "平均命中率", shortLabel: "平均", tone: "warning", value: "65%" },
     ]);
@@ -232,12 +242,15 @@ describe("providerCacheInlineMetrics", () => {
     expect(trigger?.className).toContain("text-[length:var(--app-font-size-body)]");
     expect(trigger?.className).toContain("font-normal");
     expect(trigger?.className).not.toContain("bg-[var(--app-status-success-bg)]");
-    expect(trigger?.getAttribute("aria-label")).toContain("本次发送 1.0K");
+    expect(trigger?.getAttribute("aria-label")).toContain("发送 1.0K");
+    expect(trigger?.getAttribute("aria-label")).toContain("返回 120");
+    expect(trigger?.textContent).not.toContain("本次发送");
+    expect(trigger?.textContent).not.toContain("模型返回");
     expect(trigger?.getAttribute("title")).toBe(trigger?.getAttribute("aria-label"));
-    expect(trigger?.querySelector('[data-label-variant="full"]')?.textContent).toBe("本次发送");
-    expect(trigger?.querySelector('[data-label-variant="short"]')?.textContent).toBe("发送");
-    expect(trigger?.querySelectorAll('[data-label-variant="full"]')).toHaveLength(4);
-    expect(trigger?.querySelectorAll('[data-label-variant="short"]')).toHaveLength(4);
+    expect(trigger?.querySelector('[data-label-variant="full"]')?.textContent).toBe("首字");
+    expect(trigger?.querySelector('[data-label-variant="short"]')?.textContent).toBe("首字");
+    expect(trigger?.querySelectorAll('[data-label-variant="full"]')).toHaveLength(5);
+    expect(trigger?.querySelectorAll('[data-label-variant="short"]')).toHaveLength(5);
     expect(trigger?.textContent).toContain("1.0K");
     expect(trigger?.textContent).toContain("120");
     expect(trigger?.textContent).toContain("96%");
@@ -260,8 +273,9 @@ describe("providerCacheInlineMetrics", () => {
 
   it("keeps directional arrow colors while unavailable values stay neutral", () => {
     expect(providerCacheInlineMetrics(null)).toEqual([
-      { kind: "input", label: "本次发送", shortLabel: "发送", tone: "success", value: "--" },
-      { kind: "output", label: "模型返回", shortLabel: "返回", tone: "danger", value: "--" },
+      { kind: "latency", label: "首字", shortLabel: "首字", tone: "neutral", value: "--" },
+      { kind: "input", label: "发送", shortLabel: "发送", tone: "success", value: "--" },
+      { kind: "output", label: "返回", shortLabel: "返回", tone: "danger", value: "--" },
       { kind: "cache", label: "本次命中率", shortLabel: "命中", tone: "neutral", value: "--" },
       { kind: "cache", label: "平均命中率", shortLabel: "平均", tone: "neutral", value: "--" },
     ]);
@@ -288,8 +302,9 @@ describe("providerCacheInlineMetrics", () => {
         },
       },
     }))).toEqual([
-      { kind: "input", label: "本次发送", shortLabel: "发送", tone: "success", value: "1.0K" },
-      { kind: "output", label: "模型返回", shortLabel: "返回", tone: "danger", value: "120" },
+      { kind: "latency", label: "首字", shortLabel: "首字", tone: "neutral", value: "--" },
+      { kind: "input", label: "发送", shortLabel: "发送", tone: "success", value: "1.0K" },
+      { kind: "output", label: "返回", shortLabel: "返回", tone: "danger", value: "120" },
       { kind: "cache", label: "本次命中率", shortLabel: "命中", tone: "caution", value: "79%" },
       { kind: "cache", label: "平均命中率", shortLabel: "平均", tone: "danger", value: "0%" },
     ]);
@@ -315,7 +330,7 @@ describe("providerCacheInlineMetrics", () => {
           trendDelta: null,
         },
       },
-    }))[2]?.tone;
+    })).find((metric) => metric.label === "本次命中率")?.tone;
 
     expect(cacheToneAt(0.9)).toBe("success");
     expect(cacheToneAt(0.8)).toBe("good");

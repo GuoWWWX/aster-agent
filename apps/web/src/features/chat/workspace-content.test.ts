@@ -12,6 +12,7 @@ import { formatConversationRunMarkdown } from "./conversation-copy.js";
 
 import {
   createRestoredRunProgresses,
+  scopeRunProgressToLatestInput,
   collectSubagentPendingApprovals,
   commandTerminalClipboardText,
   commandTerminalHeaderLabel,
@@ -536,6 +537,25 @@ describe("run activity projection", () => {
     });
   });
 
+  it("splits a steered Run at the user message and resets its duration", () => {
+    const first = { ...assistantMessage("first-user", "开始"), role: "user" as const, createdAt: "2026-09-08T06:00:00.000Z" };
+    const steer = { ...first, id: "steer-user", content: "改为直接打印", createdAt: "2026-09-08T06:00:20.000Z" };
+    const before = { ...tool("terminal_control"), id: "before", createdAt: "2026-09-08T06:00:05.000Z" };
+    const after = { ...tool("run_command"), id: "after", createdAt: "2026-09-08T06:00:21.000Z" };
+    const final = { ...assistantMessage("final", "完成", { durationMs: 25_000 }), createdAt: "2026-09-08T06:00:25.000Z" };
+    const result = groupRunActivities([first, before, steer, after, final]);
+    expect(result.map((item) => item.kind)).toEqual(["message", "run_activity", "message", "run_activity", "message"]);
+    expect(result[1]).toMatchObject({ durationMs: 20_000, items: [{ id: "before" }] });
+    expect(result[3]).toMatchObject({ durationMs: 5_000, items: [{ id: "after" }] });
+    expect(result[1]?.id).not.toBe(result[3]?.id);
+    const window = groupRunActivities([before, steer, after, final]);
+    expect(window.map((item) => item.kind)).toEqual(["run_activity", "message", "run_activity", "message"]);
+    expect(window[0]).toMatchObject({ durationMs: 20_000, items: [{ id: "before" }] });
+    expect(window[2]).toMatchObject({ durationMs: 5_000, items: [{ id: "after" }] });
+    const textOnly = groupRunActivities([first, assistantMessage("partial", "正在考虑"), steer, final]);
+    expect([...getConversationRunDurationInsertIndexes(textOnly).values()]).toEqual([[20_000], [5_000]]);
+  });
+
   it("combines a Subagent continuation duration into the existing work process", () => {
     const firstAnswer = assistantMessage("assistant-first", "Subagent 已完成 Ping。", {
       durationMs: 89_000,
@@ -696,6 +716,17 @@ describe("run activity projection", () => {
 });
 
 describe("run progress duration", () => {
+  it("anchors the live timer to the latest consumed steer input", () => {
+    const first = { ...assistantMessage("first-user", "开始"), role: "user" as const, createdAt: "2026-09-08T06:00:00.000Z" };
+    const steer = { ...first, id: "steer-user", createdAt: "2026-09-08T06:00:20.000Z" };
+    const progress = { anchorTimelineItemId: first.id, runId: first.runId, startedAt: Date.parse(first.createdAt), outputStartedAt: Date.parse(first.createdAt) + 1_000 };
+    expect(scopeRunProgressToLatestInput(progress, [first, steer])).toMatchObject({
+      anchorTimelineItemId: steer.id,
+      startedAt: Date.parse(steer.createdAt),
+      outputStartedAt: null,
+    });
+    expect(scopeRunProgressToLatestInput(progress, [first])).toBe(progress);
+  });
   it("restores the running indicator when an active conversation is reopened", () => {
     expect(createRestoredRunProgresses(null, 1_000)).toEqual([]);
     expect(createRestoredRunProgresses("run-1", 1_000)).toEqual([{
@@ -828,6 +859,14 @@ describe("run progress duration", () => {
 
     expect(getConversationRunProgressInsertIndex(timeline, null)).toBe(1);
     expect(getConversationRunProgressInsertIndex(timeline, "tool-1")).toBe(1);
+  });
+
+  it("places team progress after the incoming collaboration bubble", () => {
+    const timeline = [{ id: "request", kind: "agent_message", messageType: "message" },
+      { id: "activity", kind: "run_activity", items: [{ id: "tool", kind: "tool" }] }];
+    expect(getConversationRunProgressInsertIndex(timeline, null)).toBe(1);
+    expect(getConversationRunProgressInsertIndex(timeline, "tool")).toBe(1);
+    expect(getModelActivityInsertIndex(timeline, "run", null)).toBe(1);
   });
 
   it("keeps the running indicator with its anchored user turn", () => {

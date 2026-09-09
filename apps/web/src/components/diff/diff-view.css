@@ -1,5 +1,6 @@
 /* Styling trigger: descendant and data-attribute selectors express Diff line semantics. */
 .tool-diff-view {
+  --tool-diff-surface: var(--app-muted);
   --tool-diff-code-comment: #64748b;
   --tool-diff-code-function: #0369a1;
   --tool-diff-code-keyword: #7c3aed;
@@ -10,7 +11,7 @@
   max-height: min(520px, 55dvh);
   margin: 0;
   overflow: auto;
-  background: var(--app-muted);
+  background: var(--tool-diff-surface);
   color: var(--tool-diff-code-text);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: var(--app-font-size-control);
@@ -24,17 +25,24 @@
 }
 
 .tool-diff-view__line {
+  --tool-diff-line-background: var(--tool-diff-surface);
+  --tool-diff-line-marker: transparent;
   display: grid;
   min-height: 1.5em;
-  grid-template-columns: 48px minmax(0, 1fr);
-  border-left: 4px solid transparent;
+  grid-template-columns: 40px minmax(0, 1fr);
+  background: var(--tool-diff-line-background);
 }
 
 .tool-diff-view__line-number {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  border-left: 4px solid var(--tool-diff-line-marker);
   border-right: 1px solid rgba(148, 163, 184, 0.22);
+  background: var(--tool-diff-line-background);
   color: var(--app-muted-foreground);
-  padding: 0 9px 0 6px;
-  text-align: right;
+  padding: 0 5px 0 2px;
+  text-align: left;
   user-select: none;
 }
 
@@ -43,8 +51,8 @@
 }
 
 .tool-diff-view__line[data-kind="collapsed"] {
-  border-left-color: rgba(148, 163, 184, 0.55);
-  background: color-mix(in srgb, var(--app-muted) 84%, var(--app-accent) 16%);
+  --tool-diff-line-marker: rgba(148, 163, 184, 0.55);
+  --tool-diff-line-background: color-mix(in srgb, var(--tool-diff-surface) 84%, var(--app-accent) 16%);
 }
 
 .tool-diff-view__collapsed-context {
@@ -71,13 +79,13 @@
 }
 
 .tool-diff-view__line[data-kind="deletion"] {
-  border-left-color: #f87171;
-  background: rgba(254, 202, 202, 0.62);
+  --tool-diff-line-marker: #f87171;
+  --tool-diff-line-background: color-mix(in srgb, #fecaca 62%, var(--tool-diff-surface));
 }
 
 .tool-diff-view__line[data-kind="addition"] {
-  border-left-color: #4ade80;
-  background: rgba(187, 247, 208, 0.62);
+  --tool-diff-line-marker: #4ade80;
+  --tool-diff-line-background: color-mix(in srgb, #bbf7d0 62%, var(--tool-diff-surface));
 }
 
 .tool-diff-view__line[data-kind="addition"] .tool-diff-view__line-number {
@@ -144,6 +152,7 @@
 }
 
 [data-theme="dark"] .tool-diff-view {
+  --tool-diff-surface: #1d1d1d;
   --tool-diff-code-comment: #94a3b8;
   --tool-diff-code-function: #67e8f9;
   --tool-diff-code-keyword: #c084fc;
@@ -151,15 +160,12 @@
   --tool-diff-code-operator: #f9a8d4;
   --tool-diff-code-string: #86efac;
   --tool-diff-code-text: #e2e8f0;
-  background: #1d1d1d;
 }
 
 [data-theme="dark"] .tool-diff-view__line[data-kind="deletion"] {
-  border-left-color: #f87171;
-  background: rgba(127, 29, 29, 0.34);
+  --tool-diff-line-background: color-mix(in srgb, #7f1d1d 34%, var(--tool-diff-surface));
 }
 
 [data-theme="dark"] .tool-diff-view__line[data-kind="addition"] {
-  border-left-color: #4ade80;
-  background: rgba(20, 83, 45, 0.38);
+  --tool-diff-line-background: color-mix(in srgb, #14532d 38%, var(--tool-diff-surface));
 }

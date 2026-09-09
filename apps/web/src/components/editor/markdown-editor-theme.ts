@@ -307,7 +307,7 @@ const darkTheme = EditorView.theme(
     ".cm-content": { caretColor: "#93c5fd" },
     ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#93c5fd" },
     "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
-      backgroundColor: "rgba(96, 165, 250, 0.26)",
+      backgroundColor: "var(--app-text-selection)",
     },
   },
   { dark: true },

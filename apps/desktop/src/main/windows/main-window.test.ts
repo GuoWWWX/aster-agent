@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("electron", () => ({
   BrowserWindow: class MockBrowserWindow {
+    public webContents = { on: vi.fn() };
     public constructor(public readonly options: Record<string, unknown>) {}
   },
 }));

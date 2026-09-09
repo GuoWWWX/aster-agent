@@ -15,6 +15,7 @@ import {
   createConversationTurnPreviews,
   isConversationTurnNavigatorNarrow,
   visibleConversationTurnIds,
+  scrollConversationTurnIntoView,
 } from "./conversation-turn-navigator.js";
 
 class TestResizeObserver {
@@ -22,6 +23,24 @@ class TestResizeObserver {
   observe(): void {}
   unobserve(): void {}
 }
+
+it("centers a turn by scrolling only the message viewport", () => {
+  const viewport = document.createElement("div");
+  const anchor = document.createElement("div");
+  viewport.scrollTop = 300;
+  Object.defineProperties(viewport, {
+    clientHeight: { value: 500 }, clientTop: { value: 1 },
+  });
+  vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 100, 900, 502));
+  vi.spyOn(anchor, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 800, 500, 100));
+  const scrollTo = vi.fn();
+  const scrollIntoView = vi.fn();
+  viewport.scrollTo = scrollTo;
+  anchor.scrollIntoView = scrollIntoView;
+  scrollConversationTurnIntoView(viewport, anchor, "auto");
+  expect(scrollTo).toHaveBeenCalledWith({ top: 799, behavior: "auto" });
+  expect(scrollIntoView).not.toHaveBeenCalled();
+});
 
 function message(input: {
   content: string;
@@ -270,6 +289,7 @@ describe("conversation turn navigator", () => {
         runId: `run-${index + 1}`,
       }),
     ]).flat();
+    messages.scrollTo = vi.fn();
     for (const item of timeline) {
       const wrapper = document.createElement("div");
       wrapper.dataset.conversationTimelineItem = item.id;

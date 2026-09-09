@@ -24,6 +24,36 @@ afterEach(async () => {
 });
 
 describe("EventProjector", () => {
+  it("replays full history when a compression boundary follows a compact startup checkpoint", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-compression-tail-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const creation = source.prepareConversationCreation(null);
+    const id = creation.conversation.id;
+    const log = new ThreadLog(directory);
+    const runId = crypto.randomUUID();
+    log.append(id, { type: "conversation_created", payload: creation });
+    log.append(id, { type: "run_created", payload: { runId, modelId: "demo" } });
+    for (let i = 0; i < 3; i++) log.append(id, {
+      type: "user_message", payload: { runId, messageId: crypto.randomUUID(), content: `历史 ${i}` },
+    });
+    log.append(id, { type: "run_finished", payload: { runId, status: "completed" } });
+    const projector = new EventProjector(source, log);
+    projector.projectAllConversationLogs({ releaseHistory: true });
+    projector.checkpointInactiveConversations();
+    log.append(id, { type: "context_checkpoint", payload: {
+      coveredThroughContextSequence: 2, summary: "前两条历史摘要",
+    } });
+    const recovered = new AgentDatabase(":memory:");
+    const restarted = new EventProjector(recovered, log);
+    expect(() => restarted.projectAllConversationLogs({ releaseHistory: true })).not.toThrow();
+    restarted.ensureConversationHistoryProjected(id);
+    expect(recovered.listContextMessages(id)).toHaveLength(3);
+    expect(recovered.getConversation(id).lastRunStatus).toBe("completed");
+    source.close();
+    recovered.close();
+  });
+
   it("recovers attachments embedded in old snapshot messages instead of an incomplete startup checkpoint", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-old-attachments-"));
     temporaryDirectories.push(directory);
@@ -1192,7 +1222,7 @@ describe("EventProjector", () => {
     recovered.close();
   });
 
-  it("consumes a write-ahead Steer message into the active Run", async () => {
+  it.each(["active", "completed", "failed", "cancelled"] as const)("restores write-ahead Steer messages when their Run is %s", async (status) => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-write-ahead-steer-"));
     temporaryDirectories.push(directory);
     const source = new AgentDatabase(":memory:");
@@ -1266,20 +1296,48 @@ describe("EventProjector", () => {
       expect.objectContaining({ content: "补充约束：不要修改配置", role: "user", runId: run.runId }),
     ]));
 
-    // Simulate a process crash after the JSONL append, but before a later
-    // process has indexed the event stream. Recovery must replay the pending
-    // snapshot before consuming the Steer message into the active Run.
+    if (status !== "active") {
+      projector.projectBusinessEvent(creation.conversation.id, threadLog.append(creation.conversation.id, {
+        payload: { assistantKind: "turn", content: "本轮结束", error: null,
+          messageId: crypto.randomUUID(), modelId: "test-model", result: "本轮结束", runId: run.runId, status },
+        type: "run_terminal",
+      }));
+      projector.checkpointInactiveConversations();
+    }
+    // Startup restores compact Run state first. Lazy history hydration must not
+    // require a historical Steer to target a currently active Run.
     const recovered = new AgentDatabase(":memory:");
-    new EventProjector(recovered, threadLog).projectAllConversationLogs();
-    expect(recovered.listPendingMessages(creation.conversation.id)).toEqual([]);
-    expect(recovered.listTimeline(creation.conversation.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ content: "补充约束：不要修改配置", role: "user", runId: run.runId }),
-    ]));
-    expect(recovered.listContextMessages(creation.conversation.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ content: "补充约束：不要修改配置", role: "user", runId: run.runId }),
-    ]));
-    source.close();
-    recovered.close();
+    const recoveredProjector = new EventProjector(recovered, threadLog);
+    try {
+      recoveredProjector.projectAllConversationLogs({ releaseHistory: status !== "active" });
+      recoveredProjector.ensureConversationHistoryProjected(creation.conversation.id);
+      expect(recovered.listPendingMessages(creation.conversation.id)).toEqual([]);
+      expect(recovered.listTimeline(creation.conversation.id)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ content: "补充约束：不要修改配置", role: "user", runId: run.runId }),
+      ]));
+      expect(recovered.listContextMessages(creation.conversation.id)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ content: "补充约束：不要修改配置", role: "user", runId: run.runId }),
+      ]));
+      recovered.projectThreadLogBusinessEvents(creation.conversation.id, [userEvent]);
+      expect(recovered.listTimeline(creation.conversation.id).filter((item) => item.id === consumed.userMessage.id)).toHaveLength(1);
+      expect(recovered.listContextMessages(creation.conversation.id).filter((item) => item.content === consumed.modelContent)).toHaveLength(1);
+      if (status !== "active") {
+        expect(recovered.getConversation(creation.conversation.id)).toMatchObject({ activeRunId: null, lastRunStatus: status });
+        recoveredProjector.releaseInactiveConversationHistories();
+        recoveredProjector.ensureConversationHistoryProjected(creation.conversation.id);
+        expect(recovered.listTimeline(creation.conversation.id).filter((item) => item.id === consumed.userMessage.id)).toHaveLength(1);
+        expect(recovered.listContextMessages(creation.conversation.id).filter((item) => item.content === consumed.modelContent)).toHaveLength(1);
+        const nextPending = recovered.enqueuePendingMessage({ conversationId: creation.conversation.id,
+          content: "新的实时补充", deliveryMode: "steer" });
+        expect(() => recovered.preparePendingMessageConsumption(nextPending.id, run.runId, nextPending.content))
+          .toThrow("Pending message can only steer its active conversation run.");
+        recovered.deletePendingMessage(nextPending.id);
+        expect(() => recovered.createRunWithUserMessage(creation.conversation.id, "再次发送", "test-model")).not.toThrow();
+      }
+    } finally {
+      source.close();
+      recovered.close();
+    }
   });
 
   it("rebuilds AttachmentStore metadata from JSONL references without logging paths", async () => {

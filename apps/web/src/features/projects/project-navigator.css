@@ -192,7 +192,7 @@
   z-index: 4;
   right: 4px;
   left: 4px;
-  border-top: 1px dashed #94a3b8;
+  border-top: 2px solid var(--app-accent);
   content: "";
   pointer-events: none;
 }
@@ -405,17 +405,21 @@
   border-radius: var(--app-radius);
   background: var(--app-hover);
   opacity: 0;
+  pointer-events: none;
   transform: translateY(-50%);
   transition: opacity 120ms ease;
 }
 
 .project-navigator__session-shell:hover .project-navigator__session-actions,
-.project-navigator__session-shell:focus-within .project-navigator__session-actions {
+.project-navigator__session-shell[data-menu-open="true"] .project-navigator__session-actions,
+.project-navigator__session-shell:has(:focus-visible) .project-navigator__session-actions {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .project-navigator__session-shell:hover .project-navigator__session-status,
-.project-navigator__session-shell:focus-within .project-navigator__session-status {
+.project-navigator__session-shell[data-menu-open="true"] .project-navigator__session-status,
+.project-navigator__session-shell:has(:focus-visible) .project-navigator__session-status {
   opacity: 0;
 }
 

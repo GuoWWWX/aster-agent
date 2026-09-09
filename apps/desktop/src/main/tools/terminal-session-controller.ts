@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { release } from "node:os";
 
 import { spawn as spawnPty } from "node-pty";
 
@@ -45,6 +46,7 @@ type PtyFactory = (
 ) => PtyProcess;
 
 type ActiveTerminalSession = {
+  columns: number;
   dataSubscription: Disposable;
   exitSubscription: Disposable;
   output: string;
@@ -52,6 +54,7 @@ type ActiveTerminalSession = {
   outputStartCursor: number;
   process: PtyProcess;
   projectId: string;
+  rows: number;
 };
 
 type TerminalEventListener = (event: TerminalSessionEvent) => void;
@@ -124,6 +127,7 @@ export class TerminalSessionController {
       this.emit({ exitCode, sessionId, type: "exit" });
     });
     this.sessions.set(sessionId, {
+      columns: input.columns,
       dataSubscription,
       exitSubscription,
       output: "",
@@ -131,11 +135,16 @@ export class TerminalSessionController {
       outputStartCursor: 0,
       process,
       projectId: input.projectId,
+      rows: input.rows,
     });
     return terminalSessionSchema.parse({
+      initialSize: { columns: input.columns, rows: input.rows },
       projectId: input.projectId,
       sessionId,
       shellLabel: launch.label,
+      ...(globalThis.process.platform === "win32" ? {
+        windowsPty: { backend: "conpty", buildNumber: Number(release().split(".")[2]) },
+      } : {}),
     });
   }
 
@@ -166,7 +175,11 @@ export class TerminalSessionController {
   }
 
   public resize(input: TerminalSessionResizeInput): void {
-    this.requireSession(input.sessionId).process.resize(input.columns, input.rows);
+    const session = this.requireSession(input.sessionId);
+    if (session.columns === input.columns && session.rows === input.rows) return;
+    session.process.resize(input.columns, input.rows);
+    session.columns = input.columns;
+    session.rows = input.rows;
   }
 
   public close(input: TerminalSessionReferenceInput): void {
@@ -216,6 +229,8 @@ export class TerminalSessionController {
     this.pendingData.delete(sessionId);
     if (pending === undefined) return;
 
+    let nextCursor = this.requireSession(sessionId).outputEndCursor
+      - pending.reduce((length, chunk) => length + chunk.length, 0);
     let data = "";
     for (const chunk of pending) {
       let offset = 0;
@@ -224,12 +239,13 @@ export class TerminalSessionController {
         data += chunk.slice(offset, offset + size);
         offset += size;
         if (data.length === MAX_TERMINAL_EVENT_CHARS) {
-          this.emit({ data, sessionId, type: "data" });
+          nextCursor += data.length;
+          this.emit({ data, nextCursor, sessionId, type: "data" });
           data = "";
         }
       }
     }
-    if (data.length > 0) this.emit({ data, sessionId, type: "data" });
+    if (data.length > 0) this.emit({ data, nextCursor: nextCursor + data.length, sessionId, type: "data" });
   }
 
   private emit(event: TerminalSessionEvent): void {

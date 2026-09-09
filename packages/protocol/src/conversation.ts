@@ -615,6 +615,7 @@ export const conversationContextUsageSchema = z
     outputReserveTokens: z.number().int().nonnegative(),
     providerCache: z
       .object({
+        firstTokenLatencyMs: z.number().int().nonnegative().nullable().optional(),
         lastReportedHitRate: z.number().min(0).max(1).optional(),
         cumulative: z
           .object({
@@ -1057,6 +1058,13 @@ const modelRequestStartedEventSchema = z
   })
   .strict();
 
+const modelFirstTokenEventSchema = z.object({
+  conversationId: conversationIdSchema,
+  runId: runIdSchema,
+  latencyMs: z.number().int().nonnegative(),
+  type: z.literal("model.first_token_received"),
+}).strict();
+
 const modelRetryUpdatedEventSchema = z
   .object({
     conversationId: conversationIdSchema,
@@ -1111,7 +1119,9 @@ const taskListUpdatedEventSchema = z
 const pendingMessagesUpdatedEventSchema = z
   .object({
     conversationId: conversationIdSchema,
+    consumedMessages: z.array(conversationMessageItemSchema).optional(),
     pendingMessages: conversationPendingMessageListSchema,
+    queuePaused: z.boolean().optional(),
     type: z.literal("pending_messages.updated")
   })
   .strict();
@@ -1190,6 +1200,7 @@ const runFinishedEventSchema = z
 export const conversationRunEventSchema = z.discriminatedUnion("type", [
   runStartedEventSchema,
   modelRequestStartedEventSchema,
+  modelFirstTokenEventSchema,
   modelRetryUpdatedEventSchema,
   assistantReasoningDeltaEventSchema,
   assistantDeltaEventSchema,

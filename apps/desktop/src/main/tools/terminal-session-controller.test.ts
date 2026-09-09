@@ -56,8 +56,10 @@ describe("TerminalSessionController", () => {
     controller.onEvent((event) => events.push(event));
 
     const session = controller.open({ columns: 120, projectId, rows: 32 });
+    expect(session).toMatchObject({ initialSize: { columns: 120, rows: 32 } });
     expect(controller.isActive({ sessionId: session.sessionId })).toBe(true);
     controller.write({ data: "git status\r", sessionId: session.sessionId });
+    controller.resize({ columns: 100, rows: 20, sessionId: session.sessionId });
     controller.resize({ columns: 100, rows: 20, sessionId: session.sessionId });
     fake.emitData("working tree clean\r\n");
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -74,8 +76,9 @@ describe("TerminalSessionController", () => {
     expect(launchOptions?.rows).toBe(32);
     expect(fake.process.write).toHaveBeenCalledWith("git status\r");
     expect(fake.process.resize).toHaveBeenCalledWith(100, 20);
+    expect(fake.process.resize).toHaveBeenCalledOnce();
     expect(events).toEqual([
-      { data: "working tree clean\r\n", sessionId: session.sessionId, type: "data" },
+      { data: "working tree clean\r\n", nextCursor: 20, sessionId: session.sessionId, type: "data" },
       { exitCode: 0, sessionId: session.sessionId, type: "exit" },
     ]);
     expect(() => controller.write({ data: "x", sessionId: session.sessionId })).toThrow(
@@ -100,7 +103,7 @@ describe("TerminalSessionController", () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(events).toEqual([
-      { data: "first prompt\r\n", sessionId: session.sessionId, type: "data" },
+      { data: "first prompt\r\n", nextCursor: 14, sessionId: session.sessionId, type: "data" },
     ]);
     expect(controller.readOutput({ afterCursor: 0, maxChars: 5, sessionId: session.sessionId }))
       .toEqual({ data: "first", nextCursor: 5, truncated: true });
@@ -120,6 +123,28 @@ describe("TerminalSessionController", () => {
     controller.dispose();
 
     expect(fake.process.kill).toHaveBeenCalledOnce();
+  });
+
+  it("keeps event cursors aligned with the transcript across bounded chunks", async () => {
+    const fake = createFakePty();
+    const controller = new TerminalSessionController(
+      { getProject: () => ({ id: projectId, isPinned: false, name: "Agent", rootPath: "D:\\Agent" }) },
+      { getConfiguration: () => DEFAULT_TERMINAL_CONFIGURATION },
+      () => fake.process,
+    );
+    const chunks: { data: string; nextCursor: number }[] = [];
+    controller.onEvent((event) => { if (event.type === "data") chunks.push(event); });
+    const session = controller.open({ columns: 120, projectId, rows: 32 });
+    const data = "\x1b[H" + "x".repeat(70_000) + "\r\n";
+    fake.emitData(data);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    fake.emitData("PS> ");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(chunks.map((chunk) => chunk.nextCursor)).toEqual([65_536, data.length, data.length + 4]);
+    expect(chunks.map((chunk) => chunk.data).join("")).toBe(data + "PS> ");
+    expect(controller.readOutput({ afterCursor: data.length, maxChars: 100, sessionId: session.sessionId }))
+      .toEqual({ data: "PS> ", nextCursor: data.length + 4, truncated: false });
+    controller.dispose();
   });
 
   it("prefers the configured executable path for the selected shell", () => {

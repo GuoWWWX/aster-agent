@@ -1,9 +1,12 @@
+import { QueryTextarea } from "./query-textarea.js";
+import { ProjectImageResult } from "./project-image-result.js";
+import { ToolDisclosureContext, useToolDisclosure } from "./tool-disclosure-state.js";
+import { findComposerReferenceRanges } from "./composer-reference-ranges.js";
 import {
   Bot,
   ArchiveRestore,
   ArrowDown,
   ArrowUp,
-  AtSign,
   BrainCircuit,
   ChevronDown,
   ChevronRight,
@@ -27,6 +30,8 @@ import {
   MessageSquareText,
   Paperclip,
   Pencil,
+  Pause,
+  Play,
   RefreshCw,
   Scale,
   Search,
@@ -468,6 +473,26 @@ export function createRestoredRunProgresses(
     : [{ anchorTimelineItemId: null, outputStartedAt: null, runId, startedAt }];
 }
 
+export function scopeRunProgressToLatestInput(
+  progress: RunProgress,
+  timeline: readonly ConversationTimelineItem[],
+): RunProgress {
+  const inputs = timeline.filter((item) => item.kind === "message"
+    && item.role === "user" && item.runId === progress.runId);
+  const latest = inputs.at(-1);
+  if (latest === undefined || (inputs.length < 2
+    && timeline.find((item) => item.runId === progress.runId)?.id === latest.id)) return progress;
+  const startedAt = Date.parse(latest.createdAt);
+  if (!Number.isFinite(startedAt)) return progress;
+  return {
+    ...progress,
+    anchorTimelineItemId: latest.id,
+    outputStartedAt: progress.outputStartedAt !== null && progress.outputStartedAt >= startedAt
+      ? progress.outputStartedAt : null,
+    startedAt,
+  };
+}
+
 type ConversationMention = Pick<
   ConversationSummary,
   "id" | "projectId" | "teamId" | "threadKind" | "title"
@@ -488,6 +513,8 @@ type MentionOption =
   | { kind: "directory"; value: ProjectFileMention }
   | { kind: "file"; value: ProjectFileMention }
   | { kind: "team"; value: TeamMention };
+
+const MENTION_GROUPS = { conversation: "对话", team: "团队", directory: "文件夹", file: "文件" };
 
 type MentionQuery = {
   end: number;
@@ -936,6 +963,7 @@ export function ConversationWorkspace({
   } | null>(null);
   const [slashQuery, setSlashQuery] = useState<MentionQuery | null>(null);
   const [slashSkills, setSlashSkills] = useState<SkillConfiguration[]>([]);
+  const [toolDisclosureChoices] = useState(() => new Map<string, boolean>());
   const [draftAttachments, setDraftAttachments] = useState<ConversationAttachment[]>([]);
   const [draftAttachmentPreviewUrls, setDraftAttachmentPreviewUrls] = useState<
     Record<string, string>
@@ -972,6 +1000,7 @@ export function ConversationWorkspace({
   const [removingAttachmentId, setRemovingAttachmentId] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [pendingMessages, setPendingMessages] = useState<ConversationPendingMessage[]>([]);
+  const [pendingQueuePaused, setPendingQueuePaused] = useState(true);
   const [pendingMessageActionId, setPendingMessageActionId] = useState<string | null>(null);
   const [approvingToolId, setApprovingToolId] = useState<string | null>(null);
   const [approvalErrors, setApprovalErrors] = useState<Record<string, string>>({});
@@ -1230,7 +1259,7 @@ export function ConversationWorkspace({
     [timeline],
   );
   const projectMentionLocation = useMemo(
-    () => mentionQuery === null || mentionQuery.query.length === 0
+    () => mentionQuery === null
       ? null
       : parseProjectMentionQuery(mentionQuery.query),
     [mentionQuery],
@@ -1260,6 +1289,7 @@ export function ConversationWorkspace({
       });
       if (contextUsageRequestRef.current === requestId) {
         setContextUsage(nextUsage);
+        // Keep the entire last completed measurement stable while the next request streams.
         if (nextUsage.providerCache?.latest != null) {
           setLastProviderUsage({ conversationId: session.id, usage: nextUsage });
         }
@@ -1518,9 +1548,12 @@ export function ConversationWorkspace({
 
   const loadPendingMessages = useCallback(async (): Promise<void> => {
     try {
-      setPendingMessages(await agentClient.listConversationPendingMessages({
-        conversationId: session.id,
-      }));
+      const [messages, paused] = await Promise.all([
+        agentClient.listConversationPendingMessages({ conversationId: session.id }),
+        agentClient.getConversationPendingQueuePaused({ conversationId: session.id }),
+      ]);
+      setPendingMessages(messages);
+      setPendingQueuePaused(paused);
     } catch {
       setPendingMessages([]);
     }
@@ -1735,7 +1768,17 @@ export function ConversationWorkspace({
         return;
       }
       if (event.type === "pending_messages.updated" && event.conversationId === session.id) {
+        const consumedMessages = event.consumedMessages;
+        if (consumedMessages !== undefined) {
+          timelineRevisionRef.current += 1;
+          setTimeline((current) => {
+            const next = consumedMessages.reduce(upsertTimelineItem, current);
+            timelineRef.current = next;
+            return next;
+          });
+        }
         setPendingMessages(event.pendingMessages);
+        if (event.queuePaused !== undefined) setPendingQueuePaused(event.queuePaused);
         void loadTimeline();
         return;
       }
@@ -1873,7 +1916,7 @@ export function ConversationWorkspace({
     scrollToBottom();
     const animationFrame = window.requestAnimationFrame(scrollToBottom);
     return () => window.cancelAnimationFrame(animationFrame);
-  }, [active, composerOverlayHeight, isLoadingTimeline, modelActivity, operationError, taskList, timeline]);
+  }, [active, composerOverlayHeight, isLoadingTimeline, modelActivity, operationError, pendingMessages, taskList, timeline]);
 
   const handleCopyMessage = useCallback(async (
     message: ConversationMessageItem,
@@ -2382,7 +2425,7 @@ export function ConversationWorkspace({
   ]);
 
   const mentionOptions = useMemo((): MentionOption[] => {
-    if (mentionQuery === null || mentionQuery.query.length === 0) return [];
+    if (mentionQuery === null) return [];
     const options: MentionOption[] = [];
     const normalizedQuery = mentionQuery.query.toLocaleLowerCase();
     const canMentionTeams = session.projectId !== null
@@ -2403,7 +2446,7 @@ export function ConversationWorkspace({
             )
           )
         )
-        .slice(0, 4)
+        .slice(0, 8)
         .map((instance): MentionOption => ({
           kind: "team",
           value: {
@@ -2417,12 +2460,16 @@ export function ConversationWorkspace({
       !mentionQuery.query.includes("/")
       && selectedConversationMentions.length < MAX_SELECTED_CONVERSATION_MENTIONS
     ) {
-      options.push(...availableConversationMentions
+      const conversations = [...new Map([
+        ...relatedSessions.filter((candidate) => candidate.parentConversationId === session.id && !candidate.isArchived),
+        ...availableConversationMentions,
+      ].map((candidate) => [candidate.id, candidate])).values()];
+      options.push(...conversations
         .filter((conversation) =>
           !selectedConversationMentions.some((selected) => selected.id === conversation.id)
           && conversation.title.toLocaleLowerCase().includes(normalizedQuery)
         )
-        .slice(0, Math.max(0, 4 - options.length))
+        .slice(0, 12)
         .map((value): MentionOption => ({ kind: "conversation", value })));
     }
     if (
@@ -2442,7 +2489,7 @@ export function ConversationWorkspace({
             || !activeProjectFileMentions.some((selected) => selected.path === entry.path)
           )
         )
-        .slice(0, Math.max(0, 8 - options.length))
+        .slice(0, 24)
         .map((entry): MentionOption => ({
           kind: entry.kind === "directory" ? "directory" : "file",
           value: {
@@ -2452,7 +2499,8 @@ export function ConversationWorkspace({
           },
         })));
     }
-    return options;
+    const groupOrder = ["conversation", "team", "directory", "file"];
+    return options.sort((a, b) => groupOrder.indexOf(a.kind) - groupOrder.indexOf(b.kind));
   }, [
     activeProjectFileMentions,
     availableConversationMentions,
@@ -2460,6 +2508,7 @@ export function ConversationWorkspace({
     projectMentionListing,
     projectMentionLocation,
     referenceWorkspaceId,
+    relatedSessions,
     selectedConversationMentions,
     selectedTeamMentions,
     session.id,
@@ -2495,9 +2544,29 @@ export function ConversationWorkspace({
           || skill.description.toLocaleLowerCase().includes(query)
         )
       )
+      .sort((left, right) => Number(left.origin === "system") - Number(right.origin === "system"))
       .map((skill) => ({ kind: "skill", value: skill }));
     return [...commands, ...skills];
   }, [selectedAgent, session.projectId, session.teamId, slashQuery, slashSkills]);
+
+  const composerReferences = findComposerReferenceRanges(composerValue, [
+    ...selectedConversationMentions.map((mention) => `@${mention.title}`),
+    ...selectedTeamMentions.map((mention) => `@${mention.name}`),
+    ...activeProjectFileMentions.map((mention) => `@${mention.path}`),
+    ...SLASH_COMMANDS.map((command) => `/${command.name}`),
+    ...slashSkills.map((skill) => `/${skill.id}`),
+  ]);
+  const changeComposerValue = useCallback((nextValue: string, caret: number): void => {
+    const contains = (label: string): boolean => findComposerReferenceRanges(nextValue, [label]).length > 0;
+    setSelectedConversationMentions((current) => current.filter((mention) => contains(`@${mention.title}`)));
+    setSelectedTeamMentions((current) => current.filter((mention) => contains(`@${mention.name}`)));
+    setSelectedProjectFileMentions((current) => current.filter((mention) => contains(`@${mention.path}`)));
+    setComposerValue(nextValue);
+    const nextMentionQuery = findMentionQuery(nextValue, caret);
+    setMentionQuery(nextMentionQuery);
+    setSlashQuery(nextMentionQuery === null ? findSlashQuery(nextValue, caret) : null);
+    setMentionSelectionIndex(0);
+  }, []);
 
   const selectMention = useCallback((option: MentionOption): void => {
     if (mentionQuery === null) return;
@@ -2508,7 +2577,7 @@ export function ConversationWorkspace({
         : option.kind === "team" ? option.value.name : option.value.path} `;
     const nextValue = `${composerValue.slice(0, mentionQuery.start)}${insertedText}${composerValue.slice(mentionQuery.end)}`;
     const nextCaret = mentionQuery.start + insertedText.length;
-    setComposerValue(nextValue);
+    changeComposerValue(nextValue, nextCaret);
     if (option.kind === "conversation") {
       setSelectedConversationMentions((current) =>
         current.some((selected) => selected.id === option.value.id)
@@ -2543,7 +2612,7 @@ export function ConversationWorkspace({
       composerRef.current?.focus();
       composerRef.current?.setSelectionRange(nextCaret, nextCaret);
     });
-  }, [composerValue, mentionQuery]);
+  }, [changeComposerValue, composerValue, mentionQuery]);
 
   const selectSlashOption = useCallback((option: SlashOption): void => {
     if (slashQuery === null) return;
@@ -2551,7 +2620,7 @@ export function ConversationWorkspace({
     const insertedText = `/${optionName} `;
     const nextValue = `${composerValue.slice(0, slashQuery.start)}${insertedText}${composerValue.slice(slashQuery.end)}`;
     const nextCaret = slashQuery.start + insertedText.length;
-    setComposerValue(nextValue);
+    changeComposerValue(nextValue, nextCaret);
     setMentionQuery(null);
     setSlashQuery(null);
     setMentionSelectionIndex(0);
@@ -2559,7 +2628,7 @@ export function ConversationWorkspace({
       composerRef.current?.focus();
       composerRef.current?.setSelectionRange(nextCaret, nextCaret);
     });
-  }, [composerValue, slashQuery]);
+  }, [changeComposerValue, composerValue, slashQuery]);
 
   const handleMentionOptionClick = useCallback(
     (event: MouseEvent<HTMLButtonElement>): void => {
@@ -2576,6 +2645,12 @@ export function ConversationWorkspace({
     },
     [selectSlashOption, slashOptions],
   );
+
+  useEffect(() => {
+    composerRef.current?.closest('.conversation-workspace__composer')?.querySelector<HTMLElement>(
+      '.conversation-mention-menu [aria-selected="true"]',
+    )?.scrollIntoView?.({ block: "nearest" });
+  }, [mentionSelectionIndex]);
 
   const handleComposerKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>): void => {
@@ -2691,16 +2766,17 @@ export function ConversationWorkspace({
     pendingMessageId: string,
   ): Promise<void> => {
     if (pendingMessageActionId !== null) return;
+    const queuedMessages = pendingMessages.filter((message) => message.deliveryMode === "queue");
     if (
-      pendingMessageIds.length !== pendingMessages.length
-      || pendingMessageIds.every((id, index) => id === pendingMessages[index]?.id)
+      pendingMessageIds.length !== queuedMessages.length
+      || pendingMessageIds.every((id, index) => id === queuedMessages[index]?.id)
     ) return;
     const messagesById = new Map(pendingMessages.map((message) => [message.id, message]));
-    const next = pendingMessageIds.flatMap((id) => {
-      const message = messagesById.get(id);
-      return message === undefined ? [] : [message];
-    });
-    if (next.length !== pendingMessages.length) return;
+    if (new Set(pendingMessageIds).size !== queuedMessages.length
+      || pendingMessageIds.some((id) => messagesById.get(id)?.deliveryMode !== "queue")) return;
+    let queueIndex = 0;
+    const next = pendingMessages.map((message) => message.deliveryMode === "steer"
+      ? message : messagesById.get(pendingMessageIds[queueIndex++]!)!);
     const previous = pendingMessages;
     setPendingMessages(next);
     setPendingMessageActionId(pendingMessageId);
@@ -2708,7 +2784,7 @@ export function ConversationWorkspace({
     try {
       setPendingMessages(await agentClient.reorderConversationPendingMessages({
         conversationId: session.id,
-        pendingMessageIds: [...pendingMessageIds],
+        pendingMessageIds: next.map((message) => message.id),
       }));
     } catch (error) {
       setPendingMessages(previous);
@@ -2838,7 +2914,13 @@ export function ConversationWorkspace({
   const displayTimeline = groupRunActivities(
     projectSubagentMessagesForParentTimeline(timeline, subagentConversationIds),
   );
+  const queuedMessages = pendingMessages.filter((message) => message.deliveryMode === "queue");
+  // Pending records are durable sent input, but are not a model/timer boundary until consumed.
+  const sentSteerMessages = pendingMessages.filter((message) => message.deliveryMode === "steer"
+    && !timeline.some((item) => item.id === message.id));
   const forceableCompactionId = forceableContextCompactionId(timeline, activeRunId);
+  const displayRunProgresses = useMemo(() => runProgresses.map((progress) =>
+    scopeRunProgressToLatestInput(progress, timeline)), [runProgresses, timeline]);
   const runningContextCompactionRunIds = new Set(
     displayTimeline.flatMap((item) =>
       item.kind === "tool" && isRunningContextCompaction(item) && item.runId !== null
@@ -2887,7 +2969,7 @@ export function ConversationWorkspace({
   );
   const runProgressesByInsertIndex = useMemo(() => {
     const progressByIndex = new Map<number, RunProgress[]>();
-    for (const progress of runProgresses) {
+    for (const progress of displayRunProgresses) {
       const insertIndex = getConversationRunProgressInsertIndex(
         displayTimeline,
         progress.anchorTimelineItemId,
@@ -2897,13 +2979,13 @@ export function ConversationWorkspace({
       progressByIndex.set(insertIndex, items);
     }
     return progressByIndex;
-  }, [displayTimeline, runProgresses]);
+  }, [displayTimeline, displayRunProgresses]);
   const modelActivityInsertIndex = modelActivity === null
     ? -1
     : getModelActivityInsertIndex(
         displayTimeline,
         modelActivity.runId,
-        runProgresses.find((progress) => progress.runId === modelActivity.runId)
+        displayRunProgresses.find((progress) => progress.runId === modelActivity.runId)
           ?.anchorTimelineItemId
           ?? modelActivity.anchorTimelineItemId,
       );
@@ -3090,7 +3172,7 @@ export function ConversationWorkspace({
           ) : displayTimeline.length === 0 && runProgresses.length === 0 && modelActivity === null ? (
             <div className="conversation-workspace__blank">等待任务</div>
           ) : (
-            <>
+            <ToolDisclosureContext.Provider value={toolDisclosureChoices}>
               {displayTimeline.map((item, index) => (
                 <Fragment key={item.id}>
                   {(runDurationsByInsertIndex.get(index) ?? []).map((durationMs, durationIndex) => (
@@ -3149,8 +3231,11 @@ export function ConversationWorkspace({
                           ? modelActivity
                           : null}
                         runProgress={item.kind === "run_activity"
-                          ? runProgresses.find((progress) =>
+                          ? displayRunProgresses.find((progress) =>
                               progress.runId !== null && item.runIds.includes(progress.runId)
+                              && index >= getConversationRunProgressInsertIndex(
+                                displayTimeline, progress.anchorTimelineItemId,
+                              )
                             )
                             ?? null
                           : null}
@@ -3226,8 +3311,25 @@ export function ConversationWorkspace({
               {modelActivity !== null && modelActivityInsertIndex === displayTimeline.length ? (
                 <ModelActivityIndicator activity={modelActivity} />
               ) : null}
-            </>
+            </ToolDisclosureContext.Provider>
           )}
+          {sentSteerMessages.map((message) => (
+            <div className="chat-message-group" data-role="user" data-sent-steer={message.id} key={message.id}>
+              <PendingMessageAttachmentPreviews agentClient={agentClient}
+                attachmentIds={message.attachmentIds} conversationId={message.conversationId}
+                sent />
+              {message.content.length > 0 ? (
+                <article className="chat-message" data-role="user" data-status="completed">
+                  <p>{message.content}</p>
+                </article>
+              ) : null}
+              <div className="chat-message__meta">
+                <time dateTime={message.createdAt} title={formatConversationDateTime(message.createdAt)}>
+                  {formatConversationTime(message.createdAt)}
+                </time>
+              </div>
+            </div>
+          ))}
           {operationError !== null ? <ConversationErrorItem content={operationError} /> : null}
           <div
             aria-hidden="true"
@@ -3265,12 +3367,24 @@ export function ConversationWorkspace({
             />
           ) : null}
 
-          {pendingMessages.length > 0 ? (
+          {queuedMessages.length > 0 ? (
             <ConversationPendingMessageQueue
               agentClient={agentClient}
               actioningMessageId={pendingMessageActionId}
               editingMessageId={editingPendingMessageId}
-              messages={pendingMessages}
+              messages={queuedMessages}
+              paused={pendingQueuePaused}
+              onTogglePaused={async () => {
+                if (pendingMessageActionId !== null) return;
+                setPendingMessageActionId("queue-state");
+                try {
+                  setPendingQueuePaused(await agentClient.setConversationPendingQueuePaused({
+                    conversationId: session.id, paused: !pendingQueuePaused,
+                  }));
+                } catch (error) {
+                  setOperationError(getUserErrorMessage(error, "无法更改队列状态。"));
+                } finally { setPendingMessageActionId(null); }
+              }}
               onDelete={handleDeletePendingMessage}
               onEdit={handleEditPendingMessage}
               onReorder={handleReorderPendingMessages}
@@ -3373,71 +3487,29 @@ export function ConversationWorkspace({
                 ))}
               </AttachmentStrip>
             ) : null}
-            {selectedConversationMentions.length > 0
-              || selectedTeamMentions.length > 0
-              || activeProjectFileMentions.length > 0 ? (
-              <div className="conversation-mentions conversation-mentions--draft">
-                {selectedTeamMentions.map((mention) => (
-                  <span className="conversation-mention-chip" data-kind="team" key={mention.id}>
-                    <UsersRound aria-hidden="true" size={13} />
-                    <span>{mention.name}</span>
-                    <button
-                      aria-label={`移除团队引用 ${mention.name}`}
-                      type="button"
-                      onClick={() => setSelectedTeamMentions((current) =>
-                        current.filter((candidate) => candidate.id !== mention.id)
-                      )}
-                    >
-                      <X aria-hidden="true" size={12} />
-                    </button>
-                  </span>
-                ))}
-                {selectedConversationMentions.map((mention) => (
-                  <span className="conversation-mention-chip" data-kind="conversation" key={mention.id}>
-                    <AtSign aria-hidden="true" size={13} />
-                    <span>{mention.title}</span>
-                    <button
-                      aria-label={`移除对话引用 ${mention.title}`}
-                      type="button"
-                      onClick={() => setSelectedConversationMentions((current) =>
-                        current.filter((candidate) => candidate.id !== mention.id)
-                      )}
-                    >
-                      <X aria-hidden="true" size={12} />
-                    </button>
-                  </span>
-                ))}
-                {activeProjectFileMentions.map((mention) => (
-                  <span className="conversation-mention-chip" data-kind="file" key={mention.path}>
-                    <FileTypeIcon path={mention.path} size={13} />
-                    <span title={mention.path}>{mention.path}</span>
-                    <button
-                      aria-label={`移除文件引用 ${mention.path}`}
-                      type="button"
-                      onClick={() => setSelectedProjectFileMentions((current) =>
-                        current.filter((candidate) => candidate.path !== mention.path)
-                      )}
-                    >
-                      <X aria-hidden="true" size={12} />
-                    </button>
-                  </span>
-                ))}
-              </div>
-            ) : null}
             <div className="conversation-workspace__composer-input">
               {
                 mentionQuery !== null
-                && mentionQuery.query.length > 0
                 && mentionOptions.length > 0
               ? (
                 <div className="conversation-mention-menu" role="listbox" aria-label="引用对话或文件">
                   {mentionOptions.map((option, index) => {
+                    const child = option.kind === "conversation"
+                      ? relatedSessions.find((candidate) => candidate.id === option.value.id)
+                      : undefined;
                     const projectName = option.kind === "conversation"
                       ? projects.find(
                         (candidate) => candidate.id === option.value.projectId,
                       )?.name
                       : null;
                     return (
+                      <Fragment key={option.kind === "conversation" || option.kind === "team"
+                        ? `${option.kind}:${option.value.id}` : `${option.kind}:${option.value.path}`}>
+                      {mentionOptions[index - 1]?.kind === option.kind ? null : (
+                        <div role="presentation" className="px-2 py-1 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
+                          {MENTION_GROUPS[option.kind]}
+                        </div>
+                      )}
                       <button
                         aria-selected={index === mentionSelectionIndex}
                         className={index === mentionSelectionIndex ? "is-selected" : undefined}
@@ -3453,14 +3525,16 @@ export function ConversationWorkspace({
                         {option.kind === "team" ? (
                           <UsersRound aria-hidden="true" size={15} />
                         ) : option.kind === "conversation" ? (
-                          <MessageSquareText aria-hidden="true" size={15} />
+                          child?.parentConversationId != null ? (
+                            <SubagentAvatar icon={child.avatarIcon} seed={child.id} size="compact" />
+                          ) : <MessageSquareText aria-hidden="true" size={15} />
                         ) : option.kind === "directory" ? (
                           <Folder aria-hidden="true" size={15} />
                         ) : (
                           <FileTypeIcon path={option.value.path} size={15} />
                         )}
                         <span>
-                          <strong>{option.kind === "conversation"
+                          <strong title={option.kind === "conversation" ? option.value.title : option.value.name}>{option.kind === "conversation"
                             ? option.value.title
                             : option.kind === "team" ? option.value.name : option.value.name}</strong>
                           <small>{option.kind === "conversation"
@@ -3474,6 +3548,7 @@ export function ConversationWorkspace({
                             : `${option.kind === "directory" ? "目录" : "文件"} · ${option.value.path}`}</small>
                         </span>
                       </button>
+                      </Fragment>
                     );
                   })}
                 </div>
@@ -3482,9 +3557,16 @@ export function ConversationWorkspace({
                   {slashOptions.length === 0 ? (
                     <p>没有匹配的命令</p>
                   ) : slashOptions.map((option, index) => (
+                    <Fragment key={`${option.kind}:${option.kind === "skill" ? option.value.id : option.value.name}`}>
+                    {slashOptions[index - 1]?.kind === option.kind ? null : (
+                      <div role="presentation" className="px-2 py-1 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
+                        {option.kind === "skill" ? "技能" : "指令"}
+                      </div>
+                    )}
                     <button
+                      title={option.value.description}
                       aria-selected={index === mentionSelectionIndex}
-                      className={index === mentionSelectionIndex ? "is-selected" : undefined}
+                      className={[index === mentionSelectionIndex ? "is-selected" : "", option.kind === "skill" ? "grid-cols-[18px_minmax(0,1fr)_auto]!" : ""].join(" ")}
                       data-option-index={index}
                       key={`${option.kind}:${option.kind === "skill"
                         ? option.value.id
@@ -3506,25 +3588,43 @@ export function ConversationWorkspace({
                         <Terminal aria-hidden="true" size={15} />
                       )}
                       <span>
-                        <strong>/{option.kind === "skill"
-                          ? option.value.id
-                          : option.value.name} · {option.kind === "skill"
-                            ? option.value.name
-                            : option.value.title}</strong>
+                        <strong>/{option.value.name}{option.kind === "command" ? ` · ${option.value.title}` : ""}</strong>
                         <small>{option.kind === "skill"
                           ? `Skill · ${option.value.description || "使用这个 Skill 处理任务"}`
                           : option.value.description}</small>
                       </span>
+                      {option.kind === "skill" ? <small className="ml-auto shrink-0 whitespace-nowrap text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">{option.value.origin === "system" ? "系统" : "个人"}</small> : null}
                     </button>
+                    </Fragment>
                   ))}
                 </div>
               ) : null}
-              <textarea
-                ref={composerRef}
+              <QueryTextarea
+                textareaRef={composerRef}
                 aria-label="输入任务"
-                data-query-active={mentionQuery !== null || slashQuery !== null
-                  ? "true"
-                  : undefined}
+                query={mentionQuery ?? slashQuery}
+                references={composerReferences}
+                renderReferenceIcon={(range) => {
+                  const label = composerValue.slice(range.start, range.end);
+                  if (label === "/compact") return <ArchiveRestore size={12} aria-hidden="true" />;
+                  if (label === "/plan") return <ListTodo size={12} aria-hidden="true" />;
+                  if (label === "/review") return <FileSearch size={12} aria-hidden="true" />;
+                  if (label === "/test") return <Terminal size={12} aria-hidden="true" />;
+                  if (label.startsWith("/")) return <Sparkles size={12} aria-hidden="true" />;
+                  if (selectedTeamMentions.some((item) => `@${item.name}` === label)) return <UsersRound size={12} aria-hidden="true" />;
+                  const file = activeProjectFileMentions.find((item) => `@${item.path}` === label);
+                  if (file !== undefined) return <FileTypeIcon path={file.path} size={12} />;
+                  const reference = selectedConversationMentions.find((item) => `@${item.title}` === label);
+                  const child = relatedSessions.find((item) => item.id === reference?.id && item.parentConversationId !== null);
+                  if (child !== undefined) return <span className="inline-flex shrink-0 scale-[0.65]"><SubagentAvatar icon={child.avatarIcon} seed={child.id} size="compact" /></span>;
+                  return <MessageSquareText size={12} aria-hidden="true" />;
+                }}
+                onReferenceDelete={(range) => {
+                  changeComposerValue(composerValue.slice(0, range.start) + composerValue.slice(range.end), range.start);
+                  setMentionQuery(null);
+                  setSlashQuery(null);
+                  queueMicrotask(() => composerRef.current?.setSelectionRange(range.start, range.start));
+                }}
                 disabled={isSending || pendingMessageActionId !== null || isModelUnavailable || isEndedSubagent}
                 placeholder={isEndedSubagent
                   ? "Subagent 已结束，可查看完整过程"
@@ -3535,28 +3635,16 @@ export function ConversationWorkspace({
                     : `向 ${selectedAgent.name} 输入任务`}
                 rows={2}
                 value={composerValue}
-                onChange={(event) => {
-                  const nextValue = event.target.value;
-                  const nextMentionQuery = findMentionQuery(
-                    nextValue,
-                    event.target.selectionStart,
-                  );
-                  setComposerValue(nextValue);
-                  setMentionQuery(nextMentionQuery);
-                  setSlashQuery(nextMentionQuery === null
-                    ? findSlashQuery(nextValue, event.target.selectionStart)
-                    : null);
-                  setMentionSelectionIndex(0);
-                }}
+                onValueChange={changeComposerValue}
                 onClick={(event) => {
                   const nextMentionQuery = findMentionQuery(
-                    event.currentTarget.value,
+                    composerValue,
                     event.currentTarget.selectionStart,
                   );
                   setMentionQuery(nextMentionQuery);
                   setSlashQuery(nextMentionQuery === null
                     ? findSlashQuery(
-                      event.currentTarget.value,
+                      composerValue,
                       event.currentTarget.selectionStart,
                     )
                     : null);
@@ -3840,12 +3928,12 @@ function findMentionQuery(value: string, cursor: number): MentionQuery | null {
 
 function findSlashQuery(value: string, cursor: number): MentionQuery | null {
   const beforeCursor = value.slice(0, cursor);
-  const match = beforeCursor.match(/^\/([^\s/]*)$/u);
+  const match = beforeCursor.match(/(?:^|\s)\/([^\s/]*)$/u);
   if (match === null) return null;
   return {
     end: cursor,
     query: match[1] ?? "",
-    start: 0,
+    start: cursor - (match[1]?.length ?? 0) - 1,
   };
 }
 
@@ -4222,10 +4310,12 @@ function PendingMessageAttachmentPreviews({
   agentClient,
   attachmentIds,
   conversationId,
+  sent = false,
 }: {
   agentClient: AgentClient;
   attachmentIds: readonly string[];
   conversationId: string;
+  sent?: boolean;
 }): ReactElement | null {
   const visibleAttachmentIds = useMemo(() => attachmentIds.slice(0, 3), [attachmentIds]);
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
@@ -4262,14 +4352,14 @@ function PendingMessageAttachmentPreviews({
           </span>
         ) : (
           <button
-            aria-label="预览待发送图片"
+            aria-label={sent ? "预览图片" : "预览待发送图片"}
             className="conversation-pending-queue__attachment-preview"
             key={attachmentId}
             type="button"
             onClick={() => requestMediaPreview({
-              alt: "待发送图片",
+              alt: sent ? "图片" : "待发送图片",
               src: previewUrl,
-              title: "待发送图片",
+              title: sent ? "图片" : "待发送图片",
             })}
           >
             <img alt="" src={previewUrl} />
@@ -4288,6 +4378,8 @@ function ConversationPendingMessageQueue({
   actioningMessageId,
   editingMessageId,
   messages,
+  paused,
+  onTogglePaused,
   onDelete,
   onEdit,
   onReorder,
@@ -4297,6 +4389,8 @@ function ConversationPendingMessageQueue({
   actioningMessageId: string | null;
   editingMessageId: string | null;
   messages: readonly ConversationPendingMessage[];
+  paused: boolean;
+  onTogglePaused: () => Promise<void>;
   onDelete: (pendingMessageId: string) => Promise<void>;
   onEdit: (message: ConversationPendingMessage) => void;
   onReorder: (
@@ -4322,6 +4416,12 @@ function ConversationPendingMessageQueue({
         <ListEnd aria-hidden="true" size={14} />
         <strong>待发送</strong>
         <span>{messages.length}</span>
+        <div className="ml-auto flex items-center gap-[5px]">
+          {paused ? <small className="text-[var(--app-muted-foreground)]">已暂停</small> : null}
+          <IconButton disabled={actioningMessageId !== null} label={paused ? "继续队列（本轮完成后依次发送）" : "暂停队列"} size="compact" onClick={() => void onTogglePaused()}>
+            {paused ? <Play aria-hidden="true" size={14} /> : <Pause aria-hidden="true" size={14} />}
+          </IconButton>
+        </div>
       </header>
       <div className="conversation-pending-queue__items">
         {messages.map((message) => {
@@ -4341,7 +4441,6 @@ function ConversationPendingMessageQueue({
               data-drop-position={dropIndicator?.id === message.id
                 ? dropIndicator.position
                 : undefined}
-              draggable={actioningMessageId === null}
               key={message.id}
               onDragEnd={finishDrag}
               onDragOver={(event) => {
@@ -4358,12 +4457,7 @@ function ConversationPendingMessageQueue({
                 });
               }}
               onDragStart={(event) => {
-                if (
-                  actioningMessageId !== null
-                  || (event.target as Element).closest(
-                    ".conversation-pending-queue__drag-handle",
-                  ) === null
-                ) {
+                if (actioningMessageId !== null) {
                   event.preventDefault();
                   return;
                 }
@@ -4393,6 +4487,7 @@ function ConversationPendingMessageQueue({
               <span
                 aria-label="拖拽调整顺序"
                 className="conversation-pending-queue__drag-handle"
+                draggable={actioningMessageId === null}
                 title="拖拽调整顺序"
               >
                 <GripVertical aria-hidden="true" size={14} />
@@ -4406,9 +4501,6 @@ function ConversationPendingMessageQueue({
                 <span className="conversation-pending-queue__content" title={message.content || fallback}>
                   {message.content || fallback}
                 </span>
-              </span>
-              <span className="conversation-pending-queue__mode">
-                {message.deliveryMode === "steer" ? "等待介入" : "排队中"}
               </span>
               <span className="conversation-pending-queue__actions">
                 {isActioning ? (
@@ -4895,6 +4987,70 @@ function formatLocalClock(timestamp: Date): string {
 export function groupRunActivities(
   timeline: ConversationTimelineItem[],
 ): TimelineDisplayItem[] {
+  const userIndexesByRun = new Map<string, number[]>();
+  const restoredRunStarts = new Map<string, number>();
+  for (const [index, item] of timeline.entries()) {
+    if (item.runId === null) continue;
+    if (item.kind === "message" && item.role === "assistant" && item.durationMs != null) {
+      restoredRunStarts.set(item.runId, Date.parse(item.createdAt) - item.durationMs);
+    }
+    if (item.kind !== "message" || item.role !== "user") {
+      // A paged window may begin mid-Run, before its next Steer input.
+      if (!userIndexesByRun.has(item.runId)) userIndexesByRun.set(item.runId, [-1]);
+      continue;
+    }
+    const indexes = userIndexesByRun.get(item.runId) ?? [];
+    indexes.push(index);
+    userIndexesByRun.set(item.runId, indexes);
+  }
+  const boundaries = [...userIndexesByRun.values()].flatMap((indexes) => indexes.slice(1))
+    .sort((a, b) => a - b);
+  if (boundaries.length === 0) return groupRunActivitySegment(timeline);
+  const projected: TimelineDisplayItem[] = [];
+  let start = 0;
+  for (const end of [...boundaries, timeline.length]) {
+    const segment = groupRunActivitySegment(timeline.slice(start, end));
+    for (const [runId, indexes] of userIndexesByRun) {
+      if (indexes.length < 2) continue;
+      const firstIndex = indexes[0];
+      const currentIndex = indexes.findLast((index) => index <= start) ?? firstIndex;
+      const nextIndex = indexes.find((index) => index >= end);
+      if (firstIndex === undefined || currentIndex === undefined) continue;
+      const first = timeline[firstIndex];
+      const current = timeline[currentIndex];
+      const firstTime = first === undefined ? restoredRunStarts.get(runId) : Date.parse(first.createdAt);
+      const currentTime = current === undefined ? firstTime : Date.parse(current.createdAt);
+      if (currentTime === undefined || !Number.isFinite(currentTime)) continue;
+      const offset = firstTime === undefined ? null : Math.max(0, currentTime - firstTime);
+      const next = nextIndex === undefined ? undefined : timeline[nextIndex];
+      const duration = next === undefined ? null
+        : Math.max(0, Date.parse(next.createdAt) - currentTime);
+      const activityIndex = segment.findIndex((item) => item.kind === "run_activity" && item.runId === runId);
+      const durationIndex = activityIndex >= 0 ? activityIndex : segment.findLastIndex((item) =>
+        item.kind === "message" && item.role === "assistant" && item.runId === runId);
+      for (const [index, item] of segment.entries()) {
+        if (!("runId" in item) || item.runId !== runId
+          || (item.kind !== "message" && item.kind !== "run_activity" && item.kind !== "model_retry")) continue;
+        if (item.kind === "message" && item.role !== "assistant") continue;
+        segment[index] = {
+          ...item,
+          ...(item.kind === "run_activity" && currentIndex !== firstIndex && current !== undefined
+            ? { id: `${item.id}:${current.id}` } : {}),
+          durationMs: index === durationIndex && duration !== null
+            ? duration
+            : item.durationMs == null || offset === null ? null : Math.max(0, item.durationMs - offset),
+        };
+      }
+    }
+    projected.push(...segment);
+    start = end;
+  }
+  return projected;
+}
+
+function groupRunActivitySegment(
+  timeline: ConversationTimelineItem[],
+): TimelineDisplayItem[] {
   const lastRunItemIndex = new Map<string, number>();
   for (const [index, item] of timeline.entries()) {
     if (item.runId !== null) lastRunItemIndex.set(item.runId, index);
@@ -5262,6 +5418,7 @@ export function getConversationRunDurationInsertIndexes(
       || (item.kind === "message" && item.role === "user")
     ) {
       runStartIndex = index + 1;
+      completedRunIds.clear();
       continue;
     }
     const isCompletedAssistant = item.kind === "message" && item.role === "assistant";
@@ -5316,6 +5473,7 @@ export function getConversationRunProgressInsertIndex(
     id: string;
     items?: readonly { id: string }[] | undefined;
     kind: string;
+    messageType?: string | undefined;
     role?: string | undefined;
     tools?: readonly { id: string }[] | undefined;
   }[],
@@ -5332,7 +5490,8 @@ export function getConversationRunProgressInsertIndex(
 
   for (let index = searchStartIndex; index >= 0; index -= 1) {
     const item = timeline[index];
-    if (item?.kind === "message" && item.role === "user") return index + 1;
+    if ((item?.kind === "message" && item.role === "user")
+      || (item?.kind === "agent_message" && item.messageType !== "task_result")) return index + 1;
   }
 
   return 0;
@@ -5353,6 +5512,7 @@ export function getModelActivityInsertIndex(
   runId: string | null,
   fallbackAnchorTimelineItemId: string | null,
 ): number {
+  const turnStart = getConversationRunProgressInsertIndex(timeline, fallbackAnchorTimelineItemId);
   if (runId !== null) {
     const latestRetryIndex = timeline.findLastIndex((item) =>
       (item.kind === "model_retry" && item.runId === runId)
@@ -5360,14 +5520,14 @@ export function getModelActivityInsertIndex(
         entry.kind === "model_retry" && entry.runId === runId
       ) === true
     );
-    if (latestRetryIndex >= 0) {
+    if (latestRetryIndex >= turnStart) {
       return timeline[latestRetryIndex]?.kind === "model_retry"
         ? latestRetryIndex + 1
         : latestRetryIndex;
     }
   }
 
-  return getConversationRunProgressInsertIndex(timeline, fallbackAnchorTimelineItemId);
+  return turnStart;
 }
 
 export function getFinalCompletedAssistantMessageIds(
@@ -5619,7 +5779,7 @@ function TimelineItem({
     return (
       <RunActivityTimelineItem
         agentClient={agentClient}
-        key={`${item.id}:${String(activeRunId !== null && item.runIds.includes(activeRunId))}`}
+        key={item.id}
         item={item}
         teamManaged={teamManaged}
         activeRunId={activeRunId}
@@ -5637,13 +5797,10 @@ function TimelineItem({
   }
 
   if (item.kind === "tool_batch") {
-    const hasFailure = item.tools.some((tool) =>
-      toolItemHasFailure(tool) || approvalErrors[tool.id] !== undefined
-    );
     return (
       <ToolBatchTimelineItem
         agentClient={agentClient}
-        key={`${item.id}:${String(hasFailure)}:${latestActiveToolId ?? "idle"}`}
+        key={item.id}
         item={item}
         teamManaged={teamManaged}
         activeRunId={activeRunId}
@@ -5672,7 +5829,7 @@ function TimelineItem({
     return (
       <ToolTimelineItem
         agentClient={agentClient}
-        key={`${item.id}:${approvalErrors[item.id] === undefined ? String(toolItemHasFailure(item)) : "approval_failed"}:${latestActiveToolId ?? "idle"}`}
+        key={item.id}
         item={item}
         teamManaged={teamManaged}
         latestActiveToolId={latestActiveToolId}
@@ -6312,7 +6469,7 @@ function RunActivityTimelineItem({
   liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
 }): ReactElement {
   const isActive = activeRunId !== null && item.runIds.includes(activeRunId);
-  const [isExpanded, setIsExpanded] = useState(isActive);
+  const [isExpanded, setIsExpanded] = useToolDisclosure(item.id);
   const [now, setNow] = useState(() => Date.now());
   const contentId = useId();
   useEffect(() => {
@@ -6368,7 +6525,7 @@ function RunActivityTimelineItem({
           approvalErrors={approvalErrors}
           approvingToolId={approvingToolId}
           item={entry}
-          key={`${entry.id}:${latestActiveToolId ?? "idle"}`}
+          key={entry.id}
           latestActiveToolId={latestActiveToolId}
           liveToolOutputs={liveToolOutputs}
           modelActivity={null}
@@ -6386,7 +6543,7 @@ function RunActivityTimelineItem({
         approvalError={approvalErrors[entry.id] ?? null}
         isApproving={approvingToolId === entry.id}
         item={entry}
-        key={`${entry.id}:${String(toolItemHasFailure(entry))}:${latestActiveToolId ?? "idle"}`}
+        key={entry.id}
         latestActiveToolId={latestActiveToolId}
         liveOutput={liveToolOutputs[entry.id]}
         onChangeApproval={onChangeApproval}
@@ -6473,9 +6630,7 @@ function ToolBatchTimelineItem({
   ) => Promise<void>;
   liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
 }): ReactElement {
-  const shouldAutoExpand = latestActiveToolId !== null
-    && item.tools.some((tool) => tool.id === latestActiveToolId);
-  const [isExpanded, setIsExpanded] = useState(shouldAutoExpand);
+  const [isExpanded, setIsExpanded] = useToolDisclosure(item.id, item.tools.map((tool) => tool.id));
   const hasFailure = item.tools.some((tool) =>
     toolItemHasFailure(tool) || approvalErrors[tool.id] !== undefined
   );
@@ -6517,7 +6672,7 @@ function ToolBatchTimelineItem({
           {item.tools.map((tool) => (
             <ToolTimelineItem
               agentClient={agentClient}
-              key={`${tool.id}:${approvalErrors[tool.id] === undefined ? String(toolItemHasFailure(tool)) : "approval_failed"}:${latestActiveToolId ?? "idle"}`}
+              key={tool.id}
               item={tool}
               teamManaged={teamManaged}
               latestActiveToolId={latestActiveToolId}
@@ -6725,7 +6880,6 @@ function ToolTimelineItem({
   agentClient,
   item,
   teamManaged,
-  latestActiveToolId,
   approvalActionable,
   approvalError,
   isApproving,
@@ -6762,8 +6916,7 @@ function ToolTimelineItem({
     : approvalError === null && !toolItemHasFailure(item)
     ? item.status
     : "failed";
-  const shouldAutoExpand = item.id === latestActiveToolId;
-  const [isExpanded, setIsExpanded] = useState(shouldAutoExpand);
+  const [isExpanded, setIsExpanded] = useToolDisclosure(item.id);
   const [isRawCallOpen, setIsRawCallOpen] = useState(false);
   const detailsLabel = isExpanded ? "收起调用详情" : "展开调用详情";
 
@@ -6934,6 +7087,7 @@ function ToolTypeIcon({ name }: { name: string }): ReactElement {
     case "read_attachment":
       return <Paperclip aria-hidden="true" size={15} />;
     case "view_attachments":
+    case "view_image":
       return <Images aria-hidden="true" size={15} />;
     case "write_file":
     case "replace_in_file":
@@ -7077,7 +7231,10 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
         : `${completed ? "已读取" : "读取"} ${path}`;
     case "read_attachment":
       return completed ? "已读取附件" : "读取附件";
+    case "view_image":
+      return `${completed ? "已查看图片" : "查看图片"} ${path === null ? "" : fileNameFromPath(path)}`.trim();
     case "view_attachments": {
+      if (Array.isArray(argumentsValue?.paths)) return `${completed ? "已查看" : "查看"} ${argumentsValue.paths.length} 张图片`;
       const attachmentIds = Array.isArray(argumentsValue?.attachment_ids)
         ? argumentsValue.attachment_ids
         : [];
@@ -7339,7 +7496,7 @@ const TOOL_BATCH_CATEGORIES: readonly ToolBatchCategory[] = [
   {
     iconToolName: "read_file",
     label: (count) => `读取 ${count} 个文件`,
-    names: ["read_file", "read_external_file", "read_attachment", "view_attachments"],
+    names: ["read_file", "read_external_file", "read_attachment", "view_attachments", "view_image"],
     priority: 80,
   },
   {
@@ -7503,6 +7660,10 @@ function ToolDetail({
     );
   }
 
+  if (item.name === "view_image" && item.status === "completed" && item.result !== null) {
+    return <ProjectImageResult agentClient={agentClient} payload={item.result} />;
+  }
+
   if (item.name === "search_text") {
     return <SearchTextResult payload={item.result} status={item.status} />;
   }
@@ -7612,7 +7773,7 @@ function CommandTerminal({
   );
 }
 
-function CommandLifecycleResult({
+export function CommandLifecycleResult({
   mode,
   payload,
   status,
@@ -7621,12 +7782,26 @@ function CommandLifecycleResult({
   payload: string | null;
   status: ConversationToolItem["status"];
 }): ReactElement {
+  if (mode === "stop") {
+    const value = payload === null ? null : parseToolValue(payload);
+    const command = value?.command;
+    if (command === null || typeof command !== "object" || !("status" in command)) {
+      return <ToolResultNotice result={payload} status={status} />;
+    }
+    const pending = "completedAt" in command && command.completedAt === null;
+    return (
+      <div className="px-2 py-1 text-[length:var(--app-font-size-body)] text-[var(--app-muted-foreground)]" role="status">
+        {pending ? "已发送停止请求。" : command.status === "cancelled" ? "后台命令已停止。" : "后台命令已结束，无需再次停止。"}
+        {"error" in command && typeof command.error === "string" && command.error.length > 0 ? (
+          <p className="mt-1 break-words text-[var(--app-destructive)]">{command.error}</p>
+        ) : null}
+      </div>
+    );
+  }
   const result = payload === null ? null : parseCommandLifecycleResult(payload, mode);
   if (result === null) return <ToolResultNotice result={payload} status={status} />;
 
-  const summary = mode === "stop"
-    ? "后台命令停止结果"
-    : `${result.waitStatus === "timeout" ? "等待超时" : "等待结束"} · ${result.commands.length} 条命令`;
+  const summary = `${result.waitStatus === "timeout" ? "等待超时" : "等待结束"} · ${result.commands.length} 条命令`;
   return (
     <StructuredToolResult summary={summary}>
       <div className="tool-command-session-list">
@@ -7813,6 +7988,16 @@ function AttachmentViewResult({
   payload: string | null;
   status: ConversationToolItem["status"];
 }): ReactElement {
+  const items = payload === null ? null : parseToolValue(payload)?.items;
+  if (Array.isArray(items)) return <div className="flex max-w-full items-start gap-2 overflow-x-auto py-1">
+    {items.map((item: unknown, index: number) => {
+      if (!isRecord(item)) return null;
+      if (isRecord(item.image)) return <div className="shrink-0" key={index}><ProjectImageResult agentClient={agentClient} payload={JSON.stringify({ ok: true, value: { image: item.image } })} /></div>;
+      const attachment = conversationAttachmentListSchema.safeParse([item.attachment]);
+      const value = attachment.success ? attachment.data[0] : undefined;
+      return value === undefined ? null : <AttachmentChip agentClient={agentClient} attachment={value} key={index} />;
+    })}
+  </div>;
   const attachments = payload === null ? null : parseAttachmentViewResult(payload);
   if (attachments === null) return <ToolResultNotice result={payload} status={status} />;
 

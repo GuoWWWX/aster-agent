@@ -47,6 +47,7 @@ const PARALLEL_READ_TOOL_NAMES = new Set([
   "list_background_commands",
   "list_directory",
   "read_file",
+  "view_image",
   "search_text",
   "find_files",
 ]);
@@ -57,6 +58,13 @@ const COMMAND_TOOL_NAMES = new Set([
   "wait_for_commands",
   "stop_command",
 ]);
+
+const viewImageArgumentsSchema = z.object({
+  path: relativeProjectPathSchema.refine((value) => /\.(png|jpe?g|webp|gif)$/iu.test(value),
+    "Use a workspace-relative PNG, JPEG, WebP or GIF image path.")
+    .refine((value) => !/[?#]/u.test(value), "Image paths containing URL query or fragment delimiters are unsupported.")
+    .describe("Image file path relative to the current workspace, not a URL or absolute path."),
+}).strict();
 
 const PREPARE_BEFORE_BATCH_TOOL_NAMES = new Set([
   "write_file",
@@ -96,14 +104,15 @@ const readFileArgumentsSchema = z
     }).describe("Project-relative POSIX file path."),
     startLine: z.number().int().positive().default(1)
       .describe("One-based first line to return. Defaults to 1; use nextStartLine from a previous result to continue."),
-    lineCount: z.number().int().min(1).max(MAX_READ_LINES).optional()
-      .describe(`Preferred range limit: NUMBER OF LINES to read (1-${MAX_READ_LINES}), not an end line. Example: startLine=650, lineCount=220 reads lines 650-869. Do not combine with endLine. If both limits are omitted, read up to ${MAX_READ_LINES} lines.`),
-    endLine: z.number().int().positive().optional()
-      .describe(`Alternative to lineCount: one-based inclusive END LINE NUMBER. Example: startLine=650, endLine=869. Must be >= startLine and select at most ${MAX_READ_LINES} lines. Do not combine with lineCount; use lineCount when specifying how many lines to read.`),
+    lineCount: z.number().int().min(1).max(MAX_READ_LINES).nullish().transform((value) => value ?? undefined)
+      .describe(`Preferred limit: NUMBER OF LINES (1-${MAX_READ_LINES}), not an end line. Example: startLine=650, lineCount=220 reads lines 650-869. Omit or set null when using endLine. If both are supplied they must describe the same range; if neither is supplied read up to ${MAX_READ_LINES} lines.`),
+    endLine: z.number().int().positive().nullish().transform((value) => value ?? undefined)
+      .describe(`Alternative limit: one-based inclusive END LINE NUMBER. Example: startLine=650, endLine=869. Must be >= startLine and select at most ${MAX_READ_LINES} lines. Omit or set null when using lineCount. If both are supplied, endLine must equal startLine+lineCount-1.`),
   })
   .strict()
   .superRefine((value, context) => {
-    if (value.lineCount !== undefined && value.endLine !== undefined) {
+    if (value.lineCount !== undefined && value.endLine !== undefined
+      && value.endLine !== value.startLine + value.lineCount - 1) {
       context.addIssue({
         code: "custom",
         message: "Choose either lineCount or endLine, not both. Remove endLine to read a number of lines, or remove lineCount to read through an inclusive end line.",
@@ -526,7 +535,7 @@ export class ProjectToolRegistry {
         parameters: modelToolParameters(waitForCommandsArgumentsSchema),
       },
       {
-        description: "Stop one running background command by the commandId returned from run_command. If the ID is no longer in recent context, call list_background_commands first instead of guessing or reusing an old ID.",
+        description: "Stop one running background command by the commandId returned from run_command. Returns a compact status receipt without command output; completedAt=null means process exit is not yet confirmed. Only call wait_for_commands separately if output is needed. If the ID is no longer in recent context, call list_background_commands first instead of guessing or reusing an old ID.",
         name: "stop_command",
         parameters: modelToolParameters(stopCommandArgumentsSchema),
       },
@@ -695,6 +704,22 @@ export class ProjectToolRegistry {
       if (name === "read_file") {
         if (projectId === undefined) throw new Error("A workspace is required for file inspection.");
         return await this.readProjectFile(parsedArguments, projectId, signal);
+      }
+      if (name === "view_image") {
+        if (projectId === undefined) throw new Error("A workspace is required for image inspection.");
+        const input = viewImageArgumentsSchema.parse(parsedArguments);
+        const image = await this.projects.readPreviewImage({ projectId, path: path.posix.basename(input.path), sourcePath: input.path });
+        throwIfAborted(signal);
+        return {
+          ...this.success({ image: { projectId, path: input.path, mimeType: image.mimeType } }),
+          modelAttachments: [{
+            id: randomUUID(), kind: "image", data: image.data, mimeType: image.mimeType,
+            name: path.posix.basename(input.path), projectPath: input.path, source: "project",
+            readPath: input.path.startsWith("attachments/") ? `./${input.path}` : input.path,
+            contextTokens: Math.min(8192, Math.max(1024, Math.ceil(image.data.length * 0.75 / 2048))),
+            readState: "full", truncated: false,
+          }],
+        };
       }
       if (name === "read_external_file") {
         return await this.prepareExternalFileRead(parsedArguments, signal);
@@ -1593,7 +1618,13 @@ export class ProjectToolRegistry {
       throw new Error("Command was not found in the current command scope.");
     }
     session.terminate(true);
-    return this.success({ command: this.commandSessionSnapshot(session) });
+    return this.success({ command: {
+      commandId: session.commandId,
+      status: session.status,
+      completedAt: session.completedAt,
+      exitCode: session.exitCode,
+      error: session.error,
+    } });
   }
 
   public dispose(): void {

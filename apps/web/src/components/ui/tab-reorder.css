@@ -1,0 +1,17 @@
+/* Styling trigger #2: drag-state attributes and insertion-marker pseudo-element. */
+.reorderable-tab { position: relative; }
+[data-tab-reordering="true"][data-app-drag-region],
+[data-tab-reordering="true"] [data-app-drag-region],
+[data-tab-reordering="true"] { -webkit-app-region: no-drag; }
+.reorderable-tab[data-tab-dragging="true"] { opacity: 0.5; }
+.reorderable-tab[data-tab-drop]::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  border-left: 2px solid var(--app-accent);
+  pointer-events: none;
+  z-index: 2;
+}
+.reorderable-tab[data-tab-drop="before"]::after { left: 0; }
+.reorderable-tab[data-tab-drop="after"]::after { right: 0; }

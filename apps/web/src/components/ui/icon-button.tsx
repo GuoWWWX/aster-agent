@@ -44,19 +44,21 @@ type IconButtonProps = Omit<
   VariantProps<typeof iconButtonVariants> & {
     children: ReactNode;
     label: string;
+    tooltip?: string;
   };
 
 export function IconButton({
   children,
   className,
   label,
+  tooltip,
   size,
   type = "button",
   variant,
   ...buttonProps
 }: IconButtonProps): ReactElement {
   return (
-    <TooltipAnchor content={label} disabled={buttonProps.disabled === true}>
+    <TooltipAnchor content={tooltip ?? label} disabled={buttonProps.disabled === true}>
       <button
         {...buttonProps}
         aria-label={label}

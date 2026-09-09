@@ -523,6 +523,8 @@ export {
   pendingConversationMessageReferenceIpcArgumentsSchema,
   publishTeamWorkItemIpcArgumentsSchema,
   reorderPendingConversationMessagesIpcArgumentsSchema,
+  setPendingQueuePausedIpcArgumentsSchema,
+  pendingQueuePausedResponseSchema,
   readConversationAttachmentPreviewIpcArgumentsSchema,
   removeConversationAttachmentIpcArgumentsSchema,
   replaceLatestConversationMessageIpcArgumentsSchema,
