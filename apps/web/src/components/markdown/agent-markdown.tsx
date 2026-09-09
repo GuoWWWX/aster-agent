@@ -1,11 +1,17 @@
 import MarkdownIt from "markdown-it";
+import { Check, Copy } from "lucide-react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { useCallback, useMemo, type KeyboardEvent, type MouseEvent, type ReactElement } from "react";
 
 import { requestMediaPreview } from "../media/image-viewer.js";
 import { fileTypeIconMarkup, isRecognizedFileTypePath } from "../ui/file-type-icon-data.js";
 import { highlightCode } from "./code-highlighter.js";
+import { terminalTokens } from "../ui/terminal-tokens.js";
 
 import "./agent-markdown.css";
+
+const copyIcon = renderToStaticMarkup(<Copy aria-hidden="true" size={16} />);
+const copiedIcon = renderToStaticMarkup(<Check aria-hidden="true" size={16} />);
 
 const renderer = new MarkdownIt({
   breaks: true,
@@ -130,8 +136,13 @@ renderer.renderer.rules.fence = (tokens, index) => {
   const token = tokens[index];
   const language = token?.info.trim().split(/\s+/)[0] || "text";
   const source = token?.content ?? "";
-  const highlightedSource = highlightCode(source, language);
-  return `<pre class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><button aria-label="复制代码" class="agent-markdown__code-copy" data-action="copy-code" type="button">复制</button><code class="hljs">${highlightedSource}</code></pre>\n`;
+  const shell = /^(bash|sh|shell|zsh|powershell|pwsh|ps1|ps|cmd|bat|batch)$/iu.test(language);
+  const highlightedSource = shell ? terminalTokens(source, true).map((token) =>
+    `<span class="agent-markdown__shell-${token.kind}">${renderer.utils.escapeHtml(source.slice(token.start, token.end))}</span>`,
+  ).join("") : highlightCode(source, language);
+  const label = /^(powershell|pwsh|ps1|ps)$/iu.test(language) ? "PowerShell"
+    : language.toLowerCase() === "bash" ? "Bash" : language;
+  return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><div class="agent-markdown__code-header"><span>${renderer.utils.escapeHtml(label)}</span><button aria-label="复制代码" title="复制代码" class="agent-markdown__code-copy" data-action="copy-code" type="button">${copyIcon}</button></div><pre><code class="hljs">${highlightedSource}</code></pre></div>\n`;
 };
 
 const defaultImage = renderer.renderer.rules.image;
@@ -162,13 +173,19 @@ export function AgentMarkdown({ content }: { content: string }): ReactElement {
     }
     const button = event.target.closest<HTMLButtonElement>("[data-action='copy-code']");
     if (button === null || !event.currentTarget.contains(button)) return;
-    const code = button.closest("pre")?.querySelector("code")?.textContent;
+    const code = button.closest(".agent-markdown__code-block")?.querySelector("code")?.textContent;
     if (code === null || code === undefined) return;
 
     void navigator.clipboard.writeText(code).then(() => {
-      button.textContent = "已复制";
+      button.innerHTML = copiedIcon;
+      button.setAttribute("aria-label", "已复制");
+      button.title = "已复制";
       window.setTimeout(() => {
-        if (button.isConnected) button.textContent = "复制";
+        if (button.isConnected) {
+          button.innerHTML = copyIcon;
+          button.setAttribute("aria-label", "复制代码");
+          button.title = "复制代码";
+        }
       }, 1_500);
     }).catch(() => undefined);
   }, []);

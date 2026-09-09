@@ -21,6 +21,19 @@ async function createThreadLog(): Promise<ThreadLog> {
 }
 
 describe("ThreadLog", () => {
+  it("restores first-token timing even when the provider omitted usage", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-first-token-"));
+    temporaryDirectories.push(directory);
+    const log = new ThreadLog(directory);
+    log.append(conversationId, { type: "assistant_message", payload: {
+      content: "answer", runId: "run", providerState: {
+        apiFormat: "openai-chat-completions", baseUrl: "https://example.test", modelId: "test",
+        payload: {}, firstTokenLatencyMs: 250,
+      },
+    } });
+    expect(new ThreadLog(directory).readProviderUsageStates(conversationId)?.[0])
+      .toMatchObject({ firstTokenLatencyMs: 250, payload: null });
+  });
   it("loads only uncovered bodies and keeps usage independent of full context", async () => {
     const log = await createThreadLog();
     log.append(conversationId, { type: "user_message", payload: { content: "old".repeat(500_000), runId: "old" } });

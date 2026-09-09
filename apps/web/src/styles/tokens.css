@@ -1,3 +1,4 @@
+/* CSS trigger #3: shared semantic variables for descendant components. */
 :root {
   color-scheme: light;
   --app-accent: #2563eb;
@@ -18,6 +19,7 @@
   --app-muted-foreground: #64748b;
   --app-subtle-foreground: #94a3b8;
   --app-panel: #ffffff;
+  --app-tooltip-background: #ffffff;
   --app-panel-subtle: #f8fafc;
   --app-font-size-caption: 10px;
   --app-font-size-auxiliary: 11px;
@@ -35,6 +37,8 @@
   --app-selection: rgba(191, 219, 254, 0.55);
   --app-selection-border: var(--app-accent);
   --app-selection-foreground: #16395f;
+  --app-text-selection: #dcebfe;
+  --app-text-selection-foreground: #16395f;
   --app-status-danger-bg: #fef2f2;
   --app-status-danger-fg: #b91c1c;
   --app-status-info-bg: #eff6ff;
@@ -68,10 +72,13 @@
   --app-muted-foreground: #c7c9cc;
   --app-subtle-foreground: #aeb0b4;
   --app-panel: #202020;
+  --app-tooltip-background: #2c2c2c;
   --app-panel-subtle: #282828;
   --app-selection: #3a3a3a;
   --app-selection-border: #5b5b5b;
   --app-selection-foreground: #f1f3f4;
+  --app-text-selection: #315f8c;
+  --app-text-selection-foreground: #f1f3f4;
   --app-status-danger-bg: rgba(127, 29, 29, 0.32);
   --app-status-danger-fg: #fca5a5;
   --app-status-info-bg: var(--app-status-neutral-bg);

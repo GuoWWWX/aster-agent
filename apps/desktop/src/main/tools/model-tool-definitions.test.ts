@@ -128,7 +128,7 @@ describe("model tool definitions", () => {
     }
     expect(endLineDescription).toContain("400");
     expect(property(definitions, "read_file", "lineCount")).toMatchObject({
-      type: "integer", minimum: 1, maximum: 400,
+      anyOf: [{ type: "integer", minimum: 1, maximum: 400 }, { type: "null" }],
     });
     // A default here would inject lineCount even when the model chooses endLine.
     expect(property(definitions, "read_file", "lineCount")).not.toHaveProperty("default");

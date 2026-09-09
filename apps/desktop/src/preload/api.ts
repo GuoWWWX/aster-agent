@@ -527,6 +527,15 @@ export function createDesktopBridge(): DesktopBridge {
         input
       );
     },
+    async openProjectDirectory(input: ProjectReferenceInput) {
+      await invoke<void>(IPC_CHANNELS.projectOpenDirectory, input);
+    },
+    getConversationPendingQueuePaused(input: ConversationReferenceInput) {
+      return invoke<boolean>(IPC_CHANNELS.conversationGetPendingQueuePaused, input);
+    },
+    setConversationPendingQueuePaused(input: ConversationReferenceInput & { paused: boolean }) {
+      return invoke<boolean>(IPC_CHANNELS.conversationSetPendingQueuePaused, input);
+    },
     markConversationResultViewed(input: ConversationReferenceInput) {
       return invoke<BridgeResult<"markConversationResultViewed">>(
         IPC_CHANNELS.conversationMarkResultViewed,

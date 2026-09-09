@@ -116,13 +116,41 @@ export class SkillDocumentStore {
     const rootPath = this.getManagedDirectoryPath();
     const directory = path.join(rootPath, parsed.metadata.name);
     const entryPath = path.join(directory, "SKILL.md");
-    if (existsSync(entryPath)) return this.readPath(entryPath);
+    if (existsSync(entryPath)) {
+      const document = this.readPath(entryPath);
+      this.registerSystemDocument(document);
+      return document;
+    }
     if (existsSync(directory)) throw new Error("内置 Skill 目录存在，但缺少 SKILL.md。未覆盖现有目录。");
     mkdirSync(directory, { recursive: false });
     writeFileSync(entryPath, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
     const document = this.toDocument(entryPath, content);
-    this.synchronizeDocuments([document]);
+    this.registerSystemDocument(document);
     return document;
+  }
+
+  private registerSystemDocument(document: SkillDocument): void {
+    this.synchronizeDocuments([document]);
+    const configuration = this.integrationConfiguration.getConfiguration();
+    const normalize = (content: string): string => content.replace(/\r\n/gu, "\n").trim();
+    const isStandalone = (entryPath: string): boolean => readdirSync(path.dirname(entryPath)).length === 1;
+    const skills = configuration.skills.map((skill) => {
+      if (samePath(skill.entryPath, document.entryPath)) return { ...skill, origin: "system" as const };
+      if (!skill.enabled || skill.name !== document.metadata.name) return skill;
+      try {
+        // Preserve customized copies and files; retire only exact duplicate catalog entries.
+        if (isStandalone(skill.entryPath) && isStandalone(document.entryPath)
+          && normalize(this.readPath(skill.entryPath).content) === normalize(document.content)) {
+          return { ...skill, enabled: false };
+        }
+      } catch {
+        // Missing external files are not evidence of a duplicate.
+      }
+      return skill;
+    });
+    if (JSON.stringify(skills) !== JSON.stringify(configuration.skills)) {
+      this.integrationConfiguration.saveConfiguration({ ...configuration, skills });
+    }
   }
 
   public discoverDocuments(): SkillDiscoveryResult {

@@ -62,24 +62,24 @@ const terminalReferenceArgumentsSchema = z.object({
 
 const terminalControlArgumentsSchema = z.object({
   action: z.enum(["create", "list", "write", "read", "close"])
-    .describe("Persistent side-terminal action to perform."),
-  afterCursor: z.number().int().nonnegative().optional()
+    .describe("Side-terminal action. create accepts only name/columns/rows; list has no parameters; write requires terminalId/command, optionally expectedContext/afterCursor/maxChars/yieldTimeMs; read requires terminalId, optionally afterCursor/maxChars; close requires terminalId. Omit unused fields or set them to null; never invent placeholder values."),
+  afterCursor: z.number().int().nonnegative().nullable().optional()
     .describe("For write/read, return output after this cursor. Reuse nextCursor to avoid duplicate output."),
-  columns: z.number().int().min(2).max(500).optional()
+  columns: z.number().int().min(2).max(500).nullable().optional()
     .describe("For create, initial terminal columns; defaults to 120 and is resized by the visible tab."),
-  command: z.string().min(1).max(32_000).optional()
+  command: z.string().min(1).max(32_000).nullable().optional()
     .describe("Command required for write. Enter is appended automatically."),
-  expectedContext: z.enum(["local", "ssh"]).optional()
+  expectedContext: z.enum(["local", "ssh"]).nullable().optional()
     .describe("For write, expected shell context. Always set ssh for commands intended for an established SSH shell."),
-  maxChars: z.number().int().min(1).max(65_536).optional()
+  maxChars: z.number().int().min(1).max(65_536).nullable().optional()
     .describe("For write/read, maximum output characters returned; defaults to 32768."),
-  name: z.string().trim().min(1).max(120).optional()
+  name: z.string().trim().min(1).max(120).nullable().optional()
     .describe("For create, optional visible tab name. The returned resolvedName is authoritative."),
-  rows: z.number().int().min(1).max(300).optional()
+  rows: z.number().int().min(1).max(300).nullable().optional()
     .describe("For create, initial terminal rows; defaults to 32 and is resized by the visible tab."),
-  terminalId: z.string().uuid().optional()
+  terminalId: z.string().uuid().nullable().optional()
     .describe("Terminal ID required for write, read and close. Use list if the active ID is no longer in context."),
-  yieldTimeMs: z.number().int().min(0).optional()
+  yieldTimeMs: z.number().int().min(0).nullable().optional()
     .describe("For write, immediate-output sampling delay; defaults to 200 and values above 5000 are capped."),
 }).strict();
 
@@ -177,7 +177,11 @@ export class WorkspaceTerminalTool {
     signal: AbortSignal;
   }): ToolExecution {
     const control = terminalControlArgumentsSchema.parse(parseToolArguments(input.rawArguments));
-    const { action, ...actionArguments } = control;
+    const { action, ...fields } = control;
+    // Strict-output providers may require every advertised property. Null is
+    // absence, not a placeholder command/ID; action-specific validation remains strict.
+    const actionArguments = Object.fromEntries(Object.entries(fields)
+      .filter(([, value]) => value !== null && value !== undefined));
     switch (action) {
       case "create":
         return this.prepareCreateTerminal(

@@ -1192,7 +1192,7 @@
     position: fixed;
     z-index: 1199;
     border-radius: 2px;
-    background: #2563eb;
+    background: var(--app-accent);
     box-shadow: 0 0 0 1px rgba(191, 219, 254, 0.9);
     pointer-events: none;
   }

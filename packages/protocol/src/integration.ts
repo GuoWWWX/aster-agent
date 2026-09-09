@@ -57,6 +57,7 @@ export const mcpServerConfigurationSchema = z
 
 export const skillConfigurationSchema = z
   .object({
+    origin: z.enum(["system", "personal"]).optional(),
     description: z.string().trim().max(1_024),
     enabled: z.boolean(),
     entryPath: z.string().trim().min(1).max(2_000),

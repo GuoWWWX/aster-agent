@@ -22,6 +22,7 @@ import type { WindowState } from "@agent/protocol";
 
 import type { AgentClient } from "../../runtime/index.js";
 import { IconButton } from "../ui/icon-button.js";
+import { useTabReorder } from "../ui/use-tab-reorder.js";
 
 type AppTitlebarProps = {
   activeConversationId?: string | null;
@@ -37,6 +38,7 @@ type AppTitlebarProps = {
   onCloseConversationTab?: (conversationId: string) => void;
   onCloseOtherConversationTabs?: (conversationId: string) => void;
   onSelectConversationTab?: (conversationId: string) => void;
+  onMoveConversationTab?: (source: string, target: string, side: "before" | "after") => void;
   showFilePanelControl?: boolean;
   showProjectNavigatorControl?: boolean;
 };
@@ -80,9 +82,11 @@ export function AppTitlebar({
   onCloseConversationTab,
   onCloseOtherConversationTabs,
   onSelectConversationTab,
+  onMoveConversationTab,
   showFilePanelControl = true,
   showProjectNavigatorControl = true,
 }: AppTitlebarProps): ReactElement {
+  const reorderTabProps = useTabReorder((source, target, side) => onMoveConversationTab?.(source, target, side));
   const [hostWindowState, setHostWindowState] = useState<HostWindowState>(
     INITIAL_HOST_WINDOW_STATE,
   );
@@ -155,6 +159,7 @@ export function AppTitlebar({
   return (
     <header
       className="app-titlebar"
+      {...reorderTabProps.listProps}
       data-app-drag-region="true"
       data-slot="app-titlebar"
       onDoubleClick={() => {
@@ -198,11 +203,13 @@ export function AppTitlebar({
           />
           <div
             className="app-titlebar__conversation-surface"
+            {...reorderTabProps.listProps}
             data-app-drag-region="true"
           >
             <div
               aria-label="已打开的对话"
               className="app-titlebar__conversation-tabs"
+              {...reorderTabProps.listProps}
               onDoubleClick={(event) => event.stopPropagation()}
               onWheel={(event) => {
                 const tabs = event.currentTarget;
@@ -230,7 +237,8 @@ export function AppTitlebar({
                 const isActive = tab.id === activeConversationId;
                 return (
                   <div
-                    className="app-titlebar__conversation-tab"
+                    className="app-titlebar__conversation-tab reorderable-tab"
+                    {...reorderTabProps.tabProps(tab.id)}
                     data-active={String(isActive)}
                     key={tab.id}
                     onContextMenu={(event) => {

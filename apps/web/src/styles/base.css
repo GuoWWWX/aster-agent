@@ -1,4 +1,4 @@
-/* CSS trigger #2: global scrollbar pseudo-elements require vendor selectors. */
+/* CSS trigger #2: global scrollbar and text selection pseudo-elements. */
 
 * {
   box-sizing: border-box;
@@ -62,6 +62,6 @@ button:disabled {
 }
 
 ::selection {
-  background: var(--app-selection);
-  color: var(--app-selection-foreground);
+  background: var(--app-text-selection);
+  color: var(--app-text-selection-foreground);
 }

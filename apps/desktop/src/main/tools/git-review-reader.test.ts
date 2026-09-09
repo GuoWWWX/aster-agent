@@ -21,6 +21,17 @@ function result(stdout = "", exitCode = 0, stderr = "") {
 }
 
 describe("GitReviewReader", () => {
+  it("rejects a branch occupied by another worktree before switching", async () => {
+    const runGit = vi.fn((_directory: string, args: readonly string[]) => Promise.resolve(result(
+      args[0] === "rev-parse" ? "D:/Agent\n" : "feature/demo\t\t \tD:/other\n",
+    )));
+    const reader = new GitReviewReader(
+      { getProject: () => ({ id: projectId, name: "Agent", rootPath: "D:/Agent" }) }, runGit,
+    );
+    await expect(reader.runOperation({ action: "switchBranch", branch: "feature/demo", projectId }))
+      .rejects.toThrow("该分支已被其他工作区使用");
+    expect(runGit.mock.calls.some(([, args]) => args[0] === "switch")).toBe(false);
+  });
   it("returns branches, divergence, staging state, and per-file line statistics", async () => {
     const runGit = vi.fn((_workingDirectory: string, args: readonly string[]) => {
       const command = args.join(" ");
@@ -33,7 +44,7 @@ describe("GitReviewReader", () => {
         return Promise.resolve(result(" M src/app.ts\0R  src/new.ts\0src/old.ts\0?? notes.txt\0"));
       }
       if (command.startsWith("for-each-ref ")) {
-        return Promise.resolve(result("develop\torigin/develop\t*\nfeature/demo\t\t \n"));
+        return Promise.resolve(result("develop\torigin/develop\t*\tD:/Agent\nfeature/demo\t\t \tD:/other\n"));
       }
       if (command === "diff --numstat --no-renames -z HEAD --") {
         return Promise.resolve(result("1\t2\tsrc/app.ts\u00003\t0\tsrc/new.ts\u00000\t4\tsrc/old.ts\u0000"));
@@ -56,8 +67,8 @@ describe("GitReviewReader", () => {
       behind: 3,
       branch: "develop",
       branches: [
-        { current: true, name: "develop", upstream: "origin/develop" },
-        { current: false, name: "feature/demo", upstream: null },
+        { current: true, isWorktreeOccupied: false, name: "develop", upstream: "origin/develop" },
+        { current: false, isWorktreeOccupied: true, name: "feature/demo", upstream: null },
       ],
       isRepository: true,
       upstream: "origin/develop",

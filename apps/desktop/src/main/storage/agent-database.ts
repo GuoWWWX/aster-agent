@@ -979,12 +979,14 @@ function readProjectionProviderState(
   }
   const apiFormat = modelApiFormatSchema.safeParse(value.apiFormat);
   const usage = readProjectionProviderTokenUsage(value.usage);
+  const firstTokenLatencyMs = readProjectionTokenCount(value.firstTokenLatencyMs);
   return apiFormat.success
     ? {
         apiFormat: apiFormat.data,
         baseUrl: value.baseUrl,
         modelId: value.modelId,
         payload: value.payload,
+        ...(firstTokenLatencyMs === undefined ? {} : { firstTokenLatencyMs }),
         ...(usage === undefined ? {} : { usage }),
       }
     : undefined;
@@ -6278,7 +6280,7 @@ export class AgentDatabase {
     if (conversation.activeRunId !== runId) {
       throw new Error("Pending message can only steer its active conversation run.");
     }
-    const messageId = randomUUID();
+    const messageId = pendingMessageId;
     const attachments = this.listConversationAttachmentsByIds(
       record.message.conversationId,
       record.message.attachmentIds
@@ -6396,7 +6398,7 @@ export class AgentDatabase {
     const conversation = this.getConversation(record.message.conversationId);
     this.assertNoActiveRun(record.message.conversationId);
     const runId = randomUUID();
-    const messageId = randomUUID();
+    const messageId = pendingMessageId;
     const now = new Date().toISOString();
     const attachments = this.listConversationAttachmentsByIds(
       record.message.conversationId,
@@ -8584,7 +8586,7 @@ export class AgentDatabase {
     this.touchConversation(conversationId, event.createdAt);
   }
 
-  /** Materialize a Steer message into the already-running Run. */
+  /** Restore a committed Steer message without changing its Run's current state. */
   private materializeThreadLogPendingMessageConsumption(
     conversationId: string,
     event: ThreadLogProjectionEvent,
@@ -8592,14 +8594,36 @@ export class AgentDatabase {
     const pendingMessageId = readProjectionString(event.payload, "pendingMessageId");
     const message = threadLogUserMessage(event.payload, conversationId, event.createdAt);
     const modelContent = readProjectionString(event.payload, "modelContent");
-    if (pendingMessageId === null || message === null || modelContent === null) {
+    if (pendingMessageId === null || message === null || modelContent === null
+      || message.runId === null
+      || message.runId !== readProjectionString(event.payload, "runId")
+      || this.getRunConversationId(message.runId) !== conversationId) {
       throw new Error("ThreadLog write-ahead pending message consumption is invalid.");
     }
-    this.projectPreparedPendingMessageConsumptionInTransaction({
-      modelContent,
-      pendingMessageId,
-      userMessage: message,
-    }, event.eventId);
+    const pending = this.database.prepare(
+      "SELECT conversation_id FROM conversation_pending_messages WHERE id = ?",
+    ).get(pendingMessageId) as DatabaseRow | undefined;
+    if (pending !== undefined && asString(pending, "conversation_id") !== conversationId) {
+      throw new Error("ThreadLog pending message belongs to another Conversation.");
+    }
+    // This event is a committed historical fact, not a new live Steer request.
+    // Startup/LRU hydration can retain the Run's terminal state while rebuilding
+    // its messages; replay must neither require an active Run nor reactivate it.
+    this.consumeThreadLogPendingRecord(pendingMessageId, message.createdAt);
+    this.insertThreadLogTimeline(message);
+    this.bindThreadLogPendingAttachmentsToMessage(pendingMessageId, message.id);
+    this.insertThreadLogModelMessage({
+      attachmentIds: message.attachments.map((attachment) => attachment.id),
+      content: modelContent,
+      conversationId,
+      createdAt: message.createdAt,
+      eventId: event.eventId,
+      role: "user",
+      runId: message.runId,
+      toolCallId: null,
+      toolCalls: [],
+    });
+    this.touchConversation(conversationId, message.createdAt);
   }
 
   private materializeThreadLogModelRetry(
@@ -9218,6 +9242,14 @@ export class AgentDatabase {
        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, NULL)`,
     );
     for (const [index, record] of pendingMessages.entries()) {
+      if (!requireAttachmentBindings) {
+        const retained = this.database.prepare(
+          "SELECT status FROM conversation_pending_messages WHERE id = ? AND conversation_id = ?",
+        ).get(record.message.id, conversationId) as DatabaseRow | undefined;
+        // LRU eviction keeps consumption/cancellation facts. An older queue
+        // snapshot must not recreate these rows or resurrect their attachments.
+        if (retained !== undefined && asString(retained, "status") !== "pending") continue;
+      }
       insert.run(
         record.message.id,
         conversationId,

@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
+import { parseSkillMarkdown } from "@agent/protocol";
 
 import {
   BASE_SYSTEM_PROMPT,
   BROWSER_USE_SKILL,
   CONTEXT_COMPACTION_PROMPT,
+  SYSTEM_SKILLS,
 } from "./prompt-assets.js";
 
 describe("prompt assets", () => {
+  it("bundles distinct, valid system skills", () => {
+    const names = SYSTEM_SKILLS.map((content) => parseSkillMarkdown(content).metadata.name);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toEqual(["browser-use", "image-view", "code-review", "debugging"]);
+  });
   it("loads the stable base prompt from bundled Markdown", () => {
     expect(BASE_SYSTEM_PROMPT).toContain("You are a local coding Agent.");
     expect(BASE_SYSTEM_PROMPT).toContain("# Response Language");

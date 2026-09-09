@@ -58,6 +58,7 @@ function expandWorkProcess(container: HTMLElement): void {
 }
 
 beforeEach(() => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   useWorkbenchUiStore.setState({ activeActivity: "conversations" });
   useAgentDirectoryStore.getState().hydrate(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
@@ -69,9 +70,57 @@ afterEach(() => {
   document.body.replaceChildren();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("Automatic continuation answer", () => {
+  it("renders one timer after a team request, never above its bubble", async () => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "团队成员", activeRunId: RUN_ID });
+    const request: ConversationAgentMessageItem = {
+      id: MESSAGE_ID, kind: "agent_message", conversationId: PARENT_ID,
+      senderConversationId: CHILD_ID, senderTitle: "Team Lead", content: "读取项目文件",
+      createdAt: "2026-09-08T00:00:00.000Z", messageType: "message", readAt: null,
+      runId: WORK_ITEM_ID, status: "unread", replyInstruction: "回报结果", taskId: null, fileChanges: [],
+    };
+    const tool: ConversationToolItem = { arguments: "{}", batchId: null, conversationId: PARENT_ID,
+      createdAt: "2026-09-08T00:00:01.000Z", diff: null, id: TOOL_ID, kind: "tool",
+      name: "read_file", result: null, runId: RUN_ID, status: "running" };
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([request, tool]);
+    const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => {
+      root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={target} /></TooltipProvider>);
+      await flushConversationWorkspace();
+    });
+    expect(container.textContent?.match(/已处理/g)).toHaveLength(1);
+    expect(container.textContent?.indexOf("读取项目文件")).toBeLessThan(container.textContent?.indexOf("已处理") ?? -1);
+  });
+  it("keeps the old work timer frozen and starts a new one after a steer in the same Run", async () => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "插队计时", activeRunId: RUN_ID });
+    const first = { attachments: [], content: "开始", conversationId: PARENT_ID,
+      createdAt: "2026-09-08T00:00:00.000Z", id: MESSAGE_ID, kind: "message" as const,
+      modelId: null, role: "user" as const, runId: RUN_ID, status: "completed" as const };
+    const steer = { ...first, id: CHILD_ID, content: "直接打印", createdAt: "2026-09-08T00:00:20.000Z" };
+    const before: ConversationToolItem = { arguments: "{}", batchId: null, conversationId: PARENT_ID,
+      createdAt: "2026-09-08T00:00:01.000Z", diff: null, id: TOOL_ID, kind: "tool",
+      name: "list_directory", result: "[]", runId: RUN_ID, status: "completed" };
+    const after = { ...before, createdAt: steer.createdAt, id: WORK_ITEM_ID, status: "running" as const };
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse(steer.createdAt));
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([first, before, steer, after]);
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={target} /></TooltipProvider>);
+      await flushConversationWorkspace();
+    });
+    const groups = container.querySelectorAll(".conversation-run-activity");
+    expect(groups).toHaveLength(2);
+    expect(groups[0]?.textContent).toContain("已处理 20秒");
+    expect(groups[1]?.textContent).toContain("已处理 0秒");
+  });
+
   it("renders one answer with both source anchors and one copy action without private receipt rows", async () => {
     const client = new MockAgentClient();
     const target = session({ id: PARENT_ID, title: "续跑" });
@@ -125,6 +174,7 @@ describe("Conversation cache status", () => {
     const withUsage = (hitRate: number): ConversationContextUsage => ({
       ...empty,
       providerCache: {
+        firstTokenLatencyMs: 250,
         cumulative: { cacheCreationInputTokens: 0, cachedInputTokens: hitRate * 100,
           hitRate, inputTokens: 100, reportedRequestCount: 1, requestCount: 1 },
         latest: { cacheCreationInputTokens: 0, cachedInputTokens: hitRate * 100,
@@ -152,16 +202,44 @@ describe("Conversation cache status", () => {
       load.mockResolvedValue(withUsage(0.8));
       await finish("completed");
       expect(metric()?.textContent).toContain("80%");
+      const completedStats = metric()?.closest("button")?.textContent;
+      const pending = withUsage(0.8);
+      pending.providerCache!.latest = null;
+      pending.providerCache!.firstTokenLatencyMs = null;
+      load.mockResolvedValue(pending);
+      await act(async () => {
+        listener({ type: "run.started", conversationId: PARENT_ID, runId: RUN_ID, modelId: "test-model" });
+        listener({ type: "model.request_started", conversationId: PARENT_ID, runId: RUN_ID });
+        await flushConversationWorkspace();
+      });
+      expect(metric()?.closest("button")?.textContent).toBe(completedStats);
+      pending.providerCache!.firstTokenLatencyMs = 1200;
+      await act(async () => {
+        listener({ type: "model.first_token_received", conversationId: PARENT_ID, runId: RUN_ID, latencyMs: 1200 });
+        await flushConversationWorkspace();
+      });
+      expect(metric()?.closest("button")?.textContent).toBe(completedStats);
       load.mockRejectedValue(new Error("IPC unavailable"));
       await finish("failed");
       expect(metric()?.textContent).toContain("80%");
       load.mockResolvedValue(empty);
       await finish("failed");
       expect(metric()?.textContent).toContain("80%");
-      load.mockResolvedValue(withUsage(0));
+      const nextResult = withUsage(0);
+      nextResult.providerCache!.firstTokenLatencyMs = 1200;
+      load.mockResolvedValue(nextResult);
       await finish("completed");
       expect(metric()?.textContent).toContain("0%");
+      expect(container.querySelector('[data-cache-metric="首字"]')?.textContent).toContain("1.20s");
       expect(metric()?.textContent).not.toContain("80%");
+      load.mockRejectedValue(new Error("Usage not received yet"));
+      await act(async () => {
+        listener({ type: "model.request_started", conversationId: PARENT_ID, runId: RUN_ID });
+        await flushConversationWorkspace();
+      });
+      expect(metric()?.textContent).toContain("0%");
+      await finish("failed");
+      expect(metric()?.textContent).toContain("0%");
       load.mockResolvedValue(empty);
       await act(async () => {
         root?.render(render(session({ id: CHILD_ID, title: "新对话" })));
@@ -665,13 +743,15 @@ describe("Tool activity disclosure", () => {
       root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={target} /></TooltipProvider>);
       await flushConversationWorkspace();
     });
+    expandWorkProcess(container);
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="展开调用详情"]')?.click());
     expect(container.textContent).toContain("第 7495-7540 行");
     expect(container.textContent).toContain("分段源码");
     if (totalLines === null) expect(container.textContent).not.toContain("，共");
     else expect(container.textContent).toContain("共 8000 行");
   });
 
-  it("keeps only the newest running tool open and closes it when it completes", async () => {
+  it("defaults to collapsed and preserves user disclosure choices through tool updates", async () => {
     const client = new MockAgentClient();
     const target = session({
       activeRunId: RUN_ID,
@@ -719,6 +799,10 @@ describe("Tool activity disclosure", () => {
       await flushConversationWorkspace();
     });
 
+    expect(container.querySelectorAll('button[aria-label="收起调用详情"]')).toHaveLength(0);
+    expandWorkProcess(container);
+    expect(container.querySelectorAll('button[aria-label="收起调用详情"]')).toHaveLength(0);
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="展开调用详情"]')?.click());
     expect(container.querySelectorAll('button[aria-label="收起调用详情"]')).toHaveLength(1);
     expect(container.textContent).toContain("first.ts");
     expect(container.textContent).not.toContain("执行中");
@@ -739,8 +823,8 @@ describe("Tool activity disclosure", () => {
       'button[aria-label="收起调用详情"]',
     );
     expect(container.querySelectorAll('button[aria-label="收起调用详情"]')).toHaveLength(1);
-    expect(newestExpandedToggle?.closest("article")?.textContent).toContain("second-query");
-    expect(newestExpandedToggle?.closest("article")?.textContent).not.toContain("first.ts");
+    expect(newestExpandedToggle?.closest("article")?.textContent).toContain("first.ts");
+    expect(newestExpandedToggle?.closest("article")?.textContent).not.toContain("second-query");
 
     act(() => {
       runEventListener?.({
@@ -755,6 +839,11 @@ describe("Tool activity disclosure", () => {
       });
     });
 
+    expect(container.querySelectorAll('button[aria-label="收起调用详情"]')).toHaveLength(1);
+    act(() => newestExpandedToggle?.click());
+    expect(container.querySelectorAll('button[aria-label="收起调用详情"]')).toHaveLength(0);
+    act(() => container.querySelector<HTMLButtonElement>('button[title="收起工作过程"]')?.click());
+    expandWorkProcess(container);
     expect(container.querySelectorAll('button[aria-label="收起调用详情"]')).toHaveLength(0);
   });
 
@@ -1082,6 +1171,7 @@ describe("Model request retry timeline", () => {
       });
     });
 
+    expandWorkProcess(container);
     expect(container.textContent).toContain("模型请求重试");
     expect(container.textContent).toContain("正在重新连接 1/5 · 1 秒后重试");
     expect(container.textContent).not.toContain("HTTP 402");
@@ -1210,7 +1300,74 @@ describe("Run progress indicator", () => {
 });
 
 describe("Pending message queue", () => {
-  it("shows attachment previews and reorders rows from the drag handle", async () => {
+  it.each(["restore", "send", "promote"])("shows %s steer as sent input, then places new tools below it without waiting for a history reload", async (mode) => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "插队", activeRunId: RUN_ID });
+    const pending: ConversationPendingMessage = {
+      attachmentIds: [WORK_ITEM_ID], content: "不用侧边终端直接", conversationId: PARENT_ID,
+      createdAt: "2026-09-08T00:00:10.000Z", deliveryMode: "steer", id: CHILD_ID,
+      referencedConversationIds: [], referencedProjectPaths: [],
+    };
+    const first = { attachments: [], content: "打印网址", conversationId: PARENT_ID,
+      createdAt: "2026-09-08T00:00:00.000Z", id: MESSAGE_ID, kind: "message" as const,
+      modelId: null, role: "user" as const, runId: RUN_ID, status: "completed" as const };
+    const before: ConversationToolItem = { arguments: "{}", batchId: null, conversationId: PARENT_ID,
+      createdAt: "2026-09-08T00:00:01.000Z", diff: null, id: TOOL_ID, kind: "tool",
+      name: "terminal_control", result: "{}", runId: RUN_ID, status: "completed" };
+    const consumed = { ...first, content: pending.content, id: pending.id, createdAt: "2026-09-08T00:00:20.000Z" };
+    const after = { ...before, id: WORK_ITEM_ID, name: "run_command", createdAt: consumed.createdAt, status: "running" as const };
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse(consumed.createdAt));
+    const history = vi.spyOn(client, "listConversationTimeline").mockResolvedValue([first, before]);
+    vi.spyOn(client, "listConversationPendingMessages").mockResolvedValue(mode === "send" ? []
+      : [{ ...pending, deliveryMode: mode === "promote" ? "queue" : "steer" }]);
+    vi.spyOn(client, "promoteConversationPendingMessage").mockResolvedValue([pending]);
+    vi.spyOn(client, "readConversationAttachmentPreview").mockResolvedValue({ data: "AQID", mimeType: "image/png" });
+    let listener: (event: ConversationRunEvent) => void = () => undefined;
+    vi.spyOn(client, "onConversationRunEvent").mockImplementation((callback) => {
+      listener = callback;
+      return () => undefined;
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={target} /></TooltipProvider>);
+      await flushConversationWorkspace();
+    });
+    // A slow snapshot must not delay consumption events or briefly remove the sent bubble.
+    history.mockImplementation(() => new Promise(() => {}));
+    await act(async () => {
+      if (mode === "send") listener({ conversationId: PARENT_ID, pendingMessages: [pending], type: "pending_messages.updated" });
+      if (mode === "promote") container.querySelector<HTMLButtonElement>('button[aria-label="直接发送"]')?.click();
+      await flushConversationWorkspace();
+    });
+    expect(container.querySelector(".conversation-pending-queue")).toBeNull();
+    const bubble = container.querySelector("[data-sent-steer]");
+    expect(bubble?.textContent).toContain(pending.content);
+    expect(bubble?.querySelector('button[aria-label="预览图片"]')).not.toBeNull();
+    expect(container.querySelectorAll(".conversation-run-activity")).toHaveLength(1);
+    // The original indicator remains the sole active timer until the boundary is consumed.
+    const originalGroup = container.querySelector(".conversation-run-activity");
+    act(() => {
+      listener({ conversationId: PARENT_ID, consumedMessages: [consumed], pendingMessages: [], type: "pending_messages.updated" });
+    });
+    expect(container.querySelectorAll("[data-sent-steer]")).toHaveLength(0);
+    expect([...container.querySelectorAll('.chat-message[data-role="user"]')]
+      .filter((element) => element.textContent === pending.content)).toHaveLength(1);
+    act(() => listener({ conversationId: PARENT_ID, runId: RUN_ID, tool: after, type: "tool.started" }));
+    const groups = container.querySelectorAll(".conversation-run-activity");
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toBe(originalGroup);
+    expect(groups[0]?.textContent).toContain("已处理 20秒");
+    expect(groups[1]?.textContent).toContain("已处理 0秒");
+    const boundary = container.querySelector(`[data-conversation-timeline-item="${pending.id}"]`)!;
+    expect(boundary.compareDocumentPosition(groups[1]!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    // A late acceptance response cannot duplicate a message already consumed by the runtime.
+    act(() => listener({ conversationId: PARENT_ID, pendingMessages: [pending], type: "pending_messages.updated" }));
+    expect(container.querySelector("[data-sent-steer]")).toBeNull();
+  });
+
+  it.each([false, true])("shows attachment previews and reorders queued rows with hidden steer=%s", async (withSteer) => {
     const client = new MockAgentClient();
     const target = session({ id: PARENT_ID, title: "待发送队列测试" });
     const imageAttachmentId = "00000000-0000-4000-8000-000000000017";
@@ -1236,11 +1393,19 @@ describe("Pending message queue", () => {
         referencedProjectPaths: [],
       },
     ];
-    vi.spyOn(client, "listConversationPendingMessages").mockResolvedValue(pendingMessages);
+    const steer: ConversationPendingMessage = { ...pendingMessages[0]!, attachmentIds: [],
+      id: CHILD_ID, content: "已经发送的补充", deliveryMode: "steer" };
+    vi.spyOn(client, "getConversationPendingQueuePaused").mockResolvedValue(true);
+    const toggleQueue = vi.spyOn(client, "setConversationPendingQueuePaused").mockResolvedValue(false);
+    const sendMessage = vi.spyOn(client, "sendConversationMessage");
+    vi.spyOn(client, "listConversationPendingMessages").mockResolvedValue(withSteer
+      ? [pendingMessages[0]!, steer, pendingMessages[1]!] : pendingMessages);
     vi.spyOn(client, "readConversationAttachmentPreview")
       .mockResolvedValue({ data: "AQID", mimeType: "image/png" });
     const reorder = vi.spyOn(client, "reorderConversationPendingMessages")
-      .mockResolvedValue([pendingMessages[1]!, pendingMessages[0]!]);
+      .mockResolvedValue(withSteer
+        ? [pendingMessages[1]!, steer, pendingMessages[0]!]
+        : [pendingMessages[1]!, pendingMessages[0]!]);
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -1260,6 +1425,14 @@ describe("Pending message queue", () => {
     ));
     expect(queue).not.toBeNull();
     expect(rows).toHaveLength(2);
+    expect(queue?.textContent).toContain("已暂停");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="继续队列（本轮完成后依次发送）"]')?.click();
+      await flushConversationWorkspace();
+    });
+    expect(toggleQueue).toHaveBeenCalledWith({ conversationId: PARENT_ID, paused: false });
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(queue?.textContent).not.toContain("已暂停");
     expect(container.querySelector(".conversation-pending-queue__position")).toBeNull();
     expect(container.querySelector('[aria-label="上移"]')).toBeNull();
     expect(container.querySelector('[aria-label="下移"]')).toBeNull();
@@ -1279,6 +1452,9 @@ describe("Pending message queue", () => {
     if (firstRow === undefined || secondRow === undefined || handle === null || handle === undefined) {
       throw new Error("Expected draggable pending message rows.");
     }
+    expect(handle.draggable).toBe(true);
+    expect(firstRow.draggable).toBe(false);
+    expect(queue?.textContent).not.toContain("排队中");
     vi.spyOn(firstRow, "getBoundingClientRect").mockReturnValue({
       bottom: 38,
       height: 38,
@@ -1327,7 +1503,9 @@ describe("Pending message queue", () => {
 
     expect(reorder).toHaveBeenCalledWith({
       conversationId: PARENT_ID,
-      pendingMessageIds: [pendingMessages[1]!.id, pendingMessages[0]!.id],
+      pendingMessageIds: withSteer
+        ? [pendingMessages[1]!.id, steer.id, pendingMessages[0]!.id]
+        : [pendingMessages[1]!.id, pendingMessages[0]!.id],
     });
   });
 });
@@ -2173,6 +2351,7 @@ describe("Subagent approval queue", () => {
         description: "检查实现中的缺陷与回归风险",
         enabled: true,
         entryPath: "C:/skills/code-review/SKILL.md",
+        origin: "system",
         id: "code-review",
         mcpDependencies: [],
         name: "代码审查",
@@ -2194,6 +2373,13 @@ describe("Subagent approval queue", () => {
       modelSelection: conversation.modelSelection,
       title: "Skill 斜杠菜单测试",
     });
+    const referenced = session({ id: CHILD_ID, title: "你好你是 (1)", parentConversationId: target.id, threadKind: "subagent" });
+    vi.spyOn(client, "listConversations").mockResolvedValue([
+      conversation,
+    ]);
+    vi.spyOn(client, "listConversationForks").mockResolvedValue([]);
+    const usage = vi.spyOn(client, "getConversationContextUsage");
+    const send = vi.spyOn(client, "sendConversationMessage");
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -2201,7 +2387,7 @@ describe("Subagent approval queue", () => {
     await act(async () => {
       root?.render(
         <TooltipProvider>
-          <ConversationWorkspace agentClient={client} project={null} session={target} />
+          <ConversationWorkspace agentClient={client} project={null} session={target} relatedSessions={[referenced]} />
         </TooltipProvider>,
       );
       await flushConversationWorkspace();
@@ -2209,7 +2395,7 @@ describe("Subagent approval queue", () => {
 
     const textarea = container.querySelector<HTMLTextAreaElement>('[aria-label="输入任务"]');
     act(() => {
-      setNativeTextValue(textarea, "/code");
+      setNativeTextValue(textarea, "先检查 /code");
       textarea?.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await act(async () => {
@@ -2218,13 +2404,55 @@ describe("Subagent approval queue", () => {
 
     expect(textarea?.dataset.queryActive).toBe("true");
     const skillOption = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
-      .find((option) => option.textContent?.includes("/code-review · 代码审查") === true);
+      .find((option) => option.querySelector("strong")?.textContent === "/代码审查");
     expect(skillOption).toBeDefined();
+    expect(skillOption?.lastElementChild?.textContent).toBe("系统");
 
     act(() => skillOption?.click());
 
-    expect(textarea?.value).toBe("/code-review ");
-    expect(textarea?.dataset.queryActive).toBeUndefined();
+    expect(textarea?.value).toBe("先检查 \u3000code-review ");
+    expect(textarea?.dataset.queryActive).toBe("true");
+    expect(container.querySelector("[data-composer-query]")?.textContent).toBe("\u3000code-review");
+    expect(container.querySelector("[data-composer-reference-icon] svg")).not.toBeNull();
+    expect(container.querySelector(".conversation-mentions--draft")).toBeNull();
+    await act(async () => {
+      textarea?.setSelectionRange(17, 17);
+      textarea?.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", bubbles: true, cancelable: true }));
+      await flushConversationWorkspace();
+    });
+    expect(textarea?.value).toBe("先检查 ");
+    expect(container.querySelector("[data-composer-query]")).toBeNull();
+    act(() => {
+      setNativeTextValue(textarea, "@");
+      textarea?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.querySelector('.conversation-mention-menu [role="presentation"]')?.textContent).toBe("对话");
+    expect(container.querySelector('.conversation-mention-menu')?.textContent).toContain(referenced.title);
+    expect(send).not.toHaveBeenCalled();
+    act(() => {
+      setNativeTextValue(textarea, "先看 @你好");
+      textarea?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const referenceOption = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+      .find((option) => option.textContent?.includes(referenced.title));
+    expect(referenceOption).toBeDefined();
+    await act(async () => { referenceOption?.click(); await flushConversationWorkspace(); });
+    expect(container.querySelector(".conversation-mentions--draft")).toBeNull();
+    expect(container.querySelector("[data-composer-query]")?.textContent).toBe(`\u3000${referenced.title}`);
+    expect(usage).toHaveBeenCalledWith(expect.objectContaining({ referencedConversationIds: [CHILD_ID] }));
+    await act(async () => {
+      textarea?.setSelectionRange(6, 6);
+      textarea?.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
+      await flushConversationWorkspace();
+    });
+    expect(textarea?.value).toBe("先看  ");
+    expect(container.querySelector("[data-composer-query]")).toBeNull();
+    await act(async () => {
+      textarea?.form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await flushConversationWorkspace();
+    });
+    expect(send).toHaveBeenCalled();
+    expect(send.mock.calls.at(-1)?.[0].referencedConversationIds).toBeUndefined();
   });
 
   it("offers Teams through @ mentions without a direct composer handoff control", async () => {
@@ -2305,7 +2533,7 @@ describe("Subagent approval queue", () => {
       await flushConversationWorkspace();
     });
 
-    expect(textarea?.value).toBe(`@${team.name} `);
+    expect(textarea?.value).toBe(`\u3000${team.name} `);
     expect(container.querySelector('[aria-label="交给团队"]')).toBeNull();
     expect(container.querySelector(`[aria-label="交给 ${team.name} 并自动分发"]`)).toBeNull();
     await act(async () => {

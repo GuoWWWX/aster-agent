@@ -1535,9 +1535,9 @@
 .settings-reasoning-option__drop-indicator {
   position: fixed;
   z-index: 1001;
-  height: 1px;
+  height: 2px;
   border-radius: 1px;
-  background: color-mix(in srgb, var(--app-muted-foreground) 58%, var(--app-border));
+  background: var(--app-accent);
   pointer-events: none;
 }
 

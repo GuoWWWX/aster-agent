@@ -10,6 +10,7 @@ import {
   ChevronsDownUp,
   ChevronsUpDown,
   Clock3,
+  Copy,
   Eye,
   EyeOff,
   Folder,
@@ -92,6 +93,8 @@ type ProjectNavigatorProps = {
   teamWorkItems: TeamWorkItemView[];
   tree: ProjectTreeController;
   onClearOperationError: () => void;
+  onCopyText: (text: string) => Promise<void>;
+  onOpenProjectDirectory?: (projectId: string) => Promise<void>;
   onCreateProjectSession: (projectId: string) => void;
   onCreateTemporarySession: () => void;
   onDeleteSession: (sessionId: string) => Promise<boolean>;
@@ -338,6 +341,8 @@ export function ProjectNavigator({
   teamWorkItems,
   tree,
   onClearOperationError,
+  onCopyText,
+  onOpenProjectDirectory,
   onCreateProjectSession,
   onCreateTeamInstance,
   onCreateTemporarySession,
@@ -387,6 +392,7 @@ export function ProjectNavigator({
   const [sortOpen, setSortOpen] = useState(false);
   const [sortOption, setSortOption] = useState<NavigatorSortOption>("custom");
   const [contextMenu, setContextMenu] = useState<NavigatorContextMenu | null>(null);
+  const [menuError, setMenuError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<NavigatorDialog | null>(null);
   const [draftName, setDraftName] = useState("");
   const [draftProjectId, setDraftProjectId] = useState("");
@@ -706,10 +712,11 @@ export function ProjectNavigator({
     target: NavigatorMenuTarget,
   ): void {
     event.preventDefault();
+    const bounds = event.type === "click" ? event.currentTarget.getBoundingClientRect() : null;
     setContextMenu({
       target,
-      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 196)),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 216)),
+      x: Math.max(8, Math.min(bounds?.left ?? event.clientX, window.innerWidth - 196)),
+      y: Math.max(8, Math.min(bounds ? bounds.bottom + 4 : event.clientY, window.innerHeight - 310)),
     });
   }
 
@@ -722,7 +729,7 @@ export function ProjectNavigator({
     setContextMenu({
       target: { kind: "project", project },
       x: Math.max(8, Math.min(bounds.left, window.innerWidth - 196)),
-      y: Math.max(8, Math.min(bounds.bottom + 4, window.innerHeight - 216)),
+      y: Math.max(8, Math.min(bounds.bottom + 4, window.innerHeight - 310)),
     });
   }
 
@@ -961,13 +968,14 @@ export function ProjectNavigator({
         ) : null}
         </label>
 
-        {tree.operationError ?? operationError ? (
+        {menuError ?? tree.operationError ?? operationError ? (
           <div className="project-navigator__notice" role="status">
-            <span>{tree.operationError ?? operationError}</span>
+            <span>{menuError ?? tree.operationError ?? operationError}</span>
             <button
               type="button"
               onClick={() => {
                 tree.clearOperationError();
+                setMenuError(null);
                 onClearOperationError();
               }}
             >
@@ -1001,6 +1009,7 @@ export function ProjectNavigator({
                   <div className="project-navigator__sessions">
                   {visiblePinnedSessions.map((session) => (
                     <SessionTreeItem
+                      menuOpen={contextMenu?.target.kind === "session" && contextMenu.target.session.id === session.id}
                       key={session.id}
                       active={session.id === activeSessionId}
                       activeSessionId={activeSessionId}
@@ -1195,23 +1204,6 @@ export function ProjectNavigator({
                         </button>
                         <div className="project-navigator__project-actions">
                           <button
-                            aria-label={`更多 ${project.name}`}
-                            title="更多"
-                            type="button"
-                            onClick={(event) => openProjectActionsMenu(event, project)}
-                          >
-                            <MoreHorizontal aria-hidden="true" size={15} />
-                          </button>
-                          <button
-                            aria-label={`在 ${project.name} 中创建团队`}
-                            disabled={teams.length === 0}
-                            title={teams.length === 0 ? "请先在设置中配置团队模板" : "创建项目团队"}
-                            type="button"
-                            onClick={() => openCreateTeamDialog("project", project.id, null)}
-                          >
-                            <UsersRound aria-hidden="true" size={15} />
-                          </button>
-                          <button
                             aria-label={`在 ${project.name} 中新建对话`}
                             disabled={isCreatingSession}
                             title="新建对话"
@@ -1220,6 +1212,9 @@ export function ProjectNavigator({
                           >
                             <SquarePen aria-hidden="true" size={15} />
                           </button>
+                          <IconButton label={`更多 ${project.name}`} onClick={(event) => openProjectActionsMenu(event, project)}>
+                            <MoreHorizontal aria-hidden="true" size={15} />
+                          </IconButton>
                         </div>
                       </div>
 
@@ -1265,6 +1260,7 @@ export function ProjectNavigator({
                           ) : (
                             visibleSessions.map((session) => (
                               <SessionTreeItem
+                                menuOpen={contextMenu?.target.kind === "session" && contextMenu.target.session.id === session.id}
                                 key={session.id}
                                 active={session.id === activeSessionId}
                                 activeSessionId={activeSessionId}
@@ -1459,6 +1455,7 @@ export function ProjectNavigator({
                   <div className="project-navigator__sessions">
                   {visibleTemporarySessions.map((session) => (
                     <SessionTreeItem
+                      menuOpen={contextMenu?.target.kind === "session" && contextMenu.target.session.id === session.id}
                       key={session.id}
                       active={session.id === activeSessionId}
                       activeSessionId={activeSessionId}
@@ -1511,6 +1508,21 @@ export function ProjectNavigator({
       {contextMenu !== null ? createPortal(
         <NavigatorContextMenuView
           menu={contextMenu}
+          canCreateTeam={teams.length > 0}
+          canOpenDirectory={onOpenProjectDirectory !== undefined}
+          onCreateTeam={(target) => {
+            setContextMenu(null);
+            if (target.kind === "project") openCreateTeamDialog("project", target.project.id, null);
+            if (target.kind === "session") openCreateTeamDialog("conversation", target.session.projectId, target.session.id);
+          }}
+          onProjectPathAction={(project, action) => {
+            setContextMenu(null);
+            setMenuError(null);
+            void Promise.resolve().then(() => action === "copy"
+              ? onCopyText(project.rootPath)
+              : onOpenProjectDirectory?.(project.id)
+            ).catch(() => setMenuError(action === "copy" ? "复制项目路径失败" : "无法打开项目目录，请确认目录存在并在桌面应用中重试"));
+          }}
           projectHasRunningSession={contextMenuProjectHasRunningSession}
           onClose={() => setContextMenu(null)}
           onDeleteTeamInstance={(instance) => {
@@ -1772,6 +1784,7 @@ function TeamInstanceTreeItem({
 }
 
 type SessionButtonProps = {
+  menuOpen?: boolean;
   active: boolean;
   archived?: boolean;
   draggable: boolean;
@@ -1926,6 +1939,7 @@ function SessionTreeItem({
 
 function SessionButton({
   active,
+  menuOpen = false,
   archived = false,
   draggable,
   dragging,
@@ -1934,24 +1948,21 @@ function SessionButton({
   session,
   onArchive,
   onContextMenu,
-  onCreateTeam,
   onDragEnd,
   onDragOver,
   onDragStart,
   onDrop,
-  onPin,
   onSelect,
 }: SessionButtonProps & {
   onCreateTeam?: () => void;
 }): ReactElement {
-  const isRunning = isSessionRunning(session);
-  const isManagedTeamWorkItemConversation = session.teamWorkItemId !== null
-    && session.teamWorkItemId !== undefined;
   const statusLabel = sessionStatusLabel(session);
+  const archiveDisabled = isSessionRunning(session) || (!!session.teamWorkItemId && !archived);
 
   return (
     <div
       className="project-navigator__session-shell"
+      data-menu-open={menuOpen}
       data-dragging={dragging}
       data-drop-position={dropPosition ?? undefined}
       data-pinned={session.isPinned}
@@ -1982,43 +1993,23 @@ function SessionButton({
         <SessionStatusIndicator session={session} />
       </button>
       <div className="project-navigator__session-actions">
-        {onCreateTeam === undefined ? null : (
-          <button
-            aria-label={`在 ${session.title} 中创建对话团队`}
-            title="创建对话团队"
-            type="button"
-            onClick={onCreateTeam}
-          >
-            <UsersRound aria-hidden="true" size={13} />
-          </button>
-        )}
-        <button
-          aria-label={`${session.isPinned ? "取消置顶" : "置顶"} ${session.title}`}
-          title={session.isPinned ? "取消置顶" : "置顶"}
-          type="button"
-          onClick={() => onPin(!session.isPinned)}
+        <IconButton
+          label={`${archived ? "取消归档" : "归档"} ${session.title}`}
+          tooltip={archived ? "取消归档" : "归档"}
+          disabled={archiveDisabled}
+          onClick={(event) => {
+            event.stopPropagation();
+            onArchive(!archived);
+          }}
         >
-          {session.isPinned ? (
-            <PinOff aria-hidden="true" size={13} />
-          ) : (
-            <Pin aria-hidden="true" size={13} />
-          )}
-        </button>
-        <button
-          aria-label={`${archived ? "取消归档" : "归档"} ${session.title}`}
-          disabled={isRunning || (isManagedTeamWorkItemConversation && !archived)}
-          title={isManagedTeamWorkItemConversation && !archived
-            ? "团队执行对话由 WorkItem 生命周期保留"
-            : isRunning ? "运行中的对话不能归档" : archived ? "取消归档" : "归档"}
-          type="button"
-          onClick={() => onArchive(!archived)}
-        >
-          {archived ? (
-            <ArchiveRestore aria-hidden="true" size={13} />
-          ) : (
-            <Archive aria-hidden="true" size={13} />
-          )}
-        </button>
+          {archived ? <ArchiveRestore aria-hidden="true" size={15} /> : <Archive aria-hidden="true" size={15} />}
+        </IconButton>
+        <IconButton label={`更多 ${session.title}`} tooltip="更多" aria-haspopup="menu" aria-expanded={menuOpen} onClick={(event) => {
+          event.stopPropagation();
+          onContextMenu(event);
+        }}>
+          <MoreHorizontal aria-hidden="true" size={15} />
+        </IconButton>
       </div>
     </div>
   );
@@ -2026,6 +2017,10 @@ function SessionButton({
 
 function NavigatorContextMenuView({
   menu,
+  canCreateTeam,
+  canOpenDirectory,
+  onCreateTeam,
+  onProjectPathAction,
   projectHasRunningSession,
   onClose,
   onDeleteSession,
@@ -2040,6 +2035,10 @@ function NavigatorContextMenuView({
   onSetTeamInstanceArchived,
 }: {
   menu: NavigatorContextMenu;
+  canCreateTeam: boolean;
+  canOpenDirectory: boolean;
+  onCreateTeam: (target: NavigatorMenuTarget) => void;
+  onProjectPathAction: (project: ProjectSummary, action: "copy" | "open") => void;
   projectHasRunningSession: boolean;
   onClose: () => void;
   onDeleteSession: (session: ProjectSession) => void;
@@ -2057,6 +2056,13 @@ function NavigatorContextMenuView({
   onSetTeamInstanceArchived: (instance: TeamInstanceView, archived: boolean) => void;
 }): ReactElement {
   const target = menu.target;
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
   const sessionIsRunning = target.kind === "session" && (
     isSessionRunning(target.session)
   );
@@ -2075,8 +2081,15 @@ function NavigatorContextMenuView({
       <div
         className="project-navigator__context-menu"
         role="menu"
-        style={{ left: menu.x, top: menu.y }}
+        style={{ left: menu.x, top: menu.y, maxHeight: `calc(100vh - ${menu.y + 8}px)`, overflowY: "auto" }}
       >
+        {target.kind !== "team-instance" && (target.kind === "project" || (!target.session.isArchived && !target.session.teamWorkItemId)) ? (
+          <button role="menuitem" type="button" disabled={!canCreateTeam}
+            title={!canCreateTeam ? "请先在设置中配置团队模板" : undefined}
+            onClick={() => onCreateTeam(target)}>
+            <UsersRound aria-hidden="true" size={15} />创建团队
+          </button>
+        ) : null}
         {target.kind === "team-instance" ? (
           <>
             <button role="menuitem" type="button" onClick={() => onRename(target)}>
@@ -2198,6 +2211,13 @@ function NavigatorContextMenuView({
                 <EyeOff aria-hidden="true" size={15} />
               )}
               在项目中显示团队
+            </button>
+            <div className="project-navigator__context-menu-separator" role="separator" />
+            <button role="menuitem" type="button" onClick={() => onProjectPathAction(target.project, "copy")}>
+              <Copy aria-hidden="true" size={15} />复制项目路径
+            </button>
+            <button role="menuitem" type="button" disabled={!canOpenDirectory} onClick={() => onProjectPathAction(target.project, "open")}>
+              <FolderOpen aria-hidden="true" size={15} />在资源管理器打开
             </button>
             <div className="project-navigator__context-menu-separator" role="separator" />
             <button

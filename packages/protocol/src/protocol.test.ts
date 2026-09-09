@@ -64,6 +64,18 @@ import {
 } from "./index.js";
 
 describe("protocol bootstrap contract", () => {
+  it("carries the committed user messages with the pending queue consumption event", () => {
+    const conversationId = "00000000-0000-4000-8000-000000000001";
+    const message = { attachments: [], content: "不用侧边终端", conversationId,
+      createdAt: "2026-09-08T00:00:00.000Z", id: "00000000-0000-4000-8000-000000000002",
+      kind: "message", modelId: null, role: "user", runId: "00000000-0000-4000-8000-000000000003", status: "completed" };
+    const event = { conversationId, pendingMessages: [], type: "pending_messages.updated" };
+    expect(conversationRunEventSchema.parse(event)).toEqual(event);
+    expect(conversationRunEventSchema.parse({ ...event, consumedMessages: [message] }))
+      .toEqual({ ...event, consumedMessages: [message] });
+    expect(conversationRunEventSchema.safeParse({ ...event, consumedMessages: [{ ...message, id: "invalid" }] }).success).toBe(false);
+  });
+
   it("accepts one timeline cursor and rejects mixed navigation modes", () => {
     const conversationId = "00000000-0000-4000-8000-000000000001";
     expect(conversationTimelinePageInputSchema.parse({ conversationId, afterSequence: 120 }).limit).toBe(120);
@@ -425,8 +437,12 @@ describe("protocol bootstrap contract", () => {
       .toEqual({ columns: 120, projectId, rows: 36 });
     expect(() => terminalSessionOpenInputSchema.parse({ columns: 0, projectId, rows: 36 }))
       .toThrow();
-    expect(terminalSessionEventSchema.parse({ data: "ready\r\n", sessionId, type: "data" }))
+    expect(terminalSessionEventSchema.parse({ data: "ready\r\n", nextCursor: 7, sessionId, type: "data" }))
       .toMatchObject({ type: "data" });
+    expect(() => terminalSessionEventSchema.parse({ data: "ready", nextCursor: -1, sessionId, type: "data" }))
+      .toThrow();
+    expect(() => terminalSessionEventSchema.parse({ data: "ready", sessionId, type: "data" }))
+      .toThrow();
     expect(workspaceTerminalTabCloseRequestSchema.parse({
       conversationId: "00000000-0000-4000-8000-000000000003",
       sessionId,

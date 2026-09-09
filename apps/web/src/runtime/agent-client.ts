@@ -255,6 +255,8 @@ export interface AgentClient {
   listConversationPendingMessages(
     input: ConversationReferenceInput,
   ): Promise<ConversationPendingMessage[]>;
+  getConversationPendingQueuePaused(input: ConversationReferenceInput): Promise<boolean>;
+  setConversationPendingQueuePaused(input: ConversationReferenceInput & { paused: boolean }): Promise<boolean>;
   listConversations(): Promise<ConversationSummary[]>;
   listConversationForks(input: ConversationReferenceInput): Promise<ConversationSummary[]>;
   markConversationResultViewed(
@@ -277,6 +279,7 @@ export interface AgentClient {
     input: ReadConfigurationWorkspaceFileInput,
   ): Promise<ConfigurationWorkspaceFile>;
   removeProject(input: ProjectReferenceInput): Promise<void>;
+  openProjectDirectory(input: ProjectReferenceInput): Promise<void>;
   submitTeamWorkItem(input: SubmitTeamWorkItemInput): Promise<TeamWorkItemView>;
   updateTeamWorkItem(input: UpdateTeamWorkItemInput): Promise<TeamWorkItemView>;
   deleteTeamWorkItem(input: DeleteTeamWorkItemInput): Promise<void>;

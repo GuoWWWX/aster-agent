@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MockAgentClient } from "../../runtime/index.js";
-import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
+import { PROJECT_NAVIGATOR_WIDTH_RANGE, useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 import { TooltipProvider } from "../ui/tooltip.js";
 import { AppShell } from "./app-shell.js";
 
@@ -39,6 +39,7 @@ describe("AppShell", () => {
     const onClose = vi.fn();
     const onCloseOthers = vi.fn();
     const onSelect = vi.fn();
+    const onMove = vi.fn();
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -64,10 +65,42 @@ describe("AppShell", () => {
           onCloseConversationTab={onClose}
           onCloseOtherConversationTabs={onCloseOthers}
           onSelectConversationTab={onSelect}
+          onMoveConversationTab={onMove}
         />
       </TooltipProvider>,
     ));
     await act(async () => Promise.resolve());
+
+    const dragTabs = container.querySelectorAll<HTMLElement>(".reorderable-tab");
+    const dataTransfer = { setData: vi.fn(), effectAllowed: "", dropEffect: "" };
+    function drag(type: string, index: number | HTMLElement) {
+      const event = new MouseEvent(type, { bubbles: true, clientX: 10 });
+      Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+      act(() => { (typeof index === "number" ? dragTabs[index] : index)?.dispatchEvent(event); });
+    }
+    drag("dragstart", 0);
+    drag("dragover", 2);
+    expect(dragTabs[2]?.dataset.tabDrop).toBe("after");
+    drag("drop", 2);
+    expect(onMove).toHaveBeenCalledWith("idle", "generic", "after");
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(container.querySelector("[data-tab-drop]")).toBeNull();
+    const tabSurface = container.querySelector<HTMLElement>(".app-titlebar__conversation-surface")!;
+    drag("dragstart", 0);
+    drag("dragover", tabSurface);
+    expect(dragTabs[2]?.dataset.tabDrop).toBe("after");
+    drag("drop", tabSurface);
+    expect(onMove).toHaveBeenCalledTimes(2);
+    expect(onMove).toHaveBeenLastCalledWith("idle", "generic", "after");
+    expect(tabSurface.dataset.tabReordering).toBeUndefined();
+    const dragTitlebar = container.querySelector<HTMLElement>(".app-titlebar")!;
+    drag("dragstart", 0);
+    expect(dragTitlebar.dataset.tabReordering).toBe("true");
+    drag("dragover", dragTitlebar);
+    drag("drop", dragTitlebar);
+    expect(onMove).toHaveBeenCalledTimes(3);
+    expect(onMove).toHaveBeenLastCalledWith("idle", "generic", "after");
+    expect(dragTitlebar.dataset.tabReordering).toBeUndefined();
 
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent)
       .toContain("实现顶部标签");
@@ -236,6 +269,58 @@ describe("AppShell", () => {
     act(() => useWorkbenchUiStore.getState().setFilePanelOpen(true));
     expect(filePanelButton()?.textContent).toBe("README.md");
     expect(mountCount).toBe(1);
+  });
+
+  it("removes the left resize hit area when the navigator is collapsed", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() => root?.render(
+      <TooltipProvider>
+        <AppShell agentClient={new MockAgentClient()} filePanel={<div />} mainContent={<div />}
+          projectNavigator={<div>项目导航</div>} />
+      </TooltipProvider>,
+    ));
+    expect(container.querySelector(".workbench-resizable-divider--left")).not.toBeNull();
+    act(() => useWorkbenchUiStore.getState().setProjectNavigatorOpen(false));
+    expect(container.querySelector(".workbench-resizable-divider--left")).toBeNull();
+    expect(container.querySelector('[aria-label="拖动展开项目栏"]')).toBeNull();
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="展开对话列表"]')?.click());
+    expect(container.querySelector(".workbench-resizable-divider--left")).not.toBeNull();
+  });
+
+  it.each(["pointerup", "pointercancel"])("preserves drag-to-collapse and drag-back until %s", (endEvent) => {
+    const min = PROJECT_NAVIGATOR_WIDTH_RANGE.min;
+    useWorkbenchUiStore.setState({ projectNavigatorWidth: min });
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() => root?.render(
+      <TooltipProvider>
+        <AppShell agentClient={new MockAgentClient()} filePanel={<div />} mainContent={<div />}
+          projectNavigator={<div>项目导航</div>} />
+      </TooltipProvider>,
+    ));
+    const divider = container.querySelector<HTMLElement>(".workbench-resizable-divider--left")!;
+    divider.setPointerCapture = vi.fn();
+    const pointer = (target: EventTarget, type: string, clientX: number): void => {
+      act(() => { target.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, clientX })); });
+    };
+    pointer(divider, "pointerdown", 300);
+    pointer(window, "pointermove", 260);
+    expect(useWorkbenchUiStore.getState().isProjectNavigatorOpen).toBe(false);
+    expect(container.querySelector(".workbench-resizable-divider--left")).toBe(divider);
+    pointer(window, "pointermove", 340);
+    expect(useWorkbenchUiStore.getState().isProjectNavigatorOpen).toBe(true);
+    pointer(window, "pointermove", 380);
+    expect(useWorkbenchUiStore.getState().projectNavigatorWidth).toBe(min + 40);
+    pointer(window, "pointermove", 300);
+    expect(useWorkbenchUiStore.getState().isProjectNavigatorOpen).toBe(false);
+    pointer(window, endEvent, 300);
+    expect(container.querySelector(".workbench-resizable-divider--left")).toBeNull();
+    pointer(window, "pointermove", 500);
+    expect(useWorkbenchUiStore.getState().isProjectNavigatorOpen).toBe(false);
+    expect(document.body.dataset.resizingPanel).toBeUndefined();
   });
 
   it("keeps untouched conversations collapsed and restores each conversation's open state", () => {

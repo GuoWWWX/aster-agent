@@ -31,6 +31,7 @@ import {
   type ConversationAgentBinding,
   type ConversationAgentMessageItem,
   type ConversationAttachment,
+  type ConversationMessageItem,
   type ConversationMessageSubmission,
   type ConversationModelSelection,
   type ConversationModelRetryItem,
@@ -57,6 +58,7 @@ import type {
   ModelConfiguration,
   ModelContextConfiguration,
   ModelMessageAttachment,
+  ModelProviderTokenUsage,
 } from "../model/model-contracts.js";
 import {
   type CompleteTurnInput,
@@ -613,6 +615,8 @@ const DEFAULT_APPLICATION_PERMISSION_POLICIES: ApplicationPermissionPolicies = {
 const PROJECT_READ_TOOL_NAMES = new Set([
   "list_directory",
   "read_file",
+  "view_image",
+  "view_attachments",
 ]);
 
 const PROJECT_SEARCH_TOOL_NAMES = new Set([
@@ -812,6 +816,7 @@ const langChainToolResultEnvelopeSchema = z
     isError: z.boolean(),
     marker: z.literal("agent-tool-result-v1"),
     modelAttachments: z.array(z.object({
+      readPath: z.string().optional(),
       contextTokens: z.number().int().nonnegative(),
       data: z.string().nullable(),
       id: z.string().min(1),
@@ -966,6 +971,9 @@ function agentResultReceiptContent(input: {
 export class AgentRuntime {
   private readonly runCoordinator = new RunCoordinator();
   private readonly pendingAgentWakes = new Map<string, { timer: ReturnType<typeof setTimeout>; depth: number }>();
+  private readonly pendingQueuePaused = new Map<string, boolean>();
+  private readonly latestRequestUsage = new Map<string, ModelProviderTokenUsage | null>();
+  private readonly firstTokenLatencies = new Map<string, number | null>();
 
   private readonly graphExecutor = new LangGraphExecutor();
 
@@ -1292,8 +1300,12 @@ export class AgentRuntime {
     ];
     if (this.attachmentTool !== null) {
       handlers.push({
-        execute: ({ context, rawArguments, toolName }) => {
-          const attachmentResult = this.attachmentTool?.execute(
+        execute: async ({ context, rawArguments, toolName }) => {
+          const attachmentResult = toolName === "view_attachments"
+            ? await this.attachmentTool?.viewImages(context.conversationId, rawArguments,
+              async (imagePath) => this.tools.execute("view_image", JSON.stringify({ path: imagePath }), context.projectId, context.signal, context.operationOwner),
+              context.signal)
+            : this.attachmentTool?.execute(
             toolName,
             context.conversationId,
             rawArguments,
@@ -1446,7 +1458,7 @@ export class AgentRuntime {
         );
       },
       getDefinitions: () => this.tools.getProjectDefinitions().filter(
-        (definition) => definition.name !== "read_external_file",
+        (definition) => definition.name !== "read_external_file" && definition.name !== "view_image",
       ),
       getExecutionPolicy: ({ context, rawArguments, toolName }) => this.tools.getExecutionPolicy(
         toolName,
@@ -1483,6 +1495,10 @@ export class AgentRuntime {
       .setConversationPermissionMode(input.conversationId, input.permissionMode ?? DEFAULT_PERMISSION_MODE);
     const prepared = this.prepareConversationMessage(input);
     this.setExecutionPaused(input.conversationId, false);
+    if (!this.pendingQueuePaused.has(input.conversationId)
+      && this.database.listPendingMessages(input.conversationId).length === 0) {
+      this.pendingQueuePaused.set(input.conversationId, false);
+    }
     if (conversation.activeRunId !== null) {
       const pendingInput = {
         ...input,
@@ -1674,6 +1690,21 @@ export class AgentRuntime {
     return this.database.listPendingMessages(conversationId);
   }
 
+  public isPendingQueuePaused(conversationId: string): boolean {
+    this.eventProjector?.ensureConversationHistoryProjected(conversationId);
+    this.database.getConversation(conversationId);
+    return this.pendingQueuePaused.get(conversationId)
+      ?? this.database.listPendingMessages(conversationId).length > 0;
+  }
+
+  public setPendingQueuePaused(conversationId: string, paused: boolean, emit: RunEventEmitter): boolean {
+    this.database.getConversation(conversationId);
+    this.pendingQueuePaused.set(conversationId, paused);
+    this.emitPendingMessages(conversationId, emit);
+    // Resume arms future completion; it never starts a run by itself.
+    return paused;
+  }
+
   public promotePendingMessage(
     pendingMessageId: string,
     emit: RunEventEmitter
@@ -1696,7 +1727,8 @@ export class AgentRuntime {
     }
     this.emitPendingMessages(conversationId, emit);
     if (this.database.getConversation(conversationId).activeRunId === null) {
-      this.startNextPendingRun(conversationId, emit);
+      this.setExecutionPaused(conversationId, false);
+      this.startNextPendingRun(conversationId, emit, true);
     }
     return this.database.listPendingMessages(conversationId);
   }
@@ -1819,7 +1851,7 @@ export class AgentRuntime {
       this.handleAgentMessageSent(message, emit);
     }
     for (const conversationId of this.database.listConversationIdsWithPendingMessages()) {
-      this.startNextPendingRun(conversationId, emit);
+      this.setPendingQueuePaused(conversationId, true, emit);
     }
     for (const conversationId of this.database.listConversationIdsWithUnreadAgentMessages()) {
       this.startUnreadAgentMessageRun(conversationId, 0, emit);
@@ -2038,6 +2070,8 @@ export class AgentRuntime {
         type: "run_created",
       });
     }
+    this.latestRequestUsage.set(input.conversationId, null);
+    this.firstTokenLatencies.set(input.conversationId, null);
     const accepted = { runId: creation.runId, userMessage: creation.userMessage };
     try {
       beforeRunScheduled?.(accepted);
@@ -2092,8 +2126,9 @@ export class AgentRuntime {
     }
   }
 
-  private startNextPendingRun(conversationId: string, emit: RunEventEmitter): void {
+  private startNextPendingRun(conversationId: string, emit: RunEventEmitter, explicitlyRequested = false): void {
     if (this.database.isConversationExecutionPaused(conversationId)) return;
+    if (!explicitlyRequested && this.isPendingQueuePaused(conversationId)) return;
     this.eventProjector?.ensureConversationHistoryProjected(conversationId);
     const conversation = this.database.getConversation(conversationId);
     if (
@@ -2108,12 +2143,13 @@ export class AgentRuntime {
           .bindConversationAgent(conversationId, record.input.agent);
       }
       const prepared = this.prepareConversationMessage(record.input);
-      this.startPreparedRun(prepared, emit, record.message.id);
-      this.emitPendingMessages(conversationId, emit);
+      const accepted = this.startPreparedRun(prepared, emit, record.message.id);
+      this.emitPendingMessages(conversationId, emit, [accepted.userMessage]);
     } catch (error) {
       const agentError = toMainAgentError(error, {
         operation: "agent.pending_message.start"
       });
+      this.setPendingQueuePaused(conversationId, true, emit);
       reportMainError(agentError, error);
     }
   }
@@ -2127,6 +2163,7 @@ export class AgentRuntime {
   ): boolean {
     const records = this.database.listPendingMessageRecords(conversationId, "steer");
     if (records.length === 0) return false;
+    const consumedMessages: ConversationMessageItem[] = [];
     for (const record of records) {
       const prepared = this.prepareConversationMessage(record.input);
       const modelInputContent = steerModelContent(prepared.modelInputContent);
@@ -2170,6 +2207,7 @@ export class AgentRuntime {
           type: "user_message",
         });
       }
+      consumedMessages.push(userMessage);
       const stableAttachments = this.attachments?.toModelAttachments(
         conversationId,
         record.message.attachmentIds,
@@ -2193,14 +2231,21 @@ export class AgentRuntime {
       if (transientImageMessage !== null) imageMessages.push(transientImageMessage);
     }
     this.appendPendingMessagesThreadLog(conversationId);
-    this.emitPendingMessages(conversationId, emit);
+    // Publish the committed boundary with its queue update, before new model/tool events.
+    this.emitPendingMessages(conversationId, emit, consumedMessages);
     return true;
   }
 
-  private emitPendingMessages(conversationId: string, emit: RunEventEmitter): void {
+  private emitPendingMessages(
+    conversationId: string,
+    emit: RunEventEmitter,
+    consumedMessages?: ConversationMessageItem[],
+  ): void {
     this.emit(emit, {
+      ...(consumedMessages === undefined ? {} : { consumedMessages }),
       conversationId,
       pendingMessages: this.database.listPendingMessages(conversationId),
+      queuePaused: this.isPendingQueuePaused(conversationId),
       type: "pending_messages.updated"
     });
   }
@@ -2366,7 +2411,9 @@ export class AgentRuntime {
         }
         return [state.usage];
       });
-    const latestProviderUsage = providerUsages.at(-1) ?? null;
+    const latestProviderUsage = this.latestRequestUsage.has(input.conversationId)
+      ? this.latestRequestUsage.get(input.conversationId) ?? null
+      : providerUsages.at(-1) ?? null;
     const cacheReportedUsages = providerUsages.filter(
       (usage) => usage.cachedInputTokens !== undefined,
     );
@@ -2416,6 +2463,9 @@ export class AgentRuntime {
         + references.estimatedTokens
         + projectFileReferenceTokens,
       providerCache: {
+        firstTokenLatencyMs: this.firstTokenLatencies.has(input.conversationId)
+          ? this.firstTokenLatencies.get(input.conversationId) ?? null
+          : providerStates.at(-1)?.firstTokenLatencyMs ?? null,
         ...(lastReportedUsage === undefined ? {} : {
           lastReportedHitRate: Math.min(lastReportedUsage.cachedInputTokens ?? 0,
             lastReportedUsage.inputTokens) / lastReportedUsage.inputTokens,
@@ -2974,6 +3024,7 @@ export class AgentRuntime {
       const cancelled = controller.signal.aborted || isAbortError(error);
       holdPendingAfterManualCompactionPause = cancelled && manualCompactionRun;
       const status = cancelled ? "cancelled" : "failed";
+      this.setPendingQueuePaused(conversationId, true, emit);
       const agentError = toMainAgentError(error, {
         operation: "agent.run",
         redactValues: [configuration.apiKey],
@@ -3894,6 +3945,9 @@ export class AgentRuntime {
 
   private async completeModelTurn(input: ModelTurnRequest): Promise<ModelTurnResult> {
     input.signal.throwIfAborted();
+    // Missing or cancelled usage is unknown, never the previous request's value.
+    this.latestRequestUsage.set(input.conversationId, null);
+    this.firstTokenLatencies.set(input.conversationId, null);
     const teamWorkItemId = this.database.getRunningTeamWorkItemByExecutionTreeConversation(
       input.conversationId,
     )?.id;
@@ -3902,7 +3956,16 @@ export class AgentRuntime {
       runId: input.runId,
       type: "model.request_started"
     });
-    return this.modelGateway.completeTurn({
+    const result = await this.modelGateway.completeTurn({
+      onFirstToken: (latencyMs) => {
+        this.firstTokenLatencies.set(input.conversationId, latencyMs);
+        this.emit(input.emit, {
+          conversationId: input.conversationId,
+          runId: input.runId,
+          latencyMs,
+          type: "model.first_token_received",
+        });
+      },
       configuration: input.configuration,
       maxOutputTokens: input.maxOutputTokens,
       messages: input.messages,
@@ -3934,6 +3997,8 @@ export class AgentRuntime {
       signal: input.signal,
       tools: input.tools
     });
+    this.latestRequestUsage.set(input.conversationId, result.providerState?.usage ?? null);
+    return result;
   }
 
   private async executeGraphTools(
@@ -4081,7 +4146,7 @@ export class AgentRuntime {
                   ? "Browser screenshots returned by browser_control. Use screenshot pixel coordinates for pointer actions."
                   : null,
                 modelAttachments.some((attachment) => attachment.source !== "browser")
-                  ? "Conversation image attachments returned by view_attachments."
+                  ? "Images returned by view_attachments. Re-read images using their paths, not attachment IDs."
                   : null,
               ].filter((value): value is string => value !== null).join("\n"),
               role: "user" as const,

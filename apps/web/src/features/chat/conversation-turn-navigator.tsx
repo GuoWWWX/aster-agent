@@ -80,6 +80,21 @@ function timelineAnchor(root: HTMLElement, id: string): HTMLElement | null {
   return wrapper.firstElementChild instanceof HTMLElement ? wrapper.firstElementChild : wrapper;
 }
 
+/** Scroll only the message viewport, never its clipped workbench ancestors. */
+export function scrollConversationTurnIntoView(
+  root: HTMLElement,
+  anchor: HTMLElement,
+  behavior: ScrollBehavior,
+): void {
+  const rootRect = root.getBoundingClientRect();
+  const anchorRect = anchor.getBoundingClientRect();
+  root.scrollTo({
+    top: root.scrollTop + anchorRect.top - rootRect.top - root.clientTop
+      + (anchorRect.height - root.clientHeight) / 2,
+    behavior,
+  });
+}
+
 function timelineAnchors(
   root: HTMLElement,
   turnIds: ReadonlySet<string>,
@@ -325,7 +340,7 @@ export function ConversationTurnNavigator({
     const anchor = turn === undefined
       ? null
       : dragAnchorsRef.current?.get(turn.id) ?? timelineAnchor(root, turn.id);
-    anchor?.scrollIntoView({ behavior: "auto", block: "center" });
+    if (anchor !== null) scrollConversationTurnIntoView(root, anchor, "auto");
   };
 
   const scheduleDragNavigation = (clientY: number): void => {
@@ -466,9 +481,9 @@ export function ConversationTurnNavigator({
                   }
                   const root = containerRef.current;
                   const anchor = root === null ? null : timelineAnchor(root, turn.id);
-                  if (anchor === null) return;
+                  if (anchor === null || root === null) return;
                   if (!navigationAlreadyStarted) onNavigateStart();
-                  anchor.scrollIntoView({ behavior: "smooth", block: "center" });
+                  scrollConversationTurnIntoView(root, anchor, "smooth");
                 }}
               >
                 <span

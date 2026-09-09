@@ -211,6 +211,10 @@ export const updatePendingConversationMessageIpcArgumentsSchema = z.tuple([
 export const reorderPendingConversationMessagesIpcArgumentsSchema = z.tuple([
   reorderPendingConversationMessagesInputSchema
 ]);
+export const setPendingQueuePausedIpcArgumentsSchema = z.tuple([
+  conversationReferenceInputSchema.extend({ paused: z.boolean() }).strict(),
+]);
+export const pendingQueuePausedResponseSchema = z.boolean();
 
 export const conversationContextUsageIpcArgumentsSchema = z.tuple([
   conversationContextUsageInputSchema

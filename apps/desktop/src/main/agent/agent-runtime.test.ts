@@ -3453,6 +3453,57 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
+  it("keeps current usage unknown while waiting and after cancellation without lowering the average", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    let calls = 0;
+    let started: (() => void) | undefined;
+    const waiting = new Promise<void>((resolve) => { started = resolve; });
+    const model: ModelProviderAdapter = {
+      completeTurn: async (input) => {
+        calls += 1;
+        if (calls === 2) {
+          started?.();
+          await new Promise<void>((_, reject) => {
+            input.signal.addEventListener("abort", () => reject(new DOMException("Cancelled", "AbortError")), { once: true });
+          });
+        }
+        input.onFirstToken?.(250);
+        return { content: "done", finishReason: "stop", toolCalls: [], providerState: {
+          apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+          modelId: "test-model", payload: {}, usage: {
+            inputTokens: 100, outputTokens: 10, totalTokens: 110, cachedInputTokens: calls === 1 ? 80 : 0,
+          },
+        } };
+      },
+    };
+    const runtime = new AgentRuntime(database, {
+      getConfiguration: () => ({ apiKey: "secret", apiFormat: "openai-chat-completions",
+        baseUrl: "https://example.test/v1", modelId: "test-model", reasoningOptions: [] }),
+    }, projects, new ProjectToolRegistry(projects), model);
+    const usage = () => runtime.getContextUsage({ conversationId: conversation.id, permissionMode: "read_only" }).providerCache;
+    const send = (content: string) => new Promise<void>((resolve) => {
+      runtime.sendMessage({ content, conversationId: conversation.id }, (event) => {
+        if (event.type === "run.finished") resolve();
+      });
+    });
+    await send("first");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(usage()).toMatchObject({ firstTokenLatencyMs: 250, latest: { hitRate: 0.8 }, cumulative: { hitRate: 0.8 } });
+    const second = send("cancel this request");
+    await waiting;
+    expect(usage()).toMatchObject({ firstTokenLatencyMs: null, latest: null, cumulative: { hitRate: 0.8 } });
+    runtime.cancelRun(database.getConversation(conversation.id).activeRunId!);
+    await second;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(usage()).toMatchObject({ latest: null, cumulative: { hitRate: 0.8, requestCount: 1 } });
+    await send("real zero");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(usage()).toMatchObject({ latest: { hitRate: 0 }, cumulative: { hitRate: 0.4, requestCount: 2 } });
+    database.close();
+  });
+
   it("reports latest and cumulative provider cache usage for a conversation", () => {
     const database = new AgentDatabase(":memory:");
     const projects = new ProjectRegistry(database);
@@ -3524,6 +3575,7 @@ describe("AgentRuntime", () => {
       conversationId: conversation.id,
       permissionMode: "read_only",
     }).providerCache).toEqual({
+      firstTokenLatencyMs: null,
       cumulative: {
         cacheCreationInputTokens: 20,
         cachedInputTokens: 130,
@@ -3557,6 +3609,7 @@ describe("AgentRuntime", () => {
       conversationId: conversation.id,
       permissionMode: "read_only",
     }).providerCache).toEqual({
+      firstTokenLatencyMs: null,
       lastReportedHitRate: 0.8,
       cumulative: {
         cacheCreationInputTokens: 20,
@@ -4027,6 +4080,47 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
+  it("does not drain a paused queue on completion or on a new manual message", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const model = new ActiveAgentMessageFixtureModel();
+    const runtime = new AgentRuntime(database, {
+      getConfiguration: () => ({ apiKey: "secret", apiFormat: "openai-chat-completions",
+        baseUrl: "https://example.test/v1", modelId: "test-model", reasoningOptions: [] }),
+    }, projects, new ProjectToolRegistry(projects), model);
+    let resolveRun: (() => void) | undefined;
+    let finished = new Promise<void>((resolve) => { resolveRun = resolve; });
+    const emit = (event: ConversationRunEvent): void => {
+      if (event.type === "run.finished") resolveRun?.();
+    };
+    runtime.sendMessage({ content: "当前任务", conversationId: conversation.id }, emit);
+    await model.firstRequestStarted;
+    const queued = runtime.sendMessage({ content: "旧队列第一条", conversationId: conversation.id }, emit);
+    runtime.sendMessage({ content: "旧队列第二条", conversationId: conversation.id }, emit);
+    runtime.setPendingQueuePaused(conversation.id, true, emit);
+    model.continueWithFinalResponse();
+    await finished;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(model.requests).toHaveLength(1);
+    expect(database.listPendingMessages(conversation.id)).toHaveLength(2);
+    finished = new Promise<void>((resolve) => { resolveRun = resolve; });
+    runtime.sendMessage({ content: "暂停时的新消息", conversationId: conversation.id }, emit);
+    await finished;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(model.requests).toHaveLength(2);
+    expect(database.listPendingMessages(conversation.id)).toHaveLength(2);
+    if (queued.kind !== "pending") throw new Error("Expected a pending message");
+    finished = new Promise<void>((resolve) => { resolveRun = resolve; });
+    runtime.promotePendingMessage(queued.pendingMessage.id, emit);
+    await finished;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(model.requests).toHaveLength(3);
+    expect(database.listPendingMessages(conversation.id).map((message) => message.content)).toEqual(["旧队列第二条"]);
+    expect(runtime.isPendingQueuePaused(conversation.id)).toBe(true);
+    database.close();
+  });
+
   it("consumes queued messages in the reordered sequence and keeps edits in place", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-pending-thread-log-"));
     temporaryDirectories.push(root);
@@ -4120,7 +4214,7 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
-  it("resumes persisted pending messages after reopening the application database", async () => {
+  it("pauses restored messages and only drains after a new manual run completes when resumed", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-pending-resume-"));
     temporaryDirectories.push(root);
     const databasePath = path.join(root, "agent.sqlite");
@@ -4150,23 +4244,37 @@ describe("AgentRuntime", () => {
       new ProjectToolRegistry(projects),
       model,
     );
-    const finished = new Promise<void>((resolve) => {
-      runtime.resumePendingMessages((event) => {
-        if (event.type === "run.finished") resolve();
-      });
-    });
-
+    const events: ConversationRunEvent[] = [];
+    let finishedRuns = 0;
+    let resolveFinished: (() => void) | undefined;
+    const finished = new Promise<void>((resolve) => { resolveFinished = resolve; });
+    const emit = (event: ConversationRunEvent): void => {
+      events.push(event);
+      if (event.type === "run.finished" && ++finishedRuns === 2) resolveFinished?.();
+    };
+    runtime.resumePendingMessages(emit);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(runtime.isPendingQueuePaused(conversation.id)).toBe(true);
+    expect(model.requests).toHaveLength(0);
+    expect(events).toContainEqual(expect.objectContaining({ type: "pending_messages.updated", queuePaused: true }));
+    runtime.setPendingQueuePaused(conversation.id, false, emit);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(model.requests).toHaveLength(0);
+    runtime.sendMessage({ content: "新消息优先", conversationId: conversation.id }, emit);
     await finished;
 
-    expect(model.requests).toHaveLength(1);
+    expect(model.requests).toHaveLength(2);
     expect(model.requests[0]?.messages.filter((message) => message.role === "user").at(-1)?.content)
+      .toBe("新消息优先");
+    expect(model.requests[1]?.messages.filter((message) => message.role === "user").at(-1)?.content)
       .toBe("应用重启后继续发送");
     expect(reopened.listPendingMessages(conversation.id)).toEqual([]);
     const resumedUserMessage = reopened.listTimeline(conversation.id).find((item) =>
-      item.kind === "message" && item.role === "user"
+      item.kind === "message" && item.role === "user" && item.id === pending.id
     );
     expect(resumedUserMessage).toMatchObject({ content: "应用重启后继续发送" });
-    expect(resumedUserMessage?.id).not.toBe(pending.id);
+    expect(resumedUserMessage?.id).toBe(pending.id);
+    await new Promise<void>((resolve) => setImmediate(resolve));
     reopened.close();
   });
 
@@ -4297,6 +4405,80 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
+  it.each([
+    { mode: "steer", partial: true }, { mode: "promote", partial: true },
+    { mode: "steer", partial: false }, { mode: "promote", partial: false },
+  ])("accepts $mode during generation but consumes it only at the next request (partial=$partial)", async ({ mode, partial }) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-steer-thread-log-"));
+    temporaryDirectories.push(root);
+    const threadLog = new ThreadLog(path.join(root, "conversations"));
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const requests: CompleteTurnInput[] = [];
+    let finishCurrentRequest!: () => void;
+    const currentRequest = new Promise<void>((resolve) => { finishCurrentRequest = resolve; });
+    const model: ModelProviderAdapter = {
+      completeTurn: async (input) => {
+        requests.push(input);
+        if (requests.length === 1) {
+          if (partial) input.onTextDelta?.("正在考虑原请求。");
+          await currentRequest;
+          return { content: "原步骤已完成。", finishReason: "stop", toolCalls: [] };
+        }
+        return { content: "已按新要求处理。", finishReason: "stop", toolCalls: [] };
+      },
+    };
+    const runtime = new AgentRuntime(database, {
+      getConfiguration: () => ({ apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1", modelId: "test-model", reasoningOptions: [] }),
+    }, projects, new ProjectToolRegistry(projects), model,
+    undefined, undefined, null, null, null, null, null, undefined, null,
+    threadLog, new EventProjector(database, threadLog));
+    const events: ConversationRunEvent[] = [];
+    runtime.sendMessage({ content: "原请求", conversationId: conversation.id }, (event) => events.push(event));
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    const submitted = runtime.sendMessage({ content: "改为直接打印网址", conversationId: conversation.id, deliveryMode: mode === "steer" ? "steer" : "queue" }, () => undefined);
+    if (mode === "promote" && submitted.kind === "pending") {
+      expect(requests[0]?.signal.aborted).toBe(false);
+      runtime.promotePendingMessage(submitted.pendingMessage.id, () => undefined);
+    }
+    try {
+      expect(submitted.kind).toBe("pending");
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.signal.aborted).toBe(false);
+      expect(database.listPendingMessages(conversation.id)).toHaveLength(1);
+      expect(threadLog.read(conversation.id)?.events.some((event) =>
+        event.type === "user_message" && event.payload.content === "改为直接打印网址",
+      )).toBe(false);
+      finishCurrentRequest();
+      await vi.waitFor(() => expect(database.getConversation(conversation.id).activeRunId).toBeNull());
+      expect(requests).toHaveLength(2);
+      expect(requests[0]?.signal.aborted).toBe(false);
+      expect(requests[1]?.messages.some((message) => message.content.includes("改为直接打印网址"))).toBe(true);
+      expect(requests[1]?.messages.some((message) => message.content === "原步骤已完成。")).toBe(true);
+      expect(events.filter((event) => event.type === "run.finished")).toMatchObject([{ status: "completed" }]);
+      expect(events.filter((event) => event.type === "model.retry_updated")).toEqual([]);
+      expect(database.listPendingMessages(conversation.id)).toEqual([]);
+      expect(threadLog.read(conversation.id)?.events.filter((event) =>
+        event.type === "user_message" && event.payload.content === "改为直接打印网址",
+      )).toHaveLength(1);
+      const consumed = events.find((event) => event.type === "pending_messages.updated"
+        && event.consumedMessages?.length === 1);
+      expect(consumed).toMatchObject({ consumedMessages: [{
+        id: submitted.kind === "pending" ? submitted.pendingMessage.id : "",
+        content: "改为直接打印网址", role: "user",
+      }], pendingMessages: [] });
+    } finally {
+      finishCurrentRequest();
+      const activeRunId = database.getConversation(conversation.id).activeRunId;
+      if (activeRunId !== null) {
+        runtime.cancelRun(activeRunId);
+        await vi.waitFor(() => expect(database.getConversation(conversation.id).activeRunId).toBeNull());
+      }
+      database.close();
+    }
+  });
+
   it("injects steer messages only after every tool result in the active batch", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-steer-"));
     temporaryDirectories.push(root);
@@ -4320,24 +4502,25 @@ describe("AgentRuntime", () => {
       new ProjectToolRegistry(projects),
       model,
     );
+    let steered = false;
     const finished = new Promise<void>((resolve) => {
       runtime.sendMessage({ content: "先检查项目", conversationId: conversation.id }, (event) => {
+        if (event.type === "tool.started" && !steered) {
+          steered = true;
+          expect(runtime.sendMessage({
+            content: "补充：两个目录读取完成后再考虑这个要求",
+            conversationId: conversation.id,
+            deliveryMode: "steer",
+          }, () => undefined)).toMatchObject({ kind: "pending", pendingMessage: { deliveryMode: "steer" } });
+        }
         if (event.type === "run.finished") resolve();
       });
     });
     await model.firstRequestStarted;
-    const steered = runtime.sendMessage({
-      content: "补充：两个目录读取完成后再考虑这个要求",
-      conversationId: conversation.id,
-      deliveryMode: "steer",
-    }, () => undefined);
-    expect(steered).toMatchObject({
-      kind: "pending",
-      pendingMessage: { deliveryMode: "steer" },
-    });
     model.continueWithToolBatch();
     await finished;
 
+    expect(steered).toBe(true);
     expect(model.requests).toHaveLength(2);
     const messages = model.requests[1]?.messages ?? [];
     const assistantToolCallIndex = messages.findIndex((message) =>
@@ -5934,6 +6117,8 @@ describe("AgentRuntime", () => {
       item.kind === "tool" && item.name === "compact_context"
     ))).toMatchObject({ status: "cancelled" });
 
+    expect(runtime.isPendingQueuePaused(conversation.id)).toBe(true);
+    runtime.setPendingQueuePaused(conversation.id, false, () => undefined);
     const completedRuns: string[] = [];
     await new Promise<void>((resolve) => {
       runtime.sendMessage({ content: "/compact", conversationId: conversation.id }, (event) => {
@@ -7334,6 +7519,46 @@ describe("AgentRuntime", () => {
     });
     expect(otherEvents.filter((event) => event.type === "tool.approval_requested")).toHaveLength(1);
     database.close();
+  });
+
+  it("delivers workspace images directly to the model and persists only preview metadata", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-view-image-"));
+    temporaryDirectories.push(root);
+    const data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nksAAAAASUVORK5CYII=";
+    writeFileSync(path.join(root, "pixel.png"), Buffer.from(data, "base64"));
+    const database = new AgentDatabase(":memory:");
+    try {
+      const projects = new ProjectRegistry(database);
+      const project = await projects.registerDirectory(root);
+      const conversation = database.createConversation(project.id);
+      const requests: CompleteTurnInput[] = [];
+      const imageStore = new ConversationAttachmentStore(database, projects, path.join(root, "managed"));
+      const pasted = await imageStore.importBytes(conversation.id, { name: "pasted.png", mimeType: "image/png", bytes: Buffer.from(data, "base64") });
+      const model: ModelProviderAdapter = { completeTurn: (input) => {
+        requests.push(input);
+        if (requests.length === 1) return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id: "image-call", name: "view_attachments", arguments: JSON.stringify({ paths: ["pixel.png", `attachments/${pasted.id}.png`] }) }] });
+        input.onTextDelta("图片已查看");
+        return Promise.resolve({ content: "图片已查看", finishReason: "stop", toolCalls: [] });
+      } };
+      const runtime = new AgentRuntime(database, { getConfiguration: () => ({
+        apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+        contextWindow: 100_000, modelId: "test-model", reasoningOptions: [],
+      }) }, projects, new ProjectToolRegistry(projects), model, undefined, undefined, null,
+      imageStore);
+      const events: ConversationRunEvent[] = [];
+      await new Promise<void>((resolve) => {
+        runtime.sendMessage({ content: "查看项目图片", conversationId: conversation.id, permissionMode: "read_only" }, (event) => {
+          events.push(event);
+          if (event.type === "run.finished") resolve();
+        });
+      });
+      expect(requests).toHaveLength(2);
+      expect(requests[1]?.messages.flatMap((message) => message.attachments)).toContainEqual(expect.objectContaining({ kind: "image", data, projectPath: "pixel.png" }));
+      const completed = events.find((event) => event.type === "tool.completed");
+      expect(completed).toMatchObject({ tool: { name: "view_attachments", status: "completed" } });
+      expect(JSON.stringify(completed)).not.toContain(data);
+      expect(events.some((event) => event.type === "tool.approval_requested")).toBe(false);
+    } finally { database.close(); }
   });
 
   it("keeps image data at the request tail across tools without changing next-run history", async () => {

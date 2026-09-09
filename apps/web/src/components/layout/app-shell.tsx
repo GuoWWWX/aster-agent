@@ -35,6 +35,7 @@ type AppShellProps = {
   onCloseOtherConversationTabs?: (conversationId: string) => void;
   onOpenGlobalSearch?: () => void;
   onSelectConversationTab?: (conversationId: string) => void;
+  onMoveConversationTab?: (source: string, target: string, side: "before" | "after") => void;
 };
 
 export function AppShell({
@@ -49,8 +50,10 @@ export function AppShell({
   onCloseOtherConversationTabs,
   onOpenGlobalSearch,
   onSelectConversationTab,
+  onMoveConversationTab,
 }: AppShellProps): ReactElement {
   const [isFilePanelResizing, setFilePanelResizing] = useState(false);
+  const [isProjectNavigatorResizing, setProjectNavigatorResizing] = useState(false);
   const isFilePanelOpen = useWorkbenchUiStore(
     (state) => state.isFilePanelOpen,
   );
@@ -175,6 +178,7 @@ export function AppShell({
         {...(onSelectConversationTab === undefined ? {} : {
           onSelectConversationTab,
         })}
+        {...(onMoveConversationTab === undefined ? {} : { onMoveConversationTab })}
         showFilePanelControl={canShowFileWorkspace}
         showProjectNavigatorControl={isConversationWorkspace}
       />
@@ -192,10 +196,8 @@ export function AppShell({
             {projectNavigator}
           </div>
         ) : null}
-        {isConversationWorkspace ? <ResizableDivider
-          ariaLabel={
-            isProjectNavigatorOpen ? "调整项目栏宽度" : "拖动展开项目栏"
-          }
+        {isConversationWorkspace && (isProjectNavigatorOpen || isProjectNavigatorResizing) ? <ResizableDivider
+          ariaLabel="调整项目栏宽度"
           className="workbench-resizable-divider--left"
           collapsed={!isProjectNavigatorOpen}
           direction="from-start"
@@ -206,6 +208,7 @@ export function AppShell({
             setProjectNavigatorOpen(!isCollapsed)
           }
           onResize={setProjectNavigatorWidth}
+          onDraggingChange={setProjectNavigatorResizing}
         /> : null}
         <main className="workbench-main" aria-label="主要工作区">
           {mainContent}

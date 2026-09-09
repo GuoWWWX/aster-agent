@@ -14,7 +14,7 @@ import {
 
 import { AgentRuntime } from "../agent/agent-runtime.js";
 import { SkillRuntime } from "../agent/skill-runtime.js";
-import { BROWSER_USE_SKILL } from "../agent/prompts/prompt-assets.js";
+import { SYSTEM_SKILLS } from "../agent/prompts/prompt-assets.js";
 import { reportMainError, toMainAgentError } from "../errors/agent-error.js";
 import { registerMainIpcHandlers } from "../ipc/register-main-ipc.js";
 import { ModelCatalogStore } from "../model/model-catalog-store.js";
@@ -306,10 +306,12 @@ async function initializeServices(): Promise<DesktopServices> {
     integrationConfiguration,
     agentHome.paths.skillsPath,
   );
-  try {
-    skillDocuments.ensureManagedDocument(BROWSER_USE_SKILL);
-  } catch (error) {
-    console.warn("Built-in browser Skill could not be installed.", error);
+  for (const content of SYSTEM_SKILLS) {
+    try {
+      skillDocuments.ensureManagedDocument(content);
+    } catch (error) {
+      console.warn("Built-in Skill could not be installed.", error);
+    }
   }
   skillDocuments.discoverDocuments();
   const skillRuntime = new SkillRuntime(skillDocuments, integrationConfiguration);

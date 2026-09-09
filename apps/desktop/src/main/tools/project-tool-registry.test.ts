@@ -50,6 +50,24 @@ async function createLargeFixture(fileCount = 400) {
 }
 
 describe("ProjectToolRegistry", () => {
+  it("views a workspace image as visual input without persisting image bytes in tool text", async () => {
+    const { project, tools } = await createFixture();
+    const data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+    await writeFile(path.join(project.rootPath, "src", "pixel.png"), Buffer.from(data, "base64"));
+    const result = await tools.execute("view_image", JSON.stringify({ path: "src/pixel.png" }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(false);
+    expect(result.content).not.toContain(data);
+    expect(JSON.parse(result.content)).toMatchObject({ ok: true, value: { image: { path: "src/pixel.png", projectId: project.id } } });
+    if (result.kind !== "completed") throw new Error("Expected image result");
+    expect(result.modelAttachments).toEqual([expect.objectContaining({ kind: "image", source: "project", data, projectPath: "src/pixel.png" })]);
+    expect(tools.getExecutionPolicy("view_image", "{}", false)).toEqual({ group: "read", kind: "parallel" });
+  });
+
+  it.each(["../pixel.png", "C:/pixel.png", "https://example.com/image.png", "src/index.ts", "missing.png", "src/pixel.png?x.png"])("rejects unsafe or unavailable image path %s", async (imagePath) => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("view_image", JSON.stringify({ path: imagePath }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+  });
   it("reads identical ranges using a line count or an inclusive end line", async () => {
     const { project, tools } = await createFixture();
     await writeFile(path.join(project.rootPath, "lines.txt"),
@@ -75,7 +93,7 @@ describe("ProjectToolRegistry", () => {
     expect(JSON.parse(firstPage.content)).toMatchObject({ value: { startLine: 1, endLine: 400, nextStartLine: 401 } });
   });
 
-  it.each([0, -1, 1.5, 401, null])("rejects invalid lineCount %s with a field issue", async (lineCount) => {
+  it.each([0, -1, 1.5, 401])("rejects invalid lineCount %s with a field issue", async (lineCount) => {
     const { project, tools } = await createFixture();
     const result = await tools.execute("read_file", JSON.stringify({ path: "src/index.ts", lineCount }),
       project.id, new AbortController().signal);
@@ -86,10 +104,16 @@ describe("ProjectToolRegistry", () => {
   it("rejects simultaneous count and end-line limits instead of silently choosing one", async () => {
     const { project, tools } = await createFixture();
     const result = await tools.execute("read_file", JSON.stringify({
-      path: "src/index.ts", startLine: 1, lineCount: 2, endLine: 2,
+      path: "src/index.ts", startLine: 1, lineCount: 2, endLine: 3,
     }), project.id, new AbortController().signal);
     expect(result.isError).toBe(true);
     expect(result.content).toContain("Choose either lineCount or endLine");
+  });
+
+  it.each([{ startLine: 1, lineCount: 400, endLine: 400 }, { startLine: 2, lineCount: 2, endLine: 3 }, { lineCount: 2, endLine: null }, { lineCount: null, endLine: 2 }, { lineCount: null, endLine: null }])("accepts equivalent or null range limits: %j", async (range) => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("read_file", JSON.stringify({ path: "src/index.ts", ...range }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(false);
   });
 
   it("reports the count field when a count-based read exceeds the byte limit", async () => {
@@ -1286,6 +1310,13 @@ describe("ProjectToolRegistry", () => {
     );
 
     expect(stopped.content).toContain('"status":"cancelled"');
+    const receipt = JSON.parse(stopped.content) as { value: { command: Record<string, unknown> } };
+    expect(Object.keys(receipt.value.command).sort()).toEqual([
+      "commandId", "completedAt", "error", "exitCode", "status",
+    ]);
+    expect(stopped.content).not.toContain("stdout");
+    expect(stopped.content).not.toContain("stderr");
+    expect(stopped.content).not.toContain("should-not-complete");
     expect(waited.content).toContain('"waitStatus":"finished"');
     expect(waited.content).toContain('"status":"cancelled"');
   });

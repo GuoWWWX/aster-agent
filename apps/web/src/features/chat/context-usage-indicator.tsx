@@ -24,7 +24,7 @@ type ContextUsageRow = {
 };
 
 type ProviderCacheInlineMetric = {
-  kind: "cache" | "input" | "output";
+  kind: "cache" | "input" | "output" | "latency";
   label: string;
   shortLabel: string;
   tone: "caution" | "danger" | "good" | "neutral" | "success" | "warning";
@@ -169,7 +169,7 @@ export function ProviderCacheStatus({
       <PopoverTrigger asChild>
         <button
           aria-label={accessibleLabel}
-          className="pointer-events-auto mx-auto flex min-h-4 w-fit max-w-[calc(100%_-_32px)] items-center justify-center gap-1.5 overflow-hidden whitespace-nowrap rounded-[var(--app-radius)] px-1 py-0.5 text-[length:var(--app-font-size-body)] font-normal tabular-nums text-[var(--app-muted-foreground)] outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)]"
+          className="pointer-events-auto mx-auto mt-1.5 flex min-h-4 w-fit max-w-[calc(100%_-_32px)] items-center justify-center gap-1.5 overflow-hidden whitespace-nowrap rounded-[var(--app-radius)] px-1 py-0.5 text-[length:var(--app-font-size-body)] font-normal tabular-nums text-[var(--app-muted-foreground)] outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)]"
           title={accessibleLabel}
           type="button"
         >
@@ -178,7 +178,7 @@ export function ProviderCacheStatus({
               {index > 0 ? (
                 <span aria-hidden="true" className="text-[var(--app-border)]">·</span>
               ) : null}
-              {metric.kind === "cache" ? (
+              {metric.kind === "cache" || metric.kind === "latency" ? (
                 <span
                   className="inline-flex min-w-0 items-center gap-1"
                   data-cache-metric={metric.label}
@@ -287,7 +287,7 @@ function ProviderCacheDetails({
       <p className="my-1 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
         本次指最近一次模型 API 请求，不是整轮任务。平均值按有缓存明细的输入 Token 加权。
         {latest?.hitRate == null && cache?.lastReportedHitRate !== undefined
-          ? ` 本次未上报缓存明细，底部保留上次有效命中率 ${formatCachePercentage(cache.lastReportedHitRate)}。`
+          ? ` 本次暂无缓存明细，显示 --；上次有效命中率为 ${formatCachePercentage(cache.lastReportedHitRate)}，不作为本次值。`
           : null}
       </p>
       {latest === null ? (
@@ -468,27 +468,34 @@ export function providerCacheInlineMetrics(
 ): ProviderCacheInlineMetric[] {
   const latest = usage?.providerCache?.latest ?? null;
   const cumulative = usage?.providerCache?.cumulative;
-  const hitRate = latest?.hitRate ?? usage?.providerCache?.lastReportedHitRate ?? null;
-  const isPrevious = latest?.hitRate == null && hitRate !== null;
+  const hitRate = latest?.hitRate ?? null;
+  const latency = usage?.providerCache?.firstTokenLatencyMs;
   return [
     {
+      kind: "latency",
+      label: "首字",
+      shortLabel: "首字",
+      tone: "neutral",
+      value: latency == null ? "--" : latency < 1_000 ? `${latency}ms` : `${(latency / 1_000).toFixed(2)}s`,
+    },
+    {
       kind: "input",
-      label: "本次发送",
+      label: "发送",
       shortLabel: "发送",
       tone: "success",
       value: latest === null ? "--" : formatCompactTokenCount(latest.inputTokens),
     },
     {
       kind: "output",
-      label: "模型返回",
+      label: "返回",
       shortLabel: "返回",
       tone: "danger",
       value: latest === null ? "--" : formatCompactTokenCount(latest.outputTokens),
     },
     {
       kind: "cache",
-      label: isPrevious ? "上次命中率" : "本次命中率",
-      shortLabel: isPrevious ? "上次命中" : "命中",
+      label: "本次命中率",
+      shortLabel: "命中",
       tone: providerCacheTone(hitRate),
       value: hitRate === null
         ? "--"

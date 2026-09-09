@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { skillConfigurationSchema } from "./integration.js";
 
 import {
   createSkillMarkdown,
@@ -7,6 +8,12 @@ import {
 } from "./skill-document.js";
 
 describe("skill document", () => {
+  it("keeps skill origin separate from scope and accepts older personal entries", () => {
+    const skill = { description: "Review", enabled: true, entryPath: "C:/review/SKILL.md", id: "review", mcpDependencies: [], name: "review", scope: "user", version: "" };
+    expect(skillConfigurationSchema.parse(skill).origin).toBeUndefined();
+    expect(skillConfigurationSchema.parse({ ...skill, origin: "system" }).scope).toBe("user");
+    expect(skillConfigurationSchema.safeParse({ ...skill, origin: "project" }).success).toBe(false);
+  });
   it("parses required YAML metadata and Markdown instructions", () => {
     const parsed = parseSkillMarkdown(`---\nname: code-review\ndescription: Review changes safely.\n---\n\n# Workflow\n\nReview the diff.\n`);
 

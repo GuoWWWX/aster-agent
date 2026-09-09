@@ -20,6 +20,7 @@ export const gitWorkingTreeChangeSchema = z.object({
 
 export const gitBranchSchema = z.object({
   current: z.boolean(),
+  isWorktreeOccupied: z.boolean().optional(),
   name: z.string().min(1).max(512),
   upstream: z.string().min(1).max(512).nullable(),
 }).strict();
@@ -107,9 +108,17 @@ export const terminalSessionOpenInputSchema = z.object({
 }).strict();
 
 export const terminalSessionSchema = z.object({
+  initialSize: z.object({
+    columns: z.number().int().min(2).max(500),
+    rows: z.number().int().min(1).max(300),
+  }).strict().optional(),
   projectId: projectIdSchema,
   sessionId: sessionIdSchema,
   shellLabel: z.string().min(1).max(120),
+  windowsPty: z.object({
+    backend: z.literal("conpty"),
+    buildNumber: z.number().int().nonnegative(),
+  }).strict().optional(),
 }).strict();
 
 export const terminalSessionWriteInputSchema = z.object({
@@ -166,6 +175,7 @@ export const workspaceTerminalTabCloseRequestSchema = z.object({
 export const terminalSessionEventSchema = z.discriminatedUnion("type", [
   z.object({
     data: z.string().max(262_144),
+    nextCursor: z.number().int().nonnegative(),
     sessionId: sessionIdSchema,
     type: z.literal("data"),
   }).strict(),
