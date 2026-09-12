@@ -56,6 +56,7 @@ import { BrowserToolPlugin } from "../plugins/browser-tool-plugin.js";
 import { createMainWindow } from "../windows/main-window.js";
 import { ManagedBrowserController } from "../windows/managed-browser-controller.js";
 import { parseBackendSendCommand } from "./backend-command.js";
+import { dispatchBackendSendCommand as submitBackendSendCommand } from "./backend-command-dispatch.js";
 
 type DesktopServices = {
   agentRuntime: AgentRuntime;
@@ -515,12 +516,7 @@ function dispatchBackendSendCommand(commandLine: readonly string[]): void {
   const command = parseBackendSendCommand(commandLine);
   if (command === undefined || services === undefined) return;
   try {
-    const submission = services.agentRuntime.sendMessage({
-      attachmentIds: [],
-      content: command.content,
-      conversationId: command.conversationId,
-    }, sendConversationRunEvent);
-    console.log(`[backend-command] submitted ${submission.kind === "started" ? submission.runId : submission.pendingMessage.id}`);
+    console.log(`[backend-command] submitted ${submitBackendSendCommand(command, services.agentRuntime, sendConversationRunEvent)}`);
   } catch (error) {
     reportUnhandledError(error, "backend_command.send_message");
   }
