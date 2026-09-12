@@ -3435,6 +3435,10 @@ export class AgentRuntime {
     }
     const canWriteAheadTerminal = this.threadLog !== null && this.eventProjector !== null;
     if (canWriteAheadTerminal) {
+      // Clear the authoritative activeRunId before projecting the terminal
+      // event. Projection may be delayed or fail on stale history, but the
+      // renderer must still be able to stop showing the run as active.
+      this.database.finishRun(input.runId, input.status, input.error);
       const assistant = input.assistant;
       this.appendWriteAheadThreadLog(input.conversationId, {
         payload: {
