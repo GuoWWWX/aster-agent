@@ -47,7 +47,7 @@ export function findBlockMarkdownMath(source: string): MarkdownMathRange[] {
     if (/^\s*(`{3,}|~{3,})/.test(line)) { fence = !fence; offset += line.length + 1; continue; }
     if (fence || (line.trim() !== "$$" && line.trim() !== "\\[")) { offset += line.length + 1; continue; }
     const closing = line.trim() === "$$" ? "$$" : "\\]";
-    let contentOffset = offset + line.length + 1;
+    const contentOffset = offset + line.length + 1;
     for (let next = index + 1, cursor = contentOffset; next < lines.length; next += 1) {
       if ((lines[next] ?? "").trim() === closing) {
         if (cursor < offsetOfLine(lines, next)) ranges.push({ from: offset, to: offsetOfLine(lines, next) + (lines[next]?.length ?? 0), contentFrom: contentOffset, contentTo: offsetOfLine(lines, next) - 1, display: true });
