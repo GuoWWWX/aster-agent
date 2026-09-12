@@ -12,6 +12,7 @@ const electronExecutable = requireFromDesktop("electron");
 // 默认端口服务于常规 `pnpm dev`；并行 worktree 可显式传入自己的 Vite 地址，
 // 绝不能让 Electron 静默挂到另一个 worktree 的 Renderer 上。
 const rendererUrl = process.env.ELECTRON_RENDERER_URL ?? "http://127.0.0.1:5173";
+const electronArguments = process.argv.slice(2);
 
 let child = null;
 let isShuttingDown = false;
@@ -19,7 +20,7 @@ let isRestarting = false;
 let restartTimer = null;
 
 function launchElectron() {
-  child = spawn(electronExecutable, ["."], {
+  child = spawn(electronExecutable, [".", ...electronArguments], {
     cwd: desktopDirectory,
     env: {
       ...process.env,
