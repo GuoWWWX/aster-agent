@@ -1148,7 +1148,13 @@ export class AgentRuntime {
   ): boolean {
     if (this.threadLog === null || this.eventProjector === null) return false;
     const appended = this.threadLog.append(conversationId, event);
-    this.eventProjector.projectBusinessEvent(conversationId, appended);
+    try {
+      this.eventProjector.projectBusinessEvent(conversationId, appended);
+    } catch (error) {
+      // The durable event is already present. A stale projection must not
+      // prevent terminal run events from reaching the renderer.
+      console.error("ThreadLog projection failed after durable append.", error);
+    }
     return true;
   }
 
