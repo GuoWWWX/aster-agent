@@ -11,6 +11,17 @@ describe("backend command", () => {
     ])).toEqual({ conversationId, content: "hello" });
   });
 
+  it("accepts an explicit provider and model for backend runs", () => {
+    expect(parseBackendSendCommand([
+      `--aster-send=${JSON.stringify({
+        conversationId,
+        content: "hello",
+        modelId: "gpt-5.6-luna",
+        providerId: "f915f61e-364a-4a9f-bbe5-998039226177",
+      })}`,
+    ])).toMatchObject({ modelId: "gpt-5.6-luna", providerId: "f915f61e-364a-4a9f-bbe5-998039226177" });
+  });
+
   it.each([
     "--aster-send={not-json}",
     `--aster-send=${JSON.stringify({ conversationId })}`,

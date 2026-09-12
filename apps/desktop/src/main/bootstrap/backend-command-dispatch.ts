@@ -5,6 +5,8 @@ export type BackendCommandRuntime = {
     attachmentIds: string[];
     content: string;
     conversationId: string;
+    modelId?: string;
+    providerId?: string;
   }, onEvent: (event: unknown) => void) => { kind: "started"; runId: string } | { kind: "pending"; pendingMessage: { id: string } };
 };
 
@@ -17,6 +19,8 @@ export function dispatchBackendSendCommand(
     attachmentIds: [],
     content: command.content,
     conversationId: command.conversationId,
+    ...(command.modelId === undefined ? {} : { modelId: command.modelId }),
+    ...(command.providerId === undefined ? {} : { providerId: command.providerId }),
   }, onEvent);
   return submission.kind === "started" ? submission.runId : submission.pendingMessage.id;
 }

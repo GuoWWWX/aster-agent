@@ -3,6 +3,8 @@ import { z } from "zod";
 export const backendSendCommandSchema = z.object({
   conversationId: z.string().uuid(),
   content: z.string().trim().min(1).max(100_000),
+  modelId: z.string().trim().min(1).max(200).optional(),
+  providerId: z.string().uuid().optional(),
 }).strict();
 
 export type BackendSendCommand = z.infer<typeof backendSendCommandSchema>;

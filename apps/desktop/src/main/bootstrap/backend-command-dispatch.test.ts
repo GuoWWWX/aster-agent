@@ -10,6 +10,8 @@ describe("backend command dispatch", () => {
     const result = dispatchBackendSendCommand({
       conversationId: "3791f313-0656-492e-bd62-2c0dd3c3a8f8",
       content: "hello",
+      modelId: "gpt-5.6-luna",
+      providerId: "f915f61e-364a-4a9f-bbe5-998039226177",
     }, runtime, onEvent);
 
     expect(result).toBe("run-1");
@@ -17,6 +19,8 @@ describe("backend command dispatch", () => {
       attachmentIds: [],
       content: "hello",
       conversationId: "3791f313-0656-492e-bd62-2c0dd3c3a8f8",
+      modelId: "gpt-5.6-luna",
+      providerId: "f915f61e-364a-4a9f-bbe5-998039226177",
     }, onEvent);
   });
 });
