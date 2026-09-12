@@ -332,7 +332,7 @@ export class EventProjector {
       const business = batch.filter((event) => event.type !== "legacy_snapshot_imported"
         && event.sequence > importedSequence);
       this.database.restoreThreadLogConversationProperties(conversationId, business);
-      this.database.restoreThreadLogBusinessEvents(conversationId, business, true);
+      this.database.restoreThreadLogBusinessEvents(conversationId, business, true, true);
       this.database.projectThreadLogEvents(conversationId, batch);
       count += batch.length;
       batch = [];

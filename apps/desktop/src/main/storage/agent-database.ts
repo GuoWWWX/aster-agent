@@ -4947,6 +4947,19 @@ export class AgentDatabase {
     return rows.map(toConversationDeletionTask);
   }
 
+  public cancelPendingConversationDeletion(taskId: string): void {
+    const task = this.getConversationDeletionTask(taskId);
+    if (task === null || task.status !== "pending" || task.retryCount !== 0) {
+      throw new Error("Conversation cleanup has already started.");
+    }
+    this.withTransaction(() => {
+      const placeholders = task.conversationIds.map(() => "?").join(", ");
+      this.database.prepare(`UPDATE conversations SET deletion_pending = 0 WHERE id IN (${placeholders})`)
+        .run(...task.conversationIds);
+      this.database.prepare("DELETE FROM conversation_deletion_tasks WHERE id = ?").run(taskId);
+    });
+  }
+
   public beginConversationDeletionTask(taskId: string): ConversationDeletionTask | null {
     const now = new Date().toISOString();
     const result = this.database.prepare(
@@ -7956,6 +7969,7 @@ export class AgentDatabase {
     conversationId: string,
     events: readonly ThreadLogProjectionEvent[],
     replayIntoExistingState = false,
+    skipUnavailableDependencies = false,
   ): boolean {
     this.getConversation(conversationId);
     if (events.some((event) => event.type === "legacy_snapshot_imported")) return false;
@@ -8139,7 +8153,12 @@ export class AgentDatabase {
           const message = readProjectionAgentMessage(payload, "message");
           if (message === null) continue;
           if (!this.hasConversation(message.senderConversationId)) {
-            throw new Error("ThreadLog Agent message source conversation is unavailable.");
+            // Keep startup resilient when an archived/deleted child
+            // conversation is no longer present locally.
+            if (!skipUnavailableDependencies) {
+              throw new Error("ThreadLog Agent message source conversation is unavailable.");
+            }
+            continue;
           }
           const storedMessage = this.database.prepare(
             "SELECT 1 AS present FROM conversation_agent_messages WHERE id = ?",
@@ -8191,7 +8210,12 @@ export class AgentDatabase {
                   message.senderConversationId,
                 ) as DatabaseRow | undefined;
               if (task === undefined || asNullableString(task, "result_message_id") !== message.id) {
-                throw new Error("ThreadLog Subagent result message has no matching task.");
+                // The task may have been deleted independently. Do not let a
+                // stale result event prevent unrelated conversations loading.
+                if (!skipUnavailableDependencies) {
+                  throw new Error("ThreadLog Subagent result message has no matching task.");
+                }
+                continue;
               }
             }
           }
@@ -8201,7 +8225,11 @@ export class AgentDatabase {
         if (event.type === "agent_message_read") {
           const messageId = readProjectionString(payload, "messageId");
           if (messageId !== null) {
-            this.markThreadLogAgentMessageRead(conversationId, messageId, event.createdAt);
+            try {
+              this.markThreadLogAgentMessageRead(conversationId, messageId, event.createdAt);
+            } catch (error) {
+              if (!skipUnavailableDependencies) throw error;
+            }
           }
           continue;
         }
@@ -8271,7 +8299,14 @@ export class AgentDatabase {
             || !this.runExists(task.data.sourceRunId)
             || (task.data.targetRunId !== null && !this.runExists(task.data.targetRunId))
           ) {
-            throw new Error("ThreadLog Subagent task dependencies are unavailable.");
+            // A deleted/partial Subagent history must not prevent the rest of
+            // the conversation (and the desktop) from starting. Keep the
+            // event in ThreadLog for inspection, but omit the orphaned
+            // relational projection until its dependencies can be restored.
+            if (!skipUnavailableDependencies) {
+              throw new Error("ThreadLog Subagent task dependencies are unavailable.");
+            }
+            continue;
           }
           this.database
             .prepare(
