@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, nativeTheme } from "electron";
 import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { z } from "zod";
 
 import {
   APPLICATION_HOME_ENVIRONMENT_VARIABLE,
@@ -91,6 +92,11 @@ let mainWindow: BrowserWindow | undefined;
 let disposeIpcHandlers: (() => void) | undefined;
 let services: DesktopServices | undefined;
 let archivedConversationCleanupTimer: ReturnType<typeof setInterval> | undefined;
+
+const backendSendCommandSchema = z.object({
+  conversationId: z.string().uuid(),
+  content: z.string().trim().min(1).max(100_000),
+}).strict();
 
 const ARCHIVED_CONVERSATION_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 loadLocalEnvironment();
@@ -509,9 +515,36 @@ function focusMainWindow(): void {
   window.focus();
 }
 
+function parseBackendSendCommand(commandLine: readonly string[]): z.infer<typeof backendSendCommandSchema> | undefined {
+  const argument = commandLine.find((value) => value.startsWith("--aster-send="));
+  if (argument === undefined) return undefined;
+  try {
+    const parsed = backendSendCommandSchema.safeParse(JSON.parse(argument.slice("--aster-send=".length)));
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function dispatchBackendSendCommand(commandLine: readonly string[]): void {
+  const command = parseBackendSendCommand(commandLine);
+  if (command === undefined || services === undefined) return;
+  try {
+    const submission = services.agentRuntime.sendMessage({
+      attachmentIds: [],
+      content: command.content,
+      conversationId: command.conversationId,
+    }, sendConversationRunEvent);
+    console.log(`[backend-command] submitted ${submission.kind === "started" ? submission.runId : submission.pendingMessage.id}`);
+  } catch (error) {
+    reportUnhandledError(error, "backend_command.send_message");
+  }
+}
+
 if (hasSingleInstanceLock) {
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, commandLine) => {
     focusMainWindow();
+    dispatchBackendSendCommand(commandLine);
   });
 }
 
@@ -542,6 +575,7 @@ async function bootstrap(): Promise<void> {
   archivedConversationCleanupTimer.unref();
 
   await openMainWindow();
+  dispatchBackendSendCommand(process.argv);
 
   const credentialWarnings = services.credentials.getCredentialMigrationWarnings();
   if (credentialWarnings.length > 0 && mainWindow !== undefined) {
