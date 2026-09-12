@@ -7,14 +7,14 @@ describe("backend command", () => {
   it("parses the strict local send payload", () => {
     expect(parseBackendSendCommand([
       "electron.exe",
-      `--aster-send={\"conversationId\":\"${conversationId}\",\"content\":\"hello\"}`,
+      `--aster-send=${JSON.stringify({ conversationId, content: "hello" })}`,
     ])).toEqual({ conversationId, content: "hello" });
   });
 
   it.each([
     "--aster-send={not-json}",
-    `--aster-send={\"conversationId\":\"${conversationId}\"}`,
-    `--aster-send={\"conversationId\":\"${conversationId}\",\"content\":\"x\",\"permissionMode\":\"read_only\"}`,
+    `--aster-send=${JSON.stringify({ conversationId })}`,
+    `--aster-send=${JSON.stringify({ conversationId, content: "x", permissionMode: "read_only" })}`,
   ])("rejects malformed or privileged payloads: %s", (argument) => {
     expect(parseBackendSendCommand([argument])).toBeUndefined();
   });
