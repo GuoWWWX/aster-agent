@@ -5822,6 +5822,7 @@ describe("AgentRuntime", () => {
     expect(database.listModelMessages(conversation.id)).toEqual([
       expect.objectContaining({ content: "执行失败的请求", role: "user" })
     ]);
+    expect(database.getConversation(conversation.id).activeRunId).toBeNull();
     database.close();
   });
 
@@ -5948,6 +5949,7 @@ describe("AgentRuntime", () => {
     expect(typeof failedRetry.completedAt).toBe("string");
     expect(typeof failedRetry.durationMs).toBe("number");
     expect(failedRetry.reason).toContain("HTTP 429");
+    expect(database.getConversation(conversation.id).activeRunId).toBeNull();
     database.close();
   });
 
