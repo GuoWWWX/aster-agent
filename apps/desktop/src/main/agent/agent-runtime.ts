@@ -932,6 +932,17 @@ function steerModelContent(content: string): string {
   ].join("\n");
 }
 
+function supersedeFailedRunModelContent(content: string): string {
+  return [
+    "[Runtime stale-run note]",
+    "A new user request supersedes the previous failed or cancelled run in this conversation.",
+    "Treat the previous run as historical context only. Do not retry its commands or continue its plan unless the current request explicitly asks for a retry.",
+    "[End runtime stale-run note]",
+    "",
+    content,
+  ].join("\\n");
+}
+
 const MAX_AGENT_RESULT_RECEIPT_LENGTH = 1_000;
 const AGENT_RESULT_RECEIPT_TRUNCATION = "\n\n[完整结果保留在执行 Agent 对话，可按需读取]";
 
@@ -1148,7 +1159,13 @@ export class AgentRuntime {
   ): boolean {
     if (this.threadLog === null || this.eventProjector === null) return false;
     const appended = this.threadLog.append(conversationId, event);
-    this.eventProjector.projectBusinessEvent(conversationId, appended);
+    try {
+      this.eventProjector.projectBusinessEvent(conversationId, appended);
+    } catch (error) {
+      // The durable event is already present. A stale projection must not
+      // prevent terminal run events from reaching the renderer.
+      console.error("ThreadLog projection failed after durable append.", error);
+    }
     return true;
   }
 
@@ -1493,7 +1510,10 @@ export class AgentRuntime {
     }
     (this.conversationLifecycle ?? this.database)
       .setConversationPermissionMode(input.conversationId, input.permissionMode ?? DEFAULT_PERMISSION_MODE);
-    const prepared = this.prepareConversationMessage(input);
+    const preparedBase = this.prepareConversationMessage(input);
+    const prepared = conversation.lastRunStatus === "failed" || conversation.lastRunStatus === "cancelled"
+      ? { ...preparedBase, modelInputContent: supersedeFailedRunModelContent(preparedBase.modelInputContent) }
+      : preparedBase;
     this.setExecutionPaused(input.conversationId, false);
     if (!this.pendingQueuePaused.has(input.conversationId)
       && this.database.listPendingMessages(input.conversationId).length === 0) {
@@ -3429,6 +3449,10 @@ export class AgentRuntime {
     }
     const canWriteAheadTerminal = this.threadLog !== null && this.eventProjector !== null;
     if (canWriteAheadTerminal) {
+      // Clear the authoritative activeRunId before projecting the terminal
+      // event. Projection may be delayed or fail on stale history, but the
+      // renderer must still be able to stop showing the run as active.
+      this.database.finishRun(input.runId, input.status, input.error);
       const assistant = input.assistant;
       this.appendWriteAheadThreadLog(input.conversationId, {
         payload: {

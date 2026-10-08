@@ -341,6 +341,12 @@ export function createDesktopBridge(): DesktopBridge {
     async deleteConversation(input: ConversationReferenceInput) {
       await invoke<void>(IPC_CHANNELS.conversationDelete, input);
     },
+    async deleteConversationUndoable(input: ConversationReferenceInput) {
+      await invoke<void>(IPC_CHANNELS.conversationDeleteUndoable, input);
+    },
+    async restoreDeletedConversation(input: ConversationReferenceInput) {
+      await invoke<void>(IPC_CHANNELS.conversationRestoreDeleted, input);
+    },
     async deleteConfigurationWorkspaceEntry(input: DeleteConfigurationWorkspaceEntryInput) {
       await invoke<void>(IPC_CHANNELS.configurationWorkspaceDeleteEntry, input);
     },
@@ -544,6 +550,9 @@ export function createDesktopBridge(): DesktopBridge {
     },
     listConversations() {
       return invoke<BridgeResult<"listConversations">>(IPC_CHANNELS.conversationList);
+    },
+    listConversationHierarchy() {
+      return invoke<BridgeResult<"listConversationHierarchy">>(IPC_CHANNELS.conversationListHierarchy);
     },
     listConversationForks(input: ConversationReferenceInput) {
       return invoke<BridgeResult<"listConversationForks">>(

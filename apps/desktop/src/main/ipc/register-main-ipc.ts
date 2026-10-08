@@ -569,6 +569,12 @@ export function registerMainIpcHandlers(
     return conversationListResponseSchema.parse(database.listConversations());
   });
 
+  ipcMain.handle(IPC_CHANNELS.conversationListHierarchy, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    parseNoArguments(args);
+    return conversationListResponseSchema.parse(database.listConversationHierarchy());
+  });
+
   ipcMain.handle(IPC_CHANNELS.conversationCreate, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = createConversationIpcArgumentsSchema.parse(args);
@@ -734,6 +740,18 @@ export function registerMainIpcHandlers(
     getTrustedWindow(event, getMainWindow);
     const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
     await conversationDeletion.requestDeletion(input.conversationId);
+    return voidIpcResponseSchema.parse(undefined);
+  });
+  ipcMain.handle(IPC_CHANNELS.conversationDeleteUndoable, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
+    conversationDeletion.requestUndoableDeletion(input.conversationId);
+    return voidIpcResponseSchema.parse(undefined);
+  });
+  ipcMain.handle(IPC_CHANNELS.conversationRestoreDeleted, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
+    conversationDeletion.restoreDeletedConversation(input.conversationId);
     return voidIpcResponseSchema.parse(undefined);
   });
 

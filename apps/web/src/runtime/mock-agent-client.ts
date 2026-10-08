@@ -1151,6 +1151,20 @@ export class MockAgentClient implements AgentClient {
     });
   }
 
+  private readonly undoDeletedIds = new Set<string>();
+
+  public deleteConversationUndoable(input: ConversationReferenceInput): Promise<void> {
+    const conversation = this.conversations.find((item) => item.id === input.conversationId);
+    if (conversation === undefined || conversation.activeRunId !== null || conversation.teamWorkItemId !== null) {
+      return Promise.reject(new Error("Conversation cannot be deleted."));
+    }
+    this.undoDeletedIds.add(input.conversationId);
+    return Promise.resolve();
+  }
+  public restoreDeletedConversation(input: ConversationReferenceInput): Promise<void> {
+    if (!this.undoDeletedIds.delete(input.conversationId)) return Promise.reject(new Error("Deletion cannot be undone."));
+    return Promise.resolve();
+  }
   public deleteConversation(input: ConversationReferenceInput): Promise<void> {
     const index = this.conversations.findIndex(
       (conversation) => conversation.id === input.conversationId,
@@ -1488,7 +1502,16 @@ export class MockAgentClient implements AgentClient {
   public listConversations(): Promise<ConversationSummary[]> {
     return Promise.resolve(
       this.conversations
-        .filter((conversation) => !this.conversationParents.has(conversation.id))
+        .filter((conversation) => !this.conversationParents.has(conversation.id) && !this.undoDeletedIds.has(conversation.id))
+        .map((conversation) => ({ ...conversation }))
+        .sort((left, right) => Number(right.isPinned) - Number(left.isPinned)),
+    );
+  }
+
+  public listConversationHierarchy(): Promise<ConversationSummary[]> {
+    return Promise.resolve(
+      this.conversations
+        .filter((conversation) => !this.undoDeletedIds.has(conversation.id))
         .map((conversation) => ({ ...conversation }))
         .sort((left, right) => Number(right.isPinned) - Number(left.isPinned)),
     );

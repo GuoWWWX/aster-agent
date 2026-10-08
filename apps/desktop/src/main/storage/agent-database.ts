@@ -1731,6 +1731,54 @@ export class AgentDatabase {
     return rows.map(toConversation);
   }
 
+  /**
+   * Return the complete conversation hierarchy in one projection query.
+   *
+   * The renderer uses this during navigator/activity startup. Calling
+   * listConversationForks once per node turns a large project into hundreds
+   * of synchronous IPC/SQLite round trips and can delay live approval state.
+   */
+  public listConversationHierarchy(): ConversationSummary[] {
+    const rows = this.database
+      .prepare(
+        `${teamWorkItemExecutionTreeCte}
+         SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
+            selected_provider_id, selected_model_id, selected_reasoning_json, permission_mode,
+            thread_kind, agent_id, avatar_icon, team_id, title, created_at, conversations.updated_at,
+            conversations.archived_at,
+            conversations.has_unread_result, conversations.is_archived,
+            conversations.is_pinned, conversations.pin_order,
+           (SELECT id FROM runs
+            WHERE conversation_id = conversations.id
+              AND status IN ('queued', 'running')
+            ORDER BY created_at DESC, rowid DESC LIMIT 1) AS active_run_id,
+           (SELECT status FROM runs
+            WHERE conversation_id = conversations.id
+            ORDER BY created_at DESC, rowid DESC LIMIT 1) AS last_run_status
+          ,(SELECT COUNT(*) FROM subagent_tasks
+            WHERE parent_conversation_id = conversations.id
+              AND (
+                status IN ('queued', 'running')
+                OR EXISTS (
+                  SELECT 1 FROM runs AS active_subagent_runs
+                  WHERE active_subagent_runs.conversation_id = subagent_tasks.child_conversation_id
+                    AND active_subagent_runs.status IN ('queued', 'running')
+                )
+              )) AS active_subagent_count
+           ,(SELECT status FROM subagent_tasks
+             WHERE child_conversation_id = conversations.id LIMIT 1) AS subagent_task_status
+           ,team_execution_tree_projection.work_item_id AS team_work_item_id
+         FROM conversations
+         LEFT JOIN team_execution_tree_projection
+           ON team_execution_tree_projection.conversation_id = conversations.id
+         WHERE conversations.deletion_pending = 0
+         ORDER BY conversations.is_pinned DESC, conversations.sort_order ASC,
+                  conversations.updated_at DESC, conversations.created_at ASC`
+      )
+      .all() as DatabaseRow[];
+    return rows.map(toConversation);
+  }
+
   public listAgentConversations(): ConversationSummary[] {
     const rows = this.database
       .prepare(
@@ -4947,6 +4995,19 @@ export class AgentDatabase {
     return rows.map(toConversationDeletionTask);
   }
 
+  public cancelPendingConversationDeletion(taskId: string): void {
+    const task = this.getConversationDeletionTask(taskId);
+    if (task === null || task.status !== "pending" || task.retryCount !== 0) {
+      throw new Error("Conversation cleanup has already started.");
+    }
+    this.withTransaction(() => {
+      const placeholders = task.conversationIds.map(() => "?").join(", ");
+      this.database.prepare(`UPDATE conversations SET deletion_pending = 0 WHERE id IN (${placeholders})`)
+        .run(...task.conversationIds);
+      this.database.prepare("DELETE FROM conversation_deletion_tasks WHERE id = ?").run(taskId);
+    });
+  }
+
   public beginConversationDeletionTask(taskId: string): ConversationDeletionTask | null {
     const now = new Date().toISOString();
     const result = this.database.prepare(
@@ -7956,6 +8017,7 @@ export class AgentDatabase {
     conversationId: string,
     events: readonly ThreadLogProjectionEvent[],
     replayIntoExistingState = false,
+    skipUnavailableDependencies = false,
   ): boolean {
     this.getConversation(conversationId);
     if (events.some((event) => event.type === "legacy_snapshot_imported")) return false;
@@ -8139,7 +8201,12 @@ export class AgentDatabase {
           const message = readProjectionAgentMessage(payload, "message");
           if (message === null) continue;
           if (!this.hasConversation(message.senderConversationId)) {
-            throw new Error("ThreadLog Agent message source conversation is unavailable.");
+            // Keep startup resilient when an archived/deleted child
+            // conversation is no longer present locally.
+            if (!skipUnavailableDependencies) {
+              throw new Error("ThreadLog Agent message source conversation is unavailable.");
+            }
+            continue;
           }
           const storedMessage = this.database.prepare(
             "SELECT 1 AS present FROM conversation_agent_messages WHERE id = ?",
@@ -8191,7 +8258,12 @@ export class AgentDatabase {
                   message.senderConversationId,
                 ) as DatabaseRow | undefined;
               if (task === undefined || asNullableString(task, "result_message_id") !== message.id) {
-                throw new Error("ThreadLog Subagent result message has no matching task.");
+                // The task may have been deleted independently. Do not let a
+                // stale result event prevent unrelated conversations loading.
+                if (!skipUnavailableDependencies) {
+                  throw new Error("ThreadLog Subagent result message has no matching task.");
+                }
+                continue;
               }
             }
           }
@@ -8201,7 +8273,11 @@ export class AgentDatabase {
         if (event.type === "agent_message_read") {
           const messageId = readProjectionString(payload, "messageId");
           if (messageId !== null) {
-            this.markThreadLogAgentMessageRead(conversationId, messageId, event.createdAt);
+            try {
+              this.markThreadLogAgentMessageRead(conversationId, messageId, event.createdAt);
+            } catch (error) {
+              if (!skipUnavailableDependencies) throw error;
+            }
           }
           continue;
         }
@@ -8271,7 +8347,14 @@ export class AgentDatabase {
             || !this.runExists(task.data.sourceRunId)
             || (task.data.targetRunId !== null && !this.runExists(task.data.targetRunId))
           ) {
-            throw new Error("ThreadLog Subagent task dependencies are unavailable.");
+            // A deleted/partial Subagent history must not prevent the rest of
+            // the conversation (and the desktop) from starting. Keep the
+            // event in ThreadLog for inspection, but omit the orphaned
+            // relational projection until its dependencies can be restored.
+            if (!skipUnavailableDependencies) {
+              throw new Error("ThreadLog Subagent task dependencies are unavailable.");
+            }
+            continue;
           }
           this.database
             .prepare(

@@ -28,6 +28,7 @@ function describeDeletionError(error: unknown): string {
 }
 
 export class ConversationDeletionService {
+  private readonly undoableTasks = new Map<string, string>();
   private readonly inFlightTasks = new Map<string, Promise<ConversationDeletionOutcome>>();
 
   public constructor(
@@ -46,9 +47,27 @@ export class ConversationDeletionService {
 
   public async resumeIncompleteTasks(): Promise<void> {
     for (const task of this.database.listIncompleteConversationDeletionTasks()) {
+      if (this.undoableTasks.get(task.rootConversationId) === task.id) continue;
       this.unmountTaskWorkspaces(task);
       await this.processTask(task.id);
     }
+  }
+
+  public requestUndoableDeletion(conversationId: string): void {
+    const task = this.database.createConversationDeletionTask(conversationId);
+    if (task.rootConversationId !== conversationId || task.status !== "pending" || task.retryCount !== 0) {
+      throw new Error("Conversation deletion cannot be held for undo.");
+    }
+    // Persist the deletion intent, but retain all files and relations until the
+    // next process startup. Only this process owns permission to undo it.
+    this.undoableTasks.set(conversationId, task.id);
+  }
+
+  public restoreDeletedConversation(conversationId: string): void {
+    const taskId = this.undoableTasks.get(conversationId);
+    if (taskId === undefined) throw new Error("Conversation deletion can no longer be undone.");
+    this.database.cancelPendingConversationDeletion(taskId);
+    this.undoableTasks.delete(conversationId);
   }
 
   public async deleteExpiredArchivedConversations(cutoffIso: string): Promise<void> {

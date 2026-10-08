@@ -223,6 +223,8 @@ export interface DesktopBridge {
   ): Promise<void>;
   deleteConversationTaskList(input: ConversationReferenceInput): Promise<void>;
   deleteConversation(input: ConversationReferenceInput): Promise<void>;
+  deleteConversationUndoable(input: ConversationReferenceInput): Promise<void>;
+  restoreDeletedConversation(input: ConversationReferenceInput): Promise<void>;
   deleteConfigurationWorkspaceEntry(
     input: DeleteConfigurationWorkspaceEntryInput
   ): Promise<void>;
@@ -290,6 +292,7 @@ export interface DesktopBridge {
   getConversationPendingQueuePaused(input: ConversationReferenceInput): Promise<boolean>;
   setConversationPendingQueuePaused(input: ConversationReferenceInput & { paused: boolean }): Promise<boolean>;
   listConversations(): Promise<ConversationSummary[]>;
+  listConversationHierarchy(): Promise<ConversationSummary[]>;
   listConversationForks(input: ConversationReferenceInput): Promise<ConversationSummary[]>;
   markConversationResultViewed(
     input: ConversationReferenceInput

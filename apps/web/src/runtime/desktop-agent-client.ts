@@ -303,6 +303,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
   public deleteConversation(input: ConversationReferenceInput): Promise<void> {
     return this.desktopBridge.deleteConversation(input);
   }
+  public deleteConversationUndoable(input: ConversationReferenceInput): Promise<void> {
+    return this.desktopBridge.deleteConversationUndoable(input);
+  }
+  public restoreDeletedConversation(input: ConversationReferenceInput): Promise<void> {
+    return this.desktopBridge.restoreDeletedConversation(input);
+  }
 
   public deleteConfigurationWorkspaceEntry(
     input: DeleteConfigurationWorkspaceEntryInput,
@@ -510,6 +516,10 @@ export class DesktopAgentClientAdapter implements AgentClient {
 
   public listConversations(): Promise<ConversationSummary[]> {
     return this.desktopBridge.listConversations();
+  }
+
+  public listConversationHierarchy(): Promise<ConversationSummary[]> {
+    return this.desktopBridge.listConversationHierarchy();
   }
 
   public listConversationForks(

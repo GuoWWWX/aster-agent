@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useUndoStore } from "../../stores/undo-store.js";
 
 import type { ConversationSummary } from "@agent/protocol";
 
@@ -27,7 +28,7 @@ export type ProjectSessionsController = {
   isLoadingSessions: boolean;
   operationError: string | null;
   refreshSessions(): Promise<void>;
-  markSessionResultViewed(sessionId: string): void;
+  markSessionResultViewed(sessionId: string, onlySelected?: boolean): void;
   renameSession(sessionId: string, title: string): Promise<boolean>;
   reorderSessions(sessionIds: string[]): Promise<boolean>;
   sessions: ProjectSession[];
@@ -67,27 +68,14 @@ function toProjectSession(conversation: ConversationSummary): ProjectSession {
 }
 
 async function listSessionHierarchy(agentClient: AgentClient): Promise<ProjectSession[]> {
-  const conversations = await agentClient.listConversations();
-  const discovered = new Map(conversations.map((conversation) => [conversation.id, conversation]));
-  const pending = [...conversations];
-  while (pending.length > 0) {
-    const parent = pending.shift();
-    if (parent === undefined) continue;
-    const children = await agentClient.listConversationForks({ conversationId: parent.id });
-    for (const child of children) {
-      if (discovered.has(child.id)) continue;
-      discovered.set(child.id, child);
-      pending.push(child);
-    }
-  }
-  return [...discovered.values()].map(toProjectSession);
+  return (await agentClient.listConversationHierarchy()).map(toProjectSession);
 }
 
 export function useProjectSessions(
   agentClient: AgentClient,
   activeProjectId: string | null,
 ): ProjectSessionsController {
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<string | null | undefined>(undefined);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [isLoadingSessions, setIsLoadingSessions] = useState(true);
   const [operationError, setOperationError] = useState<string | null>(null);
@@ -112,7 +100,7 @@ export function useProjectSessions(
   const currentSessions = activeProjectId === null ? temporarySessions : activeProjectSessions;
   const activeSession = useMemo(
     () =>
-      sessionsWithSideConversationState.find(
+      activeSessionId === null ? null : sessionsWithSideConversationState.find(
         (session) => !session.isArchived && session.id === activeSessionId,
       ) ??
       currentSessions[0] ??
@@ -130,8 +118,8 @@ export function useProjectSessions(
   }, [sessions]);
 
   const markSessionResultViewed = useCallback(
-    async (sessionId: string): Promise<void> => {
-      const familyIds = getSessionFamilyResultIds(sessionsRef.current, sessionId);
+    async (sessionId: string, onlySelected = false): Promise<void> => {
+      const familyIds = onlySelected ? [sessionId] : getSessionFamilyResultIds(sessionsRef.current, sessionId);
       const familyIdSet = new Set(familyIds);
       if (!sessionsRef.current.some(
         (session) => familyIdSet.has(session.id) && session.hasUnreadResult,
@@ -169,12 +157,28 @@ export function useProjectSessions(
   }, [loadSessions]);
 
   useEffect(() => {
+    const refreshOnFocus = (): void => {
+      void loadSessions();
+    };
+    window.addEventListener("focus", refreshOnFocus);
+    return () => window.removeEventListener("focus", refreshOnFocus);
+  }, [loadSessions]);
+
+  useEffect(() => {
     return agentClient.onConversationRunEvent((event) => {
       if (event.type === "run.started") {
+        if (!sessionsRef.current.some((session) => session.id === event.conversationId)) {
+          void loadSessions();
+          return;
+        }
         setSessions((current) => updateSessionRunState(current, event));
         return;
       }
       if (event.type === "run.finished") {
+        if (!sessionsRef.current.some((session) => session.id === event.conversationId)) {
+          void loadSessions();
+          return;
+        }
         setSessions((current) => updateSessionRunState(current, event));
         return;
       }
@@ -196,7 +200,7 @@ export function useProjectSessions(
         );
       });
     });
-  }, [agentClient]);
+  }, [agentClient, loadSessions]);
 
   const createSession = useCallback(async (projectId: string | null): Promise<void> => {
     if (isCreatingSession) {
@@ -309,10 +313,17 @@ export function useProjectSessions(
   ): Promise<boolean> => {
     setOperationError(null);
     try {
+      const previous = sessions.find((session) => session.id === sessionId);
       updateSession(await agentClient.setConversationArchived({
         archived,
         conversationId: sessionId,
       }));
+      if (previous !== undefined && previous.isArchived !== archived) {
+        useUndoStore.getState().push({ label: archived ? "归档对话" : "恢复对话",
+          undo: async () => { updateSession(await agentClient.setConversationArchived({ conversationId: sessionId, archived: previous.isArchived })); },
+          redo: async () => { updateSession(await agentClient.setConversationArchived({ conversationId: sessionId, archived })); },
+        });
+      }
       if (archived && activeSessionIdRef.current === sessionId) {
         activeSessionIdRef.current = null;
         setActiveSessionId(null);
@@ -322,12 +333,16 @@ export function useProjectSessions(
       setOperationError(archived ? "无法归档对话" : "无法恢复对话");
       return false;
     }
-  }, [agentClient, updateSession]);
+  }, [agentClient, updateSession, sessions]);
 
   const deleteSession = useCallback(async (sessionId: string): Promise<boolean> => {
     setOperationError(null);
     try {
-      await agentClient.deleteConversation({ conversationId: sessionId });
+      await agentClient.deleteConversationUndoable({ conversationId: sessionId });
+      useUndoStore.getState().push({ label: "删除对话",
+        undo: async () => { await agentClient.restoreDeletedConversation({ conversationId: sessionId }); await loadSessions(); },
+        redo: async () => { await agentClient.deleteConversationUndoable({ conversationId: sessionId }); await loadSessions(); },
+      });
       setSessions((current) => current.filter(
         (session) =>
           session.id !== sessionId && session.parentConversationId !== sessionId,
@@ -341,7 +356,7 @@ export function useProjectSessions(
       setOperationError("无法删除对话");
       return false;
     }
-  }, [agentClient]);
+  }, [agentClient, loadSessions]);
 
   const selectSession = useCallback(
     (sessionId: string): void => {

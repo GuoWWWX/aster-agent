@@ -54,6 +54,7 @@ import type {
 } from "@agent/protocol";
 
 import { WorkbenchPanel } from "../../components/layout/panel.js";
+import { NavigatorPages, NavigatorFooter } from "../../components/layout/navigator-actions.js";
 import { IconButton } from "../../components/ui/icon-button.js";
 import {
   Popover,
@@ -81,6 +82,7 @@ import { AgentAvatar } from "../team/agent-avatar.js";
 import "./project-navigator.css";
 
 type ProjectNavigatorProps = {
+  onOpenGlobalSearch?: () => void;
   activeSessionId: string | null;
   agents: AgentProfile[];
   isCreatingSession: boolean;
@@ -115,8 +117,8 @@ type ProjectNavigatorProps = {
   onRenameSession: (sessionId: string, title: string) => Promise<boolean>;
   onReorderSessions: (sessionIds: string[]) => Promise<boolean>;
   onReorderTeamInstances: (teamInstanceIds: string[]) => Promise<boolean>;
-  onSelectProject: (projectId: string) => void;
   onSelectSession: (sessionId: string) => void;
+  onKeepSession?: (sessionId: string) => void;
   onSetSessionArchived: (sessionId: string, archived: boolean) => Promise<boolean>;
   onSetSessionPinned: (sessionId: string, pinned: boolean) => Promise<boolean>;
   onSetTeamInstanceArchived: (
@@ -329,6 +331,7 @@ export type ProjectNavigatorLocateRequest = {
 };
 
 export function ProjectNavigator({
+  onOpenGlobalSearch,
   activeSessionId,
   agents,
   isCreatingSession,
@@ -355,8 +358,8 @@ export function ProjectNavigator({
   onRenameTeamInstance,
   onReorderSessions,
   onReorderTeamInstances,
-  onSelectProject,
   onSelectSession,
+  onKeepSession,
   onSetSessionArchived,
   onSetSessionPinned,
   onSetTeamInstanceArchived,
@@ -364,6 +367,7 @@ export function ProjectNavigator({
   const activeProjectId = tree.activeProject?.id ?? null;
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [initialExpansionState] = useState(loadNavigatorExpansionState);
+  const [projectSessionLimits, setProjectSessionLimits] = useState<Record<string, number>>({});
   const [expandedProjectIds, setExpandedProjectIds] = useState<ReadonlySet<string>>(
     () => new Set(initialExpansionState.expandedProjectIds),
   );
@@ -567,6 +571,7 @@ export function ProjectNavigator({
   }, [locateRequest, sessions]);
 
   const toggleProjectExpansion = (projectId: string, isExpanded: boolean) => {
+    if (isExpanded) setProjectSessionLimits((current) => ({ ...current, [projectId]: 5 }));
     setExpandedProjectIds((current) => {
       const next = new Set(current);
       if (isExpanded) {
@@ -936,6 +941,7 @@ export function ProjectNavigator({
                 setExpandedSessionIds(new Set());
                 setExpandedTeamIds(new Set());
                 setCollapsedProjectIds(new Set(tree.projects.map((project) => project.id)));
+                setProjectSessionLimits({});
                 setIsPinnedGroupExpanded(false);
                 setIsTemporaryGroupExpanded(false);
               }
@@ -950,7 +956,9 @@ export function ProjectNavigator({
         </div>
 
         <label className="project-navigator__search app-search-field">
-        <Search aria-hidden="true" size={14} />
+        {onOpenGlobalSearch === undefined ? <Search aria-hidden="true" size={14} /> : (
+          <IconButton label="搜索所有对话" tooltip="搜索对话正文（Ctrl+Shift+F）" size="compact" onClick={onOpenGlobalSearch}><Search aria-hidden="true" size={14} /></IconButton>
+        )}
         <input
           aria-label="搜索项目、团队或对话"
           placeholder="搜索项目、团队或对话"
@@ -985,6 +993,7 @@ export function ProjectNavigator({
         ) : null}
       </header>
 
+      <NavigatorPages />
       <div className="project-navigator__body" ref={bodyRef}>
         {tree.isLoadingProjects || isLoadingSessions ? (
           <NavigatorEmpty label="正在读取项目…" loading />
@@ -1049,6 +1058,7 @@ export function ProjectNavigator({
                       }, visiblePinnedSessions.map((candidate) => candidate.id))}
                       onPin={(pinned) => void onSetSessionPinned(session.id, pinned)}
                       onSelect={onSelectSession}
+                      {...(onKeepSession === undefined ? {} : { onKeep: onKeepSession })}
                       onToggleSubagents={() => toggleSessionExpansion(session.id)}
                     />
                   ))}
@@ -1115,7 +1125,7 @@ export function ProjectNavigator({
                     sortOption,
                     (session) => session.title,
                   );
-                  const visibleSessions =
+                  const matchingSessions =
                     normalizedQuery.length === 0
                       ? projectSessions
                       : projectSessions.filter((session) =>
@@ -1124,6 +1134,14 @@ export function ProjectNavigator({
                             normalizedQuery,
                           ),
                         );
+                  const sessionLimit = projectSessionLimits[project.id] ?? 5;
+                  const visibleSessions = normalizedQuery.length > 0 ? matchingSessions : matchingSessions.filter(
+                    (session, index) => index < sessionLimit || isSessionRunning(session)
+                      || hasUnreadSessionResult(session)
+                      || session.id === activeSessionId
+                      || (locateRequest?.kind === "session" && locateRequest.id === session.id),
+                  );
+                  const hiddenSessionCount = matchingSessions.length - visibleSessions.length;
                   const isExpanded =
                     isProjectExpanded(project.id);
                   const projectGroupKey = `project:${project.isPinned === true ? "pinned" : "regular"}`;
@@ -1187,10 +1205,7 @@ export function ProjectNavigator({
                           data-navigator-key={`project:${project.id}`}
                           title={project.rootPath}
                           type="button"
-                          onClick={() => {
-                            toggleProjectExpansion(project.id, isExpanded);
-                            onSelectProject(project.id);
-                          }}
+                          onClick={() => toggleProjectExpansion(project.id, isExpanded)}
                           onContextMenu={(event) =>
                             openContextMenu(event, { kind: "project", project })
                           }
@@ -1309,11 +1324,12 @@ export function ProjectNavigator({
                                   groupKey: `session:project:${project.id}`,
                                   id: session.id,
                                   kind: "session",
-                                }, visibleSessions.map((candidate) => candidate.id))}
+                                }, matchingSessions.map((candidate) => candidate.id))}
                                 onPin={(pinned) =>
                                   void onSetSessionPinned(session.id, pinned)
                                 }
                                 onSelect={onSelectSession}
+                                {...(onKeepSession === undefined ? {} : { onKeep: onKeepSession })}
                                 onCreateTeam={() => openCreateTeamDialog(
                                   "conversation",
                                   project.id,
@@ -1335,6 +1351,16 @@ export function ProjectNavigator({
                               />
                             ))
                           )}
+                          {hiddenSessionCount > 0 ? (
+                            <button
+                              type="button"
+                              className="project-navigator__start-session"
+                              onClick={() => setProjectSessionLimits((current) => ({ ...current, [project.id]: sessionLimit * 2 }))}
+                            >
+                              <ChevronDown aria-hidden="true" size={14} />
+                              <span>显示更多（还有 {hiddenSessionCount} 条）</span>
+                            </button>
+                          ) : null}
                         </div>
                       ) : null}
                     </li>
@@ -1495,6 +1521,7 @@ export function ProjectNavigator({
                       }, visibleTemporarySessions.map((candidate) => candidate.id))}
                       onPin={(pinned) => void onSetSessionPinned(session.id, pinned)}
                       onSelect={onSelectSession}
+                      {...(onKeepSession === undefined ? {} : { onKeep: onKeepSession })}
                       onToggleSubagents={() => toggleSessionExpansion(session.id)}
                     />
                   ))}
@@ -1562,6 +1589,7 @@ export function ProjectNavigator({
         />,
         document.body,
       ) : null}
+      <NavigatorFooter />
       {dialog !== null ? createPortal(
         <NavigatorManagementDialog
           dialog={dialog}
@@ -1800,6 +1828,7 @@ type SessionButtonProps = {
   onDrop: (event: DragEvent<HTMLDivElement>) => void;
   onPin: (pinned: boolean) => void;
   onSelect: (sessionId: string) => void;
+  onKeep?: (sessionId: string) => void;
 };
 
 function hasUnreadSessionResult(session: ProjectSession): boolean {
@@ -1953,6 +1982,7 @@ function SessionButton({
   onDragStart,
   onDrop,
   onSelect,
+  onKeep,
 }: SessionButtonProps & {
   onCreateTeam?: () => void;
 }): ReactElement {
@@ -1982,6 +2012,7 @@ function SessionButton({
         title={statusLabel === null ? session.title : `${session.title} · ${statusLabel}`}
         type="button"
         onClick={() => onSelect(session.id)}
+        onDoubleClick={() => onKeep?.(session.id)}
         onContextMenu={onContextMenu}
       >
         {session.threadKind === "team_lead" ? (
@@ -2292,7 +2323,7 @@ function NavigatorManagementDialog({
   const description = dialog.kind === "remove-project"
     ? `将从工作区移除“${dialog.project.name}”，并删除本软件中的相关对话记录。磁盘文件不会被删除。`
     : dialog.kind === "delete-session"
-      ? `将永久删除“${dialog.session.title}”及其对话记录。`
+      ? `将删除“${dialog.session.title}”及其对话记录。本次软件运行期间可通过左上角撤销；关闭软件后无法撤销。`
       : dialog.kind === "delete-team-instance"
         ? `将删除团队“${dialog.instance.name}”。现有对话与执行记录会保留用于审计。`
       : null;

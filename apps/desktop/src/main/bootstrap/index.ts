@@ -55,6 +55,8 @@ import { WorkspaceBrowserTabController } from "../tools/workspace-browser-tab-co
 import { BrowserToolPlugin } from "../plugins/browser-tool-plugin.js";
 import { createMainWindow } from "../windows/main-window.js";
 import { ManagedBrowserController } from "../windows/managed-browser-controller.js";
+import { parseBackendSendCommand } from "./backend-command.js";
+import { dispatchBackendSendCommand as submitBackendSendCommand } from "./backend-command-dispatch.js";
 
 type DesktopServices = {
   agentRuntime: AgentRuntime;
@@ -91,6 +93,7 @@ let mainWindow: BrowserWindow | undefined;
 let disposeIpcHandlers: (() => void) | undefined;
 let services: DesktopServices | undefined;
 let archivedConversationCleanupTimer: ReturnType<typeof setInterval> | undefined;
+
 
 const ARCHIVED_CONVERSATION_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 loadLocalEnvironment();
@@ -509,9 +512,20 @@ function focusMainWindow(): void {
   window.focus();
 }
 
+function dispatchBackendSendCommand(commandLine: readonly string[]): void {
+  const command = parseBackendSendCommand(commandLine);
+  if (command === undefined || services === undefined) return;
+  try {
+    console.log(`[backend-command] submitted ${submitBackendSendCommand(command, services.agentRuntime, sendConversationRunEvent)}`);
+  } catch (error) {
+    reportUnhandledError(error, "backend_command.send_message");
+  }
+}
+
 if (hasSingleInstanceLock) {
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, commandLine) => {
     focusMainWindow();
+    dispatchBackendSendCommand(commandLine);
   });
 }
 
@@ -542,6 +556,7 @@ async function bootstrap(): Promise<void> {
   archivedConversationCleanupTimer.unref();
 
   await openMainWindow();
+  dispatchBackendSendCommand(process.argv);
 
   const credentialWarnings = services.credentials.getCredentialMigrationWarnings();
   if (credentialWarnings.length > 0 && mainWindow !== undefined) {

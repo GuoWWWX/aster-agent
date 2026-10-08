@@ -1,4 +1,5 @@
 import { QueryTextarea } from "./query-textarea.js";
+import { useComposerHistory } from "./use-composer-history.js";
 import { ProjectImageResult } from "./project-image-result.js";
 import { ToolDisclosureContext, useToolDisclosure } from "./tool-disclosure-state.js";
 import { findComposerReferenceRanges } from "./composer-reference-ranges.js";
@@ -156,7 +157,6 @@ import { ConversationProjectPicker } from "../projects/conversation-project-pick
 import { ModelProfilePicker } from "../settings/model-profile-picker.js";
 import { SettingsWorkspace } from "../settings/settings-workspace.js";
 import { reasoningOptionDisplayName } from "../settings/model-reasoning-options.js";
-import { TaskWorkspace } from "../tasks/task-workspace.js";
 import { AgentAvatar, SubagentAvatar } from "../team/agent-avatar.js";
 import { ToolConversationContext, ToolConversationIdentity, toolConversationTarget } from "./tool-conversation-identity.js";
 import { TeamWorkspace } from "../team/team-workspace.js";
@@ -769,8 +769,8 @@ export function WorkspaceContent({
     protectedSessionIds,
   );
 
-  if (activeActivity === "team") {
-    return (
+  return <>
+    {activeActivity === "team" || activeActivity === "tasks" ? (
       <TeamWorkspace
         agentClient={agentClient}
         projects={projects}
@@ -779,32 +779,17 @@ export function WorkspaceContent({
           onNavigateToConversation: onNavigateToTeamConversation,
         })}
       />
-    );
-  }
-
-  if (activeActivity === "tasks") {
-    return <TaskWorkspace activeProject={activeProject} />;
-  }
-
-  if (activeActivity === "settings") {
-    return <SettingsWorkspace agentClient={agentClient} />;
-  }
-
-  if (activeSession === null) {
-    return (
+    ) : activeActivity === "settings" ? <SettingsWorkspace agentClient={agentClient} /> : activeSession === null ? (
       <ProjectConversationEmpty
         activeProject={activeProject}
         isCreatingSession={isCreatingSession}
         onCreateProjectSession={onCreateProjectSession}
         onCreateTemporarySession={onCreateTemporarySession}
       />
-    );
-  }
-
-  return (
-    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+    ) : null}
+    <div className={activeActivity === "conversations" && activeSession !== null ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"}>
       {retainedSessions.map((session) => {
-        const isActive = session.id === activeSession.id;
+        const isActive = activeActivity === "conversations" && session.id === activeSession?.id;
         const conversationProject = session.projectId === null
           ? null
           : projects.find((project) => project.id === session.projectId) ?? null;
@@ -855,7 +840,7 @@ export function WorkspaceContent({
         );
       })}
     </div>
-  );
+  </>;
 }
 
 export function ConversationWorkspace({
@@ -942,6 +927,7 @@ export function ConversationWorkspace({
     ),
   );
   const [composerValue, setComposerValue] = useState("");
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [forkingMessageId, setForkingMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -963,6 +949,15 @@ export function ConversationWorkspace({
   } | null>(null);
   const [slashQuery, setSlashQuery] = useState<MentionQuery | null>(null);
   const [slashSkills, setSlashSkills] = useState<SkillConfiguration[]>([]);
+  const composerHistory = useComposerHistory({ composerValue, selectedConversationMentions,
+    selectedTeamMentions, selectedProjectFileMentions }, (snapshot) => {
+    setComposerValue(snapshot.composerValue);
+    setSelectedConversationMentions(snapshot.selectedConversationMentions);
+    setSelectedTeamMentions(snapshot.selectedTeamMentions);
+    setSelectedProjectFileMentions(snapshot.selectedProjectFileMentions);
+    setMentionQuery(null);
+    setSlashQuery(null);
+  }, composerRef, session.id, agentClient);
   const [toolDisclosureChoices] = useState(() => new Map<string, boolean>());
   const [draftAttachments, setDraftAttachments] = useState<ConversationAttachment[]>([]);
   const [draftAttachmentPreviewUrls, setDraftAttachmentPreviewUrls] = useState<
@@ -1052,7 +1047,6 @@ export function ConversationWorkspace({
   const locatedTimelineRequestIdRef = useRef<number | null>(null);
   const locatedTimelineLoadRequestRef = useRef<number | null>(null);
   const shouldStickToBottomRef = useRef(true);
-  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const copiedMessageTimeoutRef = useRef<number | null>(null);
   const rememberDraftAttachmentPreview = useCallback((attachmentId: string, url: string): void => {
     draftAttachmentPreviewUrlsRef.current = {
@@ -1733,6 +1727,22 @@ export function ConversationWorkspace({
   }, [session.activeRunId, session.id]);
 
   useEffect(() => {
+    const runId = session.activeRunId;
+    if (runId === null || timeline.length === 0) return;
+    const startedAt = timeline
+      .filter((item) => "runId" in item && item.runId === runId)
+      .map((item) => Date.parse(item.createdAt))
+      .filter(Number.isFinite)
+      .sort((left, right) => left - right)[0];
+    if (startedAt === undefined) return;
+    setRunProgresses((current) => current.map((progress) =>
+      progress.runId === runId && progress.startedAt !== startedAt
+        ? { ...progress, startedAt }
+        : progress,
+    ));
+  }, [session.activeRunId, timeline]);
+
+  useEffect(() => {
     return agentClient.onConversationRunEvent((event) => {
       const sourceSubagent = "conversationId" in event
         ? subagentSessions.find((candidate) => candidate.id === event.conversationId)
@@ -1905,6 +1915,25 @@ export function ConversationWorkspace({
     const animationFrame = window.requestAnimationFrame(restoreScrollPosition);
     return () => window.cancelAnimationFrame(animationFrame);
   }, [active, isLoadingTimeline]);
+
+  const markVisibleResult = useCallback((): void => {
+    const messages = messagesRef.current;
+    if (active && !isLoadingTimeline && session.hasUnreadResult
+      && document.visibilityState === "visible" && document.hasFocus() && messages !== null
+      && messages.clientHeight > 0 && isConversationScrolledToBottom(messages)) onViewed?.();
+  }, [active, isLoadingTimeline, onViewed, session.hasUnreadResult]);
+
+  useEffect(() => {
+    if (!active || isLoadingTimeline || !session.hasUnreadResult) return;
+    const frame = window.requestAnimationFrame(markVisibleResult);
+    window.addEventListener("focus", markVisibleResult);
+    document.addEventListener("visibilitychange", markVisibleResult);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("focus", markVisibleResult);
+      document.removeEventListener("visibilitychange", markVisibleResult);
+    };
+  }, [active, isLoadingTimeline, isScrolledAwayFromBottom, markVisibleResult, session.hasUnreadResult]);
 
   useLayoutEffect(() => {
     const messages = messagesRef.current;
@@ -3043,10 +3072,10 @@ export function ConversationWorkspace({
       className="conversation-workspace"
       aria-labelledby={headingId}
       data-compact={String(compact)}
-      onInputCapture={onViewed}
-      onKeyDownCapture={onViewed}
-      onPointerDownCapture={onViewed}
-      onWheelCapture={onViewed}
+      onInputCapture={markVisibleResult}
+      onKeyDownCapture={markVisibleResult}
+      onPointerDownCapture={markVisibleResult}
+      onWheelCapture={markVisibleResult}
     >
       <header className="conversation-workspace__header">
         <div className="conversation-workspace__path" aria-label="对话路径">
@@ -3600,6 +3629,7 @@ export function ConversationWorkspace({
                 </div>
               ) : null}
               <QueryTextarea
+                onFocus={composerHistory.onFocus}
                 textareaRef={composerRef}
                 aria-label="输入任务"
                 query={mentionQuery ?? slashQuery}
@@ -3650,7 +3680,7 @@ export function ConversationWorkspace({
                     : null);
                   setMentionSelectionIndex(0);
                 }}
-                onKeyDown={handleComposerKeyDown}
+                onKeyDown={(event) => { if (!composerHistory.onKeyDown(event)) handleComposerKeyDown(event); }}
                 onPaste={handlePasteAttachments}
               />
             </div>
@@ -6469,7 +6499,10 @@ function RunActivityTimelineItem({
   liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
 }): ReactElement {
   const isActive = activeRunId !== null && item.runIds.includes(activeRunId);
-  const [isExpanded, setIsExpanded] = useToolDisclosure(item.id);
+  const [isExpanded, setIsExpanded] = useToolDisclosure(item.id, [], isActive || runProgress !== null);
+  useEffect(() => {
+    if (!isActive && runProgress === null) setIsExpanded(false);
+  }, [isActive, runProgress, setIsExpanded]);
   const [now, setNow] = useState(() => Date.now());
   const contentId = useId();
   useEffect(() => {
@@ -6630,14 +6663,24 @@ function ToolBatchTimelineItem({
   ) => Promise<void>;
   liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
 }): ReactElement {
-  const [isExpanded, setIsExpanded] = useToolDisclosure(item.id, item.tools.map((tool) => tool.id));
+  const [isExpanded, setIsExpanded] = useToolDisclosure(item.id, item.tools.map((tool) => tool.id), item.tools.some((tool) => tool.status === "running" || tool.status === "awaiting_approval"));
+  const hasActiveTool = item.tools.some((tool) => tool.status === "running" || tool.status === "awaiting_approval");
+  useEffect(() => {
+    if (!hasActiveTool) setIsExpanded(false);
+  }, [hasActiveTool, setIsExpanded]);
   const hasFailure = item.tools.some((tool) =>
     toolItemHasFailure(tool) || approvalErrors[tool.id] !== undefined
   );
-  const label = modelActivity === null
+  const batchLabel = modelActivity === null
     ? toolBatchLabel(item.tools, teamManaged)
     : modelActivityLabel(modelActivity);
+  const currentTool = latestActiveTool(item.tools);
+  const currentToolLabel = currentTool === null || isExpanded
+    ? null
+    : toolBatchCurrentToolLabel(item.tools, teamManaged);
+  const label = batchLabel;
   const toggleLabel = isExpanded ? "收起本轮工具调用" : "展开本轮工具调用";
+  const headerLabel = currentToolLabel === null ? label : `${label} · ${currentToolLabel}`;
 
   return (
     <section className="tool-activity-batch" data-status={hasFailure ? "failed" : undefined}>
@@ -6645,14 +6688,25 @@ function ToolBatchTimelineItem({
         <span className="tool-activity-batch__identity">
           <button
             aria-expanded={isExpanded}
-            aria-label={`${toggleLabel}：${label}`}
+            aria-label={`${toggleLabel}：${headerLabel}`}
             className="inline-flex min-w-0 flex-[0_1_auto] cursor-pointer items-center gap-[7px] overflow-hidden border-0 bg-transparent p-0 text-left text-[var(--app-muted-foreground)] transition-colors hover:text-[var(--app-foreground)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1 [font:inherit]"
-            title={toggleLabel}
+            title={headerLabel}
             type="button"
             onClick={() => setIsExpanded((current) => !current)}
           >
             <ToolTypeIcon name={representativeToolName(item.tools)} />
             <span>{label}</span>
+            {currentToolLabel === null ? null : (
+              <span
+                aria-live="polite"
+                className={currentTool?.status === "awaiting_approval"
+                  ? "tool-activity-batch__execution tool-activity-batch__execution--approval"
+                  : "tool-activity-batch__execution"}
+                title={currentToolLabel}
+              >
+                · {currentToolLabel}
+              </span>
+            )}
           </button>
           {hasFailure ? <span className="tool-activity-batch__status">有失败项</span> : null}
           <button
@@ -6937,7 +6991,7 @@ function ToolTimelineItem({
             onOpenProjectFile={onOpenProjectFile}
             onToggle={() => setIsExpanded((current) => !current)}
           />
-          {effectiveStatus === "running" ? <ToolExecutionTimer /> : null}
+          {effectiveStatus === "running" ? <ToolExecutionTimer startedAt={Date.parse(item.createdAt)} /> : null}
           {effectiveStatus !== "completed" && effectiveStatus !== "running" ? (
             <span className="tool-timeline-item__status-label">
               {toolStatusLabel(effectiveStatus)}
@@ -7028,21 +7082,19 @@ function ToolTimelineItem({
   );
 }
 
-function ToolExecutionTimer(): ReactElement {
-  const startedAtRef = useRef<number | null>(null);
+function ToolExecutionTimer({ startedAt }: { startedAt: number }): ReactElement {
+  const startedAtRef = useRef<number>(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   useEffect(() => {
-    startedAtRef.current = Date.now();
+    startedAtRef.current = Number.isFinite(startedAt) ? startedAt : Date.now();
     const updateElapsed = (): void => {
-      const startedAt = startedAtRef.current;
-      if (startedAt === null) return;
-      setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1_000)));
+      setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAtRef.current) / 1_000)));
     };
     updateElapsed();
     const timerId = window.setInterval(updateElapsed, 1_000);
     return () => window.clearInterval(timerId);
-  }, []);
+  }, [startedAt]);
 
   return (
     <span
@@ -7571,6 +7623,28 @@ export function toolBatchLabel(
     ));
 
   return labels.length > 0 ? labels.join("，") : `调用了 ${tools.length} 个工具`;
+}
+
+function isActiveTool(item: ConversationToolItem): boolean {
+  return item.status === "running" || item.status === "awaiting_approval";
+}
+
+/** Returns the last active tool in display order for a collapsed batch summary. */
+export function latestActiveTool(
+  tools: readonly ConversationToolItem[],
+): ConversationToolItem | null {
+  return tools.findLast(isActiveTool) ?? null;
+}
+
+/** Describes the tool that is currently holding a collapsed batch open. */
+export function toolBatchCurrentToolLabel(
+  tools: readonly ConversationToolItem[],
+  teamManaged = false,
+): string | null {
+  const activeTool = latestActiveTool(tools);
+  if (activeTool === null) return null;
+  const state = activeTool.status === "awaiting_approval" ? "等待审批" : "正在执行";
+  return `${state}：${toolActivityLabel(activeTool, teamManaged)}`;
 }
 
 /** Returns a mode only when the whole visible batch shares one scheduler mode. */

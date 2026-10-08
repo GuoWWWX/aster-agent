@@ -34,6 +34,44 @@ afterEach(() => {
 });
 
 describe("AppShell", () => {
+  it("keeps the right toggle visible but disabled when the page has no right workspace", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() => root?.render(<TooltipProvider><AppShell agentClient={new MockAgentClient()}
+      filePanel={null} mainContent={null} projectNavigator={null} /></TooltipProvider>));
+    const toggle = () => container.querySelector<HTMLButtonElement>('[aria-label="展开右侧工作区"]');
+    expect(toggle()?.disabled).toBe(true);
+    act(() => useWorkbenchUiStore.getState().setActiveActivity("settings"));
+    expect(toggle()?.disabled).toBe(true);
+    act(() => useWorkbenchUiStore.getState().setActiveActivity("team"));
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="收起右侧工作区"]')?.disabled).toBe(false);
+  });
+  it("temporarily reveals the collapsed navigator on edge hover without changing the saved layout", () => {
+    vi.useFakeTimers();
+    try {
+      useWorkbenchUiStore.setState({ isProjectNavigatorOpen: false });
+      const container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+      act(() => root?.render(<TooltipProvider><AppShell agentClient={new MockAgentClient()}
+        filePanel={null} mainContent={<div>内容</div>} projectNavigator={<div>对话树</div>} /></TooltipProvider>));
+      const edge = container.querySelector("[data-navigator-hover-edge]")!;
+      act(() => { edge.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); vi.advanceTimersByTime(180); });
+      const panel = container.querySelector("[data-navigator-peek]")!;
+      expect(panel).not.toBeNull();
+      expect(useWorkbenchUiStore.getState().isProjectNavigatorOpen).toBe(false);
+      act(() => { panel.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body })); vi.advanceTimersByTime(150); });
+      act(() => { panel.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: document.body })); vi.advanceTimersByTime(300); });
+      expect(container.querySelector("[data-navigator-peek]")).not.toBeNull();
+      act(() => { panel.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body })); vi.advanceTimersByTime(280); });
+      expect(container.querySelector(".workbench-sidebar--left")).toBeNull();
+      act(() => useWorkbenchUiStore.getState().setProjectNavigatorOpen(true));
+      const pinned = container.querySelector(".workbench-sidebar--left")!;
+      act(() => { pinned.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body })); vi.advanceTimersByTime(500); });
+      expect(container.querySelector(".workbench-sidebar--left")).not.toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
   it("supports fixed-width scrolling and all titlebar tab close actions", async () => {
     const onCloseAll = vi.fn();
     const onClose = vi.fn();
@@ -117,13 +155,10 @@ describe("AppShell", () => {
     expect(titlebar?.dataset.appDragRegion).toBe("true");
     expect(leadingDragRegion?.dataset.appDragRegion).toBe("true");
     expect(trailingDragRegion?.dataset.appDragRegion).toBe("true");
-    expect(container.querySelector<HTMLElement>(".activity-bar")
-      ?.dataset.appDragRegion).toBe("true");
-    expect(container.querySelector<HTMLElement>(".activity-bar__spacer")
-      ?.dataset.appDragRegion).toBe("true");
+    expect(container.querySelector(".activity-bar")).toBeNull();
     expect(leadingDragRegion?.style.getPropertyValue(
       "--app-titlebar-conversation-leading-width",
-    )).toBe("319px");
+    )).toBe("124px");
 
     const idleTab = container.querySelector<HTMLButtonElement>('[role="tab"]');
     const openIdleTabMenu = (): void => {
@@ -164,7 +199,7 @@ describe("AppShell", () => {
     act(() => useWorkbenchUiStore.getState().setProjectNavigatorOpen(false));
     expect(leadingDragRegion?.style.getPropertyValue(
       "--app-titlebar-conversation-leading-width",
-    )).toBe("26px");
+    )).toBe("0px");
 
     const tabList = container.querySelector<HTMLElement>(
       ".app-titlebar__conversation-tabs",
@@ -495,8 +530,8 @@ describe("AppShell", () => {
     expect(rightPanel()?.style.width).toBe("960px");
   });
 
-  it("opens global conversation search from the activity bar", () => {
-    const onOpenGlobalSearch = vi.fn();
+  it("keeps the navigator and its toggle available on settings pages", async () => {
+    useWorkbenchUiStore.getState().setSettings();
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -507,13 +542,14 @@ describe("AppShell", () => {
           filePanel={<div />}
           mainContent={<div />}
           projectNavigator={<div />}
-          onOpenGlobalSearch={onOpenGlobalSearch}
         />
       </TooltipProvider>,
     ));
 
-    act(() => container.querySelector<HTMLButtonElement>('[aria-label="搜索所有对话"]')?.click());
-
-    expect(onOpenGlobalSearch).toHaveBeenCalledOnce();
+    await act(async () => Promise.resolve());
+    expect(container.querySelector('.workbench-sidebar--left')).not.toBeNull();
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="收起对话列表"]')?.click());
+    expect(container.querySelector('.workbench-sidebar--left')).toBeNull();
+    expect(container.querySelector('[aria-label="展开对话列表"]')).not.toBeNull();
   });
 });
