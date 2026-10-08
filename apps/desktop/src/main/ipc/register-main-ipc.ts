@@ -809,9 +809,14 @@ export function registerMainIpcHandlers(
     (event, ...args: unknown[]) => {
       getTrustedWindow(event, getMainWindow);
       const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
-      return conversationSummarySchema.parse(
+      const conversation = conversationSummarySchema.parse(
         conversationLifecycle.markConversationResultViewed(input.conversationId)
       );
+      sendConversationRunEvent(getMainWindow, {
+        conversation,
+        type: "conversation.updated"
+      });
+      return conversation;
     }
   );
 
