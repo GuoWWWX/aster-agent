@@ -635,7 +635,15 @@ export function App(): ReactElement {
         activeConversationId={projectSessions.activeSessionId}
         activeTabId={activeTabId}
         titlebarActivity={<ConversationActivity agentClient={agentClient} sessions={projectSessions.sessions}
-          projects={projectTree.projects} onSelect={(id, timelineItemId) => {
+          projects={projectTree.projects} onSelect={(id, timelineItemId, ownerConversationId) => {
+            const sideSession = ownerConversationId === undefined ? undefined
+              : projectSessions.sessions.find((candidate) => candidate.id === id);
+            if (sideSession !== undefined) {
+              setActiveActivity("conversations");
+              openTeamConversation(sideSession, ownerConversationId);
+              projectSessions.markSessionResultViewed(id, true);
+              return;
+            }
             selectSession(id);
             if (timelineItemId !== undefined) setConversationLocateRequest((current) => ({
               conversationId: id,
