@@ -11,10 +11,8 @@ import {
   CirclePlus,
   Eye,
   EyeOff,
-  FileJson2,
   FolderOpen,
   Globe2,
-  ListTree,
   LoaderCircle,
   MessageSquareText,
   MonitorCog,
@@ -78,7 +76,6 @@ import {
   type TerminalShell,
   type RuntimePlatform,
   mcpServerConfigurationListSchema,
-  mcpServerConfigurationSchema,
   isReasoningOptionEnabled,
   isReasoningOptionSupportedByApiFormat,
   integrationConfigurationSchema,
@@ -253,37 +250,32 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
 
   return (
     <section className="settings-workspace" aria-labelledby="settings-workspace-heading">
-      <header className="workspace-page-header settings-workspace__header">
-        <div className="settings-workspace__title-row">
-          <h1 id="settings-workspace-heading">设置</h1>
-          <p className="workspace-page-description settings-workspace__description">
-            Agent、团队、模型、工具、权限、终端、对话和外观
-          </p>
-        </div>
-        <span className="workspace-mode-badge">修改后自动保存</span>
-      </header>
+      <h1 className="sr-only" id="settings-workspace-heading">设置</h1>
 
       <div className="settings-workspace__body">
         <nav className="settings-navigation" aria-label="设置分区">
-          {SETTINGS_NAVIGATION.map((item) => {
-            const Icon = item.icon;
-            const isActive = item.id === activeSection;
+          <div className="settings-navigation__items">
+            {SETTINGS_NAVIGATION.map((item) => {
+              const Icon = item.icon;
+              const isActive = item.id === activeSection;
 
-            return (
-              <button
-                key={item.id}
-                aria-current={isActive ? "page" : undefined}
-                className="settings-navigation__item"
-                data-active={isActive}
-                type="button"
-                onClick={() => setActiveSection(item.id)}
-              >
-                <Icon aria-hidden="true" size={16} />
-                <span>{item.label}</span>
-                <ChevronRight aria-hidden="true" size={14} />
-              </button>
-            );
-          })}
+              return (
+                <button
+                  key={item.id}
+                  aria-current={isActive ? "page" : undefined}
+                  className="settings-navigation__item"
+                  data-active={isActive}
+                  type="button"
+                  onClick={() => setActiveSection(item.id)}
+                >
+                  <Icon aria-hidden="true" size={16} />
+                  <span>{item.label}</span>
+                  <ChevronRight aria-hidden="true" size={14} />
+                </button>
+              );
+            })}
+          </div>
+          <p className="settings-navigation__note">修改后自动保存</p>
         </nav>
 
         <div className="settings-content">
@@ -1101,7 +1093,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
           <header className="settings-provider-list__heading">
             <strong>供应商</strong>
             <IconButton
-              className="settings-provider-list__add"
+              className="settings-provider-list__add text-[var(--app-foreground)]"
               label="添加供应商"
               size="compact"
               onClick={createProvider}
@@ -1844,9 +1836,7 @@ function GlobalDefaultsSettings({
 }): ReactElement {
   return (
     <section className="settings-global-configuration" aria-labelledby="global-defaults-heading">
-      <header className="settings-global-configuration__heading">
-        <h3 id="global-defaults-heading">全局配置</h3>
-      </header>
+      <h3 className="sr-only" id="global-defaults-heading">全局配置</h3>
       <div className="settings-global-configuration__body">
         {defaultModelPicker}
         <ContextCompressionSettings
@@ -2389,7 +2379,6 @@ function ConfigurationModeSwitch({
 
 function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElement {
   const state = useIntegrationConfiguration(agentClient);
-  const editorRef = useRef<HTMLElement | null>(null);
   const [mode, setMode] = useState<ConfigurationEditorMode>("visual");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [json, setJson] = useState("[]");
@@ -2429,27 +2418,6 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
         server.id === selected.id ? { ...server, ...update } : server,
       ),
     });
-  }
-
-  function replaceServer(server: McpServerConfiguration): void {
-    if (configuration === null || selected === null) return;
-    updateConfiguration({
-      ...configuration,
-      mcpServers: servers.map((candidate) => candidate.id === selected.id ? server : candidate),
-    });
-    setSelectedId(server.id);
-    state.setError(null);
-  }
-
-  function focusConfigurationPath(path: string): void {
-    const field = path.split(/[.[\]]/, 1)[0];
-    if (field === undefined || field.length === 0) return;
-    const container = editorRef.current?.querySelector<HTMLElement>(`[data-config-path="${field}"]`);
-    const target = container?.matches("input, textarea, button")
-      ? container
-      : container?.querySelector<HTMLElement>("input, textarea, button");
-    container?.scrollIntoView({ behavior: "smooth", block: "center" });
-    target?.focus();
   }
 
   function addServer(): void {
@@ -2540,15 +2508,6 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
       action={(
         <div className="settings-section-actions">
           <ConfigurationModeSwitch mode={mode} onChange={changeMode} />
-          <button
-            className="settings-secondary-button"
-            disabled={selected === null}
-            type="button"
-            onClick={openFileWorkspace}
-          >
-            <PanelRight aria-hidden="true" size={15} />
-            在右侧打开
-          </button>
         </div>
       )}
       bodyClassName="settings-section__body--flush"
@@ -2589,11 +2548,13 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
           {selected === null ? (
             <ConfigurationEmpty icon={PlugZap} label="添加 MCP Server" onAdd={addServer} />
           ) : (
-            <section ref={editorRef} className="settings-integration-editor">
+            <section className="settings-integration-editor">
               <ConfigurationEditorHeader
                 enabled={selected.enabled}
+                fileActionLabel="编辑配置文件"
                 icon={PlugZap}
                 name={selected.name}
+                onOpenFile={openFileWorkspace}
                 onToggle={(enabled) => updateServer({ enabled })}
               />
               <div className="settings-integration-editor__body">
@@ -2650,194 +2611,10 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
               />
             </section>
           )}
-          {selected === null ? null : (
-            <McpConfigurationInspector
-              key={selected.id}
-              server={selected}
-              onApply={replaceServer}
-              onSelectPath={focusConfigurationPath}
-            />
-          )}
         </div>
       )}
     </SettingsSectionHeader>
   );
-}
-
-function McpConfigurationInspector({
-  onApply,
-  onSelectPath,
-  server,
-}: {
-  onApply: (server: McpServerConfiguration) => void;
-  onSelectPath: (path: string) => void;
-  server: McpServerConfiguration;
-}): ReactElement {
-  const isDark = useWorkbenchUiStore((state) => state.themeMode === "dark");
-  const [mode, setMode] = useState<"json" | "tree">("tree");
-  const [draft, setDraft] = useState(() => JSON.stringify(server, null, 2));
-  const [error, setError] = useState<string | null>(null);
-
-  function changeMode(nextMode: "json" | "tree"): void {
-    if (nextMode === "json") setDraft(JSON.stringify(server, null, 2));
-    setError(null);
-    setMode(nextMode);
-  }
-
-  function applyJson(): void {
-    try {
-      const parsed = mcpServerConfigurationSchema.parse(JSON.parse(draft));
-      onApply(parsed);
-      setDraft(JSON.stringify(parsed, null, 2));
-      setError(null);
-      setMode("tree");
-    } catch (reason) {
-      setError(configurationParseError(reason));
-    }
-  }
-
-  return (
-    <aside className="settings-configuration-inspector" aria-label="当前 MCP 配置">
-      <header className="settings-configuration-inspector__header">
-        <div>
-          <span><ListTree aria-hidden="true" size={15} /></span>
-          <span><strong>配置结构</strong><small>{server.id}</small></span>
-        </div>
-        <div className="settings-configuration-inspector__modes" role="group" aria-label="当前 MCP 配置视图">
-          <button aria-pressed={mode === "tree"} type="button" onClick={() => changeMode("tree")}>
-            <ListTree aria-hidden="true" size={13} />
-            结构
-          </button>
-          <button aria-pressed={mode === "json"} type="button" onClick={() => changeMode("json")}>
-            <FileJson2 aria-hidden="true" size={13} />
-            JSON
-          </button>
-        </div>
-      </header>
-      {mode === "tree" ? (
-        <JsonHierarchyTree label={server.id} value={server} onSelectPath={onSelectPath} />
-      ) : (
-        <div className="settings-configuration-inspector__editor">
-          <DocumentCodeEditor
-            ariaLabel="当前 MCP JSON"
-            isDark={isDark}
-            language="json"
-            value={draft}
-            onChange={setDraft}
-            onSave={applyJson}
-          />
-          {error === null ? null : <p role="alert">{error}</p>}
-          <footer>
-            <button className="settings-primary-button" type="button" onClick={applyJson}>
-              应用到表单
-            </button>
-          </footer>
-        </div>
-      )}
-    </aside>
-  );
-}
-
-function JsonHierarchyTree({
-  label,
-  onSelectPath,
-  value,
-}: {
-  label: string;
-  onSelectPath: (path: string) => void;
-  value: unknown;
-}): ReactElement {
-  return (
-    <div className="settings-json-tree" role="tree" aria-label="MCP 配置层级">
-      <JsonHierarchyNode
-        depth={0}
-        label={label}
-        path=""
-        value={value}
-        onSelectPath={onSelectPath}
-      />
-    </div>
-  );
-}
-
-function JsonHierarchyNode({
-  depth,
-  label,
-  onSelectPath,
-  path,
-  value,
-}: {
-  depth: number;
-  label: string;
-  onSelectPath: (path: string) => void;
-  path: string;
-  value: unknown;
-}): ReactElement {
-  const [collapsed, setCollapsed] = useState(false);
-  const entries: readonly (readonly [string, unknown])[] | null = Array.isArray(value)
-    ? value.map((entry, index) => [String(index), entry] as const)
-    : value !== null && typeof value === "object"
-      ? Object.entries(value as Record<string, unknown>)
-      : null;
-  const expandable = entries !== null;
-  const summary = expandable
-    ? `${Array.isArray(value) ? "Array" : "Object"}(${entries.length})`
-    : jsonLeafSummary(value);
-
-  return (
-    <div className="settings-json-tree__node" role="treeitem" aria-expanded={expandable ? !collapsed : undefined}>
-      <div className="settings-json-tree__row" style={{ paddingLeft: `${6 + depth * 13}px` }}>
-        {expandable ? (
-          <button
-            aria-label={`${collapsed ? "展开" : "折叠"}${label}`}
-            className="settings-json-tree__toggle"
-            data-expanded={!collapsed}
-            type="button"
-            onClick={() => setCollapsed((current) => !current)}
-          >
-            <ChevronRight aria-hidden="true" size={13} />
-          </button>
-        ) : <span className="settings-json-tree__spacer" />}
-        <button
-          className="settings-json-tree__field"
-          disabled={path.length === 0}
-          title={path.length === 0 ? label : path}
-          type="button"
-          onClick={() => onSelectPath(path)}
-        >
-          <span>{label}</span>
-          <small data-kind={jsonValueKind(value)}>{summary}</small>
-        </button>
-      </div>
-      {expandable && !collapsed ? (
-        <div role="group">
-          {entries.map(([key, entry]) => (
-            <JsonHierarchyNode
-              key={`${path}:${key}`}
-              depth={depth + 1}
-              label={Array.isArray(value) ? `[${key}]` : key}
-              path={Array.isArray(value) ? `${path}[${key}]` : path.length === 0 ? key : `${path}.${key}`}
-              value={entry}
-              onSelectPath={onSelectPath}
-            />
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function jsonValueKind(value: unknown): string {
-  if (value === null) return "null";
-  if (Array.isArray(value)) return "array";
-  return typeof value;
-}
-
-function jsonLeafSummary(value: unknown): string {
-  if (typeof value === "string") return value.length === 0 ? '""' : value;
-  if (value === null) return "null";
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
-  return jsonValueKind(value);
 }
 
 function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactElement {
@@ -2988,15 +2765,6 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
             <FolderOpen aria-hidden="true" size={15} />
             添加外部目录
           </button>
-          <button
-            className="settings-secondary-button"
-            disabled={selected === null}
-            type="button"
-            onClick={openFileWorkspace}
-          >
-            <PanelRight aria-hidden="true" size={15} />
-            在右侧打开
-          </button>
         </div>
       )}
       bodyClassName="settings-section__body--flush"
@@ -3057,8 +2825,10 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
             <section className="settings-integration-editor settings-skill-metadata">
               <ConfigurationEditorHeader
                 enabled={selected.enabled}
+                fileActionLabel="编辑文档"
                 icon={Sparkles}
                 name={selected.name}
+                onOpenFile={openFileWorkspace}
                 onToggle={(enabled) => updateSkill({ enabled })}
               />
               <div className="settings-integration-editor__body">
@@ -3084,10 +2854,6 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                     : <p role="alert">{state.error}</p>}
                 </div>
                 <div className="settings-skill-metadata__actions">
-                  <button className="settings-secondary-button" type="button" onClick={openFileWorkspace}>
-                    <PanelRight aria-hidden="true" size={14} />
-                    在右侧打开
-                  </button>
                   <button className="settings-danger-button" type="button" onClick={removeSelected}>
                     <Trash2 aria-hidden="true" size={14} />
                     移除登记
@@ -3149,7 +2915,7 @@ function ConfigurationList({
       <header className="settings-integration-list__heading">
         <strong>{headingLabel}</strong>
         <IconButton
-          className="settings-integration-list__add"
+          className="settings-integration-list__add text-[var(--app-foreground)]"
           label={actionLabel}
           size="compact"
           onClick={onAdd}
@@ -3231,13 +2997,17 @@ function ConfigurationEmpty({
 
 function ConfigurationEditorHeader({
   enabled,
+  fileActionLabel,
   icon: Icon,
   name,
+  onOpenFile,
   onToggle,
 }: {
   enabled: boolean;
+  fileActionLabel: string;
   icon: LucideIcon;
   name: string;
+  onOpenFile: () => void;
   onToggle: (enabled: boolean) => void;
 }): ReactElement {
   return (
@@ -3247,6 +3017,10 @@ function ConfigurationEditorHeader({
         <p>当前配置</p>
         <h3>{name.trim() || "未命名配置"}</h3>
       </div>
+      <button className="settings-secondary-button" type="button" onClick={onOpenFile}>
+        <PanelRight aria-hidden="true" size={15} />
+        {fileActionLabel}
+      </button>
       <label className="settings-switch" data-config-path="enabled">
         <input
           aria-label={enabled ? "停用配置" : "启用配置"}
