@@ -20,7 +20,7 @@ export function useQueuedAutoSave<T, Result = T>({
   save,
   validate,
   value,
-}: QueuedAutoSaveOptions<T, Result>): { flush: () => void; state: AutoSaveState } {
+}: QueuedAutoSaveOptions<T, Result>): { flush: () => Promise<boolean>; state: AutoSaveState } {
   const [state, setState] = useState<AutoSaveState>("idle");
   const mountedRef = useRef(true);
   const latestRef = useRef({ revision, value });
@@ -69,14 +69,16 @@ export function useQueuedAutoSave<T, Result = T>({
       });
   }, []);
 
-  const flush = useCallback((): void => {
+  const flush = useCallback(async (): Promise<boolean> => {
     if (timerRef.current !== undefined) {
       window.clearTimeout(timerRef.current);
       timerRef.current = undefined;
     }
     const latest = latestRef.current;
-    if (latest.revision <= completedRevisionRef.current) return;
+    if (latest.revision <= completedRevisionRef.current) return true;
     enqueue(latest.revision, latest.value);
+    await queueRef.current;
+    return latest.revision <= completedRevisionRef.current;
   }, [enqueue]);
 
   useEffect(() => {
@@ -99,7 +101,7 @@ export function useQueuedAutoSave<T, Result = T>({
   }, [delay, enqueue, revision]);
 
   useEffect(() => () => {
-    flush();
+    void flush();
     mountedRef.current = false;
   }, [flush]);
 

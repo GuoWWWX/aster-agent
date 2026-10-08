@@ -77,13 +77,21 @@ it("opening/searching the list never marks results read; selection only navigate
   act(() => container.querySelector<HTMLButtonElement>("button")?.click());
   expect(document.body.textContent).toContain("未读示例");
   expect(container.querySelector("button")?.getAttribute("aria-label")).toBe("对话动态，1 个未读");
-  expect(document.body.textContent).not.toContain("侧边未读");
+  expect(document.body.textContent).toContain("侧边未读 · 有新回复");
   expect(document.body.textContent).not.toContain("自动子代理");
   expect(mark).not.toHaveBeenCalled();
   const row = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("未读示例"));
   act(() => row?.click());
-  expect(select).toHaveBeenCalledWith("未读示例");
+  expect(select).toHaveBeenCalledWith("侧边未读", undefined, "未读示例");
   expect(mark).not.toHaveBeenCalled();
+});
+
+it("targets the latest unread member of a read Team Lead and keeps unviewed siblings unread", () => {
+  const lead = session("lead", { threadKind: "team_lead", teamWorkItemId: "work-item" });
+  const first = session("member-a", { parentConversationId: lead.id, hasUnreadResult: true, updatedAt: "2026-10-08T01:00:00Z" });
+  const latest = session("member-b", { parentConversationId: lead.id, hasUnreadResult: true, updatedAt: "2026-10-08T02:00:00Z" });
+  expect(conversationActivityRows([lead, first, latest], {})[0]).toMatchObject({ session: lead, unreadSession: latest });
+  expect(conversationActivityRows([lead, first, { ...latest, hasUnreadResult: false }], {})[0]).toMatchObject({ session: lead, unreadSession: first });
 });
 
 it("hydrates existing approvals without losing events arriving during the read", async () => {

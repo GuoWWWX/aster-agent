@@ -8388,6 +8388,25 @@ export class AgentDatabase {
               task.data.updatedAt,
               task.data.completedAt,
             );
+          // Parent history can contain an old running task after the child has
+          // already finished. Rehydration must preserve the child's durable Run.
+          this.database.prepare(
+            `UPDATE subagent_tasks
+             SET status = runs.status,
+                 result = COALESCE(subagent_tasks.result, ?),
+                 error = runs.error,
+                 updated_at = runs.updated_at,
+                 completed_at = runs.updated_at
+             FROM runs
+             WHERE subagent_tasks.id = ?
+               AND subagent_tasks.target_run_id = runs.id
+               AND subagent_tasks.child_conversation_id = runs.conversation_id
+               AND subagent_tasks.status IN ('queued', 'running')
+               AND runs.status IN ('completed', 'failed', 'cancelled')`,
+          ).run(
+            task.data.targetRunId === null ? null : this.terminalResults.get(task.data.targetRunId) ?? null,
+            task.data.id,
+          );
           continue;
         }
 

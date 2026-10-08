@@ -97,6 +97,10 @@ const lightTheme = EditorView.theme({
 }, { dark: false });
 
 const darkTheme = EditorView.theme({
+  "&.cm-editor .cm-gutters": {
+    backgroundColor: "var(--app-panel)",
+    color: "var(--app-subtle-foreground)",
+  },
   "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
     backgroundColor: "var(--app-text-selection)",
   },
