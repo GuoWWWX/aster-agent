@@ -400,7 +400,7 @@ export function useProjectSessions(
     ensureTeamInstanceMemberSession,
     isCreatingSession,
     isLoadingSessions,
-    markSessionResultViewed: (sessionId) => void markSessionResultViewed(sessionId),
+    markSessionResultViewed: (sessionId, onlySelected) => void markSessionResultViewed(sessionId, onlySelected),
     operationError,
     refreshSessions: loadSessions,
     renameSession,

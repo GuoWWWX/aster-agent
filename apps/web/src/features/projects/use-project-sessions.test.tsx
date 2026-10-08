@@ -22,6 +22,29 @@ afterEach(() => {
 });
 
 describe("useProjectSessions", () => {
+  it("marks only the visible conversation when the caller requests selected-only acknowledgement", async () => {
+    const parent = { ...createConversation(), hasUnreadResult: true, lastRunStatus: "completed" as const };
+    const side = { ...createConversation(crypto.randomUUID()), parentConversationId: parent.id, hasUnreadResult: true, lastRunStatus: "completed" as const };
+    const mark = vi.fn((input: { conversationId: string }) => Promise.resolve({
+      ...[parent, side].find((conversation) => conversation.id === input.conversationId)!, hasUnreadResult: false,
+    }));
+    const client = {
+      listConversationHierarchy: () => Promise.resolve([parent, side]),
+      markConversationResultViewed: mark,
+      onConversationRunEvent: () => () => {},
+    } as unknown as AgentClient;
+    let controller!: ReturnType<typeof useProjectSessions>;
+    function Harness(): null { controller = useProjectSessions(client, null); return null; }
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<Harness />); await Promise.resolve(); });
+    await act(async () => { controller.markSessionResultViewed(side.id, true); await Promise.resolve(); });
+    expect(mark).toHaveBeenCalledExactlyOnceWith({ conversationId: side.id });
+    expect(controller.sessions.find((session) => session.id === parent.id)?.hasUnreadResult).toBe(true);
+    expect(controller.sessions.find((session) => session.id === side.id)?.hasUnreadResult).toBe(false);
+  });
+
   it("loads the complete conversation hierarchy through one client request", async () => {
     const conversations = [
       createConversation("00000000-0000-4000-8000-000000000001"),
