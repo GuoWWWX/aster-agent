@@ -3411,6 +3411,9 @@ describe("AgentDatabase", () => {
     expect(database.listConversationForks(mainConversation.id)).toEqual([
       sideConversation
     ]);
+    expect(database.listConversationHierarchy().map((conversation) => conversation.id)).toEqual(
+      expect.arrayContaining([mainConversation.id, sideConversation.id]),
+    );
     expect(database.listTimeline(sideConversation.id)).toEqual([]);
     expect(database.isConversationFork(mainConversation.id)).toBe(false);
     expect(database.isConversationFork(sideConversation.id)).toBe(true);

@@ -1,4 +1,4 @@
-import { Scale } from "lucide-react";
+import { Scale, PanelsTopLeft, Settings } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
 import type {
@@ -10,6 +10,8 @@ import type {
 } from "@agent/protocol";
 
 import { AppShell } from "../components/layout/app-shell.js";
+import type { AppTitlebarConversationTab } from "../components/layout/app-titlebar.js";
+import { useNavigationHistory } from "../components/layout/use-navigation-history.js";
 import { moveTabId } from "../components/ui/tab-order.js";
 import { MediaPreviewDialogHost } from "../components/media/image-viewer.js";
 import { GlobalConversationSearchDialog } from "../features/chat/global-conversation-search-dialog.js";
@@ -20,8 +22,9 @@ import {
 } from "../features/chat/workspace-content.js";
 import {
   closeConversationTab,
-  reconcileConversationTabs,
 } from "../features/chat/conversation-tabs.js";
+import { FUNCTION_TABS, isFunctionTab, reconcileWorkbenchTabs, type WorkbenchTabs } from "../features/chat/workbench-tabs.js";
+import { ConversationActivity } from "../features/chat/conversation-activity.js";
 import {
   ProjectNavigator,
   type ProjectNavigatorLocateRequest,
@@ -112,6 +115,8 @@ export function App(): ReactElement {
     (state) => state.setFilePanelOpenForConversation,
   );
   const setActiveActivity = useWorkbenchUiStore((state) => state.setActiveActivity);
+  const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
+  const settingsSection = useWorkbenchUiStore((state) => state.settingsSection);
   const agents = useAgentDirectoryStore((state) => state.agents);
   const teams = useAgentDirectoryStore((state) => state.teams);
   const [teamInstances, setTeamInstances] = useState<TeamInstanceView[]>([]);
@@ -122,16 +127,35 @@ export function App(): ReactElement {
     agentClient,
     projectTree.activeProject?.id ?? null,
   );
-  const [openConversationIds, setOpenConversationIds] = useState<string[]>([]);
+  const [tabState, setTabState] = useState<WorkbenchTabs>({ ids: [], previewId: null });
+  const openConversationIds = tabState.ids.filter((id) => !isFunctionTab(id));
+  const activeTabId = activeActivity === "settings" ? "page:settings"
+    : activeActivity === "team" || activeActivity === "tasks" ? "page:team" : projectSessions.activeSessionId;
+  const navigation = useNavigationHistory({
+    activity: activeActivity, settingsSection,
+    projectId: projectTree.activeProject?.id ?? null,
+    conversationId: projectSessions.activeSessionId,
+  }, (entry) => JSON.stringify(entry), (entry) => {
+    setActiveActivity(entry.activity);
+    useWorkbenchUiStore.getState().setSettingsSection(entry.settingsSection);
+    projectTree.selectProject(entry.projectId);
+    if (entry.conversationId === null) projectSessions.clearSessionSelection();
+    else {
+      projectSessions.selectSession(entry.conversationId);
+    }
+  }, (entry) => (entry.projectId === null || projectTree.projects.some((project) => project.id === entry.projectId))
+    && (entry.conversationId === null || projectSessions.sessions.some(
+    (session) => session.id === entry.conversationId && !session.isArchived,
+  )));
   const [previousTabSource, setPreviousTabSource] = useState<string | null>(null);
   const availableConversationIds = projectSessions.sessions.filter((session) => !session.isArchived).map((session) => session.id);
-  const tabSource = `${projectSessions.activeSessionId ?? ""}:${availableConversationIds.join(",")}`;
+  const tabSource = `${activeTabId ?? ""}:${availableConversationIds.join(",")}`;
   // Reconcile only selection/membership changes, before committing child panes.
   // Model deltas and status updates do not schedule a second effect render.
   if (previousTabSource !== tabSource) {
     setPreviousTabSource(tabSource);
-    const next = reconcileConversationTabs(openConversationIds, availableConversationIds, projectSessions.activeSessionId);
-    if (next !== openConversationIds) setOpenConversationIds(next);
+    const next = reconcileWorkbenchTabs(tabState, availableConversationIds, activeTabId);
+    if (next !== tabState) setTabState(next);
   }
   const [navigatorLocateRequest, setNavigatorLocateRequest] =
     useState<ProjectNavigatorLocateRequest | null>(null);
@@ -181,7 +205,10 @@ export function App(): ReactElement {
   const conversationTabs = useMemo(() => {
     const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
     const projectsById = new Map(projectTree.projects.map((project) => [project.id, project]));
-    return openConversationIds.flatMap((id) => {
+    return tabState.ids.flatMap<AppTitlebarConversationTab>((id) => {
+      if (isFunctionTab(id)) return [{ id, isRunning: false, title: FUNCTION_TABS[id],
+        icon: id === "page:team" ? <PanelsTopLeft size={14} /> : <Settings size={14} />,
+        kind: "page" as const, isPreview: false }];
       const session = projectSessions.sessions.find((candidate) => candidate.id === id);
       if (session === undefined || session.isArchived) return [];
 
@@ -207,9 +234,11 @@ export function App(): ReactElement {
         ...(icon === undefined ? {} : { icon }),
         isRunning,
         title: session.title,
+        kind: "conversation" as const,
+        isPreview: tabState.previewId === session.id,
       }];
     });
-  }, [agents, openConversationIds, projectSessions.sessions, projectTree.projects, teams]);
+  }, [agents, tabState, projectSessions.sessions, projectTree.projects, teams]);
 
   useEffect(() => {
     let disposed = false;
@@ -450,9 +479,6 @@ export function App(): ReactElement {
     return () => window.clearTimeout(timeout);
   }, [navigatorLocateRequest]);
 
-  function selectProject(projectId: string): void {
-    projectTree.selectProject(projectId);
-  }
 
   const openTeamMemberSession = useCallback((
     member: ProjectSession,
@@ -484,6 +510,11 @@ export function App(): ReactElement {
   }, [projectSessions, projectTree, setActiveActivity, setFilePanelOpenForConversation]);
 
   function selectSession(sessionId: string): void {
+    if (isFunctionTab(sessionId)) {
+      setActiveActivity(sessionId === "page:team" ? "team" : "settings");
+      return;
+    }
+    setActiveActivity("conversations");
     const session = projectSessions.sessions.find(
       (candidate) => candidate.id === sessionId,
     );
@@ -499,28 +530,30 @@ export function App(): ReactElement {
 
   function closeConversationTitlebarTab(conversationId: string): void {
     const result = closeConversationTab(
-      openConversationIds,
+      tabState.ids,
       conversationId,
-      projectSessions.activeSessionId,
+      activeTabId,
     );
-    setOpenConversationIds(result.openIds);
+    setTabState({ ids: result.openIds, previewId: tabState.previewId === conversationId ? null : tabState.previewId });
     if (result.nextActiveId === null) {
+      setActiveActivity("conversations");
       projectSessions.clearSessionSelection();
-    } else if (result.nextActiveId !== projectSessions.activeSessionId) {
+    } else if (result.nextActiveId !== activeTabId) {
       selectSession(result.nextActiveId);
     }
   }
 
   function closeOtherConversationTitlebarTabs(conversationId: string): void {
-    if (!openConversationIds.includes(conversationId)) return;
-    setOpenConversationIds([conversationId]);
-    if (projectSessions.activeSessionId !== conversationId) {
+    if (!tabState.ids.includes(conversationId)) return;
+    setTabState({ ids: [conversationId], previewId: tabState.previewId === conversationId ? conversationId : null });
+    if (activeTabId !== conversationId) {
       selectSession(conversationId);
     }
   }
 
   function closeAllConversationTitlebarTabs(): void {
-    setOpenConversationIds([]);
+    setTabState({ ids: [], previewId: null });
+    setActiveActivity("conversations");
     projectSessions.clearSessionSelection();
   }
 
@@ -598,19 +631,31 @@ export function App(): ReactElement {
   return (
     <>
       <AppShell
+        navigation={navigation}
         activeConversationId={projectSessions.activeSessionId}
+        activeTabId={activeTabId}
+        titlebarActivity={<ConversationActivity agentClient={agentClient} sessions={projectSessions.sessions}
+          projects={projectTree.projects} onSelect={(id, timelineItemId) => {
+            selectSession(id);
+            if (timelineItemId !== undefined) setConversationLocateRequest((current) => ({
+              conversationId: id,
+              id: timelineItemId,
+              requestId: (current?.requestId ?? 0) + 1,
+            }));
+          }} />}
         agentClient={agentClient}
         conversationTabs={conversationTabs}
         onCloseAllConversationTabs={closeAllConversationTitlebarTabs}
         onCloseConversationTab={closeConversationTitlebarTab}
         onCloseOtherConversationTabs={closeOtherConversationTitlebarTabs}
-        onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
         onSelectConversationTab={selectSession}
+        onKeepConversationTab={(id) => setTabState((current) => current.previewId === id ? { ...current, previewId: null } : current)}
         onMoveConversationTab={(source, target, side) => {
-          setOpenConversationIds((current) => moveTabId(current, source, target, side));
+          setTabState((current) => ({ ...current, ids: moveTabId(current.ids, source, target, side) }));
         }}
         projectNavigator={
         <ProjectNavigator
+          onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
           onCopyText={(text) => agentClient.writeClipboardText(text)}
           onOpenProjectDirectory={(projectId) => agentClient.openProjectDirectory({ projectId })}
           activeSessionId={projectSessions.activeSessionId}
@@ -629,11 +674,12 @@ export function App(): ReactElement {
             projectSessions.clearOperationError();
           }}
           onCreateProjectSession={(projectId) => {
+            setActiveActivity("conversations");
             setNavigatorLocateRequest(null);
             projectTree.selectProject(projectId);
             void projectSessions.createProjectSession(projectId);
           }}
-          onCreateTemporarySession={() => void projectSessions.createTemporarySession()}
+          onCreateTemporarySession={() => { setActiveActivity("conversations"); void projectSessions.createTemporarySession(); }}
           onCreateTeamInstance={createTeamInstance}
           onDeleteSession={(sessionId) => projectSessions.deleteSession(sessionId)}
           onDeleteTeamInstance={deleteTeamInstance}
@@ -658,14 +704,11 @@ export function App(): ReactElement {
           onRenameTeamInstance={renameTeamInstance}
           onReorderSessions={(sessionIds) => projectSessions.reorderSessions(sessionIds)}
           onReorderTeamInstances={reorderTeamInstances}
-          onSelectProject={(projectId) => {
-            setNavigatorLocateRequest(null);
-            selectProject(projectId);
-          }}
           onSelectSession={(sessionId) => {
             setNavigatorLocateRequest(null);
             selectSession(sessionId);
           }}
+          onKeepSession={(id) => setTabState((current) => current.previewId === id ? { ...current, previewId: null } : current)}
           onSetSessionArchived={(sessionId, archived) =>
             projectSessions.setSessionArchived(sessionId, archived)
           }
@@ -709,7 +752,7 @@ export function App(): ReactElement {
             selectSession(sessionId);
           }}
           onSessionUpdated={(conversation) => projectSessions.updateSession(conversation)}
-          onSessionViewed={(sessionId) => projectSessions.markSessionResultViewed(sessionId)}
+          onSessionViewed={(sessionId) => projectSessions.markSessionResultViewed(sessionId, true)}
         />
       }
       filePanel={
@@ -722,7 +765,7 @@ export function App(): ReactElement {
           teamMemberOpenRequest={teamMemberOpenRequest}
           onLocateProject={(projectId) => locateInProjectNavigator("project", projectId)}
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}
-          onSessionViewed={(sessionId) => projectSessions.markSessionResultViewed(sessionId)}
+          onSessionViewed={(sessionId) => projectSessions.markSessionResultViewed(sessionId, true)}
           onSessionUpdated={(conversation) => projectSessions.updateSession(conversation)}
           tree={projectTree}
         />

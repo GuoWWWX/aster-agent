@@ -1731,6 +1731,54 @@ export class AgentDatabase {
     return rows.map(toConversation);
   }
 
+  /**
+   * Return the complete conversation hierarchy in one projection query.
+   *
+   * The renderer uses this during navigator/activity startup. Calling
+   * listConversationForks once per node turns a large project into hundreds
+   * of synchronous IPC/SQLite round trips and can delay live approval state.
+   */
+  public listConversationHierarchy(): ConversationSummary[] {
+    const rows = this.database
+      .prepare(
+        `${teamWorkItemExecutionTreeCte}
+         SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
+            selected_provider_id, selected_model_id, selected_reasoning_json, permission_mode,
+            thread_kind, agent_id, avatar_icon, team_id, title, created_at, conversations.updated_at,
+            conversations.archived_at,
+            conversations.has_unread_result, conversations.is_archived,
+            conversations.is_pinned, conversations.pin_order,
+           (SELECT id FROM runs
+            WHERE conversation_id = conversations.id
+              AND status IN ('queued', 'running')
+            ORDER BY created_at DESC, rowid DESC LIMIT 1) AS active_run_id,
+           (SELECT status FROM runs
+            WHERE conversation_id = conversations.id
+            ORDER BY created_at DESC, rowid DESC LIMIT 1) AS last_run_status
+          ,(SELECT COUNT(*) FROM subagent_tasks
+            WHERE parent_conversation_id = conversations.id
+              AND (
+                status IN ('queued', 'running')
+                OR EXISTS (
+                  SELECT 1 FROM runs AS active_subagent_runs
+                  WHERE active_subagent_runs.conversation_id = subagent_tasks.child_conversation_id
+                    AND active_subagent_runs.status IN ('queued', 'running')
+                )
+              )) AS active_subagent_count
+           ,(SELECT status FROM subagent_tasks
+             WHERE child_conversation_id = conversations.id LIMIT 1) AS subagent_task_status
+           ,team_execution_tree_projection.work_item_id AS team_work_item_id
+         FROM conversations
+         LEFT JOIN team_execution_tree_projection
+           ON team_execution_tree_projection.conversation_id = conversations.id
+         WHERE conversations.deletion_pending = 0
+         ORDER BY conversations.is_pinned DESC, conversations.sort_order ASC,
+                  conversations.updated_at DESC, conversations.created_at ASC`
+      )
+      .all() as DatabaseRow[];
+    return rows.map(toConversation);
+  }
+
   public listAgentConversations(): ConversationSummary[] {
     const rows = this.database
       .prepare(

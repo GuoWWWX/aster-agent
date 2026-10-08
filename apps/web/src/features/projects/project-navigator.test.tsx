@@ -30,6 +30,66 @@ afterEach(() => {
 });
 
 describe("ProjectNavigator", () => {
+  it("only toggles the project list when its folder/name row is clicked", () => {
+    const project = createProject();
+    const session = createProjectSession(project.id, [], "active-session");
+    const tree = createTreeController(project);
+    const selectProject = vi.spyOn(tree, "selectProject");
+    const onSelectSession = vi.fn();
+    const container = renderNavigator(project, [session], { tree, onSelectSession });
+    const row = container.querySelector<HTMLButtonElement>(".project-navigator__project-button")!;
+    act(() => row.click());
+    expect(container.querySelector(".project-navigator__session")).toBeNull();
+    act(() => row.click());
+    expect(container.querySelector('[data-navigator-key="session:active-session"]')?.getAttribute("data-active")).toBe("true");
+    expect(selectProject).not.toHaveBeenCalled();
+    expect(onSelectSession).not.toHaveBeenCalled();
+  });
+  it("doubles the project conversation limit and resets it after collapsing the project", () => {
+    const project = createProject();
+    const sessions = Array.from({ length: 23 }, (_, index) => ({
+      ...createProjectSession(project.id, [], `session-${index}`), title: `对话 ${index}`,
+    }));
+    const container = renderNavigator(project, sessions, { activeSessionId: null });
+    const rows = () => container.querySelectorAll(".project-navigator__session");
+    const more = () => Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("显示更多"));
+    expect(rows()).toHaveLength(5);
+    act(() => more()?.click());
+    expect(rows()).toHaveLength(10);
+    act(() => more()?.click());
+    expect(rows()).toHaveLength(20);
+    act(() => more()?.click());
+    expect(rows()).toHaveLength(23);
+    expect(more()).toBeUndefined();
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="收起 Demo"]')?.click());
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="展开 Demo"]')?.click());
+    expect(rows()).toHaveLength(5);
+  });
+
+  it("keeps running and selected conversations visible beyond the default limit", () => {
+    const project = createProject();
+    const sessions = Array.from({ length: 12 }, (_, index) => ({
+      ...createProjectSession(project.id, [], `session-${index}`),
+      title: `对话 ${index}`, activeRunId: index >= 5 ? `run-${index}` : null,
+    }));
+    const container = renderNavigator(project, sessions, { activeSessionId: "session-4" });
+    for (let index = 4; index < 12; index++) {
+      expect(container.querySelector(`[data-navigator-key="session:session-${index}"]`)).not.toBeNull();
+    }
+  });
+
+  it("keeps unread conversations visible beyond the default limit", () => {
+    const project = createProject();
+    const sessions = Array.from({ length: 8 }, (_, index) => ({
+      ...createProjectSession(project.id, [], `session-${index}`),
+      title: `对话 ${index}`,
+      hasUnreadResult: index === 7,
+      lastRunStatus: index === 7 ? "completed" as const : null,
+    }));
+    const container = renderNavigator(project, sessions, { activeSessionId: null });
+    expect(container.querySelector('[data-navigator-key="session:session-7"]')).not.toBeNull();
+  });
   it("shows the archive shortcut immediately before more and preserves its action", () => {
     const project = createProject();
     const session = createProjectSession(project.id, [], "archive-session");
@@ -193,7 +253,6 @@ describe("ProjectNavigator", () => {
           onRenameTeamInstance={() => Promise.resolve(true)}
           onReorderSessions={() => Promise.resolve(true)}
           onReorderTeamInstances={() => Promise.resolve(true)}
-          onSelectProject={() => undefined}
           onSelectSession={() => undefined}
           onSetSessionArchived={() => Promise.resolve(true)}
           onSetSessionPinned={() => Promise.resolve(true)}
@@ -235,6 +294,7 @@ function createTreeController(project: ProjectSummary): ProjectTreeController {
     projects: [project],
     query: "",
     rootDirectoryState: undefined,
+    ensureRootLoaded: () => undefined,
     rootEntries: [],
     selectedPath: null,
     addProject: () => Promise.resolve(null),
@@ -302,7 +362,6 @@ function renderNavigator(
         onRenameTeamInstance={() => Promise.resolve(true)}
         onReorderSessions={() => Promise.resolve(true)}
         onReorderTeamInstances={() => Promise.resolve(true)}
-        onSelectProject={() => undefined}
         onSelectSession={() => undefined}
         onSetSessionArchived={() => Promise.resolve(true)}
         onSetSessionPinned={() => Promise.resolve(true)}

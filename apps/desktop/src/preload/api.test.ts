@@ -16,6 +16,14 @@ vi.mock("electron", () => ({
 import { createDesktopBridge } from "./api.js";
 
 describe("Desktop preload bridge", () => {
+  it("routes reversible conversation deletion and restoration through separate IPC channels", async () => {
+    const input = { conversationId: "00000000-0000-4000-8000-000000000001" };
+    const bridge = createDesktopBridge();
+    await bridge.deleteConversationUndoable(input);
+    await bridge.restoreDeletedConversation(input);
+    expect(electronMocks.invoke).toHaveBeenCalledWith(IPC_CHANNELS.conversationDeleteUndoable, input);
+    expect(electronMocks.invoke).toHaveBeenCalledWith(IPC_CHANNELS.conversationRestoreDeleted, input);
+  });
   beforeEach(() => {
     vi.clearAllMocks();
   });

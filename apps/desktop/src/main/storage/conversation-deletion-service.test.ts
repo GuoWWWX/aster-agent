@@ -60,6 +60,24 @@ async function importTextAttachment(
 }
 
 describe("ConversationDeletionService", () => {
+  it("retains deleted conversations and attachments for undo only in the owning process", async () => {
+    const fixture = await createFixture();
+    const conversation = fixture.database.createConversation(fixture.project.id);
+    const storedPath = await importTextAttachment(fixture, conversation.id);
+    const service = new ConversationDeletionService(fixture.database, fixture.attachments, fixture.projects, null, fixture.threadLog);
+    service.requestUndoableDeletion(conversation.id);
+    expect(fixture.database.listConversations().some((item) => item.id === conversation.id)).toBe(false);
+    await service.resumeIncompleteTasks();
+    await expect(access(storedPath)).resolves.toBeUndefined();
+    service.restoreDeletedConversation(conversation.id);
+    expect(fixture.database.getConversation(conversation.id).id).toBe(conversation.id);
+    await expect(access(storedPath)).resolves.toBeUndefined();
+    service.requestUndoableDeletion(conversation.id);
+    const restarted = new ConversationDeletionService(fixture.database, fixture.attachments, fixture.projects, null, fixture.threadLog);
+    expect(() => restarted.restoreDeletedConversation(conversation.id)).toThrow();
+    await restarted.resumeIncompleteTasks();
+    await expect(access(storedPath)).rejects.toThrow();
+  });
   it("hides a conversation before removing its files and database tree", async () => {
     const fixture = await createFixture();
     const conversation = fixture.database.createConversation(fixture.project.id);

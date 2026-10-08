@@ -49,7 +49,9 @@ import {
   stripLegacyErrorInstanceId,
   submittedTeamWorkItems,
   toolBatchLabel,
+  toolBatchCurrentToolLabel,
   toolBatchExecutionMode,
+  latestActiveTool,
   stripLeadingThinkingSummary,
 } from "./workspace-content.js";
 
@@ -1305,6 +1307,22 @@ describe("tool batch summary", () => {
     expect(toolBatchLabel([tool("terminal_control"), tool("run_command")]))
       .toBe("操作 1 次侧边终端，运行 1 条命令");
     expect(representativeToolName([tool("terminal_control")])).toBe("terminal_control");
+  });
+
+  it("shows the newest active tool when a batch is collapsed", () => {
+    const running = {
+      ...tool("run_command", { arguments: JSON.stringify({ command: "pnpm test" }) }),
+      status: "running" as const,
+    };
+    const approval = {
+      ...tool("read_file", { arguments: JSON.stringify({ path: "README.md" }) }),
+      status: "awaiting_approval" as const,
+    };
+
+    expect(latestActiveTool([tool("write_file"), running, approval])?.id).toBe(approval.id);
+    expect(toolBatchCurrentToolLabel([tool("write_file"), running, approval]))
+      .toBe("等待审批：读取 README.md");
+    expect(toolBatchCurrentToolLabel([tool("write_file"), tool("run_command")])).toBeNull();
   });
 });
 

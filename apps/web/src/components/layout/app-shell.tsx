@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
 
 import type { AgentClient } from "../../runtime/index.js";
 import {
@@ -7,7 +7,6 @@ import {
   resolveActiveSettingsWorkspaceTarget,
   useWorkbenchUiStore,
 } from "../../stores/workbench-ui-store.js";
-import { ActivityBar } from "./activity-bar.js";
 import { AppTitlebar } from "./app-titlebar.js";
 import type { AppTitlebarConversationTab } from "./app-titlebar.js";
 import { ResizableDivider } from "./resizable-divider.js";
@@ -20,10 +19,14 @@ const TITLEBAR_CONTEXT = {
 } as const;
 
 const TITLEBAR_LEFT_CONTROL_WIDTH = 32;
-const WORKBENCH_MAIN_LEFT_INSET = 58;
+const WORKBENCH_MAIN_LEFT_INSET = 0;
 const WORKBENCH_NAVIGATOR_TO_MAIN_GAP = 5;
 
 type AppShellProps = {
+  activeTabId?: string | null;
+  titlebarActivity?: ReactNode;
+  onKeepConversationTab?: (id: string) => void;
+  navigation?: { canGoBack: boolean; canGoForward: boolean; goBack: () => void; goForward: () => void };
   activeConversationId?: string | null;
   agentClient: AgentClient;
   conversationTabs?: readonly AppTitlebarConversationTab[];
@@ -33,12 +36,15 @@ type AppShellProps = {
   onCloseAllConversationTabs?: () => void;
   onCloseConversationTab?: (conversationId: string) => void;
   onCloseOtherConversationTabs?: (conversationId: string) => void;
-  onOpenGlobalSearch?: () => void;
   onSelectConversationTab?: (conversationId: string) => void;
   onMoveConversationTab?: (source: string, target: string, side: "before" | "after") => void;
 };
 
 export function AppShell({
+  activeTabId,
+  titlebarActivity,
+  onKeepConversationTab,
+  navigation,
   activeConversationId = null,
   agentClient,
   conversationTabs = [],
@@ -48,7 +54,6 @@ export function AppShell({
   onCloseAllConversationTabs,
   onCloseConversationTab,
   onCloseOtherConversationTabs,
-  onOpenGlobalSearch,
   onSelectConversationTab,
   onMoveConversationTab,
 }: AppShellProps): ReactElement {
@@ -64,6 +69,29 @@ export function AppShell({
   const isProjectNavigatorOpen = useWorkbenchUiStore(
     (state) => state.isProjectNavigatorOpen,
   );
+  const [navigatorPeek, setNavigatorPeek] = useState(false);
+  const [previousNavigatorOpen, setPreviousNavigatorOpen] = useState(isProjectNavigatorOpen);
+  const peekTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelPeekTimer = (): void => {
+    if (peekTimer.current !== null) clearTimeout(peekTimer.current);
+    peekTimer.current = null;
+  };
+  if (previousNavigatorOpen !== isProjectNavigatorOpen) {
+    setPreviousNavigatorOpen(isProjectNavigatorOpen);
+    setNavigatorPeek(false);
+  }
+  useEffect(() => {
+    cancelPeekTimer();
+    return cancelPeekTimer;
+  }, [isProjectNavigatorOpen]);
+  const scheduleNavigatorPeek = (visible: boolean): void => {
+    cancelPeekTimer();
+    if (isProjectNavigatorOpen) return;
+    peekTimer.current = setTimeout(() => {
+      peekTimer.current = null;
+      setNavigatorPeek(visible);
+    }, visible ? 180 : 280);
+  };
   const filePanelWidth = useWorkbenchUiStore((state) => state.filePanelWidth);
   const conversationFilePanelOpen = useWorkbenchUiStore((state) =>
     activeConversationId === null
@@ -157,12 +185,15 @@ export function AppShell({
   return (
     <div className="app-shell" data-theme={themeMode}>
       <AppTitlebar
-        activeConversationId={activeConversationId}
+        {...(navigation === undefined ? {} : { navigation })}
+        activeConversationId={activeTabId === undefined ? activeConversationId : activeTabId}
+        activity={titlebarActivity}
+        {...(onKeepConversationTab === undefined ? {} : { onKeepConversationTab })}
         agentClient={agentClient}
-        conversationTabs={isConversationWorkspace ? conversationTabs : []}
+        conversationTabs={conversationTabs}
         conversationTabsLeadingWidth={conversationTabsLeadingWidth}
         contextText={TITLEBAR_CONTEXT[activeActivity]}
-        isFilePanelOpen={activeFilePanelOpen}
+        isFilePanelOpen={canShowFileWorkspace && activeFilePanelOpen}
         isProjectNavigatorOpen={isProjectNavigatorOpen}
         onToggleFilePanel={() => setActiveFilePanelOpen(!activeFilePanelOpen)}
         onToggleProjectNavigator={toggleProjectNavigator}
@@ -179,24 +210,35 @@ export function AppShell({
           onSelectConversationTab,
         })}
         {...(onMoveConversationTab === undefined ? {} : { onMoveConversationTab })}
-        showFilePanelControl={canShowFileWorkspace}
-        showProjectNavigatorControl={isConversationWorkspace}
+        canToggleFilePanel={canShowFileWorkspace}
+        showProjectNavigatorControl
       />
       <div
-        className="workbench-grid"
+        className="workbench-grid relative"
         data-active-activity={activeActivity}
         data-full-page={String(!isConversationWorkspace)}
       >
-        <ActivityBar {...(onOpenGlobalSearch === undefined ? {} : { onOpenGlobalSearch })} />
-        {isConversationWorkspace && isProjectNavigatorOpen ? (
+        {!isProjectNavigatorOpen && !navigatorPeek ? (
           <div
-            className="workbench-sidebar workbench-sidebar--left"
+            aria-hidden="true"
+            data-navigator-hover-edge
+            className="absolute inset-y-0 left-0 z-30 w-1"
+            onMouseEnter={() => scheduleNavigatorPeek(true)}
+            onMouseLeave={cancelPeekTimer}
+          />
+        ) : null}
+        {isProjectNavigatorOpen || navigatorPeek ? (
+          <div
+            className={`workbench-sidebar workbench-sidebar--left${!isProjectNavigatorOpen ? " absolute! inset-y-0 left-0 z-30 max-w-full bg-[var(--app-panel)] shadow-xl" : ""}`}
+            data-navigator-peek={!isProjectNavigatorOpen || undefined}
             style={projectNavigatorStyle}
+            onMouseEnter={cancelPeekTimer}
+            onMouseLeave={() => scheduleNavigatorPeek(false)}
           >
             {projectNavigator}
           </div>
         ) : null}
-        {isConversationWorkspace && (isProjectNavigatorOpen || isProjectNavigatorResizing) ? <ResizableDivider
+        {(isProjectNavigatorOpen || isProjectNavigatorResizing) ? <ResizableDivider
           ariaLabel="调整项目栏宽度"
           className="workbench-resizable-divider--left"
           collapsed={!isProjectNavigatorOpen}

@@ -217,6 +217,7 @@
   -webkit-app-region: drag;
 }
 
+[data-app-drag-region="false"],
 [data-slot="icon-button"] {
   -webkit-app-region: no-drag;
 }
@@ -322,6 +323,35 @@
   height: 100%;
 }
 
+/* CSS trigger #2: the fixed navigator joins the titlebar with an inverse corner;
+   the temporary hover panel keeps its independent floating surface. */
+.workbench-sidebar--left:not([data-navigator-peek]) {
+  margin-top: -5px;
+  background: var(--app-titlebar);
+  backdrop-filter: blur(18px);
+}
+
+.workbench-sidebar--left:not([data-navigator-peek]) > .workbench-panel {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.workbench-sidebar--left:not([data-navigator-peek])::after {
+  position: absolute;
+  top: 0;
+  right: calc(var(--app-radius) * -1);
+  width: var(--app-radius);
+  height: var(--app-radius);
+  background: radial-gradient(
+    circle at 100% 100%,
+    transparent var(--app-radius),
+    var(--app-titlebar) calc(var(--app-radius) + 0.5px)
+  );
+  content: "";
+  pointer-events: none;
+}
+
 .panel-header {
   display: flex;
   min-height: 44px;
@@ -371,16 +401,6 @@
 }
 
 @media (max-width: 900px) {
-  .app-titlebar__conversation-leading {
-    flex-basis: 26px;
-  }
-
-  .workbench-grid[data-file-open][data-project-navigator-open] {
-    grid-template-columns: 48px minmax(0, 1fr);
-  }
-
-  .workbench-grid > .workbench-resizable-divider--left,
-  .workbench-grid > .workbench-sidebar--left,
   .workbench-grid > .workbench-sidebar--right {
     display: none;
   }

@@ -1859,6 +1859,10 @@ export function RightSidebarWorkspace({
   const showFileWorkspace = activeTab?.kind === "file"
     || activeConfigurationTab !== null
     || isFileBrowserOpen;
+  const ensureProjectRootLoaded = tree.ensureRootLoaded;
+  useEffect(() => {
+    if (sidebarVisible && showFileWorkspace && activeConfigurationTarget === null) ensureProjectRootLoaded();
+  }, [sidebarVisible, showFileWorkspace, activeConfigurationTarget, ensureProjectRootLoaded]);
 
   useEffect(() => {
     if (
