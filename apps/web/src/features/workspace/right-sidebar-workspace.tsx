@@ -19,6 +19,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useEffectEvent,
   useMemo,
   useRef,
   useState,
@@ -1582,7 +1583,9 @@ export function RightSidebarWorkspace({
       setActiveTabForCurrentSession(tab.id);
       setIsFileBrowserOpen(false);
       setIsTreeCollapsed(false);
-      void loadConfigurationFile(tab);
+      if (configurationFilePreviewsRef.current[tab.id]?.isDirty !== true) {
+        void loadConfigurationFile(tab);
+      }
     },
     [loadConfigurationFile, setActiveTabForCurrentSession],
   );
@@ -1915,11 +1918,26 @@ export function RightSidebarWorkspace({
     flushConfigurationFile,
   ]);
 
+  const flushPendingConfigurationFiles = useEffectEvent(async (): Promise<boolean> => {
+    for (const tab of fileTabs) {
+      if (tab.kind !== "configuration-file") continue;
+      const preview = configurationFilePreviewsRef.current[tab.id];
+      if (preview?.isDirty !== true && preview?.isSaving !== true) continue;
+      if (!await flushConfigurationFile(tab)) return false;
+    }
+    return true;
+  });
+
   useEffect(() => {
     if (activeSettingsWorkspaceTarget?.kind !== "configuration") return;
     const { target } = activeSettingsWorkspaceTarget;
     const path = target.kind === "skill" ? "SKILL.md" : "mcp.json";
-    openConfigurationFile(target, path);
+    let cancelled = false;
+    void (async () => {
+      if (!await flushPendingConfigurationFiles() || cancelled) return;
+      openConfigurationFile(target, path);
+    })();
+    return () => { cancelled = true; };
   }, [activeSettingsWorkspaceTarget, openConfigurationFile]);
 
   useEffect(() => {
