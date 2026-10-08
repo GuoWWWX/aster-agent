@@ -1496,6 +1496,7 @@ export class MockAgentClient implements AgentClient {
       return Promise.reject(new Error("The mock conversation is unavailable."));
     }
     conversation.hasUnreadResult = false;
+    this.emitConversationRunEvent({ conversation: { ...conversation }, type: "conversation.updated" });
     return Promise.resolve({ ...conversation });
   }
 

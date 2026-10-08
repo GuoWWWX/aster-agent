@@ -24,6 +24,61 @@ afterEach(async () => {
 });
 
 describe("EventProjector", () => {
+  it.each(["completed", "failed", "cancelled", "running"] as const)(
+    "keeps a %s child Run authoritative when its parent history is rehydrated",
+    async (status) => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-subagent-status-"));
+      temporaryDirectories.push(directory);
+      const source = new AgentDatabase(":memory:");
+      const log = new ThreadLog(directory);
+      const parentCreation = source.prepareConversationCreation(null);
+      source.projectConversationCreated(parentCreation);
+      const parentId = parentCreation.conversation.id;
+      log.append(parentId, { type: "conversation_created", payload: parentCreation });
+      const parentRun = source.createRunWithUserMessage(parentId, "委派检查", "demo");
+      log.append(parentId, { type: "run_created", payload: { runId: parentRun.runId, modelId: "demo" } });
+      const child = source.forkConversation(parentId, "subagent");
+      log.append(child.id, { type: "conversation_created", payload: { agent: null, conversation: child } });
+      const childRun = source.createRunWithUserMessage(child.id, "检查", "demo");
+      log.append(child.id, { type: "run_created", payload: { runId: childRun.runId, modelId: "demo" } });
+      const task = source.createSubagentTask({
+        childConversationId: child.id, parentConversationId: parentId,
+        sourceRunId: parentRun.runId, task: "检查", title: "检查",
+      });
+      log.append(parentId, { type: "subagent_task_created", payload: {
+        task: source.assignSubagentTaskRun(task.id, childRun.runId),
+      } });
+      source.finishRun(parentRun.runId, "completed", null);
+      log.append(parentId, { type: "run_finished", payload: { runId: parentRun.runId, status: "completed" } });
+      if (status !== "running") {
+        source.finishRun(childRun.runId, status, null);
+        source.completeSubagentTaskByRun({ targetRunId: childRun.runId, status, error: null, result: null });
+        log.append(child.id, { type: "run_finished", payload: { runId: childRun.runId, status } });
+        // Older compact checkpoints can omit a historical task whose parent
+        // receipt never reached the log. The child still has a durable terminal Run.
+        log.append(parentId, { type: "state_checkpoint", payload: {
+          ...source.exportThreadLogStartupState(parentId), subagentTasks: [],
+        } });
+      }
+      const recovered = new AgentDatabase(":memory:");
+      const projector = new EventProjector(recovered, log);
+      projector.projectAllConversationLogs({ releaseHistory: status !== "running" });
+      expect(recovered.getConversation(parentId).activeSubagentCount).toBe(status === "running" ? 1 : 0);
+      projector.ensureConversationHistoryProjected(parentId);
+      expect(recovered.getConversation(parentId).activeSubagentCount).toBe(status === "running" ? 1 : 0);
+      expect(recovered.getSubagentTask(task.id).status).toBe(status);
+      if (status !== "running") {
+        const restarted = new EventProjector(recovered, log);
+        restarted.projectAllConversationLogs({ releaseHistory: true });
+        restarted.ensureConversationHistoryProjected(parentId);
+        expect(recovered.getConversation(parentId).activeSubagentCount).toBe(0);
+        expect(recovered.getSubagentTask(task.id).status).toBe(status);
+      }
+      source.close();
+      recovered.close();
+    },
+  );
+
   it("replays full history when a compression boundary follows a compact startup checkpoint", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-compression-tail-"));
     temporaryDirectories.push(directory);
