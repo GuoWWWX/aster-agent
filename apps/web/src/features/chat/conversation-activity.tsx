@@ -99,13 +99,15 @@ export function conversationActivityRows(sessions: readonly ProjectSession[], to
     const approval = approvalsByRoot.get(session.id);
     const waiting = approval !== undefined || live.some((tool) => tool.status === "awaiting_approval");
     const hasUnreadResult = members.some((member) => member.hasUnreadResult);
+    const unreadSession = session.hasUnreadResult ? session : members.filter((member) => member.hasUnreadResult)
+      .sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""))[0];
     const group = waiting ? "待处理" : hasUnreadResult ? "未读" : members.some((member) => member.activeRunId !== null) ? "进行中" : null;
     if (group === null) return [];
     const updatedAt = members.reduce((latest, member) => (member.updatedAt ?? "") > latest ? member.updatedAt! : latest, approval?.updatedAt ?? "");
     const fallbackApproval = Object.entries(tools).find(([, tool]) => tool.status === "awaiting_approval"
       && members.some((member) => tool.conversationId === member.id && tool.runId === member.activeRunId));
     const approvalToolId = approval?.toolId ?? fallbackApproval?.[0];
-    return [{ session, group, hasUnreadResult, updatedAt, approvalToolId, status: waiting ? "等待审批" : hasUnreadResult
+    return [{ session, group, hasUnreadResult, unreadSession, updatedAt, approvalToolId, status: waiting ? "等待审批" : hasUnreadResult
       ? members.some((member) => member.hasUnreadResult && member.lastRunStatus === "failed") ? "运行失败，待查看" : "有新回复"
       : live.some((tool) => tool.status === "running") ? "执行工具" : "正在处理" }];
   }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -113,7 +115,7 @@ export function conversationActivityRows(sessions: readonly ProjectSession[], to
 
 export function ConversationActivity({ agentClient, sessions, projects, onSelect }: {
   agentClient: AgentClient; sessions: readonly ProjectSession[]; projects: readonly ProjectSummary[];
-  onSelect: (id: string, timelineItemId?: string) => void;
+  onSelect: (id: string, timelineItemId?: string, ownerConversationId?: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -317,15 +319,20 @@ export function ConversationActivity({ agentClient, sessions, projects, onSelect
           const showUnresolvedApprovals = group === "待处理" && unresolvedApprovalItems.length > 0;
           return items.length === 0 && !showUnresolvedApprovals ? null : <section key={group} aria-label={group}>
             <h3 className="my-1 bg-[var(--app-panel-subtle)] px-2 py-1 text-[length:var(--app-font-size-control)]">{group} · {items.length + (showUnresolvedApprovals ? unresolvedApprovalItems.length : 0)}</h3>
-            {items.map(({ session, status, hasUnreadResult, approvalToolId }) => (
+            {items.map(({ session, status, hasUnreadResult, unreadSession, approvalToolId }) => (
               <div key={session.id} className="rounded-[var(--app-radius)] px-2 py-1 hover:bg-[var(--app-hover)]">
                 <div className="flex items-start gap-1">
-                  <button type="button" onClick={() => { setOpen(false); setQuery(""); if (approvalToolId === undefined) onSelect(session.id); else onSelect(session.id, approvalToolId); }}
+                  <button type="button" onClick={() => {
+                    setOpen(false); setQuery("");
+                    if (approvalToolId !== undefined) onSelect(session.id, approvalToolId);
+                    else if (unreadSession !== undefined && unreadSession.id !== session.id) onSelect(unreadSession.id, undefined, session.id);
+                    else onSelect(session.id);
+                  }}
                     className="flex min-w-0 flex-1 items-start gap-2 py-1 text-left">
                     {hasUnreadResult ? <span aria-label="未读" className="mt-1.5 size-1.5 shrink-0 rounded-full bg-[var(--app-accent)]" />
                       : group === "进行中" ? <LoaderCircle size={14} className="mt-0.5 shrink-0 animate-spin" /> : <MessageSquareText size={14} className="mt-0.5 shrink-0" />}
                     <span className="min-w-0 flex-1"><span className="block truncate font-medium">{session.title}</span>
-                      <span className="block truncate text-[var(--app-muted-foreground)]">{projectNames.get(session.projectId ?? "") ?? (session.teamId === null ? "临时对话" : "团队对话")} · {status}</span></span>
+                      <span className="block truncate text-[var(--app-muted-foreground)]">{projectNames.get(session.projectId ?? "") ?? (session.teamId === null ? "临时对话" : "团队对话")} · {group === "未读" && unreadSession !== undefined && unreadSession.id !== session.id ? `${unreadSession.title} · ` : ""}{status}</span></span>
                     {group === "待处理" ? <span className="shrink-0 rounded-[var(--app-radius-small)] bg-[var(--app-status-danger-bg)] px-1.5 py-0.5 text-[length:var(--app-font-size-caption)] text-[var(--app-status-danger-fg)]">审批</span> : null}
                   </button>
                   {group === "待处理" && approvalToolId !== undefined ? (
