@@ -71,6 +71,7 @@ import {
   type ProjectSummary,
   type SaveModelConfigurationInput,
   type SkillConfiguration,
+  type SkillDocument,
   type TerminalConfiguration,
   type TerminalOutputEncoding,
   type TerminalShell,
@@ -79,6 +80,7 @@ import {
   isReasoningOptionEnabled,
   isReasoningOptionSupportedByApiFormat,
   integrationConfigurationSchema,
+  parseSkillMarkdown,
   modelReasoningOptionKey,
   terminalConfigurationSchema,
   browserConfigurationSchema,
@@ -86,6 +88,7 @@ import {
 
 import { IconButton } from "../../components/ui/icon-button.js";
 import { DocumentCodeEditor } from "../../components/editor/document-code-editor.js";
+import { AgentMarkdown } from "../../components/markdown/agent-markdown.js";
 import {
   Select,
   SelectContent,
@@ -2461,9 +2464,9 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
     setSelectedId(remaining[0]?.id ?? null);
   }
 
-  function openFileWorkspace(): void {
+  async function openFileWorkspace(): Promise<void> {
     if (selected === null) return;
-    state.flush();
+    if (!await state.flush()) return;
     openConfigurationWorkspace({
       configurationId: selected.id,
       kind: "mcp",
@@ -2554,7 +2557,7 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
                 fileActionLabel="编辑配置文件"
                 icon={PlugZap}
                 name={selected.name}
-                onOpenFile={openFileWorkspace}
+                onOpenFile={() => void openFileWorkspace()}
                 onToggle={(enabled) => updateServer({ enabled })}
               />
               <div className="settings-integration-editor__body">
@@ -2624,6 +2627,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
   const [isDiscovering, setIsDiscovering] = useState(false);
   const [newSkillDirectoryPath, setNewSkillDirectoryPath] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [skillDocuments, setSkillDocuments] = useState<SkillDocument[]>([]);
   const configurationWorkspaceRevision = useWorkbenchUiStore(
     (current) => current.configurationWorkspaceRevision,
   );
@@ -2633,6 +2637,11 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
   const configuration = state.configuration;
   const skills = configuration?.skills ?? [];
   const selected = skills.find((skill) => skill.id === selectedId) ?? skills[0] ?? null;
+  const selectedDocument = skillDocuments.find((document) => (
+    document.entryPath.toLocaleLowerCase("en-US") === selected?.entryPath.toLocaleLowerCase("en-US")
+  ));
+  const skillPreview = useMemo(() => selectedDocument === undefined
+    ? null : parseSkillMarkdown(selectedDocument.content), [selectedDocument]);
   const creationDirectoryPath = newSkillDirectoryPath ?? defaultDirectoryPath;
 
   const discoverSkills = useCallback(async (): Promise<void> => {
@@ -2640,6 +2649,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
     setError(null);
     try {
       const result = await agentClient.discoverSkillDocuments();
+      setSkillDocuments(result.documents);
       setDefaultDirectoryPath(result.defaultDirectoryPath);
       setNewSkillDirectoryPath((current) => current ?? result.defaultDirectoryPath);
       await reload();
@@ -2678,6 +2688,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
       const document = await agentClient.createSkillDocument({
         directoryPath: creationDirectoryPath,
       });
+      setSkillDocuments((current) => [...current, document]);
       const next = await state.reload();
       const created = next?.skills.find((skill) => (
         skill.entryPath.toLocaleLowerCase("en-US") === document.entryPath.toLocaleLowerCase("en-US")
@@ -2699,6 +2710,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
     try {
       const result = await agentClient.chooseSkillDirectory();
       if (result === null) return;
+      setSkillDocuments(result.documents);
       setDefaultDirectoryPath(result.defaultDirectoryPath);
       setNewSkillDirectoryPath(result.defaultDirectoryPath);
       await state.reload();
@@ -2725,9 +2737,9 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
     setSelectedId(remaining[0]?.id ?? null);
   }
 
-  function openFileWorkspace(): void {
+  async function openFileWorkspace(): Promise<void> {
     if (selected === null) return;
-    state.flush();
+    if (!await state.flush()) return;
     openConfigurationWorkspace({
       configurationId: selected.id,
       kind: "skill",
@@ -2744,18 +2756,44 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
             value={creationDirectoryPath ?? ""}
             onValueChange={setNewSkillDirectoryPath}
           >
-            <SelectTrigger aria-label="新建 Skill 的目录" className="settings-select-trigger settings-skill-source-select">
-              <SelectValue placeholder="正在读取目录" />
+            <SelectTrigger
+              aria-label="新建 Skill 的目录"
+              className="settings-select-trigger settings-skill-source-select"
+              title={creationDirectoryPath ?? "正在读取目录"}
+            >
+              <SelectValue placeholder="正在读取目录">
+                <span className="truncate">
+                  {creationDirectoryPath === defaultDirectoryPath ? `默认目录 · ${creationDirectoryPath ?? ""}` : creationDirectoryPath}
+                </span>
+              </SelectValue>
             </SelectTrigger>
             <SelectContent align="end">
               {defaultDirectoryPath === null ? null : (
-                <SelectItem value={defaultDirectoryPath}>默认目录</SelectItem>
+                <SelectItem value={defaultDirectoryPath}>默认目录 · {defaultDirectoryPath}</SelectItem>
               )}
               {(configuration?.skillDirectories ?? []).map((directoryPath) => (
                 <SelectItem key={directoryPath} value={directoryPath}>{directoryPath}</SelectItem>
               ))}
             </SelectContent>
           </Select>
+          <IconButton
+            disabled={isDiscovering}
+            label="重新扫描 Skill 目录"
+            onClick={() => void discoverSkills()}
+          >
+            <RefreshCw aria-hidden="true" className={isDiscovering ? "settings-spin" : undefined} size={16} />
+          </IconButton>
+          {creationDirectoryPath !== null && configuration?.skillDirectories.includes(creationDirectoryPath) ? (
+            <IconButton
+              disabled={isDiscovering}
+              label="停止扫描所选目录"
+              tooltip={`停止扫描 ${creationDirectoryPath}`}
+              variant="destructive"
+              onClick={() => removeDirectory(creationDirectoryPath)}
+            >
+              <Trash2 aria-hidden="true" size={16} />
+            </IconButton>
+          ) : null}
           <button
             className="settings-secondary-button"
             disabled={isDiscovering}
@@ -2775,35 +2813,6 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
         <ConfigurationStatus error={state.error} />
       ) : (
         <div className="settings-integration-manager settings-integration-manager--skill">
-          <section className="settings-skill-sources" aria-label="Skill 扫描目录">
-            <div className="settings-skill-sources__item">
-              <span>默认目录</span>
-              <strong title={defaultDirectoryPath ?? ""}>{defaultDirectoryPath ?? "正在扫描"}</strong>
-              <button
-                aria-label="重新扫描 Skill 目录"
-                disabled={isDiscovering}
-                title="重新扫描 Skill 目录"
-                type="button"
-                onClick={() => void discoverSkills()}
-              >
-                <RefreshCw aria-hidden="true" className={isDiscovering ? "settings-spin" : undefined} size={14} />
-              </button>
-            </div>
-            {configuration.skillDirectories.map((directoryPath) => (
-              <div className="settings-skill-sources__item" key={directoryPath}>
-                <span>外部目录</span>
-                <strong title={directoryPath}>{directoryPath}</strong>
-                <button
-                  aria-label={`停止扫描 ${directoryPath}`}
-                  title="停止扫描此目录"
-                  type="button"
-                  onClick={() => removeDirectory(directoryPath)}
-                >
-                  <Trash2 aria-hidden="true" size={14} />
-                </button>
-              </div>
-            ))}
-          </section>
           <ConfigurationList
             actionLabel="新建 Skill"
             emptyLabel="暂无 Skill"
@@ -2828,7 +2837,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                 fileActionLabel="编辑文档"
                 icon={Sparkles}
                 name={selected.name}
-                onOpenFile={openFileWorkspace}
+                onOpenFile={() => void openFileWorkspace()}
                 onToggle={(enabled) => updateSkill({ enabled })}
               />
               <div className="settings-integration-editor__body">
@@ -2846,6 +2855,19 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                     />
                   </ConfigurationField>
                 </div>
+                <section aria-label="Skill 文档预览" className="mt-4 min-w-0 border-t border-[var(--app-border)] pt-4">
+                  <h4 className="mb-2 text-[length:var(--app-font-size-auxiliary)] font-semibold text-[var(--app-muted-foreground)]">文档预览</h4>
+                  {skillPreview === null ? (
+                    <p className="text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
+                      {isDiscovering ? "正在读取文档…" : "未找到 Skill 文档。"}
+                    </p>
+                  ) : (
+                    <>
+                      <p className="mb-4 text-[length:var(--app-font-size-body)] text-[var(--app-muted-foreground)]">{skillPreview.metadata.description}</p>
+                      <AgentMarkdown content={skillPreview.body} />
+                    </>
+                  )}
+                </section>
               </div>
               <footer className="settings-integration-editor__footer">
                 <div>
@@ -2930,6 +2952,7 @@ function ConfigurationList({
             aria-pressed={selectedId === item.id}
             className="settings-integration-list__item"
             data-active={selectedId === item.id}
+            title={`选择 ${item.name}`}
             type="button"
             onClick={() => onSelect(item.id)}
           >
