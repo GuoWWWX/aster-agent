@@ -100,15 +100,6 @@ export function AgentTeamSettings(): ReactElement {
               <span>{agents.length}</span>
             </button>
           </div>
-          {activeView === "agents" ? (
-            <IconButton
-              label="新建 Agent"
-              size="compact"
-              onClick={() => setSelectedAgentId(addAgent())}
-            >
-              <CirclePlus aria-hidden="true" size={18} />
-            </IconButton>
-          ) : null}
         </div>
 
         <div className="team-metrics" aria-label="Agent 与团队概况">
@@ -142,6 +133,7 @@ export function AgentTeamSettings(): ReactElement {
         ) : (
           <AgentManagementView
             agents={agents}
+            onCreateAgent={() => setSelectedAgentId(addAgent())}
             selectedAgentId={selectedAgentId}
             teams={teams}
             onSelectAgent={setSelectedAgentId}
@@ -180,15 +172,11 @@ function TeamManagementView({
     (currentTeamPage + 1) * DIRECTORY_PAGE_SIZE,
   );
 
-  if (selectedTeam === undefined) {
-    return <ManagementEmpty icon={UsersRound} label="还没有团队" />;
-  }
-
-  const members = selectedTeam.memberIds
+  const members = (selectedTeam?.memberIds ?? [])
     .map((memberId) => agents.find((agent) => agent.id === memberId))
     .filter((agent): agent is AgentProfile => agent !== undefined);
   const selectedMember = members.find((agent) => agent.id === selectedAgentId)
-    ?? members.find((agent) => agent.id === selectedTeam.leadAgentId)
+    ?? members.find((agent) => agent.id === selectedTeam?.leadAgentId)
     ?? members[0];
 
   return (
@@ -198,6 +186,7 @@ function TeamManagementView({
           label="团队目录"
           action={(
             <IconButton
+              className="text-[var(--app-foreground)]"
               label="创建团队"
               size="compact"
               onClick={() => {
@@ -213,9 +202,9 @@ function TeamManagementView({
           {pagedTeams.map((team) => (
             <button
               key={team.id}
-              aria-pressed={team.id === selectedTeam.id}
+              aria-pressed={team.id === selectedTeam?.id}
               className="team-directory-row"
-              data-selected={team.id === selectedTeam.id}
+              data-selected={team.id === selectedTeam?.id}
               type="button"
               onClick={() => onSelectTeam(team.id)}
             >
@@ -258,47 +247,57 @@ function TeamManagementView({
         </footer>
       </section>
 
-      <TeamConfigurationPane
-        agent={selectedMember}
-        agents={agents}
-        onOpenAgent={onOpenAgent}
-        onSelectMember={onSelectMember}
-        team={selectedTeam}
-      />
+      {selectedTeam === undefined ? (
+        <ManagementEmpty icon={UsersRound} label="还没有团队" />
+      ) : (
+        <TeamConfigurationPane
+          agent={selectedMember}
+          agents={agents}
+          onOpenAgent={onOpenAgent}
+          onSelectMember={onSelectMember}
+          team={selectedTeam}
+        />
+      )}
     </div>
   );
 }
 
 function AgentManagementView({
   agents,
+  onCreateAgent,
   onSelectAgent,
   selectedAgentId,
   teams,
 }: {
   agents: AgentProfile[];
+  onCreateAgent: () => void;
   onSelectAgent: (agentId: string) => void;
   selectedAgentId: string;
   teams: AgentTeam[];
 }): ReactElement {
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? agents[0];
 
-  if (selectedAgent === undefined) {
-    return <ManagementEmpty icon={BrainCircuit} label="还没有 Agent" />;
-  }
-
   return (
     <div className="agent-management-layout">
       <section className="agent-directory-pane" aria-label="Agent 列表">
-        <PaneHeading label="Agent Profiles" value={agents.length} />
+        <PaneHeading
+          label="Agent 目录"
+          value={agents.length}
+          action={(
+            <IconButton className="text-[var(--app-foreground)]" label="新建 Agent" onClick={onCreateAgent}>
+              <CirclePlus aria-hidden="true" size={18} />
+            </IconButton>
+          )}
+        />
         <div className="agent-directory-list">
           {agents.map((agent) => {
             const teamCount = teams.filter((team) => team.memberIds.includes(agent.id)).length;
             return (
               <button
                 key={agent.id}
-                aria-pressed={agent.id === selectedAgent.id}
+                aria-pressed={agent.id === selectedAgent?.id}
                 className="agent-directory-row"
-                data-selected={agent.id === selectedAgent.id}
+                data-selected={agent.id === selectedAgent?.id}
                 type="button"
                 onClick={() => onSelectAgent(agent.id)}
               >
@@ -317,7 +316,11 @@ function AgentManagementView({
         </div>
         <footer className="team-directory-footer">共 {agents.length} 个 Agent</footer>
       </section>
-      <AgentConfigurationPane agent={selectedAgent} teams={teams} />
+      {selectedAgent === undefined ? (
+        <ManagementEmpty icon={BrainCircuit} label="还没有 Agent" />
+      ) : (
+        <AgentConfigurationPane agent={selectedAgent} teams={teams} />
+      )}
     </div>
   );
 }
@@ -1027,7 +1030,7 @@ function PaneHeading({
   value?: number;
 }): ReactElement {
   return (
-    <div className="team-section-heading">
+    <div className="agent-team-section-heading">
       <h2>{label}</h2>
       {action ?? (value === undefined ? null : <span>{value}</span>)}
     </div>

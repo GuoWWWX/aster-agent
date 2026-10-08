@@ -1,9 +1,11 @@
+/* CSS triggers: descendant selectors and responsive container queries. */
 .agent-team-settings {
   display: flex;
   min-height: 0;
   height: 100%;
   flex-direction: column;
   container-type: inline-size;
+  container-name: agent-team-settings;
   background: transparent;
 }
 
@@ -162,7 +164,7 @@
   height: 100%;
   min-height: 0;
   flex: 1;
-  grid-template-columns: var(--settings-list-card-width, 270px) minmax(540px, 1fr);
+  grid-template-columns: var(--settings-list-card-width, 270px) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   gap: 5px;
   order: 3;
@@ -183,7 +185,7 @@
   background: var(--app-panel);
 }
 
-.team-section-heading {
+.agent-team-section-heading {
   display: flex;
   height: 39px;
   align-items: center;
@@ -192,26 +194,26 @@
   border-bottom: 1px solid var(--app-border);
 }
 
-.team-directory-pane > .team-section-heading,
-.agent-directory-pane > .team-section-heading {
+.team-directory-pane > .agent-team-section-heading,
+.agent-directory-pane > .agent-team-section-heading {
   height: var(--settings-list-card-header-height, 50px);
   min-height: var(--settings-list-card-header-height, 50px);
   flex: 0 0 var(--settings-list-card-header-height, 50px);
 }
 
-.team-directory-pane > .team-section-heading h2,
-.agent-directory-pane > .team-section-heading h2 {
+.team-directory-pane > .agent-team-section-heading h2,
+.agent-directory-pane > .agent-team-section-heading h2 {
   font-size: var(--app-font-size-body);
 }
 
-.team-section-heading h2 {
+.agent-team-section-heading h2 {
   margin: 0;
   color: var(--app-foreground);
   font-size: var(--app-font-size-control);
   font-weight: 700;
 }
 
-.team-section-heading span {
+.agent-team-section-heading span {
   display: grid;
   min-width: 20px;
   height: 20px;
@@ -583,6 +585,7 @@
 
 .team-configuration-pane,
 .agent-configuration-pane {
+  container-type: inline-size;
   background: var(--app-panel);
 }
 
@@ -981,18 +984,18 @@
   color: #93c5fd;
 }
 
-@container (max-width: 900px) {
+@container agent-team-settings (max-width: 900px) {
   .team-management-layout {
     grid-template-columns: var(--settings-list-card-width, 270px) minmax(0, 1fr);
   }
 
   .agent-management-layout {
-    grid-template-columns: var(--settings-list-card-width, 270px) minmax(430px, 1fr);
+    grid-template-columns: var(--settings-list-card-width, 270px) minmax(0, 1fr);
   }
 
 }
 
-@container (max-width: 780px) {
+@container (max-width: 620px) {
   .team-member-editor {
     grid-template-columns: 1fr;
   }
@@ -1003,14 +1006,31 @@
   }
 }
 
-@container (max-width: 640px) {
+@container agent-team-settings (max-width: 720px) {
   .team-metrics {
     display: none;
   }
 
+  .agent-team-settings__body {
+    overflow: auto;
+  }
+
   .team-management-layout,
   .agent-management-layout {
+    height: auto;
+    flex: 0 0 auto;
     grid-template-columns: 1fr;
+    grid-template-rows: 220px auto;
+  }
+
+  .team-configuration-pane,
+  .agent-configuration-pane {
+    height: auto;
+    min-height: 420px;
+  }
+
+  .management-detail-body {
+    overflow: visible;
   }
 
   .team-directory-pane,
@@ -1019,12 +1039,14 @@
     border: 1px solid var(--app-border);
   }
 
+}
+
+@container (max-width: 420px) {
   .management-form__row,
   .management-choice-row--three,
   .capability-picker-grid {
     grid-template-columns: 1fr;
   }
-
 }
 
 .agent-permission-rule-list {
