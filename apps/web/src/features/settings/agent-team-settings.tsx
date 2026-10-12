@@ -10,7 +10,6 @@ import {
   Plus,
   RotateCcw,
   Settings2,
-  ShieldCheck,
   Sparkles,
   Trash2,
   UsersRound,
@@ -61,10 +60,6 @@ export function AgentTeamSettings(): ReactElement {
     agents.find((agent) => agent.isDefault)?.id ?? agents[0]?.id ?? "",
   );
   const [selectedTeamId, setSelectedTeamId] = useState(teams[0]?.id ?? "");
-  const activeAgents = agents.filter((agent) => agent.enabled).length;
-  const customCapabilityAgents = agents.filter(
-    (agent) => agent.capabilityScope === "custom",
-  ).length;
 
   return (
     <section className="settings-section agent-team-settings" aria-labelledby="settings-agent-team-heading">
@@ -73,7 +68,6 @@ export function AgentTeamSettings(): ReactElement {
           <h2 id="settings-agent-team-heading">Agent 与团队</h2>
           <p className="settings-section__description">执行角色与协作编排</p>
         </div>
-        <span className="workspace-mode-badge">跨项目复用</span>
       </header>
 
       <div className="agent-team-settings__body">
@@ -100,13 +94,6 @@ export function AgentTeamSettings(): ReactElement {
               <span>{agents.length}</span>
             </button>
           </div>
-        </div>
-
-        <div className="team-metrics" aria-label="Agent 与团队概况">
-          <TeamMetric icon={UsersRound} label="可用团队" value={String(teams.length)} />
-          <TeamMetric icon={BrainCircuit} label="启用 Agent" value={`${activeAgents} / ${agents.length}`} />
-          <TeamMetric icon={Sparkles} label="继承全部能力" value={String(agents.length - customCapabilityAgents)} />
-          <TeamMetric icon={ShieldCheck} label="自定义能力范围" value={String(customCapabilityAgents)} />
         </div>
 
         {activeView === "teams" ? (
@@ -1033,24 +1020,6 @@ function PaneHeading({
     <div className="agent-team-section-heading">
       <h2>{label}</h2>
       {action ?? (value === undefined ? null : <span>{value}</span>)}
-    </div>
-  );
-}
-
-function TeamMetric({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: typeof UsersRound;
-  label: string;
-  value: string;
-}): ReactElement {
-  return (
-    <div className="team-metric">
-      <Icon aria-hidden="true" size={15} />
-      <span>{label}</span>
-      <strong>{value}</strong>
     </div>
   );
 }

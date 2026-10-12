@@ -165,6 +165,7 @@ export const applicationAppearanceConfigurationSchema = z.object({
   filePanelWidth: z.number().int().min(320).max(960),
   projectNavigatorOpen: z.boolean(),
   projectNavigatorWidth: z.number().int().min(220).max(420),
+  settingsNavigationWidth: z.number().int().min(200).max(360).default(240),
   themeMode: z.enum(["light", "dark"]),
 }).strict();
 
@@ -457,6 +458,7 @@ export const DEFAULT_APPLICATION_SETTINGS: ApplicationSettings = {
     filePanelWidth: 520,
     projectNavigatorOpen: true,
     projectNavigatorWidth: 288,
+    settingsNavigationWidth: 240,
     themeMode: "light",
   },
   general: {

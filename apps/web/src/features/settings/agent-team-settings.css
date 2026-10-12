@@ -2,7 +2,7 @@
 .agent-team-settings {
   display: flex;
   min-height: 0;
-  height: 100%;
+  height: auto;
   flex-direction: column;
   container-type: inline-size;
   container-name: agent-team-settings;
@@ -14,8 +14,8 @@
   min-height: 0;
   flex: 1;
   flex-direction: column;
-  gap: 5px;
-  overflow: hidden;
+  gap: 24px;
+  overflow: visible;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -28,11 +28,12 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 5px 10px;
-  order: 2;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius);
-  background: var(--app-panel);
+  padding: 0 0 10px;
+  order: 1;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  border-bottom: 1px solid var(--app-border);
 }
 
 .team-management-tabs {
@@ -150,39 +151,39 @@
 
 .team-management-layout {
   display: grid;
-  height: 100%;
+  height: auto;
   min-height: 0;
   flex: 1;
   grid-template-columns: var(--settings-list-card-width, 270px) minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
   gap: 5px;
   order: 3;
+  align-items: start;
 }
 
 .agent-management-layout {
   display: grid;
-  height: 100%;
+  height: auto;
   min-height: 0;
   flex: 1;
   grid-template-columns: var(--settings-list-card-width, 270px) minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
   gap: 5px;
   order: 3;
+  align-items: start;
 }
 
 .team-directory-pane,
-.team-configuration-pane,
-.agent-directory-pane,
-.agent-configuration-pane {
+.agent-directory-pane {
   display: flex;
-  height: 100%;
+  height: min(600px, calc(100dvh - 220px));
   min-width: 0;
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
-  background: var(--app-panel);
+  background: var(--app-panel-subtle);
+  position: sticky;
+  top: 0;
 }
 
 .agent-team-section-heading {
@@ -238,7 +239,7 @@
 .agent-directory-list,
 .management-detail-body {
   min-height: 0;
-  overflow: auto;
+  overflow: visible;
 }
 
 .team-directory-list,
@@ -1006,7 +1007,7 @@
   }
 }
 
-@container agent-team-settings (max-width: 720px) {
+@container agent-team-settings (max-width: 780px) {
   .team-metrics {
     display: none;
   }
@@ -1081,4 +1082,12 @@
     grid-column: 1 / -1;
     grid-row: 2;
   }
+}
+
+.team-configuration-pane, .agent-configuration-pane { min-width: 0; min-height: 0; height: auto; display: flex; flex-direction: column; padding-left: 20px; border: 0; background: transparent; }
+.team-configuration-pane > header, .agent-configuration-pane > header { border: 0; padding-left: 0; padding-right: 0; background: transparent; }
+.team-configuration-pane .management-detail-body, .agent-configuration-pane .management-detail-body { padding-left: 0; padding-right: 0; }
+@container agent-team-settings (max-width: 780px) {
+  .team-directory-pane, .agent-directory-pane { position: static; height: 220px; }
+  .team-configuration-pane, .agent-configuration-pane { padding-left: 0; margin-top: 20px; }
 }

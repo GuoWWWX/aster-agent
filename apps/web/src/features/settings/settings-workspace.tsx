@@ -41,6 +41,7 @@ import {
   type ChangeEvent,
   type ReactElement,
   type ReactNode,
+  type CSSProperties,
 } from "react";
 
 import {
@@ -87,6 +88,7 @@ import {
 } from "@agent/protocol";
 
 import { IconButton } from "../../components/ui/icon-button.js";
+import { ResizableDivider } from "../../components/layout/resizable-divider.js";
 import { DocumentCodeEditor } from "../../components/editor/document-code-editor.js";
 import { AgentMarkdown } from "../../components/markdown/agent-markdown.js";
 import {
@@ -106,6 +108,7 @@ import { getUserErrorMessage, type AgentClient } from "../../runtime/index.js";
 import { loadModelStatus, rememberModelStatus } from "../../runtime/model-status-cache.js";
 import {
   useWorkbenchUiStore,
+  SETTINGS_NAVIGATION_WIDTH_RANGE,
   type SettingsSection,
   type ThemeMode,
 } from "../../stores/workbench-ui-store.js";
@@ -159,19 +162,20 @@ type SettingsNavItem = {
   icon: LucideIcon;
   id: SettingsSection;
   label: string;
+  group: string;
 };
 
 const SETTINGS_NAVIGATION: readonly SettingsNavItem[] = [
-  { id: "general", label: "常规设置", icon: SlidersHorizontal },
-  { id: "models", label: "模型配置", icon: Boxes },
-  { id: "agents", label: "Agent 与团队", icon: UsersRound },
-  { id: "mcp", label: "MCP", icon: PlugZap },
-  { id: "skills", label: "Skill", icon: Sparkles },
-  { id: "permissions", label: "权限", icon: ShieldCheck },
-  { id: "browser", label: "浏览器", icon: Globe2 },
-  { id: "terminal", label: "终端", icon: Terminal },
-  { id: "archived", label: "已归档对话", icon: Archive },
-  { id: "appearance", label: "外观", icon: MonitorCog },
+  { id: "general", label: "常规设置", icon: SlidersHorizontal, group: "应用" },
+  { id: "appearance", label: "外观", icon: MonitorCog, group: "应用" },
+  { id: "permissions", label: "权限", icon: ShieldCheck, group: "应用" },
+  { id: "models", label: "模型配置", icon: Boxes, group: "智能体" },
+  { id: "agents", label: "Agent 与团队", icon: UsersRound, group: "智能体" },
+  { id: "mcp", label: "MCP", icon: PlugZap, group: "集成" },
+  { id: "skills", label: "Skill", icon: Sparkles, group: "集成" },
+  { id: "browser", label: "浏览器", icon: Globe2, group: "工作区" },
+  { id: "terminal", label: "终端", icon: Terminal, group: "工作区" },
+  { id: "archived", label: "已归档对话", icon: Archive, group: "数据" },
 ];
 
 const DEFAULT_MODEL_API_FORMAT: ModelApiFormat = "openai-chat-completions";
@@ -250,15 +254,35 @@ const BROWSER_ZOOM_OPTIONS = [
 export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient }): ReactElement {
   const activeSection = useWorkbenchUiStore((state) => state.settingsSection);
   const setActiveSection = useWorkbenchUiStore((state) => state.setSettingsSection);
+  const navigationWidth = useWorkbenchUiStore((state) => state.settingsNavigationWidth);
+  const setNavigationWidth = useWorkbenchUiStore((state) => state.setSettingsNavigationWidth);
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const [availableWidth, setAvailableWidth] = useState<number | null>(null);
+
+  useEffect(() => {
+    const workspace = workspaceRef.current;
+    if (workspace === null) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry !== undefined) setAvailableWidth(entry.contentRect.width);
+    });
+    observer.observe(workspace);
+    return () => observer.disconnect();
+  }, []);
+
+  const maximumWidth = availableWidth === null ? SETTINGS_NAVIGATION_WIDTH_RANGE.max
+    : Math.max(SETTINGS_NAVIGATION_WIDTH_RANGE.min, Math.min(SETTINGS_NAVIGATION_WIDTH_RANGE.max, availableWidth - 520));
+  const displayedWidth = Math.min(navigationWidth, maximumWidth);
 
   return (
     <section className="settings-workspace" aria-labelledby="settings-workspace-heading">
-      <h1 className="sr-only" id="settings-workspace-heading">设置</h1>
-
-      <div className="settings-workspace__body">
+      <div ref={workspaceRef} className="settings-workspace__body" style={{ "--settings-navigation-width": `${displayedWidth}px` } as CSSProperties}>
         <nav className="settings-navigation" aria-label="设置分区">
+          <h1 id="settings-workspace-heading" className="m-0 mb-6 px-2 text-[length:var(--app-font-size-display)] font-semibold text-[var(--app-foreground)]">设置</h1>
           <div className="settings-navigation__items">
-            {SETTINGS_NAVIGATION.map((item) => {
+            {[...new Set(SETTINGS_NAVIGATION.map((item) => item.group))].map((group) => (
+              <section key={group} className="mb-4 last:mb-0" aria-label={group}>
+                <h2 className="m-0 mb-1 px-2 text-[length:var(--app-font-size-auxiliary)] font-medium text-[var(--app-subtle-foreground)]">{group}</h2>
+                {SETTINGS_NAVIGATION.filter((item) => item.group === group).map((item) => {
               const Icon = item.icon;
               const isActive = item.id === activeSection;
 
@@ -273,15 +297,30 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
                 >
                   <Icon aria-hidden="true" size={16} />
                   <span>{item.label}</span>
-                  <ChevronRight aria-hidden="true" size={14} />
                 </button>
               );
-            })}
+                })}
+              </section>
+            ))}
           </div>
           <p className="settings-navigation__note">修改后自动保存</p>
         </nav>
 
-        <div className="settings-content">
+        <ResizableDivider
+          ariaLabel="调整设置菜单宽度"
+          className="settings-navigation-divider"
+          direction="from-start"
+          collapsible={false}
+          defaultSize={240}
+          keyboardStep={10}
+          min={SETTINGS_NAVIGATION_WIDTH_RANGE.min}
+          max={maximumWidth}
+          size={displayedWidth}
+          onResize={setNavigationWidth}
+          onCollapsedChange={() => {}}
+        />
+
+        <div key={activeSection} className="settings-content" data-section={activeSection}>
           {activeSection === "general" ? <GeneralSettings agentClient={agentClient} /> : null}
           {activeSection === "models" ? (
             <ModelsSettings agentClient={agentClient} />
@@ -599,6 +638,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
   const [isDiscovering, setIsDiscovering] = useState(false);
   const [isApiKeyVisible, setIsApiKeyVisible] = useState(false);
   const [configuredModelDrafts, setConfiguredModelDrafts] = useState<ConfiguredModelDraft[]>([]);
+  const [expandedModelIds, setExpandedModelIds] = useState<string[]>([]);
   const [globalContextCompression, setGlobalContextCompression] = useState<ContextCompressionConfiguration>(
     DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
   );
@@ -921,6 +961,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
   function addModel(): void {
     if (!isGlobalContextCompressionLoaded) return;
     const id = `model-${nextModelDraftIdRef.current++}`;
+    setExpandedModelIds((current) => [...current, id]);
     newModelContextDefaultIdsRef.current.add(id);
     newModelReasoningDefaultIdsRef.current.add(id);
     setConfiguredModelDrafts((current) => [...current, {
@@ -1373,11 +1414,27 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                     ? "自动"
                     : enabledReasoningOptions.map(reasoningOptionLabel).join("，");
                   return (
-                    <div
+                    <details
                       key={model.id}
-                      className="settings-model-option"
+                      className="settings-model-disclosure"
                       role="listitem"
+                      open={expandedModelIds.includes(model.id)}
+                      onToggle={(event) => {
+                        const isOpen = event.currentTarget.open;
+                        setExpandedModelIds((current) => {
+                          if (current.includes(model.id) === isOpen) return current;
+                          return isOpen ? [...current, model.id] : current.filter((id) => id !== model.id);
+                        });
+                      }}
                     >
+                      <summary>
+                        {model.displayName || model.modelId || "未配置模型"}
+                        <span className="ml-3 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
+                          {model.modelId || "点击配置模型参数"}
+                          {model.contextWindow === "" ? null : ` · ${Number(model.contextWindow) / 1000} K`}
+                        </span>
+                      </summary>
+                      <div className="settings-model-option">
                       <label className="settings-model-field settings-model-field--name">
                         {isTestingModel ? (
                           <span
@@ -1449,13 +1506,16 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                         <label className="settings-model-field settings-model-field--context">
                           <input
                             aria-label={`${model.modelId || "模型"}的上下文窗口`}
-                            max="10000000"
+                            title="上下文窗口，单位 K（1 K = 1000 Token）"
+                            max="10000"
                             min="0"
-                            placeholder="上下文窗口"
+                            step="0.001"
+                            placeholder="上下文窗口（K）"
                             type="number"
-                            value={model.contextWindow}
-                            onChange={(event) => setContextWindow(model.id, event.target.value)}
+                            value={model.contextWindow === "" ? "" : Number(model.contextWindow) / 1000}
+                            onChange={(event) => setContextWindow(model.id, event.target.value === "" ? "" : String(Math.round(Number(event.target.value) * 1000)))}
                           />
+                          <span className="text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">K</span>
                         </label>
 
                         <ModelContextCompressionEditor
@@ -1511,7 +1571,8 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                         </p>
                       ) : null}
 
-                    </div>
+                      </div>
+                    </details>
                   );
                 })}
               </div>
@@ -2515,7 +2576,7 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
       )}
       bodyClassName="settings-section__body--flush"
       eyebrow="Tools · Resources · Prompts"
-      title="MCP 管理器"
+      title="MCP"
     >
       {mode === "json" ? (
         <JsonConfigurationEditor
@@ -2807,7 +2868,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
       )}
       bodyClassName="settings-section__body--flush"
       eyebrow="指令 · 流程 · 模板"
-      title="Skill 管理器"
+      title="Skill"
     >
       {configuration === null ? (
         <ConfigurationStatus error={state.error} />
@@ -3037,7 +3098,6 @@ function ConfigurationEditorHeader({
     <header className="settings-integration-editor__header">
       <span className="settings-configuration-row__icon"><Icon aria-hidden="true" size={16} /></span>
       <div>
-        <p>当前配置</p>
         <h3>{name.trim() || "未命名配置"}</h3>
       </div>
       <button className="settings-secondary-button" type="button" onClick={onOpenFile}>
@@ -4045,12 +4105,12 @@ function AppearanceSettings(): ReactElement {
 
   return (
     <SettingsSectionHeader eyebrow="应用界面" title="外观">
-      <section className="settings-appearance-group" aria-labelledby="theme-heading">
+      <section className="settings-general-category" aria-labelledby="theme-heading">
         <div>
           <h3 id="theme-heading">主题</h3>
           <p>当前使用 {themeMode === "dark" ? "深色" : "浅色"} 主题</p>
         </div>
-        <div className="settings-segmented" role="group" aria-label="主题">
+        <div className="flex flex-wrap gap-3" role="group" aria-label="主题">
           <ThemeButton mode="light" selected={themeMode} onSelect={setThemeMode} label="浅色" />
           <ThemeButton mode="dark" selected={themeMode} onSelect={setThemeMode} label="深色" />
         </div>
@@ -4073,9 +4133,16 @@ function ThemeButton({
   return (
     <button
       aria-pressed={selected === mode}
+      className="w-44 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] p-3 text-left text-[length:var(--app-font-size-body)] aria-pressed:outline-2 aria-pressed:outline-[var(--app-accent)]"
       type="button"
       onClick={() => onSelect(mode)}
     >
+      <span aria-hidden="true" className={`mb-3 flex h-20 overflow-hidden rounded-[var(--app-radius-small)] border ${mode === "light" ? "border-[#dedede] bg-[#ffffff]" : "border-[#393b40] bg-[#202020]"}`}>
+        <span className={`w-1/3 border-r ${mode === "light" ? "border-[#dedede] bg-[#f5f5f5]" : "border-[#393b40] bg-[#282828]"}`} />
+        <span className="flex flex-1 flex-col gap-2 p-3">
+          {[0, 1, 2].map((line) => <span key={line} className={`h-1.5 rounded-sm ${mode === "light" ? "bg-[#dedede]" : "bg-[#393b40]"}`} />)}
+        </span>
+      </span>
       {label}
     </button>
   );

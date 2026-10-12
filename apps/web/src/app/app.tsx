@@ -66,6 +66,7 @@ function applicationSettingsSnapshot(): ApplicationSettings {
       filePanelWidth: workbench.filePanelWidth,
       projectNavigatorOpen: workbench.isProjectNavigatorOpen,
       projectNavigatorWidth: workbench.projectNavigatorWidth,
+      settingsNavigationWidth: workbench.settingsNavigationWidth,
       themeMode: workbench.themeMode,
     },
     general: {

@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { mcpServerConfigurationSchema } from "@agent/protocol";
+import { mcpServerConfigurationSchema, saveModelConfigurationInputSchema } from "@agent/protocol";
 import { TooltipProvider } from "../../components/ui/tooltip.js";
 import { MockAgentClient } from "../../runtime/index.js";
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
@@ -16,11 +16,16 @@ const initialDirectory = useAgentDirectoryStore.getState();
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  vi.stubGlobal("ResizeObserver", class {
+    observe(): void {}
+    disconnect(): void {}
+  });
   useWorkbenchUiStore.setState({
     activeActivity: "settings",
     configurationWorkspaceRevision: 0,
     configurationWorkspaceTarget: null,
     isSettingsFilePanelOpen: false,
+    settingsNavigationWidth: 240,
   });
 });
 
@@ -52,6 +57,41 @@ function clickButton(container: HTMLElement, label: string): void {
 }
 
 describe("SettingsWorkspace", () => {
+  it("shows context windows in K while saving integer Token counts", async () => {
+    const client = new MockAgentClient();
+    await client.saveModelConfiguration(saveModelConfigurationInputSchema.parse({
+      apiKey: "example-key", apiFormat: "openai-responses", baseUrl: "https://example.com/v1",
+      providerName: "Example", models: [{ modelId: "example-model", displayName: "Example model", contextWindow: 128000, reasoningOptions: [] }],
+    }));
+    const save = vi.spyOn(client, "saveModelConfiguration");
+    useWorkbenchUiStore.setState({ settingsSection: "models" });
+    const container = await renderSettings(client);
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="example-model的上下文窗口"]');
+    expect(input?.value).toBe("128");
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "200.5");
+      input?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      await vi.waitFor(() => expect(save).toHaveBeenCalled(), { timeout: 2000 });
+    });
+    expect(save.mock.calls.at(-1)?.[0].models[0]?.contextWindow).toBe(200500);
+  });
+
+  it("resizes only the settings menu and resets it to its default width", async () => {
+    const container = await renderSettings(new MockAgentClient());
+    const divider = container.querySelector<HTMLElement>('[aria-label="调整设置菜单宽度"]');
+    expect(divider).not.toBeNull();
+    const projectWidth = useWorkbenchUiStore.getState().projectNavigatorWidth;
+    act(() => { divider?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })); });
+    expect(useWorkbenchUiStore.getState().settingsNavigationWidth).toBe(250);
+    act(() => { divider?.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })); });
+    expect(useWorkbenchUiStore.getState().settingsNavigationWidth).toBe(360);
+    act(() => { divider?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
+    expect(useWorkbenchUiStore.getState().settingsNavigationWidth).toBe(240);
+    expect(useWorkbenchUiStore.getState().projectNavigatorWidth).toBe(projectWidth);
+  });
+
   it("opens the selected MCP in the sidebar and refreshes its form after a file save", async () => {
     const client = new MockAgentClient();
     const server = mcpServerConfigurationSchema.parse({

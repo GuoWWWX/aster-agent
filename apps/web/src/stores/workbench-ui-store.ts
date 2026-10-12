@@ -69,6 +69,8 @@ export const FILE_PANEL_WIDTH_RANGE = {
   max: 960,
 } as const;
 
+export const SETTINGS_NAVIGATION_WIDTH_RANGE = { min: 200, max: 360 } as const;
+
 export function clampWorkbenchPanelWidth(
   width: number,
   range: { min: number; max: number },
@@ -94,6 +96,8 @@ type WorkbenchUiState = {
   openConfigurationWorkspace: (target: ConfigurationWorkspaceTarget) => void;
   projectNavigatorWidth: number;
   settingsSection: SettingsSection;
+  settingsNavigationWidth: number;
+  setSettingsNavigationWidth: (width: number) => void;
   setFilePanelOpen: (isOpen: boolean) => void;
   setFilePanelOpenForConversation: (conversationId: string, isOpen: boolean) => void;
   setFilePanelWidth: (width: number) => void;
@@ -163,6 +167,10 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
   }),
   projectNavigatorWidth: 288,
   settingsSection: "general",
+  settingsNavigationWidth: 240,
+  setSettingsNavigationWidth: (width) => set({
+    settingsNavigationWidth: clampWorkbenchPanelWidth(width, SETTINGS_NAVIGATION_WIDTH_RANGE),
+  }),
   setFilePanelOpen: (isFilePanelOpen) => set({ isFilePanelOpen }),
   setFilePanelOpenForConversation: (conversationId, isOpen) => set((state) => ({
     filePanelOpenByConversationId: {
@@ -200,6 +208,7 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
       PROJECT_NAVIGATOR_WIDTH_RANGE,
     ),
     themeMode: appearance.themeMode,
+    settingsNavigationWidth: appearance.settingsNavigationWidth,
   }),
   setProjectNavigatorOpen: (isProjectNavigatorOpen) =>
     set({ isProjectNavigatorOpen }),

@@ -19,6 +19,20 @@ afterEach(async () => {
 });
 
 describe("ApplicationSettingsStore", () => {
+  it("preserves legacy appearance choices while defaulting the settings menu width", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-settings-width-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "settings.jsonc");
+    const appearance = { ...DEFAULT_APPLICATION_SETTINGS.appearance, themeMode: "dark" };
+    Reflect.deleteProperty(appearance, "settingsNavigationWidth");
+    await writeFile(configurationPath, JSON.stringify({ appearance, version: 1 }), "utf8");
+    const store = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    store.ensureFile();
+    expect(store.getConfiguration().appearance).toEqual({
+      ...appearance, settingsNavigationWidth: 240,
+    });
+  });
+
   it("fills missing JSONC sections without replacing existing customized sections", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "aster-app-settings-jsonc-"));
     temporaryDirectories.push(directory);
@@ -67,6 +81,7 @@ describe("ApplicationSettingsStore", () => {
       appearance: {
         ...DEFAULT_APPLICATION_SETTINGS.appearance,
         themeMode: "dark" as const,
+        settingsNavigationWidth: 310,
       },
       general: {
         ...DEFAULT_APPLICATION_SETTINGS.general,
@@ -80,6 +95,7 @@ describe("ApplicationSettingsStore", () => {
 
     expect(store.saveConfiguration(configuration)).toEqual(configuration);
     expect(store.getConfiguration()).toEqual(configuration);
+    expect(new ApplicationSettingsStore(configurationPath).getConfiguration().appearance.settingsNavigationWidth).toBe(310);
     expect(JSON.parse(await readFile(configurationPath, "utf8"))).toEqual(configuration);
   });
 
