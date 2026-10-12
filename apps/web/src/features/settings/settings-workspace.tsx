@@ -9,6 +9,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CirclePlus,
+  Database,
   Eye,
   EyeOff,
   FolderOpen,
@@ -441,7 +442,10 @@ function GeneralSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
       title="常规设置"
     >
       <section className="settings-general-category" aria-labelledby="conversation-editor-heading">
-        <h3 id="conversation-editor-heading">对话与编辑器</h3>
+        <h3 id="conversation-editor-heading">
+          <MessageSquareText aria-hidden="true" size={16} className="shrink-0 text-[var(--app-muted-foreground)]" />
+          对话与编辑器
+        </h3>
         <div className="settings-general-card">
           <article className="settings-general-row">
             <div>
@@ -532,7 +536,10 @@ function GeneralSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
       </section>
 
       <section className="settings-general-category" aria-labelledby="workspace-heading">
-        <h3 id="workspace-heading">工作区</h3>
+        <h3 id="workspace-heading">
+          <PanelRight aria-hidden="true" size={16} className="shrink-0 text-[var(--app-muted-foreground)]" />
+          工作区
+        </h3>
         <div className="settings-general-card">
           <article className="settings-general-row">
             <div>
@@ -569,7 +576,10 @@ function GeneralSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
       </section>
 
       <section className="settings-general-category" aria-labelledby="storage-location-heading">
-        <h3 id="storage-location-heading">数据存储</h3>
+        <h3 id="storage-location-heading">
+          <Database aria-hidden="true" size={16} className="shrink-0 text-[var(--app-muted-foreground)]" />
+          数据存储
+        </h3>
         <div className="settings-general-card">
           <article className="settings-general-row">
             <div className="min-w-0 flex-1">
@@ -1261,38 +1271,26 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
 
           <div className="settings-provider-editor__body">
           <div className="settings-provider-fields">
-            <div className="settings-provider-name-field">
-              <label>
-                供应商名称
-                <input
-                  name="providerName"
-                  placeholder="例如：OpenAI、DeepSeek"
-                  value={draft.providerName}
-                  onChange={updateDraft}
-                />
-              </label>
-              <div className="settings-provider-icon-field">
-                <span>供应商图标</span>
-                <ProviderIconPicker
-                  icon={draft.providerIcon}
-                  providerName={draft.providerName}
-                  onIconChange={(providerIcon) => {
-                    setDraft((current) => ({ ...current, providerIcon }));
-                    markProviderConfigurationChanged();
-                  }}
-                />
-              </div>
-            </div>
             <label>
-              备注
+              供应商名称
               <input
-                maxLength={500}
-                name="providerNote"
-                placeholder="填写供应商备注"
-                value={draft.providerNote}
+                name="providerName"
+                placeholder="例如：OpenAI、DeepSeek"
+                value={draft.providerName}
                 onChange={updateDraft}
               />
             </label>
+            <div className="settings-provider-icon-field">
+              <span>供应商图标</span>
+              <ProviderIconPicker
+                icon={draft.providerIcon}
+                providerName={draft.providerName}
+                onIconChange={(providerIcon) => {
+                  setDraft((current) => ({ ...current, providerIcon }));
+                  markProviderConfigurationChanged();
+                }}
+              />
+            </div>
             <label>
               官网地址
               <input
@@ -1331,38 +1329,46 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                 </SelectContent>
               </Select>
             </label>
-            <div className="settings-provider-fields__credentials">
-              <label>
-                请求地址
+            <label>
+              请求地址
+              <input
+                name="baseUrl"
+                placeholder={modelApiBaseUrlPlaceholder(draft.apiFormat)}
+                value={draft.baseUrl}
+                onChange={updateDraft}
+              />
+            </label>
+            <label>
+              API Key
+              <div className="settings-secret-input">
                 <input
-                  name="baseUrl"
-                  placeholder={modelApiBaseUrlPlaceholder(draft.apiFormat)}
-                  value={draft.baseUrl}
+                  autoComplete="off"
+                  name="apiKey"
+                  placeholder="请输入或重新输入 API Key"
+                  type={isApiKeyVisible ? "text" : "password"}
+                  value={draft.apiKey}
                   onChange={updateDraft}
                 />
-              </label>
-              <label>
-                API Key
-                <div className="settings-secret-input">
-                  <input
-                    autoComplete="off"
-                    name="apiKey"
-                    placeholder="请输入或重新输入 API Key"
-                    type={isApiKeyVisible ? "text" : "password"}
-                    value={draft.apiKey}
-                    onChange={updateDraft}
-                  />
-                  <button
-                    aria-label={isApiKeyVisible ? "隐藏 API Key" : "显示 API Key"}
-                    title={isApiKeyVisible ? "隐藏 API Key" : "显示 API Key"}
-                    type="button"
-                    onClick={() => setIsApiKeyVisible((current) => !current)}
-                  >
-                    {isApiKeyVisible ? <EyeOff aria-hidden="true" size={15} /> : <Eye aria-hidden="true" size={15} />}
-                  </button>
-                </div>
-              </label>
-            </div>
+                <button
+                  aria-label={isApiKeyVisible ? "隐藏 API Key" : "显示 API Key"}
+                  title={isApiKeyVisible ? "隐藏 API Key" : "显示 API Key"}
+                  type="button"
+                  onClick={() => setIsApiKeyVisible((current) => !current)}
+                >
+                  {isApiKeyVisible ? <EyeOff aria-hidden="true" size={15} /> : <Eye aria-hidden="true" size={15} />}
+                </button>
+              </div>
+            </label>
+            <label className="settings-provider-fields__note">
+              备注
+              <input
+                maxLength={500}
+                name="providerNote"
+                placeholder="填写供应商备注"
+                value={draft.providerNote}
+                onChange={updateDraft}
+              />
+            </label>
           </div>
 
           <section className="settings-provider-models" aria-labelledby="provider-models-heading">
@@ -3711,121 +3717,131 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
       eyebrow="内置浏览器"
       title="浏览器"
     >
-      <div className="settings-terminal-form">
-        <section className="settings-general-category" aria-labelledby="browser-startup-heading">
-          <h3 id="browser-startup-heading">启动与搜索</h3>
-          <div className="settings-general-card">
-            <article className="settings-general-row">
-              <div>
-                <h4>默认搜索引擎</h4>
-                <p>地址栏输入的内容不是网址时，使用此搜索引擎。</p>
-              </div>
-              <Select
-                value={draft.searchEngine}
-                onValueChange={(value) => updateConfiguration({
-                  searchEngine: value as BrowserConfiguration["searchEngine"],
+      <section className="settings-general-category" aria-labelledby="browser-startup-heading">
+        <h3 id="browser-startup-heading">
+          <Search aria-hidden="true" size={16} className="shrink-0 text-[var(--app-muted-foreground)]" />
+          启动与搜索
+        </h3>
+        <div className="settings-general-card">
+          <article className="settings-general-row">
+            <div>
+              <h4>默认搜索引擎</h4>
+              <p>地址栏输入的内容不是网址时，使用此搜索引擎。</p>
+            </div>
+            <Select
+              value={draft.searchEngine}
+              onValueChange={(value) => updateConfiguration({
+                searchEngine: value as BrowserConfiguration["searchEngine"],
+              })}
+            >
+              <SelectTrigger aria-label="默认搜索引擎" className="settings-general-select w-[160px] max-w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="google">Google</SelectItem>
+                <SelectItem value="bing">Bing</SelectItem>
+                <SelectItem value="duckduckgo">DuckDuckGo</SelectItem>
+              </SelectContent>
+            </Select>
+          </article>
+          <article className="settings-general-row">
+            <div>
+              <h4>新标签默认缩放</h4>
+              <p>当前的 100% 对应原始网页的 80%，只影响之后新建的标签。</p>
+            </div>
+            <Select
+              value={String(draft.defaultZoomPercent)}
+              onValueChange={(value) => updateConfiguration({ defaultZoomPercent: Number(value) })}
+            >
+              <SelectTrigger aria-label="新浏览器标签默认缩放" className="settings-general-select w-[160px] max-w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                {BROWSER_ZOOM_OPTIONS.map((percent) => (
+                  <SelectItem key={percent} value={String(percent)}>{percent}%</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </article>
+        </div>
+      </section>
+
+      <section className="settings-general-category" aria-labelledby="browser-download-heading">
+        <h3 id="browser-download-heading">
+          <FolderOpen aria-hidden="true" size={16} className="shrink-0 text-[var(--app-muted-foreground)]" />
+          下载
+        </h3>
+        <div className="settings-general-card">
+          <article className="settings-general-row">
+            <div>
+              <h4>下载前询问保存位置</h4>
+              <p>关闭时自动保存到系统“下载”文件夹。</p>
+            </div>
+            <label className="settings-switch">
+              <input
+                aria-label="下载前询问保存位置"
+                checked={draft.askForDownloadLocation}
+                type="checkbox"
+                onChange={(event) => updateConfiguration({
+                  askForDownloadLocation: event.target.checked,
                 })}
-              >
-                <SelectTrigger aria-label="默认搜索引擎" className="settings-select-trigger">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent align="end">
-                  <SelectItem value="google">Google</SelectItem>
-                  <SelectItem value="bing">Bing</SelectItem>
-                  <SelectItem value="duckduckgo">DuckDuckGo</SelectItem>
-                </SelectContent>
-              </Select>
-            </article>
-            <article className="settings-general-row">
-              <div>
-                <h4>新标签默认缩放</h4>
-                <p>当前的 100% 对应原始网页的 80%，只影响之后新建的标签。</p>
-              </div>
-              <Select
-                value={String(draft.defaultZoomPercent)}
-                onValueChange={(value) => updateConfiguration({ defaultZoomPercent: Number(value) })}
-              >
-                <SelectTrigger aria-label="新浏览器标签默认缩放" className="settings-select-trigger">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent align="end">
-                  {BROWSER_ZOOM_OPTIONS.map((percent) => (
-                    <SelectItem key={percent} value={String(percent)}>{percent}%</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </article>
-          </div>
-        </section>
+              />
+              <span aria-hidden="true" />
+            </label>
+          </article>
+        </div>
+      </section>
 
-        <section className="settings-general-category" aria-labelledby="browser-download-heading">
-          <h3 id="browser-download-heading">下载</h3>
-          <div className="settings-general-card">
-            <article className="settings-general-row">
-              <div>
-                <h4>下载前询问保存位置</h4>
-                <p>关闭时自动保存到系统“下载”文件夹。</p>
-              </div>
-              <label className="settings-switch">
-                <input
-                  aria-label="下载前询问保存位置"
-                  checked={draft.askForDownloadLocation}
-                  type="checkbox"
-                  onChange={(event) => updateConfiguration({
-                    askForDownloadLocation: event.target.checked,
-                  })}
-                />
-                <span aria-hidden="true" />
-              </label>
-            </article>
-          </div>
-        </section>
+      <section className="settings-general-category" aria-labelledby="browser-password-heading">
+        <h3 id="browser-password-heading">
+          <EyeOff aria-hidden="true" size={16} className="shrink-0 text-[var(--app-muted-foreground)]" />
+          密码和自动填充
+        </h3>
+        <div className="settings-general-card">
+          <article className="settings-general-row">
+            <div>
+              <h4>密码保存</h4>
+              <p>隔离的内置浏览器不会保存或自动填充密码。</p>
+            </div>
+            <span className="settings-state-badge" data-state="offline">已关闭</span>
+          </article>
+        </div>
+      </section>
 
-        <section className="settings-general-category" aria-labelledby="browser-password-heading">
-          <h3 id="browser-password-heading">密码和自动填充</h3>
-          <div className="settings-general-card">
-            <article className="settings-general-row">
-              <div>
-                <h4>密码保存</h4>
-                <p>隔离的内置浏览器不会保存或自动填充密码。</p>
-              </div>
-              <span className="settings-state-badge" data-state="offline">已关闭</span>
-            </article>
-          </div>
-        </section>
+      <section className="settings-general-category" aria-labelledby="browser-privacy-heading">
+        <h3 id="browser-privacy-heading">
+          <ShieldCheck aria-hidden="true" size={16} className="shrink-0 text-[var(--app-muted-foreground)]" />
+          隐私
+        </h3>
+        <div className="settings-general-card">
+          <article className="settings-general-row">
+            <div>
+              <h4>清除浏览数据</h4>
+              <p>清除内置浏览器的 Cookie、缓存、站点数据和当前历史记录。</p>
+            </div>
+            <button
+              className="settings-secondary-button"
+              disabled={clearState === "clearing"}
+              type="button"
+              onClick={() => void clearBrowserData()}
+            >
+              <Trash2 aria-hidden="true" size={14} />
+              {clearState === "clearing" ? "正在清除" : "清除浏览数据"}
+            </button>
+          </article>
+        </div>
+      </section>
 
-        <section className="settings-general-category" aria-labelledby="browser-privacy-heading">
-          <h3 id="browser-privacy-heading">隐私</h3>
-          <div className="settings-general-card">
-            <article className="settings-general-row">
-              <div>
-                <h4>清除浏览数据</h4>
-                <p>清除内置浏览器的 Cookie、缓存、站点数据和当前历史记录。</p>
-              </div>
-              <button
-                className="settings-secondary-button"
-                disabled={clearState === "clearing"}
-                type="button"
-                onClick={() => void clearBrowserData()}
-              >
-                <Trash2 aria-hidden="true" size={14} />
-                {clearState === "clearing" ? "正在清除" : "清除浏览数据"}
-              </button>
-            </article>
-          </div>
-        </section>
-
-        {clearState === "cleared" ? (
-          <p className="settings-terminal-status" role="status">浏览数据已清除。</p>
-        ) : null}
-        {operationError !== null ? (
-          <p className="settings-terminal-status" role="alert">{operationError}</p>
-        ) : (
-          <p className="settings-terminal-status" role="status">
-            {autoSaveStateLabel(autoSave.state)}
-          </p>
-        )}
-      </div>
+      {clearState === "cleared" ? (
+        <p className="settings-terminal-status" role="status">浏览数据已清除。</p>
+      ) : null}
+      {operationError !== null ? (
+        <p className="settings-terminal-status" role="alert">{operationError}</p>
+      ) : (
+        <p className="settings-terminal-status" role="status">
+          {autoSaveStateLabel(autoSave.state)}
+        </p>
+      )}
     </SettingsSectionHeader>
   );
 }

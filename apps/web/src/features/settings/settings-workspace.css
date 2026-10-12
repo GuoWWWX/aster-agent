@@ -3037,6 +3037,7 @@
   .settings-general-row {
     align-items: stretch;
     flex-direction: column;
+    gap: 12px;
   }
 
   .settings-general-row .settings-segmented {
@@ -3580,6 +3581,8 @@
   flex-direction: column;
   overflow: visible;
   overscroll-behavior: contain;
+  container-type: inline-size;
+  container-name: provider-fields;
 }
 
 .settings-provider-fields {
@@ -3599,12 +3602,8 @@
   font-weight: 500;
 }
 
-.settings-provider-name-field {
-  display: grid;
-  min-width: 0;
+.settings-provider-fields__note {
   grid-column: 1 / -1;
-  grid-template-columns: minmax(0, 1fr) 168px;
-  gap: 10px;
 }
 
 .settings-provider-icon-field {
@@ -3614,15 +3613,7 @@
   gap: 5px;
   color: var(--app-muted-foreground);
   font-size: var(--app-font-size-control);
-  font-weight: 650;
-}
-
-.settings-provider-fields__credentials {
-  display: grid;
-  min-width: 0;
-  grid-column: 1 / -1;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  font-weight: 500;
 }
 
 .settings-provider-fields input {
@@ -3747,19 +3738,6 @@
     row-gap: 20px;
   }
 
-  .settings-provider-fields {
-    grid-template-columns: 1fr;
-  }
-
-  .settings-provider-name-field {
-    grid-template-columns: minmax(0, 1fr) 168px;
-  }
-
-  .settings-provider-fields__credentials {
-    grid-column: auto;
-    grid-template-columns: 1fr;
-  }
-
   .settings-provider-editor__body {
     overflow: visible;
   }
@@ -3770,6 +3748,12 @@
 
   .settings-model-option {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container provider-fields (max-width: 520px) {
+  .settings-provider-fields {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
