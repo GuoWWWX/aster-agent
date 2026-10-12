@@ -49,6 +49,12 @@
   overflow: auto;
 }
 
+.settings-navigation__search {
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: transparent;
+}
+
 .settings-navigation__note {
   margin: 18px 8px 0;
   border-top: 0;
@@ -107,7 +113,7 @@
   display: block;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   container-type: inline-size;
   flex: 1 1 auto;
   background: transparent;
@@ -117,14 +123,14 @@
 .settings-section {
   display: flex;
   min-width: 0;
-  min-height: 100%;
+  min-height: 0;
   flex-direction: column;
   gap: 28px;
   width: 100%;
-  height: auto;
+  height: 100%;
   max-width: 944px;
   margin: 0 auto;
-  padding: 40px 32px 48px;
+  padding: 40px 32px 5px;
 }
 
 .settings-section__header {
@@ -179,8 +185,9 @@
 
 .settings-section__body {
   min-height: 0;
-  flex: 0 0 auto;
-  overflow: visible;
+  flex: 1 1 auto;
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -189,7 +196,7 @@
 
 .settings-section__body--flush,
 .settings-section__body--models {
-  overflow: visible;
+  overflow: hidden;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -197,20 +204,20 @@
 }
 
 .settings-section__body--general {
-  flex: 0 0 auto;
-  overflow: visible;
   padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
   display: grid;
+  align-content: start;
   gap: 28px;
 }
 
 .settings-section__body--flush {
-  display: block;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .settings-section__body--models {
@@ -218,7 +225,7 @@
   min-height: 0;
   flex-direction: column;
   gap: 28px;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .settings-global-configuration {
@@ -229,6 +236,10 @@
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
   background: var(--app-panel);
+}
+
+.settings-provider-editor > .settings-global-configuration {
+  margin-bottom: 28px;
 }
 
 .settings-global-configuration__body {
@@ -1877,13 +1888,15 @@
 
 .settings-integration-manager {
   display: grid;
+  height: 100%;
   min-height: 0;
   flex: 1 1 auto;
   grid-template-columns: var(--settings-list-card-width) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 5px;
-  overflow: visible;
+  overflow: hidden;
   background: transparent;
-  align-items: start;
+  align-items: stretch;
 }
 
 .settings-integration-manager--mcp .settings-integration-empty {
@@ -1903,9 +1916,7 @@
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
   background: var(--app-panel);
-  height: var(--settings-directory-height);
-  position: sticky;
-  top: 0;
+  height: 100%;
 }
 
 .settings-integration-list__heading {
@@ -2035,7 +2046,8 @@
   display: block;
   min-width: 0;
   min-height: 0;
-  overflow: visible;
+  overflow: auto;
+  overscroll-behavior: contain;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -2508,18 +2520,11 @@
     flex-wrap: wrap;
   }
 
-  .settings-section__body--flush,
-  .settings-section__body--models {
-    display: block;
-    overflow: auto;
-  }
-
   .settings-integration-manager {
-    height: auto;
     min-height: 0;
     grid-template-columns: 1fr;
-    grid-template-rows: 220px auto;
-    overflow: visible;
+    grid-template-rows: min(220px, 35%) minmax(0, 1fr);
+    row-gap: 20px;
   }
 
   .settings-integration-manager--mcp .settings-integration-empty {
@@ -2535,21 +2540,11 @@
   }
 
   .settings-skill-metadata {
-    min-height: 420px;
+    min-height: 0;
   }
 
   .settings-skill-document {
     min-height: 520px;
-  }
-
-  .settings-integration-list {
-    height: 220px;
-  }
-
-  .settings-integration-editor {
-    min-height: 420px;
-    grid-template-rows: auto auto auto;
-    overflow: visible;
   }
 
   .settings-integration-editor__body {
@@ -2988,10 +2983,20 @@
 }
 
 .settings-general-category > h3 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   margin: 0;
   color: var(--app-foreground);
   font-size: var(--app-font-size-subtitle);
   font-weight: 600;
+}
+
+.settings-general-category > h3::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: var(--app-border);
 }
 
 .settings-general-card {
@@ -3314,11 +3319,13 @@
 
 .settings-provider-manager {
   display: grid;
-  height: auto;
   min-height: 0;
+  flex: 1 1 auto;
   grid-template-columns: var(--settings-list-card-width) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 5px;
-  align-items: start;
+  overflow: hidden;
+  align-items: stretch;
 }
 
 .settings-provider-list {
@@ -3330,9 +3337,7 @@
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
   background: var(--app-panel);
-  height: var(--settings-directory-height);
-  position: sticky;
-  top: 0;
+  height: 100%;
 }
 
 .settings-provider-list__heading {
@@ -3518,11 +3523,8 @@
   display: block;
   min-width: 0;
   min-height: 0;
-  grid-template-rows:
-    var(--settings-list-card-header-height)
-    minmax(0, 1fr)
-    var(--settings-list-card-footer-height);
-  overflow: visible;
+  overflow: auto;
+  overscroll-behavior: contain;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -3739,16 +3741,10 @@
 
 @container (max-width: 780px) {
   .settings-provider-manager {
-    height: auto;
     min-height: 0;
     grid-template-columns: 1fr;
-    grid-template-rows: 220px auto;
-    margin-top: 5px;
-    overflow: visible;
-  }
-
-  .settings-provider-list {
-    height: 220px;
+    grid-template-rows: clamp(200px, 35%, 220px) minmax(0, 1fr);
+    row-gap: 20px;
   }
 
   .settings-provider-fields {
@@ -3762,11 +3758,6 @@
   .settings-provider-fields__credentials {
     grid-column: auto;
     grid-template-columns: 1fr;
-  }
-
-  .settings-provider-editor {
-    grid-template-rows: auto auto auto;
-    overflow: visible;
   }
 
   .settings-provider-editor__body {
@@ -3871,7 +3862,7 @@
 .settings-content[data-section="mcp"] .settings-section,
 .settings-content[data-section="skills"] .settings-section,
 .settings-content[data-section="archived"] .settings-section { max-width: 1264px; }
-.settings-section__body > .settings-general-category + .settings-general-category { margin-top: 28px; }
+.settings-section__body:not(.settings-section__body--general) > .settings-general-category + .settings-general-category { margin-top: 28px; }
 .settings-general-row > div:first-child { min-width: 0; flex: 1; }
 .settings-general-row .settings-switch,
 .settings-general-row .settings-segmented,
@@ -3887,12 +3878,11 @@
 .settings-model-option .settings-model-field--id { grid-row: auto; grid-column: auto; }
 .settings-model-field--context { display: flex; min-width: 0; align-items: center; gap: 5px; }
 @container (max-width: 780px) {
-  .settings-section { padding: 28px 24px 40px; }
-  .settings-provider-list, .settings-integration-list { position: static; }
-  .settings-provider-editor, .settings-integration-editor { padding-left: 0; margin-top: 20px; }
+  .settings-section { padding: 28px 24px 5px; }
+  .settings-provider-editor, .settings-integration-editor { padding-left: 0; }
 }
 @container (max-width: 520px) {
-  .settings-section { padding: 24px 18px 32px; }
+  .settings-section { padding: 24px 18px 5px; }
   .settings-terminal-grid > .settings-field { grid-template-columns: minmax(0, 1fr); gap: 9px; }
   .settings-general-row .settings-switch { align-self: flex-start; }
 }

@@ -57,6 +57,28 @@ function clickButton(container: HTMLElement, label: string): void {
 }
 
 describe("SettingsWorkspace", () => {
+  it("filters navigation without switching the open settings page", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "general" });
+    const container = await renderSettings(new MockAgentClient());
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="搜索设置分区"]');
+    expect(search).not.toBeNull();
+    function searchFor(value: string): void {
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(search, value);
+        search?.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    searchFor("agent");
+    expect([...container.querySelectorAll(".settings-navigation__item")].map((item) => item.textContent)).toEqual(["Agent 与团队"]);
+    expect(useWorkbenchUiStore.getState().settingsSection).toBe("general");
+    expect(container.querySelector(".settings-section__header h2")?.textContent).toBe("常规设置");
+    searchFor("没有此分区");
+    expect(container.querySelector('.settings-navigation [role="status"]')?.textContent).toBe("无匹配的设置分区");
+    searchFor("");
+    expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(10);
+    expect(useWorkbenchUiStore.getState().settingsSection).toBe("general");
+  });
+
   it("shows context windows in K while saving integer Token counts", async () => {
     const client = new MockAgentClient();
     await client.saveModelConfiguration(saveModelConfigurationInputSchema.parse({

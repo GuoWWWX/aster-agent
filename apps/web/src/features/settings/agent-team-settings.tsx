@@ -38,7 +38,6 @@ import {
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 import { AgentAvatar } from "../team/agent-avatar.js";
 import { AgentAvatarPicker } from "./agent-avatar-picker.js";
-import { useSettingsDirectoryHeight } from "./use-settings-directory-height.js";
 import "./agent-team-settings.css";
 
 type ManagementView = "agents" | "teams";
@@ -152,7 +151,6 @@ function TeamManagementView({
   teams: AgentTeam[];
 }): ReactElement {
   const selectedTeam = teams.find((team) => team.id === selectedTeamId) ?? teams[0];
-  const directoryRef = useSettingsDirectoryHeight();
   const [teamPage, setTeamPage] = useState(0);
   const teamPageCount = Math.max(1, Math.ceil(teams.length / DIRECTORY_PAGE_SIZE));
   const currentTeamPage = Math.min(teamPage, teamPageCount - 1);
@@ -170,7 +168,7 @@ function TeamManagementView({
 
   return (
     <div className="team-management-layout">
-      <section ref={directoryRef} className="team-directory-pane" aria-label="团队列表">
+      <section className="team-directory-pane" aria-label="团队列表">
         <PaneHeading
           label="团队目录"
           action={(
@@ -265,11 +263,10 @@ function AgentManagementView({
   teams: AgentTeam[];
 }): ReactElement {
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? agents[0];
-  const directoryRef = useSettingsDirectoryHeight();
 
   return (
     <div className="agent-management-layout">
-      <section ref={directoryRef} className="agent-directory-pane" aria-label="Agent 列表">
+      <section className="agent-directory-pane" aria-label="Agent 列表">
         <PaneHeading
           label="Agent 目录"
           value={agents.length}

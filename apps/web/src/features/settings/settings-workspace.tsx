@@ -127,7 +127,6 @@ import {
 } from "./model-reasoning-options.js";
 import { AgentTeamSettings } from "./agent-team-settings.js";
 import { useQueuedAutoSave, type AutoSaveState } from "./use-queued-auto-save.js";
-import { useSettingsDirectoryHeight } from "./use-settings-directory-height.js";
 import "./settings-workspace.css";
 
 type ConfiguredProvider = {
@@ -253,6 +252,10 @@ const BROWSER_ZOOM_OPTIONS = [
 ] as const;
 
 export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient }): ReactElement {
+  const [navigationQuery, setNavigationQuery] = useState("");
+  const filteredNavigation = SETTINGS_NAVIGATION.filter((item) => (
+    item.label.toLocaleLowerCase().includes(navigationQuery.trim().toLocaleLowerCase())
+  ));
   const activeSection = useWorkbenchUiStore((state) => state.settingsSection);
   const setActiveSection = useWorkbenchUiStore((state) => state.setSettingsSection);
   const navigationWidth = useWorkbenchUiStore((state) => state.settingsNavigationWidth);
@@ -278,12 +281,21 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
     <section className="settings-workspace" aria-labelledby="settings-workspace-heading">
       <div ref={workspaceRef} className="settings-workspace__body" style={{ "--settings-navigation-width": `${displayedWidth}px` } as CSSProperties}>
         <nav className="settings-navigation" aria-label="设置分区">
-          <h1 id="settings-workspace-heading" className="m-0 mb-6 px-2 text-[length:var(--app-font-size-display)] font-semibold text-[var(--app-foreground)]">设置</h1>
+          <h1 id="settings-workspace-heading" className="m-0 mb-4 px-2 text-[length:var(--app-font-size-display)] font-semibold text-[var(--app-foreground)]">设置</h1>
+          <label className="settings-navigation__search app-search-field mx-2 mb-4 shrink-0">
+            <Search aria-hidden="true" size={16} />
+            <input
+              aria-label="搜索设置分区"
+              placeholder="搜索设置分区"
+              value={navigationQuery}
+              onChange={(event) => setNavigationQuery(event.target.value)}
+            />
+          </label>
           <div className="settings-navigation__items">
-            {[...new Set(SETTINGS_NAVIGATION.map((item) => item.group))].map((group) => (
+            {[...new Set(filteredNavigation.map((item) => item.group))].map((group) => (
               <section key={group} className="mb-4 last:mb-0" aria-label={group}>
                 <h2 className="m-0 mb-1 px-2 text-[length:var(--app-font-size-auxiliary)] font-medium text-[var(--app-subtle-foreground)]">{group}</h2>
-                {SETTINGS_NAVIGATION.filter((item) => item.group === group).map((item) => {
+                {filteredNavigation.filter((item) => item.group === group).map((item) => {
               const Icon = item.icon;
               const isActive = item.id === activeSection;
 
@@ -303,6 +315,9 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
                 })}
               </section>
             ))}
+            {filteredNavigation.length === 0 ? (
+              <p className="m-0 px-2 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]" role="status">无匹配的设置分区</p>
+            ) : null}
           </div>
           <p className="settings-navigation__note">修改后自动保存</p>
         </nav>
@@ -624,7 +639,6 @@ function GeneralSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
 }
 
 function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactElement {
-  const directoryRef = useSettingsDirectoryHeight();
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>([]);
   const [draft, setDraft] = useState({
     apiKey: "",
@@ -1120,22 +1134,8 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
       eyebrow="模型协议 · 供应商"
       title="模型配置"
     >
-      <GlobalDefaultsSettings
-        agentClient={agentClient}
-        onContextCompressionChange={handleGlobalContextCompressionChange}
-        defaultModelPicker={
-          <GlobalDefaultModelPicker
-            defaultContextCompression={globalContextCompression}
-            disabled={isDefaultModelSaving}
-            models={status?.models ?? []}
-            selectedModelId={status?.modelId ?? null}
-            selectedProviderId={status?.providerId ?? null}
-            onSelect={(model) => void setDefaultModel(model)}
-          />
-        }
-      />
       <div className="settings-provider-manager">
-        <aside ref={directoryRef} className="settings-provider-list" aria-label="供应商列表">
+        <aside className="settings-provider-list" aria-label="供应商列表">
           <header className="settings-provider-list__heading">
             <strong>供应商</strong>
             <IconButton
@@ -1234,6 +1234,20 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
         </aside>
 
         <div className="settings-provider-editor">
+          <GlobalDefaultsSettings
+            agentClient={agentClient}
+            onContextCompressionChange={handleGlobalContextCompressionChange}
+            defaultModelPicker={
+              <GlobalDefaultModelPicker
+                defaultContextCompression={globalContextCompression}
+                disabled={isDefaultModelSaving}
+                models={status?.models ?? []}
+                selectedModelId={status?.modelId ?? null}
+                selectedProviderId={status?.providerId ?? null}
+                onSelect={(model) => void setDefaultModel(model)}
+              />
+            }
+          />
           <header className="settings-provider-editor__header">
             <div className="settings-provider-editor__identity">
               <ProviderLogo
@@ -2981,7 +2995,6 @@ function ConfigurationList({
   selectedId: string | null;
 }): ReactElement {
   const selectedIndex = items.findIndex((item) => item.id === selectedId);
-  const directoryRef = useSettingsDirectoryHeight();
   const pageCount = Math.max(1, Math.ceil(items.length / CONFIGURATIONS_PER_PAGE));
   const currentPage = selectedIndex < 0
     ? 0
@@ -2997,7 +3010,7 @@ function ConfigurationList({
   }
 
   return (
-    <aside ref={directoryRef} className="settings-integration-list">
+    <aside className="settings-integration-list">
       <header className="settings-integration-list__heading">
         <strong>{headingLabel}</strong>
         <IconButton

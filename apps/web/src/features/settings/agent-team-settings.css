@@ -2,7 +2,7 @@
 .agent-team-settings {
   display: flex;
   min-height: 0;
-  height: auto;
+  height: 100%;
   flex-direction: column;
   container-type: inline-size;
   container-name: agent-team-settings;
@@ -15,7 +15,7 @@
   flex: 1;
   flex-direction: column;
   gap: 24px;
-  overflow: visible;
+  overflow: hidden;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -155,9 +155,11 @@
   min-height: 0;
   flex: 1;
   grid-template-columns: var(--settings-list-card-width, 270px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 5px;
   order: 3;
-  align-items: start;
+  overflow: hidden;
+  align-items: stretch;
 }
 
 .agent-management-layout {
@@ -166,15 +168,17 @@
   min-height: 0;
   flex: 1;
   grid-template-columns: var(--settings-list-card-width, 270px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 5px;
   order: 3;
-  align-items: start;
+  overflow: hidden;
+  align-items: stretch;
 }
 
 .team-directory-pane,
 .agent-directory-pane {
   display: flex;
-  height: var(--settings-directory-height);
+  height: 100%;
   min-width: 0;
   min-height: 0;
   flex-direction: column;
@@ -182,8 +186,6 @@
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
   background: var(--app-panel);
-  position: sticky;
-  top: 0;
 }
 
 .agent-team-section-heading {
@@ -1013,22 +1015,11 @@
     display: none;
   }
 
-  .agent-team-settings__body {
-    overflow: auto;
-  }
-
   .team-management-layout,
   .agent-management-layout {
-    height: auto;
-    flex: 0 0 auto;
     grid-template-columns: 1fr;
-    grid-template-rows: 220px auto;
-  }
-
-  .team-configuration-pane,
-  .agent-configuration-pane {
-    height: auto;
-    min-height: 420px;
+    grid-template-rows: min(220px, 35%) minmax(0, 1fr);
+    row-gap: 20px;
   }
 
   .management-detail-body {
@@ -1084,10 +1075,9 @@
   }
 }
 
-.team-configuration-pane, .agent-configuration-pane { min-width: 0; min-height: 0; height: auto; display: flex; flex-direction: column; padding-left: 20px; border: 0; background: transparent; }
+.team-configuration-pane, .agent-configuration-pane { min-width: 0; min-height: 0; display: block; overflow: auto; overscroll-behavior: contain; padding-left: 20px; border: 0; background: transparent; }
 .team-configuration-pane > header, .agent-configuration-pane > header { border: 0; padding-left: 0; padding-right: 0; background: transparent; }
 .team-configuration-pane .management-detail-body, .agent-configuration-pane .management-detail-body { padding-left: 0; padding-right: 0; }
 @container agent-team-settings (max-width: 780px) {
-  .team-directory-pane, .agent-directory-pane { position: static; height: 220px; }
-  .team-configuration-pane, .agent-configuration-pane { padding-left: 0; margin-top: 20px; }
+  .team-configuration-pane, .agent-configuration-pane { padding-left: 0; }
 }
