@@ -389,117 +389,123 @@ function TeamConfigurationPane({
             团队名称、成员清单、规模和当前工作项由系统按运行状态自动注入。
           </small>
         </label>
-        <div className="management-form__row">
-          <label>
-            <span>Team Lead</span>
-            <Select
-              value={team.leadAgentId}
-              onValueChange={(leadAgentId) => updateTeam(team.id, { leadAgentId })}
-            >
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {leadCandidates.map((agent) => (
-                  <SelectItem key={agent.id} value={agent.id}>{agent.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </label>
-          <label>
-            <span>最大 Worker</span>
-            <Select
-              value={String(team.maxWorkers)}
-              onValueChange={(value) => updateTeam(team.id, { maxWorkers: Number(value) })}
-            >
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {[1, 2, 3, 4, 5].map((count) => (
-                  <SelectItem key={count} value={String(count)}>{count}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </label>
-        </div>
         </div>
 
-        <div className="team-member-editor">
-        <section className="team-member-management" aria-label={`${team.name} 成员编排`}>
-          <PaneHeading label="团队 Agent" value={members.length} />
-          <TeamMemberAdd team={team} agents={agents} />
-          <div className="team-member-list team-member-list--embedded">
-            {members.map((member) => (
-              <TeamMemberRow
-                key={member.id}
-                agent={member}
-                isLead={team.leadAgentId === member.id}
-                isSelected={agent?.id === member.id}
-                team={team}
-                onSelect={() => onSelectMember(member.id)}
-              />
-            ))}
+        <section className="team-members-section" aria-label={`${team.name} 成员编排`}>
+          <header className="team-members-section__heading">
+            <div>
+              <h3>
+                成员与职责 <span>{members.length} 名成员</span>
+              </h3>
+              <p>职责与额外要求仅在当前团队生效。</p>
+            </div>
+            <TeamMemberAdd team={team} agents={agents} />
+          </header>
+          <div className="management-form team-members-section__controls">
+            <div className="management-form__row">
+              <label>
+                <span>Team Lead</span>
+                <Select
+                  value={team.leadAgentId}
+                  onValueChange={(leadAgentId) => updateTeam(team.id, { leadAgentId })}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {leadCandidates.map((agent) => (
+                      <SelectItem key={agent.id} value={agent.id}>{agent.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <label>
+                <span>最大 Worker</span>
+                <Select
+                  value={String(team.maxWorkers)}
+                  onValueChange={(value) => updateTeam(team.id, { maxWorkers: Number(value) })}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {[1, 2, 3, 4, 5].map((count) => (
+                      <SelectItem key={count} value={String(count)}>{count}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+            </div>
+          </div>
+
+          <div className="team-member-editor">
+            <div className="team-member-management">
+              <div className="team-member-list team-member-list--embedded">
+                {members.map((member) => (
+                  <TeamMemberRow
+                    key={member.id}
+                    agent={member}
+                    isLead={team.leadAgentId === member.id}
+                    isSelected={agent?.id === member.id}
+                    team={team}
+                    onSelect={() => onSelectMember(member.id)}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {agent === undefined ? (
+              <div className="team-member-configuration team-member-configuration--empty">
+                <BrainCircuit aria-hidden="true" size={18} />
+                <p>选择成员，配置其在当前团队中的职责与额外要求。</p>
+              </div>
+            ) : (
+              <section className="team-member-configuration" aria-label={`${agent.name} 团队内配置`}>
+                <div className="team-member-configuration__heading">
+                  <AgentAvatar avatar={agent.avatar} status={agent.status} />
+                  <h3>{agent.name}</h3>
+                  <button
+                    aria-label={`打开 ${agent.name} 的基础配置`}
+                    title="打开 Agent 基础配置"
+                    type="button"
+                    onClick={() => onOpenAgent(agent.id)}
+                  >
+                    <Settings2 aria-hidden="true" size={14} />
+                  </button>
+                </div>
+                <div className="management-form team-member-configuration__form">
+                  <label>
+                    <span className="management-field-label">
+                      在本团队中的职责
+                      <small>可选</small>
+                    </span>
+                    <input
+                      placeholder={`留空则沿用：${agent.role}`}
+                      value={memberConfiguration?.role ?? ""}
+                      onChange={(event) => updateTeamMemberConfiguration(
+                        team.id,
+                        agent.id,
+                        { role: event.target.value },
+                      )}
+                    />
+                  </label>
+                  <label>
+                    <span className="management-field-label">
+                      给该成员的额外要求
+                      <small>可选</small>
+                    </span>
+                    <textarea
+                      placeholder="只在当前团队生效；留空则不增加额外要求"
+                      rows={4}
+                      value={memberConfiguration?.instructions ?? ""}
+                      onChange={(event) => updateTeamMemberConfiguration(
+                        team.id,
+                        agent.id,
+                        { instructions: event.target.value },
+                      )}
+                    />
+                  </label>
+                </div>
+              </section>
+            )}
           </div>
         </section>
-
-        {agent === undefined ? (
-          <div className="team-member-configuration team-member-configuration--empty">
-            <BrainCircuit aria-hidden="true" size={18} />
-            <p>从左侧选择一个 Agent 配置团队专属要求。</p>
-          </div>
-        ) : (
-          <section className="team-member-configuration" aria-label={`${agent.name} 团队内配置`}>
-            <div className="team-member-configuration__heading">
-              <AgentAvatar avatar={agent.avatar} status={agent.status} />
-              <div>
-                <p>当前 Agent 的团队配置</p>
-                <h3>{agent.name}</h3>
-              </div>
-              <button
-                aria-label={`打开 ${agent.name} 的基础配置`}
-                title="打开 Agent 基础配置"
-                type="button"
-                onClick={() => onOpenAgent(agent.id)}
-              >
-                <Settings2 aria-hidden="true" size={14} />
-              </button>
-            </div>
-            <div className="management-form team-member-configuration__form">
-              <p className="team-member-configuration__description">
-                左侧选择哪个 Agent，这里的职责和要求就只对它生效。
-              </p>
-              <label>
-                <span className="management-field-label">
-                  在本团队中的职责
-                  <small>可选</small>
-                </span>
-                <input
-                  placeholder={`留空则沿用：${agent.role}`}
-                  value={memberConfiguration?.role ?? ""}
-                  onChange={(event) => updateTeamMemberConfiguration(
-                    team.id,
-                    agent.id,
-                    { role: event.target.value },
-                  )}
-                />
-              </label>
-              <label>
-                <span className="management-field-label">
-                  给该成员的额外要求
-                  <small>可选</small>
-                </span>
-                <textarea
-                  placeholder="只在当前团队生效；留空则不增加额外要求"
-                  rows={4}
-                  value={memberConfiguration?.instructions ?? ""}
-                  onChange={(event) => updateTeamMemberConfiguration(
-                    team.id,
-                    agent.id,
-                    { instructions: event.target.value },
-                  )}
-                />
-              </label>
-            </div>
-          </section>
-        )}
-        </div>
 
         <section className="management-policy-section">
           <h3>项目范围</h3>
