@@ -38,6 +38,7 @@ import {
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 import { AgentAvatar } from "../team/agent-avatar.js";
 import { AgentAvatarPicker } from "./agent-avatar-picker.js";
+import { useSettingsDirectoryHeight } from "./use-settings-directory-height.js";
 import "./agent-team-settings.css";
 
 type ManagementView = "agents" | "teams";
@@ -151,6 +152,7 @@ function TeamManagementView({
   teams: AgentTeam[];
 }): ReactElement {
   const selectedTeam = teams.find((team) => team.id === selectedTeamId) ?? teams[0];
+  const directoryRef = useSettingsDirectoryHeight();
   const [teamPage, setTeamPage] = useState(0);
   const teamPageCount = Math.max(1, Math.ceil(teams.length / DIRECTORY_PAGE_SIZE));
   const currentTeamPage = Math.min(teamPage, teamPageCount - 1);
@@ -168,7 +170,7 @@ function TeamManagementView({
 
   return (
     <div className="team-management-layout">
-      <section className="team-directory-pane" aria-label="团队列表">
+      <section ref={directoryRef} className="team-directory-pane" aria-label="团队列表">
         <PaneHeading
           label="团队目录"
           action={(
@@ -263,10 +265,11 @@ function AgentManagementView({
   teams: AgentTeam[];
 }): ReactElement {
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? agents[0];
+  const directoryRef = useSettingsDirectoryHeight();
 
   return (
     <div className="agent-management-layout">
-      <section className="agent-directory-pane" aria-label="Agent 列表">
+      <section ref={directoryRef} className="agent-directory-pane" aria-label="Agent 列表">
         <PaneHeading
           label="Agent 目录"
           value={agents.length}
@@ -597,7 +600,7 @@ function AgentConfigurationPane({
                 onChange={(event) => updateAgent(agent.id, { description: event.target.value })}
               />
             </label>
-            <section className="grid min-w-0 gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] p-2" aria-labelledby={`agent-instructions-${agent.id}`}>
+            <section className="grid min-w-0 gap-[5px] rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] p-2" aria-labelledby={`agent-instructions-${agent.id}`}>
               <div className="flex min-w-0 items-center justify-between gap-2">
                 <h3 id={`agent-instructions-${agent.id}`} className="m-0 text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-foreground)]">
                   详细提示词

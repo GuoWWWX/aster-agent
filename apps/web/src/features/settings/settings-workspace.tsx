@@ -127,6 +127,7 @@ import {
 } from "./model-reasoning-options.js";
 import { AgentTeamSettings } from "./agent-team-settings.js";
 import { useQueuedAutoSave, type AutoSaveState } from "./use-queued-auto-save.js";
+import { useSettingsDirectoryHeight } from "./use-settings-directory-height.js";
 import "./settings-workspace.css";
 
 type ConfiguredProvider = {
@@ -560,7 +561,7 @@ function GeneralSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
               <h4>{APPLICATION_DISPLAY_NAME} 数据目录</h4>
               <p>保存配置、对话、附件、本地数据库和无项目对话的工作文件。</p>
               <code
-                className="mt-[5px] block truncate rounded-[var(--app-radius-small)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] px-2 py-1 font-mono text-[length:var(--app-font-size-control)] text-[var(--app-foreground)]"
+                className="mt-[5px] block truncate rounded-[var(--app-radius-small)] border border-[var(--app-border)] bg-[var(--app-panel)] px-2 py-1 font-mono text-[length:var(--app-font-size-control)] text-[var(--app-foreground)]"
                 title={storageLocation?.activePath}
               >
                 {storageLocation?.activePath ?? "正在读取…"}
@@ -623,6 +624,7 @@ function GeneralSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
 }
 
 function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactElement {
+  const directoryRef = useSettingsDirectoryHeight();
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>([]);
   const [draft, setDraft] = useState({
     apiKey: "",
@@ -1133,7 +1135,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
         }
       />
       <div className="settings-provider-manager">
-        <aside className="settings-provider-list" aria-label="供应商列表">
+        <aside ref={directoryRef} className="settings-provider-list" aria-label="供应商列表">
           <header className="settings-provider-list__heading">
             <strong>供应商</strong>
             <IconButton
@@ -2979,6 +2981,7 @@ function ConfigurationList({
   selectedId: string | null;
 }): ReactElement {
   const selectedIndex = items.findIndex((item) => item.id === selectedId);
+  const directoryRef = useSettingsDirectoryHeight();
   const pageCount = Math.max(1, Math.ceil(items.length / CONFIGURATIONS_PER_PAGE));
   const currentPage = selectedIndex < 0
     ? 0
@@ -2994,7 +2997,7 @@ function ConfigurationList({
   }
 
   return (
-    <aside className="settings-integration-list">
+    <aside ref={directoryRef} className="settings-integration-list">
       <header className="settings-integration-list__heading">
         <strong>{headingLabel}</strong>
         <IconButton
@@ -4133,7 +4136,7 @@ function ThemeButton({
   return (
     <button
       aria-pressed={selected === mode}
-      className="w-44 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] p-3 text-left text-[length:var(--app-font-size-body)] aria-pressed:outline-2 aria-pressed:outline-[var(--app-accent)]"
+      className="w-44 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] p-3 text-left text-[length:var(--app-font-size-body)] aria-pressed:outline-2 aria-pressed:outline-[var(--app-accent)]"
       type="button"
       onClick={() => onSelect(mode)}
     >

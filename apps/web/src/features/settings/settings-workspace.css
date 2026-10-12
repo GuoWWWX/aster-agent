@@ -1,11 +1,13 @@
 /* CSS triggers: scoped typography variables, descendant selectors and container queries. */
+.workbench-main:has(.settings-workspace) {
+  background: transparent;
+}
+
 .settings-workspace {
   --app-font-size-body: 14px;
   --app-font-size-control: 13px;
   --app-font-size-auxiliary: 12px;
   --app-font-size-caption: 11px;
-  --app-selection: color-mix(in srgb, var(--app-foreground) 10%, var(--app-panel));
-  --app-selection-foreground: var(--app-foreground);
   --settings-list-card-width: 230px;
   --settings-list-card-header-height: 50px;
   --settings-list-card-footer-height: 44px;
@@ -14,7 +16,7 @@
   flex: 1;
   flex-direction: column;
   gap: 5px;
-  background: var(--app-panel);
+  background: transparent;
   border-radius: var(--app-radius);
   overflow: hidden;
 }
@@ -35,7 +37,7 @@
   padding: 28px 12px 14px;
   border: 0;
   border-radius: 0;
-  background: var(--app-panel-subtle);
+  background: var(--app-panel);
   width: var(--settings-navigation-width);
   flex: 0 0 auto;
 }
@@ -108,7 +110,7 @@
   overflow: auto;
   container-type: inline-size;
   flex: 1 1 auto;
-  background: var(--app-panel);
+  background: transparent;
   overscroll-behavior: contain;
 }
 
@@ -226,7 +228,7 @@
   overflow: hidden;
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
-  background: var(--app-panel-subtle);
+  background: var(--app-panel);
 }
 
 .settings-global-configuration__body {
@@ -598,7 +600,7 @@
   min-width: 0;
   align-items: center;
   gap: 12px;
-  background: var(--app-panel-subtle);
+  background: var(--app-panel);
   padding: 16px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   border: 0;
@@ -1900,8 +1902,8 @@
   overflow: hidden;
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
-  background: var(--app-panel-subtle);
-  height: min(520px, calc(100dvh - 170px));
+  background: var(--app-panel);
+  height: var(--settings-directory-height);
   position: sticky;
   top: 0;
 }
@@ -2919,7 +2921,7 @@
   display: grid;
   grid-template-columns: 1fr;
   gap: 0;
-  background: var(--app-panel-subtle);
+  background: var(--app-panel);
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
   padding: 0 18px;
@@ -2929,7 +2931,7 @@
   overflow: hidden;
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
-  background: var(--app-panel-subtle);
+  background: var(--app-panel);
   color: var(--app-foreground);
 }
 
@@ -2996,7 +2998,7 @@
   overflow: hidden;
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
-  background: var(--app-panel-subtle);
+  background: var(--app-panel);
 }
 
 .settings-general-row {
@@ -3327,8 +3329,8 @@
   overflow: hidden;
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
-  background: var(--app-panel-subtle);
-  height: min(600px, calc(100dvh - 170px));
+  background: var(--app-panel);
+  height: var(--settings-directory-height);
   position: sticky;
   top: 0;
 }
@@ -3878,7 +3880,7 @@
 .settings-terminal-grid > .settings-field + .settings-field { border-top: 1px solid var(--app-border); }
 .settings-terminal-grid > .settings-field > span { color: var(--app-foreground); font-size: var(--app-font-size-body); }
 .settings-model-disclosure { border: 1px solid var(--app-border); border-radius: var(--app-radius); overflow: hidden; margin-bottom: 8px; }
-.settings-model-disclosure > summary { cursor: pointer; padding: 14px 16px; background: var(--app-panel-subtle); color: var(--app-foreground); font-size: var(--app-font-size-body); }
+.settings-model-disclosure > summary { cursor: pointer; padding: 14px 16px; background: var(--app-panel); color: var(--app-foreground); font-size: var(--app-font-size-body); }
 .settings-model-disclosure > summary:focus-visible { outline: 2px solid var(--app-focus-ring); outline-offset: -2px; }
 .settings-model-disclosure[open] > summary { border-bottom: 1px solid var(--app-border); }
 .settings-model-option .settings-model-field--name,
