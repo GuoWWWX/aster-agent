@@ -26,6 +26,8 @@ import {
   managedBrowserSessionSchema,
   managedBrowserSnapshotSchema,
   type BrowserConfiguration,
+  type BrowserSavedPassword,
+  type BrowserPasswordReference,
   type ManagedBrowserBoundsInput,
   type ManagedBrowserCommandInput,
   type ManagedBrowserEvent,
@@ -431,6 +433,12 @@ export class ManagedBrowserController {
       return;
     }
     for (const session of this.sessions.values()) await session.page.clearBrowsingData();
+  }
+  public getSavedPasswords(): BrowserSavedPassword[] {
+    return this.passwords?.list() ?? [];
+  }
+  public revealPassword(input: BrowserPasswordReference): string | null {
+    return this.passwords?.get(input.origin)?.password ?? null;
   }
 
   public applyConfiguration(configuration: BrowserConfiguration): void {

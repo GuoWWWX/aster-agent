@@ -1,7 +1,7 @@
 import { safeStorage } from "electron";
 import { unlinkSync } from "node:fs";
 import { z } from "zod";
-import { browserCredentialSchema, type BrowserCredential } from "@agent/protocol";
+import { browserCredentialSchema, type BrowserCredential, type BrowserSavedPassword } from "@agent/protocol";
 import { readJsonConfiguration, writeJsonDocument } from "./json-configuration-file.js";
 
 const passwordFileSchema = z.object({ version: z.literal(1), encryptedData: z.string() }).strict();
@@ -18,6 +18,10 @@ export class BrowserPasswordStore {
   public get(origin: string): BrowserCredential | null {
     if (!this.isAvailable()) return null;
     return this.read().find((credential) => credential.origin === origin) ?? null;
+  }
+  public list(): BrowserSavedPassword[] {
+    if (!this.isAvailable()) throw new Error("系统密码加密不可用，无法读取已保存密码。");
+    return this.read().map(({ origin, username }) => ({ origin, username }));
   }
 
   public save(input: BrowserCredential): void {

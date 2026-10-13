@@ -64,6 +64,7 @@ import {
   type ContextCompressionConfiguration,
   type ApplicationStorageLocation,
   type BrowserConfiguration,
+  type BrowserSavedPassword,
   type ContextCompressionThreshold,
   type ConversationPermissionMode,
   type ConversationSummary,
@@ -3695,6 +3696,68 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
   const [saveRevision, setSaveRevision] = useState(0);
   const draftRef = useRef(draft);
   const latestSaveRevisionRef = useRef(0);
+  const [defaultDownloadDirectory, setDefaultDownloadDirectory] = useState<string | null>(null);
+  const [savedPasswords, setSavedPasswords] = useState<BrowserSavedPassword[] | null>(null);
+  const [passwordListError, setPasswordListError] = useState<string | null>(null);
+  const [visiblePassword, setVisiblePassword] = useState<{ origin: string; password: string } | null>(null);
+  const [revealingOrigin, setRevealingOrigin] = useState<string | null>(null);
+  const passwordRequestRevisionRef = useRef(0);
+
+  const loadSavedPasswords = async (): Promise<void> => {
+    const revision = ++passwordRequestRevisionRef.current;
+    try {
+      const passwords = await agentClient.getBrowserSavedPasswords();
+      if (revision === passwordRequestRevisionRef.current) {
+        setSavedPasswords(passwords);
+        setVisiblePassword(null);
+        setRevealingOrigin(null);
+        setPasswordListError(null);
+      }
+    } catch (error) {
+      if (revision === passwordRequestRevisionRef.current) setPasswordListError(errorMessage(error));
+    }
+  };
+
+  useEffect(() => {
+    const revision = ++passwordRequestRevisionRef.current;
+    void agentClient.getBrowserSavedPasswords().then(
+      (passwords) => {
+        if (revision !== passwordRequestRevisionRef.current) return;
+        setSavedPasswords(passwords);
+        setVisiblePassword(null);
+        setRevealingOrigin(null);
+        setPasswordListError(null);
+      },
+      (error: unknown) => {
+        if (revision !== passwordRequestRevisionRef.current) return;
+        setVisiblePassword(null);
+        setRevealingOrigin(null);
+        setPasswordListError(errorMessage(error));
+      },
+    );
+    return () => { passwordRequestRevisionRef.current += 1; };
+  }, [agentClient]);
+
+  const showPassword = async (origin: string): Promise<void> => {
+    if (visiblePassword?.origin === origin) {
+      setVisiblePassword(null);
+      return;
+    }
+    const revision = passwordRequestRevisionRef.current;
+    setVisiblePassword(null);
+    setRevealingOrigin(origin);
+    setPasswordListError(null);
+    try {
+      const password = await agentClient.revealBrowserPassword({ origin });
+      if (revision !== passwordRequestRevisionRef.current) return;
+      if (password === null) setPasswordListError("无法读取该密码，请刷新列表。");
+      else setVisiblePassword({ origin, password });
+    } catch (error) {
+      if (revision === passwordRequestRevisionRef.current) setPasswordListError(errorMessage(error));
+    } finally {
+      if (revision === passwordRequestRevisionRef.current) setRevealingOrigin(null);
+    }
+  };
 
   useEffect(() => {
     draftRef.current = draft;
@@ -3709,6 +3772,10 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
       () => {
         if (!disposed) setOperationError("无法读取浏览器配置");
       },
+    );
+    void agentClient.getBrowserDefaultDownloadDirectory().then(
+      (directory) => { if (!disposed) setDefaultDownloadDirectory(directory); },
+      (error: unknown) => { if (!disposed) setOperationError(errorMessage(error)); },
     );
     return () => {
       disposed = true;
@@ -3745,6 +3812,11 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
     setOperationError(null);
     try {
       await agentClient.clearBrowserData();
+      passwordRequestRevisionRef.current += 1;
+      setSavedPasswords([]);
+      setVisiblePassword(null);
+      setRevealingOrigin(null);
+      setPasswordListError(null);
       setClearState("cleared");
     } catch (error) {
       setClearState("idle");
@@ -3816,7 +3888,10 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
           <article className="settings-general-row">
             <div className="min-w-0">
               <h4>下载目录</h4>
-              <p className="break-all">{draft.downloadDirectory || "系统“下载”文件夹（默认）"}</p>
+              <p className="break-all" title={draft.downloadDirectory || defaultDownloadDirectory || undefined}>
+                {draft.downloadDirectory || defaultDownloadDirectory || "正在读取下载目录…"}
+                {draft.downloadDirectory === "" && defaultDownloadDirectory !== null ? "（默认）" : null}
+              </p>
             </div>
             <div className="flex flex-wrap gap-[5px]">
               <button className="settings-secondary-button" type="button" onClick={() => {
@@ -3863,6 +3938,41 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
               <span aria-hidden="true" />
             </label>
           </article>
+          <div className="flex items-center justify-between gap-2 border-t border-[var(--app-border)] px-4 py-3">
+            <h4 className="m-0 text-[length:var(--app-font-size-body)] font-semibold">已保存的密码{savedPasswords === null ? "" : `（${savedPasswords.length}）`}</h4>
+            <IconButton label="刷新已保存密码" disabled={revealingOrigin !== null} onClick={() => {
+              setSavedPasswords(null);
+              setVisiblePassword(null);
+              setPasswordListError(null);
+              void loadSavedPasswords();
+            }}>
+              <RefreshCw aria-hidden="true" size={14} />
+            </IconButton>
+          </div>
+          {passwordListError === null ? null : <p className="px-4 pb-3 text-[length:var(--app-font-size-control)] text-[var(--app-destructive)]" role="alert">{passwordListError}</p>}
+          {savedPasswords === null ? (
+            passwordListError === null ? <p className="px-4 pb-4 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]" role="status">正在读取已保存密码…</p> : null
+          ) : savedPasswords.length === 0 ? (
+            <p className="px-4 pb-4 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">还没有已保存的密码。</p>
+          ) : savedPasswords.map((entry) => {
+            const password = visiblePassword?.origin === entry.origin ? visiblePassword.password : null;
+            return (
+              <article className="settings-general-row" key={entry.origin}>
+                <div className="min-w-0">
+                  <h4 className="break-all">{entry.origin}</h4>
+                  <p className="break-all">{entry.username || "未记录账号"}</p>
+                </div>
+                <div className="flex min-w-0 items-center gap-[5px]">
+                  <input aria-label={`${entry.origin} 的密码`} readOnly type={password === null ? "password" : "text"} value={password ?? "********"}
+                    className="h-8 w-44 min-w-0 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] px-2 text-[length:var(--app-font-size-control)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]" />
+                  <IconButton label={`${password === null ? "查看" : "隐藏"} ${entry.origin} 的密码`} tooltip={password === null ? "查看密码" : "隐藏密码"}
+                    disabled={revealingOrigin !== null} onClick={() => void showPassword(entry.origin)}>
+                    {revealingOrigin === entry.origin ? <LoaderCircle aria-hidden="true" className="settings-spin" size={14} /> : password === null ? <Eye aria-hidden="true" size={14} /> : <EyeOff aria-hidden="true" size={14} />}
+                  </IconButton>
+                </div>
+              </article>
+            );
+          })}
         </div>
       </section>
 

@@ -58,6 +58,43 @@ function clickButton(container: HTMLElement, label: string): void {
 }
 
 describe("SettingsWorkspace", () => {
+  it("does not restore a late password response after browser data is cleared", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "browser" });
+    const client = new MockAgentClient();
+    vi.spyOn(client, "getBrowserSavedPasswords").mockResolvedValue([{ origin: "https://example.test", username: "sample-user" }]);
+    let resolvePassword: (value: string) => void = () => undefined;
+    vi.spyOn(client, "revealBrowserPassword").mockReturnValue(new Promise((resolve) => { resolvePassword = resolve; }));
+    const container = await renderSettings(client);
+    act(() => clickButton(container, "查看 https://example.test 的密码"));
+    await act(async () => { clickButton(container, "清除浏览数据"); await Promise.resolve(); });
+    await act(async () => { resolvePassword("late-secret"); await Promise.resolve(); });
+    expect(container.querySelector('[aria-label="https://example.test 的密码"]')).toBeNull();
+    expect(container.textContent).toContain("还没有已保存的密码");
+  });
+  it("displays the resolved default download directory and reveals passwords only on request", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "browser" });
+    const client = new MockAgentClient();
+    vi.spyOn(client, "getBrowserDefaultDownloadDirectory").mockResolvedValue("E:\\Downloads");
+    vi.spyOn(client, "getBrowserSavedPasswords").mockResolvedValue([{ origin: "https://example.test", username: "sample-user" }]);
+    const reveal = vi.spyOn(client, "revealBrowserPassword").mockResolvedValue("sample-secret");
+    const container = await renderSettings(client);
+    expect(container.textContent).toContain("E:\\Downloads");
+    expect(container.textContent).toContain("sample-user");
+    expect(reveal).not.toHaveBeenCalled();
+    const field = (): HTMLInputElement | null => container.querySelector('[aria-label="https://example.test 的密码"]');
+    expect(field()?.type).toBe("password");
+    expect(field()?.value).not.toBe("sample-secret");
+    await act(async () => { clickButton(container, "查看 https://example.test 的密码"); await Promise.resolve(); });
+    expect(reveal).toHaveBeenCalledExactlyOnceWith({ origin: "https://example.test" });
+    expect(field()?.type).toBe("text");
+    expect(field()?.value).toBe("sample-secret");
+    act(() => clickButton(container, "隐藏 https://example.test 的密码"));
+    expect(field()?.type).toBe("password");
+    expect(field()?.value).not.toBe("sample-secret");
+    await act(async () => { clickButton(container, "清除浏览数据"); await Promise.resolve(); });
+    expect(container.textContent).toContain("还没有已保存的密码");
+    expect(field()).toBeNull();
+  });
   it("saves the selected download directory and password preference, and keeps defaults when selection is cancelled", async () => {
     vi.useFakeTimers();
     try {
@@ -77,7 +114,7 @@ describe("SettingsWorkspace", () => {
       expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ downloadDirectory: "", savePasswords: false }));
       choose.mockResolvedValue(null);
       await act(async () => { clickButton(container, "选择目录"); await Promise.resolve(); });
-      expect(container.textContent).toContain("系统“下载”文件夹（默认）");
+      expect(container.textContent).toContain("C:\\Users\\demo\\Downloads");
     } finally { vi.useRealTimers(); }
   });
   it("resets only typography while preserving the chosen theme and panel widths", async () => {

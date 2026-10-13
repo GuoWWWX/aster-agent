@@ -5,6 +5,8 @@ import type {
   ApplicationSettings,
   ApplicationStorageLocation,
   BrowserConfiguration,
+  BrowserSavedPassword,
+  BrowserPasswordReference,
   ApproveToolChangeInput,
   CancelRunInput,
   ConversationContextUsage,
@@ -375,6 +377,15 @@ export class DesktopAgentClientAdapter implements AgentClient {
   }
   public chooseBrowserDownloadDirectory(): Promise<string | null> {
     return this.desktopBridge.chooseBrowserDownloadDirectory();
+  }
+  public getBrowserDefaultDownloadDirectory(): Promise<string> {
+    return this.desktopBridge.getBrowserDefaultDownloadDirectory();
+  }
+  public getBrowserSavedPasswords(): Promise<BrowserSavedPassword[]> {
+    return this.desktopBridge.getBrowserSavedPasswords();
+  }
+  public revealBrowserPassword(input: BrowserPasswordReference): Promise<string | null> {
+    return this.desktopBridge.revealBrowserPassword(input);
   }
 
   public getTerminalConfiguration(): Promise<TerminalConfiguration> {

@@ -16,6 +16,16 @@ vi.mock("electron", () => ({
 import { createDesktopBridge } from "./api.js";
 
 describe("Desktop preload bridge", () => {
+  it("keeps browser path, password listing and explicit reveal requests separate", async () => {
+    const bridge = createDesktopBridge();
+    await bridge.getBrowserDefaultDownloadDirectory();
+    await bridge.getBrowserSavedPasswords();
+    const input = { origin: "https://example.test" };
+    await bridge.revealBrowserPassword(input);
+    expect(electronMocks.invoke).toHaveBeenCalledWith(IPC_CHANNELS.browserGetDefaultDownloadDirectory);
+    expect(electronMocks.invoke).toHaveBeenCalledWith(IPC_CHANNELS.browserGetSavedPasswords);
+    expect(electronMocks.invoke).toHaveBeenCalledWith(IPC_CHANNELS.browserRevealPassword, input);
+  });
   it("requests the browser download directory through its dedicated channel", async () => {
     await createDesktopBridge().chooseBrowserDownloadDirectory();
     expect(electronMocks.invoke).toHaveBeenCalledWith(IPC_CHANNELS.browserChooseDownloadDirectory);

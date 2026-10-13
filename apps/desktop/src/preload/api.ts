@@ -406,6 +406,15 @@ export function createDesktopBridge(): DesktopBridge {
     chooseBrowserDownloadDirectory() {
       return invoke<BridgeResult<"chooseBrowserDownloadDirectory">>(IPC_CHANNELS.browserChooseDownloadDirectory);
     },
+    getBrowserDefaultDownloadDirectory() {
+      return invoke<BridgeResult<"getBrowserDefaultDownloadDirectory">>(IPC_CHANNELS.browserGetDefaultDownloadDirectory);
+    },
+    getBrowserSavedPasswords() {
+      return invoke<BridgeResult<"getBrowserSavedPasswords">>(IPC_CHANNELS.browserGetSavedPasswords);
+    },
+    revealBrowserPassword(input) {
+      return invoke<BridgeResult<"revealBrowserPassword">>(IPC_CHANNELS.browserRevealPassword, input);
+    },
     getTerminalConfiguration() {
       return invoke<BridgeResult<"getTerminalConfiguration">>(
         IPC_CHANNELS.terminalGetConfiguration

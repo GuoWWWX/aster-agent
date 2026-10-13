@@ -33,6 +33,7 @@ describe("BrowserPasswordStore", () => {
     const text = await readFile(file, "utf8");
     for (const value of Object.values(login)) expect(text).not.toContain(value);
     const reopened = new BrowserPasswordStore(file);
+    expect(reopened.list()).toEqual([{ origin: login.origin, username: login.username }]);
     expect(reopened.get(login.origin)).toEqual(login);
     expect(reopened.get("https://sub.example.com")).toBeNull();
     expect(reopened.get("http://example.com")).toBeNull();

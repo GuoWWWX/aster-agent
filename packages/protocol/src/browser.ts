@@ -15,6 +15,12 @@ export const browserCredentialSchema = z.object({
   password: z.string().min(1).max(4096),
 }).strict();
 export type BrowserCredential = z.infer<typeof browserCredentialSchema>;
+export const browserSavedPasswordSchema = browserCredentialSchema.omit({ password: true });
+export const browserSavedPasswordListSchema = z.array(browserSavedPasswordSchema).max(1000);
+export type BrowserSavedPassword = z.infer<typeof browserSavedPasswordSchema>;
+export const browserPasswordReferenceSchema = browserSavedPasswordSchema.pick({ origin: true });
+export type BrowserPasswordReference = z.infer<typeof browserPasswordReferenceSchema>;
+export const browserPasswordValueSchema = browserCredentialSchema.shape.password.nullable();
 export const browserPasswordConfigurationSchema = z.object({
   enabled: z.boolean(),
   credential: browserCredentialSchema.nullable(),

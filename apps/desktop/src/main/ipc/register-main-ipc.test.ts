@@ -18,6 +18,8 @@ describe("result viewed IPC notification", () => {
   let dispose: (() => void) | undefined;
   const send = vi.fn();
   const markViewed = vi.fn();
+  const listPasswords = vi.fn(() => [{ origin: "https://example.test", username: "sample-user" }]);
+  const revealPassword = vi.fn((): string | null => "sample-secret");
   const conversation: ConversationSummary = {
     id: "00000000-0000-4000-8000-000000000001", title: "已结束的子代理",
     activeRunId: null, activeSubagentCount: 0, hasUnreadResult: false,
@@ -42,7 +44,7 @@ describe("result viewed IPC notification", () => {
       terminalSessions: { onEvent: () => unsubscribe },
       workspaceTerminalTabs: { onOpenRequested: () => unsubscribe, onCloseRequested: () => unsubscribe, dispose: unsubscribe },
       workspaceBrowserTabs: { onOpenRequested: () => unsubscribe, onCloseRequested: () => unsubscribe, dispose: unsubscribe },
-      managedBrowser: { onEvent: () => unsubscribe },
+      managedBrowser: { onEvent: () => unsubscribe, getSavedPasswords: listPasswords, revealPassword },
       browserConfiguration: { getConfiguration: () => DEFAULT_BROWSER_CONFIGURATION },
       conversationLifecycle: { markConversationResultViewed: markViewed },
     } as unknown as Parameters<typeof registerMainIpcHandlers>[1];
@@ -50,6 +52,36 @@ describe("result viewed IPC notification", () => {
     invoke = electron.handle.mock.calls.find(([channel]) => channel === IPC_CHANNELS.conversationMarkResultViewed)![1];
   });
   afterEach(() => { dispose?.(); dispose = undefined; });
+
+  it("returns the system download path and password metadata without any secret", async () => {
+    const frame = {};
+    const trusted = { sender: { mainFrame: frame }, senderFrame: frame } as IpcMainInvokeEvent;
+    const directory = electron.handle.mock.calls.find(([channel]) => channel === IPC_CHANNELS.browserGetDefaultDownloadDirectory)![1];
+    const list = electron.handle.mock.calls.find(([channel]) => channel === IPC_CHANNELS.browserGetSavedPasswords)![1];
+    await expect(directory(trusted)).resolves.toBe("C:\\Downloads");
+    await expect(list(trusted)).resolves.toEqual([{ origin: "https://example.test", username: "sample-user" }]);
+    await expect(list(trusted, "unexpected")).rejects.toThrow();
+    expect(revealPassword).not.toHaveBeenCalled();
+  });
+
+  it("reveals only a valid origin for the trusted top frame and removes all new handlers", async () => {
+    const frame = {};
+    const trusted = { sender: { mainFrame: frame }, senderFrame: frame } as IpcMainInvokeEvent;
+    const reveal = electron.handle.mock.calls.find(([channel]) => channel === IPC_CHANNELS.browserRevealPassword)![1];
+    await expect(reveal(trusted, { origin: "https://example.test" })).resolves.toBe("sample-secret");
+    await expect(reveal(trusted, { origin: "http://example.test" })).rejects.toThrow();
+    await expect(reveal(trusted, { origin: "https://example.test", username: "unexpected" })).rejects.toThrow();
+    await expect(reveal({ ...trusted, senderFrame: {} } as IpcMainInvokeEvent, { origin: "https://example.test" })).rejects.toThrow();
+    electron.fromWebContents.mockReturnValueOnce(undefined);
+    await expect(reveal(trusted, { origin: "https://example.test" })).rejects.toThrow();
+    expect(revealPassword).toHaveBeenCalledExactlyOnceWith({ origin: "https://example.test" });
+    revealPassword.mockReturnValueOnce(null);
+    await expect(reveal(trusted, { origin: "https://example.test" })).resolves.toBeNull();
+    dispose?.(); dispose = undefined;
+    for (const channel of [IPC_CHANNELS.browserGetDefaultDownloadDirectory, IPC_CHANNELS.browserGetSavedPasswords, IPC_CHANNELS.browserRevealPassword]) {
+      expect(electron.removeHandler).toHaveBeenCalledWith(channel);
+    }
+  });
 
   it("selects a browser download directory and removes the handler on disposal", async () => {
     const choose = electron.handle.mock.calls.find(([channel]) => channel === IPC_CHANNELS.browserChooseDownloadDirectory)![1];

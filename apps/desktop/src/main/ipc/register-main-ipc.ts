@@ -20,6 +20,9 @@ import {
   applicationSettingsSchema,
   browserConfigurationIpcArgumentsSchema,
   browserConfigurationSchema,
+  browserSavedPasswordListSchema,
+  browserPasswordReferenceIpcArgumentsSchema,
+  browserPasswordValueSchema,
   cancelRunIpcArgumentsSchema,
   clipboardWriteTextIpcArgumentsSchema,
   configurationWorkspaceDirectoryListingSchema,
@@ -1462,6 +1465,24 @@ export function registerMainIpcHandlers(
       properties: ["openDirectory", "createDirectory"],
     });
     return z.string().max(4096).nullable().parse(selection.canceled ? null : selection.filePaths[0] ?? null);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.browserGetDefaultDownloadDirectory, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    parseNoArguments(args);
+    return z.string().min(1).max(4096).parse(app.getPath("downloads"));
+  });
+  ipcMain.handle(IPC_CHANNELS.browserGetSavedPasswords, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    if (event.senderFrame !== event.sender.mainFrame) throw new Error("Rejected password request from a subframe.");
+    parseNoArguments(args);
+    return browserSavedPasswordListSchema.parse(managedBrowser.getSavedPasswords());
+  });
+  ipcMain.handle(IPC_CHANNELS.browserRevealPassword, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    if (event.senderFrame !== event.sender.mainFrame) throw new Error("Rejected password request from a subframe.");
+    const [input] = browserPasswordReferenceIpcArgumentsSchema.parse(args);
+    return browserPasswordValueSchema.parse(managedBrowser.revealPassword(input));
   });
 
   ipcMain.handle(
