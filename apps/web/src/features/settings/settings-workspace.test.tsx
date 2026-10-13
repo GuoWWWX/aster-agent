@@ -156,7 +156,7 @@ describe("SettingsWorkspace", () => {
   it("filters navigation without switching the open settings page", async () => {
     useWorkbenchUiStore.setState({ settingsSection: "general" });
     const container = await renderSettings(new MockAgentClient());
-    const search = container.querySelector<HTMLInputElement>('input[aria-label="搜索设置分区"]');
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="搜索设置"]');
     expect(search).not.toBeNull();
     function searchFor(value: string): void {
       act(() => {
@@ -169,10 +169,80 @@ describe("SettingsWorkspace", () => {
     expect(useWorkbenchUiStore.getState().settingsSection).toBe("general");
     expect(container.querySelector(".settings-section__header h2")?.textContent).toBe("常规设置");
     searchFor("没有此分区");
-    expect(container.querySelector('.settings-navigation [role="status"]')?.textContent).toBe("无匹配的设置分区");
+    expect(container.querySelector('.settings-navigation [role="status"]')?.textContent).toBe("无匹配的设置");
     searchFor("");
     expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(10);
     expect(useWorkbenchUiStore.getState().settingsSection).toBe("general");
+  });
+
+  it("finds specific settings across sections and locates the clicked result after loading", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "general" });
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+    try {
+      const container = await renderSettings(new MockAgentClient());
+      const search = container.querySelector<HTMLInputElement>('input[aria-label="搜索设置"]');
+      function searchFor(value: string): void {
+        act(() => {
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(search, value);
+          search?.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+      }
+      searchFor("下载目录");
+      const result = container.querySelector<HTMLButtonElement>('[aria-label="浏览器：下载目录"]');
+      expect(result).not.toBeNull();
+      expect(useWorkbenchUiStore.getState().settingsSection).toBe("general");
+      await act(async () => { result?.click(); await Promise.resolve(); });
+      expect(useWorkbenchUiStore.getState().settingsSection).toBe("browser");
+      expect(container.querySelector('[data-settings-search-highlight]')?.textContent).toContain("下载目录");
+      expect(scrollIntoView).toHaveBeenCalled();
+      searchFor("字号");
+      expect(container.querySelector('[aria-label="外观：界面字号"]')).not.toBeNull();
+      expect(container.querySelector('[aria-label="终端：字号"]')).not.toBeNull();
+      searchFor("API KEY");
+      expect(container.querySelector('[aria-label="模型配置：API Key"]')).not.toBeNull();
+      searchFor("");
+      expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(10);
+    } finally {
+      Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+    }
+  });
+
+  it("opens the Agent tab again when the same search result is clicked after changing tabs", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "general" });
+    const container = await renderSettings(new MockAgentClient());
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="搜索设置"]');
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(search, "Agent 角色");
+      search?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const result = container.querySelector<HTMLButtonElement>('[aria-label="Agent 与团队：Agent 角色"]');
+    await act(async () => { result?.click(); await Promise.resolve(); });
+    expect(container.querySelector('[data-settings-search-highlight] [aria-label="角色"]')).not.toBeNull();
+    const teamTab = container.querySelector<HTMLButtonElement>('[role="tab"]');
+    act(() => teamTab?.click());
+    expect(container.querySelector('[aria-label="角色"]')).toBeNull();
+    await act(async () => { result?.click(); await Promise.resolve(); });
+    expect(container.querySelector('[data-settings-search-highlight] [aria-label="角色"]')).not.toBeNull();
+  });
+
+  it("waits for a configuration to exist instead of creating one through search", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "general" });
+    const client = new MockAgentClient();
+    await client.saveIntegrationConfiguration({ mcpServers: [], skillDirectories: [], skills: [], version: 1 });
+    const save = vi.spyOn(client, "saveIntegrationConfiguration");
+    const container = await renderSettings(client);
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="搜索设置"]');
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(search, "MCP 环境变量");
+      search?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { clickButton(container, "MCP：环境变量"); await Promise.resolve(); });
+    expect(useWorkbenchUiStore.getState().settingsSection).toBe("mcp");
+    expect(save).not.toHaveBeenCalled();
+    expect(container.querySelector('.settings-content [role="status"]')?.textContent).toContain("选择或创建");
+    await act(async () => { clickButton(container, "添加 MCP Server"); await Promise.resolve(); });
+    expect(container.querySelector('[data-settings-search-highlight]')?.getAttribute("data-config-path")).toBe("env");
   });
 
   it("shows context windows in K while saving integer Token counts", async () => {

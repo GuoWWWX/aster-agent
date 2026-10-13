@@ -53,8 +53,13 @@ const MODEL_STRATEGY_LABEL: Record<AgentModelStrategy, string> = {
   inherit: "继承对话",
 };
 
-export function AgentTeamSettings(): ReactElement {
-  const [activeView, setActiveView] = useState<ManagementView>("teams");
+export function AgentTeamSettings({ searchTarget }: { searchTarget?: { agentView?: ManagementView } | null } = {}): ReactElement {
+  const [activeView, setActiveView] = useState<ManagementView>(searchTarget?.agentView ?? "teams");
+  const [previousSearchTarget, setPreviousSearchTarget] = useState(searchTarget);
+  if (previousSearchTarget !== searchTarget) {
+    setPreviousSearchTarget(searchTarget);
+    if (searchTarget?.agentView !== undefined) setActiveView(searchTarget.agentView);
+  }
   const agents = useAgentDirectoryStore((state) => state.agents);
   const teams = useAgentDirectoryStore((state) => state.teams);
   const addAgent = useAgentDirectoryStore((state) => state.addAgent);
@@ -366,6 +371,7 @@ function TeamConfigurationPane({
         <label>
           <span>团队名称</span>
           <input
+            aria-label="团队名称"
             value={team.name}
             onChange={(event) => updateTeam(team.id, { name: event.target.value })}
           />
@@ -373,6 +379,7 @@ function TeamConfigurationPane({
         <label>
           <span>团队说明</span>
           <textarea
+            aria-label="团队说明"
             rows={3}
             value={team.description}
             onChange={(event) => updateTeam(team.id, { description: event.target.value })}
@@ -384,6 +391,7 @@ function TeamConfigurationPane({
             <small>所有成员继承</small>
           </span>
           <textarea
+            aria-label="团队指令"
             placeholder="留空时仅注入团队结构、项目和当前任务上下文"
             rows={4}
             value={team.instructions}
@@ -634,7 +642,7 @@ function AgentConfigurationPane({
           </div>
 
           <section className="management-policy-section">
-            <SettingsCategoryHeading icon={Boxes}>模型策略</SettingsCategoryHeading>
+            <SettingsCategoryHeading id="agent-model-strategy-heading" icon={Boxes}>模型策略</SettingsCategoryHeading>
             <div className="management-choice-row management-choice-row--three">
               {(["inherit", "auto", "fixed"] as const).map((strategy) => (
                 <button
