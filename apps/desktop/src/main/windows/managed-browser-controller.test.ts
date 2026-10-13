@@ -1,4 +1,6 @@
 import { type BrowserWindow, type MenuItemConstructorOptions } from "electron";
+import path from "node:path";
+import os from "node:os";
 import type { BrowserConfiguration, ManagedBrowserEvent } from "@agent/protocol";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -73,6 +75,7 @@ import {
   normalizeManagedBrowserUrl,
   reloadManagedBrowserPage,
   resolveManagedBrowserAddress,
+  resolveBrowserDownloadPath,
 } from "./managed-browser-controller.js";
 
 function createFakePage() {
@@ -135,6 +138,8 @@ function createFakePage() {
     reload: vi.fn(() => Promise.resolve()),
     saveScreenshot: vi.fn(() => Promise.resolve()),
     setAskForDownloadLocation: vi.fn(),
+    setDownloadDirectory: vi.fn(),
+    setSavePasswords: vi.fn(),
     setBounds: vi.fn(),
     setColorScheme: vi.fn(() => Promise.resolve()),
     setVisible: vi.fn(),
@@ -166,12 +171,22 @@ function browserConfiguration(
 ): BrowserConfiguration {
   return {
     askForDownloadLocation: false,
+    downloadDirectory: "",
+    savePasswords: true,
     defaultZoomPercent: 100,
     searchEngine: "google",
     version: 1,
     ...overrides,
   };
 }
+
+it("downloads into the configured directory and avoids overwriting reserved names", () => {
+  const directory = path.join(os.tmpdir(), "aster-download-test");
+  const first = resolveBrowserDownloadPath("../report.pdf", [], directory);
+  expect(first).toBe(path.join(directory, "report.pdf"));
+  expect(resolveBrowserDownloadPath("report.pdf", [{ fileName: "report.pdf", savePath: first, receivedBytes: 0, totalBytes: 0, state: "progressing" }], directory))
+    .toBe(path.join(directory, "report (1).pdf"));
+});
 
 describe("ManagedBrowserController", () => {
   beforeEach(() => {

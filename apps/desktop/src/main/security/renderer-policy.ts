@@ -13,7 +13,14 @@ type RendererTarget =
     };
 
 function getRendererTarget(): RendererTarget {
-  const rendererUrl = process.env.ELECTRON_RENDERER_URL;
+  if (app.isPackaged || process.env.ASTER_START_MODE === "preview") {
+    return {
+      kind: "file",
+      value: app.isPackaged ? path.join(app.getAppPath(), "renderer/index.html")
+        : path.resolve(app.getAppPath(), "../web/dist/index.html")
+    };
+  }
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL ?? "http://127.0.0.1:5173";
 
   if (rendererUrl !== undefined && rendererUrl.length > 0) {
     const parsedUrl = new URL(rendererUrl);
@@ -27,10 +34,7 @@ function getRendererTarget(): RendererTarget {
     };
   }
 
-  return {
-    kind: "file",
-    value: path.resolve(app.getAppPath(), "../web/dist/index.html")
-  };
+  throw new Error("Development renderer URL is empty. Run pnpm dev; use pnpm preview for static builds.");
 }
 
 function isAllowedNavigation(target: RendererTarget, navigationUrl: string): boolean {

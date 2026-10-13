@@ -5,6 +5,8 @@ import type {
   ApplicationSettings,
   ApplicationStorageLocation,
   BrowserConfiguration,
+  BrowserSavedPassword,
+  BrowserPasswordReference,
   ApproveToolChangeInput,
   CancelRunInput,
   ConversationContextUsage,
@@ -217,6 +219,10 @@ export interface AgentClient {
   getIntegrationConfiguration(): Promise<IntegrationConfiguration>;
   getBrowserConfiguration(): Promise<BrowserConfiguration>;
   clearBrowserData(): Promise<void>;
+  chooseBrowserDownloadDirectory(): Promise<string | null>;
+  getBrowserDefaultDownloadDirectory(): Promise<string>;
+  getBrowserSavedPasswords(): Promise<BrowserSavedPassword[]>;
+  revealBrowserPassword(input: BrowserPasswordReference): Promise<string | null>;
   getTerminalConfiguration(): Promise<TerminalConfiguration>;
   getGitReviewSnapshot(input: GitReviewInput): Promise<GitReviewSnapshot>;
   getGitFileDiff(input: GitFileDiffInput): Promise<GitFileDiff>;

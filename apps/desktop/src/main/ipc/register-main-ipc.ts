@@ -9,6 +9,7 @@ import {
   type IpcMainInvokeEvent
 } from "electron";
 import { openProjectDirectory } from "../projects/open-project-directory.js";
+import { z } from "zod";
 import {
   acceptTeamWorkItemIpcArgumentsSchema,
   addProjectResponseSchema,
@@ -19,6 +20,9 @@ import {
   applicationSettingsSchema,
   browserConfigurationIpcArgumentsSchema,
   browserConfigurationSchema,
+  browserSavedPasswordListSchema,
+  browserPasswordReferenceIpcArgumentsSchema,
+  browserPasswordValueSchema,
   cancelRunIpcArgumentsSchema,
   clipboardWriteTextIpcArgumentsSchema,
   configurationWorkspaceDirectoryListingSchema,
@@ -809,9 +813,14 @@ export function registerMainIpcHandlers(
     (event, ...args: unknown[]) => {
       getTrustedWindow(event, getMainWindow);
       const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
-      return conversationSummarySchema.parse(
+      const conversation = conversationSummarySchema.parse(
         conversationLifecycle.markConversationResultViewed(input.conversationId)
       );
+      sendConversationRunEvent(getMainWindow, {
+        conversation,
+        type: "conversation.updated"
+      });
+      return conversation;
     }
   );
 
@@ -1446,6 +1455,35 @@ export function registerMainIpcHandlers(
       return saved;
     },
   );
+
+  ipcMain.handle(IPC_CHANNELS.browserChooseDownloadDirectory, async (event, ...args: unknown[]) => {
+    const window = getTrustedWindow(event, getMainWindow);
+    parseNoArguments(args);
+    const selection = await dialog.showOpenDialog(window, {
+      title: "选择下载目录",
+      defaultPath: browserConfiguration.getConfiguration().downloadDirectory || app.getPath("downloads"),
+      properties: ["openDirectory", "createDirectory"],
+    });
+    return z.string().max(4096).nullable().parse(selection.canceled ? null : selection.filePaths[0] ?? null);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.browserGetDefaultDownloadDirectory, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    parseNoArguments(args);
+    return z.string().min(1).max(4096).parse(app.getPath("downloads"));
+  });
+  ipcMain.handle(IPC_CHANNELS.browserGetSavedPasswords, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    if (event.senderFrame !== event.sender.mainFrame) throw new Error("Rejected password request from a subframe.");
+    parseNoArguments(args);
+    return browserSavedPasswordListSchema.parse(managedBrowser.getSavedPasswords());
+  });
+  ipcMain.handle(IPC_CHANNELS.browserRevealPassword, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    if (event.senderFrame !== event.sender.mainFrame) throw new Error("Rejected password request from a subframe.");
+    const [input] = browserPasswordReferenceIpcArgumentsSchema.parse(args);
+    return browserPasswordValueSchema.parse(managedBrowser.revealPassword(input));
+  });
 
   ipcMain.handle(
     IPC_CHANNELS.browserClearData,

@@ -23,6 +23,9 @@ beforeEach(() => {
     isSettingsFilePanelOpen: false,
     settingsSection: "general",
     themeMode: "light",
+    uiFontSize: 13,
+    chatFontSize: 13,
+    codeFontSize: 11,
   });
 });
 
@@ -34,6 +37,24 @@ afterEach(() => {
 });
 
 describe("AppShell", () => {
+  it("applies restored font sizes immediately and removes them when the shell unmounts", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() => root?.render(<TooltipProvider><AppShell agentClient={new MockAgentClient()}
+      filePanel={null} mainContent={null} projectNavigator={null} /></TooltipProvider>));
+    act(() => useWorkbenchUiStore.setState({ uiFontSize: 16, chatFontSize: 18, codeFontSize: 15 }));
+    const style = document.documentElement.style;
+    expect(style.getPropertyValue("--app-ui-font-size")).toBe("16px");
+    expect(style.getPropertyValue("--app-chat-font-size")).toBe("18px");
+    expect(style.getPropertyValue("--app-code-font-size")).toBe("15px");
+    act(() => root?.unmount());
+    root = null;
+    expect(style.getPropertyValue("--app-ui-font-size")).toBe("");
+    expect(style.getPropertyValue("--app-chat-font-size")).toBe("");
+    expect(style.getPropertyValue("--app-code-font-size")).toBe("");
+  });
+
   it("keeps the right toggle visible but disabled when the page has no right workspace", () => {
     const container = document.createElement("div");
     document.body.append(container);

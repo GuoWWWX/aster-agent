@@ -161,10 +161,14 @@ export const applicationPermissionPoliciesSchema = z.object({
 }).strict();
 
 export const applicationAppearanceConfigurationSchema = z.object({
+  uiFontSize: z.number().int().min(12).max(18).default(13),
+  chatFontSize: z.number().int().min(12).max(24).default(13),
+  codeFontSize: z.number().int().min(10).max(24).default(11),
   filePanelOpen: z.boolean(),
   filePanelWidth: z.number().int().min(320).max(960),
   projectNavigatorOpen: z.boolean(),
   projectNavigatorWidth: z.number().int().min(220).max(420),
+  settingsNavigationWidth: z.number().int().min(200).max(360).default(240),
   themeMode: z.enum(["light", "dark"]),
 }).strict();
 
@@ -453,10 +457,14 @@ export const DEFAULT_AGENT_DIRECTORY_CONFIGURATION: AgentDirectoryConfiguration 
 export const DEFAULT_APPLICATION_SETTINGS: ApplicationSettings = {
   agentDirectory: structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION),
   appearance: {
+    uiFontSize: 13,
+    chatFontSize: 13,
+    codeFontSize: 11,
     filePanelOpen: true,
     filePanelWidth: 520,
     projectNavigatorOpen: true,
     projectNavigatorWidth: 288,
+    settingsNavigationWidth: 240,
     themeMode: "light",
   },
   general: {

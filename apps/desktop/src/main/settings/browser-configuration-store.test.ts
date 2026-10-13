@@ -19,6 +19,17 @@ afterEach(async () => {
 });
 
 describe("BrowserConfigurationStore", () => {
+  it("persists a custom directory and rejects a relative path or file", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-browser-download-"));
+    temporaryDirectories.push(directory);
+    const file = path.join(directory, "browser.json");
+    const store = new BrowserConfigurationStore(file);
+    const configuration = { ...DEFAULT_BROWSER_CONFIGURATION, downloadDirectory: directory, savePasswords: false };
+    store.saveConfiguration(configuration);
+    expect(new BrowserConfigurationStore(file).getConfiguration()).toEqual(configuration);
+    expect(() => store.saveConfiguration({ ...configuration, downloadDirectory: "relative" })).toThrow();
+    expect(() => store.saveConfiguration({ ...configuration, downloadDirectory: file })).toThrow();
+  });
   it("returns the browser defaults before the first save", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-browser-"));
     temporaryDirectories.push(directory);
@@ -33,6 +44,7 @@ describe("BrowserConfigurationStore", () => {
     const configurationPath = path.join(directory, "browser-settings.json");
     const store = new BrowserConfigurationStore(configurationPath);
     const configuration = {
+      ...DEFAULT_BROWSER_CONFIGURATION,
       askForDownloadLocation: true,
       defaultZoomPercent: 125,
       searchEngine: "duckduckgo" as const,
@@ -52,6 +64,8 @@ describe("BrowserConfigurationStore", () => {
 
     expect(new BrowserConfigurationStore(configurationPath).getConfiguration()).toEqual({
       askForDownloadLocation: false,
+      downloadDirectory: "",
+      savePasswords: true,
       defaultZoomPercent: 125,
       searchEngine: "google",
       version: 1,
