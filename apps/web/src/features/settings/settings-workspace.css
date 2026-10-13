@@ -1,4 +1,10 @@
-/* CSS triggers: scoped typography variables, descendant selectors and container queries. */
+/* CSS triggers: scoped typography variables, registered lengths, descendant selectors and container queries. */
+@property --settings-page-inset {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 32px;
+}
+
 .workbench-main:has(.settings-workspace) {
   background: transparent;
 }
@@ -11,6 +17,7 @@
   --settings-list-card-width: 230px;
   --settings-list-card-header-height: 50px;
   --settings-list-card-footer-height: 44px;
+  --settings-scrollbar-width: 10px;
   display: flex;
   min-height: 0;
   flex: 1;
@@ -47,6 +54,7 @@
   min-height: 0;
   flex: 1;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .settings-navigation__search {
@@ -110,6 +118,7 @@
 }
 
 .settings-content {
+  --settings-page-content-width: 880px;
   display: block;
   min-width: 0;
   min-height: 0;
@@ -121,6 +130,7 @@
 }
 
 .settings-section {
+  --settings-page-inset: max(32px, calc((100cqw - var(--settings-page-content-width)) / 2));
   display: flex;
   min-width: 0;
   min-height: 0;
@@ -128,9 +138,8 @@
   gap: 28px;
   width: 100%;
   height: 100%;
-  max-width: 944px;
   margin: 0 auto;
-  padding: 40px 32px 5px;
+  padding: 40px 0 5px;
 }
 
 .settings-section__header {
@@ -140,7 +149,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 20px;
-  padding: 0;
+  padding: 0 var(--settings-page-inset);
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -187,8 +196,10 @@
   min-height: 0;
   flex: 1 1 auto;
   overflow: auto;
+  scrollbar-gutter: stable;
   overscroll-behavior: contain;
-  padding: 0;
+  padding: 0 var(--settings-page-inset);
+  padding-right: calc(var(--settings-page-inset) - var(--settings-scrollbar-width));
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -197,14 +208,14 @@
 .settings-section__body--flush,
 .settings-section__body--models {
   overflow: hidden;
-  padding: 0;
+  scrollbar-gutter: auto;
+  padding: 0 0 0 var(--settings-page-inset);
   border: 0;
   border-radius: 0;
   background: transparent;
 }
 
 .settings-section__body--general {
-  padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -1942,6 +1953,7 @@
 
 .settings-integration-list__items {
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 5px;
 }
 
@@ -2047,11 +2059,13 @@
   min-width: 0;
   min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
   overscroll-behavior: contain;
   border: 0;
   border-radius: 0;
   background: transparent;
   padding-left: 20px;
+  padding-right: calc(var(--settings-page-inset) - var(--settings-scrollbar-width));
 }
 
 .settings-integration-editor__header {
@@ -3386,6 +3400,7 @@
   gap: 3px;
   min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
   overscroll-behavior: contain;
   padding: 0 0 2px;
 }
@@ -3525,11 +3540,13 @@
   min-width: 0;
   min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
   overscroll-behavior: contain;
   border: 0;
   border-radius: 0;
   background: transparent;
   padding-left: 20px;
+  padding-right: calc(var(--settings-page-inset) - var(--settings-scrollbar-width));
 }
 
 .settings-provider-editor__header {
@@ -3738,6 +3755,11 @@
     row-gap: 20px;
   }
 
+  .settings-provider-list,
+  .settings-integration-list {
+    margin-right: var(--settings-page-inset);
+  }
+
   .settings-provider-editor__body {
     overflow: visible;
   }
@@ -3841,11 +3863,21 @@
 }
 
 .settings-navigation-divider { width: 5px; flex: 0 0 5px; }
-.settings-content[data-section="models"] .settings-section,
-.settings-content[data-section="agents"] .settings-section,
-.settings-content[data-section="mcp"] .settings-section,
-.settings-content[data-section="skills"] .settings-section,
-.settings-content[data-section="archived"] .settings-section { max-width: 1264px; }
+.settings-section__body,
+.settings-provider-editor,
+.settings-integration-editor,
+.team-configuration-pane,
+.agent-configuration-pane { scrollbar-width: auto; }
+.settings-section__body::-webkit-scrollbar,
+.settings-provider-editor::-webkit-scrollbar,
+.settings-integration-editor::-webkit-scrollbar,
+.team-configuration-pane::-webkit-scrollbar,
+.agent-configuration-pane::-webkit-scrollbar { width: var(--settings-scrollbar-width); }
+.settings-content[data-section="models"],
+.settings-content[data-section="agents"],
+.settings-content[data-section="mcp"],
+.settings-content[data-section="skills"],
+.settings-content[data-section="archived"] { --settings-page-content-width: 1200px; }
 .settings-section__body:not(.settings-section__body--general) > .settings-general-category + .settings-general-category { margin-top: 28px; }
 .settings-general-row > div:first-child { min-width: 0; flex: 1; }
 .settings-general-row .settings-switch,
@@ -3862,11 +3894,11 @@
 .settings-model-option .settings-model-field--id { grid-row: auto; grid-column: auto; }
 .settings-model-field--context { display: flex; min-width: 0; align-items: center; gap: 5px; }
 @container (max-width: 780px) {
-  .settings-section { padding: 28px 24px 5px; }
+  .settings-section { --settings-page-inset: 24px; padding: 28px 0 5px; }
   .settings-provider-editor, .settings-integration-editor { padding-left: 0; }
 }
 @container (max-width: 520px) {
-  .settings-section { padding: 24px 18px 5px; }
+  .settings-section { --settings-page-inset: 18px; padding: 24px 0 5px; }
   .settings-terminal-grid > .settings-field { grid-template-columns: minmax(0, 1fr); gap: 9px; }
   .settings-general-row .settings-switch { align-self: flex-start; }
 }
