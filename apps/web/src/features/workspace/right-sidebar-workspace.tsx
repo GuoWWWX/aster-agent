@@ -3170,11 +3170,6 @@ function AgentPromptPreview({
             核心指令.md
           </span>
         </div>
-        <div className="right-sidebar-file__actions">
-          <span className="text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]" role="status">
-            自动保存
-          </span>
-        </div>
       </header>
       {agent === undefined ? (
         <div className="right-sidebar-file__state">该 Agent 已删除，无法继续编辑提示词。</div>
@@ -3194,7 +3189,6 @@ function AgentPromptPreview({
         />
       )}
       <footer className="right-sidebar-config-file__footer">
-        <span>提示词会随 Agent 配置自动保存</span>
         <span>Markdown</span>
       </footer>
     </section>

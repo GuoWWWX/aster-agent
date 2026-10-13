@@ -63,14 +63,6 @@
   background: transparent;
 }
 
-.settings-navigation__note {
-  margin: 18px 8px 0;
-  border-top: 0;
-  padding-top: 0;
-  color: var(--app-muted-foreground);
-  font-size: var(--app-font-size-auxiliary);
-}
-
 .settings-navigation__item {
   display: flex;
   min-width: 0;
@@ -3313,10 +3305,6 @@
     display: flex;
     flex: 0 0 auto;
     overflow: auto hidden;
-  }
-
-  .settings-navigation__note {
-    display: none;
   }
 
   .settings-navigation__item {

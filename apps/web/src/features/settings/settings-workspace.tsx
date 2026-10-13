@@ -328,7 +328,6 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
               <p className="m-0 px-2 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]" role="status">无匹配的设置分区</p>
             ) : null}
           </div>
-          <p className="settings-navigation__note">修改后自动保存</p>
         </nav>
 
         <ResizableDivider
@@ -3266,7 +3265,7 @@ function JsonConfigurationEditor({
     <div className="settings-json-editor">
       <div className="settings-json-editor__toolbar">
         <span><Braces aria-hidden="true" size={15} />{label}</span>
-        <small>{autoSaveStateLabel(saveState)}</small>
+        {saveState === "idle" ? null : <small>{autoSaveStateLabel(saveState)}</small>}
       </div>
       <DocumentCodeEditor
         ariaLabel={label}
@@ -3281,7 +3280,7 @@ function JsonConfigurationEditor({
   );
 }
 
-function autoSaveStateLabel(state: AutoSaveState): string {
+function autoSaveStateLabel(state: AutoSaveState): string | null {
   switch (state) {
     case "failed":
       return "自动保存失败";
@@ -3294,7 +3293,7 @@ function autoSaveStateLabel(state: AutoSaveState): string {
     case "saved":
       return "已自动保存";
     case "idle":
-      return "修改后自动保存";
+      return null;
   }
 }
 
@@ -3896,7 +3895,7 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
       ) : null}
       {operationError !== null ? (
         <p className="settings-terminal-status" role="alert">{operationError}</p>
-      ) : (
+      ) : autoSave.state === "idle" ? null : (
         <p className="settings-terminal-status" role="status">
           {autoSaveStateLabel(autoSave.state)}
         </p>
@@ -4167,7 +4166,7 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
 
         {operationError !== null ? (
           <p className="settings-terminal-status" role="alert">{operationError}</p>
-        ) : (
+        ) : autoSave.state === "idle" ? null : (
           <p className="settings-terminal-status" role="status">
             {autoSaveStateLabel(autoSave.state)}
           </p>
