@@ -851,7 +851,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
       })
       .catch(() => {
         if (!disposed) {
-          setOperationError("API Key 无法解密，请重新输入一次；之后会随当前软件的数据目录稳定保存");
+          setOperationError("API Key 读取失败，请检查 settings.jsonc 中对应供应商的配置");
         }
       });
 
