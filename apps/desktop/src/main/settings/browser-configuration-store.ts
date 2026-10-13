@@ -37,6 +37,12 @@ export class BrowserConfigurationStore {
 
   public saveConfiguration(input: BrowserConfiguration): BrowserConfiguration {
     const parsed = browserConfigurationSchema.parse(input);
+    if (parsed.downloadDirectory !== "") {
+      if (!path.isAbsolute(parsed.downloadDirectory) || !statSync(parsed.downloadDirectory).isDirectory()) {
+        throw new Error("请选择已存在的绝对下载目录。");
+      }
+      parsed.downloadDirectory = realpathSync(parsed.downloadDirectory);
+    }
     if (this.configuration instanceof SettingsJsoncFile) {
       const stored = Object.fromEntries(
         Object.entries(parsed).filter(([key]) => key !== "version"),
@@ -47,4 +53,5 @@ export class BrowserConfigurationStore {
     return writeJsonConfiguration(this.configuration, browserConfigurationSchema, parsed);
   }
 }
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import path from "node:path";

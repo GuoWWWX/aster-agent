@@ -62,10 +62,14 @@ function applicationSettingsSnapshot(): ApplicationSettings {
       teams: structuredClone(directory.teams),
     },
     appearance: {
+      uiFontSize: workbench.uiFontSize,
+      chatFontSize: workbench.chatFontSize,
+      codeFontSize: workbench.codeFontSize,
       filePanelOpen: workbench.isFilePanelOpen,
       filePanelWidth: workbench.filePanelWidth,
       projectNavigatorOpen: workbench.isProjectNavigatorOpen,
       projectNavigatorWidth: workbench.projectNavigatorWidth,
+      settingsNavigationWidth: workbench.settingsNavigationWidth,
       themeMode: workbench.themeMode,
     },
     general: {
@@ -635,7 +639,15 @@ export function App(): ReactElement {
         activeConversationId={projectSessions.activeSessionId}
         activeTabId={activeTabId}
         titlebarActivity={<ConversationActivity agentClient={agentClient} sessions={projectSessions.sessions}
-          projects={projectTree.projects} onSelect={(id, timelineItemId) => {
+          projects={projectTree.projects} onSelect={(id, timelineItemId, ownerConversationId) => {
+            const sideSession = ownerConversationId === undefined ? undefined
+              : projectSessions.sessions.find((candidate) => candidate.id === id);
+            if (sideSession !== undefined) {
+              setActiveActivity("conversations");
+              openTeamConversation(sideSession, ownerConversationId);
+              projectSessions.markSessionResultViewed(id, true);
+              return;
+            }
             selectSession(id);
             if (timelineItemId !== undefined) setConversationLocateRequest((current) => ({
               conversationId: id,

@@ -1,10 +1,39 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MockAgentClient } from "./mock-agent-client.js";
+import { updateSideSessionsForRunEvent, upsertSideSession } from "../features/workspace/right-sidebar-workspace.js";
+import { conversationActivityRows } from "../features/chat/conversation-activity.js";
 
 describe("MockAgentClient", () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("notifies sidebar and activity views when a completed result is viewed while retaining live Runs", async () => {
+    vi.useFakeTimers();
+    const client = new MockAgentClient();
+    const conversation = await client.createConversation({ projectId: null });
+    await client.sendConversationMessage({ content: "检查", conversationId: conversation.id });
+    await vi.advanceTimersByTimeAsync(800);
+    const completed = (await client.listConversations())[0]!;
+    let sidebar = upsertSideSession([], completed);
+    const running = await client.createConversation({ projectId: null });
+    await client.sendConversationMessage({ content: "继续检查", conversationId: running.id });
+    const live = (await client.listConversations()).find(({ id }) => id === running.id)!;
+    sidebar = upsertSideSession(sidebar, live);
+    const updated = vi.fn();
+    const unsubscribe = client.onConversationRunEvent((event) => {
+      if (event.type !== "conversation.updated") return;
+      updated(event);
+      sidebar = updateSideSessionsForRunEvent(sidebar, event);
+    });
+    expect(conversationActivityRows(sidebar, {})).toHaveLength(2);
+    await client.markConversationResultViewed({ conversationId: completed.id });
+    expect(updated).toHaveBeenCalledExactlyOnceWith({ type: "conversation.updated", conversation: { ...completed, hasUnreadResult: false } });
+    expect(sidebar.find(({ id }) => id === completed.id)?.hasUnreadResult).toBe(false);
+    expect(conversationActivityRows(sidebar, {}).map(({ session }) => session.id)).toEqual([live.id]);
+    expect(sidebar.find(({ id }) => id === live.id)?.activeRunId).toBe(live.activeRunId);
+    unsubscribe();
   });
 
   it("reports mock capabilities and rejects desktop-only commands", async () => {

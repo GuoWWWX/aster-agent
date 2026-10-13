@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, nativeTheme } from "electron";
+import { BrowserPasswordStore } from "../settings/browser-password-store.js";
 import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -341,6 +342,8 @@ async function initializeServices(): Promise<DesktopServices> {
   const managedBrowser = new ManagedBrowserController(
     () => mainWindow,
     browserConfiguration,
+    undefined,
+    new BrowserPasswordStore(path.join(agentHome.paths.rootPath, "browser-passwords.json")),
   );
   const browserToolPlugin = new BrowserToolPlugin(managedBrowser, workspaceBrowserTabs);
   await attachments.resumeCancelledPendingMessageAttachmentCleanup();

@@ -1,3 +1,4 @@
+/* CSS triggers 2 and 3: Electron drag regions, tab states and shell variables. */
 .app-shell {
   display: flex;
   height: 100dvh;
@@ -64,7 +65,9 @@
   min-width: 0;
   height: 100%;
   flex: 0 1 auto;
-  align-items: stretch;
+  align-items: center;
+  gap: 5px;
+  padding: 0 3px;
   overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior-inline: contain;
@@ -78,13 +81,14 @@
 
 .app-titlebar__conversation-tab {
   display: flex;
+  height: calc(100% - 6px);
   width: 220px;
   min-width: 220px;
   max-width: 220px;
   flex: 0 0 220px;
   align-items: center;
-  border-right: 1px solid var(--app-border);
-  border-bottom: 2px solid transparent;
+  border: 1px solid transparent;
+  border-radius: var(--app-radius);
   background: transparent;
   color: var(--app-muted-foreground);
 }
@@ -95,9 +99,9 @@
 }
 
 .app-titlebar__conversation-tab[data-active="true"] {
-  border-bottom-color: var(--app-foreground);
-  background: var(--app-panel-subtle);
-  color: var(--app-foreground);
+  border-color: var(--app-selection-border);
+  background: var(--app-selection);
+  color: var(--app-selection-foreground);
 }
 
 .app-titlebar__conversation-tab-select {

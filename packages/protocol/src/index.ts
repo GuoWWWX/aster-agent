@@ -201,6 +201,15 @@ export {
 export type { DesktopBridge } from "./desktop-bridge.js";
 export {
   browserConfigurationSchema,
+  BROWSER_PASSWORD_CHANNELS,
+  browserCredentialSchema,
+  browserSavedPasswordListSchema,
+  browserPasswordReferenceSchema,
+  browserPasswordValueSchema,
+  type BrowserSavedPassword,
+  type BrowserPasswordReference,
+  browserPasswordConfigurationSchema,
+  type BrowserCredential,
   DEFAULT_BROWSER_CONFIGURATION,
 } from "./browser.js";
 export type { BrowserConfiguration } from "./browser.js";
@@ -510,6 +519,7 @@ export {
   approveToolChangeIpcArgumentsSchema,
   applicationSettingsIpcArgumentsSchema,
   browserConfigurationIpcArgumentsSchema,
+  browserPasswordReferenceIpcArgumentsSchema,
   cancelRunIpcArgumentsSchema,
   clipboardWriteTextIpcArgumentsSchema,
   createSkillDocumentIpcArgumentsSchema,

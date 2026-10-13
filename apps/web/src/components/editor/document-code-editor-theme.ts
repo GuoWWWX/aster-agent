@@ -8,7 +8,7 @@ const sharedTheme = EditorView.theme({
     height: "100%",
     backgroundColor: "transparent",
     color: "var(--app-foreground)",
-    fontSize: "11px",
+    fontSize: "var(--app-code-font-size)",
   },
   "&.cm-focused": { outline: "none" },
   ".cm-scroller": {
@@ -97,6 +97,10 @@ const lightTheme = EditorView.theme({
 }, { dark: false });
 
 const darkTheme = EditorView.theme({
+  "&.cm-editor .cm-gutters": {
+    backgroundColor: "var(--app-panel)",
+    color: "var(--app-subtle-foreground)",
+  },
   "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
     backgroundColor: "var(--app-text-selection)",
   },
