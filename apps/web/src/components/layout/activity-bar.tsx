@@ -1,11 +1,11 @@
 import {
-  ListTodo,
+  CalendarClock,
   MessageSquareText,
   Moon,
   Search,
   Settings,
   Sun,
-  UsersRound,
+  PanelsTopLeft,
   type LucideIcon,
 } from "lucide-react";
 import type { ReactElement } from "react";
@@ -21,8 +21,8 @@ type ActivityItem = {
 
 const ACTIVITY_ITEMS: readonly ActivityItem[] = [
   { id: "conversations", label: "对话", icon: MessageSquareText },
-  { id: "team", label: "团队", icon: UsersRound },
-  { id: "tasks", label: "任务", icon: ListTodo },
+  { id: "team", label: "任务看板", icon: PanelsTopLeft },
+  { id: "schedules", label: "定时任务", icon: CalendarClock },
 ];
 
 export function ActivityBar({ onOpenGlobalSearch }: { onOpenGlobalSearch?: () => void }): ReactElement {
@@ -48,7 +48,7 @@ export function ActivityBar({ onOpenGlobalSearch }: { onOpenGlobalSearch?: () =>
       <nav className="activity-bar__navigation" aria-label="工作区视图">
         {ACTIVITY_ITEMS.map((item) => {
           const ItemIcon = item.icon;
-          const isActive = activeActivity === item.id;
+          const isActive = activeActivity === item.id || (item.id === "team" && activeActivity === "tasks");
 
           return (
             <IconButton

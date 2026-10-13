@@ -3315,7 +3315,7 @@ button.tool-file-change__path:hover {
 
 [data-theme="dark"] .conversation-workspace__surface,
 [data-theme="dark"] .conversation-empty__content {
-  background: #202020;
+  background: var(--app-panel);
 }
 
 [data-theme="dark"] .conversation-workspace__messages {
@@ -3328,12 +3328,12 @@ button.tool-file-change__path:hover {
 }
 
 [data-theme="dark"] .tool-timeline-item {
-  background: #282828;
+  background: var(--app-panel-subtle);
 }
 
 [data-theme="dark"] .tool-timeline-item[data-status="failed"] {
   border-color: rgba(248, 113, 113, 0.46);
-  background: #282828;
+  background: var(--app-panel-subtle);
 }
 
 [data-theme="dark"] .tool-timeline-item[data-status="failed"] .tool-timeline-item__header {
@@ -3354,12 +3354,12 @@ button.tool-file-change__path:hover {
 }
 
 [data-theme="dark"] .conversation-workspace__composer-surface {
-  background: #282828;
+  background: var(--app-panel-subtle);
 }
 
 [data-theme="dark"] .conversation-pending-queue {
   border-color: #3d3d3d;
-  background: #282828;
+  background: var(--app-panel-subtle);
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
 }
 
@@ -3391,7 +3391,7 @@ button.tool-file-change__path:hover {
 [data-theme="dark"] .conversation-task-list__summary-control,
 [data-theme="dark"] .conversation-task-list__details {
   border-color: #3d3d3d;
-  background: #282828;
+  background: var(--app-panel-subtle);
   color: var(--app-foreground);
 }
 
@@ -3490,7 +3490,7 @@ button.tool-file-change__path:hover {
 
 [data-theme="dark"] .conversation-empty__create {
   border-color: rgba(212, 212, 216, 0.22);
-  background: #282828;
+  background: var(--app-panel-subtle);
   color: var(--app-foreground);
 }
 .conversation-workspace__messages .chat-message {

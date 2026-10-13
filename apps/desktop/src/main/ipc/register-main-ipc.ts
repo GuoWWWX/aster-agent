@@ -1,3 +1,5 @@
+import { scheduledTaskListSchema, scheduledTaskSchema, saveScheduledTaskIpcArgumentsSchema, scheduledTaskReferenceIpcArgumentsSchema } from "@agent/protocol";
+import type { ScheduledTaskController } from "../schedules/scheduled-task-controller.js";
 import {
   app,
   BrowserWindow,
@@ -266,6 +268,7 @@ function subscribeToWindowState(window: BrowserWindow): void {
 }
 
 type MainIpcDependencies = {
+  scheduledTasks: ScheduledTaskController;
   agentRuntime: AgentRuntime;
   applicationStorageLocation: ApplicationStorageLocationStore;
   applicationSettings: ApplicationSettingsStore;
@@ -314,6 +317,7 @@ export function registerMainIpcHandlers(
   getMainWindow: () => BrowserWindow | undefined,
   {
     agentRuntime,
+    scheduledTasks,
     applicationStorageLocation,
     applicationSettings,
     browserConfiguration,
@@ -351,6 +355,22 @@ export function registerMainIpcHandlers(
     removeHandler(channel): void {
       electronIpcMain.removeHandler(channel);
     },
+  });
+  ipcMain.handle(IPC_CHANNELS.scheduledTaskList, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow); emptyIpcArgumentsSchema.parse(args);
+    return scheduledTaskListSchema.parse(scheduledTasks.list());
+  });
+  ipcMain.handle(IPC_CHANNELS.scheduledTaskSave, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow); const [input] = saveScheduledTaskIpcArgumentsSchema.parse(args);
+    return scheduledTaskSchema.parse(scheduledTasks.save(input));
+  });
+  ipcMain.handle(IPC_CHANNELS.scheduledTaskDelete, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow); const [input] = scheduledTaskReferenceIpcArgumentsSchema.parse(args);
+    scheduledTasks.delete(input.id);
+  });
+  ipcMain.handle(IPC_CHANNELS.scheduledTaskRun, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow); const [input] = scheduledTaskReferenceIpcArgumentsSchema.parse(args);
+    return scheduledTaskSchema.parse(scheduledTasks.run(input.id));
   });
   const disposeApplicationSettingsListener = applicationSettings.onChanged((settings) => {
     const window = getMainWindow();

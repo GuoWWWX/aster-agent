@@ -1,3 +1,6 @@
+import { ScheduledTaskController } from "../schedules/scheduled-task-controller.js";
+import { ScheduledTaskStore } from "../schedules/scheduled-task-store.js";
+import { AgentScheduledTaskRunner } from "../schedules/agent-scheduled-task-runner.js";
 import { app, BrowserWindow, nativeTheme } from "electron";
 import { BrowserPasswordStore } from "../settings/browser-password-store.js";
 import { existsSync, readFileSync } from "node:fs";
@@ -60,6 +63,7 @@ import { parseBackendSendCommand } from "./backend-command.js";
 import { dispatchBackendSendCommand as submitBackendSendCommand } from "./backend-command-dispatch.js";
 
 type DesktopServices = {
+  scheduledTasks: ScheduledTaskController;
   agentRuntime: AgentRuntime;
   applicationStorageLocation: ApplicationStorageLocationStore;
   applicationSettings: ApplicationSettingsStore;
@@ -390,7 +394,13 @@ async function initializeServices(): Promise<DesktopServices> {
   });
   database.blockInterruptedTeamWorkItems();
 
+  const scheduledTasks = new ScheduledTaskController(
+    new ScheduledTaskStore(path.join(agentHome.paths.rootPath, "scheduled-tasks.json")),
+    new AgentScheduledTaskRunner(conversationLifecycle, agentRuntime, database, projectRegistry, applicationSettings),
+    sendConversationRunEvent, (error) => reportMainError(toMainAgentError(error, { operation: "scheduled_task.execute" }), error),
+  );
   return {
+    scheduledTasks,
     agentRuntime,
     applicationStorageLocation,
     applicationSettings,
@@ -559,6 +569,7 @@ async function bootstrap(): Promise<void> {
   archivedConversationCleanupTimer.unref();
 
   await openMainWindow();
+  services.scheduledTasks.start();
   dispatchBackendSendCommand(process.argv);
 
   app.on("activate", () => {
@@ -583,6 +594,7 @@ async function bootstrap(): Promise<void> {
     } catch (error) {
       reportMainError(toMainAgentError(error, { operation: "thread_log.shutdown_checkpoint" }), error);
     }
+    services?.scheduledTasks.dispose();
     services?.graphCheckpointer.close();
     services?.managedBrowser.dispose();
     services?.terminalSessions.dispose();

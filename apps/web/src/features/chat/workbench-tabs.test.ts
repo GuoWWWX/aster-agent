@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { reconcileWorkbenchTabs } from "./workbench-tabs.js";
 
 describe("workbench preview tabs", () => {
+  it("keeps the scheduled task page separate from conversation previews and opens it once", () => {
+    const first = reconcileWorkbenchTabs({ ids: ["a"], previewId: "a" }, ["a", "b"], "page:schedules");
+    expect(first).toEqual({ ids: ["a", "page:schedules"], previewId: "a" });
+    expect(reconcileWorkbenchTabs(first, ["a", "b"], "page:schedules")).toBe(first);
+    expect(reconcileWorkbenchTabs(first, ["a", "b"], "b")).toEqual({ ids: ["b", "page:schedules"], previewId: "b" });
+  });
   it("does not duplicate or turn a retained conversation back into a preview on repeated visits", () => {
     const state = { ids: ["a", "b"], previewId: "b" };
     expect(reconcileWorkbenchTabs(state, ["a", "b"], "a")).toBe(state);

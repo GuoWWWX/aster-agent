@@ -1,4 +1,5 @@
 import { QueryTextarea } from "./query-textarea.js";
+import { ScheduledTasksWorkspace } from "../schedules/scheduled-tasks-workspace.js";
 import { useComposerHistory } from "./use-composer-history.js";
 import { ProjectImageResult } from "./project-image-result.js";
 import { ToolDisclosureContext, useToolDisclosure } from "./tool-disclosure-state.js";
@@ -219,7 +220,7 @@ type WorkspaceContentProps = {
     timelineItemId?: string,
   ) => void;
   onNavigateToTeamConversation?: (conversationId: string) => void;
-  onProjectSelected: (projectId: string) => void;
+  onProjectSelected: (projectId: string | null) => void;
   onRefreshSessions?: () => Promise<void>;
   onSessionSelected: (sessionId: string) => void;
   onSessionUpdated: (conversation: ConversationSummary) => void;
@@ -779,7 +780,14 @@ export function WorkspaceContent({
           onNavigateToConversation: onNavigateToTeamConversation,
         })}
       />
-    ) : activeActivity === "settings" ? <SettingsWorkspace agentClient={agentClient} /> : activeSession === null ? (
+    ) : activeActivity === "schedules" ? <ScheduledTasksWorkspace agentClient={agentClient} projects={projects}
+      onOpenConversation={(id, projectId) => {
+        void (onRefreshSessions?.() ?? Promise.resolve()).then(() => {
+          onProjectSelected(projectId);
+          useWorkbenchUiStore.getState().setActiveActivity("conversations");
+          onSessionSelected(id);
+        });
+      }} /> : activeActivity === "settings" ? <SettingsWorkspace agentClient={agentClient} /> : activeSession === null ? (
       <ProjectConversationEmpty
         activeProject={activeProject}
         isCreatingSession={isCreatingSession}

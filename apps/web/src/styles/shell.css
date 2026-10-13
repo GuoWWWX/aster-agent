@@ -15,8 +15,15 @@
   align-items: center;
   background: var(--app-titlebar);
   color: var(--app-muted-foreground);
-  backdrop-filter: blur(18px);
   user-select: none;
+}
+
+/* CSS triggers #2/#3: hashed project variables color only the leading titlebar area. */
+.app-shell[data-project-accent] .app-titlebar {
+  background-image: linear-gradient(105deg,
+    color-mix(in srgb, var(--app-project-accent-start) 22%, transparent),
+    color-mix(in srgb, var(--app-project-accent-end) 16%, transparent) 180px,
+    transparent 480px);
 }
 
 .app-titlebar__brand {
@@ -214,7 +221,7 @@
 
 .app-titlebar__window-controls {
   margin-left: 4px;
-  border-left: 1px solid rgba(226, 232, 240, 0.82);
+  border-left: 1px solid var(--app-border);
 }
 
 [data-app-drag-region="true"] {
@@ -232,7 +239,7 @@
   min-width: 0;
   flex: 1;
   gap: 5px;
-  padding: 5px 0 0;
+  padding: 5px 5px 5px 0;
 }
 
 .activity-bar,
@@ -250,33 +257,20 @@
   position: relative;
   display: flex;
   width: 48px;
+  flex-shrink: 0;
   margin-top: -5px;
+  margin-bottom: -5px;
+  margin-right: -5px;
   overflow: visible;
   flex-direction: column;
   align-items: center;
-  border-top: 0;
-  border-right: 0;
-  border-top-left-radius: 0;
-  border-top-right-radius: 0;
+  border: 0;
+  border-radius: 0;
   background: var(--app-titlebar);
-  backdrop-filter: blur(18px);
   padding: 8px 4px;
 }
 
-.activity-bar::after {
-  position: absolute;
-  top: 0;
-  right: calc(var(--app-radius) * -1);
-  width: var(--app-radius);
-  height: var(--app-radius);
-  background: radial-gradient(
-    circle at 100% 100%,
-    transparent var(--app-radius),
-    var(--app-titlebar) calc(var(--app-radius) + 0.5px)
-  );
-  content: "";
-  pointer-events: none;
-}
+
 
 .activity-bar__navigation,
 .activity-bar__footer {
@@ -295,7 +289,7 @@
 .activity-bar__footer {
   width: 100%;
   padding-top: 8px;
-  border-top: 1px solid rgba(226, 232, 240, 0.8);
+  border-top: 1px solid var(--app-border);
 }
 
 .workbench-main {
@@ -307,6 +301,7 @@
 }
 
 .workbench-grid[data-active-activity="settings"] > .workbench-main,
+.workbench-grid[data-active-activity="schedules"] > .workbench-main,
 .workbench-grid[data-active-activity="team"] > .workbench-main {
   overflow: visible;
   border: 0;
@@ -325,35 +320,6 @@
 .workbench-sidebar > .workbench-panel {
   width: 100%;
   height: 100%;
-}
-
-/* CSS trigger #2: the fixed navigator joins the titlebar with an inverse corner;
-   the temporary hover panel keeps its independent floating surface. */
-.workbench-sidebar--left:not([data-navigator-peek]) {
-  margin-top: -5px;
-  background: var(--app-titlebar);
-  backdrop-filter: blur(18px);
-}
-
-.workbench-sidebar--left:not([data-navigator-peek]) > .workbench-panel {
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-}
-
-.workbench-sidebar--left:not([data-navigator-peek])::after {
-  position: absolute;
-  top: 0;
-  right: calc(var(--app-radius) * -1);
-  width: var(--app-radius);
-  height: var(--app-radius);
-  background: radial-gradient(
-    circle at 100% 100%,
-    transparent var(--app-radius),
-    var(--app-titlebar) calc(var(--app-radius) + 0.5px)
-  );
-  content: "";
-  pointer-events: none;
 }
 
 .panel-header {

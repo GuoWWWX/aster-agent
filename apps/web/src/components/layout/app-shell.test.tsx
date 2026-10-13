@@ -176,10 +176,10 @@ describe("AppShell", () => {
     expect(titlebar?.dataset.appDragRegion).toBe("true");
     expect(leadingDragRegion?.dataset.appDragRegion).toBe("true");
     expect(trailingDragRegion?.dataset.appDragRegion).toBe("true");
-    expect(container.querySelector(".activity-bar")).toBeNull();
+    expect(container.querySelector(".activity-bar")).not.toBeNull();
     expect(leadingDragRegion?.style.getPropertyValue(
       "--app-titlebar-conversation-leading-width",
-    )).toBe("124px");
+    )).toBe("172px");
 
     const idleTab = container.querySelector<HTMLButtonElement>('[role="tab"]');
     const openIdleTabMenu = (): void => {

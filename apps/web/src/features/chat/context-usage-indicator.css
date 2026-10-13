@@ -243,11 +243,11 @@
 }
 
 [data-theme="dark"] .context-usage-indicator__ring::after {
-  background: #282828;
+  background: var(--app-panel-subtle);
 }
 
 [data-theme="dark"] .context-usage-indicator__content {
-  background: #282828;
+  background: var(--app-panel-subtle);
 }
 
 [data-theme="dark"] .context-usage-indicator__meter {
