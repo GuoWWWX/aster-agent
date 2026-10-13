@@ -98,6 +98,7 @@ export const IPC_CHANNELS = {
   applicationSettingsChooseStorageLocation: "application_settings.choose_storage_location",
   applicationSettingsResetStorageLocation: "application_settings.reset_storage_location",
   browserGetConfiguration: "browser.get_configuration",
+  browserChooseDownloadDirectory: "browser.choose_download_directory",
   browserSaveConfiguration: "browser.save_configuration",
   browserClearData: "browser.clear_data",
   terminalGetConfiguration: "terminal.get_configuration",

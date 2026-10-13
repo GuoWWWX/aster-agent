@@ -201,6 +201,10 @@ export {
 export type { DesktopBridge } from "./desktop-bridge.js";
 export {
   browserConfigurationSchema,
+  BROWSER_PASSWORD_CHANNELS,
+  browserCredentialSchema,
+  browserPasswordConfigurationSchema,
+  type BrowserCredential,
   DEFAULT_BROWSER_CONFIGURATION,
 } from "./browser.js";
 export type { BrowserConfiguration } from "./browser.js";

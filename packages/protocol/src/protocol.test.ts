@@ -587,6 +587,8 @@ describe("protocol bootstrap contract", () => {
     expect(browserConfigurationSchema.parse({ defaultZoomPercent: 125, version: 1 }))
       .toEqual({
         askForDownloadLocation: false,
+        downloadDirectory: "",
+        savePasswords: true,
         defaultZoomPercent: 125,
         searchEngine: "google",
         version: 1,

@@ -373,6 +373,9 @@ export class DesktopAgentClientAdapter implements AgentClient {
   public clearBrowserData(): Promise<void> {
     return this.desktopBridge.clearBrowserData();
   }
+  public chooseBrowserDownloadDirectory(): Promise<string | null> {
+    return this.desktopBridge.chooseBrowserDownloadDirectory();
+  }
 
   public getTerminalConfiguration(): Promise<TerminalConfiguration> {
     return this.desktopBridge.getTerminalConfiguration();

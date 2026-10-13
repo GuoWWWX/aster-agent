@@ -3815,9 +3815,23 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
         </h3>
         <div className="settings-general-card">
           <article className="settings-general-row">
+            <div className="min-w-0">
+              <h4>下载目录</h4>
+              <p className="break-all">{draft.downloadDirectory || "系统“下载”文件夹（默认）"}</p>
+            </div>
+            <div className="flex flex-wrap gap-[5px]">
+              <button className="settings-secondary-button" type="button" onClick={() => {
+                void agentClient.chooseBrowserDownloadDirectory().then((directory) => {
+                  if (directory !== null) updateConfiguration({ downloadDirectory: directory });
+                }).catch((error: unknown) => setOperationError(errorMessage(error)));
+              }}><FolderOpen aria-hidden="true" size={14} />选择目录</button>
+              <button className="settings-secondary-button" type="button" disabled={draft.downloadDirectory === ""} onClick={() => updateConfiguration({ downloadDirectory: "" })}>恢复默认</button>
+            </div>
+          </article>
+          <article className="settings-general-row">
             <div>
               <h4>下载前询问保存位置</h4>
-              <p>关闭时自动保存到系统“下载”文件夹。</p>
+              <p>关闭时自动保存到下载目录；开启时每次选择保存位置。</p>
             </div>
             <label className="settings-switch">
               <input
@@ -3843,9 +3857,12 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
           <article className="settings-general-row">
             <div>
               <h4>密码保存</h4>
-              <p>隔离的内置浏览器不会保存或自动填充密码。</p>
+              <p>在 HTTPS 网站登录时询问保存密码，使用系统加密存储，下次访问同一网站自动填充。关闭后停止保存与填充。</p>
             </div>
-            <span className="settings-state-badge" data-state="offline">已关闭</span>
+            <label className="settings-switch">
+              <input aria-label="保存并自动填充密码" checked={draft.savePasswords} type="checkbox" onChange={(event) => updateConfiguration({ savePasswords: event.target.checked })} />
+              <span aria-hidden="true" />
+            </label>
           </article>
         </div>
       </section>
@@ -3859,7 +3876,7 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
           <article className="settings-general-row">
             <div>
               <h4>清除浏览数据</h4>
-              <p>清除内置浏览器的 Cookie、缓存、站点数据和当前历史记录。</p>
+              <p>清除内置浏览器的 Cookie、缓存、站点数据、已保存密码和当前历史记录。</p>
             </div>
             <button
               className="settings-secondary-button"

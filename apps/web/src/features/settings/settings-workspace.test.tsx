@@ -58,6 +58,28 @@ function clickButton(container: HTMLElement, label: string): void {
 }
 
 describe("SettingsWorkspace", () => {
+  it("saves the selected download directory and password preference, and keeps defaults when selection is cancelled", async () => {
+    vi.useFakeTimers();
+    try {
+      useWorkbenchUiStore.setState({ settingsSection: "browser" });
+      const client = new MockAgentClient();
+      const choose = vi.spyOn(client, "chooseBrowserDownloadDirectory").mockResolvedValue("D:\\Downloads");
+      const save = vi.spyOn(client, "saveBrowserConfiguration");
+      const container = await renderSettings(client);
+      const password = container.querySelector<HTMLInputElement>('[aria-label="保存并自动填充密码"]');
+      expect(password?.checked).toBe(true);
+      await act(async () => { clickButton(container, "选择目录"); await Promise.resolve(); });
+      act(() => password?.click());
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ downloadDirectory: "D:\\Downloads", savePasswords: false }));
+      act(() => clickButton(container, "恢复默认"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ downloadDirectory: "", savePasswords: false }));
+      choose.mockResolvedValue(null);
+      await act(async () => { clickButton(container, "选择目录"); await Promise.resolve(); });
+      expect(container.textContent).toContain("系统“下载”文件夹（默认）");
+    } finally { vi.useRealTimers(); }
+  });
   it("resets only typography while preserving the chosen theme and panel widths", async () => {
     useWorkbenchUiStore.setState({
       settingsSection: "appearance", themeMode: "dark", uiFontSize: 16,

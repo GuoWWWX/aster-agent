@@ -403,6 +403,9 @@ export function createDesktopBridge(): DesktopBridge {
     clearBrowserData() {
       return invoke<BridgeResult<"clearBrowserData">>(IPC_CHANNELS.browserClearData);
     },
+    chooseBrowserDownloadDirectory() {
+      return invoke<BridgeResult<"chooseBrowserDownloadDirectory">>(IPC_CHANNELS.browserChooseDownloadDirectory);
+    },
     getTerminalConfiguration() {
       return invoke<BridgeResult<"getTerminalConfiguration">>(
         IPC_CHANNELS.terminalGetConfiguration
