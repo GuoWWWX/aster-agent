@@ -232,6 +232,7 @@ MCP 的 `command`、`args`、`env`、`headers`、`url` 等服务定义统一在 
 | 旧存储 | 新位置 |
 | --- | --- |
 | `application-settings.json` | `general`、`appearance`、`permissionPolicies`；`agentDirectory.agents/teams` 提到根层 `agents/teams` |
+| 旧管理目录或 Electron 数据目录的 `settings.jsonc` | 新目录缺少该文件时先原样复制，保留明文密钥、注释和空配置；已有目标文件不覆盖 |
 | `model-credentials.json` | `providers`、`defaultModelSelection`、`recentSelection`；`encryptedApiKey` 解密后写 `apiKey` |
 | `model-catalog.json` | `modelCatalog` |
 | `context-compression-settings.json` | `contextCompression` |
@@ -241,7 +242,7 @@ MCP 的 `command`、`args`、`env`、`headers`、`url` 等服务定义统一在 
 | 旧 `agent.sqlite → plugin_catalog` | `id`、`enabled` 合入 `plugins`；名称、版本、路径、清单、哈希和扫描更新时间改为扫描计算 |
 | 旧 `agent.sqlite`、`langgraph-checkpoints.sqlite` | 统一为 `db.sqlite`；按目标结构转换后导入，只保留一份 `schema_migrations`，详见[单库迁移](./21-数据库实体关系图.md#91-单库生命周期与迁移) |
 
-迁移逐个校验旧格式，去掉各文件的外层版本号，保留 ID、能力、默认/最近选择、用户规则及可选字段。旧默认供应商/模型组合为 `defaultModelSelection`，原来未指定思考程度时写 `reasoning: null`。仅导入旧密文时尝试本机解密；失败则保留旧文件、迁入供应商和模型元数据，将对应 `apiKey` 留空，并在本次启动进入主窗口后提示补填，不因解密失败阻止启动。JSONC 的明文 Key 读取和保存不调用系统加密接口。〔FACT｜`model-credential-store.ts`；`bootstrap/index.ts`〕
+迁移逐个校验旧格式，去掉各文件的外层版本号，保留 ID、能力、默认/最近选择、用户规则及可选字段。旧默认供应商/模型组合为 `defaultModelSelection`，原来未指定思考程度时写 `reasoning: null`。先迁移旧目录中已有的 `settings.jsonc`；存在 `providers` 字段（包括显式空数组）时，不再导入旧密文或环境变量供应商。只有该字段缺失时才尝试导入旧密文并在本机解密；失败则保留旧文件、迁入供应商和模型元数据，将对应 `apiKey` 留空，不弹启动警告或阻止启动。JSONC 的明文 Key 读取和保存不调用系统加密接口。〔FACT｜`agent-home.ts`；`model-credential-store.ts`；`bootstrap/index.ts`〕
 
 新文件校验成功并原子落盘后才切换读取；已有 `settings.jsonc` 不得被旧文件覆盖。旧文件先保留备份，不同时双写，清理由用户确认。迁移后的明文文件按同样的访问限制保护。
 

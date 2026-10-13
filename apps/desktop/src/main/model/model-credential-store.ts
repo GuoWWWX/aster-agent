@@ -408,7 +408,6 @@ export class ModelCredentialStore {
   private readonly configurationPath: string | null;
   private readonly legacyConfigurationPath: string | null;
   private readonly settings: SettingsJsoncFile | null;
-  private credentialMigrationWarnings: string[] = [];
 
   public constructor(configuration: string | SettingsJsoncFile, legacyConfigurationPath?: string) {
     this.configurationPath = typeof configuration === "string" ? configuration : null;
@@ -418,7 +417,7 @@ export class ModelCredentialStore {
 
   public importFromEnvironment(): void {
     this.migrateLegacyConfiguration();
-    if (this.hasConfigurationSection()) return;
+    if (this.settings?.has("providers") || this.hasConfigurationSection()) return;
     const baseUrl = process.env.AGENT_MODEL_BASE_URL?.trim();
     const apiKey = process.env.AGENT_MODEL_API_KEY?.trim();
     const modelId = process.env.AGENT_MODEL_ID?.trim();
@@ -783,10 +782,6 @@ export class ModelCredentialStore {
     return this.readLegacyStoredConfiguration(this.configurationPath);
   }
 
-  public getCredentialMigrationWarnings(): readonly string[] {
-    return [...this.credentialMigrationWarnings];
-  }
-
   private readLegacyStoredConfiguration(configurationPath: string): StoredConfiguration {
     const parsed = readJsonDocument(configurationPath);
     const current = storedConfigurationV6Schema.safeParse(parsed);
@@ -970,7 +965,6 @@ export class ModelCredentialStore {
       || !existsSync(this.legacyConfigurationPath)
     ) return;
     const legacy = this.readLegacyStoredConfiguration(this.legacyConfigurationPath);
-    const warnings: string[] = [];
     const migrated = storedConfigurationV6Schema.parse({
       ...legacy,
       providers: legacy.providers.map((provider) => {
@@ -980,13 +974,11 @@ export class ModelCredentialStore {
         } catch {
           // Preserve the original ciphertext file; an unavailable old OS key
           // must not prevent editing the new plaintext JSONC configuration.
-          warnings.push(provider.name);
         }
         return { ...provider, encryptedApiKey: Buffer.from(apiKey, "utf8").toString("base64") };
       }),
     });
     this.writeStoredConfiguration(migrated);
-    this.credentialMigrationWarnings = warnings;
   }
 
   private encodeApiKey(apiKey: string): string {
