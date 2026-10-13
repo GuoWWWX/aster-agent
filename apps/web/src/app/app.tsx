@@ -1,4 +1,4 @@
-import { Scale, PanelsTopLeft, Settings } from "lucide-react";
+import { Scale, CalendarClock, PanelsTopLeft, Settings } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
 import type {
@@ -134,6 +134,7 @@ export function App(): ReactElement {
   const [tabState, setTabState] = useState<WorkbenchTabs>({ ids: [], previewId: null });
   const openConversationIds = tabState.ids.filter((id) => !isFunctionTab(id));
   const activeTabId = activeActivity === "settings" ? "page:settings"
+    : activeActivity === "schedules" ? "page:schedules"
     : activeActivity === "team" || activeActivity === "tasks" ? "page:team" : projectSessions.activeSessionId;
   const navigation = useNavigationHistory({
     activity: activeActivity, settingsSection,
@@ -211,7 +212,7 @@ export function App(): ReactElement {
     const projectsById = new Map(projectTree.projects.map((project) => [project.id, project]));
     return tabState.ids.flatMap<AppTitlebarConversationTab>((id) => {
       if (isFunctionTab(id)) return [{ id, isRunning: false, title: FUNCTION_TABS[id],
-        icon: id === "page:team" ? <PanelsTopLeft size={14} /> : <Settings size={14} />,
+        icon: id === "page:schedules" ? <CalendarClock size={14} /> : id === "page:team" ? <PanelsTopLeft size={14} /> : <Settings size={14} />,
         kind: "page" as const, isPreview: false }];
       const session = projectSessions.sessions.find((candidate) => candidate.id === id);
       if (session === undefined || session.isArchived) return [];
@@ -515,7 +516,7 @@ export function App(): ReactElement {
 
   function selectSession(sessionId: string): void {
     if (isFunctionTab(sessionId)) {
-      setActiveActivity(sessionId === "page:team" ? "team" : "settings");
+      setActiveActivity(sessionId === "page:team" ? "team" : sessionId === "page:schedules" ? "schedules" : "settings");
       return;
     }
     setActiveActivity("conversations");
@@ -635,6 +636,8 @@ export function App(): ReactElement {
   return (
     <>
       <AppShell
+        activeProject={projectTree.projects.find((project) => project.id === projectSessions.activeSession?.projectId) ?? null}
+        onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
         navigation={navigation}
         activeConversationId={projectSessions.activeSessionId}
         activeTabId={activeTabId}

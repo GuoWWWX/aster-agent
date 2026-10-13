@@ -23,6 +23,12 @@ describe("result viewed IPC notification", () => {
   const emptyModelStatus = { baseUrl: null, configured: false, modelId: null, models: [], providerId: null, recentSelection: null, supportsStreaming: true, supportsTools: true };
   const deleteProvider = vi.fn(() => emptyModelStatus);
   const deleteSkill = vi.fn();
+  const scheduleInput = { name: "巡检", prompt: "检查", projectId: null, agentId: null, enabled: true,
+    permissionMode: "ask_before_changes" as const, recurrence: { kind: "daily" as const, time: "09:00", timezone: "UTC" } };
+  const scheduledTask = { ...scheduleInput, id: "00000000-0000-4000-8000-000000000003",
+    createdAt: "2026-10-14T00:00:00.000Z", updatedAt: "2026-10-14T00:00:00.000Z", nextRunAt: "2026-10-14T09:00:00.000Z", executions: [] };
+  const scheduledTasks = { list: vi.fn(() => [scheduledTask]), save: vi.fn(() => scheduledTask),
+    delete: vi.fn(), run: vi.fn(() => scheduledTask) };
   const conversation: ConversationSummary = {
     id: "00000000-0000-4000-8000-000000000001", title: "已结束的子代理",
     activeRunId: null, activeSubagentCount: 0, hasUnreadResult: false,
@@ -43,6 +49,7 @@ describe("result viewed IPC notification", () => {
     const unsubscribe = () => undefined;
     // Only subscription owners and the handler's lifecycle owner are used at registration.
     const dependencies = {
+      scheduledTasks,
       credentials: { deleteProvider },
       skillDocuments: { deleteDocument: deleteSkill },
       applicationSettings: { onChanged: () => unsubscribe },
@@ -57,6 +64,25 @@ describe("result viewed IPC notification", () => {
     invoke = electron.handle.mock.calls.find(([channel]) => channel === IPC_CHANNELS.conversationMarkResultViewed)![1];
   });
   afterEach(() => { dispose?.(); dispose = undefined; });
+
+  it("validates scheduled task commands before calling their owner and rejects untrusted senders", async () => {
+    const frame = {};
+    const trusted = { sender: { mainFrame: frame }, senderFrame: frame } as IpcMainInvokeEvent;
+    const handler = (channel: string) => electron.handle.mock.calls.find(([name]) => name === channel)![1];
+    await expect(handler(IPC_CHANNELS.scheduledTaskList)(trusted)).resolves.toEqual([scheduledTask]);
+    await expect(handler(IPC_CHANNELS.scheduledTaskSave)(trusted, scheduleInput)).resolves.toEqual(scheduledTask);
+    await expect(handler(IPC_CHANNELS.scheduledTaskRun)(trusted, { id: scheduledTask.id })).resolves.toEqual(scheduledTask);
+    await expect(handler(IPC_CHANNELS.scheduledTaskDelete)(trusted, { id: scheduledTask.id })).resolves.toBeUndefined();
+    await expect(handler(IPC_CHANNELS.scheduledTaskSave)(trusted, { ...scheduleInput, extra: true })).rejects.toThrow();
+    await expect(handler(IPC_CHANNELS.scheduledTaskRun)(trusted, { id: "invalid" })).rejects.toThrow();
+    for (const channel of [IPC_CHANNELS.scheduledTaskList, IPC_CHANNELS.scheduledTaskSave, IPC_CHANNELS.scheduledTaskRun, IPC_CHANNELS.scheduledTaskDelete]) {
+      electron.fromWebContents.mockReturnValueOnce(undefined);
+      await expect(handler(channel)(trusted, scheduleInput)).rejects.toThrow();
+    }
+    expect(scheduledTasks.save).toHaveBeenCalledExactlyOnceWith(scheduleInput);
+    expect(scheduledTasks.run).toHaveBeenCalledExactlyOnceWith(scheduledTask.id);
+    expect(scheduledTasks.delete).toHaveBeenCalledExactlyOnceWith(scheduledTask.id);
+  });
 
   it("validates deletion inputs and trusted senders and unregisters both deletion handlers", async () => {
     const frame = {};

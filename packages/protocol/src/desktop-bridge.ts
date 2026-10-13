@@ -1,3 +1,4 @@
+import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "./scheduled-task.js";
 import type {
   ApproveToolChangeInput,
   CancelRunInput,
@@ -153,6 +154,11 @@ import type {
  * shell. It deliberately exposes operations, not a generic IPC transport.
  */
 export interface DesktopBridge {
+  listScheduledTasks(): Promise<ScheduledTask[]>;
+  saveScheduledTask(input: SaveScheduledTaskInput): Promise<ScheduledTask>;
+  deleteScheduledTask(input: ScheduledTaskReference): Promise<void>;
+  runScheduledTask(input: ScheduledTaskReference): Promise<ScheduledTask>;
+
   addProject(): Promise<ProjectSummary | null>;
   createProjectEntry(input: CreateProjectEntryInput): Promise<ProjectEntry>;
   createConfigurationWorkspaceEntry(

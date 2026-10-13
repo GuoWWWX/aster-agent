@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
 
 import type { AgentClient } from "../../runtime/index.js";
+import type { ProjectSummary } from "@agent/protocol";
+import { ActivityBar } from "./activity-bar.js";
+import { projectAccent } from "./project-accent.js";
 import {
   FILE_PANEL_WIDTH_RANGE,
   PROJECT_NAVIGATOR_WIDTH_RANGE,
@@ -16,6 +19,7 @@ const TITLEBAR_CONTEXT = {
   settings: "Agent、团队、模型、工具与工作区偏好",
   tasks: "持续接收、规划和跟踪任务",
   team: "查看团队进度、Agent 状态与协作动态",
+  schedules: "配置定时任务，查看执行记录",
 } as const;
 
 const TITLEBAR_LEFT_CONTROL_WIDTH = 32;
@@ -23,6 +27,8 @@ const WORKBENCH_MAIN_LEFT_INSET = 0;
 const WORKBENCH_NAVIGATOR_TO_MAIN_GAP = 5;
 
 type AppShellProps = {
+  activeProject?: ProjectSummary | null;
+  onOpenGlobalSearch?: () => void;
   activeTabId?: string | null;
   titlebarActivity?: ReactNode;
   onKeepConversationTab?: (id: string) => void;
@@ -41,6 +47,8 @@ type AppShellProps = {
 };
 
 export function AppShell({
+  activeProject = null,
+  onOpenGlobalSearch,
   activeTabId,
   titlebarActivity,
   onKeepConversationTab,
@@ -158,6 +166,7 @@ export function AppShell({
   }, [uiFontSize, chatFontSize, codeFontSize]);
 
   const isConversationWorkspace = activeActivity === "conversations";
+  const canShowProjectNavigator = activeActivity !== "schedules";
   const activeSettingsWorkspaceTarget = resolveActiveSettingsWorkspaceTarget(
     activeActivity,
     settingsSection,
@@ -191,14 +200,19 @@ export function AppShell({
   const projectNavigatorStyle = {
     width: `${projectNavigatorWidth}px`,
   } as CSSProperties;
-  const conversationTabsLeadingWidth = WORKBENCH_MAIN_LEFT_INSET
-    + (isProjectNavigatorOpen
+  const conversationTabsLeadingWidth = 48 + WORKBENCH_MAIN_LEFT_INSET
+    + (isProjectNavigatorOpen && canShowProjectNavigator
       ? projectNavigatorWidth + WORKBENCH_NAVIGATOR_TO_MAIN_GAP
       : 0)
     - TITLEBAR_LEFT_CONTROL_WIDTH;
 
+  const accent = isConversationWorkspace ? projectAccent(activeProject) : null;
+  const accentStyle = accent === null ? undefined : {
+    "--app-project-accent-start": accent[0],
+    "--app-project-accent-end": accent[1],
+  } as CSSProperties;
   return (
-    <div className="app-shell" data-theme={themeMode}>
+    <div className="app-shell" data-theme={themeMode} data-project-accent={accent !== null || undefined} style={accentStyle}>
       <AppTitlebar
         {...(navigation === undefined ? {} : { navigation })}
         activeConversationId={activeTabId === undefined ? activeConversationId : activeTabId}
@@ -226,26 +240,28 @@ export function AppShell({
         })}
         {...(onMoveConversationTab === undefined ? {} : { onMoveConversationTab })}
         canToggleFilePanel={canShowFileWorkspace}
-        showProjectNavigatorControl
+        showProjectNavigatorControl={canShowProjectNavigator}
       />
       <div
         className="workbench-grid relative"
         data-active-activity={activeActivity}
         data-full-page={String(!isConversationWorkspace)}
       >
-        {!isProjectNavigatorOpen && !navigatorPeek ? (
+        <ActivityBar {...(onOpenGlobalSearch === undefined ? {} : { onOpenGlobalSearch })} />
+        {canShowProjectNavigator && !isProjectNavigatorOpen && !navigatorPeek ? (
           <div
             aria-hidden="true"
             data-navigator-hover-edge
-            className="absolute inset-y-0 left-0 z-30 w-1"
+            className="absolute inset-y-0 left-[48px] z-30 w-1"
             onMouseEnter={() => scheduleNavigatorPeek(true)}
             onMouseLeave={cancelPeekTimer}
           />
         ) : null}
         {isProjectNavigatorOpen || navigatorPeek ? (
           <div
-            className={`workbench-sidebar workbench-sidebar--left${!isProjectNavigatorOpen ? " absolute! inset-y-0 left-0 z-30 max-w-full bg-[var(--app-panel)] shadow-xl" : ""}`}
+            className={`workbench-sidebar workbench-sidebar--left${!isProjectNavigatorOpen ? " absolute! inset-y-0 left-[48px] z-30 max-w-full bg-[var(--app-panel)] shadow-xl" : ""}`}
             data-navigator-peek={!isProjectNavigatorOpen || undefined}
+            hidden={!canShowProjectNavigator}
             style={projectNavigatorStyle}
             onMouseEnter={cancelPeekTimer}
             onMouseLeave={() => scheduleNavigatorPeek(false)}
@@ -253,7 +269,7 @@ export function AppShell({
             {projectNavigator}
           </div>
         ) : null}
-        {(isProjectNavigatorOpen || isProjectNavigatorResizing) ? <ResizableDivider
+        {canShowProjectNavigator && (isProjectNavigatorOpen || isProjectNavigatorResizing) ? <ResizableDivider
           ariaLabel="调整项目栏宽度"
           className="workbench-resizable-divider--left"
           collapsed={!isProjectNavigatorOpen}

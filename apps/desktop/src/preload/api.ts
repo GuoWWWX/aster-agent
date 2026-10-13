@@ -1,3 +1,4 @@
+import type { SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
 import { ipcRenderer, type IpcRendererEvent } from "electron";
 import { IPC_CHANNELS } from "../../../../packages/protocol/src/ipc-channels.js";
 // Import the narrow schema module directly. The protocol barrel also exports
@@ -415,6 +416,10 @@ export function createDesktopBridge(): DesktopBridge {
     revealBrowserPassword(input) {
       return invoke<BridgeResult<"revealBrowserPassword">>(IPC_CHANNELS.browserRevealPassword, input);
     },
+    listScheduledTasks() { return invoke<BridgeResult<"listScheduledTasks">>(IPC_CHANNELS.scheduledTaskList); },
+    saveScheduledTask(input: SaveScheduledTaskInput) { return invoke<BridgeResult<"saveScheduledTask">>(IPC_CHANNELS.scheduledTaskSave, input); },
+    deleteScheduledTask(input: ScheduledTaskReference) { return invoke<BridgeResult<"deleteScheduledTask">>(IPC_CHANNELS.scheduledTaskDelete, input); },
+    runScheduledTask(input: ScheduledTaskReference) { return invoke<BridgeResult<"runScheduledTask">>(IPC_CHANNELS.scheduledTaskRun, input); },
     getTerminalConfiguration() {
       return invoke<BridgeResult<"getTerminalConfiguration">>(
         IPC_CHANNELS.terminalGetConfiguration

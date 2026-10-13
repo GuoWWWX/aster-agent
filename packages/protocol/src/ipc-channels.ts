@@ -3,6 +3,10 @@
  * stay dependency-free so it can also be loaded from a sandboxed preload.
  */
 export const IPC_CHANNELS = {
+  scheduledTaskList: "scheduled_task.list",
+  scheduledTaskSave: "scheduled_task.save",
+  scheduledTaskDelete: "scheduled_task.delete",
+  scheduledTaskRun: "scheduled_task.run",
   runtimeGetInfo: "runtime.get_info",
   projectAdd: "project.add",
   projectRemove: "project.remove",

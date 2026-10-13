@@ -1,10 +1,11 @@
 export const FUNCTION_TABS = {
   "page:team": "任务看板",
   "page:settings": "设置",
+  "page:schedules": "定时任务",
 } as const;
 
 export function isFunctionTab(id: string): id is keyof typeof FUNCTION_TABS {
-  return id === "page:team" || id === "page:settings";
+  return Object.hasOwn(FUNCTION_TABS, id);
 }
 
 export type WorkbenchTabs = { ids: string[]; previewId: string | null };

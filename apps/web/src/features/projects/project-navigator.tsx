@@ -54,7 +54,6 @@ import type {
 } from "@agent/protocol";
 
 import { WorkbenchPanel } from "../../components/layout/panel.js";
-import { NavigatorPages, NavigatorFooter } from "../../components/layout/navigator-actions.js";
 import { IconButton } from "../../components/ui/icon-button.js";
 import {
   Popover,
@@ -993,7 +992,6 @@ export function ProjectNavigator({
         ) : null}
       </header>
 
-      <NavigatorPages />
       <div className="project-navigator__body" ref={bodyRef}>
         {tree.isLoadingProjects || isLoadingSessions ? (
           <NavigatorEmpty label="正在读取项目…" loading />
@@ -1591,7 +1589,6 @@ export function ProjectNavigator({
         />,
         document.body,
       ) : null}
-      <NavigatorFooter />
       {dialog !== null ? createPortal(
         <NavigatorManagementDialog
           dialog={dialog}

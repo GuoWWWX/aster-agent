@@ -3188,7 +3188,7 @@
 }
 
 [data-theme="dark"] .settings-draft-form {
-  background: #282828;
+  background: var(--app-panel-subtle);
 }
 
 [data-theme="dark"] .settings-configuration-row__icon {

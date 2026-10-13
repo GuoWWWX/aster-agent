@@ -1,3 +1,4 @@
+import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
 import type {
   CapabilitySet,
   AddTeamWorkItemCommentInput,
@@ -146,6 +147,11 @@ export type ManagedBrowserEventListener = (event: ManagedBrowserEvent) => void;
  * browser mock and Electron preload surface stay interchangeable.
  */
 export interface AgentClient {
+  listScheduledTasks(): Promise<ScheduledTask[]>;
+  saveScheduledTask(input: SaveScheduledTaskInput): Promise<ScheduledTask>;
+  deleteScheduledTask(input: ScheduledTaskReference): Promise<void>;
+  runScheduledTask(input: ScheduledTaskReference): Promise<ScheduledTask>;
+
   addProject(): Promise<ProjectSummary | null>;
   createProjectEntry(input: CreateProjectEntryInput): Promise<ProjectEntry>;
   createConfigurationWorkspaceEntry(

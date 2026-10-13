@@ -85,7 +85,7 @@
 }
 
 [data-theme="dark"] .workspace-outline-button {
-  background: #282828;
+  background: var(--app-panel-subtle);
   color: var(--app-foreground);
 }
 

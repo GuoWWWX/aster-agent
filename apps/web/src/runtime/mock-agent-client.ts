@@ -1,3 +1,4 @@
+import { saveScheduledTaskInputSchema, type ScheduledTask, type SaveScheduledTaskInput, type ScheduledTaskReference } from "@agent/protocol";
 import {
   createSkillMarkdown,
   DEFAULT_BROWSER_CONFIGURATION,
@@ -261,6 +262,7 @@ function resolveMockForkBoundary(
  * deterministic fixture, not a substitute for a persistent runtime.
  */
 export class MockAgentClient implements AgentClient {
+  private scheduledTasks: ScheduledTask[] = [];
   private readonly activeRuns = new Map<string, MockRun>();
 
   private readonly conversationListeners = new Set<ConversationRunEventListener>();
@@ -1331,6 +1333,22 @@ export class MockAgentClient implements AgentClient {
     return Promise.resolve();
   }
 
+  public listScheduledTasks(): Promise<ScheduledTask[]> { return Promise.resolve(structuredClone(this.scheduledTasks)); }
+  public saveScheduledTask(raw: SaveScheduledTaskInput): Promise<ScheduledTask> {
+    const input = saveScheduledTaskInputSchema.parse(raw);
+    const previous = this.scheduledTasks.find((task) => task.id === input.id);
+    const now = new Date().toISOString();
+    const task: ScheduledTask = { ...input, id: previous?.id ?? crypto.randomUUID(), createdAt: previous?.createdAt ?? now,
+      updatedAt: now, nextRunAt: input.enabled && input.recurrence.kind === "once" ? input.recurrence.at : null, executions: previous?.executions ?? [] };
+    this.scheduledTasks = previous === undefined ? [...this.scheduledTasks, task] : this.scheduledTasks.map((item) => item.id === task.id ? task : item);
+    return Promise.resolve(structuredClone(task));
+  }
+  public deleteScheduledTask(input: ScheduledTaskReference): Promise<void> {
+    this.scheduledTasks = this.scheduledTasks.filter((task) => task.id !== input.id); return Promise.resolve();
+  }
+  public runScheduledTask(): Promise<ScheduledTask> {
+    return Promise.reject(new Error("定时任务执行需要桌面环境。"));
+  }
   public getTerminalConfiguration(): Promise<TerminalConfiguration> {
     return Promise.resolve(structuredClone(this.terminalConfiguration));
   }

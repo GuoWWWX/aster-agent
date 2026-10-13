@@ -7,7 +7,7 @@ import {
   type TerminalConfiguration,
 } from "@agent/protocol";
 
-export type ActivityView = "conversations" | "team" | "tasks" | "settings";
+export type ActivityView = "conversations" | "team" | "tasks" | "settings" | "schedules";
 
 export type SettingsSection =
   | "general"

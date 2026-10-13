@@ -1,3 +1,4 @@
+import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
 import type {
   CapabilitySet,
   AddTeamWorkItemCommentInput,
@@ -391,6 +392,11 @@ export class DesktopAgentClientAdapter implements AgentClient {
   public revealBrowserPassword(input: BrowserPasswordReference): Promise<string | null> {
     return this.desktopBridge.revealBrowserPassword(input);
   }
+
+  public listScheduledTasks(): Promise<ScheduledTask[]> { return this.desktopBridge.listScheduledTasks(); }
+  public saveScheduledTask(input: SaveScheduledTaskInput): Promise<ScheduledTask> { return this.desktopBridge.saveScheduledTask(input); }
+  public deleteScheduledTask(input: ScheduledTaskReference): Promise<void> { return this.desktopBridge.deleteScheduledTask(input); }
+  public runScheduledTask(input: ScheduledTaskReference): Promise<ScheduledTask> { return this.desktopBridge.runScheduledTask(input); }
 
   public getTerminalConfiguration(): Promise<TerminalConfiguration> {
     return this.desktopBridge.getTerminalConfiguration();
