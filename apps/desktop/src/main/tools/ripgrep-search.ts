@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import path from "node:path";
 
-import { rgPath } from "@vscode/ripgrep";
+import { rgPath } from "./bundled-ripgrep.js";
 import { ToolArgumentsError } from "../model/tool-arguments.js";
 
 const MAX_SEARCH_MATCH_TEXT_LENGTH = 800;

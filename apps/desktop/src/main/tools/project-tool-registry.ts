@@ -16,7 +16,7 @@ import {
   type TerminalShell,
   type WriteProjectFileInput,
 } from "@agent/protocol";
-import { rgPath } from "@vscode/ripgrep";
+import { rgPath } from "./bundled-ripgrep.js";
 import { applyPatch, createTwoFilesPatch, parsePatch } from "diff";
 import { z } from "zod";
 
