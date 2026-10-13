@@ -26,6 +26,8 @@ import {
   managedBrowserSessionSchema,
   managedBrowserSnapshotSchema,
   type BrowserConfiguration,
+  type BrowserSavedPassword,
+  type BrowserPasswordReference,
   type ManagedBrowserBoundsInput,
   type ManagedBrowserCommandInput,
   type ManagedBrowserEvent,
@@ -37,6 +39,8 @@ import {
 } from "@agent/protocol";
 
 import { BrowserConfigurationStore } from "../settings/browser-configuration-store.js";
+import { BrowserPasswordStore } from "../settings/browser-password-store.js";
+import { installBrowserPasswords } from "./browser-password-controller.js";
 
 import {
   buildManagedBrowserMenuHtml,
@@ -192,6 +196,8 @@ type ManagedBrowserPage = {
   reload(): Promise<void>;
   saveScreenshot(): Promise<void>;
   setAskForDownloadLocation(enabled: boolean): void;
+  setDownloadDirectory(directory: string): void;
+  setSavePasswords(enabled: boolean): void;
   setBounds(bounds: Rectangle): void;
   setColorScheme(colorScheme: "light" | "dark"): Promise<void>;
   setVisible(visible: boolean): void;
@@ -204,7 +210,7 @@ type ManagedBrowserPage = {
   zoomOut(): void;
 };
 
-type BrowserPageFactory = (window: BrowserWindow, shortcuts: BrowserPageShortcuts) => ManagedBrowserPage;
+type BrowserPageFactory = (window: BrowserWindow, shortcuts: BrowserPageShortcuts, passwords?: BrowserPasswordStore) => ManagedBrowserPage;
 
 type ActiveBrowserSession = {
   bounds: Rectangle | null;
@@ -224,6 +230,7 @@ export class ManagedBrowserController {
     private readonly getMainWindow: () => BrowserWindow | undefined,
     private readonly browserConfiguration: Pick<BrowserConfigurationStore, "getConfiguration">,
     private readonly createPage: BrowserPageFactory = createElectronBrowserPage,
+    private readonly passwords?: BrowserPasswordStore,
   ) {}
 
   public async open(input: ManagedBrowserOpenInput): Promise<ManagedBrowserSession> {
@@ -234,8 +241,11 @@ export class ManagedBrowserController {
       onGlobalSearch: () => {
         if (this.sessions.has(sessionId)) this.emit({ sessionId, type: "openGlobalSearch" });
       },
-    });
+    }, this.passwords);
     const configuration = this.browserConfiguration.getConfiguration();
+    page.setAskForDownloadLocation(configuration.askForDownloadLocation);
+    page.setDownloadDirectory(configuration.downloadDirectory);
+    page.setSavePasswords(configuration.savePasswords);
     const disposeState = page.onStateChanged(() => this.emitState(sessionId));
     const disposeError = page.onError((message) => {
       this.emit({ message, sessionId, type: "error" });
@@ -417,16 +427,25 @@ export class ManagedBrowserController {
   }
 
   public async clearBrowsingData(): Promise<void> {
+    this.passwords?.clear();
     if (this.sessions.size === 0) {
       await electronSession.fromPartition(MANAGED_BROWSER_PARTITION).clearData();
       return;
     }
     for (const session of this.sessions.values()) await session.page.clearBrowsingData();
   }
+  public getSavedPasswords(): BrowserSavedPassword[] {
+    return this.passwords?.list() ?? [];
+  }
+  public revealPassword(input: BrowserPasswordReference): string | null {
+    return this.passwords?.get(input.origin)?.password ?? null;
+  }
 
   public applyConfiguration(configuration: BrowserConfiguration): void {
     for (const session of this.sessions.values()) {
       session.page.setAskForDownloadLocation(configuration.askForDownloadLocation);
+      session.page.setDownloadDirectory(configuration.downloadDirectory);
+      session.page.setSavePasswords(configuration.savePasswords);
     }
   }
 
@@ -882,12 +901,13 @@ function isLikelyBrowserHost(value: string): boolean {
   }
 }
 
-function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPageShortcuts): ManagedBrowserPage {
+function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPageShortcuts, passwords?: BrowserPasswordStore): ManagedBrowserPage {
   const view = new WebContentsView({
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       partition: MANAGED_BROWSER_PARTITION,
+      preload: path.resolve(__dirname, "../preload/browser-passwords.cjs"),
       sandbox: true,
       webSecurity: true,
     },
@@ -902,6 +922,8 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
   const errorListeners = new Set<(message: string) => void>();
   const findResultListeners = new Set<(result: BrowserFindResult) => void>();
   let askForDownloadLocation = false;
+  let downloadDirectory = "";
+  let savePasswords = false;
   let closed = false;
   let colorScheme: "light" | "dark" = nativeTheme.shouldUseDarkColors ? "dark" : "light";
   let zoomPercent = 100;
@@ -1000,6 +1022,9 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
   const emitError = (message: string): void => {
     for (const listener of errorListeners) listener(message);
   };
+  const passwordController = passwords === undefined ? undefined : installBrowserPasswords(
+    webContents, window, passwords, () => savePasswords, emitError,
+  );
   const showStartPage = async (): Promise<void> => {
     await webContents.loadURL("about:blank");
     await webContents.executeJavaScript(managedBrowserStartPageScript(), true);
@@ -1029,10 +1054,10 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
     };
     if (askForDownloadLocation) {
       item.setSaveDialogOptions({
-        defaultPath: path.join(app.getPath("downloads"), download.fileName),
+        defaultPath: path.join(downloadDirectory || app.getPath("downloads"), path.basename(download.fileName)),
       });
     } else {
-      download.savePath = resolveBrowserDownloadPath(download.fileName, downloads);
+      download.savePath = resolveBrowserDownloadPath(download.fileName, downloads, downloadDirectory || app.getPath("downloads"));
       item.setSavePath(download.savePath);
     }
     downloads.unshift(download);
@@ -1127,6 +1152,7 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
       });
     },
     clearBrowsingData: async () => {
+      passwordController?.refresh();
       await webContents.session.clearData();
       history.length = 0;
       await reloadManagedBrowserPage(
@@ -1137,6 +1163,7 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
     },
     close: () => {
       closed = true;
+      passwordController?.dispose();
       stateListeners.clear();
       errorListeners.clear();
       findResultListeners.clear();
@@ -1337,6 +1364,11 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
     setAskForDownloadLocation: (enabled) => {
       askForDownloadLocation = enabled;
     },
+    setDownloadDirectory: (directory) => { downloadDirectory = directory; },
+    setSavePasswords: (enabled) => {
+      savePasswords = enabled;
+      passwordController?.refresh();
+    },
     setBounds: (bounds) => view.setBounds(bounds),
     setColorScheme: async (nextColorScheme) => {
       const changed = colorScheme !== nextColorScheme;
@@ -1392,9 +1424,10 @@ function adjacentZoomPercent(current: number, direction: "in" | "out"): number {
   return [...ZOOM_PERCENT_STEPS].reverse().find((candidate) => candidate < current) ?? 25;
 }
 
-function resolveBrowserDownloadPath(
+export function resolveBrowserDownloadPath(
   fileName: string,
   downloads: readonly BrowserDownload[],
+  directory: string = app.getPath("downloads"),
 ): string {
   const safeFileName = path.basename(fileName) || "download";
   const parsed = path.parse(safeFileName);
@@ -1403,12 +1436,12 @@ function resolveBrowserDownloadPath(
     const candidateName = index === 0
       ? safeFileName
       : `${parsed.name} (${index})${parsed.ext}`;
-    const candidatePath = path.join(app.getPath("downloads"), candidateName);
+    const candidatePath = path.join(directory, candidateName);
     if (!existsSync(candidatePath) && !reservedPaths.has(candidatePath.toLocaleLowerCase("en-US"))) {
       return candidatePath;
     }
   }
-  return path.join(app.getPath("downloads"), `${randomUUID()}-${safeFileName}`);
+  return path.join(directory, `${randomUUID()}-${safeFileName}`);
 }
 
 async function applyManagedBrowserColorScheme(

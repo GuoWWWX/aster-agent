@@ -8,15 +8,24 @@
     "pnpm": ">=10 <11"
   },
   "scripts": {
+    "start": "pnpm dev",
     "dev": "concurrently --kill-others-on-fail --names web,desktop --prefix-colors cyan,green \"pnpm --filter @agent/web dev -- --strictPort\" \"wait-on tcp:127.0.0.1:5173 && pnpm --filter @agent/desktop dev\"",
-    "lint": "pnpm --recursive --if-present run lint",
+    "preview": "pnpm build && pnpm --filter @agent/desktop preview",
+    "verify:native": "node scripts/verify-native-runtime.mjs",
+    "verify:package": "node scripts/verify-native-runtime.mjs --packaged",
+    "package:dir": "pnpm build && pnpm verify:native && electron-builder --config electron-builder.config.cjs --win --x64 --dir --publish never && pnpm verify:package",
+    "package:win": "pnpm build && pnpm verify:native && electron-builder --config electron-builder.config.cjs --win nsis --x64 --publish never && pnpm verify:package",
+    "lint:scripts": "eslint scripts/*.mjs electron-builder.config.cjs --max-warnings 0",
+    "lint": "pnpm lint:scripts && pnpm --recursive --if-present run lint",
     "typecheck": "pnpm --recursive --if-present run typecheck",
-    "test": "pnpm --recursive --if-present run test",
+    "test:scripts": "node --test scripts/*.test.mjs",
+    "test": "pnpm test:scripts && pnpm --recursive --if-present run test",
     "build": "pnpm --recursive --if-present run build"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "concurrently": "^10.0.4",
+    "electron-builder": "26.15.3",
     "eslint": "^10.8.1",
     "eslint-plugin-import": "^2.32.0",
     "eslint-plugin-react-hooks": "^7.1.1",

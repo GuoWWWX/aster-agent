@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { DEFAULT_APPLICATION_SETTINGS } from "@agent/protocol";
 
 import {
   resolveActiveSettingsWorkspaceTarget,
@@ -6,6 +7,20 @@ import {
 } from "./workbench-ui-store.js";
 
 describe("workbench prompt workspace", () => {
+  it("restores the settings menu width and clamps later edits without resizing other panels", () => {
+    const store = useWorkbenchUiStore.getState();
+    store.hydrateAppearance({ ...DEFAULT_APPLICATION_SETTINGS.appearance, settingsNavigationWidth: 310 });
+    expect(useWorkbenchUiStore.getState().settingsNavigationWidth).toBe(310);
+    store.setSettingsNavigationWidth(999);
+    expect(useWorkbenchUiStore.getState().settingsNavigationWidth).toBe(360);
+    store.setSettingsNavigationWidth(150);
+    expect(useWorkbenchUiStore.getState().settingsNavigationWidth).toBe(200);
+    store.setSettingsNavigationWidth(250.4);
+    expect(useWorkbenchUiStore.getState()).toMatchObject({
+      settingsNavigationWidth: 250, projectNavigatorWidth: 288, filePanelWidth: 520,
+    });
+  });
+
   beforeEach(() => {
     useWorkbenchUiStore.setState({
       agentPromptWorkspaceTarget: null,

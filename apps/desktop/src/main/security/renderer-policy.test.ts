@@ -1,10 +1,35 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BrowserWindow } from "electron";
+import path from "node:path";
 const openExternal = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
-vi.mock("electron", () => ({ app: { getAppPath: () => "C:/aster" }, shell: { openExternal } }));
+const application = vi.hoisted(() => ({ isPackaged: false, getAppPath: () => "C:/aster" }));
+vi.mock("electron", () => ({ app: application, shell: { openExternal } }));
 import { applyRendererSecurityPolicy, externalHttpUrl } from "./renderer-policy.js";
 
 describe("renderer web links", () => {
+  function rendererTarget() {
+    return applyRendererSecurityPolicy({ webContents: { setWindowOpenHandler: vi.fn(), on: vi.fn(), session: {
+      setPermissionCheckHandler: vi.fn(), setPermissionRequestHandler: vi.fn(),
+    } } } as unknown as BrowserWindow);
+  }
+  it("defaults unpackaged Electron to Vite rather than silently loading dist", () => {
+    vi.stubEnv("ELECTRON_RENDERER_URL", undefined);
+    vi.stubEnv("ASTER_START_MODE", undefined);
+    try {
+      const target = rendererTarget();
+      expect(target.kind).toBe("url");
+      expect(target.value.toString()).toBe("http://127.0.0.1:5173/");
+    } finally { vi.unstubAllEnvs(); }
+  });
+  it("uses static assets only for explicit preview or a packaged application", () => {
+    vi.stubEnv("ASTER_START_MODE", "preview");
+    vi.stubEnv("ELECTRON_RENDERER_URL", "http://127.0.0.1:5174");
+    try {
+      expect(rendererTarget()).toEqual({ kind: "file", value: path.resolve("C:/aster", "../web/dist/index.html") });
+      application.isPackaged = true;
+      expect(rendererTarget()).toEqual({ kind: "file", value: path.join("C:/aster", "renderer/index.html") });
+    } finally { application.isPackaged = false; vi.unstubAllEnvs(); }
+  });
   it.each(["http://localhost:5173/", "https://example.com/a?q=1", "http://[::1]:8080/"])("permits %s", (url) => {
     expect(externalHttpUrl(url)).toBe(url);
   });

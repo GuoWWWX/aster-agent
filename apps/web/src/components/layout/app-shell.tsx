@@ -124,6 +124,9 @@ export function AppShell({
     (state) => state.setProjectNavigatorWidth,
   );
   const themeMode = useWorkbenchUiStore((state) => state.themeMode);
+  const uiFontSize = useWorkbenchUiStore((state) => state.uiFontSize);
+  const chatFontSize = useWorkbenchUiStore((state) => state.chatFontSize);
+  const codeFontSize = useWorkbenchUiStore((state) => state.codeFontSize);
   const toggleProjectNavigator = useWorkbenchUiStore(
     (state) => state.toggleProjectNavigator,
   );
@@ -141,6 +144,18 @@ export function AppShell({
       document.documentElement.removeAttribute("data-theme");
     };
   }, [themeMode]);
+
+  useEffect(() => {
+    const style = document.documentElement.style;
+    style.setProperty("--app-ui-font-size", `${uiFontSize}px`);
+    style.setProperty("--app-chat-font-size", `${chatFontSize}px`);
+    style.setProperty("--app-code-font-size", `${codeFontSize}px`);
+    return () => {
+      for (const name of ["--app-ui-font-size", "--app-chat-font-size", "--app-code-font-size"]) {
+        style.removeProperty(name);
+      }
+    };
+  }, [uiFontSize, chatFontSize, codeFontSize]);
 
   const isConversationWorkspace = activeActivity === "conversations";
   const activeSettingsWorkspaceTarget = resolveActiveSettingsWorkspaceTarget(

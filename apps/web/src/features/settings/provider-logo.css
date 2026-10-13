@@ -184,14 +184,14 @@
   outline-offset: 1px;
 }
 
-.provider-icon-picker__trigger > span {
+.provider-icon-picker__trigger > span:not(.provider-logo) {
   min-width: 0;
   flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--app-font-size-control);
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .provider-icon-picker__trigger > svg {
