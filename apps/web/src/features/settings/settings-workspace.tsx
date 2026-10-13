@@ -13,15 +13,21 @@ import {
   Eye,
   EyeOff,
   FolderOpen,
+  FileCode2,
   Globe2,
   LoaderCircle,
+  Layers3,
   MessageSquareText,
   MonitorCog,
+  Palette,
   PanelRight,
   PlugZap,
   RefreshCw,
   Search,
   ShieldCheck,
+  Shield,
+  Type,
+  LockKeyhole,
   Sparkles,
   SlidersHorizontal,
   Terminal,
@@ -50,6 +56,7 @@ import {
   APPLICATION_DISPLAY_NAME,
   APPLICATION_HOME_ENVIRONMENT_VARIABLE,
   DEFAULT_BROWSER_CONFIGURATION,
+  DEFAULT_APPLICATION_SETTINGS,
   DEFAULT_TERMINAL_CONFIGURATION,
   LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
   DEFAULT_MODEL_CATALOG,
@@ -117,7 +124,7 @@ import { useApplicationSettingsStore } from "../../stores/application-settings-s
 import { ModelReasoningOptionsEditor } from "./model-reasoning-options-editor.js";
 import { ModelProfilePicker } from "./model-profile-picker.js";
 import { ProviderIconPicker, ProviderLogo } from "./provider-logo.js";
-import { SettingsConfigurationCard } from "./settings-configuration-card.js";
+import { SettingsCategoryHeading, SettingsConfigurationCard } from "./settings-configuration-card.js";
 import {
   getArchivedConversationDaysRemaining,
   getArchivedConversations,
@@ -368,15 +375,11 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
 }
 
 function GeneralSettings({ agentClient }: { agentClient: AgentClient }): ReactElement {
-  const defaultPermissionMode = useApplicationSettingsStore((state) => state.defaultPermissionMode);
   const defaultMessageDeliveryMode = useApplicationSettingsStore(
     (state) => state.defaultMessageDeliveryMode,
   );
   const setDefaultMessageDeliveryMode = useApplicationSettingsStore(
     (state) => state.setDefaultMessageDeliveryMode,
-  );
-  const setDefaultPermissionMode = useApplicationSettingsStore(
-    (state) => state.setDefaultPermissionMode,
   );
   const sendShortcut = useApplicationSettingsStore((state) => state.sendShortcut);
   const setSendShortcut = useApplicationSettingsStore((state) => state.setSendShortcut);
@@ -514,25 +517,6 @@ function GeneralSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
             </div>
           </article>
 
-          <article className="settings-general-row">
-            <div>
-              <h4>新对话权限模式</h4>
-              <p>新建对话时默认采用的文件与命令操作方式</p>
-            </div>
-            <Select
-              value={defaultPermissionMode}
-              onValueChange={(value) => setDefaultPermissionMode(value as ConversationPermissionMode)}
-            >
-              <SelectTrigger aria-label="新对话权限模式" className="settings-general-select">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent align="end">
-                <SelectItem value="read_only">规划</SelectItem>
-                <SelectItem value="ask_before_changes">请求审批</SelectItem>
-                <SelectItem value="full_access">完全访问</SelectItem>
-              </SelectContent>
-            </Select>
-          </article>
         </div>
       </section>
 
@@ -1378,7 +1362,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
           <SettingsConfigurationCard className="settings-provider-models" aria-labelledby="provider-models-heading">
             <div className="settings-provider-models__heading">
               <div className="settings-provider-models__heading-copy">
-                <h4 id="provider-models-heading">已配置模型</h4>
+                <h4 id="provider-models-heading" className="flex items-center gap-2"><Boxes aria-hidden="true" size={16} />已配置模型</h4>
                 <p>请求使用模型 ID；显示名只用于对话界面。</p>
               </div>
               <div className="settings-provider-models__heading-actions">
@@ -2055,7 +2039,7 @@ function GlobalDefaultModelPicker({
   return (
     <div className="settings-global-model">
       <div className="settings-global-model__heading">
-        <span>默认模型</span>
+        <span className="flex items-center gap-2"><Bot aria-hidden="true" size={16} />默认模型</span>
         <small>新对话使用</small>
       </div>
 
@@ -2185,7 +2169,7 @@ function ContextCompressionSettings({
   return (
     <div className="settings-context-compression">
       <div className="settings-context-compression__heading">
-        <span>上下文自动压缩</span>
+        <span className="flex items-center gap-2"><Braces aria-hidden="true" size={16} />上下文自动压缩</span>
         <small>
           {isPercentage ? "按模型窗口计算" : "按已占用 Token 计算"}
         </small>
@@ -2648,6 +2632,7 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
                 onToggle={(enabled) => updateServer({ enabled })}
               />
               <div className="settings-integration-editor__body">
+                <SettingsCategoryHeading icon={PlugZap}>基础与连接</SettingsCategoryHeading>
                 <div className="settings-field-grid">
                   <ConfigurationField configPath="name" label="名称">
                     <input value={selected.name} onChange={(event) => updateServer({ name: event.target.value })} />
@@ -2930,6 +2915,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                 onToggle={(enabled) => updateSkill({ enabled })}
               />
               <div className="settings-integration-editor__body">
+                <SettingsCategoryHeading icon={Layers3}>使用范围与依赖</SettingsCategoryHeading>
                 <div className="settings-field-grid settings-skill-fields">
                   <ConfigurationField className="settings-field--wide" label="SKILL.md 路径">
                     <input readOnly title={selected.entryPath} value={selected.entryPath} />
@@ -2945,7 +2931,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                   </ConfigurationField>
                 </div>
                 <section aria-label="Skill 文档预览" className="mt-4 min-w-0 border-t border-[var(--app-border)] pt-4">
-                  <h4 className="mb-2 text-[length:var(--app-font-size-auxiliary)] font-semibold text-[var(--app-muted-foreground)]">文档预览</h4>
+                  <h4 className="mb-2 flex items-center gap-2 text-[length:var(--app-font-size-auxiliary)] font-semibold text-[var(--app-muted-foreground)]"><Eye aria-hidden="true" size={15} />文档预览</h4>
                   {skillPreview === null ? (
                     <p className="text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
                       {isDiscovering ? "正在读取文档…" : "未找到 Skill 文档。"}
@@ -3570,14 +3556,32 @@ function formatArchivedConversationDate(archivedAt: string | null): string {
 }
 
 function PermissionsSettings(): ReactElement {
+  const defaultPermissionMode = useApplicationSettingsStore((state) => state.defaultPermissionMode);
+  const setDefaultPermissionMode = useApplicationSettingsStore((state) => state.setDefaultPermissionMode);
+  const permissionPolicies = useApplicationSettingsStore((state) => state.permissionPolicies);
+  const setPermissionPolicy = useApplicationSettingsStore((state) => state.setPermissionPolicy);
   const approvalReviewer = useApplicationSettingsStore((state) => state.approvalReviewer);
   const setApprovalReviewer = useApplicationSettingsStore((state) => state.setApprovalReviewer);
 
   return (
     <SettingsSectionHeader eyebrow="安全边界与审批" title="权限">
       <div className="settings-general-category">
-        <h3>权限模式</h3>
+        <SettingsCategoryHeading icon={ShieldCheck}>权限模式</SettingsCategoryHeading>
         <div className="settings-general-card">
+          <article className="settings-general-row">
+            <div>
+              <h4>新对话权限模式</h4>
+              <p>影响之后新建的对话；已有对话保留各自的权限模式。</p>
+            </div>
+            <Select value={defaultPermissionMode} onValueChange={(value) => setDefaultPermissionMode(value as ConversationPermissionMode)}>
+              <SelectTrigger aria-label="新对话权限模式" className="settings-general-select"><SelectValue /></SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="read_only">规划</SelectItem>
+                <SelectItem value="ask_before_changes">请求审批</SelectItem>
+                <SelectItem value="full_access">完全访问</SelectItem>
+              </SelectContent>
+            </Select>
+          </article>
           <article className="settings-general-row">
             <div>
               <h4>规划</h4>
@@ -3600,7 +3604,7 @@ function PermissionsSettings(): ReactElement {
       </div>
 
       <div className="settings-general-category">
-        <h3>请求审批的处理方式</h3>
+        <SettingsCategoryHeading icon={Bot}>请求审批的处理方式</SettingsCategoryHeading>
         <div className="settings-general-card">
           <article className="settings-general-row">
             <div>
@@ -3631,8 +3635,39 @@ function PermissionsSettings(): ReactElement {
         </div>
       </div>
 
+      <section className="settings-general-category" aria-labelledby="tool-policies-heading">
+        <SettingsCategoryHeading id="tool-policies-heading" icon={Shield}>工具权限</SettingsCategoryHeading>
+        <div className="settings-general-card">
+          {([
+            { id: "workspace-read", label: "文件读取", description: "读取授权工作区中的文件。", icon: FolderOpen },
+            { id: "workspace-search", label: "工作区搜索", description: "查找文件、文本与代码内容。", icon: Search },
+            { id: "patch-write", label: "文件修改", description: "写入、修改或删除工作区文件。", icon: FileCode2 },
+            { id: "command-run", label: "命令与终端", description: "执行命令、创建和操作侧边终端。", icon: Terminal },
+            { id: "browser-control", label: "浏览器操作", description: "打开页面、导航与浏览器交互。", icon: Globe2 },
+          ] as const).map(({ id, label, description, icon: Icon }) => (
+            <article key={id} className="settings-general-row">
+              <div>
+                <h4 className="flex items-center gap-2"><Icon aria-hidden="true" size={15} />{label}</h4>
+                <p>{description}</p>
+              </div>
+              <Select value={permissionPolicies[id]} onValueChange={(value) => {
+                if (value === "allow" || value === "ask" || value === "unavailable") setPermissionPolicy(id, value);
+              }}>
+                <SelectTrigger aria-label={`${label}权限`} className="settings-general-select"><SelectValue /></SelectTrigger>
+                <SelectContent align="end">
+                  <SelectItem value="allow">直接允许</SelectItem>
+                  <SelectItem value="ask">请求审批</SelectItem>
+                  <SelectItem value="unavailable">禁用</SelectItem>
+                </SelectContent>
+              </Select>
+            </article>
+          ))}
+          <p className="px-4 pb-4 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">工具权限与对话权限模式共同生效；规划模式仍禁止修改，工作区边界与危险操作保护始终保留。</p>
+        </div>
+      </section>
+
       <div className="settings-general-category">
-        <h3>审批范围</h3>
+        <SettingsCategoryHeading icon={LockKeyhole}>审批范围</SettingsCategoryHeading>
         <div className="settings-general-card">
           <article className="settings-general-row">
             <div>
@@ -3935,7 +3970,9 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
       eyebrow="工作区"
       title="侧边终端"
     >
-      <div className="settings-terminal-form">
+      <div className="grid gap-7">
+        <section className="settings-general-category" aria-labelledby="terminal-startup-heading">
+        <SettingsCategoryHeading id="terminal-startup-heading" icon={Terminal}>启动与 Shell</SettingsCategoryHeading>
         <div className="settings-terminal-grid">
           <label className="settings-field">
             <span>默认 Shell</span>
@@ -3976,6 +4013,13 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
             />
           </label>
 
+        </div>
+        <p className="settings-terminal-status mt-2">仅影响之后新建的侧边终端。启动路径留空时使用默认命令；PWSH 会尝试常见安装目录。</p>
+        </section>
+
+        <section className="settings-general-category" aria-labelledby="terminal-output-heading">
+        <SettingsCategoryHeading id="terminal-output-heading" icon={Braces}>命令输出</SettingsCategoryHeading>
+        <div className="settings-terminal-grid">
           <label className="settings-field">
             <span>一次性命令输出字符集</span>
             <Select
@@ -3999,6 +4043,13 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
             </Select>
           </label>
 
+        </div>
+        <p className="settings-terminal-status mt-2">用于 AI 一次性命令的结果解码，侧边终端的交互输出保持原有编码。</p>
+        </section>
+
+        <section className="settings-general-category" aria-labelledby="terminal-font-heading">
+        <SettingsCategoryHeading id="terminal-font-heading" icon={Type}>字体与排版</SettingsCategoryHeading>
+        <div className="settings-terminal-grid">
           <label className="settings-field settings-field--wide">
             <span>字体预设</span>
             <Select
@@ -4063,10 +4114,18 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
           </label>
         </div>
 
-        <p className="settings-terminal-status">
-          Shell、启动路径、字体、字号和行高只影响之后新建的侧边终端标签，不会改变 AI 的一次性命令 Shell。输出字符集仅用于一次性命令结果解码。路径留空时按默认命令启动；PWSH 会尝试常见安装目录。
-        </p>
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+          <p className="settings-terminal-status">字体、字号和行高应用于之后新建的侧边终端。</p>
+          <button className="settings-secondary-button" type="button" onClick={() => updateDraft({
+            fontFamily: DEFAULT_TERMINAL_CONFIGURATION.fontFamily,
+            fontSize: DEFAULT_TERMINAL_CONFIGURATION.fontSize,
+            lineHeight: DEFAULT_TERMINAL_CONFIGURATION.lineHeight,
+          })}><RefreshCw aria-hidden="true" size={14} />恢复默认排版</button>
+        </div>
+        </section>
 
+        <section className="settings-general-category" aria-labelledby="terminal-preview-heading">
+        <SettingsCategoryHeading id="terminal-preview-heading" icon={Eye}>效果预览</SettingsCategoryHeading>
         <section
           aria-label="终端预览"
           className="settings-terminal-preview"
@@ -4086,6 +4145,7 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
               {"\n\n中文输出"}
             </code>
           </pre>
+        </section>
         </section>
 
         {operationError !== null ? (
@@ -4141,19 +4201,84 @@ function resolvedTerminalShell(
 function AppearanceSettings(): ReactElement {
   const setThemeMode = useWorkbenchUiStore((state) => state.setThemeMode);
   const themeMode = useWorkbenchUiStore((state) => state.themeMode);
+  const uiFontSize = useWorkbenchUiStore((state) => state.uiFontSize);
+  const chatFontSize = useWorkbenchUiStore((state) => state.chatFontSize);
+  const codeFontSize = useWorkbenchUiStore((state) => state.codeFontSize);
+  const setFontSize = useWorkbenchUiStore((state) => state.setAppearanceFontSize);
+  const settingsWidth = useWorkbenchUiStore((state) => state.settingsNavigationWidth);
+  const projectWidth = useWorkbenchUiStore((state) => state.projectNavigatorWidth);
+  const fileWidth = useWorkbenchUiStore((state) => state.filePanelWidth);
+  const setSettingsWidth = useWorkbenchUiStore((state) => state.setSettingsNavigationWidth);
+  const setProjectWidth = useWorkbenchUiStore((state) => state.setProjectNavigatorWidth);
+  const setFileWidth = useWorkbenchUiStore((state) => state.setFilePanelWidth);
 
   return (
     <SettingsSectionHeader eyebrow="应用界面" title="外观">
-      <SettingsConfigurationCard className="settings-general-category" aria-labelledby="theme-heading">
-        <div>
-          <h3 id="theme-heading">主题</h3>
-          <p>当前使用 {themeMode === "dark" ? "深色" : "浅色"} 主题</p>
-        </div>
-        <div className="flex flex-wrap gap-3" role="group" aria-label="主题">
+      <section className="settings-general-category" aria-labelledby="theme-heading">
+        <SettingsCategoryHeading id="theme-heading" icon={Palette}>主题</SettingsCategoryHeading>
+        <SettingsConfigurationCard>
+        <div className="flex flex-wrap gap-[5px]" role="group" aria-label="主题">
           <ThemeButton mode="light" selected={themeMode} onSelect={setThemeMode} label="浅色" />
           <ThemeButton mode="dark" selected={themeMode} onSelect={setThemeMode} label="深色" />
         </div>
-      </SettingsConfigurationCard>
+        </SettingsConfigurationCard>
+      </section>
+
+      <section className="settings-general-category" aria-labelledby="appearance-font-heading">
+        <SettingsCategoryHeading id="appearance-font-heading" icon={Type}>字体与阅读</SettingsCategoryHeading>
+        <SettingsConfigurationCard className="p-0">
+          {([
+            { field: "uiFontSize", value: uiFontSize, min: 12, max: 18, label: "界面字号", description: "菜单、设置、列表和按钮的文字大小，标题随比例调整。" },
+            { field: "chatFontSize", value: chatFontSize, min: 12, max: 24, label: "对话字号", description: "用户消息与 AI 回复的正文大小。" },
+            { field: "codeFontSize", value: codeFontSize, min: 10, max: 24, label: "代码编辑器字号", description: "源文件与配置文件代码编辑器的文字大小；终端排版在终端页设置。" },
+          ] as const).map(({ field, value, min, max, label, description }) => (
+            <article key={field} className="settings-general-row">
+              <div><h4>{label}</h4><p>{description}</p></div>
+              <Select value={String(value)} onValueChange={(size) => setFontSize(field, Number(size))}>
+                <SelectTrigger aria-label={label} className="settings-general-select"><SelectValue /></SelectTrigger>
+                <SelectContent align="end">
+                  {Array.from({ length: max - min + 1 }, (_, index) => min + index).map((size) => (
+                    <SelectItem key={size} value={String(size)}>{size} px{size === DEFAULT_APPLICATION_SETTINGS.appearance[field] ? "（默认）" : ""}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </article>
+          ))}
+          <div className="border-t border-[var(--app-border)] p-4" aria-label="字体预览">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <span className="flex items-center gap-2 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]"><Eye aria-hidden="true" size={15} />实时预览</span>
+              <button className="settings-secondary-button" type="button" onClick={() => {
+                for (const field of ["uiFontSize", "chatFontSize", "codeFontSize"] as const) setFontSize(field, DEFAULT_APPLICATION_SETTINGS.appearance[field]);
+              }}><RefreshCw aria-hidden="true" size={14} />恢复默认字号</button>
+            </div>
+            <p className="mb-2 text-[length:var(--app-font-size-body)]">设置与工作区 · Aster 123</p>
+            <p className="mb-2" style={{ fontSize: `${chatFontSize}px` }}>你好，今天我们一起完成这个项目。</p>
+            <pre className="overflow-x-auto font-mono" style={{ fontSize: `${codeFontSize}px` }}>const message = "Hello, Aster";</pre>
+          </div>
+        </SettingsConfigurationCard>
+      </section>
+
+      <section className="settings-general-category" aria-labelledby="appearance-panels-heading">
+        <SettingsCategoryHeading id="appearance-panels-heading" icon={PanelRight}>面板尺寸</SettingsCategoryHeading>
+        <SettingsConfigurationCard className="p-0">
+          {[
+            { label: "对话目录宽度", value: projectWidth, min: 220, max: 420, set: setProjectWidth },
+            { label: "设置菜单宽度", value: settingsWidth, min: 200, max: 360, set: setSettingsWidth },
+            { label: "右侧工作区宽度", value: fileWidth, min: 320, max: 960, set: setFileWidth },
+          ].map(({ label, value, min, max, set }) => (
+            <article key={label} className="settings-general-row">
+              <div><h4>{label}</h4><p>也可以拖动面板边界调整，修改后自动记住。</p></div>
+              <div className="flex shrink-0 items-center gap-2">
+                <input aria-label={label} className="h-8 w-24 rounded-[var(--app-radius)] border border-[var(--app-border)] px-2 text-[length:var(--app-font-size-control)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]" min={min} max={max} type="number" step={1} value={value} onChange={(event) => {
+                  const width = event.currentTarget.valueAsNumber;
+                  if (Number.isFinite(width)) set(width);
+                }} />
+                <span className="text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">px</span>
+              </div>
+            </article>
+          ))}
+        </SettingsConfigurationCard>
+      </section>
     </SettingsSectionHeader>
   );
 }
@@ -4172,7 +4297,7 @@ function ThemeButton({
   return (
     <button
       aria-pressed={selected === mode}
-      className="w-44 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] p-3 text-left text-[length:var(--app-font-size-body)] aria-pressed:outline-2 aria-pressed:outline-[var(--app-accent)]"
+      className="w-44 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] p-3 text-left text-[length:var(--app-font-size-body)] aria-pressed:border-[var(--app-selection-border)] aria-pressed:bg-[var(--app-selection)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)]"
       type="button"
       onClick={() => onSelect(mode)}
     >

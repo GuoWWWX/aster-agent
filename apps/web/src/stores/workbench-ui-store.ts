@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import {
+  DEFAULT_APPLICATION_SETTINGS,
   DEFAULT_TERMINAL_CONFIGURATION,
   type ApplicationAppearanceConfiguration,
   type ConfigurationWorkspaceKind,
@@ -79,6 +80,10 @@ export function clampWorkbenchPanelWidth(
 }
 
 type WorkbenchUiState = {
+  uiFontSize: number;
+  chatFontSize: number;
+  codeFontSize: number;
+  setAppearanceFontSize: (field: "uiFontSize" | "chatFontSize" | "codeFontSize", size: number) => void;
   activeActivity: ActivityView;
   agentPromptWorkspaceTarget: AgentPromptWorkspaceTarget | null;
   configurationWorkspaceRevision: number;
@@ -124,6 +129,10 @@ type WorkbenchUiState = {
  * tasks, and agent execution will be queried from AgentClient when available.
  */
 export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
+  uiFontSize: DEFAULT_APPLICATION_SETTINGS.appearance.uiFontSize,
+  chatFontSize: DEFAULT_APPLICATION_SETTINGS.appearance.chatFontSize,
+  codeFontSize: DEFAULT_APPLICATION_SETTINGS.appearance.codeFontSize,
+  setAppearanceFontSize: (field, size) => set({ [field]: size }),
   activeActivity: "conversations",
   agentPromptWorkspaceTarget: null,
   configurationWorkspaceRevision: 0,
@@ -197,6 +206,9 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
     })),
   setActiveActivity: (activeActivity) => set({ activeActivity }),
   hydrateAppearance: (appearance) => set({
+    uiFontSize: appearance.uiFontSize,
+    chatFontSize: appearance.chatFontSize,
+    codeFontSize: appearance.codeFontSize,
     filePanelWidth: clampWorkbenchPanelWidth(
       appearance.filePanelWidth,
       FILE_PANEL_WIDTH_RANGE,

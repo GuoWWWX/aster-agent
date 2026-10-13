@@ -8,6 +8,7 @@ import { mcpServerConfigurationSchema, saveModelConfigurationInputSchema } from 
 import { TooltipProvider } from "../../components/ui/tooltip.js";
 import { MockAgentClient } from "../../runtime/index.js";
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
+import { useApplicationSettingsStore } from "../../stores/application-settings-store.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 import { SettingsWorkspace } from "./settings-workspace.js";
 
@@ -57,6 +58,42 @@ function clickButton(container: HTMLElement, label: string): void {
 }
 
 describe("SettingsWorkspace", () => {
+  it("resets only typography while preserving the chosen theme and panel widths", async () => {
+    useWorkbenchUiStore.setState({
+      settingsSection: "appearance", themeMode: "dark", uiFontSize: 16,
+      chatFontSize: 18, codeFontSize: 15, settingsNavigationWidth: 310,
+    });
+    const container = await renderSettings(new MockAgentClient());
+    expect(container.querySelector('[aria-label="界面字号"]')?.textContent).toContain("16 px");
+    act(() => clickButton(container, "恢复默认字号"));
+    expect(useWorkbenchUiStore.getState()).toMatchObject({
+      uiFontSize: 13, chatFontSize: 13, codeFontSize: 11,
+      themeMode: "dark", settingsNavigationWidth: 310,
+    });
+  });
+
+  it("exposes existing tool policies and updates the selected policy through the settings control", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "permissions" });
+    const container = await renderSettings(new MockAgentClient());
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="命令与终端权限"]');
+    expect(trigger).not.toBeNull();
+    expect(container.querySelectorAll('button[aria-label$="权限"]')).toHaveLength(5);
+    const previous = useApplicationSettingsStore.getState().permissionPolicies["command-run"];
+    const scrollIntoView = vi.fn();
+    vi.stubGlobal("ResizeObserver", class { observe(): void {} disconnect(): void {} });
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+    await act(async () => {
+      trigger?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+    const disabledOption = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((option) => option.textContent === "禁用");
+    expect(disabledOption).toBeDefined();
+    act(() => disabledOption?.click());
+    expect(useApplicationSettingsStore.getState().permissionPolicies["command-run"]).toBe("unavailable");
+    act(() => useApplicationSettingsStore.getState().setPermissionPolicy("command-run", previous));
+    Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+  });
+
   it("filters navigation without switching the open settings page", async () => {
     useWorkbenchUiStore.setState({ settingsSection: "general" });
     const container = await renderSettings(new MockAgentClient());

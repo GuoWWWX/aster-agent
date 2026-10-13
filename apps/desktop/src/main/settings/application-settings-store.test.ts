@@ -19,6 +19,22 @@ afterEach(async () => {
 });
 
 describe("ApplicationSettingsStore", () => {
+  it("persists typography through a fresh JSONC store without changing other preferences", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-typography-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "settings.jsonc");
+    const store = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    store.ensureFile();
+    const current = store.getConfiguration();
+    const customized = {
+      ...current,
+      appearance: { ...current.appearance, uiFontSize: 16, chatFontSize: 18, codeFontSize: 15 },
+    };
+    store.saveConfiguration(customized);
+    const reopened = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    expect(reopened.getConfiguration()).toEqual(customized);
+  });
+
   it("preserves legacy appearance choices while defaulting the settings menu width", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "aster-settings-width-"));
     temporaryDirectories.push(directory);

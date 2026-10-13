@@ -6,10 +6,12 @@ import {
   ChevronRight,
   CirclePlus,
   Eye,
+  FolderOpen,
   Layers3,
   Plus,
   RotateCcw,
   Settings2,
+  ShieldCheck,
   Sparkles,
   Trash2,
   UsersRound,
@@ -36,7 +38,7 @@ import {
   type AgentTeam,
 } from "../../stores/agent-directory-store.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
-import { SettingsConfigurationCard } from "./settings-configuration-card.js";
+import { SettingsCategoryHeading, SettingsConfigurationCard } from "./settings-configuration-card.js";
 import { AgentAvatar } from "../team/agent-avatar.js";
 import { AgentAvatarPicker } from "./agent-avatar-picker.js";
 import "./agent-team-settings.css";
@@ -511,7 +513,7 @@ function TeamConfigurationPane({
         </SettingsConfigurationCard>
 
         <SettingsConfigurationCard aria-label="团队项目范围">
-          <h3 className="mb-2 text-[length:var(--app-font-size-auxiliary)] font-semibold text-[var(--app-muted-foreground)]">项目范围</h3>
+          <SettingsCategoryHeading icon={FolderOpen} className="mb-2">项目范围</SettingsCategoryHeading>
           <div className="management-choice-row">
             <button
               aria-pressed={team.projectScope === "all"}
@@ -632,7 +634,7 @@ function AgentConfigurationPane({
           </div>
 
           <section className="management-policy-section">
-            <h3>模型策略</h3>
+            <SettingsCategoryHeading icon={Boxes}>模型策略</SettingsCategoryHeading>
             <div className="management-choice-row management-choice-row--three">
               {(["inherit", "auto", "fixed"] as const).map((strategy) => (
                 <button
@@ -656,7 +658,7 @@ function AgentConfigurationPane({
           <PermissionEditor agent={agent} onUpdate={(patch) => updateAgent(agent.id, patch)} />
 
           <section className="management-policy-section">
-            <h3>所在团队</h3>
+            <SettingsCategoryHeading icon={UsersRound}>所在团队</SettingsCategoryHeading>
             <div className="management-tag-list">
               {memberships.length === 0 ? <span>未加入团队</span> : memberships.map((team) => (
                 <span key={team.id}><UsersRound aria-hidden="true" size={12} />{team.name}</span>
@@ -716,7 +718,7 @@ function AvatarEditor({
 
   return (
     <section className="management-policy-section agent-avatar-editor-section">
-      <h3>头像</h3>
+      <SettingsCategoryHeading icon={BrainCircuit}>头像</SettingsCategoryHeading>
       <AgentAvatarPicker
         avatar={agent.avatar}
         status={agent.status}
@@ -760,7 +762,7 @@ function CapabilityEditor({
   return (
     <section className="management-policy-section">
       <div className="management-policy-section__heading">
-        <h3>Skill 与 MCP</h3>
+        <SettingsCategoryHeading icon={Layers3}>Skill 与 MCP</SettingsCategoryHeading>
         <Select
           value={agent.capabilityScope}
           onValueChange={(value) => onUpdate({ capabilityScope: value as AgentCapabilityScope })}
@@ -874,7 +876,7 @@ function PermissionEditor({
     >
       <div className="management-policy-section__heading">
         <div className="min-w-0">
-          <h3 id={`agent-permissions-${agent.id}`}>权限规则</h3>
+          <SettingsCategoryHeading id={`agent-permissions-${agent.id}`} icon={ShieldCheck}>权限规则</SettingsCategoryHeading>
           <p className="m-0 max-w-full break-words text-[length:var(--app-font-size-control)] font-medium leading-[1.35] text-[var(--app-muted-foreground)]">
             这里是手动维护的高级长期规则，审批卡不会自动添加。未匹配操作仍需审批；命令末尾可使用 * 做前缀匹配。
           </p>

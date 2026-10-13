@@ -3493,3 +3493,10 @@ button.tool-file-change__path:hover {
   background: #282828;
   color: var(--app-foreground);
 }
+.conversation-workspace__messages .chat-message {
+  font-size: var(--app-chat-font-size);
+}
+
+.conversation-workspace__messages .chat-message .agent-markdown {
+  font-size: inherit;
+}
