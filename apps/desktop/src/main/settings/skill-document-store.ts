@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -28,6 +29,7 @@ import {
 } from "@agent/protocol";
 
 import { IntegrationConfigurationStore } from "./integration-configuration-store.js";
+import { isPathInsideRoot } from "../security/workspace-path.js";
 
 const DISCOVERY_IGNORED_DIRECTORIES = new Set([".git", "node_modules"]);
 const MAX_DISCOVERED_SKILLS = 500;
@@ -187,6 +189,35 @@ export class SkillDocumentStore {
   public readDocument(entryPath: string): SkillDocument {
     this.assertRegistered(entryPath);
     return this.readPath(entryPath);
+  }
+
+  public deleteDocument(entryPath: string): void {
+    this.assertRegistered(entryPath);
+    this.assertSkillEntryPath(entryPath);
+    const configuration = this.integrationConfiguration.getConfiguration();
+    const skill = configuration.skills.find((candidate) => samePath(candidate.entryPath, entryPath));
+    if (skill?.origin === "system") throw new Error("内置 Skill 不能删除，请使用停用开关。");
+    const directoryPath = path.dirname(path.resolve(entryPath));
+    let packagePath = directoryPath;
+    if (existsSync(directoryPath)) {
+      if (lstatSync(directoryPath).isSymbolicLink()) throw new Error("不能删除符号链接 Skill 目录。");
+      const canonicalDirectory = this.resolveExistingDirectory(directoryPath);
+      packagePath = canonicalDirectory;
+      const roots = [this.getManagedDirectoryPath(), ...configuration.skillDirectories];
+      if (samePath(path.parse(canonicalDirectory).root, canonicalDirectory)
+        || roots.some((root) => samePath(existsSync(root) ? realpathSync(root) : root, canonicalDirectory))) {
+        throw new Error("不能删除 Skill 扫描根目录，请将 Skill 放在独立子目录中。");
+      }
+      if (existsSync(entryPath) && (lstatSync(entryPath).isSymbolicLink()
+        || !samePath(path.dirname(realpathSync(entryPath)), canonicalDirectory))) {
+        throw new Error("Skill 入口必须位于自己的目录内。");
+      }
+      rmSync(canonicalDirectory, { recursive: true, force: true });
+    }
+    this.integrationConfiguration.saveConfiguration({
+      ...configuration,
+      skills: configuration.skills.filter((candidate) => !isPathInsideRoot(packagePath, path.resolve(candidate.entryPath))),
+    });
   }
 
   public saveDocument(input: SkillDocumentSaveInput): SkillDocument {

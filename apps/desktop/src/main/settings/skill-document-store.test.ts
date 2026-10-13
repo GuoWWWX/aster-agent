@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -23,6 +23,43 @@ async function createStores() {
 }
 
 describe("SkillDocumentStore", () => {
+  it("does not follow links out of a deleted Skill package", async () => {
+    const { directory, documents } = await createStores();
+    const document = documents.createManagedDocument();
+    const outside = path.join(directory, "outside");
+    await mkdir(outside);
+    await writeFile(path.join(outside, "keep.txt"), "keep");
+    await symlink(outside, path.join(path.dirname(document.entryPath), "linked"), process.platform === "win32" ? "junction" : "dir");
+    documents.deleteDocument(document.entryPath);
+    expect(await readFile(path.join(outside, "keep.txt"), "utf8")).toBe("keep");
+  });
+  it("deletes a Skill package and does not rediscover it", async () => {
+    const { documents, integrations } = await createStores();
+    const removed = documents.createManagedDocument();
+    const kept = documents.createManagedDocument();
+    await writeFile(path.join(path.dirname(removed.entryPath), "references", "notes.md"), "notes");
+    const nested = path.join(path.dirname(removed.entryPath), "references", "nested");
+    await mkdir(nested);
+    await writeFile(path.join(nested, "SKILL.md"), "---\nname: nested\ndescription: Nested.\n---\n\n# Instructions\n");
+    documents.discoverDocuments();
+    documents.deleteDocument(removed.entryPath);
+    await expect(readdir(path.dirname(removed.entryPath))).rejects.toThrow();
+    expect(documents.discoverDocuments().documents.map((document) => document.entryPath)).toEqual([kept.entryPath]);
+    expect(integrations.getConfiguration().skills.map((skill) => skill.entryPath)).toEqual([kept.entryPath]);
+  });
+
+  it("rejects deletion of an unregistered package, a scan root and a bundled Skill", async () => {
+    const { directory, documents } = await createStores();
+    expect(() => documents.deleteDocument(path.join(directory, "unknown", "SKILL.md"))).toThrow();
+    const root = documents.discoverDocuments().defaultDirectoryPath;
+    const rootEntry = path.join(root, "SKILL.md");
+    await writeFile(rootEntry, "---\nname: root-skill\ndescription: Root.\n---\n\n# Instructions\n");
+    documents.discoverDocuments();
+    expect(() => documents.deleteDocument(rootEntry)).toThrow();
+    const bundled = documents.ensureManagedDocument("---\nname: bundled\ndescription: Built in.\n---\n\n# Instructions\n");
+    expect(() => documents.deleteDocument(bundled.entryPath)).toThrow();
+    expect(await readFile(rootEntry, "utf8")).toContain("root-skill");
+  });
   it("classifies bundled skills and disables only identical duplicate entries", async () => {
     const { directory, documents, integrations } = await createStores();
     const content = "---\nname: browser-use\ndescription: Browser.\n---\n\n# Browser\n";

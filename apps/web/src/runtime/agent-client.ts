@@ -208,6 +208,7 @@ export interface AgentClient {
   discoverModels(input: DiscoverModelsInput): Promise<DiscoveredModel[]>;
   testModelConnection(input: TestModelConnectionInput): Promise<ModelConnectionTestResult>;
   getModelApiKey(providerId: string): Promise<string | null>;
+  deleteModelProvider(providerId: string): Promise<ModelRuntimeStatus>;
   getCapabilities(): Promise<CapabilitySet>;
   getModelCatalog(): Promise<ModelCatalog>;
   getModelStatus(): Promise<ModelRuntimeStatus>;
@@ -324,6 +325,7 @@ export interface AgentClient {
     input: SetProjectTeamsInNavigatorInput,
   ): Promise<ProjectSummary>;
   readSkillDocument(input: SkillDocumentReferenceInput): Promise<SkillDocument>;
+  deleteSkillDocument(input: SkillDocumentReferenceInput): Promise<void>;
   sendConversationMessage(
     input: SendConversationMessageInput,
   ): Promise<ConversationMessageSubmission>;

@@ -79,6 +79,38 @@ afterEach(async () => {
 });
 
 describe("ModelCredentialStore", () => {
+  it.each(["jsonc", "legacy"])("deletes providers and keeps an empty %s configuration after restart", async (format) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-model-delete-"));
+    temporaryDirectories.push(directory);
+    const configuration = format === "jsonc"
+      ? new SettingsJsoncFile(path.join(directory, "settings.jsonc"))
+      : path.join(directory, "models.json");
+    const store = new ModelCredentialStore(configuration);
+    const input = {
+      apiFormat: "openai-chat-completions" as const,
+      apiKey: "test-key",
+      baseUrl: "https://example.test/v1",
+      models: [{ contextWindow: 0, displayName: "Test", modelId: "test", reasoningOptions: [] }],
+      providerName: "First",
+    };
+    const first = store.saveConfiguration(input);
+    const second = store.saveConfiguration({ ...input, providerName: "Second", models: [{ ...input.models[0]!, modelId: "next-model" }, ...input.models] });
+    const secondId = second.models.find((model) => model.providerName === "Second")?.providerId;
+    expect(secondId).toBeDefined();
+    store.setRecentSelection({ providerId: first.providerId!, modelId: "test", reasoning: null });
+    const remaining = store.deleteProvider(first.providerId!);
+    expect(remaining.providerId).toBe(secondId);
+    expect(remaining.models).toHaveLength(2);
+    expect(remaining.modelId).toBe("next-model");
+    expect(remaining.recentSelection).toBeNull();
+    expect(store.deleteProvider(secondId!)).toMatchObject({ configured: false, models: [], providerId: null });
+    const restored = new ModelCredentialStore(configuration);
+    vi.stubEnv("AGENT_MODEL_BASE_URL", input.baseUrl);
+    vi.stubEnv("AGENT_MODEL_API_KEY", input.apiKey);
+    vi.stubEnv("AGENT_MODEL_ID", "test");
+    restored.importFromEnvironment();
+    expect(restored.getStatus()).toMatchObject({ configured: false, models: [] });
+  });
   it("preserves explicitly empty JSONC providers instead of restoring environment credentials", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "aster-model-empty-settings-"));
     temporaryDirectories.push(directory);

@@ -96,6 +96,8 @@ import {
 } from "@agent/protocol";
 
 import { IconButton } from "../../components/ui/icon-button.js";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../components/ui/dialog.js";
+import { SettingsDirectoryDeleteButton } from "./settings-directory-delete-button.js";
 import { ResizableDivider } from "../../components/layout/resizable-divider.js";
 import { DocumentCodeEditor } from "../../components/editor/document-code-editor.js";
 import { AgentMarkdown } from "../../components/markdown/agent-markdown.js";
@@ -719,6 +721,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
   const [operationError, setOperationError] = useState<string | null>(null);
   const [providerPage, setProviderPage] = useState(0);
   const [providerSaveState, setProviderSaveState] = useState<ProviderSaveState>("idle");
+  const [deletingProviderId, setDeletingProviderId] = useState<string | null>(null);
   const [providerSearchQuery, setProviderSearchQuery] = useState("");
   const [saveRevision, setSaveRevision] = useState(0);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog>(DEFAULT_MODEL_CATALOG);
@@ -1086,6 +1089,27 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
     setProviderSaveState("idle");
   }
 
+  async function deleteProvider(providerId: string): Promise<void> {
+    setDeletingProviderId(providerId);
+    setOperationError(null);
+    try {
+      await saveQueueRef.current.catch(() => undefined);
+      const nextStatus = await agentClient.deleteModelProvider(providerId);
+      setStatus(rememberModelStatus(agentClient, nextStatus));
+      if (selectedProviderId === providerId) {
+        setProviderPage(0);
+        setProviderSearchQuery("");
+        const nextProvider = nextStatus.models[0]?.providerId;
+        if (nextProvider === undefined) createProvider();
+        else setActiveProviderId(nextProvider);
+      }
+    } catch (reason) {
+      setOperationError(errorMessage(reason));
+    } finally {
+      setDeletingProviderId(null);
+    }
+  }
+
   async function discoverModels(): Promise<void> {
     if (draft.baseUrl.trim().length === 0 || draft.apiKey.trim().length === 0) {
       setOperationError("请先填写请求地址和 API Key");
@@ -1182,14 +1206,6 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
 
   return (
     <SettingsSectionHeader
-      action={(
-        <div className="settings-section-actions">
-          <button className="settings-secondary-button" type="button" onClick={createProvider}>
-            <CirclePlus aria-hidden="true" size={15} />
-            添加供应商
-          </button>
-        </div>
-      )}
       bodyClassName="settings-section__body--models"
       eyebrow="模型协议 · 供应商"
       title="模型配置"
@@ -1198,6 +1214,9 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
         <aside className="settings-provider-list" aria-label="供应商列表">
           <header className="settings-provider-list__heading">
             <strong>供应商</strong>
+            <IconButton label="添加供应商" size="compact" disabled={deletingProviderId !== null} onClick={createProvider}>
+              <CirclePlus aria-hidden="true" size={18} />
+            </IconButton>
           </header>
 
           <div className="settings-provider-list__body">
@@ -1206,6 +1225,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
               <input
                 aria-label="搜索供应商"
                 autoComplete="off"
+                disabled={deletingProviderId !== null}
                 placeholder="搜索供应商"
                 value={providerSearchQuery}
                 onChange={(event) => {
@@ -1221,10 +1241,11 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                   {normalizedProviderSearchQuery.length === 0 ? "暂无已配置供应商" : "未找到匹配的供应商"}
                 </p>
               ) : pagedProviders.map((provider) => (
+                <div key={provider.id} className="group/directory relative" data-active={provider.id === selectedProviderId}>
                 <button
-                  key={provider.id}
                   aria-pressed={provider.id === selectedProviderId}
                   className="settings-provider-list__item"
+                  disabled={deletingProviderId !== null}
                   data-active={provider.id === selectedProviderId}
                   type="button"
                   onClick={() => {
@@ -1249,6 +1270,12 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                     data-state={provider.connectionStatus}
                   />
                 </button>
+                <SettingsDirectoryDeleteButton
+                  disabled={deletingProviderId !== null || providerSaveState === "pending" || providerSaveState === "saving"}
+                  label={`删除供应商 ${provider.name}`}
+                  onDelete={() => void deleteProvider(provider.id)}
+                />
+                </div>
               ))}
             </div>
           </div>
@@ -1285,7 +1312,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
           </footer>
         </aside>
 
-        <div className="settings-provider-editor">
+        <div className="settings-provider-editor" inert={deletingProviderId !== null}>
           <GlobalDefaultsSettings
             agentClient={agentClient}
             onContextCompressionChange={handleGlobalContextCompressionChange}
@@ -2571,11 +2598,12 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
     }
   }
 
-  function deleteSelected(): void {
-    if (configuration === null || selected === null) return;
-    const remaining = servers.filter((server) => server.id !== selected.id);
+  function deleteServer(id: string): void {
+    if (configuration === null) return;
+    const remaining = servers.filter((server) => server.id !== id);
     updateConfiguration({ ...configuration, mcpServers: remaining });
-    setSelectedId(remaining[0]?.id ?? null);
+    if (selected?.id === id) setSelectedId(remaining[0]?.id ?? null);
+    useWorkbenchUiStore.getState().closeConfigurationWorkspace({ configurationId: id, kind: "mcp" });
   }
 
   async function openFileWorkspace(): Promise<void> {
@@ -2625,12 +2653,6 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
       action={(
         <div className="settings-section-actions">
           <ConfigurationModeSwitch mode={mode} onChange={changeMode} />
-          {mode === "visual" ? (
-            <button className="settings-secondary-button" type="button" onClick={addServer}>
-              <CirclePlus aria-hidden="true" size={15} />
-              添加 MCP Server
-            </button>
-          ) : null}
         </div>
       )}
       bodyClassName="settings-section__body--flush"
@@ -2654,6 +2676,7 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
       ) : (
         <div className="settings-integration-manager settings-integration-manager--mcp">
           <ConfigurationList
+            actionLabel="添加 MCP Server"
             emptyLabel="暂无 MCP Server"
             headingLabel="MCP Server"
             icon={PlugZap}
@@ -2664,6 +2687,8 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
               summary: server.transport === "stdio" ? server.command ?? "stdio" : server.url ?? "HTTP",
             }))}
             selectedId={selected?.id ?? null}
+            onAdd={addServer}
+            onDelete={deleteServer}
             onSelect={setSelectedId}
           />
           {selected === null ? (
@@ -2734,7 +2759,6 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
               <ConfigurationEditorFooter
                 error={state.error}
                 saveState={state.autoSaveState}
-                onDelete={deleteSelected}
               />
             </section>
           )}
@@ -2752,6 +2776,9 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
   const [newSkillDirectoryPath, setNewSkillDirectoryPath] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [skillDocuments, setSkillDocuments] = useState<SkillDocument[]>([]);
+  const [skillToDelete, setSkillToDelete] = useState<SkillConfiguration | null>(null);
+  const [isDeletingSkill, setIsDeletingSkill] = useState(false);
+  const [skillDeleteError, setSkillDeleteError] = useState<string | null>(null);
   const configurationWorkspaceRevision = useWorkbenchUiStore(
     (current) => current.configurationWorkspaceRevision,
   );
@@ -2854,11 +2881,28 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
     }
   }
 
-  function removeSelected(): void {
-    if (configuration === null || selected === null) return;
-    const remaining = skills.filter((skill) => skill.id !== selected.id);
-    state.update({ ...configuration, skills: remaining });
-    setSelectedId(remaining[0]?.id ?? null);
+  async function deleteSkill(): Promise<void> {
+    if (skillToDelete === null) return;
+    setIsDeletingSkill(true);
+    setSkillDeleteError(null);
+    try {
+      if (!await state.flush()) throw new Error("请先完成当前配置的保存。");
+      await agentClient.deleteSkillDocument({ entryPath: skillToDelete.entryPath });
+      const next = await state.reload();
+      if (next !== null) {
+        setSkillDocuments((current) => current.filter((document) => next.skills.some((skill) => skill.entryPath === document.entryPath)));
+        if (!next.skills.some((skill) => skill.id === selected?.id)) setSelectedId(next.skills[0]?.id ?? null);
+        const target = useWorkbenchUiStore.getState().configurationWorkspaceTarget;
+        if (target?.kind === "skill" && !next.skills.some((skill) => skill.id === target.configurationId)) {
+          useWorkbenchUiStore.getState().closeConfigurationWorkspace(target);
+        }
+      }
+      setSkillToDelete(null);
+    } catch (reason) {
+      setSkillDeleteError(errorMessage(reason));
+    } finally {
+      setIsDeletingSkill(false);
+    }
   }
 
   async function openFileWorkspace(): Promise<void> {
@@ -2925,15 +2969,6 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
           >
             <FolderOpen aria-hidden="true" size={16} />
           </IconButton>
-          <button
-            className="settings-secondary-button"
-            disabled={creationDirectoryPath === null}
-            type="button"
-            onClick={() => void createSkill()}
-          >
-            <CirclePlus aria-hidden="true" size={15} />
-            新建 Skill
-          </button>
         </div>
       )}
       bodyClassName="settings-section__body--flush"
@@ -2945,16 +2980,24 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
       ) : (
         <div className="settings-integration-manager settings-integration-manager--skill">
           <ConfigurationList
+            actionLabel="新建 Skill"
+            addDisabled={creationDirectoryPath === null}
             emptyLabel="暂无 Skill"
             headingLabel="Skill 列表"
             icon={Sparkles}
             items={skills.map((skill) => ({
+              deleteDisabledReason: skill.origin === "system" ? "内置 Skill 可停用，不能删除" : undefined,
               enabled: skill.enabled,
               id: skill.id,
               name: skill.name,
               summary: skill.entryPath,
             }))}
             selectedId={selected?.id ?? null}
+            onAdd={() => void createSkill()}
+            onDelete={(id) => {
+              setSkillDeleteError(null);
+              setSkillToDelete(skills.find((skill) => skill.id === id) ?? null);
+            }}
             onSelect={setSelectedId}
           />
           {selected === null ? (
@@ -3005,17 +3048,27 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                     ? <span>{autoSaveStateLabel(state.autoSaveState)}</span>
                     : <p role="alert">{state.error}</p>}
                 </div>
-                <div className="settings-skill-metadata__actions">
-                  <button className="settings-danger-button" type="button" onClick={removeSelected}>
-                    <Trash2 aria-hidden="true" size={14} />
-                    移除登记
-                  </button>
-                </div>
               </footer>
             </section>
           )}
         </div>
       )}
+      <Dialog open={skillToDelete !== null} onOpenChange={(open) => {
+        if (!open && !isDeletingSkill) setSkillToDelete(null);
+      }}>
+        <DialogContent className="gap-4 p-5" showCloseButton={!isDeletingSkill}>
+          <DialogTitle>删除 Skill「{skillToDelete?.name}」？</DialogTitle>
+          <DialogDescription>将删除下列目录及其中的所有文件，包括指令、脚本和资源。此操作无法撤销。</DialogDescription>
+          <p className="m-0 break-all rounded-[var(--app-radius)] bg-[var(--app-panel-subtle)] p-3 text-[length:var(--app-font-size-control)]">
+            {skillToDelete?.entryPath.replace(/[/\\][^/\\]+$/, "")}
+          </p>
+          {skillDeleteError === null ? null : <p className="m-0 text-[var(--app-destructive)]" role="alert">{skillDeleteError}</p>}
+          <div className="flex justify-end gap-2">
+            <button className="settings-secondary-button" disabled={isDeletingSkill} type="button" onClick={() => setSkillToDelete(null)}>取消</button>
+            <button className="settings-danger-button" disabled={isDeletingSkill} type="button" onClick={() => void deleteSkill()}>{isDeletingSkill ? "正在删除…" : "删除目录和文件"}</button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </SettingsSectionHeader>
   );
 }
@@ -3029,17 +3082,25 @@ function ConfigurationStatus({ error }: { error: string | null }): ReactElement 
 }
 
 function ConfigurationList({
+  actionLabel,
+  addDisabled = false,
   emptyLabel,
   headingLabel,
   icon: Icon,
   items,
+  onAdd,
+  onDelete,
   onSelect,
   selectedId,
 }: {
+  actionLabel: string;
+  addDisabled?: boolean;
   emptyLabel: string;
   headingLabel: string;
   icon: LucideIcon;
-  items: { enabled: boolean; id: string; name: string; summary: string }[];
+  items: { enabled: boolean; id: string; name: string; summary: string; deleteDisabledReason?: string | undefined }[];
+  onAdd: () => void;
+  onDelete: (id: string) => void;
   onSelect: (id: string) => void;
   selectedId: string | null;
 }): ReactElement {
@@ -3062,11 +3123,14 @@ function ConfigurationList({
     <aside className="settings-integration-list">
       <header className="settings-integration-list__heading">
         <strong>{headingLabel}</strong>
+        <IconButton disabled={addDisabled} label={actionLabel} size="compact" onClick={onAdd}>
+          <CirclePlus aria-hidden="true" size={18} />
+        </IconButton>
       </header>
       <div className="settings-integration-list__items">
         {items.length === 0 ? <p>{emptyLabel}</p> : pagedItems.map((item) => (
+          <div key={item.id} className="group/directory relative" data-active={selectedId === item.id}>
           <button
-            key={item.id}
             aria-pressed={selectedId === item.id}
             className="settings-integration-list__item"
             data-active={selectedId === item.id}
@@ -3081,6 +3145,13 @@ function ConfigurationList({
             </span>
             <span className="settings-integration-list__status" data-enabled={item.enabled} />
           </button>
+          <SettingsDirectoryDeleteButton
+            disabled={item.deleteDisabledReason !== undefined}
+            {...(item.deleteDisabledReason === undefined ? {} : { disabledReason: item.deleteDisabledReason })}
+            label={`删除 ${item.name}`}
+            onDelete={() => onDelete(item.id)}
+          />
+          </div>
         ))}
       </div>
       <footer className="settings-integration-list__footer">
@@ -3270,21 +3341,15 @@ function KeyValueEditor({
 function ConfigurationEditorFooter({
   error,
   saveState,
-  onDelete,
 }: {
   error: string | null;
   saveState: AutoSaveState;
-  onDelete: () => void;
 }): ReactElement {
   return (
     <footer className="settings-integration-editor__footer">
       <div>
         {error === null ? <span>{autoSaveStateLabel(saveState)}</span> : <p role="alert">{error}</p>}
       </div>
-      <button className="settings-danger-button" type="button" onClick={onDelete}>
-        <Trash2 aria-hidden="true" size={14} />
-        删除
-      </button>
     </footer>
   );
 }

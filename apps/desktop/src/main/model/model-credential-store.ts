@@ -211,14 +211,20 @@ const storedRecentSelectionSchema = conversationModelSelectionSchema.extend({
 
 const storedConfigurationV6Schema = z
   .object({
-    defaultModelId: z.string().min(1).max(200),
-    defaultProviderId: z.string().uuid(),
-    providers: z.array(storedProviderSchema).min(1).max(100),
+    defaultModelId: z.string().min(1).max(200).nullable(),
+    defaultProviderId: z.string().uuid().nullable(),
+    providers: z.array(storedProviderSchema).max(100),
     recentSelection: storedRecentSelectionSchema.nullable(),
     version: z.literal(6)
   })
   .strict()
   .superRefine((value, context) => {
+    if (value.providers.length === 0) {
+      if (value.defaultModelId !== null || value.defaultProviderId !== null || value.recentSelection !== null) {
+        context.addIssue({ code: "custom", message: "Empty providers cannot retain a model selection." });
+      }
+      return;
+    }
     const defaultProvider = value.providers.find(
       (provider) => provider.id === value.defaultProviderId
     );
@@ -250,15 +256,16 @@ type SelectedStoredModel = {
 };
 
 const settingsModelConfigurationSchema = z.object({
-  defaultModelSelection: conversationModelSelectionSchema,
-  providers: z.array(settingsProviderSchema).min(1).max(100),
+  defaultModelSelection: conversationModelSelectionSchema.nullable(),
+  providers: z.array(settingsProviderSchema).max(100),
   recentSelection: storedRecentSelectionSchema.nullable(),
 }).strict().superRefine((value, context) => {
+  if (value.providers.length === 0 && value.defaultModelSelection === null && value.recentSelection === null) return;
   const provider = value.providers.find(
-    (candidate) => candidate.id === value.defaultModelSelection.providerId,
+    (candidate) => candidate.id === value.defaultModelSelection?.providerId,
   );
   if (provider === undefined || !provider.models.some(
-    (model) => model.modelId === value.defaultModelSelection.modelId,
+    (model) => model.modelId === value.defaultModelSelection?.modelId,
   )) {
     context.addIssue({
       code: "custom",
@@ -417,7 +424,7 @@ export class ModelCredentialStore {
 
   public importFromEnvironment(): void {
     this.migrateLegacyConfiguration();
-    if (this.settings?.has("providers") || this.hasConfigurationSection()) return;
+    if (this.settings?.has("providers") || (this.configurationPath !== null && existsSync(this.configurationPath)) || this.hasConfigurationSection()) return;
     const baseUrl = process.env.AGENT_MODEL_BASE_URL?.trim();
     const apiKey = process.env.AGENT_MODEL_API_KEY?.trim();
     const modelId = process.env.AGENT_MODEL_ID?.trim();
@@ -470,7 +477,7 @@ export class ModelCredentialStore {
         ? stored.defaultModelId
         : provider.models[0]?.modelId
     );
-    if (selectedModelId === undefined) {
+    if (selectedModelId === undefined || selectedModelId === null) {
       throw new Error("The selected provider has no configured models.");
     }
     const model = provider.models.find((candidate) => candidate.modelId === selectedModelId);
@@ -500,6 +507,7 @@ export class ModelCredentialStore {
     this.migrateLegacyConfiguration();
     if (!this.hasConfigurationSection()) return null;
     const stored = this.readStoredConfiguration();
+    if (stored.defaultModelId === null || stored.defaultProviderId === null) return null;
     const configuredDefault = this.settings === null
       ? null
       : conversationModelSelectionSchema.safeParse(
@@ -711,6 +719,24 @@ export class ModelCredentialStore {
     return this.getStatus();
   }
 
+  public deleteProvider(providerId: string): ModelRuntimeStatus {
+    this.migrateLegacyConfiguration();
+    if (!this.hasConfigurationSection()) return this.getStatus();
+    const stored = this.readStoredConfiguration();
+    const providers = stored.providers.filter((provider) => provider.id !== providerId);
+    const defaultProvider = providers.find((provider) => provider.id === stored.defaultProviderId) ?? providers[0];
+    this.writeStoredConfiguration(storedConfigurationV6Schema.parse({
+      ...stored,
+      defaultProviderId: defaultProvider?.id ?? null,
+      defaultModelId: defaultProvider?.id === stored.defaultProviderId && defaultProvider?.models.some((model) => model.modelId === stored.defaultModelId)
+        ? stored.defaultModelId
+        : defaultProvider?.models[0]?.modelId ?? null,
+      providers,
+      recentSelection: stored.recentSelection?.providerId === providerId ? null : stored.recentSelection,
+    }));
+    return this.getStatus();
+  }
+
   public setDefaultModel(input: SetDefaultModelInput): ModelRuntimeStatus {
     const existing = this.readStoredConfiguration();
     const provider = this.getProvider(existing, input.providerId);
@@ -766,8 +792,8 @@ export class ModelCredentialStore {
         recentSelection: this.settings.readValue("recentSelection") ?? null,
       });
       return storedConfigurationV6Schema.parse({
-        defaultModelId: configuration.defaultModelSelection.modelId,
-        defaultProviderId: configuration.defaultModelSelection.providerId,
+        defaultModelId: configuration.defaultModelSelection?.modelId ?? null,
+        defaultProviderId: configuration.defaultModelSelection?.providerId ?? null,
         providers: configuration.providers.map(({ apiKey, ...provider }) => ({
           ...provider,
           encryptedApiKey: Buffer.from(apiKey, "utf8").toString("base64"),
@@ -935,7 +961,7 @@ export class ModelCredentialStore {
         },
         {
           key: "defaultModelSelection",
-          value: {
+          value: stored.defaultProviderId === null ? null : {
             modelId: stored.defaultModelId,
             providerId: stored.defaultProviderId,
             reasoning: defaultReasoning,
@@ -954,7 +980,10 @@ export class ModelCredentialStore {
       const providers = this.settings.readValue("providers");
       return Array.isArray(providers) && providers.length > 0;
     }
-    return this.configurationPath !== null && existsSync(this.configurationPath);
+    if (this.configurationPath === null || !existsSync(this.configurationPath)) return false;
+    const document = readJsonDocument(this.configurationPath);
+    return !(typeof document === "object" && document !== null && "providers" in document
+      && Array.isArray(document.providers) && document.providers.length === 0);
   }
 
   private migrateLegacyConfiguration(): void {

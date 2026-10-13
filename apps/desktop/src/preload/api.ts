@@ -474,6 +474,9 @@ export function createDesktopBridge(): DesktopBridge {
         IPC_CHANNELS.skillImportDocument
       );
     },
+    deleteModelProvider(providerId: string) {
+      return invoke<BridgeResult<"deleteModelProvider">>(IPC_CHANNELS.modelDeleteProvider, { providerId });
+    },
     getModelApiKey(providerId: string) {
       return invoke<BridgeResult<"getModelApiKey">>(IPC_CHANNELS.modelGetApiKey, {
         providerId
@@ -736,6 +739,9 @@ export function createDesktopBridge(): DesktopBridge {
         IPC_CHANNELS.projectSetTeamsInNavigator,
         input
       );
+    },
+    deleteSkillDocument(input: SkillDocumentReferenceInput) {
+      return invoke<BridgeResult<"deleteSkillDocument">>(IPC_CHANNELS.skillDeleteDocument, input);
     },
     readSkillDocument(input: SkillDocumentReferenceInput) {
       return invoke<BridgeResult<"readSkillDocument">>(

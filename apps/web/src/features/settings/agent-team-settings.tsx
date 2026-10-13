@@ -39,6 +39,7 @@ import {
 } from "../../stores/agent-directory-store.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 import { SettingsCategoryHeading, SettingsConfigurationGroup } from "./settings-configuration-card.js";
+import { SettingsDirectoryDeleteButton } from "./settings-directory-delete-button.js";
 import { AgentAvatar } from "../team/agent-avatar.js";
 import { AgentAvatarPicker } from "./agent-avatar-picker.js";
 import "./agent-team-settings.css";
@@ -64,6 +65,8 @@ export function AgentTeamSettings({ searchTarget }: { searchTarget?: { agentView
   const teams = useAgentDirectoryStore((state) => state.teams);
   const addAgent = useAgentDirectoryStore((state) => state.addAgent);
   const addTeam = useAgentDirectoryStore((state) => state.addTeam);
+  const removeAgent = useAgentDirectoryStore((state) => state.removeAgent);
+  const removeTeam = useAgentDirectoryStore((state) => state.removeTeam);
   const [selectedAgentId, setSelectedAgentId] = useState(
     agents.find((agent) => agent.isDefault)?.id ?? agents[0]?.id ?? "",
   );
@@ -105,10 +108,6 @@ export function AgentTeamSettings({ searchTarget }: { searchTarget?: { agentView
               <span>{agents.length}</span>
             </button>
           </div>
-          <button className="settings-secondary-button" type="button" onClick={activeView === "teams" ? createTeam : () => setSelectedAgentId(addAgent())}>
-            <CirclePlus aria-hidden="true" size={15} />
-            {activeView === "teams" ? "创建团队" : "新建 Agent"}
-          </button>
         </div>
       </header>
 
@@ -117,6 +116,14 @@ export function AgentTeamSettings({ searchTarget }: { searchTarget?: { agentView
         {activeView === "teams" ? (
           <TeamManagementView
             agents={agents}
+            onCreateTeam={createTeam}
+            onDeleteTeam={(id) => {
+              removeTeam(id);
+              if (selectedTeamId === id) {
+                setSelectedTeamId(useAgentDirectoryStore.getState().teams[0]?.id ?? "");
+                setTeamPage(0);
+              }
+            }}
             selectedAgentId={selectedAgentId}
             selectedTeamId={selectedTeamId}
             teamPage={teamPage}
@@ -136,6 +143,15 @@ export function AgentTeamSettings({ searchTarget }: { searchTarget?: { agentView
         ) : (
           <AgentManagementView
             agents={agents}
+            onCreateAgent={() => setSelectedAgentId(addAgent())}
+            onDeleteAgent={(id) => {
+              removeAgent(id);
+              useWorkbenchUiStore.getState().closeAgentPromptWorkspace(id);
+              if (selectedAgentId === id) {
+                const remaining = useAgentDirectoryStore.getState().agents;
+                setSelectedAgentId(remaining[Math.min(agents.findIndex((agent) => agent.id === id), remaining.length - 1)]?.id ?? "");
+              }
+            }}
             selectedAgentId={selectedAgentId}
             teams={teams}
             onSelectAgent={setSelectedAgentId}
@@ -148,6 +164,8 @@ export function AgentTeamSettings({ searchTarget }: { searchTarget?: { agentView
 
 function TeamManagementView({
   agents,
+  onCreateTeam,
+  onDeleteTeam,
   onOpenAgent,
   onSelectMember,
   onSelectTeam,
@@ -158,6 +176,8 @@ function TeamManagementView({
   onSelectPage,
 }: {
   agents: AgentProfile[];
+  onCreateTeam: () => void;
+  onDeleteTeam: (id: string) => void;
   onOpenAgent: (agentId: string) => void;
   onSelectMember: (agentId: string) => void;
   onSelectTeam: (teamId: string) => void;
@@ -187,13 +207,14 @@ function TeamManagementView({
       <section className="team-directory-pane" aria-label="团队列表">
         <PaneHeading
           label="团队目录"
+          action={<IconButton label="创建团队" size="compact" onClick={onCreateTeam}><CirclePlus aria-hidden="true" size={18} /></IconButton>}
         />
         <div className="team-directory-list">
           {pagedTeams.map((team) => (
+            <div key={team.id} className="group/directory relative" data-active={team.id === selectedTeam?.id}>
             <button
-              key={team.id}
               aria-pressed={team.id === selectedTeam?.id}
-              className="team-directory-row"
+              className="team-directory-row w-full"
               data-selected={team.id === selectedTeam?.id}
               type="button"
               onClick={() => onSelectTeam(team.id)}
@@ -207,6 +228,8 @@ function TeamManagementView({
               </span>
               <ChevronRight aria-hidden="true" size={14} />
             </button>
+            <SettingsDirectoryDeleteButton label={`删除团队 ${team.name}`} onDelete={() => onDeleteTeam(team.id)} />
+            </div>
           ))}
         </div>
         <footer className="team-directory-footer">
@@ -254,11 +277,15 @@ function TeamManagementView({
 
 function AgentManagementView({
   agents,
+  onCreateAgent,
+  onDeleteAgent,
   onSelectAgent,
   selectedAgentId,
   teams,
 }: {
   agents: AgentProfile[];
+  onCreateAgent: () => void;
+  onDeleteAgent: (id: string) => void;
   onSelectAgent: (agentId: string) => void;
   selectedAgentId: string;
   teams: AgentTeam[];
@@ -271,15 +298,16 @@ function AgentManagementView({
         <PaneHeading
           label="Agent 目录"
           value={agents.length}
+          action={<IconButton label="新建 Agent" size="compact" onClick={onCreateAgent}><CirclePlus aria-hidden="true" size={18} /></IconButton>}
         />
         <div className="agent-directory-list">
           {agents.map((agent) => {
             const teamCount = teams.filter((team) => team.memberIds.includes(agent.id)).length;
             return (
+              <div key={agent.id} className="group/directory relative" data-active={agent.id === selectedAgent?.id}>
               <button
-                key={agent.id}
                 aria-pressed={agent.id === selectedAgent?.id}
-                className="agent-directory-row"
+                className="agent-directory-row w-full"
                 data-selected={agent.id === selectedAgent?.id}
                 type="button"
                 onClick={() => onSelectAgent(agent.id)}
@@ -294,6 +322,13 @@ function AgentManagementView({
                 </span>
                 <ChevronRight aria-hidden="true" size={14} />
               </button>
+              <SettingsDirectoryDeleteButton
+                disabled={agent.isDefault}
+                {...(agent.isDefault ? { disabledReason: "默认 Agent 不能删除" } : {})}
+                label={`删除 Agent ${agent.name}`}
+                onDelete={() => onDeleteAgent(agent.id)}
+              />
+              </div>
             );
           })}
         </div>
@@ -1007,16 +1042,18 @@ function TeamMemberRow({
 }
 
 function PaneHeading({
+  action,
   label,
   value,
 }: {
+  action?: ReactElement;
   label: string;
   value?: number;
 }): ReactElement {
   return (
     <div className="agent-team-section-heading">
       <h2>{label}</h2>
-      {value === undefined ? null : <span>{value}</span>}
+      {action ?? (value === undefined ? null : <span>{value}</span>)}
     </div>
   );
 }

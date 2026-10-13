@@ -351,6 +351,7 @@ export interface DesktopBridge {
   saveModelConfiguration(
     input: SaveModelConfigurationInput
   ): Promise<ModelRuntimeStatus>;
+  deleteModelProvider(providerId: string): Promise<ModelRuntimeStatus>;
   setDefaultModel(input: SetDefaultModelInput): Promise<ModelRuntimeStatus>;
   saveContextCompressionConfiguration(
     input: ContextCompressionConfiguration
@@ -372,6 +373,7 @@ export interface DesktopBridge {
   discoverSkillDocuments(): Promise<SkillDiscoveryResult>;
   importSkillDocument(): Promise<SkillDocument | null>;
   readSkillDocument(input: SkillDocumentReferenceInput): Promise<SkillDocument>;
+  deleteSkillDocument(input: SkillDocumentReferenceInput): Promise<void>;
   saveSkillDocument(input: SkillDocumentSaveInput): Promise<SkillDocument>;
   writeConfigurationWorkspaceFile(
     input: WriteConfigurationWorkspaceFileInput

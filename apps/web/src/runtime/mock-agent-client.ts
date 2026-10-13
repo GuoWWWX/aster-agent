@@ -1252,6 +1252,22 @@ export class MockAgentClient implements AgentClient {
     return Promise.resolve(this.modelApiKeys.get(providerId) ?? null);
   }
 
+  public deleteModelProvider(providerId: string): Promise<ModelRuntimeStatus> {
+    const models = this.modelStatus.models.filter((model) => model.providerId !== providerId);
+    const selected = models.find((model) => model.providerId === this.modelStatus.providerId && model.modelId === this.modelStatus.modelId) ?? models[0];
+    this.modelApiKeys.delete(providerId);
+    this.modelStatus = {
+      ...this.modelStatus,
+      baseUrl: selected?.providerBaseUrl ?? null,
+      configured: selected !== undefined,
+      modelId: selected?.modelId ?? null,
+      models,
+      providerId: selected?.providerId ?? null,
+      recentSelection: this.modelStatus.recentSelection?.providerId === providerId ? null : this.modelStatus.recentSelection,
+    };
+    return this.getModelStatus();
+  }
+
   public getModelCatalog(): Promise<ModelCatalog> {
     return Promise.resolve(structuredClone(DEFAULT_MODEL_CATALOG));
   }
@@ -2185,6 +2201,15 @@ export class MockAgentClient implements AgentClient {
     return document === undefined
       ? Promise.reject(new Error("The mock Skill document is unavailable."))
       : Promise.resolve(structuredClone(document));
+  }
+
+  public deleteSkillDocument(input: SkillDocumentReferenceInput): Promise<void> {
+    this.skillDocuments.delete(input.entryPath);
+    this.integrationConfiguration = {
+      ...this.integrationConfiguration,
+      skills: this.integrationConfiguration.skills.filter((skill) => skill.entryPath !== input.entryPath),
+    };
+    return Promise.resolve();
   }
 
   public sendConversationMessage(

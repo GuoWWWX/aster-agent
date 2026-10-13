@@ -551,6 +551,7 @@ export {
   getTeamWorkItemExecutionIpcArgumentsSchema,
   getTeamCollaborationProjectionIpcArgumentsSchema,
   getModelApiKeyIpcArgumentsSchema,
+  deleteModelProviderIpcArgumentsSchema,
   integrationConfigurationIpcArgumentsSchema,
   importConversationAttachmentBytesIpcArgumentsSchema,
   IPC_CHANNELS,

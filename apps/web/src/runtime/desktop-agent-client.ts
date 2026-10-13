@@ -336,6 +336,10 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.getModelApiKey(providerId);
   }
 
+  public deleteModelProvider(providerId: string): Promise<ModelRuntimeStatus> {
+    return this.desktopBridge.deleteModelProvider(providerId);
+  }
+
   public getModelCatalog(): Promise<ModelCatalog> {
     return this.desktopBridge.getModelCatalog();
   }
@@ -739,6 +743,10 @@ export class DesktopAgentClientAdapter implements AgentClient {
 
   public readSkillDocument(input: SkillDocumentReferenceInput): Promise<SkillDocument> {
     return this.desktopBridge.readSkillDocument(input);
+  }
+
+  public deleteSkillDocument(input: SkillDocumentReferenceInput): Promise<void> {
+    return this.desktopBridge.deleteSkillDocument(input);
   }
 
   public sendConversationMessage(

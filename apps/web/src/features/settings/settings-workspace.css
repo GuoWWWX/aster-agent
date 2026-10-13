@@ -14,7 +14,7 @@
   --app-font-size-control: var(--app-ui-font-size);
   --app-font-size-auxiliary: calc(var(--app-ui-font-size) - 1px);
   --app-font-size-caption: calc(var(--app-ui-font-size) - 2px);
-  --settings-list-card-width: 230px;
+  --settings-list-card-width: 280px;
   --settings-list-card-header-height: 50px;
   --settings-list-card-footer-height: 44px;
   --settings-scrollbar-width: 10px;
@@ -2274,15 +2274,6 @@
   width: min(190px, 22vw);
 }
 
-.settings-skill-metadata__actions {
-  display: inline-flex;
-  min-width: 0;
-  flex: 0 0 auto !important;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-}
-
 .settings-skill-fields {
   grid-template-columns: 1fr;
 }
@@ -3839,7 +3830,7 @@
 .settings-content[data-section="models"],
 .settings-content[data-section="agents"],
 .settings-content[data-section="mcp"],
-.settings-content[data-section="skills"],
+.settings-content[data-section="skills"] { --settings-page-content-width: 1040px; }
 .settings-content[data-section="archived"] { --settings-page-content-width: 1200px; }
 .settings-section__body:not(.settings-section__body--general) > .settings-general-category + .settings-general-category { margin-top: 28px; }
 .settings-general-row > div:first-child { min-width: 0; flex: 1; }

@@ -66,6 +66,7 @@ import {
   getTeamWorkItemExecutionIpcArgumentsSchema,
   getTeamCollaborationProjectionIpcArgumentsSchema,
   getModelApiKeyIpcArgumentsSchema,
+  deleteModelProviderIpcArgumentsSchema,
   integrationConfigurationIpcArgumentsSchema,
   integrationConfigurationSchema,
   gitFileDiffIpcArgumentsSchema,
@@ -1282,6 +1283,12 @@ export function registerMainIpcHandlers(
     return modelApiKeySchema.parse(credentials.getApiKey(input.providerId));
   });
 
+  ipcMain.handle(IPC_CHANNELS.modelDeleteProvider, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = deleteModelProviderIpcArgumentsSchema.parse(args);
+    return modelRuntimeStatusSchema.parse(credentials.deleteProvider(input.providerId));
+  });
+
   ipcMain.handle(IPC_CHANNELS.modelDiscover, async (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = discoverModelsIpcArgumentsSchema.parse(args);
@@ -1649,6 +1656,13 @@ export function registerMainIpcHandlers(
     const selectedPath = selection.filePaths[0];
     if (selection.canceled || selectedPath === undefined) return null;
     return skillDocumentSchema.parse(skillDocuments.importDocument(selectedPath));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.skillDeleteDocument, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = skillDocumentReferenceIpcArgumentsSchema.parse(args);
+    skillDocuments.deleteDocument(input.entryPath);
+    return voidIpcResponseSchema.parse(undefined);
   });
 
   ipcMain.handle(IPC_CHANNELS.skillReadDocument, (event, ...args: unknown[]) => {
