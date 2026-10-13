@@ -117,6 +117,7 @@ import { useApplicationSettingsStore } from "../../stores/application-settings-s
 import { ModelReasoningOptionsEditor } from "./model-reasoning-options-editor.js";
 import { ModelProfilePicker } from "./model-profile-picker.js";
 import { ProviderIconPicker, ProviderLogo } from "./provider-logo.js";
+import { SettingsConfigurationCard } from "./settings-configuration-card.js";
 import {
   getArchivedConversationDaysRemaining,
   getArchivedConversations,
@@ -1258,6 +1259,8 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
               />
             }
           />
+          <div className="settings-provider-editor__body">
+          <SettingsConfigurationCard className="settings-provider-profile" aria-label="供应商基本配置">
           <header className="settings-provider-editor__header">
             <div className="settings-provider-editor__identity">
               <ProviderLogo
@@ -1269,7 +1272,6 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
             </div>
           </header>
 
-          <div className="settings-provider-editor__body">
           <div className="settings-provider-fields">
             <label>
               供应商名称
@@ -1371,7 +1373,9 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
             </label>
           </div>
 
-          <section className="settings-provider-models" aria-labelledby="provider-models-heading">
+          </SettingsConfigurationCard>
+
+          <SettingsConfigurationCard className="settings-provider-models" aria-labelledby="provider-models-heading">
             <div className="settings-provider-models__heading">
               <div className="settings-provider-models__heading-copy">
                 <h4 id="provider-models-heading">已配置模型</h4>
@@ -1602,7 +1606,19 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
               <p className="settings-empty-state">添加模型后输入模型 ID；获取模型后可从右侧下拉选择。</p>
             )}
 
-          </section>
+            {operationError !== null ? <p className="settings-operation-error" role="alert">{operationError}</p> : null}
+            {providerSaveState === "pending" || providerSaveState === "saving" || providerSaveState === "incomplete" ? (
+              <footer className="settings-provider-editor__footer">
+                <p>
+                  {providerSaveState === "pending"
+                    ? "等待更新"
+                    : providerSaveState === "saving"
+                      ? "正在更新"
+                      : "请完成供应商和模型配置"}
+                </p>
+              </footer>
+            ) : null}
+          </SettingsConfigurationCard>
 
           {isModelTestDialogOpen ? (
             <div
@@ -1687,20 +1703,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
             </div>
           ) : null}
 
-          {operationError !== null ? <p className="settings-operation-error" role="alert">{operationError}</p> : null}
           </div>
-
-          <footer className="settings-provider-editor__footer">
-            <p>
-              {providerSaveState === "pending"
-                ? "等待更新"
-                : providerSaveState === "saving"
-                  ? "正在更新"
-                  : providerSaveState === "incomplete"
-                    ? "请完成供应商和模型配置"
-                    : null}
-            </p>
-          </footer>
         </div>
       </div>
     </SettingsSectionHeader>
@@ -2635,6 +2638,7 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
             <ConfigurationEmpty icon={PlugZap} label="添加 MCP Server" onAdd={addServer} />
           ) : (
             <section className="settings-integration-editor">
+              <SettingsConfigurationCard>
               <ConfigurationEditorHeader
                 enabled={selected.enabled}
                 fileActionLabel="编辑配置文件"
@@ -2695,6 +2699,7 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
                 saveState={state.autoSaveState}
                 onDelete={deleteSelected}
               />
+              </SettingsConfigurationCard>
             </section>
           )}
         </div>
@@ -2915,6 +2920,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
             <ConfigurationEmpty icon={Sparkles} label="新建 Skill" onAdd={() => void createSkill()} />
           ) : (
             <section className="settings-integration-editor settings-skill-metadata">
+              <SettingsConfigurationCard>
               <ConfigurationEditorHeader
                 enabled={selected.enabled}
                 fileActionLabel="编辑文档"
@@ -2965,6 +2971,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                   </button>
                 </div>
               </footer>
+              </SettingsConfigurationCard>
             </section>
           )}
         </div>
@@ -4137,7 +4144,7 @@ function AppearanceSettings(): ReactElement {
 
   return (
     <SettingsSectionHeader eyebrow="应用界面" title="外观">
-      <section className="settings-general-category" aria-labelledby="theme-heading">
+      <SettingsConfigurationCard className="settings-general-category" aria-labelledby="theme-heading">
         <div>
           <h3 id="theme-heading">主题</h3>
           <p>当前使用 {themeMode === "dark" ? "深色" : "浅色"} 主题</p>
@@ -4146,7 +4153,7 @@ function AppearanceSettings(): ReactElement {
           <ThemeButton mode="light" selected={themeMode} onSelect={setThemeMode} label="浅色" />
           <ThemeButton mode="dark" selected={themeMode} onSelect={setThemeMode} label="深色" />
         </div>
-      </section>
+      </SettingsConfigurationCard>
     </SettingsSectionHeader>
   );
 }

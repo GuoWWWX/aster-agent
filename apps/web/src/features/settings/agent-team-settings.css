@@ -257,6 +257,16 @@
   flex: 1;
 }
 
+.team-configuration-pane > .management-detail-body {
+  display: grid;
+  gap: 5px;
+}
+
+.management-profile-card > .management-form,
+.management-profile-card .management-policy-section:last-child {
+  border-bottom: 0;
+}
+
 .team-directory-footer {
   display: flex;
   height: var(--settings-list-card-footer-height, 44px);
@@ -448,8 +458,7 @@
 
 .team-members-section {
   --team-member-columns: minmax(200px, 0.72fr) minmax(280px, 1.28fr);
-  padding: 20px 14px;
-  border-bottom: 1px solid var(--app-border);
+  padding: 16px;
 }
 
 .team-members-section__heading {

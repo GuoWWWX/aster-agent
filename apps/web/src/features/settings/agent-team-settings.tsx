@@ -36,6 +36,7 @@ import {
   type AgentTeam,
 } from "../../stores/agent-directory-store.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
+import { SettingsConfigurationCard } from "./settings-configuration-card.js";
 import { AgentAvatar } from "../team/agent-avatar.js";
 import { AgentAvatarPicker } from "./agent-avatar-picker.js";
 import "./agent-team-settings.css";
@@ -339,6 +340,8 @@ function TeamConfigurationPane({
 
   return (
     <aside className="team-configuration-pane" aria-label={`${team.name} 配置`}>
+      <div className="management-detail-body">
+      <SettingsConfigurationCard className="management-profile-card p-0" aria-label="团队基本配置">
       <div className="management-detail-heading">
         <span className="management-detail-heading__icon">
           <Settings2 aria-hidden="true" size={16} />
@@ -357,7 +360,6 @@ function TeamConfigurationPane({
         </button>
       </div>
 
-      <div className="management-detail-body">
         <div className="management-form">
         <label>
           <span>团队名称</span>
@@ -390,8 +392,9 @@ function TeamConfigurationPane({
           </small>
         </label>
         </div>
+      </SettingsConfigurationCard>
 
-        <section className="team-members-section" aria-label={`${team.name} 成员编排`}>
+        <SettingsConfigurationCard className="team-members-section" aria-label={`${team.name} 成员编排`}>
           <header className="team-members-section__heading">
             <div>
               <h3>
@@ -505,10 +508,10 @@ function TeamConfigurationPane({
               </section>
             )}
           </div>
-        </section>
+        </SettingsConfigurationCard>
 
-        <section className="management-policy-section">
-          <h3>项目范围</h3>
+        <SettingsConfigurationCard aria-label="团队项目范围">
+          <h3 className="mb-2 text-[length:var(--app-font-size-auxiliary)] font-semibold text-[var(--app-muted-foreground)]">项目范围</h3>
           <div className="management-choice-row">
             <button
               aria-pressed={team.projectScope === "all"}
@@ -527,7 +530,7 @@ function TeamConfigurationPane({
               指定项目
             </button>
           </div>
-        </section>
+        </SettingsConfigurationCard>
       </div>
 
     </aside>
@@ -549,6 +552,7 @@ function AgentConfigurationPane({
 
   return (
     <aside className="agent-configuration-pane" aria-label={`${agent.name} 配置`}>
+      <SettingsConfigurationCard className="management-profile-card p-0">
       <div className="management-detail-heading">
         <AgentAvatar avatar={agent.avatar} status={agent.status} />
         <div>
@@ -661,6 +665,7 @@ function AgentConfigurationPane({
           </section>
         </div>
       </div>
+      </SettingsConfigurationCard>
     </aside>
   );
 }
