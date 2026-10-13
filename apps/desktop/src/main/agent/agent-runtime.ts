@@ -2434,6 +2434,12 @@ export class AgentRuntime {
     const latestProviderUsage = this.latestRequestUsage.has(input.conversationId)
       ? this.latestRequestUsage.get(input.conversationId) ?? null
       : providerUsages.at(-1) ?? null;
+    const latestProviderState = providerStates.at(-1);
+    const generationDurationMs = latestProviderState?.generationDurationMs;
+    const outputTokensPerSecond = latestProviderUsage === null
+      || latestProviderState?.usage === undefined
+      || generationDurationMs === undefined || generationDurationMs <= 0
+      ? null : latestProviderState.usage.outputTokens * 1_000 / generationDurationMs;
     const cacheReportedUsages = providerUsages.filter(
       (usage) => usage.cachedInputTokens !== undefined,
     );
@@ -2483,6 +2489,7 @@ export class AgentRuntime {
         + references.estimatedTokens
         + projectFileReferenceTokens,
       providerCache: {
+        outputTokensPerSecond,
         firstTokenLatencyMs: this.firstTokenLatencies.has(input.conversationId)
           ? this.firstTokenLatencies.get(input.conversationId) ?? null
           : providerStates.at(-1)?.firstTokenLatencyMs ?? null,

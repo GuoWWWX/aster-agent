@@ -3472,7 +3472,7 @@ describe("AgentRuntime", () => {
         input.onFirstToken?.(250);
         return { content: "done", finishReason: "stop", toolCalls: [], providerState: {
           apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
-          modelId: "test-model", payload: {}, usage: {
+          modelId: "test-model", payload: {}, generationDurationMs: 500, usage: {
             inputTokens: 100, outputTokens: 10, totalTokens: 110, cachedInputTokens: calls === 1 ? 80 : 0,
           },
         } };
@@ -3490,14 +3490,14 @@ describe("AgentRuntime", () => {
     });
     await send("first");
     await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(usage()).toMatchObject({ firstTokenLatencyMs: 250, latest: { hitRate: 0.8 }, cumulative: { hitRate: 0.8 } });
+    expect(usage()).toMatchObject({ firstTokenLatencyMs: 250, outputTokensPerSecond: 20, latest: { hitRate: 0.8 }, cumulative: { hitRate: 0.8 } });
     const second = send("cancel this request");
     await waiting;
-    expect(usage()).toMatchObject({ firstTokenLatencyMs: null, latest: null, cumulative: { hitRate: 0.8 } });
+    expect(usage()).toMatchObject({ firstTokenLatencyMs: null, outputTokensPerSecond: null, latest: null, cumulative: { hitRate: 0.8 } });
     runtime.cancelRun(database.getConversation(conversation.id).activeRunId!);
     await second;
     await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(usage()).toMatchObject({ latest: null, cumulative: { hitRate: 0.8, requestCount: 1 } });
+    expect(usage()).toMatchObject({ outputTokensPerSecond: null, latest: null, cumulative: { hitRate: 0.8, requestCount: 1 } });
     await send("real zero");
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(usage()).toMatchObject({ latest: { hitRate: 0 }, cumulative: { hitRate: 0.4, requestCount: 2 } });
@@ -3530,6 +3530,7 @@ describe("AgentRuntime", () => {
       cacheCreationInputTokens: number | undefined,
       modelId = "test-model",
       baseUrl = "https://example.test/v1",
+      generationDurationMs?: number,
     ): void => {
       const run = database.createRunWithUserMessage(
         conversation.id,
@@ -3546,6 +3547,7 @@ describe("AgentRuntime", () => {
           baseUrl,
           modelId,
           payload: {},
+          ...(generationDurationMs === undefined ? {} : { generationDurationMs }),
           usage: {
             ...(cacheCreationInputTokens === undefined
               ? {}
@@ -3576,6 +3578,7 @@ describe("AgentRuntime", () => {
       permissionMode: "read_only",
     }).providerCache).toEqual({
       firstTokenLatencyMs: null,
+      outputTokensPerSecond: null,
       cumulative: {
         cacheCreationInputTokens: 20,
         cachedInputTokens: 130,
@@ -3610,6 +3613,7 @@ describe("AgentRuntime", () => {
       permissionMode: "read_only",
     }).providerCache).toEqual({
       firstTokenLatencyMs: null,
+      outputTokensPerSecond: null,
       lastReportedHitRate: 0.8,
       cumulative: {
         cacheCreationInputTokens: 20,
@@ -3643,6 +3647,11 @@ describe("AgentRuntime", () => {
     appendUsage(100, undefined, undefined, "test-model", "https://another-provider.test/v1");
     expect(runtime.getContextUsage({ conversationId: conversation.id, permissionMode: "read_only" })
       .providerCache?.lastReportedHitRate).toBeUndefined();
+    for (const [duration, expected] of [[undefined, null], [0, null], [2000, 5]] as const) {
+      appendUsage(100, 80, 0, "test-model", "https://example.test/v1", duration);
+      expect(runtime.getContextUsage({ conversationId: conversation.id, permissionMode: "read_only" })
+        .providerCache?.outputTokensPerSecond).toBe(expected);
+    }
     database.close();
   });
 
@@ -3657,7 +3666,7 @@ describe("AgentRuntime", () => {
         log.append(conversation.id, { type: "assistant_message", payload: {
           content: "answer", runId: crypto.randomUUID(), modelId: "test-model",
           providerState: { apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
-            modelId: "test-model", payload: {}, usage: { inputTokens: 100, outputTokens: 10,
+            modelId: "test-model", payload: {}, generationDurationMs: 2000, usage: { inputTokens: 100, outputTokens: 10,
               totalTokens: 110, ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }) } },
         } });
       }
@@ -3670,6 +3679,7 @@ describe("AgentRuntime", () => {
       expect(runtime.getContextUsage({ conversationId: conversation.id, permissionMode: "read_only" })
         .providerCache).toMatchObject({
           lastReportedHitRate: 0.8,
+          outputTokensPerSecond: 5,
           latest: { inputTokens: 100, outputTokens: 10, hitRate: null },
           cumulative: { hitRate: 0.8, reportedRequestCount: 1, requestCount: 2 },
         });

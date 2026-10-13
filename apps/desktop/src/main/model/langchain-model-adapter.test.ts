@@ -325,8 +325,31 @@ describe("LangChainModelAdapter", () => {
     try {
       const result = await adapter.completeTurn(inputFor("openai-chat-completions", { onFirstToken }));
       expect(result.providerState?.firstTokenLatencyMs).toBe(kind === "empty" ? undefined : 250);
+      expect(result.providerState?.generationDurationMs).toBe(kind === "empty" ? undefined : 550);
       expect(onFirstToken).toHaveBeenCalledTimes(kind === "empty" ? 0 : 1);
       if (kind !== "empty") expect(onFirstToken).toHaveBeenCalledWith(250);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("measures output duration when the SDK does not expose HTTP dispatch", async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const onFirstToken = vi.fn();
+    const adapter = new LangChainModelAdapter("google-gemini", vi.fn(), () => ({
+      async *stream() {
+        now = 100;
+        yield await Promise.resolve(new AIMessageChunk({ content: "hello" }));
+        now = 600;
+        yield new AIMessageChunk({ content: "world" });
+      },
+    }) as unknown as BaseChatModel);
+    try {
+      const result = await adapter.completeTurn(inputFor("google-gemini", { onFirstToken }));
+      expect(result.providerState?.generationDurationMs).toBe(500);
+      expect(result.providerState?.firstTokenLatencyMs).toBeUndefined();
+      expect(onFirstToken).not.toHaveBeenCalled();
     } finally {
       clock.mockRestore();
     }

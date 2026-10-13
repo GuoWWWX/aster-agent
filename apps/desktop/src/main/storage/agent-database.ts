@@ -980,6 +980,7 @@ function readProjectionProviderState(
   const apiFormat = modelApiFormatSchema.safeParse(value.apiFormat);
   const usage = readProjectionProviderTokenUsage(value.usage);
   const firstTokenLatencyMs = readProjectionTokenCount(value.firstTokenLatencyMs);
+  const generationDurationMs = readProjectionTokenCount(value.generationDurationMs);
   return apiFormat.success
     ? {
         apiFormat: apiFormat.data,
@@ -987,6 +988,7 @@ function readProjectionProviderState(
         modelId: value.modelId,
         payload: value.payload,
         ...(firstTokenLatencyMs === undefined ? {} : { firstTokenLatencyMs }),
+        ...(generationDurationMs === undefined ? {} : { generationDurationMs }),
         ...(usage === undefined ? {} : { usage }),
       }
     : undefined;

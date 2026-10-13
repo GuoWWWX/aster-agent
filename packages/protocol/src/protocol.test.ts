@@ -1139,6 +1139,12 @@ describe("protocol bootstrap contract", () => {
     for (const value of [null, -1, 1.01, NaN, "0.8"]) expect(schema.safeParse(value).success).toBe(false);
   });
 
+  it("validates optional output throughput and preserves unavailable and zero values", () => {
+    const schema = conversationContextUsageSchema.shape.providerCache.unwrap().shape.outputTokensPerSecond;
+    for (const value of [undefined, null, 0, 12.5]) expect(schema.safeParse(value).success).toBe(true);
+    for (const value of [-1, NaN, Infinity, "12.5"]) expect(schema.safeParse(value).success).toBe(false);
+  });
+
   it("validates global context compression thresholds", () => {
     const configuration = contextCompressionConfigurationSchema.parse({
       mode: "percentage",
