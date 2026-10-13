@@ -341,6 +341,8 @@ export const getModelApiKeyIpcArgumentsSchema = z.tuple([
   getModelApiKeyInputSchema
 ]);
 
+export const deleteModelProviderIpcArgumentsSchema = getModelApiKeyIpcArgumentsSchema;
+
 export const testModelConnectionIpcArgumentsSchema = z.tuple([
   testModelConnectionInputSchema
 ]);

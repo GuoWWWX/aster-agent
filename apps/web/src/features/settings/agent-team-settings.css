@@ -14,7 +14,7 @@
   min-height: 0;
   flex: 1;
   flex-direction: column;
-  gap: 24px;
+  gap: 0;
   overflow: hidden;
   border: 0;
   border-radius: 0;
@@ -24,18 +24,17 @@
 
 .team-management-toolbar {
   display: flex;
-  min-height: 43px;
+  min-height: 0;
   flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 0 0 10px;
-  order: 1;
+  padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
-  border-bottom: 1px solid var(--app-border);
-  margin-right: var(--settings-page-inset);
+  border-bottom: 0;
+  margin-right: 0;
 }
 
 .team-management-tabs {
@@ -259,7 +258,8 @@
 
 .team-configuration-pane > .management-detail-body {
   display: grid;
-  gap: 5px;
+  align-content: start;
+  gap: 18px;
 }
 
 .management-profile-card > .management-form,
@@ -469,22 +469,6 @@
   flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 18px;
-}
-
-.team-members-section__heading h3 {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 0;
-  color: var(--app-foreground);
-  font-size: var(--app-font-size-subtitle);
-  font-weight: 600;
-}
-
-.team-members-section__heading h3 span {
-  color: var(--app-muted-foreground);
-  font-size: var(--app-font-size-auxiliary);
-  font-weight: 400;
 }
 
 .team-members-section__heading p {
@@ -858,7 +842,7 @@
 
 .agent-editor-grid > .management-form {
   align-content: start;
-  border-bottom: 1px solid var(--app-border);
+  border-bottom: 0;
 }
 
 .agent-avatar-editor-section > h3 {

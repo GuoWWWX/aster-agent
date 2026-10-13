@@ -58,6 +58,49 @@ function clickButton(container: HTMLElement, label: string): void {
 }
 
 describe("SettingsWorkspace", () => {
+  it("deletes a provider through its directory row and resets the empty editor", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "models" });
+    const client = new MockAgentClient();
+    await client.saveModelConfiguration({ apiKey: "test-key", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1", providerName: "Delete me", models: [{ contextWindow: 0, displayName: "Test", modelId: "test", reasoningOptions: [] }] });
+    const container = await renderSettings(client);
+    await act(async () => { clickButton(container, "删除供应商 Delete me"); await Promise.resolve(); });
+    expect(await client.getModelStatus()).toMatchObject({ configured: false, models: [] });
+    expect(container.querySelector<HTMLInputElement>('[name="providerName"]')?.value).toBe("");
+    expect(container.textContent).toContain("共 0 家供应商");
+  });
+
+  it("deletes an unselected MCP row without changing the selected server", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "mcp" });
+    const client = new MockAgentClient();
+    const configuration = await client.getIntegrationConfiguration();
+    await client.saveIntegrationConfiguration({ ...configuration, mcpServers: ["first", "second"].map((id) => mcpServerConfigurationSchema.parse({ id, name: id, transport: "stdio", command: "npx", args: [], enabled: true, env: {}, headers: {}, scope: "user", url: null })) });
+    const container = await renderSettings(client);
+    await act(async () => { clickButton(container, "删除 second"); await Promise.resolve(); });
+    expect(container.querySelector('.settings-integration-list__item[data-active="true"]')?.textContent).toContain("first");
+    expect(container.textContent).toContain("共 1 项");
+  });
+
+  it("asks before deleting a Skill package and closes its editor after confirmation", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "skills" });
+    const client = new MockAgentClient();
+    const document = await client.createSkillDocument();
+    const remove = vi.spyOn(client, "deleteSkillDocument");
+    const container = await renderSettings(client);
+    const skill = (await client.getIntegrationConfiguration()).skills[0]!;
+    useWorkbenchUiStore.getState().openConfigurationWorkspace({ configurationId: skill.id, kind: "skill", title: skill.name });
+    act(() => clickButton(container, `删除 ${skill.name}`));
+    expect(remove).not.toHaveBeenCalled();
+    expect(document.entryPath).toContain("SKILL.md");
+    expect(globalThis.document.querySelector('[role="dialog"]')?.textContent).toContain("所有文件");
+    act(() => clickButton(globalThis.document.body, "取消"));
+    expect(remove).not.toHaveBeenCalled();
+    act(() => clickButton(container, `删除 ${skill.name}`));
+    await act(async () => { clickButton(globalThis.document.body, "删除目录和文件"); await Promise.resolve(); });
+    expect(remove).toHaveBeenCalledExactlyOnceWith({ entryPath: document.entryPath });
+    expect((await client.getIntegrationConfiguration()).skills).toEqual([]);
+    expect(useWorkbenchUiStore.getState().configurationWorkspaceTarget).toBeNull();
+    expect(container.textContent).toContain("暂无 Skill");
+  });
   it("does not restore a late password response after browser data is cleared", async () => {
     useWorkbenchUiStore.setState({ settingsSection: "browser" });
     const client = new MockAgentClient();

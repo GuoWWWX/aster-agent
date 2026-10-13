@@ -20,6 +20,9 @@ describe("result viewed IPC notification", () => {
   const markViewed = vi.fn();
   const listPasswords = vi.fn(() => [{ origin: "https://example.test", username: "sample-user" }]);
   const revealPassword = vi.fn((): string | null => "sample-secret");
+  const emptyModelStatus = { baseUrl: null, configured: false, modelId: null, models: [], providerId: null, recentSelection: null, supportsStreaming: true, supportsTools: true };
+  const deleteProvider = vi.fn(() => emptyModelStatus);
+  const deleteSkill = vi.fn();
   const conversation: ConversationSummary = {
     id: "00000000-0000-4000-8000-000000000001", title: "已结束的子代理",
     activeRunId: null, activeSubagentCount: 0, hasUnreadResult: false,
@@ -40,6 +43,8 @@ describe("result viewed IPC notification", () => {
     const unsubscribe = () => undefined;
     // Only subscription owners and the handler's lifecycle owner are used at registration.
     const dependencies = {
+      credentials: { deleteProvider },
+      skillDocuments: { deleteDocument: deleteSkill },
       applicationSettings: { onChanged: () => unsubscribe },
       terminalSessions: { onEvent: () => unsubscribe },
       workspaceTerminalTabs: { onOpenRequested: () => unsubscribe, onCloseRequested: () => unsubscribe, dispose: unsubscribe },
@@ -52,6 +57,26 @@ describe("result viewed IPC notification", () => {
     invoke = electron.handle.mock.calls.find(([channel]) => channel === IPC_CHANNELS.conversationMarkResultViewed)![1];
   });
   afterEach(() => { dispose?.(); dispose = undefined; });
+
+  it("validates deletion inputs and trusted senders and unregisters both deletion handlers", async () => {
+    const frame = {};
+    const trusted = { sender: { mainFrame: frame }, senderFrame: frame } as IpcMainInvokeEvent;
+    const provider = electron.handle.mock.calls.find(([channel]) => channel === IPC_CHANNELS.modelDeleteProvider)![1];
+    const skill = electron.handle.mock.calls.find(([channel]) => channel === IPC_CHANNELS.skillDeleteDocument)![1];
+    const providerId = "00000000-0000-4000-8000-000000000001";
+    await expect(provider(trusted, { providerId })).resolves.toEqual(emptyModelStatus);
+    await expect(skill(trusted, { entryPath: "C:\\skills\\example\\SKILL.md" })).resolves.toBeUndefined();
+    await expect(provider(trusted, { providerId: "" })).rejects.toThrow();
+    await expect(skill(trusted, { entryPath: "", extra: true })).rejects.toThrow();
+    electron.fromWebContents.mockReturnValueOnce(undefined);
+    await expect(provider(trusted, { providerId })).rejects.toThrow();
+    electron.fromWebContents.mockReturnValueOnce(undefined);
+    await expect(skill(trusted, { entryPath: "C:\\skills\\example\\SKILL.md" })).rejects.toThrow();
+    expect(deleteProvider).toHaveBeenCalledExactlyOnceWith(providerId);
+    expect(deleteSkill).toHaveBeenCalledExactlyOnceWith("C:\\skills\\example\\SKILL.md");
+    dispose?.(); dispose = undefined;
+    for (const channel of [IPC_CHANNELS.modelDeleteProvider, IPC_CHANNELS.skillDeleteDocument]) expect(electron.removeHandler).toHaveBeenCalledWith(channel);
+  });
 
   it("returns the system download path and password metadata without any secret", async () => {
     const frame = {};
