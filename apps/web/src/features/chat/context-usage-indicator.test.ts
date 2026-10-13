@@ -144,6 +144,16 @@ describe("providerCacheLabel", () => {
 });
 
 describe("providerCacheInlineMetrics", () => {
+  it.each([[undefined, "-- tok/s"], [null, "-- tok/s"], [0, "0.0 tok/s"], [12.34, "12.3 tok/s"]] as const)(
+    "formats server output throughput without substituting missing values: %s", (speed, value) => {
+      const current = usage({ providerCache: {
+        cumulative: { cacheCreationInputTokens: 0, cachedInputTokens: 0, hitRate: null,
+          inputTokens: 0, reportedRequestCount: 0, requestCount: 0 },
+        latest: null, outputTokensPerSecond: speed,
+      } });
+      expect(providerCacheInlineMetrics(current).find((metric) => metric.kind === "throughput")).toMatchObject({ value });
+    },
+  );
   it.each([[undefined, "--"], [0, "0ms"], [250, "250ms"], [1250, "1.25s"]] as const)("formats first-token latency independently of usage: %s", (latency, value) => {
     const current = usage({ providerCache: {
       cumulative: { cacheCreationInputTokens: 0, cachedInputTokens: 0, hitRate: null,
@@ -197,7 +207,8 @@ describe("providerCacheInlineMetrics", () => {
       { kind: "latency", label: "首字", shortLabel: "首字", tone: "neutral", value: "--" },
       { kind: "input", label: "发送", shortLabel: "发送", tone: "success", value: "1.0K" },
       { kind: "output", label: "返回", shortLabel: "返回", tone: "danger", value: "120" },
-      { kind: "cache", label: "本次命中率", shortLabel: "命中", tone: "good", value: "80%" },
+      { kind: "throughput", label: "速度", shortLabel: "速度", tone: "neutral", value: "-- tok/s" },
+      { kind: "cache", label: "本次命中率", shortLabel: "本次", tone: "good", value: "80%" },
       { kind: "cache", label: "平均命中率", shortLabel: "平均", tone: "warning", value: "65%" },
     ]);
   });
@@ -249,12 +260,19 @@ describe("providerCacheInlineMetrics", () => {
     expect(trigger?.getAttribute("title")).toBe(trigger?.getAttribute("aria-label"));
     expect(trigger?.querySelector('[data-label-variant="full"]')?.textContent).toBe("首字");
     expect(trigger?.querySelector('[data-label-variant="short"]')?.textContent).toBe("首字");
-    expect(trigger?.querySelectorAll('[data-label-variant="full"]')).toHaveLength(5);
-    expect(trigger?.querySelectorAll('[data-label-variant="short"]')).toHaveLength(5);
+    expect(trigger?.querySelectorAll('[data-label-variant="full"]')).toHaveLength(4);
+    expect(trigger?.querySelectorAll('[data-label-variant="short"]')).toHaveLength(4);
     expect(trigger?.textContent).toContain("1.0K");
     expect(trigger?.textContent).toContain("120");
     expect(trigger?.textContent).toContain("96%");
     expect(trigger?.textContent).toContain("85%");
+    expect(trigger?.textContent).toContain("tok/s");
+    const cacheGroup = trigger?.querySelector('[data-cache-group]');
+    expect(cacheGroup?.querySelectorAll("svg")).toHaveLength(1);
+    expect(cacheGroup?.textContent).toBe("本次96%平均85%");
+    expect(trigger?.querySelector('[data-cache-metric="首字"] svg')).not.toBeNull();
+    expect(trigger?.querySelector('[data-cache-metric="速度"] svg')).not.toBeNull();
+    expect(trigger?.getAttribute("aria-label")).toContain("本次命中率 96%");
     expect(trigger?.textContent).not.toContain("pp");
     expect(trigger?.querySelector('[data-token-direction="up"][data-tone="success"]')).not.toBeNull();
     expect(trigger?.querySelector('[data-token-direction="down"][data-tone="danger"]')).not.toBeNull();
@@ -276,7 +294,8 @@ describe("providerCacheInlineMetrics", () => {
       { kind: "latency", label: "首字", shortLabel: "首字", tone: "neutral", value: "--" },
       { kind: "input", label: "发送", shortLabel: "发送", tone: "success", value: "--" },
       { kind: "output", label: "返回", shortLabel: "返回", tone: "danger", value: "--" },
-      { kind: "cache", label: "本次命中率", shortLabel: "命中", tone: "neutral", value: "--" },
+      { kind: "throughput", label: "速度", shortLabel: "速度", tone: "neutral", value: "-- tok/s" },
+      { kind: "cache", label: "本次命中率", shortLabel: "本次", tone: "neutral", value: "--" },
       { kind: "cache", label: "平均命中率", shortLabel: "平均", tone: "neutral", value: "--" },
     ]);
   });
@@ -305,7 +324,8 @@ describe("providerCacheInlineMetrics", () => {
       { kind: "latency", label: "首字", shortLabel: "首字", tone: "neutral", value: "--" },
       { kind: "input", label: "发送", shortLabel: "发送", tone: "success", value: "1.0K" },
       { kind: "output", label: "返回", shortLabel: "返回", tone: "danger", value: "120" },
-      { kind: "cache", label: "本次命中率", shortLabel: "命中", tone: "caution", value: "79%" },
+      { kind: "throughput", label: "速度", shortLabel: "速度", tone: "neutral", value: "-- tok/s" },
+      { kind: "cache", label: "本次命中率", shortLabel: "本次", tone: "caution", value: "79%" },
       { kind: "cache", label: "平均命中率", shortLabel: "平均", tone: "danger", value: "0%" },
     ]);
   });

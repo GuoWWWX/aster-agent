@@ -980,6 +980,7 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
     let fingerprint: RequestFingerprint | undefined;
     let requestStartedAt: number | undefined;
     let firstTokenLatencyMs: number | undefined;
+    let firstTokenReceivedAt: number | undefined;
     const model = this.factory(input, (url, options) => {
       fingerprint = requestFingerprint(options?.body);
       requestStartedAt = performance.now();
@@ -1011,10 +1012,13 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
           && chunk.tool_call_chunks.some((call: unknown) => isRecord(call)
             && ((typeof call.name === "string" && call.name.length > 0)
               || (typeof call.args === "string" && call.args.length > 0)));
-        if (firstTokenLatencyMs === undefined && requestStartedAt !== undefined
+        if (firstTokenReceivedAt === undefined
           && (text.length > 0 || reasoningDeltas.some((delta) => delta.length > 0) || hasToolOutput)) {
-          firstTokenLatencyMs = Math.max(0, Math.round(performance.now() - requestStartedAt));
-          input.onFirstToken?.(firstTokenLatencyMs);
+          firstTokenReceivedAt = performance.now();
+          if (requestStartedAt !== undefined) {
+            firstTokenLatencyMs = Math.max(0, Math.round(firstTokenReceivedAt - requestStartedAt));
+            input.onFirstToken?.(firstTokenLatencyMs);
+          }
         }
         if (text.length > 0) {
           content += text;
@@ -1038,8 +1042,11 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
       }
       const toolCalls = assistantToolCalls(latest).map(normalizeToolCall);
       const savedProviderState = providerState(input, latest, fingerprint);
-      if (savedProviderState !== undefined && firstTokenLatencyMs !== undefined) {
-        savedProviderState.firstTokenLatencyMs = firstTokenLatencyMs;
+      if (savedProviderState !== undefined) {
+        if (firstTokenLatencyMs !== undefined) savedProviderState.firstTokenLatencyMs = firstTokenLatencyMs;
+        if (firstTokenReceivedAt !== undefined) {
+          savedProviderState.generationDurationMs = Math.max(0, Math.round(performance.now() - firstTokenReceivedAt));
+        }
       }
       return {
         content,

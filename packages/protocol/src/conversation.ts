@@ -616,6 +616,7 @@ export const conversationContextUsageSchema = z
     providerCache: z
       .object({
         firstTokenLatencyMs: z.number().int().nonnegative().nullable().optional(),
+        outputTokensPerSecond: z.number().nonnegative().nullable().optional(),
         lastReportedHitRate: z.number().min(0).max(1).optional(),
         cumulative: z
           .object({

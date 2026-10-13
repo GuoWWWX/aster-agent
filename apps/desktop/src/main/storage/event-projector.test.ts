@@ -584,6 +584,7 @@ describe("EventProjector", () => {
       baseUrl: "https://example.test/v1",
       modelId: "test-model",
       payload: { responseId: "response-1" },
+      generationDurationMs: 2000,
       usage: {
         cachedInputTokens: 80,
         inputTokens: 100,

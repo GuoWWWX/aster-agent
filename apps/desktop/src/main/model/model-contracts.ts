@@ -16,6 +16,7 @@ export type ModelProviderState = {
   modelId: string;
   payload: unknown;
   firstTokenLatencyMs?: number;
+  generationDurationMs?: number;
   usage?: ModelProviderTokenUsage;
 };
 

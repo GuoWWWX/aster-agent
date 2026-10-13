@@ -1,5 +1,5 @@
 import { type ConversationContextUsage } from "@agent/protocol";
-import { ArrowDown, ArrowUp } from "lucide-react";
+import { ArrowDown, ArrowUp, Gauge, Target, Timer } from "lucide-react";
 import { Fragment, type CSSProperties, type ReactElement } from "react";
 
 import {
@@ -24,7 +24,7 @@ type ContextUsageRow = {
 };
 
 type ProviderCacheInlineMetric = {
-  kind: "cache" | "input" | "output" | "latency";
+  kind: "cache" | "input" | "output" | "latency" | "throughput";
   label: string;
   shortLabel: string;
   tone: "caution" | "danger" | "good" | "neutral" | "success" | "warning";
@@ -160,6 +160,7 @@ export function ProviderCacheStatus({
   usage: ConversationContextUsage | null;
 }): ReactElement {
   const metrics = providerCacheInlineMetrics(usage);
+  const cacheMetrics = metrics.filter((metric) => metric.kind === "cache");
   const accessibleLabel = `${metrics.map((metric) => (
     `${metric.label} ${metric.value}`
   )).join("，")}，点击查看明细`;
@@ -169,21 +170,22 @@ export function ProviderCacheStatus({
       <PopoverTrigger asChild>
         <button
           aria-label={accessibleLabel}
-          className="pointer-events-auto mx-auto mt-1.5 flex min-h-4 w-fit max-w-[calc(100%_-_32px)] items-center justify-center gap-1.5 overflow-hidden whitespace-nowrap rounded-[var(--app-radius)] px-1 py-0.5 text-[length:var(--app-font-size-body)] font-normal tabular-nums text-[var(--app-muted-foreground)] outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)]"
+          className="pointer-events-auto mx-auto mt-1.5 flex min-h-4 w-fit max-w-[calc(100%_-_32px)] flex-wrap items-center justify-center gap-1.5 whitespace-nowrap rounded-[var(--app-radius)] px-1 py-0.5 text-[length:var(--app-font-size-body)] font-normal tabular-nums text-[var(--app-muted-foreground)] outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)]"
           title={accessibleLabel}
           type="button"
         >
-          {metrics.map((metric, index) => (
+          {metrics.filter((metric) => metric.kind !== "cache").map((metric, index) => (
             <Fragment key={metric.label}>
               {index > 0 ? (
                 <span aria-hidden="true" className="text-[var(--app-border)]">·</span>
               ) : null}
-              {metric.kind === "cache" || metric.kind === "latency" ? (
+              {metric.kind === "latency" || metric.kind === "throughput" ? (
                 <span
                   className="inline-flex min-w-0 items-center gap-1"
                   data-cache-metric={metric.label}
                   data-tone={metric.tone}
                 >
+                  {metric.kind === "latency" ? <Timer aria-hidden="true" size={13} /> : <Gauge aria-hidden="true" size={13} />}
                   <ProviderMetricLabel metric={metric} />
                   <span className={providerCacheToneTextClassName(metric.tone)}>
                     {metric.value}
@@ -218,6 +220,16 @@ export function ProviderCacheStatus({
               )}
             </Fragment>
           ))}
+          <span aria-hidden="true" className="text-[var(--app-border)]">·</span>
+          <span className="inline-flex items-center gap-1.5" data-cache-group>
+            <Target aria-hidden="true" size={13} />
+            {cacheMetrics.map((metric) => (
+              <span key={metric.label} className="inline-flex items-center gap-1" data-cache-metric={metric.label} data-tone={metric.tone}>
+                <ProviderMetricLabel metric={metric} />
+                <span className={providerCacheToneTextClassName(metric.tone)}>{metric.value}</span>
+              </span>
+            ))}
+          </span>
         </button>
       </PopoverTrigger>
       <PopoverContent align="center" className="context-usage-indicator__content">
@@ -236,6 +248,7 @@ function ProviderMetricLabel({
 }: {
   metric: ProviderCacheInlineMetric;
 }): ReactElement {
+  if (metric.kind === "cache") return <span aria-hidden="true">{metric.shortLabel}</span>;
   return (
     <>
       <span
@@ -286,6 +299,7 @@ function ProviderCacheDetails({
       </div>
       <p className="my-1 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
         本次指最近一次模型 API 请求，不是整轮任务。平均值按有缓存明细的输入 Token 加权。
+        速度为服务端输出 Token 数除以首个输出到响应结束的时长，不含首字等待；缺少计量时显示 --。
         {latest?.hitRate == null && cache?.lastReportedHitRate !== undefined
           ? ` 本次暂无缓存明细，显示 --；上次有效命中率为 ${formatCachePercentage(cache.lastReportedHitRate)}，不作为本次值。`
           : null}
@@ -470,6 +484,7 @@ export function providerCacheInlineMetrics(
   const cumulative = usage?.providerCache?.cumulative;
   const hitRate = latest?.hitRate ?? null;
   const latency = usage?.providerCache?.firstTokenLatencyMs;
+  const speed = usage?.providerCache?.outputTokensPerSecond;
   return [
     {
       kind: "latency",
@@ -493,9 +508,16 @@ export function providerCacheInlineMetrics(
       value: latest === null ? "--" : formatCompactTokenCount(latest.outputTokens),
     },
     {
+      kind: "throughput",
+      label: "速度",
+      shortLabel: "速度",
+      tone: "neutral",
+      value: `${speed == null ? "--" : speed.toFixed(1)} tok/s`,
+    },
+    {
       kind: "cache",
       label: "本次命中率",
-      shortLabel: "命中",
+      shortLabel: "本次",
       tone: providerCacheTone(hitRate),
       value: hitRate === null
         ? "--"

@@ -28,11 +28,11 @@ describe("ThreadLog", () => {
     log.append(conversationId, { type: "assistant_message", payload: {
       content: "answer", runId: "run", providerState: {
         apiFormat: "openai-chat-completions", baseUrl: "https://example.test", modelId: "test",
-        payload: {}, firstTokenLatencyMs: 250,
+        payload: {}, firstTokenLatencyMs: 250, generationDurationMs: 2000,
       },
     } });
     expect(new ThreadLog(directory).readProviderUsageStates(conversationId)?.[0])
-      .toMatchObject({ firstTokenLatencyMs: 250, payload: null });
+      .toMatchObject({ firstTokenLatencyMs: 250, generationDurationMs: 2000, payload: null });
   });
   it("loads only uncovered bodies and keeps usage independent of full context", async () => {
     const log = await createThreadLog();
