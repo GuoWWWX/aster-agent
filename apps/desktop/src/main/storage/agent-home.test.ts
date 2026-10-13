@@ -139,6 +139,41 @@ describe("Agent home", () => {
     await expect(readFile(result.paths.applicationSettingsPath, "utf8")).resolves.toBe('{"version":1}');
   });
 
+  it("copies an existing JSONC from the former Electron data directory before section migration", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "aster-home-jsonc-"));
+    temporaryDirectories.push(root);
+    const legacyRootPath = path.join(root, "legacy");
+    const configuredHomePath = path.join(root, "configured");
+    await mkdir(legacyRootPath);
+    const original = '{\n  // Keep user comments and explicitly empty providers.\n  "version": 1, "providers": []\n}\n';
+    await writeFile(path.join(legacyRootPath, "settings.jsonc"), original, "utf8");
+
+    const result = await initializeAgentHome({ environment: { ASTER_HOME: configuredHomePath }, legacyRootPath });
+
+    expect(result.migratedEntries).toContain("settings.jsonc");
+    await expect(readFile(result.paths.settingsPath, "utf8")).resolves.toBe(original);
+    await expect(readFile(path.join(legacyRootPath, "settings.jsonc"), "utf8")).resolves.toBe(original);
+  });
+
+  it("never replaces the current JSONC with a legacy JSONC on repeated startup", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "aster-home-jsonc-repeat-"));
+    temporaryDirectories.push(root);
+    const legacyRootPath = path.join(root, "legacy");
+    const configuredHomePath = path.join(root, "configured");
+    await mkdir(legacyRootPath);
+    await mkdir(configuredHomePath);
+    const current = '{"version":1,"providers":[]}';
+    await writeFile(path.join(legacyRootPath, "settings.jsonc"), '{"version":1,"providers":[{"apiKey":"old-key"}]}', "utf8");
+    await writeFile(path.join(configuredHomePath, "settings.jsonc"), current, "utf8");
+    const options = { environment: { ASTER_HOME: configuredHomePath }, legacyRootPath };
+
+    for (let startup = 0; startup < 2; startup += 1) {
+      const result = await initializeAgentHome(options);
+      expect(result.migratedEntries).not.toContain("settings.jsonc");
+      await expect(readFile(result.paths.settingsPath, "utf8")).resolves.toBe(current);
+    }
+  });
+
   it("migrates the former .agent conversation-files directory into .aster attachments", async () => {
     const homeDirectory = await mkdtemp(path.join(os.tmpdir(), "aster-home-default-migration-"));
     temporaryDirectories.push(homeDirectory);

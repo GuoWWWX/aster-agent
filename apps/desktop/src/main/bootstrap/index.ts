@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, nativeTheme } from "electron";
+import { app, BrowserWindow, nativeTheme } from "electron";
+import { BrowserPasswordStore } from "../settings/browser-password-store.js";
 import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -341,6 +342,8 @@ async function initializeServices(): Promise<DesktopServices> {
   const managedBrowser = new ManagedBrowserController(
     () => mainWindow,
     browserConfiguration,
+    undefined,
+    new BrowserPasswordStore(path.join(agentHome.paths.rootPath, "browser-passwords.json")),
   );
   const browserToolPlugin = new BrowserToolPlugin(managedBrowser, workspaceBrowserTabs);
   await attachments.resumeCancelledPendingMessageAttachmentCleanup();
@@ -557,18 +560,6 @@ async function bootstrap(): Promise<void> {
 
   await openMainWindow();
   dispatchBackendSendCommand(process.argv);
-
-  const credentialWarnings = services.credentials.getCredentialMigrationWarnings();
-  if (credentialWarnings.length > 0 && mainWindow !== undefined) {
-    void dialog.showMessageBox(mainWindow, {
-      type: "warning",
-      message: "部分旧 API Key 无法恢复，请重新填写",
-      detail: `以下供应商的旧密钥无法解密：${credentialWarnings.join("、")}。\n供应商和模型配置已迁入 settings.jsonc，对应 apiKey 留空；旧文件已保留。请在设置中或 settings.jsonc 内填写明文 API Key。`,
-      buttons: ["知道了"],
-    }).catch((error: unknown) => reportMainError(
-      toMainAgentError(error, { operation: "model.credential_migration_notice" }), error,
-    ));
-  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

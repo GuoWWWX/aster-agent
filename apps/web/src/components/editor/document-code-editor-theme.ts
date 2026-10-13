@@ -8,7 +8,7 @@ const sharedTheme = EditorView.theme({
     height: "100%",
     backgroundColor: "transparent",
     color: "var(--app-foreground)",
-    fontSize: "11px",
+    fontSize: "var(--app-code-font-size)",
   },
   "&.cm-focused": { outline: "none" },
   ".cm-scroller": {

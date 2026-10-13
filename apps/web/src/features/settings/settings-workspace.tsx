@@ -9,18 +9,25 @@ import {
   ChevronLeft,
   ChevronRight,
   CirclePlus,
+  Database,
   Eye,
   EyeOff,
   FolderOpen,
+  FileCode2,
   Globe2,
   LoaderCircle,
+  Layers3,
   MessageSquareText,
   MonitorCog,
+  Palette,
   PanelRight,
   PlugZap,
   RefreshCw,
   Search,
   ShieldCheck,
+  Shield,
+  Type,
+  LockKeyhole,
   Sparkles,
   SlidersHorizontal,
   Terminal,
@@ -41,6 +48,7 @@ import {
   type ChangeEvent,
   type ReactElement,
   type ReactNode,
+  type CSSProperties,
 } from "react";
 
 import {
@@ -48,6 +56,7 @@ import {
   APPLICATION_DISPLAY_NAME,
   APPLICATION_HOME_ENVIRONMENT_VARIABLE,
   DEFAULT_BROWSER_CONFIGURATION,
+  DEFAULT_APPLICATION_SETTINGS,
   DEFAULT_TERMINAL_CONFIGURATION,
   LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
   DEFAULT_MODEL_CATALOG,
@@ -55,6 +64,7 @@ import {
   type ContextCompressionConfiguration,
   type ApplicationStorageLocation,
   type BrowserConfiguration,
+  type BrowserSavedPassword,
   type ContextCompressionThreshold,
   type ConversationPermissionMode,
   type ConversationSummary,
@@ -87,6 +97,7 @@ import {
 } from "@agent/protocol";
 
 import { IconButton } from "../../components/ui/icon-button.js";
+import { ResizableDivider } from "../../components/layout/resizable-divider.js";
 import { DocumentCodeEditor } from "../../components/editor/document-code-editor.js";
 import { AgentMarkdown } from "../../components/markdown/agent-markdown.js";
 import {
@@ -106,6 +117,7 @@ import { getUserErrorMessage, type AgentClient } from "../../runtime/index.js";
 import { loadModelStatus, rememberModelStatus } from "../../runtime/model-status-cache.js";
 import {
   useWorkbenchUiStore,
+  SETTINGS_NAVIGATION_WIDTH_RANGE,
   type SettingsSection,
   type ThemeMode,
 } from "../../stores/workbench-ui-store.js";
@@ -113,6 +125,8 @@ import { useApplicationSettingsStore } from "../../stores/application-settings-s
 import { ModelReasoningOptionsEditor } from "./model-reasoning-options-editor.js";
 import { ModelProfilePicker } from "./model-profile-picker.js";
 import { ProviderIconPicker, ProviderLogo } from "./provider-logo.js";
+import { SettingsCategoryHeading, SettingsConfigurationCard } from "./settings-configuration-card.js";
+import { matchesSettingsQuery, SETTINGS_SEARCH_ITEMS, type SettingsSearchItem } from "./settings-search.js";
 import {
   getArchivedConversationDaysRemaining,
   getArchivedConversations,
@@ -159,19 +173,20 @@ type SettingsNavItem = {
   icon: LucideIcon;
   id: SettingsSection;
   label: string;
+  group: string;
 };
 
 const SETTINGS_NAVIGATION: readonly SettingsNavItem[] = [
-  { id: "general", label: "常规设置", icon: SlidersHorizontal },
-  { id: "models", label: "模型配置", icon: Boxes },
-  { id: "agents", label: "Agent 与团队", icon: UsersRound },
-  { id: "mcp", label: "MCP", icon: PlugZap },
-  { id: "skills", label: "Skill", icon: Sparkles },
-  { id: "permissions", label: "权限", icon: ShieldCheck },
-  { id: "browser", label: "浏览器", icon: Globe2 },
-  { id: "terminal", label: "终端", icon: Terminal },
-  { id: "archived", label: "已归档对话", icon: Archive },
-  { id: "appearance", label: "外观", icon: MonitorCog },
+  { id: "general", label: "常规设置", icon: SlidersHorizontal, group: "应用" },
+  { id: "appearance", label: "外观", icon: MonitorCog, group: "应用" },
+  { id: "permissions", label: "权限", icon: ShieldCheck, group: "应用" },
+  { id: "models", label: "模型配置", icon: Boxes, group: "智能体" },
+  { id: "agents", label: "Agent 与团队", icon: UsersRound, group: "智能体" },
+  { id: "mcp", label: "MCP", icon: PlugZap, group: "集成" },
+  { id: "skills", label: "Skill", icon: Sparkles, group: "集成" },
+  { id: "browser", label: "浏览器", icon: Globe2, group: "工作区" },
+  { id: "terminal", label: "终端", icon: Terminal, group: "工作区" },
+  { id: "archived", label: "已归档对话", icon: Archive, group: "数据" },
 ];
 
 const DEFAULT_MODEL_API_FORMAT: ModelApiFormat = "openai-chat-completions";
@@ -248,17 +263,85 @@ const BROWSER_ZOOM_OPTIONS = [
 ] as const;
 
 export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient }): ReactElement {
+  const [navigationQuery, setNavigationQuery] = useState("");
+  const [searchTarget, setSearchTarget] = useState<SettingsSearchItem | null>(null);
+  const [locatedTarget, setLocatedTarget] = useState<SettingsSearchItem | null>(null);
+  const filteredNavigation = SETTINGS_NAVIGATION.filter((item) => (
+    matchesSettingsQuery(navigationQuery, item.label)
+  ));
+  const searchResults = navigationQuery.trim() === "" ? [] : SETTINGS_SEARCH_ITEMS.filter((item) => (
+    matchesSettingsQuery(navigationQuery, item.label, item.keywords ?? "", SETTINGS_NAVIGATION.find((section) => section.id === item.section)?.label ?? "")
+  ));
   const activeSection = useWorkbenchUiStore((state) => state.settingsSection);
   const setActiveSection = useWorkbenchUiStore((state) => state.setSettingsSection);
+  const navigationWidth = useWorkbenchUiStore((state) => state.settingsNavigationWidth);
+  const setNavigationWidth = useWorkbenchUiStore((state) => state.setSettingsNavigationWidth);
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [availableWidth, setAvailableWidth] = useState<number | null>(null);
+
+  useEffect(() => {
+    const workspace = workspaceRef.current;
+    if (workspace === null) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry !== undefined) setAvailableWidth(entry.contentRect.width);
+    });
+    observer.observe(workspace);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const content = contentRef.current;
+    if (content === null || searchTarget === null || searchTarget.section !== activeSection) return;
+    let highlighted: HTMLElement | null = null;
+    let previousTabIndex: string | null = null;
+    const locate = (): boolean => {
+      const target = content.querySelector<HTMLElement>(searchTarget.selector);
+      if (target === null) return false;
+      highlighted = target.closest<HTMLElement>(".settings-general-row, .settings-field, label") ?? target;
+      previousTabIndex = highlighted.getAttribute("tabindex");
+      highlighted.setAttribute("data-settings-search-highlight", "true");
+      highlighted.setAttribute("tabindex", "-1");
+      highlighted.scrollIntoView?.({ block: "center", behavior: "instant" });
+      highlighted.focus({ preventScroll: true });
+      setLocatedTarget(searchTarget);
+      return true;
+    };
+    // Configuration pages load asynchronously; locate once the requested field mounts.
+    const observer = new MutationObserver(() => { if (locate()) observer.disconnect(); });
+    if (!locate()) observer.observe(content, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      if (highlighted === null) return;
+      highlighted.removeAttribute("data-settings-search-highlight");
+      if (previousTabIndex === null) highlighted.removeAttribute("tabindex");
+      else highlighted.setAttribute("tabindex", previousTabIndex);
+    };
+  }, [activeSection, searchTarget]);
+
+  const maximumWidth = availableWidth === null ? SETTINGS_NAVIGATION_WIDTH_RANGE.max
+    : Math.max(SETTINGS_NAVIGATION_WIDTH_RANGE.min, Math.min(SETTINGS_NAVIGATION_WIDTH_RANGE.max, availableWidth - 520));
+  const displayedWidth = Math.min(navigationWidth, maximumWidth);
 
   return (
     <section className="settings-workspace" aria-labelledby="settings-workspace-heading">
-      <h1 className="sr-only" id="settings-workspace-heading">设置</h1>
-
-      <div className="settings-workspace__body">
+      <div ref={workspaceRef} className="settings-workspace__body" style={{ "--settings-navigation-width": `${displayedWidth}px` } as CSSProperties}>
         <nav className="settings-navigation" aria-label="设置分区">
+          <h1 id="settings-workspace-heading" className="m-0 mb-4 px-2 text-[length:var(--app-font-size-display)] font-semibold text-[var(--app-foreground)]">设置</h1>
+          <label className="settings-navigation__search app-search-field mx-2 mb-4 shrink-0">
+            <Search aria-hidden="true" size={16} />
+            <input
+              aria-label="搜索设置"
+              placeholder="搜索设置"
+              value={navigationQuery}
+              onChange={(event) => { setNavigationQuery(event.target.value); setSearchTarget(null); }}
+            />
+          </label>
           <div className="settings-navigation__items">
-            {SETTINGS_NAVIGATION.map((item) => {
+            {[...new Set(filteredNavigation.map((item) => item.group))].map((group) => (
+              <section key={group} className="mb-4 last:mb-0" aria-label={group}>
+                <h2 className="m-0 mb-1 px-2 text-[length:var(--app-font-size-auxiliary)] font-medium text-[var(--app-subtle-foreground)]">{group}</h2>
+                {filteredNavigation.filter((item) => item.group === group).map((item) => {
               const Icon = item.icon;
               const isActive = item.id === activeSection;
 
@@ -269,24 +352,63 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
                   className="settings-navigation__item"
                   data-active={isActive}
                   type="button"
-                  onClick={() => setActiveSection(item.id)}
+                  onClick={() => { setSearchTarget(null); setActiveSection(item.id); }}
                 >
                   <Icon aria-hidden="true" size={16} />
                   <span>{item.label}</span>
-                  <ChevronRight aria-hidden="true" size={14} />
                 </button>
               );
-            })}
+                })}
+              </section>
+            ))}
+            {searchResults.length > 0 ? (
+              <section aria-label="配置项搜索结果">
+                <h2 className="m-0 mb-1 px-2 text-[length:var(--app-font-size-auxiliary)] font-medium text-[var(--app-subtle-foreground)]">配置项 · {searchResults.length}</h2>
+                {searchResults.map((item) => {
+                  const section = SETTINGS_NAVIGATION.find((section) => section.id === item.section)!;
+                  const Icon = section.icon;
+                  return (
+                    <button key={`${item.section}:${item.label}`} type="button"
+                      aria-label={`${section.label}：${item.label}`}
+                      className="mb-1 flex w-full items-start gap-2 rounded-[var(--app-radius)] px-2 py-2 text-left text-[length:var(--app-font-size-control)] text-[var(--app-foreground)] hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] data-[active=true]:bg-[var(--app-selection)]"
+                      data-active={searchTarget?.section === item.section && searchTarget.label === item.label}
+                      onClick={() => { setSearchTarget({ ...item }); setActiveSection(item.section); }}>
+                      <Icon aria-hidden="true" size={16} className="mt-0.5 shrink-0" />
+                      <span className="min-w-0"><span className="block break-words">{item.label}</span><span className="block text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">{section.label}</span></span>
+                    </button>
+                  );
+                })}
+              </section>
+            ) : null}
+            {filteredNavigation.length === 0 && searchResults.length === 0 ? (
+              <p className="m-0 px-2 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]" role="status">无匹配的设置</p>
+            ) : null}
           </div>
-          <p className="settings-navigation__note">修改后自动保存</p>
         </nav>
 
-        <div className="settings-content">
+        <ResizableDivider
+          ariaLabel="调整设置菜单宽度"
+          className="settings-navigation-divider"
+          direction="from-start"
+          collapsible={false}
+          defaultSize={240}
+          keyboardStep={10}
+          min={SETTINGS_NAVIGATION_WIDTH_RANGE.min}
+          max={maximumWidth}
+          size={displayedWidth}
+          onResize={setNavigationWidth}
+          onCollapsedChange={() => {}}
+        />
+
+        <div key={activeSection} ref={contentRef} className="settings-content [&_[data-settings-search-highlight]]:rounded-[var(--app-radius)] [&_[data-settings-search-highlight]]:outline-2 [&_[data-settings-search-highlight]]:-outline-offset-2 [&_[data-settings-search-highlight]]:outline-[var(--app-focus-ring)]" data-section={activeSection}>
+          {searchTarget !== null && searchTarget.section === activeSection && locatedTarget !== searchTarget && ["models", "agents", "mcp", "skills"].includes(activeSection) ? (
+            <p role="status" className="m-0 mb-3 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">选择或创建包含“{searchTarget.label}”的配置后可定位此项{activeSection === "mcp" ? "，请使用表单视图" : ""}。</p>
+          ) : null}
           {activeSection === "general" ? <GeneralSettings agentClient={agentClient} /> : null}
           {activeSection === "models" ? (
             <ModelsSettings agentClient={agentClient} />
           ) : null}
-          {activeSection === "agents" ? <AgentTeamSettings /> : null}
+          {activeSection === "agents" ? <AgentTeamSettings searchTarget={searchTarget} /> : null}
           {activeSection === "mcp" ? (
             <McpSettings agentClient={agentClient} />
           ) : null}
@@ -311,15 +433,11 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
 }
 
 function GeneralSettings({ agentClient }: { agentClient: AgentClient }): ReactElement {
-  const defaultPermissionMode = useApplicationSettingsStore((state) => state.defaultPermissionMode);
   const defaultMessageDeliveryMode = useApplicationSettingsStore(
     (state) => state.defaultMessageDeliveryMode,
   );
   const setDefaultMessageDeliveryMode = useApplicationSettingsStore(
     (state) => state.setDefaultMessageDeliveryMode,
-  );
-  const setDefaultPermissionMode = useApplicationSettingsStore(
-    (state) => state.setDefaultPermissionMode,
   );
   const sendShortcut = useApplicationSettingsStore((state) => state.sendShortcut);
   const setSendShortcut = useApplicationSettingsStore((state) => state.setSendShortcut);
@@ -386,7 +504,10 @@ function GeneralSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
       title="常规设置"
     >
       <section className="settings-general-category" aria-labelledby="conversation-editor-heading">
-        <h3 id="conversation-editor-heading">对话与编辑器</h3>
+        <h3 id="conversation-editor-heading">
+          <MessageSquareText aria-hidden="true" size={16} className="shrink-0 text-[var(--app-muted-foreground)]" />
+          对话与编辑器
+        </h3>
         <div className="settings-general-card">
           <article className="settings-general-row">
             <div>
@@ -454,30 +575,14 @@ function GeneralSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
             </div>
           </article>
 
-          <article className="settings-general-row">
-            <div>
-              <h4>新对话权限模式</h4>
-              <p>新建对话时默认采用的文件与命令操作方式</p>
-            </div>
-            <Select
-              value={defaultPermissionMode}
-              onValueChange={(value) => setDefaultPermissionMode(value as ConversationPermissionMode)}
-            >
-              <SelectTrigger aria-label="新对话权限模式" className="settings-general-select">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent align="end">
-                <SelectItem value="read_only">规划</SelectItem>
-                <SelectItem value="ask_before_changes">请求审批</SelectItem>
-                <SelectItem value="full_access">完全访问</SelectItem>
-              </SelectContent>
-            </Select>
-          </article>
         </div>
       </section>
 
       <section className="settings-general-category" aria-labelledby="workspace-heading">
-        <h3 id="workspace-heading">工作区</h3>
+        <h3 id="workspace-heading">
+          <PanelRight aria-hidden="true" size={16} className="shrink-0 text-[var(--app-muted-foreground)]" />
+          工作区
+        </h3>
         <div className="settings-general-card">
           <article className="settings-general-row">
             <div>
@@ -514,14 +619,17 @@ function GeneralSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
       </section>
 
       <section className="settings-general-category" aria-labelledby="storage-location-heading">
-        <h3 id="storage-location-heading">数据存储</h3>
+        <h3 id="storage-location-heading">
+          <Database aria-hidden="true" size={16} className="shrink-0 text-[var(--app-muted-foreground)]" />
+          数据存储
+        </h3>
         <div className="settings-general-card">
           <article className="settings-general-row">
             <div className="min-w-0 flex-1">
               <h4>{APPLICATION_DISPLAY_NAME} 数据目录</h4>
               <p>保存配置、对话、附件、本地数据库和无项目对话的工作文件。</p>
               <code
-                className="mt-[5px] block truncate rounded-[var(--app-radius-small)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] px-2 py-1 font-mono text-[length:var(--app-font-size-control)] text-[var(--app-foreground)]"
+                className="mt-[5px] block truncate rounded-[var(--app-radius-small)] border border-[var(--app-border)] bg-[var(--app-panel)] px-2 py-1 font-mono text-[length:var(--app-font-size-control)] text-[var(--app-foreground)]"
                 title={storageLocation?.activePath}
               >
                 {storageLocation?.activePath ?? "正在读取…"}
@@ -599,6 +707,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
   const [isDiscovering, setIsDiscovering] = useState(false);
   const [isApiKeyVisible, setIsApiKeyVisible] = useState(false);
   const [configuredModelDrafts, setConfiguredModelDrafts] = useState<ConfiguredModelDraft[]>([]);
+  const [expandedModelIds, setExpandedModelIds] = useState<string[]>([]);
   const [globalContextCompression, setGlobalContextCompression] = useState<ContextCompressionConfiguration>(
     DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
   );
@@ -846,7 +955,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
       })
       .catch(() => {
         if (!disposed) {
-          setOperationError("API Key 无法解密，请重新输入一次；之后会随当前软件的数据目录稳定保存");
+          setOperationError("API Key 读取失败，请检查 settings.jsonc 中对应供应商的配置");
         }
       });
 
@@ -921,6 +1030,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
   function addModel(): void {
     if (!isGlobalContextCompressionLoaded) return;
     const id = `model-${nextModelDraftIdRef.current++}`;
+    setExpandedModelIds((current) => [...current, id]);
     newModelContextDefaultIdsRef.current.add(id);
     newModelReasoningDefaultIdsRef.current.add(id);
     setConfiguredModelDrafts((current) => [...current, {
@@ -1077,20 +1187,6 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
       eyebrow="模型协议 · 供应商"
       title="模型配置"
     >
-      <GlobalDefaultsSettings
-        agentClient={agentClient}
-        onContextCompressionChange={handleGlobalContextCompressionChange}
-        defaultModelPicker={
-          <GlobalDefaultModelPicker
-            defaultContextCompression={globalContextCompression}
-            disabled={isDefaultModelSaving}
-            models={status?.models ?? []}
-            selectedModelId={status?.modelId ?? null}
-            selectedProviderId={status?.providerId ?? null}
-            onSelect={(model) => void setDefaultModel(model)}
-          />
-        }
-      />
       <div className="settings-provider-manager">
         <aside className="settings-provider-list" aria-label="供应商列表">
           <header className="settings-provider-list__heading">
@@ -1191,6 +1287,22 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
         </aside>
 
         <div className="settings-provider-editor">
+          <GlobalDefaultsSettings
+            agentClient={agentClient}
+            onContextCompressionChange={handleGlobalContextCompressionChange}
+            defaultModelPicker={
+              <GlobalDefaultModelPicker
+                defaultContextCompression={globalContextCompression}
+                disabled={isDefaultModelSaving}
+                models={status?.models ?? []}
+                selectedModelId={status?.modelId ?? null}
+                selectedProviderId={status?.providerId ?? null}
+                onSelect={(model) => void setDefaultModel(model)}
+              />
+            }
+          />
+          <div className="settings-provider-editor__body">
+          <SettingsConfigurationCard className="settings-provider-profile" aria-label="供应商基本配置">
           <header className="settings-provider-editor__header">
             <div className="settings-provider-editor__identity">
               <ProviderLogo
@@ -1202,40 +1314,27 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
             </div>
           </header>
 
-          <div className="settings-provider-editor__body">
           <div className="settings-provider-fields">
-            <div className="settings-provider-name-field">
-              <label>
-                供应商名称
-                <input
-                  name="providerName"
-                  placeholder="例如：OpenAI、DeepSeek"
-                  value={draft.providerName}
-                  onChange={updateDraft}
-                />
-              </label>
-              <div className="settings-provider-icon-field">
-                <span>供应商图标</span>
-                <ProviderIconPicker
-                  icon={draft.providerIcon}
-                  providerName={draft.providerName}
-                  onIconChange={(providerIcon) => {
-                    setDraft((current) => ({ ...current, providerIcon }));
-                    markProviderConfigurationChanged();
-                  }}
-                />
-              </div>
-            </div>
             <label>
-              备注
+              供应商名称
               <input
-                maxLength={500}
-                name="providerNote"
-                placeholder="填写供应商备注"
-                value={draft.providerNote}
+                name="providerName"
+                placeholder="例如：OpenAI、DeepSeek"
+                value={draft.providerName}
                 onChange={updateDraft}
               />
             </label>
+            <div className="settings-provider-icon-field">
+              <span>供应商图标</span>
+              <ProviderIconPicker
+                icon={draft.providerIcon}
+                providerName={draft.providerName}
+                onIconChange={(providerIcon) => {
+                  setDraft((current) => ({ ...current, providerIcon }));
+                  markProviderConfigurationChanged();
+                }}
+              />
+            </div>
             <label>
               官网地址
               <input
@@ -1274,44 +1373,54 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                 </SelectContent>
               </Select>
             </label>
-            <div className="settings-provider-fields__credentials">
-              <label>
-                请求地址
+            <label>
+              请求地址
+              <input
+                name="baseUrl"
+                placeholder={modelApiBaseUrlPlaceholder(draft.apiFormat)}
+                value={draft.baseUrl}
+                onChange={updateDraft}
+              />
+            </label>
+            <label>
+              API Key
+              <div className="settings-secret-input">
                 <input
-                  name="baseUrl"
-                  placeholder={modelApiBaseUrlPlaceholder(draft.apiFormat)}
-                  value={draft.baseUrl}
+                  autoComplete="off"
+                  name="apiKey"
+                  placeholder="请输入或重新输入 API Key"
+                  type={isApiKeyVisible ? "text" : "password"}
+                  value={draft.apiKey}
                   onChange={updateDraft}
                 />
-              </label>
-              <label>
-                API Key
-                <div className="settings-secret-input">
-                  <input
-                    autoComplete="off"
-                    name="apiKey"
-                    placeholder="请输入或重新输入 API Key"
-                    type={isApiKeyVisible ? "text" : "password"}
-                    value={draft.apiKey}
-                    onChange={updateDraft}
-                  />
-                  <button
-                    aria-label={isApiKeyVisible ? "隐藏 API Key" : "显示 API Key"}
-                    title={isApiKeyVisible ? "隐藏 API Key" : "显示 API Key"}
-                    type="button"
-                    onClick={() => setIsApiKeyVisible((current) => !current)}
-                  >
-                    {isApiKeyVisible ? <EyeOff aria-hidden="true" size={15} /> : <Eye aria-hidden="true" size={15} />}
-                  </button>
-                </div>
-              </label>
-            </div>
+                <button
+                  aria-label={isApiKeyVisible ? "隐藏 API Key" : "显示 API Key"}
+                  title={isApiKeyVisible ? "隐藏 API Key" : "显示 API Key"}
+                  type="button"
+                  onClick={() => setIsApiKeyVisible((current) => !current)}
+                >
+                  {isApiKeyVisible ? <EyeOff aria-hidden="true" size={15} /> : <Eye aria-hidden="true" size={15} />}
+                </button>
+              </div>
+            </label>
+            <label className="settings-provider-fields__note">
+              备注
+              <input
+                maxLength={500}
+                name="providerNote"
+                placeholder="填写供应商备注"
+                value={draft.providerNote}
+                onChange={updateDraft}
+              />
+            </label>
           </div>
 
-          <section className="settings-provider-models" aria-labelledby="provider-models-heading">
+          </SettingsConfigurationCard>
+
+          <SettingsConfigurationCard className="settings-provider-models" aria-labelledby="provider-models-heading">
             <div className="settings-provider-models__heading">
               <div className="settings-provider-models__heading-copy">
-                <h4 id="provider-models-heading">已配置模型</h4>
+                <h4 id="provider-models-heading" className="flex items-center gap-2"><Boxes aria-hidden="true" size={16} />已配置模型</h4>
                 <p>请求使用模型 ID；显示名只用于对话界面。</p>
               </div>
               <div className="settings-provider-models__heading-actions">
@@ -1373,11 +1482,27 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                     ? "自动"
                     : enabledReasoningOptions.map(reasoningOptionLabel).join("，");
                   return (
-                    <div
+                    <details
                       key={model.id}
-                      className="settings-model-option"
+                      className="settings-model-disclosure"
                       role="listitem"
+                      open={expandedModelIds.includes(model.id)}
+                      onToggle={(event) => {
+                        const isOpen = event.currentTarget.open;
+                        setExpandedModelIds((current) => {
+                          if (current.includes(model.id) === isOpen) return current;
+                          return isOpen ? [...current, model.id] : current.filter((id) => id !== model.id);
+                        });
+                      }}
                     >
+                      <summary>
+                        {model.displayName || model.modelId || "未配置模型"}
+                        <span className="ml-3 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
+                          {model.modelId || "点击配置模型参数"}
+                          {model.contextWindow === "" ? null : ` · ${Number(model.contextWindow) / 1000} K`}
+                        </span>
+                      </summary>
+                      <div className="settings-model-option">
                       <label className="settings-model-field settings-model-field--name">
                         {isTestingModel ? (
                           <span
@@ -1449,13 +1574,16 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                         <label className="settings-model-field settings-model-field--context">
                           <input
                             aria-label={`${model.modelId || "模型"}的上下文窗口`}
-                            max="10000000"
+                            title="上下文窗口，单位 K（1 K = 1000 Token）"
+                            max="10000"
                             min="0"
-                            placeholder="上下文窗口"
+                            step="0.001"
+                            placeholder="上下文窗口（K）"
                             type="number"
-                            value={model.contextWindow}
-                            onChange={(event) => setContextWindow(model.id, event.target.value)}
+                            value={model.contextWindow === "" ? "" : Number(model.contextWindow) / 1000}
+                            onChange={(event) => setContextWindow(model.id, event.target.value === "" ? "" : String(Math.round(Number(event.target.value) * 1000)))}
                           />
+                          <span className="text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">K</span>
                         </label>
 
                         <ModelContextCompressionEditor
@@ -1511,7 +1639,8 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                         </p>
                       ) : null}
 
-                    </div>
+                      </div>
+                    </details>
                   );
                 })}
               </div>
@@ -1519,7 +1648,19 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
               <p className="settings-empty-state">添加模型后输入模型 ID；获取模型后可从右侧下拉选择。</p>
             )}
 
-          </section>
+            {operationError !== null ? <p className="settings-operation-error" role="alert">{operationError}</p> : null}
+            {providerSaveState === "pending" || providerSaveState === "saving" || providerSaveState === "incomplete" ? (
+              <footer className="settings-provider-editor__footer">
+                <p>
+                  {providerSaveState === "pending"
+                    ? "等待更新"
+                    : providerSaveState === "saving"
+                      ? "正在更新"
+                      : "请完成供应商和模型配置"}
+                </p>
+              </footer>
+            ) : null}
+          </SettingsConfigurationCard>
 
           {isModelTestDialogOpen ? (
             <div
@@ -1604,20 +1745,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
             </div>
           ) : null}
 
-          {operationError !== null ? <p className="settings-operation-error" role="alert">{operationError}</p> : null}
           </div>
-
-          <footer className="settings-provider-editor__footer">
-            <p>
-              {providerSaveState === "pending"
-                ? "等待更新"
-                : providerSaveState === "saving"
-                  ? "正在更新"
-                  : providerSaveState === "incomplete"
-                    ? "请完成供应商和模型配置"
-                    : null}
-            </p>
-          </footer>
         </div>
       </div>
     </SettingsSectionHeader>
@@ -1969,7 +2097,7 @@ function GlobalDefaultModelPicker({
   return (
     <div className="settings-global-model">
       <div className="settings-global-model__heading">
-        <span>默认模型</span>
+        <span className="flex items-center gap-2"><Bot aria-hidden="true" size={16} />默认模型</span>
         <small>新对话使用</small>
       </div>
 
@@ -2099,7 +2227,7 @@ function ContextCompressionSettings({
   return (
     <div className="settings-context-compression">
       <div className="settings-context-compression__heading">
-        <span>上下文自动压缩</span>
+        <span className="flex items-center gap-2"><Braces aria-hidden="true" size={16} />上下文自动压缩</span>
         <small>
           {isPercentage ? "按模型窗口计算" : "按已占用 Token 计算"}
         </small>
@@ -2515,7 +2643,7 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
       )}
       bodyClassName="settings-section__body--flush"
       eyebrow="Tools · Resources · Prompts"
-      title="MCP 管理器"
+      title="MCP"
     >
       {mode === "json" ? (
         <JsonConfigurationEditor
@@ -2552,6 +2680,7 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
             <ConfigurationEmpty icon={PlugZap} label="添加 MCP Server" onAdd={addServer} />
           ) : (
             <section className="settings-integration-editor">
+              <SettingsConfigurationCard>
               <ConfigurationEditorHeader
                 enabled={selected.enabled}
                 fileActionLabel="编辑配置文件"
@@ -2561,6 +2690,7 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
                 onToggle={(enabled) => updateServer({ enabled })}
               />
               <div className="settings-integration-editor__body">
+                <SettingsCategoryHeading icon={PlugZap}>基础与连接</SettingsCategoryHeading>
                 <div className="settings-field-grid">
                   <ConfigurationField configPath="name" label="名称">
                     <input value={selected.name} onChange={(event) => updateServer({ name: event.target.value })} />
@@ -2612,6 +2742,7 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
                 saveState={state.autoSaveState}
                 onDelete={deleteSelected}
               />
+              </SettingsConfigurationCard>
             </section>
           )}
         </div>
@@ -2807,7 +2938,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
       )}
       bodyClassName="settings-section__body--flush"
       eyebrow="指令 · 流程 · 模板"
-      title="Skill 管理器"
+      title="Skill"
     >
       {configuration === null ? (
         <ConfigurationStatus error={state.error} />
@@ -2832,6 +2963,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
             <ConfigurationEmpty icon={Sparkles} label="新建 Skill" onAdd={() => void createSkill()} />
           ) : (
             <section className="settings-integration-editor settings-skill-metadata">
+              <SettingsConfigurationCard>
               <ConfigurationEditorHeader
                 enabled={selected.enabled}
                 fileActionLabel="编辑文档"
@@ -2841,6 +2973,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                 onToggle={(enabled) => updateSkill({ enabled })}
               />
               <div className="settings-integration-editor__body">
+                <SettingsCategoryHeading icon={Layers3}>使用范围与依赖</SettingsCategoryHeading>
                 <div className="settings-field-grid settings-skill-fields">
                   <ConfigurationField className="settings-field--wide" label="SKILL.md 路径">
                     <input readOnly title={selected.entryPath} value={selected.entryPath} />
@@ -2856,7 +2989,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                   </ConfigurationField>
                 </div>
                 <section aria-label="Skill 文档预览" className="mt-4 min-w-0 border-t border-[var(--app-border)] pt-4">
-                  <h4 className="mb-2 text-[length:var(--app-font-size-auxiliary)] font-semibold text-[var(--app-muted-foreground)]">文档预览</h4>
+                  <h4 className="mb-2 flex items-center gap-2 text-[length:var(--app-font-size-auxiliary)] font-semibold text-[var(--app-muted-foreground)]"><Eye aria-hidden="true" size={15} />文档预览</h4>
                   {skillPreview === null ? (
                     <p className="text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
                       {isDiscovering ? "正在读取文档…" : "未找到 Skill 文档。"}
@@ -2882,6 +3015,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                   </button>
                 </div>
               </footer>
+              </SettingsConfigurationCard>
             </section>
           )}
         </div>
@@ -3037,7 +3171,6 @@ function ConfigurationEditorHeader({
     <header className="settings-integration-editor__header">
       <span className="settings-configuration-row__icon"><Icon aria-hidden="true" size={16} /></span>
       <div>
-        <p>当前配置</p>
         <h3>{name.trim() || "未命名配置"}</h3>
       </div>
       <button className="settings-secondary-button" type="button" onClick={onOpenFile}>
@@ -3069,7 +3202,7 @@ function ConfigurationField({
   label: string;
 }): ReactElement {
   return (
-    <label className={`settings-field ${className}`.trim()} data-config-path={configPath}>
+    <label className={`settings-field ${className}`.trim()} data-config-path={configPath} data-settings-field={label}>
       <span>{label}</span>
       {children}
     </label>
@@ -3191,7 +3324,7 @@ function JsonConfigurationEditor({
     <div className="settings-json-editor">
       <div className="settings-json-editor__toolbar">
         <span><Braces aria-hidden="true" size={15} />{label}</span>
-        <small>{autoSaveStateLabel(saveState)}</small>
+        {saveState === "idle" ? null : <small>{autoSaveStateLabel(saveState)}</small>}
       </div>
       <DocumentCodeEditor
         ariaLabel={label}
@@ -3206,7 +3339,7 @@ function JsonConfigurationEditor({
   );
 }
 
-function autoSaveStateLabel(state: AutoSaveState): string {
+function autoSaveStateLabel(state: AutoSaveState): string | null {
   switch (state) {
     case "failed":
       return "自动保存失败";
@@ -3219,7 +3352,7 @@ function autoSaveStateLabel(state: AutoSaveState): string {
     case "saved":
       return "已自动保存";
     case "idle":
-      return "修改后自动保存";
+      return null;
   }
 }
 
@@ -3481,14 +3614,32 @@ function formatArchivedConversationDate(archivedAt: string | null): string {
 }
 
 function PermissionsSettings(): ReactElement {
+  const defaultPermissionMode = useApplicationSettingsStore((state) => state.defaultPermissionMode);
+  const setDefaultPermissionMode = useApplicationSettingsStore((state) => state.setDefaultPermissionMode);
+  const permissionPolicies = useApplicationSettingsStore((state) => state.permissionPolicies);
+  const setPermissionPolicy = useApplicationSettingsStore((state) => state.setPermissionPolicy);
   const approvalReviewer = useApplicationSettingsStore((state) => state.approvalReviewer);
   const setApprovalReviewer = useApplicationSettingsStore((state) => state.setApprovalReviewer);
 
   return (
     <SettingsSectionHeader eyebrow="安全边界与审批" title="权限">
       <div className="settings-general-category">
-        <h3>权限模式</h3>
+        <SettingsCategoryHeading icon={ShieldCheck}>权限模式</SettingsCategoryHeading>
         <div className="settings-general-card">
+          <article className="settings-general-row">
+            <div>
+              <h4>新对话权限模式</h4>
+              <p>影响之后新建的对话；已有对话保留各自的权限模式。</p>
+            </div>
+            <Select value={defaultPermissionMode} onValueChange={(value) => setDefaultPermissionMode(value as ConversationPermissionMode)}>
+              <SelectTrigger aria-label="新对话权限模式" className="settings-general-select"><SelectValue /></SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="read_only">规划</SelectItem>
+                <SelectItem value="ask_before_changes">请求审批</SelectItem>
+                <SelectItem value="full_access">完全访问</SelectItem>
+              </SelectContent>
+            </Select>
+          </article>
           <article className="settings-general-row">
             <div>
               <h4>规划</h4>
@@ -3511,7 +3662,7 @@ function PermissionsSettings(): ReactElement {
       </div>
 
       <div className="settings-general-category">
-        <h3>请求审批的处理方式</h3>
+        <SettingsCategoryHeading icon={Bot}>请求审批的处理方式</SettingsCategoryHeading>
         <div className="settings-general-card">
           <article className="settings-general-row">
             <div>
@@ -3542,8 +3693,39 @@ function PermissionsSettings(): ReactElement {
         </div>
       </div>
 
+      <section className="settings-general-category" aria-labelledby="tool-policies-heading">
+        <SettingsCategoryHeading id="tool-policies-heading" icon={Shield}>工具权限</SettingsCategoryHeading>
+        <div className="settings-general-card">
+          {([
+            { id: "workspace-read", label: "文件读取", description: "读取授权工作区中的文件。", icon: FolderOpen },
+            { id: "workspace-search", label: "工作区搜索", description: "查找文件、文本与代码内容。", icon: Search },
+            { id: "patch-write", label: "文件修改", description: "写入、修改或删除工作区文件。", icon: FileCode2 },
+            { id: "command-run", label: "命令与终端", description: "执行命令、创建和操作侧边终端。", icon: Terminal },
+            { id: "browser-control", label: "浏览器操作", description: "打开页面、导航与浏览器交互。", icon: Globe2 },
+          ] as const).map(({ id, label, description, icon: Icon }) => (
+            <article key={id} className="settings-general-row">
+              <div>
+                <h4 className="flex items-center gap-2"><Icon aria-hidden="true" size={15} />{label}</h4>
+                <p>{description}</p>
+              </div>
+              <Select value={permissionPolicies[id]} onValueChange={(value) => {
+                if (value === "allow" || value === "ask" || value === "unavailable") setPermissionPolicy(id, value);
+              }}>
+                <SelectTrigger aria-label={`${label}权限`} className="settings-general-select"><SelectValue /></SelectTrigger>
+                <SelectContent align="end">
+                  <SelectItem value="allow">直接允许</SelectItem>
+                  <SelectItem value="ask">请求审批</SelectItem>
+                  <SelectItem value="unavailable">禁用</SelectItem>
+                </SelectContent>
+              </Select>
+            </article>
+          ))}
+          <p className="px-4 pb-4 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">工具权限与对话权限模式共同生效；规划模式仍禁止修改，工作区边界与危险操作保护始终保留。</p>
+        </div>
+      </section>
+
       <div className="settings-general-category">
-        <h3>审批范围</h3>
+        <SettingsCategoryHeading icon={LockKeyhole}>审批范围</SettingsCategoryHeading>
         <div className="settings-general-card">
           <article className="settings-general-row">
             <div>
@@ -3572,6 +3754,68 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
   const [saveRevision, setSaveRevision] = useState(0);
   const draftRef = useRef(draft);
   const latestSaveRevisionRef = useRef(0);
+  const [defaultDownloadDirectory, setDefaultDownloadDirectory] = useState<string | null>(null);
+  const [savedPasswords, setSavedPasswords] = useState<BrowserSavedPassword[] | null>(null);
+  const [passwordListError, setPasswordListError] = useState<string | null>(null);
+  const [visiblePassword, setVisiblePassword] = useState<{ origin: string; password: string } | null>(null);
+  const [revealingOrigin, setRevealingOrigin] = useState<string | null>(null);
+  const passwordRequestRevisionRef = useRef(0);
+
+  const loadSavedPasswords = async (): Promise<void> => {
+    const revision = ++passwordRequestRevisionRef.current;
+    try {
+      const passwords = await agentClient.getBrowserSavedPasswords();
+      if (revision === passwordRequestRevisionRef.current) {
+        setSavedPasswords(passwords);
+        setVisiblePassword(null);
+        setRevealingOrigin(null);
+        setPasswordListError(null);
+      }
+    } catch (error) {
+      if (revision === passwordRequestRevisionRef.current) setPasswordListError(errorMessage(error));
+    }
+  };
+
+  useEffect(() => {
+    const revision = ++passwordRequestRevisionRef.current;
+    void agentClient.getBrowserSavedPasswords().then(
+      (passwords) => {
+        if (revision !== passwordRequestRevisionRef.current) return;
+        setSavedPasswords(passwords);
+        setVisiblePassword(null);
+        setRevealingOrigin(null);
+        setPasswordListError(null);
+      },
+      (error: unknown) => {
+        if (revision !== passwordRequestRevisionRef.current) return;
+        setVisiblePassword(null);
+        setRevealingOrigin(null);
+        setPasswordListError(errorMessage(error));
+      },
+    );
+    return () => { passwordRequestRevisionRef.current += 1; };
+  }, [agentClient]);
+
+  const showPassword = async (origin: string): Promise<void> => {
+    if (visiblePassword?.origin === origin) {
+      setVisiblePassword(null);
+      return;
+    }
+    const revision = passwordRequestRevisionRef.current;
+    setVisiblePassword(null);
+    setRevealingOrigin(origin);
+    setPasswordListError(null);
+    try {
+      const password = await agentClient.revealBrowserPassword({ origin });
+      if (revision !== passwordRequestRevisionRef.current) return;
+      if (password === null) setPasswordListError("无法读取该密码，请刷新列表。");
+      else setVisiblePassword({ origin, password });
+    } catch (error) {
+      if (revision === passwordRequestRevisionRef.current) setPasswordListError(errorMessage(error));
+    } finally {
+      if (revision === passwordRequestRevisionRef.current) setRevealingOrigin(null);
+    }
+  };
 
   useEffect(() => {
     draftRef.current = draft;
@@ -3586,6 +3830,10 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
       () => {
         if (!disposed) setOperationError("无法读取浏览器配置");
       },
+    );
+    void agentClient.getBrowserDefaultDownloadDirectory().then(
+      (directory) => { if (!disposed) setDefaultDownloadDirectory(directory); },
+      (error: unknown) => { if (!disposed) setOperationError(errorMessage(error)); },
     );
     return () => {
       disposed = true;
@@ -3622,6 +3870,11 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
     setOperationError(null);
     try {
       await agentClient.clearBrowserData();
+      passwordRequestRevisionRef.current += 1;
+      setSavedPasswords([]);
+      setVisiblePassword(null);
+      setRevealingOrigin(null);
+      setPasswordListError(null);
       setClearState("cleared");
     } catch (error) {
       setClearState("idle");
@@ -3635,121 +3888,186 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
       eyebrow="内置浏览器"
       title="浏览器"
     >
-      <div className="settings-terminal-form">
-        <section className="settings-general-category" aria-labelledby="browser-startup-heading">
-          <h3 id="browser-startup-heading">启动与搜索</h3>
-          <div className="settings-general-card">
-            <article className="settings-general-row">
-              <div>
-                <h4>默认搜索引擎</h4>
-                <p>地址栏输入的内容不是网址时，使用此搜索引擎。</p>
-              </div>
-              <Select
-                value={draft.searchEngine}
-                onValueChange={(value) => updateConfiguration({
-                  searchEngine: value as BrowserConfiguration["searchEngine"],
+      <section className="settings-general-category" aria-labelledby="browser-startup-heading">
+        <h3 id="browser-startup-heading">
+          <Search aria-hidden="true" size={16} className="shrink-0 text-[var(--app-muted-foreground)]" />
+          启动与搜索
+        </h3>
+        <div className="settings-general-card">
+          <article className="settings-general-row">
+            <div>
+              <h4>默认搜索引擎</h4>
+              <p>地址栏输入的内容不是网址时，使用此搜索引擎。</p>
+            </div>
+            <Select
+              value={draft.searchEngine}
+              onValueChange={(value) => updateConfiguration({
+                searchEngine: value as BrowserConfiguration["searchEngine"],
+              })}
+            >
+              <SelectTrigger aria-label="默认搜索引擎" className="settings-general-select w-[160px] max-w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="google">Google</SelectItem>
+                <SelectItem value="bing">Bing</SelectItem>
+                <SelectItem value="duckduckgo">DuckDuckGo</SelectItem>
+              </SelectContent>
+            </Select>
+          </article>
+          <article className="settings-general-row">
+            <div>
+              <h4>新标签默认缩放</h4>
+              <p>当前的 100% 对应原始网页的 80%，只影响之后新建的标签。</p>
+            </div>
+            <Select
+              value={String(draft.defaultZoomPercent)}
+              onValueChange={(value) => updateConfiguration({ defaultZoomPercent: Number(value) })}
+            >
+              <SelectTrigger aria-label="新浏览器标签默认缩放" className="settings-general-select w-[160px] max-w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                {BROWSER_ZOOM_OPTIONS.map((percent) => (
+                  <SelectItem key={percent} value={String(percent)}>{percent}%</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </article>
+        </div>
+      </section>
+
+      <section className="settings-general-category" aria-labelledby="browser-download-heading">
+        <h3 id="browser-download-heading">
+          <FolderOpen aria-hidden="true" size={16} className="shrink-0 text-[var(--app-muted-foreground)]" />
+          下载
+        </h3>
+        <div className="settings-general-card">
+          <article className="settings-general-row">
+            <div className="min-w-0">
+              <h4 id="browser-download-directory">下载目录</h4>
+              <p className="break-all" title={draft.downloadDirectory || defaultDownloadDirectory || undefined}>
+                {draft.downloadDirectory || defaultDownloadDirectory || "正在读取下载目录…"}
+                {draft.downloadDirectory === "" && defaultDownloadDirectory !== null ? "（默认）" : null}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-[5px]">
+              <button className="settings-secondary-button" type="button" onClick={() => {
+                void agentClient.chooseBrowserDownloadDirectory().then((directory) => {
+                  if (directory !== null) updateConfiguration({ downloadDirectory: directory });
+                }).catch((error: unknown) => setOperationError(errorMessage(error)));
+              }}><FolderOpen aria-hidden="true" size={14} />选择目录</button>
+              <button className="settings-secondary-button" type="button" disabled={draft.downloadDirectory === ""} onClick={() => updateConfiguration({ downloadDirectory: "" })}>恢复默认</button>
+            </div>
+          </article>
+          <article className="settings-general-row">
+            <div>
+              <h4>下载前询问保存位置</h4>
+              <p>关闭时自动保存到下载目录；开启时每次选择保存位置。</p>
+            </div>
+            <label className="settings-switch">
+              <input
+                aria-label="下载前询问保存位置"
+                checked={draft.askForDownloadLocation}
+                type="checkbox"
+                onChange={(event) => updateConfiguration({
+                  askForDownloadLocation: event.target.checked,
                 })}
-              >
-                <SelectTrigger aria-label="默认搜索引擎" className="settings-select-trigger">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent align="end">
-                  <SelectItem value="google">Google</SelectItem>
-                  <SelectItem value="bing">Bing</SelectItem>
-                  <SelectItem value="duckduckgo">DuckDuckGo</SelectItem>
-                </SelectContent>
-              </Select>
-            </article>
-            <article className="settings-general-row">
-              <div>
-                <h4>新标签默认缩放</h4>
-                <p>当前的 100% 对应原始网页的 80%，只影响之后新建的标签。</p>
-              </div>
-              <Select
-                value={String(draft.defaultZoomPercent)}
-                onValueChange={(value) => updateConfiguration({ defaultZoomPercent: Number(value) })}
-              >
-                <SelectTrigger aria-label="新浏览器标签默认缩放" className="settings-select-trigger">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent align="end">
-                  {BROWSER_ZOOM_OPTIONS.map((percent) => (
-                    <SelectItem key={percent} value={String(percent)}>{percent}%</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </article>
-          </div>
-        </section>
+              />
+              <span aria-hidden="true" />
+            </label>
+          </article>
+        </div>
+      </section>
 
-        <section className="settings-general-category" aria-labelledby="browser-download-heading">
-          <h3 id="browser-download-heading">下载</h3>
-          <div className="settings-general-card">
-            <article className="settings-general-row">
-              <div>
-                <h4>下载前询问保存位置</h4>
-                <p>关闭时自动保存到系统“下载”文件夹。</p>
-              </div>
-              <label className="settings-switch">
-                <input
-                  aria-label="下载前询问保存位置"
-                  checked={draft.askForDownloadLocation}
-                  type="checkbox"
-                  onChange={(event) => updateConfiguration({
-                    askForDownloadLocation: event.target.checked,
-                  })}
-                />
-                <span aria-hidden="true" />
-              </label>
-            </article>
+      <section className="settings-general-category" aria-labelledby="browser-password-heading">
+        <h3 id="browser-password-heading">
+          <EyeOff aria-hidden="true" size={16} className="shrink-0 text-[var(--app-muted-foreground)]" />
+          密码和自动填充
+        </h3>
+        <div className="settings-general-card">
+          <article className="settings-general-row">
+            <div>
+              <h4>密码保存</h4>
+              <p>在 HTTPS 网站登录时询问保存密码，使用系统加密存储，下次访问同一网站自动填充。关闭后停止保存与填充。</p>
+            </div>
+            <label className="settings-switch">
+              <input aria-label="保存并自动填充密码" checked={draft.savePasswords} type="checkbox" onChange={(event) => updateConfiguration({ savePasswords: event.target.checked })} />
+              <span aria-hidden="true" />
+            </label>
+          </article>
+          <div className="flex items-center justify-between gap-2 border-t border-[var(--app-border)] px-4 py-3">
+            <h4 id="browser-saved-passwords" className="m-0 text-[length:var(--app-font-size-body)] font-semibold">已保存的密码{savedPasswords === null ? "" : `（${savedPasswords.length}）`}</h4>
+            <IconButton label="刷新已保存密码" disabled={revealingOrigin !== null} onClick={() => {
+              setSavedPasswords(null);
+              setVisiblePassword(null);
+              setPasswordListError(null);
+              void loadSavedPasswords();
+            }}>
+              <RefreshCw aria-hidden="true" size={14} />
+            </IconButton>
           </div>
-        </section>
+          {passwordListError === null ? null : <p className="px-4 pb-3 text-[length:var(--app-font-size-control)] text-[var(--app-destructive)]" role="alert">{passwordListError}</p>}
+          {savedPasswords === null ? (
+            passwordListError === null ? <p className="px-4 pb-4 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]" role="status">正在读取已保存密码…</p> : null
+          ) : savedPasswords.length === 0 ? (
+            <p className="px-4 pb-4 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">还没有已保存的密码。</p>
+          ) : savedPasswords.map((entry) => {
+            const password = visiblePassword?.origin === entry.origin ? visiblePassword.password : null;
+            return (
+              <article className="settings-general-row" key={entry.origin}>
+                <div className="min-w-0">
+                  <h4 className="break-all">{entry.origin}</h4>
+                  <p className="break-all">{entry.username || "未记录账号"}</p>
+                </div>
+                <div className="flex min-w-0 items-center gap-[5px]">
+                  <input aria-label={`${entry.origin} 的密码`} readOnly type={password === null ? "password" : "text"} value={password ?? "********"}
+                    className="h-8 w-44 min-w-0 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] px-2 text-[length:var(--app-font-size-control)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]" />
+                  <IconButton label={`${password === null ? "查看" : "隐藏"} ${entry.origin} 的密码`} tooltip={password === null ? "查看密码" : "隐藏密码"}
+                    disabled={revealingOrigin !== null} onClick={() => void showPassword(entry.origin)}>
+                    {revealingOrigin === entry.origin ? <LoaderCircle aria-hidden="true" className="settings-spin" size={14} /> : password === null ? <Eye aria-hidden="true" size={14} /> : <EyeOff aria-hidden="true" size={14} />}
+                  </IconButton>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </section>
 
-        <section className="settings-general-category" aria-labelledby="browser-password-heading">
-          <h3 id="browser-password-heading">密码和自动填充</h3>
-          <div className="settings-general-card">
-            <article className="settings-general-row">
-              <div>
-                <h4>密码保存</h4>
-                <p>隔离的内置浏览器不会保存或自动填充密码。</p>
-              </div>
-              <span className="settings-state-badge" data-state="offline">已关闭</span>
-            </article>
-          </div>
-        </section>
+      <section className="settings-general-category" aria-labelledby="browser-privacy-heading">
+        <h3 id="browser-privacy-heading">
+          <ShieldCheck aria-hidden="true" size={16} className="shrink-0 text-[var(--app-muted-foreground)]" />
+          隐私
+        </h3>
+        <div className="settings-general-card">
+          <article className="settings-general-row">
+            <div>
+              <h4>清除浏览数据</h4>
+              <p>清除内置浏览器的 Cookie、缓存、站点数据、已保存密码和当前历史记录。</p>
+            </div>
+            <button
+              className="settings-secondary-button"
+              disabled={clearState === "clearing"}
+              type="button"
+              onClick={() => void clearBrowserData()}
+            >
+              <Trash2 aria-hidden="true" size={14} />
+              {clearState === "clearing" ? "正在清除" : "清除浏览数据"}
+            </button>
+          </article>
+        </div>
+      </section>
 
-        <section className="settings-general-category" aria-labelledby="browser-privacy-heading">
-          <h3 id="browser-privacy-heading">隐私</h3>
-          <div className="settings-general-card">
-            <article className="settings-general-row">
-              <div>
-                <h4>清除浏览数据</h4>
-                <p>清除内置浏览器的 Cookie、缓存、站点数据和当前历史记录。</p>
-              </div>
-              <button
-                className="settings-secondary-button"
-                disabled={clearState === "clearing"}
-                type="button"
-                onClick={() => void clearBrowserData()}
-              >
-                <Trash2 aria-hidden="true" size={14} />
-                {clearState === "clearing" ? "正在清除" : "清除浏览数据"}
-              </button>
-            </article>
-          </div>
-        </section>
-
-        {clearState === "cleared" ? (
-          <p className="settings-terminal-status" role="status">浏览数据已清除。</p>
-        ) : null}
-        {operationError !== null ? (
-          <p className="settings-terminal-status" role="alert">{operationError}</p>
-        ) : (
-          <p className="settings-terminal-status" role="status">
-            {autoSaveStateLabel(autoSave.state)}
-          </p>
-        )}
-      </div>
+      {clearState === "cleared" ? (
+        <p className="settings-terminal-status" role="status">浏览数据已清除。</p>
+      ) : null}
+      {operationError !== null ? (
+        <p className="settings-terminal-status" role="alert">{operationError}</p>
+      ) : autoSave.state === "idle" ? null : (
+        <p className="settings-terminal-status" role="status">
+          {autoSaveStateLabel(autoSave.state)}
+        </p>
+      )}
     </SettingsSectionHeader>
   );
 }
@@ -3836,7 +4154,9 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
       eyebrow="工作区"
       title="侧边终端"
     >
-      <div className="settings-terminal-form">
+      <div className="grid gap-7">
+        <section className="settings-general-category" aria-labelledby="terminal-startup-heading">
+        <SettingsCategoryHeading id="terminal-startup-heading" icon={Terminal}>启动与 Shell</SettingsCategoryHeading>
         <div className="settings-terminal-grid">
           <label className="settings-field">
             <span>默认 Shell</span>
@@ -3877,6 +4197,13 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
             />
           </label>
 
+        </div>
+        <p className="settings-terminal-status mt-2">仅影响之后新建的侧边终端。启动路径留空时使用默认命令；PWSH 会尝试常见安装目录。</p>
+        </section>
+
+        <section className="settings-general-category" aria-labelledby="terminal-output-heading">
+        <SettingsCategoryHeading id="terminal-output-heading" icon={Braces}>命令输出</SettingsCategoryHeading>
+        <div className="settings-terminal-grid">
           <label className="settings-field">
             <span>一次性命令输出字符集</span>
             <Select
@@ -3900,6 +4227,13 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
             </Select>
           </label>
 
+        </div>
+        <p className="settings-terminal-status mt-2">用于 AI 一次性命令的结果解码，侧边终端的交互输出保持原有编码。</p>
+        </section>
+
+        <section className="settings-general-category" aria-labelledby="terminal-font-heading">
+        <SettingsCategoryHeading id="terminal-font-heading" icon={Type}>字体与排版</SettingsCategoryHeading>
+        <div className="settings-terminal-grid">
           <label className="settings-field settings-field--wide">
             <span>字体预设</span>
             <Select
@@ -3964,10 +4298,18 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
           </label>
         </div>
 
-        <p className="settings-terminal-status">
-          Shell、启动路径、字体、字号和行高只影响之后新建的侧边终端标签，不会改变 AI 的一次性命令 Shell。输出字符集仅用于一次性命令结果解码。路径留空时按默认命令启动；PWSH 会尝试常见安装目录。
-        </p>
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+          <p className="settings-terminal-status">字体、字号和行高应用于之后新建的侧边终端。</p>
+          <button className="settings-secondary-button" type="button" onClick={() => updateDraft({
+            fontFamily: DEFAULT_TERMINAL_CONFIGURATION.fontFamily,
+            fontSize: DEFAULT_TERMINAL_CONFIGURATION.fontSize,
+            lineHeight: DEFAULT_TERMINAL_CONFIGURATION.lineHeight,
+          })}><RefreshCw aria-hidden="true" size={14} />恢复默认排版</button>
+        </div>
+        </section>
 
+        <section className="settings-general-category" aria-labelledby="terminal-preview-heading">
+        <SettingsCategoryHeading id="terminal-preview-heading" icon={Eye}>效果预览</SettingsCategoryHeading>
         <section
           aria-label="终端预览"
           className="settings-terminal-preview"
@@ -3988,10 +4330,11 @@ function TerminalSettings({ agentClient }: { agentClient: AgentClient }): ReactE
             </code>
           </pre>
         </section>
+        </section>
 
         {operationError !== null ? (
           <p className="settings-terminal-status" role="alert">{operationError}</p>
-        ) : (
+        ) : autoSave.state === "idle" ? null : (
           <p className="settings-terminal-status" role="status">
             {autoSaveStateLabel(autoSave.state)}
           </p>
@@ -4042,18 +4385,83 @@ function resolvedTerminalShell(
 function AppearanceSettings(): ReactElement {
   const setThemeMode = useWorkbenchUiStore((state) => state.setThemeMode);
   const themeMode = useWorkbenchUiStore((state) => state.themeMode);
+  const uiFontSize = useWorkbenchUiStore((state) => state.uiFontSize);
+  const chatFontSize = useWorkbenchUiStore((state) => state.chatFontSize);
+  const codeFontSize = useWorkbenchUiStore((state) => state.codeFontSize);
+  const setFontSize = useWorkbenchUiStore((state) => state.setAppearanceFontSize);
+  const settingsWidth = useWorkbenchUiStore((state) => state.settingsNavigationWidth);
+  const projectWidth = useWorkbenchUiStore((state) => state.projectNavigatorWidth);
+  const fileWidth = useWorkbenchUiStore((state) => state.filePanelWidth);
+  const setSettingsWidth = useWorkbenchUiStore((state) => state.setSettingsNavigationWidth);
+  const setProjectWidth = useWorkbenchUiStore((state) => state.setProjectNavigatorWidth);
+  const setFileWidth = useWorkbenchUiStore((state) => state.setFilePanelWidth);
 
   return (
     <SettingsSectionHeader eyebrow="应用界面" title="外观">
-      <section className="settings-appearance-group" aria-labelledby="theme-heading">
-        <div>
-          <h3 id="theme-heading">主题</h3>
-          <p>当前使用 {themeMode === "dark" ? "深色" : "浅色"} 主题</p>
-        </div>
-        <div className="settings-segmented" role="group" aria-label="主题">
+      <section className="settings-general-category" aria-labelledby="theme-heading">
+        <SettingsCategoryHeading id="theme-heading" icon={Palette}>主题</SettingsCategoryHeading>
+        <SettingsConfigurationCard>
+        <div className="flex flex-wrap gap-[5px]" role="group" aria-label="主题">
           <ThemeButton mode="light" selected={themeMode} onSelect={setThemeMode} label="浅色" />
           <ThemeButton mode="dark" selected={themeMode} onSelect={setThemeMode} label="深色" />
         </div>
+        </SettingsConfigurationCard>
+      </section>
+
+      <section className="settings-general-category" aria-labelledby="appearance-font-heading">
+        <SettingsCategoryHeading id="appearance-font-heading" icon={Type}>字体与阅读</SettingsCategoryHeading>
+        <SettingsConfigurationCard className="p-0">
+          {([
+            { field: "uiFontSize", value: uiFontSize, min: 12, max: 18, label: "界面字号", description: "菜单、设置、列表和按钮的文字大小，标题随比例调整。" },
+            { field: "chatFontSize", value: chatFontSize, min: 12, max: 24, label: "对话字号", description: "用户消息与 AI 回复的正文大小。" },
+            { field: "codeFontSize", value: codeFontSize, min: 10, max: 24, label: "代码编辑器字号", description: "源文件与配置文件代码编辑器的文字大小；终端排版在终端页设置。" },
+          ] as const).map(({ field, value, min, max, label, description }) => (
+            <article key={field} className="settings-general-row">
+              <div><h4>{label}</h4><p>{description}</p></div>
+              <Select value={String(value)} onValueChange={(size) => setFontSize(field, Number(size))}>
+                <SelectTrigger aria-label={label} className="settings-general-select"><SelectValue /></SelectTrigger>
+                <SelectContent align="end">
+                  {Array.from({ length: max - min + 1 }, (_, index) => min + index).map((size) => (
+                    <SelectItem key={size} value={String(size)}>{size} px{size === DEFAULT_APPLICATION_SETTINGS.appearance[field] ? "（默认）" : ""}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </article>
+          ))}
+          <div className="border-t border-[var(--app-border)] p-4" aria-label="字体预览">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <span className="flex items-center gap-2 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]"><Eye aria-hidden="true" size={15} />实时预览</span>
+              <button className="settings-secondary-button" type="button" onClick={() => {
+                for (const field of ["uiFontSize", "chatFontSize", "codeFontSize"] as const) setFontSize(field, DEFAULT_APPLICATION_SETTINGS.appearance[field]);
+              }}><RefreshCw aria-hidden="true" size={14} />恢复默认字号</button>
+            </div>
+            <p className="mb-2 text-[length:var(--app-font-size-body)]">设置与工作区 · Aster 123</p>
+            <p className="mb-2" style={{ fontSize: `${chatFontSize}px` }}>你好，今天我们一起完成这个项目。</p>
+            <pre className="overflow-x-auto font-mono" style={{ fontSize: `${codeFontSize}px` }}>const message = "Hello, Aster";</pre>
+          </div>
+        </SettingsConfigurationCard>
+      </section>
+
+      <section className="settings-general-category" aria-labelledby="appearance-panels-heading">
+        <SettingsCategoryHeading id="appearance-panels-heading" icon={PanelRight}>面板尺寸</SettingsCategoryHeading>
+        <SettingsConfigurationCard className="p-0">
+          {[
+            { label: "对话目录宽度", value: projectWidth, min: 220, max: 420, set: setProjectWidth },
+            { label: "设置菜单宽度", value: settingsWidth, min: 200, max: 360, set: setSettingsWidth },
+            { label: "右侧工作区宽度", value: fileWidth, min: 320, max: 960, set: setFileWidth },
+          ].map(({ label, value, min, max, set }) => (
+            <article key={label} className="settings-general-row">
+              <div><h4>{label}</h4><p>也可以拖动面板边界调整，修改后自动记住。</p></div>
+              <div className="flex shrink-0 items-center gap-2">
+                <input aria-label={label} className="h-8 w-24 rounded-[var(--app-radius)] border border-[var(--app-border)] px-2 text-[length:var(--app-font-size-control)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]" min={min} max={max} type="number" step={1} value={value} onChange={(event) => {
+                  const width = event.currentTarget.valueAsNumber;
+                  if (Number.isFinite(width)) set(width);
+                }} />
+                <span className="text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">px</span>
+              </div>
+            </article>
+          ))}
+        </SettingsConfigurationCard>
       </section>
     </SettingsSectionHeader>
   );
@@ -4073,9 +4481,16 @@ function ThemeButton({
   return (
     <button
       aria-pressed={selected === mode}
+      className="w-44 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] p-3 text-left text-[length:var(--app-font-size-body)] aria-pressed:border-[var(--app-selection-border)] aria-pressed:bg-[var(--app-selection)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)]"
       type="button"
       onClick={() => onSelect(mode)}
     >
+      <span aria-hidden="true" className={`mb-3 flex h-20 overflow-hidden rounded-[var(--app-radius-small)] border ${mode === "light" ? "border-[#dedede] bg-[#ffffff]" : "border-[#393b40] bg-[#202020]"}`}>
+        <span className={`w-1/3 border-r ${mode === "light" ? "border-[#dedede] bg-[#f5f5f5]" : "border-[#393b40] bg-[#282828]"}`} />
+        <span className="flex flex-1 flex-col gap-2 p-3">
+          {[0, 1, 2].map((line) => <span key={line} className={`h-1.5 rounded-sm ${mode === "light" ? "bg-[#dedede]" : "bg-[#393b40]"}`} />)}
+        </span>
+      </span>
       {label}
     </button>
   );

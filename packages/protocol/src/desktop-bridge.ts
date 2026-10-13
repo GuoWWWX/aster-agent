@@ -71,7 +71,7 @@ import type {
 import type { RuntimeInfo } from "./runtime.js";
 import type { WindowState } from "./window.js";
 import type { IntegrationConfiguration } from "./integration.js";
-import type { BrowserConfiguration } from "./browser.js";
+import type { BrowserConfiguration, BrowserSavedPassword, BrowserPasswordReference } from "./browser.js";
 import type { TerminalConfiguration } from "./terminal.js";
 import type {
   GitFileDiff,
@@ -241,6 +241,10 @@ export interface DesktopBridge {
   getIntegrationConfiguration(): Promise<IntegrationConfiguration>;
   getBrowserConfiguration(): Promise<BrowserConfiguration>;
   clearBrowserData(): Promise<void>;
+  chooseBrowserDownloadDirectory(): Promise<string | null>;
+  getBrowserDefaultDownloadDirectory(): Promise<string>;
+  getBrowserSavedPasswords(): Promise<BrowserSavedPassword[]>;
+  revealBrowserPassword(input: BrowserPasswordReference): Promise<string | null>;
   getTerminalConfiguration(): Promise<TerminalConfiguration>;
   getGitReviewSnapshot(input: GitReviewInput): Promise<GitReviewSnapshot>;
   getGitFileDiff(input: GitFileDiffInput): Promise<GitFileDiff>;

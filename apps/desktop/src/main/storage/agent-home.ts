@@ -12,6 +12,7 @@ import {
 } from "@agent/protocol";
 
 const LEGACY_AGENT_ENTRIES = [
+  { source: "settings.jsonc", target: "settings.jsonc" },
   { source: "application-settings.json", target: "application-settings.json" },
   { source: "browser-settings.json", target: "browser-settings.json" },
   { source: "context-compression-settings.json", target: "context-compression-settings.json" },

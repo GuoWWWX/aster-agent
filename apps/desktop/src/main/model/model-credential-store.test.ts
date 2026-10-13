@@ -70,6 +70,7 @@ function requestHeader(init: RequestInit | undefined, name: string): string | nu
 afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
       rm(directory, { force: true, recursive: true })
@@ -78,6 +79,23 @@ afterEach(async () => {
 });
 
 describe("ModelCredentialStore", () => {
+  it("preserves explicitly empty JSONC providers instead of restoring environment credentials", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-model-empty-settings-"));
+    temporaryDirectories.push(directory);
+    const settings = new SettingsJsoncFile(path.join(directory, "settings.jsonc"));
+    settings.writeValues([{ key: "providers", value: [] }]);
+    const original = await readFile(settings.path, "utf8");
+    vi.stubEnv("AGENT_MODEL_BASE_URL", "https://example.test/v1");
+    vi.stubEnv("AGENT_MODEL_API_KEY", "environment-key");
+    vi.stubEnv("AGENT_MODEL_ID", "test");
+    const store = new ModelCredentialStore(settings);
+
+    store.importFromEnvironment();
+
+    expect(store.getStatus().configured).toBe(false);
+    expect(await readFile(settings.path, "utf8")).toBe(original);
+  });
+
   it("stores editable API keys in settings.jsonc without an encrypted shadow field", async () => {
     vi.spyOn(safeStorage, "isEncryptionAvailable").mockReturnValue(false);
     const decrypt = vi.spyOn(safeStorage, "decryptString").mockImplementation(() => { throw new Error("must not decrypt JSONC"); });
@@ -120,17 +138,19 @@ describe("ModelCredentialStore", () => {
       models: [{ modelId: "test", displayName: "test", contextWindow: 0, reasoningOptions: [] }], providerName: "旧供应商",
     });
     const original = await readFile(legacyPath, "utf8");
-    vi.spyOn(safeStorage, "decryptString").mockImplementation(() => { throw new Error("ciphertext error"); });
+    const decrypt = vi.spyOn(safeStorage, "decryptString").mockImplementation(() => { throw new Error("ciphertext error"); });
     const store = new ModelCredentialStore(new SettingsJsoncFile(settingsPath), legacyPath);
     expect(() => store.importFromEnvironment()).not.toThrow();
     expect(store.getConfiguration().apiKey).toBe("");
-    expect(store.getCredentialMigrationWarnings()).toEqual(["旧供应商"]);
     expect(await readFile(legacyPath, "utf8")).toBe(original);
     const content = await readFile(settingsPath, "utf8");
     expect(content).toContain('"apiKey": ""');
     expect(content).not.toContain("encryptedApiKey");
     const restarted = new ModelCredentialStore(new SettingsJsoncFile(settingsPath), legacyPath);
+    decrypt.mockClear();
     expect(() => restarted.importFromEnvironment()).not.toThrow();
+    expect(restarted.getConfiguration().apiKey).toBe("");
+    expect(decrypt).not.toHaveBeenCalled();
   });
 
   it("migrates the former encrypted model file into settings.jsonc", async () => {

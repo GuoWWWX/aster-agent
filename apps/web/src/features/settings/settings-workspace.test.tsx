@@ -4,10 +4,11 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { mcpServerConfigurationSchema } from "@agent/protocol";
+import { mcpServerConfigurationSchema, saveModelConfigurationInputSchema } from "@agent/protocol";
 import { TooltipProvider } from "../../components/ui/tooltip.js";
 import { MockAgentClient } from "../../runtime/index.js";
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
+import { useApplicationSettingsStore } from "../../stores/application-settings-store.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 import { SettingsWorkspace } from "./settings-workspace.js";
 
@@ -16,11 +17,16 @@ const initialDirectory = useAgentDirectoryStore.getState();
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  vi.stubGlobal("ResizeObserver", class {
+    observe(): void {}
+    disconnect(): void {}
+  });
   useWorkbenchUiStore.setState({
     activeActivity: "settings",
     configurationWorkspaceRevision: 0,
     configurationWorkspaceTarget: null,
     isSettingsFilePanelOpen: false,
+    settingsNavigationWidth: 240,
   });
 });
 
@@ -52,6 +58,228 @@ function clickButton(container: HTMLElement, label: string): void {
 }
 
 describe("SettingsWorkspace", () => {
+  it("does not restore a late password response after browser data is cleared", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "browser" });
+    const client = new MockAgentClient();
+    vi.spyOn(client, "getBrowserSavedPasswords").mockResolvedValue([{ origin: "https://example.test", username: "sample-user" }]);
+    let resolvePassword: (value: string) => void = () => undefined;
+    vi.spyOn(client, "revealBrowserPassword").mockReturnValue(new Promise((resolve) => { resolvePassword = resolve; }));
+    const container = await renderSettings(client);
+    act(() => clickButton(container, "查看 https://example.test 的密码"));
+    await act(async () => { clickButton(container, "清除浏览数据"); await Promise.resolve(); });
+    await act(async () => { resolvePassword("late-secret"); await Promise.resolve(); });
+    expect(container.querySelector('[aria-label="https://example.test 的密码"]')).toBeNull();
+    expect(container.textContent).toContain("还没有已保存的密码");
+  });
+  it("displays the resolved default download directory and reveals passwords only on request", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "browser" });
+    const client = new MockAgentClient();
+    vi.spyOn(client, "getBrowserDefaultDownloadDirectory").mockResolvedValue("E:\\Downloads");
+    vi.spyOn(client, "getBrowserSavedPasswords").mockResolvedValue([{ origin: "https://example.test", username: "sample-user" }]);
+    const reveal = vi.spyOn(client, "revealBrowserPassword").mockResolvedValue("sample-secret");
+    const container = await renderSettings(client);
+    expect(container.textContent).toContain("E:\\Downloads");
+    expect(container.textContent).toContain("sample-user");
+    expect(reveal).not.toHaveBeenCalled();
+    const field = (): HTMLInputElement | null => container.querySelector('[aria-label="https://example.test 的密码"]');
+    expect(field()?.type).toBe("password");
+    expect(field()?.value).not.toBe("sample-secret");
+    await act(async () => { clickButton(container, "查看 https://example.test 的密码"); await Promise.resolve(); });
+    expect(reveal).toHaveBeenCalledExactlyOnceWith({ origin: "https://example.test" });
+    expect(field()?.type).toBe("text");
+    expect(field()?.value).toBe("sample-secret");
+    act(() => clickButton(container, "隐藏 https://example.test 的密码"));
+    expect(field()?.type).toBe("password");
+    expect(field()?.value).not.toBe("sample-secret");
+    await act(async () => { clickButton(container, "清除浏览数据"); await Promise.resolve(); });
+    expect(container.textContent).toContain("还没有已保存的密码");
+    expect(field()).toBeNull();
+  });
+  it("saves the selected download directory and password preference, and keeps defaults when selection is cancelled", async () => {
+    vi.useFakeTimers();
+    try {
+      useWorkbenchUiStore.setState({ settingsSection: "browser" });
+      const client = new MockAgentClient();
+      const choose = vi.spyOn(client, "chooseBrowserDownloadDirectory").mockResolvedValue("D:\\Downloads");
+      const save = vi.spyOn(client, "saveBrowserConfiguration");
+      const container = await renderSettings(client);
+      const password = container.querySelector<HTMLInputElement>('[aria-label="保存并自动填充密码"]');
+      expect(password?.checked).toBe(true);
+      await act(async () => { clickButton(container, "选择目录"); await Promise.resolve(); });
+      act(() => password?.click());
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ downloadDirectory: "D:\\Downloads", savePasswords: false }));
+      act(() => clickButton(container, "恢复默认"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ downloadDirectory: "", savePasswords: false }));
+      choose.mockResolvedValue(null);
+      await act(async () => { clickButton(container, "选择目录"); await Promise.resolve(); });
+      expect(container.textContent).toContain("C:\\Users\\demo\\Downloads");
+    } finally { vi.useRealTimers(); }
+  });
+  it("resets only typography while preserving the chosen theme and panel widths", async () => {
+    useWorkbenchUiStore.setState({
+      settingsSection: "appearance", themeMode: "dark", uiFontSize: 16,
+      chatFontSize: 18, codeFontSize: 15, settingsNavigationWidth: 310,
+    });
+    const container = await renderSettings(new MockAgentClient());
+    expect(container.querySelector('[aria-label="界面字号"]')?.textContent).toContain("16 px");
+    act(() => clickButton(container, "恢复默认字号"));
+    expect(useWorkbenchUiStore.getState()).toMatchObject({
+      uiFontSize: 13, chatFontSize: 13, codeFontSize: 11,
+      themeMode: "dark", settingsNavigationWidth: 310,
+    });
+  });
+
+  it("exposes existing tool policies and updates the selected policy through the settings control", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "permissions" });
+    const container = await renderSettings(new MockAgentClient());
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="命令与终端权限"]');
+    expect(trigger).not.toBeNull();
+    expect(container.querySelectorAll('button[aria-label$="权限"]')).toHaveLength(5);
+    const previous = useApplicationSettingsStore.getState().permissionPolicies["command-run"];
+    const scrollIntoView = vi.fn();
+    vi.stubGlobal("ResizeObserver", class { observe(): void {} disconnect(): void {} });
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+    await act(async () => {
+      trigger?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+    const disabledOption = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((option) => option.textContent === "禁用");
+    expect(disabledOption).toBeDefined();
+    act(() => disabledOption?.click());
+    expect(useApplicationSettingsStore.getState().permissionPolicies["command-run"]).toBe("unavailable");
+    act(() => useApplicationSettingsStore.getState().setPermissionPolicy("command-run", previous));
+    Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+  });
+
+  it("filters navigation without switching the open settings page", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "general" });
+    const container = await renderSettings(new MockAgentClient());
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="搜索设置"]');
+    expect(search).not.toBeNull();
+    function searchFor(value: string): void {
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(search, value);
+        search?.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    searchFor("agent");
+    expect([...container.querySelectorAll(".settings-navigation__item")].map((item) => item.textContent)).toEqual(["Agent 与团队"]);
+    expect(useWorkbenchUiStore.getState().settingsSection).toBe("general");
+    expect(container.querySelector(".settings-section__header h2")?.textContent).toBe("常规设置");
+    searchFor("没有此分区");
+    expect(container.querySelector('.settings-navigation [role="status"]')?.textContent).toBe("无匹配的设置");
+    searchFor("");
+    expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(10);
+    expect(useWorkbenchUiStore.getState().settingsSection).toBe("general");
+  });
+
+  it("finds specific settings across sections and locates the clicked result after loading", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "general" });
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+    try {
+      const container = await renderSettings(new MockAgentClient());
+      const search = container.querySelector<HTMLInputElement>('input[aria-label="搜索设置"]');
+      function searchFor(value: string): void {
+        act(() => {
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(search, value);
+          search?.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+      }
+      searchFor("下载目录");
+      const result = container.querySelector<HTMLButtonElement>('[aria-label="浏览器：下载目录"]');
+      expect(result).not.toBeNull();
+      expect(useWorkbenchUiStore.getState().settingsSection).toBe("general");
+      await act(async () => { result?.click(); await Promise.resolve(); });
+      expect(useWorkbenchUiStore.getState().settingsSection).toBe("browser");
+      expect(container.querySelector('[data-settings-search-highlight]')?.textContent).toContain("下载目录");
+      expect(scrollIntoView).toHaveBeenCalled();
+      searchFor("字号");
+      expect(container.querySelector('[aria-label="外观：界面字号"]')).not.toBeNull();
+      expect(container.querySelector('[aria-label="终端：字号"]')).not.toBeNull();
+      searchFor("API KEY");
+      expect(container.querySelector('[aria-label="模型配置：API Key"]')).not.toBeNull();
+      searchFor("");
+      expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(10);
+    } finally {
+      Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+    }
+  });
+
+  it("opens the Agent tab again when the same search result is clicked after changing tabs", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "general" });
+    const container = await renderSettings(new MockAgentClient());
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="搜索设置"]');
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(search, "Agent 角色");
+      search?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const result = container.querySelector<HTMLButtonElement>('[aria-label="Agent 与团队：Agent 角色"]');
+    await act(async () => { result?.click(); await Promise.resolve(); });
+    expect(container.querySelector('[data-settings-search-highlight] [aria-label="角色"]')).not.toBeNull();
+    const teamTab = container.querySelector<HTMLButtonElement>('[role="tab"]');
+    act(() => teamTab?.click());
+    expect(container.querySelector('[aria-label="角色"]')).toBeNull();
+    await act(async () => { result?.click(); await Promise.resolve(); });
+    expect(container.querySelector('[data-settings-search-highlight] [aria-label="角色"]')).not.toBeNull();
+  });
+
+  it("waits for a configuration to exist instead of creating one through search", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "general" });
+    const client = new MockAgentClient();
+    await client.saveIntegrationConfiguration({ mcpServers: [], skillDirectories: [], skills: [], version: 1 });
+    const save = vi.spyOn(client, "saveIntegrationConfiguration");
+    const container = await renderSettings(client);
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="搜索设置"]');
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(search, "MCP 环境变量");
+      search?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { clickButton(container, "MCP：环境变量"); await Promise.resolve(); });
+    expect(useWorkbenchUiStore.getState().settingsSection).toBe("mcp");
+    expect(save).not.toHaveBeenCalled();
+    expect(container.querySelector('.settings-content [role="status"]')?.textContent).toContain("选择或创建");
+    await act(async () => { clickButton(container, "添加 MCP Server"); await Promise.resolve(); });
+    expect(container.querySelector('[data-settings-search-highlight]')?.getAttribute("data-config-path")).toBe("env");
+  });
+
+  it("shows context windows in K while saving integer Token counts", async () => {
+    const client = new MockAgentClient();
+    await client.saveModelConfiguration(saveModelConfigurationInputSchema.parse({
+      apiKey: "example-key", apiFormat: "openai-responses", baseUrl: "https://example.com/v1",
+      providerName: "Example", models: [{ modelId: "example-model", displayName: "Example model", contextWindow: 128000, reasoningOptions: [] }],
+    }));
+    const save = vi.spyOn(client, "saveModelConfiguration");
+    useWorkbenchUiStore.setState({ settingsSection: "models" });
+    const container = await renderSettings(client);
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="example-model的上下文窗口"]');
+    expect(input?.value).toBe("128");
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "200.5");
+      input?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      await vi.waitFor(() => expect(save).toHaveBeenCalled(), { timeout: 2000 });
+    });
+    expect(save.mock.calls.at(-1)?.[0].models[0]?.contextWindow).toBe(200500);
+  });
+
+  it("resizes only the settings menu and resets it to its default width", async () => {
+    const container = await renderSettings(new MockAgentClient());
+    const divider = container.querySelector<HTMLElement>('[aria-label="调整设置菜单宽度"]');
+    expect(divider).not.toBeNull();
+    const projectWidth = useWorkbenchUiStore.getState().projectNavigatorWidth;
+    act(() => { divider?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })); });
+    expect(useWorkbenchUiStore.getState().settingsNavigationWidth).toBe(250);
+    act(() => { divider?.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })); });
+    expect(useWorkbenchUiStore.getState().settingsNavigationWidth).toBe(360);
+    act(() => { divider?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); });
+    expect(useWorkbenchUiStore.getState().settingsNavigationWidth).toBe(240);
+    expect(useWorkbenchUiStore.getState().projectNavigatorWidth).toBe(projectWidth);
+  });
+
   it("opens the selected MCP in the sidebar and refreshes its form after a file save", async () => {
     const client = new MockAgentClient();
     const server = mcpServerConfigurationSchema.parse({

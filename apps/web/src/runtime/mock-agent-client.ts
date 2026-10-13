@@ -22,6 +22,8 @@ import {
   type AddTeamWorkItemCommentInput,
   type DeleteTeamWorkItemInput,
   type BrowserConfiguration,
+  type BrowserSavedPassword,
+  type BrowserPasswordReference,
   type SkillDocumentReferenceInput,
   type SkillDocumentSaveInput,
   type TerminalConfiguration,
@@ -1294,6 +1296,19 @@ export class MockAgentClient implements AgentClient {
 
   public getBrowserConfiguration(): Promise<BrowserConfiguration> {
     return Promise.resolve(structuredClone(this.browserConfiguration));
+  }
+  public chooseBrowserDownloadDirectory(): Promise<string | null> {
+    return Promise.resolve(null);
+  }
+  public getBrowserDefaultDownloadDirectory(): Promise<string> {
+    return Promise.resolve("C:\\Users\\demo\\Downloads");
+  }
+  public getBrowserSavedPasswords(): Promise<BrowserSavedPassword[]> {
+    return Promise.resolve([]);
+  }
+  public revealBrowserPassword(input: BrowserPasswordReference): Promise<string | null> {
+    void input;
+    return Promise.resolve(null);
   }
 
   public clearBrowserData(): Promise<void> {

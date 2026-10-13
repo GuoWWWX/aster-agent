@@ -1,3 +1,4 @@
+/* CSS trigger 2: selected, hover and focus states on workspace tabs. */
 .right-sidebar-workspace {
   display: flex;
   min-height: 0;
@@ -25,8 +26,9 @@
   display: flex;
   min-width: 0;
   flex: 1;
-  align-items: stretch;
-  gap: 1px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 3px;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -37,21 +39,23 @@
 
 .right-sidebar-workspace__tab-shell {
   display: inline-flex;
+  height: calc(var(--app-workspace-header-height) - 6px);
   min-width: 74px;
   max-width: 180px;
   align-items: center;
-  border-right: 1px solid var(--app-border);
+  border: 1px solid transparent;
+  border-radius: var(--app-radius);
   background: transparent;
   color: var(--app-muted-foreground);
 }
 
 .right-sidebar-workspace__tab-shell[data-active="true"] {
-  background: var(--app-panel);
-  color: var(--app-foreground);
-  box-shadow: inset 0 2px 0 var(--app-selection-border);
+  border-color: var(--app-selection-border);
+  background: var(--app-selection);
+  color: var(--app-selection-foreground);
 }
 
-.right-sidebar-workspace__tab-shell:hover {
+.right-sidebar-workspace__tab-shell:hover:not([data-active="true"]) {
   background: var(--app-hover);
   color: var(--app-foreground);
 }

@@ -57,6 +57,21 @@ export default tseslint.config(
   ...tseslint.configs.recommendedTypeChecked,
   reactHooks.configs.flat.recommended,
   {
+    files: ["scripts/*.mjs", "electron-builder.config.cjs"],
+    ...tseslint.configs.disableTypeChecked,
+    languageOptions: {
+      globals: {
+        process: "readonly", console: "readonly", setTimeout: "readonly", clearTimeout: "readonly",
+        URL: "readonly", AbortSignal: "readonly", fetch: "readonly", Response: "readonly",
+        require: "readonly", __dirname: "readonly", module: "readonly"
+      }
+    }
+  },
+  {
+    files: ["electron-builder.config.cjs"],
+    rules: { "@typescript-eslint/no-require-imports": "off" }
+  },
+  {
     files: ["**/*.{ts,tsx,mts,cts}"],
     languageOptions: {
       parserOptions: {

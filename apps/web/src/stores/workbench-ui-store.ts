@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import {
+  DEFAULT_APPLICATION_SETTINGS,
   DEFAULT_TERMINAL_CONFIGURATION,
   type ApplicationAppearanceConfiguration,
   type ConfigurationWorkspaceKind,
@@ -69,6 +70,8 @@ export const FILE_PANEL_WIDTH_RANGE = {
   max: 960,
 } as const;
 
+export const SETTINGS_NAVIGATION_WIDTH_RANGE = { min: 200, max: 360 } as const;
+
 export function clampWorkbenchPanelWidth(
   width: number,
   range: { min: number; max: number },
@@ -77,6 +80,10 @@ export function clampWorkbenchPanelWidth(
 }
 
 type WorkbenchUiState = {
+  uiFontSize: number;
+  chatFontSize: number;
+  codeFontSize: number;
+  setAppearanceFontSize: (field: "uiFontSize" | "chatFontSize" | "codeFontSize", size: number) => void;
   activeActivity: ActivityView;
   agentPromptWorkspaceTarget: AgentPromptWorkspaceTarget | null;
   configurationWorkspaceRevision: number;
@@ -94,6 +101,8 @@ type WorkbenchUiState = {
   openConfigurationWorkspace: (target: ConfigurationWorkspaceTarget) => void;
   projectNavigatorWidth: number;
   settingsSection: SettingsSection;
+  settingsNavigationWidth: number;
+  setSettingsNavigationWidth: (width: number) => void;
   setFilePanelOpen: (isOpen: boolean) => void;
   setFilePanelOpenForConversation: (conversationId: string, isOpen: boolean) => void;
   setFilePanelWidth: (width: number) => void;
@@ -120,6 +129,10 @@ type WorkbenchUiState = {
  * tasks, and agent execution will be queried from AgentClient when available.
  */
 export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
+  uiFontSize: DEFAULT_APPLICATION_SETTINGS.appearance.uiFontSize,
+  chatFontSize: DEFAULT_APPLICATION_SETTINGS.appearance.chatFontSize,
+  codeFontSize: DEFAULT_APPLICATION_SETTINGS.appearance.codeFontSize,
+  setAppearanceFontSize: (field, size) => set({ [field]: size }),
   activeActivity: "conversations",
   agentPromptWorkspaceTarget: null,
   configurationWorkspaceRevision: 0,
@@ -163,6 +176,10 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
   }),
   projectNavigatorWidth: 288,
   settingsSection: "general",
+  settingsNavigationWidth: 240,
+  setSettingsNavigationWidth: (width) => set({
+    settingsNavigationWidth: clampWorkbenchPanelWidth(width, SETTINGS_NAVIGATION_WIDTH_RANGE),
+  }),
   setFilePanelOpen: (isFilePanelOpen) => set({ isFilePanelOpen }),
   setFilePanelOpenForConversation: (conversationId, isOpen) => set((state) => ({
     filePanelOpenByConversationId: {
@@ -189,6 +206,9 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
     })),
   setActiveActivity: (activeActivity) => set({ activeActivity }),
   hydrateAppearance: (appearance) => set({
+    uiFontSize: appearance.uiFontSize,
+    chatFontSize: appearance.chatFontSize,
+    codeFontSize: appearance.codeFontSize,
     filePanelWidth: clampWorkbenchPanelWidth(
       appearance.filePanelWidth,
       FILE_PANEL_WIDTH_RANGE,
@@ -200,6 +220,7 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
       PROJECT_NAVIGATOR_WIDTH_RANGE,
     ),
     themeMode: appearance.themeMode,
+    settingsNavigationWidth: appearance.settingsNavigationWidth,
   }),
   setProjectNavigatorOpen: (isProjectNavigatorOpen) =>
     set({ isProjectNavigatorOpen }),

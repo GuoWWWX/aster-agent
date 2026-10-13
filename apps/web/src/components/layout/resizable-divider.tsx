@@ -48,6 +48,9 @@ type ResizableDividerProps = {
   className?: string;
   collapsed?: boolean;
   collapseThreshold?: number;
+  collapsible?: boolean;
+  defaultSize?: number;
+  keyboardStep?: number;
   direction: ResizeDirection;
   liveResizeId?: string;
   max: number;
@@ -64,6 +67,9 @@ export function ResizableDivider({
   className,
   collapsed = false,
   collapseThreshold = RESIZABLE_PANEL_COLLAPSE_THRESHOLD,
+  collapsible = true,
+  defaultSize,
+  keyboardStep = 16,
   direction,
   liveResizeId,
   max,
@@ -123,12 +129,12 @@ export function ResizableDivider({
         direction,
       );
 
-      const transition = getResizeCollapseTransition(
+      const transition = collapsible ? getResizeCollapseTransition(
         nextWidth,
         min,
         collapseThreshold,
         collapsedDuringDrag,
-      );
+      ) : null;
       if (transition === "collapse") {
         latestWidth = min;
         onResize(min);
@@ -171,12 +177,12 @@ export function ResizableDivider({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
-    const step = 16;
+    const step = keyboardStep;
     const grow = direction === "from-start" ? step : -step;
 
     if (event.key === "Home") {
       event.preventDefault();
-      onResize(min);
+      onResize(defaultSize ?? min);
       return;
     }
 
@@ -197,6 +203,9 @@ export function ResizableDivider({
     <div
       aria-label={ariaLabel}
       aria-orientation="vertical"
+      aria-valuemin={min}
+      aria-valuemax={max}
+      aria-valuenow={size}
       className={cn("resizable-divider", className)}
       data-collapsed={String(collapsed)}
       data-direction={direction}
@@ -204,6 +213,7 @@ export function ResizableDivider({
       tabIndex={0}
       onKeyDown={handleKeyDown}
       onPointerDown={handlePointerDown}
+      onDoubleClick={defaultSize === undefined ? undefined : () => onResize(defaultSize)}
     >
       <span aria-hidden="true" className="resizable-divider__grip" />
     </div>

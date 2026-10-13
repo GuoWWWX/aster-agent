@@ -277,6 +277,26 @@
   flex: 1;
 }
 
+.project-navigator__folder-icon {
+  position: relative;
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.project-navigator__folder-icon::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--app-accent);
+  border-radius: var(--app-radius-small);
+  background: var(--app-panel);
+}
+
 .project-navigator__group-chevron {
   opacity: 0;
   transition: opacity 120ms ease;

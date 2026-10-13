@@ -62,10 +62,14 @@ function applicationSettingsSnapshot(): ApplicationSettings {
       teams: structuredClone(directory.teams),
     },
     appearance: {
+      uiFontSize: workbench.uiFontSize,
+      chatFontSize: workbench.chatFontSize,
+      codeFontSize: workbench.codeFontSize,
       filePanelOpen: workbench.isFilePanelOpen,
       filePanelWidth: workbench.filePanelWidth,
       projectNavigatorOpen: workbench.isProjectNavigatorOpen,
       projectNavigatorWidth: workbench.projectNavigatorWidth,
+      settingsNavigationWidth: workbench.settingsNavigationWidth,
       themeMode: workbench.themeMode,
     },
     general: {

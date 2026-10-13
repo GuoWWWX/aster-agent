@@ -1,4 +1,4 @@
-/* CSS triggers: descendant selectors and responsive container queries. */
+/* CSS triggers: descendant selectors, shared descendant variables and responsive container queries. */
 .agent-team-settings {
   display: flex;
   min-height: 0;
@@ -14,11 +14,12 @@
   min-height: 0;
   flex: 1;
   flex-direction: column;
-  gap: 5px;
+  gap: 24px;
   overflow: hidden;
   border: 0;
   border-radius: 0;
   background: transparent;
+  padding-left: var(--settings-page-inset);
 }
 
 .team-management-toolbar {
@@ -28,11 +29,13 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 5px 10px;
-  order: 2;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius);
-  background: var(--app-panel);
+  padding: 0 0 10px;
+  order: 1;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  border-bottom: 1px solid var(--app-border);
+  margin-right: var(--settings-page-inset);
 }
 
 .team-management-tabs {
@@ -150,30 +153,32 @@
 
 .team-management-layout {
   display: grid;
-  height: 100%;
+  height: auto;
   min-height: 0;
   flex: 1;
   grid-template-columns: var(--settings-list-card-width, 270px) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   gap: 5px;
   order: 3;
+  overflow: hidden;
+  align-items: stretch;
 }
 
 .agent-management-layout {
   display: grid;
-  height: 100%;
+  height: auto;
   min-height: 0;
   flex: 1;
   grid-template-columns: var(--settings-list-card-width, 270px) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   gap: 5px;
   order: 3;
+  overflow: hidden;
+  align-items: stretch;
 }
 
 .team-directory-pane,
-.team-configuration-pane,
-.agent-directory-pane,
-.agent-configuration-pane {
+.agent-directory-pane {
   display: flex;
   height: 100%;
   min-width: 0;
@@ -235,10 +240,10 @@
 }
 
 .team-directory-list,
-.agent-directory-list,
-.management-detail-body {
+.agent-directory-list {
   min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .team-directory-list,
@@ -247,7 +252,19 @@
 }
 
 .management-detail-body {
+  min-height: 0;
+  overflow: visible;
   flex: 1;
+}
+
+.team-configuration-pane > .management-detail-body {
+  display: grid;
+  gap: 5px;
+}
+
+.management-profile-card > .management-form,
+.management-profile-card .management-policy-section:last-child {
+  border-bottom: 0;
 }
 
 .team-directory-footer {
@@ -376,7 +393,7 @@
   place-items: center;
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
-  background: var(--app-panel-subtle);
+  background: var(--app-panel);
   color: var(--app-muted-foreground);
 }
 
@@ -403,8 +420,10 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) 32px;
   gap: 5px;
-  padding: 7px;
-  border-bottom: 1px solid var(--app-border);
+  width: 240px;
+  max-width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
 }
 
 .team-member-add [data-slot="select-trigger"] {
@@ -430,16 +449,62 @@
 
 .team-member-add--complete {
   display: flex;
-  min-height: 39px;
+  min-height: 32px;
+  width: auto;
   align-items: center;
   color: var(--app-muted-foreground);
   font-size: var(--app-font-size-auxiliary);
 }
 
+.team-members-section {
+  --team-member-columns: minmax(200px, 0.72fr) minmax(280px, 1.28fr);
+  padding: 16px;
+}
+
+.team-members-section__heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.team-members-section__heading h3 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  color: var(--app-foreground);
+  font-size: var(--app-font-size-subtitle);
+  font-weight: 600;
+}
+
+.team-members-section__heading h3 span {
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-auxiliary);
+  font-weight: 400;
+}
+
+.team-members-section__heading p {
+  margin: 4px 0 0;
+  color: var(--app-muted-foreground);
+  font-size: var(--app-font-size-auxiliary);
+}
+
+.management-form.team-members-section__controls {
+  padding: 0;
+  border-bottom: 0;
+  margin-bottom: 16px;
+}
+
+.team-members-section__controls .management-form__row,
 .team-member-editor {
   display: grid;
-  grid-template-columns: minmax(238px, 0.78fr) minmax(340px, 1.22fr);
-  border-bottom: 1px solid var(--app-border);
+  grid-template-columns: var(--team-member-columns);
+  gap: 20px;
+  align-items: start;
 }
 
 .team-member-management,
@@ -447,12 +512,9 @@
   min-width: 0;
 }
 
-.team-member-management {
-  border-right: 1px solid var(--app-border);
-}
-
 .team-member-list--embedded {
-  padding-block: 4px 6px;
+  padding: 0;
+  gap: 5px;
 }
 
 .team-member-row {
@@ -475,7 +537,7 @@
 .team-member-row__main {
   display: grid;
   min-width: 0;
-  min-height: 57px;
+  min-height: 48px;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
@@ -524,30 +586,19 @@
 
 .team-member-configuration__heading {
   display: grid;
-  min-height: 56px;
+  min-height: 48px;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 9px;
-  padding: 9px 14px;
-  background: var(--app-panel-subtle);
+  padding: 0 0 12px;
+  background: transparent;
 }
 
-.team-member-configuration__heading p,
 .team-member-configuration__heading h3 {
   margin: 0;
-}
-
-.team-member-configuration__heading p {
-  color: var(--app-muted-foreground);
-  font-size: var(--app-font-size-caption);
-  font-weight: 600;
-}
-
-.team-member-configuration__heading h3 {
-  margin-top: 2px;
   color: var(--app-foreground);
-  font-size: var(--app-font-size-control);
-  font-weight: 700;
+  font-size: var(--app-font-size-body);
+  font-weight: 600;
 }
 
 .team-member-configuration__heading > button {
@@ -723,14 +774,8 @@
 }
 
 .team-member-configuration__form {
+  padding: 0;
   border-bottom: 0;
-}
-
-.team-member-configuration__description {
-  margin: 0;
-  color: var(--app-muted-foreground);
-  font-size: var(--app-font-size-auxiliary);
-  line-height: 1.5;
 }
 
 .management-policy-section {
@@ -995,38 +1040,26 @@
 
 }
 
-@container (max-width: 620px) {
-  .team-member-editor {
-    grid-template-columns: 1fr;
+@container (max-width: 560px) {
+  .team-members-section {
+    --team-member-columns: minmax(0, 1fr);
   }
 
-  .team-member-management {
-    border-right: 0;
-    border-bottom: 1px solid var(--app-border);
+  .team-members-section__heading > .team-member-add {
+    width: 100%;
   }
 }
 
-@container agent-team-settings (max-width: 720px) {
+@container agent-team-settings (max-width: 780px) {
   .team-metrics {
     display: none;
   }
 
-  .agent-team-settings__body {
-    overflow: auto;
-  }
-
   .team-management-layout,
   .agent-management-layout {
-    height: auto;
-    flex: 0 0 auto;
     grid-template-columns: 1fr;
-    grid-template-rows: 220px auto;
-  }
-
-  .team-configuration-pane,
-  .agent-configuration-pane {
-    height: auto;
-    min-height: 420px;
+    grid-template-rows: min(220px, 35%) minmax(0, 1fr);
+    row-gap: 20px;
   }
 
   .management-detail-body {
@@ -1035,8 +1068,8 @@
 
   .team-directory-pane,
   .agent-directory-pane {
-    max-height: 220px;
     border: 1px solid var(--app-border);
+    margin-right: var(--settings-page-inset);
   }
 
 }
@@ -1081,4 +1114,11 @@
     grid-column: 1 / -1;
     grid-row: 2;
   }
+}
+
+.team-configuration-pane, .agent-configuration-pane { min-width: 0; min-height: 0; display: block; overflow: auto; scrollbar-gutter: stable; overscroll-behavior: contain; padding-left: 20px; padding-right: calc(var(--settings-page-inset) - var(--settings-scrollbar-width)); border: 0; background: transparent; }
+.team-configuration-pane > header, .agent-configuration-pane > header { border: 0; padding-left: 0; padding-right: 0; background: transparent; }
+.team-configuration-pane .management-detail-body, .agent-configuration-pane .management-detail-body { padding-left: 0; padding-right: 0; }
+@container agent-team-settings (max-width: 780px) {
+  .team-configuration-pane, .agent-configuration-pane { padding-left: 0; }
 }

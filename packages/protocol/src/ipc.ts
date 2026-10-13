@@ -50,7 +50,7 @@ import {
   writeProjectFileInputSchema
 } from "./project.js";
 import { integrationConfigurationSchema } from "./integration.js";
-import { browserConfigurationSchema } from "./browser.js";
+import { browserConfigurationSchema, browserPasswordReferenceSchema } from "./browser.js";
 import { terminalConfigurationSchema } from "./terminal.js";
 import {
   gitFileDiffInputSchema,
@@ -372,6 +372,7 @@ export const terminalConfigurationIpcArgumentsSchema = z.tuple([
 export const browserConfigurationIpcArgumentsSchema = z.tuple([
   browserConfigurationSchema,
 ]);
+export const browserPasswordReferenceIpcArgumentsSchema = z.tuple([browserPasswordReferenceSchema]);
 
 export const gitReviewIpcArgumentsSchema = z.tuple([gitReviewInputSchema]);
 export const gitFileDiffIpcArgumentsSchema = z.tuple([gitFileDiffInputSchema]);

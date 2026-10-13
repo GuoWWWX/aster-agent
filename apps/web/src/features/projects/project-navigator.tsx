@@ -1210,11 +1210,13 @@ export function ProjectNavigator({
                             openContextMenu(event, { kind: "project", project })
                           }
                         >
-                          {isExpanded ? (
-                            <FolderOpen aria-hidden="true" size={16} />
-                          ) : (
-                            <Folder aria-hidden="true" size={16} />
-                          )}
+                          <span className="project-navigator__folder-icon" aria-hidden="true">
+                            {isExpanded ? (
+                              <FolderOpen size={16} />
+                            ) : (
+                              <Folder size={16} />
+                            )}
+                          </span>
                           <span>{project.name}</span>
                         </button>
                         <div className="project-navigator__project-actions">
