@@ -16,7 +16,6 @@ import {
   FileCode2,
   Globe2,
   LoaderCircle,
-  Layers3,
   MessageSquareText,
   MonitorCog,
   Palette,
@@ -125,7 +124,7 @@ import { useApplicationSettingsStore } from "../../stores/application-settings-s
 import { ModelReasoningOptionsEditor } from "./model-reasoning-options-editor.js";
 import { ModelProfilePicker } from "./model-profile-picker.js";
 import { ProviderIconPicker, ProviderLogo } from "./provider-logo.js";
-import { SettingsCategoryHeading, SettingsConfigurationCard } from "./settings-configuration-card.js";
+import { SettingsCategoryHeading, SettingsConfigurationCard, SettingsConfigurationGroup } from "./settings-configuration-card.js";
 import { matchesSettingsQuery, SETTINGS_SEARCH_ITEMS, type SettingsSearchItem } from "./settings-search.js";
 import {
   getArchivedConversationDaysRemaining,
@@ -1183,6 +1182,14 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
 
   return (
     <SettingsSectionHeader
+      action={(
+        <div className="settings-section-actions">
+          <button className="settings-secondary-button" type="button" onClick={createProvider}>
+            <CirclePlus aria-hidden="true" size={15} />
+            添加供应商
+          </button>
+        </div>
+      )}
       bodyClassName="settings-section__body--models"
       eyebrow="模型协议 · 供应商"
       title="模型配置"
@@ -1191,14 +1198,6 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
         <aside className="settings-provider-list" aria-label="供应商列表">
           <header className="settings-provider-list__heading">
             <strong>供应商</strong>
-            <IconButton
-              className="settings-provider-list__add text-[var(--app-foreground)]"
-              label="添加供应商"
-              size="compact"
-              onClick={createProvider}
-            >
-              <CirclePlus aria-hidden="true" size={18} />
-            </IconButton>
           </header>
 
           <div className="settings-provider-list__body">
@@ -1302,18 +1301,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
             }
           />
           <div className="settings-provider-editor__body">
-          <SettingsConfigurationCard className="settings-provider-profile" aria-label="供应商基本配置">
-          <header className="settings-provider-editor__header">
-            <div className="settings-provider-editor__identity">
-              <ProviderLogo
-                icon={draft.providerIcon}
-                providerName={draft.providerName}
-                size="medium"
-              />
-              <h3>{draft.providerName.trim() || "新供应商"}</h3>
-            </div>
-          </header>
-
+          <SettingsConfigurationGroup cardAriaLabel="供应商基本配置" cardClassName="settings-provider-profile" icon={Boxes} title="基本配置">
           <div className="settings-provider-fields">
             <label>
               供应商名称
@@ -1415,12 +1403,11 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
             </label>
           </div>
 
-          </SettingsConfigurationCard>
+          </SettingsConfigurationGroup>
 
-          <SettingsConfigurationCard className="settings-provider-models" aria-labelledby="provider-models-heading">
+          <SettingsConfigurationGroup cardAriaLabel="模型列表" cardClassName="settings-provider-models" icon={Bot} title="模型列表">
             <div className="settings-provider-models__heading">
               <div className="settings-provider-models__heading-copy">
-                <h4 id="provider-models-heading" className="flex items-center gap-2"><Boxes aria-hidden="true" size={16} />已配置模型</h4>
                 <p>请求使用模型 ID；显示名只用于对话界面。</p>
               </div>
               <div className="settings-provider-models__heading-actions">
@@ -1660,7 +1647,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                 </p>
               </footer>
             ) : null}
-          </SettingsConfigurationCard>
+          </SettingsConfigurationGroup>
 
           {isModelTestDialogOpen ? (
             <div
@@ -1966,8 +1953,7 @@ function GlobalDefaultsSettings({
   onContextCompressionChange: (configuration: ContextCompressionConfiguration) => void;
 }): ReactElement {
   return (
-    <section className="settings-global-configuration" aria-labelledby="global-defaults-heading">
-      <h3 className="sr-only" id="global-defaults-heading">全局配置</h3>
+    <SettingsConfigurationGroup cardClassName="settings-global-configuration p-0" icon={SlidersHorizontal} title="全局配置">
       <div className="settings-global-configuration__body">
         {defaultModelPicker}
         <ContextCompressionSettings
@@ -1975,7 +1961,7 @@ function GlobalDefaultsSettings({
           onConfigurationChange={onContextCompressionChange}
         />
       </div>
-    </section>
+    </SettingsConfigurationGroup>
   );
 }
 
@@ -2639,6 +2625,12 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
       action={(
         <div className="settings-section-actions">
           <ConfigurationModeSwitch mode={mode} onChange={changeMode} />
+          {mode === "visual" ? (
+            <button className="settings-secondary-button" type="button" onClick={addServer}>
+              <CirclePlus aria-hidden="true" size={15} />
+              添加 MCP Server
+            </button>
+          ) : null}
         </div>
       )}
       bodyClassName="settings-section__body--flush"
@@ -2662,7 +2654,6 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
       ) : (
         <div className="settings-integration-manager settings-integration-manager--mcp">
           <ConfigurationList
-            actionLabel="添加 MCP Server"
             emptyLabel="暂无 MCP Server"
             headingLabel="MCP Server"
             icon={PlugZap}
@@ -2673,14 +2664,12 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
               summary: server.transport === "stdio" ? server.command ?? "stdio" : server.url ?? "HTTP",
             }))}
             selectedId={selected?.id ?? null}
-            onAdd={addServer}
             onSelect={setSelectedId}
           />
           {selected === null ? (
             <ConfigurationEmpty icon={PlugZap} label="添加 MCP Server" onAdd={addServer} />
           ) : (
             <section className="settings-integration-editor">
-              <SettingsConfigurationCard>
               <ConfigurationEditorHeader
                 enabled={selected.enabled}
                 fileActionLabel="编辑配置文件"
@@ -2689,8 +2678,7 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
                 onOpenFile={() => void openFileWorkspace()}
                 onToggle={(enabled) => updateServer({ enabled })}
               />
-              <div className="settings-integration-editor__body">
-                <SettingsCategoryHeading icon={PlugZap}>基础与连接</SettingsCategoryHeading>
+              <SettingsConfigurationCard aria-label="MCP 基本配置">
                 <div className="settings-field-grid">
                   <ConfigurationField configPath="name" label="名称">
                     <input value={selected.name} onChange={(event) => updateServer({ name: event.target.value })} />
@@ -2716,6 +2704,10 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
                     </Select>
                   </ConfigurationField>
                   <ScopeField configPath="scope" scope={selected.scope} onChange={(scope) => updateServer({ scope })} />
+                </div>
+              </SettingsConfigurationCard>
+              <SettingsConfigurationGroup icon={selected.transport === "stdio" ? Terminal : Globe2} title={selected.transport === "stdio" ? "启动参数" : "连接地址"}>
+                <div className="settings-field-grid">
                   {selected.transport === "stdio" ? (
                     <ConfigurationField className="settings-field--wide" configPath="command" label="命令">
                       <input value={selected.command ?? ""} onChange={(event) => updateServer({ command: event.target.value })} />
@@ -2731,18 +2723,19 @@ function McpSettings({ agentClient }: { agentClient: AgentClient }): ReactElemen
                     </ConfigurationField>
                   ) : null}
                 </div>
+              </SettingsConfigurationGroup>
+              <SettingsConfigurationGroup icon={Database} title={selected.transport === "stdio" ? "环境变量" : "请求头"}>
                 {selected.transport === "stdio" ? (
                   <KeyValueEditor configPath="env" label="环境变量" value={selected.env} onChange={(env) => updateServer({ env })} />
                 ) : (
                   <KeyValueEditor configPath="headers" label="请求头" value={selected.headers} onChange={(headers) => updateServer({ headers })} />
                 )}
-              </div>
+              </SettingsConfigurationGroup>
               <ConfigurationEditorFooter
                 error={state.error}
                 saveState={state.autoSaveState}
                 onDelete={deleteSelected}
               />
-              </SettingsConfigurationCard>
             </section>
           )}
         </div>
@@ -2925,14 +2918,21 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
               <Trash2 aria-hidden="true" size={16} />
             </IconButton>
           ) : null}
-          <button
-            className="settings-secondary-button"
+          <IconButton
             disabled={isDiscovering}
-            type="button"
+            label="添加外部目录"
             onClick={() => void chooseSkillDirectory()}
           >
-            <FolderOpen aria-hidden="true" size={15} />
-            添加外部目录
+            <FolderOpen aria-hidden="true" size={16} />
+          </IconButton>
+          <button
+            className="settings-secondary-button"
+            disabled={creationDirectoryPath === null}
+            type="button"
+            onClick={() => void createSkill()}
+          >
+            <CirclePlus aria-hidden="true" size={15} />
+            新建 Skill
           </button>
         </div>
       )}
@@ -2945,7 +2945,6 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
       ) : (
         <div className="settings-integration-manager settings-integration-manager--skill">
           <ConfigurationList
-            actionLabel="新建 Skill"
             emptyLabel="暂无 Skill"
             headingLabel="Skill 列表"
             icon={Sparkles}
@@ -2956,14 +2955,12 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
               summary: skill.entryPath,
             }))}
             selectedId={selected?.id ?? null}
-            onAdd={() => void createSkill()}
             onSelect={setSelectedId}
           />
           {selected === null ? (
             <ConfigurationEmpty icon={Sparkles} label="新建 Skill" onAdd={() => void createSkill()} />
           ) : (
             <section className="settings-integration-editor settings-skill-metadata">
-              <SettingsConfigurationCard>
               <ConfigurationEditorHeader
                 enabled={selected.enabled}
                 fileActionLabel="编辑文档"
@@ -2972,8 +2969,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                 onOpenFile={() => void openFileWorkspace()}
                 onToggle={(enabled) => updateSkill({ enabled })}
               />
-              <div className="settings-integration-editor__body">
-                <SettingsCategoryHeading icon={Layers3}>使用范围与依赖</SettingsCategoryHeading>
+              <SettingsConfigurationCard aria-label="Skill 基本配置">
                 <div className="settings-field-grid settings-skill-fields">
                   <ConfigurationField className="settings-field--wide" label="SKILL.md 路径">
                     <input readOnly title={selected.entryPath} value={selected.entryPath} />
@@ -2988,8 +2984,9 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                     />
                   </ConfigurationField>
                 </div>
-                <section aria-label="Skill 文档预览" className="mt-4 min-w-0 border-t border-[var(--app-border)] pt-4">
-                  <h4 className="mb-2 flex items-center gap-2 text-[length:var(--app-font-size-auxiliary)] font-semibold text-[var(--app-muted-foreground)]"><Eye aria-hidden="true" size={15} />文档预览</h4>
+              </SettingsConfigurationCard>
+              <SettingsConfigurationGroup cardAriaLabel="Skill 文档预览" icon={Eye} title="文档预览">
+                <div className="min-w-0">
                   {skillPreview === null ? (
                     <p className="text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
                       {isDiscovering ? "正在读取文档…" : "未找到 Skill 文档。"}
@@ -3000,8 +2997,8 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                       <AgentMarkdown content={skillPreview.body} />
                     </>
                   )}
-                </section>
-              </div>
+                </div>
+              </SettingsConfigurationGroup>
               <footer className="settings-integration-editor__footer">
                 <div>
                   {state.error === null
@@ -3015,7 +3012,6 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                   </button>
                 </div>
               </footer>
-              </SettingsConfigurationCard>
             </section>
           )}
         </div>
@@ -3033,21 +3029,17 @@ function ConfigurationStatus({ error }: { error: string | null }): ReactElement 
 }
 
 function ConfigurationList({
-  actionLabel,
   emptyLabel,
   headingLabel,
   icon: Icon,
   items,
-  onAdd,
   onSelect,
   selectedId,
 }: {
-  actionLabel: string;
   emptyLabel: string;
   headingLabel: string;
   icon: LucideIcon;
   items: { enabled: boolean; id: string; name: string; summary: string }[];
-  onAdd: () => void;
   onSelect: (id: string) => void;
   selectedId: string | null;
 }): ReactElement {
@@ -3070,14 +3062,6 @@ function ConfigurationList({
     <aside className="settings-integration-list">
       <header className="settings-integration-list__heading">
         <strong>{headingLabel}</strong>
-        <IconButton
-          className="settings-integration-list__add text-[var(--app-foreground)]"
-          label={actionLabel}
-          size="compact"
-          onClick={onAdd}
-        >
-          <CirclePlus aria-hidden="true" size={18} />
-        </IconButton>
       </header>
       <div className="settings-integration-list__items">
         {items.length === 0 ? <p>{emptyLabel}</p> : pagedItems.map((item) => (
@@ -3171,7 +3155,8 @@ function ConfigurationEditorHeader({
     <header className="settings-integration-editor__header">
       <span className="settings-configuration-row__icon"><Icon aria-hidden="true" size={16} /></span>
       <div>
-        <h3>{name.trim() || "未命名配置"}</h3>
+        <h3>基本配置</h3>
+        <p>{name.trim() || "未命名配置"}</p>
       </div>
       <button className="settings-secondary-button" type="button" onClick={onOpenFile}>
         <PanelRight aria-hidden="true" size={15} />

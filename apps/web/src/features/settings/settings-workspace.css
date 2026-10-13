@@ -173,6 +173,14 @@
   align-items: center;
   justify-content: flex-end;
   gap: 7px;
+  margin-left: auto;
+}
+
+.settings-configuration-group__title::after {
+  height: 1px;
+  flex: 1;
+  background: var(--app-border);
+  content: "";
 }
 
 .settings-section__description {
@@ -239,10 +247,6 @@
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
   background: var(--app-panel);
-}
-
-.settings-provider-editor > .settings-global-configuration {
-  margin-bottom: 5px;
 }
 
 .settings-configuration-card input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
@@ -2040,12 +2044,6 @@
   background: #16a34a;
 }
 
-.settings-integration-list__add {
-  width: 32px;
-  height: 32px;
-  flex: 0 0 auto;
-}
-
 .settings-integration-list__footer {
   display: flex;
   height: var(--settings-list-card-footer-height);
@@ -2061,9 +2059,12 @@
 }
 
 .settings-integration-editor {
-  display: block;
+  display: grid;
   min-width: 0;
   min-height: 0;
+  align-content: start;
+  grid-auto-rows: max-content;
+  gap: 18px;
   overflow: auto;
   scrollbar-gutter: stable;
   overscroll-behavior: contain;
@@ -2081,7 +2082,7 @@
   align-items: center;
   gap: 9px;
   border-bottom: 0;
-  padding: 0 0 20px;
+  padding: 0;
 }
 
 .settings-integration-editor__header > div {
@@ -2108,12 +2109,6 @@
 .settings-integration-editor__header p {
   color: var(--app-muted-foreground);
   font-size: var(--app-font-size-auxiliary);
-}
-
-.settings-integration-editor__body {
-  min-height: 0;
-  overflow: visible;
-  padding: 0;
 }
 
 .settings-field-grid {
@@ -2226,8 +2221,27 @@
   min-height: 44px;
   align-items: center;
   gap: 7px;
-  border-top: 1px solid var(--app-border);
-  padding: 8px 12px;
+  border-top: 0;
+  padding: 0;
+}
+
+.settings-configuration-group .settings-key-value-editor {
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.settings-configuration-group .settings-key-value-editor h4 {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+.settings-configuration-group .settings-key-value-editor header {
+  justify-content: flex-end;
 }
 
 .settings-integration-editor__footer > div {
@@ -2257,7 +2271,7 @@
 }
 
 .settings-skill-source-select {
-  width: min(260px, 28vw);
+  width: min(190px, 22vw);
 }
 
 .settings-skill-metadata__actions {
@@ -2520,7 +2534,6 @@
 }
 
 .settings-integration-list__item:focus-visible,
-.settings-integration-list__add:focus-visible,
 .settings-field input:focus-visible,
 .settings-field textarea:focus-visible,
 .settings-key-value-editor input:focus-visible,
@@ -2565,10 +2578,6 @@
 
   .settings-skill-document {
     min-height: 520px;
-  }
-
-  .settings-integration-editor__body {
-    overflow: visible;
   }
 
   .settings-field-grid {
@@ -3373,12 +3382,6 @@
   font-weight: 700;
 }
 
-.settings-provider-list__add {
-  width: 32px;
-  height: 32px;
-  flex: 0 0 auto;
-}
-
 .settings-provider-list__body {
   display: flex;
   min-height: 0;
@@ -3538,9 +3541,12 @@
 }
 
 .settings-provider-editor {
-  display: block;
+  display: grid;
   min-width: 0;
   min-height: 0;
+  align-content: start;
+  grid-auto-rows: max-content;
+  gap: 18px;
   overflow: auto;
   scrollbar-gutter: stable;
   overscroll-behavior: contain;
@@ -3551,18 +3557,6 @@
   padding-right: calc(var(--settings-page-inset) - var(--settings-scrollbar-width));
 }
 
-.settings-provider-editor__header {
-  display: flex;
-  min-height: 50px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border-bottom: 0;
-  padding: 0 0 20px;
-}
-
-.settings-provider-editor__header h3,
-.settings-provider-models__heading h4,
 .settings-provider-models__heading p,
 .settings-provider-editor__footer p {
   margin: 0;
@@ -3574,31 +3568,12 @@
   font-size: var(--app-font-size-control);
 }
 
-.settings-provider-editor__header h3 {
-  color: var(--app-foreground);
-  font-size: var(--app-font-size-title);
-  font-weight: 700;
-}
-
-.settings-provider-editor__identity {
-  display: inline-flex;
-  min-width: 0;
-  align-items: center;
-  gap: 8px;
-}
-
-.settings-provider-editor__identity h3 {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .settings-provider-editor__body {
   display: flex;
   min-width: 0;
   min-height: 0;
   flex-direction: column;
-  gap: 5px;
+  gap: 18px;
   overflow: visible;
   overscroll-behavior: contain;
   container-type: inline-size;
@@ -3691,12 +3666,6 @@
   gap: 8px;
 }
 
-.settings-provider-models__heading h4 {
-  color: var(--app-foreground);
-  font-size: var(--app-font-size-body);
-  font-weight: 700;
-}
-
 .settings-provider-models .settings-model-list {
   height: auto;
   min-height: 0;
@@ -3711,13 +3680,6 @@
   padding: 10px 16px;
 }
 
-.settings-provider-profile .settings-provider-editor__header {
-  height: auto;
-  min-height: 32px;
-  flex: 0 0 auto;
-  padding: 0 0 16px;
-}
-
 .settings-provider-models > .settings-provider-editor__footer {
   height: auto;
   min-height: 0;
@@ -3730,8 +3692,7 @@
   background: var(--settings-control-background);
 }
 
-.settings-provider-list__heading,
-.settings-provider-editor__header {
+.settings-provider-list__heading {
   height: var(--settings-list-card-header-height);
   flex: 0 0 var(--settings-list-card-header-height);
 }
@@ -3748,9 +3709,7 @@
   background: var(--app-panel);
 }
 
-[data-theme="dark"] .settings-provider-list__identity strong,
-[data-theme="dark"] .settings-provider-editor__header h3,
-[data-theme="dark"] .settings-provider-models__heading h4 {
+[data-theme="dark"] .settings-provider-list__identity strong {
   color: var(--app-foreground);
 }
 
@@ -3823,22 +3782,6 @@
 }
 
 @container (max-width: 560px) {
-  .settings-integration-editor__header {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-  }
-
-  .settings-integration-editor__header > .settings-switch {
-    grid-column: 3;
-    grid-row: 1;
-  }
-
-  .settings-integration-editor__header > .settings-secondary-button {
-    grid-column: 1 / -1;
-    grid-row: 2;
-    justify-self: end;
-  }
-
   .settings-provider-models__heading {
     flex-wrap: wrap;
   }
