@@ -454,6 +454,11 @@ function sendConversationRunEvent(event: unknown): void {
     IPC_CHANNELS.conversationRunEvent,
     validated,
   );
+  if (validated.type === "conversation.open_requested") {
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+  }
 }
 
 async function openMainWindow(): Promise<void> {
@@ -568,7 +573,7 @@ async function bootstrap(): Promise<void> {
   if (process.env.ASTER_CONTROL_ENABLED === "1") {
     const control = new ConversationControl(services.database, services.conversationLifecycle,
       services.agentRuntime, services.eventProjector, services.applicationSettings,
-      services.teamWorkItems, sendConversationRunEvent);
+      services.teamWorkItems, sendConversationRunEvent, services.credentials);
     localControl = new LocalControlServer((command) => control.execute(command),
       (error) => reportUnhandledError(error, "local_control.command"));
     const connectionPath = path.join(app.getPath("userData"), "local-control.json");

@@ -23,6 +23,17 @@ afterEach(() => {
 });
 
 describe("useProjectSessions", () => {
+  it("selects a backend-opened conversation immediately without reload", async () => {
+    let emit: ((event: ConversationRunEvent) => void) | null = null;
+    const client = { listConversationHierarchy: () => Promise.resolve([]), onConversationRunEvent(listener: (event: ConversationRunEvent) => void) { emit = listener; return () => {}; } } as unknown as AgentClient;
+    let controller!: ReturnType<typeof useProjectSessions>;
+    function Harness(): ReactElement { controller = useProjectSessions(client, null); return <div>{controller.activeSession?.title}</div>; }
+    const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => { root?.render(<Harness />); await Promise.resolve(); });
+    act(() => { emit?.({ type: "conversation.open_requested", conversation: createConversation() }); });
+    expect(controller.activeSessionId).toBe(createConversation().id);
+    expect(container.textContent).toBe("后台会话");
+  });
   it("opens and acknowledges the unread Team member represented by a read Lead's activity row", async () => {
     const lead = { ...createConversation(), title: "Team Lead · 默认团队", threadKind: "team_lead" as const, teamWorkItemId: crypto.randomUUID() };
     const member = { ...createConversation(crypto.randomUUID()), title: "前端开发 · 默认团队", parentConversationId: lead.id,

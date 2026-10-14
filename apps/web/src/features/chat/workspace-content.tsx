@@ -1808,7 +1808,7 @@ export function ConversationWorkspace({
         }
         return;
       }
-      if (event.conversationId !== session.id) {
+      if (event.type === "conversation.open_requested" || event.conversationId !== session.id) {
         return;
       }
 

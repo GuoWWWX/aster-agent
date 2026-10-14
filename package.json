@@ -20,6 +20,7 @@
     "lint": "pnpm lint:scripts && pnpm --recursive --if-present run lint",
     "typecheck": "pnpm --recursive --if-present run typecheck",
     "test:scripts": "node --test scripts/*.test.mjs",
+    "test:control": "node --test scripts/aster-control.test.mjs && pnpm --filter @agent/desktop exec vitest run src/main/control --maxWorkers=1 && pnpm --filter @agent/web exec vitest run src/features/projects/use-project-sessions.test.tsx --maxWorkers=1",
     "test": "pnpm test:scripts && pnpm --recursive --if-present run test",
     "build": "pnpm --recursive --if-present run build"
   },
