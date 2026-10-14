@@ -522,6 +522,38 @@
   padding: 4px 0;
 }
 
+.conversation-workspace__loading {
+  min-height: 120px;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  align-self: stretch;
+  gap: 12px;
+  font-size: var(--app-font-size-subtitle);
+}
+
+.conversation-workspace__loading-mark {
+  position: relative;
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border: 1px solid var(--app-border);
+  border-radius: 50%;
+  background: var(--app-panel-subtle);
+  color: var(--app-accent);
+}
+
+.conversation-workspace__loading-mark::after {
+  position: absolute;
+  inset: -4px;
+  border: 2px solid transparent;
+  border-top-color: var(--app-accent);
+  border-radius: 50%;
+  content: "";
+  animation: conversation-workspace-spin 1.6s linear infinite;
+}
+
 .conversation-workspace__blank {
   margin: auto;
 }
@@ -3121,6 +3153,11 @@ button.tool-file-change__path:hover {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .conversation-workspace__loading-mark::after {
+    animation: none;
+    transform: rotate(35deg);
+  }
+
   .conversation-workspace__reasoning-range,
   .conversation-workspace__reasoning-thumb,
   .conversation-workspace__reasoning-track {

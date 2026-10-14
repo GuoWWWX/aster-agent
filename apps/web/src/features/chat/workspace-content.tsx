@@ -3167,7 +3167,9 @@ export function ConversationWorkspace({
           ) : null}
           {isLoadingTimeline ? (
             <div className="conversation-workspace__loading" role="status">
-              <LoaderCircle aria-hidden="true" size={17} />
+              <span className="conversation-workspace__loading-mark" aria-hidden="true">
+                <MessageSquareText size={23} strokeWidth={1.75} />
+              </span>
               <span>正在加载对话</span>
             </div>
           ) : displayTimeline.length === 0 && runProgresses.length === 0 && modelActivity === null ? (

@@ -74,6 +74,31 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it("centers the loading state in the message area while keeping the composer available", async () => {
+  const client = new MockAgentClient();
+  let finishLoading: (items: ConversationTimelineItem[]) => void = () => {};
+  const timeline = new Promise<ConversationTimelineItem[]>((resolve) => { finishLoading = resolve; });
+  vi.spyOn(client, "listConversationTimeline").mockReturnValue(timeline);
+  const container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+
+  act(() => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      session={session({ id: PARENT_ID, title: "加载中的对话" })} /></TooltipProvider>);
+  });
+  expect(container.querySelector('[aria-label="对话记录"] > .conversation-workspace__loading')).not.toBeNull();
+  expect(container.querySelector(".conversation-workspace__loading-mark")).not.toBeNull();
+  expect(container.querySelector(".conversation-workspace__composer")).not.toBeNull();
+
+  await act(async () => {
+    finishLoading([]);
+    await timeline;
+    await flushConversationWorkspace();
+  });
+  expect(container.querySelector(".conversation-workspace__loading")).toBeNull();
+});
+
 describe("Automatic continuation answer", () => {
   it("renders one timer after a team request, never above its bubble", async () => {
     const client = new MockAgentClient();
