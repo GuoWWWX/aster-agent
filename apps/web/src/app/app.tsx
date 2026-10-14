@@ -729,6 +729,13 @@ export function App(): ReactElement {
           }
           onRenameTeamInstance={renameTeamInstance}
           onReorderSessions={(sessionIds) => projectSessions.reorderSessions(sessionIds)}
+          onSetSessionProject={async (sessionId, projectId) => {
+            const moved = await projectSessions.setSessionProject(sessionId, projectId);
+            if (moved && projectSessions.activeSessionId === sessionId) {
+              projectTree.selectProject(projectId);
+            }
+            return moved;
+          }}
           onReorderTeamInstances={reorderTeamInstances}
           onSelectSession={(sessionId) => {
             setNavigatorLocateRequest(null);

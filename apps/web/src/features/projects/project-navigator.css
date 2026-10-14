@@ -227,6 +227,12 @@
   background: var(--app-hover);
 }
 
+.project-navigator__project-row[data-drop-project="true"],
+.project-navigator__temporary[data-drop-project="true"] > .project-navigator__project-row {
+  background: var(--app-hover);
+  box-shadow: inset 0 0 0 1px var(--app-accent);
+}
+
 .project-navigator__project-toggle {
   display: grid;
   width: 22px;
@@ -283,6 +289,7 @@
   width: 16px;
   height: 16px;
   flex: 0 0 16px;
+  color: color-mix(in srgb, var(--project-folder-accent-start) 30%, var(--app-muted-foreground));
 }
 
 .project-navigator__folder-icon::after {
@@ -290,11 +297,13 @@
   position: absolute;
   right: 0;
   bottom: 0;
-  width: 7px;
-  height: 7px;
-  border: 1px solid var(--app-accent);
-  border-radius: var(--app-radius-small);
-  background: var(--app-panel);
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--app-panel);
+  border-radius: 50%;
+  background: linear-gradient(135deg,
+    var(--project-folder-accent-start), var(--project-folder-accent-end));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--project-folder-accent-end) 55%, transparent);
 }
 
 .project-navigator__group-chevron {

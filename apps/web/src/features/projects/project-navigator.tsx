@@ -37,6 +37,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type DragEvent,
   type MouseEvent,
   type ReactElement,
@@ -54,6 +55,7 @@ import type {
 } from "@agent/protocol";
 
 import { WorkbenchPanel } from "../../components/layout/panel.js";
+import { projectAccent } from "../../components/layout/project-accent.js";
 import { IconButton } from "../../components/ui/icon-button.js";
 import {
   Popover,
@@ -115,6 +117,7 @@ type ProjectNavigatorProps = {
   onRenameProject: (projectId: string, name: string) => Promise<boolean>;
   onRenameSession: (sessionId: string, title: string) => Promise<boolean>;
   onReorderSessions: (sessionIds: string[]) => Promise<boolean>;
+  onSetSessionProject: (sessionId: string, projectId: string | null) => Promise<boolean>;
   onReorderTeamInstances: (teamInstanceIds: string[]) => Promise<boolean>;
   onSelectSession: (sessionId: string) => void;
   onKeepSession?: (sessionId: string) => void;
@@ -356,6 +359,7 @@ export function ProjectNavigator({
   onRenameSession,
   onRenameTeamInstance,
   onReorderSessions,
+  onSetSessionProject,
   onReorderTeamInstances,
   onSelectSession,
   onKeepSession,
@@ -403,6 +407,7 @@ export function ProjectNavigator({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [dragItem, setDragItem] = useState<NavigatorDragItem | null>(null);
   const [dropIndicator, setDropIndicator] = useState<NavigatorDropIndicator | null>(null);
+  const [dropProjectId, setDropProjectId] = useState<string | null | undefined>(undefined);
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const sortLabel = NAVIGATOR_SORT_OPTIONS.find(
     (option) => option.value === sortOption,
@@ -451,12 +456,23 @@ export function ProjectNavigator({
     setDragPreview(event);
     setDragItem(item);
     setDropIndicator(null);
+    setDropProjectId(undefined);
   }
 
   function updateDropIndicator(
     event: DragEvent<HTMLElement>,
     target: NavigatorDragItem,
   ): void {
+    if (dragItem?.kind === "session" && target.kind === "session"
+      && dragItem.groupKey !== target.groupKey) {
+      const projectId = target.groupKey === "session:temporary"
+        ? null
+        : target.groupKey.startsWith("session:project:")
+          ? target.groupKey.slice("session:project:".length)
+          : undefined;
+      if (projectId !== undefined && updateProjectDrop(event, projectId)) return;
+    }
+    setDropProjectId(undefined);
     if (
       dragItem === null
       || dragItem.kind !== target.kind
@@ -479,6 +495,41 @@ export function ProjectNavigator({
   function finishDrag(): void {
     setDragItem(null);
     setDropIndicator(null);
+    setDropProjectId(undefined);
+  }
+
+  function updateProjectDrop(event: DragEvent<HTMLElement>, projectId: string | null): boolean {
+    if (dragItem?.kind !== "session") return false;
+    const source = sessions.find((session) => session.id === dragItem.id);
+    if (source === undefined || source.projectId === projectId) return false;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    setDropIndicator(null);
+    setDropProjectId(projectId);
+    return true;
+  }
+
+  function moveSessionToProject(event: DragEvent<HTMLElement>, projectId: string | null): boolean {
+    if (dragItem?.kind !== "session") return false;
+    event.preventDefault();
+    event.stopPropagation();
+    const session = sessions.find((candidate) => candidate.id === dragItem.id);
+    finishDrag();
+    if (session === undefined || session.projectId === projectId) return true;
+    void onSetSessionProject(session.id, projectId).then((moved) => {
+      if (!moved) return;
+      if (projectId === null) setIsTemporaryGroupExpanded(true);
+      else {
+        setIsProjectsGroupExpanded(true);
+        setExpandedProjectIds((current) => new Set(current).add(projectId));
+        setCollapsedProjectIds((current) => {
+          const next = new Set(current);
+          next.delete(projectId);
+          return next;
+        });
+      }
+    });
+    return true;
   }
 
   function dropItem(
@@ -487,6 +538,19 @@ export function ProjectNavigator({
     groupIds: readonly string[],
   ): void {
     event.preventDefault();
+    event.stopPropagation();
+    if (dragItem?.kind === "session" && target.kind === "session"
+      && dragItem.groupKey !== target.groupKey) {
+      const projectId = target.groupKey === "session:temporary"
+        ? null
+        : target.groupKey.startsWith("session:project:")
+          ? target.groupKey.slice("session:project:".length)
+          : undefined;
+      if (projectId !== undefined) {
+        moveSessionToProject(event, projectId);
+        return;
+      }
+    }
     if (
       dragItem === null
       || dropIndicator === null
@@ -1146,6 +1210,7 @@ export function ProjectNavigator({
                   const projectGroupIds = visibleProjects
                     .filter((candidate) => candidate.isPinned === project.isPinned)
                     .map((candidate) => candidate.id);
+                  const folderAccent = projectAccent(project, tree.projects);
 
                   return (
                     <li
@@ -1156,6 +1221,7 @@ export function ProjectNavigator({
                       <div
                         className="project-navigator__project-row"
                         data-dragging={dragItem?.kind === "project" && dragItem.id === project.id}
+                        data-drop-project={dropProjectId === project.id || undefined}
                         data-drop-position={
                           dropIndicator?.kind === "project" && dropIndicator.id === project.id
                             ? dropIndicator.position
@@ -1167,21 +1233,27 @@ export function ProjectNavigator({
                           && projectGroupIds.length > 1
                         }
                         onDragEnd={finishDrag}
-                        onDragOver={(event) => updateDropIndicator(event, {
-                          groupKey: projectGroupKey,
-                          id: project.id,
-                          kind: "project",
-                        })}
+                        onDragOver={(event) => {
+                          if (updateProjectDrop(event, project.id)) return;
+                          updateDropIndicator(event, {
+                            groupKey: projectGroupKey,
+                            id: project.id,
+                            kind: "project",
+                          });
+                        }}
                         onDragStart={(event) => startDrag(event, {
                           groupKey: projectGroupKey,
                           id: project.id,
                           kind: "project",
                         }, ".project-navigator__project-actions")}
-                        onDrop={(event) => dropItem(event, {
-                          groupKey: projectGroupKey,
-                          id: project.id,
-                          kind: "project",
-                        }, projectGroupIds)}
+                        onDrop={(event) => {
+                          if (moveSessionToProject(event, project.id)) return;
+                          dropItem(event, {
+                            groupKey: projectGroupKey,
+                            id: project.id,
+                            kind: "project",
+                          }, projectGroupIds);
+                        }}
                       >
                         <button
                           aria-expanded={isExpanded}
@@ -1208,7 +1280,14 @@ export function ProjectNavigator({
                             openContextMenu(event, { kind: "project", project })
                           }
                         >
-                          <span className="project-navigator__folder-icon" aria-hidden="true">
+                          <span
+                            className="project-navigator__folder-icon"
+                            aria-hidden="true"
+                            style={{
+                              "--project-folder-accent-start": folderAccent?.[0],
+                              "--project-folder-accent-end": folderAccent?.[1],
+                            } as CSSProperties}
+                          >
                             {isExpanded ? (
                               <FolderOpen size={16} />
                             ) : (
@@ -1283,7 +1362,6 @@ export function ProjectNavigator({
                                 draggable={
                                   sortOption === "custom"
                                   && normalizedQuery.length === 0
-                                  && visibleSessions.length > 1
                                 }
                                 dragging={dragItem?.kind === "session" && dragItem.id === session.id}
                                 dropPosition={
@@ -1464,6 +1542,9 @@ export function ProjectNavigator({
                     : ""
                 }`}
                 aria-label="临时对话"
+                data-drop-project={dropProjectId === null || undefined}
+                onDragOver={(event) => { updateProjectDrop(event, null); }}
+                onDrop={(event) => { moveSessionToProject(event, null); }}
               >
                 <NavigatorGroupHeader
                   action={{
@@ -1489,7 +1570,6 @@ export function ProjectNavigator({
                       draggable={
                         sortOption === "custom"
                         && normalizedQuery.length === 0
-                        && visibleTemporarySessions.length > 1
                       }
                       dragging={dragItem?.kind === "session" && dragItem.id === session.id}
                       dropPosition={
