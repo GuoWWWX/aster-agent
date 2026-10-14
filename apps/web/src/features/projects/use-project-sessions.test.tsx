@@ -111,6 +111,23 @@ describe("useProjectSessions", () => {
     expect(listConversationHierarchy).toHaveBeenCalledTimes(1);
   });
 
+  it("shows a background-created conversation before a Run starts without a focus or reload", async () => {
+    let emit: ((event: ConversationRunEvent) => void) | null = null;
+    const listConversationHierarchy = vi.fn(() => Promise.resolve([]));
+    const client = { listConversationHierarchy, onConversationRunEvent(listener: (event: ConversationRunEvent) => void) {
+      emit = listener; return () => { emit = null; };
+    } } as unknown as AgentClient;
+    function Harness(): ReactElement {
+      const sessions = useProjectSessions(client, null);
+      return <div>{sessions.sessions.map((session) => <span key={session.id}>{session.title}</span>)}</div>;
+    }
+    const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => { root?.render(<Harness />); await Promise.resolve(); });
+    act(() => { emit?.({ type: "conversation.updated", conversation: createConversation() }); });
+    expect(container.textContent).toContain("后台会话");
+    expect(listConversationHierarchy).toHaveBeenCalledTimes(1);
+  });
+
   it("refreshes the session list when a run event references an unknown conversation", async () => {
     const conversation = createConversation();
     let conversations: ConversationSummary[] = [];

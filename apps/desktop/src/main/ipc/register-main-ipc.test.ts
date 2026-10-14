@@ -39,6 +39,7 @@ describe("result viewed IPC notification", () => {
     updatedAt: "2026-10-09T00:00:00.000Z", workspaceRootPath: null,
   };
   let invoke: (event: IpcMainInvokeEvent, input: unknown) => Promise<unknown>;
+  let dependencies: Parameters<typeof registerMainIpcHandlers>[1];
   const event = { sender: {} } as IpcMainInvokeEvent;
 
   beforeEach(() => {
@@ -48,7 +49,7 @@ describe("result viewed IPC notification", () => {
     markViewed.mockReturnValue(conversation);
     const unsubscribe = () => undefined;
     // Only subscription owners and the handler's lifecycle owner are used at registration.
-    const dependencies = {
+    dependencies = {
       scheduledTasks,
       credentials: { deleteProvider },
       skillDocuments: { deleteDocument: deleteSkill },
@@ -58,12 +59,29 @@ describe("result viewed IPC notification", () => {
       workspaceBrowserTabs: { onOpenRequested: () => unsubscribe, onCloseRequested: () => unsubscribe, dispose: unsubscribe },
       managedBrowser: { onEvent: () => unsubscribe, getSavedPasswords: listPasswords, revealPassword },
       browserConfiguration: { getConfiguration: () => DEFAULT_BROWSER_CONFIGURATION },
-      conversationLifecycle: { markConversationResultViewed: markViewed },
+      conversationLifecycle: { markConversationResultViewed: markViewed, createConversation: () => conversation },
     } as unknown as Parameters<typeof registerMainIpcHandlers>[1];
     dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
     invoke = electron.handle.mock.calls.find(([channel]) => channel === IPC_CHANNELS.conversationMarkResultViewed)![1];
   });
   afterEach(() => { dispose?.(); dispose = undefined; });
+
+  it("publishes IPC creation through the shared observer after persistence", async () => {
+    dispose?.();
+    // The trusted window is the same object returned to the sender validator.
+    const trustedWindow = { isDestroyed: () => false, on: vi.fn(), webContents: { send } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(trustedWindow);
+    const publish = vi.fn();
+    dispose = registerMainIpcHandlers(() => trustedWindow, dependencies, { resumePendingMessages: false, emitConversationRunEvent: publish });
+    const frame = {};
+    const trusted = { sender: { mainFrame: frame }, senderFrame: frame } as IpcMainInvokeEvent;
+    const create = electron.handle.mock.calls.filter(([channel]) => channel === IPC_CHANNELS.conversationCreate).at(-1)![1];
+    await expect(create(trusted, {})).resolves.toEqual(conversation);
+    expect(publish).toHaveBeenCalledExactlyOnceWith({ type: "conversation.updated", conversation });
+    expect(send).not.toHaveBeenCalled();
+    await expect(create(trusted, { extra: true })).rejects.toThrow();
+    expect(publish).toHaveBeenCalledTimes(1);
+  });
 
   it("validates scheduled task commands before calling their owner and rejects untrusted senders", async () => {
     const frame = {};

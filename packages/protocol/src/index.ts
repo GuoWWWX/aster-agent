@@ -660,3 +660,4 @@ export { windowStateSchema } from "./window.js";
 export type { WindowState } from "./window.js";
 
 export * from "./scheduled-task.js";
+export { localControlCommandSchema, type LocalControlCommand } from "./local-control.js";
