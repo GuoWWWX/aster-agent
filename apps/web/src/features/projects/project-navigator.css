@@ -471,6 +471,7 @@
 .project-navigator__session[data-active="true"] {
   background: var(--app-selection);
   color: var(--app-selection-foreground);
+  box-shadow: inset 0 0 0 1px var(--app-selection-border), var(--app-selection-shadow);
 }
 
 .project-navigator__project-button[data-located="true"],
@@ -626,6 +627,7 @@ button.project-navigator__team-member[data-active="true"],
 button.project-navigator__team-member[data-active="true"]:hover {
   background: var(--app-selection);
   color: var(--app-selection-foreground);
+  box-shadow: inset 0 0 0 1px var(--app-selection-border), var(--app-selection-shadow);
 }
 
 button.project-navigator__team-member[data-active="true"]

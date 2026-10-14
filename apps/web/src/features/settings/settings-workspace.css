@@ -89,6 +89,7 @@
 .settings-navigation__item[data-active="true"] {
   background: var(--app-selection);
   color: var(--app-selection-foreground);
+  box-shadow: inset 0 0 0 1px var(--app-selection-border), var(--app-selection-shadow);
   font-weight: 600;
 }
 

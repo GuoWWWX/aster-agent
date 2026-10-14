@@ -53,6 +53,7 @@
   border-color: var(--app-selection-border);
   background: var(--app-selection);
   color: var(--app-selection-foreground);
+  box-shadow: var(--app-selection-shadow);
 }
 
 .right-sidebar-workspace__tab-shell:hover:not([data-active="true"]) {

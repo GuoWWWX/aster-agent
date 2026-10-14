@@ -234,6 +234,7 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
 .project-tree__row[data-selected="true"] {
   background: var(--app-selection);
   color: var(--app-selection-foreground);
+  box-shadow: inset 0 0 0 1px var(--app-selection-border), var(--app-selection-shadow);
 }
 
 .project-tree__row[data-located="true"]:not([data-selected="true"]) {
