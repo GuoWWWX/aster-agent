@@ -1,5 +1,6 @@
 import { QueryTextarea } from "./query-textarea.js";
 import { UserMessageContent } from "./user-message-content.js";
+import { createPastedTextAttachment } from "./pasted-text-attachment.js";
 import { ScheduledTasksWorkspace } from "../schedules/scheduled-tasks-workspace.js";
 import { useComposerHistory } from "./use-composer-history.js";
 import { ProjectImageResult } from "./project-image-result.js";
@@ -2081,6 +2082,7 @@ export function ConversationWorkspace({
       hasNoSubmitContent ||
       pendingMessageActionId !== null ||
       isSending ||
+      isAddingAttachments ||
       isEndedSubagent ||
       (editingPendingMessageId === null
         && !isMockRuntime
@@ -2337,8 +2339,6 @@ export function ConversationWorkspace({
   const handlePasteAttachments = useCallback(
     (event: ReactClipboardEvent<HTMLTextAreaElement>): void => {
       const files = getClipboardAttachmentFiles(event.clipboardData);
-      if (files.length === 0) return;
-
       if (
         isMockRuntime
         || isSending
@@ -2348,7 +2348,12 @@ export function ConversationWorkspace({
       ) {
         return;
       }
-      event.preventDefault();
+      const pastedText = files.length === 0 ? event.clipboardData.getData("text/plain") : null;
+      const textAttachment = pastedText === null ? null : createPastedTextAttachment(pastedText);
+      if (textAttachment !== null) files.push(textAttachment);
+      if (files.length === 0) return;
+      // Text can still paste normally if an attachment limit prevents its import.
+      if (pastedText === null) event.preventDefault();
 
       const remainingCount = MAX_DRAFT_ATTACHMENTS - composerAttachments.length;
       if (files.length > remainingCount) {
@@ -2360,7 +2365,7 @@ export function ConversationWorkspace({
         setOperationError(`“${pastedAttachmentName(oversizedFile, 0)}”超过 25 MB。`);
         return;
       }
-
+      event.preventDefault();
       setIsAddingAttachments(true);
       setOperationError(null);
       void (async () => {
@@ -2396,6 +2401,11 @@ export function ConversationWorkspace({
             ));
           }
         } catch (error) {
+          if (pastedText !== null) {
+            setComposerValue(current => current.length === 0 ? pastedText : `${current}\n${pastedText}`);
+            setMentionQuery(null);
+            setSlashQuery(null);
+          }
           try {
             setDraftAttachments(await agentClient.listDraftConversationAttachments({
               conversationId: session.id,
@@ -3893,6 +3903,7 @@ export function ConversationWorkspace({
                         && activeProjectFileMentions.length === 0
                       ))
                         || isSending
+                        || isAddingAttachments
                         || pendingMessageActionId !== null
                         || isModelUnavailable
                         || isEndedSubagent
