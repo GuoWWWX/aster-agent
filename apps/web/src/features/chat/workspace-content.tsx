@@ -1,4 +1,5 @@
 import { QueryTextarea } from "./query-textarea.js";
+import { UserMessageContent } from "./user-message-content.js";
 import { ScheduledTasksWorkspace } from "../schedules/scheduled-tasks-workspace.js";
 import { useComposerHistory } from "./use-composer-history.js";
 import { ProjectImageResult } from "./project-image-result.js";
@@ -5977,7 +5978,7 @@ function TimelineItem({
               </>}
             </>
           ) : (
-            renderedMessageContent.length > 0 ? <p>{renderedMessageContent}</p> : null
+            renderedMessageContent.length > 0 ? <UserMessageContent content={renderedMessageContent} /> : null
           )}
         </article>
       ) : null}

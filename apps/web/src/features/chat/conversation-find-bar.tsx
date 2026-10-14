@@ -71,6 +71,14 @@ function clearHighlights(): void {
 }
 
 export function scrollConversationMatchIntoView(root: HTMLElement, range: Range): void {
+  const disclosure = range.startContainer.parentElement
+    ?.closest("[data-user-message-content]")
+    ?.querySelector<HTMLButtonElement>('button[aria-expanded="false"]');
+  if (disclosure !== null && disclosure !== undefined) {
+    disclosure.click();
+    window.requestAnimationFrame(() => scrollConversationMatchIntoView(root, range));
+    return;
+  }
   const rangeWithLayout = range as Range & {
     getBoundingClientRect?: () => DOMRect;
   };
