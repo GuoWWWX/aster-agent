@@ -20,6 +20,7 @@ beforeEach(() => {
     filePanelWidthsByConversationId: {},
     isFilePanelOpen: true,
     isProjectNavigatorOpen: true,
+    projectNavigatorWidth: 288,
     isSettingsFilePanelOpen: false,
     settingsSection: "general",
     themeMode: "light",
@@ -179,7 +180,7 @@ describe("AppShell", () => {
     expect(container.querySelector(".activity-bar")).not.toBeNull();
     expect(leadingDragRegion?.style.getPropertyValue(
       "--app-titlebar-conversation-leading-width",
-    )).toBe("172px");
+    )).toBe("168px");
 
     const idleTab = container.querySelector<HTMLButtonElement>('[role="tab"]');
     const openIdleTabMenu = (): void => {

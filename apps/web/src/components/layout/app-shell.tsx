@@ -25,6 +25,7 @@ const TITLEBAR_CONTEXT = {
 const TITLEBAR_LEFT_CONTROL_WIDTH = 32;
 const WORKBENCH_MAIN_LEFT_INSET = 0;
 const WORKBENCH_NAVIGATOR_TO_MAIN_GAP = 5;
+const WORKBENCH_ACTIVITY_BAR_WIDTH = 44;
 
 type AppShellProps = {
   activeProject?: ProjectSummary | null;
@@ -204,7 +205,7 @@ export function AppShell({
   const projectNavigatorStyle = {
     width: `${projectNavigatorWidth}px`,
   } as CSSProperties;
-  const conversationTabsLeadingWidth = 48 + WORKBENCH_MAIN_LEFT_INSET
+  const conversationTabsLeadingWidth = WORKBENCH_ACTIVITY_BAR_WIDTH + WORKBENCH_MAIN_LEFT_INSET
     + (isProjectNavigatorOpen
       ? projectNavigatorWidth + WORKBENCH_NAVIGATOR_TO_MAIN_GAP
       : 0)
@@ -256,14 +257,14 @@ export function AppShell({
           <div
             aria-hidden="true"
             data-navigator-hover-edge
-            className="absolute inset-y-0 left-[48px] z-30 w-1"
+            className="absolute inset-y-0 left-[44px] z-30 w-1"
             onMouseEnter={() => scheduleNavigatorPeek(true)}
             onMouseLeave={cancelPeekTimer}
           />
         ) : null}
         {isProjectNavigatorOpen || navigatorPeek ? (
           <div
-            className={`workbench-sidebar workbench-sidebar--left${!isProjectNavigatorOpen ? " absolute! inset-y-0 left-[48px] z-30 max-w-full bg-[var(--app-panel)] shadow-xl" : ""}`}
+            className={`workbench-sidebar workbench-sidebar--left${!isProjectNavigatorOpen ? " absolute! inset-y-0 left-[44px] z-30 max-w-full bg-[var(--app-panel)] shadow-xl" : ""}`}
             data-navigator-peek={!isProjectNavigatorOpen || undefined}
             hidden={!canShowProjectNavigator}
             style={projectNavigatorStyle}
