@@ -15,6 +15,7 @@
   --app-focus-ring: #60a5fa;
   --app-foreground: #30333b;
   --app-hover: #edeef2;
+  --app-navigation-hover: rgba(49, 51, 56, 0.12);
   --app-muted: #f6f7f9;
   --app-muted-foreground: #626773;
   --app-subtle-foreground: #818793;
@@ -72,6 +73,7 @@
   --app-focus-ring: #93c5fd;
   --app-foreground: #dfe1e5;
   --app-hover: #34363c;
+  --app-navigation-hover: var(--app-hover);
   --app-muted: #25262b;
   --app-muted-foreground: #b4b8c0;
   --app-subtle-foreground: #9399a5;

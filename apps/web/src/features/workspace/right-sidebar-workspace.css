@@ -57,7 +57,7 @@
 }
 
 .right-sidebar-workspace__tab-shell:hover:not([data-active="true"]) {
-  background: var(--app-hover);
+  background: var(--app-navigation-hover);
   color: var(--app-foreground);
 }
 

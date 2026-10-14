@@ -101,7 +101,7 @@
 }
 
 .app-titlebar__conversation-tab:hover {
-  background: var(--app-hover);
+  background: var(--app-navigation-hover);
   color: var(--app-foreground);
 }
 
