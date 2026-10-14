@@ -168,13 +168,6 @@
   box-shadow: 0 0 0 2px var(--app-focus-ring);
 }
 
-.conversation-header-control--subagent-menu {
-  width: 24px;
-  justify-content: center;
-  border-color: transparent;
-  padding: 0;
-}
-
 .conversation-header-control__chevron {
   flex: 0 0 auto;
   transition: transform 120ms ease;
@@ -182,63 +175,6 @@
 
 .conversation-header-control[data-open="true"] .conversation-header-control__chevron {
   transform: rotate(180deg);
-}
-
-.conversation-header-subagents {
-  display: inline-flex;
-  height: 26px;
-  min-width: 0;
-  align-items: center;
-  gap: 5px;
-  padding: 0 2px;
-}
-
-.conversation-header-subagents__avatars {
-  display: flex;
-  align-items: center;
-}
-
-.conversation-header-subagents__placeholder {
-  display: grid;
-  width: 20px;
-  height: 20px;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius);
-  background: var(--app-panel-subtle);
-  color: var(--app-subtle-foreground);
-}
-
-.conversation-header-subagents__avatar {
-  display: inline-flex;
-  flex: 0 0 auto;
-  border: 0;
-  border-radius: var(--app-radius);
-  outline: none;
-  background: transparent;
-  padding: 0;
-  cursor: pointer;
-  transition: margin-left 120ms ease;
-}
-
-.conversation-header-subagents__avatar + .conversation-header-subagents__avatar {
-  margin-left: -6px;
-}
-
-.conversation-header-subagents:hover
-  .conversation-header-subagents__avatar + .conversation-header-subagents__avatar,
-.conversation-header-subagents:focus-within
-  .conversation-header-subagents__avatar + .conversation-header-subagents__avatar {
-  margin-left: 2px;
-}
-
-.conversation-header-subagents__avatar:focus-visible {
-  box-shadow: 0 0 0 2px var(--app-focus-ring);
-}
-
-.conversation-header-subagents .agent-profile-avatar {
-  box-shadow: 0 0 0 1px var(--app-panel);
 }
 
 .conversation-header-control__count {

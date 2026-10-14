@@ -47,6 +47,17 @@ afterEach(() => {
 });
 
 describe("ConversationHeaderControls", () => {
+  it("opens the Agent menu when there are no subagents", async () => {
+    const container = renderControls(new MockAgentClient(), [], vi.fn());
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="查看全部子代理"]');
+    expect(trigger).not.toBeNull();
+    expect(trigger?.textContent).toContain("Agent");
+    expect(trigger?.textContent).toContain("0");
+    expect(trigger?.disabled).toBe(false);
+    await act(async () => { trigger?.click(); await Promise.resolve(); });
+    expect(trigger?.dataset.open).toBe("true");
+    expect(document.body.textContent).toContain("暂无子代理");
+  });
   it("uses existing Subagent avatars and separates running, completed, and ended work", async () => {
     const client = new MockAgentClient();
     enableGit(client);
@@ -77,12 +88,11 @@ describe("ConversationHeaderControls", () => {
     const trigger = container.querySelector<HTMLButtonElement>('[aria-label="查看全部子代理"]');
     expect(activeStrip).not.toBeNull();
     expect(trigger).not.toBeNull();
-    expect(activeStrip?.querySelectorAll(".agent-profile-avatar")).toHaveLength(1);
+    expect(trigger?.textContent).toContain("Agent");
+    expect(trigger?.querySelector("svg")).not.toBeNull();
+    expect(trigger?.querySelectorAll("button")).toHaveLength(0);
     expect(trigger?.querySelector(".agent-profile-avatar")).toBeNull();
-    act(() => activeStrip?.querySelector<HTMLButtonElement>(
-      '[aria-label="打开活跃子代理 视觉核对"]',
-    )?.click());
-    expect(onOpenSubagent).toHaveBeenCalledWith(expect.objectContaining({ id: ACTIVE_CHILD_ID }));
+    expect(onOpenSubagent).not.toHaveBeenCalled();
 
     await act(async () => {
       trigger?.click();
@@ -114,6 +124,9 @@ describe("ConversationHeaderControls", () => {
     act(() => completedRow?.querySelector<HTMLButtonElement>('[aria-label="打开子代理对话 测试补充"]')?.click());
     expect(onOpenSubagent).toHaveBeenCalledWith(expect.objectContaining({ id: COMPLETE_CHILD_ID }));
     expect(completedRow?.querySelector('[data-lucide="arrow-up-right"]')).toBeNull();
+    await act(async () => { trigger?.click(); await Promise.resolve(); });
+    act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="打开子代理对话 视觉核对"]')?.click());
+    expect(onOpenSubagent).toHaveBeenCalledWith(expect.objectContaining({ id: ACTIVE_CHILD_ID }));
   });
 
   it("shows branch and change totals and opens the Git workspace", async () => {
@@ -201,7 +214,7 @@ describe("ConversationHeaderControls", () => {
     const inactiveStrip = container.querySelector<HTMLElement>('[aria-label="0 个活跃子代理"]');
     expect(inactiveStrip).not.toBeNull();
     expect(inactiveStrip?.textContent).toContain("0");
-    expect(inactiveStrip?.querySelector(".conversation-header-subagents__placeholder")).not.toBeNull();
+    expect(container.querySelector('[aria-label="查看全部子代理"] svg')).not.toBeNull();
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[aria-label="查看全部子代理"]')?.click();
