@@ -62,7 +62,7 @@ export default tseslint.config(
     languageOptions: {
       globals: {
         process: "readonly", console: "readonly", setTimeout: "readonly", clearTimeout: "readonly",
-        URL: "readonly", AbortSignal: "readonly", fetch: "readonly", Response: "readonly",
+        URL: "readonly", AbortSignal: "readonly", AbortController: "readonly", fetch: "readonly", Response: "readonly",
         require: "readonly", __dirname: "readonly", module: "readonly"
       }
     }

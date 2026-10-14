@@ -51,16 +51,16 @@ pnpm dev
 
 `pnpm dev`（或 `pnpm start`）是日常开发的默认入口：启动 Vite、Main/Preload 编译监听和 Electron。React/CSS 修改由 Vite 热更新，Electron 主进程 PID 保持不变；Main/Preload 修改才自动重启 Electron。Web Renderer 地址为 `http://127.0.0.1:5173`。
 
-开发启动会验证 Vite 来自当前 worktree；端口被其他 worktree 占用时明确失败，不复用另一份页面，也不回退到旧 `dist`。并行 worktree 可在两个终端分别运行：
+开发启动会验证 Vite 来自当前 worktree；端口被其他 worktree 占用时明确失败，不复用另一份页面，也不回退到旧 `dist`。并行 worktree 可指定独立端口：
 
 ```powershell
-pnpm --filter @agent/web dev -- --port 5174
-# 另一个终端，同一个 worktree
 $env:ELECTRON_RENDERER_URL = "http://127.0.0.1:5174"
-pnpm --filter @agent/desktop dev
+pnpm dev
 ```
 
 不要用 `electron .` 或直接执行 Electron 替代开发脚本。
+
+从后台创建、发送、读取对话可显式启用 `ASTER_CONTROL_ENABLED=1`，再用 `pnpm control` 或 HTTP 接口；桌面通过同一事件链实时感知。调用和连接方式见[本机控制接口与终端调用](./doc/25-本机控制接口与终端调用.md)。
 
 启动日志会显示源码绝对路径、分支和提交。继续尚未合并的功能时，必须在包含该功能最新改动的 worktree 中启动；共享 `develop` 或其他修复分支不包含未合并界面，不能把它们的验收窗口当成最新版本。
 

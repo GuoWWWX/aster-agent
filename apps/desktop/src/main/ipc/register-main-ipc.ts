@@ -299,9 +299,10 @@ type MainIpcDependencies = {
 
 type MainIpcRegistrationOptions = {
   resumePendingMessages?: boolean;
+  emitConversationRunEvent?: (event: unknown) => void;
 };
 
-function sendConversationRunEvent(
+function sendWindowConversationRunEvent(
   getMainWindow: () => BrowserWindow | undefined,
   event: unknown
 ): void {
@@ -344,7 +345,8 @@ export function registerMainIpcHandlers(
     workspaceBrowserTabs,
     tools,
   }: MainIpcDependencies,
-  { resumePendingMessages = true }: MainIpcRegistrationOptions = {},
+  { resumePendingMessages = true, emitConversationRunEvent = (event) =>
+    sendWindowConversationRunEvent(getMainWindow, event) }: MainIpcRegistrationOptions = {},
 ): () => void {
   const ipcMain = createIpcHandlerRegistrar<IpcHandler>({
     handle(channel, handler): void {
@@ -606,7 +608,7 @@ export function registerMainIpcHandlers(
     const modelSelection = input.modelSelection === undefined
       ? undefined
       : credentials.resolveSelection(input.modelSelection);
-    return conversationSummarySchema.parse(
+    const conversation = conversationSummarySchema.parse(
       conversationLifecycle.createConversation(input.projectId ?? null, {
         ...(input.agent === undefined ? {} : { agent: input.agent }),
         ...(modelSelection === undefined ? {} : { modelSelection }),
@@ -614,6 +616,8 @@ export function registerMainIpcHandlers(
         ...(input.threadKind === undefined ? {} : { threadKind: input.threadKind })
       })
     );
+    emitConversationRunEvent({ type: "conversation.updated", conversation });
+    return conversation;
   });
 
   ipcMain.handle(
@@ -746,7 +750,7 @@ export function registerMainIpcHandlers(
     const conversation = conversationSummarySchema.parse(
       conversationLifecycle.setConversationArchived(input.conversationId, input.archived)
     );
-    sendConversationRunEvent(getMainWindow, {
+    emitConversationRunEvent({
       conversation,
       type: "conversation.updated"
     });
@@ -837,7 +841,7 @@ export function registerMainIpcHandlers(
       const conversation = conversationSummarySchema.parse(
         conversationLifecycle.markConversationResultViewed(input.conversationId)
       );
-      sendConversationRunEvent(getMainWindow, {
+      emitConversationRunEvent({
         conversation,
         type: "conversation.updated"
       });
@@ -933,9 +937,9 @@ export function registerMainIpcHandlers(
       return conversationMessageSubmissionSchema.parse(
         database.isTeamWorkItemExecutionTreeConversation(input.conversationId)
           ? teamWorkItems.sendExecutionGuidance(input, (runEvent) =>
-            sendConversationRunEvent(getMainWindow, runEvent))
+            emitConversationRunEvent(runEvent))
           : agentRuntime.sendMessage(input, (runEvent) =>
-            sendConversationRunEvent(getMainWindow, runEvent)
+            emitConversationRunEvent(runEvent)
           )
       );
     }
@@ -1046,7 +1050,7 @@ export function registerMainIpcHandlers(
         agentRuntime.sendMessage({
           ...conversationInput,
           conversationId: coordinatorConversationId,
-        }, (runEvent) => sendConversationRunEvent(getMainWindow, runEvent)),
+        }, (runEvent) => emitConversationRunEvent(runEvent)),
       );
     },
   );
@@ -1087,7 +1091,7 @@ export function registerMainIpcHandlers(
       const [input] = submitTeamWorkItemIpcArgumentsSchema.parse(args);
       return teamWorkItemViewSchema.parse(
         teamWorkItems.submit(input, (runEvent) =>
-          sendConversationRunEvent(getMainWindow, runEvent)),
+          emitConversationRunEvent(runEvent)),
       );
     },
   );
@@ -1099,7 +1103,7 @@ export function registerMainIpcHandlers(
       const [input] = updateTeamWorkItemIpcArgumentsSchema.parse(args);
       return teamWorkItemViewSchema.parse(
         teamWorkItems.update(input, (runEvent) =>
-          sendConversationRunEvent(getMainWindow, runEvent)),
+          emitConversationRunEvent(runEvent)),
       );
     },
   );
@@ -1110,7 +1114,7 @@ export function registerMainIpcHandlers(
       getTrustedWindow(event, getMainWindow);
       const [input] = deleteTeamWorkItemIpcArgumentsSchema.parse(args);
       teamWorkItems.delete(input, (runEvent) =>
-        sendConversationRunEvent(getMainWindow, runEvent));
+        emitConversationRunEvent(runEvent));
       return voidIpcResponseSchema.parse(undefined);
     },
   );
@@ -1131,7 +1135,7 @@ export function registerMainIpcHandlers(
       const [input] = publishTeamWorkItemIpcArgumentsSchema.parse(args);
       return teamWorkItemViewSchema.parse(
         teamWorkItems.publish(input, (runEvent) =>
-          sendConversationRunEvent(getMainWindow, runEvent)),
+          emitConversationRunEvent(runEvent)),
       );
     },
   );
@@ -1143,7 +1147,7 @@ export function registerMainIpcHandlers(
       const [input] = requestTeamWorkItemReworkIpcArgumentsSchema.parse(args);
       return teamWorkItemViewSchema.parse(
         teamWorkItems.requestRework(input, (runEvent) =>
-          sendConversationRunEvent(getMainWindow, runEvent)),
+          emitConversationRunEvent(runEvent)),
       );
     },
   );
@@ -1173,7 +1177,7 @@ export function registerMainIpcHandlers(
       const [input] = replaceLatestConversationMessageIpcArgumentsSchema.parse(args);
       return runAcceptedSchema.parse(
         await agentRuntime.replaceLatestMessage(input, (runEvent) =>
-          sendConversationRunEvent(getMainWindow, runEvent)
+          emitConversationRunEvent(runEvent)
         )
       );
     }
@@ -1205,7 +1209,7 @@ export function registerMainIpcHandlers(
     getTrustedWindow(event, getMainWindow);
     const [input] = setPendingQueuePausedIpcArgumentsSchema.parse(args);
     return pendingQueuePausedResponseSchema.parse(agentRuntime.setPendingQueuePaused(
-      input.conversationId, input.paused, (runEvent) => sendConversationRunEvent(getMainWindow, runEvent),
+      input.conversationId, input.paused, (runEvent) => emitConversationRunEvent(runEvent),
     ));
   });
   ipcMain.handle(
@@ -1215,7 +1219,7 @@ export function registerMainIpcHandlers(
       const [input] = pendingConversationMessageReferenceIpcArgumentsSchema.parse(args);
       return conversationPendingMessageListSchema.parse(
         agentRuntime.promotePendingMessage(input.pendingMessageId, (runEvent) =>
-          sendConversationRunEvent(getMainWindow, runEvent)
+          emitConversationRunEvent(runEvent)
         )
       );
     }
@@ -1228,7 +1232,7 @@ export function registerMainIpcHandlers(
       const [input] = pendingConversationMessageReferenceIpcArgumentsSchema.parse(args);
       return conversationPendingMessageListSchema.parse(
         await agentRuntime.deletePendingMessage(input.pendingMessageId, (runEvent) =>
-          sendConversationRunEvent(getMainWindow, runEvent)
+          emitConversationRunEvent(runEvent)
         )
       );
     }
@@ -1243,7 +1247,7 @@ export function registerMainIpcHandlers(
         agentRuntime.updatePendingMessage(
           input.pendingMessageId,
           input.content,
-          (runEvent) => sendConversationRunEvent(getMainWindow, runEvent)
+          (runEvent) => emitConversationRunEvent(runEvent)
         )
       );
     }
@@ -1258,7 +1262,7 @@ export function registerMainIpcHandlers(
         agentRuntime.reorderPendingMessages(
           input.conversationId,
           input.pendingMessageIds,
-          (runEvent) => sendConversationRunEvent(getMainWindow, runEvent)
+          (runEvent) => emitConversationRunEvent(runEvent)
         )
       );
     }
@@ -1813,7 +1817,7 @@ export function registerMainIpcHandlers(
   if (resumePendingMessages) {
     setImmediate(() => {
       agentRuntime.resumePendingMessages((runEvent) =>
-        sendConversationRunEvent(getMainWindow, runEvent)
+        emitConversationRunEvent(runEvent)
       );
     });
   }

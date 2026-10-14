@@ -61,6 +61,8 @@ import { createMainWindow } from "../windows/main-window.js";
 import { ManagedBrowserController } from "../windows/managed-browser-controller.js";
 import { parseBackendSendCommand } from "./backend-command.js";
 import { dispatchBackendSendCommand as submitBackendSendCommand } from "./backend-command-dispatch.js";
+import { ConversationControl } from "../control/conversation-control.js";
+import { LocalControlServer } from "../control/local-control-server.js";
 
 type DesktopServices = {
   scheduledTasks: ScheduledTaskController;
@@ -97,6 +99,7 @@ type DesktopServices = {
 let mainWindow: BrowserWindow | undefined;
 let disposeIpcHandlers: (() => void) | undefined;
 let services: DesktopServices | undefined;
+let localControl: LocalControlServer | undefined;
 let archivedConversationCleanupTimer: ReturnType<typeof setInterval> | undefined;
 
 
@@ -440,11 +443,13 @@ function getServices(): DesktopServices {
 }
 
 function sendConversationRunEvent(event: unknown): void {
+  const validated = conversationRunEventSchema.parse(event);
+  localControl?.publish(validated);
   const window = mainWindow;
   if (window === undefined || window.isDestroyed()) return;
   window.webContents.send(
     IPC_CHANNELS.conversationRunEvent,
-    conversationRunEventSchema.parse(event),
+    validated,
   );
 }
 
@@ -454,8 +459,13 @@ async function openMainWindow(): Promise<void> {
   mainWindow = window;
   disposeIpcHandlers = registerMainIpcHandlers(() => mainWindow, getServices(), {
     resumePendingMessages: process.env.AGENT_SKIP_PENDING_RUN_RESUMPTION !== "1",
+    emitConversationRunEvent: sendConversationRunEvent,
   });
   const rendererTarget = applyRendererSecurityPolicy(window);
+
+  window.webContents.on("console-message", (details) => {
+    if (details.level === "error") reportUnhandledError(new Error(details.message), "electron.renderer_console");
+  });
 
   window.webContents.on("preload-error", (_event, preloadPath, error) => {
     reportUnhandledError(error, "electron.preload", { preloadPath });
@@ -550,6 +560,16 @@ async function bootstrap(): Promise<void> {
   await app.whenReady();
   app.setAppUserModelId("com.agent.workbench");
   services = await initializeServices();
+  if (process.env.ASTER_CONTROL_ENABLED === "1") {
+    const control = new ConversationControl(services.database, services.conversationLifecycle,
+      services.agentRuntime, services.eventProjector, services.applicationSettings,
+      services.teamWorkItems, sendConversationRunEvent);
+    localControl = new LocalControlServer((command) => control.execute(command),
+      (error) => reportUnhandledError(error, "local_control.command"));
+    const connectionPath = path.join(app.getPath("userData"), "local-control.json");
+    await localControl.start(connectionPath);
+    console.log(`[local-control] connection file: ${connectionPath}`);
+  }
   archivedConversationCleanupTimer = setInterval(() => {
     const currentServices = services;
     if (currentServices === undefined) return;
@@ -584,7 +604,14 @@ async function bootstrap(): Promise<void> {
     }
   });
 
-  app.once("before-quit", () => {
+  app.once("before-quit", (event) => {
+    const closingControl = localControl;
+    if (closingControl !== undefined) {
+      event.preventDefault();
+      localControl = undefined;
+      void closingControl.close().catch((error: unknown) => reportUnhandledError(error, "local_control.close"))
+        .finally(() => app.quit());
+    }
     if (archivedConversationCleanupTimer !== undefined) {
       clearInterval(archivedConversationCleanupTimer);
       archivedConversationCleanupTimer = undefined;

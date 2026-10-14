@@ -10,6 +10,7 @@ import {
   type ConversationAttachment,
   type ConversationContextUsage,
   type ConversationAgentMessageItem,
+  type ConversationTimelineItem,
   type ConversationPendingMessage,
   type ConversationRunEvent,
   type ConversationTaskList,
@@ -330,6 +331,35 @@ describe("Conversation timeline location", () => {
     } else {
       Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView);
     }
+  });
+});
+
+describe("Background user message live delivery", () => {
+  it("shows a background user message and streaming answer in an already-open conversation", async () => {
+    const client = new MockAgentClient();
+    const send = vi.spyOn(client, "sendConversationMessage");
+    let listener: (event: ConversationRunEvent) => void = () => {};
+    vi.spyOn(client, "onConversationRunEvent").mockImplementation((callback) => { listener = callback; return () => {}; });
+    let history: ConversationTimelineItem[] = [];
+    vi.spyOn(client, "listConversationTimeline").mockImplementation(() => Promise.resolve(history));
+    const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => {
+      root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+        session={session({ id: PARENT_ID, title: "后台发送验收" })} /></TooltipProvider>);
+      await flushConversationWorkspace();
+    });
+    history = [{ kind: "message", id: MESSAGE_ID, conversationId: PARENT_ID, runId: RUN_ID,
+      content: "通过接口发送的用户消息", role: "user", status: "completed", modelId: null,
+      createdAt: "2026-10-14T00:00:00.000Z", attachments: [] }];
+    await act(async () => {
+      listener({ type: "run.started", conversationId: PARENT_ID, runId: RUN_ID, modelId: "fixture" });
+      await flushConversationWorkspace();
+    });
+    act(() => listener({ type: "assistant.delta", conversationId: PARENT_ID, runId: RUN_ID,
+      messageId: CHILD_ID, modelId: "fixture", delta: "后台流式回答" }));
+    expect(container.textContent).toContain("通过接口发送的用户消息");
+    expect(container.textContent).toContain("后台流式回答");
+    expect(send).not.toHaveBeenCalled();
   });
 });
 

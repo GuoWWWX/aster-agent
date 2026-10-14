@@ -8,8 +8,9 @@
     "pnpm": ">=10 <11"
   },
   "scripts": {
+    "control": "node scripts/aster-control.mjs",
     "start": "pnpm dev",
-    "dev": "concurrently --kill-others-on-fail --names web,desktop --prefix-colors cyan,green \"pnpm --filter @agent/web dev -- --strictPort\" \"wait-on tcp:127.0.0.1:5173 && pnpm --filter @agent/desktop dev\"",
+    "dev": "node scripts/dev.mjs",
     "preview": "pnpm build && pnpm --filter @agent/desktop preview",
     "verify:native": "node scripts/verify-native-runtime.mjs",
     "verify:package": "node scripts/verify-native-runtime.mjs --packaged",
