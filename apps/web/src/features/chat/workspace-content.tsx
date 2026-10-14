@@ -3063,7 +3063,7 @@ export function ConversationWorkspace({
             </button>
           ) : pathScope.kind === "team" ? (
             <>
-              <span className="conversation-workspace__path-temporary">
+              <span className="conversation-workspace__path-temporary whitespace-nowrap">
                 <UsersRound aria-hidden="true" size={16} />
                 团队
               </span>
@@ -3076,7 +3076,7 @@ export function ConversationWorkspace({
               </span>
             </>
           ) : (
-            <span className="conversation-workspace__path-temporary">
+            <span className="conversation-workspace__path-temporary whitespace-nowrap">
               <MessageSquareText aria-hidden="true" size={16} />
               {pathScope.label}
             </span>

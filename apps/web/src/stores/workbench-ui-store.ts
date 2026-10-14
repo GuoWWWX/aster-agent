@@ -145,7 +145,7 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
   configurationWorkspaceRevision: 0,
   configurationWorkspaceTarget: null,
   filePanelOpenByConversationId: {},
-  filePanelWidth: 520,
+  filePanelWidth: DEFAULT_APPLICATION_SETTINGS.appearance.filePanelWidth,
   filePanelWidthsByConversationId: {},
   isFilePanelOpen: true,
   isProjectNavigatorOpen: true,
@@ -181,7 +181,7 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
     configurationWorkspaceTarget,
     isSettingsFilePanelOpen: true,
   }),
-  projectNavigatorWidth: 288,
+  projectNavigatorWidth: DEFAULT_APPLICATION_SETTINGS.appearance.projectNavigatorWidth,
   settingsSection: "general",
   settingsNavigationWidth: 240,
   setSettingsNavigationWidth: (width) => set({
