@@ -1,3 +1,5 @@
+import type { AnswerUserQuestionInput, UserQuestion } from "./user-question.js";
+import type { BackgroundCommand, StopBackgroundCommandInput } from "./background-command.js";
 import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "./scheduled-task.js";
 import type {
   ApproveToolChangeInput,
@@ -154,6 +156,11 @@ import type {
  * shell. It deliberately exposes operations, not a generic IPC transport.
  */
 export interface DesktopBridge {
+  listUserQuestions(input: ConversationReferenceInput): Promise<UserQuestion[]>;
+  answerUserQuestion(input: AnswerUserQuestionInput): Promise<UserQuestion>;
+  markUserQuestionViewed(input: { questionId: string }): Promise<UserQuestion>;
+  listBackgroundCommands(input: ConversationReferenceInput): Promise<BackgroundCommand[]>;
+  stopBackgroundCommand(input: StopBackgroundCommandInput): Promise<BackgroundCommand>;
   listScheduledTasks(): Promise<ScheduledTask[]>;
   saveScheduledTask(input: SaveScheduledTaskInput): Promise<ScheduledTask>;
   deleteScheduledTask(input: ScheduledTaskReference): Promise<void>;

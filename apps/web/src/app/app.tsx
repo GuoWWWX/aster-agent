@@ -533,6 +533,10 @@ export function App(): ReactElement {
     projectSessions.selectSession(sessionId);
   }
 
+  useEffect(() => agentClient.onConversationRunEvent((event) => {
+    if (event.type === "notification.activated") selectSession(event.conversationId);
+  }));
+
   function closeConversationTitlebarTab(conversationId: string): void {
     const result = closeConversationTab(
       tabState.ids,

@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { UserQuestionService } from "./user-question-service.js";
+import { UserQuestionTool } from "./user-question-tool.js";
+import type { BackgroundCommand, AnswerUserQuestionInput, UserQuestion } from "@agent/protocol";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { interrupt, isGraphInterrupt } from "@langchain/langgraph";
@@ -488,6 +491,7 @@ function assertRunConfigurationMatchesSnapshot(
 type RunEventEmitter = (event: ConversationRunEvent) => void;
 
 type SendMessageOptions = {
+  questionAnswerId?: string;
   allowManagedTeamWorkItemExecution?: boolean;
   beforeRunScheduled?: (accepted: RunAccepted) => void;
   /** Keeps an internal execution prompt from replacing a user-facing Conversation title. */
@@ -495,6 +499,7 @@ type SendMessageOptions = {
 };
 
 type RuntimeToolContext = ToolHandlerExecutionContext & {
+  toolCallId?: string;
   configuration: ModelConfiguration;
   contextCompressionConfiguration: ContextCompressionThreshold;
   emit: RunEventEmitter;
@@ -1044,6 +1049,8 @@ export class AgentRuntime {
   private readonly referenceHistory: ConversationReferenceHistory;
 
   private readonly subagentTool: SubagentTool;
+  public readonly userQuestions: UserQuestionService;
+  private readonly userQuestionTool: UserQuestionTool;
 
   private readonly webSearchTool: WebSearchTool;
 
@@ -1086,6 +1093,33 @@ export class AgentRuntime {
     private readonly conversationLifecycle: ConversationLifecycleService | null = null,
   ) {
     this.modelGateway = new ModelGateway(model);
+    this.userQuestions = new UserQuestionService({
+      conversation: (id) => this.database.getConversation(id),
+      list: (id) => this.database.listUserQuestions(id),
+      get: (id) => this.database.getUserQuestion(id),
+      delivered: (id, conversationId) => this.database.wasUserQuestionAnswerDelivered(id, conversationId),
+      save: (question) => {
+        const event = { type: "user_question_updated" as const, payload: { question } };
+        if (this.threadLog !== null && this.eventProjector !== null) this.appendWriteAheadThreadLog(question.displayConversationId, event);
+        else this.database.applyUserQuestionProjectionEvent(question.displayConversationId, event);
+      },
+      deliver: (question, conversationId, content, emit) => {
+        this.eventProjector?.ensureConversationHistoryProjected(conversationId);
+        const target = this.database.getConversation(conversationId);
+        if (conversationId === question.conversationId && question.teamWorkItemId !== target.teamWorkItemId) {
+          throw new Error("提问所属的团队工作项已切换，请在原工作项中继续处理；回答已保存。");
+        }
+        const previous = this.database.getLatestRunExecutionSnapshot(conversationId);
+        const selection = target.modelSelection ?? (previous?.providerId === null || previous?.providerId === undefined ? null : { providerId: previous.providerId, modelId: previous.modelId, reasoning: previous.reasoning });
+        const input: SendConversationMessageInput = { conversationId, content, deliveryMode: "steer", permissionMode: target.permissionMode ?? previous?.permissionMode ?? DEFAULT_PERMISSION_MODE,
+          ...(selection === null ? {} : { providerId: selection.providerId, modelId: selection.modelId, ...(selection.reasoning === null ? {} : { reasoning: selection.reasoning }) }) };
+        if (target.teamWorkItemId !== null) {
+          if (this.teamWorkItemDispatcher?.deliverQuestionAnswer === undefined) throw new Error("团队提问暂时无法继续，请重试送达。");
+          this.teamWorkItemDispatcher.deliverQuestionAnswer(input, question.id, emit);
+        } else this.sendMessage(input, emit, { questionAnswerId: question.id, titleOverride: target.title });
+      },
+    });
+    this.userQuestionTool = new UserQuestionTool(this.userQuestions);
     this.taskListTool = new TaskListTool(database);
     this.referenceHistory = threadLog === null ? database : new ThreadLogReferenceReader(database, threadLog);
     this.agentCommunicationTool = new AgentCommunicationTool(database, this.referenceHistory);
@@ -1199,6 +1233,13 @@ export class AgentRuntime {
 
   private createToolHandlerRegistry(): ToolHandlerRegistry<RuntimeToolContext> {
     const handlers: ToolHandler<RuntimeToolContext>[] = [
+      {
+        execute: ({ context, rawArguments, toolName }) => this.userQuestionTool.execute({ toolName, rawArguments,
+          conversationId: context.conversationId, runId: context.runId, toolCallId: context.toolCallId ?? context.runId, signal: context.signal, emit: context.emit }),
+        getDefinitions: () => this.userQuestionTool.getDefinitions(),
+        getExecutionPolicy: () => ({ kind: "serial" }),
+        isAvailable: () => true,
+      },
       {
         execute: ({ context, rawArguments, toolName }) => this.teamWorkItemTool.execute({
           arguments: rawArguments,
@@ -1530,7 +1571,7 @@ export class AgentRuntime {
             this.appendWriteAheadPendingMessages(input.conversationId, [
               ...this.database.listPendingMessageRecords(input.conversationId),
               preparedPending,
-            ]);
+            ], options?.questionAnswerId);
             return preparedPending.message;
           })()
         : this.database.enqueuePendingMessage(pendingInput);
@@ -1538,6 +1579,9 @@ export class AgentRuntime {
         this.appendPendingMessagesThreadLog(input.conversationId);
       }
       this.emitPendingMessages(input.conversationId, emit);
+      if (options?.questionAnswerId !== undefined && (this.threadLog === null || this.eventProjector === null)) {
+        this.database.applyUserQuestionProjectionEvent(input.conversationId, { type: "pending_messages_updated", payload: { questionAnswerId: options.questionAnswerId } });
+      }
       this.subagentTool.interruptWait(input.conversationId);
       return { kind: "pending", pendingMessage };
     }
@@ -1548,6 +1592,7 @@ export class AgentRuntime {
       undefined,
       options?.beforeRunScheduled,
       options?.titleOverride,
+      options?.questionAnswerId,
     );
     return {
       kind: "started",
@@ -1832,6 +1877,7 @@ export class AgentRuntime {
   }
 
   public resumePendingMessages(emit: RunEventEmitter): void {
+    this.userQuestions.resumeUndelivered(emit, (error) => reportMainError(toMainAgentError(error, { operation: "user_question.resume" }), error));
     for (const recovery of this.database.listAgentReplyRecoveries()) {
       this.eventProjector?.ensureConversationHistoryProjected(recovery.trigger.conversationId);
       const run = this.database.getConversationRunOutcome(recovery.trigger.conversationId, recovery.runId);
@@ -1993,6 +2039,7 @@ export class AgentRuntime {
     pendingMessageId?: string,
     beforeRunScheduled?: (accepted: RunAccepted) => void,
     titleOverride?: string,
+    questionAnswerId?: string,
   ): RunAccepted {
     const { configuration, input } = prepared;
     const executionSnapshot = createRunExecutionSnapshot({
@@ -2036,6 +2083,7 @@ export class AgentRuntime {
               permissionMode: prepared.permissionMode,
               runId: queued.runId,
               title: queued.nextTitle,
+              ...(questionAnswerId === undefined ? {} : { questionAnswerId }),
               ...(queued.pendingMessageId === null
                 ? {}
                 : { pendingMessageId: queued.pendingMessageId }),
@@ -2064,6 +2112,9 @@ export class AgentRuntime {
             prepared.modelInputContent,
             executionSnapshot,
           );
+    if (questionAnswerId !== undefined && (this.threadLog === null || this.eventProjector === null)) {
+      this.database.applyUserQuestionProjectionEvent(input.conversationId, { type: "run_queued", payload: { questionAnswerId } });
+    }
     if (pendingMessageId !== undefined) {
       this.appendPendingMessagesThreadLog(creation.conversation.id);
     }
@@ -2284,12 +2335,14 @@ export class AgentRuntime {
   private appendWriteAheadPendingMessages(
     conversationId: string,
     pendingMessages: readonly StoredPendingMessage[],
+    questionAnswerId?: string,
   ): void {
     this.appendWriteAheadThreadLog(conversationId, {
       payload: {
         attachmentRefs: this.pendingMessageAttachmentReferences(conversationId, pendingMessages),
         pendingMessages,
         writeAhead: true,
+        ...(questionAnswerId === undefined ? {} : { questionAnswerId }),
       },
       type: "pending_messages_updated",
     });
@@ -4286,8 +4339,9 @@ export class AgentRuntime {
     return results;
   }
 
-  private runtimeToolContext(input: GraphToolExecutionInput): RuntimeToolContext {
+  private runtimeToolContext(input: GraphToolExecutionInput | GraphToolCallInput): RuntimeToolContext {
     return {
+      ...("toolCall" in input ? { toolCallId: input.toolCall.id } : {}),
       configuration: input.configuration,
       contextCompressionConfiguration: input.contextCompressionConfiguration,
       conversationId: input.conversationId,
@@ -5777,7 +5831,25 @@ export class AgentRuntime {
     });
   }
 
+  public listUserQuestions(conversationId: string): UserQuestion[] { this.database.getConversation(conversationId); return this.userQuestions.list(conversationId); }
+  public answerUserQuestion(input: AnswerUserQuestionInput, emit: RunEventEmitter): UserQuestion { return this.userQuestions.answer(input, emit); }
+  public markUserQuestionViewed(id: string, emit: RunEventEmitter): UserQuestion { return this.userQuestions.markViewed(id, emit); }
+  public listBackgroundCommands(conversationId: string): BackgroundCommand[] { return this.tools.listConversationCommands(this.commandOwners(conversationId)); }
+  public stopBackgroundCommand(conversationId: string, commandId: string): Promise<BackgroundCommand> { return this.tools.stopConversationCommand(commandId, this.commandOwners(conversationId)); }
+  private commandOwners(conversationId: string): string[] {
+    this.database.getConversation(conversationId);
+    const owners = new Set([conversationId]);
+    const conversations = this.database.listConversationHierarchy();
+    let added = true;
+    while (added) {
+      added = false;
+      for (const conversation of conversations) if (conversation.parentConversationId !== null && owners.has(conversation.parentConversationId) && !owners.has(conversation.id)) { owners.add(conversation.id); added = true; }
+    }
+    return [...owners];
+  }
+
   private emit(emit: RunEventEmitter, event: ConversationRunEvent): void {
+    if (event.type === "run.finished" && event.status === "cancelled") this.userQuestions.cancelForConversation(event.conversationId, emit);
     let validated: ConversationRunEvent;
     try {
       validated = conversationRunEventSchema.parse(event);

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { UserQuestionProjection } from "./user-question-projection.js";
+import { userQuestionSchema, type UserQuestion } from "@agent/protocol";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -493,6 +495,8 @@ const threadLogStartupStateSchema = z.object({
   format: z.literal(2),
   executionPaused: z.boolean().default(false),
   terminalResults: z.array(z.object({ runId: z.string().uuid(), result: z.string().nullable() }).strict()).default([]),
+  userQuestions: z.array(userQuestionSchema).default([]),
+  deliveredQuestionIds: z.array(z.string().uuid()).default([]),
   agent: conversationAgentBindingSchema.nullable(),
   conversation: conversationSummarySchema,
   sortOrder: z.number().int().nonnegative(),
@@ -1303,6 +1307,7 @@ function toPublicConversationAttachment(
 }
 
 export class AgentDatabase {
+  private readonly userQuestions = new UserQuestionProjection();
   private readonly projectionCursors = new Map<string, ThreadLogProjectionCursor>();
   private readonly executionPaused = new Set<string>();
   private readonly terminalResults = new Map<string, string | null>();
@@ -1334,6 +1339,7 @@ export class AgentDatabase {
   }
 
   public close(): void {
+    this.userQuestions.clear();
     this.database.close();
     this.executionPaused.clear();
     this.terminalResults.clear();
@@ -1344,6 +1350,23 @@ export class AgentDatabase {
   }
 
   public isOpen(): boolean { return this.database.isOpen; }
+
+  public listUserQuestions(conversationId?: string): UserQuestion[] {
+    return this.userQuestions.list(conversationId).filter((question) =>
+      this.hasConversation(question.displayConversationId) && this.hasConversation(question.conversationId));
+  }
+  public getUserQuestion(id: string): UserQuestion {
+    const question = this.userQuestions.get(id);
+    this.getConversation(question.conversationId);
+    this.getConversation(question.displayConversationId);
+    return question;
+  }
+  public wasUserQuestionAnswerDelivered(id: string, conversationId: string): boolean {
+    return this.userQuestions.wasDelivered(id, conversationId);
+  }
+  public applyUserQuestionProjectionEvent(conversationId: string, event: { type: string; payload: Record<string, unknown> }): void {
+    this.userQuestions.apply(conversationId, event);
+  }
 
   /**
    * Conversation JSONL files are the only durable source after finalization.
@@ -7663,6 +7686,7 @@ export class AgentDatabase {
 
   /** Clears only the derived event index before a Conversation log is rebuilt. */
   public resetThreadLogProjection(conversationId: string): void {
+    this.userQuestions.reset(conversationId);
     this.getConversation(conversationId);
     this.clearThreadLogProjection(conversationId);
   }
@@ -7721,6 +7745,7 @@ export class AgentDatabase {
       eventIds.add(event.eventId);
     }
     const stored = structuredClone(events);
+    for (const event of stored) this.userQuestions.apply(conversationId, event);
     const currentEvents = this.projectionEvents.get(conversationId) ?? [];
     for (const event of stored) {
       currentEvents.push(event);
@@ -9459,6 +9484,8 @@ export class AgentDatabase {
     // Queued inputs and active children require the ordinary recovery path.
     if (snapshot.pendingMessages.length > 0 || snapshot.subagentTasks.some((task) => task.status === "queued" || task.status === "running")) return null;
     return threadLogStartupStateSchema.parse({ ...snapshot, format: 2,
+      userQuestions: this.userQuestions.list(conversationId).filter((question) => question.displayConversationId === conversationId),
+      deliveredQuestionIds: this.userQuestions.deliveredQuestionIds(conversationId),
       terminalResults: snapshot.runs.filter((run) => this.terminalResults.has(run.id))
         .map((run) => ({ runId: run.id, result: this.terminalResults.get(run.id) ?? null })),
       executionPaused: this.isConversationExecutionPaused(conversationId), sortOrder: this.getConversationSortOrder(conversationId) });
@@ -9473,6 +9500,8 @@ export class AgentDatabase {
       throw new Error("ThreadLog startup checkpoint is not a valid inactive conversation state.");
     }
     this.restoreThreadLogLegacySnapshot(conversationId, state);
+    for (const question of state.userQuestions) this.userQuestions.apply(conversationId, { type: "user_question_updated", payload: { question } });
+    for (const questionAnswerId of state.deliveredQuestionIds) this.userQuestions.apply(conversationId, { type: "run_queued", payload: { questionAnswerId } });
     for (const result of state.terminalResults) {
       if (this.getRunConversationId(result.runId) !== conversationId) throw new Error("Terminal result belongs to another conversation.");
       this.terminalResults.set(result.runId, result.result);
@@ -9497,6 +9526,7 @@ export class AgentDatabase {
       && state.runs.every((run) => run.status !== "queued" && run.status !== "running")
       && state.agentMessages.every((record) => record.message.conversationId === conversationId)
       && state.subagentTasks.every((task) => task.parentConversationId === conversationId)
+      && state.userQuestions.every((question) => question.displayConversationId === conversationId)
       && state.attachmentRefs.every((attachment) => attachment.conversationId === conversationId);
   }
 
