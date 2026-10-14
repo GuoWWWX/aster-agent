@@ -1,10 +1,21 @@
 import { z } from "zod";
-import { conversationIdSchema, conversationMessageDeliveryModeSchema, conversationModelSelectionSchema, conversationTimelinePageInputSchema, saveModelConfigurationInputSchema } from "./conversation.js";
+import { approveToolChangeInputSchema, conversationIdSchema, conversationMessageDeliveryModeSchema, conversationModelSelectionSchema, conversationReferenceInputSchema, conversationTimelinePageInputSchema, renameConversationInputSchema, saveModelConfigurationInputSchema, setConversationArchivedInputSchema, setConversationPermissionModeInputSchema } from "./conversation.js";
+import { answerUserQuestionInputSchema } from "./user-question.js";
+import { stopBackgroundCommandInputSchema } from "./background-command.js";
 
 export const localControlCommandSchema = z.discriminatedUnion("command", [
   z.object({ command: z.literal("projects.list"), input: z.object({}).strict() }).strict(),
   z.object({ command: z.literal("conversations.list"), input: z.object({}).strict() }).strict(),
   z.object({ command: z.literal("models.configure"), input: saveModelConfigurationInputSchema }).strict(),
+  z.object({ command: z.literal("models.status"), input: z.object({}).strict() }).strict(),
+  z.object({ command: z.literal("user_questions.list"), input: conversationReferenceInputSchema }).strict(),
+  z.object({ command: z.literal("user_questions.answer"), input: answerUserQuestionInputSchema }).strict(),
+  z.object({ command: z.literal("approvals.resolve"), input: approveToolChangeInputSchema }).strict(),
+  z.object({ command: z.literal("background_commands.list"), input: conversationReferenceInputSchema }).strict(),
+  z.object({ command: z.literal("background_commands.stop"), input: stopBackgroundCommandInputSchema }).strict(),
+  z.object({ command: z.literal("conversations.set_permission"), input: setConversationPermissionModeInputSchema }).strict(),
+  z.object({ command: z.literal("conversations.rename"), input: renameConversationInputSchema }).strict(),
+  z.object({ command: z.literal("conversations.archive"), input: setConversationArchivedInputSchema }).strict(),
   z.object({ command: z.literal("conversations.open"), input: z.object({ conversationId: conversationIdSchema }).strict() }).strict(),
   z.object({ command: z.literal("conversations.create"), input: z.object({
     projectId: z.string().uuid().nullable().optional(),

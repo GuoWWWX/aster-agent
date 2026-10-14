@@ -3,7 +3,10 @@ import { pathToFileURL } from "node:url";
 import { TextDecoder } from "node:util";
 
 const commands = { projects: "projects.list", list: "conversations.list", create: "conversations.create",
-  read: "conversations.read", send: "messages.send", cancel: "runs.cancel", open: "conversations.open", "configure-model": "models.configure" };
+  read: "conversations.read", send: "messages.send", cancel: "runs.cancel", open: "conversations.open", "configure-model": "models.configure",
+  models: "models.status", questions: "user_questions.list", answer: "user_questions.answer", approve: "approvals.resolve",
+  programs: "background_commands.list", "stop-program": "background_commands.stop", permission: "conversations.set_permission",
+  rename: "conversations.rename", archive: "conversations.archive" };
 
 export async function* controlEvents(response) {
   if (!response.ok || response.body === null) throw new Error(`Event subscription failed (${response.status}).`);
@@ -102,7 +105,7 @@ export async function runControl(argv, { out = (value) => console.log(JSON.strin
   if (open) args.splice(openIndex, 1);
   const [name, json = "{}"] = args;
   if (!connectionPath || (name !== "watch" && name !== "verify" && commands[name] === undefined) || args.length > 2 || (wait && name !== "send") || (open && name !== "verify")) {
-    throw new Error('Usage: pnpm control --connection <local-control.json> projects|list|create|read|send|cancel|open|configure-model|watch|verify [JSON] [--wait] [--open]');
+    throw new Error(`Usage: pnpm control --connection <local-control.json> ${Object.keys(commands).join("|")}|watch|verify [JSON] [--wait] [--open]`);
   }
   const connection = JSON.parse(await readFile(connectionPath, "utf8"));
   const url = new URL(connection.url);
