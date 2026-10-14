@@ -56,7 +56,7 @@ test("CLI rejects invalid commands and safe errors never include the connection 
   await assert.rejects(runControl(["--connection", connection, "list"]), /Invalid local control/);
 }));
 
-test("CLI verify creates a conversation, observes creation and both Runs, then checks saved history", async () => fixture(async (connection) => {
+test("CLI verify opens the desktop conversation before both Runs, then checks saved history", async () => fixture(async (connection) => {
   const calls = [];
   const output = [];
   const messages = [];
@@ -83,8 +83,8 @@ test("CLI verify creates a conversation, observes creation and both Runs, then c
     }
     return new Response(JSON.stringify({ items: messages }));
   };
-  assert.equal(await runControl(["--connection", connection, "verify", '{"projectId":"project"}'], { fetchControl, out: (value) => output.push(value) }), 0);
-  assert.deepEqual(calls, ["subscribe", "conversations.create", "messages.send", "messages.send", "conversations.read"]);
+  assert.equal(await runControl(["--connection", connection, "verify", '{"projectId":"project"}', "--open"], { fetchControl, out: (value) => output.push(value) }), 0);
+  assert.deepEqual(calls, ["subscribe", "conversations.create", "conversations.open", "messages.send", "messages.send", "conversations.read"]);
   assert.deepEqual(output.at(-1), { type: "verification.finished", ok: true, conversationId: "c", runIds: ["r1", "r2"], rounds: 2, userMessages: 2, assistantMessages: 2 });
 }));
 

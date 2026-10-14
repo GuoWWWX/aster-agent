@@ -182,7 +182,12 @@ export function useProjectSessions(
         setSessions((current) => updateSessionRunState(current, event));
         return;
       }
-      if (event.type !== "conversation.updated") return;
+      if (event.type !== "conversation.updated" && event.type !== "conversation.open_requested") return;
+
+      if (event.type === "conversation.open_requested") {
+        activeSessionIdRef.current = event.conversation.id;
+        setActiveSessionId(event.conversation.id);
+      }
 
       const session = toProjectSession(event.conversation);
       setSessions((current) => {

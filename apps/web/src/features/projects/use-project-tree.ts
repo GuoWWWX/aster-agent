@@ -51,7 +51,7 @@ export type ProjectTreeController = {
     showTeamsInNavigator: boolean,
   ): Promise<boolean>;
   selectPath(path: string): void;
-  selectProject(projectId: string | null): void;
+  selectProject: (projectId: string | null) => void;
   setQuery(query: string): void;
   toggleDirectory(directoryPath: string): void;
 };

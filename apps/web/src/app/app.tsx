@@ -127,6 +127,7 @@ export function App(): ReactElement {
   const [teamNavigatorWorkItems, setTeamNavigatorWorkItems] = useState<TeamWorkItemView[]>([]);
   const [teamInstanceError, setTeamInstanceError] = useState<string | null>(null);
   const projectTree = useProjectTree(agentClient);
+  const selectProject = projectTree.selectProject;
   const projectSessions = useProjectSessions(
     agentClient,
     projectTree.activeProject?.id ?? null,
@@ -268,6 +269,11 @@ export function App(): ReactElement {
 
     void refreshTeamNavigation();
     const unsubscribe = agentClient.onConversationRunEvent((event) => {
+      if (event.type === "conversation.open_requested") {
+        setActiveActivity("conversations");
+        selectProject(event.conversation.projectId);
+        return;
+      }
       if (
         event.type !== "conversation.updated"
         && event.type !== "run.started"
@@ -284,7 +290,7 @@ export function App(): ReactElement {
       unsubscribe();
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
     };
-  }, [agentClient, teams]);
+  }, [agentClient, teams, selectProject, setActiveActivity]);
 
   const refreshTeamState = useCallback(async (): Promise<void> => {
     const [instances, items] = await Promise.all([

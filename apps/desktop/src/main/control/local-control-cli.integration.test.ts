@@ -47,7 +47,8 @@ it("verifies both CLI turns through HTTP, Runtime, model streaming and shared Re
   const server = new LocalControlServer((command) => control.execute(command), (error) => { serverErrors.push(error); });
   const emit = (event: ConversationRunEvent): void => { rendererEvents.push(event); server.publish(event); };
   const control = new ConversationControl(database, lifecycle, runtime, projector,
-    { getConfiguration: () => DEFAULT_APPLICATION_SETTINGS }, { sendExecutionGuidance: (input, onEvent) => runtime.sendMessage(input, onEvent) }, emit);
+    { getConfiguration: () => DEFAULT_APPLICATION_SETTINGS }, { sendExecutionGuidance: (input, onEvent) => runtime.sendMessage(input, onEvent) }, emit,
+    { resolveSelection: (selection) => selection, saveConfiguration: () => { throw new Error("Not configured in fixture."); } });
   try {
     const connectionPath = path.join(directory, "connection.json");
     await server.start(connectionPath);

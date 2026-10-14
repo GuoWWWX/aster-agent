@@ -38,7 +38,8 @@ describe("local control through the real Runtime", () => {
     const server = new LocalControlServer((command) => control.execute(command), (error) => { throw error; });
     const emit = (event: ConversationRunEvent) => { rendererEvents.push(event); server.publish(event); };
     const control = new ConversationControl(database, lifecycle, runtime, projector,
-      { getConfiguration: () => DEFAULT_APPLICATION_SETTINGS }, { sendExecutionGuidance: (input, onEvent) => runtime.sendMessage(input, onEvent) }, emit);
+      { getConfiguration: () => DEFAULT_APPLICATION_SETTINGS }, { sendExecutionGuidance: (input, onEvent) => runtime.sendMessage(input, onEvent) }, emit,
+      { resolveSelection: (selection) => selection, saveConfiguration: () => { throw new Error("Not configured in fixture."); } });
     const controller = new AbortController();
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {

@@ -1213,6 +1213,7 @@ export const conversationRunEventSchema = z.discriminatedUnion("type", [
   toolApprovalRequestedEventSchema,
   toolCompletedEventSchema,
   conversationUpdatedEventSchema,
+  z.object({ type: z.literal("conversation.open_requested"), conversation: conversationSummarySchema }).strict(),
   runFinishedEventSchema
 ]);
 

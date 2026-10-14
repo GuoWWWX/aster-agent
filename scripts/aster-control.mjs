@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 import { TextDecoder } from "node:util";
 
 const commands = { projects: "projects.list", list: "conversations.list", create: "conversations.create",
-  read: "conversations.read", send: "messages.send", cancel: "runs.cancel" };
+  read: "conversations.read", send: "messages.send", cancel: "runs.cancel", open: "conversations.open", "configure-model": "models.configure" };
 
 export async function* controlEvents(response) {
   if (!response.ok || response.body === null) throw new Error(`Event subscription failed (${response.status}).`);
@@ -41,7 +41,7 @@ async function waitForRun(events, conversationId, submission, out) {
   throw new Error("Event stream closed before Run finished; use read to recover the latest result.");
 }
 
-async function verifyConversation(request, events, input, out) {
+async function verifyConversation(request, events, input, out, open) {
   const conversation = await request("conversations.create", input);
   if (typeof conversation.id !== "string") throw new Error("Creation did not return a conversation ID.");
   const conversationId = conversation.id;
@@ -55,6 +55,7 @@ async function verifyConversation(request, events, input, out) {
     }
   }
   if (!creationObserved) throw new Error("Created conversation was not broadcast to observers.");
+  if (open) await request("conversations.open", { conversationId });
   const prompts = [
     "这是一条后台接口验收消息。请仅回复 ASTER_CONTROL_ROUND_1，不调用任何工具。",
     "这是同一对话的第二轮验收。请仅回复 ASTER_CONTROL_ROUND_2，不调用任何工具。",
@@ -96,9 +97,12 @@ export async function runControl(argv, { out = (value) => console.log(JSON.strin
   const waitIndex = args.indexOf("--wait");
   const wait = waitIndex >= 0;
   if (wait) args.splice(waitIndex, 1);
+  const openIndex = args.indexOf("--open");
+  const open = openIndex >= 0;
+  if (open) args.splice(openIndex, 1);
   const [name, json = "{}"] = args;
-  if (!connectionPath || (name !== "watch" && name !== "verify" && commands[name] === undefined) || args.length > 2 || (wait && name !== "send")) {
-    throw new Error('Usage: pnpm control --connection <local-control.json> projects|list|create|read|send|cancel|watch|verify [JSON] [--wait]');
+  if (!connectionPath || (name !== "watch" && name !== "verify" && commands[name] === undefined) || args.length > 2 || (wait && name !== "send") || (open && name !== "verify")) {
+    throw new Error('Usage: pnpm control --connection <local-control.json> projects|list|create|read|send|cancel|open|configure-model|watch|verify [JSON] [--wait] [--open]');
   }
   const connection = JSON.parse(await readFile(connectionPath, "utf8"));
   const url = new URL(connection.url);
@@ -133,7 +137,7 @@ export async function runControl(argv, { out = (value) => console.log(JSON.strin
         return 0;
       }
     }
-    if (name === "verify") return await verifyConversation(request, events, input, out);
+    if (name === "verify") return await verifyConversation(request, events, input, out, open);
     const result = await request(commands[name], input);
     out(result);
     if (!events) return 0;
