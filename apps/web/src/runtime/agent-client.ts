@@ -1,3 +1,4 @@
+import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput } from "@agent/protocol";
 import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
 import type {
   CapabilitySet,
@@ -147,6 +148,11 @@ export type ManagedBrowserEventListener = (event: ManagedBrowserEvent) => void;
  * browser mock and Electron preload surface stay interchangeable.
  */
 export interface AgentClient {
+  listUserQuestions(input: ConversationReferenceInput): Promise<UserQuestion[]>;
+  answerUserQuestion(input: AnswerUserQuestionInput): Promise<UserQuestion>;
+  markUserQuestionViewed(input: { questionId: string }): Promise<UserQuestion>;
+  listBackgroundCommands(input: ConversationReferenceInput): Promise<BackgroundCommand[]>;
+  stopBackgroundCommand(input: StopBackgroundCommandInput): Promise<BackgroundCommand>;
   listScheduledTasks(): Promise<ScheduledTask[]>;
   saveScheduledTask(input: SaveScheduledTaskInput): Promise<ScheduledTask>;
   deleteScheduledTask(input: ScheduledTaskReference): Promise<void>;

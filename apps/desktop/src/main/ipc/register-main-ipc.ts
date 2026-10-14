@@ -1,4 +1,5 @@
 import { scheduledTaskListSchema, scheduledTaskSchema, saveScheduledTaskIpcArgumentsSchema, scheduledTaskReferenceIpcArgumentsSchema } from "@agent/protocol";
+import { userQuestionSchema, userQuestionReferenceSchema, answerUserQuestionInputSchema, backgroundCommandSchema, stopBackgroundCommandInputSchema } from "@agent/protocol";
 import type { ScheduledTaskController } from "../schedules/scheduled-task-controller.js";
 import {
   app,
@@ -12,6 +13,7 @@ import {
 } from "electron";
 import { openProjectDirectory } from "../projects/open-project-directory.js";
 import { z } from "zod";
+import { publishConversationAttentionEvent } from "../windows/conversation-attention.js";
 import {
   acceptTeamWorkItemIpcArgumentsSchema,
   addProjectResponseSchema,
@@ -306,11 +308,13 @@ function sendWindowConversationRunEvent(
   getMainWindow: () => BrowserWindow | undefined,
   event: unknown
 ): void {
+  const parsed = conversationRunEventSchema.parse(event);
+  publishConversationAttentionEvent(parsed);
   const window = getMainWindow();
   if (window === undefined || window.isDestroyed()) return;
   window.webContents.send(
     IPC_CHANNELS.conversationRunEvent,
-    conversationRunEventSchema.parse(event)
+    parsed
   );
 }
 
@@ -441,6 +445,32 @@ export function registerMainIpcHandlers(
     getTrustedWindow(event, getMainWindow);
     parseNoArguments(args);
     return getRuntimeInfo();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.userQuestionList, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
+    return z.array(userQuestionSchema).parse(agentRuntime.listUserQuestions(input.conversationId));
+  });
+  ipcMain.handle(IPC_CHANNELS.userQuestionAnswer, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([answerUserQuestionInputSchema]).parse(args);
+    return userQuestionSchema.parse(agentRuntime.answerUserQuestion(input, emitConversationRunEvent));
+  });
+  ipcMain.handle(IPC_CHANNELS.userQuestionMarkViewed, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([userQuestionReferenceSchema]).parse(args);
+    return userQuestionSchema.parse(agentRuntime.markUserQuestionViewed(input.questionId, emitConversationRunEvent));
+  });
+  ipcMain.handle(IPC_CHANNELS.backgroundCommandList, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
+    return z.array(backgroundCommandSchema).parse(agentRuntime.listBackgroundCommands(input.conversationId));
+  });
+  ipcMain.handle(IPC_CHANNELS.backgroundCommandStop, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([stopBackgroundCommandInputSchema]).parse(args);
+    return backgroundCommandSchema.parse(await agentRuntime.stopBackgroundCommand(input.conversationId, input.commandId));
   });
 
   ipcMain.handle(IPC_CHANNELS.pluginList, (event, ...args: unknown[]) => {
@@ -769,18 +799,21 @@ export function registerMainIpcHandlers(
     getTrustedWindow(event, getMainWindow);
     const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
     await conversationDeletion.requestDeletion(input.conversationId);
+    publishConversationAttentionEvent();
     return voidIpcResponseSchema.parse(undefined);
   });
   ipcMain.handle(IPC_CHANNELS.conversationDeleteUndoable, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
     conversationDeletion.requestUndoableDeletion(input.conversationId);
+    publishConversationAttentionEvent();
     return voidIpcResponseSchema.parse(undefined);
   });
   ipcMain.handle(IPC_CHANNELS.conversationRestoreDeleted, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
     conversationDeletion.restoreDeletedConversation(input.conversationId);
+    publishConversationAttentionEvent();
     return voidIpcResponseSchema.parse(undefined);
   });
 

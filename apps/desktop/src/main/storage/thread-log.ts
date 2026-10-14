@@ -25,6 +25,7 @@ const THREAD_LOG_CONTEXT_CACHE_LIMIT = 4;
 const THREAD_LOG_CONTEXT_CACHE_BYTES = 16 * 1_024 * 1_024;
 
 const threadLogEventTypeSchema = z.enum([
+  "user_question_updated",
  "agent_message",
   "agent_message_read",
  "assistant_message",

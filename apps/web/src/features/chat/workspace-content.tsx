@@ -167,6 +167,7 @@ import { formatConversationRunMarkdown } from "./conversation-copy.js";
 import { TerminalText } from "../../components/ui/terminal-text.js";
 import { ConversationFindBar } from "./conversation-find-bar.js";
 import { ConversationHeaderControls } from "./conversation-header-controls.js";
+import { UserQuestionPanel } from "./user-question-panel.js";
 import { ConversationTurnNavigator } from "./conversation-turn-navigator.js";
 import {
   ContextUsageIndicator,
@@ -3148,6 +3149,7 @@ export function ConversationWorkspace({
         {compact ? null : (
           <ConversationHeaderControls
             agentClient={agentClient}
+            conversationId={session.id}
             project={project}
             subagents={subagentSessions}
             onDeleteSubagent={async (subagent) => {
@@ -3452,6 +3454,7 @@ export function ConversationWorkspace({
             />
           ) : null}
 
+          <UserQuestionPanel key={session.id} agentClient={agentClient} conversationId={session.id} active={active} />
           <form className="conversation-workspace__composer" onSubmit={(event) => void handleSubmit(event)}>
           <div className="conversation-workspace__composer-surface">
             {isEditingComposerMessage ? (

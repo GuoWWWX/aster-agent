@@ -19,9 +19,11 @@ import type { AgentClient } from "../../runtime/index.js";
 import { SubagentAvatar } from "../team/agent-avatar.js";
 import type { ProjectSession } from "../projects/project-session-model.js";
 import { getGitReviewCache } from "../workspace/git-review-cache.js";
+import { BackgroundPrograms } from "./background-programs.js";
 
 type ConversationHeaderControlsProps = {
   agentClient: AgentClient;
+  conversationId?: string;
   project: ProjectSummary | null;
   subagents: readonly ProjectSession[];
   onDeleteSubagent?: (subagent: ProjectSession) => Promise<void>;
@@ -33,6 +35,7 @@ const SUBAGENT_PREVIEW_CONCURRENCY = 2;
 
 export function ConversationHeaderControls({
   agentClient,
+  conversationId,
   project,
   subagents,
   onDeleteSubagent,
@@ -174,6 +177,7 @@ export function ConversationHeaderControls({
 
   return (
     <div className="conversation-header-controls">
+      {conversationId === undefined ? null : <BackgroundPrograms key={conversationId} agentClient={agentClient} conversationId={conversationId} />}
       <div
         aria-label={`${activeSubagents.length} 个活跃子代理`}
         className="conversation-header-subagents"

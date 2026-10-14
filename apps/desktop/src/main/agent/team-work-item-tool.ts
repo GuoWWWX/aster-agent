@@ -5,6 +5,7 @@ import type {
   ConversationPermissionMode,
   ConversationRunEvent,
   SubmitTeamWorkItemInput,
+  SendConversationMessageInput,
   TeamWorkItemView,
 } from "@agent/protocol";
 
@@ -42,6 +43,7 @@ type RunEventEmitter = (event: ConversationRunEvent) => void;
 
 type TeamWorkItemDispatcher = {
   submit(input: SubmitTeamWorkItemInput, emit: RunEventEmitter): TeamWorkItemView;
+  deliverQuestionAnswer?(input: SendConversationMessageInput, questionId: string, emit: RunEventEmitter): void;
 };
 
 type TeamWorkItemToolExecution = {
