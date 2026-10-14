@@ -643,6 +643,20 @@ export function App(): ReactElement {
     }));
   }, [openTeamConversation, projectSessions, projectTree, setActiveActivity]);
 
+  const locateConversationItem = (conversationId: string, itemId: string): void => {
+    const target = projectSessions.sessions.find((candidate) => candidate.id === conversationId);
+    if (target === undefined) return;
+    if (target.parentConversationId !== null && target.threadKind !== "subagent") {
+      openTeamConversation(target, undefined, itemId);
+      return;
+    }
+    if (target.projectId !== null) projectTree.selectProject(target.projectId);
+    selectSession(conversationId);
+    setConversationLocateRequest((current) => ({
+      conversationId, id: itemId, requestId: (current?.requestId ?? 0) + 1,
+    }));
+  };
+
   return (
     <>
       <AppShell
@@ -774,6 +788,7 @@ export function App(): ReactElement {
           onForkConversation={forkConversationFromMessage}
           onLocateProject={(projectId) => locateInProjectNavigator("project", projectId)}
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}
+          onLocateConversationItem={locateConversationItem}
           onOpenProjectFile={requestOpenProjectFile}
           onOpenGitReview={requestOpenGitReview}
           onOpenTeamConversation={openTeamConversation}
@@ -798,6 +813,7 @@ export function App(): ReactElement {
           teamMemberOpenRequest={teamMemberOpenRequest}
           onLocateProject={(projectId) => locateInProjectNavigator("project", projectId)}
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}
+          onLocateConversationItem={locateConversationItem}
           onSessionViewed={(sessionId) => projectSessions.markSessionResultViewed(sessionId, true)}
           onSessionUpdated={(conversation) => projectSessions.updateSession(conversation)}
           tree={projectTree}

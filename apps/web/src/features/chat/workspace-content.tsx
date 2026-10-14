@@ -5,7 +5,7 @@ import { MAX_DRAFT_ATTACHMENTS, MAX_DRAFT_ATTACHMENT_BYTES, getClipboardAttachme
 import { ScheduledTasksWorkspace } from "../schedules/scheduled-tasks-workspace.js";
 import { useComposerHistory } from "./use-composer-history.js";
 import { ProjectImageResult } from "./project-image-result.js";
-import { ToolDisclosureContext, useToolDisclosure } from "./tool-disclosure-state.js";
+import { ToolDisclosureContext, ToolRevealContext, useToolDisclosure } from "./tool-disclosure-state.js";
 import { findComposerReferenceRanges } from "./composer-reference-ranges.js";
 import {
   Bot,
@@ -33,6 +33,7 @@ import {
   ListEnd,
   ListTodo,
   MessageSquareText,
+  MessageCircleQuestion,
   Paperclip,
   Pencil,
   Pause,
@@ -56,6 +57,7 @@ import {
 } from "lucide-react";
 import {
   useCallback,
+  useContext,
   useEffect,
   Fragment,
   useId,
@@ -95,6 +97,7 @@ import type {
   ConversationTaskList,
   ConversationTimelineItem,
   ConversationToolItem,
+  UserQuestion,
   ModelReasoningOption,
   ModelProfile,
   ModelRuntimeStatus,
@@ -171,6 +174,7 @@ import { TerminalText } from "../../components/ui/terminal-text.js";
 import { ConversationFindBar } from "./conversation-find-bar.js";
 import { ConversationHeaderControls } from "./conversation-header-controls.js";
 import { UserQuestionPanel } from "./user-question-panel.js";
+import { questionForAnswer, questionToolForAnswer } from "./question-answer-reference.js";
 import { ConversationTurnNavigator } from "./conversation-turn-navigator.js";
 import {
   ContextUsageIndicator,
@@ -216,6 +220,7 @@ type WorkspaceContentProps = {
   onForkConversation: (conversationId: string, throughMessageId: string) => Promise<void>;
   onLocateProject: (projectId: string) => void;
   onLocateSession: (sessionId: string) => void;
+  onLocateConversationItem?: (conversationId: string, itemId: string) => void;
   onOpenProjectFile?: (projectId: string, path: string) => void;
   onOpenGitReview?: (projectId: string, path?: string) => void;
   onOpenTeamConversation: (
@@ -704,6 +709,7 @@ export function WorkspaceContent({
   onForkConversation,
   onLocateProject,
   onLocateSession,
+  onLocateConversationItem,
   onOpenProjectFile,
   onOpenGitReview,
   onOpenTeamConversation,
@@ -772,6 +778,7 @@ export function WorkspaceContent({
                 : null}
               onLocateProject={onLocateProject}
               onLocateSession={onLocateSession}
+              {...(onLocateConversationItem === undefined ? {} : { onLocateConversationItem })}
               onOpenProjectFile={projectId === null || onOpenProjectFile === undefined
                 ? undefined
                 : (path) => {
@@ -815,6 +822,7 @@ export function ConversationWorkspace({
   onAddProject,
   onLocateProject,
   onLocateSession,
+  onLocateConversationItem,
   onOpenProjectFile,
   onOpenGitReview,
   onOpenTeamConversation,
@@ -841,6 +849,7 @@ export function ConversationWorkspace({
   onAddProject?: () => Promise<ProjectSummary | null>;
   onLocateProject?: (projectId: string) => void;
   onLocateSession?: (sessionId: string) => void;
+  onLocateConversationItem?: (conversationId: string, itemId: string) => void;
   onOpenProjectFile?: ((path: string) => void) | undefined;
   onOpenGitReview?: ((path?: string) => void) | undefined;
   onOpenTeamConversation?: (
@@ -921,6 +930,19 @@ export function ConversationWorkspace({
     setSlashQuery(null);
   }, composerRef, session.id, agentClient);
   const [toolDisclosureChoices] = useState(() => new Map<string, boolean>());
+  const [userQuestions, setUserQuestions] = useState<UserQuestion[]>([]);
+  useEffect(() => {
+    let disposed = false;
+    setUserQuestions([]);
+    void agentClient.listUserQuestions({ conversationId: session.id }).then((questions) => {
+      if (!disposed) setUserQuestions(questions);
+    }).catch(() => undefined);
+    const unsubscribe = agentClient.onConversationRunEvent((event) => {
+      if (event.type !== "user_question.updated" || event.question.displayConversationId !== session.id) return;
+      setUserQuestions((current) => [event.question, ...current.filter((question) => question.id !== event.question.id)]);
+    });
+    return () => { disposed = true; unsubscribe(); };
+  }, [agentClient, session.id]);
   const [draftAttachments, setDraftAttachments] = useState<ConversationAttachment[]>([]);
   const [draftAttachmentPreviewUrls, setDraftAttachmentPreviewUrls] = useState<
     Record<string, string>
@@ -2914,6 +2936,17 @@ export function ConversationWorkspace({
   const displayTimeline = groupRunActivities(
     projectSubagentMessagesForParentTimeline(timeline, subagentConversationIds),
   );
+  const locateQuestion = async (question: UserQuestion): Promise<void> => {
+    try {
+      const visibleTool = question.conversationId === session.id
+        ? questionToolForAnswer(timeline, question) : null;
+      const tool = visibleTool ?? questionToolForAnswer(
+        await agentClient.listConversationTimeline({ conversationId: question.conversationId }), question,
+      );
+      if (tool === null) throw new Error("Question tool not found");
+      onLocateConversationItem?.(question.conversationId, tool.id);
+    } catch { setOperationError("无法定位这条提问。"); }
+  };
   const queuedMessages = pendingMessages.filter((message) => message.deliveryMode === "queue");
   // Pending records are durable sent input, but are not a model/timer boundary until consumed.
   const sentSteerMessages = pendingMessages.filter((message) => message.deliveryMode === "steer"
@@ -3174,7 +3207,10 @@ export function ConversationWorkspace({
             <div className="conversation-workspace__blank">等待任务</div>
           ) : (
             <ToolDisclosureContext.Provider value={toolDisclosureChoices}>
-              {displayTimeline.map((item, index) => (
+              <ToolRevealContext.Provider value={locateTimelineItem}>
+              {displayTimeline.map((item, index) => {
+                const answerQuestion = item.kind === "message" ? questionForAnswer(item, userQuestions) : null;
+                return (
                 <Fragment key={item.id}>
                   {(runDurationsByInsertIndex.get(index) ?? []).map((durationMs, durationIndex) => (
                     <div
@@ -3211,6 +3247,15 @@ export function ConversationWorkspace({
                       <TimelineItem
                         agentClient={agentClient}
                         item={item}
+                        questionAnswer={answerQuestion}
+                        questionSenderName={answerQuestion === null ? null : (() => {
+                          const source = relatedSessions.find((candidate) => candidate.id === answerQuestion.conversationId)
+                            ?? (session.id === answerQuestion.conversationId ? session : undefined);
+                          return agentProfiles.find((agent) => agent.id === source?.agentId)?.name
+                            ?? (answerQuestion.conversationId === session.id ? defaultAgent?.name : undefined)
+                            ?? answerQuestion.sourceTitle;
+                        })()}
+                        onLocateQuestion={locateQuestion}
                         agentAvatar={item.kind === "agent_message"
                           ? conversationAgentAvatars.get(item.senderConversationId)
                             ?? agentProfiles.find((agent) =>
@@ -3218,11 +3263,18 @@ export function ConversationWorkspace({
                               || item.senderTitle.startsWith(`${agent.name} ·`)
                             )?.avatar
                             ?? null
-                          : null}
+                          : answerQuestion !== null
+                            ? conversationAgentAvatars.get(answerQuestion.conversationId)
+                              ?? (answerQuestion.conversationId === session.id
+                                ? defaultAgent?.avatar : undefined)
+                              ?? null
+                            : null}
                         agentAvatarSeed={item.kind === "agent_message"
                           && subagentConversationIds.has(item.senderConversationId)
                           ? item.senderConversationId
-                          : null}
+                          : answerQuestion !== null
+                            ? answerQuestion.conversationId
+                            : null}
                         teamManaged={teamManaged}
                         activeRunId={activeRunId}
                         latestActiveToolId={latestActiveToolId}
@@ -3301,7 +3353,7 @@ export function ConversationWorkspace({
                     />
                   ))}
                 </Fragment>
-              ))}
+              ); })}
               {(runProgressesByInsertIndex.get(displayTimeline.length) ?? [])
                 .filter((progress) =>
                   progress.runId === null || !runningContextCompactionRunIds.has(progress.runId)
@@ -3312,6 +3364,7 @@ export function ConversationWorkspace({
               {modelActivity !== null && modelActivityInsertIndex === displayTimeline.length ? (
                 <ModelActivityIndicator activity={modelActivity} />
               ) : null}
+              </ToolRevealContext.Provider>
             </ToolDisclosureContext.Provider>
           )}
           {sentSteerMessages.map((message) => (
@@ -5089,7 +5142,7 @@ function groupRunActivitySegment(
       continue;
     }
     if (item.kind === "tool") {
-      if (item.name === "compact_context") continue;
+      if (item.name === "compact_context" || isTaskListManagementTool(item.name)) continue;
       activityFor(item.runId, index).items.push(item);
       continue;
     }
@@ -5127,6 +5180,7 @@ function groupRunActivitySegment(
 
   const projected: TimelineDisplayItem[] = [];
   for (const [index, item] of timeline.entries()) {
+    if (item.kind === "tool" && isTaskListManagementTool(item.name)) continue;
     if (item.kind === "tool" && item.name === "compact_context") {
       projected.push(item);
       continue;
@@ -5341,6 +5395,7 @@ export function groupToolBatches(
 
   for (const item of timeline) {
     if (item.kind === "tool") {
+      if (isTaskListManagementTool(item.name)) continue;
       tools.push(item);
       if (item.id === breakAfterTimelineItemId) flushTools();
       continue;
@@ -5351,6 +5406,10 @@ export function groupToolBatches(
 
   flushTools();
   return grouped;
+}
+
+function isTaskListManagementTool(name: string): boolean {
+  return name === "create_task_list" || name === "update_task_list" || name === "close_task_list";
 }
 
 export function projectTimelineForActiveRun(
@@ -5562,12 +5621,14 @@ export function getFinalCompletedAssistantMessageIds(
 function ReasoningDisclosure({
   children,
   streaming,
+  reveal = false,
 }: {
   children: ReactNode;
   streaming: boolean;
+  reveal?: boolean;
 }): ReactElement {
   const contentId = useId();
-  const [isExpanded, setIsExpanded] = useState(streaming);
+  const [isExpanded, setIsExpanded] = useState(streaming || reveal);
 
   return (
     <section className="my-[5px] min-w-0">
@@ -5715,6 +5776,9 @@ function ModelRetryTimelineItem({ item }: { item: ConversationModelRetryItem }):
 function TimelineItem({
   agentClient,
   item,
+  questionAnswer,
+  questionSenderName,
+  onLocateQuestion,
   agentAvatar,
   agentAvatarSeed,
   teamManaged,
@@ -5744,6 +5808,9 @@ function TimelineItem({
 }: {
   agentClient: AgentClient;
   item: TimelineDisplayItem;
+  questionAnswer: UserQuestion | null;
+  questionSenderName: string | null;
+  onLocateQuestion: (question: UserQuestion) => Promise<void>;
   agentAvatar: AgentProfile["avatar"] | null;
   agentAvatarSeed: string | null;
   teamManaged: boolean;
@@ -5892,7 +5959,7 @@ function TimelineItem({
   const renderedMessageContent = item.role === "assistant"
     ? stripLeadingThinkingSummary(item.content)
     : item.content;
-  const canEdit = item.role === "user" && item.id === latestUserMessageId;
+  const canEdit = item.role === "user" && questionAnswer === null && item.id === latestUserMessageId;
   const showMessageMeta = item.role === "user"
     || canShowCompletionTime
     || canCopyMessage
@@ -5915,9 +5982,25 @@ function TimelineItem({
 
   return (
     <div className="chat-message-group" data-role={item.role}>
+      {questionAnswer === null ? null : (
+        <span className="inline-flex max-w-full items-center gap-[5px] px-[2px] text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-muted-foreground)]">
+          {agentAvatar !== null ? <AgentAvatar avatar={agentAvatar} size="compact" />
+            : agentAvatarSeed !== null ? <SubagentAvatar icon={null} seed={agentAvatarSeed} size="compact" />
+              : <Bot aria-hidden="true" size={15} className="shrink-0" />}
+          <span className="truncate">来自 {questionSenderName}</span>
+        </span>
+      )}
       {item.role === "user" ? messageAttachments : null}
       {hasMessageBody ? (
         <article className="chat-message" data-role={item.role} data-status={item.status}>
+          {questionAnswer === null ? null : (
+            <button type="button" onClick={() => void onLocateQuestion(questionAnswer)}
+              title={`跳到提问：${questionAnswer.questions.map((prompt) => prompt.question).join("；")}`}
+              className="flex max-w-full min-w-0 items-center gap-[5px] rounded-[var(--app-radius-small)] border-0 bg-[var(--app-status-info-bg)] px-2 py-1 text-left text-[length:var(--app-font-size-control)] font-medium text-[var(--app-status-info-fg)] hover:underline focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)]">
+              <MessageCircleQuestion aria-hidden="true" size={14} className="shrink-0" />
+              <span className="min-w-0 truncate">提问：{questionAnswer.questions.map((prompt) => prompt.question).join("；")}</span>
+            </button>
+          )}
           {item.role === "assistant" && item.status === "failed" ? (
             <ConversationErrorContent content={item.content} />
           ) : item.role === "assistant" ? (
@@ -5939,6 +6022,12 @@ function TimelineItem({
                 : null}
               </>}
             </>
+          ) : questionAnswer !== null ? (
+            <UserMessageContent content={questionAnswer.questions.map((prompt) =>
+              questionAnswer.questions.length === 1
+                ? questionAnswer.answers?.[prompt.id] ?? ""
+                : `${prompt.title}：${questionAnswer.answers?.[prompt.id] ?? ""}`,
+            ).join("\n\n")} />
           ) : (
             renderedMessageContent.length > 0 ? <UserMessageContent content={renderedMessageContent} /> : null
           )}
@@ -6473,10 +6562,13 @@ function RunActivityTimelineItem({
   liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
 }): ReactElement {
   const isActive = activeRunId !== null && item.runIds.includes(activeRunId);
+  const reveal = useContext(ToolRevealContext);
+  const revealThisRun = item.items.some((entry) => entry.kind === "tool" && entry.id === reveal?.id);
   const [isExpanded, setIsExpanded] = useToolDisclosure(item.id, [], isActive || runProgress !== null);
+  useEffect(() => { if (revealThisRun) setIsExpanded(true); }, [reveal?.requestId, revealThisRun, setIsExpanded]);
   useEffect(() => {
-    if (!isActive && runProgress === null) setIsExpanded(false);
-  }, [isActive, runProgress, setIsExpanded]);
+    if (!isActive && runProgress === null && !revealThisRun) setIsExpanded(false);
+  }, [isActive, runProgress, revealThisRun, setIsExpanded]);
   const [now, setNow] = useState(() => Date.now());
   const contentId = useId();
   useEffect(() => {
@@ -6590,7 +6682,7 @@ function RunActivityTimelineItem({
       {isExpanded ? (
         <div className="flex min-w-0 flex-col gap-[5px] pt-[5px]" id={contentId}>
           {hasReasoning ? (
-            <ReasoningDisclosure streaming={reasoningStreaming}>
+            <ReasoningDisclosure key={revealThisRun ? reveal?.requestId : "normal"} streaming={reasoningStreaming} reveal={revealThisRun}>
               {activityContent}
               {modelActivityContent}
             </ReasoningDisclosure>
@@ -6638,10 +6730,13 @@ function ToolBatchTimelineItem({
   liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
 }): ReactElement {
   const [isExpanded, setIsExpanded] = useToolDisclosure(item.id, item.tools.map((tool) => tool.id), item.tools.some((tool) => tool.status === "running" || tool.status === "awaiting_approval"));
+  const reveal = useContext(ToolRevealContext);
+  const revealThisBatch = item.tools.some((tool) => tool.id === reveal?.id);
+  useEffect(() => { if (revealThisBatch) setIsExpanded(true); }, [reveal?.requestId, revealThisBatch, setIsExpanded]);
   const hasActiveTool = item.tools.some((tool) => tool.status === "running" || tool.status === "awaiting_approval");
   useEffect(() => {
-    if (!hasActiveTool) setIsExpanded(false);
-  }, [hasActiveTool, setIsExpanded]);
+    if (!hasActiveTool && !revealThisBatch) setIsExpanded(false);
+  }, [hasActiveTool, revealThisBatch, setIsExpanded]);
   const hasFailure = item.tools.some((tool) =>
     toolItemHasFailure(tool) || approvalErrors[tool.id] !== undefined
   );
@@ -6945,11 +7040,20 @@ function ToolTimelineItem({
     ? item.status
     : "failed";
   const [isExpanded, setIsExpanded] = useToolDisclosure(item.id);
+  const reveal = useContext(ToolRevealContext);
+  const element = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (reveal?.id !== item.id) return;
+    setIsExpanded(true);
+    const timer = window.setTimeout(() => element.current?.scrollIntoView?.({ behavior: "smooth", block: "center" }), 0);
+    return () => window.clearTimeout(timer);
+  }, [item.id, reveal?.id, reveal?.requestId, setIsExpanded]);
   const [isRawCallOpen, setIsRawCallOpen] = useState(false);
   const detailsLabel = isExpanded ? "收起调用详情" : "展开调用详情";
 
   return (
     <article
+      ref={element}
       className={variant === "activity" ? "tool-activity-row" : "tool-timeline-item"}
       data-status={effectiveStatus}
     >
@@ -7112,6 +7216,8 @@ function ToolTypeIcon({ name }: { name: string }): ReactElement {
       return <Globe2 aria-hidden="true" size={15} />;
     case "read_attachment":
       return <Paperclip aria-hidden="true" size={15} />;
+    case "request_user_input":
+      return <MessageCircleQuestion aria-hidden="true" size={15} />;
     case "view_attachments":
     case "view_image":
       return <Images aria-hidden="true" size={15} />;
@@ -7320,6 +7426,8 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
       return completed ? "文件已编辑" : "编辑文件";
     case "get_project_info":
       return "读取项目信息";
+    case "request_user_input":
+      return "提问";
     case "create_task_list":
       return completed ? "任务清单已创建" : "创建任务清单";
     case "update_task_list":
@@ -7647,6 +7755,16 @@ function ToolDetail({
   onOpenSubagent: ((conversationId: string) => void) | undefined;
   onOpenProjectFile: ((path: string) => void) | undefined;
 }): ReactElement {
+  if (item.name === "request_user_input") {
+    const questions: unknown = parseToolPayload(item.arguments)?.questions;
+    const prompts: unknown[] = Array.isArray(questions) ? questions : [];
+    return <div className="ml-5 flex min-w-0 flex-col gap-[5px] py-[5px] text-[length:var(--app-font-size-body)] text-[var(--app-foreground)]">
+      {prompts.map((question, index) =>
+        typeof question === "object" && question !== null && "question" in question && typeof question.question === "string"
+          ? <p key={index} className="m-0 break-words">{question.question}</p> : null)}
+      {item.status === "failed" ? <ToolResultNotice result={item.result} status={item.status} /> : null}
+    </div>;
+  }
   if (item.name === "run_command") {
     return (
       <CommandTerminal

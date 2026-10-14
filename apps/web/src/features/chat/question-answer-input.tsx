@@ -1,4 +1,4 @@
-import { FileText, Image, LoaderCircle, Paperclip, X } from "lucide-react";
+import { FileText, Image, LoaderCircle, Paperclip, Send, X } from "lucide-react";
 import { useEffect, useRef, useState, type ClipboardEvent, type ReactElement } from "react";
 import type { ConversationAttachment } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/index.js";
@@ -7,15 +7,27 @@ import { QueryTextarea } from "./query-textarea.js";
 import { createPastedTextAttachment } from "./pasted-text-attachment.js";
 import { MAX_DRAFT_ATTACHMENTS, MAX_DRAFT_ATTACHMENT_BYTES, getClipboardAttachmentFiles, pastedAttachmentName, readAttachmentFileAsBase64 } from "./clipboard-attachments.js";
 
-export function QuestionAnswerInput({ label, value, onChange, onPaste, disabled }: {
+export function QuestionAnswerInput({ label, value, onChange, onPaste, disabled, onChoose, submitDisabled, sending }: {
   label: string; value: string; onChange: (value: string) => void;
   onPaste: (event: ClipboardEvent<HTMLTextAreaElement>) => void; disabled: boolean;
+  onChoose?: () => void; submitDisabled?: boolean; sending?: boolean;
 }): ReactElement {
   const ref = useRef<HTMLTextAreaElement>(null);
-  return <QueryTextarea textareaRef={ref} query={null} aria-label={label} rows={2}
+  return <div className="min-w-0 rounded-[var(--app-radius-large)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] p-[5px] focus-within:border-[var(--app-accent)]">
+    <QueryTextarea textareaRef={ref} query={null} aria-label={label} rows={2}
     disabled={disabled} value={value} onValueChange={onChange} onPaste={onPaste}
-    placeholder="也可以直接输入自己的回答，支持粘贴图片或文件…"
-    className="block w-full resize-y rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] px-3 py-2 text-[length:var(--app-font-size-body)] text-[var(--app-foreground)] outline-none focus:border-[var(--app-accent)]" />;
+    placeholder="也可以输入自己的答案…"
+    className="block w-full resize-y border-0 bg-transparent px-2 py-1 text-[length:var(--app-font-size-body)] text-[var(--app-foreground)] outline-none" />
+    {onChoose === undefined ? null : <div className="flex items-center justify-end gap-[5px]">
+      <IconButton type="button" size="compact" disabled={disabled} label="添加回答文件或图片" onClick={onChoose}>
+        <Paperclip aria-hidden="true" size={15} />
+      </IconButton>
+      <button type="submit" disabled={submitDisabled} aria-label={sending ? "提交中" : "提交回答"}
+        className="inline-flex size-7 items-center justify-center rounded-[var(--app-radius)] border-0 bg-[var(--app-primary-action)] text-[var(--app-primary-action-foreground)] disabled:opacity-40">
+        {sending ? <LoaderCircle aria-hidden="true" size={15} className="animate-spin" /> : <Send aria-hidden="true" size={15} />}
+      </button>
+    </div>}
+  </div>;
 }
 
 export function useQuestionAttachments(agentClient: AgentClient, conversationId: string) {

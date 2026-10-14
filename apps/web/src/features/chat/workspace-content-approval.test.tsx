@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_AGENT_DIRECTORY_CONFIGURATION,
   serializeAgentError,
+  userQuestionSchema,
   type ConversationAttachment,
   type ConversationContextUsage,
   type ConversationAgentMessageItem,
@@ -72,6 +73,44 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+it("shows an answered question with its agent and opens the original prompt", async () => {
+  const client = new MockAgentClient();
+  const target = session({ id: PARENT_ID, title: "测试代理" });
+  const question = userQuestionSchema.parse({
+    id: CHILD_ID, conversationId: PARENT_ID, displayConversationId: PARENT_ID,
+    runId: RUN_ID, toolCallId: "ask", sourceTitle: "测试代理",
+    questions: [{ id: "scope", title: "范围", question: "检查哪些页面？", options: [] }],
+    status: "answered", answers: { scope: "设置页面" }, viewed: true, deliveryComplete: true,
+    createdAt: "2026-10-14T01:00:00Z", answeredAt: "2026-10-14T01:01:00Z",
+  });
+  const tool: ConversationToolItem = { arguments: JSON.stringify({ questions: question.questions }),
+    batchId: null, conversationId: PARENT_ID, createdAt: question.createdAt, diff: null,
+    id: TOOL_ID, kind: "tool", name: "request_user_input",
+    result: JSON.stringify({ questionId: question.id }), runId: RUN_ID, status: "completed" };
+  const answer: ConversationTimelineItem = { attachments: [],
+    content: "用户回答了你发起的提问。\n\n范围\n检查哪些页面？\n用户回答：设置页面",
+    conversationId: PARENT_ID, createdAt: "2026-10-14T01:01:01Z", id: MESSAGE_ID,
+    kind: "message", modelId: null, role: "user", runId: CHILD_ID, status: "completed" };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool, answer]);
+  vi.spyOn(client, "listUserQuestions").mockResolvedValue([question]);
+  const locate = vi.fn();
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  const render = (requestId?: number) => <TooltipProvider><ConversationWorkspace agentClient={client}
+    project={null} session={target} onLocateConversationItem={locate}
+    locateTimelineItem={requestId === undefined ? null : { id: TOOL_ID, requestId }}
+  /></TooltipProvider>;
+  await act(async () => { root?.render(render()); await flushConversationWorkspace(); });
+  expect(container.textContent).toContain("来自 默认 Agent");
+  const jump = container.querySelector<HTMLButtonElement>('button[title^="跳到提问："]');
+  expect(jump?.textContent).toContain("检查哪些页面？");
+  await act(async () => { jump?.click(); await Promise.resolve(); });
+  expect(locate).toHaveBeenCalledWith(PARENT_ID, TOOL_ID);
+  await act(async () => { root?.render(render(1)); await Promise.resolve(); });
+  expect(container.querySelector('.tool-activity-row .tool-timeline-item__label-text')?.textContent).toBe("提问");
+  expect(container.querySelector('.tool-activity-row button[aria-label="收起调用详情"]')).not.toBeNull();
+  expect(container.textContent).toContain("检查哪些页面？");
 });
 
 describe("Automatic continuation answer", () => {

@@ -75,7 +75,7 @@ function QuestionAnswer({ question, agentClient, onAnswered }: { question: UserQ
     }).then(onAnswered).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "无法提交回答。")).finally(() => setSending(false));
   }}>
     {question.conversationId !== question.displayConversationId ? <p className="m-0 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">来自 {question.sourceTitle}</p> : null}
-    {question.questions.map((prompt) => <fieldset key={prompt.id} disabled={sending || submitted || attachmentState.busy} className="m-0 min-w-0 space-y-[5px] border-0 p-0">
+    {question.questions.map((prompt, index) => <fieldset key={prompt.id} disabled={sending || submitted || attachmentState.busy} className="m-0 min-w-0 space-y-[5px] border-0 p-0">
       <legend className="sr-only">{prompt.title}</legend><p data-user-question-prompt className="m-0 break-words text-[length:var(--app-font-size-body)] font-medium">{prompt.question}</p>
       {prompt.options.length > 0 ? <div className="grid min-w-0 grid-cols-1 gap-[5px]">{prompt.options.map((option) => {
         const selected = choices[prompt.id] === option.label;
@@ -94,11 +94,16 @@ function QuestionAnswer({ question, agentClient, onAnswered }: { question: UserQ
       <QuestionAnswerInput label={`${prompt.title}的回答`} disabled={sending || submitted || attachmentState.busy}
         value={submitted ? question.answers?.[prompt.id] ?? "" : texts[prompt.id] ?? ""}
         onChange={value => changeText(prompt.id, value)}
-        onPaste={event => attachmentState.paste(event, text => changeText(prompt.id, `${texts[prompt.id] ?? ""}${text}`))} />
+        onPaste={event => attachmentState.paste(event, text => changeText(prompt.id, `${texts[prompt.id] ?? ""}${text}`))}
+        {...(index !== question.questions.length - 1 || submitted ? {} : {
+          onChoose: () => { void attachmentState.importFiles(null); },
+          submitDisabled: sending || attachmentState.busy || question.questions.some((item) => !answers[item.id]?.trim()),
+          sending,
+        })} />
     </fieldset>)}
-    <QuestionAnswerAttachments agentClient={agentClient} attachments={attachmentState.attachments} busy={sending || attachmentState.busy}
-      {...(submitted ? {} : { onRemove: (attachment) => { void attachmentState.remove(attachment); }, onChoose: () => { void attachmentState.importFiles(null); } })} />
-    <div className="flex items-center justify-between gap-3"><span className="text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">{submitted ? "回答已保存，等待送达" : "提交后，代理将继续处理"}</span><button type="submit" disabled={sending || attachmentState.busy || (!submitted && question.questions.some((prompt) => !answers[prompt.id]?.trim()))} className="inline-flex shrink-0 items-center gap-1.5 rounded-[var(--app-radius)] bg-[var(--app-primary-action)] px-3 py-1.5 text-[length:var(--app-font-size-body)] text-[var(--app-primary-action-foreground)] disabled:opacity-40"><Send aria-hidden="true" size={13} />{sending ? "提交中…" : submitted ? "重试送达" : "提交回答"}</button></div>
+    {attachmentState.attachments.length === 0 ? null : <QuestionAnswerAttachments agentClient={agentClient} attachments={attachmentState.attachments} busy={sending || attachmentState.busy}
+      {...(submitted ? {} : { onRemove: (attachment) => { void attachmentState.remove(attachment); } })} />}
+    <div className="flex items-center justify-between gap-3"><span className="text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">{submitted ? "回答已保存，等待送达" : "提交后，代理将继续处理"}</span>{submitted ? <button type="submit" disabled={sending || attachmentState.busy} className="inline-flex shrink-0 items-center gap-1.5 rounded-[var(--app-radius)] bg-[var(--app-primary-action)] px-3 py-1.5 text-[length:var(--app-font-size-body)] text-[var(--app-primary-action-foreground)] disabled:opacity-40"><Send aria-hidden="true" size={13} />{sending ? "提交中…" : "重试送达"}</button> : null}</div>
     {attachmentState.error ? <p role="alert" className="m-0 text-[var(--app-destructive)]">{attachmentState.error}</p> : null}
     {error ? <p role="alert" className="m-0 text-[var(--app-destructive)]">{error}</p> : null}
   </form>;

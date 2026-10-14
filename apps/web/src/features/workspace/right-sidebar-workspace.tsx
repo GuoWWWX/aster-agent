@@ -605,6 +605,7 @@ export function RightSidebarWorkspace({
   teamMemberOpenRequest,
   onLocateProject,
   onLocateSession,
+  onLocateConversationItem,
   onSessionViewed,
   onSessionUpdated,
   tree,
@@ -617,6 +618,7 @@ export function RightSidebarWorkspace({
   teamMemberOpenRequest: TeamMemberOpenRequest | null;
   onLocateProject: (projectId: string) => void;
   onLocateSession: (sessionId: string) => void;
+  onLocateConversationItem?: (conversationId: string, itemId: string) => void;
   onSessionViewed: (sessionId: string) => void;
   onSessionUpdated: (conversation: ConversationSummary) => void;
   tree: ProjectTreeController;
@@ -2559,6 +2561,7 @@ export function RightSidebarWorkspace({
                     onLocateSession={() => {
                       if (activeSession !== null) onLocateSession(activeSession.id);
                     }}
+                    {...(onLocateConversationItem === undefined ? {} : { onLocateConversationItem })}
                      onOpenProjectFile={(path) => void openProjectFilePath(path)}
                     onSessionUpdated={updateSideSession}
                     onViewed={() => onSessionViewed(session.id)}
