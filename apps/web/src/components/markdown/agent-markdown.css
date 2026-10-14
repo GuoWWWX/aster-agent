@@ -1,4 +1,4 @@
-/* CSS trigger 2: rendered Markdown tables, nested lists, and decorated file links need structural selectors. */
+/* CSS triggers 1/2/3: parser-generated Markdown classes, structural selectors and inherited callout colors. */
 .agent-markdown {
   --agent-md-heading-strong: #0f172a;
   --agent-md-heading: #1e293b;
@@ -519,3 +519,74 @@
   outline: 2px solid var(--app-focus-ring);
   outline-offset: 2px;
 }
+
+.agent-markdown__math-block {
+  max-width: 100%;
+  margin: 10px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.agent-markdown__callout {
+  --agent-callout-accent: var(--agent-md-link);
+  margin: 0 0 10px;
+  padding: 9px 12px;
+  border-radius: var(--app-radius);
+  border-inline-start: 3px solid var(--agent-callout-accent);
+  background: color-mix(in srgb, var(--agent-callout-accent) 8%, var(--app-panel));
+}
+
+.agent-markdown__callout[data-tone="amber"] { --agent-callout-accent: var(--app-status-warning-fg); }
+.agent-markdown__callout[data-tone="red"] { --agent-callout-accent: var(--app-status-danger-fg); }
+.agent-markdown__callout[data-tone="green"] { --agent-callout-accent: var(--app-status-success-fg); }
+.agent-markdown__callout[data-tone="slate"] { --agent-callout-accent: var(--app-muted-foreground); }
+.agent-markdown__callout[data-tone="cyan"] { --agent-callout-accent: var(--agent-md-code-function); }
+.agent-markdown__callout[data-tone="purple"] { --agent-callout-accent: var(--agent-md-code-keyword); }
+.agent-markdown__callout-title {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-bottom: 5px;
+  color: var(--agent-callout-accent);
+  font-weight: 600;
+}
+.agent-markdown__callout-title svg { flex-shrink: 0; align-self: center; }
+.agent-markdown__callout-title :is(strong, em, code) { color: inherit; }
+.agent-markdown details > summary { cursor: pointer; }
+.agent-markdown__callout > :last-child { margin-bottom: 0; }
+.agent-markdown__callout:not([open]) > summary { margin-bottom: 0; }
+
+.agent-markdown__mermaid {
+  margin: 0 0 10px;
+  min-width: 0;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  overflow: hidden;
+  background: var(--app-panel);
+}
+.agent-markdown__mermaid .agent-markdown__code-header > div { display: flex; gap: 5px; }
+.agent-markdown__mermaid button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--app-radius);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.agent-markdown__mermaid button:hover { background: var(--app-hover); color: var(--app-foreground); }
+.agent-markdown__mermaid button:focus-visible { outline: 2px solid var(--app-focus-ring); outline-offset: -2px; }
+.agent-markdown__mermaid-canvas { padding: 10px; overflow: auto; color: var(--app-muted-foreground); }
+.agent-markdown__mermaid-canvas svg { display: block; width: 100%; height: auto; max-width: 100%; margin-inline: auto; }
+.agent-markdown__mermaid-canvas[data-error] { color: var(--app-status-danger-fg); }
+.agent-markdown__mermaid pre:not([hidden]) { margin: 0; padding: 9px; overflow: auto; background: var(--app-muted); }
+.agent-markdown__mermaid pre[hidden] { display: none; }
+.agent-markdown__mermaid pre code { background: transparent; padding: 0; border: 0; }
+.agent-markdown__mermaid-caption,
+.agent-markdown figcaption,
+.agent-markdown caption { margin: 5px 0; color: var(--app-muted-foreground); text-align: center; font-size: var(--app-font-size-control); }
+.agent-markdown figure { margin: 0 0 10px; }
+.agent-markdown kbd { border: 1px solid var(--app-border); border-radius: var(--app-radius-small); padding: 1px 4px; background: var(--app-muted); color: var(--app-foreground); font-family: ui-monospace, monospace; font-size: 0.88em; }

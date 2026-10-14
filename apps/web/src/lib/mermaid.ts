@@ -3,8 +3,7 @@ import { calculateRasterSize, svgDataUrl } from "./svg-image.js";
 /**
  * Mermaid 渲染服务。
  *
- * 编辑器装饰层、Word 预览、DOCX 导出三处都要拿同一张图，所以渲染、缓存、
- * 栅格化都收在这里。mermaid 本体约 500KB，用动态 import 让它只在文档里
+ * 对话展示和文档编辑器共用渲染与缓存。动态 import 让 Mermaid 只在文档里
  * 真的出现 mermaid 代码块时才下载。
  */
 
@@ -18,22 +17,513 @@ const inflight = new Map<string, Promise<RenderResult>>();
 let mermaidReady: Promise<typeof import("mermaid").default> | undefined;
 let currentTheme: "default" | "dark" = "default";
 const MERMAID_FONT_FAMILY = "Microsoft YaHei, Segoe UI Emoji, sans-serif";
+const MERMAID_FONT_SIZE = 14;
+const MERMAID_LABEL_WRAP_WIDTH = 240;
+const MERMAID_THEME_CSS = `
+.nodeLabel {
+  display: inline-block;
+  max-width: ${MERMAID_LABEL_WRAP_WIDTH}px;
+  white-space: normal !important;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.25;
+  text-align: center;
+}
+.nodeLabel p { margin: 0; }
+.cluster-label { padding-bottom: 8px; }
+.cluster-label .nodeLabel { max-width: 480px; font-weight: 600; line-height: 1.35; }
+/* 类图方法与属性列表：单行完整舒展展现，不限宽度、不折行，左对齐展示代码签名 */
+g.classGroup .nodeLabel,
+.node[id*="classId-"] .nodeLabel,
+g.classGroup div,
+.node[id*="classId-"] div,
+g.classGroup span,
+.node[id*="classId-"] span,
+g.classGroup p,
+.node[id*="classId-"] p {
+  max-width: none !important;
+  white-space: nowrap !important;
+  text-align: left !important;
+  overflow-wrap: normal !important;
+  word-break: normal !important;
+}
+/* 类名标题保持居中加粗 */
+g.classGroup .classTitle .nodeLabel,
+.node[id*="classId-"] .classTitle .nodeLabel,
+.classTitle,
+.classTitleText {
+  text-align: center !important;
+}
+/* 连线标签只显示文字，不绘制 Mermaid 默认的背景块。 */
+.edgeLabel,
+.edgeLabel *,
+.edgeLabel p,
+.edgeLabel span,
+.edgeLabel foreignObject,
+.edgeLabel foreignObject > div { background: transparent !important; background-color: transparent !important; }
+.edgeLabel rect { fill: transparent !important; stroke: none !important; }
+.edgeLabel, .edgeLabel * { text-shadow: none !important; }
+.edgeLabel text, .edgeLabel tspan { paint-order: normal; stroke: none !important; }
+/* 连线标签文字长时自动折行，避免被 foreignObject 默认单行截断 */
+.edgeLabel,
+.labelBkg,
+.edgeLabel p,
+.edgeLabel span,
+.edgeLabel div,
+.edgeLabel foreignObject > div {
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  line-height: 1.35 !important;
+  text-align: center !important;
+}
+.edgeLabel foreignObject {
+  overflow: visible !important;
+}
+/* 状态图 (State Diagram) 连线与箭头统一使用琥珀主橙色 #f59e0b */
+.transition,
+path.transition,
+.edgePaths .transition,
+.statediagram-state line,
+g.stateGroup line {
+  stroke: #f59e0b !important;
+  stroke-width: 1.5px !important;
+  fill: none !important;
+}
+defs [id*="barbEnd"],
+[id*="barbEnd"] path,
+marker[id*="barbEnd"] path,
+[id$="-barbEnd"],
+[id$="-barbEnd"] path {
+  fill: #f59e0b !important;
+  stroke: #f59e0b !important;
+}
+.node circle.state-start,
+circle.state-start,
+.node .fork-join,
+rect.fork-join {
+  fill: #f59e0b !important;
+  stroke: #f59e0b !important;
+}
+`;
 
 function mermaidConfig(theme: "default" | "dark") {
+  const isDark = theme === "dark";
   return {
     startOnLoad: false,
-    theme,
-    // securityLevel 保持 strict：图里的文本来自用户文档，
-    // 放开会让 mermaid 允许内联脚本和外部资源。
+    theme: "default" as const,
     securityLevel: "strict" as const,
     htmlLabels: true,
     fontFamily: MERMAID_FONT_FAMILY,
+    fontSize: MERMAID_FONT_SIZE,
+    markdownAutoWrap: true,
+    themeVariables: {
+      fontSize: `${MERMAID_FONT_SIZE}px`,
+      fontFamily: MERMAID_FONT_FAMILY,
+      // 深浅色模式使用完全相同的核心主橙色 #f59e0b
+      lineColor: "#f59e0b",
+      primaryBorderColor: "#f59e0b",
+      nodeBorder: "#f59e0b",
+      actorBorder: "#f59e0b",
+      actorLineColor: "#f59e0b",
+      signalColor: "#f59e0b",
+      labelBoxBorderColor: "#f59e0b",
+      loopLineColor: "#f59e0b",
+      noteBorderColor: "#f59e0b",
+      sequenceNumberColor: isDark ? "#fef3c7" : "#1c1917",
+      // 方块填充：浅色模式 #fef3c7（正宗浅橙金色），深色模式 #382613（深黑棕夜光底）
+      primaryColor: isDark ? "#382613" : "#fef3c7",
+      actorBkg: isDark ? "#382613" : "#fef3c7",
+      labelBoxBkgColor: isDark ? "#382613" : "#fef3c7",
+      mainBkg: isDark ? "#382613" : "#fef3c7",
+      // 容器背景与便签背景
+      secondaryColor: isDark ? "#292015" : "#fffbeb",
+      tertiaryColor: isDark ? "#261e14" : "#fffbeb",
+      noteBkgColor: isDark ? "#292015" : "#fffbeb",
+      // 文本颜色
+      primaryTextColor: isDark ? "#fef3c7" : "#1c1917",
+      actorTextColor: isDark ? "#fef3c7" : "#1c1917",
+      signalTextColor: isDark ? "#fef3c7" : "#1c1917",
+      labelTextColor: isDark ? "#fef3c7" : "#78350f",
+      loopTextColor: isDark ? "#fef3c7" : "#78350f",
+      noteTextColor: isDark ? "#fef3c7" : "#1c1917",
+    },
+    themeCSS: MERMAID_THEME_CSS + (isDark ? `
+/* ====== 深色模式：暖金/琥珀夜光体系 ====== */
+/* 流程图子图（Cluster）容器与标题 */
+.cluster rect {
+  fill: #261e14 !important;
+  stroke: #f59e0b !important;
+  stroke-width: 1.5px !important;
+  rx: 6px !important;
+  ry: 6px !important;
+}
+.cluster-label text, .cluster-label span, .cluster-label .nodeLabel {
+  fill: #fde68a !important;
+  color: #fde68a !important;
+  font-weight: 600 !important;
+}
+
+/* 流程图节点小方块（矩形、多边形/菱形、圆形等） */
+.node[id*="-flowchart-"] rect,
+.node[id*="-flowchart-"] polygon,
+.node[id*="-flowchart-"] circle,
+.node[id*="-flowchart-"] ellipse,
+.node[id*="-flowchart-"] path {
+  fill: #382613 !important;
+  stroke: #f59e0b !important;
+  stroke-width: 1.5px !important;
+}
+.node .nodeLabel,
+.node text,
+.node span {
+  fill: #fde68a !important;
+  color: #fde68a !important;
+}
+
+/* 连线与连线标签 */
+.relation, .edgePath .path {
+  stroke: #f59e0b !important;
+}
+[id$="-arrowhead"] path:not([fill]):not([style*="fill"]),
+[id$="-crosshead"] path:not([fill]):not([style*="fill"]),
+marker path:not([fill]):not([style*="fill"]) {
+  fill: #f59e0b !important;
+  stroke: #f59e0b !important;
+}
+.edgeLabel text, .edgeLabel span {
+  fill: #fef3c7 !important;
+  color: #fef3c7 !important;
+}
+
+/* 时序图 (Sequence Diagram) */
+rect.actor, rect[class*="actor"], .actor rect {
+  fill: #382613 !important;
+  stroke: #f59e0b !important;
+  stroke-width: 1.5px !important;
+}
+text.actor, text[class*="actor"], .actor text, .actor tspan {
+  fill: #fef3c7 !important;
+  color: #fef3c7 !important;
+  stroke: none !important;
+}
+.actor-man line, line.actor-man {
+  stroke: #f59e0b !important;
+  stroke-width: 2px !important;
+}
+.actor-man circle, circle.actor-man {
+  stroke: #f59e0b !important;
+  stroke-width: 2px !important;
+  fill: #382613 !important;
+}
+.actor-line {
+  stroke: #f59e0b !important;
+}
+.messageText {
+  fill: #fef3c7 !important;
+}
+.messageLine0, .messageLine1 {
+  stroke: #f59e0b !important;
+}
+.note {
+  fill: #292015 !important;
+  stroke: #f59e0b !important;
+}
+.noteText, .noteText tspan {
+  fill: #fef3c7 !important;
+}
+/* 时序图 alt/loop 条件框体与其文字 */
+.labelBox {
+  fill: #382613 !important;
+  stroke: #f59e0b !important;
+}
+.labelText, .loopText, .loopText tspan {
+  fill: #fef3c7 !important;
+  color: #fef3c7 !important;
+  font-weight: 600 !important;
+}
+.sectionTitle, .sectionTitle text {
+  fill: #fde68a !important;
+  color: #fde68a !important;
+  font-weight: 600 !important;
+}
+.loopLine {
+  stroke: #f59e0b !important;
+}
+/* 时序图 autonumber 序号圆点与文字：紧凑精致，文字清晰不模糊，完美垂直居中 */
+[id$="-sequencenumber"] circle, marker[id*="sequencenumber"] circle {
+  r: 7.5px !important;
+  fill: #382613 !important;
+  stroke: #f59e0b !important;
+  stroke-width: 1.2px !important;
+}
+.sequenceNumber {
+  fill: #fef3c7 !important;
+  color: #fef3c7 !important;
+  font-weight: 700 !important;
+  font-size: 11px !important;
+  dominant-baseline: central !important;
+  text-anchor: middle !important;
+}
+
+/* 状态图 (State Diagram) */
+.statediagram-state rect {
+  fill: #382613 !important;
+  stroke: #f59e0b !important;
+  stroke-width: 1.5px !important;
+}
+.statediagram-cluster rect,
+.statediagram-cluster rect.outer {
+  fill: #261e14 !important;
+  stroke: #f59e0b !important;
+  stroke-width: 1.5px !important;
+}
+.statediagram-cluster .inner {
+  fill: #1c150e !important;
+}
+.node circle.state-end {
+  fill: #261e14 !important;
+  stroke: #f59e0b !important;
+  stroke-width: 1.5px !important;
+}
+.end-state-inner {
+  fill: #f59e0b !important;
+  stroke: none !important;
+}
+.state-title,
+.transitionLabel,
+.state-note,
+.statediagram-state text,
+.statediagram-note text,
+.state-title text,
+.stateLabel text,
+.statediagram .edgeLabel {
+  fill: #fef3c7 !important;
+  color: #fef3c7 !important;
+}
+.statediagram-note rect {
+  fill: #292015 !important;
+  stroke: #f59e0b !important;
+}
+
+/* 类图与 ER 图 */
+.classTitle text { fill: #fef3c7 !important; }
+.relationLabel { fill: #fef3c7 !important; }
+.node[id*="classId-"] .outer-path path:first-child,
+g.classGroup rect,
+.node[id*="classId-"] rect {
+  fill: #382613 !important;
+  stroke: #f59e0b !important;
+  stroke-width: 1.5px !important;
+}
+g.classGroup line, .node[id*="classId-"] line, .divider {
+  stroke: #f59e0b !important;
+  stroke-width: 1px !important;
+}
+g.classGroup text, g.classGroup span, .node[id*="classId-"] text, .node[id*="classId-"] span {
+  fill: #fef3c7 !important;
+  color: #fef3c7 !important;
+}
+.er.entityBox { fill: #382613 !important; stroke: #f59e0b !important; }
+.er.attributeBoxOdd { fill: #261e14 !important; }
+.er.attributeBoxEven { fill: #382613 !important; }
+.er.entityBox text, .er.attributeBoxOdd text, .er.attributeBoxEven text, .er.relationshipLabel text {
+  fill: #fef3c7 !important;
+}
+.er.relationshipLine { stroke: #f59e0b !important; }
+` : `
+/* ====== 浅色模式：暖金/琥珀日间体系 ====== */
+/* 流程图子图（Cluster）容器与标题 */
+.cluster rect {
+  fill: #fffbeb !important;
+  stroke: #f59e0b !important;
+  stroke-width: 1.5px !important;
+  rx: 6px !important;
+  ry: 6px !important;
+}
+.cluster-label text, .cluster-label span, .cluster-label .nodeLabel {
+  fill: #78350f !important;
+  color: #78350f !important;
+  font-weight: 600 !important;
+}
+
+/* 流程图节点小方块（矩形、多边形/菱形、圆形等）：边框纯正橙色，中间浅一点的橙色 */
+.node[id*="-flowchart-"] rect,
+.node[id*="-flowchart-"] polygon,
+.node[id*="-flowchart-"] circle,
+.node[id*="-flowchart-"] ellipse,
+.node[id*="-flowchart-"] path {
+  fill: #fef3c7 !important;
+  stroke: #f59e0b !important;
+  stroke-width: 1.5px !important;
+}
+.node .nodeLabel,
+.node text,
+.node span {
+  fill: #ea580c !important;
+  color: #ea580c !important;
+}
+
+/* 连线与连线标签 */
+.relation, .edgePath .path {
+  stroke: #f59e0b !important;
+}
+[id$="-arrowhead"] path:not([fill]):not([style*="fill"]),
+[id$="-crosshead"] path:not([fill]):not([style*="fill"]),
+marker path:not([fill]):not([style*="fill"]) {
+  fill: #f59e0b !important;
+  stroke: #f59e0b !important;
+}
+.edgeLabel text, .edgeLabel span {
+  fill: #1c1917 !important;
+  color: #1c1917 !important;
+}
+
+/* 时序图 (Sequence Diagram)：方块边框纯正橙色，中间浅一点的橙色 */
+rect.actor, rect[class*="actor"], .actor rect {
+  fill: #fef3c7 !important;
+  stroke: #f59e0b !important;
+  stroke-width: 1.5px !important;
+}
+text.actor, text[class*="actor"], .actor text, .actor tspan {
+  fill: #1c1917 !important;
+  color: #1c1917 !important;
+  stroke: none !important;
+}
+.actor-man line, line.actor-man {
+  stroke: #f59e0b !important;
+  stroke-width: 2px !important;
+}
+.actor-man circle, circle.actor-man {
+  stroke: #f59e0b !important;
+  stroke-width: 2px !important;
+  fill: #fef3c7 !important;
+}
+.actor-line {
+  stroke: #f59e0b !important;
+}
+.messageText {
+  fill: #1c1917 !important;
+}
+.messageLine0, .messageLine1 {
+  stroke: #f59e0b !important;
+}
+.note {
+  fill: #fffbeb !important;
+  stroke: #f59e0b !important;
+}
+.noteText, .noteText tspan {
+  fill: #1c1917 !important;
+}
+/* 时序图 alt/loop 条件框体与其文字 */
+.labelBox {
+  fill: #fef3c7 !important;
+  stroke: #f59e0b !important;
+}
+.labelText, .loopText, .loopText tspan {
+  fill: #78350f !important;
+  color: #78350f !important;
+  font-weight: 600 !important;
+}
+.sectionTitle, .sectionTitle text {
+  fill: #78350f !important;
+  color: #78350f !important;
+  font-weight: 600 !important;
+}
+.loopLine {
+  stroke: #f59e0b !important;
+}
+/* 时序图 autonumber 序号圆点与文字：紧凑精致，文字清晰不模糊，完美垂直居中 */
+[id$="-sequencenumber"] circle, marker[id*="sequencenumber"] circle {
+  r: 7.5px !important;
+  fill: #fef3c7 !important;
+  stroke: #f59e0b !important;
+  stroke-width: 1.2px !important;
+}
+.sequenceNumber {
+  fill: #1c1917 !important;
+  color: #1c1917 !important;
+  font-weight: 700 !important;
+  font-size: 11px !important;
+  dominant-baseline: central !important;
+  text-anchor: middle !important;
+}
+
+/* 状态图 (State Diagram) */
+.statediagram-state rect {
+  fill: #fef3c7 !important;
+  stroke: #f59e0b !important;
+  stroke-width: 1.5px !important;
+}
+.statediagram-cluster rect,
+.statediagram-cluster rect.outer {
+  fill: #fffbeb !important;
+  stroke: #f59e0b !important;
+  stroke-width: 1.5px !important;
+}
+.statediagram-cluster .inner {
+  fill: #fef3c7 !important;
+}
+.node circle.state-end {
+  fill: #fffbeb !important;
+  stroke: #f59e0b !important;
+  stroke-width: 1.5px !important;
+}
+.end-state-inner {
+  fill: #f59e0b !important;
+  stroke: none !important;
+}
+.state-title,
+.transitionLabel,
+.state-note,
+.statediagram-state text,
+.statediagram-note text,
+.state-title text,
+.stateLabel text,
+.statediagram .edgeLabel {
+  fill: #1c1917 !important;
+  color: #1c1917 !important;
+}
+.statediagram-note rect {
+  fill: #fffbeb !important;
+  stroke: #f59e0b !important;
+}
+
+/* 类图与 ER 图 */
+.classTitle text { fill: #1c1917 !important; }
+.relationLabel { fill: #1c1917 !important; }
+.node[id*="classId-"] .outer-path path:first-child,
+g.classGroup rect,
+.node[id*="classId-"] rect {
+  fill: #fef3c7 !important;
+  stroke: #f59e0b !important;
+  stroke-width: 1.5px !important;
+}
+g.classGroup line, .node[id*="classId-"] line, .divider {
+  stroke: #f59e0b !important;
+  stroke-width: 1px !important;
+}
+g.classGroup text, g.classGroup span, .node[id*="classId-"] text, .node[id*="classId-"] span {
+  fill: #1c1917 !important;
+  color: #1c1917 !important;
+}
+.er.entityBox { fill: #fef3c7 !important; stroke: #f59e0b !important; }
+.er.attributeBoxOdd { fill: #fffbeb !important; }
+.er.attributeBoxEven { fill: #fef3c7 !important; }
+.er.entityBox text, .er.attributeBoxOdd text, .er.attributeBoxEven text, .er.relationshipLabel text {
+  fill: #1c1917 !important;
+}
+.er.relationshipLine { stroke: #f59e0b !important; }
+`),
     flowchart: {
       htmlLabels: true,
-      useMaxWidth: false,
-      wrappingWidth: 180,
+      useMaxWidth: true,
+      wrappingWidth: MERMAID_LABEL_WRAP_WIDTH,
       nodeSpacing: 50,
-      rankSpacing: 50,
+      rankSpacing: 60,
+      padding: 24,
+      subGraphTitleMargin: { top: 16, bottom: 32 },
+      curve: "basis" as const,
     },
   };
 }
@@ -50,13 +540,30 @@ async function loadMermaid(dark: boolean) {
 
   const mermaid = await mermaidReady;
   if (currentTheme !== wanted) {
-    // 主题变了要重新初始化并清缓存，否则深色模式下拿到的还是浅色图。
+    // 主题变了要重新初始化 mermaid 引擎，但保留已有的 svgCache 和 pngCache：
+    // cacheKey 已经由 "d:" / "l:" 天然区分深浅色，保留缓存可让用户来回切换深浅色时瞬间秒开，
+    // 彻底避免图表高度瞬间坍缩导致页面滚动位置丢失。
     mermaid.initialize(mermaidConfig(wanted));
     currentTheme = wanted;
-    svgCache.clear();
-    pngCache.clear();
   }
   return mermaid;
+}
+
+/**
+ * 对用户输入的 Mermaid 源码做方向与格式的轻量容错归一化：
+ * 1. 容错方向小写：Mermaid 官方 lexer 仅识别大写 LR/RL/TB/TD/BT，
+ *    用户手打小写 "flowchart lr"、"graph tb" 或 "direction lr" 时自动归一为大写，
+ *    彻底避免因大小写敏感导致解析失败或方向失灵。
+ */
+export function normalizeMermaidSource(source: string): string {
+  let s = source.trim();
+  s = s.replace(/^([ \t]*(?:flowchart|graph))[ \t]+(lr|rl|tb|td|bt)\b/im, (_m: string, prefix: string, dir: string) => {
+    return `${prefix} ${dir.toUpperCase()}`;
+  });
+  s = s.replace(/^([ \t]*direction)[ \t]+(lr|rl|tb|td|bt)\b/gim, (_m: string, prefix: string, dir: string) => {
+    return `${prefix} ${dir.toUpperCase()}`;
+  });
+  return s;
 }
 
 function cacheKey(source: string, dark: boolean) {
@@ -64,15 +571,18 @@ function cacheKey(source: string, dark: boolean) {
 }
 
 let renderSeq = 0;
+// Mermaid configuration is global. Keep initialization and asynchronous rendering
+// together so a second consumer cannot change the first diagram's theme.
+let renderQueue: Promise<unknown> = Promise.resolve();
 
 /** 读缓存，命中时调用方可以同步拿到图，避免闪一下空白再出现。 */
 export function getCachedMermaidSvg(source: string, dark: boolean): RenderResult | undefined {
-  return svgCache.get(cacheKey(source.trim(), dark));
+  return svgCache.get(cacheKey(normalizeMermaidSource(source), dark));
 }
 
 export async function renderMermaid(source: string, dark: boolean): Promise<RenderResult> {
-  const trimmed = source.trim();
-  const key = cacheKey(trimmed, dark);
+  const normalized = normalizeMermaidSource(source);
+  const key = cacheKey(normalized, dark);
 
   const cached = svgCache.get(key);
   if (cached) return cached;
@@ -80,17 +590,18 @@ export async function renderMermaid(source: string, dark: boolean): Promise<Rend
   const pending = inflight.get(key);
   if (pending) return pending;
 
-  const task = (async () => {
+  const task = renderQueue.then(async () => {
     const mermaid = await loadMermaid(dark);
     renderSeq += 1;
     // id 必须唯一：mermaid 会用它做 DOM 元素 id 和 SVG 内部的 clip-path 引用，
     // 重复 id 会让同一页里的多张图互相串。
-    const { svg } = await mermaid.render(`mk-mermaid-${renderSeq}`, trimmed);
+    const { svg } = await mermaid.render(`mk-mermaid-${renderSeq}`, normalized);
     const size = measureSvg(svg);
-    const result = { svg, ...size };
+    const result = { svg: readableEdgeLabels(svg, size, dark), ...size };
     svgCache.set(key, result);
     return result;
-  })();
+  });
+  renderQueue = task.catch(() => undefined);
 
   inflight.set(key, task);
   try {
@@ -100,26 +611,286 @@ export async function renderMermaid(source: string, dark: boolean): Promise<Rend
   }
 }
 
+/** 标签背景透明后，要按标签实际落点的底色选字色，而不是对整张图强制白字。 */
+function readableEdgeLabels(svg: string, size: { width: number; height: number }, dark: boolean): string {
+  const host = document.createElement("div");
+  host.style.cssText = "position:fixed;left:0;top:0;visibility:hidden;pointer-events:none";
+  host.innerHTML = svg;
+  const root = host.querySelector("svg")!;
+  const originalSize = [root.getAttribute("width"), root.getAttribute("height")];
+  root.setAttribute("width", String(size.width));
+  root.setAttribute("height", String(size.height));
+  document.body.append(host);
+  try {
+    // 同级分组按 SVG 绘制顺序覆盖；嵌套分组会覆盖外层分组底色。
+    const clusters = Array.from(root.querySelectorAll<SVGRectElement>(".cluster > rect")).map((rect) => ({
+      bounds: rect.getBoundingClientRect(), style: getComputedStyle(rect),
+    }));
+    for (const label of root.querySelectorAll<SVGGElement>("g.edgeLabel")) {
+      const bounds = label.getBoundingClientRect();
+      if (!bounds.width || !bounds.height) continue;
+      const x = bounds.x + bounds.width / 2;
+      const y = bounds.y + bounds.height / 2;
+      let rgb = dark ? [24, 24, 27] : [255, 255, 255];
+      for (const cluster of clusters) {
+        const b = cluster.bounds;
+        if (x < b.left || x > b.right || y < b.top || y > b.bottom) continue;
+        const channels = cluster.style.fill.match(/[\d.]+/g)?.map(Number);
+        if (!channels || channels.length < 3) continue; // fill:none 不覆盖画布
+        const alpha = (channels[3] ?? 1) * Number(cluster.style.fillOpacity) * Number(cluster.style.opacity);
+        rgb = rgb.map((channel, i) => (channels[i] ?? 0) * alpha + channel * (1 - alpha));
+      }
+      const linear = rgb.map((channel) => {
+        const value = channel / 255;
+        return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+      });
+      const luminance = (linear[0] ?? 0) * 0.2126 + (linear[1] ?? 0) * 0.7152 + (linear[2] ?? 0) * 0.0722;
+      const color = (luminance + 0.05) / 0.066 > 1.05 / (luminance + 0.05) ? "#1c1917" : "#fef3c7";
+      const background = `rgb(${rgb.map((channel) => Math.round(channel)).join(", ")})`;
+      // 内联到文字本身，SVG 单独展示和 PNG 栅格化时也能保留，不依赖页面 CSS。
+      for (const element of [label, ...label.querySelectorAll<SVGElement | HTMLElement>("div,span,p,text,tspan")]) {
+        element.style.setProperty("color", color, "important");
+        if (element.matches("text,tspan")) {
+          element.style.setProperty("fill", color, "important");
+          element.style.setProperty("stroke", background, "important");
+          element.style.setProperty("stroke-width", "3px", "important");
+          element.style.setProperty("paint-order", "stroke", "important");
+        } else if (element.matches("div,span,p")) {
+          element.style.setProperty("white-space", "normal", "important");
+          element.style.setProperty("overflow-wrap", "anywhere", "important");
+          element.style.setProperty("word-break", "break-word", "important");
+          element.style.setProperty("line-height", "1.35", "important");
+          element.style.setProperty("text-align", "center", "important");
+          // foreignObject 文本没有 SVG stroke，用同色文字描边擦掉连线。
+          element.style.setProperty("text-shadow", `1.5px 0 ${background}, -1.5px 0 ${background}, 0 1.5px ${background}, 0 -1.5px ${background}`, "important");
+        }
+      }
+
+      // 如果连线标签内容较长发生换行，自动扩展 foreignObject 高度并向上补偿偏移以保持居中，避免文字被溢出切断
+      for (const fo of label.querySelectorAll<SVGForeignObjectElement>("foreignObject")) {
+        fo.style.setProperty("overflow", "visible", "important");
+        const div = fo.querySelector<HTMLElement>("div, span, p");
+        if (div) {
+          const neededHeight = Math.ceil(div.scrollHeight);
+          const currentHeight = parseFloat(fo.getAttribute("height") || "0");
+          if (neededHeight > currentHeight && neededHeight > 0) {
+            fo.setAttribute("height", String(neededHeight));
+            const deltaY = (neededHeight - currentHeight) / 2;
+            const foY = parseFloat(fo.getAttribute("y") || "0");
+            fo.setAttribute("y", String(foY - deltaY));
+          }
+        }
+      }
+    }
+
+    // 嵌套子图防遮挡与标题避让：使用相对于 SVG 的绝对屏幕全局几何坐标，精准判定父子包含关系
+    const rootBbox = root.getBoundingClientRect();
+    const clusterElements = Array.from(root.querySelectorAll<SVGGElement>(".cluster"));
+    const clusterData = clusterElements.map((c) => {
+      const rect = c.querySelector<SVGRectElement>("rect");
+      const label = c.querySelector<SVGGElement>(".cluster-label");
+      const rectBbox = rect ? rect.getBoundingClientRect() : null;
+      const labelBbox = label ? label.getBoundingClientRect() : null;
+      const localRectY = rect ? parseFloat(rect.getAttribute("y") || "0") : 0;
+      const localRectH = rect ? parseFloat(rect.getAttribute("height") || "0") : 0;
+      const globalX = rectBbox ? rectBbox.left - rootBbox.left : 0;
+      const globalY = rectBbox ? rectBbox.top - rootBbox.top : 0;
+      const globalW = rectBbox ? rectBbox.width : 0;
+      const globalH = rectBbox ? rectBbox.height : 0;
+      return { cluster: c, rect, label, localRectY, localRectH, globalX, globalY, globalW, globalH, labelBbox };
+    });
+
+    for (const parent of clusterData) {
+      if (!parent.rect || !parent.label) continue;
+      const parentLabelFo = parent.label.querySelector("foreignObject");
+      const parentLabelH = parentLabelFo ? parseFloat(parentLabelFo.getAttribute("height") || "24") : 24;
+      const parentLabelMatch = parent.label.getAttribute("transform")?.match(/translate\(([^,]+),\s*([^)]+)\)/);
+      if (!parentLabelMatch) continue;
+      const parentLabelX = (parentLabelMatch[1] ?? "");
+      const parentLabelY = parseFloat((parentLabelMatch[2] ?? ""));
+      const parentLabelBottom = parent.labelBbox ? parent.labelBbox.bottom - rootBbox.top : (parent.globalY + parentLabelH);
+
+      // 仅当子 cluster 在全局坐标上真正被包含在 parent 内部（且有明显内缩）或 DOM 包含时才判定为嵌套子图，
+      // 彻底避免同级平行的多个子图因局部坐标同为 (8, 8) 而被误判为嵌套，进而导致负坐标裁切
+      const children = clusterData.filter((c) =>
+        c !== parent && c.rect &&
+        (parent.cluster.contains(c.cluster) || (
+          c.globalX >= parent.globalX + 2 &&
+          c.globalX + c.globalW <= parent.globalX + parent.globalW - 2 &&
+          c.globalY >= parent.globalY + 2 &&
+          c.globalY + c.globalH <= parent.globalY + parent.globalH - 2
+        ))
+      );
+
+      if (children.length === 0) continue;
+      const topChild = children.reduce((min, c) => (c.globalY < min.globalY ? c : min), children[0]!);
+      if (!topChild?.rect) continue;
+      const minSafeGap = 16;
+      const currentGap = topChild.globalY - parentLabelBottom;
+
+      if (currentGap < minSafeGap) {
+        const deficit = minSafeGap - currentGap;
+        // 向上扩展父卡片时受限于父卡片本地坐标，不得使其变为负数以免顶沿被视口裁剪
+        const maxSafeUpShift = Math.max(0, parent.localRectY);
+        const upShift = Math.min(maxSafeUpShift, Math.ceil(deficit * 0.5));
+        const downShift = deficit - upShift;
+
+        if (upShift > 0) {
+          parent.rect.setAttribute("y", String(parent.localRectY - upShift));
+          parent.rect.setAttribute("height", String(parent.localRectH + upShift));
+          parent.label.setAttribute("transform", `translate(${parentLabelX}, ${parentLabelY - upShift})`);
+        }
+
+        if (downShift > 0) {
+          topChild.rect.setAttribute("y", String(topChild.localRectY + downShift));
+          topChild.rect.setAttribute("height", String(Math.max(20, topChild.localRectH - downShift)));
+          if (topChild.label) {
+            const childLabelMatch = topChild.label.getAttribute("transform")?.match(/translate\(([^,]+),\s*([^)]+)\)/);
+            if (childLabelMatch) {
+              topChild.label.setAttribute("transform", `translate(${childLabelMatch[1]}, ${parseFloat(childLabelMatch[2] ?? "0") + downShift * 0.7})`);
+            }
+          }
+        }
+      }
+    }
+
+    // 卡片标题与连线文字防重叠避让：检测 cluster-label 与 edgeLabel 是否发生空间撞车
+    for (const cluster of clusterData) {
+      if (!cluster.label) continue;
+      const clusterBbox = cluster.label.getBoundingClientRect();
+      if (!clusterBbox.width || !clusterBbox.height) continue;
+
+      for (const edge of root.querySelectorAll<SVGGElement>("g.edgeLabel")) {
+        const edgeBbox = edge.getBoundingClientRect();
+        if (!edgeBbox.width || !edgeBbox.height) continue;
+
+        const xOverlap = Math.max(0, Math.min(clusterBbox.right, edgeBbox.right) - Math.max(clusterBbox.left, edgeBbox.left));
+        const yOverlap = Math.max(0, Math.min(clusterBbox.bottom, edgeBbox.bottom) - Math.max(clusterBbox.top, edgeBbox.top));
+
+        if (xOverlap > 10 && yOverlap > 0) {
+          const edgeMatch = edge.getAttribute("transform")?.match(/translate\(([^,]+),\s*([^)]+)\)/);
+          if (edgeMatch) {
+            const shiftY = yOverlap + 14;
+            edge.setAttribute("transform", `translate(${edgeMatch[1]}, ${parseFloat(edgeMatch[2] ?? "0") - shiftY})`);
+          }
+        }
+      }
+    }
+
+    // 时序图 autonumber 序号文字垂直居中校准：消除 Mermaid 原生硬编码的 y 偏移，绝对对齐圆球中心
+    for (const seq of root.querySelectorAll<SVGTextElement>(".sequenceNumber, text[class*='sequenceNumber']")) {
+      const currentY = parseFloat(seq.getAttribute("y") || "0");
+      if (currentY) {
+        seq.setAttribute("y", String(currentY - 4.5));
+      }
+      seq.style.setProperty("dominant-baseline", "central", "important");
+      seq.style.setProperty("text-anchor", "middle", "important");
+      seq.style.setProperty("font-size", "11px", "important");
+      seq.style.setProperty("font-weight", "700", "important");
+      if (dark) {
+        seq.style.setProperty("fill", "#fef3c7", "important");
+        seq.style.setProperty("color", "#fef3c7", "important");
+      }
+    }
+
+    // 方块颜色与文字颜色智能联动：
+    // 当改变方块颜色时（自定义 stroke/fill），内部文字若未显式指定颜色，默认使用边框颜色；
+    // 使得边框与文字始终同色系（如默认橙框橙字、绿框绿字、蓝框蓝字），无论深浅模式都完美清晰协调。
+    applyNodeTextBorderColor(root, dark);
+
+    // 时序图背景高亮框（rect rgb(...) 指令）深色模式自适应与文字高对比度保证
+    adaptSequenceDiagramRects(root, dark);
+
+    // 全图 ViewBox 动态安全呼吸边距自适应：检测最顶、最底、最左、最右的几何边界，
+    // 确保任何图形、圆角边框、标题文字与视口边缘至少有 12~16px 的充裕呼吸留白，100% 杜绝裁切与紧贴压抑。
+    const vbAttr = root.getAttribute("viewBox");
+    if (vbAttr) {
+      const vbParts = vbAttr.trim().split(/[\s,]+/).map(Number);
+      if (vbParts.length === 4 && vbParts.every(Number.isFinite)) {
+        let [vx = 0, vy = 0, vw = 0, vh = 0] = vbParts;
+
+        let minTop = Infinity;
+        let maxBottom = -Infinity;
+        let minLeft = Infinity;
+        let maxRight = -Infinity;
+
+        for (const el of root.querySelectorAll<SVGGraphicsElement>(".cluster rect, .cluster-label, .node, g.edgeLabel, .edgePaths path, rect.actor, text.actor, .statediagram-state")) {
+          const b = el.getBoundingClientRect();
+          if (b.width === 0 && b.height === 0) continue;
+          const top = b.top - rootBbox.top;
+          const bottom = b.bottom - rootBbox.top;
+          const left = b.left - rootBbox.left;
+          const right = b.right - rootBbox.left;
+          if (top < minTop) minTop = top;
+          if (bottom > maxBottom) maxBottom = bottom;
+          if (left < minLeft) minLeft = left;
+          if (right > maxRight) maxRight = right;
+        }
+
+        const SAFE_PAD_TOP = 16;
+        const SAFE_PAD_BOTTOM = 16;
+        const SAFE_PAD_SIDE = 12;
+
+        if (minTop < SAFE_PAD_TOP) {
+          const deltaTop = SAFE_PAD_TOP - minTop;
+          vy -= deltaTop;
+          vh += deltaTop;
+        }
+        if (Number.isFinite(maxBottom) && (vh - maxBottom < SAFE_PAD_BOTTOM)) {
+          vh += (SAFE_PAD_BOTTOM - (vh - maxBottom));
+        }
+        if (minLeft < SAFE_PAD_SIDE) {
+          const deltaLeft = SAFE_PAD_SIDE - minLeft;
+          vx -= deltaLeft;
+          vw += deltaLeft;
+        }
+        if (Number.isFinite(maxRight) && (vw - maxRight < SAFE_PAD_SIDE)) {
+          vw += (SAFE_PAD_SIDE - (vw - maxRight));
+        }
+
+        root.setAttribute("viewBox", `${vx} ${vy} ${vw} ${vh}`);
+        size.width = Math.ceil(vw);
+        size.height = Math.ceil(vh);
+      }
+    }
+
+    ["width", "height"].forEach((name, i) => {
+      const value = originalSize[i];
+      if (value === "100%" || value == null) {
+        root.setAttribute(name, String(i === 0 ? size.width : size.height));
+      } else {
+        root.setAttribute(name, value);
+      }
+    });
+    return root.outerHTML;
+  } finally {
+    host.remove();
+  }
+}
+
 /**
  * 从 SVG 文本里读出尺寸。
  *
  * 优先 viewBox：mermaid 输出的 width/height 常常是 `100%`，直接拿去做
- * canvas 尺寸会得到 NaN。
+ * canvas 尺寸会得到 NaN。支持科学计数法与逗号/空格分隔格式。
  */
-function measureSvg(svg: string): { width: number; height: number } {
-  const viewBox = svg.match(/viewBox="([\d.\-\s]+)"/);
+export function measureSvg(svg: string): { width: number; height: number } {
+  const viewBox = svg.match(/\bviewBox="([^"]+)"/i);
   if (viewBox) {
-    const parts = viewBox[1]?.trim().split(/\s+/).map(Number) ?? [];
-    const width = parts[2];
-    const height = parts[3];
-    if (parts.length === 4 && width !== undefined && height !== undefined && width > 0 && height > 0) {
+    const parts = (viewBox[1] ?? "").trim().split(/[\s,]+/).map(Number);
+    const width = parts[2] ?? 0; const height = parts[3] ?? 0;
+    if (parts.length === 4 && Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
       return { width, height };
     }
   }
 
-  const width = Number(svg.match(/\bwidth="(\d+(?:\.\d+)?)"/)?.[1]);
-  const height = Number(svg.match(/\bheight="(\d+(?:\.\d+)?)"/)?.[1]);
-  if (width > 0 && height > 0) return { width, height };
+  const widthMatch = svg.match(/\bwidth="([\d.]+(?:e[+-]?\d+)?)(?:px)?"/i);
+  const heightMatch = svg.match(/\bheight="([\d.]+(?:e[+-]?\d+)?)(?:px)?"/i);
+  const width = Number(widthMatch?.[1]);
+  const height = Number(heightMatch?.[1]);
+  if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+    return { width, height };
+  }
 
   return { width: 800, height: 400 };
 }
@@ -138,7 +909,8 @@ export async function mermaidToPngDataUrl(source: string, dark: boolean, scale =
   if (cached) return cached;
 
   const { svg, width, height } = await renderMermaid(trimmed, dark);
-  const dataUrl = await svgToPng(svg, width, height, scale);
+  // PNG 导出使用白色画布，不能把深色编辑器画布上的白字直接带过去。
+  const dataUrl = await svgToPng(readableEdgeLabels(svg, { width, height }, false), width, height, scale);
   pngCache.set(key, dataUrl);
   return dataUrl;
 }
@@ -149,20 +921,19 @@ function svgToPng(svg: string, width: number, height: number, scale: number): Pr
     // tainted，随后 toDataURL 抛 SecurityError。
     const image = new Image();
     let settled = false;
-    const timeout: { value?: number } = {};
 
     const fail = (cause: unknown) => {
       if (settled) return;
       settled = true;
-      if (timeout.value !== undefined) window.clearTimeout(timeout.value);
+      if (timeout !== undefined) window.clearTimeout(timeout);
       reject(cause instanceof Error ? cause : new Error("图表转图片失败"));
     };
 
-    timeout.value = window.setTimeout(() => fail(new Error("图表转图片超时")), 10_000);
+    const timeout = window.setTimeout(() => fail(new Error("图表转图片超时")), 10_000);
 
     image.onload = () => {
       if (settled) return;
-      if (timeout.value !== undefined) window.clearTimeout(timeout.value);
+      if (timeout !== undefined) window.clearTimeout(timeout);
       try {
         const rasterSize = calculateRasterSize(width, height, scale);
         const canvas = document.createElement("canvas");
@@ -211,4 +982,158 @@ function withExplicitSize(svg: string, width: number, height: number) {
 /** 判断一个代码块的语言标记是不是 mermaid。 */
 export function isMermaidLanguage(language: string | undefined) {
   return language?.trim().toLowerCase() === "mermaid";
+}
+
+/**
+ * 节点文字颜色智能联动与微透暗底适配：
+ * 当改变方块颜色时（自定义 stroke/fill），内部文字若未显式指定颜色，默认使用边框颜色；
+ * 使得边框与文字始终同色系（如默认橙框橙字、绿框绿字、蓝框蓝字），无论深浅模式都完美清晰协调。
+ */
+export function applyNodeTextBorderColor(root: Element, dark: boolean) {
+  for (const node of root.querySelectorAll<SVGGElement>(".node")) {
+    const shapes = node.querySelectorAll<SVGElement>("rect, polygon, circle, ellipse, path");
+    let customStroke: string | null = null;
+
+    for (const shape of shapes) {
+      const styleAttr = shape.getAttribute("style") || "";
+      const fillMatch = styleAttr.match(/(?:^|;)\s*fill\s*:\s*([^;!]+)/i);
+      const strokeMatch = styleAttr.match(/(?:^|;)\s*stroke\s*:\s*([^;!]+)/i);
+      const inlineFill = fillMatch?.[1]?.trim() || shape.getAttribute("fill");
+      const inlineStroke = strokeMatch?.[1]?.trim() || shape.getAttribute("stroke");
+
+      const hasFill = inlineFill && inlineFill !== "none" && inlineFill !== "transparent";
+      const hasStroke = inlineStroke && inlineStroke !== "none" && inlineStroke !== "transparent";
+
+      if (hasStroke || hasFill) {
+        customStroke = (hasStroke ? inlineStroke : inlineFill ?? "").trim();
+        if (dark) {
+          shape.style.setProperty("stroke", customStroke, "important");
+          shape.style.setProperty("stroke-width", "2px", "important");
+          shape.style.setProperty("fill", `color-mix(in srgb, ${customStroke} 20%, #202020)`, "important");
+        }
+      }
+    }
+
+    // 如果未显式指定文字颜色，让文字默认使用边框颜色
+    const nodeStyle = node.getAttribute("style") || "";
+    const hasExplicitTextColor = /(?:^|;)\s*color\s*:\s*([^;!]+)/i.test(nodeStyle);
+
+    if (!hasExplicitTextColor) {
+      const targetColor = customStroke
+        ? (dark ? `color-mix(in srgb, ${customStroke} 75%, #ffffff)` : customStroke)
+        : (dark ? "#fde68a" : "#ea580c");
+      for (const textEl of node.querySelectorAll<HTMLElement | SVGElement>("div, span, p, text, tspan")) {
+        const elStyle = textEl.getAttribute("style") || "";
+        if (!/(?:^|;)\s*(?:color|fill)\s*:\s*([^;!]+)/i.test(elStyle)) {
+          textEl.style.setProperty("color", targetColor, "important");
+          if (textEl.matches("text, tspan")) {
+            textEl.style.setProperty("fill", targetColor, "important");
+          }
+        }
+      }
+    }
+  }
+}
+
+function parseRgbColor(colorStr: string): [number, number, number] | null {
+  const trimmed = colorStr.trim().toLowerCase();
+  const rgbMatch = trimmed.match(/rgba?\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/);
+  if (rgbMatch) {
+    return [parseFloat((rgbMatch[1] ?? "")), parseFloat((rgbMatch[2] ?? "")), parseFloat((rgbMatch[3] ?? ""))];
+  }
+  const hexMatch = trimmed.match(/^#([0-9a-f]{3,8})$/i);
+  if (hexMatch) {
+    const hex = (hexMatch[1] ?? "");
+    if (hex.length === 3) {
+      return [parseInt(hex.charAt(0) + hex.charAt(0), 16), parseInt(hex.charAt(1) + hex.charAt(1), 16), parseInt(hex.charAt(2) + hex.charAt(2), 16)];
+    }
+    if (hex.length >= 6) {
+      return [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)];
+    }
+  }
+  return null;
+}
+
+function getRgbLuminance(r: number, g: number, b: number): number {
+  const linear = [r, g, b].map((c) => {
+    const v = c / 255;
+    return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  });
+  return (linear[0] ?? 0) * 0.2126 + (linear[1] ?? 0) * 0.7152 + (linear[2] ?? 0) * 0.0722;
+}
+
+/**
+ * 时序图背景高亮框（rect rgb(...) 指令）深色模式自适应与对比度优化：
+ * 1. 在深色模式下，将刺眼的亮浅色背景框（如 AliceBlue、FloralWhite 等）自适应转换为沉稳优雅的微透暗调底色，
+ *    保留阶段区分色相（如阶段一暗蓝调、阶段二暗暖调），彻底避免深色模式下突兀的大白板；
+ * 2. 对落在背景框区域内的消息文本（.messageText）与连线进行底色亮度检测，确保文字与底色始终保持极佳对比度，
+ *    无论深色模式还是浅色模式都清晰可见。
+ */
+export function adaptSequenceDiagramRects(root: Element, dark: boolean) {
+  const backgroundRects = Array.from(root.querySelectorAll<SVGRectElement>("rect.rect, rect[class*='rect'], rect[fill*='rgb'], rect[style*='fill']")).filter((rect) => {
+    return !rect.matches(".actor, .note, .labelBox, [class*='actor'], [class*='note'], [class*='labelBox']");
+  });
+
+  if (backgroundRects.length === 0) return;
+
+  const rectData = backgroundRects.map((rect) => {
+    const styleAttr = rect.getAttribute("style") || "";
+    const fillMatch = styleAttr.match(/(?:^|;)\s*fill\s*:\s*([^;!]+)/i);
+    const fillStr = fillMatch?.[1]?.trim() || rect.getAttribute("fill") || "";
+    const parsed = parseRgbColor(fillStr);
+    const luminance = parsed ? getRgbLuminance(parsed[0], parsed[1], parsed[2]) : 0.5;
+
+    return {
+      rect,
+      fillStr,
+      parsed,
+      luminance,
+      bounds: typeof rect.getBoundingClientRect === "function" ? rect.getBoundingClientRect() : null,
+    };
+  });
+
+  for (const item of rectData) {
+    if (!item.parsed) continue;
+
+    if (dark) {
+      // 深色模式下：如果背景是亮浅色（相对亮度 > 0.35）
+      if (item.luminance > 0.35) {
+        const rawColor = `rgb(${item.parsed[0]}, ${item.parsed[1]}, ${item.parsed[2]})`;
+        const darkFill = `color-mix(in srgb, ${rawColor} 18%, #202020)`;
+        const darkStroke = `color-mix(in srgb, ${rawColor} 45%, #f59e0b)`;
+        item.rect.style.setProperty("fill", darkFill, "important");
+        item.rect.style.setProperty("stroke", darkStroke, "important");
+        item.rect.style.setProperty("stroke-width", "1px", "important");
+        item.rect.style.setProperty("stroke-dasharray", "4 2", "important");
+        item.rect.style.setProperty("rx", "4px", "important");
+        item.rect.style.setProperty("ry", "4px", "important");
+        item.luminance = 0.08; // 转换为暗底
+      }
+    }
+  }
+
+  // 检查落在此背景框内的时序图消息文本 (.messageText)
+  const messageTexts = root.querySelectorAll<SVGTextElement>(".messageText, text.messageText");
+  for (const text of messageTexts) {
+    if (typeof text.getBoundingClientRect !== "function") continue;
+    const textBounds = text.getBoundingClientRect();
+    if (!textBounds.width && !textBounds.height) continue;
+    const tx = textBounds.x + textBounds.width / 2;
+    const ty = textBounds.y + textBounds.height / 2;
+
+    for (const item of rectData) {
+      if (!item.bounds) continue;
+      const b = item.bounds;
+      if (tx >= b.left && tx <= b.right && ty >= b.top && ty <= b.bottom) {
+        if (item.luminance > 0.4) {
+          text.style.setProperty("fill", "#1c1917", "important");
+          text.style.setProperty("color", "#1c1917", "important");
+        } else {
+          text.style.setProperty("fill", "#fef3c7", "important");
+          text.style.setProperty("color", "#fef3c7", "important");
+        }
+        break;
+      }
+    }
+  }
 }

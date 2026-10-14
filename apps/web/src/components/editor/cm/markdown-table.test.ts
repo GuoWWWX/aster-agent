@@ -55,13 +55,14 @@ it("Obsidian 双链别名中的管道不会拆成额外列", () => {
       "转型主攻方向",
     ],
   ]);
-  assert.equal(serializeMarkdownTable(table), source.replace(/ ---- /g, " --- "));
+  assert.equal(serializeMarkdownTable(table), source);
 });
 
 it("解析对齐并按最大列数补齐", () => {
   assert.deepEqual(parseMarkdownTable("A | B\r\n:--- | ---:\r\n1 | 2 | 3"), {
     rows: [["A", "B", ""], ["1", "2", "3"]],
     alignments: ["left", "right", "none"],
+    columnWeights: [3, 3, 3],
   });
 });
 

@@ -30,3 +30,12 @@
   --font-sans: "Geist Variable", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
   --font-emoji: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji";
 }
+
+/* CSS trigger 5: upstream HTML keyboard labels use a fixed light palette.
+   Bridge colors only; the generated geometry stays unchanged. */
+.mk-cm-html-kbd,
+.mk-html-keyboard {
+  background: var(--muted) !important;
+  border-color: var(--border) !important;
+  color: var(--foreground);
+}

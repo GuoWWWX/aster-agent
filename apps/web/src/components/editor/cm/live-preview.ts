@@ -4,7 +4,10 @@ import { markdownCaptionText, mermaidFenceCaption } from "../../../lib/mermaid-f
 import { findBareExternalLinks, findObsidianWikilinks, isExternalDocumentLink, isMarkdownWikilinkTarget } from "../../../lib/document-links.js";
 import { parseMarkdownCalloutHeader } from "../../../lib/markdown-callout.js";
 import { parseYamlFrontmatter } from "../../../lib/markdown-frontmatter.js";
+import { findBlockMarkdownMath, findInlineMarkdownMath } from "../../../lib/markdown-math.js";
 import { findRelaxedStrongRanges } from "../../../lib/relaxed-strong.js";
+import { findRelaxedEmphasisRanges } from "../../../lib/relaxed-emphasis.js";
+import { parseHorizontalRuleText } from "../../../lib/horizontal-rule-text.js";
 import { RangeSetBuilder, StateEffect, StateField, type EditorState, type Extension, type Range } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate, type WidgetType } from "@codemirror/view";
 import type { SyntaxNode, SyntaxNodeRef } from "@lezer/common";
@@ -14,9 +17,16 @@ import {
   codeBlockIndentPtFromInfo,
   codeFenceLanguageFromInfo,
 } from "./code-block-indent.js";
-import { markdownSourceIndentClass, markdownSourceIndentLength, parseMarkdownSourceListLine, sourceOrderedListValue } from "./source-indent.js";
-import { selectedMarkdownTableRows, selectionIntersectsRange, selectionOnLines, selectionTouchesOnSameLine, cursorOnLines } from "./selection-utils.js";
+import {
+  markdownSourceIndentClass,
+  markdownSourceIndentLength,
+  parseMarkdownSourceListLine,
+  sourceOrderedListValue,
+  splitMarkdownQuotePrefix,
+} from "./source-indent.js";
+import { selectedMarkdownTableRows, selectionIntersectsRange, selectionOnLineNumber, selectionOnLines, selectionTouchesOnSameLine, cursorOnLines } from "./selection-utils.js";
 import { parseMarkdownTable } from "./markdown-table.js";
+import { markdownInlineHtmlTagRanges } from "../../../lib/markdown-inline-html.js";
 import {
   applyTableWidthMode,
   createTableDisplaySettings,
@@ -27,7 +37,7 @@ import {
   type TableDisplaySettings,
   type TableWidthMode,
 } from "./table-display-settings.js";
-import { BulletWidget, CopyCodeWidget, editMermaidSourceEffect, editTableSourceEffect, MarkdownCalloutIconWidget, MarkdownFrontmatterWidget, MarkdownImageWidget, MarkdownLinkIconWidget, MarkdownWikilinkWidget, MermaidWidget, OrderedListWidget, selectWholeTableEffect, TableWidget, TaskCheckboxWidget } from "./widgets.js";
+import { BulletWidget, CopyCodeWidget, editMermaidSourceEffect, editTableSourceEffect, MarkdownBreakWidget, MarkdownCalloutIconWidget, MarkdownFrontmatterWidget, MarkdownImageWidget, MarkdownLinkIconWidget, MarkdownMathWidget, MarkdownWikilinkWidget, MermaidWidget, OrderedListWidget, selectWholeTableEffect, TableWidget, TaskCheckboxWidget } from "./widgets.js";
 
 /**
  * 内联装饰层：Obsidian 式实时预览的核心。
@@ -113,6 +123,7 @@ type DecorationCollector = {
   readonly focused: boolean;
   readonly decorations: Range<Decoration>[];
   readonly atomics: Range<Decoration>[];
+  readonly mathRanges: Array<{ from: number; to: number }>;
 };
 
 // 列表标记和复选框专用：pad 不跨行，避免光标停在上一行末尾误触发下一行源码展开。
@@ -247,8 +258,7 @@ function handleHeading(collector: DecorationCollector, ref: SyntaxNodeRef, level
   // Pandoc 的 `{-}` 与旧版 `{.unnumbered}` 只控制 Word 编号，阅读态不显示。
   const source = state.doc.sliceString(ref.from, ref.to);
   const attribute = source.match(/\s*\{([^{}]*)\}\s*$/);
-  const unnumbered = attribute?.[1]
-    ?.split(/\s+/)
+  const unnumbered = attribute?.[1]?.split(/\s+/)
     .some((value) => value === "-" || value === ".unnumbered" || value === "unnumbered");
   if (unnumbered && attribute?.index !== undefined) hide(collector, ref.from + attribute.index, ref.to);
 }
@@ -284,18 +294,64 @@ function hasSyntaxAncestor(node: SyntaxNode, names: ReadonlySet<string>): boolea
   return false;
 }
 
-const relaxedStrongExcludedNodes = new Set(["StrongEmphasis", "InlineCode", "FencedCode", "CodeBlock"]);
+function isInsideOrCrossingMath(from: number, to: number, mathRanges: Array<{ from: number; to: number }>): boolean {
+  for (const math of mathRanges) {
+    if (from < math.to && to > math.from) {
+      if (!(from <= math.from && to >= math.to)) return true;
+    }
+  }
+  return false;
+}
+
+const relaxedStrongExcludedNodes = new Set([
+  "StrongEmphasis",
+  "InlineCode",
+  "FencedCode",
+  "CodeBlock",
+  "Link",
+  "Autolink",
+]);
+
+const relaxedEmphasisExcludedNodes = new Set([
+  "StrongEmphasis",
+  "Emphasis",
+  "InlineCode",
+  "FencedCode",
+  "CodeBlock",
+  "Link",
+  "Autolink",
+]);
 
 function addRelaxedStrong(collector: DecorationCollector, lineFrom: number, tree: ReturnType<typeof syntaxTree>): void {
   const line = collector.state.doc.lineAt(lineFrom);
   for (const range of findRelaxedStrongRanges(line.text)) {
     const from = line.from + range.from;
     const to = line.from + range.to;
+    if (isInsideOrCrossingMath(from, to, collector.mathRanges)) continue;
     const contentFrom = line.from + range.contentFrom;
     const contentNode = tree.resolveInner(contentFrom, 1);
     if (hasSyntaxAncestor(contentNode, relaxedStrongExcludedNodes)) continue;
+    if (isInsideObsidianWikilink(collector.state, from, to)) continue;
 
     addMark(collector, from, to, "mk-cm-strong");
+    if (cursorInside(collector, from, to) || sourceSelected(collector, from, to)) continue;
+    hide(collector, from, contentFrom);
+    hide(collector, line.from + range.contentTo, to);
+  }
+}
+
+function addRelaxedEmphasis(collector: DecorationCollector, lineFrom: number, tree: ReturnType<typeof syntaxTree>): void {
+  const line = collector.state.doc.lineAt(lineFrom);
+  for (const range of findRelaxedEmphasisRanges(line.text)) {
+    const from = line.from + range.from;
+    const to = line.from + range.to;
+    if (isInsideOrCrossingMath(from, to, collector.mathRanges)) continue;
+    const contentFrom = line.from + range.contentFrom;
+    const contentNode = tree.resolveInner(contentFrom, 1);
+    if (hasSyntaxAncestor(contentNode, relaxedEmphasisExcludedNodes)) continue;
+    if (isInsideObsidianWikilink(collector.state, from, to)) continue;
+
+    addMark(collector, from, to, "mk-cm-em");
     if (cursorInside(collector, from, to) || sourceSelected(collector, from, to)) continue;
     hide(collector, from, contentFrom);
     hide(collector, line.from + range.contentTo, to);
@@ -330,7 +386,7 @@ function handleLink(collector: DecorationCollector, ref: SyntaxNodeRef): void {
 
   const open = marks[0];
   const close = marks[1];
-  if (!open || !close) return;
+  if (open === undefined || close === undefined) return;
   addMark(collector, open.to, close.from, `mk-cm-link mk-cm-link--${kind}`, linkTarget);
 
   if (editingSource) return;
@@ -353,6 +409,7 @@ function addObsidianAndBareLinks(collector: DecorationCollector, lineFrom: numbe
   for (const link of wikilinks) {
     const from = line.from + link.from;
     const to = line.from + link.to;
+    if (isInsideOrCrossingMath(from, to, collector.mathRanges)) continue;
     if (insideProtectedInlineSource(collector.state, from)) continue;
 
     const kind = isExternalDocumentLink(link.target) ? "external" : "document";
@@ -367,6 +424,7 @@ function addObsidianAndBareLinks(collector: DecorationCollector, lineFrom: numbe
     if (wikilinks.some((wikilink) => link.from < wikilink.to && link.to > wikilink.from)) continue;
     const from = line.from + link.from;
     const to = line.from + link.to;
+    if (isInsideOrCrossingMath(from, to, collector.mathRanges)) continue;
     if (insideProtectedInlineSource(collector.state, from)) continue;
     if (cursorInside(collector, from, to) || sourceSelected(collector, from, to)) continue;
     const attributes = { "data-mk-link-target": link.target };
@@ -382,14 +440,71 @@ function insideFencedCode(state: EditorState, position: number): boolean {
   return false;
 }
 
+function addInlineMath(collector: DecorationCollector, lineFrom: number): void {
+  const line = collector.state.doc.lineAt(lineFrom);
+  if (insideFencedCode(collector.state, line.from)) return;
+
+  for (const range of findInlineMarkdownMath(line.text)) {
+    const from = line.from + range.from;
+    const to = line.from + range.to;
+    const contentFrom = line.from + range.contentFrom;
+    const contentTo = line.from + range.contentTo;
+    collector.mathRanges.push({ from, to });
+    if (cursorInside(collector, from, to) || sourceSelected(collector, from, to)) {
+      // 公式源码内的 `[...]` 会被 Markdown 语法树识别成引用链接。公式优先级
+      // 更高：编辑源码时只保留普通文本外观，不能让内部方括号表现成文件链接。
+      addMark(collector, from, to, "mk-cm-math-source");
+      continue;
+    }
+    replaceInline(
+      collector,
+      from,
+      to,
+      new MarkdownMathWidget(
+        collector.state.doc.sliceString(contentFrom, contentTo),
+        false,
+        contentFrom,
+        !collector.state.readOnly,
+      ),
+    );
+  }
+}
+
+function addCommonHtml(collector: DecorationCollector, lineFrom: number): void {
+  const line = collector.state.doc.lineAt(lineFrom);
+  if (insideFencedCode(collector.state, line.from)) return;
+  const stack: Array<{ name: string; contentFrom: number }> = [];
+  for (const tag of markdownInlineHtmlTagRanges(line.text)) {
+    const from = line.from + tag.from;
+    const to = line.from + tag.to;
+    if (cursorInside(collector, from, to) || sourceSelected(collector, from, to)) continue;
+    if (tag.name === "br") {
+      replaceInline(collector, from, to, new MarkdownBreakWidget());
+    } else if (tag.closing) {
+      hide(collector, from, to);
+      const open = stack.pop();
+      if (open && open.name === tag.name && open.contentFrom < from) {
+        const className = `mk-cm-html-${tag.name === "b" ? "strong" : tag.name === "i" ? "em" : tag.name === "del" ? "s" : tag.name}`;
+        addMark(collector, open.contentFrom, from, className);
+      }
+    } else {
+      hide(collector, from, to);
+      if (!tag.selfClosing) stack.push({ name: tag.name, contentFrom: to });
+    }
+    if (tag.name !== "br" && !tag.closing && tag.selfClosing) hide(collector, from, to);
+  }
+}
+
 function addRenderedSourceIndent(collector: DecorationCollector, lineFrom: number): void {
   const line = collector.state.doc.lineAt(lineFrom);
   if (insideFencedCode(collector.state, line.from)) return;
   const indentLength = markdownSourceIndentLength(line.text);
   if (indentLength === 0) return;
   if (sourceSelected(collector, line.from, line.to)) return;
+  const { prefix } = splitMarkdownQuotePrefix(line.text);
+  const start = line.from + prefix.length;
   addLine(collector, line.from, markdownSourceIndentClass(line.text));
-  hide(collector, line.from, line.from + indentLength);
+  hide(collector, start, start + indentLength);
 }
 
 function lineHasParsedListMark(state: EditorState, from: number, to: number): boolean {
@@ -496,25 +611,76 @@ function handleQuoteMark(collector: DecorationCollector, ref: SyntaxNodeRef): vo
     : "mk-cm-quote-line";
   addLine(collector, line.from, classes);
 
+  // 围栏首行的 QuoteMark 是 FencedCode 的前一个兄弟，其余行在 FencedCode 内。
+  // 代码块进入源码态时统一保留真实引用前缀，不让普通引用的逐行 hide 再将它隐藏。
+  const next = ref.node.nextSibling;
+  let code = ref.node.parent?.name === "FencedCode"
+    ? ref.node.parent
+    : next?.name === "FencedCode" && state.doc.lineAt(next.from).from === line.from ? next : null;
+  if (!code && ref.node.parent?.name === "Blockquote") {
+    for (let sibling = ref.node.nextSibling; sibling; sibling = sibling.nextSibling) {
+      if (state.doc.lineAt(sibling.from).from !== line.from) break;
+      if (sibling.name === "FencedCode") {
+        code = sibling;
+        break;
+      }
+    }
+  }
+  if (code) {
+    // `firstLine`/`lastLine` 上面表示的是整个 Blockquote。不能用它们判断
+    // 代码块是否进入源码态，否则光标停在代码块前面的引用正文时，会让首行
+    // 的 `>` 先显示出来，再被 FencedCode 的隐藏装饰盖掉，造成箭头跑位。
+    const codeFirstLine = state.doc.lineAt(code.from);
+    const codeLastLine = state.doc.lineAt(Math.min(code.to, state.doc.length));
+    // 选中首行时，选区通常只覆盖围栏文本；FencedCode 节点从围栏内容起算，
+    // 仅按节点区间判断会把 QuoteMark 误判为渲染态，导致隐藏的 `>` 被原生选区
+    // 临时绘制到代码卡片里。按实际代码首尾行判断，保证前缀和首行同步进入源码态。
+    const sourceVisible = cursorLine(collector, code.from, code.to)
+      || sourceSelected(collector, code.from, code.to)
+      || (collector.focused && (selectionOnLines(state, codeFirstLine.from, codeLastLine.to)
+        || selectionOnLineNumber(state, line.number)
+        || selectionIntersectsRange(state, line.from, line.to)));
+    const prefixClass = callout ? "mk-cm-callout-code-prefix" : "mk-cm-quote-code-prefix";
+
+    // 始终保留 QuoteMark 和其后空格的 DOM，只切换可见性。如果在渲染态用
+    // replace 删掉它们，鼠标开始拖选时 CodeMirror 会在同一帧里先绘制旧选区、
+    // 再重建行内 DOM，首行的 `>` 和围栏就会短暂被推进代码卡片。
+    addLine(collector, line.from, "mk-cm-nested-code-prefix-layout");
+    collector.decorations.push(markDecoration(`${prefixClass}${sourceVisible ? "" : " mk-cm-nested-code-prefix-hidden"}`).range(ref.from, ref.to));
+    if (sourceVisible) {
+      addLine(collector, line.from, callout ? "mk-cm-callout-code-source" : "mk-cm-quote-code-source");
+    }
+    return;
+  }
+
   // 选中引用正文时同样露出 `>`，避免选区中混入渲染符号而无法直接修改。
   if (cursorLine(collector, ref.from, ref.to) || sourceSelected(collector, line.from, line.to)) return;
   hide(collector, ref.from, ref.to + trailingSpaceCount(state, ref.to, 1));
   if (!callout || !isFirstLine) return;
   const markerFrom = firstContentStart + callout.markerStart;
+  const markerTo = firstContentStart + callout.markerEnd;
+  const hasCustomTitle = Boolean(callout.title);
   addWidget(
     collector,
     markerFrom,
     new MarkdownCalloutIconWidget(
       callout.type,
       callout.tone,
-      callout.title || callout.defaultTitle,
+      hasCustomTitle ? "" : callout.defaultTitle,
       callout.fold ? collapsed : undefined,
       callout.fold ? firstLine.from : undefined,
       callout.fold ? (view) => { toggleCalloutCollapsed(view, firstLine.from); } : undefined,
     ),
     -1,
   );
-  hide(collector, markerFrom, firstLine.to);
+  if (hasCustomTitle) {
+    hide(collector, markerFrom, markerTo);
+    if (markerTo < firstLine.to) {
+      collector.decorations.push(markDecoration("mk-cm-callout-title").range(markerTo, firstLine.to));
+    }
+  } else {
+    hide(collector, markerFrom, firstLine.to);
+  }
 }
 
 /**
@@ -530,6 +696,40 @@ function handleHorizontalRule(collector: DecorationCollector, ref: SyntaxNodeRef
   hide(collector, line.from, line.to);
 }
 
+/**
+ * 带文字居中分割线（如 `--- ABC` 或 `--- 阶段总结 ---`）：
+ * 光标未处于行内时，隐藏前缀（及可选后缀），将整行渲染为两端延伸横线、中间文字留空格间隙的居中分割线；
+ * 光标处于行内或被选中时，展开完整 Markdown 源码。
+ */
+function handleTextDivider(collector: DecorationCollector, ref: SyntaxNodeRef): void {
+  const state = collector.state;
+  const line = state.doc.lineAt(ref.from);
+  if (ref.from !== line.from || ref.to !== line.to) return;
+
+  const quotePrefixMatch = line.text.match(/^\s*>[ \t]?/);
+  const quoteOffset = quotePrefixMatch ? quotePrefixMatch[0].length : 0;
+  const lineText = line.text.slice(quoteOffset);
+
+  const parsed = parseHorizontalRuleText(lineText);
+  if (!parsed) return;
+
+  const editing = cursorLine(collector, line.from, line.to) || sourceSelected(collector, line.from, line.to);
+  if (editing) return;
+
+  const { prefix, text, suffix } = parsed;
+
+  addLine(collector, line.from, "mk-cm-hr-text");
+  const prefixStart = line.from + quoteOffset;
+  const textStart = prefixStart + prefix.length;
+  const textEnd = textStart + text.length;
+
+  hide(collector, prefixStart, textStart);
+  addMark(collector, textStart, textEnd, "mk-cm-hr-text-content");
+  if (suffix) {
+    hide(collector, textEnd, line.to);
+  }
+}
+
 function handleListMark(collector: DecorationCollector, ref: SyntaxNodeRef): void {
   const state = collector.state;
   const line = state.doc.lineAt(ref.from);
@@ -538,7 +738,9 @@ function handleListMark(collector: DecorationCollector, ref: SyntaxNodeRef): voi
   const ordered = parentList?.name === "OrderedList";
   const taskRange = taskSourceRange(node);
 
-  addLine(collector, line.from, ordered ? "mk-cm-list-line mk-cm-list-ordered" : "mk-cm-list-line");
+  const quoted = /^\s*>[ \t]?/.test(line.text);
+  const quoteClass = quoted ? " mk-cm-quote-list-line" : "";
+  addLine(collector, line.from, `${ordered ? "mk-cm-list-line mk-cm-list-ordered" : "mk-cm-list-line"}${quoteClass}`);
 
   // 任务项用 TaskMarker 的复选框作为唯一符号，不能再额外留一个普通圆点。
   // `- [ ]` 作为一个整体判断：只有光标靠近这组标记时才一起显示源码，
@@ -587,10 +789,28 @@ function handleFencedCode(collector: DecorationCollector, ref: SyntaxNodeRef, ra
   // Mermaid 被选中时与其他 Markdown 对象一样回退到源码；源码显示后继续
   // 保留整块行装饰，避免选区变化时背景卡片闪退。
   const editing = cursorLine(collector, ref.from, ref.to)
-    || sourceSelected(collector, ref.from, ref.to);
+    || sourceSelected(collector, ref.from, ref.to)
+    || (collector.focused && selectionOnLines(state, firstLine.from, lastLine.to));
   const indentClass = codeBlockIndentClass(codeBlockIndentPtFromInfo(info));
   const indented = indentClass ? ` ${indentClass}` : "";
   const indentAttribute = infoNode ? codeBlockIndentAttributeRange(doc.sliceString(infoNode.from, infoNode.to)) : null;
+  // 代码行保留外层引用背景；QuoteMark 的显隐和可编辑前缀由 handleQuoteMark 处理。
+  let calloutClass = "";
+  const fenceLine = doc.lineAt(ref.from);
+  const fencePrefix = fenceLine.text.match(/^\s*>[ \t]?/);
+  if (fencePrefix) {
+    for (let number = fenceLine.number; number >= 1; number -= 1) {
+      const line = doc.line(number);
+      const prefix = line.text.match(/^\s*>[ \t]?/);
+      if (!prefix) break;
+      const header = parseMarkdownCalloutHeader(line.text.slice(prefix[0].length));
+      if (header) {
+        calloutClass = ` mk-cm-callout-line mk-cm-callout-line--${header.tone}`;
+        break;
+      }
+    }
+  }
+  const quoteClass = fencePrefix && !calloutClass ? " mk-cm-quote-line mk-cm-quote-code-line" : "";
   if (infoNode && indentAttribute) {
     hide(collector, infoNode.from + indentAttribute.from, infoNode.from + indentAttribute.to);
   }
@@ -613,11 +833,13 @@ function handleFencedCode(collector: DecorationCollector, ref: SyntaxNodeRef, ra
 
     if (isFence && !editing) {
       // 整行 replace 掉围栏。跨行装饰必须由 StateField 提供，所以这里只能
-      // 逐行处理：把这一行的字符全部隐藏，行本身仍然存在（高度靠 CSS 压到 0）。
-      hide(collector, line.from, line.to);
-      addLine(collector, line.from, isFirst
+      // 逐行处理。引用里的 QuoteMark 需要始终留在 DOM 中，否则拖选围栏首行时
+      // 它会在 replace/mark 切换的瞬间改变行宽。因此引用围栏只隐藏 `> ` 后的内容。
+      const quotePrefixLength = line.text.match(/^\s*>[ \t]?/)?.[0].length ?? 0;
+      hide(collector, line.from + quotePrefixLength, line.to);
+      addLine(collector, line.from, `${isFirst
         ? `mk-cm-code-fence mk-cm-code-fence-first${indented}`
-        : `mk-cm-code-fence mk-cm-code-fence-last${indented}`);
+        : `mk-cm-code-fence mk-cm-code-fence-last${indented}`}${quoteClass}${calloutClass}`);
       continue;
     }
 
@@ -625,18 +847,17 @@ function handleFencedCode(collector: DecorationCollector, ref: SyntaxNodeRef, ra
     // 光标进出代码块时不会跳。编辑态下围栏行不再隐藏文字，直接显示 ``` 源码，
     // 首尾行仍然套 first/last 拿圆角。
     const edge = isFirst ? " mk-cm-code-first" : isLast ? " mk-cm-code-last" : "";
-    addLine(collector, line.from, `mk-cm-code-line${edge}${indented}`);
+    addLine(collector, line.from, `mk-cm-code-line${edge}${indented}${quoteClass}${calloutClass}`);
   }
 
-  // 只有渲染态才挂语言标签和复制按钮：编辑态首行显示的就是 ```java 本身，
-  // 标签叠上去会跟源码文字重叠。
-  if (!editing && firstLine.from >= rangeFrom && firstLine.from <= rangeTo) {
-    if (language) {
+  // 语言标签只在非编辑态显示（避免与编辑态首行的 ```lang 文本重叠）；
+  // 复制按钮始终挂在围栏首行末尾绝对定位在右上角，鼠标 hover 时呈现，编辑源码时也能便捷复制。
+  if (firstLine.from >= rangeFrom && firstLine.from <= rangeTo) {
+    if (!editing && language) {
       collector.decorations.push(
         Decoration.line({ attributes: { "data-code-language": language } }).range(firstLine.from),
       );
     }
-    // 复制按钮作为 side:1 的 widget 挂在围栏首行末尾，绝对定位在右上角。
     const codeText = extractFenceCodeText(state, ref.from, ref.to);
     if (codeText) {
       collector.decorations.push(
@@ -654,7 +875,7 @@ function handleTaskMarker(collector: DecorationCollector, ref: SyntaxNodeRef): v
   const sourceRange = taskSourceRange(ref.node) ?? ref;
   const line = collector.state.doc.lineAt(ref.from);
   if (touchesSameLine(collector, sourceRange.from, sourceRange.to) || sourceSelected(collector, line.from, line.to)) return;
-  const widget = Decoration.replace({ widget: new TaskCheckboxWidget((marker[1] ?? " ").toLowerCase() === "x") });
+  const widget = Decoration.replace({ widget: new TaskCheckboxWidget((marker[1] ?? "").toLowerCase() === "x") });
   collector.decorations.push(widget.range(ref.from, ref.to));
   collector.atomics.push(widget.range(ref.from, ref.to));
 }
@@ -666,6 +887,9 @@ function buildDecorations(view: EditorView): { decorations: DecorationSet; atomi
     focused: view.hasFocus && !state.readOnly,
     decorations: [],
     atomics: [],
+    // 块级公式的内容行仍会进入 Markdown 语法树。先登记完整范围，确保其中
+    // 的 `[...]`、`[[...]]` 等字符不会再被链接装饰层隐藏或变成可跳转对象。
+    mathRanges: findBlockMarkdownMath(state.doc.toString()).map(({ from, to }) => ({ from, to })),
   };
   const tree = syntaxTree(state);
 
@@ -674,10 +898,13 @@ function buildDecorations(view: EditorView): { decorations: DecorationSet; atomi
     const lastLine = state.doc.lineAt(to);
     for (let lineNumber = firstLine.number; lineNumber <= lastLine.number; lineNumber += 1) {
       const lineFrom = state.doc.line(lineNumber).from;
+      addInlineMath(collector, lineFrom);
+      addCommonHtml(collector, lineFrom);
       addRenderedSourceIndent(collector, lineFrom);
       addFallbackSourceList(collector, lineFrom);
       addObsidianAndBareLinks(collector, lineFrom);
       addRelaxedStrong(collector, lineFrom, tree);
+      addRelaxedEmphasis(collector, lineFrom, tree);
     }
     tree.iterate({
       from,
@@ -690,6 +917,9 @@ function buildDecorations(view: EditorView): { decorations: DecorationSet; atomi
           handleHeading(collector, ref, Number(heading[1]));
           return;
         }
+
+        if (isInsideOrCrossingMath(ref.from, ref.to, collector.mathRanges)
+          && (name === "StrongEmphasis" || name === "Emphasis" || name === "Strikethrough" || name === "InlineCode" || name === "Link")) return;
 
         switch (name) {
           case "StrongEmphasis":
@@ -715,6 +945,9 @@ function buildDecorations(view: EditorView): { decorations: DecorationSet; atomi
             return;
           case "HorizontalRule":
             handleHorizontalRule(collector, ref);
+            return;
+          case "Paragraph":
+            handleTextDivider(collector, ref);
             return;
           case "ListMark":
             handleListMark(collector, ref);
@@ -793,6 +1026,10 @@ class LivePreviewPlugin {
       const built = buildDecorations(update.view);
       this.decorations = built.decorations;
       this.atomics = built.atomics;
+      // 选区触发源码态时，围栏文本和代码行 class 会在同一轮切换。主动排一次
+      // measure，避免浏览器沿用切换前的原生选区矩形；引用前缀本身则始终保留
+      // 在 DOM 中，只切换 visibility，不再参与这次重排。
+      if (update.selectionSet || update.focusChanged || readOnlyChanged) update.view.requestMeasure();
     }
   }
 }
@@ -806,7 +1043,98 @@ const livePreviewViewPlugin = ViewPlugin.fromClass(LivePreviewPlugin, {
 export const livePreviewPlugin: Extension = [
   calloutCollapseState,
   livePreviewViewPlugin,
+  EditorView.domEventHandlers({
+    mousedown(event, view) {
+      const eventTarget = event.target instanceof Element
+        ? event.target.closest(".mk-cm-quote-code-prefix, .mk-cm-callout-code-prefix")
+        : null;
+      const line = event.target instanceof Element
+        ? event.target.closest(".cm-line.mk-cm-quote-code-line, .cm-line.mk-cm-callout-line")
+        : null;
+      // 箭头右侧到代码卡片左边是可编辑的引用沟槽，即使点在空白处也应定位到 `>`。
+      if (!eventTarget && line) {
+        const lineBox = line.getBoundingClientRect();
+        const cardLeft = Number.parseFloat(getComputedStyle(line, "::after").left) + lineBox.left;
+        if (event.clientX >= lineBox.left && event.clientX < cardLeft) {
+          const from = view.posAtDOM(line, 0) + 1;
+          view.dispatch({ selection: { anchor: from }, userEvent: "select.pointer" });
+          view.focus();
+          event.preventDefault();
+          return true;
+        }
+      }
+      // 某些 WebView 会把点击空白沟槽的 target 直接交给编辑器根节点；再用坐标反查源码行。
+      if (!eventTarget) {
+        const position = view.posAtCoords({ x: event.clientX, y: event.clientY });
+        if (position !== null) {
+          const sourceLine = view.state.doc.lineAt(position);
+          const domAtPosition = view.domAtPos(position).node;
+          const sourceLineElement = domAtPosition instanceof Element
+            ? domAtPosition.closest(".cm-line.mk-cm-quote-code-line, .cm-line.mk-cm-callout-line")
+            : domAtPosition.parentElement?.closest(".cm-line.mk-cm-quote-code-line, .cm-line.mk-cm-callout-line");
+          const lineBox = sourceLineElement?.getBoundingClientRect();
+          const cardLeft = sourceLineElement
+            ? Number.parseFloat(getComputedStyle(sourceLineElement, "::after").left) + (lineBox?.left ?? 0)
+            : Number.POSITIVE_INFINITY;
+          if (sourceLineElement && /^\s*>[ \t]?/.test(sourceLine.text) && event.clientX < cardLeft) {
+            view.dispatch({ selection: { anchor: sourceLine.from + 1 }, userEvent: "select.pointer" });
+            view.focus();
+            event.preventDefault();
+            return true;
+          }
+        }
+      }
+      if (!eventTarget) return false;
+      // 负 text-indent 会让浏览器按“代码正文”命中；把前缀区域显式映射回 `>` 的真实位置。
+      const from = view.posAtDOM(eventTarget, 0) + 1;
+      view.dispatch({ selection: { anchor: from }, userEvent: "select.pointer" });
+      view.focus();
+      event.preventDefault();
+      return true;
+    },
+  }),
 ];
+
+function buildMathBlocks(state: EditorState): DecorationSet {
+  const builder = new RangeSetBuilder<Decoration>();
+  const editable = !state.readOnly;
+  const source = state.doc.toString();
+
+  for (const range of findBlockMarkdownMath(source)) {
+    if (editable && selectionOnLines(state, range.from, range.to)) {
+      builder.add(range.from, range.to, Decoration.mark({ class: "mk-cm-math-source" }));
+      continue;
+    }
+    const rawFormula = source.slice(range.contentFrom, range.contentTo);
+    const formula = rawFormula
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^[ \t]*(?:>[ \t]?)+/, ""))
+      .join("\n")
+      .trim();
+    if (!formula) continue;
+    builder.add(
+      range.from,
+      range.to,
+      Decoration.replace({
+        widget: new MarkdownMathWidget(formula, true, range.contentFrom, editable),
+        block: true,
+      }),
+    );
+  }
+
+  return builder.finish();
+}
+
+/** 独占行的 `$$...$$` / `\[...\]` 使用块级装饰，避免跨行 replace 在 ViewPlugin 中失效。 */
+export const markdownMathBlockExtension = StateField.define<{ decorations: DecorationSet; readOnly: boolean }>({
+  create: (state) => ({ decorations: buildMathBlocks(state), readOnly: state.readOnly }),
+  update: (value, transaction) => {
+    const readOnly = transaction.state.readOnly;
+    if (!transaction.docChanged && !transaction.selection && readOnly === value.readOnly) return value;
+    return { decorations: buildMathBlocks(transaction.state), readOnly };
+  },
+  provide: (self) => EditorView.decorations.from(self, (value) => value.decorations),
+});
 
 function buildFrontmatterBlock(state: EditorState, editable: boolean, forceRender = false): DecorationSet {
   const frontmatter = parseYamlFrontmatter(state.doc.toString());
@@ -857,7 +1185,7 @@ export function frontmatterBlockExtension(editable = true): Extension {
  * 代价是这里要遍历整篇文档而不是可见区。可以接受：mermaid 块通常一篇文档里
  * 只有几个，远少于内联标记的数量。
  */
-function buildMermaidBlocks(state: EditorState, dark: boolean, sourceBlockFrom: number | null, editable: boolean): DecorationSet {
+function buildMermaidBlocks(state: EditorState, sourceBlockFrom: number | null, editable: boolean): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
 
   syntaxTree(state).iterate({
@@ -901,7 +1229,7 @@ function buildMermaidBlocks(state: EditorState, dark: boolean, sourceBlockFrom: 
       builder.add(
         replaceFrom,
         replaceTo,
-        Decoration.replace({ widget: new MermaidWidget(body, dark, first.from, editable, caption), block: true }),
+        Decoration.replace({ widget: new MermaidWidget(body, first.from, editable, caption), block: true }),
       );
       return false;
     },
@@ -916,12 +1244,18 @@ function extractFenceBody(state: EditorState, from: number, to: number): string 
   const last = state.doc.lineAt(Math.min(to, state.doc.length));
   if (last.number <= first.number) return "";
 
-  const bodyStart = state.doc.line(first.number + 1).from;
-  // 末行是收尾围栏时不要带进来；文档结尾缺收尾围栏时它就是正文的一部分。
-  const closing = /^\s*(```|~~~)/.test(last.text);
-  const bodyEnd = closing ? state.doc.line(last.number - 1>= first.number + 1 ? last.number - 1 : first.number + 1).to : last.to;
-  if (bodyEnd <= bodyStart) return "";
-  return state.doc.sliceString(bodyStart, bodyEnd);
+  const bodyStartLine = first.number + 1;
+  const closing = /^[ \t]*(?:>[ \t]?)*[ \t]*(```|~~~)/.test(last.text);
+  const bodyEndLine = closing
+    ? (last.number - 1 >= bodyStartLine ? last.number - 1 : bodyStartLine)
+    : last.number;
+
+  const lines: string[] = [];
+  for (let ln = bodyStartLine; ln <= bodyEndLine; ln += 1) {
+    const text = state.doc.line(ln).text;
+    lines.push(text.replace(/^[ \t]*(?:>[ \t]?)+/, ""));
+  }
+  return lines.join("\n");
 }
 
 /** 取围栏代码块的纯文本正文（供复制按钮使用），去掉首尾围栏行。 */
@@ -929,9 +1263,10 @@ function extractFenceCodeText(state: EditorState, from: number, to: number): str
   return extractFenceBody(state, from, to);
 }
 
-/// 深浅色作为 field 的一部分：主题切换时要重画图，否则深色模式下
-/// 拿到的还是上次缓存的浅色版本。
-export function mermaidBlockExtension(dark: boolean, editable = true): Extension {
+/// Mermaid 块级装饰：尺寸和布局与深浅色完全无关，
+/// 仅需按 editable 初始化与热替换，绝不在主题切换时销毁重建 StateField，
+/// 彻底保障 CodeMirror HeightMap 物理高度连续稳定，杜绝视口跳动与滚动位置被重置。
+export function mermaidBlockExtension(editable = true): Extension {
   interface MermaidBlockState {
     decorations: DecorationSet;
     parserTree: ReturnType<typeof syntaxTree>;
@@ -941,7 +1276,7 @@ export function mermaidBlockExtension(dark: boolean, editable = true): Extension
   const field = StateField.define<MermaidBlockState>({
     create: (state) => {
       const parserTree = syntaxTree(state);
-      return { decorations: buildMermaidBlocks(state, dark, null, editable), parserTree, sourceBlockFrom: null };
+      return { decorations: buildMermaidBlocks(state, null, editable), parserTree, sourceBlockFrom: null };
     },
     update: (value, tr) => {
       const parserTree = syntaxTree(tr.state);
@@ -971,7 +1306,7 @@ export function mermaidBlockExtension(dark: boolean, editable = true): Extension
       // 大段粘贴后语法树可能在后台才补齐；解析树变化时也必须重建，否则要等
       // 用户再点击一次产生选区事务后才会把源码替换成图表。
       if (!tr.docChanged && tr.selection === undefined && !parserChanged && sourceBlockFrom === value.sourceBlockFrom) return value;
-      return { decorations: buildMermaidBlocks(tr.state, dark, sourceBlockFrom, editable), parserTree, sourceBlockFrom };
+      return { decorations: buildMermaidBlocks(tr.state, sourceBlockFrom, editable), parserTree, sourceBlockFrom };
     },
     provide: (self) => EditorView.decorations.from(self, (value) => value.decorations),
   });

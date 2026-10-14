@@ -35,7 +35,8 @@ const sharedTheme = EditorView.theme({
   ".cm-scroller": {
     fontFamily: "var(--font-sans, 'Geist Variable', 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif)",
     lineHeight: "1.75",
-    overflow: "auto",
+    overflowX: "hidden",
+    overflowY: "auto",
   },
   ".cm-content": {
     width: "100%",
@@ -291,7 +292,7 @@ const sharedTheme = EditorView.theme({
 
 const lightTheme = EditorView.theme(
   {
-    "&": { color: "#0f172a" },
+    "&": { color: "#0f172a", "--mk-editor-caret-color": "#4f6fae" },
     ".cm-content": { caretColor: "#1d4ed8" },
     ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#1d4ed8" },
     "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
@@ -303,9 +304,9 @@ const lightTheme = EditorView.theme(
 
 const darkTheme = EditorView.theme(
   {
-    "&": { color: "#f8fafc" },
-    ".cm-content": { caretColor: "#93c5fd" },
-    ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#93c5fd" },
+    "&": { color: "#e4e4e7", "--mk-editor-caret-color": "#e4e4e7" },
+    ".cm-content": { caretColor: "#e4e4e7" },
+    ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#e4e4e7" },
     "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
       backgroundColor: "var(--app-text-selection)",
     },
@@ -353,11 +354,11 @@ const lightHighlight = HighlightStyle.define(
 
 const darkHighlight = HighlightStyle.define(
   [
-    { tag: tags.heading1, color: "#f8fafc" },
-    { tag: tags.heading2, color: "#f8fafc" },
-    { tag: tags.heading3, color: "#e2e8f0" },
+    { tag: tags.heading1, color: "#e4e4e7" },
+    { tag: tags.heading2, color: "#e4e4e7" },
+    { tag: tags.heading3, color: "#d4d4d8" },
     { tag: [tags.heading4, tags.heading5, tags.heading6], color: "#cbd5e1" },
-    { tag: tags.strong, color: "#f8fafc" },
+    { tag: tags.strong, color: "#e4e4e7" },
     { tag: tags.emphasis, color: "#e2e8f0" },
     { tag: tags.strikethrough, color: "#94a3b8" },
     { tag: tags.link, color: "#93c5fd" },

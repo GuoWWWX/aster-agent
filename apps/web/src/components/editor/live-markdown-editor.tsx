@@ -1,3 +1,6 @@
+import { markdownCursorExtension } from "./cm/cursor.js";
+import { refreshLiveMermaidTheme } from "./cm/widgets.js";
+import "katex/dist/katex.min.css";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { deleteMarkupBackward, insertNewlineContinueMarkup, markdown } from "@codemirror/lang-markdown";
 import { GFM } from "@lezer/markdown";
@@ -11,7 +14,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { isSupportedImagePath } from "../../lib/image-files.js";
 import { parseYamlFrontmatter } from "../../lib/markdown-frontmatter.js";
 import { cn } from "../../lib/cn.js";
-import { frontmatterBlockExtension, getTableDisplayContext, livePreviewPlugin, markdownImageBlockExtension, mermaidBlockExtension, renderFrontmatterEffect, resetCalloutCollapsedEffect, tableBlockExtension, tableSyntaxRefreshPlugin, type TableDisplayContext } from "./cm/live-preview.js";
+import { frontmatterBlockExtension, getTableDisplayContext, livePreviewPlugin, markdownImageBlockExtension, markdownMathBlockExtension, mermaidBlockExtension, renderFrontmatterEffect, resetCalloutCollapsedEffect, tableBlockExtension, tableSyntaxRefreshPlugin, type TableDisplayContext } from "./cm/live-preview.js";
 import { documentTitleExtension } from "./cm/document-title.js";
 import { markdownFormattingKeymap, markdownIndentUnit } from "./cm/formatting-keymap.js";
 import { markdownLinkInteractionExtension } from "./cm/link-interactions.js";
@@ -271,13 +274,14 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
 ) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const cursorCompartment = useRef(new Compartment()).current;
+  const mathCompartment = useRef(new Compartment()).current;
   const themeCompartment = useRef(new Compartment()).current;
   const readOnlyCompartment = useRef(new Compartment()).current;
   const documentTitleCompartment = useRef(new Compartment()).current;
   const livePreviewCompartment = useRef(new Compartment()).current;
   const linkInteractionCompartment = useRef(new Compartment()).current;
-  // mermaid 的块级装饰带着深浅色：主题变了图要重画，
-  // 否则深色模式下拿到的还是缓存里的浅色版本。
+  // Theme changes refresh Mermaid pixels without replacing its block StateField.
   const mermaidCompartment = useRef(new Compartment()).current;
   const imageBlockCompartment = useRef(new Compartment()).current;
   const frontmatterCompartment = useRef(new Compartment()).current;
@@ -404,6 +408,7 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
       // drawSelection() 去掉：它把每行选区背景填满整行宽度直到容器右边缘，
       // 导致选区右侧无边距而文字右侧有 24px 边距，视觉上左右不对称。
       // 改用浏览器原生 ::selection，选区只包裹被选中的字符宽度，和文字边距一致。
+      cursorCompartment.of(markdownCursorExtension(isDark)),
       rectangularSelection(),
       EditorView.lineWrapping,
       linkInteractionCompartment.of(createLinkInteractionExtension()),
@@ -475,7 +480,8 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
         () => viewRef.current?.dispatch({ effects: renderFrontmatterEffect.of() }),
       )),
       frontmatterCompartment.of(frontmatterBlockExtension(!readOnly)),
-      mermaidCompartment.of(mermaidBlockExtension(isDark, !readOnly)),
+      mermaidCompartment.of(mermaidBlockExtension(!readOnly)),
+      mathCompartment.of(markdownMathBlockExtension),
       imageBlockCompartment.of(markdownImageBlockExtension(markdownSourcePath, !readOnly)),
       tableBlockExtension,
       tableSyntaxRefreshPlugin,
@@ -588,16 +594,20 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
     });
   }, [documentTitle, documentTitleCompartment, documentTitleEditable]);
 
-  // 主题热替换：只换 compartment 内容，view 保持不变，所以光标和 undo 历史都在。
+  // Theme changes retain block StateFields, widget heights, selection and history.
   useEffect(() => {
-    viewRef.current?.dispatch({
-      effects: [
-        themeCompartment.reconfigure(markdownEditorTheme(isDark)),
-        frontmatterCompartment.reconfigure(frontmatterBlockExtension(!readOnly)),
-        mermaidCompartment.reconfigure(mermaidBlockExtension(isDark, !readOnly)),
-      ],
-    });
-  }, [frontmatterCompartment, isDark, mermaidCompartment, readOnly, themeCompartment]);
+    const view = viewRef.current;
+    if (!view) return;
+    const scrollTop = view.scrollDOM.scrollTop;
+    view.dispatch({ effects: [themeCompartment.reconfigure(markdownEditorTheme(isDark)), cursorCompartment.reconfigure(markdownCursorExtension(isDark))] });
+    refreshLiveMermaidTheme(view.dom, isDark);
+    view.scrollDOM.scrollTop = scrollTop;
+  }, [cursorCompartment, isDark, themeCompartment]);
+
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: [frontmatterCompartment.reconfigure(frontmatterBlockExtension(!readOnly)),
+      mermaidCompartment.reconfigure(mermaidBlockExtension(!readOnly)), mathCompartment.reconfigure(markdownMathBlockExtension)] });
+  }, [frontmatterCompartment, mathCompartment, mermaidCompartment, readOnly]);
 
   useEffect(() => {
     viewRef.current?.dispatch({
@@ -645,6 +655,7 @@ export const LiveMarkdownEditor = forwardRef<LiveMarkdownEditorHandle, LiveMarkd
     const next = initialContentRef.current;
     const selection = initialEditorSelection(next);
     activeTableFromRef.current = null;
+    if (documentChanged) view.scrollDOM.scrollTop = 0;
     if (view.state.doc.toString() === next) {
       view.dispatch({
         selection,

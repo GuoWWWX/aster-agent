@@ -11,6 +11,7 @@ import {
   frontmatterBlockExtension,
   livePreviewPlugin,
   mermaidBlockExtension,
+  markdownMathBlockExtension,
   tableBlockExtension,
 } from "./live-preview.js";
 
@@ -74,6 +75,14 @@ describe("live preview decorations", () => {
     expect(view.dom.querySelector("tbody td")).not.toBeNull();
   });
 
+  it("keeps short table separators at a readable default width and preserves their source", () => {
+    const source = "| 名称 | 公式 |\n| - | -- |\n| 这是中文名称 | $|x|$ |";
+    const view = mountEditor(source, tableBlockExtension);
+    expect(view.dom.querySelector(".mk-cm-table colgroup")).toBeNull();
+    expect(view.dom.querySelector<HTMLElement>(".mk-cm-table th")?.style.minWidth).toBe("72px");
+    expect(view.state.doc.toString()).toBe(source);
+  });
+
   it("replaces a Mermaid fence with a block widget", () => {
     const view = mountEditor(
       "```mermaid {caption=\"图1-1 流程图\"}\ngraph TD\n  A-->B\n```",
@@ -100,5 +109,31 @@ describe("live preview decorations", () => {
 
     expect(view.dom.querySelector(".mk-cm-frontmatter")).not.toBeNull();
     expect(view.dom.querySelector(".mk-cm-frontmatter")?.textContent).toContain("title");
+  });
+
+  it("renders quoted block math and leaves emphasis inside formulas untouched", () => {
+    const view = mountEditor("开始\n\n> $$\n> x^2 + y^2\n> $$\n\n**公式 $a * b * c$ 正文**",
+      livePreviewPlugin, markdownMathBlockExtension, EditorState.readOnly.of(true));
+    expect(view.dom.querySelector(".mk-cm-math-block .katex")).not.toBeNull();
+    expect(view.dom.querySelector(".mk-cm-math-inline .katex")).not.toBeNull();
+    expect(view.dom.querySelector(".mk-cm-math-inline .mk-cm-em")).toBeNull();
+    expect(view.dom.querySelector(".mk-cm-strong")).not.toBeNull();
+    expect(view.dom.querySelector(".is-invalid")).toBeNull();
+  });
+
+  it("decorates safe inline HTML without adding executable elements or event handlers", () => {
+    const view = mountEditor('开始\n\n<kbd onclick="alert(1)">Ctrl</kbd> H<sub>2</sub>O <script>alert(1)</script>', livePreviewPlugin);
+    expect(view.dom.querySelector(".mk-cm-html-kbd")?.textContent).toBe("Ctrl");
+    expect(view.dom.querySelector(".mk-cm-html-sub")?.textContent).toBe("2");
+    expect(view.dom.querySelector("[onclick],script")).toBeNull();
+    expect(view.state.doc.toString()).toContain('onclick="alert(1)"');
+  });
+
+  it("keeps quoted code geometry and creates the real copy control", () => {
+    const view = mountEditor('开始\n\n> ```typescript\n> const value = 1;\n> ```', livePreviewPlugin);
+    expect(view.dom.querySelector(".mk-cm-quote-code-line")).not.toBeNull();
+    expect(view.dom.querySelector("button[aria-label='复制代码']")).not.toBeNull();
+    expect(view.dom.querySelector(".mk-cm-quote-code-prefix")).not.toBeNull();
+    expect(view.state.doc.toString()).toContain("> const value = 1;");
   });
 });

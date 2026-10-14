@@ -3,6 +3,7 @@ import { redo, undo } from "@codemirror/commands";
 import { EditorView, WidgetType } from "@codemirror/view";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import katex from "katex";
 import {
   ArrowDownToLine,
   ArrowLeft,
@@ -45,8 +46,8 @@ import {
   reorderTableColumn,
   reorderTableRow,
   serializeMarkdownTable,
-  tableCellPointerSelection,
   tableOperationFocus,
+  tableCellPointerSelection,
   tableSelectionBounds,
   tableSelectionCoversWholeTable,
   tableSelectionToTsv,
@@ -57,6 +58,7 @@ import {
 import { TableCellCompositionGuard } from "./table-cell-edit.js";
 import { setTableWidthModeEffect, tableContextChangeEvent, type TableWidthMode } from "./table-display-settings.js";
 import { renderTableInlineMarkdown } from "./table-inline-renderer.js";
+import { normalizeMathSource } from "../../../lib/markdown-math.js";
 
 type ImageWidthMode = "fit" | "natural";
 
@@ -64,6 +66,85 @@ const imageWidthModes = new Map<string, ImageWidthMode>();
 
 const COPY_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>`;
 const CHECK_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+
+/** KaTeX 公式预览；点击公式时把光标放回源码，保持实时预览可编辑。 */
+export class MarkdownMathWidget extends WidgetType {
+  constructor(
+    private readonly source: string,
+    private readonly display: boolean,
+    private readonly editPosition: number,
+    private readonly editable: boolean,
+  ) {
+    super();
+  }
+
+  override eq(other: MarkdownMathWidget): boolean {
+    return other.source === this.source
+      && other.display === this.display
+      && other.editPosition === this.editPosition
+      && other.editable === this.editable;
+  }
+
+  override toDOM(view: EditorView): HTMLElement {
+    const host = document.createElement(this.display ? "div" : "span");
+    host.className = this.display ? "mk-cm-math-block" : "mk-cm-math-inline";
+    const normalized = normalizeMathSource(this.source);
+    try {
+      host.innerHTML = katex.renderToString(normalized, {
+        displayMode: this.display,
+        throwOnError: true,
+        output: "html",
+        strict: false,
+        trust: false,
+      });
+    } catch {
+      host.classList.add("is-invalid");
+      host.textContent = this.source;
+    }
+    if (this.editable) {
+      host.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        view.dispatch({ selection: { anchor: this.editPosition }, scrollIntoView: true });
+        view.focus();
+      });
+    }
+    return host;
+  }
+
+  override ignoreEvent(): boolean {
+    return true;
+  }
+}
+
+export class MarkdownBreakWidget extends WidgetType {
+  override eq(other: MarkdownBreakWidget) { return other.constructor === MarkdownBreakWidget; }
+  override toDOM() { const element = document.createElement("br"); element.className = "mk-cm-markdown-break"; return element; }
+  override ignoreEvent() { return false; }
+}
+
+function copyTextToClipboard(text: string, onSuccess: () => void): void {
+  const fallback = () => {
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    } catch { /* Clipboard access can be denied by the host. */ }
+    onSuccess();
+  };
+
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    navigator.clipboard.writeText(text).then(onSuccess).catch(fallback);
+  } else {
+    fallback();
+  }
+}
 
 /**
  * 代码块右上角的复制按钮。
@@ -88,10 +169,18 @@ export class CopyCodeWidget extends WidgetType {
     btn.dataset.tooltip = "复制代码";
     btn.innerHTML = COPY_ICON;
 
+    // 在 click 之前阻止编辑器移动选区和按钮抢焦点，避免围栏切换到源码态。
+    const keepEditorSelection = (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    btn.addEventListener("pointerdown", keepEditorSelection);
+    btn.addEventListener("mousedown", keepEditorSelection);
+
     btn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      void navigator.clipboard.writeText(this.code).then(() => {
+      copyTextToClipboard(this.code, () => {
         btn.innerHTML = CHECK_ICON;
         btn.classList.add("mk-cm-copy-code--ok");
         window.setTimeout(() => {
@@ -105,7 +194,7 @@ export class CopyCodeWidget extends WidgetType {
   }
 
   override ignoreEvent(): boolean {
-    return false;
+    return true;
   }
 }
 
@@ -224,10 +313,46 @@ function measuredBlockWidget(content: HTMLElement, spacing: "frontmatter" | "med
  * mermaid 的渲染是异步的，widget 的 toDOM 必须同步返回，所以这里先返回一个
  * 容器：命中缓存就直接填图（切换光标进出时不会闪空白），否则先占位再异步补上。
  */
+function isDarkEditorView(view: EditorView): boolean {
+  return view.dom.closest('[data-theme="dark"]') !== null
+    || document.documentElement.dataset.theme === "dark"
+    || document.body.dataset.theme === "dark";
+}
+
+export function refreshLiveMermaidTheme(editorDom: HTMLElement, isDark: boolean): void {
+  const hosts = editorDom.querySelectorAll<HTMLElement>(".mk-cm-mermaid");
+  hosts.forEach((host) => {
+    const canvas = host.querySelector<HTMLElement>(".mk-cm-mermaid-canvas");
+    const source = host.dataset.mkMermaidSource;
+    if (!canvas || !source) return;
+
+    const cached = getCachedMermaidSvg(source, isDark);
+    if (cached) {
+      delete host.dataset.state;
+      host.style.minHeight = "";
+      canvas.innerHTML = cached.svg;
+      return;
+    }
+
+    void renderMermaid(source, isDark)
+      .then(({ svg }) => {
+        if (!canvas.isConnected) return;
+        delete host.dataset.state;
+        host.style.minHeight = "";
+        canvas.innerHTML = svg;
+      })
+      .catch((error: unknown) => {
+        if (!canvas.isConnected) return;
+        host.dataset.state = "error";
+        host.style.minHeight = "";
+        canvas.textContent = error instanceof Error ? error.message : "图表渲染失败";
+      });
+  });
+}
+
 export class MermaidWidget extends WidgetType {
   constructor(
     private readonly source: string,
-    private readonly dark: boolean,
     private readonly blockFrom: number,
     private readonly editable: boolean,
     private readonly caption?: string,
@@ -237,17 +362,85 @@ export class MermaidWidget extends WidgetType {
 
   override eq(other: MermaidWidget): boolean {
     return other.source === this.source
-      && other.dark === this.dark
       && other.blockFrom === this.blockFrom
       && other.editable === this.editable
       && other.caption === this.caption;
+  }
+
+  override updateDOM(dom: HTMLElement, view: EditorView): boolean {
+    const host = dom.classList.contains("mk-cm-mermaid") ? dom : dom.querySelector<HTMLElement>(".mk-cm-mermaid");
+    const canvas = dom.querySelector<HTMLElement>(".mk-cm-mermaid-canvas");
+    if (!host || !canvas) return false;
+
+    const isDark = isDarkEditorView(view);
+    const cached = getCachedMermaidSvg(this.source, isDark);
+    if (cached) {
+      delete host.dataset.state;
+      host.style.minHeight = "";
+      canvas.innerHTML = cached.svg;
+      return true;
+    }
+
+    // 若新主题尚未缓存，保留当前现有 SVG 画面与物理尺寸（零坍塌），在后台无感完成重绘替换
+    void renderMermaid(this.source, isDark)
+      .then(({ svg }) => {
+        if (!canvas.isConnected) return;
+        delete host.dataset.state;
+        host.style.minHeight = "";
+        canvas.innerHTML = svg;
+      })
+      .catch((error: unknown) => {
+        if (!canvas.isConnected) return;
+        host.dataset.state = "error";
+        host.style.minHeight = "";
+        canvas.textContent = error instanceof Error ? error.message : "图表渲染失败";
+      });
+
+    return true;
   }
 
   override toDOM(view: EditorView): HTMLElement {
     // 分两层：外层负责边框，内层专门放 SVG。
     const host = document.createElement("div");
     host.className = "mk-cm-mermaid";
+    host.dataset.mkMermaidSource = this.source;
+    if (this.caption) host.dataset.mkMermaidCaption = this.caption;
     const container = measuredBlockWidget(host, "media");
+
+    const langLabel = document.createElement("span");
+    langLabel.className = "mk-cm-mermaid-language";
+    langLabel.textContent = "MERMAID";
+    langLabel.setAttribute("aria-hidden", "true");
+    host.append(langLabel);
+
+    const actions = document.createElement("div");
+    actions.className = "mk-cm-mermaid-actions";
+
+    const copyButton = document.createElement("button");
+    copyButton.type = "button";
+    copyButton.className = "mk-cm-mermaid-copy";
+    copyButton.dataset.tooltip = "复制 Mermaid 源码";
+    copyButton.setAttribute("aria-label", "复制 Mermaid 源码");
+    copyButton.innerHTML = COPY_ICON;
+    const preventSelect = (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    copyButton.addEventListener("pointerdown", preventSelect);
+    copyButton.addEventListener("mousedown", preventSelect);
+    copyButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      copyTextToClipboard(this.source, () => {
+        copyButton.innerHTML = CHECK_ICON;
+        copyButton.classList.add("mk-cm-mermaid-copy--ok");
+        window.setTimeout(() => {
+          copyButton.innerHTML = COPY_ICON;
+          copyButton.classList.remove("mk-cm-mermaid-copy--ok");
+        }, 1500);
+      });
+    });
+    actions.append(copyButton);
 
     const previewButton = document.createElement("button");
     previewButton.type = "button";
@@ -261,7 +454,7 @@ export class MermaidWidget extends WidgetType {
       const svg = host.querySelector(".mk-cm-mermaid-canvas svg")?.outerHTML;
       if (svg) requestMediaPreview({ src: svgDataUrl(svg), alt: "Mermaid 图表", title: "Mermaid 图表" });
     });
-    host.append(previewButton);
+    actions.append(previewButton);
 
     if (this.editable) {
       const sourceButton = document.createElement("button");
@@ -280,12 +473,26 @@ export class MermaidWidget extends WidgetType {
         });
         view.focus();
       });
-      host.append(sourceButton);
+      actions.append(sourceButton);
     }
+    host.append(actions);
 
     const canvas = document.createElement("div");
     canvas.className = "mk-cm-mermaid-canvas";
-    canvas.setAttribute("role", "img");
+    canvas.setAttribute("role", "region");
+    canvas.style.userSelect = "text";
+    canvas.addEventListener("pointerdown", (event) => {
+      const target = event.target as Element | null;
+      if (target?.closest("a, [role='link'], text, span, .node, .edgeLabel, .cluster-label")) {
+        event.stopPropagation();
+      }
+    });
+    canvas.addEventListener("click", (event) => {
+      const link = (event.target as Element | null)?.closest("a");
+      if (link && link.href) {
+        event.stopPropagation();
+      }
+    });
     canvas.setAttribute("aria-label", "Mermaid 图表");
     host.append(canvas);
 
@@ -296,28 +503,45 @@ export class MermaidWidget extends WidgetType {
       host.append(caption);
     }
 
-    const cached = getCachedMermaidSvg(this.source, this.dark);
+    const isDark = isDarkEditorView(view);
+    const cached = getCachedMermaidSvg(this.source, isDark);
     if (cached) {
       canvas.innerHTML = cached.svg;
       return container;
     }
 
-    host.dataset.state = "loading";
-    canvas.textContent = "正在渲染图表…";
+    // 若当前深浅色尚未缓存，但相反主题已有缓存，直接借用相反主题的 SVG 呈现在画布上！
+    // 物理尺寸和 viewBox 分毫不差，高度绝对零坍缩，彻底杜绝切换主题时视口跳动与滚动重置。
+    const peerCached = getCachedMermaidSvg(this.source, !isDark);
+    if (peerCached) {
+      canvas.innerHTML = peerCached.svg;
+    } else {
+      host.style.minHeight = "180px";
+      host.dataset.state = "loading";
+      canvas.textContent = "正在渲染图表…";
+    }
 
-    void renderMermaid(this.source, this.dark)
+    void renderMermaid(this.source, isDark)
       .then(({ svg }) => {
         // 容器可能已经被 CM 回收（用户快速滚动或改了源码），
         // 这时候往里写东西没有意义，isConnected 判掉。
         if (!canvas.isConnected) return;
         delete host.dataset.state;
+        host.style.minHeight = "";
         canvas.innerHTML = svg;
+        // 如果此前未命中任何缓存（从 loading 状态初次撑开），才需要通知 CM 重排测量；
+        // 若此前已使用同尺寸的 peerCached，高度完全一致，避免冗余测量扰动视口。
+        if (!peerCached) {
+          view.requestMeasure();
+        }
       })
       .catch((error: unknown) => {
         if (!canvas.isConnected) return;
         host.dataset.state = "error";
+        host.style.minHeight = "";
         // 语法错误要给出原文，否则用户不知道图为什么画不出来。
         canvas.textContent = error instanceof Error ? error.message : "图表渲染失败";
+        view.requestMeasure();
       });
 
     return container;
@@ -327,7 +551,11 @@ export class MermaidWidget extends WidgetType {
    * 图表主体交给编辑器处理选区：普通单击仍是空选区并保持预览，
    * 拖选经过图表时才能让块级装饰恢复 Mermaid 源码。
    */
-  override ignoreEvent(): boolean {
+  override ignoreEvent(event: Event): boolean {
+    const target = event.target as Element | null;
+    if (target?.closest(".mk-cm-mermaid-canvas, .mk-cm-mermaid-source, a, [role='link']")) {
+      return true;
+    }
     return false;
   }
 }
@@ -593,12 +821,39 @@ export class MarkdownWikilinkWidget extends WidgetType {
     icon.className = `mk-cm-link-icon mk-cm-link-icon--${this.kind}${this.invalid ? " mk-cm-link-icon--invalid" : ""}`;
     icon.setAttribute("aria-hidden", "true");
     icon.innerHTML = iconMarkup(this.kind === "external" ? Globe2 : FileText);
-    link.append(icon, document.createTextNode(this.label));
+    link.append(icon);
+    renderWikilinkFormattedLabel(link, this.label);
     return link;
   }
 
   override ignoreEvent(): boolean {
     return false;
+  }
+}
+
+function renderWikilinkFormattedLabel(container: HTMLElement, label: string): void {
+  const pattern = /(\*\*([^*]+)\*\*|\*([^*]+)\*)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(label)) !== null) {
+    if (match.index > lastIndex) {
+      container.append(document.createTextNode(label.slice(lastIndex, match.index)));
+    }
+    if (match[2] !== undefined) {
+      const strong = document.createElement("strong");
+      strong.className = "mk-cm-strong";
+      strong.textContent = match[2];
+      container.append(strong);
+    } else if (match[3] !== undefined) {
+      const em = document.createElement("em");
+      em.className = "mk-cm-em";
+      em.textContent = match[3];
+      container.append(em);
+    }
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < label.length) {
+    container.append(document.createTextNode(label.slice(lastIndex)));
   }
 }
 
@@ -642,10 +897,12 @@ export class MarkdownCalloutIconWidget extends WidgetType {
       toggle.innerHTML = iconMarkup(this.collapsed ? ChevronRight : ChevronDown);
       host.prepend(toggle);
     }
-    const title = document.createElement("span");
-    title.className = "mk-cm-callout-title";
-    title.textContent = this.title;
-    host.append(title);
+    if (this.title) {
+      const title = document.createElement("span");
+      title.className = "mk-cm-callout-title";
+      title.textContent = this.title;
+      host.append(title);
+    }
 
     if (this.onToggle) {
       host.addEventListener("mousedown", (event) => {
@@ -813,14 +1070,40 @@ export class TableWidget extends WidgetType {
     tableScroll.className = "mk-cm-table-scroll";
     const table = document.createElement("table");
     table.className = "mk-cm-table";
+    // One/two-dash separators are grammar compatibility, not narrower columns.
+    const displayWeights = this.model.columnWeights?.map((weight) => Math.max(3, weight)) ?? [];
+    const hasDistinctWeights = displayWeights.some((weight) => weight !== displayWeights[0]);
+    if (hasDistinctWeights) {
+      const colgroup = document.createElement("colgroup");
+      const totalWeight = displayWeights.reduce((sum, w) => sum + w, 0);
+      displayWeights.forEach((weight) => {
+        const col = document.createElement("col");
+        if (totalWeight > 0) {
+          col.style.width = `${((weight / totalWeight) * 100).toFixed(2)}%`;
+        }
+        colgroup.append(col);
+      });
+      table.append(colgroup);
+    }
     const buildRow = (rowIndex: number, isHeader: boolean) => {
       const row = document.createElement("tr");
-      (this.model.rows[rowIndex] ?? []).forEach((cell, columnIndex) => {
+      this.model.rows[rowIndex]?.forEach((cell, columnIndex) => {
         const element = document.createElement(isHeader ? "th" : "td");
         element.dataset.tableRow = String(rowIndex);
         element.dataset.tableColumn = String(columnIndex);
+        const alignment = this.model.alignments[columnIndex] ?? "none";
+        if (alignment !== "none") {
+          element.style.textAlign = alignment;
+        }
+        const weight = this.model.columnWeights?.[columnIndex];
+        if (weight !== undefined) {
+          element.style.minWidth = `${Math.max(72, Math.min(320, weight * 24))}px`;
+        }
         const content = renderTableInlineMarkdown(cell);
         content.removeAttribute("tabindex");
+        if (alignment !== "none") {
+          content.style.textAlign = alignment;
+        }
         element.append(content);
         row.append(element);
       });
@@ -880,6 +1163,7 @@ export class TableWidget extends WidgetType {
       if (!cell) return;
       event.preventDefault();
       event.stopPropagation();
+      // 表格内开始拖选时使用和编辑模式一致的单元格选区，不再同时扩展正文行选区。
       dragAnchor = null;
       const nextSelection = tableCellPointerSelection(cellSelection, cell, event.shiftKey);
       if (nextSelection.kind === "range") {
@@ -968,12 +1252,9 @@ export class TableWidget extends WidgetType {
     wrapper.addEventListener("copy", (event) => {
       if (!cellSelection) return;
       event.preventDefault();
-      event.clipboardData?.setData(
-        "text/plain",
-        tableSelectionCoversWholeTable(this.model, cellSelection)
-          ? serializeMarkdownTable(this.model)
-          : tableSelectionToTsv(this.model, cellSelection),
-      );
+      event.clipboardData?.setData("text/plain", tableSelectionCoversWholeTable(this.model, cellSelection)
+        ? serializeMarkdownTable(this.model)
+        : tableSelectionToTsv(this.model, cellSelection));
     });
     wrapper.addEventListener("keydown", (event) => {
       if (event.key === "Escape") clearCellSelection();
@@ -1043,6 +1324,7 @@ export class TableWidget extends WidgetType {
     let draft: MarkdownTable = {
       rows: this.model.rows.map((row) => [...row]),
       alignments: [...this.model.alignments],
+      ...(this.model.columnWeights ? { columnWeights: [...this.model.columnWeights] } : {}),
     };
     let dirty = false;
     const composition = new TableCellCompositionGuard();
@@ -1066,25 +1348,30 @@ export class TableWidget extends WidgetType {
     // 默认按表格内容收缩，避免只有少量列时无意义地铺满编辑区。
     let wrapsContent = this.widthMode === "content";
 
-    const focusCell = (row: number, column: number) => {
+    const focusCell = (row: number, column: number, selectAll = false) => {
       scheduleFrame(() => {
-        const current = view.dom.querySelector<HTMLInputElement>(
+        const current = view.dom.querySelector<HTMLTextAreaElement>(
           `.mk-cm-table-wrapper[data-table-from="${this.tableFrom}"] .mk-cm-table-input[data-table-row="${row}"][data-table-column="${column}"]`,
         );
         if (!current) return;
         current.hidden = false;
         current.parentElement?.querySelector<HTMLElement>(".mk-cm-table-cell-content")?.classList.add("is-editing");
         current.focus();
-        current.select();
+        if (selectAll) {
+          current.select();
+        } else {
+          const len = current.value.length;
+          current.setSelectionRange(len, len);
+        }
       });
     };
 
     const commit = (focus?: { row: number; column: number }) => {
       const previous = active;
       if (!dirty) {
-        if (focus) focusCell(focus.row, focus.column);
+        if (focus) focusCell(focus.row, focus.column, true);
         else if (previous) {
-          const input = wrapper.querySelector<HTMLInputElement>(`.mk-cm-table-input[data-table-row="${previous.row}"][data-table-column="${previous.column}"]`);
+          const input = wrapper.querySelector<HTMLTextAreaElement>(`.mk-cm-table-input[data-table-row="${previous.row}"][data-table-column="${previous.column}"]`);
           if (input) input.hidden = true;
           input?.parentElement?.querySelector<HTMLElement>(".mk-cm-table-cell-content")?.classList.remove("is-editing");
         }
@@ -1097,9 +1384,13 @@ export class TableWidget extends WidgetType {
     };
 
     const cancel = () => {
-      draft = { rows: this.model.rows.map((row) => [...row]), alignments: [...this.model.alignments] };
+      draft = {
+        rows: this.model.rows.map((row) => [...row]),
+        alignments: [...this.model.alignments],
+        ...(this.model.columnWeights ? { columnWeights: [...this.model.columnWeights] } : {}),
+      };
       dirty = false;
-      wrapper.querySelectorAll<HTMLInputElement>(".mk-cm-table-input").forEach((input) => {
+      wrapper.querySelectorAll<HTMLTextAreaElement>(".mk-cm-table-input").forEach((input) => {
         const row = Number(input.dataset.tableRow);
         const column = Number(input.dataset.tableColumn);
         input.value = draft.rows[row]?.[column] ?? "";
@@ -1227,15 +1518,12 @@ export class TableWidget extends WidgetType {
 
     const showTableSource = () => {
       const insert = serializeMarkdownTable(draft);
-      const transaction = {
+      view.dispatch({
+        ...(dirty && insert !== this.source ? { changes: { from: this.tableFrom, to: this.tableTo, insert } } : {}),
         selection: { anchor: this.tableFrom },
         effects: editTableSourceEffect.of(this.tableFrom),
         scrollIntoView: true,
-        ...(dirty && insert !== this.source
-          ? { changes: { from: this.tableFrom, to: this.tableTo, insert } }
-          : {}),
-      };
-      view.dispatch(transaction);
+      });
       view.focus();
     };
     const selectWholeTable = () => {
@@ -1328,6 +1616,20 @@ export class TableWidget extends WidgetType {
 
     const table = document.createElement("table");
     table.className = "mk-cm-table";
+    const displayWeights = draft.columnWeights?.map((weight) => Math.max(3, weight)) ?? [];
+    const hasDistinctWeights = displayWeights.some((weight) => weight !== displayWeights[0]);
+    if (hasDistinctWeights) {
+      const colgroup = document.createElement("colgroup");
+      const totalWeight = displayWeights.reduce((sum, w) => sum + w, 0);
+      displayWeights.forEach((weight) => {
+        const col = document.createElement("col");
+        if (totalWeight > 0) {
+          col.style.width = `${((weight / totalWeight) * 100).toFixed(2)}%`;
+        }
+        colgroup.append(col);
+      });
+      table.append(colgroup);
+    }
     const tableScroll = document.createElement("div");
     tableScroll.className = "mk-cm-table-scroll";
     const columnDragLayer = document.createElement("div");
@@ -1815,20 +2117,26 @@ export class TableWidget extends WidgetType {
     const buildInput = (row: number, column: number) => {
       const cell = document.createElement("div");
       cell.className = "mk-cm-table-cell";
+      const alignment = draft.alignments[column] ?? "none";
       const rendered = renderTableInlineMarkdown(draft.rows[row]?.[column] ?? "");
       rendered.dataset.tableRow = String(row);
       rendered.dataset.tableColumn = String(column);
       rendered.tabIndex = 0;
       rendered.setAttribute("aria-label", `第 ${row + 1} 行，第 ${column + 1} 列`);
+      if (alignment !== "none") {
+        rendered.style.textAlign = alignment;
+      }
 
-      const input = document.createElement("input");
-      input.type = "text";
+      const input = document.createElement("textarea");
       input.className = "mk-cm-table-input";
       input.hidden = true;
       input.value = draft.rows[row]?.[column] ?? "";
       input.dataset.tableRow = String(row);
       input.dataset.tableColumn = String(column);
       input.setAttribute("aria-label", `第 ${row + 1} 行，第 ${column + 1} 列`);
+      if (alignment !== "none") {
+        input.style.textAlign = alignment;
+      }
       input.addEventListener("focus", () => {
         active = { row, column };
         updateSelection({ kind: "cell", anchor: { row, column }, focus: { row, column } });
@@ -1845,8 +2153,7 @@ export class TableWidget extends WidgetType {
           input.value = draft.rows[row]?.[column] ?? "";
           return;
         }
-        const targetRow = draft.rows[row];
-        if (targetRow) targetRow[column] = input.value;
+        draft.rows[row]![column] = input.value;
         dirty = true;
       });
       input.addEventListener("compositionstart", () => composition.start());
@@ -1855,8 +2162,7 @@ export class TableWidget extends WidgetType {
           input.value = draft.rows[row]?.[column] ?? "";
           return;
         }
-        const targetRow = draft.rows[row];
-        if (targetRow) targetRow[column] = input.value;
+        draft.rows[row]![column] = input.value;
         dirty = true;
         if (document.activeElement !== input) commit();
       });
@@ -1871,7 +2177,7 @@ export class TableWidget extends WidgetType {
           event.preventDefault();
           redo(view);
           focusCell(row, column);
-        } else if (event.key === "Enter" && !composition.composing && !event.isComposing) {
+        } else if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !composition.composing && !event.isComposing) {
           event.preventDefault();
           input.blur();
         } else if (event.key === "Escape") {
@@ -1950,10 +2256,18 @@ export class TableWidget extends WidgetType {
 
     const buildRow = (rowIndex: number, isHeader: boolean): HTMLTableRowElement => {
       const tr = document.createElement("tr");
-      (draft.rows[rowIndex] ?? []).forEach((_, colIndex) => {
+      draft.rows[rowIndex]?.forEach((_, colIndex) => {
         const el = document.createElement(isHeader ? "th" : "td");
         el.dataset.tableRow = String(rowIndex);
         el.dataset.tableColumn = String(colIndex);
+        const alignment = draft.alignments[colIndex] ?? "none";
+        if (alignment !== "none") {
+          el.style.textAlign = alignment;
+        }
+        const weight = draft.columnWeights?.[colIndex];
+        if (weight !== undefined) {
+          el.style.minWidth = `${Math.max(72, Math.min(320, weight * 24))}px`;
+        }
         el.append(buildInput(rowIndex, colIndex));
         if (isHeader) {
           const columnHandle = buildDragHandle("column", colIndex);
