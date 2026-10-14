@@ -551,26 +551,92 @@ describe("AppShell", () => {
     expect(rightPanel()?.style.width).toBe("960px");
   });
 
-  it("keeps the navigator and its toggle available on settings pages", async () => {
-    useWorkbenchUiStore.getState().setSettings();
+  it.each(["settings", "team", "tasks", "schedules"] as const)("keeps the titlebar stable while hiding the navigator on %s", async (activity) => {
+    useWorkbenchUiStore.setState({ projectNavigatorWidth: 320 });
+    const agentClient = new MockAgentClient();
+    const projects = await agentClient.listProjects();
+    const onMount = vi.fn();
+    const onUnmount = vi.fn();
+    function Navigator(): ReactElement {
+      useEffect(() => { onMount(); return onUnmount; }, []);
+      return <div>对话列表</div>;
+    }
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
     act(() => root?.render(
       <TooltipProvider>
         <AppShell
-          agentClient={new MockAgentClient()}
+          activeProject={projects[0] ?? null}
+          projects={projects}
+          agentClient={agentClient}
+          conversationTabs={[
+            { id: "conversation-a", title: "项目对话", isRunning: false },
+            { id: "page:settings", title: "设置", isRunning: false, kind: "page" },
+          ]}
           filePanel={<div />}
           mainContent={<div />}
-          projectNavigator={<div />}
+          projectNavigator={<Navigator />}
         />
       </TooltipProvider>,
     ));
 
     await act(async () => Promise.resolve());
-    expect(container.querySelector('.workbench-sidebar--left')).not.toBeNull();
-    act(() => container.querySelector<HTMLButtonElement>('[aria-label="收起对话列表"]')?.click());
-    expect(container.querySelector('.workbench-sidebar--left')).toBeNull();
-    expect(container.querySelector('[aria-label="展开对话列表"]')).not.toBeNull();
+    const panel = container.querySelector<HTMLElement>('.workbench-sidebar--left')!;
+    const shell = container.querySelector<HTMLElement>('.app-shell')!;
+    const gradientStyle = shell.getAttribute("style");
+    expect(shell.dataset.projectAccent).toBe("true");
+    const leading = container.querySelector<HTMLElement>('.app-titlebar__conversation-leading')!;
+    const leadingWidth = leading.style.getPropertyValue("--app-titlebar-conversation-leading-width");
+    const leftToggle = () => container.querySelector<HTMLButtonElement>('[aria-label="收起对话列表"]')!;
+    const headerButtonLayout = () => Array.from(container.querySelectorAll('.app-titlebar button'), (button) => ({
+      label: button.getAttribute("aria-label")?.replace(/^(收起|展开)/, ""),
+      className: button.className,
+    }));
+    const headerButtons = headerButtonLayout();
+    expect(panel.hidden).toBe(false);
+    act(() => useWorkbenchUiStore.getState().setActiveActivity(activity));
+    expect(shell.dataset.projectAccent).toBe("true");
+    expect(shell.getAttribute("style")).toBe(gradientStyle);
+    expect(leading.style.getPropertyValue("--app-titlebar-conversation-leading-width")).toBe(leadingWidth);
+    expect(headerButtonLayout()).toEqual(headerButtons);
+    expect(leftToggle().disabled).toBe(true);
+    expect(panel.hidden).toBe(true);
+    expect(container.querySelector('[aria-label="调整项目栏宽度"]')).toBeNull();
+    expect(container.querySelector('[data-navigator-hover-edge]')).toBeNull();
+    expect(useWorkbenchUiStore.getState().isProjectNavigatorOpen).toBe(true);
+    expect(onMount).toHaveBeenCalledTimes(1);
+    expect(onUnmount).not.toHaveBeenCalled();
+    act(() => useWorkbenchUiStore.getState().setActiveActivity("conversations"));
+    expect(panel.hidden).toBe(false);
+    expect(panel.style.width).toBe("320px");
+    expect(leftToggle().disabled).toBe(false);
+  });
+
+  it("clears pending and visible hover previews on page changes while preserving the collapsed preference", async () => {
+    vi.useFakeTimers();
+    try {
+      useWorkbenchUiStore.setState({ isProjectNavigatorOpen: false });
+      const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+      act(() => root?.render(<TooltipProvider><AppShell agentClient={new MockAgentClient()}
+        filePanel={null} mainContent={null} projectNavigator={<div>对话列表</div>} /></TooltipProvider>));
+      await act(async () => Promise.resolve());
+      const hover = (): void => { act(() => {
+        container.querySelector('[data-navigator-hover-edge]')?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      }); };
+      hover();
+      act(() => useWorkbenchUiStore.getState().setActiveActivity("settings"));
+      act(() => { vi.advanceTimersByTime(200); });
+      expect(container.querySelector('[data-navigator-peek]')).toBeNull();
+      act(() => useWorkbenchUiStore.getState().setActiveActivity("conversations"));
+      hover();
+      act(() => { vi.advanceTimersByTime(200); });
+      expect(container.querySelector('[data-navigator-peek]')).not.toBeNull();
+      act(() => useWorkbenchUiStore.getState().setActiveActivity("tasks"));
+      act(() => useWorkbenchUiStore.getState().setActiveActivity("conversations"));
+      expect(container.querySelector('[data-navigator-peek]')).toBeNull();
+      expect(useWorkbenchUiStore.getState().isProjectNavigatorOpen).toBe(false);
+      expect(container.querySelector('[aria-label="展开对话列表"]')).not.toBeNull();
+    } finally { vi.useRealTimers(); }
   });
 });

@@ -81,19 +81,21 @@ export function AppShell({
   );
   const [navigatorPeek, setNavigatorPeek] = useState(false);
   const [previousNavigatorOpen, setPreviousNavigatorOpen] = useState(isProjectNavigatorOpen);
+  const [previousActivity, setPreviousActivity] = useState(activeActivity);
   const peekTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelPeekTimer = (): void => {
     if (peekTimer.current !== null) clearTimeout(peekTimer.current);
     peekTimer.current = null;
   };
-  if (previousNavigatorOpen !== isProjectNavigatorOpen) {
+  if (previousNavigatorOpen !== isProjectNavigatorOpen || previousActivity !== activeActivity) {
     setPreviousNavigatorOpen(isProjectNavigatorOpen);
+    setPreviousActivity(activeActivity);
     setNavigatorPeek(false);
   }
   useEffect(() => {
     cancelPeekTimer();
     return cancelPeekTimer;
-  }, [isProjectNavigatorOpen]);
+  }, [isProjectNavigatorOpen, activeActivity]);
   const scheduleNavigatorPeek = (visible: boolean): void => {
     cancelPeekTimer();
     if (isProjectNavigatorOpen) return;
@@ -168,7 +170,7 @@ export function AppShell({
   }, [uiFontSize, chatFontSize, codeFontSize]);
 
   const isConversationWorkspace = activeActivity === "conversations";
-  const canShowProjectNavigator = activeActivity !== "schedules";
+  const canShowProjectNavigator = isConversationWorkspace;
   const activeSettingsWorkspaceTarget = resolveActiveSettingsWorkspaceTarget(
     activeActivity,
     settingsSection,
@@ -203,12 +205,12 @@ export function AppShell({
     width: `${projectNavigatorWidth}px`,
   } as CSSProperties;
   const conversationTabsLeadingWidth = 48 + WORKBENCH_MAIN_LEFT_INSET
-    + (isProjectNavigatorOpen && canShowProjectNavigator
+    + (isProjectNavigatorOpen
       ? projectNavigatorWidth + WORKBENCH_NAVIGATOR_TO_MAIN_GAP
       : 0)
     - TITLEBAR_LEFT_CONTROL_WIDTH;
 
-  const accent = isConversationWorkspace ? projectAccent(activeProject, projects) : null;
+  const accent = projectAccent(activeProject, projects);
   const accentStyle = accent === null ? undefined : {
     "--app-project-accent-start": accent[0],
     "--app-project-accent-end": accent[1],
@@ -242,7 +244,7 @@ export function AppShell({
         })}
         {...(onMoveConversationTab === undefined ? {} : { onMoveConversationTab })}
         canToggleFilePanel={canShowFileWorkspace}
-        showProjectNavigatorControl={canShowProjectNavigator}
+        canToggleProjectNavigator={canShowProjectNavigator}
       />
       <div
         className="workbench-grid relative"

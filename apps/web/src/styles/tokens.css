@@ -62,7 +62,7 @@
   --app-primary-action: #5175b0;
   --app-primary-action-foreground: #ffffff;
   --app-border: #393b40;
-  --app-canvas: #2b2d30;
+  --app-canvas: #26282c;
   --app-destructive: #ef4444;
   --app-destructive-foreground: #ffffff;
   --app-find-active-bg: rgba(251, 146, 60, 0.72);
@@ -74,8 +74,8 @@
   --app-muted: #25262b;
   --app-muted-foreground: #b4b8c0;
   --app-subtle-foreground: #9399a5;
-  --app-panel: #1e1f22;
-  --app-tooltip-background: #2b2d30;
+  --app-panel: #191a1c;
+  --app-tooltip-background: var(--app-canvas);
   --app-panel-subtle: #25262b;
   --app-selection: #2e4369;
   --app-selection-border: #526fa0;
