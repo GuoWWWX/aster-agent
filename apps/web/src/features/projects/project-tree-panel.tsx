@@ -283,7 +283,6 @@ export function ProjectTreePanel({
       >
         <div className="project-tree-panel__heading-row">
           <div>
-            <p className="panel-eyebrow">工作区文件</p>
             <h2 id="project-tree-heading">
               {tree.activeProject?.name ?? "文件"}
             </h2>

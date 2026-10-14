@@ -345,7 +345,6 @@ export function ConfigurationWorkspaceTreePanel({
       <header className="project-tree-panel__header">
         <div className="project-tree-panel__heading-row">
           <div>
-            <p className="panel-eyebrow">工作区文件</p>
             <h2 id="configuration-workspace-tree-heading" title={target.title}>{target.title}</h2>
           </div>
         </div>
