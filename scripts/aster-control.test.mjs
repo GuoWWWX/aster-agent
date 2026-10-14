@@ -55,3 +55,66 @@ test("CLI rejects invalid commands and safe errors never include the connection 
   await writeFile(connection, JSON.stringify({ schemaVersion: 1, url: "https://remote.test", token: "secret" }));
   await assert.rejects(runControl(["--connection", connection, "list"]), /Invalid local control/);
 }));
+
+test("CLI verify creates a conversation, observes creation and both Runs, then checks saved history", async () => fixture(async (connection) => {
+  const calls = [];
+  const output = [];
+  const messages = [];
+  const frame = (data) => `event: conversation\ndata: ${JSON.stringify(data)}\n\n`;
+  const stream = 'event: ready\ndata: {}\n\n'
+    + frame({ type: "conversation.updated", conversation: { id: "other" } })
+    + frame({ type: "conversation.updated", conversation: { id: "c" } })
+    + [1, 2].map((round) => frame({ type: "run.started", conversationId: "c", runId: `r${round}` })
+      + frame({ type: "assistant.delta", conversationId: "c", runId: `r${round}`, delta: `answer ${round}` })
+      + frame({ type: "run.finished", conversationId: "c", runId: `r${round}`, status: "completed" })).join("");
+  const fetchControl = async (url, options) => {
+    calls.push(url.endsWith("events") ? "subscribe" : JSON.parse(options.body).command);
+    if (url.endsWith("events")) return new Response(stream);
+    const request = JSON.parse(options.body);
+    if (request.command === "conversations.create") {
+      assert.deepEqual(request.input, { projectId: "project" });
+      return new Response('{"id":"c"}');
+    }
+    if (request.command === "messages.send") {
+      assert.equal(request.input.conversationId, "c");
+      messages.push({ kind: "message", role: "user", content: request.input.content },
+        { kind: "message", role: "assistant", content: `answer ${messages.length / 2 + 1}` });
+      return new Response(JSON.stringify({ kind: "started", runId: `r${messages.length / 2}` }));
+    }
+    return new Response(JSON.stringify({ items: messages }));
+  };
+  assert.equal(await runControl(["--connection", connection, "verify", '{"projectId":"project"}'], { fetchControl, out: (value) => output.push(value) }), 0);
+  assert.deepEqual(calls, ["subscribe", "conversations.create", "messages.send", "messages.send", "conversations.read"]);
+  assert.deepEqual(output.at(-1), { type: "verification.finished", ok: true, conversationId: "c", runIds: ["r1", "r2"], rounds: 2, userMessages: 2, assistantMessages: 2 });
+}));
+
+test("CLI verify stops at a failed Run and does not submit another message", async () => fixture(async (connection) => {
+  const calls = [];
+  const output = [];
+  const fetchControl = async (url, options) => {
+    if (url.endsWith("events")) return new Response('event: ready\ndata: {}\n\nevent: conversation\ndata: {"type":"conversation.updated","conversation":{"id":"c"}}\n\nevent: conversation\ndata: {"type":"run.finished","conversationId":"c","runId":"r","status":"failed"}\n\n');
+    const command = JSON.parse(options.body).command;
+    calls.push(command);
+    return new Response(JSON.stringify(command === "conversations.create" ? { id: "c" } : { kind: "started", runId: "r" }));
+  };
+  assert.equal(await runControl(["--connection", connection, "verify"], { fetchControl, out: (value) => output.push(value) }), 1);
+  assert.deepEqual(calls, ["conversations.create", "messages.send"]);
+  assert.deepEqual(output.at(-1), { type: "verification.finished", ok: false, conversationId: "c", runIds: ["r"], failedRound: 1, status: "failed" });
+}));
+
+test("CLI verify rejects missing persisted history even when both streamed Runs complete", async () => fixture(async (connection) => {
+  let round = 0;
+  const frame = (data) => `event: conversation\ndata: ${JSON.stringify(data)}\n\n`;
+  const stream = 'event: ready\ndata: {}\n\n' + frame({ type: "conversation.updated", conversation: { id: "c" } })
+    + [1, 2].map((index) => frame({ type: "run.started", conversationId: "c", runId: `r${index}` })
+      + frame({ type: "assistant.delta", conversationId: "c", runId: `r${index}`, delta: "answer" })
+      + frame({ type: "run.finished", conversationId: "c", runId: `r${index}`, status: "completed" })).join("");
+  const fetchControl = async (url, options) => {
+    if (url.endsWith("events")) return new Response(stream);
+    const { command } = JSON.parse(options.body);
+    if (command === "conversations.create") return new Response('{"id":"c"}');
+    if (command === "messages.send") return new Response(JSON.stringify({ kind: "started", runId: `r${++round}` }));
+    return new Response('{"items":[]}');
+  };
+  await assert.rejects(runControl(["--connection", connection, "verify"], { fetchControl, out: () => {} }), /Saved history/);
+}));
