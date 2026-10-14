@@ -106,8 +106,8 @@
 }
 
 .app-titlebar__conversation-tab[data-active="true"] {
-  border-color: var(--app-selection-border);
-  background: var(--app-selection);
+  border-color: var(--app-chrome-selection-border);
+  background: var(--app-chrome-selection);
   color: var(--app-selection-foreground);
   box-shadow: var(--app-selection-shadow);
 }

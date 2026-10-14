@@ -54,7 +54,7 @@ export function ActivityBar({ onOpenGlobalSearch }: { onOpenGlobalSearch?: () =>
             <IconButton
               key={item.id}
               aria-pressed={isActive}
-              className={isActive ? undefined : "hover:bg-[var(--app-navigation-hover)]"}
+              className={isActive ? "bg-[var(--app-chrome-selection)] ring-[var(--app-chrome-selection-border)]" : "hover:bg-[var(--app-navigation-hover)]"}
               label={item.label}
               size="activity"
               variant={isActive ? "selected" : "quiet"}
@@ -87,7 +87,7 @@ export function ActivityBar({ onOpenGlobalSearch }: { onOpenGlobalSearch?: () =>
         </IconButton>
         <IconButton
           aria-pressed={activeActivity === "settings"}
-          className={activeActivity === "settings" ? undefined : "hover:bg-[var(--app-navigation-hover)]"}
+          className={activeActivity === "settings" ? "bg-[var(--app-chrome-selection)] ring-[var(--app-chrome-selection-border)]" : "hover:bg-[var(--app-navigation-hover)]"}
           label="设置"
           size="activity"
           variant={activeActivity === "settings" ? "selected" : "quiet"}
