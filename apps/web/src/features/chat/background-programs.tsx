@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState, type ReactElement } from "react";
 import type { BackgroundCommand } from "@agent/protocol";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover.js";
 import type { AgentClient } from "../../runtime/index.js";
+import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 
 export function programPresentation(command: string, name: string | null): { label: string; icon: IconifyIcon | null } {
   const text = `${name ?? ""} ${command}`;
@@ -28,6 +29,8 @@ export function BackgroundPrograms({ agentClient, conversationId }: { agentClien
   const [commands, setCommands] = useState<BackgroundCommand[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [stopping, setStopping] = useState<string | null>(null);
+  const openCommand = useWorkbenchUiStore(state => state.openBackgroundCommandView);
+  const hasRunningCommands = commands.some(command => command.status === "running");
   const refresh = useCallback(async (signal: AbortSignal): Promise<void> => {
     try {
       const values = await agentClient.listBackgroundCommands({ conversationId });
@@ -40,9 +43,9 @@ export function BackgroundPrograms({ agentClient, conversationId }: { agentClien
     const unsubscribe = agentClient.onConversationRunEvent((event) => {
       if (event.type === "tool.completed" || event.type === "run.finished") void refresh(controller.signal);
     });
-    const timer = open ? window.setInterval(() => void refresh(controller.signal), 2000) : undefined;
+    const timer = open || hasRunningCommands ? window.setInterval(() => void refresh(controller.signal), 2000) : undefined;
     return () => { controller.abort(); unsubscribe(); if (timer !== undefined) window.clearInterval(timer); };
-  }, [agentClient, open, refresh]);
+  }, [agentClient, open, hasRunningCommands, refresh]);
   const stop = async (commandId: string): Promise<void> => {
     setStopping(commandId); setError(null);
     try {
@@ -62,11 +65,15 @@ export function BackgroundPrograms({ agentClient, conversationId }: { agentClien
         {commands.map((command) => {
           const presentation = programPresentation(command.command, command.serviceName);
           return <li key={command.commandId} className="flex items-start gap-2 border-t border-[var(--app-border)] px-2 py-3">
-            <span className="mt-0.5 shrink-0 text-[var(--app-muted-foreground)]">{presentation.icon ? <Icon aria-hidden="true" icon={presentation.icon} width={18} height={18} /> : <Terminal aria-hidden="true" size={18} />}</span>
-            <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><strong className="min-w-0 truncate">{command.serviceName || presentation.label}</strong><span className={command.status === "running" ? "shrink-0 text-[var(--app-accent)]" : "shrink-0 text-[var(--app-muted-foreground)]"}>{statusLabels[command.status]}</span></div>
-              <p className="my-1 truncate font-mono text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]" title={command.command}>{command.command}</p>
-              <p className="m-0 truncate text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]" title={command.workingDirectory}>{command.workingDirectory} · {new Date(command.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}{command.exitCode === null ? "" : ` · 退出 ${command.exitCode}`}</p>
-            </div>
+            <button type="button" aria-label={`查看 ${command.serviceName || presentation.label} 的执行情况`} title="在右侧工作区查看输出"
+              onClick={() => { openCommand({ conversationId, commandId: command.commandId, name: command.serviceName || presentation.label }); setOpen(false); }}
+              className="flex min-w-0 flex-1 items-start gap-2 rounded-[var(--app-radius-small)] bg-transparent text-left hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] [font:inherit]">
+              <span className="mt-0.5 shrink-0 text-[var(--app-muted-foreground)]">{presentation.icon ? <Icon aria-hidden="true" icon={presentation.icon} width={18} height={18} /> : <Terminal aria-hidden="true" size={18} />}</span>
+              <span className="min-w-0 flex-1"><span className="flex items-center gap-2"><strong className="min-w-0 truncate">{command.serviceName || presentation.label}</strong><span className={command.status === "running" ? "shrink-0 text-[var(--app-accent)]" : "shrink-0 text-[var(--app-muted-foreground)]"}>{statusLabels[command.status]}</span></span>
+                <span className="my-1 block truncate font-mono text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]" title={command.command}>{command.command}</span>
+                <span className="block truncate text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]" title={command.workingDirectory}>{command.workingDirectory} · {new Date(command.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}{command.exitCode === null ? "" : ` · 退出 ${command.exitCode}`}</span>
+              </span>
+            </button>
             {command.status === "running" ? <button aria-label={`停止 ${command.serviceName || presentation.label}`} title="停止程序及其子进程" type="button" disabled={stopping !== null} onClick={() => void stop(command.commandId)} className="rounded p-1.5 text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)] hover:text-[var(--app-foreground)] disabled:opacity-40">{stopping === command.commandId ? <LoaderCircle aria-hidden="true" className="animate-spin" size={14} /> : <Square aria-hidden="true" size={14} />}</button> : null}
           </li>;
         })}

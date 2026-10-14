@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { UserQuestionService } from "./user-question-service.js";
 import { UserQuestionTool } from "./user-question-tool.js";
-import type { BackgroundCommand, AnswerUserQuestionInput, UserQuestion } from "@agent/protocol";
+import type { BackgroundCommand, BackgroundCommandOutput, ReadBackgroundCommandInput, AnswerUserQuestionInput, UserQuestion } from "@agent/protocol";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { interrupt, isGraphInterrupt } from "@langchain/langgraph";
@@ -5842,6 +5842,9 @@ export class AgentRuntime {
   public answerUserQuestion(input: AnswerUserQuestionInput, emit: RunEventEmitter): UserQuestion { return this.userQuestions.answer(input, emit); }
   public markUserQuestionViewed(id: string, emit: RunEventEmitter): UserQuestion { return this.userQuestions.markViewed(id, emit); }
   public listBackgroundCommands(conversationId: string): BackgroundCommand[] { return this.tools.listConversationCommands(this.commandOwners(conversationId)); }
+  public readBackgroundCommand(input: ReadBackgroundCommandInput): BackgroundCommandOutput {
+    return this.tools.readConversationCommand(input.commandId, this.commandOwners(input.conversationId), input.maxChars);
+  }
   public stopBackgroundCommand(conversationId: string, commandId: string): Promise<BackgroundCommand> { return this.tools.stopConversationCommand(commandId, this.commandOwners(conversationId)); }
   private commandOwners(conversationId: string): string[] {
     this.database.getConversation(conversationId);

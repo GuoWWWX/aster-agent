@@ -101,6 +101,24 @@ describe("result viewed IPC notification", () => {
     expect(scheduledTasks.run).toHaveBeenCalledExactlyOnceWith(scheduledTask.id);
     expect(scheduledTasks.delete).toHaveBeenCalledExactlyOnceWith(scheduledTask.id);
   });
+  it("validates bounded command output reads and rejects untrusted senders", async () => {
+    const read = vi.fn(() => ({ command: { commandId: conversation.id, conversationId: conversation.id, command: "echo ok", mode: "batch", serviceName: null,
+      workingDirectory: ".", startedAt: "2026-10-14T01:00:00Z", completedAt: "2026-10-14T01:00:01Z", status: "completed", exitCode: 0 },
+      stdout: "ok", stderr: "", error: null, timedOut: false, truncated: false }));
+    dependencies.agentRuntime = { readBackgroundCommand: read } as unknown as typeof dependencies.agentRuntime;
+    dispose?.();
+    const trustedWindow = { isDestroyed: () => false, on: vi.fn(), webContents: { send } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(trustedWindow);
+    dispose = registerMainIpcHandlers(() => trustedWindow, dependencies, { resumePendingMessages: false });
+    const handler = electron.handle.mock.calls.filter(([name]) => name === IPC_CHANNELS.backgroundCommandRead).at(-1)![1];
+    const frame = {}; const trusted = { sender: { mainFrame: frame }, senderFrame: frame } as IpcMainInvokeEvent;
+    const input = { conversationId: conversation.id, commandId: conversation.id };
+    await expect(handler(trusted, input)).resolves.toMatchObject({ stdout: "ok" });
+    await expect(handler(trusted, { ...input, maxChars: 64001 })).rejects.toThrow();
+    electron.fromWebContents.mockReturnValueOnce(undefined);
+    await expect(handler(trusted, input)).rejects.toThrow();
+    expect(read).toHaveBeenCalledExactlyOnceWith(input);
+  });
 
   it("validates deletion inputs and trusted senders and unregisters both deletion handlers", async () => {
     const frame = {};

@@ -1,5 +1,5 @@
 import type { AnswerUserQuestionInput, UserQuestion } from "./user-question.js";
-import type { BackgroundCommand, StopBackgroundCommandInput } from "./background-command.js";
+import type { BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "./background-command.js";
 import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "./scheduled-task.js";
 import type {
   ApproveToolChangeInput,
@@ -160,6 +160,7 @@ export interface DesktopBridge {
   answerUserQuestion(input: AnswerUserQuestionInput): Promise<UserQuestion>;
   markUserQuestionViewed(input: { questionId: string }): Promise<UserQuestion>;
   listBackgroundCommands(input: ConversationReferenceInput): Promise<BackgroundCommand[]>;
+  readBackgroundCommand(input: ReadBackgroundCommandInput): Promise<BackgroundCommandOutput>;
   stopBackgroundCommand(input: StopBackgroundCommandInput): Promise<BackgroundCommand>;
   listScheduledTasks(): Promise<ScheduledTask[]>;
   saveScheduledTask(input: SaveScheduledTaskInput): Promise<ScheduledTask>;

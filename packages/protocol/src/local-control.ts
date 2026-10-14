@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { approveToolChangeInputSchema, conversationIdSchema, conversationMessageDeliveryModeSchema, conversationModelSelectionSchema, conversationReferenceInputSchema, conversationTimelinePageInputSchema, renameConversationInputSchema, saveModelConfigurationInputSchema, setConversationArchivedInputSchema, setConversationPermissionModeInputSchema } from "./conversation.js";
 import { answerUserQuestionInputSchema } from "./user-question.js";
-import { stopBackgroundCommandInputSchema } from "./background-command.js";
+import { stopBackgroundCommandInputSchema, readBackgroundCommandInputSchema } from "./background-command.js";
 
 export const localControlCommandSchema = z.discriminatedUnion("command", [
   z.object({ command: z.literal("projects.list"), input: z.object({}).strict() }).strict(),
@@ -12,6 +12,7 @@ export const localControlCommandSchema = z.discriminatedUnion("command", [
   z.object({ command: z.literal("user_questions.answer"), input: answerUserQuestionInputSchema }).strict(),
   z.object({ command: z.literal("approvals.resolve"), input: approveToolChangeInputSchema }).strict(),
   z.object({ command: z.literal("background_commands.list"), input: conversationReferenceInputSchema }).strict(),
+  z.object({ command: z.literal("background_commands.read"), input: readBackgroundCommandInputSchema }).strict(),
   z.object({ command: z.literal("background_commands.stop"), input: stopBackgroundCommandInputSchema }).strict(),
   z.object({ command: z.literal("conversations.set_permission"), input: setConversationPermissionModeInputSchema }).strict(),
   z.object({ command: z.literal("conversations.rename"), input: renameConversationInputSchema }).strict(),

@@ -84,6 +84,7 @@ import {
 import { ProjectTreePanel } from "../projects/project-tree-panel.js";
 import { ProjectImageViewer } from "./project-image-viewer.js";
 import { TerminalWorkspace } from "./terminal-workspace.js";
+import { BackgroundCommandWorkspace } from "./background-command-workspace.js";
 import {
   retainedWorkspaceCacheIds,
   WORKSPACE_CACHE_SWEEP_INTERVAL_MS,
@@ -147,7 +148,8 @@ type ManagedBrowserTab = ToolTabBase & {
   url: string;
 };
 
-type ToolTab = GitReviewTab | TerminalTab | ManagedBrowserTab;
+type BackgroundCommandTab = ToolTabBase & { kind: "background-command"; conversationId: string; commandId: string };
+type ToolTab = GitReviewTab | TerminalTab | ManagedBrowserTab | BackgroundCommandTab;
 
 type SidebarTab =
   | FileTab
@@ -624,6 +626,8 @@ export function RightSidebarWorkspace({
   const agentProfiles = useAgentDirectoryStore((state) => state.agents);
   const teams = useAgentDirectoryStore((state) => state.teams);
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
+  const backgroundCommandViewRequest = useWorkbenchUiStore(state => state.backgroundCommandViewRequest);
+  const handledBackgroundCommandRequest = useRef<string | null>(null);
   const activeSessionId = activeSession?.id ?? null;
   const sidebarVisible = useWorkbenchUiStore((state) => activeActivity === "settings"
     ? state.isSettingsFilePanelOpen
@@ -1009,6 +1013,19 @@ export function RightSidebarWorkspace({
     teamMemberOpenRequest,
     updateOpenChatIds,
   ]);
+
+  useEffect(() => {
+    const request = backgroundCommandViewRequest;
+    if (request === null || handledBackgroundCommandRequest.current === request.requestId
+      || (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId))) return;
+    handledBackgroundCommandRequest.current = request.requestId;
+    const id = `background-command:${request.commandId}`;
+    setToolTabs(current => current.some(tab => tab.id === id)
+      ? current.map(tab => tab.id === id ? { ...tab, lastAccessedAt: Date.now() } : tab)
+      : [...current, { id, kind: "background-command", conversationId: request.conversationId,
+        commandId: request.commandId, name: `运行：${request.name}`, lastAccessedAt: Date.now() }]);
+    setActiveTabForCurrentSession(id); setFilePanelOpen(true); setIsFileBrowserOpen(false);
+  }, [activeSessionId, backgroundCommandViewRequest, openChatIds, setActiveTabForCurrentSession, setFilePanelOpen]);
 
   useEffect(() => {
     return agentClient.onWorkspaceTerminalTabOpenRequested((request) => {
@@ -1805,6 +1822,7 @@ export function RightSidebarWorkspace({
       if (
         retainedToolTabIds.has(tab.id)
         || tab.kind === "git-review"
+        || tab.kind === "background-command"
         || tab.session === null
         || releasingToolTabIdsRef.current.has(tab.id)
       ) {
@@ -2338,7 +2356,7 @@ export function RightSidebarWorkspace({
                       )
                     ) : tab.kind === "git-review" ? (
                       <SquareCheckBig aria-hidden="true" size={14} />
-                    ) : tab.kind === "terminal" ? (
+                    ) : tab.kind === "terminal" || tab.kind === "background-command" ? (
                       <Terminal aria-hidden="true" size={14} />
                     ) : tab.kind === "managed-browser" ? (
                       <Globe2 aria-hidden="true" size={14} />
@@ -2470,6 +2488,9 @@ export function RightSidebarWorkspace({
                         }
                       : null}
                   />
+                ) : tab.kind === "background-command" ? (
+                  <BackgroundCommandWorkspace agentClient={agentClient} conversationId={tab.conversationId} commandId={tab.commandId}
+                    active={isActive && sidebarVisible && activeActivity === "conversations"} />
                 ) : tab.kind === "terminal" ? (
                   <TerminalWorkspace
                     active={isActive}
@@ -2703,6 +2724,7 @@ export function RightSidebarWorkspace({
               onToggleTree={() => setIsTreeCollapsed((current) => !current)}
             />
           ) : activeTab?.kind === "git-review"
+            || activeTab?.kind === "background-command"
             || activeTab?.kind === "terminal"
             || activeTab?.kind === "managed-browser" ? null : (
             <RightSidebarEmptyState

@@ -50,6 +50,23 @@ async function createLargeFixture(fileCount = 400) {
 }
 
 describe("ProjectToolRegistry", () => {
+  it("reads completed output with Unicode, stderr, failure status and a bounded recent tail", async () => {
+    const { project, tools } = await createFixture(); const conversationId = crypto.randomUUID();
+    const owner = { conversationId, conversationTitle: "输出检查", runId: crypto.randomUUID() };
+    const signal = new AbortController().signal;
+    try {
+      const prepared = await tools.execute("run_command", JSON.stringify({ command: "node -e \"process.stdout.write('后台输出中文\\nabcdefghijklmnopqrstuvwxyz\\n'); process.stderr.write('problem\\n'); process.exit(3)\"" }), project.id, signal, owner);
+      if (prepared.kind !== "command") throw new Error("Expected command proposal.");
+      const result = await tools.executePreparedCommand(prepared.command, project.id, signal, owner);
+      const commandId = (JSON.parse(result.content) as { value: { commandId: string } }).value.commandId;
+      const full = tools.readConversationCommand(commandId, [conversationId]);
+      expect(full.stdout).toContain("后台输出中文"); expect(full.stderr).toContain("problem");
+      expect(full.command.status).toBe("failed"); expect(full.command.exitCode).toBeGreaterThan(0);
+      const tail = tools.readConversationCommand(commandId, [conversationId], 8);
+      expect(tail.stdout.length).toBeLessThanOrEqual(8); expect(tail.stdout).toBe(full.stdout.slice(-8));
+      expect(tail.truncated).toBe(true);
+    } finally { tools.dispose(); }
+  });
   it("exposes owned programs to the UI, rejects another conversation's stop and terminates a child process tree", async () => {
     if (process.platform !== "win32") return;
     const { project, tools } = await createFixture(); const conversationId = crypto.randomUUID(); const otherId = crypto.randomUUID();
@@ -65,6 +82,8 @@ describe("ProjectToolRegistry", () => {
       commandId = (JSON.parse(started.content) as { value: { commandId: string } }).value.commandId;
       expect(tools.listConversationCommands([conversationId])).toContainEqual(expect.objectContaining({ commandId, serviceName: "Spring Boot fixture", status: "running" }));
       expect(tools.listConversationCommands([otherId])).toEqual([]);
+      expect(() => tools.readConversationCommand(commandId!, [otherId])).toThrow("当前对话");
+      expect(tools.readConversationCommand(commandId, [conversationId])).toMatchObject({ command: { commandId, status: "running" }, stdout: "", stderr: "" });
       await expect(tools.stopConversationCommand(commandId, [otherId])).rejects.toThrow("当前对话");
       let childPid = 0;
       await vi.waitFor(async () => { childPid = Number((await readFile(path.join(project.rootPath, "child.pid"), "utf8")).trim()); expect(childPid).toBeGreaterThan(0); }, { timeout: 8000 });
@@ -1474,6 +1493,9 @@ describe("ProjectToolRegistry", () => {
       signal,
       owner,
     );
+    // stop_command returns a receipt before exit; wait before removing the working directory.
+    await tools.execute("wait_for_commands", JSON.stringify({ commandIds: [payload.value.commandId], timeoutMs: 5000 }), project.id, signal, owner);
+    tools.dispose();
   });
 
   it("keeps independent read tools responsive on a large workspace", async () => {

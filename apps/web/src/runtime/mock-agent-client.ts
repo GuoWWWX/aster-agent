@@ -1,4 +1,4 @@
-import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput } from "@agent/protocol";
+import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
 import { saveScheduledTaskInputSchema, type ScheduledTask, type SaveScheduledTaskInput, type ScheduledTaskReference } from "@agent/protocol";
 import {
   createSkillMarkdown,
@@ -1554,6 +1554,7 @@ export class MockAgentClient implements AgentClient {
   public answerUserQuestion(input: AnswerUserQuestionInput): Promise<UserQuestion> { return Promise.reject(new Error(`演示环境中没有提问 ${input.questionId}。`)); }
   public markUserQuestionViewed(input: { questionId: string }): Promise<UserQuestion> { return Promise.reject(new Error(`演示环境中没有提问 ${input.questionId}。`)); }
   public listBackgroundCommands(input: ConversationReferenceInput): Promise<BackgroundCommand[]> { void input; return Promise.resolve([]); }
+  public readBackgroundCommand(input: ReadBackgroundCommandInput): Promise<BackgroundCommandOutput> { return Promise.reject(new Error(`演示环境中没有后台程序 ${input.commandId}。`)); }
   public stopBackgroundCommand(input: StopBackgroundCommandInput): Promise<BackgroundCommand> { return Promise.reject(new Error(`演示环境中没有后台程序 ${input.commandId}。`)); }
 
   public listConversations(): Promise<ConversationSummary[]> {

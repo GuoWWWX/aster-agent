@@ -1,4 +1,4 @@
-import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput } from "@agent/protocol";
+import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
 import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
 import type {
   CapabilitySet,
@@ -152,6 +152,7 @@ export interface AgentClient {
   answerUserQuestion(input: AnswerUserQuestionInput): Promise<UserQuestion>;
   markUserQuestionViewed(input: { questionId: string }): Promise<UserQuestion>;
   listBackgroundCommands(input: ConversationReferenceInput): Promise<BackgroundCommand[]>;
+  readBackgroundCommand(input: ReadBackgroundCommandInput): Promise<BackgroundCommandOutput>;
   stopBackgroundCommand(input: StopBackgroundCommandInput): Promise<BackgroundCommand>;
   listScheduledTasks(): Promise<ScheduledTask[]>;
   saveScheduledTask(input: SaveScheduledTaskInput): Promise<ScheduledTask>;

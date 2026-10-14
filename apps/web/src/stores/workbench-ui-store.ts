@@ -80,6 +80,8 @@ export function clampWorkbenchPanelWidth(
 }
 
 type WorkbenchUiState = {
+  backgroundCommandViewRequest: { requestId: string; conversationId: string; commandId: string; name: string } | null;
+  openBackgroundCommandView: (input: { conversationId: string; commandId: string; name: string }) => void;
   uiFontSize: number;
   chatFontSize: number;
   codeFontSize: number;
@@ -129,6 +131,11 @@ type WorkbenchUiState = {
  * tasks, and agent execution will be queried from AgentClient when available.
  */
 export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
+  backgroundCommandViewRequest: null,
+  openBackgroundCommandView: (input) => set(state => ({
+    backgroundCommandViewRequest: { ...input, requestId: crypto.randomUUID() },
+    filePanelOpenByConversationId: { ...state.filePanelOpenByConversationId, [input.conversationId]: true },
+  })),
   uiFontSize: DEFAULT_APPLICATION_SETTINGS.appearance.uiFontSize,
   chatFontSize: DEFAULT_APPLICATION_SETTINGS.appearance.chatFontSize,
   codeFontSize: DEFAULT_APPLICATION_SETTINGS.appearance.codeFontSize,

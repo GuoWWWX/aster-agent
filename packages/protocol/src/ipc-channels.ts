@@ -7,6 +7,7 @@ export const IPC_CHANNELS = {
   userQuestionAnswer: "user_question.answer",
   userQuestionMarkViewed: "user_question.mark_viewed",
   backgroundCommandList: "background_command.list",
+  backgroundCommandRead: "background_command.read",
   backgroundCommandStop: "background_command.stop",
   scheduledTaskList: "scheduled_task.list",
   scheduledTaskSave: "scheduled_task.save",

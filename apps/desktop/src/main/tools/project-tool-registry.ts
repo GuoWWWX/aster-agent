@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
-import { backgroundCommandSchema, type BackgroundCommand } from "@agent/protocol";
+import { backgroundCommandSchema, type BackgroundCommand, type BackgroundCommandOutput } from "@agent/protocol";
 import { sanitizeSensitiveText } from "../errors/agent-error.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { TextDecoder } from "node:util";
+import { TextDecoder, stripVTControlCharacters } from "node:util";
 import {
   APPLICATION_DISPLAY_NAME,
   DEFAULT_TERMINAL_CONFIGURATION,
@@ -1538,6 +1538,15 @@ export class ProjectToolRegistry {
     if (session === undefined || !conversationIds.includes(session.conversationId)) throw new Error("找不到当前对话的后台程序。");
     if (session.status === "running") { session.terminate(true); await session.completion; }
     return this.backgroundCommandSummary(session);
+  }
+  public readConversationCommand(commandId: string, conversationIds: readonly string[], maxChars = 24000): BackgroundCommandOutput {
+    const session = this.commandSessions.get(commandId);
+    if (session === undefined || !conversationIds.includes(session.conversationId)) throw new Error("找不到当前对话的后台程序。");
+    const stdout = stripVTControlCharacters(sanitizeSensitiveText(decodeTerminalOutput(Buffer.concat(session.stdoutChunks), session.outputEncoding)));
+    const stderr = stripVTControlCharacters(sanitizeSensitiveText(decodeTerminalOutput(Buffer.concat(session.stderrChunks), session.outputEncoding)));
+    return { command: this.backgroundCommandSummary(session), stdout: stdout.slice(-maxChars), stderr: stderr.slice(-maxChars),
+      error: session.error === null ? null : sanitizeSensitiveText(session.error), timedOut: session.timedOut,
+      truncated: session.truncated || stdout.length > maxChars || stderr.length > maxChars };
   }
   private backgroundCommandSummary(session: CommandSession): BackgroundCommand {
     return backgroundCommandSchema.parse({ commandId: session.commandId, conversationId: session.conversationId,

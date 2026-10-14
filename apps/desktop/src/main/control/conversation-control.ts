@@ -1,5 +1,5 @@
 import {
-  backgroundCommandSchema, userQuestionSchema,
+  backgroundCommandSchema, backgroundCommandOutputSchema, userQuestionSchema,
   conversationListResponseSchema, conversationMessageSubmissionSchema,
   conversationSummarySchema, conversationTimelinePageSchema, projectListResponseSchema, modelRuntimeStatusSchema,
   type ConversationRunEvent, type LocalControlCommand,
@@ -18,7 +18,7 @@ export class ConversationControl {
   public constructor(
     private readonly database: Pick<AgentDatabase, "listProjects" | "listConversationHierarchy" | "getConversation" | "isTeamWorkItemExecutionTreeConversation">,
     private readonly lifecycle: Pick<ConversationLifecycleService, "createConversation" | "setConversationPermissionMode" | "setConversationModelSelection" | "renameConversation" | "setConversationArchived">,
-    private readonly runtime: Pick<AgentRuntime, "sendMessage" | "cancelConversation" | "listUserQuestions" | "answerUserQuestion" | "approveToolChange" | "listBackgroundCommands" | "stopBackgroundCommand">,
+    private readonly runtime: Pick<AgentRuntime, "sendMessage" | "cancelConversation" | "listUserQuestions" | "answerUserQuestion" | "approveToolChange" | "listBackgroundCommands" | "readBackgroundCommand" | "stopBackgroundCommand">,
     private readonly projector: Pick<EventProjector, "prepareTimeline" | "listTimelinePage">,
     private readonly settings: Pick<ApplicationSettingsStore, "getConfiguration">,
     private readonly teams: Pick<TeamWorkItemRuntime, "sendExecutionGuidance">,
@@ -48,6 +48,7 @@ export class ConversationControl {
         this.runtime.approveToolChange(command.input);
         return { resolved: true };
       case "background_commands.list": return z.array(backgroundCommandSchema).parse(this.runtime.listBackgroundCommands(command.input.conversationId));
+      case "background_commands.read": return backgroundCommandOutputSchema.parse(this.runtime.readBackgroundCommand(command.input));
       case "background_commands.stop": return backgroundCommandSchema.parse(await this.runtime.stopBackgroundCommand(command.input.conversationId, command.input.commandId));
       case "conversations.set_permission": {
         const conversation = conversationSummarySchema.parse(this.lifecycle.setConversationPermissionMode(command.input.conversationId, command.input.permissionMode));

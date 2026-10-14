@@ -1,5 +1,5 @@
 import { scheduledTaskListSchema, scheduledTaskSchema, saveScheduledTaskIpcArgumentsSchema, scheduledTaskReferenceIpcArgumentsSchema } from "@agent/protocol";
-import { userQuestionSchema, userQuestionReferenceSchema, answerUserQuestionInputSchema, backgroundCommandSchema, stopBackgroundCommandInputSchema } from "@agent/protocol";
+import { userQuestionSchema, userQuestionReferenceSchema, answerUserQuestionInputSchema, backgroundCommandSchema, stopBackgroundCommandInputSchema, backgroundCommandOutputSchema, readBackgroundCommandInputSchema } from "@agent/protocol";
 import type { ScheduledTaskController } from "../schedules/scheduled-task-controller.js";
 import {
   app,
@@ -471,6 +471,11 @@ export function registerMainIpcHandlers(
     getTrustedWindow(event, getMainWindow);
     const [input] = z.tuple([stopBackgroundCommandInputSchema]).parse(args);
     return backgroundCommandSchema.parse(await agentRuntime.stopBackgroundCommand(input.conversationId, input.commandId));
+  });
+  ipcMain.handle(IPC_CHANNELS.backgroundCommandRead, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([readBackgroundCommandInputSchema]).parse(args);
+    return backgroundCommandOutputSchema.parse(agentRuntime.readBackgroundCommand(input));
   });
 
   ipcMain.handle(IPC_CHANNELS.pluginList, (event, ...args: unknown[]) => {
