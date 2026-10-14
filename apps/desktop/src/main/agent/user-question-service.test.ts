@@ -16,7 +16,7 @@ function fixture() {
     list: (id) => [...records.values()].filter((q) => id === undefined || q.conversationId === id || q.displayConversationId === id),
     get: (id) => { const value = records.get(id); if (!value) throw new Error("Missing question"); return value; },
     save: (q) => { records.set(q.id, structuredClone(q)); },
-    delivered: (id, owner) => receipts.has(`${id}:${owner}`), deliver,
+    delivered: (id, owner) => receipts.has(`${id}:${owner}`), validateAttachments: () => undefined, deliver,
   });
   const emit = vi.fn();
   const request = (owner = root.id, toolCallId = randomUUID()) => service.request({ conversationId: owner, runId: randomUUID(), toolCallId,
@@ -48,6 +48,15 @@ describe("UserQuestionService", () => {
     expect(f.deliver.mock.calls.map((call) => call[1])).toEqual([f.child.id, f.root.id, f.root.id]);
     expect(f.records.get(q.id)?.deliveryComplete).toBe(true);
     f.service.resumeUndelivered(f.emit, vi.fn()); expect(f.deliver).toHaveBeenCalledTimes(3); f.close();
+  });
+  it("persists answer attachments and rejects changed attachments during an idempotent retry", () => {
+    const f = fixture(); const q = f.request(f.child.id); const attachmentId = randomUUID();
+    f.deliver.mockImplementationOnce(() => { throw new Error("retry delivery"); });
+    expect(() => f.service.answer({ questionId: q.id, answers: { scope: "参考截图" }, attachmentIds: [attachmentId] }, f.emit)).toThrow("retry delivery");
+    expect(f.records.get(q.id)?.answerAttachmentIds).toEqual([attachmentId]);
+    expect(() => f.service.answer({ questionId: q.id, answers: { scope: "参考截图" }, attachmentIds: [randomUUID()] }, f.emit)).toThrow("回答已提交");
+    expect(f.service.answer({ questionId: q.id, answers: { scope: "参考截图" } }, f.emit).deliveryComplete).toBe(true);
+    expect(f.deliver.mock.calls[1]?.[0].answerAttachmentIds).toEqual([attachmentId]); f.close();
   });
   it("waits for all answers without polling and supports cancellation, timeout and scope checks", async () => {
     const f = fixture(); const first = f.request(); const second = f.request();

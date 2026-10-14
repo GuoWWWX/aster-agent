@@ -1098,6 +1098,12 @@ export class AgentRuntime {
       list: (id) => this.database.listUserQuestions(id),
       get: (id) => this.database.getUserQuestion(id),
       delivered: (id, conversationId) => this.database.wasUserQuestionAnswerDelivered(id, conversationId),
+      validateAttachments: (question, ids) => {
+        if (ids.length === 0) return;
+        if (this.attachments === null) throw new Error("附件服务不可用。");
+        const drafts = new Set(this.database.listDraftConversationAttachments(question.conversationId).map(attachment => attachment.id));
+        if (ids.some(id => !drafts.has(id))) throw new Error("回答附件必须属于发起提问的对话，且尚未发送。");
+      },
       save: (question) => {
         const event = { type: "user_question_updated" as const, payload: { question } };
         if (this.threadLog !== null && this.eventProjector !== null) this.appendWriteAheadThreadLog(question.displayConversationId, event);
@@ -1112,6 +1118,7 @@ export class AgentRuntime {
         const previous = this.database.getLatestRunExecutionSnapshot(conversationId);
         const selection = target.modelSelection ?? (previous?.providerId === null || previous?.providerId === undefined ? null : { providerId: previous.providerId, modelId: previous.modelId, reasoning: previous.reasoning });
         const input: SendConversationMessageInput = { conversationId, content, deliveryMode: "steer", permissionMode: target.permissionMode ?? previous?.permissionMode ?? DEFAULT_PERMISSION_MODE,
+          ...(conversationId !== question.conversationId || (question.answerAttachmentIds?.length ?? 0) === 0 ? {} : { attachmentIds: question.answerAttachmentIds }),
           ...(selection === null ? {} : { providerId: selection.providerId, modelId: selection.modelId, ...(selection.reasoning === null ? {} : { reasoning: selection.reasoning }) }) };
         if (target.teamWorkItemId !== null) {
           if (this.teamWorkItemDispatcher?.deliverQuestionAnswer === undefined) throw new Error("团队提问暂时无法继续，请重试送达。");
