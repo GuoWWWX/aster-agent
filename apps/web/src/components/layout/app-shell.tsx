@@ -28,6 +28,7 @@ const WORKBENCH_NAVIGATOR_TO_MAIN_GAP = 5;
 
 type AppShellProps = {
   activeProject?: ProjectSummary | null;
+  projects?: readonly ProjectSummary[];
   onOpenGlobalSearch?: () => void;
   activeTabId?: string | null;
   titlebarActivity?: ReactNode;
@@ -48,6 +49,7 @@ type AppShellProps = {
 
 export function AppShell({
   activeProject = null,
+  projects = [],
   onOpenGlobalSearch,
   activeTabId,
   titlebarActivity,
@@ -206,7 +208,7 @@ export function AppShell({
       : 0)
     - TITLEBAR_LEFT_CONTROL_WIDTH;
 
-  const accent = isConversationWorkspace ? projectAccent(activeProject) : null;
+  const accent = isConversationWorkspace ? projectAccent(activeProject, projects) : null;
   const accentStyle = accent === null ? undefined : {
     "--app-project-accent-start": accent[0],
     "--app-project-accent-end": accent[1],
