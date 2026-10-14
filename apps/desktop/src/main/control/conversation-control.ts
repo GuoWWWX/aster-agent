@@ -1,8 +1,10 @@
 import {
+  backgroundCommandSchema, userQuestionSchema,
   conversationListResponseSchema, conversationMessageSubmissionSchema,
   conversationSummarySchema, conversationTimelinePageSchema, projectListResponseSchema, modelRuntimeStatusSchema,
   type ConversationRunEvent, type LocalControlCommand,
 } from "@agent/protocol";
+import { z } from "zod";
 import type { AgentRuntime } from "../agent/agent-runtime.js";
 import type { ApplicationSettingsStore } from "../settings/application-settings-store.js";
 import type { AgentDatabase } from "../storage/agent-database.js";
@@ -15,13 +17,13 @@ import type { ModelCredentialStore } from "../model/model-credential-store.js";
 export class ConversationControl {
   public constructor(
     private readonly database: Pick<AgentDatabase, "listProjects" | "listConversationHierarchy" | "getConversation" | "isTeamWorkItemExecutionTreeConversation">,
-    private readonly lifecycle: Pick<ConversationLifecycleService, "createConversation" | "setConversationPermissionMode" | "setConversationModelSelection">,
-    private readonly runtime: Pick<AgentRuntime, "sendMessage" | "cancelConversation">,
+    private readonly lifecycle: Pick<ConversationLifecycleService, "createConversation" | "setConversationPermissionMode" | "setConversationModelSelection" | "renameConversation" | "setConversationArchived">,
+    private readonly runtime: Pick<AgentRuntime, "sendMessage" | "cancelConversation" | "listUserQuestions" | "answerUserQuestion" | "approveToolChange" | "listBackgroundCommands" | "stopBackgroundCommand">,
     private readonly projector: Pick<EventProjector, "prepareTimeline" | "listTimelinePage">,
     private readonly settings: Pick<ApplicationSettingsStore, "getConfiguration">,
     private readonly teams: Pick<TeamWorkItemRuntime, "sendExecutionGuidance">,
     private readonly emit: (event: ConversationRunEvent) => void,
-    private readonly models: Pick<ModelCredentialStore, "saveConfiguration" | "resolveSelection">,
+    private readonly models: Pick<ModelCredentialStore, "saveConfiguration" | "resolveSelection" | "getStatus">,
   ) {}
 
   public async execute(command: LocalControlCommand): Promise<unknown> {
@@ -29,6 +31,29 @@ export class ConversationControl {
       case "projects.list": return projectListResponseSchema.parse(this.database.listProjects());
       case "conversations.list": return conversationListResponseSchema.parse(this.database.listConversationHierarchy());
       case "models.configure": return modelRuntimeStatusSchema.parse(this.models.saveConfiguration(command.input));
+      case "conversations.rename": {
+        const conversation = conversationSummarySchema.parse(this.lifecycle.renameConversation(command.input.conversationId, command.input.title));
+        this.emit({ type: "conversation.updated", conversation });
+        return conversation;
+      }
+      case "conversations.archive": {
+        const conversation = conversationSummarySchema.parse(this.lifecycle.setConversationArchived(command.input.conversationId, command.input.archived));
+        this.emit({ type: "conversation.updated", conversation });
+        return conversation;
+      }
+      case "models.status": return modelRuntimeStatusSchema.parse(this.models.getStatus());
+      case "user_questions.list": return z.array(userQuestionSchema).parse(this.runtime.listUserQuestions(command.input.conversationId));
+      case "user_questions.answer": return userQuestionSchema.parse(this.runtime.answerUserQuestion(command.input, this.emit));
+      case "approvals.resolve":
+        this.runtime.approveToolChange(command.input);
+        return { resolved: true };
+      case "background_commands.list": return z.array(backgroundCommandSchema).parse(this.runtime.listBackgroundCommands(command.input.conversationId));
+      case "background_commands.stop": return backgroundCommandSchema.parse(await this.runtime.stopBackgroundCommand(command.input.conversationId, command.input.commandId));
+      case "conversations.set_permission": {
+        const conversation = conversationSummarySchema.parse(this.lifecycle.setConversationPermissionMode(command.input.conversationId, command.input.permissionMode));
+        this.emit({ type: "conversation.updated", conversation });
+        return conversation;
+      }
       case "conversations.open": {
         const conversation = conversationSummarySchema.parse(this.database.getConversation(command.input.conversationId));
         if (conversation.isArchived || this.database.isTeamWorkItemExecutionTreeConversation(conversation.id)) {

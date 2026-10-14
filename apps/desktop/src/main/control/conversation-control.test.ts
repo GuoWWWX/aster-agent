@@ -25,7 +25,8 @@ describe("ConversationControl", () => {
   const cancelConversation = vi.fn();
   const settings = { getConfiguration: () => DEFAULT_APPLICATION_SETTINGS };
   const teams = { sendExecutionGuidance: vi.fn(sendMessage) };
-  const models = { resolveSelection: vi.fn((selection: ConversationModelSelection) => selection), saveConfiguration: vi.fn() };
+  const models = { resolveSelection: vi.fn((selection: ConversationModelSelection) => selection), saveConfiguration: vi.fn(), getStatus: vi.fn() };
+  const interactions = { listUserQuestions: vi.fn(() => []), answerUserQuestion: vi.fn(), approveToolChange: vi.fn(), listBackgroundCommands: vi.fn(() => []), stopBackgroundCommand: vi.fn() };
   beforeEach(async () => {
     vi.clearAllMocks();
     directory = await mkdtemp(path.join(os.tmpdir(), "aster-conversation-control-"));
@@ -33,7 +34,7 @@ describe("ConversationControl", () => {
     log = new ThreadLog(directory);
     projector = new EventProjector(database, log);
     lifecycle = new ConversationLifecycleService(database, log, projector);
-    control = new ConversationControl(database, lifecycle, { sendMessage, cancelConversation }, projector, settings, teams, emit,
+    control = new ConversationControl(database, lifecycle, { sendMessage, cancelConversation, ...interactions }, projector, settings, teams, emit,
       models);
   });
   afterEach(async () => { database.close(); await rm(directory, { force: true, recursive: true }); });
@@ -56,6 +57,40 @@ describe("ConversationControl", () => {
     await expect(execute({ command: "conversations.create", input: { projectId: randomUUID() } })).rejects.toThrow();
     expect(database.listConversations()).toEqual([]);
     expect(emit).not.toHaveBeenCalled();
+  });
+  it("validates permission changes, persists them and publishes the saved state", async () => {
+    const conversation = lifecycle.createConversation(null);
+    const summary = await execute({ command: "conversations.set_permission", input: { conversationId: conversation.id, permissionMode: "read_only" } });
+    expect(database.getConversation(conversation.id).permissionMode).toBe("read_only");
+    expect(emit).toHaveBeenCalledExactlyOnceWith({ type: "conversation.updated", conversation: summary });
+    expect(localControlCommandSchema.safeParse({ command: "conversations.set_permission", input: { conversationId: conversation.id, permissionMode: "invalid" } }).success).toBe(false);
+  });
+  it("renames and archives the saved conversation while keeping its identity", async () => {
+    const conversation = lifecycle.createConversation(null);
+    await execute({ command: "conversations.rename", input: { conversationId: conversation.id, title: "后台全流程验收" } });
+    await execute({ command: "conversations.archive", input: { conversationId: conversation.id, archived: true } });
+    expect(database.getConversation(conversation.id)).toMatchObject({ id: conversation.id, title: "后台全流程验收", isArchived: true });
+    expect(emit).toHaveBeenCalledTimes(2);
+    await execute({ command: "conversations.archive", input: { conversationId: conversation.id, archived: false } });
+    expect(database.getConversation(conversation.id).isArchived).toBe(false);
+  });
+  it("uses the Runtime approval boundary and propagates expired approval failures", async () => {
+    const input = { toolId: randomUUID(), runId: randomUUID(), approved: false, scope: "once" };
+    expect(await execute({ command: "approvals.resolve", input })).toEqual({ resolved: true });
+    expect(interactions.approveToolChange).toHaveBeenCalledExactlyOnceWith(input);
+    interactions.approveToolChange.mockImplementationOnce(() => { throw new Error("Expired approval"); });
+    await expect(execute({ command: "approvals.resolve", input })).rejects.toThrow("Expired approval");
+  });
+  it("keeps question and background program queries scoped and preserves stop failures", async () => {
+    const conversationId = randomUUID();
+    expect(await execute({ command: "user_questions.list", input: { conversationId } })).toEqual([]);
+    expect(interactions.listUserQuestions).toHaveBeenCalledExactlyOnceWith(conversationId);
+    expect(await execute({ command: "background_commands.list", input: { conversationId } })).toEqual([]);
+    expect(interactions.listBackgroundCommands).toHaveBeenCalledExactlyOnceWith(conversationId);
+    const commandId = randomUUID();
+    interactions.stopBackgroundCommand.mockRejectedValueOnce(new Error("Different conversation"));
+    await expect(execute({ command: "background_commands.stop", input: { conversationId, commandId } })).rejects.toThrow("Different conversation");
+    expect(interactions.stopBackgroundCommand).toHaveBeenCalledExactlyOnceWith(conversationId, commandId);
   });
   it("saves a validated model selection before broadcasting creation", async () => {
     const selection = { providerId: randomUUID(), modelId: "configured-model", reasoning: null };

@@ -14,6 +14,10 @@ describe("local control commands", () => {
   });
 
   it.each([
+    { command: "user_questions.answer", input: { questionId: "invalid", answers: { scope: "yes" } } },
+    { command: "approvals.resolve", input: { runId: conversationId, toolId: conversationId, approved: "true" } },
+    { command: "background_commands.stop", input: { conversationId, commandId: "invalid" } },
+    { command: "models.status", input: { includeSecrets: true } },
     { command: "unknown", input: {} },
     { command: "conversations.create", input: { workspaceRootPath: "C:/" } },
     { command: "messages.send", input: { conversationId, content: " " } },
