@@ -637,6 +637,7 @@ export function App(): ReactElement {
     <>
       <AppShell
         activeProject={projectTree.projects.find((project) => project.id === projectSessions.activeSession?.projectId) ?? null}
+        projects={projectTree.projects}
         onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
         navigation={navigation}
         activeConversationId={projectSessions.activeSessionId}

@@ -13,17 +13,17 @@
   height: 36px;
   min-height: 36px;
   align-items: center;
-  background: var(--app-titlebar);
+  background: transparent;
   color: var(--app-muted-foreground);
   user-select: none;
 }
 
-/* CSS triggers #2/#3: hashed project variables color only the leading titlebar area. */
-.app-shell[data-project-accent] .app-titlebar {
-  background-image: linear-gradient(105deg,
-    color-mix(in srgb, var(--app-project-accent-start) 22%, transparent),
-    color-mix(in srgb, var(--app-project-accent-end) 16%, transparent) 180px,
-    transparent 480px);
+/* CSS triggers #2/#3: the shared canvas carries project color beneath transparent shell chrome. */
+.app-shell[data-project-accent] {
+  background-image: radial-gradient(ellipse 620px 160px at 0 0,
+    color-mix(in srgb, var(--app-project-accent-start) 38%, transparent),
+    color-mix(in srgb, var(--app-project-accent-end) 24%, transparent) 42%,
+    transparent 100%);
 }
 
 .app-titlebar__brand {
@@ -242,7 +242,6 @@
   padding: 5px 5px 5px 0;
 }
 
-.activity-bar,
 .workbench-panel,
 .workbench-main {
   min-width: 0;
@@ -266,7 +265,7 @@
   align-items: center;
   border: 0;
   border-radius: 0;
-  background: var(--app-titlebar);
+  background: transparent;
   padding: 8px 4px;
 }
 
