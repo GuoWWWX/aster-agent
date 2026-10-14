@@ -81,19 +81,21 @@ export function AppShell({
   );
   const [navigatorPeek, setNavigatorPeek] = useState(false);
   const [previousNavigatorOpen, setPreviousNavigatorOpen] = useState(isProjectNavigatorOpen);
+  const [previousActivity, setPreviousActivity] = useState(activeActivity);
   const peekTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelPeekTimer = (): void => {
     if (peekTimer.current !== null) clearTimeout(peekTimer.current);
     peekTimer.current = null;
   };
-  if (previousNavigatorOpen !== isProjectNavigatorOpen) {
+  if (previousNavigatorOpen !== isProjectNavigatorOpen || previousActivity !== activeActivity) {
     setPreviousNavigatorOpen(isProjectNavigatorOpen);
+    setPreviousActivity(activeActivity);
     setNavigatorPeek(false);
   }
   useEffect(() => {
     cancelPeekTimer();
     return cancelPeekTimer;
-  }, [isProjectNavigatorOpen]);
+  }, [isProjectNavigatorOpen, activeActivity]);
   const scheduleNavigatorPeek = (visible: boolean): void => {
     cancelPeekTimer();
     if (isProjectNavigatorOpen) return;
@@ -168,7 +170,7 @@ export function AppShell({
   }, [uiFontSize, chatFontSize, codeFontSize]);
 
   const isConversationWorkspace = activeActivity === "conversations";
-  const canShowProjectNavigator = activeActivity !== "schedules";
+  const canShowProjectNavigator = isConversationWorkspace;
   const activeSettingsWorkspaceTarget = resolveActiveSettingsWorkspaceTarget(
     activeActivity,
     settingsSection,

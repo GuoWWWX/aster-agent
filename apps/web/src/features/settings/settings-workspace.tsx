@@ -588,7 +588,7 @@ function GeneralSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
           <article className="settings-general-row">
             <div>
               <h4>对话列表</h4>
-              <p>在左侧显示项目、置顶和临时对话</p>
+              <p>在对话页左侧显示项目、置顶和临时对话</p>
             </div>
             <label className="settings-switch">
               <input
