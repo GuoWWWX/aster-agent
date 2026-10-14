@@ -52,7 +52,7 @@ type AppTitlebarProps = {
   onSelectConversationTab?: (conversationId: string) => void;
   onMoveConversationTab?: (source: string, target: string, side: "before" | "after") => void;
   canToggleFilePanel?: boolean;
-  showProjectNavigatorControl?: boolean;
+  canToggleProjectNavigator?: boolean;
 };
 
 export type AppTitlebarConversationTab = {
@@ -101,7 +101,7 @@ export function AppTitlebar({
   onSelectConversationTab,
   onMoveConversationTab,
   canToggleFilePanel = true,
-  showProjectNavigatorControl = true,
+  canToggleProjectNavigator = true,
 }: AppTitlebarProps): ReactElement {
   const tabsRef = useRef<HTMLDivElement>(null);
   const tabIds = conversationTabs.map((tab) => tab.id).join(",");
@@ -231,24 +231,21 @@ export function AppTitlebar({
         }
       }}
     >
-      {showProjectNavigatorControl ? (
-        <IconButton
-          aria-pressed={isProjectNavigatorOpen}
-          label={isProjectNavigatorOpen ? "收起对话列表" : "展开对话列表"}
-          size="titlebar"
-          variant="titlebar"
-          onClick={onToggleProjectNavigator}
-          onDoubleClick={(event) => event.stopPropagation()}
-        >
-          {isProjectNavigatorOpen ? (
-            <PanelLeftClose aria-hidden="true" size={16} />
-          ) : (
-            <PanelLeftOpen aria-hidden="true" size={16} />
-          )}
-        </IconButton>
-      ) : (
-        <div className="app-titlebar__brand" data-app-drag-region="true" />
-      )}
+      <IconButton
+        aria-pressed={isProjectNavigatorOpen}
+        disabled={!canToggleProjectNavigator}
+        label={isProjectNavigatorOpen ? "收起对话列表" : "展开对话列表"}
+        size="titlebar"
+        variant="titlebar"
+        onClick={onToggleProjectNavigator}
+        onDoubleClick={(event) => event.stopPropagation()}
+      >
+        {isProjectNavigatorOpen ? (
+          <PanelLeftClose aria-hidden="true" size={16} />
+        ) : (
+          <PanelLeftOpen aria-hidden="true" size={16} />
+        )}
+      </IconButton>
 
       <div className="flex shrink-0 items-center" data-app-drag-region="false"
         onDoubleClick={(event) => event.stopPropagation()}>

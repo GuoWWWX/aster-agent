@@ -205,12 +205,12 @@ export function AppShell({
     width: `${projectNavigatorWidth}px`,
   } as CSSProperties;
   const conversationTabsLeadingWidth = 48 + WORKBENCH_MAIN_LEFT_INSET
-    + (isProjectNavigatorOpen && canShowProjectNavigator
+    + (isProjectNavigatorOpen
       ? projectNavigatorWidth + WORKBENCH_NAVIGATOR_TO_MAIN_GAP
       : 0)
     - TITLEBAR_LEFT_CONTROL_WIDTH;
 
-  const accent = isConversationWorkspace ? projectAccent(activeProject, projects) : null;
+  const accent = projectAccent(activeProject, projects);
   const accentStyle = accent === null ? undefined : {
     "--app-project-accent-start": accent[0],
     "--app-project-accent-end": accent[1],
@@ -244,7 +244,7 @@ export function AppShell({
         })}
         {...(onMoveConversationTab === undefined ? {} : { onMoveConversationTab })}
         canToggleFilePanel={canShowFileWorkspace}
-        showProjectNavigatorControl={canShowProjectNavigator}
+        canToggleProjectNavigator={canShowProjectNavigator}
       />
       <div
         className="workbench-grid relative"
