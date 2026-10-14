@@ -80,7 +80,7 @@
   --app-muted-foreground: #b4b8c0;
   --app-subtle-foreground: #9399a5;
   --app-panel: #191a1c;
-  --app-tooltip-background: var(--app-canvas);
+  --app-tooltip-background: var(--app-panel);
   --app-panel-subtle: #25262b;
   --app-selection: rgba(49, 51, 56, 0.75);
   --app-selection-border: rgba(180, 188, 204, 0.12);
