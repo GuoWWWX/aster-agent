@@ -4,7 +4,7 @@ import {
   type ConversationRunEvent,
   type SendConversationMessageInput,
 } from "@agent/protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentRuntime } from "../agent/agent-runtime.js";
 import type { ModelCredentialStore } from "../model/model-credential-store.js";
@@ -20,6 +20,34 @@ afterEach(() => {
 });
 
 describe("TeamWorkItemRuntime", () => {
+  it("continues an answered Team question through the WorkItem lifecycle and frozen model policy", () => {
+    const database = new AgentDatabase(":memory:"); databases.push(database);
+    database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = { id: crypto.randomUUID(), name: "Question fixture", rootPath: "D:\\workspace\\question-fixture", isPinned: false };
+    database.saveProject(project);
+    const source = database.createConversation(project.id);
+    const instance = database.createTeamInstance({ teamId: "default-team", projectId: project.id, scope: "project" });
+    const selection = { providerId: crypto.randomUUID(), modelId: "fixture-model", reasoning: null };
+    const workItem = database.createTeamWorkItem({ teamId: "default-team", teamInstanceId: instance.id, projectId: project.id, sourceConversationId: source.id,
+      title: "范围确认", requirement: "检查页面", acceptanceCriteria: [], priority: "normal", permissionMode: "read_only" }, selection);
+    const lead = database.createConversation(project.id, { threadKind: "team_lead", teamId: "default-team", parentConversationId: source.id });
+    const first = database.createRunWithUserMessage(lead.id, "ask", selection.modelId);
+    database.startTeamWorkItem(workItem.id, lead.id, first.runId); database.finishRun(first.runId, "completed", null);
+    database.finishTeamWorkItemRun({ workItemId: workItem.id, conversationId: lead.id, runId: first.runId, status: "completed", error: null, resultSummary: "等待范围" });
+    const send = vi.fn((input: SendConversationMessageInput, _emit: (event: ConversationRunEvent) => void, options?: { beforeRunScheduled?: (value: { runId: string }) => void }) => {
+      const run = database.createRunWithUserMessage(input.conversationId, input.content, input.modelId ?? selection.modelId);
+      options?.beforeRunScheduled?.({ runId: run.runId });
+      return { kind: "started" as const, runId: run.runId, userMessage: run.userMessage };
+    });
+    const runtime = new TeamWorkItemRuntime(database, {} as ConversationLifecycleService, { sendMessage: send } as unknown as AgentRuntime,
+      {} as ModelCredentialStore, {} as ProjectRegistry, { getConfiguration: () => structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION) });
+    const questionId = crypto.randomUUID();
+    runtime.deliverQuestionAnswer({ conversationId: lead.id, content: "用户回答：设置页面", permissionMode: "full_access", modelId: "wrong", reasoning: { kind: "effort", value: "high" } }, questionId, () => undefined);
+    expect(send.mock.calls[0]?.[0]).toMatchObject({ modelId: selection.modelId, providerId: selection.providerId, permissionMode: "read_only", deliveryMode: "steer" });
+    expect(send.mock.calls[0]?.[0]).not.toHaveProperty("reasoning");
+    expect(send.mock.calls[0]?.[2]).toMatchObject({ questionAnswerId: questionId, allowManagedTeamWorkItemExecution: true });
+    expect(database.getTeamWorkItem(workItem.id)).toMatchObject({ status: "running", revision: 2 });
+  });
   it("provisions manually created project and conversation Team instances with every configured member", () => {
     const database = new AgentDatabase(":memory:");
     databases.push(database);

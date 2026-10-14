@@ -1,3 +1,4 @@
+import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput } from "@agent/protocol";
 import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
 import type {
   CapabilitySet,
@@ -557,6 +558,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
   ): Promise<ConversationSummary> {
     return this.desktopBridge.markConversationResultViewed(input);
   }
+
+  public listUserQuestions(input: ConversationReferenceInput): Promise<UserQuestion[]> { return this.desktopBridge.listUserQuestions(input); }
+  public answerUserQuestion(input: AnswerUserQuestionInput): Promise<UserQuestion> { return this.desktopBridge.answerUserQuestion(input); }
+  public markUserQuestionViewed(input: { questionId: string }): Promise<UserQuestion> { return this.desktopBridge.markUserQuestionViewed(input); }
+  public listBackgroundCommands(input: ConversationReferenceInput): Promise<BackgroundCommand[]> { return this.desktopBridge.listBackgroundCommands(input); }
+  public stopBackgroundCommand(input: StopBackgroundCommandInput): Promise<BackgroundCommand> { return this.desktopBridge.stopBackgroundCommand(input); }
 
   public listProjectEntries(
     input: ListProjectEntriesInput,

@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_TERMINAL_CONFIGURATION } from "@agent/protocol";
 
@@ -50,6 +50,31 @@ async function createLargeFixture(fileCount = 400) {
 }
 
 describe("ProjectToolRegistry", () => {
+  it("exposes owned programs to the UI, rejects another conversation's stop and terminates a child process tree", async () => {
+    if (process.platform !== "win32") return;
+    const { project, tools } = await createFixture(); const conversationId = crypto.randomUUID(); const otherId = crypto.randomUUID();
+    const owner = { conversationId, conversationTitle: "网关服务", runId: crypto.randomUUID() }; const signal = new AbortController().signal;
+    let commandId: string | undefined;
+    try {
+      const prepared = await tools.execute("run_command", JSON.stringify({
+        command: "$taskChild = Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 60' -PassThru; Set-Content -LiteralPath child.pid -Encoding ascii -Value $taskChild.Id; Start-Sleep -Seconds 60",
+        mode: "service", serviceName: "Spring Boot fixture", yieldTimeMs: 0, timeoutMs: 90_000,
+      }), project.id, signal, owner);
+      if (prepared.kind !== "command") throw new Error("Expected command proposal");
+      const started = await tools.executePreparedCommand(prepared.command, project.id, signal, owner);
+      commandId = (JSON.parse(started.content) as { value: { commandId: string } }).value.commandId;
+      expect(tools.listConversationCommands([conversationId])).toContainEqual(expect.objectContaining({ commandId, serviceName: "Spring Boot fixture", status: "running" }));
+      expect(tools.listConversationCommands([otherId])).toEqual([]);
+      await expect(tools.stopConversationCommand(commandId, [otherId])).rejects.toThrow("当前对话");
+      let childPid = 0;
+      await vi.waitFor(async () => { childPid = Number((await readFile(path.join(project.rootPath, "child.pid"), "utf8")).trim()); expect(childPid).toBeGreaterThan(0); }, { timeout: 8000 });
+      expect(() => process.kill(childPid, 0)).not.toThrow();
+      await expect(tools.stopConversationCommand(commandId, [conversationId])).resolves.toMatchObject({ status: "cancelled" });
+      await vi.waitFor(() => { expect(() => process.kill(childPid, 0)).toThrow(); }, { timeout: 5000 });
+      const completed = tools.listConversationCommands([conversationId]).find((item) => item.commandId === commandId);
+      expect(completed?.status).toBe("cancelled"); expect(typeof completed?.completedAt).toBe("string");
+    } finally { try { if (commandId !== undefined) await tools.stopConversationCommand(commandId, [conversationId]); } finally { tools.dispose(); } }
+  }, 20_000);
   it("views a workspace image as visual input without persisting image bytes in tool text", async () => {
     const { project, tools } = await createFixture();
     const data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
@@ -1398,6 +1423,8 @@ describe("ProjectToolRegistry", () => {
       ok: true,
       value: { commands: [] },
     });
+    // Stop is an acknowledgement; wait for process exit before removing its working directory.
+    await tools.execute("wait_for_commands", JSON.stringify({ commandIds: [commandId], timeoutMs: 5000 }), project.id, signal, owner);
     expect(JSON.parse(afterStop.content)).toMatchObject({
       ok: true,
       value: { commands: [] },

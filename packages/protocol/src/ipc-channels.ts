@@ -3,6 +3,11 @@
  * stay dependency-free so it can also be loaded from a sandboxed preload.
  */
 export const IPC_CHANNELS = {
+  userQuestionList: "user_question.list",
+  userQuestionAnswer: "user_question.answer",
+  userQuestionMarkViewed: "user_question.mark_viewed",
+  backgroundCommandList: "background_command.list",
+  backgroundCommandStop: "background_command.stop",
   scheduledTaskList: "scheduled_task.list",
   scheduledTaskSave: "scheduled_task.save",
   scheduledTaskDelete: "scheduled_task.delete",

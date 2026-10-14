@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { backgroundCommandSchema, type BackgroundCommand } from "@agent/protocol";
+import { sanitizeSensitiveText } from "../errors/agent-error.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -1524,6 +1526,24 @@ export class ProjectToolRegistry {
     return firstLine.length <= MAX_SERVICE_NAME_LENGTH
       ? firstLine
       : `${firstLine.slice(0, MAX_SERVICE_NAME_LENGTH - 3)}...`;
+  }
+
+  public listConversationCommands(conversationIds: readonly string[]): BackgroundCommand[] {
+    const owners = new Set(conversationIds);
+    return [...this.commandSessions.values()].filter((session) => owners.has(session.conversationId))
+      .sort((left, right) => Number(right.status === "running") - Number(left.status === "running") || right.startedAt.localeCompare(left.startedAt)).slice(0, 50).map((session) => this.backgroundCommandSummary(session));
+  }
+  public async stopConversationCommand(commandId: string, conversationIds: readonly string[]): Promise<BackgroundCommand> {
+    const session = this.commandSessions.get(commandId);
+    if (session === undefined || !conversationIds.includes(session.conversationId)) throw new Error("找不到当前对话的后台程序。");
+    if (session.status === "running") { session.terminate(true); await session.completion; }
+    return this.backgroundCommandSummary(session);
+  }
+  private backgroundCommandSummary(session: CommandSession): BackgroundCommand {
+    return backgroundCommandSchema.parse({ commandId: session.commandId, conversationId: session.conversationId,
+      command: sanitizeSensitiveText(session.command).slice(0, 4000), mode: session.mode, serviceName: sanitizeSensitiveText(session.serviceName).slice(0, 120) || null,
+      workingDirectory: session.workingDirectory, startedAt: session.startedAt, completedAt: session.completedAt,
+      status: session.status, exitCode: session.exitCode });
   }
 
   private listBackgroundCommands(

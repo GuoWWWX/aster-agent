@@ -1,3 +1,4 @@
+import type { AnswerUserQuestionInput, StopBackgroundCommandInput } from "@agent/protocol";
 import type { SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
 import { ipcRenderer, type IpcRendererEvent } from "electron";
 import { IPC_CHANNELS } from "../../../../packages/protocol/src/ipc-channels.js";
@@ -568,6 +569,11 @@ export function createDesktopBridge(): DesktopBridge {
         input
       );
     },
+    listUserQuestions(input: ConversationReferenceInput) { return invoke<BridgeResult<"listUserQuestions">>(IPC_CHANNELS.userQuestionList, input); },
+    answerUserQuestion(input: AnswerUserQuestionInput) { return invoke<BridgeResult<"answerUserQuestion">>(IPC_CHANNELS.userQuestionAnswer, input); },
+    markUserQuestionViewed(input: { questionId: string }) { return invoke<BridgeResult<"markUserQuestionViewed">>(IPC_CHANNELS.userQuestionMarkViewed, input); },
+    listBackgroundCommands(input: ConversationReferenceInput) { return invoke<BridgeResult<"listBackgroundCommands">>(IPC_CHANNELS.backgroundCommandList, input); },
+    stopBackgroundCommand(input: StopBackgroundCommandInput) { return invoke<BridgeResult<"stopBackgroundCommand">>(IPC_CHANNELS.backgroundCommandStop, input); },
     listConversations() {
       return invoke<BridgeResult<"listConversations">>(IPC_CHANNELS.conversationList);
     },

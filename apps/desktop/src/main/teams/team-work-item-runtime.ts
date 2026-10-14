@@ -500,6 +500,22 @@ export class TeamWorkItemRuntime {
     });
   }
 
+  public deliverQuestionAnswer(input: SendConversationMessageInput, questionId: string, emit: RunEventEmitter): void {
+    const conversation = this.database.getConversation(input.conversationId);
+    if (conversation.teamWorkItemId === null) throw new Error("该对话不属于团队工作项。");
+    const workItem = this.database.getTeamWorkItem(conversation.teamWorkItemId);
+    if (!["running", "waiting_user", "completed"].includes(workItem.status)) throw new Error("该工作项已停止，请先恢复工作项。");
+    this.agentRuntime.sendMessage({ content: input.content, conversationId: input.conversationId, deliveryMode: "steer", providerId: workItem.modelSelection.providerId, modelId: workItem.modelSelection.modelId,
+      permissionMode: workItem.permissionMode, ...(workItem.modelSelection.reasoning === null ? {} : { reasoning: workItem.modelSelection.reasoning }) }, (event) => {
+      if (event.type === "run.finished" && event.conversationId === workItem.executionConversationId) this.finishRun(workItem.id, event, emit);
+      emit(event);
+    }, { allowManagedTeamWorkItemExecution: true, questionAnswerId: questionId, titleOverride: conversation.title,
+      ...(conversation.activeRunId !== null || conversation.id !== workItem.executionConversationId ? {} : { beforeRunScheduled: (accepted: { runId: string }) => {
+        if (workItem.status === "running") this.database.startTeamWorkItemGuidance(workItem.id, accepted.runId);
+        else this.database.startTeamWorkItemRework(workItem.id, accepted.runId, input.content);
+      } }) });
+  }
+
   public accept(input: AcceptTeamWorkItemInput): TeamWorkItemView {
     return this.database.acceptTeamWorkItem(input);
   }

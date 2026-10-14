@@ -58,6 +58,8 @@ import { WorkspaceTerminalTabController } from "../tools/workspace-terminal-tab-
 import { WorkspaceBrowserTabController } from "../tools/workspace-browser-tab-controller.js";
 import { BrowserToolPlugin } from "../plugins/browser-tool-plugin.js";
 import { createMainWindow } from "../windows/main-window.js";
+import { publishConversationAttentionEvent } from "../windows/conversation-attention.js";
+import { attachNativeConversationAttention } from "../windows/native-conversation-attention.js";
 import { ManagedBrowserController } from "../windows/managed-browser-controller.js";
 import { parseBackendSendCommand } from "./backend-command.js";
 import { dispatchBackendSendCommand as submitBackendSendCommand } from "./backend-command-dispatch.js";
@@ -445,6 +447,7 @@ function getServices(): DesktopServices {
 function sendConversationRunEvent(event: unknown): void {
   const validated = conversationRunEventSchema.parse(event);
   localControl?.publish(validated);
+  publishConversationAttentionEvent(validated);
   const window = mainWindow;
   if (window === undefined || window.isDestroyed()) return;
   window.webContents.send(
@@ -457,6 +460,8 @@ async function openMainWindow(): Promise<void> {
   const window = createMainWindow();
   let rendererRecoveryAttempted = false;
   mainWindow = window;
+  const disposeAttention = attachNativeConversationAttention(window, getServices().database);
+  window.once("closed", disposeAttention);
   disposeIpcHandlers = registerMainIpcHandlers(() => mainWindow, getServices(), {
     resumePendingMessages: process.env.AGENT_SKIP_PENDING_RUN_RESUMPTION !== "1",
     emitConversationRunEvent: sendConversationRunEvent,

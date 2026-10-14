@@ -2791,6 +2791,7 @@ describe("AgentRuntime", () => {
       "list_subagents",
       "read_agent_conversation",
       "read_external_file",
+      "request_user_input",
       "run_command",
       "send_agent_message",
       "set_team_collaboration_plan",
@@ -2800,6 +2801,7 @@ describe("AgentRuntime", () => {
       "wait_for_agent_message",
       "wait_for_commands",
       "wait_for_subagents",
+      "wait_for_user_input",
       "web_search"
     ]);
     expect(requests[0]?.reasoning).toBeUndefined();
