@@ -8,7 +8,7 @@
  * 列表圆点和编号改为继承正文颜色。所需的 shadcn 语义变量由 markdown-token-bridge.css 提供。
  *
  * 源文件：md-king/src/index.css
- * 提取规则数：275
+ * 提取规则数：324
  */
 
 @import "./markdown-token-bridge.css";
@@ -190,6 +190,48 @@
     padding: 4px 0;
   }
 
+.mk-cm-math-inline {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    color: inherit;
+    vertical-align: middle;
+    cursor: text;
+  }
+
+.mk-cm-math-inline .katex {
+    font-size: 1em;
+  }
+
+/* 公式源码优先于 Markdown 链接语法，避免其中的 `[...]` 显示为文件链接。 */
+  .mk-cm-math-source,
+  .mk-cm-math-source * {
+    color: inherit !important;
+    text-decoration: none !important;
+    cursor: text !important;
+  }
+
+.mk-cm-math-block {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    padding: 8px 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    color: inherit;
+    text-align: center;
+    cursor: text;
+    overscroll-behavior-inline: contain;
+  }
+
+.mk-cm-math-block.is-invalid,
+  .mk-cm-math-inline.is-invalid {
+    color: #e11d48;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.9em;
+  }
+
 .mk-cm-link--document {
     color: #0f766e;
   }
@@ -235,6 +277,8 @@
 /* 引用的左边框走 box-shadow 而不是 border-left：border 会挤压行内容的可用宽度，
      导致光标进出引用块时整行文字左右跳动。 */
   .mk-cm-quote-line {
+    --mk-quote-accent: rgba(148, 163, 184, 0.66);
+    --mk-quote-bg: rgba(248, 250, 252, 0.7);
     padding-left: 14px !important;
     box-shadow: inset 3px 0 0 rgba(148, 163, 184, 0.66);
     background: rgba(248, 250, 252, 0.7);
@@ -440,9 +484,13 @@
     line-height: 1;
   }
 
-.mk-cm-callout-title,
-  .mk-cm-callout-fallback-title {
-    color: var(--mk-callout-accent);
+.mk-cm-callout-first,
+  .mk-cm-callout-first *,
+  .mk-cm-callout-title,
+  .mk-cm-callout-title *,
+  .mk-cm-callout-fallback-title,
+  .mk-cm-callout-fallback-title * {
+    color: var(--mk-callout-accent) !important;
     font-style: normal;
     font-weight: 700;
   }
@@ -468,12 +516,16 @@
 
 .mk-word-callout--purple { --mk-callout-accent: #7c3aed; }
 
+.mk-word-callout-title,
+  .mk-word-callout-title * {
+    color: var(--mk-callout-accent) !important;
+    font-weight: 700;
+  }
+
 .mk-word-callout-title {
     display: flex;
     align-items: center;
     gap: 6px;
-    color: var(--mk-callout-accent);
-    font-weight: 700;
   }
 
 .mk-word-callout-body {
@@ -501,6 +553,46 @@
     transform: translateY(-50%);
   }
 
+/* 带文字居中分割线（--- ABC）：行居中，两端延伸横线，文字两端各隔一个空格 */
+  .mk-cm-hr-text {
+    position: relative;
+    text-align: center;
+    overflow: hidden;
+    color: #64748b;
+    font-size: 0.875rem;
+    font-weight: 500;
+    line-height: 1.5;
+    padding: 6px 0;
+  }
+
+.mk-cm-hr-text-content {
+    position: relative;
+    display: inline-block;
+    padding: 0 0.75em;
+    user-select: text;
+  }
+
+.mk-cm-hr-text-content::before,
+  .mk-cm-hr-text-content::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    width: 9999px;
+    height: 1.5px;
+    background: rgba(148, 163, 184, 0.6);
+    border-radius: 1px;
+    transform: translateY(-50%);
+    pointer-events: none;
+  }
+
+.mk-cm-hr-text-content::before {
+    right: 100%;
+  }
+
+.mk-cm-hr-text-content::after {
+    left: 100%;
+  }
+
 .mk-cm-source-indent-1 { --mk-cm-source-indent: 32px; padding-left: 32px !important; }
 
 .mk-cm-source-indent-2 { --mk-cm-source-indent: 64px; padding-left: 64px !important; }
@@ -515,6 +607,11 @@
 
 .mk-cm-list-line {
     padding-left: calc(6px + var(--mk-cm-source-indent, 0px)) !important;
+  }
+
+.mk-cm-list-line.mk-cm-quote-list-line {
+    /* 引用列表的项目符号要落在引用正文列，不能把引用箭头挤到列表符号后面。 */
+    padding-left: calc(14px + var(--mk-cm-source-indent, 0px)) !important;
   }
 
 .mk-cm-bullet {
@@ -575,17 +672,17 @@
     color: #2563eb;
   }
 
-.mk-cm-code-indent-1 { margin-left: 32px; }
+.mk-cm-code-indent-1 { --mk-code-indent: 32px; margin-left: 32px; }
 
-.mk-cm-code-indent-2 { margin-left: 64px; }
+.mk-cm-code-indent-2 { --mk-code-indent: 64px; margin-left: 64px; }
 
-.mk-cm-code-indent-3 { margin-left: 96px; }
+.mk-cm-code-indent-3 { --mk-code-indent: 96px; margin-left: 96px; }
 
-.mk-cm-code-indent-4 { margin-left: 128px; }
+.mk-cm-code-indent-4 { --mk-code-indent: 128px; margin-left: 128px; }
 
-.mk-cm-code-indent-5 { margin-left: 160px; }
+.mk-cm-code-indent-5 { --mk-code-indent: 160px; margin-left: 160px; }
 
-.mk-cm-code-indent-6 { margin-left: 192px; }
+.mk-cm-code-indent-6 { --mk-code-indent: 192px; margin-left: 192px; }
 
 /* 兼容热更新前仍在使用旧编辑态 class 的窗口，避免点击代码块后卡片背景消失。 */
   .mk-cm-code-raw {
@@ -677,7 +774,7 @@
   }
 
 .mk-cm-image[data-selected="true"] .mk-cm-image-frame {
-    outline: 2px solid var(--app-selection-border);
+    outline: 2px solid rgba(37, 99, 235, 0.82);
     outline-offset: 2px;
   }
 
@@ -765,22 +862,44 @@
   .mk-cm-mermaid {
     position: relative;
     margin: 0;
-    padding: 12px;
+    padding: 36px 14px 14px 14px;
     border: 1px solid rgba(226, 232, 240, 0.95);
     border-radius: 4px;
     /* 同上，与预览侧的图表外框同色，不带透明度。 */
     background: #f8fafc;
   }
 
+.mk-cm-mermaid-language {
+    position: absolute;
+    left: 12px;
+    top: 8px;
+    font-family: ui-sans-serif, system-ui, var(--font-emoji), sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: rgba(100, 116, 139, 0.85);
+    pointer-events: none;
+    user-select: none;
+  }
+
 .mk-cm-mermaid-canvas {
     display: flex;
     justify-content: center;
-    overflow-x: auto;
+    align-items: center;
+    overflow-x: hidden;
+    max-width: 100%;
+    text-align: center;
+    -webkit-user-select: text;
+    user-select: text;
   }
 
 .mk-cm-mermaid svg {
-    max-width: 100%;
-    height: auto;
+    display: block;
+    max-width: 100% !important;
+    height: auto !important;
+    vertical-align: middle;
   }
 
 .mk-cm-mermaid-caption {
@@ -794,7 +913,7 @@
 
 .mk-cm-mermaid[data-state="loading"] .mk-cm-mermaid-canvas,
   .mk-cm-mermaid[data-state="error"] .mk-cm-mermaid-canvas {
-    justify-content: flex-start;
+    text-align: left;
     font-family: ui-sans-serif, system-ui, var(--font-emoji), sans-serif;
     font-size: 12px;
     color: #64748b;
@@ -863,6 +982,7 @@
   }
 
 .cm-line[data-code-language]:hover .mk-cm-copy-code,
+  .cm-line.mk-cm-code-line--first:hover .mk-cm-copy-code,
   .mk-cm-copy-code:focus-visible {
     opacity: 1;
   }
@@ -876,6 +996,141 @@
 .mk-cm-copy-code--ok {
     color: #16a34a !important;
     opacity: 1 !important;
+  }
+
+/* CM 的代码行与引用正文是兄弟节点，没有可透出的父级引用背景。
+     行本身绘制完整引用底色/边线；内缩的伪元素只在本行内绘制代码卡片。
+     禁用外扩阴影，避免相邻行互相遮挡；文字和工具栏使用同一内缩量。 */
+  .cm-line:is(.mk-cm-callout-line, .mk-cm-quote-code-line):is(.mk-cm-code-line, .mk-cm-code-raw, .mk-cm-code-fence) {
+    --mk-nested-code-bg: #f8fafc;
+    --mk-nested-code-border: rgba(226, 232, 240, 0.95);
+    position: relative;
+    isolation: isolate;
+    box-sizing: border-box;
+    /* 额外缩进只移动内层卡片，不能移动引用边线或可编辑的 >。 */
+    margin-inline: 0 !important;
+    width: auto;
+    /* 选区切换源码态时，行宽仍固定为编辑器内容宽度，避免卡片按选中文本收缩。 */
+    min-width: 100%;
+    padding-inline: calc(44px + var(--mk-code-indent, 0px)) 44px !important;
+    border-radius: 0;
+  }
+
+/* 代码块的缩进只作用于卡片内部。即使行同时带有
+     `.mk-cm-code-indent-*`，也不能把整行（以及可编辑的 `>`）一起推走。 */
+  .cm-line.mk-cm-nested-code-prefix-layout {
+    margin-inline: 0 !important;
+  }
+
+.cm-line.mk-cm-callout-line:is(.mk-cm-code-line, .mk-cm-code-raw, .mk-cm-code-fence) {
+    background: var(--mk-callout-bg);
+    box-shadow:
+      inset 3px 0 0 var(--mk-callout-accent),
+      inset -1px 0 0 color-mix(in srgb, var(--mk-callout-accent) 38%, transparent);
+  }
+
+.cm-line.mk-cm-quote-code-line:is(.mk-cm-code-line, .mk-cm-code-raw, .mk-cm-code-fence) {
+    background: var(--mk-quote-bg);
+    box-shadow:
+      inset 3px 0 0 var(--mk-quote-accent),
+      inset -1px 0 0 color-mix(in srgb, var(--mk-quote-accent) 38%, transparent);
+  }
+
+.cm-line:is(.mk-cm-callout-line, .mk-cm-quote-code-line):is(.mk-cm-code-line, .mk-cm-code-raw, .mk-cm-code-fence)::after {
+    content: "";
+    position: absolute;
+    inset: 0 32px 0 calc(32px + var(--mk-code-indent, 0px));
+    z-index: -1;
+    pointer-events: none;
+    background: var(--mk-nested-code-bg);
+    border-inline: 1px solid var(--mk-nested-code-border);
+  }
+
+.cm-line:is(.mk-cm-callout-line, .mk-cm-quote-code-line):is(.mk-cm-code-first, .mk-cm-code-fence-first)::after {
+    border-top: 1px solid var(--mk-nested-code-border);
+    border-radius: 4px 4px 0 0;
+  }
+
+.cm-line:is(.mk-cm-callout-line, .mk-cm-quote-code-line):is(.mk-cm-code-last, .mk-cm-code-fence-last)::after {
+    border-bottom: 1px solid var(--mk-nested-code-border);
+    border-radius: 0 0 4px 4px;
+  }
+
+.cm-line:is(.mk-cm-callout-line, .mk-cm-quote-code-line)[data-code-language]::before {
+    left: calc(44px + var(--mk-code-indent, 0px));
+  }
+
+.cm-line:is(.mk-cm-callout-line, .mk-cm-quote-code-line) .mk-cm-copy-code {
+    right: 40px;
+  }
+
+.cm-line.mk-cm-callout-code-source {
+    text-indent: 0;
+  }
+
+.cm-line.mk-cm-quote-code-source {
+    text-indent: 0;
+  }
+
+.cm-line:is(.mk-cm-callout-line, .mk-cm-quote-code-line).mk-cm-callout-code-source:is(.mk-cm-code-line, .mk-cm-code-raw, .mk-cm-code-fence),
+  .cm-line:is(.mk-cm-callout-line, .mk-cm-quote-code-line).mk-cm-quote-code-source:is(.mk-cm-code-line, .mk-cm-code-raw, .mk-cm-code-fence) {
+    /* 源码态让 > 正常参与排版，额外缩进放到前缀后的间距，保证光标有真实落点。 */
+    padding-inline: calc(44px + var(--mk-code-indent, 0px)) 44px !important;
+    text-indent: 0 !important;
+  }
+
+.cm-line.mk-cm-nested-code-prefix-layout .mk-cm-callout-code-prefix,
+  .cm-line.mk-cm-nested-code-prefix-layout .mk-cm-quote-code-prefix {
+    width: auto;
+    margin-left: calc(-30px - var(--mk-code-indent, 0px));
+    margin-right: 0;
+  }
+
+.cm-line.mk-cm-nested-code-prefix-layout .mk-cm-callout-code-prefix + *,
+  .cm-line.mk-cm-nested-code-prefix-layout .mk-cm-quote-code-prefix + * {
+    /* 间距放在 > 后面的内容上，不能放在前缀本身上，否则 > 后的光标会跳过整段间距。 */
+    margin-right: calc(14.5625px + var(--mk-code-indent, 0px));
+  }
+
+/* 渲染态不显示引用箭头，但保留它的行内尺寸；进入源码态时只切换
+     visibility，不重建行内排版，拖选首行不再产生横向跳动。 */
+  .mk-cm-nested-code-prefix-hidden {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+.mk-cm-callout-code-prefix {
+    display: inline-block;
+    width: auto;
+    white-space: nowrap;
+    /* 引用箭头是独立的可点击编辑槽，不应被代码文本的原生选区背景带走。 */
+    user-select: none;
+    text-indent: 0;
+    font-family: var(--font-sans, sans-serif);
+    /* 代码为正文的 0.88 倍，引用前缀恢复为正文大小，且不改变代码行高。 */
+    font-size: calc(1em / 0.88);
+    /* 与渲染态围栏保持同一行高，避免点击代码块后整块跳高。 */
+    line-height: 1;
+    font-weight: 400;
+  }
+
+.mk-cm-quote-code-prefix {
+    display: inline-block;
+    width: auto;
+    white-space: nowrap;
+    /* 保持箭头固定在引用沟槽；点击仍由编辑器事件映射到真实源码位置。 */
+    user-select: none;
+    text-indent: 0;
+    font-family: var(--font-sans, sans-serif);
+    font-size: calc(1em / 0.88);
+    /* 前缀字号恢复为正文大小，但不能把代码行撑高；代码行仍由 0.88em
+       的行盒决定高度，箭头只在行内垂直对齐。 */
+    line-height: 1;
+    font-weight: 400;
+    position: relative;
+    z-index: 1;
+    cursor: text;
+    pointer-events: auto;
   }
 
 /* GFM 表格渲染态 widget */
@@ -902,60 +1157,56 @@
     background: #eff6ff;
   }
 
-.mk-cm-mermaid-source {
+.mk-cm-mermaid-actions {
     position: absolute;
-    top: 4px;
+    top: 6px;
     right: 8px;
     display: inline-flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
     align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    padding: 0;
-    border: none;
-    border-radius: 5px;
-    background: transparent;
-    color: #64748b;
-    cursor: pointer;
-  }
-
-.mk-cm-mermaid-expand {
-    position: absolute;
-    top: 4px;
-    right: 36px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    padding: 0;
-    border: none;
-    border-radius: 5px;
-    background: transparent;
-    color: #64748b;
-    cursor: pointer;
+    gap: 4px;
+    z-index: 5;
     opacity: 0;
-    transition: opacity 140ms ease, background 140ms ease, color 140ms ease;
+    transition: opacity 140ms ease;
   }
 
-.mk-cm-mermaid:hover .mk-cm-mermaid-expand,
-  .mk-cm-mermaid-expand:focus-visible,
-  .mk-cm-mermaid-expand:hover {
+.mk-cm-mermaid:hover .mk-cm-mermaid-actions,
+  .mk-cm-mermaid-actions:focus-within {
     opacity: 1;
   }
 
-.mk-cm-mermaid-expand:hover,
-  .mk-cm-mermaid-expand:focus-visible {
-    background: rgba(226, 232, 240, 0.9);
-    color: #334155;
-    outline: none;
+.mk-cm-mermaid-copy,
+  .mk-cm-mermaid-expand,
+  .mk-cm-mermaid-source {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: #64748b;
+    cursor: pointer;
+    transition: background 140ms ease, color 140ms ease;
   }
 
-.mk-cm-mermaid-source:hover,
+.mk-cm-mermaid-copy:hover,
+  .mk-cm-mermaid-copy:focus-visible,
+  .mk-cm-mermaid-expand:hover,
+  .mk-cm-mermaid-expand:focus-visible,
+  .mk-cm-mermaid-source:hover,
   .mk-cm-mermaid-source:focus-visible {
     background: rgba(226, 232, 240, 0.9);
     color: #334155;
     outline: none;
+  }
+
+.mk-cm-mermaid-copy--ok {
+    color: #16a34a !important;
   }
 
 .mk-cm-table-scroll {
@@ -1044,7 +1295,7 @@
 .mk-cm-table th,
   .mk-cm-table td {
     position: relative;
-    min-width: 112px;
+    min-width: 60px;
     padding: 0;
     border: 1px solid #e2e8f0;
     text-align: left;
@@ -1073,9 +1324,11 @@
     white-space: normal;
   }
 
-.mk-cm-table-wrapper.is-wrap .mk-cm-table-cell-content {
+.mk-cm-table-wrapper.is-wrap .mk-cm-table-cell-content,
+  .mk-cm-table-wrapper.is-wrap .mk-cm-table-input {
     overflow-wrap: anywhere;
     text-overflow: clip;
+    word-break: break-word;
   }
 
 .mk-table-column-drag-handle,
@@ -1192,7 +1445,7 @@
     position: fixed;
     z-index: 1199;
     border-radius: 2px;
-    background: var(--app-accent);
+    background: #2563eb;
     box-shadow: 0 0 0 1px rgba(191, 219, 254, 0.9);
     pointer-events: none;
   }
@@ -1212,15 +1465,23 @@
     width: 100%;
     min-width: 0;
     height: 100%;
-    padding: 5px 10px;
+    min-height: 32px;
+    resize: none;
+    overflow: hidden;
+    padding: 6px 10px;
     box-sizing: border-box;
     border: 0;
     outline: 0;
     background: transparent;
     color: inherit;
     font: inherit;
+    font-size: 13px;
     line-height: 1.5;
-    letter-spacing: 0;
+    letter-spacing: normal;
+    text-align: inherit;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
 .mk-cm-table-input[hidden] {
@@ -1228,19 +1489,30 @@
   }
 
 .mk-cm-table-cell {
-    min-width: 110px;
+    position: relative;
+    width: 100%;
+    min-width: 0;
     min-height: 32px;
+    box-sizing: border-box;
   }
 
 .mk-cm-table-cell-content {
     min-height: 32px;
     padding: 6px 10px;
+    box-sizing: border-box;
     overflow: hidden;
     outline: 0;
+    text-align: inherit;
     text-overflow: ellipsis;
     cursor: cell;
     user-select: none;
     touch-action: none;
+    font-size: 13px;
+    line-height: 1.5;
+    letter-spacing: normal;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
 .mk-cm-table-cell-content.is-editing {
@@ -1313,6 +1585,25 @@
     background: #bfdbfe !important;
     box-shadow: none;
   }
+
+.mk-cm-html-strong { font-weight: 700; }
+
+.mk-cm-html-em { font-style: italic; }
+
+.mk-cm-html-s { text-decoration: line-through; }
+
+.mk-cm-html-u { text-decoration: underline; }
+
+.mk-cm-html-mark { background: #fef08a; color: #1c1917; }
+
+.mk-cm-html-sub { font-size: 0.75em; vertical-align: sub; }
+
+.mk-cm-html-sup { font-size: 0.75em; vertical-align: super; }
+
+.mk-cm-html-small { font-size: 0.85em; }
+
+.mk-cm-html-kbd,
+  .mk-html-keyboard { border: 1px solid #cbd5e1; border-radius: 3px; background: #f1f5f9; padding: 1px 4px; font-family: ui-monospace, monospace; font-size: 0.88em; }
 
 /* 只有显式点击“选中整张表格”时才整表高亮；普通文本选区保留实际行列范围。 */
   .mk-cm-table-wrapper.is-toolbar-selected .mk-cm-table th,
@@ -1395,6 +1686,8 @@
   }
 
 [data-theme="dark"] .mk-cm-quote-line {
+    --mk-quote-accent: rgba(148, 163, 184, 0.5);
+    --mk-quote-bg: rgba(63, 63, 70, 0.28);
     box-shadow: inset 3px 0 0 rgba(148, 163, 184, 0.5) !important;
     background: rgba(63, 63, 70, 0.28) !important;
     color: #cbd5e1 !important;
@@ -1437,7 +1730,11 @@
       inset 0 -1px 0 color-mix(in srgb, var(--mk-callout-accent) 48%, transparent) !important;
   }
 
-[data-theme="dark"] .mk-cm-callout-first.mk-cm-callout-last {
+[data-theme="dark"] .mk-cm-callout-first.mk-cm-callout-last,
+  [data-theme="dark"] .mk-cm-callout-first.mk-cm-callout-collapsed-summary {
+    padding-bottom: 7px !important;
+    border-bottom-left-radius: 5px;
+    border-bottom-right-radius: 5px;
     box-shadow:
       inset 3px 0 0 var(--mk-callout-accent),
       inset -1px 0 0 color-mix(in srgb, var(--mk-callout-accent) 48%, transparent),
@@ -1445,9 +1742,26 @@
       inset 0 -1px 0 color-mix(in srgb, var(--mk-callout-accent) 48%, transparent) !important;
   }
 
-[data-theme="dark"] .mk-cm-callout-title,
-  [data-theme="dark"] .mk-cm-callout-fallback-title {
-    color: color-mix(in srgb, var(--mk-callout-accent) 70%, white) !important;
+[data-theme="dark"] .mk-cm-callout-line--cyan { --mk-callout-accent: #06b6d4; }
+
+[data-theme="dark"] .mk-cm-callout-line--blue { --mk-callout-accent: #3b82f6; }
+
+[data-theme="dark"] .mk-cm-callout-line--green { --mk-callout-accent: #22c55e; }
+
+[data-theme="dark"] .mk-cm-callout-line--amber { --mk-callout-accent: #f59e0b; }
+
+[data-theme="dark"] .mk-cm-callout-line--red { --mk-callout-accent: #ef4444; }
+
+[data-theme="dark"] .mk-cm-callout-line--purple { --mk-callout-accent: #a855f7; }
+
+[data-theme="dark"] .mk-cm-callout-first,
+  [data-theme="dark"] .mk-cm-callout-first *,
+  [data-theme="dark"] .mk-cm-callout-title,
+  [data-theme="dark"] .mk-cm-callout-title *,
+  [data-theme="dark"] .mk-cm-callout-fallback-title,
+  [data-theme="dark"] .mk-cm-callout-fallback-title * {
+    color: var(--mk-callout-accent) !important;
+    font-weight: 700;
   }
 
 [data-theme="dark"] .mk-cm-frontmatter {
@@ -1479,6 +1793,15 @@
   }
 
 [data-theme="dark"] .mk-cm-hr::before {
+    background: rgba(100, 116, 139, 0.5);
+  }
+
+[data-theme="dark"] .mk-cm-hr-text {
+    color: #94a3b8;
+  }
+
+[data-theme="dark"] .mk-cm-hr-text-content::before,
+  [data-theme="dark"] .mk-cm-hr-text-content::after {
     background: rgba(100, 116, 139, 0.5);
   }
 
@@ -1540,6 +1863,24 @@
 
 [data-theme="dark"] .mk-cm-image[data-state="loading"] .mk-cm-image-canvas {
     color: #a1a1aa;
+  }
+
+[data-theme="dark"] .cm-line.mk-cm-callout-line:is(.mk-cm-code-line, .mk-cm-code-raw, .mk-cm-code-fence) {
+    --mk-nested-code-bg: #18181b;
+    --mk-nested-code-border: rgba(212, 212, 216, 0.18);
+    background: color-mix(in srgb, var(--mk-callout-accent) 16%, #202020) !important;
+    box-shadow:
+      inset 3px 0 0 var(--mk-callout-accent),
+      inset -1px 0 0 color-mix(in srgb, var(--mk-callout-accent) 48%, transparent) !important;
+  }
+
+[data-theme="dark"] .cm-line.mk-cm-quote-code-line:is(.mk-cm-code-line, .mk-cm-code-raw, .mk-cm-code-fence) {
+    --mk-nested-code-bg: #18181b;
+    --mk-nested-code-border: rgba(212, 212, 216, 0.18);
+    background: var(--mk-quote-bg) !important;
+    box-shadow:
+      inset 3px 0 0 var(--mk-quote-accent),
+      inset -1px 0 0 color-mix(in srgb, var(--mk-quote-accent) 48%, transparent) !important;
   }
 
 [data-theme="dark"] .mk-cm-image[data-state="error"] .mk-cm-image-canvas {
@@ -1627,27 +1968,31 @@
 
 [data-theme="dark"] .mk-cm-table th {
     background: rgba(39, 39, 42, 0.8);
-    color: #f4f4f5;
+    color: #e4e4e7;
   }
 
-[data-theme="dark"] .mk-cm-mermaid-source {
+[data-theme="dark"] .mk-cm-mermaid-copy,
+  [data-theme="dark"] .mk-cm-mermaid-source,
+  [data-theme="dark"] .mk-cm-mermaid-expand {
     color: #a1a1aa;
   }
 
-[data-theme="dark"] .mk-cm-mermaid-expand {
-    color: #a1a1aa;
+[data-theme="dark"] .mk-cm-mermaid-language {
+    color: rgba(161, 161, 170, 0.85);
   }
 
-[data-theme="dark"] .mk-cm-mermaid-expand:hover,
-  [data-theme="dark"] .mk-cm-mermaid-expand:focus-visible {
-    background: rgba(63, 63, 70, 0.9);
-    color: #f4f4f5;
-  }
-
-[data-theme="dark"] .mk-cm-mermaid-source:hover,
+[data-theme="dark"] .mk-cm-mermaid-copy:hover,
+  [data-theme="dark"] .mk-cm-mermaid-copy:focus-visible,
+  [data-theme="dark"] .mk-cm-mermaid-expand:hover,
+  [data-theme="dark"] .mk-cm-mermaid-expand:focus-visible,
+  [data-theme="dark"] .mk-cm-mermaid-source:hover,
   [data-theme="dark"] .mk-cm-mermaid-source:focus-visible {
     background: rgba(63, 63, 70, 0.9);
     color: #f4f4f5;
+  }
+
+[data-theme="dark"] .mk-cm-mermaid-copy--ok {
+    color: #4ade80 !important;
   }
 
 [data-theme="dark"] .mk-table-column-drag-handle,
@@ -1723,7 +2068,7 @@
 
 [data-theme="dark"] .mk-cm-table-cell-content code {
     background: #3f3f46;
-    color: #f4f4f5;
+    color: #e4e4e7;
   }
 
 [data-theme="dark"] .mk-cm-table-cell-content a {
@@ -1775,8 +2120,8 @@
   }
 
 [data-theme="dark"] .mk-word-preview-page:not(.mk-word-preview-page--paper-light) .mk-word-callout-title,
-  [data-theme="dark"] .mk-word-preview-page:not(.mk-word-preview-page--paper-light) .mk-word-callout-title span {
-    color: color-mix(in srgb, var(--mk-callout-accent) 70%, white) !important;
+  [data-theme="dark"] .mk-word-preview-page:not(.mk-word-preview-page--paper-light) .mk-word-callout-title * {
+    color: var(--mk-callout-accent) !important;
   }
 /* Aster 约定：列表圆点和编号跟随当前正文颜色。 */
 .mk-cm-bullet,

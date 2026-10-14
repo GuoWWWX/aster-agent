@@ -1,7 +1,7 @@
 # md-king 迁移源清单
 
-> 文档状态：首批 UI 外壳基线  
-> 记录时间：2026-08-15  
+> 文档状态：UI 外壳与 Markdown 编辑器迁移记录
+> 最近同步：2026-10-14（历史批次见各节）
 > 源目录：`D:\Code\Project\AI\md-king`  
 > 目标目录：`D:\Code\Project\202608\Agent`
 
@@ -154,3 +154,57 @@ HEAD：eaa5d562dc849b5a2887dc068af8d0df5f947aea
 | `src/lib/mermaid-fence.ts` | `8B30C12FB2E38D9CD809DF329BA89CE2225AFC6DEAB2C972CE3722C04BF1AB84` | `apps/web/src/lib/mermaid-fence.ts` | 只提取实时预览使用的 Mermaid caption 与整行加粗题注解析；不迁入仅服务 Word 转换的图题样式块及前后文本重写函数。 |
 
 样式策略：侧边栏外壳仍使用 Tailwind；`markdown-editor.css` 仅承载 CodeMirror 动态 `mk-cm-*` 类、组合选择器和 md-king 机械迁移规则，属于 CSS 触发条件 1、2、5、6，不新增手写平行样式系统。
+
+## 8. Markdown 更新同步（2026-10-14）
+
+源快照：`D:\Code\Project\AI\md-king`，`726cf666d79a6f8a36ea6c593646ab247706cf7a`（v1.1.13），工作区干净。对比 §7.5 的 `d64bcde` 基线；源仓库只读。本批先合并已有主题/定时任务 PR #38，再从 `develop@ccdfbcb` 创建独立分支 `codex/markdown-upstream-sync`。
+
+### 8.1 范围与行为
+
+- 同步编辑器的公式容错、引用内公式和代码块、光标绘制、受控 HTML 排版、紧贴中文的斜体、短分隔线与公式竖线表格解析、列宽权重、题注和带文字分隔线。
+- 同步 Mermaid 的方向容错、节点/子图排版、类图与时序图对比度、SVG 尺寸解析、主题缓存和原位重绘。对话展示也使用此渲染服务，支持查看源码、复制和现有媒体放大查看器。
+- 对话中的数学、表格、HTML、强调、标题属性和题注复用共享解析器；Aster 自有的代码复制、终端颜色、文件类型图标和媒体查看入口继续由本项目持有。
+- 未迁入 MDKing 的 Tauri、Word/DOCX 导出、窗口外壳、Outline 和调试接口；Aster 的 IPC、文件解析、草稿与保存契约保留。
+
+### 8.2 源文件身份
+
+以下哈希均为源文件 SHA256。`cm/*` 目标位于 `apps/web/src/components/editor/cm/`；`lib/*` 目标位于 `apps/web/src/lib/`。
+
+| 源文件 | SHA256 | 目标与差异 |
+| --- | --- | --- |
+| `src/components/editor/cm/live-preview.ts` | `45F7FD6A665EA993A1C43C3B03DEC5CC2F9172FB5DE628536DAF4C6B090189A3` | `cm/live-preview.ts`；相对 ESM 导入、严格数组边界与可选属性检查。 |
+| `src/components/editor/cm/widgets.ts` | `94B7DBD8BF986EBD1D66F200FE01C9825F852DEBE5865267485065909C2DEEA0` | `cm/widgets.ts`；Aster 图片 resolver、`data-theme`、Widget override、短分隔线显示宽度与显式 KaTeX `trust: false`。 |
+| `src/components/editor/cm/markdown-table.ts` | `3F7FA1CAB693D0AE74CE5024B2E6FAD83120D75715593A0B1272F149FE2AD68E` | `cm/markdown-table.ts`；保留分隔线权重、序列化及行列操作；严格边界检查。 |
+| `src/components/editor/cm/source-indent.ts` | `4134B09B124AF5F04BBDFBD76684CA04DC05D48549E352070ED171EBBFB62FB3` | `cm/source-indent.ts`；引用内列表前缀；数组访问保护。 |
+| `src/components/editor/cm/markdown-language.ts` | `4C2DE817C86DA54CB8CA13CD0C60297ECAEA4FD540EF15D2282295766B9ADAF8` | `cm/markdown-language.ts`；恢复 HTMLTag 语法节点，仍禁用 HTMLBlock/IndentedCode。 |
+| `src/components/editor/cm/table-inline-renderer.ts` | `78D15BC1E2A4C0119E64618FD18D787587E7F3197DA0EF8E6B2B50A07E4E2217` | `cm/table-inline-renderer.ts`；类型适配，结构化 DOM，HTML 属性白名单，显式 KaTeX `trust: false`。 |
+| `src/components/editor/cm/cursor.ts` | `248868A6D1C2422F764F1D7DDFE33218CBEC8E7114C88AE95FBBC16B6A62A249` | `cm/cursor.ts`；单独绘制光标，保留原生选区。 |
+| `src/components/editor/cm/theme.ts` | `8F228BBC8C643B5DD58851552E4C96EFC225CBB1C1D70E51C6AE30A9C6F0E09A` | `apps/web/src/components/editor/markdown-editor-theme.ts`；同步光标、正文色与横向溢出约束，保留 Aster 选区令牌。 |
+| `src/components/editor/live-markdown-editor.tsx` | `6884110DCD49C95A117371AB24613D630F93F7918AD6F2575C1DDDFAF638B34A` | 同路径加 `apps/web/`；仅取光标、块公式、原位主题刷新与换文件滚动重置，保留 Aster 保存正文参数、contentRevision、图片导入等宿主契约。 |
+| `src/lib/mermaid.ts` | `2BE73A246220BE9705AF1A121BC03BF2D0A3E21C9641BA8125F25688BCD3D503` | `lib/mermaid.ts`；相对导入、严格类型适配，串行化全局配置与异步绘制，保持 `securityLevel: strict`。 |
+| `src/lib/markdown-math.ts` | `249CE961BCCEA74908E64D56600723B993AAC2B94B27313C10E3BA5723F1E8E6` | `lib/markdown-math.ts`；共享公式范围和容错，严格边界检查。 |
+| `src/lib/markdown-inline-html.ts` | `7D9C28C71F1EE7812F8EB63C82A2D9D0CFCF04A21038275528FFAF14284FE066` | `lib/markdown-inline-html.ts`；白名单语法解析；对话另加安全输出层。 |
+| `src/lib/relaxed-emphasis.ts` | `4ED7C8A8ECE1BF2C11B395290375CAD5F777D793E79C52820782C8C7D6F8C0DA` | `lib/relaxed-emphasis.ts`；与已有宽松粗体解析共同使用。 |
+| `src/lib/horizontal-rule-text.ts` | `3D056338DAF2BA83D2F29B96E7325F04ACE1F562936F13ADF60BB06C513D75E8` | `lib/horizontal-rule-text.ts`；对话和编辑器共享带文字分隔线语法。 |
+| `src/lib/markdown-heading-attributes.ts` | `37084CE1263F5C4EFEDA6AF98C9CDD5F4BC8844AA51053CF647B89D8A9C171B1` | `lib/markdown-heading-attributes.ts`；阅读态隐藏不编号控制标记。 |
+| `src/lib/markdown-block-caption.ts` | `9CBB48271219449DCB8CD9116FBDA61DD0A84B03AFB20050C65BA944C8E0FB55` | `lib/markdown-block-caption.ts`；兼容紧邻表格的加粗题注。 |
+| `src/lib/markdown-image-caption.ts` | `4F9F44A3CC547F685DBF2EECD3890982FEFE86A2729C11A87374A0FCAD5582AD` | `lib/markdown-image-caption.ts`；相邻图片题注/旧 custom-style Div 提取，严格边界检查。 |
+| `src/index.css` | `B1239F9FB5EDB30648D4705ED34BD60D672190C9C79330A4712A2B8D74EEE645` | `apps/web/src/components/editor/markdown-editor.css`；脚本重提取 324 条规则，沿用外壳排除名单和 `.dark` 改写。 |
+
+### 8.3 Aster 接入差异
+
+1. 新增 `lib/markdown-math-plugin.ts` 和 `components/markdown/markdown-rendering-plugins.ts` 接入对话。HTML 仅输出受控标签；脚本/iframe/SVG 源标签按文字显示，过滤事件、样式和危险地址。受控任务复选框使用独立 token，不绕过用户 HTML 过滤。
+2. 对话表格继续遵循已有的表头居中、正文左对齐约定。编辑器保留上游对齐和长分隔线列宽权重；一/二横线仅按最小三横线的视觉宽度显示，保存仍保留原分隔线。
+3. Mermaid 配置为全局状态；不同消费者的初始化与异步渲染串行执行，同源同主题请求合并，错误不阻断下一张图。切换主题保留两套缓存，并保留旧 SVG 高度直至新图完成。
+4. 对话 memo 化 HTML 挂载对象；仅主题变化时不重建原生 details、源码区域和图表容器。编辑器主题只重配颜色/光标，不重建块 StateField、内容、选区和历史。
+5. 对话仅将完整闭合的 Mermaid 围栏替换为图表，流式未完成代码继续显示源码。题注只吸收紧邻行，原生 caption 优先；行内/引用内图片不打乱独立图片题注索引。
+6. `markdown-token-bridge.css` 为上游固定浅色的键盘标签桥接主题色。`agent-markdown.css` 的新增规则属于 CSS 触发条件 1/2/3；生成编辑器 CSS 仍只由提取脚本修改。
+7. 上游六组 lib 测试迁入 Vitest，保留有意义的纯解析用例；引用代码/公式/HTML 行为直接测试实际 CodeMirror 装饰，避免复制实现算法作为测试。Aster 媒体查看器已有滚轮定点缩放、拖动、适应窗口和图库导航，继续复用它。
+
+### 8.4 验证
+
+- 全仓 lint、typecheck、生产 build 通过；生成 CSS 重跑幂等，无外壳选择器泄漏。
+- 脚本 6 项、协议 119 项、Desktop 859 项通过；Desktop 默认并发在本机曾出现超时和 Windows 临时目录占用，使用 `--maxWorkers=2` 完整重跑通过。
+- Web 104 个测试文件、661 项测试全部通过，覆盖 HTML 过滤、数学、引用代码、短表格、题注、Mermaid 并发、源码复制与编辑器保存/主题/文档切换。
+- 实际组件在 1440×900、1024×680 明暗主题检查；页面/编辑器无整体横向溢出，图表源码、放大及缩放交互可用。
+- 从本 worktree 根目录 `pnpm dev` 启动 HTTP Renderer；React/CSS 修改经 HMR 生效，Electron 主 PID 保持不变。
