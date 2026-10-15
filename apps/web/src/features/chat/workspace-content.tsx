@@ -534,11 +534,26 @@ export function reasoningEndpointColor(progress: number): string {
   return `color-mix(in srgb, ${lower.color} ${100 - upperWeight}%, ${upper.color} ${upperWeight}%)`;
 }
 
-export function isFlagshipUltraReasoning(modelId: string | null, option: ModelReasoningOption | undefined): boolean {
+const FLAGSHIP_REASONING_EFFECTS = [
+  [/^gpt-\d+(?:\.\d+)?-(?:sol|astra)(?:-|$)/iu, ["ultra"]],
+  [/^claude-(?:opus|fable|mythos)-/iu, ["max"]],
+  [/^gemini-\d+(?:\.\d+)?-(?:pro|argon)(?:-|$)/iu, ["high"]],
+  [/^gemini-2\.5-pro(?:-|$)/iu, [32768]],
+  [/^deepseek-v\d+(?:\.\d+)?-pro(?:-|$)/iu, ["max"]],
+  [/^kimi-k3(?:-|$)/iu, ["max"]],
+  [/^glm-5\.[23](?:-\d{4}(?:-\d{2}){0,2})?$/iu, ["max"]],
+  [/^grok-4\.[67](?:-latest|-\d{4}(?:-\d{2}){0,2})?$/iu, ["xhigh"]],
+  [/^grok-4\.[35](?:-latest|-\d{4}(?:-\d{2}){0,2})?$/iu, ["high"]],
+  [/^qwen(?:\d+(?:\.\d+)?)?-max(?:-|$)/iu, ["max"]],
+  [/^minimax-m3(?:-preview)?$/iu, ["max"]],
+] as const;
+
+export function shouldShowFlagshipReasoningEnergy(modelId: string | null, option: ModelReasoningOption | undefined): boolean {
+  if (option === undefined || option.enabled === false) return false;
   const modelName = modelId?.trim().split("/").at(-1) ?? "";
-  return /^gpt-\d+(?:\.\d+)?-(?:sol|astra)(?:-|$)/iu.test(modelName)
-    && option !== undefined && option.enabled !== false
-    && typeof option.value === "string" && option.value.trim().toLowerCase() === "ultra";
+  const value = typeof option.value === "string" ? option.value.trim().toLowerCase() : option.value;
+  return FLAGSHIP_REASONING_EFFECTS.some(([pattern, levels]) => pattern.test(modelName)
+    && levels.some(level => level === value));
 }
 
 function ConversationReasoningControl({
@@ -573,7 +588,7 @@ function ConversationReasoningControl({
     : options.length <= 1
       ? 100
       : 34 + ((selectedIndex - 1) / (options.length - 1)) * 66;
-  const showEnergyField = isFlagshipUltraReasoning(modelId, selectedOption);
+  const showEnergyField = shouldShowFlagshipReasoningEnergy(modelId, selectedOption);
   const sliderStyle = {
     "--reasoning-fill": reasoningEndpointColor(colorProgress),
   } as CSSProperties;

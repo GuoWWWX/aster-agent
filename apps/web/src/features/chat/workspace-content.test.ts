@@ -41,7 +41,7 @@ import {
   describeConversationError,
   representativeToolName,
   reasoningEndpointColor,
-  isFlagshipUltraReasoning,
+  shouldShowFlagshipReasoningEnergy,
   resolveConversationPathIconKind,
   resolveConversationPathScope,
   resolveInitialConversationModelSelection,
@@ -271,7 +271,28 @@ describe("reasoning strength color progression", () => {
     ["gpt-6-luna", ultra, false],
     ["gpt-5.6-luna", ultra, false],
     ["gpt-5.6-terra", ultra, false],
-    ["claude-opus-5-5", { kind: "effort", value: "max" }, false],
+    ["anthropic/claude-opus-5-5", { kind: "effort", value: "max" }, true],
+    ["claude-fable-5-1", { kind: "effort", value: "max" }, true],
+    ["claude-sonnet-5-5", { kind: "effort", value: "max" }, false],
+    ["claude-haiku-5-5", { kind: "effort", value: "max" }, false],
+    ["claude-opus-5-5", { kind: "effort", value: "high" }, false],
+    ["gemini-3.1-pro-preview", { kind: "effort", value: "high" }, true],
+    ["gemini-4-argon", { kind: "effort", value: "high" }, true],
+    ["gemini-2.5-pro", { kind: "token_budget", value: 32768 }, true],
+    ["gemini-2.5-pro", { kind: "token_budget", value: 8192 }, false],
+    ["gemini-3.8-flash", { kind: "effort", value: "high" }, false],
+    ["deepseek-v4-pro", { kind: "effort", value: "max" }, true],
+    ["deepseek-flash", { kind: "effort", value: "max" }, false],
+    ["kimi-k3", { kind: "effort", value: "max" }, true],
+    ["kimi-k3", { kind: "effort", value: "low" }, false],
+    ["GLM-5.3", { kind: "effort", value: "max" }, true],
+    ["GLM-5.3-Flash", { kind: "effort", value: "max" }, false],
+    ["grok-4.7", { kind: "effort", value: "xhigh" }, true],
+    ["grok-4.7", { kind: "effort", value: "high" }, false],
+    ["qwen3.8-max", { kind: "custom_effort", value: "max" }, true],
+    ["qwen3.8-flash", { kind: "custom_effort", value: "max" }, false],
+    ["MiniMax-M3", { kind: "custom_effort", value: "max" }, true],
+    ["MiniMax-M3.1-Flash-Preview", { kind: "effort", value: "max" }, false],
     ["other-sol", ultra, false],
     [null, ultra, false],
     ["gpt-6-sol", undefined, false],
@@ -280,8 +301,8 @@ describe("reasoning strength color progression", () => {
     ["gpt-6-sol", { kind: "effort", value: "max" }, false],
     ["gpt-6-sol", { kind: "effort", value: "high", displayName: "Ultra" }, false],
     ["gpt-6-sol", { kind: "token_budget", value: 8192, displayName: "Ultra" }, false],
-  ] as const)("shows the energy effect only for flagship Ultra: %s / %j", (modelId, option, expected) => {
-    expect(isFlagshipUltraReasoning(modelId, option)).toBe(expected);
+  ] as const)("shows the energy effect only at each flagship model's highest level: %s / %j", (modelId, option, expected) => {
+    expect(shouldShowFlagshipReasoningEnergy(modelId, option)).toBe(expected);
   });
 
   it("moves through blue, light blue, blue-violet, and deep purple stops", () => {
