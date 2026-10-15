@@ -105,7 +105,7 @@ export function AppShell({
   }, [isProjectNavigatorOpen, activeActivity]);
   const scheduleNavigatorPeek = (visible: boolean): void => {
     cancelPeekTimer();
-    if (isProjectNavigatorOpen) return;
+    if (isProjectNavigatorOpen || activeActivity !== "conversations") return;
     peekTimer.current = setTimeout(() => {
       peekTimer.current = null;
       setNavigatorPeek(visible);
@@ -267,7 +267,10 @@ export function AppShell({
         data-active-activity={activeActivity}
         data-full-page={String(!isConversationWorkspace)}
       >
-        <ActivityBar {...(onOpenGlobalSearch === undefined ? {} : { onOpenGlobalSearch })} />
+        <ActivityBar
+          {...(onOpenGlobalSearch === undefined ? {} : { onOpenGlobalSearch })}
+          onConversationHoverChange={scheduleNavigatorPeek}
+        />
         {canShowProjectNavigator && !isProjectNavigatorOpen && !navigatorPeek ? (
           <div
             aria-hidden="true"

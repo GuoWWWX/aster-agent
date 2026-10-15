@@ -25,7 +25,10 @@ const ACTIVITY_ITEMS: readonly ActivityItem[] = [
   { id: "schedules", label: "定时任务", icon: CalendarClock },
 ];
 
-export function ActivityBar({ onOpenGlobalSearch }: { onOpenGlobalSearch?: () => void }): ReactElement {
+export function ActivityBar({ onOpenGlobalSearch, onConversationHoverChange }: {
+  onOpenGlobalSearch?: () => void;
+  onConversationHoverChange?: (isHovered: boolean) => void;
+}): ReactElement {
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
   const setActiveActivity = useWorkbenchUiStore(
     (state) => state.setActiveActivity,
@@ -59,6 +62,8 @@ export function ActivityBar({ onOpenGlobalSearch }: { onOpenGlobalSearch?: () =>
               size="activity"
               variant={isActive ? "selected" : "quiet"}
               onClick={() => setActiveActivity(item.id)}
+              onMouseEnter={item.id === "conversations" ? () => onConversationHoverChange?.(true) : undefined}
+              onMouseLeave={item.id === "conversations" ? () => onConversationHoverChange?.(false) : undefined}
             >
               <ItemIcon aria-hidden="true" size={18} strokeWidth={1.8} />
             </IconButton>

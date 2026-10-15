@@ -91,7 +91,7 @@ describe("AppShell", () => {
     act(() => useWorkbenchUiStore.getState().setActiveActivity("team"));
     expect(container.querySelector<HTMLButtonElement>('[aria-label="收起右侧工作区"]')?.disabled).toBe(false);
   });
-  it("temporarily reveals the collapsed navigator on edge hover without changing the saved layout", () => {
+  it.each(["edge", "icon"] as const)("temporarily reveals the collapsed navigator on %s hover without changing the saved layout", (source) => {
     vi.useFakeTimers();
     try {
       useWorkbenchUiStore.setState({ isProjectNavigatorOpen: false });
@@ -100,11 +100,14 @@ describe("AppShell", () => {
       root = createRoot(container);
       act(() => root?.render(<TooltipProvider><AppShell agentClient={new MockAgentClient()}
         filePanel={null} mainContent={<div>内容</div>} projectNavigator={<div>对话树</div>} /></TooltipProvider>));
-      const edge = container.querySelector("[data-navigator-hover-edge]")!;
-      act(() => { edge.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); vi.advanceTimersByTime(180); });
+      const trigger = container.querySelector(source === "edge" ? "[data-navigator-hover-edge]" : '[aria-label="对话"]')!;
+      act(() => { trigger.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); vi.advanceTimersByTime(180); });
       const panel = container.querySelector("[data-navigator-peek]")!;
       expect(panel).not.toBeNull();
       expect(useWorkbenchUiStore.getState().isProjectNavigatorOpen).toBe(false);
+      act(() => { trigger.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: panel })); });
+      act(() => { panel.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: trigger })); vi.advanceTimersByTime(300); });
+      expect(container.querySelector("[data-navigator-peek]")).not.toBeNull();
       act(() => { panel.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body })); vi.advanceTimersByTime(150); });
       act(() => { panel.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: document.body })); vi.advanceTimersByTime(300); });
       expect(container.querySelector("[data-navigator-peek]")).not.toBeNull();
@@ -114,6 +117,50 @@ describe("AppShell", () => {
       const pinned = container.querySelector(".workbench-sidebar--left")!;
       act(() => { pinned.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body })); vi.advanceTimersByTime(500); });
       expect(container.querySelector(".workbench-sidebar--left")).not.toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+  it("cancels a brief conversation icon hover and hides a preview when the pointer leaves the icon", () => {
+    vi.useFakeTimers();
+    try {
+      useWorkbenchUiStore.setState({ isProjectNavigatorOpen: false });
+      const container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+      act(() => root?.render(<TooltipProvider><AppShell agentClient={new MockAgentClient()}
+        filePanel={null} mainContent={<div>内容</div>} projectNavigator={<div>对话树</div>} /></TooltipProvider>));
+      const icon = container.querySelector('[aria-label="对话"]')!;
+      const enter = (): void => { act(() => { icon.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); }); };
+      const leave = (): void => { act(() => { icon.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body })); }); };
+      enter();
+      act(() => { vi.advanceTimersByTime(100); });
+      leave();
+      act(() => { vi.advanceTimersByTime(500); });
+      expect(container.querySelector("[data-navigator-peek]")).toBeNull();
+      enter();
+      act(() => { vi.advanceTimersByTime(180); });
+      expect(container.querySelector("[data-navigator-peek]")).not.toBeNull();
+      leave();
+      act(() => { vi.advanceTimersByTime(280); });
+      expect(container.querySelector("[data-navigator-peek]")).toBeNull();
+      expect(useWorkbenchUiStore.getState().isProjectNavigatorOpen).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+  it("does not reveal the navigator or switch pages when hovering the conversation icon from a feature page", () => {
+    vi.useFakeTimers();
+    try {
+      useWorkbenchUiStore.setState({ activeActivity: "settings", isProjectNavigatorOpen: false });
+      const container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+      act(() => root?.render(<TooltipProvider><AppShell agentClient={new MockAgentClient()}
+        filePanel={null} mainContent={null} projectNavigator={<div>对话树</div>} /></TooltipProvider>));
+      act(() => {
+        container.querySelector('[aria-label="对话"]')?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+        vi.advanceTimersByTime(500);
+      });
+      expect(container.querySelector("[data-navigator-peek]")).toBeNull();
+      expect(useWorkbenchUiStore.getState().activeActivity).toBe("settings");
+      expect(useWorkbenchUiStore.getState().isProjectNavigatorOpen).toBe(false);
     } finally { vi.useRealTimers(); }
   });
   it("supports fixed-width scrolling and all titlebar tab close actions", async () => {
@@ -638,7 +685,7 @@ describe("AppShell", () => {
     expect(leftToggle().disabled).toBe(false);
   });
 
-  it("clears pending and visible hover previews on page changes while preserving the collapsed preference", async () => {
+  it.each(["edge", "icon"] as const)("clears pending and visible %s hover previews on page changes while preserving the collapsed preference", async (source) => {
     vi.useFakeTimers();
     try {
       useWorkbenchUiStore.setState({ isProjectNavigatorOpen: false });
@@ -647,7 +694,7 @@ describe("AppShell", () => {
         filePanel={null} mainContent={null} projectNavigator={<div>对话列表</div>} /></TooltipProvider>));
       await act(async () => Promise.resolve());
       const hover = (): void => { act(() => {
-        container.querySelector('[data-navigator-hover-edge]')?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+        container.querySelector(source === "edge" ? '[data-navigator-hover-edge]' : '[aria-label="对话"]')?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
       }); };
       hover();
       act(() => useWorkbenchUiStore.getState().setActiveActivity("settings"));
