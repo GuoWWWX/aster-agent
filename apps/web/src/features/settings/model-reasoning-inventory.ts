@@ -54,4 +54,34 @@ export const MODEL_REASONING_INVENTORY: Record<string, { sourceUrls: string[]; n
     note: "M3.1 Flash Preview 暂限 M Plan / MiniMax Code；M2.5/M2.7 家族预定 2026-11-18 退役。",
     modelIds: ["MiniMax-M3.1-Flash-Preview", "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1", "MiniMax-M2.1-highspeed", "MiniMax-M2"],
   },
+  mistral: {
+    sourceUrls: ["https://docs.mistral.ai/models", "https://docs.mistral.ai/studio/conversations/reasoning"],
+    note: "原厂混合思考模型 none/high；旧 Magistral 的退役日期以官方生命周期表为准，不从聚合目录恢复已退役版本。",
+    modelIds: ["mistral-large-4", "mistral-large-4-0", "mistral-medium-3-5", "mistral-medium-latest", "mistral-small-2603", "mistral-small-latest"],
+  },
+  meta: {
+    sourceUrls: ["https://dev.meta.ai/docs/overview", "https://dev.meta.ai/docs/reasoning"],
+    note: "Muse Wonder / Spark 属于 Meta Model API；Llama / Glimmer 自部署接口不能直接继承这些档位。Contributor 不支持 max。",
+    modelIds: ["muse-wonder-1.0", "muse-spark-1.3", "muse-spark-1.3-contributor", "muse-spark-1.2", "muse-spark-1.2-contributor", "muse-spark-1.1"],
+  },
+  stepfun: {
+    sourceUrls: ["https://platform.stepfun.ai/docs/en/step-plan/integrations/reasoning-api", "https://platform.stepfun.ai/docs/en/api-reference/chat/chat-completion-create"],
+    note: "Step 5 Preview / 3.7 Flash 三档，3.5 Flash 2603 二档；基础 3.5 Flash 沿用服务默认。Step Plan 使用独立端点。",
+    modelIds: ["step-5-preview", "step-3.7-flash", "step-3.5-flash-2603", "step-3.5-flash"],
+  },
+  xiaomi: {
+    sourceUrls: ["https://mimo.mi.com/docs/en-US/quick-start/model", "https://mimo.mi.com/docs/en-US/quick-start/usage-guide/other/deep-thinking"],
+    note: "原厂使用 thinking.type 开关；V2.5/V2.5-Pro 预定 2026-10-21 下线。旧 V2 / Omni 不因聚合目录仍保留而自动作为当前默认。",
+    modelIds: ["mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed", "mimo-v2.6-flash", "mimo-v2.5-pro", "mimo-v2.5"],
+  },
+  longcat: {
+    sourceUrls: ["https://longcat.chat/platform/docs/"],
+    note: "官方同时提供 Chat / Messages；目录只维护已明确的型号，默认不指定 effort。",
+    modelIds: ["LongCat-2.5-Preview", "LongCat-2.0"],
+  },
+  cohere: {
+    sourceUrls: ["https://docs.cohere.com/docs/models", "https://docs.cohere.com/docs/compatibility-api"],
+    note: "使用 OpenAI 兼容端点；原生 Cohere Chat 与兼容端点的参数不能直接混用。本应用不把 thinking 开关和预算伪装成固定 effort。",
+    modelIds: ["command-a-plus-05-2026", "command-a-reasoning-08-2025", "north-mini-code-1-0"],
+  },
 };

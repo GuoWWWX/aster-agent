@@ -120,7 +120,12 @@ export function ModelReasoningCatalogSettings({ agentClient }: { agentClient: Ag
 
   return <section className="settings-section" aria-label="推理程度配置">
     <header className="settings-section__header">
-      <div className="settings-section__title-row"><h2>推理程度</h2><p className="settings-section__description">按供应商、模型与协议维护默认推理档位</p></div>
+      <div className="settings-section__title-row"><h2>推理程度</h2><p className="settings-section__description">按供应商、模型与协议维护默认推理档位</p>
+        <nav aria-label="模型查新来源" className="flex flex-wrap gap-2 text-[length:var(--app-font-size-control)] text-[var(--app-accent)]">
+          <a href="https://models.dev/" target="_blank" rel="noreferrer">Models.dev 型号目录 ↗</a>
+          <a href="https://openrouter.ai/models?order=newest" target="_blank" rel="noreferrer">OpenRouter 最新发布 ↗</a>
+        </nav>
+      </div>
       <button type="button" className="settings-primary-button" disabled={catalog === null || saving || !dirty} onClick={() => void save()}>
         {saving ? "保存中…" : dirty ? "保存修改" : "已保存"}
       </button>

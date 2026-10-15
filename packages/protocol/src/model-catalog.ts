@@ -55,7 +55,11 @@ export function upgradeModelReasoningCatalog(catalog: ModelCatalog): ModelCatalo
   const retained = [...overrides, ...rules.slice(legacy.length)];
   const defaults = DEFAULT_MODEL_REASONING_RULES.filter(rule => !retained.some(override => override.id === rule.id
     || (override.providerId === rule.providerId && override.modelKey === rule.modelKey && override.apiFormat === rule.apiFormat)));
-  return { ...catalog, reasoningRules: [...structuredClone(defaults), ...retained] };
+  const providers = catalog.reasoningProviders;
+  const missingProviders = providers === undefined ? [] : DEFAULT_MODEL_REASONING_PROVIDERS.filter(provider =>
+    defaults.some(rule => rule.providerId === provider.id) && !providers.some(existing => existing.id === provider.id));
+  return { ...catalog, ...(providers === undefined ? {} : { reasoningProviders: [...providers, ...structuredClone(missingProviders)] }),
+    reasoningRules: [...structuredClone(defaults), ...retained] };
 }
 
 /**

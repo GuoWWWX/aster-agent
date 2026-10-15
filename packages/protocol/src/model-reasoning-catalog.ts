@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ADDITIONAL_MODEL_REASONING_PROVIDERS, ADDITIONAL_MODEL_REASONING_RULES } from "./model-reasoning-additional-catalog.js";
 import { isValidModelReasoningRegex } from "./model-reasoning-matcher.js";
 import { modelApiFormatSchema, modelProviderIconSchema, modelReasoningOptionSchema, isReasoningOptionSupportedByApiFormat, modelReasoningOptionKey, type ModelReasoningOption } from "./conversation.js";
 
@@ -23,6 +24,7 @@ export const DEFAULT_MODEL_REASONING_PROVIDERS: ModelReasoningProvider[] = [
   { id: "xai", name: "xAI", icon: "xai", apiFormats: ["openai-chat-completions", "openai-responses"], sourceUrl: "https://docs.x.ai/developers/model-capabilities/text/reasoning" },
   { id: "qwen", name: "通义千问", icon: "qwen", apiFormats: ["openai-chat-completions"], sourceUrl: "https://www.alibabacloud.com/help/en/model-studio/deep-thinking" },
   { id: "minimax", name: "MiniMax", icon: "minimax", apiFormats: ["openai-chat-completions", "openai-responses", "anthropic-messages"], sourceUrl: "https://platform.minimax.io/docs/guides/text-generation" },
+  ...ADDITIONAL_MODEL_REASONING_PROVIDERS,
 ];
 
 export const modelReasoningRuleSchema = z.object({
@@ -221,7 +223,7 @@ const groups: Group[] = [
   { id: "minimax2", name: "MiniMax M2.x（服务默认）", seeds: ["minimax2"], matchMode: "glob", matches: ["MiniMax-M2*"] },
 ];
 
-export const DEFAULT_MODEL_REASONING_RULES: ModelReasoningRule[] = groups.flatMap(group => {
+export const DEFAULT_MODEL_REASONING_RULES: ModelReasoningRule[] = [...groups.flatMap(group => {
   const rules: ModelReasoningRule[] = [];
   for (const seedId of group.seeds) {
     const seed = seeds.find(item => item.id === seedId);
@@ -239,4 +241,4 @@ export const DEFAULT_MODEL_REASONING_RULES: ModelReasoningRule[] = groups.flatMa
     }
   }
   return rules;
-});
+}), ...ADDITIONAL_MODEL_REASONING_RULES.map(rule => modelReasoningRuleSchema.parse(rule))];

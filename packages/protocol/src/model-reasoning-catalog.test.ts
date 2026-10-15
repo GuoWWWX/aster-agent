@@ -30,6 +30,13 @@ describe("model-specific reasoning capabilities", () => {
     ["openai-chat-completions", "kimi-k3", ["low", "high", "max"]],
     ["openai-chat-completions", "glm-5.2", ["low", "high", "max"]],
     ["openai-chat-completions", "qwen-plus", []],
+    ["openai-chat-completions", "mistral-large-4", ["none", "high"]],
+    ["openai-responses", "muse-wonder-1.0", ["minimal", "low", "medium", "high", "xhigh", "max"]],
+    ["openai-responses", "muse-spark-1.3-contributor", ["minimal", "low", "medium", "high", "xhigh"]],
+    ["anthropic-messages", "step-5-preview", ["low", "medium", "high"]],
+    ["openai-chat-completions", "step-3.5-flash-2603", ["low", "high"]],
+    ["openai-chat-completions", "mimo-v2.6-pro", []],
+    ["anthropic-messages", "LongCat-2.5-Preview", []],
     ["google-gemini", "gpt-6-sol", []],
     ["google-gemini", "gpt-5.6", []],
     ["openai-chat-completions", "unknown-model", []],
@@ -80,7 +87,8 @@ describe("model-specific reasoning capabilities", () => {
       const rules = DEFAULT_MODEL_REASONING_RULES.filter(rule => rule.providerId === provider.id);
       expect(rules.length, provider.id).toBeGreaterThan(0);
     }
-    expect(DEFAULT_MODEL_REASONING_RULES.length).toBeLessThan(LEGACY_EXACT_MODEL_REASONING_RULES.length / 2);
+    const legacyProviders = new Set(LEGACY_EXACT_MODEL_REASONING_RULES.map(rule => rule.providerId));
+    expect(DEFAULT_MODEL_REASONING_RULES.filter(rule => legacyProviders.has(rule.providerId)).length).toBeLessThan(LEGACY_EXACT_MODEL_REASONING_RULES.length / 2);
     expect(DEFAULT_MODEL_REASONING_RULES.every(rule => rule.matchMode === "glob" || rule.matchMode === "exact")).toBe(true);
     for (const rule of LEGACY_EXACT_MODEL_REASONING_RULES) {
       for (const modelId of rule.matches) {
@@ -94,6 +102,16 @@ describe("model-specific reasoning capabilities", () => {
       }
     }
     expect(resolveModelReasoningOptions(DEFAULT_MODEL_CATALOG, "openai-chat-completions", "gpt-6-unknown")).toEqual([]);
+  });
+
+  it("adds providers referenced by migrated defaults while preserving the original nine provider edits", () => {
+    const legacyProviders = new Set(LEGACY_EXACT_MODEL_REASONING_RULES.map(rule => rule.providerId));
+    const providers = structuredClone(DEFAULT_MODEL_CATALOG.reasoningProviders!.filter(provider => legacyProviders.has(provider.id)));
+    providers[0]!.name = "My OpenAI";
+    const upgraded = upgradeModelReasoningCatalog({ ...DEFAULT_MODEL_CATALOG, reasoningProviders: providers, reasoningRules: structuredClone(LEGACY_EXACT_MODEL_REASONING_RULES) });
+    expect(modelCatalogSchema.safeParse(upgraded).success).toBe(true);
+    expect(upgraded.reasoningProviders?.slice(0, providers.length)).toEqual(providers);
+    expect(upgraded.reasoningProviders?.some(provider => provider.id === "meta")).toBe(true);
   });
 
   it("uses simple family wildcards with later exceptions for different capabilities", () => {

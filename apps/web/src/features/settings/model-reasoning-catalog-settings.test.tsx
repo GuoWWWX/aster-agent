@@ -189,12 +189,14 @@ it("retains older flat custom rules while preparing the supplier tree", () => {
 it("adds missing built-in models without replacing existing overrides", async () => {
   const client = new MockAgentClient();
   const override = { ...DEFAULT_MODEL_REASONING_RULES[0]!, options: [] };
-  await client.saveModelCatalog({ ...DEFAULT_MODEL_CATALOG, reasoningRules: [override] });
+  await client.saveModelCatalog({ ...DEFAULT_MODEL_CATALOG, reasoningProviders: [{ ...DEFAULT_MODEL_CATALOG.reasoningProviders![0]!, name: "My OpenAI" }], reasoningRules: [override] });
   await render(client); click("补齐内置模型"); await save();
   const saved = await client.getModelCatalog();
   expect(saved.reasoningRules).toHaveLength(DEFAULT_MODEL_REASONING_RULES.length);
   expect(saved.reasoningRules?.find(item => item.id === override.id)?.options).toEqual([]);
   expect(saved.reasoningRules?.some(item => item.modelKey === "claude-latest")).toBe(true);
+  expect(saved.reasoningProviders?.some(item => item.id === "meta")).toBe(true);
+  expect(saved.reasoningProviders?.find(item => item.id === "openai")?.name).toBe("My OpenAI");
 });
 
 it("orders groups by numeric version without changing stored matching precedence", () => {
