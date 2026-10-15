@@ -6,7 +6,7 @@ import type { HtmlPreview } from "@agent/protocol";
 import { MockAgentClient } from "../../runtime/mock-agent-client.js";
 import { TooltipProvider } from "../ui/tooltip.js";
 import { AgentMarkdown, renderAgentMarkdown } from "../markdown/agent-markdown.js";
-import { HtmlFilePreview, HtmlPreviewScope } from "./html-preview-card.js";
+import { HtmlPreviewCard, HtmlPreviewScope } from "./html-preview-card.js";
 
 const conversationId = "00000000-0000-4000-8000-000000000001";
 const result: HtmlPreview = { id: conversationId, title: "demo.html", url: "http://127.0.0.1:1234/token/demo.html", source: "<h1>页面</h1>" };
@@ -56,10 +56,37 @@ describe("conversation HTML previews", () => {
     expect(request).toHaveBeenCalledWith({ kind: "browser", conversationId, id: result.id });
     await click("刷新 HTML 预览");
     expect(request.mock.calls.filter(([input]) => input.kind === "code")).toHaveLength(2);
-    await click("关闭 HTML 预览");
+    expect(node.querySelector('[aria-label="关闭 HTML 预览"]')).toBeNull();
     expect(block?.querySelector("pre")?.textContent).toBe("<h1>页面</h1>\n");
     expect(block?.querySelectorAll("header")).toHaveLength(1);
-    expect(request.mock.calls.filter(([input]) => input.kind === "release")).toHaveLength(2);
+    expect(request.mock.calls.filter(([input]) => input.kind === "release")).toHaveLength(1);
+  });
+
+  it("presents complete final HTML without loading incomplete or intermediate output", async () => {
+    const content = "```html\n<h1>页面</h1>\n```";
+    await render(<AgentMarkdown content={content} />);
+    expect(request).not.toHaveBeenCalled();
+    await render(<AgentMarkdown content={content} presentHtml />);
+    expect(node.querySelector("iframe")).not.toBeNull();
+    expect(node.querySelector("pre")).toBeNull();
+    await render(<AgentMarkdown content={"```html\n<h1>未结束"} presentHtml />);
+    expect(node.querySelector("iframe")).toBeNull();
+    expect(request.mock.calls.filter(([input]) => input.kind === "code")).toHaveLength(1);
+  });
+
+  it("presents a saved file only through an explicit final HTML reference", async () => {
+    const content = "页面已保存。\n\n```html-preview\npages/demo.html\n```";
+    await render(<AgentMarkdown content={content} />);
+    expect(request).not.toHaveBeenCalled();
+    await render(<AgentMarkdown content={content} presentHtml />);
+    expect(request).toHaveBeenCalledWith({ kind: "file", conversationId, path: "pages/demo.html" });
+    expect(node.querySelectorAll("iframe")).toHaveLength(1);
+    await click("源码");
+    expect(node.querySelector("code")?.textContent).toBe(result.source);
+    expect(node.querySelector("iframe")).toBeNull();
+    await render(<AgentMarkdown content={"```html-preview\nhttps://example.com/demo.html\n```"} presentHtml />);
+    expect(node.querySelector("iframe")).toBeNull();
+    expect(request.mock.calls.filter(([input]) => input.kind === "file")).toHaveLength(1);
   });
 
   it("switches each HTML fence independently without nesting cards or losing copy", async () => {
@@ -87,7 +114,7 @@ describe("conversation HTML previews", () => {
   });
 
   it("fits reported content height and only accepts bounded messages from its own sandbox", async () => {
-    await render(<HtmlFilePreview path="demo.html" />);
+    await render(<HtmlPreviewCard source={{ kind: "file", path: "demo.html" }} />);
     const frame = node.querySelector("iframe")!;
     const resize = (height: unknown, source: MessageEventSource | null = frame.contentWindow, id = result.id, origin = "null"): void => {
       act(() => { window.dispatchEvent(new MessageEvent("message", { source, origin, data: { type: "html-preview.resize", id, height } })); });
@@ -110,19 +137,18 @@ describe("conversation HTML previews", () => {
   it("releases late responses after unmount and lets failed file previews retry", async () => {
     let resolve!: (value: HtmlPreview) => void;
     request.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
-    await render(<HtmlFilePreview path="demo.html" />);
+    await render(<HtmlPreviewCard source={{ kind: "file", path: "demo.html" }} />);
     await render(null);
     await act(async () => { resolve(result); await Promise.resolve(); });
     expect(request).toHaveBeenCalledWith({ kind: "release", conversationId, id: result.id });
     request.mockRejectedValueOnce(new Error("文件不存在"));
-    await render(<HtmlFilePreview path="demo.html" />);
+    await render(<HtmlPreviewCard source={{ kind: "file", path: "demo.html" }} />);
     expect(node.querySelector('[role="alert"]')?.textContent).toBe("文件不存在");
     await click("刷新 HTML 预览");
     expect(node.querySelector("iframe")).not.toBeNull();
-    await click("关闭 HTML 预览");
-    await click("预览 HTML：demo.html");
-    expect(node.querySelector("iframe")).not.toBeNull();
-    await render(<HtmlFilePreview path="demo.txt" />);
+    await click("源码");
     expect(node.querySelector("iframe")).toBeNull();
+    await click("预览");
+    expect(node.querySelector("iframe")).not.toBeNull();
   });
 });

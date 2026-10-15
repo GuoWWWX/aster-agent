@@ -1,4 +1,4 @@
-import { HtmlPreviewContext, HtmlPreviewScope, HtmlFilePreview } from "../../components/html-preview/html-preview-card.js";
+import { HtmlPreviewScope } from "../../components/html-preview/html-preview-card.js";
 import { QueryTextarea } from "./query-textarea.js";
 import { UserMessageContent } from "./user-message-content.js";
 import { createPastedTextAttachment } from "./pasted-text-attachment.js";
@@ -6013,7 +6013,7 @@ function TimelineItem({
             <>
               {item.continuationMessages !== undefined ? item.continuationMessages.map((message) => (
                 <div key={message.id} data-conversation-timeline-item={message.id}>
-                  <AgentMarkdown content={stripLeadingThinkingSummary(message.content)} />
+                  <AgentMarkdown content={stripLeadingThinkingSummary(message.content)} presentHtml={canShowCompletionTime && message.id === item.continuationMessages?.at(-1)?.id && message.runId !== activeRunId && message.status === "completed"} />
                 </div>
               )) : <>
               {renderedReasoningContent.length > 0 ? (
@@ -6024,7 +6024,7 @@ function TimelineItem({
                 />
               ) : null}
               {renderedMessageContent.length > 0
-                ? <AgentMarkdown content={renderedMessageContent} />
+                ? <AgentMarkdown content={renderedMessageContent} presentHtml={canShowCompletionTime && item.runId !== activeRunId && item.status === "completed"} />
                 : null}
               </>}
             </>
@@ -7056,10 +7056,6 @@ function ToolTimelineItem({
   }, [item.id, reveal?.id, reveal?.requestId, setIsExpanded]);
   const [isRawCallOpen, setIsRawCallOpen] = useState(false);
   const detailsLabel = isExpanded ? "收起调用详情" : "展开调用详情";
-  const previewContext = useContext(HtmlPreviewContext);
-  const changedFilePath = effectiveStatus === "completed" && ["write_file", "replace_in_file", "apply_patch"].includes(item.name)
-    ? fileChangeSummary(item)?.path : undefined;
-  const htmlPreviewPath = previewContext !== null && changedFilePath && /\.html?$/iu.test(changedFilePath) ? changedFilePath : undefined;
 
   return (
     <article
@@ -7106,7 +7102,7 @@ function ToolTimelineItem({
           </button>
         </span>
       </header>
-      {isExpanded ? htmlPreviewPath ? <HtmlFilePreview path={htmlPreviewPath} onClose={() => setIsExpanded(false)} /> : (
+      {isExpanded ? (
         <ToolDetail
           agentClient={agentClient}
           item={item}

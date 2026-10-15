@@ -100,7 +100,7 @@ it("centers the loading state in the message area while keeping the composer ava
   expect(container.querySelector(".conversation-workspace__loading")).toBeNull();
 });
 
-it("expands an HTML edit into one preview/source surface instead of also rendering the diff", async () => {
+it("expands an ordinary HTML edit as a diff without requesting a preview", async () => {
   const client = new MockAgentClient();
   const target = session({ id: PARENT_ID, title: "HTML 预览互斥" });
   const source = "<h1>鹈鹕动画</h1>";
@@ -109,7 +109,7 @@ it("expands an HTML edit into one preview/source surface instead of also renderi
     arguments: JSON.stringify({ path: "index.html", content: source }), diff: `--- /dev/null\n+++ b/index.html\n@@ -0,0 +1 @@\n+${source}\n`,
     result: JSON.stringify({ ok: true, value: { path: "index.html" } }) };
   vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool]);
-  vi.spyOn(client, "htmlPreview").mockImplementation(input => Promise.resolve(input.kind === "file"
+  const preview = vi.spyOn(client, "htmlPreview").mockImplementation(input => Promise.resolve(input.kind === "file"
     ? { id: TOOL_ID, title: "index.html", url: "http://127.0.0.1:1234/token/index.html", source } : null));
   const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   await act(async () => { root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={target} /></TooltipProvider>); await flushConversationWorkspace(); });
@@ -118,15 +118,45 @@ it("expands an HTML edit into one preview/source surface instead of also renderi
   expect(edit).not.toBeNull();
   const toggle = edit!.querySelector<HTMLButtonElement>('.tool-timeline-item__toggle')!;
   await act(async () => { toggle.click(); await flushConversationWorkspace(); });
-  expect(edit!.querySelectorAll('[aria-label="HTML 页面预览"]')).toHaveLength(1);
-  expect(edit!.querySelectorAll("iframe")).toHaveLength(1);
-  expect(edit!.querySelector("pre")).toBeNull();
-  await act(async () => { [...edit!.querySelectorAll("button")].find(button => button.textContent === "源码")!.click(); await Promise.resolve(); });
+  expect(edit!.querySelector('[aria-label="HTML 页面预览"]')).toBeNull();
   expect(edit!.querySelector("iframe")).toBeNull();
-  expect(edit!.querySelectorAll("pre")).toHaveLength(1);
-  expect(edit!.querySelector("pre")?.textContent).toBe(source);
+  expect(edit!.textContent).toContain(source);
+  expect(preview).not.toHaveBeenCalled();
   await act(async () => { toggle.click(); await Promise.resolve(); });
   expect(edit!.querySelector('[aria-label="HTML 页面预览"]')).toBeNull();
+});
+
+it.each([
+  { name: "final code", content: "```html\n<h1>动画</h1>\n```", status: "completed" as const, intermediate: false, kind: "code" },
+  { name: "final file", content: "```html-preview\nexamples/demo.html\n```", status: "completed" as const, intermediate: false, kind: "file" },
+  { name: "streaming code", content: "```html\n<h1>动画</h1>\n```", status: "streaming" as const, intermediate: false, kind: null },
+  { name: "failed code", content: "```html\n<h1>动画</h1>\n```", status: "failed" as const, intermediate: false, kind: null },
+  { name: "intermediate code", content: "```html\n<h1>动画</h1>\n```", status: "completed" as const, intermediate: true, kind: null },
+])("automatically presents only completed final HTML: $name", async ({ content, status, intermediate, kind }) => {
+  const client = new MockAgentClient();
+  const message: ConversationTimelineItem = { id: MESSAGE_ID, kind: "message", conversationId: PARENT_ID,
+    runId: RUN_ID, attachments: [], modelId: null, role: "assistant", status, content, createdAt: "2026-10-15T00:00:00Z" };
+  const tool: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID,
+    batchId: null, name: "read_file", status: "completed", arguments: '{"path":"index.html"}',
+    result: "文件内容", diff: null, createdAt: "2026-10-15T00:00:01Z" };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue(intermediate ? [message, tool] : [message]);
+  const preview = vi.spyOn(client, "htmlPreview").mockImplementation(input => Promise.resolve(input.kind === "code" || input.kind === "file"
+    ? { id: TOOL_ID, title: "demo.html", url: "http://127.0.0.1:1234/token/demo.html", source: "<h1>动画</h1>" } : null));
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  const render = (activeRunId: string | null) => <TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+    session={session({ id: PARENT_ID, title: "显式展示 HTML", activeRunId })} /></TooltipProvider>;
+  await act(async () => { root?.render(render(RUN_ID)); await flushConversationWorkspace(); });
+  expect(preview).not.toHaveBeenCalled();
+  await act(async () => { root?.render(render(null)); await flushConversationWorkspace(); });
+  if (kind === null) {
+    expect(preview).not.toHaveBeenCalled();
+    expect(container.querySelector("iframe")).toBeNull();
+  } else {
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(preview.mock.calls[0]?.[0]).toMatchObject({ kind, conversationId: PARENT_ID });
+    expect(container.querySelectorAll("iframe")).toHaveLength(1);
+    expect(container.querySelector('[aria-label="关闭 HTML 预览"]')).toBeNull();
+  }
 });
 
 it("shows an answered question without an agent label and opens the original prompt", async () => {

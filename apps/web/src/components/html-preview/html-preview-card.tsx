@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
-import { CodeXml, Copy, ExternalLink, RefreshCw, X } from "lucide-react";
+import { CodeXml, Copy, ExternalLink, RefreshCw } from "lucide-react";
 import { htmlPreviewResizeMessageSchema, type HtmlPreview } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import { IconButton } from "../ui/icon-button.js";
@@ -12,8 +12,8 @@ export function HtmlPreviewScope({ client, conversationId, children }: { client:
   return <HtmlPreviewContext.Provider value={value}>{children}</HtmlPreviewContext.Provider>;
 }
 
-export function HtmlPreviewCard({ source, onClose, embedded = false, initialMode = "preview" }: {
-  source: HtmlPreviewSource; onClose?: () => void; embedded?: boolean; initialMode?: "preview" | "source";
+export function HtmlPreviewCard({ source, embedded = false, initialMode = "preview" }: {
+  source: HtmlPreviewSource; embedded?: boolean; initialMode?: "preview" | "source";
 }): ReactElement {
   const context = useContext(HtmlPreviewContext);
   const [revision, setRevision] = useState(0);
@@ -22,12 +22,11 @@ export function HtmlPreviewCard({ source, onClose, embedded = false, initialMode
   const value = source.kind === "code" ? source.html : source.path;
   return <HtmlPreviewContent key={`${context?.conversationId}:${source.kind}:${value}:${revision}:${requested}`} source={source} embedded={embedded} mode={mode} requested={requested}
     onModeChange={next => { setMode(next); if (next === "preview") setRequested(true); }}
-    onClose={() => { if (onClose !== undefined) onClose(); else { setMode("source"); setRequested(false); } }}
     onRefresh={() => { setRequested(true); setRevision(current => current + 1); }} />;
 }
 
-function HtmlPreviewContent({ source, onClose, onRefresh, embedded, mode, requested, onModeChange }: {
-  source: HtmlPreviewSource; onClose: () => void; onRefresh: () => void; embedded: boolean;
+function HtmlPreviewContent({ source, onRefresh, embedded, mode, requested, onModeChange }: {
+  source: HtmlPreviewSource; onRefresh: () => void; embedded: boolean;
   mode: "preview" | "source"; requested: boolean; onModeChange: (mode: "preview" | "source") => void;
 }): ReactElement {
   const context = useContext(HtmlPreviewContext);
@@ -76,7 +75,6 @@ function HtmlPreviewContent({ source, onClose, onRefresh, embedded, mode, reques
       <IconButton label="复制代码" size="compact" disabled={sourceText === undefined} onClick={() => {
         if (sourceText !== undefined) void navigator.clipboard.writeText(sourceText).catch(() => setError("复制失败，请重试。"));
       }}><Copy size={14} /></IconButton>
-      <IconButton label="关闭 HTML 预览" size="compact" onClick={onClose}><X size={14} /></IconButton>
     </header>
     {error !== null ? <p role="alert" className="m-0 p-2 text-[length:var(--app-font-size-control)] text-[var(--app-destructive)]">{error}</p> : null}
     {mode === "source" && sourceText !== undefined
@@ -87,12 +85,4 @@ function HtmlPreviewContent({ source, onClose, onRefresh, embedded, mode, reques
           frameRef.current?.contentWindow?.postMessage({ type: "html-preview.measure", id: preview.id }, "*");
         }} />}
   </section>;
-}
-
-export function HtmlFilePreview({ path, onClose }: { path: string; onClose?: () => void }): ReactElement | null {
-  const context = useContext(HtmlPreviewContext);
-  const [open, setOpen] = useState(true);
-  if (context === null || !/\.html?$/iu.test(path)) return null;
-  return open ? <HtmlPreviewCard source={{ kind: "file", path }} onClose={() => { setOpen(false); onClose?.(); }} />
-    : <button type="button" className="my-[5px] border-0 bg-transparent text-[length:var(--app-font-size-control)] text-[var(--app-accent)]" onClick={() => setOpen(true)}>预览 HTML：{path}</button>;
 }
