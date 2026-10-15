@@ -2531,7 +2531,7 @@ export function RightSidebarWorkspace({
                   />
                 ) : (
                   <ManagedBrowserWorkspace
-                    active={isActive}
+                    active={isActive && sidebarVisible && activeActivity === "conversations"}
                     agentClient={agentClient}
                     colorScheme={isDark ? "dark" : "light"}
                     initialUrl={tab.url}

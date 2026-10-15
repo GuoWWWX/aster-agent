@@ -40,6 +40,7 @@ export function TooltipAnchor({
       <TooltipPrimitive.Trigger asChild>{trigger}</TooltipPrimitive.Trigger>
       <TooltipPrimitive.Portal>
         <TooltipPrimitive.Content
+          data-native-view-overlay=""
           className={cn(
             "z-[120] max-w-64 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-tooltip-background)] px-2 py-1 text-[length:var(--app-font-size-caption)] font-medium leading-4 text-[var(--app-foreground)] shadow-md",
             contentClassName,

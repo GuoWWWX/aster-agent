@@ -35,9 +35,11 @@ let root: Root | null = null;
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-  Object.defineProperty(globalThis, "ResizeObserver", {
-    configurable: true,
-    value: TestResizeObserver,
+  vi.stubGlobal("ResizeObserver", TestResizeObserver);
+  vi.stubGlobal("innerWidth", 1800);
+  vi.stubGlobal("innerHeight", 1000);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    return this.matches("[data-managed-browser-surface]") ? new DOMRect(600, 100, 800, 600) : new DOMRect();
   });
 });
 
@@ -46,12 +48,14 @@ afterEach(() => {
   root = null;
   document.body.replaceChildren();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 function renderBrowser(
   client: MockAgentClient,
   menuRequest: ManagedBrowserWorkspaceMenuRequest | null = null,
 ): HTMLDivElement {
+  vi.spyOn(client, "commandManagedBrowser").mockResolvedValue();
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -93,8 +97,8 @@ describe("ManagedBrowserWorkspace", () => {
     expect(command).toHaveBeenCalledWith({
       command: "showFind",
       sessionId: SESSION.sessionId,
-      x: 0,
-      y: 0,
+      x: 1400,
+      y: 100,
     });
   });
 
@@ -130,36 +134,84 @@ describe("ManagedBrowserWorkspace", () => {
     expect(dispatch).toHaveBeenCalledTimes(2);
   });
 
-  it("resizes the real native page directly from the right-panel drag width", async () => {
+  it("uses the committed surface rectangle during a drag instead of predicting it from panel width", async () => {
     const client = new MockAgentClient();
     const setBounds = vi.spyOn(client as AgentClient, "setManagedBrowserBounds").mockResolvedValue();
     const container = renderBrowser(client);
+    await act(async () => { await new Promise(resolve => window.requestAnimationFrame(resolve)); });
     const surface = container.querySelector<HTMLElement>("[data-managed-browser-surface]");
     expect(surface).not.toBeNull();
-    vi.spyOn(surface!, "getBoundingClientRect").mockReturnValue({
-      bottom: 700,
-      height: 600,
-      left: 600,
-      right: 1_400,
-      toJSON: () => ({}),
-      top: 100,
-      width: 800,
-      x: 600,
-      y: 100,
-    });
+    let bounds = new DOMRect(600, 100, 800, 600);
+    Object.defineProperty(surface, "getBoundingClientRect", { value: () => bounds });
 
     act(() => {
       emitLivePanelResize({ id: "right-workspace", phase: "start", size: 800 });
-      emitLivePanelResize({ id: "right-workspace", phase: "move", size: 1_000 });
+      bounds = new DOMRect(740, 110, 660, 550);
+      emitLivePanelResize({ id: "right-workspace", phase: "move", size: 500 });
     });
 
     await vi.waitFor(() => expect(setBounds).toHaveBeenCalledWith({
-      height: 600,
+      height: 550,
       sessionId: SESSION.sessionId,
       visible: true,
-      width: 1_000,
-      x: 400,
-      y: 100,
+      width: 660,
+      x: 740,
+      y: 110,
+    }));
+    bounds = new DOMRect(750, 120, 650, 530);
+    await vi.waitFor(() => expect(setBounds).toHaveBeenLastCalledWith({
+      sessionId: SESSION.sessionId, visible: true, x: 750, y: 120, width: 650, height: 530,
+    }));
+    act(() => { emitLivePanelResize({ id: "right-workspace", phase: "end", size: 500 }); });
+  });
+
+  it("hides the native surface while overlapping renderer overlays are open and restores it after the last closes", async () => {
+    const client = new MockAgentClient();
+    const setBounds = vi.spyOn(client, "setManagedBrowserBounds").mockResolvedValue();
+    const openBrowser = vi.spyOn(client, "openManagedBrowser");
+    const closeBrowser = vi.spyOn(client, "closeManagedBrowser");
+    const navigateBrowser = vi.spyOn(client, "navigateManagedBrowser");
+    renderBrowser(client);
+    const overlay = (bounds = new DOMRect(900, 80, 300, 200)): HTMLDivElement => {
+      const element = document.createElement("div");
+      element.dataset.nativeViewOverlay = "";
+      element.dataset.state = "open";
+      Object.defineProperty(element, "getBoundingClientRect", { value: () => bounds });
+      document.body.append(element);
+      return element;
+    };
+    const outside = overlay(new DOMRect(0, 0, 200, 60));
+    const closed = overlay();
+    closed.dataset.state = "closed";
+    await new Promise(resolve => window.requestAnimationFrame(resolve));
+    expect(setBounds).toHaveBeenLastCalledWith(expect.objectContaining({ visible: true }));
+    outside.remove(); closed.remove();
+    const first = overlay();
+    await vi.waitFor(() => expect(setBounds).toHaveBeenLastCalledWith(expect.objectContaining({ visible: false })));
+    const second = overlay();
+    first.remove();
+    await new Promise(resolve => window.requestAnimationFrame(resolve));
+    expect(setBounds).toHaveBeenLastCalledWith(expect.objectContaining({ visible: false }));
+    second.remove();
+    await vi.waitFor(() => expect(setBounds).toHaveBeenLastCalledWith(expect.objectContaining({ visible: true })));
+    expect(openBrowser).not.toHaveBeenCalled();
+    expect(closeBrowser).not.toHaveBeenCalled();
+    expect(navigateBrowser).not.toHaveBeenCalled();
+  });
+
+  it("clips native bounds to the visible ancestor content instead of drawing beyond its card", async () => {
+    const client = new MockAgentClient();
+    const setBounds = vi.spyOn(client, "setManagedBrowserBounds").mockResolvedValue();
+    const container = renderBrowser(client);
+    const section = container.querySelector<HTMLElement>("[data-managed-browser-workspace]")!;
+    section.style.overflow = "hidden";
+    section.style.overflowX = "hidden";
+    section.style.overflowY = "hidden";
+    Object.defineProperty(section, "getBoundingClientRect", { value: () => new DOMRect(650, 120, 500, 400) });
+    Object.defineProperties(section, { clientWidth: { value: 500 }, clientHeight: { value: 400 } });
+    act(() => { emitLivePanelResize({ id: "right-workspace", phase: "end", size: 800 }); });
+    await vi.waitFor(() => expect(setBounds).toHaveBeenLastCalledWith({
+      sessionId: SESSION.sessionId, visible: true, x: 650, y: 120, width: 500, height: 400,
     }));
   });
 

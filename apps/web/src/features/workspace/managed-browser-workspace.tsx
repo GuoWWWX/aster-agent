@@ -210,6 +210,8 @@ export function ManagedBrowserWorkspace({
     const surface = surfaceRef.current;
     if (surface === null) return undefined;
     let animationFrame: number | null = null;
+    let liveResizing = false;
+    const observedElements = new Set<Element>();
     const dispatcher = createManagedBrowserBoundsDispatcher((input) => (
       agentClient.setManagedBrowserBounds(input)
     ));
@@ -217,13 +219,49 @@ export function ManagedBrowserWorkspace({
       const current = sessionRef.current;
       if (current === null) return;
       const bounds = surface.getBoundingClientRect();
+      let left = Math.max(0, bounds.left);
+      let top = Math.max(0, bounds.top);
+      let right = Math.min(window.innerWidth, bounds.right);
+      let bottom = Math.min(window.innerHeight, bounds.bottom);
+      for (let parent = surface.parentElement; parent !== null; parent = parent.parentElement) {
+        const style = window.getComputedStyle(parent);
+        const clipX = /^(hidden|clip|scroll|auto)$/u.test(style.overflowX || style.overflow);
+        const clipY = /^(hidden|clip|scroll|auto)$/u.test(style.overflowY || style.overflow);
+        if (!clipX && !clipY) continue;
+        const parentBounds = parent.getBoundingClientRect();
+        if (clipX) {
+          left = Math.max(left, parentBounds.left + parent.clientLeft);
+          right = Math.min(right, parentBounds.left + parent.clientLeft + parent.clientWidth);
+        }
+        if (clipY) {
+          top = Math.max(top, parentBounds.top + parent.clientTop);
+          bottom = Math.min(bottom, parentBounds.top + parent.clientTop + parent.clientHeight);
+        }
+        if (!observedElements.has(parent)) { observer.observe(parent); observedElements.add(parent); }
+      }
+      let occluded = false;
+      for (const overlay of document.querySelectorAll<HTMLElement>('[data-native-view-overlay], [role="menu"]')) {
+        if (!observedElements.has(overlay)) { observer.observe(overlay); observedElements.add(overlay); }
+        if (overlay.dataset.state === "closed") continue;
+        const overlayBounds = overlay.getBoundingClientRect();
+        if (overlayBounds.width > 0 && overlayBounds.height > 0
+          && overlayBounds.left < right && overlayBounds.right > left
+          && overlayBounds.top < bottom && overlayBounds.bottom > top) occluded = true;
+      }
+      for (const element of observedElements) {
+        if (!element.isConnected) { observer.unobserve(element); observedElements.delete(element); }
+      }
+      const x = Math.ceil(left);
+      const y = Math.ceil(top);
+      const width = Math.max(0, Math.floor(right) - x);
+      const height = Math.max(0, Math.floor(bottom) - y);
       dispatcher.push({
-        height: Math.max(0, Math.round(bounds.height)),
+        height,
         sessionId: current.sessionId,
-        visible: activeRef.current,
-        width: Math.max(0, Math.round(bounds.width)),
-        x: Math.max(0, Math.round(bounds.x)),
-        y: Math.max(0, Math.round(bounds.y)),
+        visible: activeRef.current && !occluded && width > 0 && height > 0,
+        width,
+        x,
+        y,
       });
     };
     const scheduleBounds = (): void => {
@@ -231,49 +269,35 @@ export function ManagedBrowserWorkspace({
       animationFrame = window.requestAnimationFrame(() => {
         animationFrame = null;
         measureBounds();
+        if (liveResizing) scheduleBounds();
       });
     };
-    let liveResizeBase: { bounds: DOMRect; size: number } | null = null;
     const handleLiveResize = (event: Event): void => {
       const detail = (event as CustomEvent<LivePanelResizeDetail>).detail;
       if (detail.id !== "right-workspace") return;
-      if (detail.phase === "start") {
-        liveResizeBase = {
-          bounds: surface.getBoundingClientRect(),
-          size: detail.size,
-        };
-        return;
-      }
-      if (detail.phase === "end") {
-        liveResizeBase = null;
-        measureBounds();
-        return;
-      }
-      const current = sessionRef.current;
-      if (current === null || liveResizeBase === null) return;
-      const delta = detail.size - liveResizeBase.size;
-      dispatcher.push({
-        height: Math.max(0, Math.round(liveResizeBase.bounds.height)),
-        sessionId: current.sessionId,
-        visible: activeRef.current,
-        width: Math.max(0, Math.round(liveResizeBase.bounds.width + delta)),
-        x: Math.max(0, Math.round(liveResizeBase.bounds.x - delta)),
-        y: Math.max(0, Math.round(liveResizeBase.bounds.y)),
-      });
+      liveResizing = detail.phase !== "end";
+      scheduleBounds();
     };
     // ResizeObserver already runs after layout and before paint. Send its latest
     // geometry immediately so the native view can join the same visual frame.
     const observer = new ResizeObserver(measureBounds);
     observer.observe(surface);
+    observedElements.add(surface);
+    const mutations = new MutationObserver(scheduleBounds);
+    mutations.observe(document.body, { childList: true, subtree: true, attributes: true,
+      attributeFilter: ["data-state", "style", "class", "hidden"] });
     window.addEventListener(LIVE_PANEL_RESIZE_EVENT, handleLiveResize);
     window.addEventListener("resize", scheduleBounds);
+    window.addEventListener("scroll", scheduleBounds, true);
     scheduleBoundsRef.current = scheduleBounds;
     measureBounds();
     return () => {
       scheduleBoundsRef.current = null;
       observer.disconnect();
+      mutations.disconnect();
       window.removeEventListener(LIVE_PANEL_RESIZE_EVENT, handleLiveResize);
       window.removeEventListener("resize", scheduleBounds);
+      window.removeEventListener("scroll", scheduleBounds, true);
       if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
       dispatcher.stop();
       const current = sessionRef.current;
@@ -341,7 +365,7 @@ export function ManagedBrowserWorkspace({
   };
 
   return (
-    <section className="flex h-full min-h-0 w-full flex-col bg-[var(--app-panel)]" aria-label="内置浏览器" data-managed-browser-workspace onKeyDownCapture={handleFindShortcut}>
+    <section className="flex h-full min-h-0 min-w-0 w-full flex-col overflow-hidden bg-[var(--app-panel)]" aria-label="内置浏览器" data-managed-browser-workspace onKeyDownCapture={handleFindShortcut}>
       <form className="flex h-11 flex-none items-center gap-1 border-b border-[var(--app-border)] px-2" onSubmit={navigate}>
         <div className="flex shrink-0 items-center gap-0.5">
           <button aria-label="后退" className="grid size-7 place-items-center rounded-md hover:bg-[var(--app-hover)] disabled:opacity-40" disabled={!session?.canGoBack} type="button" onClick={() => command("back")}><ArrowLeft aria-hidden="true" size={15} /></button>

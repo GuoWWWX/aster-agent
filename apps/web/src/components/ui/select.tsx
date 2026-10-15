@@ -62,6 +62,7 @@ export function SelectContent({
         )}
         collisionPadding={collisionPadding}
         data-slot="select-content"
+        data-native-view-overlay=""
         position={position}
         sideOffset={sideOffset}
         {...props}
