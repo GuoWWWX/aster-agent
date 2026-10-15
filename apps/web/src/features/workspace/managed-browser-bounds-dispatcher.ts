@@ -3,6 +3,7 @@ import type { ManagedBrowserBoundsInput } from "@agent/protocol";
 type ManagedBrowserBoundsDispatcher = {
   push: (input: ManagedBrowserBoundsInput) => void;
   stop: () => void;
+  pause: (paused: boolean) => void;
 };
 
 function managedBrowserBoundsKey(input: ManagedBrowserBoundsInput): string {
@@ -17,9 +18,10 @@ export function createManagedBrowserBoundsDispatcher(
   let inFlight = false;
   let pending: ManagedBrowserBoundsInput | null = null;
   let stopped = false;
+  let paused = false;
 
   const drain = (): void => {
-    if (stopped || inFlight || pending === null) return;
+    if (stopped || paused || inFlight || pending === null) return;
     const next = pending;
     const nextKey = managedBrowserBoundsKey(next);
     pending = null;
@@ -35,13 +37,18 @@ export function createManagedBrowserBoundsDispatcher(
 
   return {
     push(input) {
-      if (stopped) return;
+      if (stopped || paused) return;
       pending = input;
       drain();
     },
     stop() {
       stopped = true;
       pending = null;
+    },
+    pause(value) {
+      paused = value;
+      pending = null;
+      completedKey = null;
     },
   };
 }

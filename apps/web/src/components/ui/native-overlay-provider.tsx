@@ -1,4 +1,4 @@
-import { NATIVE_OVERLAY_FRAME_NAME, type NativeOverlayRegionsInput, type NativeOverlayResizePointer } from "@agent/protocol";
+import { NATIVE_OVERLAY_FRAME_NAME, type NativeOverlayRegionsInput } from "@agent/protocol";
 import { createContext, useContext, useEffect, useState, type ReactElement, type ReactNode } from "react";
 
 import { NATIVE_OVERLAY_READY } from "../../lib/native-overlay.js";
@@ -59,6 +59,7 @@ function connectOverlayHost(child: Window, root: HTMLElement): () => void {
   let lastInput = "";
   let overlays: HTMLElement[] = [];
   let resizing = false;
+  let browserDrag = false;
   let interactive = false;
   const observedOverlays = new Set<HTMLElement>();
   const resizeObserver = new ResizeObserver(() => schedule());
@@ -73,9 +74,10 @@ function connectOverlayHost(child: Window, root: HTMLElement): () => void {
     for (const element of overlays) {
       if (!observedOverlays.has(element)) { resizeObserver.observe(element); observedOverlays.add(element); }
     }
-    const draggingBrowser = document.body.dataset.resizingPanel === "true"
-      && [...document.querySelectorAll<HTMLElement>("[data-managed-browser-surface]")]
-        .some((surface) => surface.getBoundingClientRect().width > 0);
+    if (document.body.dataset.resizingPanel !== "true") browserDrag = false;
+    else if (!browserDrag) browserDrag = [...document.querySelectorAll<HTMLElement>("[data-managed-browser-surface]")]
+      .some((surface) => surface.getBoundingClientRect().width > 0);
+    const draggingBrowser = browserDrag;
     resizing = draggingBrowser;
     const regions = overlays.flatMap((element) => {
       const bounds = element.getBoundingClientRect();
@@ -141,29 +143,13 @@ function connectOverlayHost(child: Window, root: HTMLElement): () => void {
   };
   const outsideEvents = ["pointerdown", "pointerup", "mousedown", "mouseup", "click"];
   for (const type of outsideEvents) window.addEventListener(type, forwardOutside);
-  let pointerTimer: number | undefined;
-  let latestPointer: NativeOverlayResizePointer | undefined;
-  const flushPointer = (): void => {
-    pointerTimer = undefined;
-    const pointer = latestPointer;
-    latestPointer = undefined;
-    if (pointer === undefined || !resizing) return;
+  const stopResizePointer = bridge.onResizePointer((pointer) => {
+    if (!resizing) return;
     window.dispatchEvent(new PointerEvent("pointermove", {
       bubbles: true, clientX: pointer.x, clientY: pointer.y,
       button: 0, buttons: 1, pointerType: "mouse", isPrimary: true,
     }));
-  };
-  const stopResizePointer = bridge.onResizePointer((pointer) => {
-    if (!resizing) return;
-    latestPointer = pointer;
-    if (pointer.phase === "move") {
-      // A native child can occlude the parent's compositor and pause its RAF.
-      // Keep drag input on a bounded timer so it continues before mouse release.
-      pointerTimer ??= window.setTimeout(flushPointer, 16);
-      return;
-    }
-    if (pointerTimer !== undefined) window.clearTimeout(pointerTimer);
-    flushPointer();
+    if (pointer.phase === "move") return;
     window.dispatchEvent(new PointerEvent("pointerup", {
       bubbles: true, clientX: pointer.x, clientY: pointer.y,
       button: 0, buttons: 0,
@@ -221,7 +207,6 @@ function connectOverlayHost(child: Window, root: HTMLElement): () => void {
   schedule();
   return () => {
     if (updateTimer !== undefined) window.clearTimeout(updateTimer);
-    if (pointerTimer !== undefined) window.clearTimeout(pointerTimer);
     resizeObserver.disconnect();
     mutations.disconnect();
     themeObserver.disconnect();

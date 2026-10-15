@@ -678,3 +678,5 @@ export * from "./scheduled-task.js";
 export { localControlCommandSchema, type LocalControlCommand } from "./local-control.js";
 export * from "./user-question.js";
 export * from "./background-command.js";
+export { advancePanelDrag, directBrowserHorizontalBounds } from "./panel-resize.js";
+export type { PanelDrag } from "./panel-resize.js";

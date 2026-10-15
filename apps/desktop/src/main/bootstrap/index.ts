@@ -515,7 +515,9 @@ async function openMainWindow(): Promise<void> {
     resumePendingMessages: process.env.AGENT_SKIP_PENDING_RUN_RESUMPTION !== "1",
     emitConversationRunEvent: sendConversationRunEvent,
   });
-  const nativeOverlay = new NativeOverlayController(window);
+  const nativeOverlay = new NativeOverlayController(window,
+    pointer => getServices().managedBrowser.resizeFromPointer(pointer),
+    () => getServices().managedBrowser.cancelDirectResize());
   const rendererTarget = applyRendererSecurityPolicy(window, nativeOverlay);
 
   window.webContents.on("console-message", (details) => {

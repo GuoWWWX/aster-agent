@@ -7,6 +7,7 @@ import {
   NATIVE_OVERLAY_RESIZE_POINTER_CHANNEL,
   nativeOverlayRegionsInputSchema,
   type NativeOverlayRegionsInput,
+  type NativeOverlayResizePointer,
 } from "@agent/protocol";
 
 /** Owns the one sandboxed React overlay host above the parent's native browser views. */
@@ -22,7 +23,9 @@ export class NativeOverlayController {
   private lastBounds: Rectangle | undefined;
   private readonly parentContents: WebContents;
 
-  public constructor(private readonly parentWindow: BrowserWindow) {
+  public constructor(private readonly parentWindow: BrowserWindow,
+    private readonly resizeDirectly?: (pointer: NativeOverlayResizePointer) => boolean,
+    private readonly cancelDirectResize?: () => void) {
     this.parentContents = parentWindow.webContents;
     this.parentContents.on("did-create-window", this.attachOverlay);
     this.parentContents.on("did-start-navigation", this.releaseDocumentOverlay);
@@ -173,15 +176,17 @@ export class NativeOverlayController {
     const bounds = this.parentWindow.getContentBounds();
     const zoom = this.parentContents.getZoomFactor();
     event.preventDefault();
-    window.webContents.send(NATIVE_OVERLAY_RESIZE_POINTER_CHANNEL, {
+    const pointer: NativeOverlayResizePointer = {
       phase: mouse.type === "mouseUp" ? "end" : "move",
       x: (cursor.x - bounds.x) / zoom,
       y: (cursor.y - bounds.y) / zoom,
-    });
+    };
+    if (!this.resizeDirectly?.(pointer)) window.webContents.send(NATIVE_OVERLAY_RESIZE_POINTER_CHANNEL, pointer);
     if (mouse.type === "mouseUp") this.stopResize();
   };
 
   private stopResize(): void {
+    if (this.resizeContents.size > 0) this.cancelDirectResize?.();
     for (const contents of this.resizeContents) contents.removeListener("before-mouse-event", this.relayResize);
     this.resizeContents.clear();
   }
@@ -224,6 +229,7 @@ export class NativeOverlayController {
 
   private releaseOverlay(destroy: boolean): void {
     this.stopResize();
+    this.cancelDirectResize?.();
     const window = this.overlayWindow;
     this.detachOverlay?.();
     this.detachOverlay = undefined;

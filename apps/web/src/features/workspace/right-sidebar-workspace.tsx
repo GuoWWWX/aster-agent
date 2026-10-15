@@ -2533,6 +2533,7 @@ export function RightSidebarWorkspace({
                   />
                 ) : (
                   <ManagedBrowserWorkspace
+                    selected={isActive && activeActivity === "conversations"}
                     active={isActive && sidebarVisible && activeActivity === "conversations"}
                     agentClient={agentClient}
                     colorScheme={isDark ? "dark" : "light"}

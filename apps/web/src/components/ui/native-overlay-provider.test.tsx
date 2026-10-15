@@ -103,7 +103,7 @@ it("relays every native drag movement without placing a full-window input layer 
   await ready();
   const surface = document.createElement("div");
   surface.dataset.managedBrowserSurface = "";
-  vi.spyOn(surface, "getBoundingClientRect").mockReturnValue(new DOMRect(500, 100, 300, 400));
+  const read = vi.spyOn(surface, "getBoundingClientRect").mockReturnValue(new DOMRect(500, 100, 300, 400));
   document.body.append(surface);
   document.body.dataset.resizingPanel = "true";
   act(() => emitLivePanelResize({ id: "right-workspace", phase: "start", size: 300 }));
@@ -111,10 +111,13 @@ it("relays every native drag movement without placing a full-window input layer 
   const move = vi.fn();
   window.addEventListener("pointermove", move);
   for (const x of [450, 400, 350]) resizePointer({ phase: "move", x, y: 200 });
-  expect(move).not.toHaveBeenCalled();
-  await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 20)); });
-  expect(move).toHaveBeenCalledTimes(1);
+  expect(move).toHaveBeenCalledTimes(3);
   expect(move).toHaveBeenLastCalledWith(expect.objectContaining({ clientX: 350 }));
+  read.mockClear();
+  read.mockReturnValue(new DOMRect());
+  act(() => emitLivePanelResize({ id: "right-workspace", phase: "move", size: 280 }));
+  expect(read).not.toHaveBeenCalled();
+  expect(update).toHaveBeenLastCalledWith(expect.objectContaining({ resizing: true }));
   window.removeEventListener("pointermove", move);
   const up = vi.fn();
   window.addEventListener("pointerup", up);

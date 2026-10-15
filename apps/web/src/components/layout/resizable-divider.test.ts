@@ -4,7 +4,7 @@ import { act, createElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { LIVE_PANEL_RESIZE_EVENT, type LivePanelResizeDetail } from "./live-panel-resize.js";
+import { LIVE_PANEL_RESIZE_EVENT, NATIVE_PANEL_RESIZE_EVENT, type LivePanelResizeDetail } from "./live-panel-resize.js";
 
 import {
   clampResizablePanelWidth,
@@ -65,6 +65,23 @@ function renderDivider(): { divider: HTMLDivElement; releasePointerCapture: Retu
 }
 
 describe("ResizableDivider pointer updates", () => {
+  it("applies native geometry immediately and rejects input from a different drag", () => {
+    const { divider, snapshots } = renderDivider();
+    let id = "";
+    const started = (event: Event): void => { id = (event as CustomEvent<LivePanelResizeDetail>).detail.dragId ?? id; };
+    window.addEventListener(LIVE_PANEL_RESIZE_EVENT, started); listeners.push(started);
+    act(() => { divider.dispatchEvent(pointer("pointerdown", 500)); });
+    act(() => { window.dispatchEvent(new CustomEvent(NATIVE_PANEL_RESIZE_EVENT, {
+      detail: { id: "stale", phase: "move", pointerX: 450, size: 350, collapsed: false } })); });
+    expect(snapshots.at(-1)?.phase).toBe("start");
+    act(() => { window.dispatchEvent(new CustomEvent(NATIVE_PANEL_RESIZE_EVENT, {
+      detail: { id, phase: "move", pointerX: 450, size: 350, collapsed: false } })); });
+    expect(snapshots.at(-1)).toEqual({ phase: "move", size: 350, width: "350px", collapsed: "false" });
+    act(() => { window.dispatchEvent(new CustomEvent(NATIVE_PANEL_RESIZE_EVENT, {
+      detail: { id, phase: "end", pointerX: 440, size: 360, collapsed: false } })); });
+    expect(snapshots.at(-1)).toEqual({ phase: "end", size: 360, width: "360px", collapsed: "false" });
+    expect(document.body.hasAttribute("data-resizing-panel")).toBe(false);
+  });
   it("commits width and collapse state before emitting each live resize event", () => {
     const { divider, snapshots } = renderDivider();
     act(() => { divider.dispatchEvent(pointer("pointerdown", 500)); });

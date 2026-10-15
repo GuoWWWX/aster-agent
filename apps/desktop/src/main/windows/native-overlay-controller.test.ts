@@ -46,10 +46,10 @@ const HOST = "http://127.0.0.1:5178/native-overlay.html";
 const originalPlatform = process.platform;
 const controllers: NativeOverlayController[] = [];
 beforeEach(() => { Object.defineProperty(process, "platform", { value: "win32" }); });
-function fixture() {
+function fixture(directResize?: (pointer: { phase: "move" | "end"; x: number; y: number }) => boolean, cancelDirectResize?: () => void) {
   const parent = new FakeWindow();
   const child = new FakeWindow();
-  const controller = new NativeOverlayController(parent as unknown as BrowserWindow);
+  const controller = new NativeOverlayController(parent as unknown as BrowserWindow, directResize, cancelDirectResize);
   controllers.push(controller);
   const receive = electron.on.mock.calls.at(-1)?.[1] as (...args: unknown[]) => void;
   const open = () => {
@@ -70,6 +70,29 @@ afterEach(() => {
 });
 
 describe("native overlay host", () => {
+  it.each(["navigation", "crash", "stop"])("cancels direct geometry ownership on %s", (reason) => {
+    const cancel = vi.fn();
+    const { parent, child, open, update } = fixture(() => true, cancel);
+    open(); update({ regions: [], interactive: false, resizing: true });
+    cancel.mockClear();
+    if (reason === "navigation") parent.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+    else if (reason === "crash") child.webContents.emit("render-process-gone");
+    else update({ regions: [], interactive: false, resizing: false });
+    expect(cancel).toHaveBeenCalled();
+    expect(parent.webContents.listenerCount("before-mouse-event")).toBe(0);
+  });
+  it("sends native input straight to the browser resize owner without a child-window round trip", () => {
+    const direct = vi.fn(() => true);
+    const { parent, child, open, update } = fixture(direct);
+    open(); update({ regions: [], interactive: false, resizing: true });
+    const event = { preventDefault: vi.fn() };
+    parent.webContents.emit("before-mouse-event", event, { type: "mouseMove", globalX: 620, globalY: 230 });
+    expect(direct).toHaveBeenLastCalledWith({ phase: "move", x: 600, y: 200 });
+    expect(child.webContents.send).not.toHaveBeenCalled();
+    parent.webContents.emit("before-mouse-event", event, { type: "mouseUp", button: "left", globalX: 600, globalY: 230 });
+    expect(direct).toHaveBeenLastCalledWith({ phase: "end", x: 580, y: 200 });
+    expect(parent.webContents.listenerCount("before-mouse-event")).toBe(0);
+  });
   it.each(["parent", "child"] as const)("releases %s after Electron invalidates the window's webContents getter", (target) => {
     const { parent, child, controller, open } = fixture();
     open();

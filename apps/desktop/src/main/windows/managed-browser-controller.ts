@@ -22,6 +22,8 @@ import {
 
 import {
   APPLICATION_DISPLAY_NAME,
+  advancePanelDrag,
+  directBrowserHorizontalBounds,
   managedBrowserEventSchema,
   managedBrowserSessionSchema,
   managedBrowserSnapshotSchema,
@@ -36,6 +38,8 @@ import {
   type ManagedBrowserReferenceInput,
   type ManagedBrowserSession,
   type ManagedBrowserSnapshot,
+  type NativeOverlayResizePointer,
+  type PanelDrag,
 } from "@agent/protocol";
 
 import { BrowserConfigurationStore } from "../settings/browser-configuration-store.js";
@@ -230,6 +234,9 @@ export class ManagedBrowserController {
   private colorScheme: "light" | "dark" = nativeTheme.shouldUseDarkColors ? "dark" : "light";
   private readonly listeners = new Set<BrowserEventListener>();
   private readonly sessions = new Map<string, ActiveBrowserSession>();
+  private directResize: { id: string; drag: PanelDrag; baseSize: number; bounds: ManagedBrowserBoundsInput;
+    rawX: number; rawRight: number; viewportWidth: number; nativeOwned: boolean; pointerX: number } | null = null;
+  private lastResizeId: string | null = null;
 
   public constructor(
     private readonly getMainWindow: () => BrowserWindow | undefined,
@@ -390,6 +397,60 @@ export class ManagedBrowserController {
   }
 
   public setBounds(input: ManagedBrowserBoundsInput): void {
+    const resize = input.resize;
+    if (resize?.phase === "start") {
+      const session = this.sessions.get(input.sessionId);
+      if (!input.visible || session === undefined || session.background || resize.drag.direction !== "from-end") return;
+      this.lastResizeId = resize.id;
+      this.directResize = { id: resize.id, drag: resize.drag, baseSize: resize.drag.size, bounds: input,
+        rawX: resize.rawX, rawRight: resize.rawRight, viewportWidth: resize.viewportWidth, nativeOwned: false, pointerX: resize.drag.origin };
+    } else if (resize !== undefined) {
+      if (resize.id !== this.lastResizeId) return;
+      if (resize.phase === "move") {
+        if (!this.directResize?.nativeOwned) this.updateDirectResize(resize.pointerX);
+        return;
+      }
+      this.directResize = null;
+    } else if (this.directResize?.bounds.sessionId === input.sessionId) {
+      if (input.visible) return;
+      this.directResize = null;
+    }
+    this.applyBounds(input);
+  }
+
+  /** Called before native mouse delivery; never waits for a Renderer measurement. */
+  public resizeFromPointer(pointer: NativeOverlayResizePointer): boolean {
+    if (this.directResize !== null) this.directResize.nativeOwned = true;
+    const current = this.updateDirectResize(pointer.x);
+    if (current === null) return false;
+    this.emit({ type: "panelResize", sessionId: current.bounds.sessionId, id: current.id,
+      phase: pointer.phase, pointerX: pointer.x, size: current.drag.size, collapsed: current.drag.collapsed });
+    if (pointer.phase === "end") this.directResize = null;
+    return true;
+  }
+
+  private updateDirectResize(pointerX: number): NonNullable<ManagedBrowserController["directResize"]> | null {
+    const current = this.directResize;
+    if (current === null) return null;
+    current.pointerX = pointerX;
+    current.drag = advancePanelDrag(current.drag, pointerX);
+    const horizontal = directBrowserHorizontalBounds(current.rawX, current.rawRight,
+      current.drag.size - current.baseSize, current.viewportWidth);
+    this.applyBounds({ ...current.bounds, ...horizontal, visible: !current.drag.collapsed });
+    return current;
+  }
+
+  public cancelDirectResize(): void {
+    const current = this.directResize;
+    this.directResize = null;
+    const window = this.getMainWindow();
+    if (current !== null && window !== undefined && !window.isDestroyed()) {
+      this.emit({ type: "panelResize", sessionId: current.bounds.sessionId, id: current.id,
+        phase: "end", pointerX: current.pointerX, size: current.drag.size, collapsed: current.drag.collapsed });
+    }
+  }
+
+  private applyBounds(input: ManagedBrowserBoundsInput): void {
     const window = this.requireWindow();
     const session = this.sessions.get(input.sessionId);
     if (session === undefined) return;
@@ -400,11 +461,12 @@ export class ManagedBrowserController {
       return;
     }
     const [contentWidth = 1, contentHeight = 1] = window.getContentSize();
-    const x = Math.min(input.x, Math.max(0, contentWidth - 1));
-    const y = Math.min(Math.max(TITLEBAR_HEIGHT, input.y), Math.max(TITLEBAR_HEIGHT, contentHeight - 1));
+    const zoom = window.webContents.getZoomFactor();
+    const x = Math.min(Math.round(input.x * zoom), Math.max(0, contentWidth - 1));
+    const y = Math.min(Math.round(Math.max(TITLEBAR_HEIGHT, input.y) * zoom), Math.max(TITLEBAR_HEIGHT, contentHeight - 1));
     const bounds = {
-      height: Math.max(1, Math.min(input.height, contentHeight - y)),
-      width: Math.max(1, Math.min(input.width, contentWidth - x)),
+      height: Math.max(1, Math.min(Math.round((Math.max(TITLEBAR_HEIGHT, input.y) + input.height) * zoom) - y, contentHeight - y)),
+      width: Math.max(1, Math.min(Math.round((input.x + input.width) * zoom) - x, contentWidth - x)),
       x,
       y,
     };
@@ -414,6 +476,7 @@ export class ManagedBrowserController {
   }
 
   public close(input: ManagedBrowserReferenceInput): void {
+    if (this.directResize?.bounds.sessionId === input.sessionId) this.directResize = null;
     const session = this.sessions.get(input.sessionId);
     if (session === undefined) return;
     if (this.browserMenuOverlay?.sessionId === input.sessionId) this.closeBrowserMenuOverlay();
@@ -431,6 +494,7 @@ export class ManagedBrowserController {
   }
 
   public dispose(): void {
+    this.directResize = null;
     const errors: unknown[] = [];
     try { this.closeBrowserMenuOverlay(); } catch (error) { errors.push(error); }
     this.listeners.clear();
