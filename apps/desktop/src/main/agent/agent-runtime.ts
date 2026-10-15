@@ -3173,6 +3173,7 @@ export class AgentRuntime {
       });
     } finally {
       this.clearPendingChangeApprovals(runId);
+      this.browserToolPlugin?.closeBackground(conversationId);
       for (const tool of this.database.expirePendingToolApprovalsForRun(runId)) {
         this.appendShadowThreadLog(tool.conversationId, {
           payload: {

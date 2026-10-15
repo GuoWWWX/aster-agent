@@ -822,6 +822,7 @@ class BrowserOpenFixtureModel implements ModelProviderAdapter {
 
 class BrowserScreenshotFixtureModel implements ModelProviderAdapter {
   public readonly requests: CompleteTurnInput[] = [];
+  public constructor(private readonly background = false) {}
 
   public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
     this.requests.push({ ...input, messages: structuredClone(input.messages) });
@@ -830,7 +831,7 @@ class BrowserScreenshotFixtureModel implements ModelProviderAdapter {
         content: "",
         finishReason: "tool_calls",
         toolCalls: [{
-          arguments: JSON.stringify({ action: "open", url: "https://example.test" }),
+          arguments: JSON.stringify({ action: "open", background: this.background, url: "https://example.test" }),
           id: "call_browser_visual_open",
           name: "browser_control",
         }],
@@ -7207,7 +7208,7 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
-  it("returns browser screenshots to the next model turn as bounded vision input", async () => {
+  it.each([false, true])("returns browser screenshots as vision and cleans up background=%s", async (background) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-browser-screenshot-"));
     temporaryDirectories.push(root);
     const database = new AgentDatabase(":memory:");
@@ -7247,7 +7248,7 @@ describe("AgentRuntime", () => {
       tabs.confirmOpened({ requestId: request.requestId, resolvedName: "Example" });
       return true;
     });
-    const model = new BrowserScreenshotFixtureModel();
+    const model = new BrowserScreenshotFixtureModel(background);
     const runtime = new AgentRuntime(
       database,
       {
@@ -7296,6 +7297,7 @@ describe("AgentRuntime", () => {
 
     await expect(finished).resolves.toMatchObject({ status: "completed" });
     expect(browser.capture).toHaveBeenCalledWith({ sessionId: browserId });
+    expect(browser.close).toHaveBeenCalledTimes(background ? 1 : 0);
     expect(model.requests[2]?.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({
         attachments: [expect.objectContaining({

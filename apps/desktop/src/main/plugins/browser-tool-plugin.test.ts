@@ -8,7 +8,7 @@ const PROJECT_ID = "00000000-0000-4000-8000-000000000002";
 const BROWSER_ID = "00000000-0000-4000-8000-000000000003";
 
 describe("BrowserToolPlugin", () => {
-  it.each([PROJECT_ID, CONVERSATION_ID])("opens and controls one owned browser for workspace %s", async (projectId) => {
+  it.each([false, true].flatMap(background => [PROJECT_ID, CONVERSATION_ID].map(projectId => ({ background, projectId }))))("opens and controls an owned browser in $projectId with background=$background", async ({ background, projectId }) => {
     const browser = {
       back: vi.fn(),
       capture: vi.fn().mockResolvedValue({ data: "aGVsbG8=", height: 600, mimeType: "image/jpeg", width: 800 }),
@@ -53,10 +53,11 @@ describe("BrowserToolPlugin", () => {
       stop: vi.fn(),
     };
     const tabs = new WorkspaceBrowserTabController();
-    tabs.onOpenRequested((request) => {
+    const tabRequested = vi.fn((request: { requestId: string }) => {
       tabs.confirmOpened({ requestId: request.requestId, resolvedName: "资料 (1)" });
       return true;
     });
+    tabs.onOpenRequested(tabRequested);
     const plugin = new BrowserToolPlugin(browser, tabs);
 
     expect(plugin.getDefinitions().map((definition) => definition.name)).toEqual([
@@ -66,7 +67,7 @@ describe("BrowserToolPlugin", () => {
     const openProposal = await plugin.execute({
       conversationId: CONVERSATION_ID,
       projectId,
-      rawArguments: JSON.stringify({ action: "open", name: "资料", url: "https://example.test" }),
+      rawArguments: JSON.stringify({ action: "open", background, name: "资料", url: "https://example.test" }),
       signal: new AbortController().signal,
       toolName: BROWSER_TOOL_NAMES.control,
     });
@@ -75,8 +76,11 @@ describe("BrowserToolPlugin", () => {
     const opened = await openProposal.action.execute();
     expect(JSON.parse(opened.content)).toMatchObject({
       ok: true,
-      value: { browserId: BROWSER_ID, resolvedName: "资料 (1)" },
+      value: { browserId: BROWSER_ID, background, resolvedName: background ? "资料" : "资料 (1)" },
     });
+    expect(tabRequested).toHaveBeenCalledTimes(background ? 0 : 1);
+    expect(browser.open).toHaveBeenCalledWith({ url: "https://example.test" }, background
+      ? expect.objectContaining({ background: { width: 1280, height: 800 } }) : undefined);
 
     const listed = await plugin.execute({
       conversationId: CONVERSATION_ID,
@@ -185,8 +189,21 @@ describe("BrowserToolPlugin", () => {
       ok: true,
       value: { browserId: BROWSER_ID, closed: true },
     });
-    expect(closeRequested).toHaveBeenCalledWith({ conversationId: CONVERSATION_ID, sessionId: BROWSER_ID });
+    expect(closeRequested).toHaveBeenCalledTimes(background ? 0 : 1);
     expect(browser.close).toHaveBeenCalledWith({ sessionId: BROWSER_ID });
+    if (background) {
+      const reopened = await plugin.execute({ conversationId: CONVERSATION_ID, projectId: PROJECT_ID,
+        rawArguments: JSON.stringify({ action: "open", background: true, width: 620, height: 900, url: "https://example.test" }),
+        signal: new AbortController().signal, toolName: BROWSER_TOOL_NAMES.control });
+      if (reopened.kind !== "approved_action") throw new Error("Expected background approval.");
+      await reopened.action.execute();
+      plugin.closeBackground(PROJECT_ID);
+      expect(browser.close).toHaveBeenCalledTimes(1);
+      plugin.closeBackground(CONVERSATION_ID);
+      expect(browser.close).toHaveBeenCalledTimes(2);
+      plugin.closeBackground(CONVERSATION_ID);
+      expect(browser.close).toHaveBeenCalledTimes(2);
+    }
   });
 
   it("keeps legacy browser names executable without advertising them", async () => {

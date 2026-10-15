@@ -170,7 +170,7 @@ export type ManagedBrowserAutomationPort = {
   interact(input: ManagedBrowserInteraction & ManagedBrowserReferenceInput): Promise<void>;
   navigate(input: ManagedBrowserNavigateInput): Promise<void>;
   observe(input: ManagedBrowserReferenceInput): Promise<ManagedBrowserObservation>;
-  open(input: ManagedBrowserOpenInput): Promise<ManagedBrowserSession>;
+  open(input: ManagedBrowserOpenInput, options?: BackgroundBrowserOptions): Promise<ManagedBrowserSession>;
   reload(input: ManagedBrowserReferenceInput): Promise<void>;
   stop(input: ManagedBrowserReferenceInput): void;
 };
@@ -210,10 +210,14 @@ type ManagedBrowserPage = {
   zoomOut(): void;
 };
 
-type BrowserPageFactory = (window: BrowserWindow, shortcuts: BrowserPageShortcuts, passwords?: BrowserPasswordStore, isolated?: boolean) => ManagedBrowserPage;
+type BrowserViewport = { width: number; height: number };
+type BackgroundBrowserOptions = { background?: BrowserViewport; signal?: AbortSignal };
+type BrowserPageFactory = (window: BrowserWindow, shortcuts: BrowserPageShortcuts, passwords?: BrowserPasswordStore, isolated?: boolean, background?: BrowserViewport) => ManagedBrowserPage;
 
 type ActiveBrowserSession = {
   onClose?: () => void;
+  background: boolean;
+  disposeAbort: () => void;
   bounds: Rectangle | null;
   disposeError: () => void;
   disposeFindResult: () => void;
@@ -234,7 +238,8 @@ export class ManagedBrowserController {
     private readonly passwords?: BrowserPasswordStore,
   ) {}
 
-  public async open(input: ManagedBrowserOpenInput, options: { isolated?: boolean; onClose?: () => void } = {}): Promise<ManagedBrowserSession> {
+  public async open(input: ManagedBrowserOpenInput, options: BackgroundBrowserOptions & { isolated?: boolean; onClose?: () => void } = {}): Promise<ManagedBrowserSession> {
+    options.signal?.throwIfAborted();
     const window = this.requireWindow();
     const sessionId = randomUUID();
     const page = this.createPage(window, {
@@ -242,24 +247,29 @@ export class ManagedBrowserController {
       onGlobalSearch: () => {
         if (this.sessions.has(sessionId)) this.emit({ sessionId, type: "openGlobalSearch" });
       },
-    }, options.isolated ? undefined : this.passwords, options.isolated);
+    }, options.isolated || options.background !== undefined ? undefined : this.passwords, options.isolated, options.background);
     const configuration = this.browserConfiguration.getConfiguration();
     page.setAskForDownloadLocation(configuration.askForDownloadLocation);
     page.setDownloadDirectory(configuration.downloadDirectory);
-    page.setSavePasswords(configuration.savePasswords);
+    page.setSavePasswords(options.background === undefined && configuration.savePasswords);
+    if (options.background !== undefined) page.setBounds({ x: 0, y: 0, ...options.background });
     const disposeState = page.onStateChanged(() => this.emitState(sessionId));
     const disposeError = page.onError((message) => {
       this.emit({ message, sessionId, type: "error" });
     });
     const disposeFindResult = page.onFindResult((result) => this.updateFindResult(sessionId, result));
+    const onAbort = (): void => this.close({ sessionId });
     this.sessions.set(sessionId, {
       ...(options.onClose === undefined ? {} : { onClose: options.onClose }),
+      background: options.background !== undefined,
+      disposeAbort: () => options.signal?.removeEventListener("abort", onAbort),
       bounds: null,
       disposeError,
       disposeFindResult,
       disposeState,
       page,
     });
+    options.signal?.addEventListener("abort", onAbort, { once: true });
     try {
       await page.showStartPage();
       await page.setColorScheme(this.colorScheme);
@@ -267,7 +277,8 @@ export class ManagedBrowserController {
         await page.load(resolveManagedBrowserAddress(input.url, configuration.searchEngine));
       }
       page.setAskForDownloadLocation(configuration.askForDownloadLocation);
-      page.setZoomPercent(configuration.defaultZoomPercent);
+      page.setZoomPercent(options.background === undefined ? configuration.defaultZoomPercent : 100);
+      options.signal?.throwIfAborted();
       return this.sessionState(sessionId);
     } catch (error) {
       this.close({ sessionId });
@@ -382,6 +393,7 @@ export class ManagedBrowserController {
     const window = this.requireWindow();
     const session = this.sessions.get(input.sessionId);
     if (session === undefined) return;
+    if (session.background) return;
     const page = session.page;
     if (!input.visible || input.width === 0 || input.height === 0) {
       page.setVisible(false);
@@ -406,6 +418,7 @@ export class ManagedBrowserController {
     if (session === undefined) return;
     if (this.browserMenuOverlay?.sessionId === input.sessionId) this.closeBrowserMenuOverlay();
     this.sessions.delete(input.sessionId);
+    session.disposeAbort();
     session.disposeError();
     session.disposeFindResult();
     session.disposeState();
@@ -904,21 +917,32 @@ function isLikelyBrowserHost(value: string): boolean {
   }
 }
 
-function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPageShortcuts, passwords?: BrowserPasswordStore, isolated = false): ManagedBrowserPage {
-  const view = new WebContentsView({
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      partition: isolated ? `html-preview:${randomUUID()}` : MANAGED_BROWSER_PARTITION,
-      ...(isolated ? {} : { preload: path.resolve(__dirname, "../preload/browser-passwords.cjs") }),
-      sandbox: true,
-      webSecurity: true,
-    },
+function createElectronBrowserPage(ownerWindow: BrowserWindow, shortcuts: BrowserPageShortcuts, passwords?: BrowserPasswordStore, isolated = false, background?: BrowserViewport): ManagedBrowserPage {
+  const webPreferences = {
+    contextIsolation: true,
+    nodeIntegration: false,
+    partition: background !== undefined ? `browser-background:${randomUUID()}` : isolated ? `html-preview:${randomUUID()}` : MANAGED_BROWSER_PARTITION,
+    sandbox: true,
+    webSecurity: true,
+  };
+  const backgroundWindow = background === undefined ? undefined : new BrowserWindow({
+    ...background, show: false, useContentSize: true, frame: false, skipTaskbar: true, enableLargerThanScreen: true,
+    webPreferences: { ...webPreferences, backgroundThrottling: false, offscreen: true },
   });
-  window.contentView.addChildView(view);
-  view.setBackgroundColor(nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff");
-  view.setVisible(false);
-  const webContents = view.webContents;
+  const window = backgroundWindow ?? ownerWindow;
+  const view = backgroundWindow === undefined ? new WebContentsView({
+    webPreferences: { ...webPreferences, ...(isolated ? {} : { preload: path.resolve(__dirname, "../preload/browser-passwords.cjs") }) },
+  }) : undefined;
+  if (view !== undefined) {
+    window.contentView.addChildView(view);
+    view.setVisible(false);
+  }
+  const setBackgroundColor = (color: string): void => {
+    if (view !== undefined) view.setBackgroundColor(color);
+    else window.setBackgroundColor(color);
+  };
+  setBackgroundColor(nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff");
+  const webContents = view?.webContents ?? window.webContents;
   const downloads: BrowserDownload[] = [];
   const history: BrowserHistoryEntry[] = [];
   const stateListeners = new Set<() => void>();
@@ -997,6 +1021,7 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
       try {
         browserDebugger.attach("1.3");
       } catch {
+        if (background !== undefined) throw new Error("Background browser input requires the Chromium automation connection.");
         await action(sendElectronMouseInput);
         return;
       }
@@ -1017,7 +1042,7 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
   });
   const applyZoomPercent = (percent: number): void => {
     zoomPercent = Math.min(500, Math.max(25, Math.round(percent)));
-    webContents.setZoomFactor(managedBrowserZoomFactor(zoomPercent));
+    webContents.setZoomFactor(background === undefined ? managedBrowserZoomFactor(zoomPercent) : zoomPercent / 100);
   };
   const emitState = (): void => {
     for (const listener of stateListeners) listener();
@@ -1028,8 +1053,15 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
   const passwordController = passwords === undefined ? undefined : installBrowserPasswords(
     webContents, window, passwords, () => savePasswords, emitError,
   );
+  const applyBackgroundViewport = async (): Promise<void> => {
+    if (background !== undefined) await withAutomationDebugger(async (send) => {
+      // A renderer must exist before Chromium can apply its device metrics.
+      await send("Emulation.setDeviceMetricsOverride", { ...background, deviceScaleFactor: 1, mobile: false });
+    });
+  };
   const showStartPage = async (): Promise<void> => {
     await webContents.loadURL("about:blank");
+    await applyBackgroundViewport();
     await webContents.executeJavaScript(managedBrowserStartPageScript(), true);
   };
   const recordHistory = (url: string): void => {
@@ -1043,11 +1075,12 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
     if (history.length > 100) history.length = 100;
   };
   const handleDownload = (
-    _event: ElectronEvent,
+    event: ElectronEvent,
     item: DownloadItem,
     source: WebContents,
   ): void => {
     if (source.id !== webContents.id) return;
+    if (background !== undefined) { event.preventDefault(); return; }
     const download: BrowserDownload = {
       fileName: item.getFilename() || "download",
       receivedBytes: 0,
@@ -1084,7 +1117,7 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
     });
   });
   webContents.on("did-navigate", (_event, url) => {
-    applyZoomPercent(zoomPercent);
+    if (background === undefined) applyZoomPercent(zoomPercent);
     recordHistory(url);
     emitState();
   });
@@ -1100,6 +1133,7 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
     emitState();
   });
   webContents.on("before-input-event", (event, input) => {
+    if (background !== undefined) return;
     if (input.type !== "keyDown" || (!input.control && !input.meta) || input.alt) return;
     if (input.key.toLocaleLowerCase() !== "f") return;
     event.preventDefault();
@@ -1141,7 +1175,8 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
       if (webContents.navigationHistory.canGoBack()) webContents.navigationHistory.goBack();
     },
     capture: async () => {
-      const sourceImage = await webContents.capturePage();
+      const sourceImage = await webContents.capturePage(undefined, { stayHidden: background !== undefined });
+      if (sourceImage.isEmpty()) throw new Error("The browser has not rendered a screenshot yet. Wait for the page and retry.");
       const size = await viewport();
       const sourceSize = sourceImage.getSize();
       const image = sourceSize.width === size.width && sourceSize.height === size.height
@@ -1165,15 +1200,17 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
       );
     },
     close: () => {
+      if (closed) return;
       closed = true;
       passwordController?.dispose();
       stateListeners.clear();
       errorListeners.clear();
       findResultListeners.clear();
       webContents.session.removeListener("will-download", handleDownload);
-      window.contentView.removeChildView(view);
+      if (view !== undefined) window.contentView.removeChildView(view);
       if (webContents.debugger.isAttached()) webContents.debugger.detach();
-      if (!webContents.isDestroyed()) webContents.close();
+      if (backgroundWindow !== undefined) backgroundWindow.destroy();
+      else if (!webContents.isDestroyed()) webContents.close();
     },
     forward: () => {
       if (webContents.navigationHistory.canGoForward()) webContents.navigationHistory.goForward();
@@ -1193,6 +1230,7 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
     }),
     load: async (url) => {
       await applyManagedBrowserColorScheme(webContents, colorScheme, url);
+      await applyBackgroundViewport();
     },
     onError: (listener) => {
       errorListeners.add(listener);
@@ -1230,6 +1268,16 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
           return;
         }
         case "key": {
+          if (background !== undefined) {
+            const modifiers = input.modifiers.reduce((bits, modifier) => bits | ({ alt: 1, control: 2, meta: 4, shift: 8 }[modifier]), 0);
+            await withAutomationDebugger(async (send) => {
+              const event = { key: input.key, modifiers,
+                ...(input.key.length === 1 && (modifiers & 7) === 0 ? { text: input.key } : {}) };
+              await send("Input.dispatchKeyEvent", { ...event, type: "keyDown" });
+              await send("Input.dispatchKeyEvent", { key: input.key, modifiers, type: "keyUp" });
+            });
+            return;
+          }
           window.focus();
           webContents.focus();
           const event = { keyCode: input.key, modifiers: input.modifiers };
@@ -1241,6 +1289,10 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
           return;
         }
         case "type":
+          if (background !== undefined) {
+            await withAutomationDebugger(async (send) => { await send("Input.insertText", { text: input.text }); });
+            return;
+          }
           window.focus();
           webContents.focus();
           await webContents.insertText(input.text);
@@ -1372,11 +1424,14 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
       savePasswords = enabled;
       passwordController?.refresh();
     },
-    setBounds: (bounds) => view.setBounds(bounds),
+    setBounds: (bounds) => {
+      if (view !== undefined) view.setBounds(bounds);
+      else window.setContentSize(bounds.width, bounds.height);
+    },
     setColorScheme: async (nextColorScheme) => {
       const changed = colorScheme !== nextColorScheme;
       colorScheme = nextColorScheme;
-      view.setBackgroundColor(nextColorScheme === "dark" ? "#171717" : "#ffffff");
+      setBackgroundColor(nextColorScheme === "dark" ? "#171717" : "#ffffff");
       await applyManagedBrowserColorScheme(
         webContents,
         nextColorScheme,
@@ -1384,9 +1439,9 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
         changed && /^https?:/iu.test(webContents.getURL()),
       );
     },
-    setVisible: (visible) => view.setVisible(visible),
+    setVisible: (visible) => view?.setVisible(visible),
     setZoomPercent: (percent) => {
-      applyZoomPercent(percent);
+      if (background === undefined || percent !== zoomPercent) applyZoomPercent(percent);
       emitState();
     },
     showStartPage,

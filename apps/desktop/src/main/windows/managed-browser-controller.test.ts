@@ -13,6 +13,9 @@ const electronMocks = vi.hoisted(() => {
     return Promise.resolve();
   });
   return {
+    backgroundWindowOptions: [] as unknown[],
+    backgroundNativeCalls: [] as string[],
+    destroyBackgroundWindow: vi.fn(),
     getPath: vi.fn(() => "C:\\Users\\test\\Downloads"),
     buildFromTemplate: vi.fn((template: unknown) => {
       templates.push(template);
@@ -31,6 +34,45 @@ const electronMocks = vi.hoisted(() => {
 
 vi.mock("electron", () => ({
   app: { getPath: electronMocks.getPath },
+  BrowserWindow: class {
+    public readonly setBackgroundColor = vi.fn();
+    public readonly setContentSize = vi.fn();
+    public readonly destroy = electronMocks.destroyBackgroundWindow;
+    public readonly webContents;
+
+    public constructor(options: unknown) {
+      electronMocks.backgroundWindowOptions.push(options);
+      let url = "";
+      let attached = false;
+      this.webContents = {
+        debugger: {
+          attach: vi.fn(() => { attached = true; }),
+          detach: vi.fn(() => { attached = false; }),
+          isAttached: () => attached,
+          sendCommand: vi.fn((method: string) => {
+            if (method === "Emulation.setDeviceMetricsOverride" && url === "") throw new Error("Renderer not initialized");
+            electronMocks.backgroundNativeCalls.push(method);
+            return Promise.resolve();
+          }),
+        },
+        executeJavaScript: vi.fn(() => Promise.resolve()),
+        getTitle: () => "Background",
+        getURL: () => url,
+        isDestroyed: () => false,
+        isLoading: () => false,
+        loadURL: vi.fn((value: string) => {
+          url = value;
+          electronMocks.backgroundNativeCalls.push(`load:${value}`);
+          return Promise.resolve();
+        }),
+        navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+        on: vi.fn(),
+        session: { on: vi.fn(), removeListener: vi.fn(), setPermissionRequestHandler: vi.fn() },
+        setWindowOpenHandler: vi.fn(),
+        setZoomFactor: vi.fn(),
+      };
+    }
+  },
   dialog: { showMessageBox: electronMocks.showMessageBox },
   Menu: { buildFromTemplate: electronMocks.buildFromTemplate },
   nativeTheme: electronMocks.nativeTheme,
@@ -190,9 +232,74 @@ it("downloads into the configured directory and avoids overwriting reserved name
 
 describe("ManagedBrowserController", () => {
   beforeEach(() => {
+    electronMocks.backgroundWindowOptions.length = 0;
+    electronMocks.backgroundNativeCalls.length = 0;
+    electronMocks.destroyBackgroundWindow.mockClear();
     electronMocks.loadOverlayUrl.mockReset();
     electronMocks.loadOverlayUrl.mockResolvedValue(undefined);
     electronMocks.overlayViews.length = 0;
+  });
+
+  it("initializes the native renderer before applying the background viewport and reapplies it after navigation", async () => {
+    const controller = new ManagedBrowserController(() => createFakeWindow(),
+      { getConfiguration: () => browserConfiguration() });
+    const session = await controller.open({ url: "https://example.test" }, { background: { width: 620, height: 900 } });
+    expect(electronMocks.backgroundWindowOptions).toHaveLength(1);
+    const options = electronMocks.backgroundWindowOptions[0];
+    expect(options).toMatchObject({ show: false, webPreferences: { offscreen: true, nodeIntegration: false, sandbox: true } });
+    const calls = electronMocks.backgroundNativeCalls;
+    expect(calls.indexOf("Emulation.setDeviceMetricsOverride")).toBeGreaterThan(calls.indexOf("load:about:blank"));
+    expect(calls.lastIndexOf("Emulation.setDeviceMetricsOverride")).toBeGreaterThan(calls.indexOf("load:https://example.test/"));
+    controller.close({ sessionId: session.sessionId });
+    controller.dispose();
+    expect(electronMocks.destroyBackgroundWindow).toHaveBeenCalledOnce();
+  });
+
+  it("gives background pages an isolated fixed viewport without revealing a view", async () => {
+    const page = createFakePage();
+    const factory = vi.fn<NonNullable<ConstructorParameters<typeof ManagedBrowserController>[2]>>(() => page);
+    const controller = new ManagedBrowserController(() => createFakeWindow(),
+      { getConfiguration: () => browserConfiguration({ defaultZoomPercent: 150 }) }, factory);
+    const abort = new AbortController();
+    const session = await controller.open({ url: "https://example.test" }, {
+      background: { width: 620, height: 900 }, signal: abort.signal,
+    });
+    expect(factory.mock.calls[0]?.[4]).toEqual({ width: 620, height: 900 });
+    expect(page.setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 620, height: 900 });
+    expect(page.setSavePasswords).toHaveBeenCalledWith(false);
+    expect(page.setZoomPercent).toHaveBeenLastCalledWith(100);
+    controller.setBounds({ sessionId: session.sessionId, x: 0, y: 0, width: 800, height: 600, visible: true });
+    expect(page.setVisible).not.toHaveBeenCalledWith(true);
+    await controller.capture({ sessionId: session.sessionId });
+    expect(page.capture).toHaveBeenCalledOnce();
+    abort.abort();
+    expect(page.close).toHaveBeenCalledOnce();
+    controller.dispose();
+    expect(page.close).toHaveBeenCalledOnce();
+  });
+
+  it("releases a background page when opening fails or is cancelled during loading", async () => {
+    const page = createFakePage();
+    const controller = new ManagedBrowserController(() => createFakeWindow(),
+      { getConfiguration: () => browserConfiguration() }, () => page);
+    page.load.mockRejectedValueOnce(new Error("Page unavailable"));
+    await expect(controller.open({ url: "https://example.test" }, { background: { width: 620, height: 900 } }))
+      .rejects.toThrow("Page unavailable");
+    expect(page.close).toHaveBeenCalledTimes(1);
+    const abort = new AbortController();
+    let finishLoad: () => void = () => {};
+    page.load.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      finishLoad = resolve;
+      abort.abort();
+    }));
+    const opened = controller.open({ url: "https://example.test" }, {
+      background: { width: 620, height: 900 }, signal: abort.signal,
+    });
+    for (let index = 0; index < 5; index++) await Promise.resolve();
+    finishLoad();
+    await expect(opened).rejects.toMatchObject({ name: "AbortError" });
+    controller.dispose();
+    expect(page.close).toHaveBeenCalledTimes(2);
   });
 
   it("treats the previous 80% page scale as the new 100% baseline", () => {
@@ -240,7 +347,7 @@ describe("ManagedBrowserController", () => {
     const onClose = vi.fn();
     const controller = new ManagedBrowserController(() => window, { getConfiguration: () => browserConfiguration() }, factory);
     const session = await controller.open({ url: "http://127.0.0.1:1234/token/demo.html" }, { isolated: true, onClose });
-    expect(factory).toHaveBeenCalledWith(window, expect.any(Object), undefined, true);
+    expect(factory).toHaveBeenCalledWith(window, expect.any(Object), undefined, true, undefined);
     controller.close({ sessionId: session.sessionId });
     controller.dispose();
     expect(page.close).toHaveBeenCalledTimes(1);
