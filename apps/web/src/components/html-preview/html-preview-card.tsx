@@ -1,6 +1,6 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactElement, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { CodeXml, Copy, ExternalLink, RefreshCw, X } from "lucide-react";
-import type { HtmlPreview } from "@agent/protocol";
+import { htmlPreviewResizeMessageSchema, type HtmlPreview } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import { IconButton } from "../ui/icon-button.js";
 import { highlightCode } from "../markdown/code-highlighter.js";
@@ -33,6 +33,8 @@ function HtmlPreviewContent({ source, onClose, onRefresh, embedded, mode, reques
   const context = useContext(HtmlPreviewContext);
   const [preview, setPreview] = useState<HtmlPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [height, setHeight] = useState(320);
+  const frameRef = useRef<HTMLIFrameElement>(null);
   const kind = source.kind;
   const value = source.kind === "code" ? source.html : source.path;
   useEffect(() => {
@@ -47,6 +49,16 @@ function HtmlPreviewContent({ source, onClose, onRefresh, embedded, mode, reques
     }).catch(reason => { if (alive) setError(reason instanceof Error ? reason.message : "HTML 预览加载失败。"); });
     return () => { alive = false; if (owned !== undefined) release(owned); };
   }, [context, kind, value, requested]);
+  useEffect(() => {
+    if (preview === null || mode !== "preview") return;
+    const resize = (event: MessageEvent<unknown>): void => {
+      if (event.source !== frameRef.current?.contentWindow || event.origin !== "null") return;
+      const message = htmlPreviewResizeMessageSchema.safeParse(event.data);
+      if (message.success && message.data.id === preview.id) setHeight(Math.max(192, message.data.height));
+    };
+    window.addEventListener("message", resize);
+    return () => window.removeEventListener("message", resize);
+  }, [preview, mode]);
   const sourceText = source.kind === "code" ? source.html : preview?.source;
   const title = source.kind === "file" ? source.path.split(/[\\/]/u).at(-1) : "html";
   const buttonClass = "rounded-[var(--app-radius-small)] border-0 bg-transparent px-2 py-1 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)] aria-pressed:bg-[var(--app-selection)] aria-pressed:text-[var(--app-selection-foreground)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)]";
@@ -70,7 +82,10 @@ function HtmlPreviewContent({ source, onClose, onRefresh, embedded, mode, reques
     {mode === "source" && sourceText !== undefined
       ? <pre className="m-0 max-h-96 overflow-auto bg-[var(--app-muted)] p-2 font-mono text-[length:var(--app-font-size-control)]"><code className="hljs" dangerouslySetInnerHTML={{ __html: highlightCode(sourceText, "html") }} /></pre>
       : preview === null ? error === null ? <p role="status" className="m-0 p-2 text-[length:var(--app-font-size-control)]">正在加载页面…</p> : null
-      : <div className="h-80 min-h-48 resize-y overflow-auto bg-white"><iframe title={`${preview.title} 页面效果`} src={preview.url} sandbox="allow-scripts" referrerPolicy="no-referrer" className="block h-full min-h-48 w-full border-0" /></div>}
+      : <iframe ref={frameRef} title={`${preview.title} 页面效果`} src={preview.url} sandbox="allow-scripts" referrerPolicy="no-referrer"
+        className="block w-full border-0 bg-white" style={{ height }} onLoad={() => {
+          frameRef.current?.contentWindow?.postMessage({ type: "html-preview.measure", id: preview.id }, "*");
+        }} />}
   </section>;
 }
 

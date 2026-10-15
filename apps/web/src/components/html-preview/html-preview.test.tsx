@@ -86,6 +86,27 @@ describe("conversation HTML previews", () => {
     expect(request).toHaveBeenCalledWith({ kind: "release", conversationId, id: result.id });
   });
 
+  it("fits reported content height and only accepts bounded messages from its own sandbox", async () => {
+    await render(<HtmlFilePreview path="demo.html" />);
+    const frame = node.querySelector("iframe")!;
+    const resize = (height: unknown, source: MessageEventSource | null = frame.contentWindow, id = result.id, origin = "null"): void => {
+      act(() => { window.dispatchEvent(new MessageEvent("message", { source, origin, data: { type: "html-preview.resize", id, height } })); });
+    };
+    resize(720);
+    expect(frame.style.height).toBe("720px");
+    for (const height of [-1, 0, 1_000_000, NaN, "900"]) resize(height);
+    resize(900, window);
+    resize(900, frame.contentWindow, "00000000-0000-4000-8000-000000000099");
+    resize(900, frame.contentWindow, result.id, "https://example.com");
+    expect(frame.style.height).toBe("720px");
+    resize(430);
+    expect(frame.style.height).toBe("430px");
+    expect(frame.parentElement?.className).not.toContain("resize-y");
+    await click("刷新 HTML 预览");
+    resize(999);
+    expect(node.querySelector("iframe")?.style.height).not.toBe("999px");
+  });
+
   it("releases late responses after unmount and lets failed file previews retry", async () => {
     let resolve!: (value: HtmlPreview) => void;
     request.mockImplementationOnce(() => new Promise(done => { resolve = done; }));

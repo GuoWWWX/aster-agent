@@ -14,5 +14,11 @@ export const htmlPreviewSchema = z.object({
   source: z.string().max(1_000_000),
 }).strict();
 export const htmlPreviewResponseSchema = htmlPreviewSchema.nullable();
+export const HTML_PREVIEW_MAX_HEIGHT = 20_000;
+export const htmlPreviewResizeMessageSchema = z.object({
+  type: z.literal("html-preview.resize"),
+  id: z.string().uuid(),
+  height: z.number().int().min(1).max(HTML_PREVIEW_MAX_HEIGHT),
+}).strict();
 export type HtmlPreviewRequest = z.infer<typeof htmlPreviewRequestSchema>;
 export type HtmlPreview = z.infer<typeof htmlPreviewSchema>;

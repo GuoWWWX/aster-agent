@@ -3,6 +3,7 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import { htmlPreviewRequestSchema, htmlPreviewSchema, type HtmlPreview, type HtmlPreviewRequest } from "@agent/protocol";
+import { htmlPreviewDocument } from "./html-preview-document.js";
 
 const MAX_BYTES = 1_000_000;
 const TYPES: Record<string, string> = { ".css": "text/css", ".js": "text/javascript", ".mjs": "text/javascript", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf" };
@@ -36,8 +37,9 @@ export class HtmlPreviewServer {
       const relativeEntry = root === null || entryPath === null ? "index.html" : path.relative(root, entryPath).split(path.sep).join("/");
       const id = randomUUID();
       const token = randomUUID();
+      const document = htmlPreviewDocument(source, id);
       let port = 0;
-      const server = createServer((req, res) => { void this.serve(req, res, { root, relativeEntry, source, token, port }).catch(() => { if (!res.headersSent) res.writeHead(404); res.end("Preview resource unavailable."); }); });
+      const server = createServer((req, res) => { void this.serve(req, res, { root, relativeEntry, source: document, token, port }).catch(() => { if (!res.headersSent) res.writeHead(404); res.end("Preview resource unavailable."); }); });
       await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
       if (this.disposed || generation !== this.generation) { server.close(); throw new Error("HTML 预览服务已关闭。"); }
       const address = server.address();

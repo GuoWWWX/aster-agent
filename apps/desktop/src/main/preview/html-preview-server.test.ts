@@ -21,7 +21,9 @@ describe("HTML preview server", () => {
   it("serves a snapshot, relative assets and sandbox headers; reopening reads edits", async () => {
     const preview = await server.create({ kind: "file", conversationId, path: "pages/demo.html" });
     const response = await fetch(preview.url);
-    expect(await response.text()).toBe(preview.source);
+    const document = await response.text();
+    expect(document.replace(/<script data-aster-preview-resize>[\s\S]*?<\/script>/u, "")).toBe(preview.source);
+    expect(preview.source).not.toContain("data-aster-preview-resize");
     expect(response.headers.get("content-security-policy")).toContain("sandbox allow-scripts;");
     expect(response.headers.get("content-security-policy")).not.toContain("allow-same-origin");
     expect(response.headers.get("content-security-policy")).toContain("connect-src 'none'");
@@ -30,7 +32,7 @@ describe("HTML preview server", () => {
     expect((await fetch(new URL("../app.js", preview.url))).headers.get("content-type")).toBe("text/javascript");
     expect(await (await fetch(preview.url, { method: "HEAD" })).text()).toBe("");
     await writeFile(path.join(root, "pages/demo.html"), "<h1>已修改</h1>");
-    expect(await (await fetch(preview.url)).text()).toBe(preview.source);
+    expect(await (await fetch(preview.url)).text()).toBe(document);
     expect((await server.create({ kind: "file", conversationId, path: "pages/demo.html" })).source).toBe("<h1>已修改</h1>");
   });
 
@@ -88,6 +90,6 @@ describe("HTML preview server", () => {
     server.closeAll();
     await expect(pending).rejects.toThrow("关闭");
     const preview = await server.create({ kind: "code", conversationId, html: "reopened" });
-    expect(await (await fetch(preview.url)).text()).toBe("reopened");
+    expect(await (await fetch(preview.url)).text()).toContain("reopened");
   });
 });
