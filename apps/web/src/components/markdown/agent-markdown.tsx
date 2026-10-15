@@ -16,11 +16,12 @@ import "katex/dist/katex.min.css";
 import MarkdownIt from "markdown-it";
 import { Check, Copy, Maximize2, CodeXml } from "lucide-react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactElement } from "react";
+import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactElement } from "react";
 
 import { requestMediaPreview } from "../media/image-viewer.js";
 import { fileTypeIconMarkup, isRecognizedFileTypePath } from "../ui/file-type-icon-data.js";
-import { highlightCode } from "./code-highlighter.js";
+import { highlightCode, isLargeCodeSource } from "./code-highlighter.js";
+import { CodeSourceView } from "./code-source-view.js";
 import { terminalTokens } from "../ui/terminal-tokens.js";
 
 import "./agent-markdown.css";
@@ -164,17 +165,21 @@ renderer.renderer.rules.fence = (tokens, index, _options, environment: unknown) 
     const caption = captionValue == null ? "" : String(captionValue);
     return `<div class="agent-markdown__mermaid"><div class="agent-markdown__code-header"><span>MERMAID</span><div><button aria-label="放大 Mermaid 图表" title="放大图表" data-action="preview-mermaid" type="button">${expandIcon}</button><button aria-label="复制 Mermaid 源码" title="复制源码" data-action="copy-mermaid" type="button">${copyIcon}</button><button aria-label="查看 Mermaid 源码" title="查看源码" data-action="toggle-mermaid-source" type="button" aria-expanded="false">${sourceIcon}</button></div></div><div class="agent-markdown__mermaid-canvas" data-mermaid-canvas></div>${caption ? `<div class="agent-markdown__mermaid-caption">${renderer.utils.escapeHtml(caption)}</div>` : ""}<pre hidden data-mermaid-source><code>${renderer.utils.escapeHtml(source)}</code></pre></div>\n`;
   }
-  const shell = /^(bash|sh|shell|zsh|powershell|pwsh|ps1|ps|cmd|bat|batch)$/iu.test(language);
-  const highlightedSource = shell ? terminalTokens(source, true).map((token) =>
-    `<span class="agent-markdown__shell-${token.kind}">${renderer.utils.escapeHtml(source.slice(token.start, token.end))}</span>`,
-  ).join("") : highlightCode(source, language);
   const label = /^(powershell|pwsh|ps1|ps)$/iu.test(language) ? "PowerShell"
     : language.toLowerCase() === "bash" ? "Bash" : language;
   const htmlPreview = /^html?$/iu.test(language) && typeof environment === "object" && environment !== null && "htmlPreview" in environment && environment.htmlPreview === true
     && token?.map != null && "markdown" in environment && typeof environment.markdown === "string"
     && isClosedFence(environment.markdown.split("\n")[token.map[1] - 1] ?? "", token.markup);
   if (htmlPreview) return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><template data-html-code-source>${renderer.utils.escapeHtml(source)}</template><div data-html-code-preview-slot></div></div>\n`;
-  return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><div class="agent-markdown__code-header"><span>${renderer.utils.escapeHtml(label)}</span><button aria-label="复制代码" title="复制代码" class="agent-markdown__code-copy" data-action="copy-code" type="button">${copyIcon}</button></div><pre><code class="hljs">${highlightedSource}</code></pre></div>\n`;
+  const header = `<div class="agent-markdown__code-header"><span>${renderer.utils.escapeHtml(label)}</span><button aria-label="复制代码" title="复制代码" class="agent-markdown__code-copy" data-action="copy-code" type="button">${copyIcon}</button></div>`;
+  if (isLargeCodeSource(source) && typeof environment === "object" && environment !== null && "virtualCodeSources" in environment && environment.virtualCodeSources === true) {
+    return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}">${header}<template data-code-source data-language="${renderer.utils.escapeHtml(language)}">${renderer.utils.escapeHtml(source)}</template><div data-code-source-slot></div></div>\n`;
+  }
+  const shell = /^(bash|sh|shell|zsh|powershell|pwsh|ps1|ps|cmd|bat|batch)$/iu.test(language);
+  const highlightedSource = shell && !isLargeCodeSource(source) ? terminalTokens(source, true).map((token) =>
+    `<span class="agent-markdown__shell-${token.kind}">${renderer.utils.escapeHtml(source.slice(token.start, token.end))}</span>`,
+  ).join("") : highlightCode(source, language);
+  return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}">${header}<pre><code class="hljs">${highlightedSource}</code></pre></div>\n`;
 };
 
 const defaultImage = renderer.renderer.rules.image;
@@ -192,18 +197,19 @@ renderer.renderer.rules.image = (tokens, index, options, environment, self) => {
   return caption == null ? renderedImage : `<figure>${renderedImage}<figcaption>${renderer.utils.escapeHtml(String(caption))}</figcaption></figure>`;
 };
 
-export function AgentMarkdown({ content }: { content: string }): ReactElement {
+export const AgentMarkdown = memo(function AgentMarkdown({ content }: { content: string }): ReactElement {
   return <AgentMarkdownContent key={content} content={content} />;
-}
+});
 
 function AgentMarkdownContent({ content }: { content: string }): ReactElement {
   const hostRef = useRef<HTMLDivElement>(null);
   const [codePreviews, setCodePreviews] = useState<Array<{ source: string; mount: Element }>>([]);
+  const [sourceViews, setSourceViews] = useState<Array<{ source: string; language: string; mount: Element }>>([]);
   const theme = useWorkbenchUiStore((state) => state.themeMode);
   const previewContext = useContext(HtmlPreviewContext);
   const [activePreview, setActivePreview] = useState<{ source: HtmlPreviewSource; mount: Element } | null>(null);
   const canPreview = previewContext !== null;
-  const html = useMemo(() => renderAgentMarkdown(content, canPreview), [content, canPreview]);
+  const html = useMemo(() => renderAgentMarkdown(content, canPreview, true), [content, canPreview]);
   // Keep parser-owned DOM intact on theme changes: native details state, source
   // toggles and diagram height must survive while the next SVG is rendering.
   const markup = useMemo(() => ({ __html: html }), [html]);
@@ -215,6 +221,11 @@ function AgentMarkdownContent({ content }: { content: string }): ReactElement {
       return mount == null ? [] : [{ source: template.content.textContent ?? "", mount }];
     });
     if (previews.length > 0) setCodePreviews(previews);
+    const sources = [...host.querySelectorAll<HTMLTemplateElement>("[data-code-source]")].flatMap(template => {
+      const mount = template.parentElement?.querySelector("[data-code-source-slot]");
+      return mount == null ? [] : [{ source: template.content.textContent ?? "", language: template.dataset.language ?? "text", mount }];
+    });
+    if (sources.length > 0) setSourceViews(sources);
   }, []);
   useEffect(() => {
     let alive = true;
@@ -261,7 +272,8 @@ function AgentMarkdownContent({ content }: { content: string }): ReactElement {
     }
     const button = event.target.closest<HTMLButtonElement>("[data-action='copy-code']");
     if (button === null || !event.currentTarget.contains(button)) return;
-    const code = button.closest(".agent-markdown__code-block")?.querySelector("code")?.textContent;
+    const block = button.closest(".agent-markdown__code-block");
+    const code = block?.querySelector<HTMLTemplateElement>("[data-code-source]")?.content.textContent ?? block?.querySelector("code")?.textContent;
     if (code === null || code === undefined) return;
 
     void navigator.clipboard.writeText(code).then(() => {
@@ -298,6 +310,7 @@ function AgentMarkdownContent({ content }: { content: string }): ReactElement {
       onKeyDown={handleKeyDown}
     />
     {codePreviews.map((preview, index) => createPortal(<HtmlPreviewCard source={{ kind: "code", html: preview.source }} embedded initialMode="source" />, preview.mount, String(index)))}
+    {sourceViews.map((view, index) => createPortal(<CodeSourceView source={view.source} language={view.language} />, view.mount, `source:${index}`))}
     {activePreview !== null ? createPortal(<HtmlPreviewCard key={activePreview.source.kind === "file" ? activePreview.source.path : activePreview.source.html} source={activePreview.source} />, activePreview.mount) : null}
   </>);
 }
@@ -307,8 +320,8 @@ function isClosedFence(line: string, opening: string): boolean {
   return closing !== undefined && closing[0] === opening[0] && closing.length >= opening.length;
 }
 
-export function renderAgentMarkdown(content: string, htmlPreview = false): string {
+export function renderAgentMarkdown(content: string, htmlPreview = false, virtualCodeSources = false): string {
   const extracted = extractExplicitImageCaptions(separateMarkdownCallouts(content));
   const markdown = normalizeAdjacentBoldTableCaptions(extracted.markdown);
-  return renderer.render(markdown, { markdown, htmlPreview, imageCaptions: extracted.captionsByImageIndex }) + (htmlPreview ? '<div data-html-file-preview-slot></div>' : "");
+  return renderer.render(markdown, { markdown, htmlPreview, virtualCodeSources, imageCaptions: extracted.captionsByImageIndex }) + (htmlPreview ? '<div data-html-file-preview-slot></div>' : "");
 }

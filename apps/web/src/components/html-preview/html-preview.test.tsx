@@ -6,6 +6,7 @@ import type { HtmlPreview } from "@agent/protocol";
 import { MockAgentClient } from "../../runtime/mock-agent-client.js";
 import { TooltipProvider } from "../ui/tooltip.js";
 import { AgentMarkdown, renderAgentMarkdown } from "../markdown/agent-markdown.js";
+import * as highlighter from "../markdown/code-highlighter.js";
 import { HtmlPreviewCard, HtmlPreviewScope } from "./html-preview-card.js";
 
 const conversationId = "00000000-0000-4000-8000-000000000001";
@@ -21,7 +22,7 @@ describe("conversation HTML previews", () => {
     client = new MockAgentClient();
     request = vi.spyOn(client, "htmlPreview").mockImplementation(input => Promise.resolve(input.kind === "code" ? { ...result, source: input.html } : input.kind === "file" ? result : null));
   });
-  afterEach(() => { act(() => root.unmount()); node.remove(); vi.unstubAllGlobals(); });
+  afterEach(() => { act(() => root.unmount()); node.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
   async function render(children: ReactNode): Promise<void> {
     await act(async () => { root.render(<TooltipProvider><HtmlPreviewScope client={client} conversationId={conversationId}>{children}</HtmlPreviewScope></TooltipProvider>); await Promise.resolve(); });
   }
@@ -68,6 +69,30 @@ describe("conversation HTML previews", () => {
     expect(request).not.toHaveBeenCalled();
     expect(node.querySelector("iframe")).toBeNull();
     expect(node.querySelector("code")?.textContent).toBe("pages/demo.html\n");
+  });
+
+  it("uses a bounded read-only source viewport for a large HTML block and copies its complete source", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const source = '<g class="pelican"><circle cx="30" cy="40" r="20"/></g>\n'.repeat(1000);
+    await render(<AgentMarkdown content={"```html\n" + source + "```"} />);
+    expect(node.querySelector(".cm-editor")).not.toBeNull();
+    expect(node.querySelector('[contenteditable="true"]')).toBeNull();
+    await click("复制代码");
+    expect(writeText).toHaveBeenCalledWith(source);
+    expect(request).not.toHaveBeenCalled();
+    await click("预览 HTML");
+    expect(node.querySelector(".cm-editor")).toBeNull();
+    expect(node.querySelector("iframe")).not.toBeNull();
+  });
+
+  it("highlights ordinary HTML once and reuses it across unrelated parent updates", async () => {
+    const highlight = vi.spyOn(highlighter, "highlightCode");
+    const content = "```html\n<h1>示例</h1>\n```";
+    await render(<AgentMarkdown content={content} />);
+    expect(highlight).toHaveBeenCalledTimes(1);
+    await render(<AgentMarkdown content={content} />);
+    expect(highlight).toHaveBeenCalledTimes(1);
   });
 
   it("switches each HTML fence independently without nesting cards or losing copy", async () => {

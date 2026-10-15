@@ -10,6 +10,20 @@ import { AgentMarkdown, renderAgentMarkdown } from "./agent-markdown.js";
 import agentMarkdownStyles from "./agent-markdown.css?inline";
 
 describe("AgentMarkdown", () => {
+  it("virtualizes large non-HTML blocks and copies the complete escaped source", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const container = document.createElement("div"); document.body.append(container);
+    const root = createRoot(container);
+    const source = 'console.log("<script>原文</script>");\n'.repeat(1000);
+    await act(async () => { root.render(createElement(AgentMarkdown, { content: "```javascript\n" + source + "```" })); await Promise.resolve(); });
+    expect(container.querySelector(".cm-editor")).not.toBeNull();
+    expect(container.querySelector("script")).toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>("[data-action='copy-code']")?.click(); await Promise.resolve(); });
+    expect(writeText).toHaveBeenCalledWith(source);
+    act(() => root.unmount()); container.remove(); vi.unstubAllGlobals();
+  });
   it("uses a separate header, terminal command colors and copies only original code", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     const writeText = vi.fn().mockResolvedValue(undefined);

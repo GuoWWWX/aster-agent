@@ -3,7 +3,7 @@ import { CodeXml, Copy, ExternalLink, RefreshCw } from "lucide-react";
 import { htmlPreviewResizeMessageSchema, type HtmlPreview } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import { IconButton } from "../ui/icon-button.js";
-import { highlightCode } from "../markdown/code-highlighter.js";
+import { CodeSourceView } from "../markdown/code-source-view.js";
 
 export const HtmlPreviewContext = createContext<{ client: AgentClient; conversationId: string } | null>(null);
 export type HtmlPreviewSource = { kind: "code"; html: string } | { kind: "file"; path: string };
@@ -78,7 +78,7 @@ function HtmlPreviewContent({ source, onRefresh, embedded, mode, requested, onMo
     </header>
     {error !== null ? <p role="alert" className="m-0 p-2 text-[length:var(--app-font-size-control)] text-[var(--app-destructive)]">{error}</p> : null}
     {mode === "source" && sourceText !== undefined
-      ? <pre className="m-0 max-h-96 overflow-auto bg-[var(--app-muted)] p-2 font-mono text-[length:var(--app-font-size-control)]"><code className="hljs" dangerouslySetInnerHTML={{ __html: highlightCode(sourceText, "html") }} /></pre>
+      ? <CodeSourceView source={sourceText} language="html" />
       : preview === null ? error === null ? <p role="status" className="m-0 p-2 text-[length:var(--app-font-size-control)]">正在加载页面…</p> : null
       : <iframe ref={frameRef} title={`${preview.title} 页面效果`} src={preview.url} sandbox="allow-scripts" referrerPolicy="no-referrer"
         className="block w-full border-0 bg-white" style={{ height }} onLoad={() => {

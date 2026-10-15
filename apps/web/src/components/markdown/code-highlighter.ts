@@ -25,6 +25,7 @@ const languageAliases: Record<string, string> = {
 };
 
 export function highlightCode(source: string, language: string): string {
+  if (isLargeCodeSource(source)) return escapeHtml(source);
   const normalizedLanguage = languageAliases[language.toLowerCase()] ?? language.toLowerCase();
   if (normalizedLanguage.length === 0 || !hljs.getLanguage(normalizedLanguage)) {
     return escapeHtml(source);
@@ -35,6 +36,20 @@ export function highlightCode(source: string, language: string): string {
   } catch {
     return escapeHtml(source);
   }
+}
+
+export function isLargeCodeSource(source: string): boolean {
+  if (source.length > 20_000) return true;
+  let lineLength = 0;
+  let lines = 1;
+  for (let index = 0; index < source.length; index += 1) {
+    if (source.charCodeAt(index) === 10) {
+      lines += 1;
+      lineLength = 0;
+      if (lines > 200) return true;
+    } else if (++lineLength > 1_000) return true;
+  }
+  return false;
 }
 
 export function languageFromPath(path: string): string {
