@@ -2140,11 +2140,6 @@ button.tool-file-change__path:hover {
 .conversation-task-list__chevron {
   margin-left: auto;
   flex: 0 0 auto;
-  transition: transform 150ms ease;
-}
-
-.conversation-task-list[data-expanded="true"] .conversation-task-list__chevron {
-  transform: rotate(180deg);
 }
 
 .conversation-task-list__details {

@@ -9,12 +9,18 @@ import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
 import type { ProjectSession } from "../projects/project-session-model.js";
 import { ConversationWorkspace } from "./workspace-content.js";
 
-const popover = vi.hoisted(() => ({ change: undefined as ((open: boolean) => void) | undefined }));
+const popover = vi.hoisted(() => ({ change: undefined as ((open: boolean) => void) | undefined,
+  outside: undefined as ComponentProps<typeof import("../../components/ui/popover.js").PopoverContent>["onInteractOutside"],
+  escape: undefined as ComponentProps<typeof import("../../components/ui/popover.js").PopoverContent>["onEscapeKeyDown"] }));
 vi.mock("../../components/ui/popover.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../components/ui/popover.js")>();
   return { ...actual, Popover: (props: ComponentProps<typeof actual.Popover>) => {
     popover.change = props.onOpenChange;
     return <actual.Popover {...props} />;
+  }, PopoverContent: (props: ComponentProps<typeof actual.PopoverContent>) => {
+    popover.outside = props.onInteractOutside;
+    popover.escape = props.onEscapeKeyDown;
+    return <actual.PopoverContent {...props} />;
   } };
 });
 
@@ -28,13 +34,15 @@ const taskList: ConversationTaskList = { conversationId, status: "active", close
 let root: Root;
 let container: HTMLDivElement;
 let emit: (event: ConversationRunEvent) => void;
+let client: MockAgentClient;
 const readHistory = vi.fn(() => "已完成此前的检查。");
 
 beforeEach(async () => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  vi.stubGlobal("PointerEvent", MouseEvent);
   useAgentDirectoryStore.getState().hydrate(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
-  const client = new MockAgentClient();
+  client = new MockAgentClient();
   vi.spyOn(client, "onConversationRunEvent").mockImplementation(listener => { emit = listener; return () => {}; });
   vi.spyOn(client, "getConversationTaskList").mockResolvedValue(taskList);
   vi.spyOn(client, "listConversationTimeline").mockResolvedValue([{ id: "00000000-0000-4000-8000-000000000002",
@@ -49,6 +57,48 @@ beforeEach(async () => {
 });
 afterEach(() => { act(() => root.unmount()); document.body.replaceChildren(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const summary = (): HTMLButtonElement => container.querySelector<HTMLButtonElement>(".conversation-task-list__summary")!;
+
+it("switches directly between complete up and down chevrons with the disclosure state", () => {
+  expect(summary().querySelector(".lucide-chevron-down")).not.toBeNull();
+  act(() => summary().click());
+  expect(summary().querySelector(".lucide-chevron-up")).not.toBeNull();
+  expect(summary().querySelector(".lucide-chevron-down")).toBeNull();
+  act(() => summary().click());
+  expect(summary().querySelector(".lucide-chevron-down")).not.toBeNull();
+});
+
+it.each(["pointer", "focus", "escape"] as const)("keeps details open after an outside %s interaction", (kind) => {
+  act(() => summary().click());
+  let prevented = false;
+  act(() => {
+    if (kind === "escape") {
+      const event = new KeyboardEvent("keydown", { key: "Escape", cancelable: true });
+      popover.escape?.(event);
+      prevented = event.defaultPrevented;
+    } else {
+      const event = kind === "pointer"
+        ? new CustomEvent("dismissableLayer.pointerDownOutside", { cancelable: true, detail: { originalEvent: new PointerEvent("pointerdown") } })
+        : new CustomEvent("dismissableLayer.focusOutside", { cancelable: true, detail: { originalEvent: new FocusEvent("focusin") } });
+      popover.outside?.(event);
+      prevented = event.defaultPrevented;
+    }
+    if (!prevented) popover.change?.(false);
+  });
+  expect(prevented).toBe(true);
+  expect(summary().getAttribute("aria-expanded")).toBe("true");
+  expect(document.querySelector(".conversation-task-list__details")).not.toBeNull();
+  act(() => summary().click());
+  expect(summary().getAttribute("aria-expanded")).toBe("false");
+});
+
+it("hides details when its cached conversation is inactive and restores them on return", () => {
+  act(() => summary().click());
+  act(() => root.render(<TooltipProvider><ConversationWorkspace active={false} agentClient={client} project={null} session={session} /></TooltipProvider>));
+  expect(document.querySelector(".conversation-task-list__details")).toBeNull();
+  act(() => root.render(<TooltipProvider><ConversationWorkspace active agentClient={client} project={null} session={session} /></TooltipProvider>));
+  expect(summary().getAttribute("aria-expanded")).toBe("true");
+  expect(document.querySelector(".conversation-task-list__details")).not.toBeNull();
+});
 
 it("opens and closes task details without reprocessing the conversation history", () => {
   act(() => summary().click());

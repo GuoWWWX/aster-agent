@@ -18,6 +18,7 @@ import {
   BrainCircuit,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   CircleAlert,
   Check,
   Copy,
@@ -3475,6 +3476,7 @@ export function ConversationWorkspace({
         <div ref={composerOverlayRef} className="conversation-workspace__composer-overlay">
           {taskList !== null ? (
             <ConversationTaskListPanel
+              active={active}
               allowClose={teamManaged || !isEndedSubagent}
               fileChanges={activeFileChanges}
               onOpenReview={path => openChangeReview(activeRunId, path)}
@@ -4773,6 +4775,7 @@ function SubagentApprovalQueue({
 }
 
 function ConversationTaskListPanel({
+  active,
   allowClose = true,
   fileChanges,
   isActioning,
@@ -4782,6 +4785,7 @@ function ConversationTaskListPanel({
   onClose,
   onOpenReview,
 }: {
+  active: boolean;
   allowClose?: boolean;
   fileChanges: TaskFileChangeSummary | undefined;
   onOpenReview: (path?: string) => void;
@@ -4819,11 +4823,12 @@ function ConversationTaskListPanel({
       data-expanded={String(expanded)}
       data-status={summaryStatus}
     >
-      <Popover open={expanded} onOpenChange={setExpanded}>
+      <Popover open={active && expanded} onOpenChange={setExpanded}>
       <div className="conversation-task-list__body">
-        {expanded ? (
+        {active && expanded ? (
           <PopoverContent className="conversation-task-list__details w-max min-w-[min(var(--radix-popover-trigger-width),var(--radix-popover-content-available-width))] max-w-[min(560px,var(--radix-popover-content-available-width))]" id={summaryId} role="list" side="top" align="center" sideOffset={5}
-            onOpenAutoFocus={(event) => event.preventDefault()} onCloseAutoFocus={(event) => event.preventDefault()}>
+            onOpenAutoFocus={(event) => event.preventDefault()} onCloseAutoFocus={(event) => event.preventDefault()}
+            onInteractOutside={(event) => event.preventDefault()} onEscapeKeyDown={(event) => event.preventDefault()}>
             {taskList.tasks.map((task) => {
               const displayStatus = task.status === "running" && inactiveRunningStatus !== null
                 ? inactiveRunningStatus
@@ -4921,7 +4926,8 @@ function ConversationTaskListPanel({
                             ? `${runningCount} 项进行中`
                             : "任务清单"
             }</span>
-            <ChevronDown aria-hidden="true" className="conversation-task-list__chevron" size={15} />
+            {expanded ? <ChevronUp aria-hidden="true" className="conversation-task-list__chevron" size={15} />
+              : <ChevronDown aria-hidden="true" className="conversation-task-list__chevron" size={15} />}
           </button>
           </PopoverTrigger>
           {fileChanges !== undefined ? <ConversationChangesBadge summary={fileChanges} joined onReview={onOpenReview} /> : null}
