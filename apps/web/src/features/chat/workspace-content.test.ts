@@ -41,6 +41,7 @@ import {
   describeConversationError,
   representativeToolName,
   reasoningEndpointColor,
+  isFlagshipUltraReasoning,
   resolveConversationPathIconKind,
   resolveConversationPathScope,
   resolveInitialConversationModelSelection,
@@ -261,6 +262,28 @@ describe("initial conversation model selection", () => {
 });
 
 describe("reasoning strength color progression", () => {
+  const ultra = { kind: "custom_effort", value: "ultra" } as const;
+  it.each([
+    ["gpt-5.6-sol", ultra, true],
+    ["gpt-6.1-sol", ultra, true],
+    ["gpt-6-astra", ultra, true],
+    ["openai/GPT-6-SOL-2026-10-15", ultra, true],
+    ["gpt-6-luna", ultra, false],
+    ["gpt-5.6-luna", ultra, false],
+    ["gpt-5.6-terra", ultra, false],
+    ["claude-opus-5-5", { kind: "effort", value: "max" }, false],
+    ["other-sol", ultra, false],
+    [null, ultra, false],
+    ["gpt-6-sol", undefined, false],
+    ["gpt-6-sol", { ...ultra, enabled: false }, false],
+    ["gpt-6-sol", { kind: "effort", value: "high" }, false],
+    ["gpt-6-sol", { kind: "effort", value: "max" }, false],
+    ["gpt-6-sol", { kind: "effort", value: "high", displayName: "Ultra" }, false],
+    ["gpt-6-sol", { kind: "token_budget", value: 8192, displayName: "Ultra" }, false],
+  ] as const)("shows the energy effect only for flagship Ultra: %s / %j", (modelId, option, expected) => {
+    expect(isFlagshipUltraReasoning(modelId, option)).toBe(expected);
+  });
+
   it("moves through blue, light blue, blue-violet, and deep purple stops", () => {
     expect(reasoningEndpointColor(0)).toBe("var(--reasoning-blue)");
     expect(reasoningEndpointColor(34)).toBe("var(--reasoning-light-blue)");

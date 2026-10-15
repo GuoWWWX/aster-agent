@@ -502,6 +502,7 @@ type SlashOption =
 type ConversationReasoningControlProps = {
   disabled: boolean;
   fallbackOption?: ModelReasoningOption | null;
+  modelId: string | null;
   onValueChange: (value: string) => void;
   options: readonly ModelReasoningOption[];
   selectedKey: string;
@@ -533,9 +534,17 @@ export function reasoningEndpointColor(progress: number): string {
   return `color-mix(in srgb, ${lower.color} ${100 - upperWeight}%, ${upper.color} ${upperWeight}%)`;
 }
 
+export function isFlagshipUltraReasoning(modelId: string | null, option: ModelReasoningOption | undefined): boolean {
+  const modelName = modelId?.trim().split("/").at(-1) ?? "";
+  return /^gpt-\d+(?:\.\d+)?-(?:sol|astra)(?:-|$)/iu.test(modelName)
+    && option !== undefined && option.enabled !== false
+    && typeof option.value === "string" && option.value.trim().toLowerCase() === "ultra";
+}
+
 function ConversationReasoningControl({
   disabled,
   fallbackOption,
+  modelId,
   onValueChange,
   options,
   selectedKey,
@@ -564,7 +573,7 @@ function ConversationReasoningControl({
     : options.length <= 1
       ? 100
       : 34 + ((selectedIndex - 1) / (options.length - 1)) * 66;
-  const isMaximumStrength = options.length > 0 && selectedIndex === options.length;
+  const showEnergyField = isFlagshipUltraReasoning(modelId, selectedOption);
   const sliderStyle = {
     "--reasoning-fill": reasoningEndpointColor(colorProgress),
   } as CSSProperties;
@@ -635,7 +644,7 @@ function ConversationReasoningControl({
             >
               <SliderTrack className="conversation-workspace__reasoning-track">
                 <SliderRange className="conversation-workspace__reasoning-range">
-                  <ReasoningEnergyField active={isMaximumStrength} />
+                  {showEnergyField ? <ReasoningEnergyField active /> : null}
                 </SliderRange>
               </SliderTrack>
               <SliderThumb
@@ -3874,6 +3883,7 @@ export function ConversationWorkspace({
                   <ConversationReasoningControl
                     disabled={isEndedSubagent || activeModelKey.length === 0}
                     fallbackOption={session.modelSelection?.reasoning ?? null}
+                    modelId={activeModel?.modelId ?? null}
                     options={activeReasoningOptions}
                     selectedKey={effectiveReasoningOptionKey}
                     onValueChange={selectReasoning}
