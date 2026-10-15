@@ -70,7 +70,7 @@ export class EventProjector {
     return [...this.timeline.messages(conversationId)].reverse().map(({ item }) => item);
   }
 
-  public projectConversation(conversationId: string): ThreadLogProjectionResult {
+  public projectConversation(conversationId: string, skipUnavailableDependencies = false): ThreadLogProjectionResult {
     const log = this.threadLog.read(conversationId);
     if (log === null) {
       if (
@@ -84,7 +84,7 @@ export class EventProjector {
         projectedEventCount: 0,
       };
     }
-    const result = this.projectConversationFromLog(conversationId, log);
+    const result = this.projectConversationFromLog(conversationId, log, skipUnavailableDependencies);
     if (!this.verifyConversationEvents(conversationId, log.events).isConsistent) {
       throw new Error("ThreadLog event index is inconsistent with its JSONL source.");
     }
@@ -107,7 +107,7 @@ export class EventProjector {
       return;
     }
     this.database.clearVolatileConversationHistory(conversationId);
-    this.projectConversation(conversationId);
+    this.projectConversation(conversationId, true);
     this.evictExcessConversationHistories(conversationId);
   }
 
@@ -171,6 +171,7 @@ export class EventProjector {
   private projectConversationFromLog(
     conversationId: string,
     log: ThreadLogRead,
+    skipUnavailableDependencies = false,
   ): ThreadLogProjectionResult {
     this.resetStaleProjectionIfNeeded(conversationId, log.events);
     this.projectConversationCreationIfNeeded(conversationId, log.events);
@@ -186,7 +187,8 @@ export class EventProjector {
     const importedSequence = log.events.find((event) => event.type === "legacy_snapshot_imported")?.sequence ?? 0;
     const businessEvents = importedSequence === 0 ? log.events : log.events.filter((event) => event.sequence > importedSequence);
     const restored = this.database.restoreThreadLogBusinessEvents(conversationId, businessEvents,
-      importedSequence > 0 && this.database.getThreadLogProjectionCursor(conversationId) === null);
+      importedSequence > 0 && this.database.getThreadLogProjectionCursor(conversationId) === null,
+      skipUnavailableDependencies);
     const cursor = this.database.getThreadLogProjectionCursor(conversationId);
     const events = log.events.filter((event) => event.sequence > (cursor?.lastSequence ?? 0));
     // A prior process may have appended a write-ahead event and crashed before

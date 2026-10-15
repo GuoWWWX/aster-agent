@@ -24,6 +24,45 @@ afterEach(async () => {
 });
 
 describe("EventProjector", () => {
+  it("rehydrates a conversation with an orphaned Subagent task before a new message", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-orphaned-subagent-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const log = new ThreadLog(directory);
+    const creation = source.prepareConversationCreation(null);
+    source.projectConversationCreated(creation);
+    const parentId = creation.conversation.id;
+    log.append(parentId, { type: "conversation_created", payload: creation });
+    const parentRun = source.createRunWithUserMessage(parentId, "历史消息", "demo");
+    log.append(parentId, { type: "run_created", payload: { runId: parentRun.runId, modelId: "demo" } });
+    log.append(parentId, { type: "user_message", payload: {
+      message: parentRun.userMessage, content: "历史消息", runId: parentRun.runId,
+    } });
+    const child = source.forkConversation(parentId, "subagent");
+    const task = source.createSubagentTask({
+      childConversationId: child.id, parentConversationId: parentId,
+      sourceRunId: parentRun.runId, task: "历史子任务", title: "历史子任务",
+    });
+    // The child log can be absent after an older partial cleanup, while its
+    // parent still retains the durable task event.
+    log.append(parentId, { type: "subagent_task_created", payload: { task } });
+    source.finishRun(parentRun.runId, "completed", null);
+    log.append(parentId, { type: "run_finished", payload: { runId: parentRun.runId, status: "completed" } });
+
+    const recovered = new AgentDatabase(":memory:");
+    const projector = new EventProjector(recovered, log);
+    projector.projectAllConversationLogs({ releaseHistory: true });
+    expect(() => projector.projectConversation(parentId)).toThrow("ThreadLog Subagent task dependencies are unavailable.");
+    expect(() => projector.ensureConversationHistoryProjected(parentId)).not.toThrow();
+    expect(recovered.listContextMessages(parentId).map((message) => message.content)).toContain("历史消息");
+    projector.releaseInactiveConversationHistories();
+    expect(() => projector.ensureConversationHistoryProjected(parentId)).not.toThrow();
+    expect(recovered.listContextMessages(parentId).map((message) => message.content)).toEqual(["历史消息"]);
+    expect(() => recovered.createRunWithUserMessage(parentId, "新消息", "demo")).not.toThrow();
+    source.close();
+    recovered.close();
+  });
+
   it.each(["completed", "failed", "cancelled", "running"] as const)(
     "keeps a %s child Run authoritative when its parent history is rehydrated",
     async (status) => {
