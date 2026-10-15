@@ -944,7 +944,7 @@ function createElectronBrowserPage(ownerWindow: BrowserWindow, shortcuts: Browse
     if (view !== undefined) view.setBackgroundColor(color);
     else window.setBackgroundColor(color);
   };
-  setBackgroundColor(nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff");
+  setBackgroundColor(!isolated && nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff");
   const webContents = view?.webContents ?? window.webContents;
   const downloads: BrowserDownload[] = [];
   const history: BrowserHistoryEntry[] = [];
@@ -1115,7 +1115,7 @@ function createElectronBrowserPage(ownerWindow: BrowserWindow, shortcuts: Browse
   webContents.on("did-stop-loading", emitState);
   webContents.on("devtools-closed", () => {
     if (closed || webContents.isDestroyed()) return;
-    void applyManagedBrowserColorScheme(webContents, colorScheme).catch((error: unknown) => {
+    void applyManagedBrowserColorScheme(webContents, colorScheme, !isolated).catch((error: unknown) => {
       emitError(error instanceof Error ? error.message : "浏览器主题恢复失败。");
     });
   });
@@ -1233,7 +1233,7 @@ function createElectronBrowserPage(ownerWindow: BrowserWindow, shortcuts: Browse
       zoomPercent,
     }),
     load: async (url) => {
-      await applyManagedBrowserColorScheme(webContents, colorScheme, url);
+      await applyManagedBrowserColorScheme(webContents, colorScheme, !isolated, url);
       await applyBackgroundViewport();
     },
     onError: (listener) => {
@@ -1435,10 +1435,11 @@ function createElectronBrowserPage(ownerWindow: BrowserWindow, shortcuts: Browse
     setColorScheme: async (nextColorScheme) => {
       const changed = colorScheme !== nextColorScheme;
       colorScheme = nextColorScheme;
-      setBackgroundColor(nextColorScheme === "dark" ? "#171717" : "#ffffff");
+      setBackgroundColor(!isolated && nextColorScheme === "dark" ? "#171717" : "#ffffff");
       await applyManagedBrowserColorScheme(
         webContents,
         nextColorScheme,
+        !isolated,
         undefined,
         changed && /^https?:/iu.test(webContents.getURL()),
       );
@@ -1509,6 +1510,7 @@ export function resolveBrowserDownloadPath(
 async function applyManagedBrowserColorScheme(
   webContents: WebContents,
   colorScheme: "dark" | "light",
+  automaticDarkMode: boolean,
   navigateUrl?: string,
   reload = false,
 ): Promise<void> {
@@ -1519,7 +1521,8 @@ async function applyManagedBrowserColorScheme(
   });
   await browserDebugger.sendCommand(
     "Emulation.setAutoDarkModeOverride",
-    colorScheme === "dark" ? { enabled: true } : {},
+    // HTML deliveries retain authored colors, matching their in-conversation iframe.
+    colorScheme === "dark" ? { enabled: automaticDarkMode } : {},
   );
   if (colorScheme === "light" && browserDebugger.isAttached()) browserDebugger.detach();
   if (navigateUrl !== undefined) await webContents.loadURL(navigateUrl);

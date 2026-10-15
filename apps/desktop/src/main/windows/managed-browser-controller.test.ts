@@ -16,6 +16,8 @@ const electronMocks = vi.hoisted(() => {
     backgroundWebContentsDestroyed: false,
     backgroundWindowOptions: [] as unknown[],
     backgroundNativeCalls: [] as string[],
+    backgroundNativeCommands: [] as { method: string; parameters: unknown }[],
+    backgroundColors: [] as string[],
     destroyBackgroundWindow: vi.fn(),
     getPath: vi.fn(() => "C:\\Users\\test\\Downloads"),
     buildFromTemplate: vi.fn((template: unknown) => {
@@ -36,7 +38,7 @@ const electronMocks = vi.hoisted(() => {
 vi.mock("electron", () => ({
   app: { getPath: electronMocks.getPath },
   BrowserWindow: class {
-    public readonly setBackgroundColor = vi.fn();
+    public readonly setBackgroundColor = vi.fn((color: string) => { electronMocks.backgroundColors.push(color); });
     public readonly setContentSize = vi.fn();
     public readonly destroy = electronMocks.destroyBackgroundWindow;
     public readonly webContents;
@@ -50,9 +52,10 @@ vi.mock("electron", () => ({
           attach: vi.fn(() => { attached = true; }),
           detach: vi.fn(() => { attached = false; }),
           isAttached: () => attached,
-          sendCommand: vi.fn((method: string) => {
+          sendCommand: vi.fn((method: string, parameters: unknown) => {
             if (method === "Emulation.setDeviceMetricsOverride" && url === "") throw new Error("Renderer not initialized");
             electronMocks.backgroundNativeCalls.push(method);
+            electronMocks.backgroundNativeCommands.push({ method, parameters });
             return Promise.resolve();
           }),
         },
@@ -234,7 +237,30 @@ it("downloads into the configured directory and avoids overwriting reserved name
 });
 
 describe("ManagedBrowserController", () => {
+  it.each([true, false])("preserves authored preview colors without changing ordinary browser dark mode (isolated=%s)", async (isolated) => {
+    electronMocks.nativeTheme.shouldUseDarkColors = true;
+    const controller = new ManagedBrowserController(() => createFakeWindow(),
+      { getConfiguration: () => browserConfiguration() });
+    try {
+      const session = await controller.open({ url: "http://127.0.0.1:1234/token/index.html" }, {
+        isolated, background: { width: 620, height: 900 },
+      });
+      await controller.navigate({ sessionId: session.sessionId, url: "http://127.0.0.1:1234/token/next.html" });
+      const commands = electronMocks.backgroundNativeCommands;
+      expect(commands.filter(call => call.method === "Emulation.setAutoDarkModeOverride").map(call => call.parameters))
+        .toEqual([{ enabled: !isolated }, { enabled: !isolated }, { enabled: !isolated }]);
+      expect(commands.filter(call => call.method === "Emulation.setEmulatedMedia").at(-1)?.parameters)
+        .toEqual({ features: [{ name: "prefers-color-scheme", value: "dark" }] });
+      const background = isolated ? "#ffffff" : "#171717";
+      expect(electronMocks.backgroundColors).toEqual([background, background]);
+    } finally {
+      controller.dispose();
+      electronMocks.nativeTheme.shouldUseDarkColors = false;
+    }
+  });
   beforeEach(() => {
+    electronMocks.backgroundColors.length = 0;
+    electronMocks.backgroundNativeCommands.length = 0;
     electronMocks.backgroundWindowOptions.length = 0;
     electronMocks.backgroundNativeCalls.length = 0;
     electronMocks.backgroundWebContentsDestroyed = false;
