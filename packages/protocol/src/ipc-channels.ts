@@ -3,6 +3,7 @@
  * stay dependency-free so it can also be loaded from a sandboxed preload.
  */
 export const IPC_CHANNELS = {
+  htmlPreview: "html.preview",
   modelSaveCatalog: "model.save_catalog",
   userQuestionList: "user_question.list",
   userQuestionAnswer: "user_question.answer",

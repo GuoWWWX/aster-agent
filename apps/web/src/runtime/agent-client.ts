@@ -1,3 +1,4 @@
+import type { HtmlPreview, HtmlPreviewRequest } from "@agent/protocol";
 import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
 import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
 import type {
@@ -148,6 +149,7 @@ export type ManagedBrowserEventListener = (event: ManagedBrowserEvent) => void;
  * browser mock and Electron preload surface stay interchangeable.
  */
 export interface AgentClient {
+  htmlPreview(input: HtmlPreviewRequest): Promise<HtmlPreview | null>;
   listUserQuestions(input: ConversationReferenceInput): Promise<UserQuestion[]>;
   answerUserQuestion(input: AnswerUserQuestionInput): Promise<UserQuestion>;
   markUserQuestionViewed(input: { questionId: string }): Promise<UserQuestion>;

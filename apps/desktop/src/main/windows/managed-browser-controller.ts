@@ -210,9 +210,10 @@ type ManagedBrowserPage = {
   zoomOut(): void;
 };
 
-type BrowserPageFactory = (window: BrowserWindow, shortcuts: BrowserPageShortcuts, passwords?: BrowserPasswordStore) => ManagedBrowserPage;
+type BrowserPageFactory = (window: BrowserWindow, shortcuts: BrowserPageShortcuts, passwords?: BrowserPasswordStore, isolated?: boolean) => ManagedBrowserPage;
 
 type ActiveBrowserSession = {
+  onClose?: () => void;
   bounds: Rectangle | null;
   disposeError: () => void;
   disposeFindResult: () => void;
@@ -233,7 +234,7 @@ export class ManagedBrowserController {
     private readonly passwords?: BrowserPasswordStore,
   ) {}
 
-  public async open(input: ManagedBrowserOpenInput): Promise<ManagedBrowserSession> {
+  public async open(input: ManagedBrowserOpenInput, options: { isolated?: boolean; onClose?: () => void } = {}): Promise<ManagedBrowserSession> {
     const window = this.requireWindow();
     const sessionId = randomUUID();
     const page = this.createPage(window, {
@@ -241,7 +242,7 @@ export class ManagedBrowserController {
       onGlobalSearch: () => {
         if (this.sessions.has(sessionId)) this.emit({ sessionId, type: "openGlobalSearch" });
       },
-    }, this.passwords);
+    }, options.isolated ? undefined : this.passwords, options.isolated);
     const configuration = this.browserConfiguration.getConfiguration();
     page.setAskForDownloadLocation(configuration.askForDownloadLocation);
     page.setDownloadDirectory(configuration.downloadDirectory);
@@ -252,6 +253,7 @@ export class ManagedBrowserController {
     });
     const disposeFindResult = page.onFindResult((result) => this.updateFindResult(sessionId, result));
     this.sessions.set(sessionId, {
+      ...(options.onClose === undefined ? {} : { onClose: options.onClose }),
       bounds: null,
       disposeError,
       disposeFindResult,
@@ -408,6 +410,7 @@ export class ManagedBrowserController {
     session.disposeFindResult();
     session.disposeState();
     session.page.close();
+    session.onClose?.();
   }
 
   public onEvent(listener: BrowserEventListener): () => void {
@@ -901,13 +904,13 @@ function isLikelyBrowserHost(value: string): boolean {
   }
 }
 
-function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPageShortcuts, passwords?: BrowserPasswordStore): ManagedBrowserPage {
+function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPageShortcuts, passwords?: BrowserPasswordStore, isolated = false): ManagedBrowserPage {
   const view = new WebContentsView({
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      partition: MANAGED_BROWSER_PARTITION,
-      preload: path.resolve(__dirname, "../preload/browser-passwords.cjs"),
+      partition: isolated ? `html-preview:${randomUUID()}` : MANAGED_BROWSER_PARTITION,
+      ...(isolated ? {} : { preload: path.resolve(__dirname, "../preload/browser-passwords.cjs") }),
       sandbox: true,
       webSecurity: true,
     },

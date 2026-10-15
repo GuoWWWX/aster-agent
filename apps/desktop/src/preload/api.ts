@@ -1,3 +1,4 @@
+import type { HtmlPreviewRequest } from "@agent/protocol";
 import type { AnswerUserQuestionInput, StopBackgroundCommandInput, ReadBackgroundCommandInput } from "@agent/protocol";
 import type { SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
 import { ipcRenderer, type IpcRendererEvent } from "electron";
@@ -133,6 +134,7 @@ async function invoke<Result>(channel: IpcChannel, input?: unknown): Promise<Res
 
 export function createDesktopBridge(): DesktopBridge {
   return {
+    htmlPreview(input: HtmlPreviewRequest) { return invoke<BridgeResult<"htmlPreview">>(IPC_CHANNELS.htmlPreview, input); },
     addProject() {
       return invoke<BridgeResult<"addProject">>(IPC_CHANNELS.projectAdd);
     },

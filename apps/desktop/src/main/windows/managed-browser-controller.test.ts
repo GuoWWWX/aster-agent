@@ -233,6 +233,20 @@ describe("ManagedBrowserController", () => {
     expect(() => resolveManagedBrowserAddress("file:///C:/secret.txt")).toThrow("只允许");
   });
 
+  it("creates isolated HTML pages without password integration and disposes their owner exactly once", async () => {
+    const page = createFakePage();
+    const window = createFakeWindow();
+    const factory = vi.fn(() => page);
+    const onClose = vi.fn();
+    const controller = new ManagedBrowserController(() => window, { getConfiguration: () => browserConfiguration() }, factory);
+    const session = await controller.open({ url: "http://127.0.0.1:1234/token/demo.html" }, { isolated: true, onClose });
+    expect(factory).toHaveBeenCalledWith(window, expect.any(Object), undefined, true);
+    controller.close({ sessionId: session.sessionId });
+    controller.dispose();
+    expect(page.close).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("opens a new user browser tab without navigating to a default website", async () => {
     const page = createFakePage();
     const window = createFakeWindow();

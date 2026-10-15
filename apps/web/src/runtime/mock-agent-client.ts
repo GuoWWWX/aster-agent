@@ -1,3 +1,4 @@
+import type { HtmlPreview, HtmlPreviewRequest } from "@agent/protocol";
 import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
 import { saveScheduledTaskInputSchema, type ScheduledTask, type SaveScheduledTaskInput, type ScheduledTaskReference } from "@agent/protocol";
 import {
@@ -264,6 +265,7 @@ function resolveMockForkBoundary(
  * deterministic fixture, not a substitute for a persistent runtime.
  */
 export class MockAgentClient implements AgentClient {
+  public htmlPreview(input: HtmlPreviewRequest): Promise<HtmlPreview | null> { void input; return Promise.reject(new Error("HTML 本地预览请在桌面应用中使用。")); }
   private scheduledTasks: ScheduledTask[] = [];
   private readonly activeRuns = new Map<string, MockRun>();
 

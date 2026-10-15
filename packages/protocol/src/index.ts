@@ -1,3 +1,4 @@
+export { htmlPreviewRequestSchema, htmlPreviewSchema, htmlPreviewResponseSchema, type HtmlPreviewRequest, type HtmlPreview } from "./html-preview.js";
 export { capabilitySetSchema } from "./capability.js";
 export type { CapabilitySet } from "./capability.js";
 export {

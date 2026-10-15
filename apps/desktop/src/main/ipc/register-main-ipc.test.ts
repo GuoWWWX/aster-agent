@@ -66,6 +66,53 @@ describe("result viewed IPC notification", () => {
   });
   afterEach(() => { dispose?.(); dispose = undefined; });
 
+  it("validates HTML preview sources and owns isolated browser references through close and failure", async () => {
+    const preview = { id: conversation.id, title: "demo.html", url: "http://127.0.0.1:1234/token/demo.html", source: "<p>demo</p>" };
+    const htmlPreviews = { create: vi.fn(() => Promise.resolve(preview)), get: vi.fn(() => preview), retain: vi.fn(), release: vi.fn() };
+    let closed: (() => void) | undefined;
+    const openBrowser = vi.fn((_input: unknown, options: { isolated?: boolean; onClose?: () => void }) => {
+      closed = options.onClose;
+      return Promise.resolve({ sessionId: conversation.id });
+    });
+    const openTab = vi.fn(() => Promise.resolve(undefined));
+    const closeBrowser = vi.fn(() => closed?.());
+    Object.assign(dependencies, { htmlPreviews, database: { getConversation: () => conversation } });
+    Object.assign(dependencies.managedBrowser, { open: openBrowser, close: closeBrowser });
+    Object.assign(dependencies.workspaceBrowserTabs, { open: openTab });
+    dispose?.();
+    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(window);
+    dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
+    const handler = electron.handle.mock.calls.filter(([channel]) => channel === IPC_CHANNELS.htmlPreview).at(-1)![1];
+    const frame = {};
+    const trusted = { sender: { mainFrame: frame }, senderFrame: frame } as IpcMainInvokeEvent;
+    const source = { kind: "file", conversationId: conversation.id, path: "demo.html" };
+    await expect(handler(trusted, source)).resolves.toEqual(preview);
+    await expect(handler(trusted, { ...source, root: "C:/" })).rejects.toThrow();
+    await expect(handler({ ...trusted, senderFrame: {} } as IpcMainInvokeEvent, source)).rejects.toThrow();
+    electron.fromWebContents.mockReturnValueOnce(null);
+    await expect(handler(trusted, source)).rejects.toThrow();
+    expect(htmlPreviews.create).toHaveBeenCalledTimes(1);
+    const browser = { kind: "browser", conversationId: conversation.id, id: preview.id };
+    await handler(trusted, browser);
+    expect(openBrowser).toHaveBeenCalledWith({ url: preview.url }, expect.objectContaining({ isolated: true }));
+    expect(openTab).toHaveBeenCalledWith(expect.objectContaining({ conversationId: conversation.id, projectId: conversation.id, requestedName: "demo.html" }));
+    expect(htmlPreviews.retain.mock.invocationCallOrder[0]).toBeLessThan(openBrowser.mock.invocationCallOrder[0]!);
+    closed?.(); closed?.();
+    expect(htmlPreviews.release).toHaveBeenCalledTimes(1);
+    openTab.mockRejectedValueOnce(new Error("tab failed"));
+    await expect(handler(trusted, browser)).rejects.toThrow();
+    expect(closeBrowser).toHaveBeenCalledTimes(1);
+    expect(htmlPreviews.release).toHaveBeenCalledTimes(2);
+    openBrowser.mockRejectedValueOnce(new Error("load failed"));
+    await expect(handler(trusted, browser)).rejects.toThrow();
+    expect(htmlPreviews.release).toHaveBeenCalledTimes(3);
+    await handler(trusted, { ...browser, kind: "release" });
+    expect(htmlPreviews.release).toHaveBeenCalledTimes(4);
+    htmlPreviews.create.mockResolvedValueOnce({ ...preview, url: "https://example.com" });
+    await expect(handler(trusted, source)).rejects.toThrow();
+  });
+
   it("validates catalog updates and rejects untrusted senders before saving", async () => {
     dispose?.();
     const saveCatalog = vi.fn((value: typeof DEFAULT_MODEL_CATALOG) => value);

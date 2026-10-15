@@ -1,3 +1,5 @@
+import { createPortal } from "react-dom";
+import { HtmlPreviewCard, HtmlPreviewContext, type HtmlPreviewSource } from "../html-preview/html-preview-card.js";
 import { markdownMathPlugin } from "../../lib/markdown-math-plugin.js";
 import { relaxedStrongPlugin } from "../../lib/relaxed-strong.js";
 import { relaxedEmphasisPlugin } from "../../lib/relaxed-emphasis.js";
@@ -14,7 +16,7 @@ import "katex/dist/katex.min.css";
 import MarkdownIt from "markdown-it";
 import { Check, Copy, Maximize2, CodeXml } from "lucide-react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent, type MouseEvent, type ReactElement } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactElement } from "react";
 
 import { requestMediaPreview } from "../media/image-viewer.js";
 import { fileTypeIconMarkup, isRecognizedFileTypePath } from "../ui/file-type-icon-data.js";
@@ -168,7 +170,11 @@ renderer.renderer.rules.fence = (tokens, index, _options, environment: unknown) 
   ).join("") : highlightCode(source, language);
   const label = /^(powershell|pwsh|ps1|ps)$/iu.test(language) ? "PowerShell"
     : language.toLowerCase() === "bash" ? "Bash" : language;
-  return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><div class="agent-markdown__code-header"><span>${renderer.utils.escapeHtml(label)}</span><button aria-label="复制代码" title="复制代码" class="agent-markdown__code-copy" data-action="copy-code" type="button">${copyIcon}</button></div><pre><code class="hljs">${highlightedSource}</code></pre></div>\n`;
+  const htmlPreview = /^html?$/iu.test(language) && typeof environment === "object" && environment !== null && "htmlPreview" in environment && environment.htmlPreview === true
+    && token?.map != null && "markdown" in environment && typeof environment.markdown === "string"
+    && isClosedFence(environment.markdown.split("\n")[token.map[1] - 1] ?? "", token.markup);
+  const previewButton = htmlPreview ? '<button aria-label="预览 HTML" title="预览 HTML" class="agent-markdown__code-copy" data-action="preview-html" type="button">预览</button>' : "";
+  return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><div class="agent-markdown__code-header"><span>${renderer.utils.escapeHtml(label)}</span>${htmlPreview ? '<div class="flex items-center gap-[5px]">' : ""}${previewButton}<button aria-label="复制代码" title="复制代码" class="agent-markdown__code-copy" data-action="copy-code" type="button">${copyIcon}</button>${htmlPreview ? "</div>" : ""}</div><pre><code class="hljs">${highlightedSource}</code></pre>${htmlPreview ? '<div data-html-preview-slot></div>' : ""}</div>\n`;
 };
 
 const defaultImage = renderer.renderer.rules.image;
@@ -187,9 +193,17 @@ renderer.renderer.rules.image = (tokens, index, options, environment, self) => {
 };
 
 export function AgentMarkdown({ content }: { content: string }): ReactElement {
+  return <AgentMarkdownContent key={content} content={content} />;
+}
+
+function AgentMarkdownContent({ content }: { content: string }): ReactElement {
   const hostRef = useRef<HTMLDivElement>(null);
+  const originalSource = useRef<HTMLElement | null>(null);
   const theme = useWorkbenchUiStore((state) => state.themeMode);
-  const html = useMemo(() => renderAgentMarkdown(content), [content]);
+  const previewContext = useContext(HtmlPreviewContext);
+  const [activePreview, setActivePreview] = useState<{ source: HtmlPreviewSource; mount: Element } | null>(null);
+  const canPreview = previewContext !== null;
+  const html = useMemo(() => renderAgentMarkdown(content, canPreview), [content, canPreview]);
   // Keep parser-owned DOM intact on theme changes: native details state, source
   // toggles and diagram height must survive while the next SVG is rendering.
   const markup = useMemo(() => ({ __html: html }), [html]);
@@ -210,6 +224,30 @@ export function AgentMarkdown({ content }: { content: string }): ReactElement {
   }, [html, theme]);
   const handleClick = useCallback((event: MouseEvent<HTMLDivElement>): void => {
     if (!(event.target instanceof Element)) return;
+    const htmlButton = event.target.closest<HTMLButtonElement>('button[data-action="preview-html"]');
+    if (htmlButton !== null && previewContext !== null) {
+      const block = htmlButton.closest(".agent-markdown__code-block");
+      const mount = block?.querySelector("[data-html-preview-slot]");
+      const original = block?.querySelector<HTMLElement>("pre") ?? null;
+      const source = original?.querySelector("code")?.textContent;
+      if (mount != null && source != null) {
+        if (originalSource.current !== null) originalSource.current.hidden = false;
+        if (original !== null) original.hidden = true;
+        originalSource.current = original;
+        setActivePreview({ source: { kind: "code", html: source }, mount });
+      }
+      return;
+    }
+    const link = event.target.closest<HTMLAnchorElement>("a[href]");
+    const href = link?.getAttribute("href") ?? "";
+    if (previewContext !== null && href && !/^[a-z][a-z\d+.-]*:/iu.test(href) && /\.html?(?:[?#].*)?$/iu.test(href)) {
+      const mount = event.currentTarget.querySelector("[data-html-file-preview-slot]");
+      if (mount !== null) { event.preventDefault(); if (originalSource.current !== null) originalSource.current.hidden = false;
+        originalSource.current = null;
+        try { setActivePreview({ source: { kind: "file", path: decodeURIComponent(href.split(/[?#]/u)[0]!) }, mount }); } catch { /* Invalid encoded links retain their original text. */ }
+      }
+      return;
+    }
     const image = event.target.closest<HTMLImageElement>("img[data-action='preview-image']");
     if (image !== null && event.currentTarget.contains(image)) {
       requestMediaPreview({
@@ -244,7 +282,7 @@ export function AgentMarkdown({ content }: { content: string }): ReactElement {
         }
       }, 1_500);
     }).catch(() => undefined);
-  }, []);
+  }, [previewContext]);
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>): void => {
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -257,7 +295,7 @@ export function AgentMarkdown({ content }: { content: string }): ReactElement {
     });
   }, []);
 
-  return (
+  return (<>
     <div
       ref={hostRef}
       className="agent-markdown"
@@ -265,7 +303,8 @@ export function AgentMarkdown({ content }: { content: string }): ReactElement {
       onClick={handleClick}
       onKeyDown={handleKeyDown}
     />
-  );
+    {activePreview !== null ? createPortal(<HtmlPreviewCard source={activePreview.source} onClose={() => { if (originalSource.current !== null) originalSource.current.hidden = false; setActivePreview(null); }} />, activePreview.mount) : null}
+  </>);
 }
 
 function isClosedFence(line: string, opening: string): boolean {
@@ -273,8 +312,8 @@ function isClosedFence(line: string, opening: string): boolean {
   return closing !== undefined && closing[0] === opening[0] && closing.length >= opening.length;
 }
 
-export function renderAgentMarkdown(content: string): string {
+export function renderAgentMarkdown(content: string, htmlPreview = false): string {
   const extracted = extractExplicitImageCaptions(separateMarkdownCallouts(content));
   const markdown = normalizeAdjacentBoldTableCaptions(extracted.markdown);
-  return renderer.render(markdown, { markdown, imageCaptions: extracted.captionsByImageIndex });
+  return renderer.render(markdown, { markdown, htmlPreview, imageCaptions: extracted.captionsByImageIndex }) + (htmlPreview ? '<div data-html-file-preview-slot></div>' : "");
 }

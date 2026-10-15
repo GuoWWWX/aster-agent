@@ -1,3 +1,5 @@
+import { htmlPreviewRequestSchema, htmlPreviewResponseSchema } from "@agent/protocol";
+import type { HtmlPreviewServer } from "../preview/html-preview-server.js";
 import { scheduledTaskListSchema, scheduledTaskSchema, saveScheduledTaskIpcArgumentsSchema, scheduledTaskReferenceIpcArgumentsSchema } from "@agent/protocol";
 import { userQuestionSchema, userQuestionReferenceSchema, answerUserQuestionInputSchema, backgroundCommandSchema, stopBackgroundCommandInputSchema, backgroundCommandOutputSchema, readBackgroundCommandInputSchema } from "@agent/protocol";
 import type { ScheduledTaskController } from "../schedules/scheduled-task-controller.js";
@@ -288,6 +290,7 @@ type MainIpcDependencies = {
   integrationConfiguration: IntegrationConfigurationStore;
   gitReview: GitReviewReader;
   managedBrowser: ManagedBrowserController;
+  htmlPreviews: HtmlPreviewServer;
   projectRegistry: ProjectRegistry;
   threadLogLegacyImporter: ThreadLogLegacyImporter;
   skillDocuments: SkillDocumentStore;
@@ -339,6 +342,7 @@ export function registerMainIpcHandlers(
     integrationConfiguration,
     gitReview,
     managedBrowser,
+    htmlPreviews,
     projectRegistry,
     threadLogLegacyImporter,
     skillDocuments,
@@ -377,6 +381,32 @@ export function registerMainIpcHandlers(
   ipcMain.handle(IPC_CHANNELS.scheduledTaskRun, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow); const [input] = scheduledTaskReferenceIpcArgumentsSchema.parse(args);
     return scheduledTaskSchema.parse(scheduledTasks.run(input.id));
+  });
+  ipcMain.handle(IPC_CHANNELS.htmlPreview, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    if (event.senderFrame !== event.sender.mainFrame) throw new Error("Rejected HTML preview request from a subframe.");
+    const [input] = z.tuple([htmlPreviewRequestSchema]).parse(args);
+    if (input.kind === "release") { htmlPreviews.release(input.id, input.conversationId); return null; }
+    const conversation = database.getConversation(input.conversationId);
+    if (input.kind !== "browser") return htmlPreviewResponseSchema.parse(await htmlPreviews.create(input));
+    const preview = htmlPreviews.get(input.id, input.conversationId);
+    htmlPreviews.retain(input.id, input.conversationId);
+    let retained = true;
+    let sessionId: string | undefined;
+    const release = (): void => {
+      if (retained) { retained = false; htmlPreviews.release(input.id, input.conversationId); }
+    };
+    try {
+      const session = await managedBrowser.open({ url: preview.url }, { isolated: true, onClose: release });
+      sessionId = session.sessionId;
+      await workspaceBrowserTabs.open({ conversationId: conversation.id, projectId: conversation.projectId ?? conversation.id,
+        requestedName: preview.title, session, signal: new AbortController().signal });
+      return null;
+    } catch (error) {
+      if (sessionId !== undefined) managedBrowser.close({ sessionId });
+      release();
+      throw error;
+    }
   });
   const disposeApplicationSettingsListener = applicationSettings.onChanged((settings) => {
     const window = getMainWindow();

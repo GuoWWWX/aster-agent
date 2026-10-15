@@ -1,3 +1,4 @@
+import { HtmlPreviewServer } from "../preview/html-preview-server.js";
 import { ScheduledTaskController } from "../schedules/scheduled-task-controller.js";
 import { ScheduledTaskStore } from "../schedules/scheduled-task-store.js";
 import { AgentScheduledTaskRunner } from "../schedules/agent-scheduled-task-runner.js";
@@ -67,6 +68,7 @@ import { ConversationControl } from "../control/conversation-control.js";
 import { LocalControlServer } from "../control/local-control-server.js";
 
 type DesktopServices = {
+  htmlPreviews: HtmlPreviewServer;
   scheduledTasks: ScheduledTaskController;
   agentRuntime: AgentRuntime;
   applicationStorageLocation: ApplicationStorageLocationStore;
@@ -348,6 +350,10 @@ async function initializeServices(): Promise<DesktopServices> {
   const terminalSessions = new TerminalSessionController(projectRegistry, terminalConfiguration);
   const workspaceTerminalTabs = new WorkspaceTerminalTabController();
   const workspaceBrowserTabs = new WorkspaceBrowserTabController();
+  const htmlPreviews = new HtmlPreviewServer(async (conversationId) => {
+    const conversation = database.getConversation(conversationId);
+    return (await projectRegistry.ensureWorkspaceRoot(conversation.projectId ?? conversation.id)).rootPath;
+  });
   const managedBrowser = new ManagedBrowserController(
     () => mainWindow,
     browserConfiguration,
@@ -433,6 +439,7 @@ async function initializeServices(): Promise<DesktopServices> {
     workspaceTerminalTabs,
     workspaceBrowserTabs,
     managedBrowser,
+    htmlPreviews,
     tools,
   };
 }
@@ -509,6 +516,7 @@ async function openMainWindow(): Promise<void> {
       disposeIpcHandlers?.();
       disposeIpcHandlers = undefined;
       services?.managedBrowser.dispose();
+      services?.htmlPreviews.closeAll();
       services?.terminalSessions.dispose();
       mainWindow = undefined;
     }
@@ -634,6 +642,7 @@ async function bootstrap(): Promise<void> {
     services?.scheduledTasks.dispose();
     services?.graphCheckpointer.close();
     services?.managedBrowser.dispose();
+    services?.htmlPreviews.dispose();
     services?.terminalSessions.dispose();
     services?.tools.dispose();
     services?.database.close();

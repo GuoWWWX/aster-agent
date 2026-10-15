@@ -1,3 +1,4 @@
+import { HtmlPreviewScope, HtmlFilePreview } from "../../components/html-preview/html-preview-card.js";
 import { QueryTextarea } from "./query-textarea.js";
 import { UserMessageContent } from "./user-message-content.js";
 import { createPastedTextAttachment } from "./pasted-text-attachment.js";
@@ -3095,6 +3096,7 @@ export function ConversationWorkspace({
   const pathIconKind = resolveConversationPathIconKind(pathScope.kind, session);
 
   return (
+    <HtmlPreviewScope client={agentClient} conversationId={session.id}>
     <ToolConversationContext.Provider value={toolConversations}>
     <section
       className="conversation-workspace"
@@ -3969,6 +3971,7 @@ export function ConversationWorkspace({
       </div>
     </section>
     </ToolConversationContext.Provider>
+    </HtmlPreviewScope>
   );
 }
 
@@ -7053,6 +7056,8 @@ function ToolTimelineItem({
   }, [item.id, reveal?.id, reveal?.requestId, setIsExpanded]);
   const [isRawCallOpen, setIsRawCallOpen] = useState(false);
   const detailsLabel = isExpanded ? "收起调用详情" : "展开调用详情";
+  const htmlPreviewPath = effectiveStatus === "completed" && ["write_file", "replace_in_file", "apply_patch"].includes(item.name)
+    ? fileChangeSummary(item)?.path : undefined;
 
   return (
     <article
@@ -7099,6 +7104,7 @@ function ToolTimelineItem({
           </button>
         </span>
       </header>
+      {htmlPreviewPath ? <HtmlFilePreview path={htmlPreviewPath} /> : null}
       {isExpanded ? (
         <ToolDetail
           agentClient={agentClient}
