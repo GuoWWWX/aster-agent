@@ -43,6 +43,17 @@ export type ModelCatalogRule = z.infer<typeof modelCatalogRuleSchema>;
  */
 export function upgradeModelReasoningCatalog(catalog: ModelCatalog): ModelCatalog {
   const rules = catalog.reasoningRules;
+  // Replace only the unchanged pre-Ultra built-in group; edited options remain user-owned.
+  const updatedRules = rules?.map(rule => {
+    const current = DEFAULT_MODEL_REASONING_RULES.find(candidate => candidate.modelKey === "gpt6" && candidate.id === rule.id);
+    if (current === undefined) return rule;
+    const previous = { ...current, options: current.options.filter(option => option.value !== "ultra"),
+      note: "直接 API 不支持 none/minimal；GPT-6.1 Sol 工具调用使用 Responses。Codex 的 Ultra 为子代理并行运行模式，不是 API effort 值。" };
+    return JSON.stringify(rule) === JSON.stringify(previous) ? structuredClone(current) : rule;
+  });
+  if (updatedRules?.some((rule, index) => rule !== rules?.[index])) {
+    return { ...catalog, reasoningRules: updatedRules };
+  }
   const legacy = LEGACY_EXACT_MODEL_REASONING_RULES;
   if (rules === undefined || rules.length < legacy.length) return catalog;
   const prefix = rules.slice(0, legacy.length);

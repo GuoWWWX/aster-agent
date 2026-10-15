@@ -2043,16 +2043,12 @@ button.tool-file-change__path:hover {
   position: relative;
   z-index: 4;
   display: flex;
-  width: calc(100% - 20px);
-  max-width: 360px;
+  width: fit-content;
+  max-width: calc(100% - 20px);
   flex: 0 0 auto;
   align-items: flex-end;
   gap: 5px;
   margin: 0 auto 5px;
-}
-
-.conversation-task-list[data-has-changes="true"] {
-  max-width: 640px;
 }
 
 .conversation-task-list__body {
@@ -2076,7 +2072,7 @@ button.tool-file-change__path:hover {
   display: flex;
   min-width: 0;
   min-height: 32px;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   align-items: center;
   gap: 6px;
   border: 0;
@@ -3057,11 +3053,6 @@ button.tool-file-change__path:hover {
   padding: 7px 16px 6px;
 }
 
-.conversation-workspace[data-compact="true"] .conversation-task-list {
-  width: calc(100% - 20px);
-  max-width: 360px;
-}
-
 .conversation-workspace[data-compact="true"] .conversation-pending-queue {
   width: min(calc(var(--conversation-content-max-width) - 20px), calc(100% - 84px));
 }
@@ -3326,11 +3317,6 @@ button.tool-file-change__path:hover {
 @media (max-width: 720px) {
   .conversation-pending-queue {
     max-height: min(220px, 34dvh);
-  }
-
-  .conversation-task-list {
-    width: calc(100% - 20px);
-    max-width: 360px;
   }
 
   .conversation-workspace__composer-surface {

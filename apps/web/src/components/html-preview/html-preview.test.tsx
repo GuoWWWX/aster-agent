@@ -18,6 +18,7 @@ describe("conversation HTML previews", () => {
   let request: MockInstance<MockAgentClient["htmlPreview"]>;
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
     node = document.createElement("div"); document.body.append(node); root = createRoot(node);
     client = new MockAgentClient();
     request = vi.spyOn(client, "htmlPreview").mockImplementation(input => Promise.resolve(input.kind === "code" ? { ...result, source: input.html } : input.kind === "file" ? result : null));
@@ -149,12 +150,29 @@ describe("conversation HTML previews", () => {
     expect(request).toHaveBeenCalledWith({ kind: "release", conversationId, id: result.id });
     request.mockRejectedValueOnce(new Error("文件不存在"));
     await render(<HtmlPreviewCard source={{ kind: "file", path: "demo.html" }} />);
-    expect(node.querySelector('[role="alert"]')?.textContent).toBe("文件不存在");
+    expect(node.querySelector('header [aria-label="HTML 预览错误"]')).not.toBeNull();
+    expect(node.querySelector('[role="alert"]')).toBeNull();
     await click("刷新 HTML 预览");
     expect(node.querySelector("iframe")).not.toBeNull();
     await click("源码");
     expect(node.querySelector("iframe")).toBeNull();
     await click("预览");
     expect(node.querySelector("iframe")).not.toBeNull();
+  });
+
+  it("keeps browser errors in a focusable title action and clears them after retry", async () => {
+    const message = "The workspace did not confirm that the browser tab was opened in time.";
+    await render(<HtmlPreviewCard source={{ kind: "file", path: "demo.html" }} />);
+    request.mockRejectedValueOnce(new Error(message));
+    await click("在侧边浏览器打开 HTML");
+    const error = node.querySelector<HTMLButtonElement>('header [aria-label="HTML 预览错误"]');
+    expect(error).not.toBeNull();
+    expect(error?.nextElementSibling?.textContent).toBe("预览");
+    expect(node.querySelector('[role="alert"]')).toBeNull();
+    expect(node.querySelector("iframe")?.getAttribute("src")).toBe(result.url);
+    await act(async () => { error!.focus(); await Promise.resolve(); });
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toContain(message);
+    await click("在侧边浏览器打开 HTML");
+    expect(node.querySelector('[aria-label="HTML 预览错误"]')).toBeNull();
   });
 });

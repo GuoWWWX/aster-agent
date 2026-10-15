@@ -683,9 +683,9 @@ export const modelApiFormatSchema = z.enum([
 
 const GEMINI_THINKING_LEVELS = new Set(["minimal", "low", "medium", "high"]);
 
-export function isGpt56ReasoningModel(modelId: string): boolean {
-  const normalizedModelId = modelId.trim().toLocaleLowerCase();
-  return normalizedModelId === "gpt-5.6" || normalizedModelId.startsWith("gpt-5.6-");
+export function isGptReasoningSummaryModel(modelId: string): boolean {
+  const normalizedModelId = modelId.trim().toLocaleLowerCase().split("/").at(-1) ?? "";
+  return /^gpt-\d+(?:[.-]|$)/u.test(normalizedModelId);
 }
 
 export function isGeminiThinkingLevelModel(modelId: string): boolean {

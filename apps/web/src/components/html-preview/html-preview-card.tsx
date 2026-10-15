@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
-import { CodeXml, Copy, ExternalLink, RefreshCw } from "lucide-react";
+import { CircleAlert, CodeXml, Copy, ExternalLink, RefreshCw } from "lucide-react";
 import { htmlPreviewResizeMessageSchema, type HtmlPreview } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import { IconButton } from "../ui/icon-button.js";
@@ -66,17 +66,17 @@ function HtmlPreviewContent({ source, onRefresh, embedded, mode, requested, onMo
     : "my-[5px] min-w-0 overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-foreground)]"}>
     <header className="flex min-w-0 flex-wrap items-center gap-[5px] border-b border-[var(--app-border)] px-2 py-1">
       <CodeXml size={15} className="shrink-0" /><span className="min-w-0 flex-1 truncate text-[length:var(--app-font-size-control)]" title={source.kind === "file" ? source.path : "HTML 代码块"}>{title}</span>
+      {error !== null ? <IconButton label="HTML 预览错误" tooltip={error} size="compact" className="text-[var(--app-destructive)]"><CircleAlert size={14} /></IconButton> : null}
       <button className={buttonClass} type="button" aria-label={source.kind === "code" ? "预览 HTML" : undefined} aria-pressed={mode === "preview"} onClick={() => onModeChange("preview")}>预览</button>
       <button className={buttonClass} type="button" aria-pressed={mode === "source"} onClick={() => onModeChange("source")}>源码</button>
       <IconButton label="刷新 HTML 预览" size="compact" onClick={onRefresh}><RefreshCw size={14} /></IconButton>
       <IconButton label="在侧边浏览器打开 HTML" size="compact" disabled={preview === null} onClick={() => {
-        if (preview !== null && context !== null) void context.client.htmlPreview({ kind: "browser", id: preview.id, conversationId: context.conversationId }).catch(reason => setError(reason instanceof Error ? reason.message : "浏览器打开失败。"));
+        if (preview !== null && context !== null) void context.client.htmlPreview({ kind: "browser", id: preview.id, conversationId: context.conversationId }).then(() => setError(null)).catch(reason => setError(reason instanceof Error ? reason.message : "浏览器打开失败。"));
       }}><ExternalLink size={14} /></IconButton>
       <IconButton label="复制代码" size="compact" disabled={sourceText === undefined} onClick={() => {
         if (sourceText !== undefined) void navigator.clipboard.writeText(sourceText).catch(() => setError("复制失败，请重试。"));
       }}><Copy size={14} /></IconButton>
     </header>
-    {error !== null ? <p role="alert" className="m-0 p-2 text-[length:var(--app-font-size-control)] text-[var(--app-destructive)]">{error}</p> : null}
     {mode === "source" && sourceText !== undefined
       ? <CodeSourceView source={sourceText} language="html" />
       : preview === null ? error === null ? <p role="status" className="m-0 p-2 text-[length:var(--app-font-size-control)]">正在加载页面…</p> : null

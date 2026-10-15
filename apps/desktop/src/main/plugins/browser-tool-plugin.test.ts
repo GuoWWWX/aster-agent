@@ -8,7 +8,7 @@ const PROJECT_ID = "00000000-0000-4000-8000-000000000002";
 const BROWSER_ID = "00000000-0000-4000-8000-000000000003";
 
 describe("BrowserToolPlugin", () => {
-  it("opens one visible browser tab and only allows its owner to observe and interact", async () => {
+  it.each([PROJECT_ID, CONVERSATION_ID])("opens and controls one owned browser for workspace %s", async (projectId) => {
     const browser = {
       back: vi.fn(),
       capture: vi.fn().mockResolvedValue({ data: "aGVsbG8=", height: 600, mimeType: "image/jpeg", width: 800 }),
@@ -65,7 +65,7 @@ describe("BrowserToolPlugin", () => {
 
     const openProposal = await plugin.execute({
       conversationId: CONVERSATION_ID,
-      projectId: PROJECT_ID,
+      projectId,
       rawArguments: JSON.stringify({ action: "open", name: "资料", url: "https://example.test" }),
       signal: new AbortController().signal,
       toolName: BROWSER_TOOL_NAMES.control,
@@ -80,7 +80,7 @@ describe("BrowserToolPlugin", () => {
 
     const listed = await plugin.execute({
       conversationId: CONVERSATION_ID,
-      projectId: PROJECT_ID,
+      projectId,
       rawArguments: JSON.stringify({ action: "list" }),
       signal: new AbortController().signal,
       toolName: BROWSER_TOOL_NAMES.control,
@@ -92,7 +92,7 @@ describe("BrowserToolPlugin", () => {
 
     const observed = await plugin.execute({
       conversationId: CONVERSATION_ID,
-      projectId: PROJECT_ID,
+      projectId,
       rawArguments: JSON.stringify({ action: "observe", browserId: BROWSER_ID }),
       signal: new AbortController().signal,
       toolName: BROWSER_TOOL_NAMES.control,
@@ -104,7 +104,7 @@ describe("BrowserToolPlugin", () => {
 
     const screenshot = await plugin.execute({
       conversationId: CONVERSATION_ID,
-      projectId: PROJECT_ID,
+      projectId,
       rawArguments: JSON.stringify({ action: "screenshot", browserId: BROWSER_ID }),
       signal: new AbortController().signal,
       toolName: BROWSER_TOOL_NAMES.control,
@@ -119,7 +119,7 @@ describe("BrowserToolPlugin", () => {
 
     const clickProposal = await plugin.execute({
       conversationId: CONVERSATION_ID,
-      projectId: PROJECT_ID,
+      projectId,
       rawArguments: JSON.stringify({
         action: "click",
         browserId: BROWSER_ID,
@@ -144,7 +144,7 @@ describe("BrowserToolPlugin", () => {
 
     const fillProposal = await plugin.execute({
       conversationId: CONVERSATION_ID,
-      projectId: PROJECT_ID,
+      projectId,
       rawArguments: JSON.stringify({
         action: "fill",
         browserId: BROWSER_ID,
@@ -172,7 +172,7 @@ describe("BrowserToolPlugin", () => {
     tabs.onCloseRequested(closeRequested);
     const closeProposal = await plugin.execute({
       conversationId: CONVERSATION_ID,
-      projectId: PROJECT_ID,
+      projectId,
       rawArguments: JSON.stringify({ action: "close", browserId: BROWSER_ID }),
       signal: new AbortController().signal,
       toolName: BROWSER_TOOL_NAMES.control,

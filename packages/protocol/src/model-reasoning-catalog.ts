@@ -190,7 +190,7 @@ const groups: Group[] = [
   { id: "gpt-luna", name: "GPT-6 / GPT-5.6 Luna", seeds: ["gpt6-luna"], matchMode: "glob", matches: ["gpt-*-*luna", "gpt-*-*luna-*"],
     note: "Luna 在 Codex 中最高为 Max，不支持 Ultra。直接 API 的档位与 Sol 相同，但两者分别维护。" },
   { id: "gpt6", name: "GPT-6.1 Sol / GPT Astra", seeds: ["gpt6"], matchMode: "glob", matches: ["gpt-*-*astra", "gpt-*-*astra-*", "gpt-6.1-sol*"],
-    note: "直接 API 不支持 none/minimal；GPT-6.1 Sol 工具调用使用 Responses。Codex 的 Ultra 为子代理并行运行模式，不是 API effort 值。" },
+    note: "支持 Low、Medium、High、Xhigh、Max、Ultra；Ultra 使用自定义 effort 值发送。" },
   { id: "gpt52-55", name: "GPT-5.5 / 5.4 / 5.2（含 5.4 Mini、Nano）", seeds: ["gpt55", "gpt54"], matchMode: "glob", matches: ["gpt-5.5", "gpt-5.5-20*", "gpt-5.4", "gpt-5.4-20*", "gpt-5.4-mini*", "gpt-5.4-nano*", "gpt-5.2", "gpt-5.2-20*"] },
   { id: "gpt-pro", name: "GPT-5.5 / 5.4 / 5.2 Pro", seeds: ["gpt-pro"], matchMode: "glob", matches: ["gpt-5.5-pro*", "gpt-5.4-pro*", "gpt-5.2-pro*"] },
   { id: "codex", name: "GPT-5.3 / 5.2 Codex", seeds: ["codex"], matchMode: "glob", matches: ["gpt-5.3-codex*", "gpt-5.2-codex*"] },
@@ -237,6 +237,7 @@ export const DEFAULT_MODEL_REASONING_RULES: ModelReasoningRule[] = [...groups.fl
       }
       rules.push(modelReasoningRuleSchema.parse({ ...source, id: `${group.id}-${apiFormat}`, modelKey: group.id,
         name: group.name, providerId: providerForSeed(seedId), matchMode: group.matchMode, matches: group.matches,
+        options: group.id === "gpt6" ? [...source.options, { kind: "custom_effort", value: "ultra", displayName: "超高", enabled: true }] : source.options,
         note: group.note ?? source.note, apiFormat }));
     }
   }

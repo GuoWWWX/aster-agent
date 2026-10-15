@@ -1121,9 +1121,12 @@ export function RightSidebarWorkspace({
 
   useEffect(() => {
     return agentClient.onWorkspaceBrowserTabOpenRequested((request) => {
+      const conversation = request.conversationId === activeSessionId
+        ? activeSession
+        : sideSessions.find((session) => session.id === request.conversationId && openChatIds.has(session.id));
       if (
-        (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId))
-        || request.projectId !== activeProject?.id
+        conversation === null || conversation === undefined
+        || request.projectId !== (conversation.projectId ?? conversation.id)
         || !capabilities.managedBrowser
       ) {
         return;
@@ -1136,7 +1139,7 @@ export function RightSidebarWorkspace({
       }).catch(() => undefined);
     });
   }, [
-    activeProject?.id,
+    activeSession,
     activeSessionId,
     agentClient,
     capabilities.managedBrowser,
@@ -1149,10 +1152,7 @@ export function RightSidebarWorkspace({
 
   useEffect(() => {
     return agentClient.onWorkspaceBrowserTabCloseRequested((request) => {
-      if (
-        (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId))
-        || activeProject === null
-      ) {
+      if (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId)) {
         return;
       }
       const closedTabIds = new Set(toolTabs
@@ -1180,7 +1180,6 @@ export function RightSidebarWorkspace({
       }
     });
   }, [
-    activeProject,
     activeSessionId,
     activeTabId,
     agentClient,

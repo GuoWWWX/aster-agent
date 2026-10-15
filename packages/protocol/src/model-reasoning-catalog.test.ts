@@ -4,10 +4,29 @@ import { DEFAULT_MODEL_REASONING_RULES, LEGACY_EXACT_MODEL_REASONING_RULES, mode
 import { modelReasoningPatternMatches } from "./model-reasoning-matcher.js";
 
 describe("model-specific reasoning capabilities", () => {
+  it.each(["openai-chat-completions", "openai-responses"] as const)("includes Ultra in GPT-6.1 Sol recommended defaults for %s", (apiFormat) => {
+    expect(resolveModelReasoningOptions(DEFAULT_MODEL_CATALOG, apiFormat, "gpt-6.1-sol").at(-1))
+      .toMatchObject({ kind: "custom_effort", value: "ultra", enabled: true });
+  });
+
+  it("adds Ultra to unchanged saved GPT defaults while retaining user edits", () => {
+    const original = DEFAULT_MODEL_REASONING_RULES.find(rule => rule.id === "gpt6-openai-responses")!;
+    const previous = { ...original,
+      options: original.options.filter(option => option.value !== "ultra"),
+      note: "直接 API 不支持 none/minimal；GPT-6.1 Sol 工具调用使用 Responses。Codex 的 Ultra 为子代理并行运行模式，不是 API effort 值。",
+    };
+    const untouched = { ...DEFAULT_MODEL_CATALOG, reasoningRules: [previous] };
+    const upgraded = upgradeModelReasoningCatalog(untouched);
+    expect(resolveModelReasoningOptions(upgraded, "openai-responses", "gpt-6.1-sol").at(-1)?.value).toBe("ultra");
+    expect(upgradeModelReasoningCatalog(upgraded)).toBe(upgraded);
+    const edited = { ...untouched, reasoningRules: [{ ...previous, options: [] }] };
+    expect(upgradeModelReasoningCatalog(edited)).toBe(edited);
+  });
+
   it.each([
-    ["openai-chat-completions", "openai/gpt-6.1-sol", ["low", "medium", "high", "xhigh", "max"]],
+    ["openai-chat-completions", "openai/gpt-6.1-sol", ["low", "medium", "high", "xhigh", "max", "ultra"]],
     ["openai-responses", "gpt-6-sol", ["none", "low", "medium", "high", "xhigh", "max"]],
-    ["openai-responses", "gpt-6-astra", ["low", "medium", "high", "xhigh", "max"]],
+    ["openai-responses", "gpt-6-astra", ["low", "medium", "high", "xhigh", "max", "ultra"]],
     ["openai-responses", "gpt-5.6-sol", ["none", "low", "medium", "high", "xhigh", "max"]],
     ["openai-responses", "gpt-5.6-terra", ["none", "low", "medium", "high", "xhigh", "max"]],
     ["openai-chat-completions", "gpt-5.6-luna", ["none", "low", "medium", "high", "xhigh", "max"]],
@@ -77,9 +96,9 @@ describe("model-specific reasoning capabilities", () => {
     provider.apiFormats = ["openai-chat-completions"];
     expect(modelCatalogSchema.safeParse(catalog).success).toBe(true);
     expect(resolveModelReasoningOptions(catalog, "openai-responses", "gpt-6.1-sol")).toEqual([]);
-    expect(resolveModelReasoningOptions(catalog, "openai-chat-completions", "gpt-6.1-sol")).toHaveLength(5);
+    expect(resolveModelReasoningOptions(catalog, "openai-chat-completions", "gpt-6.1-sol")).toHaveLength(6);
     provider.apiFormats.push("openai-responses");
-    expect(resolveModelReasoningOptions(catalog, "openai-responses", "gpt-6.1-sol")).toHaveLength(5);
+    expect(resolveModelReasoningOptions(catalog, "openai-responses", "gpt-6.1-sol")).toHaveLength(6);
   });
 
   it("groups equivalent options while covering every previously listed model and alias", () => {
@@ -95,7 +114,9 @@ describe("model-specific reasoning capabilities", () => {
         const matching = DEFAULT_MODEL_REASONING_RULES.filter(candidate => candidate.apiFormat === rule.apiFormat
           && candidate.matches.some(pattern => modelReasoningPatternMatches(pattern, modelId, candidate.matchMode)));
         expect(matching.length, `${modelId} / ${rule.apiFormat}`).toBeGreaterThan(0);
-        const expected = modelId === "gpt-6-sol"
+        const expected = modelId === "gpt-6.1-sol" || modelId === "gpt-6-astra"
+          ? [...rule.options, { kind: "custom_effort", value: "ultra", displayName: "超高", enabled: true }]
+          : modelId === "gpt-6-sol"
           ? LEGACY_EXACT_MODEL_REASONING_RULES.find(candidate => candidate.modelKey === "gpt-6-luna" && candidate.apiFormat === rule.apiFormat)!.options
           : rule.options;
         expect(resolveModelReasoningOptions(DEFAULT_MODEL_CATALOG, rule.apiFormat, modelId), modelId).toEqual(expected);
@@ -148,7 +169,7 @@ describe("model-specific reasoning capabilities", () => {
     expect(upgraded.reasoningRules?.at(-2)).toEqual(customGroup);
     expect(upgraded.reasoningRules?.find(rule => rule.id === legacy[0]!.id)).toEqual(legacy[0]);
     expect(resolveModelReasoningOptions(upgraded, "openai-chat-completions", "gpt-6.1-sol")).toEqual([]);
-    expect(resolveModelReasoningOptions(upgraded, "openai-responses", "gpt-6.1-sol")).toHaveLength(5);
+    expect(resolveModelReasoningOptions(upgraded, "openai-responses", "gpt-6.1-sol")).toHaveLength(6);
     expect(upgradeModelReasoningCatalog(upgraded)).toBe(upgraded);
     for (const rules of [[], legacy.slice(1), [...legacy].reverse(), legacy.map((rule, index) => index === 0 ? { ...rule, matches: ["custom-*"] } : rule)]) {
       const partial = { ...catalog, reasoningRules: rules };

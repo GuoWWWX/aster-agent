@@ -83,7 +83,7 @@ export {
   getModelApiKeyInputSchema,
   importConversationAttachmentBytesInputSchema,
   isGeminiThinkingLevelModel,
-  isGpt56ReasoningModel,
+  isGptReasoningSummaryModel,
   isReasoningOptionEnabled,
   isReasoningOptionSupportedByApiFormat,
   modelApiFormatSchema,

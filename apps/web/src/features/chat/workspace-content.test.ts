@@ -712,14 +712,14 @@ describe("run activity projection", () => {
     });
   });
 
-  it("hides legacy GPT-5.6 reasoning summaries from completed work processes", () => {
+  it("hides legacy GPT reasoning summaries from completed work processes", () => {
     const summary = assistantMessage("assistant-summary", "", {
-      modelId: "gpt-5.6-terra",
+      modelId: "gpt-6.1-sol",
       reasoningContent: "Preparing subagent to ping Alibaba site",
     });
     const finalAnswer = assistantMessage("assistant-final", "任务完成。", {
       durationMs: 10_000,
-      modelId: "gpt-5.6-terra",
+      modelId: "gpt-6.1-sol",
     });
 
     const projected = groupRunActivities([summary, tool("spawn_subagent"), finalAnswer]);
@@ -730,10 +730,10 @@ describe("run activity projection", () => {
     expect(projected[1]).toMatchObject({ content: "任务完成。", kind: "message" });
   });
 
-  it("hides a legacy GPT-5.6 summary even when the run used no tools", () => {
+  it("hides a legacy GPT summary even when the run used no tools", () => {
     const finalAnswer = assistantMessage("assistant-final", "直接回答。", {
       durationMs: 4_000,
-      modelId: "gpt-5.6-terra",
+      modelId: "gpt-6.1-sol",
       reasoningContent: "Drafting concise response",
     });
 
@@ -1373,6 +1373,8 @@ describe("tool batch summary", () => {
     expect(latestActiveTool([tool("write_file"), running, approval])?.id).toBe(approval.id);
     expect(toolBatchCurrentToolLabel([tool("write_file"), running, approval]))
       .toBe("等待审批：读取 README.md");
+    expect(toolBatchCurrentToolLabel([{ ...tool("write_file", { arguments: '{"path":"pages/index.html"}' }), status: "running" }]))
+      .toBe("正在执行：创建文件 pages/index.html");
     expect(toolBatchCurrentToolLabel([tool("write_file"), tool("run_command")])).toBeNull();
   });
 });

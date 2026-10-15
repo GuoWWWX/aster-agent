@@ -20,7 +20,7 @@ it("opens above the badge on hover and keeps the popup while moving into it with
   const badge = container.querySelector("button")!;
   act(() => { badge.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); });
   const popup = document.querySelector<HTMLElement>('[aria-label="文件改动列表"]')!;
-  expect(popup).not.toBeNull(); expect(popup.dataset.side).toBe("top");
+  expect(popup).not.toBeNull(); expect(popup.dataset.side).toBe("top"); expect(popup.dataset.align).toBe("center");
   act(() => { badge.dispatchEvent(new MouseEvent("pointerout", { bubbles: true })); });
   act(() => { vi.advanceTimersByTime(199); });
   expect(document.querySelector('[aria-label="文件改动列表"]')).not.toBeNull();

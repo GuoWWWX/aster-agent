@@ -33,6 +33,7 @@ import {
   gitOperationInputSchema,
   gitReviewSnapshotSchema,
   IPC_CHANNELS,
+  isGptReasoningSummaryModel,
   isReasoningOptionEnabled,
   isReasoningOptionSupportedByApiFormat,
   listProjectEntriesInputSchema,
@@ -1426,5 +1427,15 @@ describe("protocol bootstrap contract", () => {
         projectId: "00000000-0000-4000-8000-000000000001"
       })
     ).toThrow();
+  });
+});
+
+
+describe("GPT reasoning summary identity", () => {
+  it.each(["gpt-5.6-terra", "gpt-6-sol", "gpt-6.1-sol", "openai/gpt-6-astra", " GPT-6.1-SOL "])("recognizes %s", modelId => {
+    expect(isGptReasoningSummaryModel(modelId)).toBe(true);
+  });
+  it.each(["gpt-oss-120b", "deepseek-reasoner", "qwen3", "my-gpt-6-proxy"])("does not infer summaries for %s", modelId => {
+    expect(isGptReasoningSummaryModel(modelId)).toBe(false);
   });
 });

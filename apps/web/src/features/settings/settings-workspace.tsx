@@ -126,6 +126,7 @@ import {
 import { useApplicationSettingsStore } from "../../stores/application-settings-store.js";
 import { ModelReasoningOptionsEditor } from "./model-reasoning-options-editor.js";
 import { ModelProfilePicker } from "./model-profile-picker.js";
+import { formatModelContextWindow, parseModelContextWindow } from "./model-context-window.js";
 import { ProviderIconPicker, ProviderLogo } from "./provider-logo.js";
 import { SettingsCategoryHeading, SettingsConfigurationCard, SettingsConfigurationGroup } from "./settings-configuration-card.js";
 import { matchesSettingsQuery, SETTINGS_SEARCH_ITEMS, type SettingsSearchItem } from "./settings-search.js";
@@ -822,6 +823,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
     configuredModelDrafts.length > 0 &&
     normalizedModelIds.every((modelId) => modelId.length > 0) &&
     configuredModelDrafts.every((model) => model.displayName.trim().length > 0) &&
+    configuredModelDrafts.every((model) => parseModelContextWindow(model.contextWindow) !== null) &&
     new Set(normalizedModelIds).size === normalizedModelIds.length;
   const testableModels = configuredModelDrafts.filter((model) => model.modelId.trim().length > 0);
   const selectedTestableModelCount = testableModels.filter((model) => modelTestSelection.includes(model.id)).length;
@@ -839,10 +841,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
           baseUrl: draft.baseUrl,
           models: configuredModelDrafts.map((model) => ({
             contextCompression: model.contextCompression,
-            contextWindow: Math.max(
-              0,
-              Number(model.contextWindow) || 0,
-            ),
+            contextWindow: parseModelContextWindow(model.contextWindow) ?? 0,
             displayName: model.displayName.trim(),
             modelId: model.modelId.trim(),
             reasoningOptions: model.reasoningOptions,
@@ -933,7 +932,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
     const modelDrafts = providerModels.map((model) => ({
       contextCompression: model.contextCompression
         ?? contextCompressionThreshold(globalContextCompressionRef.current),
-      contextWindow: String(model.contextWindow),
+      contextWindow: formatModelContextWindow(model.contextWindow),
       displayName: model.displayName,
       id: `model-${nextModelDraftIdRef.current++}`,
       modelId: model.modelId,
@@ -1011,7 +1010,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
       return {
         ...model,
         contextWindow: shouldApplyContextWindowDefault
-          ? String(defaultModelContextWindow(value, modelCatalog))
+          ? formatModelContextWindow(defaultModelContextWindow(value, modelCatalog))
           : model.contextWindow,
         displayName: model.displayName.length === 0 || model.displayName === model.modelId
           ? value
@@ -1040,7 +1039,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
     newModelReasoningDefaultIdsRef.current.add(id);
     setConfiguredModelDrafts((current) => [...current, {
       contextCompression: contextCompressionThreshold(globalContextCompressionRef.current),
-      contextWindow: String(defaultModelContextWindow("", modelCatalog)),
+      contextWindow: formatModelContextWindow(defaultModelContextWindow("", modelCatalog)),
       displayName: "",
       id,
       modelId: "",
@@ -1513,14 +1512,6 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                       }}
                     >
                       <summary>
-                        {model.displayName || model.modelId || "未配置模型"}
-                        <span className="ml-3 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
-                          {model.modelId || "点击配置模型参数"}
-                          {model.contextWindow === "" ? null : ` · ${Number(model.contextWindow) / 1000} K`}
-                        </span>
-                      </summary>
-                      <div className="settings-model-option">
-                      <label className="settings-model-field settings-model-field--name">
                         {isTestingModel ? (
                           <span
                             aria-label="正在测试"
@@ -1536,6 +1527,37 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                             title={connectionStatusLabel(connectionStatus)}
                           />
                         )}
+                        <span className="min-w-0 flex-1 truncate" title={model.displayName || model.modelId || "未配置模型"}>
+                          {model.displayName || model.modelId || "未配置模型"}
+                        </span>
+                        <span className="min-w-0 max-w-[40%] truncate text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
+                          {model.modelId || "点击配置模型参数"}
+                          {model.contextWindow === "" ? null : ` · ${model.contextWindow}`}
+                        </span>
+                        <span className="inline-flex shrink-0 items-center gap-0.5">
+                          <IconButton
+                            label={`测试 ${model.displayName || model.modelId || "模型"}`}
+                            tooltip="连通测试"
+                            disabled={selectedProviderId === null || model.modelId.trim().length === 0
+                              || providerSaveState === "pending" || providerSaveState === "saving"
+                              || providerSaveState === "incomplete" || isAnyModelTesting}
+                            onClick={(event) => { event.preventDefault(); event.stopPropagation(); void testModelConnection(model.modelId); }}
+                          >
+                            {isTestingModel ? <LoaderCircle aria-hidden="true" className="settings-spin" size={15} /> : <TestTube2 aria-hidden="true" size={15} />}
+                          </IconButton>
+                          <IconButton
+                            label={`删除 ${model.displayName || model.modelId || "模型"}`}
+                            tooltip={configuredModelDrafts.length === 1 ? "供应商至少保留一个模型" : "删除模型"}
+                            disabled={configuredModelDrafts.length === 1}
+                            variant="destructive"
+                            onClick={(event) => { event.preventDefault(); event.stopPropagation(); removeModel(model.id); }}
+                          >
+                            <Trash2 aria-hidden="true" size={16} />
+                          </IconButton>
+                        </span>
+                      </summary>
+                      <div className="settings-model-option">
+                      <label className="settings-model-field settings-model-field--name">
                         <input
                           aria-label={`${model.modelId || "模型"}的模型名称`}
                           placeholder="模型名称"
@@ -1592,16 +1614,13 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                         <label className="settings-model-field settings-model-field--context">
                           <input
                             aria-label={`${model.modelId || "模型"}的上下文窗口`}
-                            title="上下文窗口，单位 K（1 K = 1000 Token）"
-                            max="10000"
-                            min="0"
-                            step="0.001"
-                            placeholder="上下文窗口（K）"
-                            type="number"
-                            value={model.contextWindow === "" ? "" : Number(model.contextWindow) / 1000}
-                            onChange={(event) => setContextWindow(model.id, event.target.value === "" ? "" : String(Math.round(Number(event.target.value) * 1000)))}
+                            title="上下文窗口：不带单位为 Token，支持 K、M（如 128K、1.5M）"
+                            aria-invalid={parseModelContextWindow(model.contextWindow) === null || undefined}
+                            placeholder="Token / K / M"
+                            type="text"
+                            value={model.contextWindow}
+                            onChange={(event) => setContextWindow(model.id, event.target.value)}
                           />
-                          <span className="text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">K</span>
                         </label>
 
                         <ModelContextCompressionEditor
@@ -1612,38 +1631,6 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                             setModelContextCompression(model.id, contextCompression)
                           }
                         />
-                      </div>
-
-                      <div className="settings-model-actions">
-                        <button
-                          aria-label={`测试 ${model.displayName || model.modelId || "模型"}`}
-                          className="settings-model-test"
-                          disabled={
-                            selectedProviderId === null ||
-                            model.modelId.trim().length === 0 ||
-                            providerSaveState === "pending" ||
-                            providerSaveState === "saving" ||
-                            providerSaveState === "incomplete" ||
-                            isAnyModelTesting
-                          }
-                          title="连通测试"
-                          type="button"
-                          onClick={() => void testModelConnection(model.modelId)}
-                        >
-                          {isTestingModel
-                            ? <LoaderCircle aria-hidden="true" className="settings-spin" size={15} />
-                            : <TestTube2 aria-hidden="true" size={15} />}
-                        </button>
-                        <button
-                          aria-label={`删除 ${model.displayName || model.modelId || "模型"}`}
-                          className="settings-model-delete"
-                          disabled={configuredModelDrafts.length === 1}
-                          title={configuredModelDrafts.length === 1 ? "供应商至少保留一个模型" : "删除模型"}
-                          type="button"
-                          onClick={() => removeModel(model.id)}
-                        >
-                          <Trash2 aria-hidden="true" size={16} />
-                        </button>
                       </div>
 
                       {testResult?.kind === "failed" ? (

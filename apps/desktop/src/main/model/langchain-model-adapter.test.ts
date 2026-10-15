@@ -616,7 +616,7 @@ describe("LangChainModelAdapter", () => {
     }));
   });
 
-  it("treats GPT-5.6 Chat reasoning content as a transient summary", async () => {
+  it.each(["gpt-5.6-terra", "gpt-6-sol", "gpt-6.1-sol", "openai/gpt-6-astra"])("treats %s Chat reasoning content as a transient summary", async (modelId) => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse([
       'data: {"choices":[{"delta":{"role":"assistant","reasoning_content":"Preparing changes"},"finish_reason":null}]}\n\n',
       'data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\n',
@@ -628,7 +628,7 @@ describe("LangChainModelAdapter", () => {
       .completeTurn(inputFor("openai-chat-completions", {
         configuration: {
           ...inputFor("openai-chat-completions").configuration,
-          modelId: "gpt-5.6-terra",
+          modelId,
         },
         onReasoningDelta: (event) => reasoningDeltas.push(event),
       }));

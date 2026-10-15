@@ -75,6 +75,75 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it("shows transient reasoning in the outer work-process header and switches to the latest tool", async () => {
+  const client = new MockAgentClient();
+  let listener: (event: ConversationRunEvent) => void = () => {};
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { listener = callback; return () => {}; });
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([]);
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      session={session({ id: PARENT_ID, title: "推理摘要位置", activeRunId: RUN_ID })} /></TooltipProvider>);
+    await flushConversationWorkspace();
+  });
+  act(() => listener({ type: "assistant.reasoning_delta", conversationId: PARENT_ID, runId: RUN_ID, messageId: MESSAGE_ID, modelId: "gpt-6.1-sol", kind: "summary", reset: true, delta: "**Checking workspace files**" }));
+  const header = () => container.querySelector<HTMLButtonElement>(".conversation-run-activity > button");
+  expect(header()?.textContent).toContain("Checking workspace files");
+  expect(container.querySelector(".conversation-model-activity")).toBeNull();
+  expect(container.querySelector('[aria-label="展开思考过程"]')).toBeNull();
+  act(() => header()?.click());
+  expect(header()?.getAttribute("aria-expanded")).toBe("false");
+  const tool: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID,
+    batchId: null, createdAt: "2026-10-15T00:00:00Z", name: "read_file", arguments: '{"path":"index.html"}', result: null, diff: null, status: "running" };
+  act(() => listener({ type: "tool.started", conversationId: PARENT_ID, runId: RUN_ID, tool }));
+  expect(header()?.textContent).toContain("index.html");
+  expect(header()?.textContent).not.toContain("Checking workspace files");
+  act(() => listener({ type: "assistant.reasoning_delta", conversationId: PARENT_ID, runId: RUN_ID, messageId: MESSAGE_ID, modelId: "gpt-6.1-sol", kind: "summary", reset: true, delta: "Creating SVG animation page" }));
+  expect(header()?.textContent).toContain("Creating SVG animation page");
+  act(() => listener({ type: "assistant.delta", conversationId: PARENT_ID, runId: RUN_ID, delta: "已完成。", messageId: MESSAGE_ID, modelId: "gpt-6.1-sol" }));
+  expect(container.textContent).not.toContain("Creating SVG animation page");
+});
+
+it("shows only the latest batch status until assistant text closes the group", async () => {
+  const client = new MockAgentClient();
+  let listener: (event: ConversationRunEvent) => void = () => {};
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { listener = callback; return () => {}; });
+  const read: ConversationToolItem = {
+    id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID, batchId: null,
+    createdAt: new Date().toISOString(), name: "read_file", arguments: '{"path":"index.html"}',
+    result: null, diff: null, status: "completed",
+  };
+  const command: ConversationToolItem = {
+    ...read, id: "00000000-0000-4000-8000-000000000014", name: "run_command",
+    arguments: '{"command":"check-page"}', status: "running",
+  };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([read, command]);
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      session={session({ id: PARENT_ID, title: "工具组状态", activeRunId: RUN_ID })} /></TooltipProvider>);
+    await flushConversationWorkspace();
+  });
+  expandWorkProcess(container);
+  const batch = () => container.querySelector(".tool-activity-batch__header");
+  expect(batch()?.textContent).toContain("check-page");
+  expect(batch()?.textContent).not.toContain("运行 1 条命令");
+  act(() => listener({ type: "tool.completed", conversationId: PARENT_ID, runId: RUN_ID, tool: { ...command, status: "completed" } }));
+  expect(batch()?.textContent).toContain("check-page");
+  act(() => listener({ type: "assistant.reasoning_delta", conversationId: PARENT_ID, runId: RUN_ID,
+    messageId: MESSAGE_ID, modelId: "gpt-6.1-sol", kind: "summary", reset: true, delta: "Reviewing page layout" }));
+  expect(batch()?.textContent).toContain("Reviewing page layout");
+  act(() => listener({ type: "assistant.delta", conversationId: PARENT_ID, runId: RUN_ID,
+    messageId: MESSAGE_ID, modelId: "gpt-6.1-sol", delta: "页面检查完毕。" }));
+  expect(batch()?.textContent).toContain("运行 1 条命令，读取 1 个文件");
+  expect(batch()?.textContent).not.toContain("Reviewing page layout");
+  expect(batch()?.textContent).not.toContain("check-page");
+  act(() => listener({ type: "tool.started", conversationId: PARENT_ID, runId: RUN_ID,
+    tool: { ...read, id: "00000000-0000-4000-8000-000000000015", status: "running", arguments: '{"path":"next.html"}' } }));
+  expect(batch()?.textContent).toContain("运行 1 条命令，读取 1 个文件");
+  expect(batch()?.textContent).not.toContain("next.html");
+});
+
 it("centers the loading state in the message area while keeping the composer available", async () => {
   const client = new MockAgentClient();
   let finishLoading: (items: ConversationTimelineItem[]) => void = () => {};
@@ -189,11 +258,13 @@ it("shows a successful presentation tool as the final delivery outside the work 
     diff: null, createdAt: "2026-10-15T00:00:00Z" };
   const answer: ConversationTimelineItem = { id: MESSAGE_ID, kind: "message", conversationId: PARENT_ID,
     runId: RUN_ID, attachments: [], modelId: null, role: "assistant", status: "completed", content: "页面已完成。", createdAt: "2026-10-15T00:00:01Z" };
-  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool, answer]);
+  const change = { ...tool, id: WORK_ITEM_ID, name: "write_file", diff: "--- a/examples/demo.html\n+++ b/examples/demo.html\n@@ -1 +1 @@\n-before\n+after\n" };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([change, tool, answer]);
   const preview = vi.spyOn(client, "htmlPreview").mockImplementation(input => Promise.resolve(input.kind === "file"
     ? { id: TOOL_ID, title: "demo.html", url: "http://127.0.0.1:1234/token/demo.html", source: "<h1>动画</h1>" } : null));
   const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   const render = (activeRunId: string | null) => <TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+    onForkConversation={() => Promise.resolve()}
     session={session({ id: PARENT_ID, title: "HTML 最终交付", activeRunId })} /></TooltipProvider>;
   await act(async () => { root?.render(render(RUN_ID)); await flushConversationWorkspace(); });
   expect(preview).not.toHaveBeenCalled();
@@ -203,6 +274,14 @@ it("shows a successful presentation tool as the final delivery outside the work 
   const card = container.querySelector('[data-html-delivery]');
   expect(card?.closest(".conversation-run-activity")).toBeNull();
   expect(container.textContent.indexOf("页面已完成。")).toBeLessThan(container.textContent.indexOf("demo.html"));
+  const copy = container.querySelector('[aria-label="复制完整回复"]');
+  const changes = container.querySelector('[data-run-file-changes]');
+  const fork = container.querySelector('[aria-label="从此回复创建分支对话"]');
+  if (card === null || changes === null || copy === null || fork === null) throw new Error("Missing delivery, changes or reply actions.");
+  expect(card.compareDocumentPosition(copy) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(card.compareDocumentPosition(changes) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(changes.compareDocumentPosition(copy) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(changes.compareDocumentPosition(fork) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   expandWorkProcess(container);
   expect(container.querySelectorAll("iframe")).toHaveLength(1);
   expect(container.querySelector('.conversation-run-activity iframe')).toBeNull();
@@ -949,7 +1028,9 @@ describe("Tool activity disclosure", () => {
     expandWorkProcess(container);
     act(() => container.querySelector<HTMLButtonElement>('button[aria-label="展开调用详情"]')?.click());
     expect(container.textContent).toContain("第 7495-7540 行");
-    expect(container.textContent).toContain("分段源码");
+    expect(container.textContent).not.toContain("分段源码");
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="查看调用情况"]')?.click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("分段源码");
     if (totalLines === null) expect(container.textContent).not.toContain("，共");
     else expect(container.textContent).toContain("共 8000 行");
   });

@@ -24,9 +24,9 @@ export function ConversationChangesBadge({ summary, joined = false, onReview }: 
       className={cn("inline-flex min-h-8 shrink-0 items-center gap-[5px] whitespace-nowrap border border-[var(--app-border)] bg-[var(--app-panel)] px-2 py-1 text-[length:var(--app-font-size-control)] font-medium text-[var(--app-foreground)] hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)]", joined ? "rounded-none border-0 border-l" : "rounded-[var(--app-radius-pill)]")}>
       <span>{summary.files.length} 个文件已更改</span><ChangeStats additions={summary.additions} deletions={summary.deletions} />
     </button></PopoverAnchor>
-    <PopoverContent id={id} side="top" align="end" sideOffset={5} aria-label="文件改动列表" onPointerEnter={cancelClose} onPointerLeave={scheduleClose} onFocusCapture={cancelClose} onBlurCapture={scheduleClose}
+    <PopoverContent id={id} side="top" align="center" sideOffset={5} aria-label="文件改动列表" onPointerEnter={cancelClose} onPointerLeave={scheduleClose} onFocusCapture={cancelClose} onBlurCapture={scheduleClose}
       onOpenAutoFocus={event => event.preventDefault()} onCloseAutoFocus={event => event.preventDefault()}
-      className="max-h-[min(320px,45vh)] w-[min(560px,calc(100vw-20px))] overflow-y-auto rounded-[var(--app-radius-large)] border border-[var(--app-border)] bg-[var(--app-panel)] p-[5px] shadow-lg">
+      className="max-h-[min(320px,45vh)] w-[min(320px,calc(100vw-20px))] overflow-y-auto rounded-[var(--app-radius-large)] border border-[var(--app-border)] bg-[var(--app-panel)] p-[5px] shadow-lg">
       {summary.files.map(file => <button className={rowClass} type="button" key={file.path} title={file.path} onClick={() => { setOpen(false); onReview(file.path); }}>
         <FileDiff size={14} className="shrink-0" /><span className="min-w-0 flex-1 truncate">{file.path}</span><ChangeStats additions={file.additions} deletions={file.deletions} />
       </button>)}

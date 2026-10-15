@@ -11,7 +11,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
 import {
-  isGpt56ReasoningModel,
+  isGptReasoningSummaryModel,
   type ModelApiFormat,
 } from "@agent/protocol";
 
@@ -991,7 +991,7 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
     let reasoningContent = "";
     let reasoningStarted = false;
     const reasoningKind = this.apiFormat === "openai-chat-completions"
-      && !isGpt56ReasoningModel(input.configuration.modelId)
+      && !isGptReasoningSummaryModel(input.configuration.modelId)
       ? "content"
       : "summary";
     try {

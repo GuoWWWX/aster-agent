@@ -115,7 +115,7 @@ import {
   agentAvatarIconSchema,
   conversationAttachmentListSchema,
   DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION,
-  isGpt56ReasoningModel,
+  isGptReasoningSummaryModel,
   isReasoningOptionEnabled,
   modelReasoningOptionKey,
   parseSerializedAgentError,
@@ -155,6 +155,7 @@ import {
   getCachedModelStatus,
   loadModelStatus,
   rememberModelStatus,
+  subscribeModelStatus,
 } from "../../runtime/model-status-cache.js";
 import {
   useAgentDirectoryStore,
@@ -1001,6 +1002,7 @@ export function ConversationWorkspace({
     initialModelStatus,
   );
   const [modelStatus, setModelStatus] = useState<ModelRuntimeStatus | null>(initialModelStatus);
+  useEffect(() => subscribeModelStatus(agentClient, setModelStatus), [agentClient]);
   const [runProgresses, setRunProgresses] = useState<RunProgress[]>(() =>
     createRestoredRunProgresses(session.activeRunId),
   );
@@ -2964,6 +2966,14 @@ export function ConversationWorkspace({
   const displayTimeline = groupRunActivities(
     projectSubagentMessagesForParentTimeline(timeline, subagentConversationIds),
   );
+  const activityRunId = modelActivity?.runId;
+  if (activityRunId != null && activityRunId === activeRunId
+    && !displayTimeline.some(item => item.kind === "run_activity" && item.runIds.includes(activityRunId))) {
+    displayTimeline.splice(getModelActivityInsertIndex(displayTimeline, activityRunId, modelActivity?.anchorTimelineItemId ?? null), 0, {
+      id: `run-activity:${activityRunId}`, kind: "run_activity", runId: activityRunId,
+      runIds: [activityRunId], items: [], durationMs: null,
+    });
+  }
   const htmlDeliveries = htmlPresentationDeliveries(timeline, displayTimeline, activeRunId);
   const locateQuestion = async (question: UserQuestion): Promise<void> => {
     try {
@@ -3021,6 +3031,8 @@ export function ConversationWorkspace({
     locatedTimelineRequestIdRef.current = locateTimelineItem.requestId;
   }, [isLoadingTimeline, locateTimelineItem, timeline]);
   const latestActiveToolId = useMemo(() => getLatestActiveToolId(timeline), [timeline]);
+  const latestRunItem = activeRunId === null ? undefined : timeline.findLast((item) => item.runId === activeRunId);
+  const currentToolId = latestRunItem?.kind === "tool" ? latestRunItem.id : null;
   const runDurationsByInsertIndex = useMemo(
     () => getConversationRunDurationInsertIndexes(displayTimeline),
     [displayTimeline],
@@ -3244,6 +3256,18 @@ export function ConversationWorkspace({
               <ToolRevealContext.Provider value={locateTimelineItem}>
               {displayTimeline.map((item, index) => {
                 const answerQuestion = item.kind === "message" ? questionForAnswer(item, userQuestions) : null;
+                const deliveries = htmlDeliveries.get(item.id) ?? [];
+                const changes = changeCards.get(item.id) ?? [];
+                const afterMessage = deliveries.length === 0 && changes.length === 0 ? null : (
+                  <div className="chat-message-group gap-[5px]" data-role="assistant">
+                    {deliveries.map(delivery => (
+                      <div data-html-delivery={delivery.id} key={delivery.id}>
+                        <HtmlPreviewCard source={{ kind: "file", path: delivery.path }} />
+                      </div>
+                    ))}
+                    {changes.map(change => <ConversationChangesCard key={change.runId} summary={change.summary} onReview={path => openChangeReview(change.runId, path)} />)}
+                  </div>
+                );
                 return (
                 <Fragment key={item.id}>
                   {(runDurationsByInsertIndex.get(index) ?? []).map((durationMs, durationIndex) => (
@@ -3280,6 +3304,7 @@ export function ConversationWorkspace({
                     >
                       <TimelineItem
                         agentClient={agentClient}
+                        afterMessage={item.kind === "message" ? afterMessage : null}
                         item={item}
                         questionAnswer={answerQuestion}
                         onLocateQuestion={locateQuestion}
@@ -3298,6 +3323,7 @@ export function ConversationWorkspace({
                         teamManaged={teamManaged}
                         activeRunId={activeRunId}
                         latestActiveToolId={latestActiveToolId}
+                        currentToolId={currentToolId}
                         modelActivity={modelActivity !== null
                           && modelActivityInsertIndex === index
                           && (item.kind === "tool_batch" || item.kind === "run_activity")
@@ -3352,12 +3378,7 @@ export function ConversationWorkspace({
                       />
                     </div>
                   )}
-                  {(htmlDeliveries.get(item.id) ?? []).map(delivery => (
-                    <div className="chat-message-group" data-role="assistant" data-html-delivery={delivery.id} key={delivery.id}>
-                      <HtmlPreviewCard source={{ kind: "file", path: delivery.path }} />
-                    </div>
-                  ))}
-                  {(changeCards.get(item.id) ?? []).map(change => <ConversationChangesCard key={change.runId} summary={change.summary} onReview={path => openChangeReview(change.runId, path)} />)}
+                  {item.kind === "message" ? null : afterMessage}
                   {submittedTeamWorkItems(item).map((workItem) => (
                     <CollaborationProjectionGraph
                       agentClient={agentClient}
@@ -3888,11 +3909,12 @@ export function ConversationWorkspace({
                 ) : null}
                 <span className="conversation-workspace__model-controls">
                   <ModelProfilePicker
-                    align="end"
+                    align="center"
                     ariaLabel="对话模型列表"
                     className="model-profile-picker--conversation"
                     defaultContextCompression={contextCompressionConfiguration}
                     models={modelOptions}
+                    providerFilter
                     selectedModelId={activeModel?.modelId ?? null}
                     selectedProviderId={activeModel?.providerId ?? null}
                     side="top"
@@ -5140,7 +5162,7 @@ function groupRunActivitySegment(
     const isIntermediate = index < (lastRunItemIndex.get(item.runId) ?? index);
     const hasReasoning = reasoningContent !== undefined
       && reasoningContent.length > 0
-      && (item.modelId === null || !isGpt56ReasoningModel(item.modelId));
+      && (item.modelId === null || !isGptReasoningSummaryModel(item.modelId));
     const hasProgress = isIntermediate && visibleContent.trim().length > 0;
     const existingActivity = activities.get(item.runId);
     if (!hasReasoning && !hasProgress && existingActivity === undefined) continue;
@@ -5190,7 +5212,7 @@ function groupRunActivitySegment(
       const isLegacyGptSummary = item.kind === "message"
         && item.role === "assistant"
         && item.modelId !== null
-        && isGpt56ReasoningModel(item.modelId)
+        && isGptReasoningSummaryModel(item.modelId)
         && item.reasoningContent !== undefined;
       if (
         visibleContent !== null
@@ -5762,6 +5784,7 @@ function ModelRetryTimelineItem({ item }: { item: ConversationModelRetryItem }):
 
 function TimelineItem({
   agentClient,
+  afterMessage,
   item,
   questionAnswer,
   onLocateQuestion,
@@ -5770,6 +5793,7 @@ function TimelineItem({
   teamManaged,
   activeRunId,
   latestActiveToolId,
+  currentToolId,
   modelActivity,
   runProgress,
   approvalErrors,
@@ -5793,6 +5817,7 @@ function TimelineItem({
   liveToolOutputs,
 }: {
   agentClient: AgentClient;
+  afterMessage?: ReactNode;
   item: TimelineDisplayItem;
   questionAnswer: UserQuestion | null;
   onLocateQuestion: (question: UserQuestion) => Promise<void>;
@@ -5801,6 +5826,7 @@ function TimelineItem({
   teamManaged: boolean;
   activeRunId: string | null;
   latestActiveToolId: string | null;
+  currentToolId: string | null;
   modelActivity: ModelActivity | null;
   runProgress: RunProgress | null;
   approvalErrors: Readonly<Record<string, string>>;
@@ -5840,6 +5866,7 @@ function TimelineItem({
         teamManaged={teamManaged}
         activeRunId={activeRunId}
         latestActiveToolId={latestActiveToolId}
+        currentToolId={currentToolId}
         modelActivity={modelActivity}
         runProgress={runProgress}
         approvalErrors={approvalErrors}
@@ -5861,6 +5888,7 @@ function TimelineItem({
         teamManaged={teamManaged}
         activeRunId={activeRunId}
         latestActiveToolId={latestActiveToolId}
+        currentToolId={currentToolId}
         modelActivity={modelActivity}
         approvalErrors={approvalErrors}
         approvingToolId={approvingToolId}
@@ -6011,6 +6039,7 @@ function TimelineItem({
         </article>
       ) : null}
       {item.role === "assistant" ? messageAttachments : null}
+      {afterMessage}
       {showMessageMeta ? <div className="chat-message__meta">
         {item.role === "user" ? (
           <time dateTime={item.createdAt} title={formatConversationDateTime(item.createdAt)}>
@@ -6511,6 +6540,7 @@ function RunActivityTimelineItem({
   teamManaged,
   activeRunId,
   latestActiveToolId,
+  currentToolId,
   modelActivity,
   runProgress,
   approvalErrors,
@@ -6525,6 +6555,7 @@ function RunActivityTimelineItem({
   teamManaged: boolean;
   activeRunId: string | null;
   latestActiveToolId: string | null;
+  currentToolId: string | null;
   modelActivity: ModelActivity | null;
   runProgress: RunProgress | null;
   approvalErrors: Readonly<Record<string, string>>;
@@ -6564,6 +6595,9 @@ function RunActivityTimelineItem({
   const reasoningStreaming = displayItems.some((entry) =>
     entry.kind === "activity_reasoning" && entry.streaming
   );
+  const currentModelActivity = isActive && modelActivity?.runId != null && item.runIds.includes(modelActivity.runId)
+    ? modelActivity : null;
+  const currentBatch = displayItems.at(-1);
   const hasFailure = item.items.some((entry) =>
     entry.kind === "tool"
     && (toolItemHasFailure(entry) || approvalErrors[entry.id] !== undefined)
@@ -6603,8 +6637,9 @@ function RunActivityTimelineItem({
           item={entry}
           key={entry.id}
           latestActiveToolId={latestActiveToolId}
+          currentToolId={currentToolId}
           liveToolOutputs={liveToolOutputs}
-          modelActivity={null}
+          modelActivity={entry === currentBatch ? currentModelActivity : null}
           onChangeApproval={onChangeApproval}
           onOpenSubagent={onOpenSubagent}
           onOpenProjectFile={onOpenProjectFile}
@@ -6630,11 +6665,9 @@ function RunActivityTimelineItem({
       />
     );
   });
-  const modelActivityContent = modelActivity?.runId !== null
-    && modelActivity?.runId !== undefined
-    && item.runIds.includes(modelActivity.runId)
-    ? <ModelActivityIndicator activity={modelActivity} />
-    : null;
+  const latestTool = isActive ? item.items.findLast(entry => entry.kind === "tool" && entry.id === currentToolId) : undefined;
+  const currentStatus = currentModelActivity !== null ? modelActivityLabel(currentModelActivity)
+    : latestTool?.kind === "tool" ? (toolBatchCurrentToolLabel([latestTool], teamManaged) ?? toolActivityLabel(latestTool, teamManaged)) : null;
 
   return (
     <section
@@ -6649,7 +6682,8 @@ function RunActivityTimelineItem({
         type="button"
         onClick={() => setIsExpanded((current) => !current)}
       >
-        <span>{label}</span>
+        <span className="min-w-0 truncate" aria-live={isActive ? "polite" : undefined} title={currentStatus ?? label}>{currentStatus ?? label}</span>
+        {currentStatus !== null && durationMs !== null ? <span className="shrink-0 text-[length:var(--app-font-size-auxiliary)]">{label}</span> : null}
         <ChevronRight
           aria-hidden="true"
           className={`shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
@@ -6661,12 +6695,10 @@ function RunActivityTimelineItem({
           {hasReasoning ? (
             <ReasoningDisclosure key={revealThisRun ? reveal?.requestId : "normal"} streaming={reasoningStreaming} reveal={revealThisRun}>
               {activityContent}
-              {modelActivityContent}
             </ReasoningDisclosure>
           ) : (
             <>
               {activityContent}
-              {modelActivityContent}
             </>
           )}
         </div>
@@ -6681,6 +6713,7 @@ function ToolBatchTimelineItem({
   teamManaged,
   activeRunId,
   latestActiveToolId,
+  currentToolId,
   modelActivity,
   approvalErrors,
   approvingToolId,
@@ -6694,6 +6727,7 @@ function ToolBatchTimelineItem({
   teamManaged: boolean;
   activeRunId: string | null;
   latestActiveToolId: string | null;
+  currentToolId: string | null;
   modelActivity: ModelActivity | null;
   approvalErrors: Readonly<Record<string, string>>;
   approvingToolId: string | null;
@@ -6717,16 +6751,13 @@ function ToolBatchTimelineItem({
   const hasFailure = item.tools.some((tool) =>
     toolItemHasFailure(tool) || approvalErrors[tool.id] !== undefined
   );
-  const batchLabel = modelActivity === null
-    ? toolBatchLabel(item.tools, teamManaged)
-    : modelActivityLabel(modelActivity);
-  const currentTool = latestActiveTool(item.tools);
-  const currentToolLabel = currentTool === null || isExpanded
-    ? null
-    : toolBatchCurrentToolLabel(item.tools, teamManaged);
-  const label = batchLabel;
+  const currentTool = item.tools.find((tool) => tool.id === currentToolId);
+  const isCurrentBatch = currentTool !== undefined && currentTool.runId === activeRunId;
+  const label = modelActivity !== null ? modelActivityLabel(modelActivity)
+    : isCurrentBatch ? (toolBatchCurrentToolLabel([currentTool], teamManaged) ?? toolActivityLabel(currentTool, teamManaged))
+    : toolBatchLabel(item.tools, teamManaged);
   const toggleLabel = isExpanded ? "收起本轮工具调用" : "展开本轮工具调用";
-  const headerLabel = currentToolLabel === null ? label : `${label} · ${currentToolLabel}`;
+  const headerLabel = label;
 
   return (
     <section className="tool-activity-batch" data-status={hasFailure ? "failed" : undefined}>
@@ -6741,18 +6772,7 @@ function ToolBatchTimelineItem({
             onClick={() => setIsExpanded((current) => !current)}
           >
             <ToolTypeIcon name={representativeToolName(item.tools)} />
-            <span>{label}</span>
-            {currentToolLabel === null ? null : (
-              <span
-                aria-live="polite"
-                className={currentTool?.status === "awaiting_approval"
-                  ? "tool-activity-batch__execution tool-activity-batch__execution--approval"
-                  : "tool-activity-batch__execution"}
-                title={currentToolLabel}
-              >
-                · {currentToolLabel}
-              </span>
-            )}
+            <span className="min-w-0 truncate" aria-live={isCurrentBatch || modelActivity !== null ? "polite" : undefined}>{label}</span>
           </button>
           {hasFailure ? <span className="tool-activity-batch__status">有失败项</span> : null}
           <button
@@ -7706,7 +7726,10 @@ export function toolBatchCurrentToolLabel(
   const activeTool = latestActiveTool(tools);
   if (activeTool === null) return null;
   const state = activeTool.status === "awaiting_approval" ? "等待审批" : "正在执行";
-  return `${state}：${toolActivityLabel(activeTool, teamManaged)}`;
+  const fileChange = fileChangeSummary(activeTool);
+  const label = fileChange === null ? toolActivityLabel(activeTool, teamManaged)
+    : `${fileChange.action} ${fileChange.path}`;
+  return `${state}：${label}`;
 }
 
 /** Returns a mode only when the whole visible batch shares one scheduler mode. */
@@ -7785,11 +7808,11 @@ function ToolDetail({
   }
 
   if (item.name === "read_file") {
-    return <FileReadResult payload={item.result} status={item.status} />;
+    return <FileReadResult argumentsPayload={item.arguments} payload={item.result} status={item.status} />;
   }
 
   if (item.name === "read_external_file") {
-    return <FileReadResult payload={item.result} status={item.status} />;
+    return <FileReadResult argumentsPayload={item.arguments} payload={item.result} status={item.status} />;
   }
 
   if (item.name === "read_attachment") {
@@ -8078,28 +8101,28 @@ function DirectoryListingResult({
 }
 
 function FileReadResult({
+  argumentsPayload,
   payload,
   status,
 }: {
+  argumentsPayload: string;
   payload: string | null;
   status: ConversationToolItem["status"];
 }): ReactElement {
   const result = payload === null ? null : parseFileReadResult(payload);
-  if (result === null) {
-    return <ToolResultNotice result={payload} status={status} />;
-  }
-
+  const args = parseToolPayload(argumentsPayload);
+  const path = result?.path ?? (typeof args?.path === "string" ? args.path : "");
+  const startLine = result?.startLine ?? (typeof args?.startLine === "number" ? args.startLine : 1);
+  const endLine = result?.endLine ?? (typeof args?.endLine === "number" ? args.endLine
+    : startLine + (typeof args?.lineCount === "number" ? args.lineCount : 400) - 1);
   return (
-    <StructuredToolResult
-      summary={
-        <>
-          <span title={result.path}>{fileNameFromPath(result.path)}</span> · 第 {result.startLine}-{result.endLine} 行
-          {result.totalLines === null ? "" : `，共 ${result.totalLines} 行`}
-        </>
-      }
-    >
-      <pre>{result.content.length === 0 ? "（文件内容为空）" : result.content}</pre>
-    </StructuredToolResult>
+    <section className="tool-timeline-item__payload">
+      <p className="tool-timeline-item__payload-label break-all">
+        {path} · 第 {startLine}-{endLine} 行
+        {result?.totalLines == null ? "" : `，共 ${result.totalLines} 行`}
+      </p>
+      {result === null ? <ToolResultNotice result={payload} status={status} /> : null}
+    </section>
   );
 }
 
@@ -8117,7 +8140,6 @@ function AttachmentReadResult({
     <StructuredToolResult
       summary={`${result.name} · 字符 ${result.startOffset}-${result.endOffset} / ${result.totalCharacters}`}
     >
-      <pre>{result.content.length === 0 ? "（附件片段为空）" : result.content}</pre>
       {result.truncated ? (
         <p className="tool-directory-listing__notice">附件后面仍有内容，可继续按偏移量读取。</p>
       ) : null}
