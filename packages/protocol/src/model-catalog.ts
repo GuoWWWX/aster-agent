@@ -1,6 +1,8 @@
 import { z } from "zod";
+import { modelReasoningPatternMatches } from "./model-reasoning-matcher.js";
 
-import { modelReasoningOptionSchema } from "./conversation.js";
+import { modelReasoningOptionSchema, isReasoningOptionSupportedByApiFormat, type ModelApiFormat, type ModelReasoningOption } from "./conversation.js";
+import { DEFAULT_MODEL_REASONING_PROVIDERS, DEFAULT_MODEL_REASONING_RULES, modelReasoningProviderSchema, modelReasoningRuleSchema } from "./model-reasoning-catalog.js";
 
 const modelCatalogPatternSchema = z.string().trim().min(1).max(200);
 
@@ -15,35 +17,42 @@ export const modelCatalogRuleSchema = z.object({
 export const modelCatalogSchema = z.object({
   defaultContextWindow: z.number().int().min(1).max(10_000_000),
   models: z.array(modelCatalogRuleSchema).max(500),
+  reasoningProviders: z.array(modelReasoningProviderSchema).max(100)
+    .refine(providers => new Set(providers.map(provider => provider.id)).size === providers.length, "Provider IDs must be unique.").optional(),
+  reasoningRules: z.array(modelReasoningRuleSchema).max(500)
+    .refine(rules => new Set(rules.map(rule => rule.id)).size === rules.length, "Reasoning rule IDs must be unique.").optional(),
   version: z.literal(1),
-}).strict();
+}).strict().superRefine((catalog, context) => {
+  if (catalog.reasoningProviders === undefined) return;
+  const providers = new Set(catalog.reasoningProviders.map(provider => provider.id));
+  const keys = new Set<string>();
+  catalog.reasoningRules?.forEach((rule, index) => {
+    const key = JSON.stringify([rule.providerId, rule.modelKey, rule.apiFormat]);
+    if (!rule.providerId || !providers.has(rule.providerId) || !rule.modelKey || keys.has(key)) {
+      context.addIssue({ code: "custom", path: ["reasoningRules", index], message: "Unknown provider, missing model key, or duplicate model protocol." });
+    }
+    keys.add(key);
+  });
+});
 
 export type ModelCatalog = z.infer<typeof modelCatalogSchema>;
 export type ModelCatalogRule = z.infer<typeof modelCatalogRuleSchema>;
 
-const GPT_5_6_REASONING_OPTIONS = [
-  { displayName: "无", enabled: true, kind: "effort", value: "none" },
-  { displayName: "低", enabled: true, kind: "effort", value: "low" },
-  { displayName: "中", enabled: true, kind: "effort", value: "medium" },
-  { displayName: "高", enabled: true, kind: "effort", value: "high" },
-  { displayName: "极高", enabled: true, kind: "effort", value: "xhigh" },
-  { displayName: "最高", enabled: true, kind: "effort", value: "max" },
-] as const;
-
 /**
- * Seeded into the user-editable model-catalog.json on first desktop launch.
+ * Seeded into settings.jsonc/modelCatalog on first desktop launch.
  * Values are intentionally limited to mainstream text/chat model identifiers;
  * providers can expose additional models and users can add local rules.
  */
 export const DEFAULT_MODEL_CATALOG = modelCatalogSchema.parse({
   defaultContextWindow: 128_000,
+  reasoningRules: DEFAULT_MODEL_REASONING_RULES,
+  reasoningProviders: DEFAULT_MODEL_REASONING_PROVIDERS,
   models: [
     {
       contextWindow: 1_050_000,
       id: "openai-gpt-5.6",
       matches: ["gpt-5.6", "gpt-5.6-*"],
       name: "OpenAI GPT-5.6",
-      reasoningOptions: GPT_5_6_REASONING_OPTIONS,
     },
     {
       contextWindow: 1_050_000,
@@ -419,4 +428,19 @@ export function resolveModelCatalogRule(
 export function resolveModelContextWindow(catalog: ModelCatalog, modelId: string): number {
   return resolveModelCatalogRule(catalog, modelId)?.contextWindow
     ?? catalog.defaultContextWindow;
+}
+
+export function resolveModelReasoningOptions(catalog: ModelCatalog, apiFormat: ModelApiFormat, modelId: string): ModelReasoningOption[] {
+  const rules = catalog.reasoningRules ?? DEFAULT_MODEL_REASONING_RULES;
+  const rule = [...rules].reverse().find(candidate => candidate.apiFormat === apiFormat
+    && candidate.matches.some(pattern => modelReasoningPatternMatches(pattern, modelId, candidate.matchMode)));
+  const provider = catalog.reasoningProviders?.find(candidate => candidate.id === rule?.providerId);
+  if (provider !== undefined && !provider.apiFormats.includes(apiFormat)) return [];
+  // Legacy catalogs stored effort presets without a protocol dimension. Keep
+  // those OpenAI-compatible overrides, but never leak them into native Gemini.
+  const legacyOptions = apiFormat === "openai-chat-completions" || apiFormat === "openai-responses"
+    ? resolveModelCatalogRule(catalog, modelId)?.reasoningOptions : undefined;
+  const options = rule?.options ?? legacyOptions ?? [];
+  return options.filter(option => isReasoningOptionSupportedByApiFormat(apiFormat, option, modelId))
+    .map(option => ({ ...option }));
 }

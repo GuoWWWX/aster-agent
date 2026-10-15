@@ -11,7 +11,6 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
 import {
-  isGemini3ReasoningModel,
   isGpt56ReasoningModel,
   type ModelApiFormat,
 } from "@agent/protocol";
@@ -653,19 +652,16 @@ function reasoningOptions(input: CompleteTurnInput): Record<string, unknown> {
       : {};
   }
   if (input.configuration.apiFormat === "anthropic-messages") {
+    if (reasoning.kind === "effort" || reasoning.kind === "custom_effort") {
+      return { outputConfig: { effort: reasoning.value },
+        ...(/(?:^|\/)claude-/iu.test(input.configuration.modelId) ? { thinking: { type: "adaptive" } } : {}) };
+    }
     return reasoning.kind === "token_budget"
       ? { thinking: { budget_tokens: reasoning.value, type: "enabled" } }
       : {};
   }
-  if (isGemini3ReasoningModel(input.configuration.modelId)) {
-    return reasoning.kind === "effort"
-      ? {
-          thinkingConfig: {
-            includeThoughts: true,
-            thinkingLevel: reasoning.value.toUpperCase(),
-          },
-        }
-      : {};
+  if (reasoning.kind === "effort") {
+    return { thinkingConfig: { includeThoughts: true, thinkingLevel: reasoning.value.toUpperCase() } };
   }
   return reasoning.kind === "token_budget"
     ? { thinkingConfig: { includeThoughts: true, thinkingBudget: reasoning.value } }

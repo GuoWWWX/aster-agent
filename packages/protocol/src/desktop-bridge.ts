@@ -246,6 +246,7 @@ export interface DesktopBridge {
   testModelConnection(input: TestModelConnectionInput): Promise<ModelConnectionTestResult>;
   getModelApiKey(providerId: string): Promise<string | null>;
   getModelCatalog(): Promise<ModelCatalog>;
+  saveModelCatalog(catalog: ModelCatalog): Promise<ModelCatalog>;
   getModelStatus(): Promise<ModelRuntimeStatus>;
   getContextCompressionConfiguration(): Promise<ContextCompressionConfiguration>;
   getApplicationSettings(): Promise<ApplicationSettings>;

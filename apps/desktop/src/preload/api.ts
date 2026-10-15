@@ -392,6 +392,9 @@ export function createDesktopBridge(): DesktopBridge {
     getModelCatalog() {
       return invoke<BridgeResult<"getModelCatalog">>(IPC_CHANNELS.modelGetCatalog);
     },
+    saveModelCatalog(catalog) {
+      return invoke<BridgeResult<"saveModelCatalog">>(IPC_CHANNELS.modelSaveCatalog, catalog);
+    },
     getIntegrationConfiguration() {
       return invoke<BridgeResult<"getIntegrationConfiguration">>(
         IPC_CHANNELS.integrationGetConfiguration

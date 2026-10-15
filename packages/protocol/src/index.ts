@@ -81,7 +81,7 @@ export {
   ensureTeamMemberConversationInputSchema,
   getModelApiKeyInputSchema,
   importConversationAttachmentBytesInputSchema,
-  isGemini3ReasoningModel,
+  isGeminiThinkingLevelModel,
   isGpt56ReasoningModel,
   isReasoningOptionEnabled,
   isReasoningOptionSupportedByApiFormat,
@@ -295,6 +295,10 @@ export {
   resolveModelContextWindow,
 } from "./model-catalog.js";
 export type { ModelCatalog, ModelCatalogRule } from "./model-catalog.js";
+export { resolveModelReasoningOptions } from "./model-catalog.js";
+export { DEFAULT_MODEL_REASONING_RULES, DEFAULT_MODEL_REASONING_PROVIDERS, modelReasoningRuleSchema, modelReasoningProviderSchema } from "./model-reasoning-catalog.js";
+export type { ModelReasoningRule, ModelReasoningProvider } from "./model-reasoning-catalog.js";
+export { modelReasoningPatternMatches, isValidModelReasoningRegex, type ModelReasoningMatchMode } from "./model-reasoning-matcher.js";
 export {
   contextCompressionConfigurationSchema,
   contextCompressionModeSchema,

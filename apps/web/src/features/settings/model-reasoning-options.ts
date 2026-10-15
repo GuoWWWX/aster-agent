@@ -1,9 +1,7 @@
 import {
   DEFAULT_MODEL_CATALOG,
-  isGemini3ReasoningModel,
-  isReasoningOptionSupportedByApiFormat,
   modelReasoningOptionKey,
-  resolveModelCatalogRule,
+  resolveModelReasoningOptions,
   resolveModelContextWindow,
   type ModelApiFormat,
   type ModelCatalog,
@@ -21,17 +19,6 @@ const EFFORT_DISPLAY_NAMES = {
   none: "无",
   xhigh: "极高",
 } as const satisfies Record<ModelReasoningEffort, string>;
-
-function effortOptions(
-  efforts: readonly ModelReasoningEffort[],
-): ModelReasoningOption[] {
-  return efforts.map((value) => ({
-    displayName: EFFORT_DISPLAY_NAMES[value],
-    enabled: true,
-    kind: "effort" as const,
-    value,
-  }));
-}
 
 export function reasoningOptionApiValue(option: ModelReasoningOption): string {
   return String(option.value);
@@ -62,34 +49,7 @@ export function defaultReasoningOptions(
   modelId = "",
   catalog: ModelCatalog = DEFAULT_MODEL_CATALOG,
 ): ModelReasoningOption[] {
-  const catalogOptions = resolveModelCatalogRule(catalog, modelId)?.reasoningOptions
-    ?.filter((option) => isReasoningOptionSupportedByApiFormat(apiFormat, option, modelId));
-  if (catalogOptions !== undefined && catalogOptions.length > 0) {
-    return catalogOptions.map((option) => ({ ...option }));
-  }
-  if (apiFormat === "openai-chat-completions") {
-    return effortOptions(["low", "medium", "high"]);
-  }
-  if (apiFormat === "openai-responses") {
-    return effortOptions(["none", "low", "medium", "high"]);
-  }
-  if (apiFormat === "anthropic-messages") {
-    return [
-      { displayName: "轻度", enabled: true, kind: "token_budget", value: 1_024 },
-      { displayName: "标准", enabled: true, kind: "token_budget", value: 2_048 },
-      { displayName: "深度", enabled: true, kind: "token_budget", value: 4_096 },
-      { displayName: "极深", enabled: true, kind: "token_budget", value: 8_191 },
-    ];
-  }
-  if (isGemini3ReasoningModel(modelId)) {
-    return effortOptions(["low", "high"]);
-  }
-  return [
-    { displayName: "关闭", enabled: true, kind: "token_budget", value: 0 },
-    { displayName: "轻度", enabled: true, kind: "token_budget", value: 1_024 },
-    { displayName: "深度", enabled: true, kind: "token_budget", value: 4_096 },
-    { displayName: "极深", enabled: true, kind: "token_budget", value: 8_192 },
-  ];
+  return resolveModelReasoningOptions(catalog, apiFormat, modelId);
 }
 
 export function reorderReasoningOptions(

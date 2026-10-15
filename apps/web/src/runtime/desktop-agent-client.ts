@@ -346,6 +346,10 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.getModelCatalog();
   }
 
+  public saveModelCatalog(catalog: ModelCatalog): Promise<ModelCatalog> {
+    return this.desktopBridge.saveModelCatalog(catalog);
+  }
+
   public getModelStatus(): Promise<ModelRuntimeStatus> {
     return this.desktopBridge.getModelStatus();
   }

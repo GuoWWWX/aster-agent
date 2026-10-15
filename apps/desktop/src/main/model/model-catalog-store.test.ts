@@ -4,6 +4,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ModelCatalogStore } from "./model-catalog-store.js";
+import { SettingsJsoncFile } from "../settings/settings-jsonc-file.js";
+import { DEFAULT_MODEL_CATALOG } from "@agent/protocol";
 
 const temporaryDirectories: string[] = [];
 
@@ -16,6 +18,23 @@ afterEach(async () => {
 });
 
 describe("ModelCatalogStore", () => {
+  it("saves protocol-specific reasoning rules into settings.jsonc and preserves other settings", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-catalog-settings-"));
+    temporaryDirectories.push(directory);
+    const filename = path.join(directory, "settings.jsonc");
+    await writeFile(filename, '{\n// user comment\n"version": 1, "customSetting": true\n}', "utf8");
+    const file = new SettingsJsoncFile(filename);
+    const store = new ModelCatalogStore(file);
+    const next = { ...DEFAULT_MODEL_CATALOG, reasoningRules: [{ id: "custom", name: "Gateway", providerId: "openai", modelKey: "gateway",
+      matches: ["my-model"], apiFormat: "openai-responses" as const, options: [{ kind: "custom_effort" as const, value: "deep" }] }] };
+    store.saveCatalog(next);
+    expect(new ModelCatalogStore(new SettingsJsoncFile(filename)).getCatalog()).toEqual(next);
+    const saved = await readFile(filename, "utf8");
+    expect(saved).toContain("// user comment");
+    expect(file.readValue("customSetting")).toBe(true);
+    expect(() => store.saveCatalog({ ...next, reasoningRules: [{ ...next.reasoningRules[0]!, matches: [] }] })).toThrow();
+    expect(store.getCatalog()).toEqual(next);
+  });
   it("creates a user-editable catalog when none exists", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-catalog-"));
     temporaryDirectories.push(directory);

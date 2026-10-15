@@ -124,10 +124,12 @@ export function ProviderIconPicker({
   icon,
   providerName,
   onIconChange,
+  inDialog = false,
 }: {
   icon: ModelProviderIcon;
   providerName: string;
   onIconChange: (icon: ModelProviderIcon) => void;
+  inDialog?: boolean;
 }): ReactElement {
   const [isOpen, setIsOpen] = useState(false);
   const selectedOption = optionFor(icon);
@@ -149,7 +151,7 @@ export function ProviderIconPicker({
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        className="provider-icon-picker__content"
+        className={inDialog ? "provider-icon-picker__content z-[110]" : "provider-icon-picker__content"}
         collisionPadding={8}
         side="bottom"
         sideOffset={5}

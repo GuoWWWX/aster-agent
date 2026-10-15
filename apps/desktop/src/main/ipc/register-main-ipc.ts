@@ -1339,6 +1339,12 @@ export function registerMainIpcHandlers(
     return modelCatalogSchema.parse(modelCatalog.getCatalog());
   });
 
+  ipcMain.handle(IPC_CHANNELS.modelSaveCatalog, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [catalog] = z.tuple([modelCatalogSchema]).parse(args);
+    return modelCatalogSchema.parse(modelCatalog.saveCatalog(catalog));
+  });
+
   ipcMain.handle(IPC_CHANNELS.modelGetApiKey, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = getModelApiKeyIpcArgumentsSchema.parse(args);

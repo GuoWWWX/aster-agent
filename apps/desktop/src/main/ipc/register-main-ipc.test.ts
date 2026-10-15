@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserWindow, IpcMainInvokeEvent } from "electron";
-import { DEFAULT_BROWSER_CONFIGURATION, IPC_CHANNELS, type ConversationSummary } from "@agent/protocol";
+import { DEFAULT_BROWSER_CONFIGURATION, DEFAULT_MODEL_CATALOG, IPC_CHANNELS, type ConversationSummary } from "@agent/protocol";
 import { registerMainIpcHandlers } from "./register-main-ipc.js";
 
 const electron = vi.hoisted(() => ({
@@ -65,6 +65,24 @@ describe("result viewed IPC notification", () => {
     invoke = electron.handle.mock.calls.find(([channel]) => channel === IPC_CHANNELS.conversationMarkResultViewed)![1];
   });
   afterEach(() => { dispose?.(); dispose = undefined; });
+
+  it("validates catalog updates and rejects untrusted senders before saving", async () => {
+    dispose?.();
+    const saveCatalog = vi.fn((value: typeof DEFAULT_MODEL_CATALOG) => value);
+    Object.assign(dependencies, { modelCatalog: { saveCatalog } });
+    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(window);
+    dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
+    const handler = electron.handle.mock.calls.filter(([channel]) => channel === IPC_CHANNELS.modelSaveCatalog).at(-1)![1];
+    const frame = {};
+    const trusted = { sender: { mainFrame: frame }, senderFrame: frame } as IpcMainInvokeEvent;
+    await expect(handler(trusted, DEFAULT_MODEL_CATALOG)).resolves.toEqual(DEFAULT_MODEL_CATALOG);
+    expect(saveCatalog).toHaveBeenCalledTimes(1);
+    await expect(handler(trusted, { ...DEFAULT_MODEL_CATALOG, reasoningRules: [{ id: "bad" }] })).rejects.toBeDefined();
+    electron.fromWebContents.mockReturnValueOnce(null);
+    await expect(handler({ sender: {} } as IpcMainInvokeEvent, DEFAULT_MODEL_CATALOG)).rejects.toBeDefined();
+    expect(saveCatalog).toHaveBeenCalledTimes(1);
+  });
 
   it("publishes IPC creation through the shared observer after persistence", async () => {
     dispose?.();

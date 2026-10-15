@@ -24,12 +24,13 @@ describe("model reasoning option helpers", () => {
   });
 
   it("provides API-compatible defaults for reset", () => {
-    expect(defaultReasoningOptions("openai-chat-completions")).toMatchObject([
+    expect(defaultReasoningOptions("openai-chat-completions", "o3")).toMatchObject([
       { displayName: "低", kind: "effort", value: "low" },
       { displayName: "中", kind: "effort", value: "medium" },
       { displayName: "高", kind: "effort", value: "high" },
     ]);
-    expect(defaultReasoningOptions("openai-responses")).toHaveLength(4);
+    expect(defaultReasoningOptions("openai-responses", "gpt-5.1")).toHaveLength(4);
+    expect(defaultReasoningOptions("openai-chat-completions", "unknown-model")).toEqual([]);
     expect(defaultReasoningOptions("openai-responses", "gpt-5.6")).toMatchObject([
       { displayName: "无", kind: "effort", value: "none" },
       { displayName: "低", kind: "effort", value: "low" },
@@ -38,20 +39,23 @@ describe("model reasoning option helpers", () => {
       { displayName: "极高", kind: "effort", value: "xhigh" },
       { displayName: "最高", kind: "effort", value: "max" },
     ]);
-    expect(defaultReasoningOptions("anthropic-messages").map((option) => option.value)).toEqual([
+    expect(defaultReasoningOptions("anthropic-messages", "claude-sonnet-4-5").map((option) => option.value)).toEqual([
       1_024,
       2_048,
       4_096,
       8_191,
     ]);
-    expect(defaultReasoningOptions("google-gemini").map((option) => option.value)).toEqual([
+    expect(defaultReasoningOptions("google-gemini", "gemini-2.5-flash").map((option) => option.value)).toEqual([
+      -1,
       0,
       1_024,
       4_096,
       8_192,
+      24_576,
     ]);
     expect(defaultReasoningOptions("google-gemini", "gemini-3.1-pro-preview")).toMatchObject([
       { displayName: "低", kind: "effort", value: "low" },
+      { displayName: "中", kind: "effort", value: "medium" },
       { displayName: "高", kind: "effort", value: "high" },
     ]);
   });

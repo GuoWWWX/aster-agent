@@ -36,6 +36,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
+import { ModelReasoningCatalogSettings } from "./model-reasoning-catalog-settings.js";
 
 import {
   useCallback,
@@ -182,6 +183,7 @@ const SETTINGS_NAVIGATION: readonly SettingsNavItem[] = [
   { id: "appearance", label: "外观", icon: MonitorCog, group: "应用" },
   { id: "permissions", label: "权限", icon: ShieldCheck, group: "应用" },
   { id: "models", label: "模型配置", icon: Boxes, group: "智能体" },
+  { id: "reasoning", label: "推理程度", icon: SlidersHorizontal, group: "智能体" },
   { id: "agents", label: "Agent 与团队", icon: UsersRound, group: "智能体" },
   { id: "mcp", label: "MCP", icon: PlugZap, group: "集成" },
   { id: "skills", label: "Skill", icon: Sparkles, group: "集成" },
@@ -409,6 +411,7 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
           {activeSection === "models" ? (
             <ModelsSettings agentClient={agentClient} />
           ) : null}
+          {activeSection === "reasoning" ? <ModelReasoningCatalogSettings agentClient={agentClient} /> : null}
           {activeSection === "agents" ? <AgentTeamSettings searchTarget={searchTarget} /> : null}
           {activeSection === "mcp" ? (
             <McpSettings agentClient={agentClient} />
@@ -1127,7 +1130,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
       try {
         setModelCatalog(await agentClient.getModelCatalog());
       } catch {
-        setOperationError("模型目录配置格式错误，请检查 model-catalog.json");
+        setOperationError("模型目录配置格式错误，请检查 settings.jsonc 中的 modelCatalog");
       }
     } catch {
       setOperationError("获取模型失败，请检查接口地址、密钥和 OpenAI 兼容协议");
@@ -1575,6 +1578,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                           side="bottom"
                         >
                           <ModelReasoningOptionsEditor
+                            catalog={modelCatalog}
                             apiFormat={draft.apiFormat}
                             modelId={model.modelId}
                             modelName={model.displayName || model.modelId || "此模型"}

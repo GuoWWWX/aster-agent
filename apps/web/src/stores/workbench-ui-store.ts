@@ -12,6 +12,7 @@ export type ActivityView = "conversations" | "team" | "tasks" | "settings" | "sc
 export type SettingsSection =
   | "general"
   | "models"
+  | "reasoning"
   | "agents"
   | "mcp"
   | "skills"

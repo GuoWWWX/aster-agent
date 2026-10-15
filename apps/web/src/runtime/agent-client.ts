@@ -224,6 +224,7 @@ export interface AgentClient {
   deleteModelProvider(providerId: string): Promise<ModelRuntimeStatus>;
   getCapabilities(): Promise<CapabilitySet>;
   getModelCatalog(): Promise<ModelCatalog>;
+  saveModelCatalog(catalog: ModelCatalog): Promise<ModelCatalog>;
   getModelStatus(): Promise<ModelRuntimeStatus>;
   getContextCompressionConfiguration(): Promise<ContextCompressionConfiguration>;
   getApplicationSettings(): Promise<ApplicationSettings>;

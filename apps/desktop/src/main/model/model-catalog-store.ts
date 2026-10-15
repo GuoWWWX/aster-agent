@@ -49,6 +49,12 @@ export class ModelCatalogStore {
     );
   }
 
+  public saveCatalog(catalog: ModelCatalog): ModelCatalog {
+    const parsed = modelCatalogSchema.parse(catalog);
+    this.writeCatalog(parsed);
+    return this.getCatalog();
+  }
+
   private writeCatalog(catalog: ModelCatalog): void {
     const parsed = modelCatalogSchema.parse(catalog);
     if (this.configuration instanceof SettingsJsoncFile) {

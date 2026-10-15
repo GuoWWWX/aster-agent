@@ -712,14 +712,14 @@ describe("LangChainModelAdapter", () => {
     expect(assistant).not.toHaveProperty("reasoning_content");
   });
 
-  it("maps Gemini 3 reasoning effort to the provider thinking level", async () => {
+  it.each(["gemini-3.1-pro-preview", "gemini-4-argon"])("maps %s reasoning effort to the provider thinking level", async modelId => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse([
       'data: {"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}]}\n\n',
     ]));
     const input = inputFor("google-gemini", {
       configuration: {
         ...inputFor("google-gemini").configuration,
-        modelId: "gemini-3.1-pro-preview",
+        modelId,
       },
       reasoning: { kind: "effort", value: "high" },
     });
@@ -737,6 +737,18 @@ describe("LangChainModelAdapter", () => {
         thinkingConfig: { includeThoughts: true, thinkingLevel: "HIGH" },
       },
     });
+  });
+
+  it.each(["claude-sonnet-4-6", "MiniMax-M3.1-Flash-Preview", "deepseek-v4-pro"])("sends Anthropic effort for %s without a fake token budget", async modelId => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse(successChunks("anthropic-messages")));
+    await new LangChainModelAdapter("anthropic-messages", request).completeTurn(inputFor("anthropic-messages", {
+      configuration: { ...inputFor("anthropic-messages").configuration, modelId },
+      maxOutputTokens: 8192,
+      reasoning: { kind: "effort", value: "max" },
+    }));
+    expect(recordBody(request)).toMatchObject({ output_config: { effort: "max" } });
+    if (modelId.startsWith("claude-")) expect(recordBody(request).thinking).toEqual({ type: "adaptive" });
+    else expect(recordBody(request)).not.toHaveProperty("thinking");
   });
 
   it("does not duplicate a Gemini API version already present in the configured base URL", async () => {
