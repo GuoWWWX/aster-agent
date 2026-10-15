@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useState, type SetStateAction }
 
 // Owned by the mounted conversation, not global state or persisted business history.
 export const ToolDisclosureContext = createContext< Map<string, boolean> | null>(null);
+export const ToolRevealContext = createContext<{ id: string; requestId: number } | null>(null);
 
 export function useToolDisclosure(id: string, childIds: string[] = [], defaultExpanded = false) {
   const choices = useContext(ToolDisclosureContext);

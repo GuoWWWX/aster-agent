@@ -345,6 +345,13 @@ function subagentTaskResult(): ConversationAgentMessageItem {
 }
 
 describe("run activity projection", () => {
+  it("keeps the task list card without repeating create, update, and close tools", () => {
+    const taskTools = ["create_task_list", "update_task_list", "close_task_list"].map((name) => tool(name));
+    const visible = tool("read_file");
+    expect(groupToolBatches([...taskTools, visible])).toEqual([visible]);
+    const projected = groupRunActivities([...taskTools, visible, assistantMessage("answer", "完成")]);
+    expect(projected[0]).toMatchObject({ kind: "run_activity", items: [visible] });
+  });
   it("hides legacy Subagent messages and removes their receipt divider before grouping", () => {
     const legacyNotification = {
       ...subagentTaskResult(),
