@@ -79,4 +79,39 @@ describe("renderer web links", () => {
     expect(getNativeOverlayUrl({ kind: "file", value: path.resolve("C:/aster/renderer/index.html") }))
       .toBe(pathToFileURL(path.resolve("C:/aster/renderer/native-overlay.html")).href);
   });
+  it("permits sanitized clipboard writes only from the app and its overlay main frames", () => {
+    vi.stubEnv("ELECTRON_RENDERER_URL", "http://127.0.0.1:5178/");
+    vi.stubEnv("ASTER_START_MODE", undefined);
+    try {
+      type Owner = { getURL(): string; isDestroyed(): boolean };
+      type Details = { isMainFrame: boolean; requestingUrl: string };
+      const setPermissionCheckHandler = vi.fn<(handler: (owner: Owner | null, permission: string, origin: string, details: Details) => boolean) => void>();
+      const setPermissionRequestHandler = vi.fn<(handler: (owner: Owner, permission: string, callback: (granted: boolean) => void, details: Details) => void) => void>();
+      const contents = (url: string) => ({ getURL: () => url, isDestroyed: () => false });
+      const overlay = contents("http://127.0.0.1:5178/native-overlay.html");
+      const main = { ...contents("http://127.0.0.1:5178/"), setWindowOpenHandler: vi.fn(), on: vi.fn(), session: {
+        setPermissionCheckHandler, setPermissionRequestHandler,
+      } };
+      applyRendererSecurityPolicy({ webContents: main, getChildWindows: () => [{ webContents: overlay }] } as unknown as BrowserWindow);
+      const check = setPermissionCheckHandler.mock.calls[0]![0];
+      const request = setPermissionRequestHandler.mock.calls[0]![0];
+      for (const owner of [main, overlay]) {
+        const details = { isMainFrame: true, requestingUrl: owner.getURL() };
+        expect(check(owner, "clipboard-sanitized-write", "http://127.0.0.1:5178", details)).toBe(true);
+        const callback = vi.fn();
+        request(owner, "clipboard-sanitized-write", callback, details);
+        expect(callback).toHaveBeenCalledWith(true);
+        for (const permission of ["clipboard-read", "media", "notifications"]) {
+          expect(check(owner, permission, "http://127.0.0.1:5178", details)).toBe(false);
+          request(owner, permission, callback, details);
+          expect(callback).toHaveBeenLastCalledWith(false);
+        }
+        expect(check(owner, "clipboard-sanitized-write", "http://127.0.0.1:5178", { ...details, isMainFrame: false })).toBe(false);
+        expect(check(owner, "clipboard-sanitized-write", "https://example.com", { ...details, requestingUrl: "https://example.com" })).toBe(false);
+      }
+      for (const owner of [null, contents("http://127.0.0.1:5178/native-overlay.html"), contents("https://example.com")]) {
+        expect(check(owner, "clipboard-sanitized-write", "http://127.0.0.1:5178", { isMainFrame: true, requestingUrl: overlay.getURL() })).toBe(false);
+      }
+    } finally { vi.unstubAllEnvs(); }
+  });
 });

@@ -8,7 +8,7 @@ import { parseHorizontalRuleText } from "../../lib/horizontal-rule-text.js";
 import { normalizeAdjacentBoldTableCaptions } from "../../lib/markdown-block-caption.js";
 import { extractExplicitImageCaptions } from "../../lib/markdown-image-caption.js";
 import { mermaidFenceCaption } from "../../lib/mermaid-fence.js";
-import { renderMermaid, isMermaidLanguage } from "../../lib/mermaid.js";
+import { renderMermaid, isMermaidLanguage, mermaidToPngDataUrl } from "../../lib/mermaid.js";
 import { svgDataUrl } from "../../lib/svg-image.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 import { safeMarkdownHtmlPlugin, markdownCalloutPlugin, markdownTablePlugin, markdownCaptionPlugin } from "./markdown-rendering-plugins.js";
@@ -23,6 +23,7 @@ import { fileTypeIconMarkup, isRecognizedFileTypePath } from "../ui/file-type-ic
 import { highlightCode, isLargeCodeSource } from "./code-highlighter.js";
 import { CodeSourceView } from "./code-source-view.js";
 import { terminalTokens } from "../ui/terminal-tokens.js";
+import { Popover, PopoverAnchor, PopoverContent } from "../ui/popover.js";
 
 import "./agent-markdown.css";
 
@@ -208,6 +209,9 @@ function AgentMarkdownContent({ content }: { content: string }): ReactElement {
   const theme = useWorkbenchUiStore((state) => state.themeMode);
   const previewContext = useContext(HtmlPreviewContext);
   const [activePreview, setActivePreview] = useState<{ source: HtmlPreviewSource; mount: Element } | null>(null);
+  const [diagramMenu, setDiagramMenu] = useState<{ source: string; x: number; y: number } | null>(null);
+  const [copyingImage, setCopyingImage] = useState(false);
+  const [copyImageError, setCopyImageError] = useState<string | null>(null);
   const canPreview = previewContext !== null;
   const html = useMemo(() => renderAgentMarkdown(content, canPreview, true), [content, canPreview]);
   // Keep parser-owned DOM intact on theme changes: native details state, source
@@ -266,9 +270,19 @@ function AgentMarkdownContent({ content }: { content: string }): ReactElement {
     const card = action?.closest<HTMLElement>(".agent-markdown__mermaid");
     if (card != null && action != null) {
       const source = card.querySelector<HTMLElement>("[data-mermaid-source]");
-      if (action.dataset.action === "toggle-mermaid-source" && source !== null) { source.hidden = !source.hidden; action.setAttribute("aria-expanded", String(!source.hidden)); return; }
+      if (action.dataset.action === "toggle-mermaid-source" && source !== null) {
+        source.hidden = !source.hidden;
+        const preview = card.querySelector<HTMLElement>("[data-mermaid-canvas]");
+        const caption = card.querySelector<HTMLElement>(".agent-markdown__mermaid-caption");
+        if (preview !== null) preview.hidden = !source.hidden;
+        if (caption !== null) caption.hidden = !source.hidden;
+        action.setAttribute("aria-expanded", String(!source.hidden));
+        action.setAttribute("aria-label", source.hidden ? "查看 Mermaid 源码" : "预览 Mermaid 图表");
+        action.title = source.hidden ? "查看源码" : "切回预览";
+        return;
+      }
       if (action.dataset.action === "copy-mermaid") { void navigator.clipboard.writeText(source?.textContent ?? "").catch(() => undefined); return; }
-      if (action.dataset.action === "preview-mermaid") { const svg = card.querySelector("svg"); if (svg !== null) requestMediaPreview({ src: svgDataUrl(svg.outerHTML), title: "Mermaid 图表" }); return; }
+      if (action.dataset.action === "preview-mermaid") { const svg = card.querySelector("[data-mermaid-canvas] svg"); if (svg !== null) requestMediaPreview({ src: svgDataUrl(svg.outerHTML), title: "Mermaid 图表" }); return; }
     }
     const button = event.target.closest<HTMLButtonElement>("[data-action='copy-code']");
     if (button === null || !event.currentTarget.contains(button)) return;
@@ -301,6 +315,38 @@ function AgentMarkdownContent({ content }: { content: string }): ReactElement {
     });
   }, []);
 
+  const handleDiagramContextMenu = (event: MouseEvent<HTMLDivElement>): void => {
+    if (!(event.target instanceof Element)) return;
+    const canvas = event.target.closest<HTMLElement>("[data-mermaid-canvas]");
+    if (canvas === null || canvas.hidden || canvas.querySelector("svg") === null) return;
+    const source = canvas.closest(".agent-markdown__mermaid")?.querySelector("[data-mermaid-source] code")?.textContent;
+    if (source === undefined || source === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setCopyImageError(null);
+    setDiagramMenu({ source, x: event.clientX, y: event.clientY });
+  };
+
+  const copyDiagramImage = async (event: MouseEvent<HTMLButtonElement>): Promise<void> => {
+    if (diagramMenu === null) return;
+    const menu = diagramMenu;
+    const clipboard = event.currentTarget.ownerDocument.defaultView?.navigator.clipboard;
+    setCopyingImage(true);
+    setCopyImageError(null);
+    try {
+      if (clipboard?.write === undefined || typeof ClipboardItem === "undefined") throw new Error("Image clipboard is unavailable.");
+      // Start the clipboard request in the focused menu document while the click
+      // still supplies user activation; PNG rendering can finish asynchronously.
+      const image = mermaidToPngDataUrl(menu.source, theme === "dark").then(async (url) => (await fetch(url)).blob());
+      await clipboard.write([new ClipboardItem({ "image/png": image })]);
+      setDiagramMenu((current) => current === menu ? null : current);
+    } catch {
+      setCopyImageError("无法复制图表图片，请重试。");
+    } finally {
+      setCopyingImage(false);
+    }
+  };
+
   return (<>
     <div
       ref={bindHost}
@@ -308,10 +354,22 @@ function AgentMarkdownContent({ content }: { content: string }): ReactElement {
       dangerouslySetInnerHTML={markup}
       onClick={handleClick}
       onKeyDown={handleKeyDown}
+      onContextMenu={handleDiagramContextMenu}
     />
     {codePreviews.map((preview, index) => createPortal(<HtmlPreviewCard source={{ kind: "code", html: preview.source }} embedded initialMode="source" />, preview.mount, String(index)))}
     {sourceViews.map((view, index) => createPortal(<CodeSourceView source={view.source} language={view.language} />, view.mount, `source:${index}`))}
     {activePreview !== null ? createPortal(<HtmlPreviewCard key={activePreview.source.kind === "file" ? activePreview.source.path : activePreview.source.html} source={activePreview.source} />, activePreview.mount) : null}
+    <Popover open={diagramMenu !== null} onOpenChange={(open) => { if (!open) setDiagramMenu(null); }}>
+      <PopoverAnchor asChild><span aria-hidden="true" className="pointer-events-none fixed size-0" style={{ left: diagramMenu?.x ?? 0, top: diagramMenu?.y ?? 0 }} /></PopoverAnchor>
+      <PopoverContent align="start" side="bottom" sideOffset={0} role="menu" aria-label="Mermaid 图表菜单"
+        className="min-w-36 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] p-1 text-[length:var(--app-font-size-control)] text-[var(--app-foreground)] shadow-lg">
+        <button type="button" role="menuitem" disabled={copyingImage} onClick={(event) => void copyDiagramImage(event)}
+          className="flex h-8 w-full items-center gap-2 rounded-[var(--app-radius-small)] px-2 text-left hover:bg-[var(--app-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] disabled:opacity-50">
+          <Copy aria-hidden="true" size={14} />{copyingImage ? "正在复制图片…" : "复制图片"}
+        </button>
+        {copyImageError === null ? null : <p role="status" className="px-2 py-1 text-[var(--app-status-danger-fg)]">{copyImageError}</p>}
+      </PopoverContent>
+    </Popover>
   </>);
 }
 

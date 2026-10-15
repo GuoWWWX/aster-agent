@@ -579,7 +579,7 @@
 }
 .agent-markdown__mermaid button:hover { background: var(--app-hover); color: var(--app-foreground); }
 .agent-markdown__mermaid button:focus-visible { outline: 2px solid var(--app-focus-ring); outline-offset: -2px; }
-.agent-markdown__mermaid-canvas { padding: 10px; overflow: auto; color: var(--app-muted-foreground); }
+.agent-markdown__mermaid-canvas { padding: 10px; overflow: auto; color: var(--app-muted-foreground); user-select: text; }
 .agent-markdown__mermaid-canvas svg { display: block; width: 100%; height: auto; max-width: 100%; margin-inline: auto; }
 .agent-markdown__mermaid-canvas[data-error] { color: var(--app-status-danger-fg); }
 .agent-markdown__mermaid pre:not([hidden]) { margin: 0; padding: 9px; overflow: auto; background: var(--app-muted); }
