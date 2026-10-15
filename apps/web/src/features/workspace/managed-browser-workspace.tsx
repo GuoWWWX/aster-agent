@@ -18,18 +18,15 @@ import {
 } from "react";
 
 import type {
-  ManagedBrowserBoundsInput,
   ManagedBrowserCommandInput,
   ManagedBrowserSession,
   ManagedBrowserWorkspaceAddAction,
   ManagedBrowserWorkspaceTabAction,
 } from "@agent/protocol";
-import { directBrowserHorizontalBounds } from "@agent/protocol";
 
 import { IconButton } from "../../components/ui/icon-button.js";
 import {
   LIVE_PANEL_RESIZE_EVENT,
-  NATIVE_PANEL_RESIZE_EVENT,
   type LivePanelResizeDetail,
 } from "../../components/layout/live-panel-resize.js";
 import { getUserErrorMessage, type AgentClient } from "../../runtime/index.js";
@@ -66,7 +63,6 @@ export type ManagedBrowserWorkspaceMenuRequest =
 
 export function ManagedBrowserWorkspace({
   active,
-  selected = active,
   agentClient,
   colorScheme,
   initialUrl,
@@ -77,7 +73,6 @@ export function ManagedBrowserWorkspace({
   onWorkspaceTabMenuAction,
 }: {
   active: boolean;
-  selected?: boolean;
   agentClient: AgentClient;
   colorScheme: "light" | "dark";
   initialUrl: string;
@@ -95,8 +90,6 @@ export function ManagedBrowserWorkspace({
   const onWorkspaceTabMenuActionRef = useRef(onWorkspaceTabMenuAction);
   const sessionRef = useRef(session);
   const activeRef = useRef(active);
-  const selectedRef = useRef(selected);
-  const directDragIdRef = useRef<string | null>(null);
   const openingRef = useRef(false);
   const handledMenuRequestIdRef = useRef<number | null>(null);
   const [address, setAddress] = useState(session?.url ?? initialUrl);
@@ -126,13 +119,6 @@ export function ManagedBrowserWorkspace({
         setAddress(event.session.url);
         onSessionChangedRef.current(event.session);
         setError(null);
-        return;
-      }
-      if (event.type === "panelResize") {
-        if (event.sessionId === sessionRef.current?.sessionId && selectedRef.current
-          && (activeRef.current || directDragIdRef.current === event.id)) {
-          window.dispatchEvent(new CustomEvent(NATIVE_PANEL_RESIZE_EVENT, { detail: event }));
-        }
         return;
       }
       if (event.type === "openSettings") {
@@ -228,33 +214,21 @@ export function ManagedBrowserWorkspace({
     const dispatcher = createManagedBrowserBoundsDispatcher((input) => (
       agentClient.setManagedBrowserBounds(input)
     ));
-    let direct: { id: string; baseSize: number; bounds: ManagedBrowserBoundsInput;
-      rawX: number; rawRight: number; viewportWidth: number } | null = null;
-    const sendBounds = (input: ManagedBrowserBoundsInput): void => {
-      void agentClient.setManagedBrowserBounds(input).catch(reason => {
-        if (mountedRef.current) setError(getUserErrorMessage(reason, "无法同步浏览器尺寸。"));
-      });
-    };
-    const measureBounds = (): { input: ManagedBrowserBoundsInput; rawX: number; rawRight: number } | null => {
-      if (direct !== null) return null;
+    const measureBounds = (): void => {
       const current = sessionRef.current;
-      if (current === null) return null;
+      if (current === null) return;
       const bounds = surface.getBoundingClientRect();
-      let left = bounds.left;
+      let left = Math.max(0, bounds.left);
       let top = Math.max(0, bounds.top);
-      let right = bounds.right;
-      let insidePanel = true;
+      let right = Math.min(window.innerWidth, bounds.right);
       let bottom = Math.min(window.innerHeight, bounds.bottom);
       for (let parent = surface.parentElement; parent !== null; parent = parent.parentElement) {
         const style = window.getComputedStyle(parent);
         const clipX = /^(hidden|clip|scroll|auto)$/u.test(style.overflowX || style.overflow);
         const clipY = /^(hidden|clip|scroll|auto)$/u.test(style.overflowY || style.overflow);
-        if (!clipX && !clipY) {
-          if (parent.matches(".workbench-sidebar--right")) insidePanel = false;
-          continue;
-        }
+        if (!clipX && !clipY) continue;
         const parentBounds = parent.getBoundingClientRect();
-        if (clipX && insidePanel) {
+        if (clipX) {
           left = Math.max(left, parentBounds.left + parent.clientLeft);
           right = Math.min(right, parentBounds.left + parent.clientLeft + parent.clientWidth);
         }
@@ -262,36 +236,25 @@ export function ManagedBrowserWorkspace({
           top = Math.max(top, parentBounds.top + parent.clientTop);
           bottom = Math.min(bottom, parentBounds.top + parent.clientTop + parent.clientHeight);
         }
-        if (parent.matches(".workbench-sidebar--right")) insidePanel = false;
         if (!observedElements.has(parent)) { observer.observe(parent); observedElements.add(parent); }
       }
       for (const element of observedElements) {
         if (!element.isConnected) { observer.unobserve(element); observedElements.delete(element); }
       }
-      const x = Math.max(0, Math.ceil(left));
+      const x = Math.ceil(left);
       const y = Math.ceil(top);
-      const width = Math.max(0, Math.min(window.innerWidth, Math.floor(right)) - x);
+      const width = Math.max(0, Math.floor(right) - x);
       const height = Math.max(0, Math.floor(bottom) - y);
-      const input: ManagedBrowserBoundsInput = {
+      dispatcher.push({
         height,
         sessionId: current.sessionId,
         visible: activeRef.current && width > 0 && height > 0,
         width,
         x,
         y,
-      };
-      dispatcher.push(input);
-      return { input, rawX: Math.ceil(left), rawRight: Math.floor(right) };
+      });
     };
-    const scheduleBounds = (event?: Event): void => {
-      if (direct !== null) {
-        const collapsedByDrag = document.body.dataset.resizingPanelCollapsed === "true";
-        if (selectedRef.current && (activeRef.current || collapsedByDrag) && event?.type !== "resize") return;
-        window.dispatchEvent(new Event("pointercancel"));
-        direct = null;
-        directDragIdRef.current = null;
-        dispatcher.pause(false);
-      }
+    const scheduleBounds = (): void => {
       if (animationFrame !== null) return;
       animationFrame = window.requestAnimationFrame(() => {
         animationFrame = null;
@@ -301,32 +264,6 @@ export function ManagedBrowserWorkspace({
     const handleLiveResize = (event: Event): void => {
       const detail = (event as CustomEvent<LivePanelResizeDetail>).detail;
       if (detail.id !== "right-workspace") return;
-      if (detail.phase === "start" && detail.dragId !== undefined && detail.drag !== undefined) {
-        if (animationFrame !== null) { window.cancelAnimationFrame(animationFrame); animationFrame = null; }
-        dispatcher.pause(true);
-        const snapshot = measureBounds();
-        if (snapshot !== null && snapshot.input.visible) {
-          direct = { id: detail.dragId, baseSize: detail.size, bounds: snapshot.input,
-            rawX: snapshot.rawX, rawRight: snapshot.rawRight, viewportWidth: window.innerWidth };
-          directDragIdRef.current = direct.id;
-          sendBounds({ ...snapshot.input, resize: { phase: "start", id: direct.id, drag: detail.drag,
-            rawX: snapshot.rawX, rawRight: snapshot.rawRight, viewportWidth: direct.viewportWidth } });
-          return;
-        }
-        dispatcher.pause(false);
-      }
-      if (direct !== null) {
-        if (detail.dragId !== direct.id || detail.pointerX === undefined) return;
-        if (detail.phase === "move" && detail.native) return;
-        const horizontal = directBrowserHorizontalBounds(direct.rawX, direct.rawRight,
-          detail.size - direct.baseSize, direct.viewportWidth);
-        sendBounds({ ...direct.bounds, ...horizontal, visible: !detail.drag?.collapsed,
-          resize: { phase: detail.phase === "end" ? "end" : "move", id: direct.id, pointerX: detail.pointerX } });
-        if (detail.phase !== "end") return;
-        direct = null;
-        directDragIdRef.current = null;
-        dispatcher.pause(false);
-      }
       measureBounds();
       if (detail.phase === "end") scheduleBounds();
     };
@@ -341,8 +278,6 @@ export function ManagedBrowserWorkspace({
     scheduleBoundsRef.current = scheduleBounds;
     measureBounds();
     return () => {
-      if (direct !== null) window.dispatchEvent(new Event("pointercancel"));
-      directDragIdRef.current = null;
       scheduleBoundsRef.current = null;
       observer.disconnect();
       window.removeEventListener(LIVE_PANEL_RESIZE_EVENT, handleLiveResize);
@@ -366,9 +301,8 @@ export function ManagedBrowserWorkspace({
 
   useEffect(() => {
     activeRef.current = active;
-    selectedRef.current = selected;
     scheduleBoundsRef.current?.();
-  }, [active, selected, session?.sessionId]);
+  }, [active, session?.sessionId]);
 
   const command = (value: BrowserToolbarCommand): void => {
     const current = sessionRef.current;

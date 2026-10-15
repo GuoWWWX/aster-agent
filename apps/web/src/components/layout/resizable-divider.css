@@ -48,9 +48,3 @@ body[data-resizing-panel="true"] {
   cursor: col-resize;
   user-select: none;
 }
-
-/* CSS trigger #2: transient drag state must override inherited width transitions. */
-body[data-resizing-panel="true"] .workbench-sidebar--right {
-  transition: none !important;
-  will-change: width;
-}

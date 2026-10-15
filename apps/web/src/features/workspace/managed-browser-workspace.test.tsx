@@ -26,8 +26,6 @@ const SESSION: ManagedBrowserSession = {
 };
 
 class TestResizeObserver implements ResizeObserver {
-  static callbacks: Array<() => void> = [];
-  constructor(callback: ResizeObserverCallback) { TestResizeObserver.callbacks.push(() => callback([], this)); }
   observe(): void {}
   unobserve(): void {}
   disconnect(): void {}
@@ -36,7 +34,6 @@ class TestResizeObserver implements ResizeObserver {
 let root: Root | null = null;
 
 beforeEach(() => {
-  TestResizeObserver.callbacks = [];
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.stubGlobal("ResizeObserver", TestResizeObserver);
   vi.stubGlobal("innerWidth", 1800);
@@ -81,33 +78,6 @@ function renderBrowser(
 }
 
 describe("ManagedBrowserWorkspace", () => {
-  it("retains the gesture when its own collapse hides the panel and cancels when the tab loses selection", () => {
-    const client = new MockAgentClient();
-    vi.spyOn(client, "setManagedBrowserBounds").mockResolvedValue();
-    vi.spyOn(client, "commandManagedBrowser").mockResolvedValue();
-    const container = document.createElement("div");
-    document.body.append(container);
-    root = createRoot(container);
-    const render = (active: boolean, selected: boolean): void => {
-      act(() => root?.render(<TooltipProvider><ManagedBrowserWorkspace active={active} selected={selected}
-        agentClient={client} colorScheme="light" initialUrl={SESSION.url} menuRequest={null} session={SESSION}
-        onSessionChanged={vi.fn()} onWorkspaceAddMenuAction={vi.fn()} onWorkspaceTabMenuAction={vi.fn()} /></TooltipProvider>));
-    };
-    render(true, true);
-    const cancel = vi.fn();
-    window.addEventListener("pointercancel", cancel);
-    const drag = { origin: 600, base: 800, size: 800, min: 280, max: 1200,
-      threshold: 24, collapsed: false, collapsible: true, direction: "from-end" as const };
-    act(() => emitLivePanelResize({ id: "right-workspace", phase: "start", size: 800, drag,
-      dragId: "00000000-0000-4000-8000-000000000099", pointerX: 600 }));
-    document.body.dataset.resizingPanelCollapsed = "true";
-    render(false, true);
-    expect(cancel).not.toHaveBeenCalled();
-    render(false, false);
-    expect(cancel).toHaveBeenCalledOnce();
-    window.removeEventListener("pointercancel", cancel);
-    delete document.body.dataset.resizingPanelCollapsed;
-  });
   it("opens page find with Ctrl+F while the browser toolbar has focus", async () => {
     const client = new MockAgentClient();
     const command = vi.spyOn(client, "commandManagedBrowser").mockResolvedValue(undefined);
@@ -164,7 +134,7 @@ describe("ManagedBrowserWorkspace", () => {
     expect(dispatch).toHaveBeenCalledTimes(2);
   });
 
-  it("uses a single drag snapshot and ignores observer reads until the final alignment", async () => {
+  it("uses the committed surface rectangle during a drag instead of predicting it from panel width", async () => {
     const client = new MockAgentClient();
     const setBounds = vi.spyOn(client as AgentClient, "setManagedBrowserBounds").mockResolvedValue();
     const container = renderBrowser(client);
@@ -172,32 +142,36 @@ describe("ManagedBrowserWorkspace", () => {
     const surface = container.querySelector<HTMLElement>("[data-managed-browser-surface]");
     expect(surface).not.toBeNull();
     let bounds = new DOMRect(600, 100, 800, 600);
-    const read = vi.fn(() => bounds);
-    Object.defineProperty(surface, "getBoundingClientRect", { value: read });
-    const dragId = "00000000-0000-4000-8000-000000000099";
-    const drag = { origin: 600, base: 800, size: 800, min: 280, max: 1200,
-      threshold: 24, collapsed: false, collapsible: true, direction: "from-end" as const };
+    Object.defineProperty(surface, "getBoundingClientRect", { value: () => bounds });
 
     act(() => {
-      emitLivePanelResize({ id: "right-workspace", phase: "start", size: 800, dragId, drag, pointerX: 600 });
-      read.mockClear();
+      emitLivePanelResize({ id: "right-workspace", phase: "start", size: 800 });
       bounds = new DOMRect(740, 110, 660, 550);
-      emitLivePanelResize({ id: "right-workspace", phase: "move", size: 900, dragId, drag, pointerX: 500 });
-      for (const callback of TestResizeObserver.callbacks) callback();
-      expect(read).not.toHaveBeenCalled();
-      expect(setBounds).toHaveBeenLastCalledWith(expect.objectContaining({ height: 600, width: 900, x: 500, y: 100,
-        resize: { phase: "move", id: dragId, pointerX: 500 } }));
+      emitLivePanelResize({ id: "right-workspace", phase: "move", size: 500 });
+      expect(setBounds).toHaveBeenLastCalledWith({
+        height: 550,
+        sessionId: SESSION.sessionId,
+        visible: true,
+        width: 660,
+        x: 740,
+        y: 110,
+      });
     });
-    const count = setBounds.mock.calls.length;
-    act(() => { emitLivePanelResize({ id: "right-workspace", phase: "move", size: 940, dragId, drag, pointerX: 460, native: true }); });
-    expect(setBounds).toHaveBeenCalledTimes(count);
-    expect(read).not.toHaveBeenCalled();
+
+    await vi.waitFor(() => expect(setBounds).toHaveBeenCalledWith({
+      height: 550,
+      sessionId: SESSION.sessionId,
+      visible: true,
+      width: 660,
+      x: 740,
+      y: 110,
+    }));
     bounds = new DOMRect(750, 120, 650, 530);
-    act(() => { emitLivePanelResize({ id: "right-workspace", phase: "end", size: 940, dragId, drag, pointerX: 460 }); });
+    act(() => { emitLivePanelResize({ id: "right-workspace", phase: "move", size: 490 }); });
     await vi.waitFor(() => expect(setBounds).toHaveBeenLastCalledWith({
       sessionId: SESSION.sessionId, visible: true, x: 750, y: 120, width: 650, height: 530,
     }));
-    expect(read).toHaveBeenCalled();
+    act(() => { emitLivePanelResize({ id: "right-workspace", phase: "end", size: 500 }); });
   });
 
   it("keeps the native surface visible while renderer overlays open and close", async () => {

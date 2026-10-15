@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { managedBrowserResizeSchema } from "./panel-resize.js";
 
 import { conversationIdSchema } from "./conversation.js";
 import { projectIdSchema, relativeProjectPathSchema } from "./project.js";
@@ -268,7 +267,6 @@ export const managedBrowserCommandInputSchema = z.discriminatedUnion("command", 
 ]);
 
 export const managedBrowserBoundsInputSchema = z.object({
-  resize: managedBrowserResizeSchema.optional(),
   height: z.number().int().min(0).max(16_384),
   sessionId: sessionIdSchema,
   visible: z.boolean(),
@@ -308,8 +306,6 @@ export const workspaceBrowserTabCloseRequestSchema = z.object({
 }).strict();
 
 export const managedBrowserEventSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("panelResize"), sessionId: sessionIdSchema, id: z.uuid(),
-    phase: z.enum(["move", "end"]), pointerX: z.number().finite(), size: z.number().int().min(0).max(16_384), collapsed: z.boolean() }).strict(),
   z.object({
     session: managedBrowserSessionSchema,
     type: z.literal("state"),

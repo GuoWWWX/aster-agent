@@ -202,7 +202,6 @@ function createFakePage() {
 
 function createFakeWindow(): BrowserWindow {
   return {
-    webContents: { getZoomFactor: () => 1 },
     contentView: {
       addChildView: vi.fn(),
       removeChildView: vi.fn(),
@@ -235,61 +234,6 @@ it("downloads into the configured directory and avoids overwriting reserved name
 });
 
 describe("ManagedBrowserController", () => {
-  it("directly resizes from native input and rejects stale renderer rectangles during the drag", async () => {
-    const page = createFakePage();
-    const controller = new ManagedBrowserController(() => createFakeWindow(),
-      { getConfiguration: () => browserConfiguration() }, () => page);
-    const session = await controller.open({});
-    const events: unknown[] = [];
-    controller.onEvent(event => events.push(event));
-    const bounds = { sessionId: session.sessionId, visible: true, x: 700, y: 100, width: 500, height: 600 };
-    controller.setBounds({ ...bounds, resize: { phase: "start", id: "00000000-0000-4000-8000-000000000099",
-      drag: { origin: 690, base: 520, size: 520, min: 280, max: 1000, threshold: 24, collapsed: false, collapsible: true, direction: "from-end" },
-      rawX: 700, rawRight: 1200, viewportWidth: 1200 } });
-    expect(controller.resizeFromPointer({ phase: "move", x: 590, y: 200 })).toBe(true);
-    expect(page.setBounds).toHaveBeenLastCalledWith({ x: 600, y: 100, width: 600, height: 600 });
-    expect(events.at(-1)).toMatchObject({ type: "panelResize", size: 620, collapsed: false, phase: "move" });
-    controller.setBounds(bounds);
-    controller.setBounds({ ...bounds, resize: { phase: "move", id: "00000000-0000-4000-8000-000000000099", pointerX: 680 } });
-    expect(page.setBounds).toHaveBeenLastCalledWith({ x: 600, y: 100, width: 600, height: 600 });
-    expect(controller.resizeFromPointer({ phase: "end", x: 550, y: 200 })).toBe(true);
-    expect(page.setBounds).toHaveBeenLastCalledWith({ x: 560, y: 100, width: 640, height: 600 });
-    expect(events.at(-1)).toMatchObject({ type: "panelResize", size: 660, phase: "end" });
-    controller.dispose();
-  });
-  it("maps renderer geometry to native DIP edges at the parent zoom", async () => {
-    const page = createFakePage();
-    const window = createFakeWindow();
-    vi.spyOn(window.webContents, "getZoomFactor").mockReturnValue(1.5);
-    const controller = new ManagedBrowserController(() => window,
-      { getConfiguration: () => browserConfiguration() }, () => page);
-    const session = await controller.open({});
-    controller.setBounds({ sessionId: session.sessionId, visible: true, x: 400, y: 100, width: 400, height: 400 });
-    expect(page.setBounds).toHaveBeenLastCalledWith({ x: 600, y: 150, width: 600, height: 600 });
-    controller.dispose();
-  });
-  it.each(["hide", "close", "cancel"])("releases direct input ownership on %s", async (action) => {
-    const page = createFakePage();
-    const controller = new ManagedBrowserController(() => createFakeWindow(),
-      { getConfiguration: () => browserConfiguration() }, () => page);
-    const session = await controller.open({});
-    const bounds = { sessionId: session.sessionId, visible: true, x: 700, y: 100, width: 500, height: 600 };
-    controller.setBounds({ ...bounds, resize: { phase: "start", id: "00000000-0000-4000-8000-000000000099",
-      drag: { origin: 690, base: 520, size: 520, min: 280, max: 1000, threshold: 24, collapsed: false, collapsible: true, direction: "from-end" },
-      rawX: 700, rawRight: 1200, viewportWidth: 1200 } });
-    if (action === "hide") controller.setBounds({ ...bounds, visible: false });
-    else if (action === "close") controller.close({ sessionId: session.sessionId });
-    else {
-      const events: unknown[] = [];
-      controller.onEvent(event => events.push(event));
-      controller.cancelDirectResize();
-      expect(events.at(-1)).toMatchObject({ type: "panelResize", phase: "end" });
-      controller.setBounds({ ...bounds, width: 400 });
-      expect(page.setBounds).toHaveBeenLastCalledWith({ x: 700, y: 100, width: 400, height: 600 });
-    }
-    expect(controller.resizeFromPointer({ phase: "move", x: 500, y: 200 })).toBe(false);
-    controller.dispose();
-  });
   beforeEach(() => {
     electronMocks.backgroundWindowOptions.length = 0;
     electronMocks.backgroundNativeCalls.length = 0;

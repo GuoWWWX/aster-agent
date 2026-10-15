@@ -6,10 +6,9 @@ import {
   type ReactElement,
 } from "react";
 import { flushSync } from "react-dom";
-import { advancePanelDrag, type PanelDrag } from "@agent/protocol";
 
 import { cn } from "../../lib/cn.js";
-import { emitLivePanelResize, NATIVE_PANEL_RESIZE_EVENT, type NativePanelResizeDetail } from "./live-panel-resize.js";
+import { emitLivePanelResize } from "./live-panel-resize.js";
 import "./resizable-divider.css";
 
 export const RESIZABLE_PANEL_COLLAPSE_THRESHOLD = 24;
@@ -94,67 +93,93 @@ export function ResizableDivider({
 
     event.preventDefault();
     const divider = event.currentTarget;
-    const dragId = crypto.randomUUID();
-    let drag: PanelDrag = { base: collapsed ? min : size, size: collapsed ? min : size,
-      origin: event.clientX, min, max, threshold: collapseThreshold, collapsed, collapsible, direction };
-    let latestWidth = drag.size;
-    let latestPointerX = event.clientX;
+    let baseWidth = collapsed ? min : size;
+    let latestWidth = baseWidth;
+    let origin = event.clientX;
+    let collapsedDuringDrag = collapsed;
 
     isDraggingRef.current = true;
     divider.setPointerCapture(event.pointerId);
     divider.dataset.resizing = "true";
     onDraggingChange?.(true);
     document.body.dataset.resizingPanel = "true";
-    document.body.dataset.resizingPanelCollapsed = String(collapsed);
     if (liveResizeId !== undefined) {
-      emitLivePanelResize({ id: liveResizeId, phase: "start", size: latestWidth, dragId, drag, pointerX: latestPointerX });
+      emitLivePanelResize({ id: liveResizeId, phase: "start", size: baseWidth });
     }
 
     const stop = (): void => {
       isDraggingRef.current = false;
       delete divider.dataset.resizing;
       delete document.body.dataset.resizingPanel;
-      delete document.body.dataset.resizingPanelCollapsed;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
       window.removeEventListener("pointercancel", stop);
-      window.removeEventListener(NATIVE_PANEL_RESIZE_EVENT, nativeMove);
       if (divider.hasPointerCapture(event.pointerId)) divider.releasePointerCapture(event.pointerId);
       cleanupRef.current = null;
       onDraggingChange?.(false);
       if (liveResizeId !== undefined) {
-        emitLivePanelResize({ id: liveResizeId, phase: "end", size: latestWidth, dragId, drag, pointerX: latestPointerX });
+        emitLivePanelResize({ id: liveResizeId, phase: "end", size: latestWidth });
       }
     };
 
-    const move = (moveEvent: Pick<PointerEvent, "clientX">, native = false): void => {
+    const move = (moveEvent: PointerEvent): void => {
       if (!isDraggingRef.current) return;
-      latestPointerX = moveEvent.clientX;
-      const next = advancePanelDrag(drag, latestPointerX);
-      const collapsedChanged = next.collapsed !== drag.collapsed;
-      drag = next;
-      latestWidth = drag.size;
-      document.body.dataset.resizingPanelCollapsed = String(drag.collapsed);
-      flushSync(() => {
-        onResize(latestWidth);
-        if (collapsedChanged) onCollapsedChange(drag.collapsed);
-      });
-      if (liveResizeId !== undefined) {
-        emitLivePanelResize({ id: liveResizeId, phase: "move", size: latestWidth, dragId, drag, pointerX: latestPointerX, native });
+
+      const nextWidth = getResizedPanelWidth(
+        baseWidth,
+        moveEvent.clientX - origin,
+        direction,
+      );
+
+      const transition = collapsible ? getResizeCollapseTransition(
+        nextWidth,
+        min,
+        collapseThreshold,
+        collapsedDuringDrag,
+      ) : null;
+      if (transition === "collapse") {
+        latestWidth = min;
+        collapsedDuringDrag = true;
+        flushSync(() => {
+          onResize(min);
+          onCollapsedChange(true);
+        });
+        if (liveResizeId !== undefined) {
+          emitLivePanelResize({ id: liveResizeId, phase: "move", size: latestWidth });
+        }
+        return;
       }
-    };
-    const nativeMove = (nativeEvent: Event): void => {
-      const detail = (nativeEvent as CustomEvent<NativePanelResizeDetail>).detail;
-      if (detail.id !== dragId) return;
-      move({ clientX: detail.pointerX }, true);
-      if (detail.phase === "end") stop();
+
+      if (transition === "expand") {
+        latestWidth = min;
+        collapsedDuringDrag = false;
+        origin = moveEvent.clientX;
+        baseWidth = min;
+        flushSync(() => {
+          onResize(min);
+          onCollapsedChange(false);
+        });
+        if (liveResizeId !== undefined) {
+          emitLivePanelResize({ id: liveResizeId, phase: "move", size: latestWidth });
+        }
+        return;
+      }
+
+      if (collapsedDuringDrag) {
+        return;
+      }
+
+      latestWidth = clampResizablePanelWidth(nextWidth, min, max);
+      flushSync(() => onResize(latestWidth));
+      if (liveResizeId !== undefined) {
+        emitLivePanelResize({ id: liveResizeId, phase: "move", size: latestWidth });
+      }
     };
 
     cleanupRef.current = stop;
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
     window.addEventListener("pointercancel", stop);
-    window.addEventListener(NATIVE_PANEL_RESIZE_EVENT, nativeMove);
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
