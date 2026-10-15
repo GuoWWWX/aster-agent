@@ -9,7 +9,6 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from ".
 import { ModelReasoningOptionsEditor } from "./model-reasoning-options-editor.js";
 import { SettingsConfigurationGroup } from "./settings-configuration-card.js";
 import { createReasoningCatalogDraft, reasoningCatalogModels, reasoningCatalogModelMatchesSearch, REASONING_API_FORMATS, type ReasoningCatalogDraft, type ReasoningCatalogModel } from "./model-reasoning-catalog-draft.js";
-import { MODEL_REASONING_INVENTORY } from "./model-reasoning-inventory.js";
 import { ReasoningProviderDialog, ReasoningProviderLogo } from "./reasoning-provider-dialog.js";
 
 const inputClass = "h-8 w-full min-w-0 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] px-2 text-[length:var(--app-font-size-control)] text-[var(--app-foreground)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)]";
@@ -46,7 +45,6 @@ export function ModelReasoningCatalogSettings({ agentClient }: { agentClient: Ag
   const original = DEFAULT_MODEL_REASONING_RULES.find(item => item.providerId === provider?.id
     && item.modelKey === selected?.key && item.apiFormat === activeFormat);
   const search = query.trim().toLocaleLowerCase();
-  const inventory = provider === undefined ? undefined : MODEL_REASONING_INVENTORY[provider.id];
 
   function change(next: ReasoningCatalogDraft): void {
     if (saving) return;
@@ -218,16 +216,6 @@ export function ModelReasoningCatalogSettings({ agentClient }: { agentClient: Ag
                   {selected.matchMode === "regex" ? "每行一个 RE2 正则表达式，例如 ^claude-(opus|sonnet)-5(-5)?$；不加 / 分隔符，默认忽略大小写。" : selected.matchMode === "exact" ? "每行一个完整模型 ID，例如 claude-opus-5-5；不将 * 当作通配符。" : "每行一个匹配模式，* 匹配任意字符；也可用逗号分隔。"}
                   兼容带供应商前缀的模型 ID。名称和匹配规则在该模型各协议间共用。
                 </p>
-                {inventory !== undefined && selected.knownModelIds.length > 0 ? <section aria-label="已核对型号" className="min-w-0 border-t border-[var(--app-border)] pt-2">
-                  <div className="flex flex-wrap items-center justify-between gap-[5px] text-[length:var(--app-font-size-control)]">
-                    <strong>已核对型号 · {selected.knownModelIds.length}</strong>
-                    <span className="text-[var(--app-muted-foreground)]">2026-10-15 · {inventory.sourceUrls.map((url, index) => <a key={url} href={url} target="_blank" rel="noreferrer" className="ml-2 text-[var(--app-accent)]">官方目录{index + 1} ↗</a>)}</span>
-                  </div>
-                  <ul className="my-2 flex max-h-40 min-w-0 list-none flex-wrap gap-[5px] overflow-y-auto p-0">
-                    {selected.knownModelIds.map(modelId => <li key={modelId} className="min-w-0 max-w-full rounded-[var(--app-radius-small)] bg-[var(--app-panel-subtle)] px-2 py-1"><code className="break-all text-[length:var(--app-font-size-control)]">{modelId}</code></li>)}
-                  </ul>
-                  <p className="mb-0 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">{inventory.note} 此处列出被本组规则覆盖的已核对 ID，通配符仍可覆盖其他匹配型号；具体档位按下方协议配置。</p>
-                </section> : null}
               </div>
             </SettingsConfigurationGroup>
             <SettingsConfigurationGroup cardAriaLabel="模型推理档位配置" icon={SlidersHorizontal} title="推理档位">
