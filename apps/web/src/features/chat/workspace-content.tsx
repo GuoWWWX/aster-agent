@@ -1,4 +1,4 @@
-import { HtmlPreviewScope, HtmlFilePreview } from "../../components/html-preview/html-preview-card.js";
+import { HtmlPreviewContext, HtmlPreviewScope, HtmlFilePreview } from "../../components/html-preview/html-preview-card.js";
 import { QueryTextarea } from "./query-textarea.js";
 import { UserMessageContent } from "./user-message-content.js";
 import { createPastedTextAttachment } from "./pasted-text-attachment.js";
@@ -7056,8 +7056,10 @@ function ToolTimelineItem({
   }, [item.id, reveal?.id, reveal?.requestId, setIsExpanded]);
   const [isRawCallOpen, setIsRawCallOpen] = useState(false);
   const detailsLabel = isExpanded ? "收起调用详情" : "展开调用详情";
-  const htmlPreviewPath = effectiveStatus === "completed" && ["write_file", "replace_in_file", "apply_patch"].includes(item.name)
+  const previewContext = useContext(HtmlPreviewContext);
+  const changedFilePath = effectiveStatus === "completed" && ["write_file", "replace_in_file", "apply_patch"].includes(item.name)
     ? fileChangeSummary(item)?.path : undefined;
+  const htmlPreviewPath = previewContext !== null && changedFilePath && /\.html?$/iu.test(changedFilePath) ? changedFilePath : undefined;
 
   return (
     <article
@@ -7104,8 +7106,7 @@ function ToolTimelineItem({
           </button>
         </span>
       </header>
-      {htmlPreviewPath ? <HtmlFilePreview path={htmlPreviewPath} /> : null}
-      {isExpanded ? (
+      {isExpanded ? htmlPreviewPath ? <HtmlFilePreview path={htmlPreviewPath} onClose={() => setIsExpanded(false)} /> : (
         <ToolDetail
           agentClient={agentClient}
           item={item}

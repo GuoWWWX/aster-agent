@@ -173,8 +173,8 @@ renderer.renderer.rules.fence = (tokens, index, _options, environment: unknown) 
   const htmlPreview = /^html?$/iu.test(language) && typeof environment === "object" && environment !== null && "htmlPreview" in environment && environment.htmlPreview === true
     && token?.map != null && "markdown" in environment && typeof environment.markdown === "string"
     && isClosedFence(environment.markdown.split("\n")[token.map[1] - 1] ?? "", token.markup);
-  const previewButton = htmlPreview ? '<button aria-label="预览 HTML" title="预览 HTML" class="agent-markdown__code-copy" data-action="preview-html" type="button">预览</button>' : "";
-  return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><div class="agent-markdown__code-header"><span>${renderer.utils.escapeHtml(label)}</span>${htmlPreview ? '<div class="flex items-center gap-[5px]">' : ""}${previewButton}<button aria-label="复制代码" title="复制代码" class="agent-markdown__code-copy" data-action="copy-code" type="button">${copyIcon}</button>${htmlPreview ? "</div>" : ""}</div><pre><code class="hljs">${highlightedSource}</code></pre>${htmlPreview ? '<div data-html-preview-slot></div>' : ""}</div>\n`;
+  if (htmlPreview) return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><template data-html-code-source>${renderer.utils.escapeHtml(source)}</template><div data-html-code-preview-slot></div></div>\n`;
+  return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><div class="agent-markdown__code-header"><span>${renderer.utils.escapeHtml(label)}</span><button aria-label="复制代码" title="复制代码" class="agent-markdown__code-copy" data-action="copy-code" type="button">${copyIcon}</button></div><pre><code class="hljs">${highlightedSource}</code></pre></div>\n`;
 };
 
 const defaultImage = renderer.renderer.rules.image;
@@ -198,7 +198,7 @@ export function AgentMarkdown({ content }: { content: string }): ReactElement {
 
 function AgentMarkdownContent({ content }: { content: string }): ReactElement {
   const hostRef = useRef<HTMLDivElement>(null);
-  const originalSource = useRef<HTMLElement | null>(null);
+  const [codePreviews, setCodePreviews] = useState<Array<{ source: string; mount: Element }>>([]);
   const theme = useWorkbenchUiStore((state) => state.themeMode);
   const previewContext = useContext(HtmlPreviewContext);
   const [activePreview, setActivePreview] = useState<{ source: HtmlPreviewSource; mount: Element } | null>(null);
@@ -207,6 +207,15 @@ function AgentMarkdownContent({ content }: { content: string }): ReactElement {
   // Keep parser-owned DOM intact on theme changes: native details state, source
   // toggles and diagram height must survive while the next SVG is rendering.
   const markup = useMemo(() => ({ __html: html }), [html]);
+  const bindHost = useCallback((host: HTMLDivElement | null): void => {
+    hostRef.current = host;
+    if (host === null) return;
+    const previews = [...host.querySelectorAll<HTMLTemplateElement>("[data-html-code-source]")].flatMap(template => {
+      const mount = template.parentElement?.querySelector("[data-html-code-preview-slot]");
+      return mount == null ? [] : [{ source: template.content.textContent ?? "", mount }];
+    });
+    if (previews.length > 0) setCodePreviews(previews);
+  }, []);
   useEffect(() => {
     let alive = true;
     for (const card of hostRef.current?.querySelectorAll<HTMLElement>(".agent-markdown__mermaid") ?? []) {
@@ -224,26 +233,11 @@ function AgentMarkdownContent({ content }: { content: string }): ReactElement {
   }, [html, theme]);
   const handleClick = useCallback((event: MouseEvent<HTMLDivElement>): void => {
     if (!(event.target instanceof Element)) return;
-    const htmlButton = event.target.closest<HTMLButtonElement>('button[data-action="preview-html"]');
-    if (htmlButton !== null && previewContext !== null) {
-      const block = htmlButton.closest(".agent-markdown__code-block");
-      const mount = block?.querySelector("[data-html-preview-slot]");
-      const original = block?.querySelector<HTMLElement>("pre") ?? null;
-      const source = original?.querySelector("code")?.textContent;
-      if (mount != null && source != null) {
-        if (originalSource.current !== null) originalSource.current.hidden = false;
-        if (original !== null) original.hidden = true;
-        originalSource.current = original;
-        setActivePreview({ source: { kind: "code", html: source }, mount });
-      }
-      return;
-    }
     const link = event.target.closest<HTMLAnchorElement>("a[href]");
     const href = link?.getAttribute("href") ?? "";
     if (previewContext !== null && href && !/^[a-z][a-z\d+.-]*:/iu.test(href) && /\.html?(?:[?#].*)?$/iu.test(href)) {
       const mount = event.currentTarget.querySelector("[data-html-file-preview-slot]");
-      if (mount !== null) { event.preventDefault(); if (originalSource.current !== null) originalSource.current.hidden = false;
-        originalSource.current = null;
+      if (mount !== null) { event.preventDefault();
         try { setActivePreview({ source: { kind: "file", path: decodeURIComponent(href.split(/[?#]/u)[0]!) }, mount }); } catch { /* Invalid encoded links retain their original text. */ }
       }
       return;
@@ -297,13 +291,14 @@ function AgentMarkdownContent({ content }: { content: string }): ReactElement {
 
   return (<>
     <div
-      ref={hostRef}
+      ref={bindHost}
       className="agent-markdown"
       dangerouslySetInnerHTML={markup}
       onClick={handleClick}
       onKeyDown={handleKeyDown}
     />
-    {activePreview !== null ? createPortal(<HtmlPreviewCard source={activePreview.source} onClose={() => { if (originalSource.current !== null) originalSource.current.hidden = false; setActivePreview(null); }} />, activePreview.mount) : null}
+    {codePreviews.map((preview, index) => createPortal(<HtmlPreviewCard source={{ kind: "code", html: preview.source }} embedded initialMode="source" />, preview.mount, String(index)))}
+    {activePreview !== null ? createPortal(<HtmlPreviewCard source={activePreview.source} onClose={() => setActivePreview(null)} />, activePreview.mount) : null}
   </>);
 }
 

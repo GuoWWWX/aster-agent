@@ -100,6 +100,35 @@ it("centers the loading state in the message area while keeping the composer ava
   expect(container.querySelector(".conversation-workspace__loading")).toBeNull();
 });
 
+it("expands an HTML edit into one preview/source surface instead of also rendering the diff", async () => {
+  const client = new MockAgentClient();
+  const target = session({ id: PARENT_ID, title: "HTML 预览互斥" });
+  const source = "<h1>鹈鹕动画</h1>";
+  const tool: ConversationToolItem = { id: TOOL_ID, conversationId: PARENT_ID, runId: RUN_ID, batchId: null,
+    createdAt: "2026-10-15T00:00:00Z", kind: "tool", name: "write_file", status: "completed",
+    arguments: JSON.stringify({ path: "index.html", content: source }), diff: `--- /dev/null\n+++ b/index.html\n@@ -0,0 +1 @@\n+${source}\n`,
+    result: JSON.stringify({ ok: true, value: { path: "index.html" } }) };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool]);
+  vi.spyOn(client, "htmlPreview").mockImplementation(input => Promise.resolve(input.kind === "file"
+    ? { id: TOOL_ID, title: "index.html", url: "http://127.0.0.1:1234/token/index.html", source } : null));
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => { root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={target} /></TooltipProvider>); await flushConversationWorkspace(); });
+  expandWorkProcess(container);
+  const edit = container.querySelector<HTMLElement>(`.tool-activity-row[data-status="completed"], .tool-timeline-item[data-status="completed"]`);
+  expect(edit).not.toBeNull();
+  const toggle = edit!.querySelector<HTMLButtonElement>('.tool-timeline-item__toggle')!;
+  await act(async () => { toggle.click(); await flushConversationWorkspace(); });
+  expect(edit!.querySelectorAll('[aria-label="HTML 页面预览"]')).toHaveLength(1);
+  expect(edit!.querySelectorAll("iframe")).toHaveLength(1);
+  expect(edit!.querySelector("pre")).toBeNull();
+  await act(async () => { [...edit!.querySelectorAll("button")].find(button => button.textContent === "源码")!.click(); await Promise.resolve(); });
+  expect(edit!.querySelector("iframe")).toBeNull();
+  expect(edit!.querySelectorAll("pre")).toHaveLength(1);
+  expect(edit!.querySelector("pre")?.textContent).toBe(source);
+  await act(async () => { toggle.click(); await Promise.resolve(); });
+  expect(edit!.querySelector('[aria-label="HTML 页面预览"]')).toBeNull();
+});
+
 it("shows an answered question without an agent label and opens the original prompt", async () => {
   const client = new MockAgentClient();
   const target = session({ id: PARENT_ID, title: "测试代理" });

@@ -19,7 +19,7 @@ describe("conversation HTML previews", () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     node = document.createElement("div"); document.body.append(node); root = createRoot(node);
     client = new MockAgentClient();
-    request = vi.spyOn(client, "htmlPreview").mockImplementation(input => Promise.resolve(input.kind === "code" || input.kind === "file" ? result : null));
+    request = vi.spyOn(client, "htmlPreview").mockImplementation(input => Promise.resolve(input.kind === "code" ? { ...result, source: input.html } : input.kind === "file" ? result : null));
   });
   afterEach(() => { act(() => root.unmount()); node.remove(); vi.unstubAllGlobals(); });
   async function render(children: ReactNode): Promise<void> {
@@ -36,22 +36,45 @@ describe("conversation HTML previews", () => {
     await render(<AgentMarkdown content={"```html\n<h1>页面</h1>"} />);
     expect(node.querySelector('[data-action="preview-html"]')).toBeNull();
     await render(<AgentMarkdown content={"```html\n<h1>页面</h1>\n```"} />);
+    const block = node.querySelector(".agent-markdown__code-block");
+    expect(block?.querySelectorAll("header")).toHaveLength(1);
+    expect(block?.querySelector("pre")?.textContent).toBe("<h1>页面</h1>\n");
+    expect(request).not.toHaveBeenCalled();
     await click("预览 HTML");
     expect(request).toHaveBeenCalledWith({ kind: "code", conversationId, html: "<h1>页面</h1>\n" });
     const frame = node.querySelector("iframe");
     expect(frame?.getAttribute("sandbox")).toBe("allow-scripts");
     expect(frame?.getAttribute("src")).toBe(result.url);
-    expect(node.querySelector<HTMLElement>(".agent-markdown__code-block > pre")?.hidden).toBe(true);
+    expect(block?.querySelectorAll("header")).toHaveLength(1);
+    expect(block?.querySelector("section section")).toBeNull();
+    expect(block?.querySelector("pre")).toBeNull();
     await click("源码");
-    expect(node.querySelector('section code')?.textContent).toBe(result.source);
+    expect(node.querySelector('section code')?.textContent).toBe("<h1>页面</h1>\n");
     expect(node.querySelector('section h1')).toBeNull();
+    expect(node.querySelector("iframe")).toBeNull();
     await click("在侧边浏览器打开 HTML");
     expect(request).toHaveBeenCalledWith({ kind: "browser", conversationId, id: result.id });
     await click("刷新 HTML 预览");
     expect(request.mock.calls.filter(([input]) => input.kind === "code")).toHaveLength(2);
     await click("关闭 HTML 预览");
-    expect(node.querySelector<HTMLElement>(".agent-markdown__code-block > pre")?.hidden).toBe(false);
+    expect(block?.querySelector("pre")?.textContent).toBe("<h1>页面</h1>\n");
+    expect(block?.querySelectorAll("header")).toHaveLength(1);
     expect(request.mock.calls.filter(([input]) => input.kind === "release")).toHaveLength(2);
+  });
+
+  it("switches each HTML fence independently without nesting cards or losing copy", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    await render(<AgentMarkdown content={"```html\n<p>第一个</p>\n```\n\n```html\n<p>第二个</p>\n```"} />);
+    const blocks = node.querySelectorAll(".agent-markdown__code-block");
+    expect(blocks).toHaveLength(2);
+    await act(async () => { blocks[0]!.querySelector<HTMLButtonElement>('[aria-label="预览 HTML"]')!.click(); await Promise.resolve(); });
+    expect(blocks[0]!.querySelector("iframe")).not.toBeNull();
+    expect(blocks[0]!.querySelector("pre")).toBeNull();
+    expect(blocks[1]!.querySelector("pre")?.textContent).toBe("<p>第二个</p>\n");
+    await act(async () => { blocks[0]!.querySelector<HTMLButtonElement>('[aria-label="复制代码"]')!.click(); await Promise.resolve(); });
+    expect(writeText).toHaveBeenCalledWith("<p>第一个</p>\n");
+    expect([...blocks].every(block => block.querySelectorAll("header").length === 1)).toBe(true);
   });
 
   it("opens local HTML links, clears previews on message updates and leaves external links alone", async () => {
