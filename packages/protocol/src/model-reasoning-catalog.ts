@@ -159,18 +159,82 @@ const modelIdsBySeed: Record<string, string[]> = {
   minimax2: ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1", "MiniMax-M2.1-highspeed", "MiniMax-M2"],
 };
 
-export const DEFAULT_MODEL_REASONING_RULES: ModelReasoningRule[] = seeds.flatMap(({ formats, ...seed }) => {
-  const providerId = seed.id.startsWith("claude") ? "anthropic"
-    : seed.id.startsWith("gemini") ? "google"
-    : seed.id.startsWith("deepseek") ? "deepseek"
-    : seed.id.startsWith("kimi") ? "moonshot"
-    : seed.id.startsWith("glm") ? "zhipu"
-    : seed.id.startsWith("grok") ? "xai"
-    : seed.id.startsWith("minimax") ? "minimax"
-    : seed.id === "qwen" ? "qwen" : "openai";
+function providerForSeed(id: string): string {
+  return id.startsWith("claude") ? "anthropic"
+    : id.startsWith("gemini") ? "google"
+    : id.startsWith("deepseek") ? "deepseek"
+    : id.startsWith("kimi") ? "moonshot"
+    : id.startsWith("glm") ? "zhipu"
+    : id.startsWith("grok") ? "xai"
+    : id.startsWith("minimax") ? "minimax"
+    : id === "qwen" ? "qwen" : "openai";
+}
+
+/** The previous exact defaults are also the compatibility/migration baseline. */
+export const LEGACY_EXACT_MODEL_REASONING_RULES: ModelReasoningRule[] = seeds.flatMap(({ formats, ...seed }) => {
+  const providerId = providerForSeed(seed.id);
   return (modelIdsBySeed[seed.id] ?? []).flatMap(modelId => formats.map(apiFormat => {
     const datedAliases: Record<string, string> = { "claude-opus-4-5": "claude-opus-4-5-20251101", "claude-sonnet-4-5": "claude-sonnet-4-5-20250929", "claude-haiku-4-5": "claude-haiku-4-5-20251001" };
     return modelReasoningRuleSchema.parse({ ...seed, name: modelId, matches: [modelId, ...(datedAliases[modelId] ? [datedAliases[modelId]] : [])],
       matchMode: "exact", providerId, modelKey: modelId, id: `${modelId}-${apiFormat}`, apiFormat });
   }));
+});
+
+type Group = { id: string; name: string; seeds: string[]; matchMode: "glob" | "exact"; matches: string[]; note?: string };
+const groups: Group[] = [
+  { id: "gpt-sol", name: "GPT-6 Sol / GPT-5.6 Sol、Terra", seeds: ["gpt56"], matchMode: "glob", matches: ["gpt-*-*sol", "gpt-*-*sol-*", "gpt-5.6", "gpt-5.6-20*", "gpt-5.6-terra*"],
+    note: "这里配置直接 API 的 effort 参数。Codex 中的 Ultra 是子代理并行运行模式，不是可直接发送的 effort 值。" },
+  { id: "gpt-luna", name: "GPT-6 / GPT-5.6 Luna", seeds: ["gpt6-luna"], matchMode: "glob", matches: ["gpt-*-*luna", "gpt-*-*luna-*"],
+    note: "Luna 在 Codex 中最高为 Max，不支持 Ultra。直接 API 的档位与 Sol 相同，但两者分别维护。" },
+  { id: "gpt6", name: "GPT-6.1 Sol / GPT Astra", seeds: ["gpt6"], matchMode: "glob", matches: ["gpt-*-*astra", "gpt-*-*astra-*", "gpt-6.1-sol*"],
+    note: "直接 API 不支持 none/minimal；GPT-6.1 Sol 工具调用使用 Responses。Codex 的 Ultra 为子代理并行运行模式，不是 API effort 值。" },
+  { id: "gpt52-55", name: "GPT-5.5 / 5.4 / 5.2（含 5.4 Mini、Nano）", seeds: ["gpt55", "gpt54"], matchMode: "glob", matches: ["gpt-5.5", "gpt-5.5-20*", "gpt-5.4", "gpt-5.4-20*", "gpt-5.4-mini*", "gpt-5.4-nano*", "gpt-5.2", "gpt-5.2-20*"] },
+  { id: "gpt-pro", name: "GPT-5.5 / 5.4 / 5.2 Pro", seeds: ["gpt-pro"], matchMode: "glob", matches: ["gpt-5.5-pro*", "gpt-5.4-pro*", "gpt-5.2-pro*"] },
+  { id: "codex", name: "GPT-5.3 / 5.2 Codex", seeds: ["codex"], matchMode: "glob", matches: ["gpt-5.3-codex*", "gpt-5.2-codex*"] },
+  { id: "gpt51", name: "GPT-5.1", seeds: ["gpt51"], matchMode: "glob", matches: ["gpt-5.1", "gpt-5.1-20*"] },
+  { id: "gpt5", name: "GPT-5 / Mini、Nano", seeds: ["gpt5"], matchMode: "glob", matches: ["gpt-5", "gpt-5-20*", "gpt-5-mini*", "gpt-5-nano*"] },
+  { id: "gpt5-pro", name: "GPT-5 Pro", seeds: ["gpt5-pro"], matchMode: "glob", matches: ["gpt-5-pro*"] },
+  { id: "o-series", name: "o4-mini / o3、o3-mini / o1", seeds: ["o-series"], matchMode: "glob", matches: ["o4-mini*", "o3", "o3-20*", "o3-mini*", "o1", "o1-20*"] },
+  { id: "o3-pro", name: "o3-pro", seeds: ["o3-pro"], matchMode: "exact", matches: ["o3-pro"] },
+  { id: "claude-latest", name: "Claude 5.5 / 5.1 / 5 / Opus 4.8、4.7", seeds: ["claude-latest"], matchMode: "glob", matches: ["claude-opus-5*", "claude-sonnet-5*", "claude-haiku-5-5*", "claude-fable-5*", "claude-mythos-5*", "claude-opus-4-8*", "claude-opus-4-7*"] },
+  { id: "claude-adaptive", name: "Claude 4.6 Opus、Sonnet / Mythos Preview", seeds: ["claude-adaptive"], matchMode: "glob", matches: ["claude-opus-4-6*", "claude-sonnet-4-6*", "claude-mythos-preview*"] },
+  { id: "claude-budget", name: "Claude 4.5 Opus、Sonnet、Haiku（预算）", seeds: ["claude-budget"], matchMode: "glob", matches: ["claude-opus-4-5*", "claude-sonnet-4-5*", "claude-haiku-4-5*"] },
+  { id: "gemini-medium", name: "Gemini 4 Argon / 3.8 Flash / 3.1 Pro", seeds: ["gemini-medium"], matchMode: "glob", matches: ["gemini-4-argon*", "gemini-3.8-flash*", "gemini-3.1-pro*"] },
+  { id: "gemini-flash", name: "Gemini 3.6 Flash / 3.5、3.1 Flash-Lite / 3 Flash", seeds: ["gemini-flash"], matchMode: "glob", matches: ["gemini-3.6-flash*", "gemini-3.5-flash-lite*", "gemini-3.1-flash-lite*", "gemini-3-flash*"] },
+  { id: "gemini-image", name: "Gemini 3.1 Flash-Lite Image", seeds: ["gemini-image"], matchMode: "glob", matches: ["gemini-3.1-flash-lite-image*"] },
+  { id: "gemini3-pro", name: "Gemini 3 Pro", seeds: ["gemini3-pro"], matchMode: "glob", matches: ["gemini-3-pro", "gemini-3-pro-preview*"] },
+  { id: "gemini25-pro", name: "Gemini 2.5 Pro", seeds: ["gemini25-pro", "gemini-compatible"], matchMode: "glob", matches: ["gemini-2.5-pro", "gemini-2.5-pro-preview*"] },
+  { id: "gemini25-flash", name: "Gemini 2.5 Flash / Flash-Lite", seeds: ["gemini25-flash", "gemini-compatible-flash"], matchMode: "glob", matches: ["gemini-2.5-flash", "gemini-2.5-flash-preview*", "gemini-2.5-flash-lite*"] },
+  { id: "deepseek", name: "DeepSeek V4.1 Flash / V4 Pro", seeds: ["deepseek", "deepseek-chat", "deepseek-responses"], matchMode: "glob", matches: ["deepseek-flash*", "deepseek-v4-pro*"] },
+  { id: "kimi3", name: "Kimi K3", seeds: ["kimi3"], matchMode: "glob", matches: ["kimi-k3*"] },
+  { id: "kimi2", name: "Kimi K2.7 Code / K2.6（服务默认）", seeds: ["kimi2"], matchMode: "glob", matches: ["kimi-k2.7-code*", "kimi-k2.6*"] },
+  { id: "glm", name: "GLM 5.3（含 Flash、FlashX）/ 5.2", seeds: ["glm"], matchMode: "glob", matches: ["glm-5.3*", "glm-5.2*"] },
+  { id: "glm-legacy", name: "GLM 5.1 / 5 / 4.7、4.6（服务默认）", seeds: ["glm-legacy"], matchMode: "glob", matches: ["glm-5.1*", "glm-5", "glm-4.7*", "glm-4.6*"] },
+  { id: "grok46", name: "Grok 4.7 / 4.6", seeds: ["grok46"], matchMode: "glob", matches: ["grok-4.7*", "grok-4.6*"] },
+  { id: "grok45", name: "Grok 4.5", seeds: ["grok45"], matchMode: "glob", matches: ["grok-4.5*"] },
+  { id: "grok43", name: "Grok 4.3", seeds: ["grok43"], matchMode: "glob", matches: ["grok-4.3*"] },
+  { id: "qwen", name: "Qwen 3.8–3.5 / Coder / Plus、Turbo（服务默认）", seeds: ["qwen"], matchMode: "glob", matches: ["qwen3.8-*", "qwen3.7-*", "qwen3.6-*", "qwen3.5-*", "qwen3-coder-*", "qwen-plus*", "qwen-turbo*"] },
+  { id: "minimax31", name: "MiniMax M3.1 Flash Preview", seeds: ["minimax31"], matchMode: "glob", matches: ["MiniMax-M3.1-Flash-Preview*"] },
+  { id: "minimax3", name: "MiniMax M3（服务默认）", seeds: ["minimax3"], matchMode: "exact", matches: ["MiniMax-M3"] },
+  { id: "minimax2", name: "MiniMax M2.x（服务默认）", seeds: ["minimax2"], matchMode: "glob", matches: ["MiniMax-M2*"] },
+];
+
+export const DEFAULT_MODEL_REASONING_RULES: ModelReasoningRule[] = groups.flatMap(group => {
+  const rules: ModelReasoningRule[] = [];
+  for (const seedId of group.seeds) {
+    const seed = seeds.find(item => item.id === seedId);
+    if (seed === undefined) throw new Error(`Missing reasoning seed: ${seedId}`);
+    const { formats, ...source } = seed;
+    for (const apiFormat of formats) {
+      const existing = rules.find(rule => rule.apiFormat === apiFormat);
+      if (existing !== undefined) {
+        if (JSON.stringify(existing.options) !== JSON.stringify(seed.options)) throw new Error(`Incompatible reasoning group: ${group.id}`);
+        continue;
+      }
+      rules.push(modelReasoningRuleSchema.parse({ ...source, id: `${group.id}-${apiFormat}`, modelKey: group.id,
+        name: group.name, providerId: providerForSeed(seedId), matchMode: group.matchMode, matches: group.matches,
+        note: group.note ?? source.note, apiFormat }));
+    }
+  }
+  return rules;
 });

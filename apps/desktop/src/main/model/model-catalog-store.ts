@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import {
   DEFAULT_MODEL_CATALOG,
   modelCatalogSchema,
+  upgradeModelReasoningCatalog,
   type ModelCatalog,
 } from "@agent/protocol";
 import { readJsonConfiguration, writeJsonConfiguration } from "../settings/json-configuration-file.js";
@@ -40,17 +41,23 @@ export class ModelCatalogStore {
     this.ensureFile();
     if (this.configuration instanceof SettingsJsoncFile) {
       const value = this.configuration.readValue("modelCatalog");
-      return modelCatalogSchema.parse({ ...(value as object), version: 1 });
+      return this.upgradeCatalog(modelCatalogSchema.parse({ ...(value as object), version: 1 }));
     }
-    return readJsonConfiguration(
+    return this.upgradeCatalog(readJsonConfiguration(
       this.configuration,
       modelCatalogSchema,
       DEFAULT_MODEL_CATALOG,
-    );
+    ));
+  }
+
+  private upgradeCatalog(catalog: ModelCatalog): ModelCatalog {
+    const upgraded = upgradeModelReasoningCatalog(catalog);
+    if (upgraded !== catalog) this.writeCatalog(upgraded);
+    return upgraded;
   }
 
   public saveCatalog(catalog: ModelCatalog): ModelCatalog {
-    const parsed = modelCatalogSchema.parse(catalog);
+    const parsed = upgradeModelReasoningCatalog(modelCatalogSchema.parse(catalog));
     this.writeCatalog(parsed);
     return this.getCatalog();
   }

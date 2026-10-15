@@ -1,4 +1,4 @@
-import { DEFAULT_MODEL_REASONING_PROVIDERS, DEFAULT_MODEL_REASONING_RULES,
+import { DEFAULT_MODEL_REASONING_PROVIDERS, DEFAULT_MODEL_REASONING_RULES, upgradeModelReasoningCatalog,
   type ModelApiFormat, type ModelCatalog, type ModelReasoningMatchMode, type ModelReasoningProvider, type ModelReasoningRule } from "@agent/protocol";
 
 export const REASONING_API_FORMATS: { value: ModelApiFormat; label: string }[] = [
@@ -15,6 +15,7 @@ export type ReasoningCatalogDraft = ModelCatalog & {
 
 /** Upgrade the earlier flat catalog in the editor without writing until Save. */
 export function createReasoningCatalogDraft(catalog: ModelCatalog): ReasoningCatalogDraft {
+  catalog = upgradeModelReasoningCatalog(catalog);
   const providers = structuredClone(catalog.reasoningProviders ?? DEFAULT_MODEL_REASONING_PROVIDERS);
   const rules = structuredClone(catalog.reasoningRules ?? DEFAULT_MODEL_REASONING_RULES).map(rule => {
     const builtin = DEFAULT_MODEL_REASONING_RULES.find(candidate => candidate.id === rule.id);
@@ -44,5 +45,16 @@ export function reasoningCatalogModels(rules: ModelReasoningRule[]): ReasoningCa
     if (model !== undefined) model.rules.push(rule);
     else models.push({ key: rule.modelKey, providerId: rule.providerId, name: rule.name, matches: rule.matches, matchMode: rule.matchMode ?? "glob", rules: [rule] });
   }
-  return models;
+  const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+  const providerOrder = [...new Set(models.map(model => model.providerId))];
+  return models.sort((a, b) => {
+    if (a.providerId !== b.providerId) return providerOrder.indexOf(a.providerId) - providerOrder.indexOf(b.providerId);
+    const aVersion = a.name.match(/\d+(?:\.\d+)*/u)?.[0].split(".").map(Number) ?? [];
+    const bVersion = b.name.match(/\d+(?:\.\d+)*/u)?.[0].split(".").map(Number) ?? [];
+    for (let index = 0; index < Math.max(aVersion.length, bVersion.length); index += 1) {
+      const difference = (bVersion[index] ?? 0) - (aVersion[index] ?? 0);
+      if (difference !== 0) return difference;
+    }
+    return collator.compare(a.name, b.name);
+  });
 }

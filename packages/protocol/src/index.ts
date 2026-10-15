@@ -293,10 +293,11 @@ export {
   modelCatalogSchema,
   resolveModelCatalogRule,
   resolveModelContextWindow,
+  upgradeModelReasoningCatalog,
 } from "./model-catalog.js";
 export type { ModelCatalog, ModelCatalogRule } from "./model-catalog.js";
 export { resolveModelReasoningOptions } from "./model-catalog.js";
-export { DEFAULT_MODEL_REASONING_RULES, DEFAULT_MODEL_REASONING_PROVIDERS, modelReasoningRuleSchema, modelReasoningProviderSchema } from "./model-reasoning-catalog.js";
+export { DEFAULT_MODEL_REASONING_RULES, DEFAULT_MODEL_REASONING_PROVIDERS, LEGACY_EXACT_MODEL_REASONING_RULES, modelReasoningRuleSchema, modelReasoningProviderSchema } from "./model-reasoning-catalog.js";
 export type { ModelReasoningRule, ModelReasoningProvider } from "./model-reasoning-catalog.js";
 export { modelReasoningPatternMatches, isValidModelReasoningRegex, type ModelReasoningMatchMode } from "./model-reasoning-matcher.js";
 export {

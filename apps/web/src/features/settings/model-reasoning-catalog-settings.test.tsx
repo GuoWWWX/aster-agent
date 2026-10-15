@@ -6,7 +6,7 @@ import { DEFAULT_MODEL_CATALOG, DEFAULT_MODEL_REASONING_RULES } from "@agent/pro
 import { MockAgentClient } from "../../runtime/mock-agent-client.js";
 import { TooltipProvider } from "../../components/ui/tooltip.js";
 import { ModelReasoningCatalogSettings } from "./model-reasoning-catalog-settings.js";
-import { createReasoningCatalogDraft } from "./model-reasoning-catalog-draft.js";
+import { createReasoningCatalogDraft, reasoningCatalogModels } from "./model-reasoning-catalog-draft.js";
 
 let root: Root | null = null;
 beforeEach(() => {
@@ -63,8 +63,8 @@ it("keeps protocol options independent, saves a change, and reloads it", async (
   input("模型匹配规则", "gpt-6-*, gpt-6.1-*");
   await save();
   const saved = await client.getModelCatalog();
-  expect(saved.reasoningRules?.find(rule => rule.modelKey === "gpt-6.1-sol" && rule.apiFormat === "openai-chat-completions")?.options[0]?.enabled).toBe(false);
-  expect(saved.reasoningRules?.find(rule => rule.modelKey === "gpt-6.1-sol" && rule.apiFormat === "openai-responses")?.options[0]?.enabled).toBe(true);
+  expect(saved.reasoningRules?.find(rule => rule.modelKey === "gpt6" && rule.apiFormat === "openai-chat-completions")?.options[0]?.enabled).toBe(false);
+  expect(saved.reasoningRules?.find(rule => rule.modelKey === "gpt6" && rule.apiFormat === "openai-responses")?.options[0]?.enabled).toBe(true);
   act(() => root?.unmount()); root = null; document.body.replaceChildren();
   const reloaded = await render(client);
   expect(reloaded.querySelector<HTMLInputElement>('[aria-label="启用 低 | low"]')?.checked).toBe(false);
@@ -121,7 +121,7 @@ it("confirms provider deletion and keeps an explicitly empty catalog empty after
   await client.saveModelCatalog({ ...DEFAULT_MODEL_CATALOG, reasoningProviders: [DEFAULT_MODEL_CATALOG.reasoningProviders![0]!],
     reasoningRules: DEFAULT_MODEL_REASONING_RULES.filter(rule => rule.providerId === "openai") });
   await render(client);
-  click("删除供应商 OpenAI"); click("取消"); expect(document.body.textContent).toContain("gpt-6.1-sol");
+  click("删除供应商 OpenAI"); click("取消"); expect(document.body.textContent).toContain("GPT-6.1 Sol");
   click("删除供应商 OpenAI"); click("确认删除"); await save();
   expect(await client.getModelCatalog()).toMatchObject({ reasoningProviders: [], reasoningRules: [] });
   act(() => root?.unmount()); root = null; document.body.replaceChildren();
@@ -170,12 +170,12 @@ it("validates regex patterns without splitting quantifier commas and persists ex
   await selectProtocol("正则表达式", "模型匹配方式");
   input("模型匹配规则", "^(gpt|model)-[0-9]{1,3}$");
   await save();
-  const rule = (await client.getModelCatalog()).reasoningRules?.find(item => item.modelKey === "gpt-6.1-sol");
+  const rule = (await client.getModelCatalog()).reasoningRules?.find(item => item.modelKey === "gpt6");
   expect(rule).toMatchObject({ matchMode: "regex", matches: ["^(gpt|model)-[0-9]{1,3}$"] });
   input("模型匹配规则", "["); await save();
   expect(document.querySelector('[role="alert"]')?.textContent).toContain("正则表达式必须有效");
   await selectProtocol("指定具体模型", "模型匹配方式"); input("模型匹配规则", "my-model"); await save();
-  expect((await client.getModelCatalog()).reasoningRules?.find(item => item.modelKey === "gpt-6.1-sol")).toMatchObject({ matchMode: "exact", matches: ["my-model"] });
+  expect((await client.getModelCatalog()).reasoningRules?.find(item => item.modelKey === "gpt6")).toMatchObject({ matchMode: "exact", matches: ["my-model"] });
 });
 
 it("retains older flat custom rules while preparing the supplier tree", () => {
@@ -194,5 +194,12 @@ it("adds missing built-in models without replacing existing overrides", async ()
   const saved = await client.getModelCatalog();
   expect(saved.reasoningRules).toHaveLength(DEFAULT_MODEL_REASONING_RULES.length);
   expect(saved.reasoningRules?.find(item => item.id === override.id)?.options).toEqual([]);
-  expect(saved.reasoningRules?.some(item => item.modelKey === "claude-opus-5-5")).toBe(true);
+  expect(saved.reasoningRules?.some(item => item.modelKey === "claude-latest")).toBe(true);
+});
+
+it("orders groups by numeric version without changing stored matching precedence", () => {
+  const source = DEFAULT_MODEL_REASONING_RULES[0]!;
+  const rules = ["Model 2.9", "Model 10", "Model 2.10"].map((name, index) => ({ ...source, id: String(index), modelKey: String(index), name }));
+  expect(reasoningCatalogModels(rules).map(model => model.name)).toEqual(["Model 10", "Model 2.10", "Model 2.9"]);
+  expect(rules.map(rule => rule.name)).toEqual(["Model 2.9", "Model 10", "Model 2.10"]);
 });

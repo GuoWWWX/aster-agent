@@ -2,7 +2,7 @@ import { z } from "zod";
 import { modelReasoningPatternMatches } from "./model-reasoning-matcher.js";
 
 import { modelReasoningOptionSchema, isReasoningOptionSupportedByApiFormat, type ModelApiFormat, type ModelReasoningOption } from "./conversation.js";
-import { DEFAULT_MODEL_REASONING_PROVIDERS, DEFAULT_MODEL_REASONING_RULES, modelReasoningProviderSchema, modelReasoningRuleSchema } from "./model-reasoning-catalog.js";
+import { DEFAULT_MODEL_REASONING_PROVIDERS, DEFAULT_MODEL_REASONING_RULES, LEGACY_EXACT_MODEL_REASONING_RULES, modelReasoningProviderSchema, modelReasoningRuleSchema } from "./model-reasoning-catalog.js";
 
 const modelCatalogPatternSchema = z.string().trim().min(1).max(200);
 
@@ -37,6 +37,26 @@ export const modelCatalogSchema = z.object({
 
 export type ModelCatalog = z.infer<typeof modelCatalogSchema>;
 export type ModelCatalogRule = z.infer<typeof modelCatalogRuleSchema>;
+
+/** Compact the complete previous default prefix, retaining edited exact overrides.
+ * Partial, reordered or rematched catalogs remain user-owned and are untouched.
+ */
+export function upgradeModelReasoningCatalog(catalog: ModelCatalog): ModelCatalog {
+  const rules = catalog.reasoningRules;
+  const legacy = LEGACY_EXACT_MODEL_REASONING_RULES;
+  if (rules === undefined || rules.length < legacy.length) return catalog;
+  const prefix = rules.slice(0, legacy.length);
+  if (!prefix.every((rule, index) => {
+    const original = legacy[index]!;
+    return rule.id === original.id && rule.providerId === original.providerId && rule.modelKey === original.modelKey
+      && rule.matchMode === original.matchMode && JSON.stringify(rule.matches) === JSON.stringify(original.matches);
+  })) return catalog;
+  const overrides = prefix.filter((rule, index) => JSON.stringify(rule) !== JSON.stringify(legacy[index]));
+  const retained = [...overrides, ...rules.slice(legacy.length)];
+  const defaults = DEFAULT_MODEL_REASONING_RULES.filter(rule => !retained.some(override => override.id === rule.id
+    || (override.providerId === rule.providerId && override.modelKey === rule.modelKey && override.apiFormat === rule.apiFormat)));
+  return { ...catalog, reasoningRules: [...structuredClone(defaults), ...retained] };
+}
 
 /**
  * Seeded into settings.jsonc/modelCatalog on first desktop launch.
