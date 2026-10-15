@@ -171,7 +171,7 @@ it("opens task details above the summary and preserves close and reopen controls
   expect(document.querySelector(".conversation-task-list__details")).toBeNull();
 });
 
-it("shows transient reasoning in the outer work-process header and switches to the latest tool", async () => {
+it("keeps the outer work-process title fixed while reasoning, tools and the final answer stream", async () => {
   const client = new MockAgentClient();
   let listener: (event: ConversationRunEvent) => void = () => {};
   vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { listener = callback; return () => {}; });
@@ -184,18 +184,19 @@ it("shows transient reasoning in the outer work-process header and switches to t
   });
   act(() => listener({ type: "assistant.reasoning_delta", conversationId: PARENT_ID, runId: RUN_ID, messageId: MESSAGE_ID, modelId: "gpt-6.1-sol", kind: "summary", reset: true, delta: "**Checking workspace files**" }));
   const header = () => container.querySelector<HTMLButtonElement>(".conversation-run-activity > button");
-  expect(header()?.textContent).toContain("Checking workspace files");
+  expect(header()?.textContent).toBe("推理中");
   expect(container.querySelector(".conversation-model-activity")).toBeNull();
   expect(container.querySelector('[aria-label="展开思考过程"]')).toBeNull();
   act(() => header()?.click());
-  expect(header()?.getAttribute("aria-expanded")).toBe("false");
+  expect(header()?.getAttribute("aria-expanded")).toBe("true");
   const tool: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID,
     batchId: null, createdAt: "2026-10-15T00:00:00Z", name: "read_file", arguments: '{"path":"index.html"}', result: null, diff: null, status: "running" };
   act(() => listener({ type: "tool.started", conversationId: PARENT_ID, runId: RUN_ID, tool }));
-  expect(header()?.textContent).toContain("index.html");
+  expect(header()?.textContent).toBe("推理中");
+  expect(container.querySelector(".tool-activity-row")?.textContent).toContain("index.html");
   expect(header()?.textContent).not.toContain("Checking workspace files");
   act(() => listener({ type: "assistant.reasoning_delta", conversationId: PARENT_ID, runId: RUN_ID, messageId: MESSAGE_ID, modelId: "gpt-6.1-sol", kind: "summary", reset: true, delta: "Creating SVG animation page" }));
-  expect(header()?.textContent).toContain("Creating SVG animation page");
+  expect(header()?.textContent).toBe("推理中");
   act(() => listener({ type: "assistant.delta", conversationId: PARENT_ID, runId: RUN_ID, delta: "已完成。", messageId: MESSAGE_ID, modelId: "gpt-6.1-sol" }));
   expect(container.textContent).not.toContain("Creating SVG animation page");
 });
@@ -287,6 +288,7 @@ it.each(["assistant text", "run finished"])("keeps a manually opened tool batch 
     ? { type: "assistant.delta", conversationId: PARENT_ID, runId: RUN_ID, messageId: MESSAGE_ID,
       modelId: "gpt-6.1-sol", delta: "文件检查完成。" }
     : { type: "run.finished", conversationId: PARENT_ID, runId: RUN_ID, status: "completed", error: null }));
+  if (ending === "run finished") expandWorkProcess(container);
   expect(batchToggle()?.getAttribute("aria-expanded")).toBe("true");
   expect(batchToggle()?.textContent).toContain("读取 3 个文件");
   expect(container.querySelector(".conversation-run-activity > button")?.getAttribute("aria-expanded")).toBe("true");
@@ -318,7 +320,7 @@ it("holds the latest tool or reasoning summary between new activity events", asy
     tool: { ...second, status: "completed" } }));
   act(() => listener({ type: "model.request_started", conversationId: PARENT_ID, runId: RUN_ID }));
   expect(batch()?.textContent).toContain("second.txt");
-  expect(header()?.textContent).toContain("second.txt");
+  expect(header()?.textContent).toBe("推理中");
   expect(batch()?.textContent).not.toContain("正在推理");
 
   act(() => listener({ type: "assistant.reasoning_delta", conversationId: PARENT_ID, runId: RUN_ID,
@@ -326,7 +328,7 @@ it("holds the latest tool or reasoning summary between new activity events", asy
   act(() => listener({ type: "tool.completed", conversationId: PARENT_ID, runId: RUN_ID,
     tool: { ...first, status: "completed" } }));
   expect(batch()?.textContent).toContain("Reviewing both files");
-  expect(header()?.textContent).toContain("Reviewing both files");
+  expect(header()?.textContent).toBe("推理中");
   act(() => listener({ type: "model.request_started", conversationId: PARENT_ID, runId: RUN_ID }));
   expect(batch()?.textContent).toContain("Reviewing both files");
   act(() => listener({ type: "assistant.reasoning_delta", conversationId: PARENT_ID, runId: RUN_ID,
@@ -521,7 +523,7 @@ it("shows an answered question without an agent label and opens the original pro
 });
 
 describe("Automatic continuation answer", () => {
-  it("renders one timer after a team request, never above its bubble", async () => {
+  it("renders one running work-process status after a team request, never above its bubble", async () => {
     const client = new MockAgentClient();
     const target = session({ id: PARENT_ID, title: "团队成员", activeRunId: RUN_ID });
     const request: ConversationAgentMessageItem = {
@@ -539,8 +541,8 @@ describe("Automatic continuation answer", () => {
       root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={target} /></TooltipProvider>);
       await flushConversationWorkspace();
     });
-    expect(container.textContent?.match(/已处理/g)).toHaveLength(1);
-    expect(container.textContent?.indexOf("读取项目文件")).toBeLessThan(container.textContent?.indexOf("已处理") ?? -1);
+    expect(container.textContent?.match(/推理中/g)).toHaveLength(1);
+    expect(container.textContent?.indexOf("读取项目文件")).toBeLessThan(container.textContent?.indexOf("推理中") ?? -1);
   });
   it("keeps the old work timer frozen and starts a new one after a steer in the same Run", async () => {
     const client = new MockAgentClient();
@@ -565,7 +567,7 @@ describe("Automatic continuation answer", () => {
     const groups = container.querySelectorAll(".conversation-run-activity");
     expect(groups).toHaveLength(2);
     expect(groups[0]?.textContent).toContain("已处理 20秒");
-    expect(groups[1]?.textContent).toContain("已处理 0秒");
+    expect(groups[1]?.querySelector(":scope > button")?.textContent).toBe("推理中");
   });
 
   it("renders one answer with both source anchors and one copy action without private receipt rows", async () => {
@@ -1837,7 +1839,7 @@ describe("Pending message queue", () => {
     expect(groups).toHaveLength(2);
     expect(groups[0]).toBe(originalGroup);
     expect(groups[0]?.textContent).toContain("已处理 20秒");
-    expect(groups[1]?.textContent).toContain("已处理 0秒");
+    expect(groups[1]?.querySelector(":scope > button")?.textContent).toBe("推理中");
     const boundary = container.querySelector(`[data-conversation-timeline-item="${pending.id}"]`)!;
     expect(boundary.compareDocumentPosition(groups[1]!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     // A late acceptance response cannot duplicate a message already consumed by the runtime.

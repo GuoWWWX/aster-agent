@@ -309,6 +309,7 @@ type RunActivityItem =
 
 type RunActivityTimelineItem = {
   durationMs: number | null;
+  streaming: boolean;
   id: string;
   items: RunActivityItem[];
   kind: "run_activity";
@@ -995,6 +996,7 @@ export function ConversationWorkspace({
   const [isMockRuntime, setIsMockRuntime] = useState(false);
   const [isSavingTeamPermission, setIsSavingTeamPermission] = useState(false);
   const [isScrolledAwayFromBottom, setIsScrolledAwayFromBottom] = useState(false);
+  const [disclosureRevision, setDisclosureRevision] = useState(0);
   const [isSending, setIsSending] = useState(false);
   const [liveToolOutputs, setLiveToolOutputs] = useState<Record<string, LiveToolOutput>>({});
   const [modelActivity, setModelActivity] = useState<ModelActivity | null>(null);
@@ -1893,6 +1895,17 @@ export function ConversationWorkspace({
     });
   }, [loadTimeline]);
 
+  const handleTimelineDisclosureInteraction = useCallback((event: MouseEvent<HTMLDivElement>): void => {
+    const messages = messagesRef.current;
+    if (!active || messages === null || !(event.target instanceof Element)) return;
+    const disclosure = event.target.closest("button[aria-expanded]");
+    if (disclosure === null || !messages.contains(disclosure)) return;
+    // Capture the position before child disclosure state changes grow the timeline.
+    shouldStickToBottomRef.current = timelineAfterSequenceRef.current === null
+      && isConversationScrolledToBottom(messages);
+    setDisclosureRevision((current) => current + 1);
+  }, [active]);
+
   useLayoutEffect(() => {
     const overlay = composerOverlayRef.current;
     if (overlay === null) return;
@@ -1961,7 +1974,7 @@ export function ConversationWorkspace({
     scrollToBottom();
     const animationFrame = window.requestAnimationFrame(scrollToBottom);
     return () => window.cancelAnimationFrame(animationFrame);
-  }, [active, composerOverlayHeight, isLoadingTimeline, modelActivity, operationError, pendingMessages, taskList, timeline]);
+  }, [active, composerOverlayHeight, disclosureRevision, isLoadingTimeline, modelActivity, operationError, pendingMessages, taskList, timeline]);
 
   const handleCopyMessage = useCallback(async (
     message: ConversationMessageItem,
@@ -2965,7 +2978,7 @@ export function ConversationWorkspace({
       .map((candidate) => candidate.id)),
     [relatedSessions, session],
   );
-  const displayTimeline = groupRunActivities(
+  let displayTimeline = groupRunActivities(
     projectSubagentMessagesForParentTimeline(timeline, subagentConversationIds),
   );
   const activityRunId = modelActivity?.runId;
@@ -2973,9 +2986,12 @@ export function ConversationWorkspace({
     && !displayTimeline.some(item => item.kind === "run_activity" && item.runIds.includes(activityRunId))) {
     displayTimeline.splice(getModelActivityInsertIndex(displayTimeline, activityRunId, modelActivity?.anchorTimelineItemId ?? null), 0, {
       id: `run-activity:${activityRunId}`, kind: "run_activity", runId: activityRunId,
-      runIds: [activityRunId], items: [], durationMs: null,
+      runIds: [activityRunId], items: [], durationMs: null, streaming: false,
     });
+    displayTimeline = combineAutomaticContinuationDurations(displayTimeline);
   }
+  const activeRunActivityIndex = activeRunId === null ? -1 : displayTimeline.findLastIndex((item) =>
+    item.kind === "run_activity" && item.runIds.includes(activeRunId));
   const htmlDeliveries = htmlPresentationDeliveries(timeline, displayTimeline, activeRunId);
   const locateQuestion = async (question: UserQuestion): Promise<void> => {
     try {
@@ -3239,6 +3255,7 @@ export function ConversationWorkspace({
           ref={messagesRef}
           className="conversation-workspace__messages"
           aria-label="对话记录"
+          onClickCapture={handleTimelineDisclosureInteraction}
           onScroll={handleMessagesScroll}
         >
           {isLoadingOlderTimeline ? (
@@ -3293,7 +3310,7 @@ export function ConversationWorkspace({
                       )
                     )
                     .map((progress) => (
-                      <RunProgressIndicator key={progress.runId ?? "pending"} progress={progress} />
+                      <RunProgressIndicator key={progress.runId ?? "pending"} />
                     ))}
                   {modelActivity !== null
                     && modelActivityInsertIndex === index
@@ -3326,7 +3343,7 @@ export function ConversationWorkspace({
                           ? item.senderConversationId
                           : null}
                         teamManaged={teamManaged}
-                        activeRunId={activeRunId}
+                        activeRunId={item.kind === "run_activity" && index !== activeRunActivityIndex ? null : activeRunId}
                         latestActiveToolId={latestActiveToolId}
                         currentToolId={currentToolId}
                         modelActivity={modelActivity !== null
@@ -3411,7 +3428,7 @@ export function ConversationWorkspace({
                   progress.runId === null || !runningContextCompactionRunIds.has(progress.runId)
                 )
                 .map((progress) => (
-                  <RunProgressIndicator key={progress.runId ?? "pending"} progress={progress} />
+                  <RunProgressIndicator key={progress.runId ?? "pending"} />
                 ))}
               {modelActivity !== null && modelActivityInsertIndex === displayTimeline.length ? (
                 <ModelActivityIndicator activity={modelActivity} />
@@ -4253,21 +4270,14 @@ function ModelActivityIndicator({ activity }: { activity: ModelActivity }): Reac
   );
 }
 
-function RunProgressIndicator({ progress }: { progress: RunProgress }): ReactElement {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const intervalId = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(intervalId);
-  }, []);
-  const label = `已处理 ${formatRunDuration(progress.startedAt, now)}`;
-
+function RunProgressIndicator(): ReactElement {
   return (
     <div
-      aria-label={label}
+      aria-label="推理中"
       className="conversation-run-progress"
-      role="timer"
+      role="status"
     >
-      <span className="conversation-run-progress__label">{label}</span>
+      <span className="conversation-run-progress__label">推理中</span>
     </div>
   );
 }
@@ -5146,6 +5156,7 @@ function groupRunActivitySegment(
     if (existing !== undefined) return existing;
     const created: RunActivityTimelineItem & { firstIndex: number } = {
       durationMs: null,
+      streaming: false,
       firstIndex: index,
       id: `run-activity:${runId}`,
       items: [],
@@ -5183,6 +5194,7 @@ function groupRunActivitySegment(
     if (!hasReasoning && !hasProgress && existingActivity === undefined) continue;
 
     const activity = existingActivity ?? activityFor(item.runId, index);
+    activity.streaming ||= item.status === "streaming";
     if (item.durationMs != null) activity.durationMs = item.durationMs;
     if (hasReasoning) {
       activity.items.push({
@@ -5213,6 +5225,7 @@ function groupRunActivitySegment(
     if (activity?.firstIndex === index) {
       projected.push({
         durationMs: activity.durationMs,
+        streaming: activity.streaming,
         id: activity.id,
         items: activity.items,
         kind: activity.kind,
@@ -5296,6 +5309,8 @@ function combineAutomaticContinuationDurations(
     if (firstActivityIndex === undefined) return;
 
     const completedRunIds = new Set<string>();
+    const turnRunIds = new Set<string>();
+    let hasStreamingOutput = false;
     let combinedDurationMs = 0;
     let hasDuration = false;
     for (let index = turnStartIndex; index < turnEndIndex; index += 1) {
@@ -5303,6 +5318,13 @@ function combineAutomaticContinuationDurations(
       if (item === undefined) continue;
       const isCompletedAssistant = item.kind === "message" && item.role === "assistant";
       const isTerminalRetry = item.kind === "model_retry" && item.status !== "retrying";
+      if (item.kind === "run_activity") {
+        for (const runId of item.runIds) turnRunIds.add(runId);
+        hasStreamingOutput ||= item.streaming;
+      } else if (isCompletedAssistant) {
+        if (item.runId !== null) turnRunIds.add(item.runId);
+        hasStreamingOutput ||= item.status === "streaming";
+      }
       if (
         item.kind !== "run_activity"
         && !isCompletedAssistant
@@ -5334,19 +5356,16 @@ function combineAutomaticContinuationDurations(
       }
     }
 
-    if (activityIndexes.length < 2) return;
     const firstActivity = combined[firstActivityIndex];
     if (firstActivity?.kind !== "run_activity") return;
     combined[firstActivityIndex] = {
       ...firstActivity,
+      streaming: hasStreamingOutput,
       items: activityIndexes.flatMap((index) => {
         const activity = combined[index];
         return activity?.kind === "run_activity" ? activity.items : [];
       }),
-      runIds: activityIndexes.flatMap((index) => {
-        const activity = combined[index];
-        return activity?.kind === "run_activity" ? activity.runIds : [];
-      }),
+      runIds: [...turnRunIds],
     };
     for (const index of activityIndexes.slice(1)) mergedActivityIndexes.add(index);
   };
@@ -6585,27 +6604,19 @@ function RunActivityTimelineItem({
   liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
 }): ReactElement {
   const isActive = activeRunId !== null && item.runIds.includes(activeRunId);
+  const isInProgress = isActive || runProgress !== null || item.streaming;
   const reveal = useContext(ToolRevealContext);
   const disclosureChoices = useContext(ToolDisclosureContext);
   const revealThisRun = item.items.some((entry) => entry.kind === "tool" && entry.id === reveal?.id);
-  const [isExpanded, setIsExpanded] = useToolDisclosure(item.id, [], isActive || runProgress !== null);
+  const [expandedChoice, setIsExpanded] = useToolDisclosure(item.id, [], isInProgress);
+  const isExpanded = isInProgress || expandedChoice;
   useEffect(() => { if (revealThisRun) setIsExpanded(true); }, [reveal?.requestId, revealThisRun, setIsExpanded]);
   useEffect(() => {
-    if (!isActive && runProgress === null && !revealThisRun && !disclosureChoices?.has(item.id)) setIsExpanded(false);
-  }, [isActive, runProgress, revealThisRun, disclosureChoices, item.id, setIsExpanded]);
-  const [now, setNow] = useState(() => Date.now());
+    if (!isInProgress && !revealThisRun && !disclosureChoices?.has(item.id)) setIsExpanded(false);
+  }, [isInProgress, revealThisRun, disclosureChoices, item.id, setIsExpanded]);
   const contentId = useId();
-  useEffect(() => {
-    if (runProgress === null) return;
-    const intervalId = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(intervalId);
-  }, [runProgress]);
-  const durationMs = runProgress === null
-    ? item.durationMs
-    : (item.durationMs ?? 0) + Math.max(0, now - runProgress.startedAt);
-  const label = durationMs === null
-    ? "工作过程"
-    : `已处理 ${formatRunDuration(0, durationMs)}`;
+  const label = isInProgress ? "推理中" : item.durationMs === null
+    ? "已处理" : `已处理 ${formatRunDuration(0, item.durationMs)}`;
   const displayItems = groupRunActivityItems(item.items);
   const hasReasoning = displayItems.some((entry) => entry.kind === "activity_reasoning");
   const reasoningStreaming = displayItems.some((entry) =>
@@ -6680,26 +6691,21 @@ function RunActivityTimelineItem({
       />
     );
   });
-  const latestTool = isActive ? item.items.findLast(entry => entry.kind === "tool" && entry.id === currentToolId) : undefined;
-  const currentStatus = currentModelActivity?.preview?.trim() ? modelActivityLabel(currentModelActivity)
-    : latestTool?.kind === "tool" ? (toolBatchCurrentToolLabel([latestTool], teamManaged) ?? toolActivityLabel(latestTool, teamManaged))
-    : currentModelActivity !== null ? modelActivityLabel(currentModelActivity) : null;
-
   return (
     <section
       className="conversation-run-activity flex w-full min-w-0 flex-col"
-      data-status={hasFailure ? "failed" : isActive ? "running" : "completed"}
+      data-status={hasFailure ? "failed" : isInProgress ? "running" : "completed"}
     >
       <button
         aria-controls={contentId}
         aria-expanded={isExpanded}
+        disabled={isInProgress}
         className="flex w-full min-w-0 items-center gap-[5px] border-0 border-b border-solid border-[var(--app-border)] bg-transparent px-0 py-[6px] text-left text-[length:var(--app-font-size-body)] font-normal text-[var(--app-muted-foreground)] hover:text-[var(--app-foreground)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-2"
-        title={toggleLabel}
+        title={isInProgress ? "推理完成后可收起工作过程" : toggleLabel}
         type="button"
         onClick={() => setIsExpanded((current) => !current)}
       >
-        <span className="min-w-0 truncate" aria-live={isActive ? "polite" : undefined} title={currentStatus ?? label}>{currentStatus ?? label}</span>
-        {currentStatus !== null && durationMs !== null ? <span className="shrink-0 text-[length:var(--app-font-size-auxiliary)]">{label}</span> : null}
+        <span className="min-w-0 truncate" aria-live={isInProgress ? "polite" : undefined}>{label}</span>
         <ChevronRight
           aria-hidden="true"
           className={`shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}

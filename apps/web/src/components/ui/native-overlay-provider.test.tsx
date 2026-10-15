@@ -75,8 +75,9 @@ it("keeps the popup in the native host, mirrors theme, and removes its input reg
   expect(host.document.documentElement.dataset.theme).toBe("dark");
   expect(update).toHaveBeenLastCalledWith({ regions: [{ x: 588, y: 68, width: 324, height: 224 }], interactive: true, resizing: false });
   popup.dataset.state = "closed";
-  await flush();
-  expect(update).toHaveBeenLastCalledWith({ regions: [], interactive: false, resizing: false });
+  await vi.waitFor(() => {
+    expect(update).toHaveBeenLastCalledWith({ regions: [], interactive: false, resizing: false });
+  });
 });
 
 it("preserves outside gesture targets and dismisses when focus returns from the native page", async () => {
