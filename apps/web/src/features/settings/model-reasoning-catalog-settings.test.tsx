@@ -203,3 +203,19 @@ it("orders groups by numeric version without changing stored matching precedence
   expect(reasoningCatalogModels(rules).map(model => model.name)).toEqual(["Model 10", "Model 2.10", "Model 2.9"]);
   expect(rules.map(rule => rule.name)).toEqual(["Model 2.9", "Model 10", "Model 2.10"]);
 });
+
+it("finds concrete Fable versions inside a wildcard group and updates its covered IDs", async () => {
+  await render(new MockAgentClient());
+  for (const query of ["claude-fable-5-1", "Claude Fable 5.1", "Claudefable 5"]) {
+    input("搜索供应商或模型", query);
+    expect(document.body.textContent).not.toContain("未找到匹配的供应商或模型");
+  }
+  const row = document.querySelector<HTMLButtonElement>('li button[title*="Claude 5"]');
+  expect(row).not.toBeNull(); act(() => row?.click());
+  const inventory = document.querySelector('[aria-label="已核对型号"]');
+  expect(inventory?.textContent).toContain("claude-fable-5-1");
+  expect(inventory?.textContent).toContain("claude-fable-5");
+  expect(inventory?.textContent).toContain("claude-mythos-5-1");
+  input("模型匹配规则", "claude-opus-5*");
+  expect(document.querySelector('[aria-label="已核对型号"]')?.textContent).not.toContain("claude-fable");
+});

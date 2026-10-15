@@ -1,5 +1,6 @@
-import { DEFAULT_MODEL_REASONING_PROVIDERS, DEFAULT_MODEL_REASONING_RULES, upgradeModelReasoningCatalog,
+import { DEFAULT_MODEL_REASONING_PROVIDERS, DEFAULT_MODEL_REASONING_RULES, upgradeModelReasoningCatalog, modelReasoningPatternMatches,
   type ModelApiFormat, type ModelCatalog, type ModelReasoningMatchMode, type ModelReasoningProvider, type ModelReasoningRule } from "@agent/protocol";
+import { MODEL_REASONING_INVENTORY } from "./model-reasoning-inventory.js";
 
 export const REASONING_API_FORMATS: { value: ModelApiFormat; label: string }[] = [
   { value: "openai-chat-completions", label: "OpenAI Chat Completions" },
@@ -35,6 +36,7 @@ export type ReasoningCatalogModel = {
   matches: string[];
   matchMode: ModelReasoningMatchMode;
   rules: ModelReasoningRule[];
+  knownModelIds: string[];
 };
 
 export function reasoningCatalogModels(rules: ModelReasoningRule[]): ReasoningCatalogModel[] {
@@ -43,7 +45,12 @@ export function reasoningCatalogModels(rules: ModelReasoningRule[]): ReasoningCa
     if (rule.modelKey === undefined || rule.providerId === undefined) continue;
     const model = models.find(candidate => candidate.key === rule.modelKey && candidate.providerId === rule.providerId);
     if (model !== undefined) model.rules.push(rule);
-    else models.push({ key: rule.modelKey, providerId: rule.providerId, name: rule.name, matches: rule.matches, matchMode: rule.matchMode ?? "glob", rules: [rule] });
+    else models.push({ key: rule.modelKey, providerId: rule.providerId, name: rule.name, matches: rule.matches, matchMode: rule.matchMode ?? "glob", rules: [rule], knownModelIds: [] });
+  }
+  for (const model of models) {
+    model.knownModelIds = (MODEL_REASONING_INVENTORY[model.providerId]?.modelIds ?? []).filter(modelId => model.rules.some(rule =>
+      rules.findLast(candidate => candidate.providerId === model.providerId && candidate.apiFormat === rule.apiFormat
+        && candidate.matches.some(pattern => modelReasoningPatternMatches(pattern, modelId, candidate.matchMode)))?.modelKey === model.key));
   }
   const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
   const providerOrder = [...new Set(models.map(model => model.providerId))];
@@ -57,4 +64,10 @@ export function reasoningCatalogModels(rules: ModelReasoningRule[]): ReasoningCa
     }
     return collator.compare(a.name, b.name);
   });
+}
+
+export function reasoningCatalogModelMatchesSearch(model: ReasoningCatalogModel, providerName: string, query: string): boolean {
+  const normalize = (value: string): string => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}*]+/gu, "");
+  const search = normalize(query);
+  return [providerName, model.name, ...model.matches, ...model.knownModelIds].some(value => normalize(value).includes(search));
 }
