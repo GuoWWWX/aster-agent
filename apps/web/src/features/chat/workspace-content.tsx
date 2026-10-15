@@ -3250,13 +3250,6 @@ export function ConversationWorkspace({
                         agentClient={agentClient}
                         item={item}
                         questionAnswer={answerQuestion}
-                        questionSenderName={answerQuestion === null ? null : (() => {
-                          const source = relatedSessions.find((candidate) => candidate.id === answerQuestion.conversationId)
-                            ?? (session.id === answerQuestion.conversationId ? session : undefined);
-                          return agentProfiles.find((agent) => agent.id === source?.agentId)?.name
-                            ?? (answerQuestion.conversationId === session.id ? defaultAgent?.name : undefined)
-                            ?? answerQuestion.sourceTitle;
-                        })()}
                         onLocateQuestion={locateQuestion}
                         agentAvatar={item.kind === "agent_message"
                           ? conversationAgentAvatars.get(item.senderConversationId)
@@ -3265,18 +3258,11 @@ export function ConversationWorkspace({
                               || item.senderTitle.startsWith(`${agent.name} ·`)
                             )?.avatar
                             ?? null
-                          : answerQuestion !== null
-                            ? conversationAgentAvatars.get(answerQuestion.conversationId)
-                              ?? (answerQuestion.conversationId === session.id
-                                ? defaultAgent?.avatar : undefined)
-                              ?? null
-                            : null}
+                          : null}
                         agentAvatarSeed={item.kind === "agent_message"
                           && subagentConversationIds.has(item.senderConversationId)
                           ? item.senderConversationId
-                          : answerQuestion !== null
-                            ? answerQuestion.conversationId
-                            : null}
+                          : null}
                         teamManaged={teamManaged}
                         activeRunId={activeRunId}
                         latestActiveToolId={latestActiveToolId}
@@ -5779,7 +5765,6 @@ function TimelineItem({
   agentClient,
   item,
   questionAnswer,
-  questionSenderName,
   onLocateQuestion,
   agentAvatar,
   agentAvatarSeed,
@@ -5811,7 +5796,6 @@ function TimelineItem({
   agentClient: AgentClient;
   item: TimelineDisplayItem;
   questionAnswer: UserQuestion | null;
-  questionSenderName: string | null;
   onLocateQuestion: (question: UserQuestion) => Promise<void>;
   agentAvatar: AgentProfile["avatar"] | null;
   agentAvatarSeed: string | null;
@@ -5984,14 +5968,6 @@ function TimelineItem({
 
   return (
     <div className="chat-message-group" data-role={item.role}>
-      {questionAnswer === null ? null : (
-        <span className="inline-flex max-w-full items-center gap-[5px] px-[2px] text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-muted-foreground)]">
-          {agentAvatar !== null ? <AgentAvatar avatar={agentAvatar} size="compact" />
-            : agentAvatarSeed !== null ? <SubagentAvatar icon={null} seed={agentAvatarSeed} size="compact" />
-              : <Bot aria-hidden="true" size={15} className="shrink-0" />}
-          <span className="truncate">来自 {questionSenderName}</span>
-        </span>
-      )}
       {item.role === "user" ? messageAttachments : null}
       {hasMessageBody ? (
         <article className="chat-message" data-role={item.role} data-status={item.status}>

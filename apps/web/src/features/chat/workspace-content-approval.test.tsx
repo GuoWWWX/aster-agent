@@ -100,7 +100,7 @@ it("centers the loading state in the message area while keeping the composer ava
   expect(container.querySelector(".conversation-workspace__loading")).toBeNull();
 });
 
-it("shows an answered question with its agent and opens the original prompt", async () => {
+it("shows an answered question without an agent label and opens the original prompt", async () => {
   const client = new MockAgentClient();
   const target = session({ id: PARENT_ID, title: "测试代理" });
   const question = userQuestionSchema.parse({
@@ -127,7 +127,8 @@ it("shows an answered question with its agent and opens the original prompt", as
     locateTimelineItem={requestId === undefined ? null : { id: TOOL_ID, requestId }}
   /></TooltipProvider>;
   await act(async () => { root?.render(render()); await flushConversationWorkspace(); });
-  expect(container.textContent).toContain("来自 默认 Agent");
+  expect(container.textContent).not.toContain("来自 默认 Agent");
+  expect(container.querySelector('.chat-message[data-role="user"]')?.textContent).toContain("设置页面");
   const jump = container.querySelector<HTMLButtonElement>('button[title^="跳到提问："]');
   expect(jump?.textContent).toContain("检查哪些页面？");
   await act(async () => { jump?.click(); await Promise.resolve(); });
