@@ -210,7 +210,6 @@ export function ManagedBrowserWorkspace({
     const surface = surfaceRef.current;
     if (surface === null) return undefined;
     let animationFrame: number | null = null;
-    let liveResizing = false;
     const observedElements = new Set<Element>();
     const dispatcher = createManagedBrowserBoundsDispatcher((input) => (
       agentClient.setManagedBrowserBounds(input)
@@ -239,15 +238,6 @@ export function ManagedBrowserWorkspace({
         }
         if (!observedElements.has(parent)) { observer.observe(parent); observedElements.add(parent); }
       }
-      let occluded = false;
-      for (const overlay of document.querySelectorAll<HTMLElement>('[data-native-view-overlay], [role="menu"]')) {
-        if (!observedElements.has(overlay)) { observer.observe(overlay); observedElements.add(overlay); }
-        if (overlay.dataset.state === "closed") continue;
-        const overlayBounds = overlay.getBoundingClientRect();
-        if (overlayBounds.width > 0 && overlayBounds.height > 0
-          && overlayBounds.left < right && overlayBounds.right > left
-          && overlayBounds.top < bottom && overlayBounds.bottom > top) occluded = true;
-      }
       for (const element of observedElements) {
         if (!element.isConnected) { observer.unobserve(element); observedElements.delete(element); }
       }
@@ -258,7 +248,7 @@ export function ManagedBrowserWorkspace({
       dispatcher.push({
         height,
         sessionId: current.sessionId,
-        visible: activeRef.current && !occluded && width > 0 && height > 0,
+        visible: activeRef.current && width > 0 && height > 0,
         width,
         x,
         y,
@@ -269,23 +259,19 @@ export function ManagedBrowserWorkspace({
       animationFrame = window.requestAnimationFrame(() => {
         animationFrame = null;
         measureBounds();
-        if (liveResizing) scheduleBounds();
       });
     };
     const handleLiveResize = (event: Event): void => {
       const detail = (event as CustomEvent<LivePanelResizeDetail>).detail;
       if (detail.id !== "right-workspace") return;
-      liveResizing = detail.phase !== "end";
-      scheduleBounds();
+      measureBounds();
+      if (detail.phase === "end") scheduleBounds();
     };
     // ResizeObserver already runs after layout and before paint. Send its latest
     // geometry immediately so the native view can join the same visual frame.
     const observer = new ResizeObserver(measureBounds);
     observer.observe(surface);
     observedElements.add(surface);
-    const mutations = new MutationObserver(scheduleBounds);
-    mutations.observe(document.body, { childList: true, subtree: true, attributes: true,
-      attributeFilter: ["data-state", "style", "class", "hidden"] });
     window.addEventListener(LIVE_PANEL_RESIZE_EVENT, handleLiveResize);
     window.addEventListener("resize", scheduleBounds);
     window.addEventListener("scroll", scheduleBounds, true);
@@ -294,7 +280,6 @@ export function ManagedBrowserWorkspace({
     return () => {
       scheduleBoundsRef.current = null;
       observer.disconnect();
-      mutations.disconnect();
       window.removeEventListener(LIVE_PANEL_RESIZE_EVENT, handleLiveResize);
       window.removeEventListener("resize", scheduleBounds);
       window.removeEventListener("scroll", scheduleBounds, true);

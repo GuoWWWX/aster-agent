@@ -16,6 +16,7 @@ import {
   Pin,
 } from "lucide-react";
 import { createPortal } from "react-dom";
+import { useNativeOverlayContainer } from "../ui/native-overlay-provider.js";
 import {
   useEffect,
   useLayoutEffect,
@@ -103,6 +104,7 @@ export function AppTitlebar({
   canToggleFilePanel = true,
   canToggleProjectNavigator = true,
 }: AppTitlebarProps): ReactElement {
+  const nativeOverlayContainer = useNativeOverlayContainer();
   const tabsRef = useRef<HTMLDivElement>(null);
   const tabIds = conversationTabs.map((tab) => tab.id).join(",");
   useLayoutEffect(() => {
@@ -455,6 +457,7 @@ export function AppTitlebar({
           <div
             aria-hidden="true"
             className="app-titlebar__conversation-context-menu-backdrop"
+            data-native-view-overlay=""
             onMouseDown={() => setConversationTabContextMenu(null)}
           />
           <div
@@ -510,7 +513,7 @@ export function AppTitlebar({
             </button>
           </div>
         </>,
-        document.body,
+        nativeOverlayContainer ?? document.body,
       ) : null}
     </header>
   );

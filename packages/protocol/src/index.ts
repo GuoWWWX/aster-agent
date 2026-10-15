@@ -664,6 +664,15 @@ export { runtimeInfoSchema, runtimePlatformSchema } from "./runtime.js";
 export type { RuntimeInfo, RuntimePlatform } from "./runtime.js";
 export { windowStateSchema } from "./window.js";
 export type { WindowState } from "./window.js";
+export {
+  NATIVE_OVERLAY_FRAME_NAME,
+  NATIVE_OVERLAY_CHANNEL,
+  NATIVE_OVERLAY_BLUR_CHANNEL,
+  NATIVE_OVERLAY_RESIZE_POINTER_CHANNEL,
+  nativeOverlayRegionsInputSchema,
+  nativeOverlayResizePointerSchema,
+} from "./native-overlay.js";
+export type { NativeOverlayRegionsInput, NativeOverlayResizePointer } from "./native-overlay.js";
 
 export * from "./scheduled-task.js";
 export { localControlCommandSchema, type LocalControlCommand } from "./local-control.js";

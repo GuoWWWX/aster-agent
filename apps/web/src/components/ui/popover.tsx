@@ -2,6 +2,7 @@ import * as PopoverPrimitive from "@radix-ui/react-popover";
 import type { ComponentProps, ReactElement } from "react";
 
 import { cn } from "../../lib/cn.js";
+import { useNativeOverlayContainer } from "./native-overlay-provider.js";
 
 export const Popover = PopoverPrimitive.Root;
 export const PopoverAnchor = PopoverPrimitive.Anchor;
@@ -15,8 +16,9 @@ export function PopoverContent({
   sideOffset = 8,
   ...props
 }: ComponentProps<typeof PopoverPrimitive.Content>): ReactElement {
+  const container = useNativeOverlayContainer();
   return (
-    <PopoverPrimitive.Portal>
+    <PopoverPrimitive.Portal container={container}>
       <PopoverPrimitive.Content
         data-native-view-overlay=""
         className={cn(

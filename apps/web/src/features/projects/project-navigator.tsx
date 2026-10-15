@@ -43,6 +43,7 @@ import {
   type ReactElement,
 } from "react";
 import { createPortal } from "react-dom";
+import { useNativeOverlayContainer } from "../../components/ui/native-overlay-provider.js";
 
 import type {
   AgentProfile,
@@ -367,6 +368,7 @@ export function ProjectNavigator({
   onSetSessionPinned,
   onSetTeamInstanceArchived,
 }: ProjectNavigatorProps): ReactElement {
+  const nativeOverlayContainer = useNativeOverlayContainer();
   const activeProjectId = tree.activeProject?.id ?? null;
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [initialExpansionState] = useState(loadNavigatorExpansionState);
@@ -1667,7 +1669,7 @@ export function ProjectNavigator({
             void onSetTeamInstanceArchived(instance.id, archived);
           }}
         />,
-        document.body,
+        nativeOverlayContainer ?? document.body,
       ) : null}
       {dialog !== null ? createPortal(
         <NavigatorManagementDialog
@@ -1684,7 +1686,7 @@ export function ProjectNavigator({
           teams={teams}
           projects={tree.projects}
         />,
-        document.body,
+        nativeOverlayContainer ?? document.body,
       ) : null}
     </WorkbenchPanel>
   );
@@ -2186,6 +2188,7 @@ function NavigatorContextMenuView({
       <div
         aria-hidden="true"
         className="project-navigator__context-menu-backdrop"
+        data-native-view-overlay=""
         onMouseDown={onClose}
       />
       <div
@@ -2408,7 +2411,7 @@ function NavigatorManagementDialog({
       : null;
 
   return (
-    <div className="project-navigator__dialog-backdrop">
+    <div className="project-navigator__dialog-backdrop" data-native-view-overlay="">
       <form
         aria-labelledby="navigator-management-dialog-title"
         aria-modal="true"

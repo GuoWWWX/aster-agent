@@ -27,6 +27,7 @@ import {
   type ReactElement,
 } from "react";
 import { createPortal } from "react-dom";
+import { useNativeOverlayContainer } from "../../components/ui/native-overlay-provider.js";
 
 import type { ConfigurationWorkspaceEntry } from "@agent/protocol";
 
@@ -108,6 +109,7 @@ export function ConfigurationWorkspaceTreePanel({
   onDeleteEntry,
   onOpenFile,
 }: ConfigurationWorkspaceTreePanelProps): ReactElement {
+  const nativeOverlayContainer = useNativeOverlayContainer();
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [createKind, setCreateKind] = useState<"directory" | "file" | null>(null);
   const [draftName, setDraftName] = useState("");
@@ -531,6 +533,7 @@ export function ConfigurationWorkspaceTreePanel({
       {createKind !== null ? createPortal(
         <div
           className="project-tree-panel__dialog-backdrop"
+          data-native-view-overlay=""
           onMouseDown={(event) => {
             if (event.target === event.currentTarget && !isCreating) setCreateKind(null);
           }}
@@ -570,7 +573,7 @@ export function ConfigurationWorkspaceTreePanel({
             </div>
           </form>
         </div>,
-        document.body,
+        nativeOverlayContainer ?? document.body,
       ) : null}
     </section>
   );

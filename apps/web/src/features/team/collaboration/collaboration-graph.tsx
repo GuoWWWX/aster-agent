@@ -13,6 +13,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import { useNativeOverlayContainer } from "../../../components/ui/native-overlay-provider.js";
 import {
   MAX_TEAM_COLLABORATION_OUTPUT_LENGTH,
   type ConversationRunEvent,
@@ -85,6 +86,7 @@ export function CollaborationGraph({
   variant: CollaborationGraphVariant;
 }): ReactElement {
   const markerPrefix = useId().replaceAll(":", "");
+  const nativeOverlayContainer = useNativeOverlayContainer();
   const isMini = variant === "mini";
   const [contextMenu, setContextMenu] = useState<NodeContextMenu | null>(null);
   const [isPanning, setIsPanning] = useState(false);
@@ -444,6 +446,7 @@ export function CollaborationGraph({
           <div
             aria-hidden="true"
             className="fixed inset-0 z-40"
+            data-native-view-overlay=""
             onContextMenu={(event) => {
               event.preventDefault();
               setContextMenu(null);
@@ -479,7 +482,7 @@ export function CollaborationGraph({
             )}
           </div>
         </>,
-        document.body,
+        nativeOverlayContainer ?? document.body,
       )}
     </>
   );

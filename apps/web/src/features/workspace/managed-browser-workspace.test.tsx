@@ -148,6 +148,14 @@ describe("ManagedBrowserWorkspace", () => {
       emitLivePanelResize({ id: "right-workspace", phase: "start", size: 800 });
       bounds = new DOMRect(740, 110, 660, 550);
       emitLivePanelResize({ id: "right-workspace", phase: "move", size: 500 });
+      expect(setBounds).toHaveBeenLastCalledWith({
+        height: 550,
+        sessionId: SESSION.sessionId,
+        visible: true,
+        width: 660,
+        x: 740,
+        y: 110,
+      });
     });
 
     await vi.waitFor(() => expect(setBounds).toHaveBeenCalledWith({
@@ -159,13 +167,14 @@ describe("ManagedBrowserWorkspace", () => {
       y: 110,
     }));
     bounds = new DOMRect(750, 120, 650, 530);
+    act(() => { emitLivePanelResize({ id: "right-workspace", phase: "move", size: 490 }); });
     await vi.waitFor(() => expect(setBounds).toHaveBeenLastCalledWith({
       sessionId: SESSION.sessionId, visible: true, x: 750, y: 120, width: 650, height: 530,
     }));
     act(() => { emitLivePanelResize({ id: "right-workspace", phase: "end", size: 500 }); });
   });
 
-  it("hides the native surface while overlapping renderer overlays are open and restores it after the last closes", async () => {
+  it("keeps the native surface visible while renderer overlays open and close", async () => {
     const client = new MockAgentClient();
     const setBounds = vi.spyOn(client, "setManagedBrowserBounds").mockResolvedValue();
     const openBrowser = vi.spyOn(client, "openManagedBrowser");
@@ -187,13 +196,15 @@ describe("ManagedBrowserWorkspace", () => {
     expect(setBounds).toHaveBeenLastCalledWith(expect.objectContaining({ visible: true }));
     outside.remove(); closed.remove();
     const first = overlay();
-    await vi.waitFor(() => expect(setBounds).toHaveBeenLastCalledWith(expect.objectContaining({ visible: false })));
+    await new Promise(resolve => window.requestAnimationFrame(resolve));
+    expect(setBounds).toHaveBeenLastCalledWith(expect.objectContaining({ visible: true }));
     const second = overlay();
     first.remove();
     await new Promise(resolve => window.requestAnimationFrame(resolve));
-    expect(setBounds).toHaveBeenLastCalledWith(expect.objectContaining({ visible: false }));
+    expect(setBounds).toHaveBeenLastCalledWith(expect.objectContaining({ visible: true }));
     second.remove();
     await vi.waitFor(() => expect(setBounds).toHaveBeenLastCalledWith(expect.objectContaining({ visible: true })));
+    expect(setBounds).not.toHaveBeenCalledWith(expect.objectContaining({ visible: false }));
     expect(openBrowser).not.toHaveBeenCalled();
     expect(closeBrowser).not.toHaveBeenCalled();
     expect(navigateBrowser).not.toHaveBeenCalled();

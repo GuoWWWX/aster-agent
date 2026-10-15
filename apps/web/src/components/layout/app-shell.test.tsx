@@ -38,6 +38,28 @@ afterEach(() => {
 });
 
 describe("AppShell", () => {
+  it("previews right sidebar width during dragging and saves it once on release", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    useWorkbenchUiStore.setState({ filePanelOpenByConversationId: { test: true } });
+    act(() => root?.render(<TooltipProvider><AppShell activeConversationId="test" agentClient={new MockAgentClient()}
+      filePanel={<div />} mainContent={<div />} projectNavigator={<div />} /></TooltipProvider>));
+    const divider = container.querySelector<HTMLElement>(".workbench-resizable-divider--right")!;
+    Object.assign(divider, { setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn() });
+    const changes = vi.fn();
+    const unsubscribe = useWorkbenchUiStore.subscribe(changes);
+    act(() => { divider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 800 })); });
+    for (const clientX of [760, 720, 680]) {
+      act(() => { window.dispatchEvent(new MouseEvent("pointermove", { clientX })); });
+      expect((container.querySelector(".workbench-sidebar--right") as HTMLElement).style.getPropertyValue("--app-live-file-panel-width")).toBe(`${520 + 800 - clientX}px`);
+    }
+    expect(changes).not.toHaveBeenCalled();
+    act(() => { window.dispatchEvent(new MouseEvent("pointerup", { clientX: 680 })); });
+    expect(useWorkbenchUiStore.getState().filePanelWidthsByConversationId.test).toBe(640);
+    expect(changes).toHaveBeenCalledOnce();
+    unsubscribe();
+  });
   it("applies restored font sizes immediately and removes them when the shell unmounts", () => {
     const container = document.createElement("div");
     document.body.append(container);
@@ -360,6 +382,8 @@ describe("AppShell", () => {
     ));
     const divider = container.querySelector<HTMLElement>(".workbench-resizable-divider--left")!;
     divider.setPointerCapture = vi.fn();
+    divider.hasPointerCapture = vi.fn(() => true);
+    divider.releasePointerCapture = vi.fn();
     const pointer = (target: EventTarget, type: string, clientX: number): void => {
       act(() => { target.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, clientX })); });
     };

@@ -25,6 +25,7 @@ import {
   type ReactElement,
 } from "react";
 import { createPortal } from "react-dom";
+import { useNativeOverlayContainer } from "../../components/ui/native-overlay-provider.js";
 import type { ProjectEntry } from "@agent/protocol";
 
 import { IconButton } from "../../components/ui/icon-button.js";
@@ -113,6 +114,7 @@ export function ProjectTreePanel({
   onOpenFile,
   tree,
 }: ProjectTreePanelProps): ReactElement {
+  const nativeOverlayContainer = useNativeOverlayContainer();
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const headerRef = useRef<HTMLElement | null>(null);
   const [createKind, setCreateKind] = useState<"directory" | "file" | null>(null);
@@ -502,6 +504,7 @@ export function ProjectTreePanel({
       {createKind !== null ? createPortal(
         <div
           className="project-tree-panel__dialog-backdrop"
+          data-native-view-overlay=""
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) closeCreateDialog();
           }}
@@ -541,7 +544,7 @@ export function ProjectTreePanel({
             </div>
           </form>
         </div>,
-        document.body,
+        nativeOverlayContainer ?? document.body,
       ) : null}
     </section>
   );

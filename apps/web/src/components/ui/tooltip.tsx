@@ -2,6 +2,7 @@ import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 
 import { cn } from "../../lib/cn.js";
+import { useNativeOverlayContainer } from "./native-overlay-provider.js";
 
 export function TooltipProvider({
   delayDuration = 350,
@@ -34,13 +35,15 @@ export function TooltipAnchor({
   open,
   side = "top",
 }: TooltipAnchorProps): ReactElement {
+  const container = useNativeOverlayContainer();
   const trigger = disabled ? <span className="inline-flex">{children}</span> : children;
   return (
     <TooltipPrimitive.Root {...(open === undefined ? {} : { open })}>
       <TooltipPrimitive.Trigger asChild>{trigger}</TooltipPrimitive.Trigger>
-      <TooltipPrimitive.Portal>
+      <TooltipPrimitive.Portal container={container}>
         <TooltipPrimitive.Content
           data-native-view-overlay=""
+          data-native-overlay-interactive="false"
           className={cn(
             "z-[120] max-w-64 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-tooltip-background)] px-2 py-1 text-[length:var(--app-font-size-caption)] font-medium leading-4 text-[var(--app-foreground)] shadow-md",
             contentClassName,

@@ -69,6 +69,12 @@ export function AppShell({
   onMoveConversationTab,
 }: AppShellProps): ReactElement {
   const [isFilePanelResizing, setFilePanelResizing] = useState(false);
+  const filePanelRef = useRef<HTMLDivElement>(null);
+  const filePanelDraggingRef = useRef(false);
+  const liveFilePanelWidthRef = useRef(0);
+  useEffect(() => {
+    if (!isFilePanelResizing) filePanelRef.current?.style.removeProperty("--app-live-file-panel-width");
+  }, [isFilePanelResizing]);
   const [isProjectNavigatorResizing, setProjectNavigatorResizing] = useState(false);
   const isFilePanelOpen = useWorkbenchUiStore(
     (state) => state.isFilePanelOpen,
@@ -201,7 +207,16 @@ export function AppShell({
   const activeFilePanelWidth = isConversationWorkspace && activeConversationId !== null
     ? conversationFilePanelWidth ?? filePanelWidth
     : filePanelWidth;
-  const filePanelStyle = { width: `${activeFilePanelWidth}px` } as CSSProperties;
+  const filePanelStyle = {
+    width: isFilePanelResizing ? `var(--app-live-file-panel-width, ${activeFilePanelWidth}px)` : `${activeFilePanelWidth}px`,
+  } as CSSProperties;
+  const saveFilePanelWidth = (width: number): void => {
+    if (isConversationWorkspace && activeConversationId !== null) {
+      setFilePanelWidthForConversation(activeConversationId, width);
+    } else {
+      setFilePanelWidth(width);
+    }
+  };
   const projectNavigatorStyle = {
     width: `${projectNavigatorWidth}px`,
   } as CSSProperties;
@@ -300,17 +315,24 @@ export function AppShell({
           min={FILE_PANEL_WIDTH_RANGE.min}
           size={activeFilePanelWidth}
           onCollapsedChange={(isCollapsed) => setActiveFilePanelOpen(!isCollapsed)}
-          onDraggingChange={setFilePanelResizing}
+          onDraggingChange={(dragging) => {
+            filePanelDraggingRef.current = dragging;
+            if (dragging) liveFilePanelWidthRef.current = activeFilePanelWidth;
+            else saveFilePanelWidth(liveFilePanelWidthRef.current);
+            setFilePanelResizing(dragging);
+          }}
           onResize={(width) => {
-            if (isConversationWorkspace && activeConversationId !== null) {
-              setFilePanelWidthForConversation(activeConversationId, width);
+            if (filePanelDraggingRef.current) {
+              liveFilePanelWidthRef.current = width;
+              filePanelRef.current?.style.setProperty("--app-live-file-panel-width", `${width}px`);
               return;
             }
-            setFilePanelWidth(width);
+            saveFilePanelWidth(width);
           }}
         /> : null}
         <div
           className="workbench-sidebar workbench-sidebar--right"
+          ref={filePanelRef}
           hidden={!canShowFileWorkspace || !activeFilePanelOpen}
           style={filePanelStyle}
         >

@@ -5,6 +5,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
 } from "react";
+import { flushSync } from "react-dom";
 
 import { cn } from "../../lib/cn.js";
 import { emitLivePanelResize } from "./live-panel-resize.js";
@@ -113,6 +114,7 @@ export function ResizableDivider({
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
       window.removeEventListener("pointercancel", stop);
+      if (divider.hasPointerCapture(event.pointerId)) divider.releasePointerCapture(event.pointerId);
       cleanupRef.current = null;
       onDraggingChange?.(false);
       if (liveResizeId !== undefined) {
@@ -137,25 +139,29 @@ export function ResizableDivider({
       ) : null;
       if (transition === "collapse") {
         latestWidth = min;
-        onResize(min);
+        collapsedDuringDrag = true;
+        flushSync(() => {
+          onResize(min);
+          onCollapsedChange(true);
+        });
         if (liveResizeId !== undefined) {
           emitLivePanelResize({ id: liveResizeId, phase: "move", size: latestWidth });
         }
-        collapsedDuringDrag = true;
-        onCollapsedChange(true);
         return;
       }
 
       if (transition === "expand") {
         latestWidth = min;
-        onResize(min);
-        if (liveResizeId !== undefined) {
-          emitLivePanelResize({ id: liveResizeId, phase: "move", size: latestWidth });
-        }
         collapsedDuringDrag = false;
         origin = moveEvent.clientX;
         baseWidth = min;
-        onCollapsedChange(false);
+        flushSync(() => {
+          onResize(min);
+          onCollapsedChange(false);
+        });
+        if (liveResizeId !== undefined) {
+          emitLivePanelResize({ id: liveResizeId, phase: "move", size: latestWidth });
+        }
         return;
       }
 
@@ -164,7 +170,7 @@ export function ResizableDivider({
       }
 
       latestWidth = clampResizablePanelWidth(nextWidth, min, max);
-      onResize(latestWidth);
+      flushSync(() => onResize(latestWidth));
       if (liveResizeId !== undefined) {
         emitLivePanelResize({ id: liveResizeId, phase: "move", size: latestWidth });
       }

@@ -62,6 +62,7 @@ import { createMainWindow } from "../windows/main-window.js";
 import { publishConversationAttentionEvent } from "../windows/conversation-attention.js";
 import { attachNativeConversationAttention } from "../windows/native-conversation-attention.js";
 import { ManagedBrowserController } from "../windows/managed-browser-controller.js";
+import { NativeOverlayController } from "../windows/native-overlay-controller.js";
 import { parseBackendSendCommand } from "./backend-command.js";
 import { dispatchBackendSendCommand as submitBackendSendCommand } from "./backend-command-dispatch.js";
 import { ConversationControl } from "../control/conversation-control.js";
@@ -478,7 +479,8 @@ async function openMainWindow(): Promise<void> {
     resumePendingMessages: process.env.AGENT_SKIP_PENDING_RUN_RESUMPTION !== "1",
     emitConversationRunEvent: sendConversationRunEvent,
   });
-  const rendererTarget = applyRendererSecurityPolicy(window);
+  const nativeOverlay = new NativeOverlayController(window);
+  const rendererTarget = applyRendererSecurityPolicy(window, nativeOverlay);
 
   window.webContents.on("console-message", (details) => {
     if (details.level === "error") reportUnhandledError(new Error(details.message), "electron.renderer_console");
@@ -512,6 +514,7 @@ async function openMainWindow(): Promise<void> {
   });
 
   window.once("closed", () => {
+    nativeOverlay.dispose();
     if (mainWindow === window) {
       disposeIpcHandlers?.();
       disposeIpcHandlers = undefined;

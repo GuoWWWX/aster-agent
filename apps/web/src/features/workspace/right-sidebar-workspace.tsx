@@ -27,6 +27,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import { useNativeOverlayContainer } from "../../components/ui/native-overlay-provider.js";
 
 import type {
   ConfigurationWorkspaceFile,
@@ -626,6 +627,7 @@ export function RightSidebarWorkspace({
   tree: ProjectTreeController;
 }): ReactElement {
   const gitReviewCache = getGitReviewCache(agentClient);
+  const nativeOverlayContainer = useNativeOverlayContainer();
   const isDark = useWorkbenchUiStore((state) => state.themeMode === "dark");
   const agentProfiles = useAgentDirectoryStore((state) => state.agents);
   const teams = useAgentDirectoryStore((state) => state.teams);
@@ -2823,6 +2825,7 @@ export function RightSidebarWorkspace({
           <div
             aria-hidden="true"
             className="right-sidebar-workspace__context-menu-backdrop"
+            data-native-view-overlay=""
             onMouseDown={() => setTabContextMenu(null)}
           />
           <div
@@ -2849,7 +2852,7 @@ export function RightSidebarWorkspace({
             </button>
           </div>
         </>,
-        document.body,
+        nativeOverlayContainer ?? document.body,
       ) : null}
     </WorkbenchPanel>
   );

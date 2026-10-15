@@ -80,6 +80,7 @@ import {
   type SetStateAction,
 } from "react";
 import { createPortal } from "react-dom";
+import { useNativeOverlayContainer } from "../../components/ui/native-overlay-provider.js";
 
 import type {
   AgentAvatarIcon,
@@ -8628,6 +8629,7 @@ function ToolRawCallDialog({
   item: ConversationToolItem;
   onClose: () => void;
 }): ReactElement {
+  const nativeOverlayContainer = useNativeOverlayContainer();
   useEffect(() => {
     const closeOnEscape = (event: globalThis.KeyboardEvent): void => {
       if (event.key === "Escape") onClose();
@@ -8639,6 +8641,7 @@ function ToolRawCallDialog({
   return createPortal(
     <div
       className="tool-raw-dialog-backdrop"
+      data-native-view-overlay=""
       role="presentation"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
@@ -8671,7 +8674,7 @@ function ToolRawCallDialog({
         </div>
       </section>
     </div>,
-    document.body,
+    nativeOverlayContainer ?? document.body,
   );
 }
 

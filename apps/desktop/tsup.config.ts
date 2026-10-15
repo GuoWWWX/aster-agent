@@ -4,7 +4,8 @@ export default defineConfig({
   entry: {
     "main/index": "src/main/bootstrap/index.ts",
     "preload/index": "src/preload/index.ts",
-    "preload/browser-passwords": "src/preload/browser-passwords.ts"
+    "preload/browser-passwords": "src/preload/browser-passwords.ts",
+    "preload/native-overlay": "src/preload/native-overlay.ts"
   },
   clean: true,
   dts: false,

@@ -1,6 +1,7 @@
-import { app, shell, type BrowserWindow, type WebContents } from "electron";
+import { app, shell, type BrowserWindow, type WebContents, type WindowOpenHandlerResponse } from "electron";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { NATIVE_OVERLAY_FRAME_NAME } from "@agent/protocol";
 
 type RendererTarget =
   | {
@@ -81,15 +82,28 @@ export function externalHttpUrl(value: string): string | null {
   }
 }
 
-export function applyRendererSecurityPolicy(window: BrowserWindow): RendererTarget {
+export function getNativeOverlayUrl(target: RendererTarget): string {
+  return target.kind === "url"
+    ? new URL("native-overlay.html", target.value).href
+    : pathToFileURL(path.join(path.dirname(target.value), "native-overlay.html")).href;
+}
+
+export function applyRendererSecurityPolicy(
+  window: BrowserWindow,
+  nativeOverlay?: { allowWindow(url: string): WindowOpenHandlerResponse },
+): RendererTarget {
   const target = getRendererTarget();
+  const nativeOverlayUrl = getNativeOverlayUrl(target);
   const denyUnexpectedNavigation = (event: Electron.Event, navigationUrl: string): void => {
     if (!isAllowedNavigation(target, navigationUrl)) {
       event.preventDefault();
     }
   };
 
-  window.webContents.setWindowOpenHandler(({ url }) => {
+  window.webContents.setWindowOpenHandler(({ url, frameName }) => {
+    if (nativeOverlay !== undefined && frameName === NATIVE_OVERLAY_FRAME_NAME && url === nativeOverlayUrl) {
+      return nativeOverlay.allowWindow(url);
+    }
     const external = externalHttpUrl(url);
     if (external !== null) {
       void shell.openExternal(external).catch(() => {

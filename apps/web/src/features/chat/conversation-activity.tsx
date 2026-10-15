@@ -1,6 +1,7 @@
 import { Check, ChevronDown, LoaderCircle, MessageSquareText, Search, ShieldAlert, ShieldCheck, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useNativeOverlayContainer } from "../../components/ui/native-overlay-provider.js";
 import {
   AgentClientError,
   parseSerializedAgentError,
@@ -118,6 +119,7 @@ export function ConversationActivity({ agentClient, sessions, projects, onSelect
   onSelect: (id: string, timelineItemId?: string, ownerConversationId?: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const nativeOverlayContainer = useNativeOverlayContainer();
   const [query, setQuery] = useState("");
   const [tools, setTools] = useState<LiveTools>({});
   const [loadError, setLoadError] = useState(false);
@@ -386,7 +388,7 @@ export function ConversationActivity({ agentClient, sessions, projects, onSelect
       />
     )}
     {approvalNotice !== null ? createPortal(
-      <div role="alert" data-app-drag-region="false"
+      <div role="alert" data-app-drag-region="false" data-native-view-overlay="" data-native-overlay-interactive="false"
         className="fixed right-3 top-12 z-[110] flex w-[min(360px,calc(100vw-24px))] items-start gap-2 rounded-[var(--app-radius-large)] border border-[var(--app-border)] bg-[var(--app-panel)] p-2 shadow-xl">
         <button type="button" className="flex min-w-0 flex-1 items-start gap-2 rounded-[var(--app-radius)] p-1 text-left hover:bg-[var(--app-hover)]"
           onClick={() => { const notice = approvalNotice; setApprovalNotice(null); void openApproval(notice.conversationId, notice.toolId); }}>
@@ -408,7 +410,7 @@ export function ConversationActivity({ agentClient, sessions, projects, onSelect
         <button type="button" aria-label="关闭审批提示" className="rounded-[var(--app-radius-small)] p-1 text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)] hover:text-[var(--app-foreground)]"
           onClick={() => setApprovalNotice(null)}><X size={14} /></button>
       </div>,
-      document.body,
+      nativeOverlayContainer ?? document.body,
     ) : null}
     </span>
   </>;
