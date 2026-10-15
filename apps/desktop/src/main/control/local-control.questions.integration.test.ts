@@ -66,5 +66,5 @@ it("answers a model question through HTTP, wakes the same conversation and dedup
     expect(events.filter((event) => event.type === "run.finished")).toHaveLength(2);
     expect(events.some((event) => event.type === "user_question.updated" && event.reason === "answered")).toBe(true);
     expect(errors).toHaveLength(2);
-  } finally { await server.close(); tools.dispose(); database.close(); await rm(directory, { recursive: true, force: true }); }
+  } finally { await server.close(); await tools.dispose(); database.close(); await rm(directory, { recursive: true, force: true }); }
 }, 15000);

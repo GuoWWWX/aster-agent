@@ -620,7 +620,6 @@ const DEFAULT_APPLICATION_PERMISSION_POLICIES: ApplicationPermissionPolicies = {
 
 const PROJECT_READ_TOOL_NAMES = new Set([
   "present_html",
-  "list_directory",
   "read_file",
   "view_image",
   "view_attachments",
@@ -988,6 +987,8 @@ function agentResultReceiptContent(input: {
 
 export class AgentRuntime {
   private readonly runCoordinator = new RunCoordinator();
+  private stoppingRuns = false;
+  private stopRunsPromise: Promise<void> | null = null;
   private readonly pendingAgentWakes = new Map<string, { timer: ReturnType<typeof setTimeout>; depth: number }>();
   private readonly pendingQueuePaused = new Map<string, boolean>();
   private readonly latestRequestUsage = new Map<string, ModelProviderTokenUsage | null>();
@@ -1552,6 +1553,7 @@ export class AgentRuntime {
     emit: RunEventEmitter,
     options?: SendMessageOptions,
   ): ConversationMessageSubmission {
+    if (this.stoppingRuns) throw new Error("Agent execution is stopping.");
     const input = sendConversationMessageInputSchema.parse(rawInput);
     this.eventProjector?.ensureConversationHistoryProjected(input.conversationId);
     const conversation = this.database.getConversation(input.conversationId);
@@ -1624,6 +1626,7 @@ export class AgentRuntime {
     rawInput: ReplaceLatestConversationMessageInput,
     emit: RunEventEmitter,
   ): Promise<RunAccepted> {
+    if (this.stoppingRuns) throw new Error("Agent execution is stopping.");
     const input = replaceLatestConversationMessageInputSchema.parse(rawInput);
     this.eventProjector?.ensureConversationHistoryProjected(input.conversationId);
     const conversation = this.database.getConversation(input.conversationId);
@@ -1654,6 +1657,7 @@ export class AgentRuntime {
       this.runCoordinator.markReplacing(sourceRunId);
       this.cancelSingleRun(sourceRunId);
       await activeRun.finished;
+      if (this.stoppingRuns) throw new Error("Agent execution is stopping.");
       source = this.database.getLatestUserMessageReplacementSource(
         input.conversationId,
         input.messageId,
@@ -1896,6 +1900,7 @@ export class AgentRuntime {
   }
 
   public resumePendingMessages(emit: RunEventEmitter): void {
+    if (this.stoppingRuns) return;
     this.userQuestions.resumeUndelivered(emit, (error) => reportMainError(toMainAgentError(error, { operation: "user_question.resume" }), error));
     for (const recovery of this.database.listAgentReplyRecoveries()) {
       this.eventProjector?.ensureConversationHistoryProjected(recovery.trigger.conversationId);
@@ -2060,6 +2065,7 @@ export class AgentRuntime {
     titleOverride?: string,
     questionAnswerId?: string,
   ): RunAccepted {
+    if (this.stoppingRuns) throw new Error("Agent execution is stopping.");
     const { configuration, input } = prepared;
     const executionSnapshot = createRunExecutionSnapshot({
       configuration,
@@ -2217,6 +2223,7 @@ export class AgentRuntime {
   }
 
   private startNextPendingRun(conversationId: string, emit: RunEventEmitter, explicitlyRequested = false): void {
+    if (this.stoppingRuns) return;
     if (this.database.isConversationExecutionPaused(conversationId)) return;
     if (!explicitlyRequested && this.isPendingQueuePaused(conversationId)) return;
     this.eventProjector?.ensureConversationHistoryProjected(conversationId);
@@ -2384,6 +2391,33 @@ export class AgentRuntime {
       return;
     }
     this.cancelSingleRun(runId);
+  }
+
+  /** Drain current work before the window or persistence owners are released. */
+  public stopAllRuns(): Promise<void> {
+    if (this.stopRunsPromise !== null) return this.stopRunsPromise;
+    this.stoppingRuns = true;
+    for (const wake of this.pendingAgentWakes.values()) clearTimeout(wake.timer);
+    this.pendingAgentWakes.clear();
+    const errors: unknown[] = [];
+    try {
+      for (const conversation of this.database.listAgentConversations()) {
+        if (conversation.activeRunId === null) continue;
+        try { this.setExecutionPaused(conversation.id, true); } catch (error) { errors.push(error); }
+        try { this.cancelSingleRun(conversation.activeRunId); } catch (error) { errors.push(error); }
+      }
+    } catch (error) {
+      errors.push(error);
+    }
+    this.stopRunsPromise = this.runCoordinator.cancelAll()
+      .then(() => { if (errors.length > 0) throw new AggregateError(errors, "Run shutdown persistence failed."); })
+      .finally(() => { this.stopRunsPromise = null; });
+    return this.stopRunsPromise;
+  }
+
+  public resumeAfterWindowOpen(): void {
+    if (this.stopRunsPromise !== null) throw new Error("Agent execution is still stopping.");
+    this.stoppingRuns = false;
   }
 
   public cancelConversation(conversationId: string): void {
@@ -2597,6 +2631,7 @@ export class AgentRuntime {
   }
 
   public approveToolChange(rawInput: unknown): void {
+    if (this.stoppingRuns) throw new ToolApprovalExpiredError();
     const input = approveToolChangeInputSchema.parse(rawInput);
     const pending = this.pendingChangeApprovals.get(input.toolId);
     if (pending === undefined || pending.runId !== input.runId) {
@@ -3339,6 +3374,7 @@ export class AgentRuntime {
     modelSelection: ConversationModelSelection | undefined;
     task: string;
   }): SubagentTask {
+    if (this.stoppingRuns) throw new Error("Agent execution is stopping.");
     const parent = this.database.getConversation(input.parentConversationId);
     if (parent.isArchived) throw new Error("An archived conversation cannot start a Subagent.");
     if (
@@ -3781,6 +3817,7 @@ export class AgentRuntime {
     emit: RunEventEmitter,
     flush = false,
   ): void {
+    if (this.stoppingRuns) return;
     if (!this.database.isOpen() || !this.database.hasConversation(conversationId) || this.database.isConversationExecutionPaused(conversationId)) return;
     this.eventProjector?.ensureConversationHistoryProjected(conversationId);
     const unreadMessages = this.database.listUnreadAgentMessages(conversationId);

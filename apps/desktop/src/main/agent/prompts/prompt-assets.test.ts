@@ -59,6 +59,18 @@ describe("prompt assets", () => {
     expect(BROWSER_USE_SKILL).not.toMatch(/\r/u);
   });
 
+  it("limits workspace discovery and uses the built-in static HTML preview", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain("Do not routinely inspect the workspace for ordinary questions");
+    expect(BASE_SYSTEM_PROMPT).toContain("The authorized workspace root is already supplied");
+    expect(BASE_SYSTEM_PROMPT).toContain("Get-ChildItem -LiteralPath src -Name");
+    expect(BASE_SYSTEM_PROMPT).toContain("`ls -A`");
+    expect(BASE_SYSTEM_PROMPT).toContain("`rg --files -g");
+    expect(BASE_SYSTEM_PROMPT).toContain("`rg -n");
+    expect(BASE_SYSTEM_PROMPT).toContain("Do not start Python, http.server, or another ad hoc server just to display static HTML");
+    expect(BASE_SYSTEM_PROMPT).toContain("application's own isolated preview server");
+    expect(BASE_SYSTEM_PROMPT).not.toContain("list_directory");
+  });
+
   it("loads the strict context compaction prompt from bundled Markdown", () => {
     expect(CONTEXT_COMPACTION_PROMPT).toContain("Return strict JSON");
     expect(CONTEXT_COMPACTION_PROMPT).toContain("# Output Contract");

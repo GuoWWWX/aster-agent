@@ -50,6 +50,62 @@ async function createLargeFixture(fileCount = 400) {
 }
 
 describe("ProjectToolRegistry", () => {
+  it("retires list_directory from the manifest and rejects stale model calls", async () => {
+    const { project, projects, tools } = await createFixture();
+    expect(tools.getDefinitions().map((tool) => tool.name)).not.toContain("list_directory");
+    expect(() => tools.getExecutionPolicy("list_directory", "{}", false)).toThrow("Unknown project tool");
+    const result = await tools.execute("list_directory", "{}", project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("Unknown tool: list_directory");
+    await expect(projects.listEntries({ directoryPath: "src", projectId: project.id }))
+      .resolves.toMatchObject({ entries: [expect.objectContaining({ name: "index.ts" })] });
+  });
+
+  it("lists a requested directory through an approved shell command", async () => {
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const proposal = await tools.execute("run_command", JSON.stringify({
+      command: "Get-ChildItem -LiteralPath src -Name",
+    }), project.id, signal);
+    if (proposal.kind !== "command") throw new Error(proposal.content);
+    const result = await tools.executePreparedCommand(proposal.command, project.id, signal);
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain("index.ts");
+    await tools.dispose();
+  }, 20_000);
+
+  it("waits for owned batch and service process trees during disposal", async () => {
+    if (process.platform !== "win32") return;
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const owner = { conversationId: crypto.randomUUID(), conversationTitle: "退出清理", runId: crypto.randomUUID() };
+    const executions = ["batch", "service"].map(async (mode) => {
+      const proposal = await tools.execute("run_command", JSON.stringify({
+        command: `$cleanupChild = Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 60' -PassThru; Set-Content -LiteralPath ${mode}.pid -Encoding ascii -Value $cleanupChild.Id; Start-Sleep -Seconds 60`,
+        mode, parallel: true, serviceName: mode === "service" ? "cleanup fixture" : undefined,
+        timeoutMs: 90_000, yieldTimeMs: 0,
+      }), project.id, signal, owner);
+      if (proposal.kind !== "command") throw new Error(proposal.content);
+      return tools.executePreparedCommand(proposal.command, project.id, signal, owner);
+    });
+    try {
+      const pids: number[] = [];
+      await vi.waitFor(async () => {
+        const values = await Promise.all(["batch", "service"].map(async (mode) =>
+          Number((await readFile(path.join(project.rootPath, `${mode}.pid`), "utf8")).trim())));
+        expect(values.every((pid) => pid > 0)).toBe(true);
+        pids.splice(0, pids.length, ...values);
+      }, { timeout: 8_000 });
+      await tools.dispose();
+      for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow();
+      expect(tools.listConversationCommands([owner.conversationId])).toEqual([]);
+      await expect(Promise.all(executions)).resolves.toHaveLength(2);
+    } finally {
+      await tools.dispose();
+      await Promise.all(executions);
+    }
+  }, 20_000);
+
   it("reads completed output with Unicode, stderr, failure status and a bounded recent tail", async () => {
     const { project, tools } = await createFixture(); const conversationId = crypto.randomUUID();
     const owner = { conversationId, conversationTitle: "输出检查", runId: crypto.randomUUID() };
@@ -65,7 +121,7 @@ describe("ProjectToolRegistry", () => {
       const tail = tools.readConversationCommand(commandId, [conversationId], 8);
       expect(tail.stdout.length).toBeLessThanOrEqual(8); expect(tail.stdout).toBe(full.stdout.slice(-8));
       expect(tail.truncated).toBe(true);
-    } finally { tools.dispose(); }
+    } finally { await tools.dispose(); }
   });
   it("exposes owned programs to the UI, rejects another conversation's stop and terminates a child process tree", async () => {
     if (process.platform !== "win32") return;
@@ -92,7 +148,7 @@ describe("ProjectToolRegistry", () => {
       await vi.waitFor(() => { expect(() => process.kill(childPid, 0)).toThrow(); }, { timeout: 5000 });
       const completed = tools.listConversationCommands([conversationId]).find((item) => item.commandId === commandId);
       expect(completed?.status).toBe("cancelled"); expect(typeof completed?.completedAt).toBe("string");
-    } finally { try { if (commandId !== undefined) await tools.stopConversationCommand(commandId, [conversationId]); } finally { tools.dispose(); } }
+    } finally { try { if (commandId !== undefined) await tools.stopConversationCommand(commandId, [conversationId]); } finally { await tools.dispose(); } }
   }, 20_000);
   it("views a workspace image as visual input without persisting image bytes in tool text", async () => {
     const { project, tools } = await createFixture();
@@ -417,7 +473,7 @@ describe("ProjectToolRegistry", () => {
     const { project, tools } = await createFixture();
     const signal = new AbortController().signal;
 
-    const listing = await tools.execute("list_directory", JSON.stringify({ path: "src" }), project.id, signal);
+    const listing = await tools.execute("find_files", JSON.stringify({ path: "src", pattern: "*" }), project.id, signal);
     expect(listing.isError).toBe(false);
     expect(listing.content).toContain("index.ts");
 
@@ -518,7 +574,6 @@ describe("ProjectToolRegistry", () => {
       "list_background_commands",
       "wait_for_commands",
       "stop_command",
-      "list_directory",
       "read_file",
       "read_external_file",
       "search_text",
@@ -1495,7 +1550,7 @@ describe("ProjectToolRegistry", () => {
     );
     // stop_command returns a receipt before exit; wait before removing the working directory.
     await tools.execute("wait_for_commands", JSON.stringify({ commandIds: [payload.value.commandId], timeoutMs: 5000 }), project.id, signal, owner);
-    tools.dispose();
+    await tools.dispose();
   });
 
   it("keeps independent read tools responsive on a large workspace", async () => {

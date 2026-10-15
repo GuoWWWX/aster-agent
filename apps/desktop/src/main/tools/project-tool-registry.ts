@@ -31,6 +31,7 @@ import { resolveTerminalExecutable } from "./terminal-executable-resolver.js";
 import { findFilesWithRipgrep, searchTextWithRipgrep } from "./ripgrep-search.js";
 import { readTextLines } from "./read-text-lines.js";
 import type { ToolExecutionPolicy } from "./tool-execution-policy.js";
+import { terminateProcessTree } from "./terminate-process-tree.js";
 
 const MAX_READ_FILE_BYTES = 250_000;
 // A full replacement can contain both the old and new text in the persisted diff.
@@ -47,7 +48,6 @@ const MAX_SERVICE_NAME_LENGTH = 120;
 const PARALLEL_READ_TOOL_NAMES = new Set([
   "list_project_operations",
   "list_background_commands",
-  "list_directory",
   "read_file",
   "view_image",
   "search_text",
@@ -91,13 +91,6 @@ type TerminalLaunch = {
 const DEFAULT_TERMINAL_CONFIGURATION_PROVIDER: TerminalConfigurationProvider = {
   getConfiguration: () => structuredClone(DEFAULT_TERMINAL_CONFIGURATION),
 };
-
-const listDirectoryArgumentsSchema = z
-  .object({
-    path: relativeProjectPathSchema.default("")
-      .describe("Project-relative POSIX directory path. Use an empty string for the root."),
-  })
-  .strict();
 
 const readFileArgumentsSchema = z
   .object({
@@ -343,6 +336,7 @@ type CommandSession = {
   stdoutByteLength: number;
   terminal: TerminalLaunch;
   terminate: (cancelled: boolean) => void;
+  termination: Promise<void> | null;
   timeoutMs: number | null;
   timedOut: boolean;
   truncated: boolean;
@@ -543,12 +537,6 @@ export class ProjectToolRegistry {
       },
       {
         description:
-          "List one level of files and directories inside the current authorized workspace. Paths are workspace-relative POSIX paths.",
-        name: "list_directory",
-        parameters: modelToolParameters(listDirectoryArgumentsSchema)
-      },
-      {
-        description:
           "Read a UTF-8 text file inside the authorized workspace. Prefer startLine + lineCount (number of lines); alternatively use startLine + endLine (inclusive line number). Choose only one limit; omit both for up to 400 lines. Large files support partial reads, at most 250000 bytes per range. nextStartLine gives the next page; totalLines is null until EOF. Read a known path directly to verify it: find_files may omit ignored files.",
         name: "read_file",
         parameters: modelToolParameters(readFileArgumentsSchema)
@@ -693,15 +681,6 @@ export class ProjectToolRegistry {
       if (name === "stop_command") {
         const input = stopCommandArgumentsSchema.parse(parsedArguments);
         return this.stopCommand(input.commandId, projectId, owner.conversationId);
-      }
-      if (name === "list_directory") {
-        if (projectId === undefined) throw new Error("A workspace is required for directory inspection.");
-        const input = listDirectoryArgumentsSchema.parse(parsedArguments);
-        const listing = await this.projects.listEntries({
-          directoryPath: input.path,
-          projectId
-        });
-        return this.success(listing);
       }
       if (name === "read_file") {
         if (projectId === undefined) throw new Error("A workspace is required for file inspection.");
@@ -1067,6 +1046,7 @@ export class ProjectToolRegistry {
             projectId,
             owner.conversationId,
           );
+          throwIfAborted(signal);
           session = this.startCommand(
             commandId,
             command,
@@ -1376,6 +1356,7 @@ export class ProjectToolRegistry {
       terminal.args,
       {
         cwd: workingDirectory,
+        detached: process.platform !== "win32",
         env: commandEnvironmentWithBundledRipgrep(process.env),
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
@@ -1401,17 +1382,14 @@ export class ProjectToolRegistry {
       stdoutChunks: [],
       terminal,
       terminate: (cancelled) => {
-        if (session.status !== "running" || child.pid === undefined) return;
+        if (session.status !== "running" || child.pid === undefined || session.termination !== null) return;
         if (cancelled) session.status = "cancelled";
-        if (process.platform === "win32") {
-          spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
-            stdio: "ignore",
-            windowsHide: true,
-          }).once("error", () => child.kill());
-          return;
-        }
-        child.kill("SIGTERM");
+        session.termination = terminateProcessTree(child.pid);
+        // Still close the Shell handle on a failed tree stop; disposal awaits the
+        // original promise so an incomplete cleanup remains visible to its owner.
+        void session.termination.catch(() => child.kill());
       },
+      termination: null,
       timeoutMs: command.timeoutMs,
       timedOut: false,
       truncated: false,
@@ -1656,11 +1634,19 @@ export class ProjectToolRegistry {
     } });
   }
 
-  public dispose(): void {
-    for (const session of this.commandSessions.values()) {
+  public async dispose(): Promise<void> {
+    const sessions = [...this.commandSessions.values()];
+    for (const session of sessions) {
       session.terminate(true);
     }
+    const results = await Promise.allSettled(sessions.map(async (session) => {
+      await session.completion;
+      await session.termination;
+    }));
     this.commandSessions.clear();
+    const errors: unknown[] = [];
+    for (const result of results) { if (result.status === "rejected") errors.push(result.reason); }
+    if (errors.length > 0) throw new AggregateError(errors, "Command process cleanup failed.");
   }
 
   private async readEditableFile(

@@ -13,6 +13,7 @@ const electronMocks = vi.hoisted(() => {
     return Promise.resolve();
   });
   return {
+    backgroundWebContentsDestroyed: false,
     backgroundWindowOptions: [] as unknown[],
     backgroundNativeCalls: [] as string[],
     destroyBackgroundWindow: vi.fn(),
@@ -58,7 +59,7 @@ vi.mock("electron", () => ({
         executeJavaScript: vi.fn(() => Promise.resolve()),
         getTitle: () => "Background",
         getURL: () => url,
-        isDestroyed: () => false,
+        isDestroyed: () => electronMocks.backgroundWebContentsDestroyed,
         isLoading: () => false,
         loadURL: vi.fn((value: string) => {
           url = value;
@@ -67,7 +68,9 @@ vi.mock("electron", () => ({
         }),
         navigationHistory: { canGoBack: () => false, canGoForward: () => false },
         on: vi.fn(),
-        session: { on: vi.fn(), removeListener: vi.fn(), setPermissionRequestHandler: vi.fn() },
+        session: { on: vi.fn(), removeListener: vi.fn(() => {
+          if (electronMocks.backgroundWebContentsDestroyed) throw new Error("WebContents destroyed");
+        }), setPermissionRequestHandler: vi.fn() },
         setWindowOpenHandler: vi.fn(),
         setZoomFactor: vi.fn(),
       };
@@ -234,6 +237,7 @@ describe("ManagedBrowserController", () => {
   beforeEach(() => {
     electronMocks.backgroundWindowOptions.length = 0;
     electronMocks.backgroundNativeCalls.length = 0;
+    electronMocks.backgroundWebContentsDestroyed = false;
     electronMocks.destroyBackgroundWindow.mockClear();
     electronMocks.loadOverlayUrl.mockReset();
     electronMocks.loadOverlayUrl.mockResolvedValue(undefined);
@@ -253,6 +257,27 @@ describe("ManagedBrowserController", () => {
     controller.close({ sessionId: session.sessionId });
     controller.dispose();
     expect(electronMocks.destroyBackgroundWindow).toHaveBeenCalledOnce();
+  });
+
+  it("releases a managed session after its native contents have already been destroyed", async () => {
+    const controller = new ManagedBrowserController(() => createFakeWindow(),
+      { getConfiguration: () => browserConfiguration() });
+    await controller.open({ url: "https://example.test" }, { background: { width: 620, height: 900 } });
+    electronMocks.backgroundWebContentsDestroyed = true;
+    expect(() => controller.dispose()).not.toThrow();
+  });
+
+  it("closes remaining managed pages when one native close fails", async () => {
+    const first = createFakePage(); const second = createFakePage();
+    const onClose = vi.fn();
+    first.close.mockImplementationOnce(() => { throw new Error("native close failed"); });
+    const factory = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second);
+    const controller = new ManagedBrowserController(() => createFakeWindow(),
+      { getConfiguration: () => browserConfiguration() }, factory);
+    await controller.open({}, { onClose }); await controller.open({});
+    expect(() => controller.dispose()).toThrow(AggregateError);
+    expect(first.close).toHaveBeenCalledOnce(); expect(second.close).toHaveBeenCalledOnce();
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("gives background pages an isolated fixed viewport without revealing a view", async () => {

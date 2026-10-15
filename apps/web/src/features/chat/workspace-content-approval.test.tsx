@@ -75,6 +75,102 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it("keeps placeholder-only browser calls static while retaining their raw-call button", async () => {
+  const client = new MockAgentClient();
+  const tool: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID,
+    batchId: null, createdAt: "2026-10-16T00:00:00Z", name: "browser_control", arguments: '{"action":"open","url":"https://example.com"}',
+    result: '{"ok":true,"value":{"url":"https://example.com"}}', diff: null, status: "completed" };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool]);
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      session={session({ id: PARENT_ID, title: "浏览器空详情" })} /></TooltipProvider>);
+    await flushConversationWorkspace();
+  });
+  expandWorkProcess(container);
+  const row = container.querySelector(".tool-activity-row")!;
+  expect(row).not.toBeNull();
+  expect(row.querySelector('[aria-label="展开调用详情"]')).toBeNull();
+  expect(row.querySelector('[aria-expanded]')).toBeNull();
+  expect(row.textContent).not.toContain("调用已完成，可查看原始调用");
+  act(() => row.querySelector<HTMLButtonElement>('[aria-label="查看调用情况"]')?.click());
+  expect(document.querySelector('[aria-label="browser_control 原始调用"]')).not.toBeNull();
+});
+
+it("routes the assistant's relative QuickSort links into the existing workspace file callback", async () => {
+  const client = new MockAgentClient();
+  const openFile = vi.fn();
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([{
+    id: MESSAGE_ID, kind: "message", role: "assistant", conversationId: PARENT_ID, runId: RUN_ID,
+    createdAt: "2026-10-16T00:00:00Z", status: "completed", attachments: [], modelId: null,
+    content: "[Java：QuickSortDegenerate.java](QuickSortDegenerate.java) [Python：quicksort_degenerate.py](quicksort_degenerate.py) [JavaScript：quicksort-degenerate.js](quicksort-degenerate.js)",
+  }]);
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} onOpenProjectFile={openFile}
+      session={session({ id: PARENT_ID, title: "快速排序文件" })} /></TooltipProvider>);
+    await flushConversationWorkspace();
+  });
+  for (const link of container.querySelectorAll<HTMLAnchorElement>(".agent-markdown a")) {
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+    act(() => { link.dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(true);
+  }
+  expect(openFile.mock.calls).toEqual([["QuickSortDegenerate.java"], ["quicksort_degenerate.py"], ["quicksort-degenerate.js"]]);
+});
+
+it.each(["run_command", "wait_for_commands"])("copies %s command and output through the host clipboard when browser clipboard is denied", async (name) => {
+  const client = new MockAgentClient();
+  const nativeWrite = vi.spyOn(client, "writeClipboardText").mockResolvedValue();
+  const browserWrite = vi.fn().mockRejectedValue(new Error("Document is not focused"));
+  vi.stubGlobal("navigator", { clipboard: { writeText: browserWrite } });
+  const command = { command: "node sort.js", workingDirectory: ".", exitCode: 0, stdout: "sorted", stderr: "warning", timedOut: false, truncated: false };
+  const tool: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID,
+    batchId: null, createdAt: "2026-10-16T00:00:00Z", name, arguments: '{"command":"node sort.js"}',
+    result: JSON.stringify({ ok: true, value: name === "run_command" ? command : { commands: [command], waitStatus: "finished" } }),
+    diff: null, status: "completed" };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool]);
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      session={session({ id: PARENT_ID, title: "终端复制" })} /></TooltipProvider>);
+    await flushConversationWorkspace();
+  });
+  expandWorkProcess(container);
+  act(() => container.querySelector<HTMLButtonElement>('[aria-label="展开调用详情"]')?.click());
+  await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="复制终端内容"]')?.click(); await Promise.resolve(); });
+  expect(nativeWrite).toHaveBeenCalledWith("$ node sort.js\n\nsorted\nwarning");
+  expect(browserWrite).not.toHaveBeenCalled();
+  expect(container.querySelector('[aria-label="已复制终端内容"]')).not.toBeNull();
+});
+
+it("opens task details above the summary and preserves close and reopen controls", async () => {
+  const client = new MockAgentClient();
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([]);
+  vi.spyOn(client, "getConversationTaskList").mockResolvedValue({
+    conversationId: PARENT_ID, status: "active", closedAt: null, createdAt: "2026-10-16T00:00:00Z", updatedAt: "2026-10-16T00:00:00Z",
+    tasks: [{ id: TOOL_ID, title: "检查 QuickSortDegenerate.java 的退化排序输出和边界条件", status: "pending", reason: null }],
+  });
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      session={session({ id: PARENT_ID, title: "任务详情" })} /></TooltipProvider>);
+    await flushConversationWorkspace();
+  });
+  const summary = container.querySelector<HTMLButtonElement>(".conversation-task-list__summary")!;
+  act(() => summary.click());
+  const popup = document.querySelector<HTMLElement>(".conversation-task-list__details")!;
+  expect(popup.dataset.side).toBe("top");
+  expect(popup.id).toBe(summary.getAttribute("aria-controls"));
+  expect(popup.textContent).toContain("检查 QuickSortDegenerate.java 的退化排序输出和边界条件");
+  act(() => summary.click());
+  expect(document.querySelector(".conversation-task-list__details")).toBeNull();
+  act(() => summary.click());
+  expect(summary.getAttribute("aria-expanded")).toBe("true");
+  act(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+  expect(document.querySelector(".conversation-task-list__details")).toBeNull();
+});
+
 it("shows transient reasoning in the outer work-process header and switches to the latest tool", async () => {
   const client = new MockAgentClient();
   let listener: (event: ConversationRunEvent) => void = () => {};

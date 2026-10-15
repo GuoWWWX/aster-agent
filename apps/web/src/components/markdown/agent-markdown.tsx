@@ -16,7 +16,7 @@ import "katex/dist/katex.min.css";
 import MarkdownIt from "markdown-it";
 import { Check, Copy, Maximize2, CodeXml } from "lucide-react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactElement } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactElement, type ReactNode } from "react";
 
 import { requestMediaPreview } from "../media/image-viewer.js";
 import { fileTypeIconMarkup, isRecognizedFileTypePath } from "../ui/file-type-icon-data.js";
@@ -24,6 +24,7 @@ import { highlightCode, isLargeCodeSource } from "./code-highlighter.js";
 import { CodeSourceView } from "./code-source-view.js";
 import { terminalTokens } from "../ui/terminal-tokens.js";
 import { Popover, PopoverAnchor, PopoverContent } from "../ui/popover.js";
+import { resolveWorkspaceFileLink } from "./workspace-file-link.js";
 
 import "./agent-markdown.css";
 
@@ -31,6 +32,13 @@ const copyIcon = renderToStaticMarkup(<Copy aria-hidden="true" size={16} />);
 const expandIcon = renderToStaticMarkup(<Maximize2 aria-hidden="true" size={16} />);
 const sourceIcon = renderToStaticMarkup(<CodeXml aria-hidden="true" size={16} />);
 const copiedIcon = renderToStaticMarkup(<Check aria-hidden="true" size={16} />);
+const WorkspaceFileContext = createContext<((path: string) => void) | undefined>(undefined);
+
+export function AgentMarkdownWorkspaceScope({ onOpenFile, children }: {
+  onOpenFile: ((path: string) => void) | undefined; children: ReactNode;
+}): ReactElement {
+  return <WorkspaceFileContext.Provider value={onOpenFile}>{children}</WorkspaceFileContext.Provider>;
+}
 
 const renderer = new MarkdownIt({
   breaks: true,
@@ -208,6 +216,7 @@ function AgentMarkdownContent({ content }: { content: string }): ReactElement {
   const [sourceViews, setSourceViews] = useState<Array<{ source: string; language: string; mount: Element }>>([]);
   const theme = useWorkbenchUiStore((state) => state.themeMode);
   const previewContext = useContext(HtmlPreviewContext);
+  const workspaceContext = useContext(WorkspaceFileContext);
   const [activePreview, setActivePreview] = useState<{ source: HtmlPreviewSource; mount: Element } | null>(null);
   const [diagramMenu, setDiagramMenu] = useState<{ source: string; x: number; y: number } | null>(null);
   const [copyingImage, setCopyingImage] = useState(false);
@@ -257,6 +266,10 @@ function AgentMarkdownContent({ content }: { content: string }): ReactElement {
       }
       return;
     }
+    if (href && workspaceContext !== undefined) {
+      const path = resolveWorkspaceFileLink(href);
+      if (path !== null) { event.preventDefault(); workspaceContext(path); return; }
+    }
     const image = event.target.closest<HTMLImageElement>("img[data-action='preview-image']");
     if (image !== null && event.currentTarget.contains(image)) {
       requestMediaPreview({
@@ -302,7 +315,7 @@ function AgentMarkdownContent({ content }: { content: string }): ReactElement {
         }
       }, 1_500);
     }).catch(() => undefined);
-  }, [previewContext]);
+  }, [previewContext, workspaceContext]);
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>): void => {
     if (event.key !== "Enter" && event.key !== " ") return;

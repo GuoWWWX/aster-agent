@@ -81,9 +81,9 @@ class FixtureModel implements ModelProviderAdapter {
         },
         toolCalls: [
           {
-            arguments: JSON.stringify({ path: "" }),
+            arguments: JSON.stringify({ pattern: "*" }),
             id: "call_directory",
-            name: "list_directory"
+            name: "find_files"
           }
         ]
       });
@@ -434,6 +434,8 @@ class ReusedToolCallIdFixtureModel implements ModelProviderAdapter {
 class UnknownToolFixtureModel implements ModelProviderAdapter {
   public readonly requests: CompleteTurnInput[] = [];
 
+  public constructor(private readonly toolName = "missing_tool") {}
+
   public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
     this.requests.push({ ...input, messages: [...input.messages] });
     if (this.requests.length === 1) {
@@ -443,7 +445,7 @@ class UnknownToolFixtureModel implements ModelProviderAdapter {
         toolCalls: [{
           arguments: "{}",
           id: "call_unknown_tool",
-          name: "missing_tool",
+          name: this.toolName,
         }],
       });
     }
@@ -873,9 +875,9 @@ class ExhaustToolBudgetFixtureModel implements ModelProviderAdapter {
       content: "",
       finishReason: "tool_calls",
       toolCalls: [{
-        arguments: JSON.stringify({ path: "" }),
+        arguments: JSON.stringify({ pattern: "*" }),
         id: `call_budget_directory_${this.requests.length}`,
-        name: "list_directory",
+        name: "find_files",
       }],
     });
   }
@@ -1232,14 +1234,14 @@ class DeferredToolBatchFixtureModel implements ModelProviderAdapter {
       finishReason: "tool_calls",
       toolCalls: [
         {
-          arguments: JSON.stringify({ path: "" }),
+          arguments: JSON.stringify({ pattern: "*" }),
           id: "call_directory_first",
-          name: "list_directory",
+          name: "find_files",
         },
         {
-          arguments: JSON.stringify({ path: "" }),
+          arguments: JSON.stringify({ pattern: "*" }),
           id: "call_directory_second",
-          name: "list_directory",
+          name: "find_files",
         },
       ],
     });
@@ -2088,6 +2090,103 @@ describe("AgentRuntime", () => {
       }),
     ]));
     database.close();
+  });
+
+  it("drains active Runs on window shutdown without starting queued messages", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const model = new ReplaceRunningMessageFixtureModel();
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({
+      apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+      modelId: "test-model", reasoningOptions: [],
+    }) }, projects, new ProjectToolRegistry(projects), model);
+    runtime.sendMessage({ content: "运行中", conversationId: conversation.id }, () => undefined);
+    await model.firstRequestStarted;
+    runtime.sendMessage({ content: "排队消息", conversationId: conversation.id, deliveryMode: "queue" }, () => undefined);
+    try {
+      await runtime.stopAllRuns();
+      await new Promise<void>((resolve) => setImmediate(() => { runtime.resumePendingMessages(() => undefined); resolve(); }));
+      expect(model.requests).toHaveLength(1);
+      expect(database.getConversation(conversation.id)).toMatchObject({ activeRunId: null, lastRunStatus: "cancelled" });
+      expect(database.listPendingMessageRecords(conversation.id, "queue")).toHaveLength(1);
+      expect(() => runtime.sendMessage({ content: "清理中到达", conversationId: conversation.id }, () => undefined))
+        .toThrow("execution is stopping");
+      runtime.resumeAfterWindowOpen();
+    } finally {
+      runtime.cancelConversation(conversation.id);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      database.close();
+    }
+  });
+
+  it("drains in-memory Runs even if persisting the shutdown pause fails", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const model = new ReplaceRunningMessageFixtureModel();
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({
+      apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+      modelId: "test-model", reasoningOptions: [],
+    }) }, projects, new ProjectToolRegistry(projects), model);
+    runtime.sendMessage({ content: "运行中", conversationId: conversation.id }, () => undefined);
+    await model.firstRequestStarted;
+    vi.spyOn(database, "isConversationExecutionPaused").mockImplementationOnce(() => { throw new Error("pause storage failed"); });
+    await expect(runtime.stopAllRuns()).rejects.toThrow("Run shutdown persistence failed");
+    expect(database.getConversation(conversation.id)).toMatchObject({ activeRunId: null, lastRunStatus: "cancelled" });
+    expect(model.requests).toHaveLength(1);
+    database.close();
+  });
+
+  it("rejects an in-flight message replacement after shutdown starts", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const model = new ReplaceRunningMessageFixtureModel();
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({
+      apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+      modelId: "test-model", reasoningOptions: [],
+    }) }, projects, new ProjectToolRegistry(projects), model);
+    const accepted = runtime.sendMessage({ content: "运行中", conversationId: conversation.id }, () => undefined);
+    if (accepted.kind !== "started") throw new Error("Expected an active Run.");
+    await model.firstRequestStarted;
+    const replacement = runtime.replaceLatestMessage({ conversationId: conversation.id, messageId: accepted.userMessage.id, content: "替换内容" }, () => undefined);
+    const rejection = expect(replacement).rejects.toThrow("execution is stopping");
+    await runtime.stopAllRuns(); await rejection;
+    expect(model.requests).toHaveLength(1);
+    expect(database.getConversation(conversation.id).activeRunId).toBe(null);
+    database.close();
+  });
+
+  it("expires pending approval on shutdown without launching the command", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-shutdown-approval-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const tools = new ProjectToolRegistry(projects);
+    const execute = vi.spyOn(tools, "executePreparedCommand");
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({
+      apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+      modelId: "test-model", reasoningOptions: [],
+    }) }, projects, tools, new SingleCommandFixtureModel("Set-Content -LiteralPath shutdown.txt -Value unwanted"));
+    let approval: Extract<ConversationRunEvent, { type: "tool.approval_requested" }> | undefined;
+    runtime.sendMessage({ content: "待审批命令", conversationId: conversation.id, permissionMode: "ask_before_changes" }, (event) => {
+      if (event.type === "tool.approval_requested") approval = event;
+    });
+    try {
+      await vi.waitFor(() => expect(approval).toBeDefined());
+      await runtime.stopAllRuns();
+      expect(execute).not.toHaveBeenCalled();
+      expect(database.listTimeline(conversation.id)).toContainEqual(expect.objectContaining({ kind: "tool", name: "run_command", status: "cancelled" }));
+      await expect(readFile(path.join(root, "shutdown.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      runtime.cancelConversation(conversation.id);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await tools.dispose();
+      database.close();
+    }
   });
 
   it("cancels a running answer before replacing the latest user message", async () => {
@@ -3166,7 +3265,7 @@ describe("AgentRuntime", () => {
       );
     });
 
-    expect(model.requests[0]?.tools.map((tool) => tool.name)).toContain("list_directory");
+    expect(model.requests[0]?.tools.map((tool) => tool.name)).not.toContain("list_directory");
     expect(model.requests[0]?.tools.map((tool) => tool.name)).toContain("find_files");
     expect(model.requests[0]?.tools.map((tool) => tool.name)).not.toContain("get_project_info");
     expect(model.requests[0]?.messages[0]?.content).toContain(`Authorized root: ${path.resolve(await realpath(root))}`);
@@ -3814,6 +3913,10 @@ describe("AgentRuntime", () => {
     const project = await projects.registerDirectory(root);
     const conversation = database.createConversation(project.id);
     const model = new ExhaustToolBudgetFixtureModel();
+    const tools = new ProjectToolRegistry(projects);
+    const executeTool = vi.spyOn(tools, "execute").mockResolvedValue({
+      kind: "completed", isError: false, content: JSON.stringify({ ok: true, value: { paths: [], truncated: false } }),
+    });
     const runtime = new AgentRuntime(
       database,
       {
@@ -3826,7 +3929,7 @@ describe("AgentRuntime", () => {
         }),
       },
       projects,
-      new ProjectToolRegistry(projects),
+      tools,
       model,
     );
 
@@ -3840,6 +3943,7 @@ describe("AgentRuntime", () => {
 
     expect(finished.status).toBe("completed");
     expect(model.requests).toHaveLength(64);
+    expect(executeTool).toHaveBeenCalledTimes(63);
     expect(model.requests.at(-2)?.tools.length).toBeGreaterThan(0);
     expect(model.requests.at(-2)?.messages.at(-1)?.content).toContain(
       "last model turn that may call tools",
@@ -8082,6 +8186,44 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
+  it("preserves a completed side effect when shutdown cancels the next approval", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-shutdown-side-effect-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const tools = new ProjectToolRegistry(projects);
+    const apply = vi.spyOn(tools, "applyPreparedChange");
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({
+      apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+      modelId: "test-model", reasoningOptions: [],
+    }) }, projects, tools, new MultiChangeFixtureModel());
+    let approvals = 0;
+    let stopped: Promise<void> | undefined;
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage({ content: "创建两个文件", conversationId: conversation.id, permissionMode: "ask_before_changes" }, (event) => {
+        if (event.type === "tool.approval_requested") {
+          approvals += 1;
+          if (approvals === 1) runtime.approveToolChange({ approved: true, runId: event.runId, toolId: event.tool.id });
+          else stopped = runtime.stopAllRuns();
+        }
+        if (event.type === "run.finished") resolve();
+      });
+    });
+    await stopped;
+    expect(approvals).toBe(2);
+    expect(apply).toHaveBeenCalledOnce();
+    expect(database.listTimeline(conversation.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "tool", status: "completed" }),
+      expect.objectContaining({ kind: "tool", status: "cancelled" }),
+    ]));
+    await expect(readFile(path.join(root, "first.ts"), "utf8")).resolves.toBe("export const first = true;\n");
+    await expect(readFile(path.join(root, "second.ts"))).rejects.toMatchObject({ code: "ENOENT" });
+    await tools.dispose();
+    database.close();
+  });
+
   it("keeps a larger approval batch below the LangGraph recursion guard", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-many-approval-"));
     temporaryDirectories.push(root);
@@ -8509,11 +8651,11 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
-  it("returns an unknown tool call as a failed ToolMessage so the model can recover", async () => {
+  it.each(["missing_tool", "list_directory"])("returns %s as a failed ToolMessage so the model can recover", async (toolName) => {
     const database = new AgentDatabase(":memory:");
     const projects = new ProjectRegistry(database);
     const conversation = database.createConversation(null);
-    const model = new UnknownToolFixtureModel();
+    const model = new UnknownToolFixtureModel(toolName);
     const runtime = new AgentRuntime(
       database,
       {
@@ -8546,7 +8688,7 @@ describe("AgentRuntime", () => {
     }));
     expect(database.listTimeline(conversation.id)).toContainEqual(expect.objectContaining({
       kind: "tool",
-      name: "missing_tool",
+      name: toolName,
       status: "failed",
     }));
     database.close();
@@ -8638,7 +8780,7 @@ describe("AgentRuntime", () => {
     });
 
     const tool = database.listTimeline(conversation.id).find((item) => item.kind === "tool");
-    expect(tool).toMatchObject({ name: "list_directory", status: "failed" });
+    expect(tool).toMatchObject({ name: "find_files", status: "failed" });
     expect(tool?.kind === "tool" ? tool.result : "").toContain("fixture tool adapter failed");
     expect(events.filter((event) => event.type === "tool.completed")).toHaveLength(1);
     database.close();

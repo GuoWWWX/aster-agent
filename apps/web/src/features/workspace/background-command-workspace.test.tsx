@@ -51,6 +51,38 @@ it("shows failed command stderr and does not read while the tab is inactive", as
   await act(async () => { root?.render(<TooltipProvider><BackgroundCommandWorkspace agentClient={client} conversationId={command.conversationId} commandId={command.commandId} active /></TooltipProvider>); await Promise.resolve(); });
   expect(container.textContent).toContain("编译失败"); expect(container.textContent).toContain("退出码 2"); expect(container.textContent).toContain("仅显示最近输出");
 });
+it("copies the command and its output separately through the host clipboard", async () => {
+  const client = new MockAgentClient();
+  vi.spyOn(client, "readBackgroundCommand").mockResolvedValue({ ...output, stderr: "error details", command: { ...command, status: "completed" } });
+  const copy = vi.spyOn(client, "writeClipboardText").mockResolvedValue(undefined);
+  const browserCopy = vi.fn().mockRejectedValue(new Error("Browser clipboard denied"));
+  vi.stubGlobal("navigator", { clipboard: { writeText: browserCopy } });
+  const container = await renderViewer(client);
+  const commandButton = container.querySelector<HTMLButtonElement>('[aria-label="执行命令"] [aria-label="复制命令"]');
+  const outputButton = container.querySelector<HTMLButtonElement>('[aria-label="执行输出"] [aria-label="复制执行输出"]');
+  expect(commandButton).not.toBeNull(); expect(outputButton).not.toBeNull();
+  expect(container.querySelector('header [aria-label^="复制"]')).toBeNull();
+  await act(async () => { commandButton?.click(); await Promise.resolve(); });
+  expect(copy).toHaveBeenLastCalledWith(command.command);
+  await act(async () => { outputButton?.click(); await Promise.resolve(); });
+  expect(copy).toHaveBeenLastCalledWith("reply one\nerror details");
+  expect(browserCopy).not.toHaveBeenCalled();
+  expect(container.querySelector('[aria-label="已复制执行输出"]')).not.toBeNull();
+});
+it("keeps clipboard errors separate from the command read status and allows retry", async () => {
+  const client = new MockAgentClient();
+  vi.spyOn(client, "readBackgroundCommand").mockResolvedValue(output);
+  const copy = vi.spyOn(client, "writeClipboardText").mockRejectedValueOnce(new Error("Clipboard unavailable")).mockResolvedValue(undefined);
+  const container = await renderViewer(client);
+  const button = container.querySelector<HTMLButtonElement>('[aria-label="复制执行输出"]');
+  await act(async () => { button?.click(); await Promise.resolve(); });
+  expect(container.querySelector('[role="alert"]')?.textContent).toBe("无法复制执行输出。");
+  expect(container.querySelector("header")?.textContent).toContain("运行中");
+  expect(container.textContent).not.toContain("已暂停更新");
+  await act(async () => { button?.click(); await Promise.resolve(); });
+  expect(copy).toHaveBeenCalledTimes(2);
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+});
 it("opens one right-side detail tab in a projectless conversation and closing it keeps the process alive", async () => {
   const client = new MockAgentClient(); const conversation = await client.createConversation({ projectId: null });
   const target = createProjectSession(null, [], conversation.id);

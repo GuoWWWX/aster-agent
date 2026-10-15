@@ -40,6 +40,9 @@ it("keeps three files in the completed card and can expand, collapse and expand 
   const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   const review = vi.fn();
   act(() => root?.render(<ConversationChangesCard summary={summary} onReview={review} />));
+  const heading = container.querySelector("header")!;
+  expect(heading.querySelector("div > div")).toBeNull();
+  expect(heading.querySelector(".font-medium")?.parentElement?.className).toContain("flex-wrap");
   expect(container.querySelectorAll("[data-changed-file]")).toHaveLength(3);
   const more = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("再显示 3 个文件"))!;
   act(() => { more.click(); }); expect(container.querySelectorAll("[data-changed-file]")).toHaveLength(6);

@@ -54,7 +54,7 @@ it("finishes independent work after asking, wakes on an answer and preserves ans
     recovery.ensureConversationHistoryProjected(creation.conversation.id);
     expect(restored.wasUserQuestionAnswerDelivered(question.id, creation.conversation.id)).toBe(true);
     expect(restored.getUserQuestion(question.id).deliveryComplete).toBe(true);
-  } finally { tools.dispose(); database.close(); restored.close(); await rm(directory, { recursive: true, force: true }); }
+  } finally { await tools.dispose(); database.close(); restored.close(); await rm(directory, { recursive: true, force: true }); }
 }, 15_000);
 
 describe("Question runtime tool contract", () => {
@@ -83,7 +83,7 @@ describe("Question runtime tool contract", () => {
       await expect(finished).resolves.toMatchObject({ status: "completed" }); expect(requests).toHaveLength(3);
       expect(requests[2]?.messages.some((message) => message.content.includes("用户回答：设置页面"))).toBe(true);
       expect(database.listPendingMessages(conversation.id)).toEqual([]);
-    } finally { tools.dispose(); database.close(); }
+    } finally { await tools.dispose(); database.close(); }
   }, 10_000);
   it("preserves pending question state in an inactive startup checkpoint", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "aster-question-checkpoint-"));
@@ -99,6 +99,6 @@ describe("Question runtime tool contract", () => {
         questions: [{ id: "scope", title: "范围", question: "哪些页面？", options: [] }] }, () => undefined);
       projector.checkpointInactiveConversations(); new EventProjector(restored, log).projectAllConversationLogs({ releaseHistory: true });
       expect(restored.getUserQuestion(question.id)).toEqual(question);
-    } finally { tools.dispose(); database.close(); restored.close(); await rm(directory, { recursive: true, force: true }); }
+    } finally { await tools.dispose(); database.close(); restored.close(); await rm(directory, { recursive: true, force: true }); }
   });
 });

@@ -422,8 +422,7 @@ export class ManagedBrowserController {
     session.disposeError();
     session.disposeFindResult();
     session.disposeState();
-    session.page.close();
-    session.onClose?.();
+    try { session.page.close(); } finally { session.onClose?.(); }
   }
 
   public onEvent(listener: BrowserEventListener): () => void {
@@ -432,9 +431,13 @@ export class ManagedBrowserController {
   }
 
   public dispose(): void {
-    this.closeBrowserMenuOverlay();
+    const errors: unknown[] = [];
+    try { this.closeBrowserMenuOverlay(); } catch (error) { errors.push(error); }
     this.listeners.clear();
-    for (const sessionId of [...this.sessions.keys()]) this.close({ sessionId });
+    for (const sessionId of [...this.sessions.keys()]) {
+      try { this.close({ sessionId }); } catch (error) { errors.push(error); }
+    }
+    if (errors.length > 0) throw new AggregateError(errors, "Managed browser cleanup failed.");
   }
 
   private emitState(sessionId: string): void {
@@ -1206,8 +1209,9 @@ function createElectronBrowserPage(ownerWindow: BrowserWindow, shortcuts: Browse
       stateListeners.clear();
       errorListeners.clear();
       findResultListeners.clear();
+      if (view !== undefined && !window.isDestroyed()) window.contentView.removeChildView(view);
+      if (webContents.isDestroyed()) return;
       webContents.session.removeListener("will-download", handleDownload);
-      if (view !== undefined) window.contentView.removeChildView(view);
       if (webContents.debugger.isAttached()) webContents.debugger.detach();
       if (backgroundWindow !== undefined) backgroundWindow.destroy();
       else if (!webContents.isDestroyed()) webContents.close();

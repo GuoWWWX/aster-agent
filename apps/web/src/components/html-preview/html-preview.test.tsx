@@ -120,15 +120,20 @@ describe("conversation HTML previews", () => {
     expect(request).toHaveBeenCalledWith({ kind: "release", conversationId, id: result.id });
   });
 
-  it("fits reported content height and only accepts bounded messages from its own sandbox", async () => {
+  it("fits natural content within the preview height limits and only accepts messages from its own sandbox", async () => {
     await render(<HtmlPreviewCard source={{ kind: "file", path: "demo.html" }} />);
     const frame = node.querySelector("iframe")!;
     const bounds = vi.spyOn(frame, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 720, 320));
     const resize = (height: unknown, source: MessageEventSource | null = frame.contentWindow, id = result.id, origin = "null"): void => {
       act(() => { window.dispatchEvent(new MessageEvent("message", { source, origin, data: { type: "html-preview.resize", id, height } })); });
     };
+    resize(80);
+    expect(frame.style.height).toBe("160px");
     resize(720);
     expect(frame.style.height).toBe("720px");
+    resize(20_000);
+    expect(frame.style.height).toBe("1200px");
+    resize(720);
     bounds.mockReturnValue(new DOMRect());
     resize(1);
     expect(frame.style.height).toBe("720px");

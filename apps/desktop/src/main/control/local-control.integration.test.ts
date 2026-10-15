@@ -81,7 +81,7 @@ describe("local control through the real Runtime", () => {
         expect(replay.listTimelinePage({ conversationId: conversation.id, limit: 120 }).items).toEqual(timeline.items);
       } finally { restored.close(); }
     } finally {
-      await reader?.cancel(); controller.abort(); await server.close(); tools.dispose(); database.close();
+      await reader?.cancel(); controller.abort(); await server.close(); await tools.dispose(); database.close();
       await rm(directory, { recursive: true, force: true });
     }
   }, 15_000);

@@ -54,7 +54,28 @@ import {
   toolBatchExecutionMode,
   latestActiveTool,
   stripLeadingThinkingSummary,
+  toolHasDisplayableDetails,
 } from "./workspace-content.js";
+
+describe("tool details visibility", () => {
+  const tool: ConversationToolItem = { id: "tool", kind: "tool", conversationId: "conversation", runId: "run", batchId: null,
+    createdAt: "2026-10-16T00:00:00Z", name: "browser_control", arguments: '{"action":"open"}', result: '{"ok":true,"value":{"url":"https://example.com"}}', diff: null, status: "completed" };
+  it("hides placeholder-only browser results and preserves errors, approval and screenshot details", () => {
+    expect(toolHasDisplayableDetails(tool)).toBe(false);
+    expect(toolHasDisplayableDetails({ ...tool, status: "running", result: null })).toBe(false);
+    expect(toolHasDisplayableDetails({ ...tool, arguments: '{"action":"observe"}' })).toBe(false);
+    expect(toolHasDisplayableDetails({ ...tool, arguments: '{"action":"click"}' })).toBe(false);
+    expect(toolHasDisplayableDetails({ ...tool, status: "failed" })).toBe(true);
+    expect(toolHasDisplayableDetails({ ...tool, status: "awaiting_approval" })).toBe(true);
+    expect(toolHasDisplayableDetails({ ...tool, result: '{"ok":false,"error":"Page closed"}' })).toBe(true);
+    expect(toolHasDisplayableDetails({ ...tool, result: '{"ok":true,"value":{"coordinateSpace":"screenshot_css_pixels","width":800,"height":600,"mimeType":"image/jpeg"}}' })).toBe(true);
+  });
+  it("distinguishes a command still running from a completed empty tool result", () => {
+    expect(toolHasDisplayableDetails({ ...tool, name: "run_command", arguments: '{"command":"ping localhost"}', status: "running", result: null })).toBe(true);
+    expect(toolHasDisplayableDetails({ ...tool, name: "web_search", result: null })).toBe(false);
+    expect(toolHasDisplayableDetails({ ...tool, name: "web_search", result: '{"ok":true,"value":{"results":[]}}' })).toBe(true);
+  });
+});
 
 describe("model activity preview", () => {
   it("removes emphasis markers and separates adjacent reasoning summaries", () => {

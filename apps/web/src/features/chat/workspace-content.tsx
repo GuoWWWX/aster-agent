@@ -126,7 +126,7 @@ import {
 import { IconButton } from "../../components/ui/icon-button.js";
 import { TooltipAnchor } from "../../components/ui/tooltip.js";
 import { FileTypeIcon } from "../../components/ui/file-type-icon.js";
-import { AgentMarkdown } from "../../components/markdown/agent-markdown.js";
+import { AgentMarkdown, AgentMarkdownWorkspaceScope } from "../../components/markdown/agent-markdown.js";
 import { requestMediaPreview } from "../../components/media/image-viewer.js";
 import {
   createDiffPresentation,
@@ -135,6 +135,7 @@ import {
 } from "../../components/diff/diff-view.js";
 import {
   Popover,
+  PopoverAnchor,
   PopoverContent,
   PopoverTrigger,
 } from "../../components/ui/popover.js";
@@ -3117,6 +3118,7 @@ export function ConversationWorkspace({
   const pathIconKind = resolveConversationPathIconKind(pathScope.kind, session);
 
   return (
+    <AgentMarkdownWorkspaceScope onOpenFile={onOpenProjectFile}>
     <HtmlPreviewScope client={agentClient} conversationId={session.id}>
     <ToolConversationContext.Provider value={toolConversations}>
     <section
@@ -4010,6 +4012,7 @@ export function ConversationWorkspace({
     </section>
     </ToolConversationContext.Provider>
     </HtmlPreviewScope>
+    </AgentMarkdownWorkspaceScope>
   );
 }
 
@@ -4814,9 +4817,11 @@ function ConversationTaskListPanel({
       data-expanded={String(expanded)}
       data-status={summaryStatus}
     >
+      <Popover open={expanded} onOpenChange={(open) => { if (open !== expanded) onToggle(); }}>
       <div className="conversation-task-list__body">
         {expanded ? (
-          <div className="conversation-task-list__details" id={summaryId} role="list">
+          <PopoverContent className="conversation-task-list__details w-max min-w-[min(var(--radix-popover-trigger-width),var(--radix-popover-content-available-width))] max-w-[min(560px,var(--radix-popover-content-available-width))]" id={summaryId} role="list" side="top" align="center" sideOffset={5}
+            onOpenAutoFocus={(event) => event.preventDefault()} onCloseAutoFocus={(event) => event.preventDefault()}>
             {taskList.tasks.map((task) => {
               const displayStatus = task.status === "running" && inactiveRunningStatus !== null
                 ? inactiveRunningStatus
@@ -4865,15 +4870,16 @@ function ConversationTaskListPanel({
                 </div>
               );
             })}
-          </div>
+          </PopoverContent>
         ) : null}
+        <PopoverAnchor asChild>
         <div className="conversation-task-list__summary-control">
+          <PopoverTrigger asChild>
           <button
             aria-controls={summaryId}
             aria-expanded={expanded}
             className="conversation-task-list__summary"
             type="button"
-            onClick={onToggle}
           >
             {isCompleted ? (
               <Check aria-hidden="true" className="conversation-task-list__summary-status" size={15} />
@@ -4915,9 +4921,12 @@ function ConversationTaskListPanel({
             }</span>
             <ChevronDown aria-hidden="true" className="conversation-task-list__chevron" size={15} />
           </button>
+          </PopoverTrigger>
           {fileChanges !== undefined ? <ConversationChangesBadge summary={fileChanges} joined onReview={onOpenReview} /> : null}
         </div>
+        </PopoverAnchor>
       </div>
+      </Popover>
       {allowClose ? <IconButton
         className="conversation-task-list__action"
         disabled={isActioning}
@@ -7054,6 +7063,7 @@ function ToolTimelineItem({
     return () => window.clearTimeout(timer);
   }, [item.id, reveal?.id, reveal?.requestId, setIsExpanded]);
   const [isRawCallOpen, setIsRawCallOpen] = useState(false);
+  const canExpand = approvalError !== null || toolHasDisplayableDetails(item);
   const detailsLabel = isExpanded ? "收起调用详情" : "展开调用详情";
 
   return (
@@ -7066,6 +7076,7 @@ function ToolTimelineItem({
         <span className="tool-timeline-item__identity">
           {item.name === "spawn_subagent" ? null : <ToolTypeIcon name={item.name} />}
           <ToolActivityLabel
+            canExpand={canExpand}
             effectiveStatus={effectiveStatus}
             item={item}
             isExpanded={isExpanded}
@@ -7089,7 +7100,7 @@ function ToolTimelineItem({
           >
             <Eye aria-hidden="true" size={15} />
           </button>
-          <button
+          {canExpand ? <button
             aria-expanded={isExpanded}
             aria-label={detailsLabel}
             className="tool-timeline-item__toggle"
@@ -7098,10 +7109,10 @@ function ToolTimelineItem({
             onClick={() => setIsExpanded((current) => !current)}
           >
             <ChevronRight aria-hidden="true" size={15} />
-          </button>
+          </button> : null}
         </span>
       </header>
-      {isExpanded ? (
+      {canExpand && isExpanded ? (
         <ToolDetail
           agentClient={agentClient}
           item={item}
@@ -7476,6 +7487,7 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
 }
 
 function ToolActivityLabel({
+  canExpand,
   effectiveStatus,
   item,
   isExpanded,
@@ -7484,6 +7496,7 @@ function ToolActivityLabel({
   onOpenProjectFile,
   onToggle,
 }: {
+  canExpand: boolean;
   effectiveStatus: ConversationToolItem["status"];
   item: ConversationToolItem;
   isExpanded: boolean;
@@ -7511,15 +7524,16 @@ function ToolActivityLabel({
   if (spawnedSubagent !== null) {
     const canOpen = spawnedSubagent.childConversationId !== null
       && onOpenSubagent !== undefined;
+    const Identity = canOpen || canExpand ? "button" : "span";
     return (
-      <button
-        {...(canOpen ? {} : { "aria-expanded": isExpanded })}
-        aria-label={canOpen
+      <Identity
+        {...(canOpen || !canExpand ? {} : { "aria-expanded": isExpanded })}
+        aria-label={!canExpand && !canOpen ? `${spawnedSubagent.name} ${spawnedSubagent.action}` : canOpen
           ? `在侧边打开 Subagent 对话：${spawnedSubagent.name}`
           : `${toggleLabel}：${spawnedSubagent.name}`}
         className="inline-flex min-w-0 flex-[0_1_auto] cursor-pointer items-center gap-[6px] overflow-hidden border-0 bg-transparent p-0 text-left text-[var(--app-muted-foreground)] transition-colors hover:text-[var(--app-foreground)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1 [font:inherit]"
-        title={canOpen ? `在侧边打开 ${spawnedSubagent.name}` : toggleLabel}
-        type="button"
+        title={!canExpand && !canOpen ? undefined : canOpen ? `在侧边打开 ${spawnedSubagent.name}` : toggleLabel}
+        {...(canOpen || canExpand ? { type: "button" as const } : {})}
         onClick={() => {
           if (
             spawnedSubagent.childConversationId !== null
@@ -7528,7 +7542,7 @@ function ToolActivityLabel({
             onOpenSubagent(spawnedSubagent.childConversationId);
             return;
           }
-          onToggle();
+          if (canExpand) onToggle();
         }}
       >
         <SubagentAvatar
@@ -7542,10 +7556,11 @@ function ToolActivityLabel({
         <span className="shrink-0 text-[var(--app-muted-foreground)]">
           {spawnedSubagent.action}
         </span>
-      </button>
+      </Identity>
     );
   }
   if (summary === null) {
+    if (!canExpand) return <span className="tool-timeline-item__label-text min-w-0 truncate">{label}</span>;
     return (
       <button
         aria-expanded={isExpanded}
@@ -7562,7 +7577,7 @@ function ToolActivityLabel({
 
   return (
     <span className="tool-timeline-item__activity-label">
-      <button
+      {canExpand ? <button
         aria-expanded={isExpanded}
         aria-label={`${toggleLabel}：${label}`}
         className={toggleClassName}
@@ -7571,7 +7586,7 @@ function ToolActivityLabel({
         onClick={onToggle}
       >
         <span className="tool-timeline-item__label-text">{summary.action}</span>
-      </button>
+      </button> : <span className="tool-timeline-item__label-text">{summary.action}</span>}
       {onOpenProjectFile === undefined ? (
         <span className="inline-flex min-w-0 items-center gap-1 overflow-hidden" title={summary.path}>
           <FileTypeIcon className="shrink-0" path={summary.path} size={14} />
@@ -7766,6 +7781,8 @@ function ToolDetail({
   onOpenSubagent: ((conversationId: string) => void) | undefined;
   onOpenProjectFile: ((path: string) => void) | undefined;
 }): ReactElement {
+  const screenshot = item.name === "browser_control" && item.result !== null ? parseBrowserScreenshot(item.result) : null;
+  if (screenshot !== null) return <StructuredToolResult summary="网页截图"><p className="m-0">{screenshot.width} × {screenshot.height} · {screenshot.mimeType}</p></StructuredToolResult>;
   if (item.name === "request_user_input") {
     const questions: unknown = parseToolPayload(item.arguments)?.questions;
     const prompts: unknown[] = Array.isArray(questions) ? questions : [];
@@ -7779,6 +7796,7 @@ function ToolDetail({
   if (item.name === "run_command") {
     return (
       <CommandTerminal
+        writeClipboardText={(text) => agentClient.writeClipboardText(text)}
         argumentsPayload={item.arguments}
         resultPayload={item.result}
         status={item.status}
@@ -7790,6 +7808,7 @@ function ToolDetail({
   if (item.name === "wait_for_commands" || item.name === "stop_command") {
     return (
       <CommandLifecycleResult
+        writeClipboardText={(text) => agentClient.writeClipboardText(text)}
         mode={item.name === "wait_for_commands" ? "wait" : "stop"}
         payload={item.result}
         status={item.status}
@@ -7906,12 +7925,59 @@ function ToolDetail({
   return <ToolResultNotice result={item.result} status={item.status} />;
 }
 
+function parseBrowserScreenshot(payload: string): { width: number; height: number; mimeType: string } | null {
+  const result = parseToolValue(payload);
+  return result?.coordinateSpace === "screenshot_css_pixels" && typeof result.width === "number"
+    && typeof result.height === "number" && typeof result.mimeType === "string"
+    ? { width: result.width, height: result.height, mimeType: result.mimeType } : null;
+}
+
+export function toolHasDisplayableDetails(item: ConversationToolItem): boolean {
+  if (item.status === "failed" || item.status === "awaiting_approval" || item.diff !== null
+    || (item.result !== null && parseToolError(item.result) !== null)) return true;
+  if (item.name === "run_command") return true;
+  // File reads display their requested path and line range even before a result arrives.
+  if (item.name === "read_file" || item.name === "read_external_file") return true;
+  if (item.name === "request_user_input") {
+    const questions = parseToolPayload(item.arguments)?.questions;
+    return Array.isArray(questions) && questions.some((question: unknown) => isRecord(question)
+      && typeof question.question === "string" && question.question.trim().length > 0);
+  }
+  const payload = item.result;
+  if (payload === null) return false;
+  switch (item.name) {
+    case "wait_for_commands": return parseCommandLifecycleResult(payload, "wait") !== null;
+    case "stop_command": return parseCommandLifecycleResult(payload, "stop") !== null;
+    case "list_project_operations": return parseProjectOperationResult(payload, "list") !== null;
+    case "wait_for_project_operation": return parseProjectOperationResult(payload, "wait") !== null;
+    case "get_project_info": return parseProjectInfoResult(payload) !== null;
+    case "list_directory": return parseDirectoryListingResult(payload) !== null;
+    case "read_attachment": return parseAttachmentReadResult(payload) !== null;
+    case "view_attachments": return parseAttachmentViewResult(payload) !== null;
+    case "view_image": return item.status === "completed";
+    case "search_text": return parseSearchTextResult(payload) !== null;
+    case "web_search": return parseWebSearchResult(payload) !== null;
+    case "find_files": return parseFindFilesResult(payload) !== null;
+    case "list_agent_conversations": return parseAgentConversationListResult(payload) !== null;
+    case "read_agent_conversation": return parseAgentConversationReadResult(payload) !== null;
+    case "send_agent_message":
+    case "wait_for_agent_message": return parseAgentMessageToolResult(payload) !== null;
+    case "spawn_subagent":
+    case "list_subagents":
+    case "wait_for_subagents": return parseSubagentToolResult(payload) !== null;
+    case "browser_control": return parseBrowserScreenshot(payload) !== null;
+    default: return false;
+  }
+}
+
 function CommandTerminal({
+  writeClipboardText,
   argumentsPayload,
   liveOutput,
   resultPayload,
   status,
 }: {
+  writeClipboardText: (text: string) => Promise<void>;
   argumentsPayload: string;
   liveOutput?: LiveToolOutput;
   resultPayload: string | null;
@@ -7933,7 +7999,7 @@ function CommandTerminal({
           label={copied ? "已复制终端内容" : "复制终端内容"}
           size="compact"
           variant="quiet"
-          onClick={() => void copyTextWithFeedback(clipboardText, setCopied)}
+          onClick={() => void copyTextWithFeedback(clipboardText, setCopied, writeClipboardText)}
         >
           {copied ? <Check aria-hidden="true" size={15} /> : <Copy aria-hidden="true" size={15} />}
         </IconButton>
@@ -7951,10 +8017,12 @@ function CommandTerminal({
 }
 
 export function CommandLifecycleResult({
+  writeClipboardText,
   mode,
   payload,
   status,
 }: {
+  writeClipboardText: (text: string) => Promise<void>;
   mode: "stop" | "wait";
   payload: string | null;
   status: ConversationToolItem["status"];
@@ -7984,6 +8052,7 @@ export function CommandLifecycleResult({
       <div className="tool-command-session-list">
         {result.commands.map((command, index) => (
           <CommandTerminal
+            writeClipboardText={writeClipboardText}
             key={command.commandId ?? `${command.command}:${index}`}
             argumentsPayload={JSON.stringify({ command: command.command ?? "命令参数不可用" })}
             resultPayload={JSON.stringify({ ok: true, value: command })}
@@ -9134,9 +9203,10 @@ async function copyDiff(diff: string, setCopied: (copied: boolean) => void): Pro
 async function copyTextWithFeedback(
   text: string,
   setCopied: (copied: boolean) => void,
+  writeClipboardText = (value: string): Promise<void> => navigator.clipboard.writeText(value),
 ): Promise<void> {
   try {
-    await navigator.clipboard.writeText(text);
+    await writeClipboardText(text);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1_500);
   } catch {

@@ -6,10 +6,32 @@ import { describe, expect, it, vi } from "vitest";
 
 import { MediaPreviewDialogHost } from "../media/image-viewer.js";
 import { TooltipProvider } from "../ui/tooltip.js";
-import { AgentMarkdown, renderAgentMarkdown } from "./agent-markdown.js";
+import { AgentMarkdown, AgentMarkdownWorkspaceScope, renderAgentMarkdown } from "./agent-markdown.js";
 import agentMarkdownStyles from "./agent-markdown.css?inline";
 
 describe("AgentMarkdown", () => {
+  it("opens workspace file links through the editor callback while preserving external navigation", () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const onOpenFile = vi.fn();
+    const container = document.createElement("div"); document.body.append(container);
+    const root = createRoot(container);
+    act(() => root.render(createElement(AgentMarkdownWorkspaceScope, {
+      onOpenFile,
+      children: createElement(AgentMarkdown, { content: "[Java](QuickSortDegenerate.java) [Python](./quicksort_degenerate.py#L12) [JS](src/../quicksort-degenerate.js) [Web](https://example.com/docs)" }),
+    })));
+    const links = [...container.querySelectorAll("a")];
+    expect(links).toHaveLength(4);
+    for (const link of links.slice(0, 3)) {
+      const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+      act(() => { link.dispatchEvent(click); });
+      expect(click.defaultPrevented).toBe(true);
+    }
+    expect(onOpenFile.mock.calls).toEqual([["QuickSortDegenerate.java"], ["quicksort_degenerate.py"], ["quicksort-degenerate.js"]]);
+    const external = links[3]!;
+    expect(external.getAttribute("target")).toBe("_blank");
+    expect(external.getAttribute("href")).toBe("https://example.com/docs");
+    act(() => root.unmount()); container.remove(); vi.unstubAllGlobals();
+  });
   it("virtualizes large non-HTML blocks and copies the complete escaped source", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     const writeText = vi.fn().mockResolvedValue(undefined);
