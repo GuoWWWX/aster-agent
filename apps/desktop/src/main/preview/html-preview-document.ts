@@ -17,7 +17,7 @@ export function htmlPreviewDocument(source: string, id: string): string {
     const schedule = () => { clearTimeout(timer); timer = setTimeout(measure, 50); };
     function measure() {
       const body = document.body, root = document.documentElement;
-      if (!body) return;
+      if (!body || innerWidth === 0 || root.getBoundingClientRect().width === 0) return;
       // Viewport-sized roots must not cause a height -> viewport -> height loop.
       // Only override them while measuring natural content, then restore exactly.
       const saved = [root, body].flatMap(node => ['height', 'min-height'].map(property => ({

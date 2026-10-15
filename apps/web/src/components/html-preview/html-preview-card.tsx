@@ -50,13 +50,23 @@ function HtmlPreviewContent({ source, onRefresh, embedded, mode, requested, onMo
   }, [context, kind, value, requested]);
   useEffect(() => {
     if (preview === null || mode !== "preview") return;
+    const frame = frameRef.current;
+    if (frame === null) return;
+    let lastWidth = 0;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry === undefined) return;
+      const width = entry.contentRect.width;
+      if (width > 0 && width !== lastWidth) frame.contentWindow?.postMessage({ type: "html-preview.measure", id: preview.id }, "*");
+      lastWidth = width;
+    });
+    observer.observe(frame);
     const resize = (event: MessageEvent<unknown>): void => {
-      if (event.source !== frameRef.current?.contentWindow || event.origin !== "null") return;
+      if (event.source !== frame.contentWindow || event.origin !== "null" || frame.getBoundingClientRect().width === 0) return;
       const message = htmlPreviewResizeMessageSchema.safeParse(event.data);
       if (message.success && message.data.id === preview.id) setHeight(Math.max(192, message.data.height));
     };
     window.addEventListener("message", resize);
-    return () => window.removeEventListener("message", resize);
+    return () => { observer.disconnect(); window.removeEventListener("message", resize); };
   }, [preview, mode]);
   const sourceText = source.kind === "code" ? source.html : preview?.source;
   const title = source.kind === "file" ? source.path.split(/[\\/]/u).at(-1) : "html";

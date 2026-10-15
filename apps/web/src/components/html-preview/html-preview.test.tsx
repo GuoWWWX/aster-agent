@@ -123,11 +123,16 @@ describe("conversation HTML previews", () => {
   it("fits reported content height and only accepts bounded messages from its own sandbox", async () => {
     await render(<HtmlPreviewCard source={{ kind: "file", path: "demo.html" }} />);
     const frame = node.querySelector("iframe")!;
+    const bounds = vi.spyOn(frame, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 720, 320));
     const resize = (height: unknown, source: MessageEventSource | null = frame.contentWindow, id = result.id, origin = "null"): void => {
       act(() => { window.dispatchEvent(new MessageEvent("message", { source, origin, data: { type: "html-preview.resize", id, height } })); });
     };
     resize(720);
     expect(frame.style.height).toBe("720px");
+    bounds.mockReturnValue(new DOMRect());
+    resize(1);
+    expect(frame.style.height).toBe("720px");
+    bounds.mockReturnValue(new DOMRect(0, 0, 720, 720));
     for (const height of [-1, 0, 1_000_000, NaN, "900"]) resize(height);
     resize(900, window);
     resize(900, frame.contentWindow, "00000000-0000-4000-8000-000000000099");
@@ -139,6 +144,35 @@ describe("conversation HTML previews", () => {
     await click("刷新 HTML 预览");
     resize(999);
     expect(node.querySelector("iframe")?.style.height).not.toBe("999px");
+  });
+
+  it("remeasures a cached preview when its container becomes visible without recreating it", async () => {
+    let callback: ResizeObserverCallback = () => {};
+    const disconnect = vi.fn();
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(next: ResizeObserverCallback) { callback = next; }
+      observe() {}
+      disconnect = disconnect;
+    });
+    await render(<HtmlPreviewCard source={{ kind: "file", path: "demo.html" }} />);
+    const frame = node.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    const observer: ResizeObserver = { observe() {}, unobserve() {}, disconnect };
+    const notify = (width: number): void => {
+      act(() => callback([{ contentRect: new DOMRect(0, 0, width, 320), target: frame, borderBoxSize: [], contentBoxSize: [], devicePixelContentBoxSize: [] }], observer));
+    };
+    notify(720);
+    expect(post).toHaveBeenLastCalledWith({ type: "html-preview.measure", id: result.id }, "*");
+    post.mockClear();
+    notify(0);
+    expect(post).not.toHaveBeenCalled();
+    notify(720);
+    expect(post).toHaveBeenCalledTimes(1);
+    notify(720);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls.filter(([input]) => input.kind === "file")).toHaveLength(1);
+    await click("源码");
+    expect(disconnect).toHaveBeenCalled();
   });
 
   it("releases late responses after unmount and lets failed file previews retry", async () => {
