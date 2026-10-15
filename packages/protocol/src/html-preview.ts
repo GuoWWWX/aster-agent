@@ -1,4 +1,15 @@
 import { z } from "zod";
+import { relativeProjectPathSchema } from "./project.js";
+
+export const presentHtmlInputSchema = z.object({
+  path: relativeProjectPathSchema.min(1).max(4096)
+    .refine(value => /\.html?$/iu.test(value) && !/[:?#\r\n]/u.test(value), "Use a workspace-relative HTML file path.")
+    .describe("Existing HTML entry file relative to the current conversation workspace. Present this file as the final delivery; do not use for ordinary HTML edits."),
+}).strict();
+export const htmlPresentationResultSchema = z.object({
+  ok: z.literal(true),
+  value: z.object({ presentation: presentHtmlInputSchema.extend({ kind: z.literal("html") }).strict() }).strict(),
+}).strict();
 
 const owner = { conversationId: z.string().uuid() };
 export const htmlPreviewRequestSchema = z.discriminatedUnion("kind", [

@@ -21,8 +21,9 @@ describe("prompt assets", () => {
     expect(BASE_SYSTEM_PROMPT).toContain("# Command and Terminal Choice");
     expect(BASE_SYSTEM_PROMPT).toContain("# Browser Choice");
     expect(BASE_SYSTEM_PROMPT).toContain("# HTML Presentations");
-    expect(BASE_SYSTEM_PROMPT).toContain("language `html-preview` containing only the existing HTML entry file's workspace-relative path");
-    expect(BASE_SYSTEM_PROMPT).toContain("Tool records show file changes, never automatic page previews");
+    expect(BASE_SYSTEM_PROMPT).toContain("call `present_html` with the existing entry file's workspace-relative `path`");
+    expect(BASE_SYSTEM_PROMPT).toContain("File-edit tool records show only their diffs");
+    expect(BASE_SYSTEM_PROMPT).toContain("It starts in source mode and the user can click Preview");
     expect(BASE_SYSTEM_PROMPT).toContain("# Conflict Recovery");
     expect(BASE_SYSTEM_PROMPT).toContain(
       "The application language is Simplified Chinese (zh-CN).",

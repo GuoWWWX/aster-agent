@@ -132,7 +132,7 @@ it.each([
   { name: "streaming code", content: "```html\n<h1>动画</h1>\n```", status: "streaming" as const, intermediate: false, kind: null },
   { name: "failed code", content: "```html\n<h1>动画</h1>\n```", status: "failed" as const, intermediate: false, kind: null },
   { name: "intermediate code", content: "```html\n<h1>动画</h1>\n```", status: "completed" as const, intermediate: true, kind: null },
-])("automatically presents only completed final HTML: $name", async ({ content, status, intermediate, kind }) => {
+])("keeps Markdown HTML source until the user clicks preview: $name", async ({ content, status, intermediate }) => {
   const client = new MockAgentClient();
   const message: ConversationTimelineItem = { id: MESSAGE_ID, kind: "message", conversationId: PARENT_ID,
     runId: RUN_ID, attachments: [], modelId: null, role: "assistant", status, content, createdAt: "2026-10-15T00:00:00Z" };
@@ -148,15 +148,35 @@ it.each([
   await act(async () => { root?.render(render(RUN_ID)); await flushConversationWorkspace(); });
   expect(preview).not.toHaveBeenCalled();
   await act(async () => { root?.render(render(null)); await flushConversationWorkspace(); });
-  if (kind === null) {
-    expect(preview).not.toHaveBeenCalled();
-    expect(container.querySelector("iframe")).toBeNull();
-  } else {
-    expect(preview).toHaveBeenCalledTimes(1);
-    expect(preview.mock.calls[0]?.[0]).toMatchObject({ kind, conversationId: PARENT_ID });
-    expect(container.querySelectorAll("iframe")).toHaveLength(1);
-    expect(container.querySelector('[aria-label="关闭 HTML 预览"]')).toBeNull();
-  }
+  expect(preview).not.toHaveBeenCalled();
+  expect(container.querySelector("iframe")).toBeNull();
+});
+
+it("shows a successful presentation tool as the final delivery outside the work process", async () => {
+  const client = new MockAgentClient();
+  const tool: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID,
+    batchId: null, name: "present_html", status: "completed", arguments: '{"path":"examples/demo.html"}',
+    result: JSON.stringify({ ok: true, value: { presentation: { kind: "html", path: "examples/demo.html" } } }),
+    diff: null, createdAt: "2026-10-15T00:00:00Z" };
+  const answer: ConversationTimelineItem = { id: MESSAGE_ID, kind: "message", conversationId: PARENT_ID,
+    runId: RUN_ID, attachments: [], modelId: null, role: "assistant", status: "completed", content: "页面已完成。", createdAt: "2026-10-15T00:00:01Z" };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool, answer]);
+  const preview = vi.spyOn(client, "htmlPreview").mockImplementation(input => Promise.resolve(input.kind === "file"
+    ? { id: TOOL_ID, title: "demo.html", url: "http://127.0.0.1:1234/token/demo.html", source: "<h1>动画</h1>" } : null));
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  const render = (activeRunId: string | null) => <TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+    session={session({ id: PARENT_ID, title: "HTML 最终交付", activeRunId })} /></TooltipProvider>;
+  await act(async () => { root?.render(render(RUN_ID)); await flushConversationWorkspace(); });
+  expect(preview).not.toHaveBeenCalled();
+  await act(async () => { root?.render(render(null)); await flushConversationWorkspace(); });
+  expect(preview).toHaveBeenCalledWith({ kind: "file", conversationId: PARENT_ID, path: "examples/demo.html" });
+  expect(container.querySelectorAll("iframe")).toHaveLength(1);
+  const card = container.querySelector('[data-html-delivery]');
+  expect(card?.closest(".conversation-run-activity")).toBeNull();
+  expect(container.textContent.indexOf("页面已完成。")).toBeLessThan(container.textContent.indexOf("demo.html"));
+  expandWorkProcess(container);
+  expect(container.querySelectorAll("iframe")).toHaveLength(1);
+  expect(container.querySelector('.conversation-run-activity iframe')).toBeNull();
 });
 
 it("shows an answered question without an agent label and opens the original prompt", async () => {

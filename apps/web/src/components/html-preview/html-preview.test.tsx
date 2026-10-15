@@ -62,31 +62,12 @@ describe("conversation HTML previews", () => {
     expect(request.mock.calls.filter(([input]) => input.kind === "release")).toHaveLength(1);
   });
 
-  it("presents complete final HTML without loading incomplete or intermediate output", async () => {
-    const content = "```html\n<h1>页面</h1>\n```";
-    await render(<AgentMarkdown content={content} />);
-    expect(request).not.toHaveBeenCalled();
-    await render(<AgentMarkdown content={content} presentHtml />);
-    expect(node.querySelector("iframe")).not.toBeNull();
-    expect(node.querySelector("pre")).toBeNull();
-    await render(<AgentMarkdown content={"```html\n<h1>未结束"} presentHtml />);
-    expect(node.querySelector("iframe")).toBeNull();
-    expect(request.mock.calls.filter(([input]) => input.kind === "code")).toHaveLength(1);
-  });
-
-  it("presents a saved file only through an explicit final HTML reference", async () => {
+  it("does not treat a Markdown file marker as a presentation tool call", async () => {
     const content = "页面已保存。\n\n```html-preview\npages/demo.html\n```";
     await render(<AgentMarkdown content={content} />);
     expect(request).not.toHaveBeenCalled();
-    await render(<AgentMarkdown content={content} presentHtml />);
-    expect(request).toHaveBeenCalledWith({ kind: "file", conversationId, path: "pages/demo.html" });
-    expect(node.querySelectorAll("iframe")).toHaveLength(1);
-    await click("源码");
-    expect(node.querySelector("code")?.textContent).toBe(result.source);
     expect(node.querySelector("iframe")).toBeNull();
-    await render(<AgentMarkdown content={"```html-preview\nhttps://example.com/demo.html\n```"} presentHtml />);
-    expect(node.querySelector("iframe")).toBeNull();
-    expect(request.mock.calls.filter(([input]) => input.kind === "file")).toHaveLength(1);
+    expect(node.querySelector("code")?.textContent).toBe("pages/demo.html\n");
   });
 
   it("switches each HTML fence independently without nesting cards or losing copy", async () => {

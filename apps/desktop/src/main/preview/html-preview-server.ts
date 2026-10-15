@@ -5,7 +5,7 @@ import path from "node:path";
 import { htmlPreviewRequestSchema, htmlPreviewSchema, type HtmlPreview, type HtmlPreviewRequest } from "@agent/protocol";
 import { htmlPreviewDocument } from "./html-preview-document.js";
 
-const MAX_BYTES = 1_000_000;
+import { containedPreviewPath, readHtmlPreviewFile, HTML_PREVIEW_MAX_BYTES as MAX_BYTES } from "./html-preview-file.js";
 const TYPES: Record<string, string> = { ".css": "text/css", ".js": "text/javascript", ".mjs": "text/javascript", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf" };
 const POLICY = "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
 type Entry = { owner: string; preview: HtmlPreview; server: Server; references: number };
@@ -29,9 +29,9 @@ export class HtmlPreviewServer {
     const generation = this.generation;
     try {
       const root = input.kind === "file" ? await realpath(await this.workspaceRoot(input.conversationId)) : null;
-      const entryPath = input.kind === "file" && root !== null ? await containedPath(root, input.path) : null;
-      if (entryPath !== null && !/\.html?$/iu.test(entryPath)) throw new Error("只能预览 HTML 文件。");
-      const source = input.kind === "code" ? input.html : await readHtml(entryPath!);
+      const file = input.kind === "file" && root !== null ? await readHtmlPreviewFile(root, input.path) : null;
+      const entryPath = file?.path ?? null;
+      const source = input.kind === "code" ? input.html : file!.source;
       if (Buffer.byteLength(source) > MAX_BYTES || source.includes("\0")) throw new Error("HTML 文件格式无效或过大。");
       if (this.disposed || generation !== this.generation) throw new Error("HTML 预览服务已关闭。");
       const relativeEntry = root === null || entryPath === null ? "index.html" : path.relative(root, entryPath).split(path.sep).join("/");
@@ -86,30 +86,11 @@ export class HtmlPreviewServer {
     let body: string | Buffer;
     if (isEntry) body = context.source;
     else {
-      const file = await containedPath(context.root!, relative);
+      const file = await containedPreviewPath(context.root!, relative);
       if ((await stat(file)).size > 10_000_000) throw new Error("Asset too large.");
       body = await readFile(file);
     }
     res.writeHead(200, { "Content-Type": type, "Content-Security-Policy": POLICY, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff", "Access-Control-Allow-Origin": "*" });
     res.end(req.method === "HEAD" ? undefined : body);
   }
-}
-
-async function containedPath(root: string, value: string): Promise<string> {
-  const candidate = path.resolve(root, value);
-  const relative = path.relative(root, candidate);
-  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
-    || relative.split(path.sep).some(segment => segment.startsWith(".") || segment.includes(":"))) throw new Error("预览资源超出允许目录。");
-  const canonical = await realpath(candidate);
-  const canonicalRelative = path.relative(root, canonical);
-  if (canonicalRelative === ".." || canonicalRelative.startsWith(`..${path.sep}`) || path.isAbsolute(canonicalRelative)
-    || canonicalRelative.split(path.sep).some(segment => segment.startsWith("."))) throw new Error("预览资源超出允许目录。");
-  if (!(await stat(canonical)).isFile()) throw new Error("Preview target is not a file.");
-  return canonical;
-}
-async function readHtml(file: string): Promise<string> {
-  if ((await stat(file)).size > MAX_BYTES) throw new Error("HTML 预览文件不能超过 1 MB。");
-  const content = await readFile(file, "utf8");
-  if (content.includes("\0") || Buffer.byteLength(content) > MAX_BYTES) throw new Error("HTML 文件格式无效或过大。");
-  return content;
 }

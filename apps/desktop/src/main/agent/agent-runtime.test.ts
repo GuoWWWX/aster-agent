@@ -1723,6 +1723,47 @@ class ModelBackedContextCompactorFixture implements ModelProviderAdapter {
 }
 
 describe("AgentRuntime", () => {
+  it.each([{ temporary: false, blocked: false }, { temporary: true, blocked: false }, { temporary: false, blocked: true }])("persists present_html with workspace policy (temporary=$temporary, blocked=$blocked)", async ({ temporary, blocked }) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-present-html-"));
+    temporaryDirectories.push(directory);
+    await writeFile(path.join(directory, "demo.html"), "<h1>交付</h1>");
+    const databasePath = path.join(directory, "state.sqlite");
+    const database = new AgentDatabase(databasePath);
+    const projects = new ProjectRegistry(database);
+    const project = temporary ? null : await projects.registerDirectory(directory);
+    const conversation = database.createConversation(project?.id ?? null);
+    if (temporary) await projects.mountConversationWorkspace(conversation.id, directory);
+    const requests: CompleteTurnInput[] = [];
+    const model: ModelProviderAdapter = { completeTurn(input) {
+      requests.push({ ...input, messages: [...input.messages] });
+      if (requests.length === 1) return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [
+        { id: "present-page", name: "present_html", arguments: '{"path":"demo.html"}' },
+      ] });
+      input.onTextDelta("页面已交付");
+      return Promise.resolve({ content: "页面已交付", finishReason: "stop", toolCalls: [] });
+    } };
+    let settings = structuredClone(DEFAULT_APPLICATION_SETTINGS);
+    if (blocked) settings.permissionPolicies["workspace-read"] = "unavailable";
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({ apiKey: "secret", apiFormat: "openai-chat-completions",
+      baseUrl: "https://example.test/v1", modelId: "test-model", reasoningOptions: [] }) }, projects, new ProjectToolRegistry(projects), model,
+      undefined, undefined, null, null, null, null, null, undefined, { getConfiguration: () => settings, saveConfiguration: next => { settings = next; return settings; } });
+    await new Promise<void>(resolve => {
+      runtime.sendMessage({ conversationId: conversation.id, content: "把页面展示给我", permissionMode: "read_only" }, event => {
+        expect(event.type).not.toBe("tool.approval_requested");
+        if (event.type === "run.finished") resolve();
+      });
+    });
+    expect(requests[0]?.tools.some(tool => tool.name === "present_html")).toBe(true);
+    const entry = database.listTimeline(conversation.id).find(item => item.kind === "tool" && item.name === "present_html");
+    expect(entry).toMatchObject({ status: blocked ? "failed" : "completed", executionMode: "serial" });
+    const result = requests[1]?.messages.find(message => message.role === "tool" && message.toolCallId === "present-page")?.content;
+    if (blocked) expect(result).not.toContain('"presentation"');
+    else expect(result).toContain('"kind":"html"');
+    database.close();
+    const reopened = new AgentDatabase(databasePath);
+    expect(reopened.listTimeline(conversation.id).find(item => item.id === entry?.id)).toEqual(entry);
+    reopened.close();
+  });
   it("registers terminal_control for a project conversation and returns the resolved tab name", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-open-terminal-"));
     temporaryDirectories.push(root);
@@ -2789,6 +2830,7 @@ describe("AgentRuntime", () => {
       "list_background_commands",
       "list_models",
       "list_subagents",
+      "present_html",
       "read_agent_conversation",
       "read_external_file",
       "request_user_input",

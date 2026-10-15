@@ -170,15 +170,10 @@ renderer.renderer.rules.fence = (tokens, index, _options, environment: unknown) 
   ).join("") : highlightCode(source, language);
   const label = /^(powershell|pwsh|ps1|ps)$/iu.test(language) ? "PowerShell"
     : language.toLowerCase() === "bash" ? "Bash" : language;
-  const htmlPreview = /^(?:html?|html-preview)$/iu.test(language) && typeof environment === "object" && environment !== null && "htmlPreview" in environment && environment.htmlPreview === true
+  const htmlPreview = /^html?$/iu.test(language) && typeof environment === "object" && environment !== null && "htmlPreview" in environment && environment.htmlPreview === true
     && token?.map != null && "markdown" in environment && typeof environment.markdown === "string"
     && isClosedFence(environment.markdown.split("\n")[token.map[1] - 1] ?? "", token.markup);
-  const filePreview = language.toLowerCase() === "html-preview";
-  const filePath = source.trim();
-  const canPresentFile = filePreview && typeof environment === "object" && environment !== null && "presentHtml" in environment && environment.presentHtml === true
-    && filePath.length > 0 && filePath.length <= 4096 && /\.html?$/iu.test(filePath)
-    && !/[\r\n]/u.test(filePath) && !/^(?:[a-z][a-z\d+.-]*:|[\\/])/iu.test(filePath) && !filePath.split(/[\\/]/u).includes("..");
-  if (htmlPreview && (!filePreview || canPresentFile)) return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><template data-html-code-source${filePreview ? " data-html-file-path" : ""}>${renderer.utils.escapeHtml(filePreview ? filePath : source)}</template><div data-html-code-preview-slot></div></div>\n`;
+  if (htmlPreview) return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><template data-html-code-source>${renderer.utils.escapeHtml(source)}</template><div data-html-code-preview-slot></div></div>\n`;
   return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><div class="agent-markdown__code-header"><span>${renderer.utils.escapeHtml(label)}</span><button aria-label="复制代码" title="复制代码" class="agent-markdown__code-copy" data-action="copy-code" type="button">${copyIcon}</button></div><pre><code class="hljs">${highlightedSource}</code></pre></div>\n`;
 };
 
@@ -197,18 +192,18 @@ renderer.renderer.rules.image = (tokens, index, options, environment, self) => {
   return caption == null ? renderedImage : `<figure>${renderedImage}<figcaption>${renderer.utils.escapeHtml(String(caption))}</figcaption></figure>`;
 };
 
-export function AgentMarkdown({ content, presentHtml = false }: { content: string; presentHtml?: boolean }): ReactElement {
-  return <AgentMarkdownContent key={`${presentHtml}:${content}`} content={content} presentHtml={presentHtml} />;
+export function AgentMarkdown({ content }: { content: string }): ReactElement {
+  return <AgentMarkdownContent key={content} content={content} />;
 }
 
-function AgentMarkdownContent({ content, presentHtml }: { content: string; presentHtml: boolean }): ReactElement {
+function AgentMarkdownContent({ content }: { content: string }): ReactElement {
   const hostRef = useRef<HTMLDivElement>(null);
-  const [codePreviews, setCodePreviews] = useState<Array<{ source: HtmlPreviewSource; mount: Element }>>([]);
+  const [codePreviews, setCodePreviews] = useState<Array<{ source: string; mount: Element }>>([]);
   const theme = useWorkbenchUiStore((state) => state.themeMode);
   const previewContext = useContext(HtmlPreviewContext);
   const [activePreview, setActivePreview] = useState<{ source: HtmlPreviewSource; mount: Element } | null>(null);
   const canPreview = previewContext !== null;
-  const html = useMemo(() => renderAgentMarkdown(content, canPreview, presentHtml), [content, canPreview, presentHtml]);
+  const html = useMemo(() => renderAgentMarkdown(content, canPreview), [content, canPreview]);
   // Keep parser-owned DOM intact on theme changes: native details state, source
   // toggles and diagram height must survive while the next SVG is rendering.
   const markup = useMemo(() => ({ __html: html }), [html]);
@@ -217,9 +212,7 @@ function AgentMarkdownContent({ content, presentHtml }: { content: string; prese
     if (host === null) return;
     const previews = [...host.querySelectorAll<HTMLTemplateElement>("[data-html-code-source]")].flatMap(template => {
       const mount = template.parentElement?.querySelector("[data-html-code-preview-slot]");
-      const value = template.content.textContent ?? "";
-      const source: HtmlPreviewSource = template.hasAttribute("data-html-file-path") ? { kind: "file", path: value } : { kind: "code", html: value };
-      return mount == null ? [] : [{ source, mount }];
+      return mount == null ? [] : [{ source: template.content.textContent ?? "", mount }];
     });
     if (previews.length > 0) setCodePreviews(previews);
   }, []);
@@ -304,7 +297,7 @@ function AgentMarkdownContent({ content, presentHtml }: { content: string; prese
       onClick={handleClick}
       onKeyDown={handleKeyDown}
     />
-    {codePreviews.map((preview, index) => createPortal(<HtmlPreviewCard source={preview.source} embedded initialMode={presentHtml ? "preview" : "source"} />, preview.mount, String(index)))}
+    {codePreviews.map((preview, index) => createPortal(<HtmlPreviewCard source={{ kind: "code", html: preview.source }} embedded initialMode="source" />, preview.mount, String(index)))}
     {activePreview !== null ? createPortal(<HtmlPreviewCard key={activePreview.source.kind === "file" ? activePreview.source.path : activePreview.source.html} source={activePreview.source} />, activePreview.mount) : null}
   </>);
 }
@@ -314,8 +307,8 @@ function isClosedFence(line: string, opening: string): boolean {
   return closing !== undefined && closing[0] === opening[0] && closing.length >= opening.length;
 }
 
-export function renderAgentMarkdown(content: string, htmlPreview = false, presentHtml = false): string {
+export function renderAgentMarkdown(content: string, htmlPreview = false): string {
   const extracted = extractExplicitImageCaptions(separateMarkdownCallouts(content));
   const markdown = normalizeAdjacentBoldTableCaptions(extracted.markdown);
-  return renderer.render(markdown, { markdown, htmlPreview, presentHtml, imageCaptions: extracted.captionsByImageIndex }) + (htmlPreview ? '<div data-html-file-preview-slot></div>' : "");
+  return renderer.render(markdown, { markdown, htmlPreview, imageCaptions: extracted.captionsByImageIndex }) + (htmlPreview ? '<div data-html-file-preview-slot></div>' : "");
 }

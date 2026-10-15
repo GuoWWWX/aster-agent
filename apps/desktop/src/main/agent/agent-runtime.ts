@@ -1,3 +1,4 @@
+import { HtmlPresentationTool } from "../tools/html-presentation-tool.js";
 import { createHash, randomUUID } from "node:crypto";
 import { UserQuestionService } from "./user-question-service.js";
 import { UserQuestionTool } from "./user-question-tool.js";
@@ -618,6 +619,7 @@ const DEFAULT_APPLICATION_PERMISSION_POLICIES: ApplicationPermissionPolicies = {
 };
 
 const PROJECT_READ_TOOL_NAMES = new Set([
+  "present_html",
   "list_directory",
   "read_file",
   "view_image",
@@ -1239,7 +1241,17 @@ export class AgentRuntime {
   }
 
   private createToolHandlerRegistry(): ToolHandlerRegistry<RuntimeToolContext> {
+    const htmlPresentationTool = new HtmlPresentationTool(async conversationId => {
+      const conversation = this.database.getConversation(conversationId);
+      return (await this.projects.ensureWorkspaceRoot(conversation.projectId ?? conversation.id)).rootPath;
+    });
     const handlers: ToolHandler<RuntimeToolContext>[] = [
+      {
+        execute: ({ context, rawArguments }) => htmlPresentationTool.execute(context.conversationId, rawArguments, context.signal),
+        getDefinitions: () => htmlPresentationTool.getDefinitions(),
+        getExecutionPolicy: () => ({ kind: "serial" }),
+        isAvailable: () => true,
+      },
       {
         execute: ({ context, rawArguments, toolName }) => this.userQuestionTool.execute({ toolName, rawArguments,
           conversationId: context.conversationId, runId: context.runId, toolCallId: context.toolCallId ?? context.runId, signal: context.signal, emit: context.emit }),

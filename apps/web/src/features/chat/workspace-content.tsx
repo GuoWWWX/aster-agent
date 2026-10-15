@@ -1,4 +1,5 @@
-import { HtmlPreviewScope } from "../../components/html-preview/html-preview-card.js";
+import { htmlPresentationDeliveries } from "./html-presentations.js";
+import { HtmlPreviewCard, HtmlPreviewScope } from "../../components/html-preview/html-preview-card.js";
 import { QueryTextarea } from "./query-textarea.js";
 import { UserMessageContent } from "./user-message-content.js";
 import { createPastedTextAttachment } from "./pasted-text-attachment.js";
@@ -2961,6 +2962,7 @@ export function ConversationWorkspace({
   const displayTimeline = groupRunActivities(
     projectSubagentMessagesForParentTimeline(timeline, subagentConversationIds),
   );
+  const htmlDeliveries = htmlPresentationDeliveries(timeline, displayTimeline, activeRunId);
   const locateQuestion = async (question: UserQuestion): Promise<void> => {
     try {
       const visibleTool = question.conversationId === session.id
@@ -3346,6 +3348,11 @@ export function ConversationWorkspace({
                       />
                     </div>
                   )}
+                  {(htmlDeliveries.get(item.id) ?? []).map(delivery => (
+                    <div className="chat-message-group" data-role="assistant" data-html-delivery={delivery.id} key={delivery.id}>
+                      <HtmlPreviewCard source={{ kind: "file", path: delivery.path }} />
+                    </div>
+                  ))}
                   {submittedTeamWorkItems(item).map((workItem) => (
                     <CollaborationProjectionGraph
                       agentClient={agentClient}
@@ -6013,7 +6020,7 @@ function TimelineItem({
             <>
               {item.continuationMessages !== undefined ? item.continuationMessages.map((message) => (
                 <div key={message.id} data-conversation-timeline-item={message.id}>
-                  <AgentMarkdown content={stripLeadingThinkingSummary(message.content)} presentHtml={canShowCompletionTime && message.id === item.continuationMessages?.at(-1)?.id && message.runId !== activeRunId && message.status === "completed"} />
+                  <AgentMarkdown content={stripLeadingThinkingSummary(message.content)} />
                 </div>
               )) : <>
               {renderedReasoningContent.length > 0 ? (
@@ -6024,7 +6031,7 @@ function TimelineItem({
                 />
               ) : null}
               {renderedMessageContent.length > 0
-                ? <AgentMarkdown content={renderedMessageContent} presentHtml={canShowCompletionTime && item.runId !== activeRunId && item.status === "completed"} />
+                ? <AgentMarkdown content={renderedMessageContent} />
                 : null}
               </>}
             </>
@@ -7219,6 +7226,7 @@ function ToolTypeIcon({ name }: { name: string }): ReactElement {
     case "find_files":
       return <FileSearch aria-hidden="true" size={15} />;
     case "browser_control":
+    case "present_html":
       return <Globe2 aria-hidden="true" size={15} />;
     case "read_attachment":
       return <Paperclip aria-hidden="true" size={15} />;
@@ -7371,6 +7379,8 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
       return completed ? "已读取附件" : "读取附件";
     case "view_image":
       return `${completed ? "已查看图片" : "查看图片"} ${path === null ? "" : fileNameFromPath(path)}`.trim();
+    case "present_html":
+      return `${completed ? "已展示" : "展示"} HTML${path === null ? "" : ` · ${path}`}`;
     case "view_attachments": {
       if (Array.isArray(argumentsValue?.paths)) return `${completed ? "已查看" : "查看"} ${argumentsValue.paths.length} 张图片`;
       const attachmentIds = Array.isArray(argumentsValue?.attachment_ids)
