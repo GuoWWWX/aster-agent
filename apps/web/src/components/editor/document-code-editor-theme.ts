@@ -138,10 +138,14 @@ const darkHighlight = HighlightStyle.define([
   { tag: [tags.link, tags.url], color: "#93c5fd", textDecoration: "underline" },
 ], { themeType: "dark" });
 
+export function documentCodeHighlighting(isDark: boolean): Extension {
+  return syntaxHighlighting(isDark ? darkHighlight : lightHighlight);
+}
+
 export function documentCodeEditorTheme(isDark: boolean): Extension {
   return [
     sharedTheme,
     isDark ? darkTheme : lightTheme,
-    syntaxHighlighting(isDark ? darkHighlight : lightHighlight),
+    documentCodeHighlighting(isDark),
   ];
 }

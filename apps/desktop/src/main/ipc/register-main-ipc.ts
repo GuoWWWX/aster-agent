@@ -397,13 +397,17 @@ export function registerMainIpcHandlers(
       if (retained) { retained = false; htmlPreviews.release(input.id, input.conversationId); }
     };
     try {
-      const session = await managedBrowser.open({ url: preview.url }, { isolated: true, onClose: release });
+      const session = await managedBrowser.open({}, { isolated: true, onClose: release });
       sessionId = session.sessionId;
       await workspaceBrowserTabs.open({ conversationId: conversation.id, projectId: conversation.projectId ?? conversation.id,
         requestedName: preview.title, session, signal: new AbortController().signal });
+      await managedBrowser.navigate({ sessionId, url: preview.url });
       return null;
     } catch (error) {
-      if (sessionId !== undefined) managedBrowser.close({ sessionId });
+      if (sessionId !== undefined) {
+        workspaceBrowserTabs.close({ conversationId: conversation.id, sessionId });
+        managedBrowser.close({ sessionId });
+      }
       release();
       throw error;
     }

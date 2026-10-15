@@ -40,7 +40,7 @@ describe("conversation HTML previews", () => {
     await render(<AgentMarkdown content={"```html\n<h1>页面</h1>\n```"} />);
     const block = node.querySelector(".agent-markdown__code-block");
     expect(block?.querySelectorAll("header")).toHaveLength(1);
-    expect(block?.querySelector("pre")?.textContent).toBe("<h1>页面</h1>\n");
+    expect(block?.querySelector(".cm-content")?.textContent).toBe("<h1>页面</h1>");
     expect(request).not.toHaveBeenCalled();
     await click("预览 HTML");
     expect(request).toHaveBeenCalledWith({ kind: "code", conversationId, html: "<h1>页面</h1>\n" });
@@ -50,16 +50,19 @@ describe("conversation HTML previews", () => {
     expect(block?.querySelectorAll("header")).toHaveLength(1);
     expect(block?.querySelector("section section")).toBeNull();
     expect(block?.querySelector("pre")).toBeNull();
-    await click("源码");
-    expect(node.querySelector('section code')?.textContent).toBe("<h1>页面</h1>\n");
+    expect(block?.querySelector('[aria-label="显示源码"] .lucide-code-xml')).not.toBeNull();
+    expect(block?.querySelector('[aria-label="刷新 HTML 预览"]')).toBeNull();
+    await click("显示源码");
+    expect(node.querySelector('.cm-content')?.textContent).toBe("<h1>页面</h1>");
     expect(node.querySelector('section h1')).toBeNull();
     expect(node.querySelector("iframe")).toBeNull();
     await click("在侧边浏览器打开 HTML");
     expect(request).toHaveBeenCalledWith({ kind: "browser", conversationId, id: result.id });
-    await click("刷新 HTML 预览");
+    expect(block?.querySelector('[aria-label="预览 HTML"] .lucide-play')).not.toBeNull();
+    await click("预览 HTML");
     expect(request.mock.calls.filter(([input]) => input.kind === "code")).toHaveLength(2);
     expect(node.querySelector('[aria-label="关闭 HTML 预览"]')).toBeNull();
-    expect(block?.querySelector("pre")?.textContent).toBe("<h1>页面</h1>\n");
+    expect(block?.querySelector(".cm-editor")).toBeNull();
     expect(block?.querySelectorAll("header")).toHaveLength(1);
     expect(request.mock.calls.filter(([input]) => input.kind === "release")).toHaveLength(1);
   });
@@ -87,13 +90,16 @@ describe("conversation HTML previews", () => {
     expect(node.querySelector("iframe")).not.toBeNull();
   });
 
-  it("highlights ordinary HTML once and reuses it across unrelated parent updates", async () => {
+  it("reuses a highlighted HTML source editor across unrelated parent updates", async () => {
     const highlight = vi.spyOn(highlighter, "highlightCode");
     const content = "```html\n<h1>示例</h1>\n```";
     await render(<AgentMarkdown content={content} />);
-    expect(highlight).toHaveBeenCalledTimes(1);
+    const editor = node.querySelector(".cm-editor");
+    expect(editor).not.toBeNull();
+    expect(editor?.querySelector(".cm-line span[class]")).not.toBeNull();
     await render(<AgentMarkdown content={content} />);
-    expect(highlight).toHaveBeenCalledTimes(1);
+    expect(node.querySelector(".cm-editor")).toBe(editor);
+    expect(highlight).not.toHaveBeenCalled();
   });
 
   it("switches each HTML fence independently without nesting cards or losing copy", async () => {
@@ -105,7 +111,7 @@ describe("conversation HTML previews", () => {
     await act(async () => { blocks[0]!.querySelector<HTMLButtonElement>('[aria-label="预览 HTML"]')!.click(); await Promise.resolve(); });
     expect(blocks[0]!.querySelector("iframe")).not.toBeNull();
     expect(blocks[0]!.querySelector("pre")).toBeNull();
-    expect(blocks[1]!.querySelector("pre")?.textContent).toBe("<p>第二个</p>\n");
+    expect(blocks[1]!.querySelector(".cm-content")?.textContent).toBe("<p>第二个</p>");
     await act(async () => { blocks[0]!.querySelector<HTMLButtonElement>('[aria-label="复制代码"]')!.click(); await Promise.resolve(); });
     expect(writeText).toHaveBeenCalledWith("<p>第一个</p>\n");
     expect([...blocks].every(block => block.querySelectorAll("header").length === 1)).toBe(true);
@@ -132,7 +138,7 @@ describe("conversation HTML previews", () => {
     resize(720);
     expect(frame.style.height).toBe("720px");
     resize(20_000);
-    expect(frame.style.height).toBe("1200px");
+    expect(frame.style.height).toBe("800px");
     resize(720);
     bounds.mockReturnValue(new DOMRect());
     resize(1);
@@ -146,7 +152,8 @@ describe("conversation HTML previews", () => {
     resize(430);
     expect(frame.style.height).toBe("430px");
     expect(frame.parentElement?.className).not.toContain("resize-y");
-    await click("刷新 HTML 预览");
+    await click("显示源码");
+    await click("预览 HTML");
     resize(999);
     expect(node.querySelector("iframe")?.style.height).not.toBe("999px");
   });
@@ -176,7 +183,7 @@ describe("conversation HTML previews", () => {
     notify(720);
     expect(post).toHaveBeenCalledTimes(1);
     expect(request.mock.calls.filter(([input]) => input.kind === "file")).toHaveLength(1);
-    await click("源码");
+    await click("显示源码");
     expect(disconnect).toHaveBeenCalled();
   });
 
@@ -191,11 +198,12 @@ describe("conversation HTML previews", () => {
     await render(<HtmlPreviewCard source={{ kind: "file", path: "demo.html" }} />);
     expect(node.querySelector('header [aria-label="HTML 预览错误"]')).not.toBeNull();
     expect(node.querySelector('[role="alert"]')).toBeNull();
-    await click("刷新 HTML 预览");
+    await click("显示源码");
+    await click("预览 HTML");
     expect(node.querySelector("iframe")).not.toBeNull();
-    await click("源码");
+    await click("显示源码");
     expect(node.querySelector("iframe")).toBeNull();
-    await click("预览");
+    await click("预览 HTML");
     expect(node.querySelector("iframe")).not.toBeNull();
   });
 
@@ -206,12 +214,39 @@ describe("conversation HTML previews", () => {
     await click("在侧边浏览器打开 HTML");
     const error = node.querySelector<HTMLButtonElement>('header [aria-label="HTML 预览错误"]');
     expect(error).not.toBeNull();
-    expect(error?.nextElementSibling?.textContent).toBe("预览");
+    expect(error?.nextElementSibling?.getAttribute("aria-label")).toBe("显示源码");
     expect(node.querySelector('[role="alert"]')).toBeNull();
     expect(node.querySelector("iframe")?.getAttribute("src")).toBe(result.url);
     await act(async () => { error!.focus(); await Promise.resolve(); });
     expect(document.querySelector('[role="tooltip"]')?.textContent).toContain(message);
     await click("在侧边浏览器打开 HTML");
     expect(node.querySelector('[aria-label="HTML 预览错误"]')).toBeNull();
+  });
+
+  it("highlights a large HTML document without generating the whole document as DOM", async () => {
+    const source = '<style>.card { color: red }</style>\n<script>const count = 42;</script>\n' + '<div class="card">内容</div>\n'.repeat(1000);
+    await render(<HtmlPreviewCard source={{ kind: "code", html: source }} initialMode="source" />);
+    const viewport = node.querySelector<HTMLElement>("[data-virtual-code-source]");
+    expect(viewport?.style.height).toContain("560px");
+    expect(node.querySelector(".cm-line span[class]")).not.toBeNull();
+    expect(node.querySelectorAll(".cm-line").length).toBeLessThan(200);
+    expect(node.querySelector('[contenteditable="true"]')).toBeNull();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("marks browser opening immediately and prevents duplicate requests until it settles", async () => {
+    await render(<HtmlPreviewCard source={{ kind: "file", path: "demo.html" }} />);
+    let finish!: () => void;
+    request.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve(null); }));
+    await click("在侧边浏览器打开 HTML");
+    const button = node.querySelector<HTMLButtonElement>('[aria-label="在侧边浏览器打开 HTML"]');
+    expect(button?.disabled).toBe(true);
+    expect(button?.getAttribute("aria-busy")).toBe("true");
+    await click("在侧边浏览器打开 HTML");
+    expect(request.mock.calls.filter(([input]) => input.kind === "browser")).toHaveLength(1);
+    await act(async () => { finish(); await Promise.resolve(); });
+    const settled = node.querySelector<HTMLButtonElement>('[aria-label="在侧边浏览器打开 HTML"]');
+    expect(settled?.disabled).toBe(false);
+    expect(settled?.getAttribute("aria-busy")).toBe("false");
   });
 });
