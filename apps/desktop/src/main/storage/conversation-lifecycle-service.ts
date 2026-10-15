@@ -115,13 +115,15 @@ export class ConversationLifecycleService {
   public setConversationPermissionMode(
     conversationId: string,
     permissionMode: ConversationPermissionMode,
+    coordinationMode?: ConversationSummary["coordinationMode"],
   ): ConversationSummary {
     const current = this.database.getConversation(conversationId);
-    if (current.permissionMode === permissionMode) return current;
+    if (current.permissionMode === permissionMode && (coordinationMode === undefined || coordinationMode === (current.coordinationMode ?? "direct"))
+      && (permissionMode === "full_access" || current.coordinationMode !== "parallel_queue")) return current;
     return this.mutateAndRecord(
       conversationId,
-      ["permissionMode"],
-      () => this.database.setConversationPermissionMode(conversationId, permissionMode),
+      ["permissionMode", "coordinationMode"],
+      () => this.database.setConversationPermissionMode(conversationId, permissionMode, coordinationMode),
     );
   }
 
@@ -297,6 +299,7 @@ export class ConversationLifecycleService {
         isPinned: conversation.isPinned,
         modelSelection: conversation.modelSelection,
         permissionMode: conversation.permissionMode ?? "ask_before_changes",
+        coordinationMode: conversation.coordinationMode ?? "direct",
         pinOrder: conversation.pinOrder ?? null,
         projectId: conversation.projectId,
         sortOrder: this.database.getConversationSortOrder(conversation.id),

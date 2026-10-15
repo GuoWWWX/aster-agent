@@ -35,11 +35,17 @@ describe("Team WorkItem protocol", () => {
     expect(submitTeamWorkItemInputSchema.parse(input)).toMatchObject({
       acceptanceCriteria: [],
       executionScope: "project",
-      permissionMode: "ask_before_changes",
+      permissionMode: "full_access",
       priority: "normal",
     });
     expect(() => submitTeamWorkItemInputSchema.parse({ ...input, status: "completed" }))
       .toThrow();
+  });
+
+  it("accepts independent tasks without a project while retaining an explicit reduced permission", () => {
+    const input = { title: "调研", requirement: "查证一个问题", teamId: "default-team" };
+    expect(submitTeamWorkItemInputSchema.parse(input)).toMatchObject({ projectId: null, permissionMode: "full_access" });
+    expect(submitTeamWorkItemInputSchema.parse({ ...input, projectId: null, permissionMode: "read_only" })).toMatchObject({ projectId: null, permissionMode: "read_only" });
   });
 
   it("requires a source conversation only for explicit conversation isolation", () => {

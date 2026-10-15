@@ -26,6 +26,7 @@ import {
   SelectValue,
 } from "../../components/ui/select.js";
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
+import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import type { ProjectSession } from "../projects/project-session-model.js";
 import {
@@ -49,6 +50,7 @@ import {
 import { WorkItemLifecyclePanel } from "./team-work-item-lifecycle-panel.js";
 import { formatTeamWorkItemTime } from "./team-work-item-time.js";
 import { TeamWorkItemBoard } from "./team-work-item-board.js";
+import { TeamTaskTimeline } from "./team-task-timeline.js";
 import {
   applyCollaborationAssistantDelta,
   CollaborationGraph,
@@ -56,7 +58,7 @@ import {
 import "./team-workflow.css";
 import "./team-workspace.css";
 
-type TeamWorkspaceView = "board" | "planning" | "runtime";
+type TeamWorkspaceView = "board" | "planning" | "runtime" | "context";
 
 function toProjectSession(conversation: ConversationSummary): ProjectSession {
   return {
@@ -101,7 +103,8 @@ export function TeamWorkspace({
   projects: readonly ProjectSummary[];
 }): ReactElement {
   const teams = useAgentDirectoryStore((state) => state.teams);
-  const [selectedTeamId, setSelectedTeamId] = useState(teams[0]?.id ?? "");
+  const teamTarget = useWorkbenchUiStore(state => state.teamWorkspaceTarget);
+  const [selectedTeamId, setSelectedTeamId] = useState(teamTarget?.teamId ?? teams[0]?.id ?? "");
   const [runtimeItems, setRuntimeItems] = useState<TeamWorkItemView[]>([]);
   const [teamInstances, setTeamInstances] = useState<TeamInstanceView[]>([]);
   const [execution, setExecution] = useState<TeamWorkItemExecutionView | null>(null);
@@ -121,17 +124,24 @@ export function TeamWorkspace({
   const [editingBoardWorkItemId, setEditingBoardWorkItemId] = useState<string | null>(null);
   const [isManagingWorkItem, setIsManagingWorkItem] = useState(false);
   const [projectFilter, setProjectFilter] = useState("all");
+  const [instanceFilter, setInstanceFilter] = useState(teamTarget?.instanceId ?? "all");
   const [view, setView] = useState<TeamWorkspaceView>("board");
+  const [previousTeamTarget, setPreviousTeamTarget] = useState(teamTarget);
+  if (previousTeamTarget !== teamTarget) {
+    setPreviousTeamTarget(teamTarget);
+    if (teamTarget !== null) {
+      setSelectedTeamId(teamTarget.teamId); setInstanceFilter(teamTarget.instanceId); setView("board");
+    }
+  }
   const selectedTeam = teams.find((team) => team.id === selectedTeamId) ?? teams[0];
   const workItems = useMemo(
     () => runtimeItems.map((item) => toPrototypeWorkItem(item, projects)),
     [projects, runtimeItems],
   );
   const projectWorkItems = useMemo(
-    () => projectFilter === "all"
-      ? workItems
-      : workItems.filter((item) => item.projectId === projectFilter),
-    [projectFilter, workItems],
+    () => workItems.filter(item => (projectFilter === "all" || (item.projectId ?? "none") === projectFilter)
+      && (instanceFilter === "all" || runtimeItems.find(record => record.id === item.id)?.teamInstanceId === instanceFilter)),
+    [projectFilter, instanceFilter, workItems, runtimeItems],
   );
   const selectedWorkItem = projectWorkItems.find((item) => item.id === selectedWorkItemId)
     ?? projectWorkItems[0]
@@ -426,14 +436,14 @@ export function TeamWorkspace({
       const created = await agentClient.submitTeamWorkItem({
         ...next,
         executionScope: "project",
-        permissionMode: "ask_before_changes",
+        permissionMode: "full_access",
         teamId,
       });
       if (
         mutationRequestId !== workItemMutationRequestIdRef.current
         || activeTeamIdRef.current !== teamId
       ) return;
-      setProjectFilter(created.projectId);
+      setProjectFilter(created.projectId ?? "none");
       setFilter("all");
       setSelectedWorkItemId(created.id);
       setView("runtime");
@@ -584,7 +594,7 @@ export function TeamWorkspace({
             <Radio aria-hidden="true" size={12} />
             {selectedTeam.enabled ? "自动分发中" : "团队已停用"}
           </span>
-          <Select value={selectedTeam.id} onValueChange={setSelectedTeamId}>
+          <Select value={selectedTeam.id} onValueChange={id => { setSelectedTeamId(id); setInstanceFilter("all"); }}>
             <SelectTrigger aria-label="选择要查看的团队" className="team-runtime-select">
               <SelectValue />
             </SelectTrigger>
@@ -608,28 +618,36 @@ export function TeamWorkspace({
           <button aria-selected={view === "planning"} role="tab" type="button" onClick={() => setView("planning")}>
             <GitBranch aria-hidden="true" size={12} />执行规划
           </button>
+          <button aria-selected={view === "context"} role="tab" type="button" onClick={() => setView("context")}>
+            <MessageSquareText aria-hidden="true" size={12} />团队上下文
+          </button>
         </div>
         <div className="team-runtime-note" role="note">
           <Sparkles aria-hidden="true" size={13} />
           已连接真实团队 Runtime；任务会调用所选模型并在授权项目中执行。
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-[5px]">
+          <Select value={instanceFilter} onValueChange={setInstanceFilter}>
+            <SelectTrigger aria-label="按团队实例筛选" className="h-[30px] w-[170px] text-[length:var(--app-font-size-control)]"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="all">全部团队实例</SelectItem>{teamInstances.map(instance => <SelectItem key={instance.id} value={instance.id}>{instance.name} · {instance.projectId === null ? "独立团队" : projects.find(project => project.id === instance.projectId)?.name ?? "项目"}</SelectItem>)}</SelectContent>
+          </Select>
           <Select value={projectFilter} onValueChange={setProjectFilter}>
             <SelectTrigger aria-label="按项目筛选" className="h-[30px] w-[150px] bg-[var(--app-panel)] text-[length:var(--app-font-size-control)]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">全部项目</SelectItem>
+              <SelectItem value="none">独立工作区</SelectItem>
               {projects.map((project) => (
                 <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>
               ))}
             </SelectContent>
           </Select>
           <NewTeamWorkItemDialog
-            defaultProjectId={projectFilter === "all" ? null : projectFilter}
+            defaultProjectId={projectFilter === "all" || projectFilter === "none" ? null : projectFilter}
             isSubmitting={isSubmitting}
             projects={projects}
-            teamInstances={teamInstances}
+            teamInstances={teamInstances.filter(instance => instanceFilter === "all" || instance.id === instanceFilter)}
             onSubmit={createWorkItem}
           />
         </div>
@@ -642,7 +660,15 @@ export function TeamWorkspace({
         onSubmit={updateBoardWorkItem}
       />
 
-      {view === "board" ? (
+      {view === "context" ? <TeamTaskTimeline key={`${selectedTeam.id}:${instanceFilter}:${projectFilter}`} agentClient={agentClient}
+        items={runtimeItems.filter(item => (instanceFilter === "all" || item.teamInstanceId === instanceFilter) && (projectFilter === "all" || (item.projectId ?? "none") === projectFilter))}
+        onOpenTask={id => { setSelectedWorkItemId(id); setView("runtime"); }}
+        onOpenMember={(workItemId, conversationId) => {
+          void agentClient.getTeamWorkItemExecution(workItemId).then(result => {
+            const member = result.agents.find(agent => agent.conversation.id === conversationId);
+            if (member !== undefined) onOpenConversation(toProjectSession(member.conversation));
+          }).catch(reason => setError(reason instanceof Error ? reason.message : "成员对话打开失败。"));
+        }} /> : view === "board" ? (
         <div className="team-command-layout team-command-layout--board">
           <TeamWorkItemBoard
             items={projectWorkItems}
@@ -851,7 +877,7 @@ function toPrototypeWorkItem(
       ? "Agent 正在检查项目并决定是否需要拆分任务或委派成员。"
       : item.tasks.map((task) => task.title).join(" → "),
     priority: item.priority,
-    project: projects.find((project) => project.id === item.projectId)?.name ?? "未知项目",
+    project: item.projectId === null ? "独立工作区" : projects.find((project) => project.id === item.projectId)?.name ?? "未知项目",
     projectId: item.projectId,
     reworkRequest: item.events.filter((event) => event.type === "rework_requested").at(-1)?.detail ?? null,
     source: item.sourceConversationId === null ? "direct" : "conversation",

@@ -4491,6 +4491,73 @@ describe("AgentRuntime", () => {
     }
   });
 
+  it("keeps full access when an Agent result wakes the quick coordinator", async () => {
+    const database = new AgentDatabase(":memory:");
+    const parent = database.createConversation(null);
+    const sender = database.createConversation(null);
+    database.setConversationPermissionMode(parent.id, "full_access", "parallel_queue");
+    const projects = new ProjectRegistry(database);
+    const tools = new ProjectToolRegistry(projects);
+    const model: ModelProviderAdapter = { completeTurn: (input) => {
+      input.onTextDelta("已记录成员结果");
+      return Promise.resolve({ content: "已记录成员结果", finishReason: "stop", toolCalls: [] });
+    } };
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({
+      apiKey: "fixture", apiFormat: "openai-chat-completions", baseUrl: "https://fixture.invalid/v1", modelId: "fixture", reasoningOptions: [],
+    }) }, projects, tools, model);
+    database.sendAgentMessage({ content: "独立任务完成", messageType: "agent_result", replyInstruction: null,
+      runId: crypto.randomUUID(), senderConversationId: sender.id, targetConversationId: parent.id });
+    await new Promise<void>(resolve => runtime.resumePendingMessages(event => {
+      if (event.type === "run.finished" && event.conversationId === parent.id) resolve();
+    }));
+    expect(database.getLatestRunExecutionSnapshot(parent.id)?.permissionMode).toBe("full_access");
+    tools.dispose(); database.close();
+  });
+
+  it.each([false, true])("consumes independent quick-mode input at a safe boundary (queue paused: %s)", async (paused) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-quick-queue-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    database.setConversationPermissionMode(conversation.id, "full_access", "parallel_queue");
+    const model = new DeferredToolBatchFixtureModel();
+    const runtime = new AgentRuntime(database, {
+      getConfiguration: () => ({ apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1", modelId: "test-model", reasoningOptions: [] }),
+    }, projects, new ProjectToolRegistry(projects), model);
+    let pendingId = "";
+    const finished = new Promise<void>((resolve) => {
+      runtime.sendMessage({ content: "先处理已有任务", conversationId: conversation.id, permissionMode: "full_access" }, event => {
+        if (event.type === "tool.started" && pendingId.length === 0) {
+          const submission = runtime.sendMessage({
+            content: "独立请求：同时检查另一模块", conversationId: conversation.id, permissionMode: "full_access", deliveryMode: "queue",
+          }, () => undefined);
+          if (submission.kind !== "pending") throw new Error("Expected a durable queued request");
+          pendingId = submission.pendingMessage.id;
+          if (paused) runtime.setPendingQueuePaused(conversation.id, true, () => undefined);
+        }
+        if (event.type === "run.finished") resolve();
+      });
+    });
+    await model.firstRequestStarted;
+    model.continueWithToolBatch();
+    await finished;
+    expect(model.requests).toHaveLength(2);
+    const messages = model.requests[1]!.messages;
+    const requests = messages.filter(message => message.role === "user" && message.content.includes("独立请求："));
+    expect(requests).toHaveLength(paused ? 0 : 1);
+    if (!paused) {
+      expect(requests[0]?.content).toContain(pendingId);
+      expect(requests[0]?.content).toContain("Keep earlier assignments");
+      const index = messages.indexOf(requests[0]!);
+      expect(messages.slice(0, index).filter(message => message.role === "tool")).toHaveLength(2);
+      expect(database.listTimeline(conversation.id).filter(item => item.kind === "message" && item.role === "user" && item.content.includes("独立请求："))).toHaveLength(1);
+    }
+    expect(database.listPendingMessages(conversation.id)).toHaveLength(paused ? 1 : 0);
+    database.close();
+  });
+
   it("injects steer messages only after every tool result in the active batch", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-steer-"));
     temporaryDirectories.push(root);

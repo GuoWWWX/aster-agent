@@ -885,9 +885,9 @@ export function rankStrongContextMatches(
     .map((candidate) => candidate.message);
 }
 
-function teamExecutionScopeKey(projectId: string, sourceConversationId: string | null): string {
+function teamExecutionScopeKey(projectId: string | null, sourceConversationId: string | null): string {
   return sourceConversationId === null
-    ? `project:${projectId}`
+    ? projectId === null ? "global" : `project:${projectId}`
     : `conversation:${sourceConversationId}`;
 }
 
@@ -1194,6 +1194,7 @@ function toConversation(row: DatabaseRow): ConversationSummary {
         }),
     parentConversationId: asNullableString(row, "parent_conversation_id"),
     permissionMode: conversationPermissionModeSchema.parse(asString(row, "permission_mode")),
+    coordinationMode: asString(row, "coordination_mode"),
     pinOrder: asNullableNumber(row, "pin_order"),
     projectId: asNullableString(row, "project_id"),
     subagentTaskStatus: asNullableString(row, "subagent_task_status"),
@@ -1720,7 +1721,7 @@ export class AgentDatabase {
       .prepare(
         `${teamWorkItemExecutionTreeCte}
          SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
-            selected_provider_id, selected_model_id, selected_reasoning_json, permission_mode,
+            selected_provider_id, selected_model_id, selected_reasoning_json, permission_mode, coordination_mode,
             thread_kind, agent_id, avatar_icon, team_id, title, created_at, conversations.updated_at,
             conversations.archived_at,
             conversations.has_unread_result, conversations.is_archived,
@@ -1768,7 +1769,7 @@ export class AgentDatabase {
       .prepare(
         `${teamWorkItemExecutionTreeCte}
          SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
-            selected_provider_id, selected_model_id, selected_reasoning_json, permission_mode,
+            selected_provider_id, selected_model_id, selected_reasoning_json, permission_mode, coordination_mode,
             thread_kind, agent_id, avatar_icon, team_id, title, created_at, conversations.updated_at,
             conversations.archived_at,
             conversations.has_unread_result, conversations.is_archived,
@@ -1841,7 +1842,7 @@ export class AgentDatabase {
       .prepare(
         `${teamWorkItemExecutionTreeCte}
          SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
-            selected_provider_id, selected_model_id, selected_reasoning_json, permission_mode,
+            selected_provider_id, selected_model_id, selected_reasoning_json, permission_mode, coordination_mode,
             thread_kind, agent_id, avatar_icon, team_id, title, created_at, conversations.updated_at,
             conversations.archived_at,
             conversations.has_unread_result, conversations.is_archived,
@@ -2153,7 +2154,7 @@ export class AgentDatabase {
             current.id,
             current.teamId,
             projectId,
-            teamExecutionScopeKey(projectId!, null),
+            teamExecutionScopeKey(projectId, null),
             current.rootConversationId,
             now,
             now,
@@ -2279,7 +2280,7 @@ export class AgentDatabase {
    * source enter the same Team Lead and member audit trail.
    */
   public getTeamExecutionConversation(input: {
-    projectId: string;
+    projectId: string | null;
     sourceConversationId: string | null;
     teamId: string;
     teamInstanceId?: string;
@@ -2299,7 +2300,7 @@ export class AgentDatabase {
 
   public bindTeamExecutionConversation(input: {
     conversationId: string;
-    projectId: string;
+    projectId: string | null;
     sourceConversationId: string | null;
     teamId: string;
     teamInstanceId?: string;
@@ -2352,27 +2353,27 @@ export class AgentDatabase {
   }
 
   private resolveLegacyTeamInstanceId(input: {
-    projectId: string;
+    projectId: string | null;
     sourceConversationId: string | null;
     teamId: string;
   }): string {
     const row = this.database.prepare(
       `SELECT id FROM team_instances
-       WHERE team_id = ? AND project_id = ? AND deleted_at IS NULL
+       WHERE team_id = ? AND project_id IS ? AND deleted_at IS NULL
          AND scope = ?
          AND ((? IS NULL AND source_conversation_id IS NULL) OR source_conversation_id = ?)
        ORDER BY created_at ASC LIMIT 1`,
     ).get(
       input.teamId,
       input.projectId,
-      input.sourceConversationId === null ? "project" : "conversation",
+      input.projectId === null ? "global" : input.sourceConversationId === null ? "project" : "conversation",
       input.sourceConversationId,
       input.sourceConversationId,
     ) as DatabaseRow | undefined;
     if (row !== undefined) return asString(row, "id");
     return this.createTeamInstance({
-      projectId: input.projectId,
-      scope: input.sourceConversationId === null ? "project" : "conversation",
+      ...(input.projectId === null ? {} : { projectId: input.projectId }),
+      scope: input.projectId === null ? "global" : input.sourceConversationId === null ? "project" : "conversation",
       ...(input.sourceConversationId === null
         ? {}
         : { sourceConversationId: input.sourceConversationId }),
@@ -2390,10 +2391,67 @@ export class AgentDatabase {
     return rows.map((row) => this.getConversation(asString(row, "conversation_id")));
   }
 
+  public getTeamInstanceForConversation(conversationId: string): TeamInstanceView | null {
+    const leadId = this.getTeamExecutionConversationIdForParticipant(conversationId);
+    if (leadId === null) return null;
+    const row = this.database.prepare(`
+      SELECT id FROM team_instances WHERE root_conversation_id = ? AND deleted_at IS NULL
+      UNION SELECT team_instance_id AS id FROM team_execution_conversations WHERE conversation_id = ?
+      LIMIT 1
+    `).get(leadId, leadId) as DatabaseRow | undefined;
+    return row === undefined ? null : this.getTeamInstance(asString(row, "id"));
+  }
+
+  /** One entry per durable task, regardless of how many messages or rework Runs it contains. */
+  public getTeamTaskContext(conversationId: string, input: {
+    beforeWorkItemId?: string | undefined;
+    memberConversationId?: string | undefined;
+    limit: number;
+  }) {
+    const instance = this.getTeamInstanceForConversation(conversationId);
+    if (instance === null || instance.isArchived) throw new Error("当前对话不属于可用的团队实例。");
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 20) throw new Error("每次最多读取 20 条团队任务摘要。");
+    if (input.memberConversationId !== undefined && this.getTeamInstanceForConversation(input.memberConversationId)?.id !== instance.id) {
+      throw new Error("所选成员不属于当前团队。");
+    }
+    const before = input.beforeWorkItemId === undefined ? null : this.getTeamWorkItem(input.beforeWorkItemId);
+    if (before !== null && before.teamInstanceId !== instance.id) throw new Error("任务游标不属于当前团队。");
+    const rows = this.database.prepare(`
+      SELECT id FROM team_work_items
+      WHERE team_instance_id = ? AND deleted_at IS NULL
+        AND (? IS NULL OR created_at < ? OR (created_at = ? AND id < ?))
+        AND (? IS NULL OR execution_conversation_id = ? OR EXISTS (
+          SELECT 1 FROM team_work_item_member_assignments assignments
+          WHERE assignments.work_item_id = team_work_items.id AND assignments.member_conversation_id = ?
+        ))
+      ORDER BY created_at DESC, id DESC LIMIT ?
+    `).all(instance.id, before?.createdAt ?? null, before?.createdAt ?? null, before?.createdAt ?? null, before?.id ?? null,
+      input.memberConversationId ?? null, input.memberConversationId ?? null, input.memberConversationId ?? null, input.limit + 1) as DatabaseRow[];
+    const tasks = [];
+    for (const row of rows.slice(0, input.limit)) {
+      const item = this.getTeamWorkItem(asString(row, "id"));
+      const projection = this.getTeamCollaborationProjection(item.id);
+      const entry = {
+        id: item.id, title: item.title, projectId: item.projectId, status: item.status,
+        createdAt: item.createdAt, updatedAt: item.updatedAt,
+        summary: (item.resultSummary ?? item.blockedReason ?? item.requirement).slice(0, 600),
+        participants: projection.nodes.filter(node => node.conversationId !== null && item.participantConversationIds?.includes(node.conversationId)).slice(0, 8).map(node => ({
+          conversationId: node.conversationId, name: node.name, role: node.role, status: node.runStatus,
+          summary: node.latestOutput, runId: node.latestOutputRunId,
+        })),
+      };
+      if (tasks.length > 0 && JSON.stringify([...tasks, entry]).length > 16_000) break;
+      tasks.push(entry);
+    }
+    return { teamInstanceId: instance.id, name: instance.name, tasks,
+      nextBeforeWorkItemId: rows.length > tasks.length ? tasks.at(-1)?.id ?? null : null };
+  }
+
   public bindTeamMemberConversation(input: {
     agentId: string;
     conversationId: string;
     teamExecutionConversationId: string;
+    replica?: boolean;
   }): ConversationSummary {
     const lead = this.getConversation(input.teamExecutionConversationId);
     const member = this.getConversation(input.conversationId);
@@ -2408,18 +2466,36 @@ export class AgentDatabase {
       throw new Error("Team member conversation does not match its Team Lead.");
     }
     const now = new Date().toISOString();
+    if (input.replica !== true) {
+      const existing = this.listTeamMemberConversations(lead.id).find(conversation => conversation.agentId === input.agentId && !conversation.isArchived);
+      if (existing !== undefined) return existing;
+    }
     this.database.prepare(
       `INSERT INTO team_member_conversations (
         team_execution_conversation_id, team_id, agent_id, conversation_id, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(team_execution_conversation_id, agent_id) DO NOTHING`,
+      ON CONFLICT(conversation_id) DO NOTHING`,
     ).run(lead.id, lead.teamId, input.agentId, member.id, now, now);
     const row = this.database.prepare(
       `SELECT conversation_id FROM team_member_conversations
        WHERE team_execution_conversation_id = ? AND agent_id = ?`,
     ).get(lead.id, input.agentId) as DatabaseRow | undefined;
     if (row === undefined) throw new Error("Team member conversation could not be persisted.");
-    return this.getConversation(asString(row, "conversation_id"));
+    return this.getConversation(member.id);
+  }
+
+  public getTeamWorkerCount(teamInstanceId: string, agentId: string): number {
+    const row = this.database.prepare("SELECT worker_count FROM team_instance_worker_counts WHERE team_instance_id = ? AND agent_id = ?")
+      .get(teamInstanceId, agentId) as DatabaseRow | undefined;
+    return row === undefined ? 1 : asNumber(row, "worker_count");
+  }
+
+  public setTeamWorkerCount(teamInstanceId: string, agentId: string, count: number): void {
+    this.getTeamInstance(teamInstanceId);
+    if (!Number.isSafeInteger(count) || count < 1 || count > 8) throw new Error("每个岗位支持 1–8 位成员。");
+    this.database.prepare(`INSERT INTO team_instance_worker_counts (team_instance_id, agent_id, worker_count)
+      VALUES (?, ?, ?) ON CONFLICT(team_instance_id, agent_id) DO UPDATE SET worker_count = excluded.worker_count`)
+      .run(teamInstanceId, agentId, count);
   }
 
   public getTeamExecutionConversationIdForParticipant(conversationId: string): string | null {
@@ -2494,8 +2570,9 @@ export class AgentDatabase {
   ): TeamWorkItemView {
     const input = submitTeamWorkItemInputSchema.parse(rawInput);
     this.getTeamCoordinatorConversationId(input.teamId);
-    const project = this.database.prepare("SELECT id FROM projects WHERE id = ?").get(input.projectId);
-    if (project === undefined) throw new Error("Team WorkItem project was not found.");
+    if (input.projectId !== null && this.database.prepare("SELECT id FROM projects WHERE id = ?").get(input.projectId) === undefined) {
+      throw new Error("Team WorkItem project was not found.");
+    }
     const sourceConversation = input.sourceConversationId === undefined
       ? null
       : this.getConversation(input.sourceConversationId);
@@ -2566,7 +2643,7 @@ export class AgentDatabase {
       return instance;
     }
 
-    const scope = input.executionScope === "conversation" ? "conversation" : "project";
+    const scope = input.projectId === null ? "global" : input.executionScope === "conversation" ? "conversation" : "project";
     const sourceConversationId = scope === "conversation"
       ? input.sourceConversationId ?? null
       : null;
@@ -2580,7 +2657,7 @@ export class AgentDatabase {
     if (existing !== undefined) return existing;
     return this.createTeamInstance({
       ...(input.instanceName === undefined ? {} : { name: input.instanceName }),
-      projectId: input.projectId,
+      ...(input.projectId === null ? {} : { projectId: input.projectId }),
       scope,
       ...(sourceConversationId === null ? {} : { sourceConversationId }),
       teamId: input.teamId,
@@ -3599,7 +3676,7 @@ export class AgentDatabase {
         ? "cancelled"
         : "failed";
     const detail = input.status === "completed"
-      ? "执行、验证与自检已结束，等待用户验收。"
+      ? "负责人已提交结果，等待用户验收；实际验证以成员回执与执行记录为准。"
       : input.error ?? (input.status === "cancelled" ? "执行已取消。" : "执行失败。");
     this.withTransaction(() => {
       const result = this.database.prepare(
@@ -3835,7 +3912,7 @@ export class AgentDatabase {
       participantConversationIds,
       permissionMode: asString(row, "permission_mode"),
       priority: asString(row, "priority"),
-      projectId: asString(row, "project_id"),
+      projectId: asNullableString(row, "project_id"),
       requirement: asString(row, "requirement"),
       resultSummary: asNullableString(row, "result_summary"),
       revision: asNumber(row, "revision"),
@@ -3929,6 +4006,7 @@ export class AgentDatabase {
       modelSelection: options.modelSelection ?? null,
       parentConversationId: parent?.id ?? null,
       permissionMode: "ask_before_changes",
+      coordinationMode: "direct",
       pinOrder: null,
       projectId,
       subagentTaskStatus: null,
@@ -3967,10 +4045,10 @@ export class AgentDatabase {
           `INSERT INTO conversations
             (id, project_id, parent_conversation_id, workspace_root_path,
              selected_provider_id, selected_model_id, selected_reasoning_json,
-             permission_mode,
+             permission_mode, coordination_mode,
              thread_kind, agent_id, avatar_icon, agent_name, agent_role, agent_is_default,
              agent_instructions, team_id, title, created_at, updated_at, sort_order)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`
         )
         .run(
           conversation.id,
@@ -3983,6 +4061,7 @@ export class AgentDatabase {
             ? null
             : JSON.stringify(conversation.modelSelection.reasoning),
           conversation.permissionMode ?? "ask_before_changes",
+          conversation.coordinationMode ?? "direct",
           conversation.threadKind,
           conversation.agentId,
           conversation.avatarIcon ?? null,
@@ -4147,17 +4226,28 @@ export class AgentDatabase {
   public setConversationPermissionMode(
     conversationId: string,
     rawPermissionMode: unknown,
+    rawCoordinationMode?: unknown,
   ): ConversationSummary {
     const permissionMode = conversationPermissionModeSchema.parse(rawPermissionMode);
     const conversation = this.getConversation(conversationId);
-    if (conversation.permissionMode === permissionMode) return conversation;
+    const requestedMode = conversationSummarySchema.shape.coordinationMode.parse(rawCoordinationMode);
+    const coordinationMode = permissionMode !== "full_access" ? "direct"
+      : requestedMode ?? conversation.coordinationMode ?? "direct";
+    if (rawCoordinationMode === "parallel_queue" && permissionMode !== "full_access") throw new Error("快速协作模式需要完全访问权限。");
+    if (coordinationMode === "parallel_queue" && (conversation.threadKind !== "agent" || conversation.parentConversationId !== null || conversation.teamId !== null || conversation.isArchived)) {
+      throw new Error("快速协作模式仅适用于普通主对话。");
+    }
+    if (coordinationMode === "parallel_queue" && conversation.coordinationMode !== "parallel_queue" && conversation.activeRunId !== null) {
+      throw new Error("请在当前执行结束后启用快速协作模式。");
+    }
+    if (conversation.permissionMode === permissionMode && conversation.coordinationMode === coordinationMode) return conversation;
     this.database
       .prepare(
         `UPDATE conversations
-         SET permission_mode = ?, updated_at = ?
+         SET permission_mode = ?, coordination_mode = ?, updated_at = ?
          WHERE id = ? AND deletion_pending = 0`,
       )
-      .run(permissionMode, new Date().toISOString(), conversationId);
+      .run(permissionMode, coordinationMode ?? "direct", new Date().toISOString(), conversationId);
     return this.getConversation(conversationId);
   }
 
@@ -4199,6 +4289,7 @@ export class AgentDatabase {
       modelSelection: source.modelSelection,
       parentConversationId,
       permissionMode: source.permissionMode ?? "ask_before_changes",
+      coordinationMode: "direct",
       pinOrder: null,
       projectId: source.projectId,
       subagentTaskStatus: null,
@@ -4562,7 +4653,7 @@ export class AgentDatabase {
       .prepare(
         `${teamWorkItemExecutionTreeCte}
          SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
-            selected_provider_id, selected_model_id, selected_reasoning_json, permission_mode,
+            selected_provider_id, selected_model_id, selected_reasoning_json, permission_mode, coordination_mode,
             thread_kind, agent_id, avatar_icon, team_id, title, created_at, conversations.updated_at,
             conversations.archived_at,
             conversations.has_unread_result, conversations.is_archived,
@@ -7995,7 +8086,7 @@ export class AgentDatabase {
         `UPDATE conversations
          SET project_id = ?, workspace_root_path = ?,
              selected_provider_id = ?, selected_model_id = ?, selected_reasoning_json = ?,
-             permission_mode = ?,
+             permission_mode = ?, coordination_mode = COALESCE(?, coordination_mode),
              agent_id = ?, avatar_icon = ?, agent_name = ?, agent_role = ?,
              agent_is_default = ?, agent_instructions = ?, title = ?,
              is_archived = ?, archived_at = ?, is_pinned = ?, pin_order = ?,
@@ -8011,6 +8102,7 @@ export class AgentDatabase {
           ? null
           : JSON.stringify(selection.reasoning),
         properties.permissionMode,
+        properties.coordinationMode ?? null,
         properties.agentId,
         properties.avatarIcon ?? null,
         agent?.name ?? null,
@@ -9734,6 +9826,7 @@ export class AgentDatabase {
         selected_model_id TEXT,
         selected_reasoning_json TEXT,
         permission_mode TEXT NOT NULL DEFAULT 'ask_before_changes',
+        coordination_mode TEXT NOT NULL DEFAULT 'direct',
         thread_kind TEXT NOT NULL DEFAULT 'agent',
         agent_id TEXT,
         avatar_icon TEXT,
@@ -10781,6 +10874,55 @@ export class AgentDatabase {
           }
         },
         version: 28,
+      },
+      {
+        name: "team-independent-work-items",
+        up: (database) => {
+          const table = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'team_work_items'").get() as DatabaseRow;
+          const indexes = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'team_work_items' AND sql IS NOT NULL").all() as DatabaseRow[];
+          const columns = (database.prepare("PRAGMA table_info(team_work_items)").all() as DatabaseRow[])
+            .map(column => quoteSqliteIdentifier(asString(column, "name"))).join(", ");
+          const sql = asString(table, "sql")
+            .replace(/^(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)(?:team_work_items|"team_work_items")/iu, "$1team_work_items_independent")
+            .replace(/\bproject_id\s+TEXT\s+NOT\s+NULL/iu, "project_id TEXT");
+          database.exec(sql);
+          database.exec(`INSERT INTO team_work_items_independent (${columns}) SELECT ${columns} FROM team_work_items`);
+          database.exec("DROP TABLE team_work_items; ALTER TABLE team_work_items_independent RENAME TO team_work_items;");
+          for (const index of indexes) database.exec(asString(index, "sql"));
+        },
+        version: 29,
+      },
+      {
+        name: "team-role-worker-replicas",
+        up: (database) => {
+          const table = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'team_member_conversations'").get() as DatabaseRow;
+          const indexes = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'team_member_conversations' AND sql IS NOT NULL").all() as DatabaseRow[];
+          const sql = asString(table, "sql")
+            .replace(/^(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)(?:team_member_conversations|"team_member_conversations")/iu, "$1team_member_conversations_replicas")
+            .replace(/conversation_id\s+TEXT\s+NOT\s+NULL\s+UNIQUE/iu, "conversation_id TEXT NOT NULL PRIMARY KEY")
+            .replace(/,\s*PRIMARY KEY\s*\(team_execution_conversation_id,\s*agent_id\)/iu, "");
+          database.exec(sql);
+          database.exec("INSERT INTO team_member_conversations_replicas SELECT * FROM team_member_conversations;");
+          database.exec("DROP TABLE team_member_conversations; ALTER TABLE team_member_conversations_replicas RENAME TO team_member_conversations;");
+          for (const index of indexes) database.exec(asString(index, "sql"));
+          database.exec(`CREATE INDEX IF NOT EXISTS team_member_conversations_role ON team_member_conversations(team_execution_conversation_id, agent_id);
+            CREATE TABLE IF NOT EXISTS team_instance_worker_counts (
+              team_instance_id TEXT NOT NULL REFERENCES team_instances(id) ON DELETE CASCADE,
+              agent_id TEXT NOT NULL, worker_count INTEGER NOT NULL CHECK(worker_count BETWEEN 1 AND 8),
+              PRIMARY KEY(team_instance_id, agent_id)
+            );`);
+        },
+        version: 30,
+      },
+      {
+        name: "conversation-parallel-queue-mode",
+        up: (database) => {
+          const columns = database.prepare("PRAGMA table_info(conversations)").all() as DatabaseRow[];
+          if (!columns.some(column => column.name === "coordination_mode")) {
+            database.exec("ALTER TABLE conversations ADD COLUMN coordination_mode TEXT NOT NULL DEFAULT 'direct' CHECK(coordination_mode IN ('direct','parallel_queue'));");
+          }
+        },
+        version: 31,
       },
     ]);
   }

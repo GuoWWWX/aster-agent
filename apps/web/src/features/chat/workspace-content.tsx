@@ -941,7 +941,10 @@ export function ConversationWorkspace({
   const [forkingMessageId, setForkingMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingAttachments, setEditingAttachments] = useState<ConversationAttachment[] | null>(null);
-  const messageDeliveryMode: ConversationMessageDeliveryMode = defaultMessageDeliveryMode;
+  const [coordinationMode, setCoordinationMode] = useState(session.coordinationMode ?? "direct");
+  const [isSavingCoordinationMode, setIsSavingCoordinationMode] = useState(false);
+  const messageDeliveryMode: ConversationMessageDeliveryMode = coordinationMode === "parallel_queue"
+    ? "queue" : defaultMessageDeliveryMode;
   const [availableConversationMentions, setAvailableConversationMentions] =
     useState<ConversationMention[]>([]);
   const [selectedConversationMentions, setSelectedConversationMentions] =
@@ -1211,6 +1214,7 @@ export function ConversationWorkspace({
         permissionMode: nextPermissionMode,
       }).then((conversation) => {
         setPermissionMode(conversation.permissionMode ?? nextPermissionMode);
+        setCoordinationMode(conversation.coordinationMode ?? "direct");
         onSessionUpdated?.(conversation);
       }).catch((error) => {
         setPermissionMode(permissionMode);
@@ -1240,6 +1244,26 @@ export function ConversationWorkspace({
     session.teamWorkItemId,
     teamManaged,
   ]);
+  const toggleCoordinationMode = useCallback(async (): Promise<void> => {
+    if (isSavingCoordinationMode) return;
+    setIsSavingCoordinationMode(true);
+    setOperationError(null);
+    try {
+      const enabling = coordinationMode !== "parallel_queue";
+      const conversation = await agentClient.setConversationPermissionMode({
+        conversationId: session.id,
+        permissionMode: enabling ? "full_access" : permissionMode,
+        coordinationMode: enabling ? "parallel_queue" : "direct",
+      });
+      setCoordinationMode(conversation.coordinationMode ?? "direct");
+      setPermissionMode(conversation.permissionMode ?? permissionMode);
+      onSessionUpdated?.(conversation);
+    } catch (error) {
+      setOperationError(getUserErrorMessage(error, "无法切换快速协作模式"));
+    } finally {
+      setIsSavingCoordinationMode(false);
+    }
+  }, [agentClient, coordinationMode, isSavingCoordinationMode, onSessionUpdated, permissionMode, session.id]);
   const referenceWorkspaceId = project?.id
     ?? (session.workspaceRootPath === null ? null : session.id);
   const activeProjectFileMentions = useMemo(
@@ -1604,6 +1628,10 @@ export function ConversationWorkspace({
   useEffect(() => {
     if (!teamManaged) setPermissionMode(session.permissionMode ?? defaultPermissionMode);
   }, [defaultPermissionMode, session.id, session.permissionMode, teamManaged]);
+
+  useEffect(() => {
+    setCoordinationMode(session.coordinationMode ?? "direct");
+  }, [session.id, session.coordinationMode]);
 
   useEffect(() => {
     const awaitingApprovalToolIds = new Set(
@@ -2466,8 +2494,7 @@ export function ConversationWorkspace({
     if (mentionQuery === null) return [];
     const options: MentionOption[] = [];
     const normalizedQuery = mentionQuery.query.toLocaleLowerCase();
-    const canMentionTeams = session.projectId !== null
-      && session.parentConversationId === null
+    const canMentionTeams = session.parentConversationId === null
       && session.threadKind === "agent"
       && !teamManaged;
     if (canMentionTeams) {
@@ -3811,7 +3838,7 @@ export function ConversationWorkspace({
                   </Select>
                 )}
                 <Select
-                  disabled={isEndedSubagent || isSavingTeamPermission}
+                  disabled={isEndedSubagent || isSavingTeamPermission || isSavingCoordinationMode}
                   value={permissionMode}
                   onValueChange={selectPermissionMode}
                 >
@@ -3835,6 +3862,19 @@ export function ConversationWorkspace({
                     <SelectItem value="full_access">完全访问</SelectItem>
                   </SelectContent>
                 </Select>
+                {!teamManaged && session.parentConversationId == null && session.teamId == null ? (
+                  <button
+                    type="button"
+                    aria-pressed={coordinationMode === "parallel_queue"}
+                    disabled={isSavingCoordinationMode || (coordinationMode === "direct" && activeRunId !== null)}
+                    title="快速协作使用完全访问权限；新消息进入持久队列，主对话协调子代理并跟踪结果。请在当前执行结束后开启。"
+                    className="inline-flex items-center gap-1 rounded-[var(--app-radius)] px-2 py-1 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)] aria-pressed:bg-[var(--app-hover)] aria-pressed:text-[var(--app-foreground)] disabled:opacity-50"
+                    onClick={() => void toggleCoordinationMode()}
+                  >
+                    <UsersRound aria-hidden="true" size={14} />
+                    快速协作
+                  </button>
+                ) : null}
               </div>
               <div className="conversation-workspace__composer-actions">
                 {showContextUsage ? (

@@ -1714,7 +1714,7 @@ export class MockAgentClient implements AgentClient {
         providerId: "00000000-0000-4000-8000-000000000001",
         reasoning: null,
       },
-      permissionMode: input.permissionMode ?? "ask_before_changes",
+      permissionMode: input.permissionMode ?? "full_access",
       priority: input.priority ?? "normal",
       projectId: input.projectId,
       requirement: input.requirement,
@@ -1726,6 +1726,10 @@ export class MockAgentClient implements AgentClient {
       teamId: input.teamId,
       title: input.title,
       updatedAt: now,
+      ...(input.teamInstanceId === undefined ? {} : {
+        teamInstanceId: input.teamInstanceId,
+        instanceName: this.teamInstances.find(instance => instance.id === input.teamInstanceId)?.name ?? "团队",
+      }),
     };
     this.teamWorkItems.push(item);
     return Promise.resolve(structuredClone(item));
@@ -2076,6 +2080,7 @@ export class MockAgentClient implements AgentClient {
       return Promise.reject(new Error("Conversation was not found."));
     }
     conversation.permissionMode = input.permissionMode;
+    conversation.coordinationMode = input.permissionMode !== "full_access" ? "direct" : input.coordinationMode ?? conversation.coordinationMode ?? "direct";
     conversation.updatedAt = new Date().toISOString();
     return Promise.resolve({ ...conversation });
   }

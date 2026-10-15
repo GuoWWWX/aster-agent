@@ -59,6 +59,7 @@ describe("TeamWorkspace", () => {
       "需求看板",
       "任务与验收",
       "执行规划",
+      "团队上下文",
     ]);
     expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
     expect(container.querySelector(".team-live-execution-panel")).toBeNull();

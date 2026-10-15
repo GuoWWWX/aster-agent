@@ -770,6 +770,7 @@ export function registerMainIpcHandlers(
       conversationLifecycle.setConversationPermissionMode(
         input.conversationId,
         input.permissionMode,
+        input.coordinationMode,
       ),
     );
   });

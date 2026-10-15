@@ -25,6 +25,7 @@ import {
   PinOff,
   Plus,
   Search,
+  Send,
   Settings2,
   Scale,
   SquarePen,
@@ -42,6 +43,7 @@ import {
   type ReactElement,
 } from "react";
 import { createPortal } from "react-dom";
+import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 
 import type {
   AgentProfile,
@@ -1748,6 +1750,10 @@ function TeamInstanceTreeItem({
             </span>
           </button>
           <div className="project-navigator__session-actions">
+            <button aria-label={`给团队 ${group.instance.name} 发任务`} title="打开团队任务看板" type="button" onClick={event => {
+              event.stopPropagation();
+              useWorkbenchUiStore.getState().openTeamWorkspace({ teamId: group.instance.teamId, instanceId: group.instance.id });
+            }}><Send aria-hidden="true" size={13} /></button>
             {onArchive === undefined ? null : (
               <button
                 aria-label={`归档团队 ${group.instance.name}`}
@@ -1788,7 +1794,7 @@ function TeamInstanceTreeItem({
                 className="project-navigator__team-member"
                 data-active={session?.id === activeSessionId}
                 data-navigator-key={session === null ? undefined : `session:${session.id}`}
-                key={profile.id}
+                key={session?.id ?? profile.id}
                 title={`打开 ${profile.name} 的团队对话`}
                 type="button"
                 onClick={() => onOpenMember(profile.id, session)}

@@ -85,6 +85,8 @@ type WorkbenchUiState = {
   codeFontSize: number;
   setAppearanceFontSize: (field: "uiFontSize" | "chatFontSize" | "codeFontSize", size: number) => void;
   activeActivity: ActivityView;
+  teamWorkspaceTarget: { teamId: string; instanceId: string } | null;
+  openTeamWorkspace: (target: { teamId: string; instanceId: string }) => void;
   agentPromptWorkspaceTarget: AgentPromptWorkspaceTarget | null;
   configurationWorkspaceRevision: number;
   configurationWorkspaceTarget: ConfigurationWorkspaceTarget | null;
@@ -134,6 +136,8 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
   codeFontSize: DEFAULT_APPLICATION_SETTINGS.appearance.codeFontSize,
   setAppearanceFontSize: (field, size) => set({ [field]: size }),
   activeActivity: "conversations",
+  teamWorkspaceTarget: null,
+  openTeamWorkspace: (target) => set({ activeActivity: "team", teamWorkspaceTarget: target }),
   agentPromptWorkspaceTarget: null,
   configurationWorkspaceRevision: 0,
   configurationWorkspaceTarget: null,

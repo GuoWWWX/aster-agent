@@ -211,6 +211,34 @@ describe("ConversationLifecycleService", () => {
     });
   });
 
+  it("persists quick coordination and its permission together, including disabling and replay", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "conversation-coordination-"));
+    temporaryDirectories.push(directory);
+    const database = new AgentDatabase(":memory:");
+    const threadLog = new ThreadLog(path.join(directory, "conversations"));
+    const projector = new EventProjector(database, threadLog);
+    const service = new ConversationLifecycleService(database, threadLog, projector);
+    const conversation = service.createConversation(null);
+    expect(() => service.setConversationPermissionMode(conversation.id, "read_only", "parallel_queue")).toThrow("完全访问");
+    const enabled = service.setConversationPermissionMode(conversation.id, "full_access", "parallel_queue");
+    expect(enabled).toMatchObject({ coordinationMode: "parallel_queue", permissionMode: "full_access" });
+    expect(database.listConversations()[0]?.coordinationMode).toBe("parallel_queue");
+    expect(database.listConversationHierarchy()[0]?.coordinationMode).toBe("parallel_queue");
+    database.setConversationPermissionMode(conversation.id, "read_only");
+    projector.projectConversation(conversation.id);
+    expect(database.getConversation(conversation.id)).toMatchObject({ coordinationMode: "parallel_queue", permissionMode: "full_access" });
+    service.setConversationPermissionMode(conversation.id, "ask_before_changes");
+    database.setConversationPermissionMode(conversation.id, "full_access", "parallel_queue");
+    projector.projectConversation(conversation.id);
+    expect(database.getConversation(conversation.id)).toMatchObject({ coordinationMode: "direct", permissionMode: "ask_before_changes" });
+    const child = database.forkConversation(conversation.id, "subagent");
+    expect(() => service.setConversationPermissionMode(child.id, "full_access", "parallel_queue")).toThrow("普通主对话");
+    const run = database.createRunWithUserMessage(conversation.id, "busy", "test");
+    expect(() => service.setConversationPermissionMode(conversation.id, "full_access", "parallel_queue")).toThrow("执行结束");
+    database.finishRun(run.runId, "completed", null);
+    database.close();
+  });
+
   it("restores the previous SQLite properties when the JSONL append fails", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "conversation-properties-failure-"));
     temporaryDirectories.push(directory);

@@ -25,6 +25,7 @@ export type ProjectSession = {
   modelSelection: ConversationSummary["modelSelection"];
   parentConversationId: string | null;
   permissionMode?: ConversationSummary["permissionMode"];
+  coordinationMode?: ConversationSummary["coordinationMode"];
   pinOrder?: number | null;
   projectId: string | null;
   subagentTaskStatus?: ConversationSummary["subagentTaskStatus"];
@@ -336,37 +337,26 @@ export function getTeamInstanceNavigatorGroups(
     const root = instance.rootConversationId === null
       ? null
       : sessionsById.get(instance.rootConversationId) ?? null;
-    const configuredSessions = new Map<string, ProjectSession>();
-    if (root?.agentId !== null && root?.agentId !== undefined) {
-      configuredSessions.set(root.agentId, root);
-    }
-    for (const session of sessions) {
-      if (session.parentConversationId !== root?.id || session.agentId === null) continue;
-      if (!configuredSessions.has(session.agentId)) {
-        configuredSessions.set(session.agentId, session);
-      }
-    }
-
-    let visibleAgentIds = team.memberIds;
-    if (instance.scope === "conversation") {
-      const participantIds = new Set(workItems.flatMap((workItem) =>
+    const participantIds = instance.scope !== "conversation" ? null
+      : new Set(workItems.flatMap((workItem) =>
         workItem.teamInstanceId === instance.id
           ? workItem.participantConversationIds ?? []
           : [],
       ));
-      visibleAgentIds = team.memberIds.filter((agentId) => {
-        const session = configuredSessions.get(agentId);
-        return session !== undefined && participantIds.has(session.id);
-      });
-    }
 
     return [{
       instance,
-      members: visibleAgentIds.flatMap((agentId) => {
+      members: team.memberIds.flatMap<TeamInstanceNavigatorGroup["members"][number]>((agentId) => {
         const profile = agentsById.get(agentId);
-        return profile === undefined
-          ? []
-          : [{ profile, session: configuredSessions.get(agentId) ?? null }];
+        if (profile === undefined) return [];
+        const workers = sessions.filter(session => !session.isArchived && session.agentId === agentId
+          && (session.id === root?.id || session.parentConversationId === root?.id)
+          && (participantIds === null || participantIds.has(session.id)));
+        if (workers.length === 0) return participantIds === null ? [{ profile, session: null }] : [];
+        return workers.map(session => ({ profile: workers.length === 1 ? profile : {
+          ...profile, name: session.title.endsWith(` · ${instance.name}`)
+            ? session.title.slice(0, -(` · ${instance.name}`.length)) : session.title,
+        }, session }));
       }),
       team,
     }];
