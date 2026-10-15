@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactElement } from "react";
-import { ChevronDown, FileDiff } from "lucide-react";
+import { ChevronDown, ChevronUp, FileDiff } from "lucide-react";
 import { Popover, PopoverAnchor, PopoverContent } from "../../components/ui/popover.js";
 import { cn } from "../../lib/cn.js";
 import type { TaskFileChange, TaskFileChangeSummary } from "./task-file-change-summary.js";
@@ -36,12 +36,13 @@ export function ConversationChangesBadge({ summary, joined = false, onReview }: 
 
 export function ConversationChangesCard({ summary, onReview }: { summary: TaskFileChangeSummary; onReview: (path?: string) => void }): ReactElement {
   const [expanded, setExpanded] = useState(false);
+  const filesId = useId();
   return <section data-run-file-changes className="chat-message-group overflow-hidden rounded-[var(--app-radius-large)] border border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-foreground)]" data-role="assistant" aria-label="本轮文件改动">
     <header className="flex min-w-0 items-center gap-[5px] border-b border-[var(--app-border)] p-2">
       <FileDiff size={17} className="shrink-0" /><div className="min-w-0 flex-1 text-[length:var(--app-font-size-body)]"><span className="font-medium">已编辑 {summary.files.length} 个文件</span><div><ChangeStats additions={summary.additions} deletions={summary.deletions} /></div></div>
       <button type="button" onClick={() => onReview()} className="shrink-0 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-transparent px-2 py-1 text-[length:var(--app-font-size-control)] hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)]">查看变更</button>
     </header>
-    <div className="max-h-80 overflow-y-auto p-[5px]">{(expanded ? summary.files : summary.files.slice(0, 3)).map(file => <button key={file.path} type="button" data-changed-file={file.path} className={rowClass} title={file.path} onClick={() => onReview(file.path)}><span className="min-w-0 flex-1 truncate">{file.path}</span><ChangeStats additions={file.additions} deletions={file.deletions} /></button>)}</div>
-    {!expanded && summary.files.length > 3 ? <button className={rowClass} type="button" onClick={() => setExpanded(true)}>再显示 {summary.files.length - 3} 个文件<ChevronDown size={14} /></button> : null}
+    <div id={filesId} className="max-h-80 overflow-y-auto p-[5px]">{(expanded ? summary.files : summary.files.slice(0, 3)).map(file => <button key={file.path} type="button" data-changed-file={file.path} className={rowClass} title={file.path} onClick={() => onReview(file.path)}><span className="min-w-0 flex-1 truncate">{file.path}</span><ChangeStats additions={file.additions} deletions={file.deletions} /></button>)}</div>
+    {summary.files.length > 3 ? <button className={rowClass} type="button" aria-controls={filesId} aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{expanded ? <>收起变更<ChevronUp size={14} /></> : <>再显示 {summary.files.length - 3} 个文件<ChevronDown size={14} /></>}</button> : null}
   </section>;
 }

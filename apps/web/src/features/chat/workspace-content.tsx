@@ -3031,7 +3031,9 @@ export function ConversationWorkspace({
     locatedTimelineRequestIdRef.current = locateTimelineItem.requestId;
   }, [isLoadingTimeline, locateTimelineItem, timeline]);
   const latestActiveToolId = useMemo(() => getLatestActiveToolId(timeline), [timeline]);
-  const latestRunItem = activeRunId === null ? undefined : timeline.findLast((item) => item.runId === activeRunId);
+  const latestRunItem = activeRunId === null ? undefined : timeline.findLast((item) => item.runId === activeRunId
+    && (item.kind === "tool" || (item.kind === "message" && item.role === "assistant"
+      && stripLeadingThinkingSummary(item.content).trim().length > 0)));
   const currentToolId = latestRunItem?.kind === "tool" ? latestRunItem.id : null;
   const runDurationsByInsertIndex = useMemo(
     () => getConversationRunDurationInsertIndexes(displayTimeline),
@@ -4111,7 +4113,8 @@ function handleRunEvent(
         event.runId,
         timelineRef.current.at(-1)?.id ?? null,
       );
-      setModelActivity({
+      setModelActivity((current) => current?.runId === event.runId && current.preview?.trim()
+        ? current : {
         anchorTimelineItemId: timelineRef.current.at(-1)?.id ?? null,
         runId: event.runId,
         status: "thinking",
@@ -4122,7 +4125,6 @@ function handleRunEvent(
         completeStreamingAssistantMessages(current),
         event.retry,
       ));
-      setModelActivity((current) => current?.runId === event.runId ? null : current);
       return;
     case "assistant.reasoning_delta": {
       if (event.kind === "content") {
@@ -4130,6 +4132,7 @@ function handleRunEvent(
         updateTimeline((current) => appendAssistantReasoningDelta(current, event));
         return;
       }
+      if (event.delta.length === 0) return;
       updateTimeline(completeStreamingAssistantMessages);
       const anchorTimelineItemId = timelineRef.current.at(-1)?.id ?? null;
       setModelActivity((current) => {
@@ -4172,7 +4175,9 @@ function handleRunEvent(
       return;
     case "tool.completed":
     case "tool.started":
-      setModelActivity((current) => current?.runId === event.runId ? null : current);
+      if (event.type === "tool.started") {
+        setModelActivity((current) => current?.runId === event.runId ? null : current);
+      }
       if (event.tool.name === "compact_context") {
         removeRunProgress(setRunProgresses, event.runId);
       }
@@ -6571,12 +6576,13 @@ function RunActivityTimelineItem({
 }): ReactElement {
   const isActive = activeRunId !== null && item.runIds.includes(activeRunId);
   const reveal = useContext(ToolRevealContext);
+  const disclosureChoices = useContext(ToolDisclosureContext);
   const revealThisRun = item.items.some((entry) => entry.kind === "tool" && entry.id === reveal?.id);
   const [isExpanded, setIsExpanded] = useToolDisclosure(item.id, [], isActive || runProgress !== null);
   useEffect(() => { if (revealThisRun) setIsExpanded(true); }, [reveal?.requestId, revealThisRun, setIsExpanded]);
   useEffect(() => {
-    if (!isActive && runProgress === null && !revealThisRun) setIsExpanded(false);
-  }, [isActive, runProgress, revealThisRun, setIsExpanded]);
+    if (!isActive && runProgress === null && !revealThisRun && !disclosureChoices?.has(item.id)) setIsExpanded(false);
+  }, [isActive, runProgress, revealThisRun, disclosureChoices, item.id, setIsExpanded]);
   const [now, setNow] = useState(() => Date.now());
   const contentId = useId();
   useEffect(() => {
@@ -6597,7 +6603,6 @@ function RunActivityTimelineItem({
   );
   const currentModelActivity = isActive && modelActivity?.runId != null && item.runIds.includes(modelActivity.runId)
     ? modelActivity : null;
-  const currentBatch = displayItems.at(-1);
   const hasFailure = item.items.some((entry) =>
     entry.kind === "tool"
     && (toolItemHasFailure(entry) || approvalErrors[entry.id] !== undefined)
@@ -6639,7 +6644,7 @@ function RunActivityTimelineItem({
           latestActiveToolId={latestActiveToolId}
           currentToolId={currentToolId}
           liveToolOutputs={liveToolOutputs}
-          modelActivity={entry === currentBatch ? currentModelActivity : null}
+          modelActivity={entry.tools.some(tool => tool.id === currentToolId) ? currentModelActivity : null}
           onChangeApproval={onChangeApproval}
           onOpenSubagent={onOpenSubagent}
           onOpenProjectFile={onOpenProjectFile}
@@ -6666,8 +6671,9 @@ function RunActivityTimelineItem({
     );
   });
   const latestTool = isActive ? item.items.findLast(entry => entry.kind === "tool" && entry.id === currentToolId) : undefined;
-  const currentStatus = currentModelActivity !== null ? modelActivityLabel(currentModelActivity)
-    : latestTool?.kind === "tool" ? (toolBatchCurrentToolLabel([latestTool], teamManaged) ?? toolActivityLabel(latestTool, teamManaged)) : null;
+  const currentStatus = currentModelActivity?.preview?.trim() ? modelActivityLabel(currentModelActivity)
+    : latestTool?.kind === "tool" ? (toolBatchCurrentToolLabel([latestTool], teamManaged) ?? toolActivityLabel(latestTool, teamManaged))
+    : currentModelActivity !== null ? modelActivityLabel(currentModelActivity) : null;
 
   return (
     <section
@@ -6742,18 +6748,19 @@ function ToolBatchTimelineItem({
 }): ReactElement {
   const [isExpanded, setIsExpanded] = useToolDisclosure(item.id, item.tools.map((tool) => tool.id), item.tools.some((tool) => tool.status === "running" || tool.status === "awaiting_approval"));
   const reveal = useContext(ToolRevealContext);
+  const disclosureChoices = useContext(ToolDisclosureContext);
   const revealThisBatch = item.tools.some((tool) => tool.id === reveal?.id);
   useEffect(() => { if (revealThisBatch) setIsExpanded(true); }, [reveal?.requestId, revealThisBatch, setIsExpanded]);
   const hasActiveTool = item.tools.some((tool) => tool.status === "running" || tool.status === "awaiting_approval");
   useEffect(() => {
-    if (!hasActiveTool && !revealThisBatch) setIsExpanded(false);
-  }, [hasActiveTool, revealThisBatch, setIsExpanded]);
+    if (!hasActiveTool && !revealThisBatch && !disclosureChoices?.has(item.id)) setIsExpanded(false);
+  }, [hasActiveTool, revealThisBatch, disclosureChoices, item.id, setIsExpanded]);
   const hasFailure = item.tools.some((tool) =>
     toolItemHasFailure(tool) || approvalErrors[tool.id] !== undefined
   );
   const currentTool = item.tools.find((tool) => tool.id === currentToolId);
   const isCurrentBatch = currentTool !== undefined && currentTool.runId === activeRunId;
-  const label = modelActivity !== null ? modelActivityLabel(modelActivity)
+  const label = modelActivity?.preview?.trim() ? modelActivityLabel(modelActivity)
     : isCurrentBatch ? (toolBatchCurrentToolLabel([currentTool], teamManaged) ?? toolActivityLabel(currentTool, teamManaged))
     : toolBatchLabel(item.tools, teamManaged);
   const toggleLabel = isExpanded ? "收起本轮工具调用" : "展开本轮工具调用";

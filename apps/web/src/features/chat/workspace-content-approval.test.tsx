@@ -144,6 +144,104 @@ it("shows only the latest batch status until assistant text closes the group", a
   expect(batch()?.textContent).not.toContain("next.html");
 });
 
+it.each(["assistant text", "run finished"])("keeps a manually opened tool batch open through updates and %s", async (ending) => {
+  const client = new MockAgentClient();
+  let listener: (event: ConversationRunEvent) => void = () => {};
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { listener = callback; return () => {}; });
+  const first: ConversationToolItem = {
+    id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID, batchId: null,
+    createdAt: new Date().toISOString(), name: "read_file", arguments: '{"path":"first.txt"}',
+    result: null, diff: null, status: "completed",
+  };
+  const second: ConversationToolItem = {
+    ...first, id: "00000000-0000-4000-8000-000000000014", arguments: '{"path":"second.txt"}', status: "running",
+  };
+  const history = vi.spyOn(client, "listConversationTimeline").mockResolvedValue([first, second]);
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      session={session({ id: PARENT_ID, title: "保留工具展开选择", activeRunId: RUN_ID })} /></TooltipProvider>);
+    await flushConversationWorkspace();
+  });
+  expandWorkProcess(container);
+  const batchToggle = () => container.querySelector<HTMLButtonElement>(".tool-activity-batch__identity > button");
+  act(() => container.querySelector<HTMLButtonElement>('button[title="收起工作过程"]')?.click());
+  expandWorkProcess(container);
+  if (batchToggle()?.getAttribute("aria-expanded") === "true") act(() => batchToggle()?.click());
+  act(() => batchToggle()?.click());
+  expect(batchToggle()?.getAttribute("aria-expanded")).toBe("true");
+
+  const completed = { ...second, status: "completed" as const };
+  act(() => listener({ type: "tool.completed", conversationId: PARENT_ID, runId: RUN_ID, tool: completed }));
+  expect(batchToggle()?.getAttribute("aria-expanded")).toBe("true");
+  act(() => listener({ type: "model.request_started", conversationId: PARENT_ID, runId: RUN_ID }));
+  expect(batchToggle()?.textContent).toContain("second.txt");
+  expect(batchToggle()?.getAttribute("aria-expanded")).toBe("true");
+
+  const third = { ...second, id: "00000000-0000-4000-8000-000000000015", arguments: '{"path":"third.txt"}' };
+  act(() => listener({ type: "tool.started", conversationId: PARENT_ID, runId: RUN_ID, tool: third }));
+  expect(batchToggle()?.getAttribute("aria-expanded")).toBe("true");
+  expect(batchToggle()?.textContent).toContain("third.txt");
+  act(() => listener({ type: "assistant.reasoning_delta", conversationId: PARENT_ID, runId: RUN_ID,
+    messageId: MESSAGE_ID, modelId: "gpt-6.1-sol", kind: "summary", reset: true, delta: "Checking the final file" }));
+  expect(batchToggle()?.getAttribute("aria-expanded")).toBe("true");
+
+  history.mockImplementation(() => new Promise(() => {}));
+  act(() => listener(ending === "assistant text"
+    ? { type: "assistant.delta", conversationId: PARENT_ID, runId: RUN_ID, messageId: MESSAGE_ID,
+      modelId: "gpt-6.1-sol", delta: "文件检查完成。" }
+    : { type: "run.finished", conversationId: PARENT_ID, runId: RUN_ID, status: "completed", error: null }));
+  expect(batchToggle()?.getAttribute("aria-expanded")).toBe("true");
+  expect(batchToggle()?.textContent).toContain("读取 3 个文件");
+  expect(container.querySelector(".conversation-run-activity > button")?.getAttribute("aria-expanded")).toBe("true");
+});
+
+it("holds the latest tool or reasoning summary between new activity events", async () => {
+  const client = new MockAgentClient();
+  let listener: (event: ConversationRunEvent) => void = () => {};
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { listener = callback; return () => {}; });
+  const first: ConversationToolItem = {
+    id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID, batchId: null,
+    createdAt: new Date().toISOString(), name: "read_file", arguments: '{"path":"first.txt"}',
+    result: null, diff: null, status: "running",
+  };
+  const second: ConversationToolItem = {
+    ...first, id: "00000000-0000-4000-8000-000000000014", arguments: '{"path":"second.txt"}',
+  };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([first, second]);
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      session={session({ id: PARENT_ID, title: "稳定最新工具摘要", activeRunId: RUN_ID })} /></TooltipProvider>);
+    await flushConversationWorkspace();
+  });
+  expandWorkProcess(container);
+  const batch = () => container.querySelector(".tool-activity-batch__header");
+  const header = () => container.querySelector(".conversation-run-activity > button");
+  act(() => listener({ type: "tool.completed", conversationId: PARENT_ID, runId: RUN_ID,
+    tool: { ...second, status: "completed" } }));
+  act(() => listener({ type: "model.request_started", conversationId: PARENT_ID, runId: RUN_ID }));
+  expect(batch()?.textContent).toContain("second.txt");
+  expect(header()?.textContent).toContain("second.txt");
+  expect(batch()?.textContent).not.toContain("正在推理");
+
+  act(() => listener({ type: "assistant.reasoning_delta", conversationId: PARENT_ID, runId: RUN_ID,
+    messageId: MESSAGE_ID, modelId: "gpt-6.1-sol", kind: "summary", reset: true, delta: "Reviewing both files" }));
+  act(() => listener({ type: "tool.completed", conversationId: PARENT_ID, runId: RUN_ID,
+    tool: { ...first, status: "completed" } }));
+  expect(batch()?.textContent).toContain("Reviewing both files");
+  expect(header()?.textContent).toContain("Reviewing both files");
+  act(() => listener({ type: "model.request_started", conversationId: PARENT_ID, runId: RUN_ID }));
+  expect(batch()?.textContent).toContain("Reviewing both files");
+  act(() => listener({ type: "assistant.reasoning_delta", conversationId: PARENT_ID, runId: RUN_ID,
+    messageId: MESSAGE_ID, modelId: "gpt-6.1-sol", kind: "summary", reset: true, delta: "" }));
+  expect(batch()?.textContent).toContain("Reviewing both files");
+  act(() => listener({ type: "assistant.delta", conversationId: PARENT_ID, runId: RUN_ID,
+    messageId: MESSAGE_ID, modelId: "gpt-6.1-sol", delta: "已检查。" }));
+  expect(batch()?.textContent).toContain("读取 2 个文件");
+  expect(batch()?.textContent).not.toContain("Reviewing both files");
+});
+
 it("centers the loading state in the message area while keeping the composer available", async () => {
   const client = new MockAgentClient();
   let finishLoading: (items: ConversationTimelineItem[]) => void = () => {};

@@ -36,7 +36,7 @@ it("opens above the badge on hover and keeps the popup while moving into it with
   act(() => { badge.click(); }); expect(review).toHaveBeenLastCalledWith();
 });
 
-it("keeps the first three files in the completed card and expands the rest without duplicate rows", () => {
+it("keeps three files in the completed card and can expand, collapse and expand again", () => {
   const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   const review = vi.fn();
   act(() => root?.render(<ConversationChangesCard summary={summary} onReview={review} />));
@@ -47,4 +47,14 @@ it("keeps the first three files in the completed card and expands the rest witho
   expect(review).toHaveBeenLastCalledWith("src/file-5.tsx");
   act(() => { [...container.querySelectorAll("button")].find(button => button.textContent === "查看变更")!.click(); });
   expect(review).toHaveBeenLastCalledWith();
+  const collapse = [...container.querySelectorAll("button")].find(button => button.textContent === "收起变更");
+  expect(collapse).toBeDefined();
+  expect(collapse?.getAttribute("aria-expanded")).toBe("true");
+  act(() => { collapse!.click(); });
+  expect(container.querySelectorAll("[data-changed-file]")).toHaveLength(3);
+  expect(review).toHaveBeenCalledTimes(2);
+  const expand = [...container.querySelectorAll("button")].find(button => button.textContent === "再显示 3 个文件")!;
+  expect(expand.getAttribute("aria-expanded")).toBe("false");
+  act(() => { expand.click(); });
+  expect(container.querySelectorAll("[data-changed-file]")).toHaveLength(6);
 });
