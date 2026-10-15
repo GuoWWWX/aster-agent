@@ -23,6 +23,7 @@ export type SettingsSection =
   | "appearance";
 
 export type ThemeMode = "light" | "dark";
+export type ConversationReviewViewRequest = { requestId: string; conversationId: string; runId: string | null; path: string | null };
 
 export type ConfigurationWorkspaceTarget = {
   configurationId: string;
@@ -81,6 +82,8 @@ export function clampWorkbenchPanelWidth(
 }
 
 type WorkbenchUiState = {
+  conversationReviewViewRequest: ConversationReviewViewRequest | null;
+  openConversationReview: (input: Omit<ConversationReviewViewRequest, "requestId">) => void;
   backgroundCommandViewRequest: { requestId: string; conversationId: string; commandId: string; name: string } | null;
   openBackgroundCommandView: (input: { conversationId: string; commandId: string; name: string }) => void;
   uiFontSize: number;
@@ -132,6 +135,9 @@ type WorkbenchUiState = {
  * tasks, and agent execution will be queried from AgentClient when available.
  */
 export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
+  conversationReviewViewRequest: null,
+  openConversationReview: input => set(state => ({ conversationReviewViewRequest: { ...input, requestId: crypto.randomUUID() },
+    filePanelOpenByConversationId: { ...state.filePanelOpenByConversationId, [input.conversationId]: true } })),
   backgroundCommandViewRequest: null,
   openBackgroundCommandView: (input) => set(state => ({
     backgroundCommandViewRequest: { ...input, requestId: crypto.randomUUID() },

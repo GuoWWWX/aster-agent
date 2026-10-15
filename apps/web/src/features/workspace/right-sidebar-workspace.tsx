@@ -76,6 +76,7 @@ import { ConversationWorkspace } from "../chat/workspace-content.js";
 import { AgentAvatar, SubagentAvatar } from "../team/agent-avatar.js";
 import { ConfigurationWorkspaceTreePanel } from "./configuration-workspace-tree-panel.js";
 import { getGitReviewCache } from "./git-review-cache.js";
+import { ConversationReviewWorkspace } from "./conversation-review-workspace.js";
 import { GitReviewWorkspace } from "./git-review-workspace.js";
 import {
   ManagedBrowserWorkspace,
@@ -149,7 +150,8 @@ type ManagedBrowserTab = ToolTabBase & {
 };
 
 type BackgroundCommandTab = ToolTabBase & { kind: "background-command"; conversationId: string; commandId: string };
-type ToolTab = GitReviewTab | TerminalTab | ManagedBrowserTab | BackgroundCommandTab;
+type ConversationReviewTab = ToolTabBase & { kind: "conversation-review"; conversationId: string; runId: string | null };
+type ToolTab = GitReviewTab | TerminalTab | ManagedBrowserTab | BackgroundCommandTab | ConversationReviewTab;
 
 type SidebarTab =
   | FileTab
@@ -630,6 +632,8 @@ export function RightSidebarWorkspace({
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
   const backgroundCommandViewRequest = useWorkbenchUiStore(state => state.backgroundCommandViewRequest);
   const handledBackgroundCommandRequest = useRef<string | null>(null);
+  const conversationReviewViewRequest = useWorkbenchUiStore(state => state.conversationReviewViewRequest);
+  const handledConversationReviewRequest = useRef<string | null>(null);
   const activeSessionId = activeSession?.id ?? null;
   const sidebarVisible = useWorkbenchUiStore((state) => activeActivity === "settings"
     ? state.isSettingsFilePanelOpen
@@ -1015,6 +1019,19 @@ export function RightSidebarWorkspace({
     teamMemberOpenRequest,
     updateOpenChatIds,
   ]);
+
+  useEffect(() => {
+    const request = conversationReviewViewRequest;
+    if (request === null || handledConversationReviewRequest.current === request.requestId
+      || (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId))) return;
+    handledConversationReviewRequest.current = request.requestId;
+    const id = `conversation-review:${request.conversationId}:${request.runId ?? "all"}`;
+    setToolTabs(current => current.some(tab => tab.id === id)
+      ? current.map(tab => tab.id === id ? { ...tab, lastAccessedAt: Date.now() } : tab)
+      : [...current, { id, kind: "conversation-review", conversationId: request.conversationId,
+        runId: request.runId, name: "审阅", lastAccessedAt: Date.now() }]);
+    setActiveTabForCurrentSession(id); setFilePanelOpen(true); setIsFileBrowserOpen(false);
+  }, [activeSessionId, conversationReviewViewRequest, openChatIds, setActiveTabForCurrentSession, setFilePanelOpen]);
 
   useEffect(() => {
     const request = backgroundCommandViewRequest;
@@ -1825,6 +1842,7 @@ export function RightSidebarWorkspace({
         retainedToolTabIds.has(tab.id)
         || tab.kind === "git-review"
         || tab.kind === "background-command"
+        || tab.kind === "conversation-review"
         || tab.session === null
         || releasingToolTabIdsRef.current.has(tab.id)
       ) {
@@ -2356,7 +2374,7 @@ export function RightSidebarWorkspace({
                       ) : (
                         <AgentAvatar avatar={tabAgent.avatar} size="compact" />
                       )
-                    ) : tab.kind === "git-review" ? (
+                    ) : (tab.kind === "git-review" || tab.kind === "conversation-review") ? (
                       <SquareCheckBig aria-hidden="true" size={14} />
                     ) : tab.kind === "terminal" || tab.kind === "background-command" ? (
                       <Terminal aria-hidden="true" size={14} />
@@ -2490,6 +2508,12 @@ export function RightSidebarWorkspace({
                         }
                       : null}
                   />
+                ) : tab.kind === "conversation-review" ? (
+                  <ConversationReviewWorkspace agentClient={agentClient} conversationId={tab.conversationId} runId={tab.runId}
+                    active={isActive && sidebarVisible && activeActivity === "conversations"}
+                    requestedFile={conversationReviewViewRequest?.conversationId === tab.conversationId
+                      && conversationReviewViewRequest.runId === tab.runId && conversationReviewViewRequest.path !== null
+                      ? { path: conversationReviewViewRequest.path, requestId: conversationReviewViewRequest.requestId } : null} />
                 ) : tab.kind === "background-command" ? (
                   <BackgroundCommandWorkspace agentClient={agentClient} conversationId={tab.conversationId} commandId={tab.commandId}
                     active={isActive && sidebarVisible && activeActivity === "conversations"} />
@@ -2728,6 +2752,7 @@ export function RightSidebarWorkspace({
             />
           ) : activeTab?.kind === "git-review"
             || activeTab?.kind === "background-command"
+            || activeTab?.kind === "conversation-review"
             || activeTab?.kind === "terminal"
             || activeTab?.kind === "managed-browser" ? null : (
             <RightSidebarEmptyState

@@ -1,3 +1,4 @@
+import { ConversationChangesBadge, ConversationChangesCard } from "./conversation-file-changes.js";
 import { htmlPresentationDeliveries } from "./html-presentations.js";
 import { HtmlPreviewCard, HtmlPreviewScope } from "../../components/html-preview/html-preview-card.js";
 import { QueryTextarea } from "./query-textarea.js";
@@ -195,7 +196,8 @@ import {
   shouldResetTimelinePaging,
 } from "./conversation-timeline-state.js";
 import {
-  summarizeTaskFileChanges,
+  conversationChangeSummaries,
+  conversationChangeAnchors,
   type TaskFileChangeSummary,
 } from "./task-file-change-summary.js";
 import "./workspace-content.css";
@@ -3061,10 +3063,12 @@ export function ConversationWorkspace({
     !isLoadingTimeline
     && !isEndedSubagent
     && !teamManaged;
-  const taskFileChanges = summarizeTaskFileChanges(
-    timeline,
-    taskList?.createdAt ?? null,
-  );
+  const changeSummaries = useMemo(() => conversationChangeSummaries(timeline), [timeline]);
+  const activeFileChanges = activeRunId === null ? undefined : changeSummaries.get(activeRunId);
+  const changeCards = conversationChangeAnchors(changeSummaries, displayTimeline, activeRunId);
+  const openChangeReview = (runId: string | null, path?: string): void => {
+    useWorkbenchUiStore.getState().openConversationReview({ conversationId: session.id, runId, path: path ?? null });
+  };
   const conversationAgentAvatars = useMemo(() => {
     const profilesById = new Map(agentProfiles.map((agent) => [agent.id, agent]));
     const avatars = new Map<string, AgentProfile["avatar"]>();
@@ -3353,6 +3357,7 @@ export function ConversationWorkspace({
                       <HtmlPreviewCard source={{ kind: "file", path: delivery.path }} />
                     </div>
                   ))}
+                  {(changeCards.get(item.id) ?? []).map(change => <ConversationChangesCard key={change.runId} summary={change.summary} onReview={path => openChangeReview(change.runId, path)} />)}
                   {submittedTeamWorkItems(item).map((workItem) => (
                     <CollaborationProjectionGraph
                       agentClient={agentClient}
@@ -3432,7 +3437,8 @@ export function ConversationWorkspace({
             <ConversationTaskListPanel
               allowClose={teamManaged || !isEndedSubagent}
               expanded={isTaskListExpanded}
-              fileChanges={taskFileChanges}
+              fileChanges={activeFileChanges}
+              onOpenReview={path => openChangeReview(activeRunId, path)}
               isActioning={taskListAction !== null || isEndedSubagent}
               isRunActive={isRunning}
               lastRunStatus={session.lastRunStatus}
@@ -3440,7 +3446,7 @@ export function ConversationWorkspace({
               onClose={() => void handleCloseTaskList()}
               onToggle={() => setIsTaskListExpanded((current) => !current)}
             />
-          ) : null}
+          ) : activeFileChanges !== undefined ? <div className="mx-auto mb-[5px] max-w-full"><ConversationChangesBadge summary={activeFileChanges} onReview={path => openChangeReview(activeRunId, path)} /></div> : null}
 
           {queuedMessages.length > 0 ? (
             <ConversationPendingMessageQueue
@@ -4740,10 +4746,12 @@ function ConversationTaskListPanel({
   taskList,
   onClose,
   onToggle,
+  onOpenReview,
 }: {
   allowClose?: boolean;
   expanded: boolean;
-  fileChanges: TaskFileChangeSummary;
+  fileChanges: TaskFileChangeSummary | undefined;
+  onOpenReview: (path?: string) => void;
   isActioning: boolean;
   isRunActive: boolean;
   lastRunStatus: ProjectSession["lastRunStatus"];
@@ -4751,7 +4759,6 @@ function ConversationTaskListPanel({
   onClose: () => void;
   onToggle: () => void;
 }): ReactElement {
-  const [isChangesExpanded, setIsChangesExpanded] = useState(false);
   const runningCount = taskList.tasks.filter((task) => task.status === "running").length;
   const blockedIndex = taskList.tasks.findIndex((task) => task.status === "blocked");
   const failedIndex = taskList.tasks.findIndex((task) => task.status === "failed");
@@ -4772,21 +4779,10 @@ function ConversationTaskListPanel({
         ? "blocked"
         : inactiveRunningStatus ?? "active";
   const summaryId = `conversation-task-list-${taskList.conversationId}`;
-  const changesId = `${summaryId}-changes`;
-
-  const toggleTasks = (): void => {
-    setIsChangesExpanded(false);
-    onToggle();
-  };
-
-  const toggleChanges = (): void => {
-    if (expanded) onToggle();
-    setIsChangesExpanded((current) => !current);
-  };
-
   return (
     <div
       className="conversation-task-list"
+      data-has-changes={fileChanges !== undefined}
       data-expanded={String(expanded)}
       data-status={summaryStatus}
     >
@@ -4843,31 +4839,13 @@ function ConversationTaskListPanel({
             })}
           </div>
         ) : null}
-        {isChangesExpanded ? (
-          <div
-            aria-label="任务文件改动"
-            className="conversation-task-list__details conversation-task-list__changes-details"
-            id={changesId}
-            role="list"
-          >
-            {fileChanges.files.map((file) => (
-              <div className="conversation-task-list__file" key={file.path} role="listitem">
-                <span title={file.path}>{file.path}</span>
-                <span className="conversation-task-list__file-stats">
-                  <span data-kind="addition">+{file.additions}</span>
-                  <span data-kind="deletion">-{file.deletions}</span>
-                </span>
-              </div>
-            ))}
-          </div>
-        ) : null}
         <div className="conversation-task-list__summary-control">
           <button
             aria-controls={summaryId}
             aria-expanded={expanded}
             className="conversation-task-list__summary"
             type="button"
-            onClick={toggleTasks}
+            onClick={onToggle}
           >
             {isCompleted ? (
               <Check aria-hidden="true" className="conversation-task-list__summary-status" size={15} />
@@ -4888,9 +4866,9 @@ function ConversationTaskListPanel({
             ) : (
               <ListTodo aria-hidden="true" size={15} strokeWidth={1.9} />
             )}
-            <span>{`${completedCount}/${taskList.tasks.length} 已完成`}</span>
+            <span className="shrink-0">{`${completedCount}/${taskList.tasks.length} 已完成`}</span>
             <span className="conversation-task-list__summary-divider" aria-hidden="true">·</span>
-            <span>{
+            <span className="min-w-0 truncate">{
               isCompleted
                 ? "任务已完成"
                 : summaryStatus === "failed"
@@ -4909,21 +4887,7 @@ function ConversationTaskListPanel({
             }</span>
             <ChevronDown aria-hidden="true" className="conversation-task-list__chevron" size={15} />
           </button>
-          {fileChanges.files.length > 0 ? (
-            <button
-              aria-controls={changesId}
-              aria-expanded={isChangesExpanded}
-              aria-label={`查看 ${fileChanges.files.length} 个文件的改动`}
-              className="conversation-task-list__changes"
-              title="查看文件改动"
-              type="button"
-              onClick={toggleChanges}
-            >
-              <span>{fileChanges.files.length} 个文件已更改</span>
-              <span data-kind="addition">+{fileChanges.additions}</span>
-              <span data-kind="deletion">-{fileChanges.deletions}</span>
-            </button>
-          ) : null}
+          {fileChanges !== undefined ? <ConversationChangesBadge summary={fileChanges} joined onReview={onOpenReview} /> : null}
         </div>
       </div>
       {allowClose ? <IconButton

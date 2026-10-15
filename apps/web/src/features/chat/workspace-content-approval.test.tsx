@@ -126,6 +126,35 @@ it("expands an ordinary HTML edit as a diff without requesting a preview", async
   expect(edit!.querySelector('[aria-label="HTML 页面预览"]')).toBeNull();
 });
 
+it("shows merged file changes without a task list, then keeps the review card after the run ends", async () => {
+  const client = new MockAgentClient();
+  const first: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID,
+    batchId: null, name: "write_file", status: "completed", arguments: '{"path":"src/app.ts"}',
+    result: "{}", diff: "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-before\n+after\n", createdAt: "2026-10-15T00:00:00Z" };
+  const second = { ...first, id: WORK_ITEM_ID, diff: "--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1,2 @@\n-after\n+final\n+added\n", createdAt: "2026-10-15T00:00:01Z" };
+  const answer: ConversationTimelineItem = { id: MESSAGE_ID, kind: "message", conversationId: PARENT_ID,
+    runId: RUN_ID, attachments: [], modelId: null, role: "assistant", status: "completed", content: "修改已完成。", createdAt: "2026-10-15T00:00:02Z" };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([first, second, answer]);
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  const render = (activeRunId: string | null) => <TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+    session={session({ id: PARENT_ID, title: "无任务清单的文件改动", activeRunId })} /></TooltipProvider>;
+  await act(async () => { root?.render(render(RUN_ID)); await flushConversationWorkspace(); });
+  const badge = container.querySelector<HTMLButtonElement>('[data-conversation-change-summary]');
+  expect(badge).not.toBeNull();
+  expect(badge?.textContent).toContain("1 个文件已更改");
+  expect(badge?.textContent).toContain("+3");
+  expect(badge?.textContent).toContain("-2");
+  act(() => badge?.click());
+  expect(useWorkbenchUiStore.getState().conversationReviewViewRequest).toMatchObject({ conversationId: PARENT_ID, runId: RUN_ID, path: null });
+  await act(async () => { root?.render(render(null)); await flushConversationWorkspace(); });
+  expect(container.querySelector('.conversation-workspace__composer-overlay [data-conversation-change-summary]')).toBeNull();
+  const card = container.querySelector('[data-run-file-changes]');
+  expect(card?.textContent).toContain("已编辑 1 个文件");
+  expect(card?.querySelectorAll('[data-changed-file]')).toHaveLength(1);
+  act(() => card?.querySelector<HTMLButtonElement>('[data-changed-file]')?.click());
+  expect(useWorkbenchUiStore.getState().conversationReviewViewRequest).toMatchObject({ conversationId: PARENT_ID, runId: RUN_ID, path: "src/app.ts" });
+});
+
 it.each([
   { name: "final code", content: "```html\n<h1>动画</h1>\n```", status: "completed" as const, intermediate: false, kind: "code" },
   { name: "final file", content: "```html-preview\nexamples/demo.html\n```", status: "completed" as const, intermediate: false, kind: "file" },
