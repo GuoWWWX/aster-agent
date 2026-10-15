@@ -1032,7 +1032,6 @@ export function ConversationWorkspace({
   ));
   const [taskListAction, setTaskListAction] = useState<"closing" | null>(null);
   const [taskList, setTaskList] = useState<ConversationTaskList | null>(null);
-  const [isTaskListExpanded, setIsTaskListExpanded] = useState(false);
   const [timeline, setTimeline] = useState<ConversationTimelineItem[]>([]);
   const [timelineHasMore, setTimelineHasMore] = useState(false);
   const [isLoadingOlderTimeline, setIsLoadingOlderTimeline] = useState(false);
@@ -1792,7 +1791,6 @@ export function ConversationWorkspace({
       }
       if (event.type === "task_list.updated" && event.conversationId === session.id) {
         setTaskList(event.taskList);
-        if (event.taskList === null) setIsTaskListExpanded(false);
         return;
       }
       if (event.type === "pending_messages.updated" && event.conversationId === session.id) {
@@ -2923,7 +2921,6 @@ export function ConversationWorkspace({
       await agentClient.closeConversationTaskList({
         conversationId: session.id,
       });
-      setIsTaskListExpanded(false);
       setTaskList(null);
     } catch {
       setOperationError("无法关闭任务清单");
@@ -3479,7 +3476,6 @@ export function ConversationWorkspace({
           {taskList !== null ? (
             <ConversationTaskListPanel
               allowClose={teamManaged || !isEndedSubagent}
-              expanded={isTaskListExpanded}
               fileChanges={activeFileChanges}
               onOpenReview={path => openChangeReview(activeRunId, path)}
               isActioning={taskListAction !== null || isEndedSubagent}
@@ -3487,7 +3483,6 @@ export function ConversationWorkspace({
               lastRunStatus={session.lastRunStatus}
               taskList={taskList}
               onClose={() => void handleCloseTaskList()}
-              onToggle={() => setIsTaskListExpanded((current) => !current)}
             />
           ) : activeFileChanges !== undefined ? <div className="mx-auto mb-[5px] max-w-full"><ConversationChangesBadge summary={activeFileChanges} onReview={path => openChangeReview(activeRunId, path)} /></div> : null}
 
@@ -4779,18 +4774,15 @@ function SubagentApprovalQueue({
 
 function ConversationTaskListPanel({
   allowClose = true,
-  expanded,
   fileChanges,
   isActioning,
   isRunActive,
   lastRunStatus,
   taskList,
   onClose,
-  onToggle,
   onOpenReview,
 }: {
   allowClose?: boolean;
-  expanded: boolean;
   fileChanges: TaskFileChangeSummary | undefined;
   onOpenReview: (path?: string) => void;
   isActioning: boolean;
@@ -4798,8 +4790,8 @@ function ConversationTaskListPanel({
   lastRunStatus: ProjectSession["lastRunStatus"];
   taskList: ConversationTaskList;
   onClose: () => void;
-  onToggle: () => void;
 }): ReactElement {
+  const [expanded, setExpanded] = useState(false);
   const runningCount = taskList.tasks.filter((task) => task.status === "running").length;
   const blockedIndex = taskList.tasks.findIndex((task) => task.status === "blocked");
   const failedIndex = taskList.tasks.findIndex((task) => task.status === "failed");
@@ -4827,7 +4819,7 @@ function ConversationTaskListPanel({
       data-expanded={String(expanded)}
       data-status={summaryStatus}
     >
-      <Popover open={expanded} onOpenChange={(open) => { if (open !== expanded) onToggle(); }}>
+      <Popover open={expanded} onOpenChange={setExpanded}>
       <div className="conversation-task-list__body">
         {expanded ? (
           <PopoverContent className="conversation-task-list__details w-max min-w-[min(var(--radix-popover-trigger-width),var(--radix-popover-content-available-width))] max-w-[min(560px,var(--radix-popover-content-available-width))]" id={summaryId} role="list" side="top" align="center" sideOffset={5}
