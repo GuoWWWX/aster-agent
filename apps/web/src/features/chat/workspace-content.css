@@ -2455,6 +2455,10 @@ button.tool-file-change__path:hover {
   background: var(--app-hover);
 }
 
+.conversation-mention-menu > button[data-group-member] {
+  grid-template-columns: 20px minmax(0, 1fr);
+}
+
 .conversation-mention-menu > button.is-selected {
   background: var(--app-selection);
   box-shadow: inset 2px 0 0 var(--app-selection-border);

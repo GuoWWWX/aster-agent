@@ -7,6 +7,7 @@ import { TaskContextDirectory } from "./task-context-directory.js";
 import { TeamChatPanel } from "./team-chat-panel.js";
 import { TeamChatWorkspace } from "./team-chat-workspace.js";
 import { TooltipProvider } from "../../components/ui/tooltip.js";
+import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
 
 let root: Root | null = null;
 beforeEach(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} }); });
@@ -31,7 +32,7 @@ it("shows one task with sources and opens the original message", async () => {
 });
 it("reuses the ordinary composer and sends its selected member references as group recipients", async () => {
   const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
-  const roster = await client.getTeamChatMembers({ teamInstanceId: instance.id }); const member = roster.find(item => !item.isLead)!;
+  const roster = await client.getTeamChatMembers({ teamInstanceId: instance.id }); const selectedMembers = roster.filter(item => !item.isLead).slice(0, 2);
   const post = vi.spyOn(client, "postTeamChat"); const container = mount();
   await act(() => Promise.resolve().then(() => { root?.render(<TooltipProvider><TeamChatWorkspace agentClient={client} instance={instance} sessions={sessions} projects={[]} onSessionUpdated={() => undefined} active onOpenConversation={() => undefined} /></TooltipProvider>); }));
   const textarea = container.querySelector<HTMLTextAreaElement>('[aria-label="输入任务"]')!;
@@ -39,13 +40,16 @@ it("reuses the ordinary composer and sends its selected member references as gro
   for (const label of ["群消息用途", "关联任务", "要求全员回答"]) expect(container.querySelector(`[aria-label="${label}"]`)).toBeNull();
   expect(container.querySelector('[aria-label="权限模式"]')).not.toBeNull();
   expect(container.querySelector('[aria-label="模型"]')).not.toBeNull();
-  await act(() => Promise.resolve().then(() => { input(textarea, "@"); }));
-  const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(button => button.textContent?.includes(member.name));
-  expect(option).toBeDefined();
-  await act(() => Promise.resolve().then(() => { option?.click(); }));
+  expect(selectedMembers).toHaveLength(2);
+  for (const member of selectedMembers) {
+    await act(() => Promise.resolve().then(() => { input(textarea, textarea.value + "@"); }));
+    const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(button => button.textContent?.includes(member.name));
+    expect(option).toBeDefined();
+    await act(() => Promise.resolve().then(() => { option?.click(); }));
+  }
   await act(() => Promise.resolve().then(() => { input(textarea, textarea.value + "请核实接口"); }));
   await act(() => Promise.resolve().then(() => { container.querySelector<HTMLButtonElement>('[aria-label="发送任务"]')?.click(); }));
-  expect(post).toHaveBeenCalledWith(expect.objectContaining({ recipientConversationIds: [member.conversationId], intent: "request" }));
+  expect(post).toHaveBeenCalledWith(expect.objectContaining({ recipientConversationIds: selectedMembers.map(member => member.conversationId), intent: "request" }));
   expect(post.mock.calls[0]?.[0].content).toContain("请核实接口");
   expect(container.querySelectorAll('[data-group-message]')).toHaveLength(1);
 });
@@ -56,6 +60,47 @@ async function groupFixture(client: MockAgentClient) {
   const sessions = (await client.listConversationHierarchy()).map(conversation => ({ ...conversation, pinOrder: conversation.pinOrder ?? null }));
   return { instance, sessions };
 }
+
+it("mentions only current group members with their profile avatars, names and roles", async () => {
+  const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
+  const roster = await client.getTeamChatMembers({ teamInstanceId: instance.id });
+  const member = roster.find(item => !item.isLead)!;
+  const conversation = sessions.find(item => item.id === member.conversationId)!;
+  const profile = useAgentDirectoryStore.getState().agents.find(agent => agent.id === conversation.agentId)!;
+  const avatar = profile.avatar;
+  const image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=";
+  useAgentDirectoryStore.getState().updateAgent(profile.id, { avatar: { kind: "image", dataUrl: image, fileName: "avatar.png" } });
+  try {
+    const members = roster.map((item, index) => ({ ...item, name: item.conversationId === member.conversationId ? "测试工程师" : `成员${index}`, role: "团队职责" }));
+    const archived = { ...members.at(-1)!, isArchived: true };
+    vi.spyOn(client, "getTeamChatMembers").mockResolvedValue([...members.slice(0, -1), archived]);
+    const post = vi.spyOn(client, "postTeamChat");
+    const unrelated = { ...conversation, id: crypto.randomUUID(), title: "临时聊天干扰项" };
+    const container = mount();
+    await act(() => Promise.resolve().then(() => { root?.render(<TooltipProvider><TeamChatWorkspace agentClient={client} instance={instance} sessions={[...sessions, unrelated]} projects={[]} onSessionUpdated={() => undefined} active onOpenConversation={() => undefined} /></TooltipProvider>); }));
+    const textarea = container.querySelector<HTMLTextAreaElement>('[aria-label="输入任务"]')!;
+    await act(() => Promise.resolve().then(() => { input(textarea, "@"); }));
+    const menu = container.querySelector('[role="listbox"][aria-label="选择群成员"]')!;
+    expect(menu).not.toBeNull();
+    expect(menu.querySelector('[role="presentation"]')?.textContent).toBe("群成员");
+    expect(menu.querySelectorAll('[role="option"]')).toHaveLength(members.length - 1);
+    expect(menu.textContent).not.toContain("临时对话");
+    expect(menu.textContent).not.toContain(conversation.title);
+    expect(menu.textContent).not.toContain(unrelated.title);
+    expect(menu.textContent).not.toContain(archived.name);
+    const option = [...menu.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(button => button.querySelector("strong")?.textContent === "测试工程师")!;
+    expect(option.querySelector('[data-member-avatar] img')?.getAttribute("src")).toBe(image);
+    expect(option.querySelector("small")?.textContent).toBe("团队职责");
+    await act(() => Promise.resolve().then(() => { input(textarea, "@测试"); }));
+    expect(menu.querySelectorAll('[role="option"]')).toHaveLength(1);
+    await act(() => Promise.resolve().then(() => { textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); }));
+    expect(textarea.value.trim()).toBe("测试工程师");
+    expect(container.querySelector('[data-composer-reference-icon] img')?.getAttribute("src")).toBe(image);
+    await act(() => Promise.resolve().then(() => { input(textarea, textarea.value + "请确认"); }));
+    await act(() => Promise.resolve().then(() => { container.querySelector<HTMLButtonElement>('[aria-label="发送任务"]')?.click(); }));
+    expect(post).toHaveBeenCalledWith(expect.objectContaining({ content: "@测试工程师 请确认", recipientConversationIds: [member.conversationId] }));
+  } finally { useAgentDirectoryStore.getState().updateAgent(profile.id, { avatar }); }
+});
 
 it("uses the conversation bubbles with the user's message on the right and a member's icon and name above the left bubble", async () => {
   const client = new MockAgentClient();

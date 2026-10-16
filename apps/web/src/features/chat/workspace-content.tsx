@@ -119,6 +119,7 @@ import type {
   ProjectEntry,
   ProjectSummary,
   SkillConfiguration,
+  TeamChatMember,
   TeamInstanceScope,
   TeamInstanceView,
 } from "@agent/protocol";
@@ -491,7 +492,7 @@ type TeamMention = {
 };
 
 type MentionOption =
-  | { kind: "conversation"; value: ConversationMention }
+  | { kind: "conversation"; value: ConversationMention; member?: TeamChatMember }
   | { kind: "directory"; value: ProjectFileMention }
   | { kind: "file"; value: ProjectFileMention }
   | { kind: "team"; value: TeamMention };
@@ -977,6 +978,9 @@ export function ConversationWorkspace({
   const [selectedProjectFileMentions, setSelectedProjectFileMentions] =
     useState<ProjectFileMention[]>([]);
   const [mentionQuery, setMentionQuery] = useState<MentionQuery | null>(null);
+  const groupInstanceId = groupChat?.instanceId;
+  const isGroupMentionOpen = groupChat !== null && mentionQuery !== null;
+  const [groupMentionRoster, setGroupMentionRoster] = useState<{ instanceId: string; members: TeamChatMember[] } | null>(null);
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0);
   const [projectMentionListing, setProjectMentionListing] = useState<{
     directoryPath: string;
@@ -1700,6 +1704,14 @@ export function ConversationWorkspace({
 
   useEffect(() => {
     let disposed = false;
+    if (groupInstanceId !== undefined) {
+      void agentClient.getTeamChatMembers({ teamInstanceId: groupInstanceId }).then(members => {
+        if (!disposed) setGroupMentionRoster({ instanceId: groupInstanceId, members });
+      }).catch(() => {
+        if (!disposed) setGroupMentionRoster({ instanceId: groupInstanceId, members: [] });
+      });
+      return () => { disposed = true; };
+    }
     void agentClient.listConversations()
       .then(async (conversations) => {
         const forks = await Promise.all(
@@ -1731,7 +1743,7 @@ export function ConversationWorkspace({
     return () => {
       disposed = true;
     };
-  }, [agentClient, session.id]);
+  }, [agentClient, session.id, groupInstanceId, isGroupMentionOpen]);
 
   useEffect(() => {
     const directoryPath = projectMentionLocation?.directoryPath;
@@ -2575,6 +2587,19 @@ export function ConversationWorkspace({
     if (mentionQuery === null) return [];
     const options: MentionOption[] = [];
     const normalizedQuery = mentionQuery.query.toLocaleLowerCase();
+    if (groupChat !== null) {
+      if (groupMentionRoster?.instanceId !== groupChat.instanceId
+        || mentionQuery.query.includes("/")
+        || selectedConversationMentions.length >= MAX_SELECTED_CONVERSATION_MENTIONS) return [];
+      return groupMentionRoster.members.filter(member => !member.isArchived
+        && member.name.toLocaleLowerCase().includes(normalizedQuery)
+        && !selectedConversationMentions.some(selected => selected.id === member.conversationId))
+        .flatMap((member): MentionOption[] => {
+          const conversation = relatedSessions.find(candidate => candidate.id === member.conversationId);
+          return conversation === undefined ? [] : [{ kind: "conversation", member,
+            value: { ...conversation, title: member.name } }];
+        }).slice(0, 12);
+    }
     const canMentionTeams = session.parentConversationId === null
       && session.threadKind === "agent"
       && !teamManaged;
@@ -2606,11 +2631,10 @@ export function ConversationWorkspace({
       !mentionQuery.query.includes("/")
       && selectedConversationMentions.length < MAX_SELECTED_CONVERSATION_MENTIONS
     ) {
-      const conversations = groupChat === null ? [...new Map([
+      const conversations = [...new Map([
         ...relatedSessions.filter((candidate) => candidate.parentConversationId === session.id && !candidate.isArchived),
         ...availableConversationMentions,
-      ].map((candidate) => [candidate.id, candidate])).values()] : relatedSessions.filter(candidate =>
-        !candidate.isArchived && (candidate.id === session.id || candidate.parentConversationId === session.id));
+      ].map((candidate) => [candidate.id, candidate])).values()];
       options.push(...conversations
         .filter((conversation) =>
           !selectedConversationMentions.some((selected) => selected.id === conversation.id)
@@ -2665,6 +2689,7 @@ export function ConversationWorkspace({
     teamManaged,
     teamInstances,
     groupChat,
+    groupMentionRoster,
   ]);
 
   const slashOptions = useMemo(() => {
@@ -3704,8 +3729,10 @@ export function ConversationWorkspace({
                 mentionQuery !== null
                 && mentionOptions.length > 0
               ? (
-                <div className="conversation-mention-menu" role="listbox" aria-label="引用对话或文件">
+                <div className="conversation-mention-menu" role="listbox" aria-label={groupChat === null ? "引用对话或文件" : "选择群成员"}>
                   {mentionOptions.map((option, index) => {
+                    const member = option.kind === "conversation" ? option.member : undefined;
+                    const memberAvatar = member === undefined ? undefined : conversationAgentAvatars.get(member.conversationId);
                     const child = option.kind === "conversation"
                       ? relatedSessions.find((candidate) => candidate.id === option.value.id)
                       : undefined;
@@ -3719,13 +3746,14 @@ export function ConversationWorkspace({
                         ? `${option.kind}:${option.value.id}` : `${option.kind}:${option.value.path}`}>
                       {mentionOptions[index - 1]?.kind === option.kind ? null : (
                         <div role="presentation" className="px-2 py-1 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
-                          {MENTION_GROUPS[option.kind]}
+                          {member === undefined ? MENTION_GROUPS[option.kind] : "群成员"}
                         </div>
                       )}
                       <button
                         aria-selected={index === mentionSelectionIndex}
                         className={index === mentionSelectionIndex ? "is-selected" : undefined}
                         data-option-index={index}
+                        data-group-member={member?.conversationId}
                         key={option.kind === "conversation" || option.kind === "team"
                           ? `${option.kind}:${option.value.id}`
                           : `${option.kind}:${option.value.path}`}
@@ -3734,7 +3762,12 @@ export function ConversationWorkspace({
                         onMouseDown={(event) => event.preventDefault()}
                         onClick={handleMentionOptionClick}
                       >
-                        {option.kind === "team" ? (
+                        {member !== undefined ? (
+                          <div data-member-avatar className="flex h-5 w-5 items-center justify-center">
+                            {memberAvatar === undefined ? <SubagentAvatar icon={null} seed={member.conversationId} size="compact" />
+                              : <AgentAvatar avatar={memberAvatar} size="compact" />}
+                          </div>
+                        ) : option.kind === "team" ? (
                           <UsersRound aria-hidden="true" size={15} />
                         ) : option.kind === "conversation" ? (
                           child?.parentConversationId != null ? (
@@ -3749,7 +3782,7 @@ export function ConversationWorkspace({
                           <strong title={option.kind === "conversation" ? option.value.title : option.value.name}>{option.kind === "conversation"
                             ? option.value.title
                             : option.kind === "team" ? option.value.name : option.value.name}</strong>
-                          <small>{option.kind === "conversation"
+                          <small>{member !== undefined ? member.role : option.kind === "conversation"
                             ? `${projectName ?? "临时对话"} · ${threadKindLabel(option.value.threadKind)}`
                             : option.kind === "team"
                               ? option.value.scope === "global"
@@ -3828,6 +3861,12 @@ export function ConversationWorkspace({
                   const file = activeProjectFileMentions.find((item) => `@${item.path}` === label);
                   if (file !== undefined) return <FileTypeIcon path={file.path} size={12} />;
                   const reference = selectedConversationMentions.find((item) => `@${item.title}` === label);
+                  if (groupChat !== null && reference !== undefined) {
+                    const avatar = conversationAgentAvatars.get(reference.id);
+                    return <span className="inline-flex shrink-0 scale-[0.65]">{avatar === undefined
+                      ? <SubagentAvatar icon={null} seed={reference.id} size="compact" />
+                      : <AgentAvatar avatar={avatar} size="compact" />}</span>;
+                  }
                   const child = relatedSessions.find((item) => item.id === reference?.id && item.parentConversationId !== null);
                   if (child !== undefined) return <span className="inline-flex shrink-0 scale-[0.65]"><SubagentAvatar icon={child.avatarIcon} seed={child.id} size="compact" /></span>;
                   return <MessageSquareText size={12} aria-hidden="true" />;
