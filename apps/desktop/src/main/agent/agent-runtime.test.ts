@@ -3606,6 +3606,7 @@ describe("AgentRuntime", () => {
     const projects = new ProjectRegistry(database);
     const conversation = database.createConversation(null);
     let calls = 0;
+    const inputEstimates: number[] = [];
     let started: (() => void) | undefined;
     const waiting = new Promise<void>((resolve) => { started = resolve; });
     const model: ModelProviderAdapter = {
@@ -3633,10 +3634,13 @@ describe("AgentRuntime", () => {
     const usage = () => runtime.getContextUsage({ conversationId: conversation.id, permissionMode: "read_only" }).providerCache;
     const send = (content: string) => new Promise<void>((resolve) => {
       runtime.sendMessage({ content, conversationId: conversation.id }, (event) => {
+        if (event.type === "model.request_started" && event.estimatedInputTokens !== undefined) inputEstimates.push(event.estimatedInputTokens);
         if (event.type === "run.finished") resolve();
       });
     });
     await send("first");
+    expect(inputEstimates).toHaveLength(1);
+    expect(inputEstimates[0]).toBeGreaterThan(100);
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(usage()).toMatchObject({ firstTokenLatencyMs: 250, outputTokensPerSecond: 20, latest: { hitRate: 0.8 }, cumulative: { hitRate: 0.8 } });
     const second = send("cancel this request");

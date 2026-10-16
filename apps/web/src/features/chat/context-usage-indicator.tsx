@@ -32,6 +32,13 @@ type ProviderCacheInlineMetric = {
   value: string;
 };
 
+export type LiveModelMetrics = {
+  estimatedInputTokens: number | null;
+  estimatedOutputTokens: number;
+  firstTokenLatencyMs: number | null;
+  outputTokensPerSecond: number | null;
+};
+
 export function ContextUsageIndicator({
   contextWindowTokens,
   modelName,
@@ -157,10 +164,12 @@ export function ContextUsageIndicator({
 
 export function ProviderCacheStatus({
   usage,
+  live,
 }: {
   usage: ConversationContextUsage | null;
+  live?: LiveModelMetrics | null;
 }): ReactElement {
-  const metrics = providerCacheInlineMetrics(usage);
+  const metrics = providerCacheInlineMetrics(usage, live);
   const cacheMetrics = metrics.filter((metric) => metric.kind === "cache");
   const accessibleLabel = `${metrics.map((metric) => (
     `${metric.label} ${metric.value}`
@@ -234,8 +243,11 @@ export function ProviderCacheStatus({
         </button>
       </PopoverTrigger>
       <PopoverContent align="center" className="context-usage-indicator__content">
+        {live == null ? null : <p className="text-[var(--app-muted-foreground)]">
+          生成中约每秒更新。≈ 表示本地估算：发送量按本次消息、附件和工具定义计算，返回量与速度按已收到的正文和公开推理计算，不含隐藏推理；速度不含首字等待。缓存仍为最近完成请求的实际计量，结束后以服务端上报为准。
+        </p>}
         {usage === null ? (
-          <LoadingState label="正在读取 Provider 缓存计量…" compact />
+          live == null ? <LoadingState label="正在读取 Provider 缓存计量…" compact /> : null
         ) : (
           <ProviderCacheDetails usage={usage} />
         )}
@@ -480,12 +492,16 @@ export function providerCacheLabel(
 
 export function providerCacheInlineMetrics(
   usage: ConversationContextUsage | null,
+  live?: LiveModelMetrics | null,
 ): ProviderCacheInlineMetric[] {
   const latest = usage?.providerCache?.latest ?? null;
   const cumulative = usage?.providerCache?.cumulative;
   const hitRate = latest?.hitRate ?? null;
-  const latency = usage?.providerCache?.firstTokenLatencyMs;
-  const speed = usage?.providerCache?.outputTokensPerSecond;
+  const latency = live == null ? usage?.providerCache?.firstTokenLatencyMs : live.firstTokenLatencyMs;
+  const speed = live == null ? usage?.providerCache?.outputTokensPerSecond : live.outputTokensPerSecond;
+  const inputTokens = live == null ? latest?.inputTokens : live.estimatedInputTokens;
+  const outputTokens = live == null ? latest?.outputTokens : live.estimatedOutputTokens;
+  const prefix = live == null ? "" : "≈";
   return [
     {
       kind: "latency",
@@ -499,21 +515,21 @@ export function providerCacheInlineMetrics(
       label: "发送",
       shortLabel: "发送",
       tone: "success",
-      value: latest === null ? "--" : formatCompactTokenCount(latest.inputTokens),
+      value: inputTokens == null ? "--" : `${prefix}${formatCompactTokenCount(inputTokens)}`,
     },
     {
       kind: "output",
       label: "返回",
       shortLabel: "返回",
       tone: "danger",
-      value: latest === null ? "--" : formatCompactTokenCount(latest.outputTokens),
+      value: outputTokens == null ? "--" : `${prefix}${formatCompactTokenCount(outputTokens)}`,
     },
     {
       kind: "throughput",
       label: "速度",
       shortLabel: "速度",
       tone: "neutral",
-      value: `${speed == null ? "--" : speed.toFixed(1)} tok/s`,
+      value: `${speed == null ? "--" : `${prefix}${speed.toFixed(1)}`} tok/s`,
     },
     {
       kind: "cache",

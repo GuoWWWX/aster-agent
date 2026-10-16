@@ -1039,6 +1039,7 @@ const runStartedEventSchema = z
 const modelRequestStartedEventSchema = z
   .object({
     conversationId: conversationIdSchema,
+    estimatedInputTokens: z.number().int().nonnegative().optional(),
     runId: runIdSchema,
     type: z.literal("model.request_started")
   })

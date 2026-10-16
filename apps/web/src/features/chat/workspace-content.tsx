@@ -12,6 +12,7 @@ import { ScheduledTasksWorkspace } from "../schedules/scheduled-tasks-workspace.
 import { useComposerHistory } from "./use-composer-history.js";
 import { ProjectImageResult } from "./project-image-result.js";
 import { BrowserScreenshotResult } from "./browser-screenshot-result.js";
+import { LiveProviderCacheStatus } from "./live-provider-cache-status.js";
 import { ToolDisclosureContext, ToolRevealContext, useToolDisclosure } from "./tool-disclosure-state.js";
 import { CommandExecutionStatus, type CommandExecutionState } from "./command-execution-status.js";
 import { findComposerReferenceRanges } from "./composer-reference-ranges.js";
@@ -191,7 +192,6 @@ import { questionForAnswer, questionToolForAnswer } from "./question-answer-refe
 import { ConversationTurnNavigator } from "./conversation-turn-navigator.js";
 import {
   ContextUsageIndicator,
-  ProviderCacheStatus,
 } from "./context-usage-indicator.js";
 import { ReasoningEnergyField } from "./reasoning-energy-field.js";
 import {
@@ -4018,7 +4018,10 @@ export function ConversationWorkspace({
             </div>
           </div>
           {showContextUsage ? (
-            <ProviderCacheStatus
+            <LiveProviderCacheStatus
+              key={session.id}
+              agentClient={agentClient}
+              conversationId={session.id}
               usage={lastProviderUsage?.conversationId === session.id
                 ? lastProviderUsage.usage
                 : null}

@@ -4094,6 +4094,10 @@ export class AgentRuntime {
     )?.id;
     this.emit(input.emit, {
       conversationId: input.conversationId,
+      estimatedInputTokens: input.messages.reduce((total, message) => {
+        const estimate = estimateModelMessageTokens(message);
+        return total + estimate.contentTokens + estimate.attachmentTokens + estimate.toolCallTokens;
+      }, estimateContextTokens(JSON.stringify(input.tools))),
       runId: input.runId,
       type: "model.request_started"
     });

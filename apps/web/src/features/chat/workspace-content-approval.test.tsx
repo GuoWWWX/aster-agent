@@ -712,10 +712,11 @@ describe("Conversation cache status", () => {
     const target = session({ id: PARENT_ID, title: "缓存统计" });
     const previousSetting = useApplicationSettingsStore.getState().showContextUsage;
     useApplicationSettingsStore.setState({ showContextUsage: true });
-    let listener: (event: ConversationRunEvent) => void = () => undefined;
+    const listeners = new Set<(event: ConversationRunEvent) => void>();
+    const listener = (event: ConversationRunEvent) => { for (const next of listeners) next(event); };
     vi.spyOn(client, "onConversationRunEvent").mockImplementation((next) => {
-      listener = next;
-      return () => undefined;
+      listeners.add(next);
+      return () => { listeners.delete(next); };
     });
     vi.spyOn(client, "listConversationTimeline").mockResolvedValue([]);
     const empty: ConversationContextUsage = {
@@ -757,23 +758,24 @@ describe("Conversation cache status", () => {
       load.mockResolvedValue(withUsage(0.8));
       await finish("completed");
       expect(metric()?.textContent).toContain("80%");
-      const completedStats = metric()?.closest("button")?.textContent;
       const pending = withUsage(0.8);
       pending.providerCache!.latest = null;
       pending.providerCache!.firstTokenLatencyMs = null;
       load.mockResolvedValue(pending);
       await act(async () => {
         listener({ type: "run.started", conversationId: PARENT_ID, runId: RUN_ID, modelId: "test-model" });
-        listener({ type: "model.request_started", conversationId: PARENT_ID, runId: RUN_ID });
+        listener({ type: "model.request_started", conversationId: PARENT_ID, runId: RUN_ID, estimatedInputTokens: 1200 });
         await flushConversationWorkspace();
       });
-      expect(metric()?.closest("button")?.textContent).toBe(completedStats);
+      expect(metric()?.textContent).toContain("80%");
+      expect(container.querySelector('[data-token-direction="up"]')?.textContent).toContain("≈1.2K");
       pending.providerCache!.firstTokenLatencyMs = 1200;
       await act(async () => {
         listener({ type: "model.first_token_received", conversationId: PARENT_ID, runId: RUN_ID, latencyMs: 1200 });
         await flushConversationWorkspace();
       });
-      expect(metric()?.closest("button")?.textContent).toBe(completedStats);
+      expect(container.querySelector('[data-cache-metric="首字"]')?.textContent).toContain("1.20s");
+      expect(metric()?.textContent).toContain("80%");
       load.mockRejectedValue(new Error("IPC unavailable"));
       await finish("failed");
       expect(metric()?.textContent).toContain("80%");
