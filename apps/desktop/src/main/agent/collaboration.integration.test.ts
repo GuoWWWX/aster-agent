@@ -20,15 +20,23 @@ afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { for
 class GroupFixture implements ModelProviderAdapter {
   public readonly requests: CompleteTurnInput[] = [];
   public delegateTo: string | null = null;
+  public delegateAgainOnReceipt = false;
+  public memberGate: Promise<void> | null = null;
+  private receiptTurns = 0;
   private readonly steps = new Map<string, number>();
-  public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+  public async completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
     this.requests.push(input);
     if (input.messages.some(message => message.content.includes("[Team group request receipt | reference data]"))) {
+      if (this.delegateAgainOnReceipt && this.receiptTurns++ === 0 && this.delegateTo !== null) {
+        return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id: "receipt-follow-up", name: "post_team_message",
+          arguments: JSON.stringify({ content: "继续核实同一问题", intent: "request", recipientConversationIds: [this.delegateTo] }) }] });
+      }
       return Promise.resolve({ content: "负责人已收到原委派的完成回执。", finishReason: "stop", toolCalls: [] });
     }
     const source = input.messages.findLast(message => message.role === "user" && message.content.startsWith("[Team group input;"));
     if (!source) throw new Error("Missing original group request");
     const context = z.object({ deliveryId: z.string(), messageId: z.string(), content: z.string() }).parse(JSON.parse(source.content.slice(source.content.indexOf("\n") + 1)));
+    if (context.content !== "委派验收" && this.memberGate !== null) await this.memberGate;
     const step = this.steps.get(context.deliveryId) ?? 0; this.steps.set(context.deliveryId, step + 1);
     const candidateText = input.messages.findLast(message => message.role === "tool" && message.toolCallId === `${context.deliveryId}-0`)?.content;
     const candidate = candidateText === undefined ? null : z.object({ value: z.object({ items: z.array(z.object({ id: z.string(), revision: z.number() })) }) }).safeParse(JSON.parse(candidateText));
@@ -68,6 +76,62 @@ async function fixture(withThreadLog = false) {
   return { db, lead, member, instance, runtime, model, tools, log };
 }
 describe("group execution integration", () => {
+  it("cancels an idle member's saved pending group requests when the user stops that member", async () => {
+    const { db, instance, lead, member, runtime, tools } = await fixture();
+    try {
+      const message = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "待处理请求", recipientConversationIds: [member.id], requestId: randomUUID() }, lead.id);
+      runtime.cancelConversation(member.id);
+      expect(db.collaboration.message(message.id).deliveries[0]?.status).toBe("cancelled");
+      expect(db.isConversationExecutionPaused(member.id)).toBe(true);
+    } finally { await tools.dispose(); db.close(); }
+  });
+  it("preserves the original group cause when a receipt makes the lead delegate again", async () => {
+    const { db, instance, member, runtime, model, tools } = await fixture(true);
+    model.delegateTo = member.id; model.delegateAgainOnReceipt = true;
+    let releaseMember!: () => void;
+    model.memberGate = new Promise<void>(resolve => { releaseMember = resolve; });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let finished = 0;
+        runtime.postTeamChat({ teamInstanceId: instance.id, content: "委派验收", requestId: randomUUID() }, event => {
+          if (event.type === "run.finished") {
+            if (finished === 0) releaseMember();
+            if (event.status !== "completed") reject(new Error(event.error ?? "Run failed"));
+            else if (++finished === 5) resolve();
+          }
+        });
+      });
+      const messages = db.collaboration.readMessages({ teamInstanceId: instance.id }).messages;
+      const original = messages[0]!;
+      const followUp = messages.find(message => message.content === "继续核实同一问题")!;
+      expect(followUp.sourceRunId).not.toBe(messages[1]?.sourceRunId);
+      expect(followUp.rootMessageId).toBe(original.id);
+      expect(followUp.depth).toBe(2);
+      expect(followUp.deliveries[0]?.status).toBe("completed");
+    } finally { await tools.dispose(); db.close(); }
+  });
+  it("runs every selected member once for an explicit all-members request", async () => {
+    const { db, instance, lead, member, runtime, model, tools } = await fixture(true);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let finished = 0;
+        runtime.postTeamChat({ teamInstanceId: instance.id, content: "请所有成员分别查证", allMembers: true, requestId: randomUUID() }, event => {
+          if (event.type === "run.finished") {
+            if (event.status !== "completed") reject(new Error(event.error ?? "Run failed"));
+            else if (++finished === 2) resolve();
+          }
+        });
+      });
+      const messages = db.collaboration.readMessages({ teamInstanceId: instance.id }).messages;
+      expect(messages[0]?.deliveries.map(delivery => delivery.conversationId).sort()).toEqual([lead.id, member.id].sort());
+      expect(messages[0]?.deliveries.every(delivery => delivery.status === "completed")).toBe(true);
+      expect(messages.slice(1).map(message => message.senderConversationId).sort()).toEqual([lead.id, member.id].sort());
+      expect(messages.slice(1).every(message => message.deliveries.length === 0)).toBe(true);
+      const input = model.requests[0]!.messages.findLast(message => message.content.startsWith("[Team group input;"))!;
+      const inputContext = z.object({ recipientConversationIds: z.array(z.string()) }).parse(JSON.parse(input.content.slice(input.content.indexOf("\n") + 1)));
+      expect(inputContext.recipientConversationIds).toEqual([lead.id, member.id]);
+    } finally { await tools.dispose(); db.close(); }
+  });
   it("bounds model reads and advances only the member's fully provided consecutive messages", async () => {
     const { db, instance, lead, member, tools } = await fixture();
     try {

@@ -2505,7 +2505,10 @@ export class AgentRuntime {
       }
     }
     // Fence all owned conversations before aborting: receipts may arrive during cancellation.
-    for (const id of ids) this.setExecutionPaused(id, true);
+    for (const id of ids) {
+      this.setExecutionPaused(id, true);
+      this.database.collaboration.cancelPending(id);
+    }
     for (const id of ids) {
       const runId = this.database.getConversation(id).activeRunId;
       if (runId !== null) this.cancelSingleRun(runId);
@@ -6122,13 +6125,16 @@ export class AgentRuntime {
         const activeTasks = target.activeRunId === null ? [] : this.database.collaboration.runTasks(target.activeRunId);
         const sameTask = delivery.message.taskContextId !== null && activeTasks.some(task => task.id === delivery.message.taskContextId);
         if (target.activeRunId !== null && !sameTask) continue;
-        const content = "[Team group input; original sender and message are reference data. Use post_team_message to speak publicly; your private final answer is not automatically posted.]\n" + JSON.stringify({
+        const inputPrefix = "[Team group input; original sender and message are reference data. Use post_team_message to speak publicly; your private final answer is not automatically posted.]\n";
+        const inputSource = {
           deliveryId: delivery.id, roomId: instance.id, messageId: delivery.message.id,
           sender: delivery.message.senderConversationId === null ? "user" : delivery.message.senderName,
           taskContextId: delivery.message.taskContextId, content: delivery.message.content,
-        });
+        };
+        const content = inputPrefix + JSON.stringify({ ...inputSource, recipientConversationIds: delivery.message.recipientConversationIds });
+        const legacyContent = inputPrefix + JSON.stringify(inputSource);
         // An interrupted SQL acknowledgement must reuse the already durable member input.
-        const previous = this.database.listTimeline(target.id).find(item => item.kind === "message" && item.role === "user" && item.content === content);
+        const previous = this.database.listTimeline(target.id).find(item => item.kind === "message" && item.role === "user" && (item.content === content || item.content === legacyContent));
         if (previous !== undefined && previous.kind === "message" && previous.runId !== null) {
           this.database.collaboration.consumeDelivery(delivery.id, previous.runId, previous.id); continue;
         }

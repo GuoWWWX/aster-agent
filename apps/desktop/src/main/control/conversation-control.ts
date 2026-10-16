@@ -2,6 +2,7 @@ import {
   backgroundCommandSchema, backgroundCommandOutputSchema, userQuestionSchema,
   conversationListResponseSchema, conversationMessageSubmissionSchema,
   conversationSummarySchema, conversationTimelinePageSchema, projectListResponseSchema, modelRuntimeStatusSchema,
+  teamChatMessageSchema, teamChatPageSchema, teamChatMemberSchema,
   type ConversationRunEvent, type LocalControlCommand,
 } from "@agent/protocol";
 import { z } from "zod";
@@ -16,9 +17,9 @@ import type { ModelCredentialStore } from "../model/model-credential-store.js";
 /** Local clients use the same lifecycle, permissions and execution core as IPC. */
 export class ConversationControl {
   public constructor(
-    private readonly database: Pick<AgentDatabase, "listProjects" | "listConversationHierarchy" | "getConversation" | "isTeamWorkItemExecutionTreeConversation">,
+    private readonly database: Pick<AgentDatabase, "listProjects" | "listConversationHierarchy" | "getConversation" | "isTeamWorkItemExecutionTreeConversation" | "collaboration">,
     private readonly lifecycle: Pick<ConversationLifecycleService, "createConversation" | "setConversationPermissionMode" | "setConversationModelSelection" | "renameConversation" | "setConversationArchived">,
-    private readonly runtime: Pick<AgentRuntime, "sendMessage" | "cancelConversation" | "listUserQuestions" | "answerUserQuestion" | "approveToolChange" | "listBackgroundCommands" | "readBackgroundCommand" | "stopBackgroundCommand">,
+    private readonly runtime: Pick<AgentRuntime, "sendMessage" | "cancelConversation" | "listUserQuestions" | "answerUserQuestion" | "approveToolChange" | "listBackgroundCommands" | "readBackgroundCommand" | "stopBackgroundCommand" | "postTeamChat">,
     private readonly projector: Pick<EventProjector, "prepareTimeline" | "listTimelinePage">,
     private readonly settings: Pick<ApplicationSettingsStore, "getConfiguration">,
     private readonly teams: Pick<TeamWorkItemRuntime, "sendExecutionGuidance">,
@@ -31,6 +32,9 @@ export class ConversationControl {
       case "projects.list": return projectListResponseSchema.parse(this.database.listProjects());
       case "conversations.list": return conversationListResponseSchema.parse(this.database.listConversationHierarchy());
       case "models.configure": return modelRuntimeStatusSchema.parse(this.models.saveConfiguration(command.input));
+      case "team_chat.post": return teamChatMessageSchema.parse(this.runtime.postTeamChat(command.input, this.emit));
+      case "team_chat.read": return teamChatPageSchema.parse(this.database.collaboration.readMessages(command.input));
+      case "team_chat.members": return z.array(teamChatMemberSchema).parse(this.database.collaboration.members(command.input.teamInstanceId));
       case "conversations.rename": {
         const conversation = conversationSummarySchema.parse(this.lifecycle.renameConversation(command.input.conversationId, command.input.title));
         this.emit({ type: "conversation.updated", conversation });

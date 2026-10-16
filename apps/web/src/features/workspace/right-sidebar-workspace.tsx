@@ -330,6 +330,11 @@ export function shouldDeleteSidebarChat(
   sourceConversation: SidebarConversationSource | null = null,
   team: TeamMembership | null = null,
 ): boolean {
+  // A missing or switched owner is not evidence that a Team conversation is disposable.
+  if (conversation.teamId !== null && (
+    sourceConversation?.id !== conversation.parentConversationId
+    || team?.id !== conversation.teamId
+  )) return false;
   return conversation.threadKind !== "subagent"
     && !isManagedTeamMember(conversation)
     && !isDirectTeamMemberConversation(conversation, sourceConversation, team);

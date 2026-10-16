@@ -2,12 +2,17 @@ import { z } from "zod";
 import { approveToolChangeInputSchema, conversationIdSchema, conversationMessageDeliveryModeSchema, conversationModelSelectionSchema, conversationReferenceInputSchema, conversationTimelinePageInputSchema, renameConversationInputSchema, saveModelConfigurationInputSchema, setConversationArchivedInputSchema, setConversationPermissionModeInputSchema } from "./conversation.js";
 import { answerUserQuestionInputSchema } from "./user-question.js";
 import { stopBackgroundCommandInputSchema, readBackgroundCommandInputSchema } from "./background-command.js";
+import { postTeamChatInputSchema, readTeamChatInputSchema } from "./team-chat.js";
+import { teamInstanceReferenceInputSchema } from "./team-instance.js";
 
 export const localControlCommandSchema = z.discriminatedUnion("command", [
   z.object({ command: z.literal("projects.list"), input: z.object({}).strict() }).strict(),
   z.object({ command: z.literal("conversations.list"), input: z.object({}).strict() }).strict(),
   z.object({ command: z.literal("models.configure"), input: saveModelConfigurationInputSchema }).strict(),
   z.object({ command: z.literal("models.status"), input: z.object({}).strict() }).strict(),
+  z.object({ command: z.literal("team_chat.post"), input: postTeamChatInputSchema }).strict(),
+  z.object({ command: z.literal("team_chat.read"), input: readTeamChatInputSchema }).strict(),
+  z.object({ command: z.literal("team_chat.members"), input: teamInstanceReferenceInputSchema }).strict(),
   z.object({ command: z.literal("user_questions.list"), input: conversationReferenceInputSchema }).strict(),
   z.object({ command: z.literal("user_questions.answer"), input: answerUserQuestionInputSchema }).strict(),
   z.object({ command: z.literal("approvals.resolve"), input: approveToolChangeInputSchema }).strict(),

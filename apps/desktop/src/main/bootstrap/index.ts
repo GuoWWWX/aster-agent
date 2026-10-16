@@ -178,6 +178,7 @@ function parseLocalEnvironmentFile(contents: string): Map<string, string> {
     "AGENT_MODEL_BASE_URL",
     "AGENT_MODEL_API_KEY",
     "AGENT_MODEL_ID",
+    "ASTER_CONTROL_ENABLED",
     LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
     APPLICATION_HOME_ENVIRONMENT_VARIABLE,
   ]);

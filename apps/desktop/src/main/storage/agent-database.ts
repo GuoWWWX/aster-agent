@@ -5041,6 +5041,9 @@ export class AgentDatabase {
     if (conversation.teamWorkItemId !== null) {
       throw new Error("Managed Team WorkItem conversations are retained by their WorkItem lifecycle.");
     }
+    if (this.isTeamMemberConversation(conversationId)) {
+      throw new Error("Team member conversations are retained by their Team lifecycle.");
+    }
     const conversationRows = this.database
       .prepare(
         `WITH RECURSIVE conversation_tree(id, depth) AS (

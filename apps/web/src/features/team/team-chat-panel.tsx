@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { LoaderCircle } from "lucide-react";
 import type { ConversationSummary, TeamChatMember, TeamChatMessage } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import { AgentMarkdown } from "../../components/markdown/agent-markdown.js";
@@ -21,6 +22,8 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
   const [error, setError] = useState<string | null>(null);
   const viewport = useRef<HTMLDivElement>(null);
   const atBottom = useRef(focusMessageId === undefined); const hasLoaded = useRef(false);
+  const revealedMessage = useRef<string | undefined>(undefined);
+  const latestOwnSequence = useRef<number | null>(null);
   const loadVersion = useRef(0);
   const load = useCallback(async (beforeSequence?: number) => {
     const version = ++loadVersion.current;
@@ -46,19 +49,29 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
   }, [agentClient, teamInstanceId]);
   useEffect(() => { void Promise.resolve().then(() => load()); return () => { loadVersion.current += 1; }; }, [load]);
   useEffect(() => agentClient.onConversationRunEvent(event => {
-    if (event.type === "collaboration.changed" || event.type === "run.finished") {
+    if (event.type === "collaboration.changed" || event.type === "run.started" || event.type === "run.finished") {
       void load();
     }
   }), [agentClient, load, teamInstanceId]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!active) return;
-    if (focusMessageId !== undefined) {
+    const ownSequence = messages.findLast(message => message.senderConversationId === null)?.sequence ?? null;
+    if (ownSequence !== null && latestOwnSequence.current !== null && ownSequence > latestOwnSequence.current) {
+      atBottom.current = true;
+      revealedMessage.current = focusMessageId;
+    }
+    latestOwnSequence.current = ownSequence;
+    if (focusMessageId !== undefined && revealedMessage.current !== focusMessageId) {
       const target = viewport.current?.querySelector(`[data-group-message="${CSS.escape(focusMessageId)}"]`);
-      if (target) { target.scrollIntoView({ block: "center" }); return; }
+      if (target) { target.scrollIntoView({ block: "center" }); revealedMessage.current = focusMessageId; return; }
       if (cursor !== null) { void Promise.resolve().then(() => load(cursor)); return; }
     }
     if (atBottom.current && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
-  }, [messages, focusMessageId, cursor, load, active]);
+  }, [messages, focusMessageId, cursor, load, active, composerClearance]);
+
+  const pendingReplies = messages.flatMap(message => message.deliveries.filter(delivery =>
+    ["pending", "delivered", "consumed"].includes(delivery.status)
+    && !(delivery.runId !== null && messages.some(reply => reply.senderConversationId === delivery.conversationId && reply.sourceRunId === delivery.runId))));
 
   const openProcess = async (conversationId: string, runId: string | null) => {
     try {
@@ -108,20 +121,23 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
         const conversation = conversations.find(item => item.id === message.senderConversationId);
         const agent = agents.find(item => item.id === conversation?.agentId);
         const avatar = agent?.avatar ?? (conversation?.avatarIcon ? { kind: "icon" as const, icon: conversation.avatarIcon } : null);
+        const replySource = message.replyToId === null ? undefined : messages.find(item => item.id === message.replyToId);
+        const showReplyQuote = message.replyToId !== null && (replySource === undefined || messages.filter(item =>
+          item.sequence > replySource.sequence && item.sequence < message.sequence && item.rootMessageId !== message.rootMessageId).length >= 4);
         return <li key={message.id} data-group-message={message.id} data-role={role} className="chat-message-group">
         {role === "user" ? null : <div data-group-sender className="mb-[5px] flex min-w-0 items-center gap-[5px] text-[var(--app-muted-foreground)]">
           <span aria-label={`${message.senderName}图标`}>{avatar === null ? <SubagentAvatar icon={null} seed={message.senderConversationId!} size="compact" /> : <AgentAvatar avatar={avatar} size="compact" />}</span>
           <strong className="min-w-0 truncate">{message.senderName}</strong>
         </div>}
         <ChatMessageBubble role={role} enclosed={role === "assistant"}>
-          {message.replyToId ? <p className="mb-1 line-clamp-2 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">回复：{messages.find(item => item.id === message.replyToId)?.content.slice(0, 100) ?? "较早的群消息"}</p> : null}
+          {showReplyQuote ? <p className="mb-1 line-clamp-2 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">回复：{replySource?.content.slice(0, 100) ?? "较早的群消息"}</p> : null}
           {role === "user" ? <UserMessageContent content={message.content}>{renderMemberMentions(message)}</UserMessageContent> : <AgentMarkdown content={message.content} />}
         </ChatMessageBubble>
         <div className="flex flex-wrap items-center gap-[5px] text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">
-          <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString()}</time><span>{message.intent === "notify" ? "通知" : "请求"}</span>
+          <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString()}</time>
           {message.sourceRunId && message.senderConversationId ? <button type="button" className="hover:underline" onClick={() => void openProcess(message.senderConversationId!, message.sourceRunId)}>查看工作过程</button> : null}
         </div>
-        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">{message.deliveries.map(delivery => <span key={delivery.id}>
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">{message.deliveries.filter(delivery => delivery.status !== "completed" && delivery.status !== "consumed" && delivery.status !== "delivered").map(delivery => <span key={delivery.id}>
           @{members.find(member => member.conversationId === delivery.conversationId)?.name ?? "成员"} · {deliveryLabels[delivery.status]}
           {delivery.error ? <span className="ml-1 text-[var(--app-destructive)]">{delivery.error}</span> : null}
           {delivery.runId ? <button type="button" className="ml-1 hover:underline" onClick={() => void openProcess(delivery.conversationId, delivery.runId)}>过程</button> : null}
@@ -129,6 +145,16 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
           {delivery.status === "pending" ? <button type="button" className="ml-1 hover:underline" onClick={() => { void agentClient.cancelTeamChatDelivery({ id: delivery.id }).then(() => load()).catch(reason => setError(String(reason))); }}>取消投递</button> : null}
         </span>)}</div>
       </li>; })}</ol>
+      {pendingReplies.filter((delivery, index) => pendingReplies.findIndex(item => item.conversationId === delivery.conversationId) === index).map(delivery => {
+        const member = members.find(item => item.conversationId === delivery.conversationId);
+        const conversation = conversations.find(item => item.id === delivery.conversationId);
+        const avatar = agents.find(item => item.id === conversation?.agentId)?.avatar;
+        return <div role="status" key={delivery.conversationId} className="my-[10px] flex items-center gap-[5px] text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">
+          {avatar === undefined ? <SubagentAvatar icon={conversation?.avatarIcon} seed={delivery.conversationId} size="compact" /> : <AgentAvatar avatar={avatar} size="compact" />}
+          <span>{member?.name ?? "成员"} · {delivery.status === "consumed" ? "正在回复…" : "等待回复…"}</span>
+          <LoaderCircle aria-hidden="true" className="animate-spin" size={13} />
+        </div>;
+      })}
       <div aria-hidden="true" className="w-full shrink-0" style={{ height: `${composerClearance}px` }} />
     </div>
   </section>;

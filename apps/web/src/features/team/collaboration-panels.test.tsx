@@ -130,6 +130,63 @@ it("does not mark messages read while a retained group tab is hidden", async () 
   expect(container.querySelector('[data-group-message]')).not.toBeNull(); expect(mark).not.toHaveBeenCalled();
 });
 
+it.each([{ intervening: 0, sameThread: false }, { intervening: 1, sameThread: false }, { intervening: 4, sameThread: false }, { intervening: 4, sameThread: true }])("quotes only after unrelated chat: $intervening / same discussion $sameThread", async ({ intervening, sameThread }) => {
+  const client = new MockAgentClient(); const { instance } = await groupFixture(client);
+  const member = (await client.getTeamChatMembers({ teamInstanceId: instance.id }))[0]!;
+  const request = await client.postTeamChat({ teamInstanceId: instance.id, content: "原来的问题", requestId: crypto.randomUUID() });
+  const messages = [request, ...Array.from({ length: intervening }, (_, index) => ({ ...request, id: crypto.randomUUID(), rootMessageId: sameThread ? request.rootMessageId : crypto.randomUUID(), sequence: index + 2, content: "中间的聊天", deliveries: [] })),
+    { ...request, id: crypto.randomUUID(), sequence: intervening + 2, content: "直接回答", senderConversationId: member.conversationId, senderName: member.name, replyToId: request.id, deliveries: [] }];
+  vi.spyOn(client, "readTeamChat").mockResolvedValue({ messages, nextBeforeSequence: null, userReadSequence: 0, memberReadSequence: 0 });
+  const container = mount();
+  await act(() => Promise.resolve().then(() => { root?.render(<TeamChatPanel agentClient={client} teamInstanceId={instance.id} onOpenConversation={() => undefined} />); }));
+  const response = container.querySelector('[data-group-message][data-role="assistant"]')!;
+  expect(response.textContent).toContain("直接回答");
+  expect(response.textContent?.includes("回复：原来的问题")).toBe(intervening >= 4 && !sameThread);
+});
+
+it("shows who is preparing a reply and clears that indication after they publish", async () => {
+  const client = new MockAgentClient(); const { instance } = await groupFixture(client);
+  const member = (await client.getTeamChatMembers({ teamInstanceId: instance.id }))[0]!;
+  const request = await client.postTeamChat({ teamInstanceId: instance.id, content: "你们好", requestId: crypto.randomUUID() });
+  const runId = crypto.randomUUID();
+  const pending = { ...request, deliveries: [{ id: crypto.randomUUID(), conversationId: member.conversationId, runId, status: "consumed" as const, error: null }] };
+  let messages = [pending];
+  vi.spyOn(client, "readTeamChat").mockImplementation(() => Promise.resolve({ messages, nextBeforeSequence: null, userReadSequence: 0, memberReadSequence: 0 }));
+  const listeners: Array<Parameters<MockAgentClient["onConversationRunEvent"]>[0]> = [];
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(listener => { listeners.push(listener); return () => undefined; });
+  const container = mount();
+  await act(() => Promise.resolve().then(() => { root?.render(<TeamChatPanel agentClient={client} teamInstanceId={instance.id} onOpenConversation={() => undefined} />); }));
+  expect(container.querySelector('[role="status"]')?.textContent).toContain("正在回复");
+  messages = [pending, { ...request, id: crypto.randomUUID(), sequence: 2, content: "你好！", senderConversationId: member.conversationId, sourceRunId: runId, deliveries: [] }];
+  await act(() => Promise.resolve().then(() => { listeners.forEach(listener => listener({ type: "collaboration.changed", conversationId: member.conversationId, teamInstanceId: instance.id })); }));
+  expect(container.querySelector('[role="status"]')).toBeNull();
+  expect(container.querySelector('[data-group-message][data-role="assistant"]')?.textContent).toContain("你好！");
+});
+
+it("follows a new user message after visiting an older group source instead of repeatedly pinning that source", async () => {
+  const client = new MockAgentClient(); const { instance } = await groupFixture(client);
+  const original = await client.postTeamChat({ teamInstanceId: instance.id, content: "先前的消息", requestId: crypto.randomUUID() });
+  let messages = [original];
+  vi.stubGlobal("CSS", { escape: (value: string) => value });
+  const scrollIntoView = vi.fn();
+  const previous = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+  try {
+    vi.spyOn(client, "readTeamChat").mockImplementation(() => Promise.resolve({ messages, nextBeforeSequence: null, userReadSequence: 0, memberReadSequence: 0 }));
+    const listeners: Array<Parameters<MockAgentClient["onConversationRunEvent"]>[0]> = [];
+    vi.spyOn(client, "onConversationRunEvent").mockImplementation(listener => { listeners.push(listener); return () => undefined; });
+    const container = mount();
+    await act(() => Promise.resolve().then(() => { root?.render(<TeamChatPanel agentClient={client} teamInstanceId={instance.id} focusMessageId={original.id} onOpenConversation={() => undefined} />); }));
+    const viewport = container.querySelector<HTMLElement>('[role="log"]')!;
+    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 500 });
+    act(() => { viewport.scrollTop = 0; viewport.dispatchEvent(new Event("scroll", { bubbles: true })); });
+    messages = [original, { ...original, id: crypto.randomUUID(), sequence: 2, content: "新的问题" }];
+    await act(() => Promise.resolve().then(() => { listeners.forEach(listener => listener({ type: "collaboration.changed", conversationId: instance.rootConversationId!, teamInstanceId: instance.id })); }));
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(viewport.scrollTop).toBe(500);
+  } finally { if (previous === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView"); else Object.defineProperty(HTMLElement.prototype, "scrollIntoView", previous); }
+});
+
 it("renders selected group mentions as member avatars and blue names that open their own conversations", async () => {
   const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
   const roster = await client.getTeamChatMembers({ teamInstanceId: instance.id });

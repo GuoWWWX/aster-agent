@@ -7,6 +7,7 @@ import { HtmlPreviewCard, HtmlPreviewScope } from "../../components/html-preview
 import { HtmlPreviewGallery } from "../../components/html-preview/html-preview-gallery.js";
 import { QueryTextarea } from "./query-textarea.js";
 import { UserMessageContent } from "./user-message-content.js";
+import { TeamChatSourceContent } from "../team/team-chat-source-content.js";
 import { ChatMessageBubble } from "./chat-message-bubble.js";
 import { TeamChatWorkspace } from "../team/team-chat-workspace.js";
 import { TeamChatPanel } from "../team/team-chat-panel.js";
@@ -6129,7 +6130,7 @@ function TimelineItem({
           data-role="user"
           data-status={item.status}
         >
-          <p>{item.content}</p>
+          <TeamChatSourceContent content={item.content}><p>{item.content}</p></TeamChatSourceContent>
         </article>
       </div>
     );
@@ -6204,7 +6205,7 @@ function TimelineItem({
                 : `${prompt.title}：${questionAnswer.answers?.[prompt.id] ?? ""}`,
             ).join("\n\n")} />
           ) : (
-            renderedMessageContent.length > 0 ? <UserMessageContent content={renderedMessageContent} /> : null
+            renderedMessageContent.length > 0 ? <TeamChatSourceContent content={renderedMessageContent} /> : null
           )}
         </ChatMessageBubble>
       ) : null}
