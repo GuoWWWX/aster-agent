@@ -41,6 +41,9 @@ describe("AgentMarkdown", () => {
     const source = 'console.log("<script>原文</script>");\n'.repeat(1000);
     await act(async () => { root.render(createElement(AgentMarkdown, { content: "```javascript\n" + source + "```" })); await Promise.resolve(); });
     expect(container.querySelector(".cm-editor")).not.toBeNull();
+    await act(async () => {
+      await vi.waitFor(() => expect(container.querySelector(".cm-line span[class]")).not.toBeNull());
+    });
     expect(container.querySelector("script")).toBeNull();
     await act(async () => { container.querySelector<HTMLButtonElement>("[data-action='copy-code']")?.click(); await Promise.resolve(); });
     expect(writeText).toHaveBeenCalledWith(source);

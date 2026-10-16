@@ -11,6 +11,13 @@ let mount: HTMLElement;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  const createRange = document.createRange.bind(document);
+  vi.spyOn(document, "createRange").mockImplementation(() => {
+    const range = createRange();
+    range.getClientRects = () => Object.assign([], { item: () => null });
+    range.getBoundingClientRect = () => new DOMRect();
+    return range;
+  });
   // jsdom has no layout. Model a 100px viewport with growing/clamped content.
   const tops = new WeakMap<Element, number>();
   vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {

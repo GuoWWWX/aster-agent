@@ -1,6 +1,8 @@
 import { defaultKeymap } from "@codemirror/commands";
 import { html } from "@codemirror/lang-html";
-import { EditorState } from "@codemirror/state";
+import { LanguageDescription } from "@codemirror/language";
+import { languages } from "@codemirror/language-data";
+import { EditorState, StateEffect } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { memo, useEffect, useMemo, useRef, type ReactElement } from "react";
 import { highlightCode, isLargeCodeSource } from "./code-highlighter.js";
@@ -21,24 +23,38 @@ export const CodeSourceView = memo(function CodeSourceView({ source, language }:
   const large = isLargeCodeSource(source);
   const htmlSource = language.toLowerCase() === "html" || language.toLowerCase() === "htm";
   const highlighted = useMemo(() => large || htmlSource ? "" : highlightCode(source, language), [large, htmlSource, source, language]);
-  return large || htmlSource ? <VirtualCodeSource source={source} htmlSource={htmlSource} /> : (
+  return large || htmlSource ? <VirtualCodeSource source={source} language={language} /> : (
     <pre className="m-0 max-h-[var(--app-code-block-max-height)] overflow-auto bg-[var(--app-muted)] p-2 font-mono text-[length:var(--app-font-size-control)]">
       <code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted }} />
     </pre>
   );
 });
 
-function VirtualCodeSource({ source, htmlSource }: { source: string; htmlSource: boolean }): ReactElement {
+function VirtualCodeSource({ source, language }: { source: string; language: string }): ReactElement {
   const host = useRef<HTMLDivElement>(null);
-  const isDark = useWorkbenchUiStore(state => htmlSource && state.themeMode === "dark");
+  const isDark = useWorkbenchUiStore(state => state.themeMode === "dark");
   useEffect(() => {
     if (host.current === null) return;
+    const htmlSource = /^(html|htm)$/iu.test(language);
     const view = new EditorView({ parent: host.current, state: EditorState.create({ doc: source.replace(/\r?\n$/u, ""), extensions: [
       sourceTheme, EditorState.readOnly.of(true), EditorView.editable.of(false), keymap.of(defaultKeymap),
-      ...(htmlSource ? [html(), documentCodeHighlighting(isDark), EditorView.theme({}, { dark: isDark })] : []),
+      documentCodeHighlighting(isDark), EditorView.theme({}, { dark: isDark }),
+      ...(htmlSource ? [html()] : []),
       EditorView.contentAttributes.of({ "aria-label": "代码源码", "aria-readonly": "true", tabindex: "0" }),
     ] }) });
-    return () => view.destroy();
-  }, [source, htmlSource, isDark]);
+    let disposed = false;
+    const languageName = /^(ps|ps1|pwsh)$/iu.test(language) ? "powershell" : language;
+    const description = htmlSource ? null : LanguageDescription.matchLanguageName(languages, languageName, false)
+      ?? LanguageDescription.matchFilename(languages, `source.${languageName}`);
+    if (description !== null) {
+      void description.load().then(support => {
+        if (!disposed) view.dispatch({ effects: StateEffect.appendConfig.of(support) });
+      }).catch((error: unknown) => {
+        // Keep the readable/copyable source if a language chunk cannot load.
+        console.warn("Unable to load code source language", language, error);
+      });
+    }
+    return () => { disposed = true; view.destroy(); };
+  }, [source, language, isDark]);
   return <div ref={host} className="min-w-0 overflow-hidden bg-[var(--app-muted)]" data-virtual-code-source />;
 }
