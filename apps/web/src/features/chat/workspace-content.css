@@ -1570,7 +1570,7 @@ button.tool-file-change__path:focus-visible {
 }
 
 .tool-timeline-item__payload pre {
-  max-height: min(520px, 55dvh);
+  max-height: var(--app-code-block-max-height);
   margin: 0;
   overflow: auto;
   background: var(--app-muted);
@@ -1628,7 +1628,7 @@ button.tool-file-change__path:focus-visible {
 }
 
 .tool-command-terminal pre {
-  max-height: min(520px, 55dvh);
+  max-height: var(--app-code-block-max-height);
   margin: 0;
   overflow: auto;
   background: var(--app-muted);

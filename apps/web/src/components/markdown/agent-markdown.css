@@ -241,7 +241,7 @@
 
 .agent-markdown__code-block pre {
   margin: 0;
-  max-height: min(520px, 55dvh);
+  max-height: var(--app-code-block-max-height);
   overflow: auto;
   padding: 8px 9px;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;

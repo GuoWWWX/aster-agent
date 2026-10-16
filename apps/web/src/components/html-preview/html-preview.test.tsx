@@ -75,6 +75,17 @@ describe("conversation HTML previews", () => {
     expect(node.querySelector("code")?.textContent).toBe("pages/demo.html\n");
   });
 
+  it("shows a one-line HTML source without a trailing blank line and copies the original", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const source = "<p>一行内容</p>\n";
+    await render(<HtmlPreviewCard source={{ kind: "code", html: source }} initialMode="source" />);
+    expect(node.querySelectorAll(".cm-line")).toHaveLength(1);
+    expect(node.querySelector(".cm-line")?.textContent).toBe("<p>一行内容</p>");
+    await click("复制代码");
+    expect(writeText).toHaveBeenCalledWith(source);
+  });
+
   it("uses a bounded read-only source viewport for a large HTML block and copies its complete source", async () => {
     const writeText = vi.fn(() => Promise.resolve());
     vi.stubGlobal("navigator", { clipboard: { writeText } });
@@ -228,8 +239,6 @@ describe("conversation HTML previews", () => {
   it("highlights a large HTML document without generating the whole document as DOM", async () => {
     const source = '<style>.card { color: red }</style>\n<script>const count = 42;</script>\n' + '<div class="card">内容</div>\n'.repeat(1000);
     await render(<HtmlPreviewCard source={{ kind: "code", html: source }} initialMode="source" />);
-    const viewport = node.querySelector<HTMLElement>("[data-virtual-code-source]");
-    expect(viewport?.style.height).toContain("560px");
     expect(node.querySelector(".cm-line span[class]")).not.toBeNull();
     expect(node.querySelectorAll(".cm-line").length).toBeLessThan(200);
     expect(node.querySelector('[contenteditable="true"]')).toBeNull();

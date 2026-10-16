@@ -25,6 +25,7 @@
   --app-ui-font-size: 13px;
   --app-chat-font-size: 13px;
   --app-code-font-size: 11px;
+  --app-code-block-max-height: min(520px, 55dvh);
   --app-font-size-caption: calc(var(--app-ui-font-size) - 3px);
   --app-font-size-auxiliary: calc(var(--app-ui-font-size) - 2px);
   --app-font-size-control: calc(var(--app-ui-font-size) - 1px);
