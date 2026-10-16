@@ -4667,7 +4667,7 @@ describe("AgentRuntime", () => {
       if (event.type === "run.finished" && event.conversationId === parent.id) resolve();
     }));
     expect(database.getLatestRunExecutionSnapshot(parent.id)?.permissionMode).toBe("full_access");
-    tools.dispose(); database.close();
+    await tools.dispose(); database.close();
   });
 
   it.each([false, true])("consumes independent quick-mode input at a safe boundary (queue paused: %s)", async (paused) => {

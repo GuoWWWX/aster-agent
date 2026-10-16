@@ -83,6 +83,6 @@ it("delivers a team task through persistent implementation, independent command 
     expect(requests.filter(request => request.messages[0]?.content.includes("TEAM_LEAD_FIXTURE"))).toHaveLength(3);
     expect(teams.accept({ workItemId: work.id, acceptedCriteria: ["文件已写入", "独立测试通过"] }).status).toBe("completed");
   } finally {
-    tools.dispose(); database.close(); await rm(home, { recursive: true, force: true });
+    await tools.dispose(); database.close(); await rm(home, { recursive: true, force: true });
   }
 }, 30_000);
