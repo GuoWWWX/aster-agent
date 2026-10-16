@@ -72,6 +72,7 @@ import type {
   AgentStatus,
 } from "../../stores/agent-directory-store.js";
 import "./agent-avatar.css";
+import { AgentCharacterAvatar } from "./agent-character-avatar.js";
 
 export const AGENT_AVATAR_ICON_OPTIONS: readonly {
   icon: LucideIcon;
@@ -265,10 +266,12 @@ export function AgentAvatar({
       data-size={size}
       data-status={status}
       data-tone={avatar.kind === "icon" ? TONES[avatar.icon] : undefined}
+      data-avatar-kind={avatar.kind}
+      data-avatar-preset={avatar.kind === "preset" ? avatar.preset : undefined}
     >
       {avatar.kind === "image" ? (
         <img alt="" src={avatar.dataUrl} />
-      ) : Icon === null ? null : (
+      ) : avatar.kind === "preset" ? <AgentCharacterAvatar preset={avatar.preset} /> : Icon === null ? null : (
         <Icon strokeWidth={1.8} />
       )}
     </span>

@@ -17,9 +17,11 @@ import {
 import type {
   AgentAvatar as AgentAvatarValue,
   AgentAvatarIcon,
+  AgentAvatarPreset,
   AgentStatus,
 } from "../../stores/agent-directory-store.js";
 import { AgentAvatar, AGENT_AVATAR_ICON_OPTIONS } from "../team/agent-avatar.js";
+import { AGENT_AVATAR_PRESET_OPTIONS } from "../team/agent-character-avatar.js";
 
 export const AGENT_AVATAR_PICKER_PAGE_SIZE = 24;
 
@@ -33,12 +35,12 @@ export function filterAgentAvatarIconOptions(query: string): AgentAvatarIconOpti
   );
 }
 
-export function paginateAgentAvatarIconOptions(
-  options: readonly AgentAvatarIconOption[],
+export function paginateAgentAvatarOptions<T>(
+  options: readonly T[],
   requestedPage: number,
   pageSize = AGENT_AVATAR_PICKER_PAGE_SIZE,
 ): {
-  items: AgentAvatarIconOption[];
+  items: T[];
   page: number;
   totalPages: number;
 } {
@@ -51,12 +53,14 @@ export function paginateAgentAvatarIconOptions(
 export function AgentAvatarPicker({
   avatar,
   onIconChange,
+  onPresetChange,
   onFileChange,
   status,
   uploadError,
 }: {
   avatar: AgentAvatarValue;
   onIconChange: (icon: AgentAvatarIcon) => void;
+  onPresetChange: (preset: AgentAvatarPreset) => void;
   onFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   status?: AgentStatus;
   uploadError: string | null;
@@ -64,12 +68,17 @@ export function AgentAvatarPicker({
   const [isOpen, setIsOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
+  const [collection, setCollection] = useState<"presets" | "icons">("presets");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const filteredOptions = filterAgentAvatarIconOptions(query);
-  const pageData = paginateAgentAvatarIconOptions(filteredOptions, page);
-  const selectedIcon = avatar.kind === "icon" ? avatar.icon : null;
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const filteredOptions: { id: string; label: string; avatar: Exclude<AgentAvatarValue, { kind: "image" }> }[] = collection === "presets"
+    ? AGENT_AVATAR_PRESET_OPTIONS.filter(option => `${option.label} ${option.id}`.toLocaleLowerCase().includes(normalizedQuery))
+      .map(option => ({ ...option, avatar: { kind: "preset", preset: option.id } }))
+    : filterAgentAvatarIconOptions(query).map(option => ({ ...option, avatar: { kind: "icon", icon: option.id } }));
+  const pageData = paginateAgentAvatarOptions(filteredOptions, page);
   const selectedLabel = avatar.kind === "image"
     ? avatar.fileName
+    : avatar.kind === "preset" ? AGENT_AVATAR_PRESET_OPTIONS.find(option => option.id === avatar.preset)!.label
     : AGENT_AVATAR_ICON_OPTIONS.find((option) => option.id === avatar.icon)?.label ?? "预设图标";
 
   function updateOpen(nextOpen: boolean): void {
@@ -98,7 +107,7 @@ export function AgentAvatarPicker({
           <span className="min-w-0 flex-1">
             <strong className="block truncate font-semibold">{selectedLabel}</strong>
             <small className="block truncate text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
-              点击选择其他图标
+              内置角色、图标或上传图片
             </small>
           </span>
           <ChevronDown aria-hidden="true" className="shrink-0 text-[var(--app-muted-foreground)]" size={14} />
@@ -106,7 +115,7 @@ export function AgentAvatarPicker({
       </PopoverTrigger>
       <PopoverContent
         align="start"
-        aria-label="选择 Agent 图标"
+        aria-label="选择 Agent 头像"
         className="w-[340px] overflow-hidden rounded-[var(--app-radius-large)] border border-[var(--app-border)] bg-[var(--app-panel)] p-0 text-[var(--app-foreground)] shadow-xl"
         collisionPadding={8}
         side="bottom"
@@ -117,7 +126,7 @@ export function AgentAvatarPicker({
             <label className="app-search-field flex h-8 min-w-0 flex-1 items-center gap-1.5">
               <Search aria-hidden="true" className="shrink-0 text-[var(--app-muted-foreground)]" size={14} />
               <input
-                aria-label="搜索 Agent 图标"
+                aria-label="搜索 Agent 头像"
                 autoFocus
                 className="min-w-0 flex-1 bg-transparent text-[length:var(--app-font-size-control)] outline-none placeholder:text-[var(--app-muted-foreground)]"
                 placeholder="搜索名称或 ID"
@@ -154,39 +163,49 @@ export function AgentAvatarPicker({
           )}
         </div>
 
+        <div role="group" aria-label="头像类型" className="mx-2 mt-2 flex gap-[5px]">
+          {(["presets", "icons"] as const).map(value => <button key={value} type="button"
+            aria-label={value === "presets" ? "角色头像" : "图标"} aria-pressed={collection === value} data-selected={collection === value}
+            className="flex-1 rounded-[var(--app-radius)] px-2 py-1.5 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)] data-[selected=true]:bg-[var(--app-selection)] data-[selected=true]:text-[var(--app-selection-foreground)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)]"
+            onClick={() => { setCollection(value); setPage(1); setQuery(""); }}>
+            {value === "presets" ? "角色头像" : "图标"}
+          </button>)}
+        </div>
+
         <div className="flex min-h-8 items-center justify-between px-2.5 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
-          <span>{filteredOptions.length} 个图标</span>
+          <span>{filteredOptions.length} 个{collection === "presets" ? "角色头像" : "图标"}</span>
           <span>第 {pageData.page} / {pageData.totalPages} 页</span>
         </div>
 
         {pageData.items.length === 0 ? (
           <p className="m-0 grid min-h-40 place-items-center px-4 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">
-            没有匹配的图标
+            没有匹配的头像
           </p>
         ) : (
           <div
-            aria-label="Agent 图标列表"
+            aria-label={collection === "presets" ? "Agent 角色头像列表" : "Agent 图标列表"}
             className="grid grid-cols-4 gap-[5px] px-2 pb-2"
             role="listbox"
           >
             {pageData.items.map((option) => {
-              const selected = option.id === selectedIcon;
+              const selected = avatar.kind === option.avatar.kind && (avatar.kind === "icon" ? avatar.icon === option.id : avatar.kind === "preset" && avatar.preset === option.id);
               return (
                 <button
                   key={option.id}
                   aria-label={option.label}
                   aria-selected={selected}
-                  className="group relative flex h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-1 text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)] outline-none transition-colors hover:border-[#93c5fd] hover:bg-[var(--app-hover)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] data-[selected=true]:border-[var(--app-selection-border)] data-[selected=true]:bg-[var(--app-selection)] data-[selected=true]:text-[var(--app-selection-foreground)]"
+                  className={`group relative flex ${collection === "presets" ? "h-20" : "h-14"} min-w-0 flex-col items-center justify-center gap-1 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] px-1 text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)] outline-none transition-colors hover:border-[#93c5fd] hover:bg-[var(--app-hover)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] data-[selected=true]:border-[var(--app-selection-border)] data-[selected=true]:bg-[var(--app-selection)] data-[selected=true]:text-[var(--app-selection-foreground)]`}
                   data-selected={selected}
                   role="option"
                   title={`${option.label} (${option.id})`}
                   type="button"
                   onClick={() => {
-                    onIconChange(option.id);
+                    if (option.avatar.kind === "icon") onIconChange(option.avatar.icon);
+                    else onPresetChange(option.avatar.preset);
                     updateOpen(false);
                   }}
                 >
-                  <AgentAvatar avatar={{ icon: option.id, kind: "icon" }} size="compact" />
+                  <AgentAvatar avatar={option.avatar} size={collection === "presets" ? "large" : "compact"} />
                   <span className="w-full truncate">{option.label}</span>
                   {selected ? (
                     <Check aria-hidden="true" className="absolute right-1 top-1" size={11} />

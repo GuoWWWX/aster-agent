@@ -753,6 +753,10 @@ function AvatarEditor({
           setError(null);
           onUpdate({ avatar: { icon, kind: "icon" } });
         }}
+        onPresetChange={(preset) => {
+          setError(null);
+          onUpdate({ avatar: { kind: "preset", preset } });
+        }}
         onFileChange={handleFileChange}
       />
       {agent.avatar.kind === "image" ? (

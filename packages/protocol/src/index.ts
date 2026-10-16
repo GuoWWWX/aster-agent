@@ -26,10 +26,12 @@ export {
 export type { AgentError, AgentErrorCode } from "./agent-error.js";
 export {
   AGENT_AVATAR_ICONS,
+  AGENT_AVATAR_PRESETS,
   agentAvatarIconSchema,
+  agentAvatarPresetSchema,
   agentAvatarSchema,
 } from "./agent-avatar.js";
-export type { AgentAvatar, AgentAvatarIcon } from "./agent-avatar.js";
+export type { AgentAvatar, AgentAvatarIcon, AgentAvatarPreset } from "./agent-avatar.js";
 export {
   ARCHIVED_CONVERSATION_RETENTION_DAYS,
   approveToolChangeInputSchema,

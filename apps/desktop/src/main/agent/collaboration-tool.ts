@@ -14,7 +14,10 @@ import type { ToolExecutionPolicy } from "../tools/tool-execution-policy.js";
 
 const listSchema = listTaskContextsInputSchema.omit({ conversationId: true, projectId: true, teamInstanceId: true });
 const updateSchema = z.object(updateTaskContextInputSchema.shape).omit({ conversationId: true, requestId: true });
-const postSchema = z.object(postTeamChatInputSchema.shape).omit({ teamInstanceId: true, requestId: true }).extend({ intent: z.enum(["notify", "request"]).default("notify") });
+const postSchema = z.object(postTeamChatInputSchema.shape).omit({ teamInstanceId: true, requestId: true }).extend({
+  intent: z.enum(["notify", "request"]).default("notify"),
+  content: postTeamChatInputSchema.shape.content.describe("The public message itself, in the conversation's language. Speak naturally in the first person from your configured role, with a concrete observation or question when useful. The UI shows your name and avatar: omit name/job-title prefixes, repeated quotations and boilerplate receipts."),
+});
 const readSchema = readTeamChatInputSchema.omit({ teamInstanceId: true }).extend({
   limit: z.number().int().min(1).max(5).default(3),
   messageId: z.string().uuid().optional(), contentOffset: z.number().int().nonnegative().default(0),

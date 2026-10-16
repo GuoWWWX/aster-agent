@@ -10,6 +10,7 @@ import { create } from "zustand";
 export type {
   AgentAvatar,
   AgentAvatarIcon,
+  AgentAvatarPreset,
   AgentCapabilityScope,
   AgentDirectoryConfiguration,
   AgentPermissionRule,
