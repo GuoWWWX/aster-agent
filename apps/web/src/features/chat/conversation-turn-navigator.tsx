@@ -401,15 +401,15 @@ export function ConversationTurnNavigator({
           return (
             <TooltipAnchor
               key={turn.id}
-              contentClassName="!w-fit !max-w-96 overflow-hidden !bg-[var(--app-panel-subtle)] !px-2.5 !py-2 !text-[length:var(--app-font-size-control)] !leading-[1.4]"
+              contentClassName="!w-fit !max-w-96 overflow-hidden !px-2.5 !py-2 !text-[length:var(--app-font-size-control)] !leading-[1.4]"
               open={hoveredIndex === index}
               side="right"
               content={(
                 <span className="grid min-w-0 max-w-[22rem] gap-1 overflow-hidden text-left">
-                  <strong className="block min-w-0 truncate whitespace-nowrap font-semibold text-[var(--app-foreground)]">
+                  <strong className="block min-w-0 truncate whitespace-nowrap font-semibold">
                     {turn.question}
                   </strong>
-                  <span className="line-clamp-3 min-w-0 max-w-full overflow-hidden break-words font-normal [overflow-wrap:anywhere] text-[var(--app-muted-foreground)]">
+                  <span className="line-clamp-3 min-w-0 max-w-full overflow-hidden break-words font-normal opacity-75 [overflow-wrap:anywhere]">
                     {turn.answer}
                   </span>
                 </span>

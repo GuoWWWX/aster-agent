@@ -17,7 +17,7 @@ import "katex/dist/katex.min.css";
 import MarkdownIt from "markdown-it";
 import { Check, Copy, Maximize2, CodeXml } from "lucide-react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactElement, type ReactNode } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactElement, type ReactNode, type RefObject } from "react";
 
 import { requestMediaPreview } from "../media/image-viewer.js";
 import { fileTypeIconMarkup, isRecognizedFileTypePath } from "../ui/file-type-icon-data.js";
@@ -26,6 +26,7 @@ import { CodeSourceView } from "./code-source-view.js";
 import { terminalTokens } from "../ui/terminal-tokens.js";
 import { Popover, PopoverAnchor, PopoverContent } from "../ui/popover.js";
 import { resolveWorkspaceFileLink } from "./workspace-file-link.js";
+import { useStreamingScroll } from "../ui/use-streaming-scroll.js";
 
 import "./agent-markdown.css";
 
@@ -207,11 +208,13 @@ renderer.renderer.rules.image = (tokens, index, options, environment, self) => {
   return caption == null ? renderedImage : `<figure>${renderedImage}<figcaption>${renderer.utils.escapeHtml(String(caption))}</figcaption></figure>`;
 };
 
-export const AgentMarkdown = memo(function AgentMarkdown({ content }: { content: string }): ReactElement {
-  return <AgentMarkdownContent key={content} content={content} />;
+export const AgentMarkdown = memo(function AgentMarkdown({ content, streaming = false }: { content: string; streaming?: boolean }): ReactElement {
+  const scrollHostRef = useRef<HTMLDivElement>(null);
+  useStreamingScroll(scrollHostRef, content, streaming);
+  return <AgentMarkdownContent key={content} content={content} scrollHostRef={scrollHostRef} />;
 });
 
-function AgentMarkdownContent({ content }: { content: string }): ReactElement {
+function AgentMarkdownContent({ content, scrollHostRef }: { content: string; scrollHostRef: RefObject<HTMLDivElement | null> }): ReactElement {
   const hostRef = useRef<HTMLDivElement>(null);
   const [codePreviews, setCodePreviews] = useState<Array<{ source: string; mount: Element }>>([]);
   const [sourceViews, setSourceViews] = useState<Array<{ source: string; language: string; mount: Element }>>([]);
@@ -229,6 +232,7 @@ function AgentMarkdownContent({ content }: { content: string }): ReactElement {
   const markup = useMemo(() => ({ __html: html }), [html]);
   const bindHost = useCallback((host: HTMLDivElement | null): void => {
     hostRef.current = host;
+    scrollHostRef.current = host;
     if (host === null) return;
     const previews = [...host.querySelectorAll<HTMLTemplateElement>("[data-html-code-source]")].flatMap(template => {
       const mount = template.parentElement?.querySelector("[data-html-code-preview-slot]");
@@ -240,7 +244,7 @@ function AgentMarkdownContent({ content }: { content: string }): ReactElement {
       return mount == null ? [] : [{ source: template.content.textContent ?? "", language: template.dataset.language ?? "text", mount }];
     });
     if (sources.length > 0) setSourceViews(sources);
-  }, []);
+  }, [scrollHostRef]);
   useEffect(() => {
     let alive = true;
     for (const card of hostRef.current?.querySelectorAll<HTMLElement>(".agent-markdown__mermaid") ?? []) {

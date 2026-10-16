@@ -38,14 +38,14 @@ export function TooltipAnchor({
   const container = useNativeOverlayContainer();
   const trigger = disabled ? <span className="inline-flex">{children}</span> : children;
   return (
-    <TooltipPrimitive.Root {...(open === undefined ? {} : { open })}>
+    <TooltipPrimitive.Root disableHoverableContent {...(open === undefined ? {} : { open })}>
       <TooltipPrimitive.Trigger asChild>{trigger}</TooltipPrimitive.Trigger>
       <TooltipPrimitive.Portal container={container}>
         <TooltipPrimitive.Content
           data-native-view-overlay=""
           data-native-overlay-interactive="false"
           className={cn(
-            "z-[120] max-w-64 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-tooltip-background)] px-2 py-1 text-[length:var(--app-font-size-caption)] font-medium leading-4 text-[var(--app-foreground)] shadow-md",
+            "z-[120] max-w-64 rounded-[var(--app-radius)] border border-[var(--app-tooltip-background)] bg-[var(--app-tooltip-background)] px-2 py-1 text-[length:var(--app-font-size-caption)] font-medium leading-4 text-[var(--app-tooltip-foreground)] shadow-md",
             contentClassName,
           )}
           collisionPadding={5}

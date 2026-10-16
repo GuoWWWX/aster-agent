@@ -20,7 +20,8 @@
   --app-muted-foreground: #626773;
   --app-subtle-foreground: #818793;
   --app-panel: #ffffff;
-  --app-tooltip-background: #ffffff;
+  --app-tooltip-background: #e5e7eb;
+  --app-tooltip-foreground: #30333b;
   --app-panel-subtle: #f6f7f9;
   --app-ui-font-size: 13px;
   --app-chat-font-size: 13px;
@@ -81,7 +82,6 @@
   --app-muted-foreground: #b4b8c0;
   --app-subtle-foreground: #9399a5;
   --app-panel: #191a1c;
-  --app-tooltip-background: var(--app-panel);
   --app-panel-subtle: #25262b;
   --app-selection: rgba(49, 51, 56, 0.75);
   --app-selection-border: rgba(180, 188, 204, 0.12);

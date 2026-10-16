@@ -129,6 +129,7 @@ import {
 
 import { IconButton } from "../../components/ui/icon-button.js";
 import { TooltipAnchor } from "../../components/ui/tooltip.js";
+import { useStreamingScroll } from "../../components/ui/use-streaming-scroll.js";
 import { FileTypeIcon } from "../../components/ui/file-type-icon.js";
 import { AgentMarkdown, AgentMarkdownWorkspaceScope } from "../../components/markdown/agent-markdown.js";
 import { requestMediaPreview } from "../../components/media/image-viewer.js";
@@ -3276,13 +3277,17 @@ export function ConversationWorkspace({
                 const answerQuestion = item.kind === "message" ? questionForAnswer(item, userQuestions) : null;
                 const deliveries = htmlDeliveries.get(item.id) ?? [];
                 const changes = changeCards.get(item.id) ?? [];
-                const afterMessage = deliveries.length === 0 && changes.length === 0 ? null : (
+                const beforeMessage = deliveries.length === 0 ? null : (
                   <div className="chat-message-group gap-[5px]" data-role="assistant">
                     {deliveries.map(delivery => (
                       <div data-html-delivery={delivery.id} key={delivery.id}>
                         {"pages" in delivery ? <HtmlPreviewGallery pages={delivery.pages} /> : <HtmlPreviewCard source={{ kind: "file", path: delivery.path }} />}
                       </div>
                     ))}
+                  </div>
+                );
+                const afterMessage = changes.length === 0 ? null : (
+                  <div className="chat-message-group gap-[5px]" data-role="assistant">
                     {changes.map(change => <ConversationChangesCard key={change.runId} summary={change.summary} onReview={path => openChangeReview(change.runId, path)} />)}
                   </div>
                 );
@@ -3320,6 +3325,7 @@ export function ConversationWorkspace({
                       data-conversation-timeline-item={item.kind === "message"
                         && item.continuationMessages !== undefined ? undefined : item.id}
                     >
+                      {item.kind === "message" ? beforeMessage : null}
                       <TimelineItem
                         agentClient={agentClient}
                         afterMessage={item.kind === "message" ? afterMessage : null}
@@ -3396,7 +3402,7 @@ export function ConversationWorkspace({
                       />
                     </div>
                   )}
-                  {item.kind === "message" ? null : afterMessage}
+                  {item.kind === "message" ? null : <>{beforeMessage}{afterMessage}</>}
                   {submittedTeamWorkItems(item).map((workItem) => (
                     <CollaborationProjectionGraph
                       agentClient={agentClient}
@@ -5703,7 +5709,7 @@ function AssistantReasoningBlock({
 }): ReactElement {
   return (
     <ReasoningDisclosure streaming={streaming}>
-      <AgentMarkdown content={content} />
+      <AgentMarkdown content={content} streaming={streaming} />
     </ReasoningDisclosure>
   );
 }
@@ -6031,7 +6037,7 @@ function TimelineItem({
             <>
               {item.continuationMessages !== undefined ? item.continuationMessages.map((message) => (
                 <div key={message.id} data-conversation-timeline-item={message.id}>
-                  <AgentMarkdown content={stripLeadingThinkingSummary(message.content)} />
+                  <AgentMarkdown content={stripLeadingThinkingSummary(message.content)} streaming={message.status === "streaming"} />
                 </div>
               )) : <>
               {renderedReasoningContent.length > 0 ? (
@@ -6042,7 +6048,7 @@ function TimelineItem({
                 />
               ) : null}
               {renderedMessageContent.length > 0
-                ? <AgentMarkdown content={renderedMessageContent} />
+                ? <AgentMarkdown content={renderedMessageContent} streaming={item.status === "streaming"} />
                 : null}
               </>}
             </>
@@ -6625,7 +6631,7 @@ function RunActivityTimelineItem({
           className="min-w-0 py-[5px] text-[length:var(--app-font-size-body)] text-[var(--app-foreground)]"
           key={entry.id}
         >
-          <AgentMarkdown content={entry.content} />
+          <AgentMarkdown content={entry.content} streaming={entry.streaming} />
         </div>
       );
     }
@@ -6635,7 +6641,7 @@ function RunActivityTimelineItem({
           className="py-[5px] text-[length:var(--app-font-size-body)] text-[var(--app-foreground)]"
           key={entry.id}
         >
-          <AgentMarkdown content={entry.content} />
+          <AgentMarkdown content={entry.content} streaming={entry.streaming} />
         </div>
       );
     }
@@ -7985,9 +7991,11 @@ function CommandTerminal({
   const result = resultPayload === null ? null : parseCommandResult(resultPayload);
   const output = commandTerminalOutput(resultPayload, status, liveOutput);
   const clipboardText = commandTerminalClipboardText(command, output);
+  const scrollHost = useRef<HTMLElement>(null);
+  useStreamingScroll(scrollHost, output, status === "running");
 
   return (
-    <section className="tool-timeline-item__payload tool-structured-result tool-command-terminal">
+    <section ref={scrollHost} className="tool-timeline-item__payload tool-structured-result tool-command-terminal">
       <header className="tool-command-terminal__header">
         <span>{commandTerminalHeaderLabel(result?.terminal ?? null)}</span>
         <IconButton
@@ -8695,6 +8703,8 @@ function ToolRawCallDialog({
   onClose: () => void;
 }): ReactElement {
   const nativeOverlayContainer = useNativeOverlayContainer();
+  const scrollHost = useRef<HTMLDivElement>(null);
+  useStreamingScroll(scrollHost, `${item.arguments}\n${item.result ?? ""}`, item.status === "running");
   useEffect(() => {
     const closeOnEscape = (event: globalThis.KeyboardEvent): void => {
       if (event.key === "Escape") onClose();
@@ -8705,6 +8715,7 @@ function ToolRawCallDialog({
 
   return createPortal(
     <div
+      ref={scrollHost}
       className="tool-raw-dialog-backdrop"
       data-native-view-overlay=""
       role="presentation"

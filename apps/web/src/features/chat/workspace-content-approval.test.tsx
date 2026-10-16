@@ -145,6 +145,43 @@ it.each(["run_command", "wait_for_commands"])("copies %s command and output thro
   expect(container.querySelector('[aria-label="已复制终端内容"]')).not.toBeNull();
 });
 
+it("follows real command output events while respecting manual scrolling", async () => {
+  const client = new MockAgentClient();
+  let listener: ((event: ConversationRunEvent) => void) | undefined;
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation((callback) => { listener = callback; return () => {}; });
+  const tool: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID,
+    batchId: null, createdAt: "2026-10-16T00:00:00Z", name: "run_command", arguments: '{"command":"echo output"}',
+    result: null, diff: null, status: "running" };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool]);
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      session={session({ id: PARENT_ID, activeRunId: RUN_ID, title: "实时终端" })} /></TooltipProvider>);
+    await flushConversationWorkspace();
+  });
+  if (container.querySelector(".tool-command-terminal pre") === null) {
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="展开调用详情"]')?.click());
+  }
+  const pre = container.querySelector<HTMLElement>(".tool-command-terminal pre")!;
+  expect(pre).not.toBeNull();
+  Object.defineProperties(pre, {
+    clientHeight: { get: () => 100 },
+    scrollHeight: { get: () => (pre.textContent?.length ?? 0) * 10 },
+  });
+  const append = (): void => { act(() => listener?.({ type: "tool.output_delta", conversationId: PARENT_ID,
+    runId: RUN_ID, toolId: TOOL_ID, delta: "output line\n".repeat(30), stream: "stdout", status: "running",
+    commandId: TOOL_ID, done: false, exitCode: null, timedOut: false, truncated: false })); };
+  append();
+  expect(pre.scrollTop).toBe(pre.scrollHeight);
+  act(() => { pre.scrollTop = 40; pre.dispatchEvent(new Event("scroll")); });
+  append();
+  expect(pre.scrollTop).toBe(40);
+  act(() => { pre.scrollTop = pre.scrollHeight - pre.clientHeight; pre.dispatchEvent(new Event("scroll")); });
+  append();
+  expect(pre.scrollTop).toBe(pre.scrollHeight);
+  expect(container.querySelector(".tool-command-terminal pre")).toBe(pre);
+});
+
 it("opens task details above the summary and preserves close and reopen controls", async () => {
   const client = new MockAgentClient();
   vi.spyOn(client, "listConversationTimeline").mockResolvedValue([]);
@@ -508,7 +545,7 @@ it.each([false, true])("shows a successful presentation tool as the final delive
   const card = container.querySelector('[data-html-delivery]');
   expect(card?.querySelector('[aria-label="HTML 方案对比"]') !== null).toBe(gallery);
   expect(card?.closest(".conversation-run-activity")).toBeNull();
-  expect(container.textContent.indexOf("页面已完成。")).toBeLessThan(container.textContent.indexOf("demo.html"));
+  expect(container.textContent.indexOf("demo.html")).toBeLessThan(container.textContent.indexOf("页面已完成。"));
   const copy = container.querySelector('[aria-label="复制完整回复"]');
   const changes = container.querySelector('[data-run-file-changes]');
   const fork = container.querySelector('[aria-label="从此回复创建分支对话"]');
