@@ -112,6 +112,8 @@ describe("model tool definitions", () => {
     expect(property(definitions, "run_command", "command")).toMatchObject({
       maxLength: 4_000,
     });
+    expect(property(definitions, "run_command", "description")).toMatchObject({ type: "string", maxLength: 200 });
+    expect(definition(definitions, "run_command").parameters.required).not.toContain("description");
     expect(property(definitions, "run_command", "mode")).toMatchObject({
       default: "batch",
       enum: ["batch", "service"],

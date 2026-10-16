@@ -7,6 +7,7 @@ import { DEFAULT_TERMINAL_CONFIGURATION } from "@agent/protocol";
 
 import { ProjectRegistry } from "../projects/project-registry.js";
 import { decodeTerminalOutput, ProjectToolRegistry } from "./project-tool-registry.js";
+import type { CommandOutputEvent } from "./project-tool-registry.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -1104,13 +1105,14 @@ describe("ProjectToolRegistry", () => {
     const { project, tools } = await createFixture();
     const proposal = await tools.execute(
       "run_command",
-      JSON.stringify({ command: "Write-Output agent-command-ok", timeoutMs: 10_000 }),
+      JSON.stringify({ command: "Write-Output agent-command-ok", description: "检查命令执行通路", timeoutMs: 10_000 }),
       project.id,
       new AbortController().signal
     );
 
     if (proposal.kind !== "command") throw new Error(proposal.content);
     expect(proposal.content).toContain("awaiting_approval");
+    expect(proposal.command.description).toBe("检查命令执行通路");
     const result = await tools.executePreparedCommand(
       proposal.command,
       project.id,
@@ -1179,7 +1181,7 @@ describe("ProjectToolRegistry", () => {
     );
     if (proposal.kind !== "command") throw new Error(proposal.content);
 
-    const outputEvents: Array<{ delta: string; done: boolean; stream: string }> = [];
+    const outputEvents: CommandOutputEvent[] = [];
     let resolveFirstOutput: (() => void) | undefined;
     const firstOutput = new Promise<void>((resolve) => {
       resolveFirstOutput = resolve;
@@ -1189,8 +1191,9 @@ describe("ProjectToolRegistry", () => {
       project.id,
       signal,
       owner,
-      ({ delta, done, stream }) => {
-        outputEvents.push({ delta, done, stream });
+      (event) => {
+        const { delta, stream } = event;
+        outputEvents.push(event);
         if (stream === "stdout" && delta.includes("stream-first")) resolveFirstOutput?.();
       },
     );
@@ -1220,6 +1223,9 @@ describe("ProjectToolRegistry", () => {
     expect(outputEvents.some((event) => event.stream === "stderr" && event.delta.includes("stream-error")))
       .toBe(true);
     expect(outputEvents.some((event) => event.done)).toBe(true);
+    expect(outputEvents[0]).toMatchObject({ delta: "", status: "running", completedAt: null });
+    expect(Number.isFinite(Date.parse(outputEvents[0]?.startedAt ?? ""))).toBe(true);
+    expect(outputEvents.filter(event => event.done).every(event => event.completedAt !== null)).toBe(true);
   });
 
   it("makes the bundled ripgrep executable available to shell commands", async () => {

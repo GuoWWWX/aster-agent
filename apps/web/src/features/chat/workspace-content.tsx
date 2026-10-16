@@ -12,6 +12,7 @@ import { ScheduledTasksWorkspace } from "../schedules/scheduled-tasks-workspace.
 import { useComposerHistory } from "./use-composer-history.js";
 import { ProjectImageResult } from "./project-image-result.js";
 import { ToolDisclosureContext, ToolRevealContext, useToolDisclosure } from "./tool-disclosure-state.js";
+import { CommandExecutionStatus, type CommandExecutionState } from "./command-execution-status.js";
 import { findComposerReferenceRanges } from "./composer-reference-ranges.js";
 import {
   Bot,
@@ -394,6 +395,8 @@ type ModelActivity = {
 };
 
 type LiveToolOutput = {
+  startedAt?: string;
+  completedAt?: string | null;
   exitCode: number | null;
   stderr: string;
   stdout: string;
@@ -4227,6 +4230,8 @@ function handleRunEvent(
         };
         const next = {
           ...previous,
+          ...(event.startedAt === undefined ? {} : { startedAt: event.startedAt }),
+          ...(event.completedAt === undefined ? {} : { completedAt: event.completedAt }),
           [event.stream]: `${previous[event.stream]}${event.delta}`,
           exitCode: event.exitCode,
           status: event.status,
@@ -7087,8 +7092,9 @@ function ToolTimelineItem({
             onOpenProjectFile={onOpenProjectFile}
             onToggle={() => setIsExpanded((current) => !current)}
           />
-          {effectiveStatus === "running" ? <ToolExecutionTimer startedAt={Date.parse(item.createdAt)} /> : null}
-          {effectiveStatus !== "completed" && effectiveStatus !== "running" ? (
+          {isCommand ? <CommandExecutionStatus execution={commandExecutionState(effectiveStatus, item.result, liveOutput, item.createdAt)} showDuration={!isExpanded} />
+            : effectiveStatus === "running" ? <ToolExecutionTimer startedAt={Date.parse(item.createdAt)} /> : null}
+          {!isCommand && effectiveStatus !== "completed" && effectiveStatus !== "running" ? (
             <span className="tool-timeline-item__status-label">
               {toolStatusLabel(effectiveStatus)}
             </span>
@@ -7311,6 +7317,8 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
 
   switch (item.name) {
     case "run_command": {
+      const description = typeof argumentsValue?.description === "string" ? argumentsValue.description.trim() : "";
+      if (description.length > 0) return description;
       const command = typeof argumentsValue?.command === "string" ? argumentsValue.command : null;
       const commandResult = item.result === null ? null : parseCommandResult(item.result);
       const mode = argumentsValue?.mode === "service"
@@ -7801,6 +7809,7 @@ function ToolDetail({
       <CommandTerminal
         writeClipboardText={(text) => agentClient.writeClipboardText(text)}
         argumentsPayload={item.arguments}
+        createdAt={item.createdAt}
         resultPayload={item.result}
         status={item.status}
         {...(liveOutput === undefined ? {} : { liveOutput })}
@@ -7976,12 +7985,14 @@ export function toolHasDisplayableDetails(item: ConversationToolItem): boolean {
 function CommandTerminal({
   writeClipboardText,
   argumentsPayload,
+  createdAt,
   liveOutput,
   resultPayload,
   status,
 }: {
   writeClipboardText: (text: string) => Promise<void>;
   argumentsPayload: string;
+  createdAt?: string;
   liveOutput?: LiveToolOutput;
   resultPayload: string | null;
   status: ConversationToolItem["status"];
@@ -7999,6 +8010,9 @@ function CommandTerminal({
     <section ref={scrollHost} className="tool-timeline-item__payload tool-structured-result tool-command-terminal">
       <header className="tool-command-terminal__header">
         <span>{commandTerminalHeaderLabel(result?.terminal ?? null)}</span>
+        <div className="flex shrink-0 items-center gap-[5px]">
+          <CommandExecutionStatus execution={commandExecutionState(status, resultPayload, liveOutput, createdAt)} />
+        </div>
         <IconButton
           className="tool-command-terminal__copy"
           label={copied ? "已复制终端内容" : "复制终端内容"}
@@ -9312,6 +9326,20 @@ type CommandResultPayload = {
   truncated: boolean;
   workingDirectory: string;
 };
+
+function commandExecutionState(
+  status: ConversationToolItem["status"], resultPayload: string | null,
+  liveOutput: LiveToolOutput | undefined, createdAt?: string,
+): CommandExecutionState {
+  const result = resultPayload === null ? null : parseCommandResult(resultPayload);
+  return {
+    status: status === "awaiting_approval" || status === "failed" || status === "cancelled" || status === "rejected"
+      ? status : liveOutput?.status ?? result?.status ?? status,
+    startedAt: liveOutput?.startedAt ?? result?.startedAt ?? (status === "running" ? createdAt ?? null : null),
+    completedAt: liveOutput?.completedAt ?? result?.completedAt ?? null,
+    timedOut: liveOutput?.timedOut ?? result?.timedOut ?? false,
+  };
+}
 
 function parseCommandResult(payload: string): CommandResultPayload | null {
   const result = parseToolValue(payload);

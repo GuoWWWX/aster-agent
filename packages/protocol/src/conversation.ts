@@ -1123,6 +1123,8 @@ const toolStartedEventSchema = z
 
 const toolOutputDeltaEventSchema = z
   .object({
+    startedAt: z.string().datetime().optional(),
+    completedAt: z.string().datetime().nullable().optional(),
     commandId: z.string().uuid(),
     conversationId: conversationIdSchema,
     delta: z.string().max(MAX_MESSAGE_LENGTH),

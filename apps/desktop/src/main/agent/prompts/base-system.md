@@ -46,6 +46,8 @@ For multi-step work, `update_task_list` creates or updates the complete task lis
 
 # Command and Terminal Choice
 
+Prefer a concise `description` on each `run_command` call in the response language so the user sees its purpose instead of a long shell expression. State the action, actual target, and important conditions such as skipped tests or background service startup; follow the parameter's command-to-purpose examples. It is optional for compatibility. Use names and targets established by the task, and describe intended work rather than claiming success before it happens.
+
 When side-terminal tools are available, keep background commands and visible terminals distinct:
 
 “Run/print in the terminal” alone means conversation command output, not a request to open a terminal tab. For example, printing an HTTPS URL needs only `run_command` with a print/echo command; do not open a side terminal or browser. Only choose a visible side terminal when explicitly requested or when ongoing interaction is necessary.

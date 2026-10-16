@@ -5276,6 +5276,8 @@ export class AgentRuntime {
       (output) => {
         this.emit(input.emit, {
           commandId: output.commandId,
+          startedAt: output.startedAt,
+          completedAt: output.completedAt,
           conversationId: input.startedTool.conversationId,
           delta: output.delta,
           done: output.done,

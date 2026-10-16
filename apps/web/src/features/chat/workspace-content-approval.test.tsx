@@ -185,6 +185,33 @@ it.each(["running", "completed"] as const)("follows real command output events w
   expect(container.querySelector(".tool-command-terminal pre")).toBe(pre);
 });
 
+it("moves command duration from collapsed summary into the expanded terminal header", async () => {
+  const client = new MockAgentClient();
+  const tool: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID,
+    batchId: null, createdAt: "2026-10-15T23:59:00Z", name: "run_command", arguments: '{"command":"echo timing","description":"检查日志输出"}',
+    result: JSON.stringify({ ok: true, value: { workingDirectory: ".", status: "completed", exitCode: 0,
+      stdout: "timing", stderr: "", timedOut: false, truncated: false,
+      startedAt: "2026-10-16T00:00:00Z", completedAt: "2026-10-16T00:00:02.500Z" } }), diff: null, status: "completed" };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool]);
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={session({ id: PARENT_ID, title: "命令耗时" })} /></TooltipProvider>);
+    await flushConversationWorkspace();
+  });
+  expandWorkProcess(container);
+  const row = container.querySelector<HTMLElement>(".tool-activity-row")!;
+  expect(row.textContent).toContain("检查日志输出");
+  expect(row.textContent).not.toContain("echo timing");
+  expect(row.querySelector("[data-command-execution-status]")?.textContent).toBe("已完成2s");
+  act(() => row.querySelector<HTMLButtonElement>('[aria-label="展开调用详情"]')?.click());
+  expect(row.querySelector(".tool-timeline-item__identity [data-command-duration]")).toBeNull();
+  expect(row.querySelector(".tool-command-terminal__header [data-command-execution-status]")?.textContent).toBe("已完成2s");
+  expect(row.querySelector(".tool-command-terminal pre")?.textContent).toContain("echo timing");
+  expect(row.querySelector('[aria-label="复制终端内容"]')).not.toBeNull();
+  act(() => row.querySelector<HTMLButtonElement>('[aria-label="收起调用详情"]')?.click());
+  expect(row.querySelector(".tool-timeline-item__identity [data-command-duration]")?.textContent).toBe("2s");
+});
+
 it("opens task details above the summary and preserves close and reopen controls", async () => {
   const client = new MockAgentClient();
   vi.spyOn(client, "listConversationTimeline").mockResolvedValue([]);

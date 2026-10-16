@@ -217,6 +217,8 @@ const runCommandArgumentsSchema = z
   .object({
     command: z.string().trim().min(1).max(MAX_COMMAND_LENGTH)
       .describe("One non-interactive command for the configured project shell."),
+    description: z.string().trim().max(200).optional()
+      .describe("Recommended short user-facing purpose in the response language: action + actual target + important conditions. Examples: ping -n 4 www.baidu.com => 'Ping Baidu to check network connectivity and latency'; mvn -pl order-service -am package -DskipTests => 'Package order-service with Maven (skip tests)'; java -jar target/order-service.jar with mode=service => 'Start order-service in the background'. Use targets from this task; describe intent, not unverified success. Optional; omission or an empty value uses the command as the display title."),
     mode: z.enum(["batch", "service"]).default("batch")
       .describe("batch waits for a finite command such as a build or test to exit; service returns after its startup observation window and keeps the process running."),
     parallel: z.boolean().default(true)
@@ -270,6 +272,7 @@ export type PreparedFileChange = {
 
 export type PreparedCommand = {
   command: string;
+  description?: string | undefined;
   mode: "batch" | "service";
   parallel: boolean;
   serviceName?: string | undefined;
@@ -304,6 +307,8 @@ type ProjectOperationScope =
 type CommandSessionStatus = "running" | "completed" | "failed" | "cancelled";
 
 export type CommandOutputEvent = {
+  startedAt: string;
+  completedAt: string | null;
   commandId: string;
   delta: string;
   done: boolean;
@@ -1394,16 +1399,20 @@ export class ProjectToolRegistry {
       stdout: new StreamingTerminalOutputDecoder(outputEncoding),
     } satisfies Record<"stderr" | "stdout", StreamingTerminalOutputDecoder>;
     let outputFinished = false;
+    let outputStarted = false;
     const emitOutput = (
       stream: "stderr" | "stdout",
       delta: string,
       done: boolean,
       status: CommandSessionStatus,
     ): void => {
-      if (onOutput === undefined || (!done && delta.length === 0)) return;
+      if (onOutput === undefined || (!done && delta.length === 0 && outputStarted)) return;
+      outputStarted = true;
       // Output is best-effort and must never interrupt the child process.
       try {
         onOutput({
+          startedAt: session.startedAt,
+          completedAt: session.completedAt,
           commandId,
           delta,
           done,
@@ -1478,6 +1487,7 @@ export class ProjectToolRegistry {
       );
     });
     if (signal.aborted) session.terminate(true);
+    emitOutput("stdout", "", false, session.status);
     return session;
   }
 
