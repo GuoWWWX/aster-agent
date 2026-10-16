@@ -12,6 +12,7 @@ vi.mock("electron", () => ({
 import { NativeOverlayController } from "./native-overlay-controller.js";
 
 class FakeContents extends EventEmitter {
+  public isFocused = vi.fn(() => false);
   public mainFrame = {};
   public zoom = 1;
   public getZoomFactor = vi.fn(() => this.zoom);
@@ -251,10 +252,12 @@ describe("native overlay host", () => {
     child.emit("blur"); vi.runAllTimers();
     expect(child.webContents.send).not.toHaveBeenCalled();
     parent.focused = true; parent.emit("focus");
+    vi.runAllTimers();
     expect(child.webContents.send).toHaveBeenCalledExactlyOnceWith(NATIVE_OVERLAY_BLUR_CHANNEL);
     child.webContents.send.mockClear();
     update({ regions: [], interactive: false });
     child.emit("blur"); vi.runAllTimers(); parent.emit("focus");
+    vi.runAllTimers();
     expect(child.webContents.send).not.toHaveBeenCalled();
   });
 
@@ -270,6 +273,49 @@ describe("native overlay host", () => {
     parent.webContents.emit("did-create-window", next, { url: HOST, frameName: NATIVE_OVERLAY_FRAME_NAME });
     update({ regions: [{ x: 1, y: 2, width: 300, height: 100 }], interactive: true });
     expect(next.showInactive).not.toHaveBeenCalled();
+  });
+
+  it("does not dismiss a new opening from a blur queued while the previous overlay was hidden", () => {
+    vi.useFakeTimers();
+    const { parent, child, open, update } = fixture();
+    open();
+    const input = { regions: [{ x: 100, y: 100, width: 300, height: 100 }], interactive: true };
+    update(input);
+    update({ regions: [], interactive: false });
+    child.emit("blur");
+    update(input);
+    parent.focused = true;
+    vi.runAllTimers();
+    parent.emit("focus");
+    vi.runAllTimers();
+    expect(child.webContents.send).not.toHaveBeenCalled();
+  });
+
+  it("leaves Renderer clicks to Radix instead of racing them with Escape", () => {
+    vi.useFakeTimers();
+    const { parent, child, open, update } = fixture();
+    open();
+    update({ regions: [{ x: 100, y: 100, width: 300, height: 100 }], interactive: true });
+    child.emit("blur");
+    parent.focused = true;
+    parent.emit("focus");
+    parent.webContents.isFocused.mockReturnValue(true);
+    vi.runAllTimers();
+    expect(child.webContents.send).not.toHaveBeenCalled();
+    parent.webContents.isFocused.mockReturnValue(false);
+    parent.emit("focus"); vi.runAllTimers();
+    expect(child.webContents.send).not.toHaveBeenCalled();
+  });
+
+  it("cancels a pending blur when the overlay regains focus", () => {
+    vi.useFakeTimers();
+    const { parent, child, open, update } = fixture();
+    open();
+    update({ regions: [{ x: 100, y: 100, width: 300, height: 100 }], interactive: true });
+    child.emit("blur"); child.emit("focus");
+    parent.focused = true;
+    parent.emit("focus"); vi.runAllTimers();
+    expect(child.webContents.send).not.toHaveBeenCalled();
   });
 
   it("releases the previous document's host on parent navigation but preserves it for frames and same-document changes", () => {

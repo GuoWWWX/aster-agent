@@ -22,7 +22,7 @@ export function PopoverContent({
       <PopoverPrimitive.Content
         data-native-view-overlay=""
         className={cn(
-          "z-[100] max-h-[var(--radix-popover-content-available-height)] overflow-auto",
+          "z-[100] max-h-[var(--radix-popover-content-available-height)] overflow-auto outline-none",
           className,
         )}
         collisionPadding={collisionPadding}

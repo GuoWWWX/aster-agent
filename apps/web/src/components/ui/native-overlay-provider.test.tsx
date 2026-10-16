@@ -8,6 +8,8 @@ import type { NativeOverlayResizePointer, NativeOverlayTooltipPointer } from "@a
 
 import { emitLivePanelResize } from "../layout/live-panel-resize.js";
 import { NativeOverlayProvider, useNativeOverlayContainer } from "./native-overlay-provider.js";
+import { Popover, PopoverContent, PopoverTrigger } from "./popover.js";
+import { TooltipAnchor, TooltipProvider } from "./tooltip.js";
 
 let root: Root;
 let host: Window;
@@ -113,6 +115,38 @@ it("preserves outside gesture targets and dismisses when focus returns from the 
   host.document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   expect(parentKeys).toHaveBeenCalledOnce();
   window.removeEventListener("keydown", parentKeys);
+});
+
+it("toggles a tooltip-wrapped popover with each first click and lets an outside button execute once", async () => {
+  const outside = vi.fn();
+  act(() => root.render(<NativeOverlayProvider><TooltipProvider>
+    <Popover><TooltipAnchor content="查看子代理"><PopoverTrigger>Agent 0</PopoverTrigger></TooltipAnchor>
+      <PopoverContent>暂无子代理</PopoverContent>
+    </Popover><button onClick={outside}>其他操作</button>
+  </TooltipProvider></NativeOverlayProvider>));
+  await flush();
+  act(() => { window.dispatchEvent(new MessageEvent("message", { data: "aster:native-overlay-ready", origin: location.origin, source: host })); });
+  const trigger = mount.querySelector("button")!;
+  const click = (button: HTMLButtonElement): void => {
+    act(() => {
+      button.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      button.focus();
+      button.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+      button.click();
+    });
+  };
+  for (let cycle = 0; cycle < 5; cycle++) {
+    act(() => { trigger.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })); });
+    click(trigger); await flush();
+    expect(host.document.querySelector('[role="dialog"]')?.textContent).toBe("暂无子代理");
+    click(trigger); await flush();
+    expect(host.document.querySelector('[role="dialog"]')).toBeNull();
+  }
+  click(trigger); await flush();
+  click(mount.querySelectorAll("button")[1]!); await flush();
+  expect(outside).toHaveBeenCalledOnce();
+  expect(host.document.querySelector('[role="dialog"]')).toBeNull();
+  expect(host.document.querySelector('[role="tooltip"]')).toBeNull();
 });
 
 it("relays every native drag movement without placing a full-window input layer above the page", async () => {

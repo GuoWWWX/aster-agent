@@ -69,6 +69,41 @@ it("dismisses when the application window loses focus", async () => {
   act(() => { window.dispatchEvent(new FocusEvent("blur")); });
   expect(document.querySelector("[role=tooltip]")).toBeNull();
 });
+it("executes a trigger click once and stays dismissed until the pointer leaves and returns", async () => {
+  const click = vi.fn();
+  act(() => { root.render(<TooltipProvider><TooltipAnchor content="复制提示"><button onClick={click}>复制</button></TooltipAnchor></TooltipProvider>); });
+  const button = mount.querySelector("button")!;
+  await hover(button);
+  pointer(button, "pointerdown");
+  act(() => { button.focus(); button.click(); });
+  expect(click).toHaveBeenCalledOnce();
+  expect(document.querySelector("[role=tooltip]")).toBeNull();
+  await hover(button);
+  expect(document.querySelector("[role=tooltip]")).toBeNull();
+  pointer(button, "pointerout", document.body);
+  pointer(document.body, "pointermove");
+  await hover(button);
+  expect(document.querySelector("[role=tooltip]")?.textContent).toBe("复制提示");
+});
+it("also keeps keyboard and accessibility activation dismissed until the next hover", async () => {
+  const [first] = render();
+  act(() => { first!.focus(); first!.click(); });
+  await hover(first!);
+  expect(document.querySelector("[role=tooltip]")).toBeNull();
+  pointer(first!, "pointerout", document.body);
+  await hover(first!);
+  expect(document.querySelector("[role=tooltip]")?.textContent).toBe("复制提示");
+  act(() => { first!.click(); });
+  act(() => { first!.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true })); });
+  act(() => { mount.querySelectorAll("button")[1]!.focus(); });
+  act(() => { first!.focus(); });
+  expect(document.querySelector("[role=tooltip]")?.textContent).toBe("复制提示");
+  act(() => { first!.click(); });
+  act(() => { mount.querySelectorAll("button")[1]!.focus(); });
+  act(() => { first!.focus(); });
+  await hover(first!);
+  expect(document.querySelector("[role=tooltip]")).toBeNull();
+});
 it("closes from native cursor updates when mouse events are consumed by another native view", async () => {
   const [first] = render();
   await hover(first!);

@@ -43,10 +43,12 @@ export function TooltipAnchor({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const pointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
+  const dismissedByTrigger = useRef(false);
   const [visible, setVisible] = useState(false);
   const [selecting, setSelecting] = useState(false);
   const isOpen = open ?? visible;
   const changeOpen = useCallback((value: boolean): void => {
+    if (value && dismissedByTrigger.current) return;
     setVisible(value);
     if (!value) { setSelecting(false); pointerRef.current = null; }
     onOpenChange?.(value);
@@ -85,10 +87,16 @@ export function TooltipAnchor({
       }
     };
   }, [isOpen, changeOpen, container]);
+  const dismissFromTrigger = (): void => {
+    dismissedByTrigger.current = true;
+    changeOpen(false);
+  };
   const trigger = disabled ? <span className="inline-flex">{children}</span> : children;
   return (
     <TooltipPrimitive.Root disableHoverableContent open={isOpen} onOpenChange={changeOpen}>
-      <TooltipPrimitive.Trigger ref={triggerRef} asChild onPointerMove={(event) => {
+      <TooltipPrimitive.Trigger ref={triggerRef} asChild onPointerDown={dismissFromTrigger} onClick={dismissFromTrigger} onKeyDown={(event) => {
+        if (event.key === "Tab") dismissedByTrigger.current = false;
+      }} onPointerMove={(event) => {
         if (event.pointerType === "touch") return;
         event.preventDefault();
         pointerRef.current = { clientX: event.clientX, clientY: event.clientY };
@@ -97,6 +105,7 @@ export function TooltipAnchor({
         if (pointerRef.current !== null && pointerWithin(contentRef.current, { ...pointerRef.current, target: event.relatedTarget })) event.preventDefault();
         else changeOpen(false);
       }} onPointerLeave={(event) => {
+        dismissedByTrigger.current = false;
         event.preventDefault();
         if (!withinTooltip(triggerRef.current, contentRef.current, { target: event.relatedTarget, clientX: event.clientX, clientY: event.clientY })) changeOpen(false);
       }}>{trigger}</TooltipPrimitive.Trigger>

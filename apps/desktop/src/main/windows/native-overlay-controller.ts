@@ -116,13 +116,23 @@ export class NativeOverlayController {
     const notifyParentFocus = (): void => {
       if (pendingParentFocus && this.visible && this.interactive && this.parentWindow.isFocused()) {
         pendingParentFocus = false;
-        contents.send(NATIVE_OVERLAY_BLUR_CHANNEL);
+        // Renderer clicks already reach Radix. Escape here would close the layer
+        // before its trigger click, making that same click reopen it.
+        if (!this.parentContents.isFocused()) contents.send(NATIVE_OVERLAY_BLUR_CHANNEL);
       }
     };
-    const blurred = (): void => {
-      pendingParentFocus = true;
+    const scheduleParentFocus = (): void => {
       if (blurTimer !== undefined) clearImmediate(blurTimer);
       blurTimer = setImmediate(() => { blurTimer = undefined; notifyParentFocus(); });
+    };
+    const blurred = (): void => {
+      pendingParentFocus = this.visible && this.interactive;
+      scheduleParentFocus();
+    };
+    const focused = (): void => {
+      pendingParentFocus = false;
+      if (blurTimer !== undefined) clearImmediate(blurTimer);
+      blurTimer = undefined;
     };
     contents.setWindowOpenHandler(() => ({ action: "deny" }));
     contents.on("will-navigate", denyNavigation);
@@ -130,16 +140,18 @@ export class NativeOverlayController {
     contents.on("will-frame-navigate", denyFrameNavigation);
     contents.on("render-process-gone", crashed);
     window.on("blur", blurred);
+    window.on("focus", focused);
     window.on("closed", close);
-    this.parentWindow.on("focus", notifyParentFocus);
+    this.parentWindow.on("focus", scheduleParentFocus);
     this.detachOverlay = () => {
       if (blurTimer !== undefined) clearImmediate(blurTimer);
-      this.parentWindow.removeListener("focus", notifyParentFocus);
+      this.parentWindow.removeListener("focus", scheduleParentFocus);
       contents.removeListener("will-navigate", denyNavigation);
       contents.removeListener("will-redirect", denyNavigation);
       contents.removeListener("will-frame-navigate", denyFrameNavigation);
       contents.removeListener("render-process-gone", crashed);
       window.removeListener("blur", blurred);
+      window.removeListener("focus", focused);
       window.removeListener("closed", close);
     };
     this.synchronize();
