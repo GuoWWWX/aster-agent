@@ -808,7 +808,10 @@ export function WorkspaceContent({
       return <div key={instance.id} className={active ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"} aria-hidden={!active}>
         <TeamChatWorkspace agentClient={agentClient} instance={instance} active={active} sessions={sessions} projects={projects} onSessionUpdated={onSessionUpdated}
           {...(active && teamChatTarget?.messageId !== undefined ? { focusMessageId: teamChatTarget.messageId } : {})}
-          onOpenConversation={(conversation, messageId) => onOpenTeamConversation({ ...conversation, pinOrder: conversation.pinOrder ?? null }, undefined, messageId)} />
+          onOpenConversation={(conversation, messageId) => {
+            if (messageId === undefined) onSessionSelected(conversation.id);
+            else onOpenTeamConversation({ ...conversation, pinOrder: conversation.pinOrder ?? null }, undefined, messageId);
+          }} />
       </div>;
     })}
     <div className={activeActivity === "conversations" && teamChatTarget === null && activeSession !== null ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"}>

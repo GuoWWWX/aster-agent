@@ -1,8 +1,8 @@
 import { ChevronDown, ChevronUp } from "lucide-react";
-import { useId, useLayoutEffect, useRef, useState, type ReactElement } from "react";
+import { useId, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 
 /** Fold only the visible body; copying, search and model history keep the full text. */
-export function UserMessageContent({ content }: { content: string }): ReactElement {
+export function UserMessageContent({ content, children }: { content: string; children?: ReactNode }): ReactElement {
   const paragraph = useRef<HTMLParagraphElement>(null);
   const contentId = useId();
   const [overflows, setOverflows] = useState(false);
@@ -19,9 +19,9 @@ export function UserMessageContent({ content }: { content: string }): ReactEleme
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
     observer?.observe(element);
     return () => observer?.disconnect();
-  }, [content]);
+  }, [content, children]);
   return <div className="min-w-0" data-user-message-content>
-    <p ref={paragraph} id={contentId} className={expanded ? undefined : "line-clamp-6"}>{content}</p>
+    <p ref={paragraph} id={contentId} className={expanded ? undefined : "line-clamp-6"}>{children ?? content}</p>
     {overflows ? <button type="button" aria-expanded={expanded} aria-controls={contentId}
       data-conversation-find-ignore
       onClick={() => setExpandedContent(expanded ? null : content)}

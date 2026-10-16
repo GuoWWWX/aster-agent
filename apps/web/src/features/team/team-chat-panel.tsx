@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import type { ConversationSummary, TeamChatMember, TeamChatMessage } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import { AgentMarkdown } from "../../components/markdown/agent-markdown.js";
 import { ChatMessageBubble } from "../chat/chat-message-bubble.js";
 import { UserMessageContent } from "../chat/user-message-content.js";
+import { findComposerReferenceRanges } from "../chat/composer-reference-ranges.js";
 import { AgentAvatar, SubagentAvatar } from "./agent-avatar.js";
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
 
@@ -72,6 +73,31 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
       onOpenConversation(conversation, source?.id);
     } catch (reason) { setError(String(reason)); }
   };
+  const renderMemberMentions = (message: TeamChatMessage): ReactNode => {
+    const references = new Map<string, { member: TeamChatMember; conversation: ConversationSummary }>();
+    for (const id of message.recipientConversationIds) {
+      const member = members.find(item => item.conversationId === id);
+      const conversation = conversations.find(item => item.id === id);
+      if (member === undefined || conversation === undefined) continue;
+      references.set(`@${conversation.title}`, { member, conversation });
+      references.set(`@${member.name}`, { member, conversation });
+    }
+    const ranges = findComposerReferenceRanges(message.content, [...references.keys()]);
+    if (ranges.length === 0) return message.content;
+    return <>{ranges.map((range, index) => {
+      const { member, conversation } = references.get(message.content.slice(range.start, range.end))!;
+      const avatar = agents.find(item => item.id === conversation.agentId)?.avatar
+        ?? (conversation.avatarIcon ? { kind: "icon" as const, icon: conversation.avatarIcon } : null);
+      return <span key={range.start}>{message.content.slice(ranges[index - 1]?.end ?? 0, range.start)}
+        <button type="button" aria-label={`打开成员 ${member.name} 的对话`} title={`打开 ${member.name} 的对话`}
+          onClick={() => onOpenConversation(conversation)}
+          className="inline-flex max-w-full items-center gap-[5px] rounded-[var(--app-radius-small)] align-middle text-[var(--app-accent)] hover:underline focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)]">
+          {avatar === null ? <SubagentAvatar icon={null} seed={member.conversationId} size="compact" /> : <AgentAvatar avatar={avatar} size="compact" />}
+          <span className="min-w-0 truncate">{member.name}</span>
+        </button>
+      </span>;
+    })}{message.content.slice(ranges.at(-1)!.end)}</>;
+  };
   return <section aria-label="团队群聊" className="flex min-h-0 min-w-0 flex-1 flex-col gap-[5px] text-[length:var(--app-font-size-control)]">
     {error === null ? null : <p role="alert" className="m-0 text-[var(--app-destructive)]">{error}<button type="button" onClick={() => void load()} className="ml-2 underline">重试读取</button></p>}
     <div ref={viewport} role="log" aria-label="群消息" className="conversation-workspace__messages" onScroll={() => { const element = viewport.current; if (element) { atBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 32; const last = messages.at(-1); if (active && atBottom.current && last && document.visibilityState === "visible") void agentClient.markTeamChatRead({ teamInstanceId, throughSequence: last.sequence }).catch(reason => setError(String(reason))); } }}>
@@ -89,7 +115,7 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
         </div>}
         <ChatMessageBubble role={role} enclosed={role === "assistant"}>
           {message.replyToId ? <p className="mb-1 line-clamp-2 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">回复：{messages.find(item => item.id === message.replyToId)?.content.slice(0, 100) ?? "较早的群消息"}</p> : null}
-          {role === "user" ? <UserMessageContent content={message.content} /> : <AgentMarkdown content={message.content} />}
+          {role === "user" ? <UserMessageContent content={message.content}>{renderMemberMentions(message)}</UserMessageContent> : <AgentMarkdown content={message.content} />}
         </ChatMessageBubble>
         <div className="flex flex-wrap items-center gap-[5px] text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">
           <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString()}</time><span>{message.intent === "notify" ? "通知" : "请求"}</span>

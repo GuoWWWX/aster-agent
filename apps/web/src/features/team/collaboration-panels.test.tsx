@@ -84,3 +84,27 @@ it("does not mark messages read while a retained group tab is hidden", async () 
   await act(() => Promise.resolve().then(() => { root?.render(<TooltipProvider><TeamChatPanel agentClient={client} teamInstanceId={instance.id} active={false} onOpenConversation={() => undefined} /></TooltipProvider>); }));
   expect(container.querySelector('[data-group-message]')).not.toBeNull(); expect(mark).not.toHaveBeenCalled();
 });
+
+it("renders selected group mentions as member avatars and blue names that open their own conversations", async () => {
+  const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
+  const roster = await client.getTeamChatMembers({ teamInstanceId: instance.id });
+  const member = roster.find(item => !item.isLead)!;
+  const conversation = sessions.find(item => item.id === member.conversationId)!;
+  // Real team bindings use the short Agent name, while older composer messages contain the full conversation title.
+  const name = "测试工程师";
+  vi.spyOn(client, "getTeamChatMembers").mockResolvedValue(roster.map(item => item.conversationId === member.conversationId ? { ...item, name } : item));
+  await client.postTeamChat({ teamInstanceId: instance.id, content: `@${conversation.title} 请核实， @${name} 谢谢。@其他成员 保留原文。`,
+    recipientConversationIds: [member.conversationId], requestId: crypto.randomUUID() });
+  const open = vi.fn(); const container = mount();
+  await act(() => Promise.resolve().then(() => { root?.render(<TooltipProvider><TeamChatPanel agentClient={client} teamInstanceId={instance.id} onOpenConversation={open} /></TooltipProvider>); }));
+  const bubble = container.querySelector('.chat-message[data-role="user"]')!;
+  const mentions = bubble.querySelectorAll<HTMLButtonElement>(`button[aria-label="打开成员 ${name} 的对话"]`);
+  expect(mentions).toHaveLength(2);
+  expect(mentions[0]?.textContent).toBe(name);
+  expect(mentions[0]?.querySelector("svg")).not.toBeNull();
+  expect(mentions[0]?.classList.contains("text-[var(--app-accent)]")).toBe(true);
+  expect(bubble.textContent).not.toContain(conversation.title);
+  expect(bubble.textContent).toContain("@其他成员 保留原文。");
+  await act(() => Promise.resolve().then(() => { mentions[0]?.click(); }));
+  expect(open).toHaveBeenCalledWith(expect.objectContaining({ id: member.conversationId }));
+});
