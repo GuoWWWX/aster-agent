@@ -77,6 +77,14 @@ describe("tool details visibility", () => {
     expect(toolHasDisplayableDetails({ ...tool, result: '{"ok":true,"value":{"coordinateSpace":"screenshot_css_pixels","width":800,"height":600,"mimeType":"image/jpeg"}}' })).toBe(true);
     expect(toolHasDisplayableDetails({ ...tool, arguments: '{"action":"observe"}', result: '{"ok":true,"value":{"text":"计数：1","elements":[],"coordinateSpace":"screenshot_css_pixels","width":800,"height":600,"mimeType":"image/jpeg"}}' })).toBe(true);
   });
+  it.each([
+    ["list", "查看网页标签列表"], ["back", "后退网页"], ["forward", "前进网页"],
+    ["reload", "刷新网页"], ["stop", "停止网页加载"], ["move", "移动页面指针"],
+    ["mouse_down", "按下页面鼠标"], ["mouse_up", "松开页面鼠标"],
+    ["drag", "拖动页面元素"], ["type", "向页面输入文字"],
+  ])("describes browser action %s while its batch is running", (action, label) => {
+    expect(toolBatchCurrentToolLabel([{ ...tool, status: "running", arguments: JSON.stringify({ action }) }])).toBe(`正在执行：${label}`);
+  });
   it("distinguishes a command still running from a completed empty tool result", () => {
     expect(toolHasDisplayableDetails({ ...tool, name: "run_command", arguments: '{"command":"ping localhost"}', status: "running", result: null })).toBe(true);
     expect(toolHasDisplayableDetails({ ...tool, name: "web_search", result: null })).toBe(false);

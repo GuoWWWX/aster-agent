@@ -7432,16 +7432,36 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
       switch (action) {
         case "open":
           return completed ? "网页已打开" : "打开网页";
+        case "list":
+          return completed ? "已查看网页标签列表" : "查看网页标签列表";
         case "observe":
           return completed ? "已查看页面" : "查看页面";
         case "screenshot":
           return completed ? "已截取页面" : "截取页面";
         case "navigate":
           return completed ? "已跳转网页" : "跳转网页";
+        case "back":
+          return completed ? "网页已后退" : "后退网页";
+        case "forward":
+          return completed ? "网页已前进" : "前进网页";
+        case "reload":
+          return completed ? "网页已刷新" : "刷新网页";
+        case "stop":
+          return completed ? "网页加载已停止" : "停止网页加载";
         case "click":
           return completed ? "已点击页面元素" : "点击页面元素";
+        case "move":
+          return completed ? "已移动页面指针" : "移动页面指针";
+        case "mouse_down":
+          return completed ? "已按下页面鼠标" : "按下页面鼠标";
+        case "mouse_up":
+          return completed ? "已松开页面鼠标" : "松开页面鼠标";
+        case "drag":
+          return completed ? "已拖动页面元素" : "拖动页面元素";
         case "fill":
           return completed ? "已填写页面" : "填写页面";
+        case "type":
+          return completed ? "已向页面输入文字" : "向页面输入文字";
         case "select":
           return completed ? "已选择页面选项" : "选择页面选项";
         case "key":
@@ -7457,7 +7477,7 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
         case "show":
           return completed ? "已显示网页标签" : "显示网页标签";
         default:
-          return completed ? "浏览器操作已完成" : "操作浏览器";
+          return `${completed ? "浏览器调用已结束" : "执行浏览器调用"} · ${action ?? "未记录操作类型"}`;
       }
     }
     case "write_file": {

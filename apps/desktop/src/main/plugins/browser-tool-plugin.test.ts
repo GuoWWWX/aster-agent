@@ -106,6 +106,8 @@ describe("BrowserToolPlugin", () => {
     expect(plugin.getDefinitions().map((definition) => definition.name)).toEqual([
       BROWSER_TOOL_NAMES.control,
     ]);
+    expect(plugin.getDefinitions()[0]?.description).toContain("Reuse a known browserId from open/list");
+    expect(plugin.getDefinitions()[0]?.description).toContain("do not list before every action or to acknowledge completion");
 
     const openProposal = await plugin.execute({
       conversationId: CONVERSATION_ID,

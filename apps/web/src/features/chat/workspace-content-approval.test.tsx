@@ -98,6 +98,30 @@ it("keeps placeholder-only browser calls static while retaining their raw-call b
   expect(document.querySelector('[aria-label="browser_control 原始调用"]')).not.toBeNull();
 });
 
+it.each([
+  ["list", "已查看网页标签列表"], ["back", "网页已后退"], ["forward", "网页已前进"],
+  ["reload", "网页已刷新"], ["stop", "网页加载已停止"], ["move", "已移动页面指针"],
+  ["mouse_down", "已按下页面鼠标"], ["mouse_up", "已松开页面鼠标"],
+  ["drag", "已拖动页面元素"], ["type", "已向页面输入文字"],
+])("describes completed browser action %s instead of a generic success", async (action, label) => {
+  const client = new MockAgentClient();
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([{
+    id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID,
+    batchId: null, createdAt: "2026-10-16T00:00:00Z", name: "browser_control", arguments: JSON.stringify({ action }),
+    result: '{"ok":true,"value":{}}', diff: null, status: "completed",
+  }]);
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      session={session({ id: PARENT_ID, title: "浏览器操作名称" })} /></TooltipProvider>);
+    await flushConversationWorkspace();
+  });
+  expandWorkProcess(container);
+  const row = container.querySelector(".tool-activity-row")!;
+  expect(row.textContent).toContain(label);
+  expect(row.textContent).not.toContain("浏览器操作已完成");
+});
+
 it("routes the assistant's relative QuickSort links into the existing workspace file callback", async () => {
   const client = new MockAgentClient();
   const openFile = vi.fn();
