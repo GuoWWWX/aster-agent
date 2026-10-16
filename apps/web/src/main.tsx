@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./app/app.js";
 import { ApplicationErrorBoundary } from "./app/application-error-boundary.js";
 import { TooltipProvider } from "./components/ui/tooltip.js";
+import { NativeOverlayProvider } from "./components/ui/native-overlay-provider.js";
 import "./styles/index.css";
 
 const rootElement = document.getElementById("root");
@@ -14,10 +15,12 @@ if (rootElement === null) {
 
 createRoot(rootElement).render(
   <StrictMode>
-    <TooltipProvider>
-      <ApplicationErrorBoundary>
-        <App />
-      </ApplicationErrorBoundary>
-    </TooltipProvider>
+    <ApplicationErrorBoundary>
+      <NativeOverlayProvider>
+        <TooltipProvider>
+          <App />
+        </TooltipProvider>
+      </NativeOverlayProvider>
+    </ApplicationErrorBoundary>
   </StrictMode>,
 );

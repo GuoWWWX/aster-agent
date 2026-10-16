@@ -1,5 +1,6 @@
+import type { HtmlPreview, HtmlPreviewRequest } from "./html-preview.js";
 import type { AnswerUserQuestionInput, UserQuestion } from "./user-question.js";
-import type { BackgroundCommand, StopBackgroundCommandInput } from "./background-command.js";
+import type { BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "./background-command.js";
 import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "./scheduled-task.js";
 import type {
   ApproveToolChangeInput,
@@ -156,10 +157,12 @@ import type {
  * shell. It deliberately exposes operations, not a generic IPC transport.
  */
 export interface DesktopBridge {
+  htmlPreview(input: HtmlPreviewRequest): Promise<HtmlPreview | null>;
   listUserQuestions(input: ConversationReferenceInput): Promise<UserQuestion[]>;
   answerUserQuestion(input: AnswerUserQuestionInput): Promise<UserQuestion>;
   markUserQuestionViewed(input: { questionId: string }): Promise<UserQuestion>;
   listBackgroundCommands(input: ConversationReferenceInput): Promise<BackgroundCommand[]>;
+  readBackgroundCommand(input: ReadBackgroundCommandInput): Promise<BackgroundCommandOutput>;
   stopBackgroundCommand(input: StopBackgroundCommandInput): Promise<BackgroundCommand>;
   listScheduledTasks(): Promise<ScheduledTask[]>;
   saveScheduledTask(input: SaveScheduledTaskInput): Promise<ScheduledTask>;
@@ -245,6 +248,7 @@ export interface DesktopBridge {
   testModelConnection(input: TestModelConnectionInput): Promise<ModelConnectionTestResult>;
   getModelApiKey(providerId: string): Promise<string | null>;
   getModelCatalog(): Promise<ModelCatalog>;
+  saveModelCatalog(catalog: ModelCatalog): Promise<ModelCatalog>;
   getModelStatus(): Promise<ModelRuntimeStatus>;
   getContextCompressionConfiguration(): Promise<ContextCompressionConfiguration>;
   getApplicationSettings(): Promise<ApplicationSettings>;

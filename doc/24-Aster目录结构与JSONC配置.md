@@ -1,5 +1,7 @@
 # Aster 目录结构与 JSONC 配置
 
+推理程度目录（2026-10-15）：`settings.jsonc` 的 `modelCatalog.reasoningProviders` 保存供应商名称、品牌图标或上传图片的 data URL、支持协议；`modelCatalog.reasoningRules` 通过 providerId/modelKey 关联模型，保存模型匹配模式、协议和推理参数。设置页通过既有 JSONC 原子写入维护它，不增加独立 JSON 文件或 SQLite 表。缺失规则的旧配置使用内置规则，显式空目录及自定义规则保留。详见[模型思考能力与协议对照](./26-模型思考能力与协议对照.md)。
+
 > 2026-09-07 · 目录、统一 JSONC、单库与 JSONL 唯一持久化已实现；v2 记录格式和按需文件索引按第 22 篇继续演进。
 
 ## 1. 数据根目录

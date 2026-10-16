@@ -129,5 +129,5 @@
 
 [data-theme="dark"] .conversation-project-picker {
   border-color: #3d3d3d;
-  background: #282828;
+  background: var(--app-panel);
 }

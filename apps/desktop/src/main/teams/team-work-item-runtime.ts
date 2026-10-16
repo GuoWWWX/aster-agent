@@ -63,7 +63,9 @@ export class TeamWorkItemRuntime {
   public createInstance(input: CreateTeamInstanceInput): TeamInstanceView {
     const instance = this.database.createTeamInstance(input);
     try {
-      return this.provisionTeamInstance(instance);
+      const provisioned = this.provisionTeamInstance(instance);
+      this.showProjectTeam(provisioned);
+      return provisioned;
     } catch (error) {
       this.database.deleteTeamInstance(instance.id);
       throw error;
@@ -71,9 +73,19 @@ export class TeamWorkItemRuntime {
   }
 
   public renameInstance(input: RenameTeamInstanceInput): TeamInstanceView {
+    const previousProjectId = this.database.getTeamInstance(input.teamInstanceId).projectId;
     const instance = this.database.renameTeamInstance(input);
     this.renameTeamInstanceConversations(instance);
+    if (instance.projectId !== previousProjectId) this.showProjectTeam(instance);
     return instance;
+  }
+
+  private showProjectTeam(instance: TeamInstanceView): void {
+    if (instance.projectId === null) return;
+    const project = this.database.listProjects().find(candidate => candidate.id === instance.projectId);
+    if (project !== undefined && project.showTeamsInNavigator !== true) {
+      this.database.saveProject({ ...project, showTeamsInNavigator: true });
+    }
   }
 
   public setInstanceArchived(input: {
@@ -90,6 +102,7 @@ export class TeamWorkItemRuntime {
   public ensureInstanceMemberConversation(input: {
     agentId: string;
     teamInstanceId: string;
+    workerCount?: number | undefined;
   }): TeamMemberConversationView {
     const instance = this.database.getTeamInstance(input.teamInstanceId);
     if (instance.isArchived || instance.rootConversationId === null) {
@@ -103,6 +116,7 @@ export class TeamWorkItemRuntime {
       throw new Error("The selected Agent is not a member of this Team instance.");
     }
     let lead = this.database.getConversation(instance.rootConversationId);
+    if (input.workerCount !== undefined) this.resizeWorkers({ conversationId: lead.id, agentId: input.agentId, count: input.workerCount });
     const leadAgent = this.teamAgentBinding(team.leadAgentId, team, directory);
     const expectedLeadTitle = `${leadAgent.name} · ${instance.name}`.slice(0, 200);
     if (lead.title !== expectedLeadTitle) {
@@ -110,7 +124,7 @@ export class TeamWorkItemRuntime {
     }
     if (input.agentId === team.leadAgentId) return { lead, member: lead };
     let member = this.database.listTeamMemberConversations(lead.id)
-      .find((conversation) => conversation.agentId === input.agentId);
+      .find((conversation) => conversation.agentId === input.agentId && !conversation.isArchived);
     if (member === undefined) throw new Error("The Team member conversation is unavailable.");
     const memberAgent = this.teamAgentBinding(input.agentId, team, directory);
     const expectedMemberTitle = `${memberAgent.name} · ${instance.name}`.slice(0, 200);
@@ -118,6 +132,28 @@ export class TeamWorkItemRuntime {
       member = this.renameConversation(member.id, expectedMemberTitle);
     }
     return { lead, member };
+  }
+
+  public resizeWorkers(input: { conversationId: string; agentId: string; count: number }): ConversationSummary[] {
+    const lead = this.database.getConversation(input.conversationId);
+    const instance = this.database.getTeamInstanceForConversation(lead.id);
+    if (lead.threadKind !== "team_lead" || instance === null || instance.isArchived) throw new Error("只能由当前团队负责人调整成员数量。");
+    const directory = this.agentDirectory.getConfiguration();
+    const team = directory.teams.find(candidate => candidate.id === instance.teamId);
+    if (team === undefined || input.agentId === team.leadAgentId || !team.memberIds.includes(input.agentId)) throw new Error("请选择团队中的执行岗位，负责人数量保持为一位。");
+    if (!Number.isSafeInteger(input.count) || input.count < 1 || input.count > 8) throw new Error("每个岗位支持 1–8 位成员。");
+    const total = team.memberIds.filter(id => id !== team.leadAgentId).reduce((sum, id) => sum + (id === input.agentId ? input.count : this.database.getTeamWorkerCount(instance.id, id)), 0);
+    if (total > 32) throw new Error("一个团队实例最多保留 32 位执行成员。");
+    const members = this.database.listTeamMemberConversations(lead.id).filter(member => member.agentId === input.agentId && !member.isArchived);
+    const retiring = members.slice(input.count);
+    if (retiring.some(member => member.activeRunId !== null || this.database.listUnreadAgentMessages(member.id).length > 0)) {
+      throw new Error("待缩减的成员仍有执行或未处理消息，请等待完成后再缩容。");
+    }
+    this.database.setTeamWorkerCount(instance.id, input.agentId, input.count);
+    for (const member of retiring) this.setConversationArchived(member.id, true);
+    this.ensureConfiguredTeamMemberConversations({ directory, instanceName: instance.name, leadConversation: lead,
+      modelSelection: lead.modelSelection, projectId: lead.projectId, team });
+    return this.database.listTeamMemberConversations(lead.id).filter(member => member.agentId === input.agentId && !member.isArchived);
   }
 
   public getExecution(input: GetTeamWorkItemExecutionInput): TeamWorkItemExecutionView {
@@ -223,15 +259,16 @@ export class TeamWorkItemRuntime {
       teamId: team.id,
       threadKind: "team_lead",
     });
+    this.initializeTeamConversationAccess(created.id);
     const lead = this.renameConversation(
       created.id,
       `${leadAgent.name} · ${instance.name}`.slice(0, 200),
     );
     const saved = this.database.setTeamInstanceRoot(instance.id, lead.id);
-    if (saved.scope !== "global") {
+    {
       this.database.bindTeamExecutionConversation({
         conversationId: lead.id,
-        projectId: saved.projectId!,
+        projectId: saved.projectId,
         sourceConversationId: saved.sourceConversationId,
         teamId: saved.teamId,
         teamInstanceId: saved.id,
@@ -262,9 +299,7 @@ export class TeamWorkItemRuntime {
       `${leadName} · ${instance.name}`.slice(0, 200),
     );
     for (const member of this.database.listTeamMemberConversations(lead.id)) {
-      const memberName = member.agentId === null
-        ? "Agent"
-        : directory.agents.find((agent) => agent.id === member.agentId)?.name ?? "Agent";
+      const memberName = this.database.getConversationAgentBinding(member.id)?.name ?? "Agent";
       this.renameConversation(
         member.id,
         `${memberName} · ${instance.name}`.slice(0, 200),
@@ -308,7 +343,7 @@ export class TeamWorkItemRuntime {
       throw new Error("Configure a model before submitting a Team WorkItem.");
     }
     this.assertTeamCanAcceptWork(rawInput.teamId);
-    this.projects.getProject(rawInput.projectId);
+    if (rawInput.projectId !== null) this.projects.getProject(rawInput.projectId);
     this.validateSubmissionTeamInstance(rawInput);
     const workItem = this.database.createTeamWorkItem(rawInput, modelSelection);
     void this.schedule(rawInput.teamId, emit);
@@ -372,7 +407,7 @@ export class TeamWorkItemRuntime {
   public publish(input: PublishTeamWorkItemInput, emit: RunEventEmitter): TeamWorkItemView {
     const current = this.database.getTeamWorkItem(input.workItemId);
     this.assertTeamCanAcceptWork(current.teamId);
-    this.projects.getProject(current.projectId);
+    if (current.projectId !== null) this.projects.getProject(current.projectId);
     const published = this.database.publishTeamWorkItem(input.workItemId);
     this.schedule(published.teamId, emit);
     return this.database.getTeamWorkItem(published.id);
@@ -528,7 +563,7 @@ export class TeamWorkItemRuntime {
       const team = directory.teams.find((candidate) => candidate.id === teamId && candidate.enabled);
       if (team === undefined) return;
       const activeCount = this.database.listTeamWorkItems({ teamId })
-        .filter((item) => item.status === "running" || item.status === "reviewing")
+        .filter((item) => item.status === "running")
         .length;
       const capacity = Math.max(0, team.maxWorkers - activeCount);
       const queued = this.database.listTeamWorkItems({ teamId })
@@ -664,33 +699,38 @@ export class TeamWorkItemRuntime {
     projectId: string | null;
     team: AgentDirectoryConfiguration["teams"][number];
   }): void {
-    const existingAgentIds = new Set(
-      this.database.listTeamMemberConversations(input.leadConversation.id)
-        .flatMap((conversation) => conversation.agentId === null ? [] : [conversation.agentId]),
-    );
+    const existing = this.database.listTeamMemberConversations(input.leadConversation.id).filter(member => !member.isArchived);
+    const instance = this.database.getTeamInstanceForConversation(input.leadConversation.id);
     for (const agentId of input.team.memberIds) {
-      if (agentId === input.team.leadAgentId || existingAgentIds.has(agentId)) continue;
+      if (agentId === input.team.leadAgentId) continue;
       const configured = input.directory.agents.find(
         (candidate) => candidate.id === agentId && candidate.enabled,
       );
       if (configured === undefined) continue;
       const binding = this.teamAgentBinding(agentId, input.team, input.directory);
-      const created = this.conversationLifecycle.createConversation(input.projectId, {
-        agent: binding,
-        ...(input.modelSelection === null ? {} : { modelSelection: input.modelSelection }),
-        parentConversationId: input.leadConversation.id,
-        teamId: input.team.id,
-        threadKind: "agent",
-      });
-      this.renameConversation(
-        created.id,
-        `${binding.name} · ${input.instanceName}`.slice(0, 200),
-      );
-      this.database.bindTeamMemberConversation({
-        agentId,
-        conversationId: created.id,
-        teamExecutionConversationId: input.leadConversation.id,
-      });
+      const count = instance === null ? 1 : this.database.getTeamWorkerCount(instance.id, agentId);
+      const existingCount = existing.filter(member => member.agentId === agentId).length;
+      for (let index = existingCount; index < count; index += 1) {
+        const workerBinding = index === 0 ? binding : { ...binding, name: `${binding.name} · ${index + 1}`.slice(0, 120) };
+        const created = this.conversationLifecycle.createConversation(input.projectId, {
+          agent: workerBinding,
+          ...(input.modelSelection === null ? {} : { modelSelection: input.modelSelection }),
+          parentConversationId: input.leadConversation.id,
+          teamId: input.team.id,
+          threadKind: "agent",
+        });
+        this.initializeTeamConversationAccess(created.id);
+        this.renameConversation(
+          created.id,
+          `${workerBinding.name} · ${input.instanceName}`.slice(0, 200),
+        );
+        this.database.bindTeamMemberConversation({
+          agentId,
+          conversationId: created.id,
+          teamExecutionConversationId: input.leadConversation.id,
+          replica: true,
+        });
+      }
     }
   }
 
@@ -776,9 +816,10 @@ export class TeamWorkItemRuntime {
       "3. 每个工作项都必须至少通过 send_agent_message 委派一位持久团队成员，并使用 expectReply=true 等待专业结果；不能由 Team Lead 独自完成。后续路线变化时，用 set_team_collaboration_plan 发布完整的新修订。",
       "4. 简单任务走短路径：只选择一位最匹配的专业成员处理，Team Lead 验收后汇总，不强制跑完整团队流程。",
       "5. 常规或复杂任务再按实际需要组合需求、架构、前端、后端和测试角色；没有真实并行收益时不要同时唤醒所有成员。",
+      "若独立任务有排队且合适成员都在忙，可用 resize_team_workers 为该岗位增加独立持久成员，再用 list_agent_conversations 获取新 ID。没有可并行任务就不要扩容；任务结束后可缩减空闲副本，保留其历史。按文件或模块分配所有权，冲突时先协调并重读最新内容；不得强行覆盖其他成员修改或盲目自动合并。",
       "6. 成员完成后只会自动返回有界回执；随时用 list_agent_conversations 检查状态，仅在需要核验时用 read_agent_conversation 按 maxTokens 预算读取成员的完整持久对话，不能把成员对话当作一次性 Subagent，也不要把完整成员输出复制进 Team Lead 上下文。",
       "7. 完成实际修改，并运行与改动相符的测试或检查。",
-      "8. 在结束前做一次需求符合性与回归风险自检；发现问题立即修正。",
+      "8. 团队的首要目标是交付质量。实现完成后，把当前修改与验收条件交给未参与该实现的检查／测试成员，独立复核并实际运行相关验证；若没有独立成员，由负责人明确承担复核并说明。区分已执行的测试、仅建议的测试和未覆盖风险，发现问题先返工再复核。",
       "9. 最终回复列出成员分工、完成内容、修改文件、验证结果、未决风险，并逐项对应验收条件。",
       "不要只给方案；在当前授权范围内把任务推进到可由用户验收的状态。",
     ].join("\n");
@@ -823,6 +864,11 @@ export class TeamWorkItemRuntime {
   private renameConversation(conversationId: string, title: string): ConversationSummary {
     return this.conversationLifecycle.renameConversation?.(conversationId, title)
       ?? this.database.renameConversation(conversationId, title);
+  }
+
+  private initializeTeamConversationAccess(conversationId: string): ConversationSummary {
+    return this.conversationLifecycle.setConversationPermissionMode?.(conversationId, "full_access")
+      ?? this.database.setConversationPermissionMode(conversationId, "full_access");
   }
 
   private setConversationArchived(

@@ -1,4 +1,5 @@
-import { ImageIcon, Loader2 } from "lucide-react";
+import { LoadingState } from "../ui/loading.js";
+import { ImageIcon } from "lucide-react";
 import { useEffect, useRef, useState, type WheelEvent } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog.js";
 import { cn } from "../../lib/cn.js";
@@ -98,7 +99,7 @@ export function ImageDocumentViewer({ src, alt, path }: { src?: string; alt: str
       </header>
       {src ? <ImageViewer src={src} alt={alt} paper className="h-full flex-1" /> : (
         <div className="flex h-full min-h-0 flex-1 items-center justify-center bg-white text-slate-400 dark:bg-[#202020] dark:text-zinc-500">
-          <Loader2 className="size-5 animate-spin" aria-label="正在加载图片" />
+          <LoadingState label="正在加载图片" className="w-full" />
         </div>
       )}
     </section>

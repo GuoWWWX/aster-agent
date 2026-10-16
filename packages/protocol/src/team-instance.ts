@@ -96,6 +96,7 @@ export const setTeamInstanceArchivedInputSchema = teamInstanceReferenceInputSche
 export const ensureTeamInstanceMemberConversationInputSchema =
   teamInstanceReferenceInputSchema.extend({
     agentId: z.string().trim().min(1).max(200),
+    workerCount: z.number().int().min(1).max(8).optional(),
   }).strict();
 
 export type TeamInstanceScope = z.infer<typeof teamInstanceScopeSchema>;

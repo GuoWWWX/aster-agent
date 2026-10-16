@@ -41,6 +41,7 @@ import {
   describeConversationError,
   representativeToolName,
   reasoningEndpointColor,
+  shouldShowFlagshipReasoningEnergy,
   resolveConversationPathIconKind,
   resolveConversationPathScope,
   resolveInitialConversationModelSelection,
@@ -53,7 +54,44 @@ import {
   toolBatchExecutionMode,
   latestActiveTool,
   stripLeadingThinkingSummary,
+  toolHasDisplayableDetails,
 } from "./workspace-content.js";
+
+describe("tool details visibility", () => {
+  it("omits legacy command waits from the work process while retaining the command and final answer", () => {
+    const projected = groupRunActivities([{ ...tool, name: "run_command" }, { ...tool, id: "wait", name: "wait_for_commands" }, { ...tool, id: "read", name: "read_command_output" }, assistantMessage("answer", "已完成")]);
+    expect(JSON.stringify(projected)).not.toContain("wait_for_commands");
+    expect(JSON.stringify(projected)).not.toContain("read_command_output");
+    expect(JSON.stringify(projected)).toContain("run_command");
+    expect(projected.at(-1)).toMatchObject({ content: "已完成" });
+  });
+  const tool: ConversationToolItem = { id: "tool", kind: "tool", conversationId: "conversation", runId: "run", batchId: null,
+    createdAt: "2026-10-16T00:00:00Z", name: "browser_control", arguments: '{"action":"open"}', result: '{"ok":true,"value":{"url":"https://example.com"}}', diff: null, status: "completed" };
+  it("hides placeholder-only browser results and preserves errors, approval and screenshot details", () => {
+    expect(toolHasDisplayableDetails(tool)).toBe(false);
+    expect(toolHasDisplayableDetails({ ...tool, status: "running", result: null })).toBe(false);
+    expect(toolHasDisplayableDetails({ ...tool, arguments: '{"action":"observe"}' })).toBe(false);
+    expect(toolHasDisplayableDetails({ ...tool, arguments: '{"action":"click"}' })).toBe(false);
+    expect(toolHasDisplayableDetails({ ...tool, status: "failed" })).toBe(true);
+    expect(toolHasDisplayableDetails({ ...tool, status: "awaiting_approval" })).toBe(true);
+    expect(toolHasDisplayableDetails({ ...tool, result: '{"ok":false,"error":"Page closed"}' })).toBe(true);
+    expect(toolHasDisplayableDetails({ ...tool, result: '{"ok":true,"value":{"coordinateSpace":"screenshot_css_pixels","width":800,"height":600,"mimeType":"image/jpeg"}}' })).toBe(true);
+    expect(toolHasDisplayableDetails({ ...tool, arguments: '{"action":"observe"}', result: '{"ok":true,"value":{"text":"计数：1","elements":[],"coordinateSpace":"screenshot_css_pixels","width":800,"height":600,"mimeType":"image/jpeg"}}' })).toBe(true);
+  });
+  it.each([
+    ["list", "查看网页标签列表"], ["back", "后退网页"], ["forward", "前进网页"],
+    ["reload", "刷新网页"], ["stop", "停止网页加载"], ["move", "移动页面指针"],
+    ["mouse_down", "按下页面鼠标"], ["mouse_up", "松开页面鼠标"],
+    ["drag", "拖动页面元素"], ["type", "向页面输入文字"],
+  ])("describes browser action %s while its batch is running", (action, label) => {
+    expect(toolBatchCurrentToolLabel([{ ...tool, status: "running", arguments: JSON.stringify({ action }) }])).toBe(`正在执行：${label}`);
+  });
+  it("distinguishes a command still running from a completed empty tool result", () => {
+    expect(toolHasDisplayableDetails({ ...tool, name: "run_command", arguments: '{"command":"ping localhost"}', status: "running", result: null })).toBe(true);
+    expect(toolHasDisplayableDetails({ ...tool, name: "web_search", result: null })).toBe(false);
+    expect(toolHasDisplayableDetails({ ...tool, name: "web_search", result: '{"ok":true,"value":{"results":[]}}' })).toBe(true);
+  });
+});
 
 describe("model activity preview", () => {
   it("removes emphasis markers and separates adjacent reasoning summaries", () => {
@@ -261,6 +299,49 @@ describe("initial conversation model selection", () => {
 });
 
 describe("reasoning strength color progression", () => {
+  const ultra = { kind: "custom_effort", value: "ultra" } as const;
+  it.each([
+    ["gpt-5.6-sol", ultra, true],
+    ["gpt-6.1-sol", ultra, true],
+    ["gpt-6-astra", ultra, true],
+    ["openai/GPT-6-SOL-2026-10-15", ultra, true],
+    ["gpt-6-luna", ultra, false],
+    ["gpt-5.6-luna", ultra, false],
+    ["gpt-5.6-terra", ultra, false],
+    ["anthropic/claude-opus-5-5", { kind: "effort", value: "max" }, true],
+    ["claude-fable-5-1", { kind: "effort", value: "max" }, true],
+    ["claude-sonnet-5-5", { kind: "effort", value: "max" }, false],
+    ["claude-haiku-5-5", { kind: "effort", value: "max" }, false],
+    ["claude-opus-5-5", { kind: "effort", value: "high" }, false],
+    ["gemini-3.1-pro-preview", { kind: "effort", value: "high" }, true],
+    ["gemini-4-argon", { kind: "effort", value: "high" }, true],
+    ["gemini-2.5-pro", { kind: "token_budget", value: 32768 }, true],
+    ["gemini-2.5-pro", { kind: "token_budget", value: 8192 }, false],
+    ["gemini-3.8-flash", { kind: "effort", value: "high" }, false],
+    ["deepseek-v4-pro", { kind: "effort", value: "max" }, true],
+    ["deepseek-flash", { kind: "effort", value: "max" }, false],
+    ["kimi-k3", { kind: "effort", value: "max" }, true],
+    ["kimi-k3", { kind: "effort", value: "low" }, false],
+    ["GLM-5.3", { kind: "effort", value: "max" }, true],
+    ["GLM-5.3-Flash", { kind: "effort", value: "max" }, false],
+    ["grok-4.7", { kind: "effort", value: "xhigh" }, true],
+    ["grok-4.7", { kind: "effort", value: "high" }, false],
+    ["qwen3.8-max", { kind: "custom_effort", value: "max" }, true],
+    ["qwen3.8-flash", { kind: "custom_effort", value: "max" }, false],
+    ["MiniMax-M3", { kind: "custom_effort", value: "max" }, true],
+    ["MiniMax-M3.1-Flash-Preview", { kind: "effort", value: "max" }, false],
+    ["other-sol", ultra, false],
+    [null, ultra, false],
+    ["gpt-6-sol", undefined, false],
+    ["gpt-6-sol", { ...ultra, enabled: false }, false],
+    ["gpt-6-sol", { kind: "effort", value: "high" }, false],
+    ["gpt-6-sol", { kind: "effort", value: "max" }, false],
+    ["gpt-6-sol", { kind: "effort", value: "high", displayName: "Ultra" }, false],
+    ["gpt-6-sol", { kind: "token_budget", value: 8192, displayName: "Ultra" }, false],
+  ] as const)("shows the energy effect only at each flagship model's highest level: %s / %j", (modelId, option, expected) => {
+    expect(shouldShowFlagshipReasoningEnergy(modelId, option)).toBe(expected);
+  });
+
   it("moves through blue, light blue, blue-violet, and deep purple stops", () => {
     expect(reasoningEndpointColor(0)).toBe("var(--reasoning-blue)");
     expect(reasoningEndpointColor(34)).toBe("var(--reasoning-light-blue)");
@@ -345,6 +426,13 @@ function subagentTaskResult(): ConversationAgentMessageItem {
 }
 
 describe("run activity projection", () => {
+  it("keeps the task list card without repeating create, update, and close tools", () => {
+    const taskTools = ["create_task_list", "update_task_list", "close_task_list"].map((name) => tool(name));
+    const visible = tool("read_file");
+    expect(groupToolBatches([...taskTools, visible])).toEqual([visible]);
+    const projected = groupRunActivities([...taskTools, visible, assistantMessage("answer", "完成")]);
+    expect(projected[0]).toMatchObject({ kind: "run_activity", items: [visible] });
+  });
   it("hides legacy Subagent messages and removes their receipt divider before grouping", () => {
     const legacyNotification = {
       ...subagentTaskResult(),
@@ -661,14 +749,14 @@ describe("run activity projection", () => {
     });
   });
 
-  it("hides legacy GPT-5.6 reasoning summaries from completed work processes", () => {
+  it("hides legacy GPT reasoning summaries from completed work processes", () => {
     const summary = assistantMessage("assistant-summary", "", {
-      modelId: "gpt-5.6-terra",
+      modelId: "gpt-6.1-sol",
       reasoningContent: "Preparing subagent to ping Alibaba site",
     });
     const finalAnswer = assistantMessage("assistant-final", "任务完成。", {
       durationMs: 10_000,
-      modelId: "gpt-5.6-terra",
+      modelId: "gpt-6.1-sol",
     });
 
     const projected = groupRunActivities([summary, tool("spawn_subagent"), finalAnswer]);
@@ -679,10 +767,10 @@ describe("run activity projection", () => {
     expect(projected[1]).toMatchObject({ content: "任务完成。", kind: "message" });
   });
 
-  it("hides a legacy GPT-5.6 summary even when the run used no tools", () => {
+  it("hides a legacy GPT summary even when the run used no tools", () => {
     const finalAnswer = assistantMessage("assistant-final", "直接回答。", {
       durationMs: 4_000,
-      modelId: "gpt-5.6-terra",
+      modelId: "gpt-6.1-sol",
       reasoningContent: "Drafting concise response",
     });
 
@@ -1322,6 +1410,8 @@ describe("tool batch summary", () => {
     expect(latestActiveTool([tool("write_file"), running, approval])?.id).toBe(approval.id);
     expect(toolBatchCurrentToolLabel([tool("write_file"), running, approval]))
       .toBe("等待审批：读取 README.md");
+    expect(toolBatchCurrentToolLabel([{ ...tool("write_file", { arguments: '{"path":"pages/index.html"}' }), status: "running" }]))
+      .toBe("正在执行：创建文件 pages/index.html");
     expect(toolBatchCurrentToolLabel([tool("write_file"), tool("run_command")])).toBeNull();
   });
 });

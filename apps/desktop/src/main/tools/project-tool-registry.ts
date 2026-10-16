@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
-import { backgroundCommandSchema, type BackgroundCommand } from "@agent/protocol";
+import { backgroundCommandSchema, type BackgroundCommand, type BackgroundCommandOutput } from "@agent/protocol";
 import { sanitizeSensitiveText } from "../errors/agent-error.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { TextDecoder } from "node:util";
+import { TextDecoder, stripVTControlCharacters } from "node:util";
 import {
   APPLICATION_DISPLAY_NAME,
   DEFAULT_TERMINAL_CONFIGURATION,
@@ -31,6 +31,7 @@ import { resolveTerminalExecutable } from "./terminal-executable-resolver.js";
 import { findFilesWithRipgrep, searchTextWithRipgrep } from "./ripgrep-search.js";
 import { readTextLines } from "./read-text-lines.js";
 import type { ToolExecutionPolicy } from "./tool-execution-policy.js";
+import { terminateProcessTree } from "./terminate-process-tree.js";
 
 const MAX_READ_FILE_BYTES = 250_000;
 // A full replacement can contain both the old and new text in the persisted diff.
@@ -47,7 +48,7 @@ const MAX_SERVICE_NAME_LENGTH = 120;
 const PARALLEL_READ_TOOL_NAMES = new Set([
   "list_project_operations",
   "list_background_commands",
-  "list_directory",
+  "read_command_output",
   "read_file",
   "view_image",
   "search_text",
@@ -56,6 +57,7 @@ const PARALLEL_READ_TOOL_NAMES = new Set([
 
 const COMMAND_TOOL_NAMES = new Set([
   "list_background_commands",
+  "read_command_output",
   "run_command",
   "wait_for_commands",
   "stop_command",
@@ -91,13 +93,6 @@ type TerminalLaunch = {
 const DEFAULT_TERMINAL_CONFIGURATION_PROVIDER: TerminalConfigurationProvider = {
   getConfiguration: () => structuredClone(DEFAULT_TERMINAL_CONFIGURATION),
 };
-
-const listDirectoryArgumentsSchema = z
-  .object({
-    path: relativeProjectPathSchema.default("")
-      .describe("Project-relative POSIX directory path. Use an empty string for the root."),
-  })
-  .strict();
 
 const readFileArgumentsSchema = z
   .object({
@@ -224,20 +219,30 @@ const runCommandArgumentsSchema = z
   .object({
     command: z.string().trim().min(1).max(MAX_COMMAND_LENGTH)
       .describe("One non-interactive command for the configured project shell."),
+    description: z.string().trim().max(200).optional()
+      .describe("Recommended short user-facing purpose in the response language: action + actual target + important conditions. Examples: ping -n 4 www.baidu.com => 'Ping Baidu to check network connectivity and latency'; mvn -pl order-service -am package -DskipTests => 'Package order-service with Maven (skip tests)'; java -jar target/order-service.jar with mode=service => 'Start order-service in the background'. Use targets from this task; describe intent, not unverified success. Optional; omission or an empty value uses the command as the display title."),
     mode: z.enum(["batch", "service"]).default("batch")
-      .describe("batch waits for a finite command such as a build or test to exit; service returns after its startup observation window and keeps the process running."),
+      .describe("batch is a finite command such as a build or test; service is intentionally persistent. Both may return while running after yieldTimeMs."),
     parallel: z.boolean().default(true)
       .describe("Run alongside other independent commands from the same model turn by default; set false when this command depends on another command or shared mutable state."),
-    timeoutMs: z.number().int().min(1_000).max(MAX_COMMAND_TIMEOUT_MS).optional()
-      .describe("Optional execution limit in milliseconds. batch defaults to 30 minutes; service has no automatic timeout when omitted."),
+    timeoutMs: z.number().int().min(1_000).max(MAX_COMMAND_TIMEOUT_MS).nullable().optional()
+      .describe("Execution safety limit in milliseconds, not the requested task duration. Omit for batch's 30-minute default or service's unlimited lifetime; null explicitly disables the limit for long builds. A finite command must still exit by itself."),
     serviceName: z.string().trim().min(1).max(MAX_SERVICE_NAME_LENGTH).optional()
       .describe("Human-readable name for a service command, such as Vite development server."),
     yieldTimeMs: z.number().int().min(0).max(MAX_COMMAND_YIELD_MS).default(10_000)
-      .describe("For service mode only, how long to stream startup output before returning its commandId."),
+      .describe("Observation window for either mode (0-30000 ms). Return final output if the process exits sooner; otherwise return running with commandId. This never limits the process lifetime."),
   })
   .strict();
 
 const listBackgroundCommandsArgumentsSchema = z.object({}).strict();
+
+const readCommandOutputArgumentsSchema = z.object({
+  commandId: z.string().uuid().describe("Command UUID returned by run_command or list_background_commands in this conversation."),
+  stdoutOffset: z.number().int().min(0).default(0).describe("Character offset from nextStdoutOffset in the previous read; omit to read from the beginning of retained stdout."),
+  stderrOffset: z.number().int().min(0).default(0).describe("Character offset from nextStderrOffset in the previous read; omit to read from the beginning of retained stderr."),
+  maxChars: z.number().int().min(1).max(32_000).default(12_000).describe("Maximum characters returned per output stream. Retained logs are bounded; truncated reports the retention limit."),
+  yieldTimeMs: z.number().int().min(0).max(MAX_COMMAND_YIELD_MS).default(10_000).describe("If still running, observe for up to this many milliseconds or until exit. Use 0 for an immediate snapshot. Does not stop the command."),
+}).strict();
 
 const waitForCommandsArgumentsSchema = z.object({
   commandIds: z.array(z.string().uuid()).min(1).max(20)
@@ -264,6 +269,7 @@ export type ToolExecutionResult = {
   content: string;
   isError: boolean;
   modelAttachments?: ModelMessageAttachment[];
+  commandCompletion?: Promise<ToolExecutionResult>;
   status?: "rejected";
 };
 
@@ -277,6 +283,7 @@ export type PreparedFileChange = {
 
 export type PreparedCommand = {
   command: string;
+  description?: string | undefined;
   mode: "batch" | "service";
   parallel: boolean;
   serviceName?: string | undefined;
@@ -311,6 +318,8 @@ type ProjectOperationScope =
 type CommandSessionStatus = "running" | "completed" | "failed" | "cancelled";
 
 export type CommandOutputEvent = {
+  startedAt: string;
+  completedAt: string | null;
   commandId: string;
   delta: string;
   done: boolean;
@@ -343,6 +352,7 @@ type CommandSession = {
   stdoutByteLength: number;
   terminal: TerminalLaunch;
   terminate: (cancelled: boolean) => void;
+  termination: Promise<void> | null;
   timeoutMs: number | null;
   timedOut: boolean;
   truncated: boolean;
@@ -526,26 +536,19 @@ export class ProjectToolRegistry {
       },
       {
         description:
-          "List long-running background services started by run_command in this conversation and still active. Use this when a commandId is no longer available in the recent context. Returns each service name, commandId, launch command, working directory, start time, timeout and terminal without command output.",
+          "List still-running finite commands and background services started by run_command in this conversation. Recover commandIds missing from recent context. Returns metadata without logs; use read_command_output for bounded logs and final status.",
         name: "list_background_commands",
         parameters: modelToolParameters(listBackgroundCommandsArgumentsSchema),
       },
       {
-        description:
-          "Wait for one or more background commands returned by run_command. waitFor=any returns when one finishes; waitFor=all waits for every command. timeoutMs only bounds this wait and does not stop commands.",
-        name: "wait_for_commands",
-        parameters: modelToolParameters(waitForCommandsArgumentsSchema),
+        description: "Read bounded incremental stdout/stderr and current or final status of an existing command in this conversation. Reuse its commandId; never rerun the command just to inspect progress. Pass nextStdoutOffset and nextStderrOffset from the previous read to avoid duplicating logs. A running result is not success: before dependent work or reporting completion, confirm completedAt and exitCode. Logs update the original command card; this read does not launch a process. Prefer useful independent work between reads over repeated immediate polling.",
+        name: "read_command_output",
+        parameters: modelToolParameters(readCommandOutputArgumentsSchema),
       },
       {
-        description: "Stop one running background command by the commandId returned from run_command. Returns a compact status receipt without command output; completedAt=null means process exit is not yet confirmed. Only call wait_for_commands separately if output is needed. If the ID is no longer in recent context, call list_background_commands first instead of guessing or reusing an old ID.",
+        description: "Stop one running background command by the commandId returned from run_command. Returns a compact status receipt without command output; completedAt=null means process exit is not yet confirmed. If the ID is no longer in recent context, call list_background_commands first instead of guessing or reusing an old ID.",
         name: "stop_command",
         parameters: modelToolParameters(stopCommandArgumentsSchema),
-      },
-      {
-        description:
-          "List one level of files and directories inside the current authorized workspace. Paths are workspace-relative POSIX paths.",
-        name: "list_directory",
-        parameters: modelToolParameters(listDirectoryArgumentsSchema)
       },
       {
         description:
@@ -597,7 +600,7 @@ export class ProjectToolRegistry {
       },
       {
         description:
-          `Run one non-interactive ${commandEnvironment} command. This is the default choice for ordinary commands and does not open a visible terminal tab. Use the default mode=batch for every finite command, including long builds, checks, tests, packaging, and migrations: batch streams progress but does not return to the model until the process really exits, and it defaults to a 30-minute execution limit. Use mode=service only for a process intentionally expected to stay alive, such as a development server or watcher: startup output streams in the same tool item, then the tool returns a commandId after yieldTimeMs while the service continues without an automatic timeout unless timeoutMs is explicitly provided. Give service mode a concise serviceName so list_background_commands can recover its ID later. Never use this tool for SSH, a REPL, password prompts, or any command requiring later input; use terminal_control for those interactive PTY sessions. Any nonzero final exit code marks the command failed even when stdout contains useful data, so keep expected-negative probes separate from unrelated checks and prefer search_text/find_files when no match is acceptable. Commands run in the current authorized workspace; conversations without a project use their own persistent ${APPLICATION_DISPLAY_NAME} workspace. The bundled rg command is always available. Independent commands returned in the same model turn run in parallel by default whenever the permission mode allows commands; set parallel=false when this command depends on another command or shared mutable state. In ask-before-changes mode each command still requires its own approval, and approved independent commands can overlap.`,
+          `Run one non-interactive ${commandEnvironment} command. This is the default choice for ordinary commands and does not open a visible terminal tab. Use the default mode=batch for every finite command, including long builds, checks, tests, packaging, and migrations: both modes stream progress and return final output if the process exits within yieldTimeMs (default 10 seconds), or return running with commandId while execution continues. A running receipt is not completion: do independent work, then use read_command_output with the same commandId and incremental offsets before dependent steps or final claims. Batch defaults to a 30-minute execution limit; set timeoutMs=null for a build known to need longer. When the user requests a fixed duration, make the command exit normally after that duration (bounded count or deadline); do not use an infinite command plus the tool timeout as a timer. Use mode=service only for a process intentionally expected to stay alive, such as a development server or watcher: output stays in the original command card and the service continues without an automatic timeout unless timeoutMs is explicitly provided. Give service mode a concise serviceName so list_background_commands can recover its ID later. Never use this tool for SSH, a REPL, password prompts, or any command requiring later input; use terminal_control for those interactive PTY sessions. Any nonzero final exit code marks the command failed even when stdout contains useful data, so keep expected-negative probes separate from unrelated checks and prefer search_text/find_files when no match is acceptable. Commands run in the current authorized workspace; conversations without a project use their own persistent ${APPLICATION_DISPLAY_NAME} workspace. The bundled rg command is always available. Independent commands returned in the same model turn run in parallel by default whenever the permission mode allows commands; set parallel=false when this command depends on another command or shared mutable state. In ask-before-changes mode each command still requires its own approval, and approved independent commands can overlap.`,
         name: "run_command",
         parameters: modelToolParameters(runCommandArgumentsSchema)
       }
@@ -690,18 +693,13 @@ export class ProjectToolRegistry {
         const input = waitForCommandsArgumentsSchema.parse(parsedArguments);
         return await this.waitForCommands(input, projectId, owner.conversationId, signal);
       }
+      if (name === "read_command_output") {
+        const input = readCommandOutputArgumentsSchema.parse(parsedArguments);
+        return await this.readCommandOutput(input, projectId, owner.conversationId, signal);
+      }
       if (name === "stop_command") {
         const input = stopCommandArgumentsSchema.parse(parsedArguments);
         return this.stopCommand(input.commandId, projectId, owner.conversationId);
-      }
-      if (name === "list_directory") {
-        if (projectId === undefined) throw new Error("A workspace is required for directory inspection.");
-        const input = listDirectoryArgumentsSchema.parse(parsedArguments);
-        const listing = await this.projects.listEntries({
-          directoryPath: input.path,
-          projectId
-        });
-        return this.success(listing);
       }
       if (name === "read_file") {
         if (projectId === undefined) throw new Error("A workspace is required for file inspection.");
@@ -1054,8 +1052,13 @@ export class ProjectToolRegistry {
   ): Promise<ToolExecutionResult> {
     const configuration = this.getCommandConfiguration();
     const terminal = this.createTerminalLaunch(configuration, command.command);
-    let session: CommandSession | undefined;
     try {
+      let resolveStarted!: (session: CommandSession) => void;
+      let rejectStarted!: (error: unknown) => void;
+      const started = new Promise<CommandSession>((resolve, reject) => {
+        resolveStarted = resolve;
+        rejectStarted = reject;
+      });
       const operation = this.runCommandMutation(
         projectId,
         owner.conversationId,
@@ -1067,7 +1070,8 @@ export class ProjectToolRegistry {
             projectId,
             owner.conversationId,
           );
-          session = this.startCommand(
+          throwIfAborted(signal);
+          const session = this.startCommand(
             commandId,
             command,
             projectId,
@@ -1079,34 +1083,22 @@ export class ProjectToolRegistry {
             onOutput,
           );
           this.commandSessions.set(commandId, session);
+          resolveStarted(session);
           if (command.mode === "batch") await session.completion;
           return session;
         },
       );
-      if (command.mode === "batch") {
-        return this.commandExecutionResult(await operation);
+      // Keep the batch operation/lock alive until process exit, even after
+      // returning control to the model. Handle startup rejection separately.
+      void operation.then(resolveStarted, rejectStarted);
+      const session = await started;
+      if (command.yieldTimeMs > 0 && session.status === "running") {
+        await waitForBoundedCompletion(session.completion, command.yieldTimeMs, signal);
       }
-      const settled = operation.then(
-        (value) => ({ kind: "settled" as const, value }),
-        (error: unknown) => ({ error, kind: "failed" as const }),
-      );
-      const outcome = command.yieldTimeMs === 0
-        ? await Promise.race([
-            settled,
-            Promise.resolve({ kind: "yielded" as const }),
-          ])
-        : await Promise.race([
-            settled,
-            waitForDelay(command.yieldTimeMs).then(() => ({ kind: "yielded" as const })),
-          ]);
-      if (outcome.kind === "failed") throw outcome.error;
-      if (outcome.kind === "settled") return this.commandExecutionResult(outcome.value);
-      if (session === undefined) {
-        const started = await settled;
-        if (started.kind === "failed") throw started.error;
-        return this.commandExecutionResult(started.value);
-      }
-      return this.commandExecutionResult(session);
+      const result = this.commandExecutionResult(session);
+      return session.status === "running"
+        ? { ...result, commandCompletion: session.completion.then(() => this.commandExecutionResult(session)) }
+        : result;
     } catch (error) {
       if (error instanceof ProjectOperationConflictError) {
         return this.operationConflict(error.conflict, "command");
@@ -1259,7 +1251,7 @@ export class ProjectToolRegistry {
     const command: PreparedCommand = {
       ...input,
       mode,
-      timeoutMs: input.timeoutMs ?? (mode === "batch" ? MAX_COMMAND_TIMEOUT_MS : null),
+      timeoutMs: input.timeoutMs === undefined ? (mode === "batch" ? MAX_COMMAND_TIMEOUT_MS : null) : input.timeoutMs,
     };
     return {
       command,
@@ -1376,6 +1368,7 @@ export class ProjectToolRegistry {
       terminal.args,
       {
         cwd: workingDirectory,
+        detached: process.platform !== "win32",
         env: commandEnvironmentWithBundledRipgrep(process.env),
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
@@ -1401,17 +1394,14 @@ export class ProjectToolRegistry {
       stdoutChunks: [],
       terminal,
       terminate: (cancelled) => {
-        if (session.status !== "running" || child.pid === undefined) return;
+        if (session.status !== "running" || child.pid === undefined || session.termination !== null) return;
         if (cancelled) session.status = "cancelled";
-        if (process.platform === "win32") {
-          spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
-            stdio: "ignore",
-            windowsHide: true,
-          }).once("error", () => child.kill());
-          return;
-        }
-        child.kill("SIGTERM");
+        session.termination = terminateProcessTree(child.pid);
+        // Still close the Shell handle on a failed tree stop; disposal awaits the
+        // original promise so an incomplete cleanup remains visible to its owner.
+        void session.termination.catch(() => child.kill());
       },
+      termination: null,
       timeoutMs: command.timeoutMs,
       timedOut: false,
       truncated: false,
@@ -1422,16 +1412,20 @@ export class ProjectToolRegistry {
       stdout: new StreamingTerminalOutputDecoder(outputEncoding),
     } satisfies Record<"stderr" | "stdout", StreamingTerminalOutputDecoder>;
     let outputFinished = false;
+    let outputStarted = false;
     const emitOutput = (
       stream: "stderr" | "stdout",
       delta: string,
       done: boolean,
       status: CommandSessionStatus,
     ): void => {
-      if (onOutput === undefined || (!done && delta.length === 0)) return;
+      if (onOutput === undefined || (!done && delta.length === 0 && outputStarted)) return;
+      outputStarted = true;
       // Output is best-effort and must never interrupt the child process.
       try {
         onOutput({
+          startedAt: session.startedAt,
+          completedAt: session.completedAt,
           commandId,
           delta,
           done,
@@ -1506,6 +1500,7 @@ export class ProjectToolRegistry {
       );
     });
     if (signal.aborted) session.terminate(true);
+    emitOutput("stdout", "", false, session.status);
     return session;
   }
 
@@ -1538,6 +1533,15 @@ export class ProjectToolRegistry {
     if (session === undefined || !conversationIds.includes(session.conversationId)) throw new Error("找不到当前对话的后台程序。");
     if (session.status === "running") { session.terminate(true); await session.completion; }
     return this.backgroundCommandSummary(session);
+  }
+  public readConversationCommand(commandId: string, conversationIds: readonly string[], maxChars = 24000): BackgroundCommandOutput {
+    const session = this.commandSessions.get(commandId);
+    if (session === undefined || !conversationIds.includes(session.conversationId)) throw new Error("找不到当前对话的后台程序。");
+    const stdout = stripVTControlCharacters(sanitizeSensitiveText(decodeTerminalOutput(Buffer.concat(session.stdoutChunks), session.outputEncoding)));
+    const stderr = stripVTControlCharacters(sanitizeSensitiveText(decodeTerminalOutput(Buffer.concat(session.stderrChunks), session.outputEncoding)));
+    return { command: this.backgroundCommandSummary(session), stdout: stdout.slice(-maxChars), stderr: stderr.slice(-maxChars),
+      error: session.error === null ? null : sanitizeSensitiveText(session.error), timedOut: session.timedOut,
+      truncated: session.truncated || stdout.length > maxChars || stderr.length > maxChars };
   }
   private backgroundCommandSummary(session: CommandSession): BackgroundCommand {
     return backgroundCommandSchema.parse({ commandId: session.commandId, conversationId: session.conversationId,
@@ -1572,6 +1576,8 @@ export class ProjectToolRegistry {
   }
 
   private commandSessionSnapshot(session: CommandSession): unknown {
+    const stdout = decodeTerminalOutput(Buffer.concat(session.stdoutChunks), session.outputEncoding);
+    const stderr = decodeTerminalOutput(Buffer.concat(session.stderrChunks), session.outputEncoding);
     return {
       command: session.command,
       commandId: session.commandId,
@@ -1579,11 +1585,13 @@ export class ProjectToolRegistry {
       error: session.error,
       exitCode: session.exitCode,
       mode: session.mode,
+      nextStdoutOffset: stdout.length,
+      nextStderrOffset: stderr.length,
       serviceName: session.serviceName,
       startedAt: session.startedAt,
       status: session.status,
-      stderr: decodeTerminalOutput(Buffer.concat(session.stderrChunks), session.outputEncoding),
-      stdout: decodeTerminalOutput(Buffer.concat(session.stdoutChunks), session.outputEncoding),
+      stderr,
+      stdout,
       terminal: {
         displayName: session.terminal.displayName,
         outputEncoding: session.outputEncoding,
@@ -1594,6 +1602,44 @@ export class ProjectToolRegistry {
       truncated: session.truncated,
       workingDirectory: session.workingDirectory,
     };
+  }
+
+  private async readCommandOutput(
+    input: z.infer<typeof readCommandOutputArgumentsSchema>,
+    projectId: string | undefined,
+    conversationId: string,
+    signal: AbortSignal,
+  ): Promise<ToolExecutionResult> {
+    const session = this.commandSessions.get(input.commandId);
+    if (session === undefined || session.projectId !== projectId || session.conversationId !== conversationId) {
+      throw new Error("Command session was not found in this conversation.");
+    }
+    if (session.status === "running" && input.yieldTimeMs > 0) {
+      await waitForBoundedCompletion(session.completion, input.yieldTimeMs, signal);
+    }
+    throwIfAborted(signal);
+    const stdout = decodeTerminalOutput(Buffer.concat(session.stdoutChunks), session.outputEncoding);
+    const stderr = decodeTerminalOutput(Buffer.concat(session.stderrChunks), session.outputEncoding);
+    const stdoutStart = Math.min(input.stdoutOffset, stdout.length);
+    const stderrStart = Math.min(input.stderrOffset, stderr.length);
+    const nextStdoutOffset = Math.min(stdoutStart + input.maxChars, stdout.length);
+    const nextStderrOffset = Math.min(stderrStart + input.maxChars, stderr.length);
+    return this.success({
+      commandId: session.commandId,
+      completedAt: session.completedAt,
+      error: session.error,
+      exitCode: session.exitCode,
+      hasMoreOutput: nextStdoutOffset < stdout.length || nextStderrOffset < stderr.length,
+      mode: session.mode,
+      nextStdoutOffset,
+      nextStderrOffset,
+      startedAt: session.startedAt,
+      status: session.status,
+      stdout: stdout.slice(stdoutStart, nextStdoutOffset),
+      stderr: stderr.slice(stderrStart, nextStderrOffset),
+      timedOut: session.timedOut,
+      truncated: session.truncated,
+    });
   }
 
   private async waitForCommands(
@@ -1647,11 +1693,19 @@ export class ProjectToolRegistry {
     } });
   }
 
-  public dispose(): void {
-    for (const session of this.commandSessions.values()) {
+  public async dispose(): Promise<void> {
+    const sessions = [...this.commandSessions.values()];
+    for (const session of sessions) {
       session.terminate(true);
     }
+    const results = await Promise.allSettled(sessions.map(async (session) => {
+      await session.completion;
+      await session.termination;
+    }));
     this.commandSessions.clear();
+    const errors: unknown[] = [];
+    for (const result of results) { if (result.status === "rejected") errors.push(result.reason); }
+    if (errors.length > 0) throw new AggregateError(errors, "Command process cleanup failed.");
   }
 
   private async readEditableFile(
@@ -1941,10 +1995,6 @@ export class ProjectToolRegistry {
   private success(value: unknown): ToolExecutionResult {
     return { kind: "completed", content: JSON.stringify({ ok: true, value }), isError: false };
   }
-}
-
-function waitForDelay(delayMs: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 export function commandEnvironmentWithBundledRipgrep(

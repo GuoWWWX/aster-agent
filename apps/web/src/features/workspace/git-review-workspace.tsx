@@ -1,3 +1,4 @@
+import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -9,7 +10,6 @@ import {
   GitBranch,
   GitBranchPlus,
   GitCommitHorizontal,
-  LoaderCircle,
   Minus,
   Plus,
   RefreshCw,
@@ -824,7 +824,7 @@ export function GitReviewWorkspace({
           onClick={() => void refresh()}
         >
           {isLoading || isBusy
-            ? <LoaderCircle aria-hidden="true" className="animate-spin" size={15} />
+            ? <Spinner aria-hidden="true" size={15} />
             : <RefreshCw aria-hidden="true" size={15} />}
         </IconButton>
         <Popover open={active && toolbarMenuOpen} onOpenChange={setToolbarMenuOpen}>
@@ -905,7 +905,7 @@ export function GitReviewWorkspace({
             <div className="git-review-change-pane min-h-0 flex-1 overflow-auto p-1.5">
             {snapshot === null || snapshot.changes.length === 0 ? (
               <div className="grid h-full place-items-center px-4 text-center text-xs text-[var(--app-muted-foreground)]">
-                {isLoading ? "正在读取变更…" : "工作区没有未提交变更"}
+                {isLoading ? <LoadingState label="正在读取变更…" className="w-full" /> : "工作区没有未提交变更"}
               </div>
             ) : (
               <div>
@@ -1168,7 +1168,7 @@ function DiffViewer({
     return <></>;
   }
   if (diff === null) {
-    return <div className={cn(viewerClassName, "grid h-20 place-items-center")}><LoaderCircle aria-hidden="true" className="animate-spin text-[var(--app-muted-foreground)]" size={17} /></div>;
+    return <LoadingState label="正在读取差异…" compact className={cn(viewerClassName, "h-20")} />;
   }
   if (diff.content.length === 0) {
     return <div className={cn(viewerClassName, "grid h-20 place-items-center text-xs text-[var(--app-muted-foreground)]")}>该文件没有可显示的文本差异</div>;

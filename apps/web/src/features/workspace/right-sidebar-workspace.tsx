@@ -1,3 +1,4 @@
+import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import {
   Check,
   ChevronRight,
@@ -5,7 +6,6 @@ import {
   Folder,
   FolderOpen,
   Globe2,
-  LoaderCircle,
   MessageSquarePlus,
   PanelRightClose,
   PanelRightOpen,
@@ -27,6 +27,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import { useNativeOverlayContainer } from "../../components/ui/native-overlay-provider.js";
 
 import type {
   ConfigurationWorkspaceFile,
@@ -76,6 +77,7 @@ import { ConversationWorkspace } from "../chat/workspace-content.js";
 import { AgentAvatar, SubagentAvatar } from "../team/agent-avatar.js";
 import { ConfigurationWorkspaceTreePanel } from "./configuration-workspace-tree-panel.js";
 import { getGitReviewCache } from "./git-review-cache.js";
+import { ConversationReviewWorkspace } from "./conversation-review-workspace.js";
 import { GitReviewWorkspace } from "./git-review-workspace.js";
 import {
   ManagedBrowserWorkspace,
@@ -84,6 +86,7 @@ import {
 import { ProjectTreePanel } from "../projects/project-tree-panel.js";
 import { ProjectImageViewer } from "./project-image-viewer.js";
 import { TerminalWorkspace } from "./terminal-workspace.js";
+import { BackgroundCommandWorkspace } from "./background-command-workspace.js";
 import {
   retainedWorkspaceCacheIds,
   WORKSPACE_CACHE_SWEEP_INTERVAL_MS,
@@ -142,12 +145,16 @@ type TerminalTab = ToolTabBase & {
 };
 
 type ManagedBrowserTab = ToolTabBase & {
+  background?: boolean;
+  conversationId: string | null;
   kind: "managed-browser";
   session: ManagedBrowserSession | null;
   url: string;
 };
 
-type ToolTab = GitReviewTab | TerminalTab | ManagedBrowserTab;
+type BackgroundCommandTab = ToolTabBase & { kind: "background-command"; conversationId: string; commandId: string };
+type ConversationReviewTab = ToolTabBase & { kind: "conversation-review"; conversationId: string; runId: string | null };
+type ToolTab = GitReviewTab | TerminalTab | ManagedBrowserTab | BackgroundCommandTab | ConversationReviewTab;
 
 type SidebarTab =
   | FileTab
@@ -603,6 +610,7 @@ export function RightSidebarWorkspace({
   teamMemberOpenRequest,
   onLocateProject,
   onLocateSession,
+  onLocateConversationItem,
   onSessionViewed,
   onSessionUpdated,
   tree,
@@ -615,15 +623,21 @@ export function RightSidebarWorkspace({
   teamMemberOpenRequest: TeamMemberOpenRequest | null;
   onLocateProject: (projectId: string) => void;
   onLocateSession: (sessionId: string) => void;
+  onLocateConversationItem?: (conversationId: string, itemId: string) => void;
   onSessionViewed: (sessionId: string) => void;
   onSessionUpdated: (conversation: ConversationSummary) => void;
   tree: ProjectTreeController;
 }): ReactElement {
   const gitReviewCache = getGitReviewCache(agentClient);
+  const nativeOverlayContainer = useNativeOverlayContainer();
   const isDark = useWorkbenchUiStore((state) => state.themeMode === "dark");
   const agentProfiles = useAgentDirectoryStore((state) => state.agents);
   const teams = useAgentDirectoryStore((state) => state.teams);
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
+  const backgroundCommandViewRequest = useWorkbenchUiStore(state => state.backgroundCommandViewRequest);
+  const handledBackgroundCommandRequest = useRef<string | null>(null);
+  const conversationReviewViewRequest = useWorkbenchUiStore(state => state.conversationReviewViewRequest);
+  const handledConversationReviewRequest = useRef<string | null>(null);
   const activeSessionId = activeSession?.id ?? null;
   const sidebarVisible = useWorkbenchUiStore((state) => activeActivity === "settings"
     ? state.isSettingsFilePanelOpen
@@ -843,6 +857,8 @@ export function RightSidebarWorkspace({
   const openManagedBrowser = useCallback((
     requestedName?: string,
     session: ManagedBrowserSession | null = null,
+    background = false,
+    conversationId = activeSessionId,
   ): string | null => {
     if (!capabilities.managedBrowser) return null;
     const id = `managed-browser:${crypto.randomUUID()}`;
@@ -857,17 +873,22 @@ export function RightSidebarWorkspace({
     setToolTabs((current) => [...current, {
       id,
       kind: "managed-browser",
+      conversationId,
+      background,
       lastAccessedAt: now,
       name,
       session,
       url: session?.url ?? "",
     }]);
-    setActiveTabForCurrentSession(id);
-    setFilePanelOpen(true);
-    setIsFileBrowserOpen(false);
-    setMenuOpen(false);
+    if (!background) {
+      setActiveTabForCurrentSession(id);
+      setFilePanelOpen(true);
+      setIsFileBrowserOpen(false);
+      setMenuOpen(false);
+    }
     return name;
   }, [
+    activeSessionId,
     capabilities.managedBrowser,
     fileTabs,
     setActiveTabForCurrentSession,
@@ -1011,6 +1032,32 @@ export function RightSidebarWorkspace({
   ]);
 
   useEffect(() => {
+    const request = conversationReviewViewRequest;
+    if (request === null || handledConversationReviewRequest.current === request.requestId
+      || (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId))) return;
+    handledConversationReviewRequest.current = request.requestId;
+    const id = `conversation-review:${request.conversationId}:${request.runId ?? "all"}`;
+    setToolTabs(current => current.some(tab => tab.id === id)
+      ? current.map(tab => tab.id === id ? { ...tab, lastAccessedAt: Date.now() } : tab)
+      : [...current, { id, kind: "conversation-review", conversationId: request.conversationId,
+        runId: request.runId, name: "审阅", lastAccessedAt: Date.now() }]);
+    setActiveTabForCurrentSession(id); setFilePanelOpen(true); setIsFileBrowserOpen(false);
+  }, [activeSessionId, conversationReviewViewRequest, openChatIds, setActiveTabForCurrentSession, setFilePanelOpen]);
+
+  useEffect(() => {
+    const request = backgroundCommandViewRequest;
+    if (request === null || handledBackgroundCommandRequest.current === request.requestId
+      || (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId))) return;
+    handledBackgroundCommandRequest.current = request.requestId;
+    const id = `background-command:${request.commandId}`;
+    setToolTabs(current => current.some(tab => tab.id === id)
+      ? current.map(tab => tab.id === id ? { ...tab, lastAccessedAt: Date.now() } : tab)
+      : [...current, { id, kind: "background-command", conversationId: request.conversationId,
+        commandId: request.commandId, name: `运行：${request.name}`, lastAccessedAt: Date.now() }]);
+    setActiveTabForCurrentSession(id); setFilePanelOpen(true); setIsFileBrowserOpen(false);
+  }, [activeSessionId, backgroundCommandViewRequest, openChatIds, setActiveTabForCurrentSession, setFilePanelOpen]);
+
+  useEffect(() => {
     return agentClient.onWorkspaceTerminalTabOpenRequested((request) => {
       if (
         (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId))
@@ -1085,14 +1132,23 @@ export function RightSidebarWorkspace({
 
   useEffect(() => {
     return agentClient.onWorkspaceBrowserTabOpenRequested((request) => {
+      const conversation = request.conversationId === activeSessionId
+        ? activeSession
+        : sideSessions.find((session) => session.id === request.conversationId && openChatIds.has(session.id));
       if (
-        (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId))
-        || request.projectId !== activeProject?.id
+        (conversation != null && request.projectId !== (conversation.projectId ?? conversation.id))
+        || (request.background !== true && conversation == null)
         || !capabilities.managedBrowser
       ) {
         return;
       }
-      const resolvedName = openManagedBrowser(request.requestedName ?? undefined, request.session);
+      const existing = toolTabs.find((tab) => tab.kind === "managed-browser" && tab.session?.sessionId === request.session.sessionId);
+      if (existing !== undefined && request.background !== true) {
+        setActiveTabForCurrentSession(existing.id);
+        setFilePanelOpen(true);
+        setIsFileBrowserOpen(false);
+      }
+      const resolvedName = existing?.name ?? openManagedBrowser(request.requestedName ?? undefined, request.session, request.background === true, request.conversationId);
       if (resolvedName === null) return;
       void agentClient.confirmWorkspaceBrowserTabOpened({
         requestId: request.requestId,
@@ -1100,27 +1156,23 @@ export function RightSidebarWorkspace({
       }).catch(() => undefined);
     });
   }, [
-    activeProject?.id,
+    activeSession,
     activeSessionId,
     agentClient,
     capabilities.managedBrowser,
     fileTabs,
     openChatIds,
     openManagedBrowser,
+    setActiveTabForCurrentSession,
+    setFilePanelOpen,
     sideSessions,
     toolTabs,
   ]);
 
   useEffect(() => {
     return agentClient.onWorkspaceBrowserTabCloseRequested((request) => {
-      if (
-        (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId))
-        || activeProject === null
-      ) {
-        return;
-      }
       const closedTabIds = new Set(toolTabs
-        .filter((tab) => tab.kind === "managed-browser" && tab.session?.sessionId === request.sessionId)
+        .filter((tab) => tab.kind === "managed-browser" && tab.conversationId === request.conversationId && tab.session?.sessionId === request.sessionId)
         .map((tab) => tab.id));
       if (closedTabIds.size === 0) return;
       const openTabs = [
@@ -1144,7 +1196,6 @@ export function RightSidebarWorkspace({
       }
     });
   }, [
-    activeProject,
     activeSessionId,
     activeTabId,
     agentClient,
@@ -1805,6 +1856,8 @@ export function RightSidebarWorkspace({
       if (
         retainedToolTabIds.has(tab.id)
         || tab.kind === "git-review"
+        || tab.kind === "background-command"
+        || tab.kind === "conversation-review"
         || tab.session === null
         || releasingToolTabIdsRef.current.has(tab.id)
       ) {
@@ -2336,9 +2389,9 @@ export function RightSidebarWorkspace({
                       ) : (
                         <AgentAvatar avatar={tabAgent.avatar} size="compact" />
                       )
-                    ) : tab.kind === "git-review" ? (
+                    ) : (tab.kind === "git-review" || tab.kind === "conversation-review") ? (
                       <SquareCheckBig aria-hidden="true" size={14} />
-                    ) : tab.kind === "terminal" ? (
+                    ) : tab.kind === "terminal" || tab.kind === "background-command" ? (
                       <Terminal aria-hidden="true" size={14} />
                     ) : tab.kind === "managed-browser" ? (
                       <Globe2 aria-hidden="true" size={14} />
@@ -2352,6 +2405,7 @@ export function RightSidebarWorkspace({
                       />
                     )}
                     <span>{tab.name}</span>
+                    {tab.kind === "managed-browser" && tab.background === true ? <small className="shrink-0 text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">后台</small> : null}
                   </button>
                   <button
                     aria-label={`关闭 ${tab.name}`}
@@ -2432,7 +2486,7 @@ export function RightSidebarWorkspace({
                 onClick={() => void createSideChat()}
               >
                 {isCreatingChat ? (
-                  <LoaderCircle aria-hidden="true" className="right-sidebar-workspace__spin" size={15} />
+                  <Spinner aria-hidden="true" size={15} />
                 ) : (
                   <SquarePen aria-hidden="true" size={15} />
                 )}
@@ -2470,6 +2524,15 @@ export function RightSidebarWorkspace({
                         }
                       : null}
                   />
+                ) : tab.kind === "conversation-review" ? (
+                  <ConversationReviewWorkspace agentClient={agentClient} conversationId={tab.conversationId} runId={tab.runId}
+                    active={isActive && sidebarVisible && activeActivity === "conversations"}
+                    requestedFile={conversationReviewViewRequest?.conversationId === tab.conversationId
+                      && conversationReviewViewRequest.runId === tab.runId && conversationReviewViewRequest.path !== null
+                      ? { path: conversationReviewViewRequest.path, requestId: conversationReviewViewRequest.requestId } : null} />
+                ) : tab.kind === "background-command" ? (
+                  <BackgroundCommandWorkspace agentClient={agentClient} conversationId={tab.conversationId} commandId={tab.commandId}
+                    active={isActive && sidebarVisible && activeActivity === "conversations"} />
                 ) : tab.kind === "terminal" ? (
                   <TerminalWorkspace
                     active={isActive}
@@ -2485,7 +2548,8 @@ export function RightSidebarWorkspace({
                   />
                 ) : (
                   <ManagedBrowserWorkspace
-                    active={isActive}
+                    {...(tab.conversationId === null ? {} : { conversationId: tab.conversationId })}
+                    active={isActive && sidebarVisible && activeActivity === "conversations"}
                     agentClient={agentClient}
                     colorScheme={isDark ? "dark" : "light"}
                     initialUrl={tab.url}
@@ -2538,6 +2602,7 @@ export function RightSidebarWorkspace({
                     onLocateSession={() => {
                       if (activeSession !== null) onLocateSession(activeSession.id);
                     }}
+                    {...(onLocateConversationItem === undefined ? {} : { onLocateConversationItem })}
                      onOpenProjectFile={(path) => void openProjectFilePath(path)}
                     onSessionUpdated={updateSideSession}
                     onViewed={() => onSessionViewed(session.id)}
@@ -2703,6 +2768,8 @@ export function RightSidebarWorkspace({
               onToggleTree={() => setIsTreeCollapsed((current) => !current)}
             />
           ) : activeTab?.kind === "git-review"
+            || activeTab?.kind === "background-command"
+            || activeTab?.kind === "conversation-review"
             || activeTab?.kind === "terminal"
             || activeTab?.kind === "managed-browser" ? null : (
             <RightSidebarEmptyState
@@ -2774,6 +2841,7 @@ export function RightSidebarWorkspace({
           <div
             aria-hidden="true"
             className="right-sidebar-workspace__context-menu-backdrop"
+            data-native-view-overlay=""
             onMouseDown={() => setTabContextMenu(null)}
           />
           <div
@@ -2800,7 +2868,7 @@ export function RightSidebarWorkspace({
             </button>
           </div>
         </>,
-        document.body,
+        nativeOverlayContainer ?? document.body,
       ) : null}
     </WorkbenchPanel>
   );
@@ -3008,10 +3076,7 @@ function FilePreview({
         </div>
       </header>
       {state === undefined || state.isLoading ? (
-        <div className="right-sidebar-file__state" role="status">
-          <LoaderCircle aria-hidden="true" className="right-sidebar-workspace__spin" size={17} />
-          正在读取文件
-        </div>
+        <LoadingState label="正在读取文件" className="h-full flex-1" />
       ) : isImagePreview ? (
         state.error !== null || state.imageDataUrl === null ? (
           <div className="right-sidebar-file__state">
@@ -3254,7 +3319,7 @@ function ConfigurationFilePreview({
             onClick={onSave}
           >
             {state?.isSaving ? (
-              <LoaderCircle aria-hidden="true" className="right-sidebar-workspace__spin" size={14} />
+              <Spinner aria-hidden="true" size={14} />
             ) : (
               <Check aria-hidden="true" size={15} />
             )}
@@ -3274,10 +3339,7 @@ function ConfigurationFilePreview({
         </div>
       </header>
       {state === undefined || state.isLoading ? (
-        <div className="right-sidebar-file__state" role="status">
-          <LoaderCircle aria-hidden="true" className="right-sidebar-workspace__spin" size={17} />
-          正在读取文件
-        </div>
+        <LoadingState label="正在读取文件" className="h-full flex-1" />
       ) : state.error !== null ? (
         <div className="right-sidebar-file__state" role="alert">
           <p>{state.error}</p>

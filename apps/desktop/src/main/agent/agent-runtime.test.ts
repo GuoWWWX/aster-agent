@@ -3,10 +3,12 @@ import { writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import {
   DEFAULT_AGENT_DIRECTORY_CONFIGURATION,
   DEFAULT_APPLICATION_SETTINGS,
+  conversationAttachmentSchema,
 } from "@agent/protocol";
 import type {
   ConversationAgentMessageItem,
@@ -81,9 +83,9 @@ class FixtureModel implements ModelProviderAdapter {
         },
         toolCalls: [
           {
-            arguments: JSON.stringify({ path: "" }),
+            arguments: JSON.stringify({ pattern: "*" }),
             id: "call_directory",
-            name: "list_directory"
+            name: "find_files"
           }
         ]
       });
@@ -434,6 +436,8 @@ class ReusedToolCallIdFixtureModel implements ModelProviderAdapter {
 class UnknownToolFixtureModel implements ModelProviderAdapter {
   public readonly requests: CompleteTurnInput[] = [];
 
+  public constructor(private readonly toolName = "missing_tool") {}
+
   public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
     this.requests.push({ ...input, messages: [...input.messages] });
     if (this.requests.length === 1) {
@@ -443,7 +447,7 @@ class UnknownToolFixtureModel implements ModelProviderAdapter {
         toolCalls: [{
           arguments: "{}",
           id: "call_unknown_tool",
-          name: "missing_tool",
+          name: this.toolName,
         }],
       });
     }
@@ -822,6 +826,7 @@ class BrowserOpenFixtureModel implements ModelProviderAdapter {
 
 class BrowserScreenshotFixtureModel implements ModelProviderAdapter {
   public readonly requests: CompleteTurnInput[] = [];
+  public constructor(private readonly background = false) {}
 
   public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
     this.requests.push({ ...input, messages: structuredClone(input.messages) });
@@ -830,7 +835,7 @@ class BrowserScreenshotFixtureModel implements ModelProviderAdapter {
         content: "",
         finishReason: "tool_calls",
         toolCalls: [{
-          arguments: JSON.stringify({ action: "open", url: "https://example.test" }),
+          arguments: JSON.stringify({ action: "open", background: this.background, url: "https://example.test" }),
           id: "call_browser_visual_open",
           name: "browser_control",
         }],
@@ -842,7 +847,7 @@ class BrowserScreenshotFixtureModel implements ModelProviderAdapter {
         finishReason: "tool_calls",
         toolCalls: [{
           arguments: JSON.stringify({
-            action: "screenshot",
+            action: "observe",
             browserId: "00000000-0000-4000-8000-000000000003",
           }),
           id: "call_browser_screenshot",
@@ -872,9 +877,9 @@ class ExhaustToolBudgetFixtureModel implements ModelProviderAdapter {
       content: "",
       finishReason: "tool_calls",
       toolCalls: [{
-        arguments: JSON.stringify({ path: "" }),
+        arguments: JSON.stringify({ pattern: "*" }),
         id: `call_budget_directory_${this.requests.length}`,
-        name: "list_directory",
+        name: "find_files",
       }],
     });
   }
@@ -1231,14 +1236,14 @@ class DeferredToolBatchFixtureModel implements ModelProviderAdapter {
       finishReason: "tool_calls",
       toolCalls: [
         {
-          arguments: JSON.stringify({ path: "" }),
+          arguments: JSON.stringify({ pattern: "*" }),
           id: "call_directory_first",
-          name: "list_directory",
+          name: "find_files",
         },
         {
-          arguments: JSON.stringify({ path: "" }),
+          arguments: JSON.stringify({ pattern: "*" }),
           id: "call_directory_second",
-          name: "list_directory",
+          name: "find_files",
         },
       ],
     });
@@ -1723,6 +1728,50 @@ class ModelBackedContextCompactorFixture implements ModelProviderAdapter {
 }
 
 describe("AgentRuntime", () => {
+  it.each([{ temporary: false, blocked: false }, { temporary: true, blocked: false }, { temporary: false, blocked: true }]
+    .flatMap(value => [{ ...value, gallery: false }, { ...value, gallery: true }]))("persists present_html with workspace policy (temporary=$temporary, blocked=$blocked, gallery=$gallery)", async ({ temporary, blocked, gallery }) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-present-html-"));
+    temporaryDirectories.push(directory);
+    await writeFile(path.join(directory, "demo.html"), "<h1>交付</h1>");
+    const databasePath = path.join(directory, "state.sqlite");
+    const database = new AgentDatabase(databasePath);
+    const projects = new ProjectRegistry(database);
+    const project = temporary ? null : await projects.registerDirectory(directory);
+    const conversation = database.createConversation(project?.id ?? null);
+    if (temporary) await projects.mountConversationWorkspace(conversation.id, directory);
+    const requests: CompleteTurnInput[] = [];
+    const model: ModelProviderAdapter = { completeTurn(input) {
+      requests.push({ ...input, messages: [...input.messages] });
+      if (requests.length === 1) return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [
+        { id: "present-page", name: "present_html", arguments: JSON.stringify(gallery
+          ? { pages: [{ title: "文件版", kind: "file", path: "demo.html" }, { title: "片段版", kind: "code", html: "<div>备选</div>" }] }
+          : { path: "demo.html" }) },
+      ] });
+      input.onTextDelta("页面已交付");
+      return Promise.resolve({ content: "页面已交付", finishReason: "stop", toolCalls: [] });
+    } };
+    let settings = structuredClone(DEFAULT_APPLICATION_SETTINGS);
+    if (blocked) settings.permissionPolicies["workspace-read"] = "unavailable";
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({ apiKey: "secret", apiFormat: "openai-chat-completions",
+      baseUrl: "https://example.test/v1", modelId: "test-model", reasoningOptions: [] }) }, projects, new ProjectToolRegistry(projects), model,
+      undefined, undefined, null, null, null, null, null, undefined, { getConfiguration: () => settings, saveConfiguration: next => { settings = next; return settings; } });
+    await new Promise<void>(resolve => {
+      runtime.sendMessage({ conversationId: conversation.id, content: "把页面展示给我", permissionMode: "read_only" }, event => {
+        expect(event.type).not.toBe("tool.approval_requested");
+        if (event.type === "run.finished") resolve();
+      });
+    });
+    expect(requests[0]?.tools.some(tool => tool.name === "present_html")).toBe(true);
+    const entry = database.listTimeline(conversation.id).find(item => item.kind === "tool" && item.name === "present_html");
+    expect(entry).toMatchObject({ status: blocked ? "failed" : "completed", executionMode: "serial" });
+    const result = requests[1]?.messages.find(message => message.role === "tool" && message.toolCallId === "present-page")?.content;
+    if (blocked) expect(result).not.toContain('"presentation"');
+    else expect(result).toContain(gallery ? '"kind":"html_gallery"' : '"kind":"html"');
+    database.close();
+    const reopened = new AgentDatabase(databasePath);
+    expect(reopened.listTimeline(conversation.id).find(item => item.id === entry?.id)).toEqual(entry);
+    reopened.close();
+  });
   it("registers terminal_control for a project conversation and returns the resolved tab name", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-open-terminal-"));
     temporaryDirectories.push(root);
@@ -2046,6 +2095,103 @@ describe("AgentRuntime", () => {
       }),
     ]));
     database.close();
+  });
+
+  it("drains active Runs on window shutdown without starting queued messages", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const model = new ReplaceRunningMessageFixtureModel();
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({
+      apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+      modelId: "test-model", reasoningOptions: [],
+    }) }, projects, new ProjectToolRegistry(projects), model);
+    runtime.sendMessage({ content: "运行中", conversationId: conversation.id }, () => undefined);
+    await model.firstRequestStarted;
+    runtime.sendMessage({ content: "排队消息", conversationId: conversation.id, deliveryMode: "queue" }, () => undefined);
+    try {
+      await runtime.stopAllRuns();
+      await new Promise<void>((resolve) => setImmediate(() => { runtime.resumePendingMessages(() => undefined); resolve(); }));
+      expect(model.requests).toHaveLength(1);
+      expect(database.getConversation(conversation.id)).toMatchObject({ activeRunId: null, lastRunStatus: "cancelled" });
+      expect(database.listPendingMessageRecords(conversation.id, "queue")).toHaveLength(1);
+      expect(() => runtime.sendMessage({ content: "清理中到达", conversationId: conversation.id }, () => undefined))
+        .toThrow("execution is stopping");
+      runtime.resumeAfterWindowOpen();
+    } finally {
+      runtime.cancelConversation(conversation.id);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      database.close();
+    }
+  });
+
+  it("drains in-memory Runs even if persisting the shutdown pause fails", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const model = new ReplaceRunningMessageFixtureModel();
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({
+      apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+      modelId: "test-model", reasoningOptions: [],
+    }) }, projects, new ProjectToolRegistry(projects), model);
+    runtime.sendMessage({ content: "运行中", conversationId: conversation.id }, () => undefined);
+    await model.firstRequestStarted;
+    vi.spyOn(database, "isConversationExecutionPaused").mockImplementationOnce(() => { throw new Error("pause storage failed"); });
+    await expect(runtime.stopAllRuns()).rejects.toThrow("Run shutdown persistence failed");
+    expect(database.getConversation(conversation.id)).toMatchObject({ activeRunId: null, lastRunStatus: "cancelled" });
+    expect(model.requests).toHaveLength(1);
+    database.close();
+  });
+
+  it("rejects an in-flight message replacement after shutdown starts", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const model = new ReplaceRunningMessageFixtureModel();
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({
+      apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+      modelId: "test-model", reasoningOptions: [],
+    }) }, projects, new ProjectToolRegistry(projects), model);
+    const accepted = runtime.sendMessage({ content: "运行中", conversationId: conversation.id }, () => undefined);
+    if (accepted.kind !== "started") throw new Error("Expected an active Run.");
+    await model.firstRequestStarted;
+    const replacement = runtime.replaceLatestMessage({ conversationId: conversation.id, messageId: accepted.userMessage.id, content: "替换内容" }, () => undefined);
+    const rejection = expect(replacement).rejects.toThrow("execution is stopping");
+    await runtime.stopAllRuns(); await rejection;
+    expect(model.requests).toHaveLength(1);
+    expect(database.getConversation(conversation.id).activeRunId).toBe(null);
+    database.close();
+  });
+
+  it("expires pending approval on shutdown without launching the command", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-shutdown-approval-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const tools = new ProjectToolRegistry(projects);
+    const execute = vi.spyOn(tools, "executePreparedCommand");
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({
+      apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+      modelId: "test-model", reasoningOptions: [],
+    }) }, projects, tools, new SingleCommandFixtureModel("Set-Content -LiteralPath shutdown.txt -Value unwanted"));
+    let approval: Extract<ConversationRunEvent, { type: "tool.approval_requested" }> | undefined;
+    runtime.sendMessage({ content: "待审批命令", conversationId: conversation.id, permissionMode: "ask_before_changes" }, (event) => {
+      if (event.type === "tool.approval_requested") approval = event;
+    });
+    try {
+      await vi.waitFor(() => expect(approval).toBeDefined());
+      await runtime.stopAllRuns();
+      expect(execute).not.toHaveBeenCalled();
+      expect(database.listTimeline(conversation.id)).toContainEqual(expect.objectContaining({ kind: "tool", name: "run_command", status: "cancelled" }));
+      await expect(readFile(path.join(root, "shutdown.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      runtime.cancelConversation(conversation.id);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await tools.dispose();
+      database.close();
+    }
   });
 
   it("cancels a running answer before replacing the latest user message", async () => {
@@ -2789,7 +2935,9 @@ describe("AgentRuntime", () => {
       "list_background_commands",
       "list_models",
       "list_subagents",
+      "present_html",
       "read_agent_conversation",
+      "read_command_output",
       "read_external_file",
       "request_user_input",
       "run_command",
@@ -2799,7 +2947,6 @@ describe("AgentRuntime", () => {
       "stop_command",
       "update_task_list",
       "wait_for_agent_message",
-      "wait_for_commands",
       "wait_for_subagents",
       "wait_for_user_input",
       "web_search"
@@ -3123,7 +3270,7 @@ describe("AgentRuntime", () => {
       );
     });
 
-    expect(model.requests[0]?.tools.map((tool) => tool.name)).toContain("list_directory");
+    expect(model.requests[0]?.tools.map((tool) => tool.name)).not.toContain("list_directory");
     expect(model.requests[0]?.tools.map((tool) => tool.name)).toContain("find_files");
     expect(model.requests[0]?.tools.map((tool) => tool.name)).not.toContain("get_project_info");
     expect(model.requests[0]?.messages[0]?.content).toContain(`Authorized root: ${path.resolve(await realpath(root))}`);
@@ -3460,6 +3607,7 @@ describe("AgentRuntime", () => {
     const projects = new ProjectRegistry(database);
     const conversation = database.createConversation(null);
     let calls = 0;
+    const inputEstimates: number[] = [];
     let started: (() => void) | undefined;
     const waiting = new Promise<void>((resolve) => { started = resolve; });
     const model: ModelProviderAdapter = {
@@ -3487,10 +3635,13 @@ describe("AgentRuntime", () => {
     const usage = () => runtime.getContextUsage({ conversationId: conversation.id, permissionMode: "read_only" }).providerCache;
     const send = (content: string) => new Promise<void>((resolve) => {
       runtime.sendMessage({ content, conversationId: conversation.id }, (event) => {
+        if (event.type === "model.request_started" && event.estimatedInputTokens !== undefined) inputEstimates.push(event.estimatedInputTokens);
         if (event.type === "run.finished") resolve();
       });
     });
     await send("first");
+    expect(inputEstimates).toHaveLength(1);
+    expect(inputEstimates[0]).toBeGreaterThan(100);
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(usage()).toMatchObject({ firstTokenLatencyMs: 250, outputTokensPerSecond: 20, latest: { hitRate: 0.8 }, cumulative: { hitRate: 0.8 } });
     const second = send("cancel this request");
@@ -3771,6 +3922,10 @@ describe("AgentRuntime", () => {
     const project = await projects.registerDirectory(root);
     const conversation = database.createConversation(project.id);
     const model = new ExhaustToolBudgetFixtureModel();
+    const tools = new ProjectToolRegistry(projects);
+    const executeTool = vi.spyOn(tools, "execute").mockResolvedValue({
+      kind: "completed", isError: false, content: JSON.stringify({ ok: true, value: { paths: [], truncated: false } }),
+    });
     const runtime = new AgentRuntime(
       database,
       {
@@ -3783,7 +3938,7 @@ describe("AgentRuntime", () => {
         }),
       },
       projects,
-      new ProjectToolRegistry(projects),
+      tools,
       model,
     );
 
@@ -3797,6 +3952,7 @@ describe("AgentRuntime", () => {
 
     expect(finished.status).toBe("completed");
     expect(model.requests).toHaveLength(64);
+    expect(executeTool).toHaveBeenCalledTimes(63);
     expect(model.requests.at(-2)?.tools.length).toBeGreaterThan(0);
     expect(model.requests.at(-2)?.messages.at(-1)?.content).toContain(
       "last model turn that may call tools",
@@ -4489,6 +4645,73 @@ describe("AgentRuntime", () => {
       }
       database.close();
     }
+  });
+
+  it("keeps full access when an Agent result wakes the quick coordinator", async () => {
+    const database = new AgentDatabase(":memory:");
+    const parent = database.createConversation(null);
+    const sender = database.createConversation(null);
+    database.setConversationPermissionMode(parent.id, "full_access", "parallel_queue");
+    const projects = new ProjectRegistry(database);
+    const tools = new ProjectToolRegistry(projects);
+    const model: ModelProviderAdapter = { completeTurn: (input) => {
+      input.onTextDelta("已记录成员结果");
+      return Promise.resolve({ content: "已记录成员结果", finishReason: "stop", toolCalls: [] });
+    } };
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({
+      apiKey: "fixture", apiFormat: "openai-chat-completions", baseUrl: "https://fixture.invalid/v1", modelId: "fixture", reasoningOptions: [],
+    }) }, projects, tools, model);
+    database.sendAgentMessage({ content: "独立任务完成", messageType: "agent_result", replyInstruction: null,
+      runId: crypto.randomUUID(), senderConversationId: sender.id, targetConversationId: parent.id });
+    await new Promise<void>(resolve => runtime.resumePendingMessages(event => {
+      if (event.type === "run.finished" && event.conversationId === parent.id) resolve();
+    }));
+    expect(database.getLatestRunExecutionSnapshot(parent.id)?.permissionMode).toBe("full_access");
+    await tools.dispose(); database.close();
+  });
+
+  it.each([false, true])("consumes independent quick-mode input at a safe boundary (queue paused: %s)", async (paused) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-quick-queue-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    database.setConversationPermissionMode(conversation.id, "full_access", "parallel_queue");
+    const model = new DeferredToolBatchFixtureModel();
+    const runtime = new AgentRuntime(database, {
+      getConfiguration: () => ({ apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1", modelId: "test-model", reasoningOptions: [] }),
+    }, projects, new ProjectToolRegistry(projects), model);
+    let pendingId = "";
+    const finished = new Promise<void>((resolve) => {
+      runtime.sendMessage({ content: "先处理已有任务", conversationId: conversation.id, permissionMode: "full_access" }, event => {
+        if (event.type === "tool.started" && pendingId.length === 0) {
+          const submission = runtime.sendMessage({
+            content: "独立请求：同时检查另一模块", conversationId: conversation.id, permissionMode: "full_access", deliveryMode: "queue",
+          }, () => undefined);
+          if (submission.kind !== "pending") throw new Error("Expected a durable queued request");
+          pendingId = submission.pendingMessage.id;
+          if (paused) runtime.setPendingQueuePaused(conversation.id, true, () => undefined);
+        }
+        if (event.type === "run.finished") resolve();
+      });
+    });
+    await model.firstRequestStarted;
+    model.continueWithToolBatch();
+    await finished;
+    expect(model.requests).toHaveLength(2);
+    const messages = model.requests[1]!.messages;
+    const requests = messages.filter(message => message.role === "user" && message.content.includes("独立请求："));
+    expect(requests).toHaveLength(paused ? 0 : 1);
+    if (!paused) {
+      expect(requests[0]?.content).toContain(pendingId);
+      expect(requests[0]?.content).toContain("Keep earlier assignments");
+      const index = messages.indexOf(requests[0]!);
+      expect(messages.slice(0, index).filter(message => message.role === "tool")).toHaveLength(2);
+      expect(database.listTimeline(conversation.id).filter(item => item.kind === "message" && item.role === "user" && item.content.includes("独立请求："))).toHaveLength(1);
+    }
+    expect(database.listPendingMessages(conversation.id)).toHaveLength(paused ? 1 : 0);
+    database.close();
   });
 
   it("injects steer messages only after every tool result in the active batch", async () => {
@@ -6741,6 +6964,66 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
+  it("continues model work after a finite command yields and persists completion into the original card", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-yield-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const tools = new ProjectToolRegistry(projects);
+    const threadLog = new ThreadLog(path.join(root, "conversations"));
+    const events: ConversationRunEvent[] = [];
+    let turn = 0;
+    const model: ModelProviderAdapter = {
+      completeTurn(input) {
+        turn += 1;
+        if (turn === 1) return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{
+          id: "yield-command", name: "run_command", arguments: JSON.stringify({
+            command: 'Write-Output "started"; Start-Sleep -Milliseconds 1500; Write-Output "finished"', yieldTimeMs: 0,
+          }),
+        }] });
+        const receipt = input.messages.find(message => message.role === "tool" && message.toolCallId === "yield-command");
+        expect(receipt?.content).toContain('"status":"running"');
+        expect(tools.listConversationCommands([conversation.id])[0]?.status).toBe("running");
+        input.onTextDelta("Independent analysis while the command runs");
+        return Promise.resolve({ content: "Independent analysis while the command runs", finishReason: "stop", toolCalls: [] });
+      },
+    };
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({
+      apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+      modelId: "test-model", reasoningOptions: [],
+    }) }, projects, tools, model, undefined, undefined, null, null, null, null, undefined, undefined, null,
+    threadLog, new EventProjector(database, threadLog));
+    try {
+      await new Promise<void>((resolve) => {
+        runtime.sendMessage({ content: "yield", conversationId: conversation.id, permissionMode: "full_access" }, event => {
+          events.push(event);
+          if (event.type === "run.finished") resolve();
+        });
+      });
+      const command = database.listTimeline(conversation.id).find(item => item.kind === "tool" && item.name === "run_command");
+      if (command?.kind !== "tool") throw new Error("Expected command card.");
+      expect(command.result).toContain('"status":"running"');
+      await vi.waitFor(() => {
+        const final = database.listTimeline(conversation.id).find(item => item.id === command.id);
+        expect(final?.kind === "tool" ? final.result : null).toContain('"status":"completed"');
+        expect(final?.kind === "tool" ? final.result : null).toContain("finished");
+      }, { timeout: 10_000 });
+      expect(database.listTimeline(conversation.id).filter(item => item.kind === "tool")).toHaveLength(1);
+      expect(database.listModelMessages(conversation.id).filter(message => message.role === "tool")).toHaveLength(1);
+      expect(threadLog.read(conversation.id)?.events).toContainEqual(expect.objectContaining({ type: "runtime_activity_updated" }));
+      const updates = events.filter(event => event.type === "tool.completed");
+      expect(updates).toHaveLength(2);
+      expect(updates.every(event => event.type === "tool.completed" && event.tool.id === command.id)).toBe(true);
+      // Reprojection must retain final UI state without adding model ToolMessages.
+      new EventProjector(database, threadLog).projectConversation(conversation.id);
+      const replayed = database.listTimeline(conversation.id).find(item => item.id === command.id);
+      expect(replayed?.kind === "tool" ? replayed.result : null).toContain('"status":"completed"');
+      expect(database.listModelMessages(conversation.id).filter(message => message.role === "tool")).toHaveLength(1);
+    } finally { await tools.dispose(); database.close(); }
+  });
+
   it("waits for command approval before executing PowerShell in the project root", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-command-"));
     temporaryDirectories.push(root);
@@ -7165,7 +7448,7 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
-  it("returns browser screenshots to the next model turn as bounded vision input", async () => {
+  it.each([false, true])("returns browser screenshots as vision and cleans up background=%s", async (background) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-browser-screenshot-"));
     temporaryDirectories.push(root);
     const database = new AgentDatabase(":memory:");
@@ -7195,7 +7478,7 @@ describe("AgentRuntime", () => {
       getSession: vi.fn(() => session),
       interact: vi.fn(),
       navigate: vi.fn(),
-      observe: vi.fn(),
+      observe: vi.fn().mockResolvedValue({ elements: [], text: "Example", title: "Example", url: session.url, viewport: { width: 800, height: 600 } }),
       open: vi.fn().mockResolvedValue(session),
       reload: vi.fn(),
       stop: vi.fn(),
@@ -7205,7 +7488,8 @@ describe("AgentRuntime", () => {
       tabs.confirmOpened({ requestId: request.requestId, resolvedName: "Example" });
       return true;
     });
-    const model = new BrowserScreenshotFixtureModel();
+    const model = new BrowserScreenshotFixtureModel(background);
+    const screenshotStore = new ConversationAttachmentStore(database, projects, path.join(root, "managed"));
     const runtime = new AgentRuntime(
       database,
       {
@@ -7223,7 +7507,7 @@ describe("AgentRuntime", () => {
       undefined,
       undefined,
       null,
-      null,
+      screenshotStore,
       null,
       null,
       null,
@@ -7254,6 +7538,25 @@ describe("AgentRuntime", () => {
 
     await expect(finished).resolves.toMatchObject({ status: "completed" });
     expect(browser.capture).toHaveBeenCalledWith({ sessionId: browserId });
+    const screenshotTool = database.listTimeline(conversation.id).find((item) => item.kind === "tool" && item.arguments.includes('"observe"'));
+    if (screenshotTool?.kind !== "tool" || screenshotTool.result === null) throw new Error("Expected screenshot tool");
+    const screenshotResultSchema = z.object({ value: z.object({ image: conversationAttachmentSchema }) });
+    const image = screenshotResultSchema.parse(JSON.parse(screenshotTool.result)).value.image;
+    expect(image).toMatchObject({ conversationId: conversation.id, messageId: screenshotTool.id, kind: "image" });
+    expect(screenshotStore.listDrafts(conversation.id)).toEqual([]);
+    expect(screenshotStore.readImagePreview(conversation.id, image.id).data).toBe("YnJvd3Nlci1waXhlbHM=");
+    expect(screenshotTool.result).not.toContain("YnJvd3Nlci1waXhlbHM=");
+    const lastReply = database.listTimeline(conversation.id).findLast((item) => item.kind === "message" && item.role === "assistant");
+    if (lastReply === undefined) throw new Error("Expected assistant boundary");
+    const fork = database.forkConversation(conversation.id, "sibling", lastReply.id);
+    const forkTool = database.listTimeline(fork.id).find((item) => item.kind === "tool" && item.arguments.includes('"observe"'));
+    if (forkTool?.kind !== "tool" || forkTool.result === null) throw new Error("Expected forked screenshot");
+    const forkImage = screenshotResultSchema.parse(JSON.parse(forkTool.result)).value.image;
+    expect(forkImage).toMatchObject({ conversationId: fork.id, messageId: forkTool.id, source: "browser" });
+    expect(screenshotStore.readImagePreview(fork.id, forkImage.id).data).toBe("YnJvd3Nlci1waXhlbHM=");
+    const resolved = screenshotStore.resolveThreadLogPaths(forkImage);
+    expect(resolved.storedPath).toBe(database.getConversationAttachment(fork.id, forkImage.id).storedPath);
+    expect(browser.close).toHaveBeenCalledTimes(background ? 1 : 0);
     expect(model.requests[2]?.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({
         attachments: [expect.objectContaining({
@@ -8038,6 +8341,44 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
+  it("preserves a completed side effect when shutdown cancels the next approval", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-shutdown-side-effect-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const tools = new ProjectToolRegistry(projects);
+    const apply = vi.spyOn(tools, "applyPreparedChange");
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({
+      apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+      modelId: "test-model", reasoningOptions: [],
+    }) }, projects, tools, new MultiChangeFixtureModel());
+    let approvals = 0;
+    let stopped: Promise<void> | undefined;
+    await new Promise<void>((resolve) => {
+      runtime.sendMessage({ content: "创建两个文件", conversationId: conversation.id, permissionMode: "ask_before_changes" }, (event) => {
+        if (event.type === "tool.approval_requested") {
+          approvals += 1;
+          if (approvals === 1) runtime.approveToolChange({ approved: true, runId: event.runId, toolId: event.tool.id });
+          else stopped = runtime.stopAllRuns();
+        }
+        if (event.type === "run.finished") resolve();
+      });
+    });
+    await stopped;
+    expect(approvals).toBe(2);
+    expect(apply).toHaveBeenCalledOnce();
+    expect(database.listTimeline(conversation.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "tool", status: "completed" }),
+      expect.objectContaining({ kind: "tool", status: "cancelled" }),
+    ]));
+    await expect(readFile(path.join(root, "first.ts"), "utf8")).resolves.toBe("export const first = true;\n");
+    await expect(readFile(path.join(root, "second.ts"))).rejects.toMatchObject({ code: "ENOENT" });
+    await tools.dispose();
+    database.close();
+  });
+
   it("keeps a larger approval batch below the LangGraph recursion guard", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-many-approval-"));
     temporaryDirectories.push(root);
@@ -8465,11 +8806,11 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
-  it("returns an unknown tool call as a failed ToolMessage so the model can recover", async () => {
+  it.each(["missing_tool", "list_directory"])("returns %s as a failed ToolMessage so the model can recover", async (toolName) => {
     const database = new AgentDatabase(":memory:");
     const projects = new ProjectRegistry(database);
     const conversation = database.createConversation(null);
-    const model = new UnknownToolFixtureModel();
+    const model = new UnknownToolFixtureModel(toolName);
     const runtime = new AgentRuntime(
       database,
       {
@@ -8502,7 +8843,7 @@ describe("AgentRuntime", () => {
     }));
     expect(database.listTimeline(conversation.id)).toContainEqual(expect.objectContaining({
       kind: "tool",
-      name: "missing_tool",
+      name: toolName,
       status: "failed",
     }));
     database.close();
@@ -8594,7 +8935,7 @@ describe("AgentRuntime", () => {
     });
 
     const tool = database.listTimeline(conversation.id).find((item) => item.kind === "tool");
-    expect(tool).toMatchObject({ name: "list_directory", status: "failed" });
+    expect(tool).toMatchObject({ name: "find_files", status: "failed" });
     expect(tool?.kind === "tool" ? tool.result : "").toContain("fixture tool adapter failed");
     expect(events.filter((event) => event.type === "tool.completed")).toHaveLength(1);
     database.close();

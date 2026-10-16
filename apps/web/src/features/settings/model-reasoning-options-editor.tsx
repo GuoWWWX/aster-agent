@@ -10,7 +10,7 @@ import {
 import { createPortal } from "react-dom";
 
 import {
-  isGemini3ReasoningModel,
+  isGeminiThinkingLevelModel,
   isReasoningOptionEnabled,
   isReasoningOptionSupportedByApiFormat,
   modelReasoningEffortSchema,
@@ -18,6 +18,8 @@ import {
   modelReasoningOptionSchema,
   type ModelApiFormat,
   type ModelReasoningOption,
+  type ModelCatalog,
+  DEFAULT_MODEL_CATALOG,
 } from "@agent/protocol";
 
 import {
@@ -33,6 +35,8 @@ type ModelReasoningOptionsEditorProps = {
   modelName: string;
   options: readonly ModelReasoningOption[];
   onChange: (options: ModelReasoningOption[]) => void;
+  catalog?: ModelCatalog;
+  showTitle?: boolean;
 };
 
 type ReasoningOptionDraft = {
@@ -84,8 +88,8 @@ function optionFromDraft(
 
   const option = (() => {
     if (
-      apiFormat === "anthropic-messages"
-      || (apiFormat === "google-gemini" && !isGemini3ReasoningModel(modelId))
+      (apiFormat === "anthropic-messages" && /^-?\d+$/u.test(apiValue))
+      || (apiFormat === "google-gemini" && !isGeminiThinkingLevelModel(modelId) && /^-?\d+$/u.test(apiValue))
     ) {
       if (!/^-?\d+$/.test(apiValue)) return null;
       return {
@@ -127,6 +131,8 @@ export function ModelReasoningOptionsEditor({
   modelName,
   onChange,
   options,
+  catalog = DEFAULT_MODEL_CATALOG,
+  showTitle = true,
 }: ModelReasoningOptionsEditorProps): ReactElement {
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editingDraft, setEditingDraft] = useState<ReasoningOptionDraft | null>(null);
@@ -361,7 +367,7 @@ export function ModelReasoningOptionsEditor({
   }
 
   function resetOptions(): void {
-    applyOptions(defaultReasoningOptions(apiFormat, modelId));
+    applyOptions(defaultReasoningOptions(apiFormat, modelId, catalog));
     cancelEditing();
     setPendingOptions([]);
     setError(null);
@@ -549,7 +555,7 @@ export function ModelReasoningOptionsEditor({
     <section className="settings-reasoning-options" aria-label={`${modelName}的推理强度`}>
       <div className="settings-reasoning-options__heading">
         <div className="settings-reasoning-options__heading-copy">
-          <strong>推理强度</strong>
+          {showTitle ? <strong>推理强度</strong> : null}
           <span>{enabledCount} / {visibleOptionCount} 已启用</span>
         </div>
         <div className="settings-reasoning-options__heading-actions">

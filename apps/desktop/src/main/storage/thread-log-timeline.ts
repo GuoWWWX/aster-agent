@@ -121,6 +121,10 @@ export class ThreadLogTimeline {
       }
       if (event.type === "run_terminal" || event.type === "run_finished") {
         for (const entry of items.values()) {
+          if (entry.runId === event.payload.runId && entry.kind === "tool" && entry.status === "running") {
+            entry.status = "failed";
+            entry.patch = { status: "failed", result: JSON.stringify({ ok: false, error: "执行已中断：所属运行已结束，未收到完成结果。不会在重启后自动重放。" }) };
+          }
           if (entry.runId === event.payload.runId && entry.kind === "tool" && entry.status === "awaiting_approval") {
             entry.status = "cancelled";
             entry.patch = { status: "cancelled", result: "审批已失效：所属运行已经结束。" };

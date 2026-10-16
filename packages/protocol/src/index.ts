@@ -1,3 +1,4 @@
+export { htmlPreviewRequestSchema, htmlPreviewSchema, htmlPreviewResponseSchema, htmlPreviewResizeMessageSchema, presentHtmlInputSchema, htmlPresentationResultSchema, htmlPresentationPageSchema, HTML_PREVIEW_MAX_HEIGHT, type HtmlPreviewRequest, type HtmlPreview, type HtmlPresentationPage } from "./html-preview.js";
 export { capabilitySetSchema } from "./capability.js";
 export type { CapabilitySet } from "./capability.js";
 export {
@@ -81,8 +82,8 @@ export {
   ensureTeamMemberConversationInputSchema,
   getModelApiKeyInputSchema,
   importConversationAttachmentBytesInputSchema,
-  isGemini3ReasoningModel,
-  isGpt56ReasoningModel,
+  isGeminiThinkingLevelModel,
+  isGptReasoningSummaryModel,
   isReasoningOptionEnabled,
   isReasoningOptionSupportedByApiFormat,
   modelApiFormatSchema,
@@ -293,8 +294,13 @@ export {
   modelCatalogSchema,
   resolveModelCatalogRule,
   resolveModelContextWindow,
+  upgradeModelReasoningCatalog,
 } from "./model-catalog.js";
 export type { ModelCatalog, ModelCatalogRule } from "./model-catalog.js";
+export { resolveModelReasoningOptions } from "./model-catalog.js";
+export { DEFAULT_MODEL_REASONING_RULES, DEFAULT_MODEL_REASONING_PROVIDERS, LEGACY_EXACT_MODEL_REASONING_RULES, modelReasoningRuleSchema, modelReasoningProviderSchema } from "./model-reasoning-catalog.js";
+export type { ModelReasoningRule, ModelReasoningProvider } from "./model-reasoning-catalog.js";
+export { modelReasoningPatternMatches, isValidModelReasoningRegex, type ModelReasoningMatchMode } from "./model-reasoning-matcher.js";
 export {
   contextCompressionConfigurationSchema,
   contextCompressionModeSchema,
@@ -658,6 +664,17 @@ export { runtimeInfoSchema, runtimePlatformSchema } from "./runtime.js";
 export type { RuntimeInfo, RuntimePlatform } from "./runtime.js";
 export { windowStateSchema } from "./window.js";
 export type { WindowState } from "./window.js";
+export {
+  NATIVE_OVERLAY_FRAME_NAME,
+  NATIVE_OVERLAY_CHANNEL,
+  NATIVE_OVERLAY_BLUR_CHANNEL,
+  NATIVE_OVERLAY_RESIZE_POINTER_CHANNEL,
+  NATIVE_OVERLAY_TOOLTIP_POINTER_CHANNEL,
+  nativeOverlayRegionsInputSchema,
+  nativeOverlayResizePointerSchema,
+  nativeOverlayTooltipPointerSchema,
+} from "./native-overlay.js";
+export type { NativeOverlayRegionsInput, NativeOverlayResizePointer, NativeOverlayTooltipPointer } from "./native-overlay.js";
 
 export * from "./scheduled-task.js";
 export { localControlCommandSchema, type LocalControlCommand } from "./local-control.js";

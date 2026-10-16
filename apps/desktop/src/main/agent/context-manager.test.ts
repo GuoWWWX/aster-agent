@@ -6,6 +6,7 @@ import {
   createContextCompactionMessages,
   parseContextSummary,
   selectCompactionRetryBatch,
+  normalizeModelFacingToolOutputs,
 } from "./context-manager.js";
 
 function message(
@@ -39,6 +40,34 @@ function build(sourceMessages: StoredContextMessage[], threshold = 5_000) {
 }
 
 describe("context manager", () => {
+  it("excludes legacy command waits from model history, recall and compaction while keeping other tool pairs", () => {
+    const source = [
+      message(1, "user", "检查命令结果"),
+      message(2, "assistant", "", { toolCalls: [
+        { id: "wait-id", name: "wait_for_commands", arguments: "{}" },
+        { id: "read-id", name: "read_file", arguments: '{"path":"a.txt"}' },
+      ] }),
+      message(3, "tool", "DUPLICATE_WAIT_LOG", { toolCallId: "wait-id" }),
+      message(4, "tool", "file contents", { toolCallId: "read-id" }),
+    ];
+    const plan = build(source);
+    expect(JSON.stringify(plan.messages)).not.toContain("DUPLICATE_WAIT_LOG");
+    expect(plan.messages.find(entry => entry.role === "assistant")?.toolCalls.map(call => call.name)).toEqual(["read_file"]);
+    expect(plan.messages.find(entry => entry.toolCallId === "read-id")?.content).toBe("file contents");
+    const compact = createContextCompactionMessages(null, source);
+    expect(JSON.stringify(compact)).not.toContain("DUPLICATE_WAIT_LOG");
+    const normalized = normalizeModelFacingToolOutputs(source.map(entry => ({ ...entry, attachments: [] })));
+    expect(JSON.stringify(normalized)).not.toContain("wait_for_commands");
+    const recalled = buildManagedContext({
+      checkpoint: { conversationId: "conversation-id", coveredThroughSequence: 4,
+        createdAt: "2026-10-16T00:00:00Z", updatedAt: "2026-10-16T00:00:00Z", summary: "{}" },
+      compressionMode: "tokens", compressionThresholdTokens: 5_000,
+      estimatedSystemTokens: 100, estimatedToolDefinitionTokens: 100, outputReserveTokens: 500,
+      sourceMessages: [...source, message(5, "user", "继续")], relevantMessages: [source[2]!],
+    });
+    expect(JSON.stringify(recalled.messages)).not.toContain("DUPLICATE_WAIT_LOG");
+    expect(source[1]?.toolCalls).toHaveLength(2);
+  });
   it("counts attachment tokens separately and lets them trigger old-turn compaction", () => {
     const source = [1, 2, 3, 4].map((turn) => ({
       ...message(turn, "user", `第 ${turn} 轮`),

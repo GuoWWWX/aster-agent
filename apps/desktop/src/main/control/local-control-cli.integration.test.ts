@@ -68,7 +68,7 @@ it("verifies both CLI turns through HTTP, Runtime, model streaming and shared Re
     expect(projector.listTimelinePage({ conversationId: result.conversationId, limit: 120 }).items.filter((item) => item.kind === "message"))
       .toHaveLength(4);
   } finally {
-    await server.close(); tools.dispose(); database.close();
+    await server.close(); await tools.dispose(); database.close();
     await rm(directory, { recursive: true, force: true });
   }
 }, 150_000);

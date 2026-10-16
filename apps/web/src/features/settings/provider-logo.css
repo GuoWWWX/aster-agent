@@ -31,9 +31,15 @@
   font-size: 10px;
 }
 
-.provider-logo > svg {
+.provider-logo > svg,
+.provider-logo > img {
   width: 72%;
   height: 72%;
+}
+
+.provider-logo > img {
+  display: block;
+  object-fit: contain;
 }
 
 .provider-logo--auto {
@@ -53,43 +59,43 @@
 }
 
 .provider-logo--openai {
-  background: #111827;
-  color: #f8fafc;
+  background: #000000;
+  color: #ffffff;
 }
 
 .provider-logo--anthropic {
-  background: #f3e8d4;
-  color: #7c4a2d;
+  background: #faf9f5;
+  color: #141413;
 }
 
 .provider-logo--google {
-  background: #e8f0fe;
-  color: #2563eb;
+  background: #ffffff;
+  color: #4285f4;
 }
 
 .provider-logo--xai {
-  background: #111827;
-  color: #f8fafc;
+  background: #000000;
+  color: #ffffff;
 }
 
 .provider-logo--deepseek {
-  background: #dbeafe;
-  color: #1d4ed8;
+  background: #ffffff;
+  color: #4d6bfe;
 }
 
 .provider-logo--qwen {
-  background: #fef3c7;
-  color: #b45309;
+  background: #ffffff;
+  color: #615ced;
 }
 
 .provider-logo--moonshot {
-  background: #ede9fe;
-  color: #6d28d9;
+  background: #121212;
+  color: #ffffff;
 }
 
 .provider-logo--minimax {
-  background: #fef3c7;
-  color: #b45309;
+  background: #ffffff;
+  color: #e62176;
 }
 
 .provider-logo--baidu,
@@ -120,8 +126,8 @@
 }
 
 .provider-logo--zhipu {
-  background: #dbeafe;
-  color: #1e40af;
+  background: #ffffff;
+  color: #1f63ec;
 }
 
 .provider-logo--siliconflow {
@@ -130,8 +136,8 @@
 }
 
 .provider-logo--openrouter {
-  background: #ffedd5;
-  color: #c2410c;
+  background: #ffffff;
+  color: #000000;
 }
 
 .provider-logo--cloudflare {
@@ -140,8 +146,8 @@
 }
 
 .provider-logo--nvidia {
-  background: #dcfce7;
-  color: #15803d;
+  background: #ffffff;
+  color: #76b900;
 }
 
 .provider-logo--aihubmix {

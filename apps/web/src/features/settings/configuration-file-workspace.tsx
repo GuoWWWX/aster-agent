@@ -1,3 +1,4 @@
+import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import {
   Check,
   ChevronDown,
@@ -8,7 +9,6 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
-  LoaderCircle,
   RefreshCw,
   Trash2,
   X,
@@ -22,6 +22,7 @@ import {
   type ReactElement,
 } from "react";
 import { createPortal } from "react-dom";
+import { useNativeOverlayContainer } from "../../components/ui/native-overlay-provider.js";
 
 import type {
   ConfigurationWorkspaceDirectoryListing,
@@ -122,6 +123,7 @@ export function ConfigurationFileWorkspace({
   title: string;
 }): ReactElement {
   const isDark = useWorkbenchUiStore((state) => state.themeMode === "dark");
+  const nativeOverlayContainer = useNativeOverlayContainer();
   const [entriesByDirectory, setEntriesByDirectory] = useState<
     Record<string, readonly ConfigurationWorkspaceEntry[]>
   >({});
@@ -494,6 +496,7 @@ export function ConfigurationFileWorkspace({
       aria-label={`${title} 文件工作区`}
       aria-modal="true"
       className="configuration-file-workspace__backdrop"
+      data-native-view-overlay=""
       data-theme={isDark ? "dark" : "light"}
       role="dialog"
       onMouseDown={(event) => {
@@ -603,7 +606,7 @@ export function ConfigurationFileWorkspace({
                   onClick={() => void saveFile()}
                 >
                   {isSaving ? (
-                    <LoaderCircle aria-hidden="true" className="configuration-file-workspace__spin" size={15} />
+                    <Spinner aria-hidden="true" size={15} />
                   ) : (
                     <Check aria-hidden="true" size={16} />
                   )}
@@ -628,10 +631,7 @@ export function ConfigurationFileWorkspace({
             )}
             <div className="configuration-file-workspace__editor-content">
               {preview.isLoading ? (
-                <div className="configuration-file-workspace__state" role="status">
-                  <LoaderCircle aria-hidden="true" className="configuration-file-workspace__spin" size={18} />
-                  正在读取文件
-                </div>
+                <LoadingState label="正在读取文件" className="h-full flex-1" />
               ) : preview.error !== null ? (
                 <div className="configuration-file-workspace__state" role="alert">
                   <p>{preview.error}</p>
@@ -696,7 +696,7 @@ export function ConfigurationFileWorkspace({
         </div>
       </section>
     </div>,
-    document.body,
+    nativeOverlayContainer ?? document.body,
   );
 }
 
@@ -737,7 +737,7 @@ function ConfigurationWorkspaceTree({
               onClick={() => onToggleDirectory(entry.path)}
             >
               {loadingDirectories.has(entry.path) ? (
-                <LoaderCircle aria-hidden="true" className="configuration-file-workspace__spin" size={13} />
+                <Spinner aria-hidden="true" size={13} />
               ) : isExpanded ? (
                 <ChevronDown aria-hidden="true" size={14} />
               ) : (

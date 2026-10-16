@@ -1,3 +1,6 @@
+import { Spinner } from "../ui/loading.js";
+import { createPortal } from "react-dom";
+import { HtmlPreviewCard, HtmlPreviewContext, type HtmlPreviewSource } from "../html-preview/html-preview-card.js";
 import { markdownMathPlugin } from "../../lib/markdown-math-plugin.js";
 import { relaxedStrongPlugin } from "../../lib/relaxed-strong.js";
 import { relaxedEmphasisPlugin } from "../../lib/relaxed-emphasis.js";
@@ -6,7 +9,7 @@ import { parseHorizontalRuleText } from "../../lib/horizontal-rule-text.js";
 import { normalizeAdjacentBoldTableCaptions } from "../../lib/markdown-block-caption.js";
 import { extractExplicitImageCaptions } from "../../lib/markdown-image-caption.js";
 import { mermaidFenceCaption } from "../../lib/mermaid-fence.js";
-import { renderMermaid, isMermaidLanguage } from "../../lib/mermaid.js";
+import { renderMermaid, isMermaidLanguage, mermaidToPngDataUrl } from "../../lib/mermaid.js";
 import { svgDataUrl } from "../../lib/svg-image.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 import { safeMarkdownHtmlPlugin, markdownCalloutPlugin, markdownTablePlugin, markdownCaptionPlugin } from "./markdown-rendering-plugins.js";
@@ -14,12 +17,16 @@ import "katex/dist/katex.min.css";
 import MarkdownIt from "markdown-it";
 import { Check, Copy, Maximize2, CodeXml } from "lucide-react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent, type MouseEvent, type ReactElement } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactElement, type ReactNode, type RefObject } from "react";
 
 import { requestMediaPreview } from "../media/image-viewer.js";
 import { fileTypeIconMarkup, isRecognizedFileTypePath } from "../ui/file-type-icon-data.js";
-import { highlightCode } from "./code-highlighter.js";
+import { highlightCode, isLargeCodeSource } from "./code-highlighter.js";
+import { CodeSourceView } from "./code-source-view.js";
 import { terminalTokens } from "../ui/terminal-tokens.js";
+import { Popover, PopoverAnchor, PopoverContent } from "../ui/popover.js";
+import { resolveWorkspaceFileLink } from "./workspace-file-link.js";
+import { useStreamingScroll } from "../ui/use-streaming-scroll.js";
 
 import "./agent-markdown.css";
 
@@ -27,6 +34,13 @@ const copyIcon = renderToStaticMarkup(<Copy aria-hidden="true" size={16} />);
 const expandIcon = renderToStaticMarkup(<Maximize2 aria-hidden="true" size={16} />);
 const sourceIcon = renderToStaticMarkup(<CodeXml aria-hidden="true" size={16} />);
 const copiedIcon = renderToStaticMarkup(<Check aria-hidden="true" size={16} />);
+const WorkspaceFileContext = createContext<((path: string) => void) | undefined>(undefined);
+
+export function AgentMarkdownWorkspaceScope({ onOpenFile, children }: {
+  onOpenFile: ((path: string) => void) | undefined; children: ReactNode;
+}): ReactElement {
+  return <WorkspaceFileContext.Provider value={onOpenFile}>{children}</WorkspaceFileContext.Provider>;
+}
 
 const renderer = new MarkdownIt({
   breaks: true,
@@ -162,13 +176,21 @@ renderer.renderer.rules.fence = (tokens, index, _options, environment: unknown) 
     const caption = captionValue == null ? "" : String(captionValue);
     return `<div class="agent-markdown__mermaid"><div class="agent-markdown__code-header"><span>MERMAID</span><div><button aria-label="放大 Mermaid 图表" title="放大图表" data-action="preview-mermaid" type="button">${expandIcon}</button><button aria-label="复制 Mermaid 源码" title="复制源码" data-action="copy-mermaid" type="button">${copyIcon}</button><button aria-label="查看 Mermaid 源码" title="查看源码" data-action="toggle-mermaid-source" type="button" aria-expanded="false">${sourceIcon}</button></div></div><div class="agent-markdown__mermaid-canvas" data-mermaid-canvas></div>${caption ? `<div class="agent-markdown__mermaid-caption">${renderer.utils.escapeHtml(caption)}</div>` : ""}<pre hidden data-mermaid-source><code>${renderer.utils.escapeHtml(source)}</code></pre></div>\n`;
   }
-  const shell = /^(bash|sh|shell|zsh|powershell|pwsh|ps1|ps|cmd|bat|batch)$/iu.test(language);
-  const highlightedSource = shell ? terminalTokens(source, true).map((token) =>
-    `<span class="agent-markdown__shell-${token.kind}">${renderer.utils.escapeHtml(source.slice(token.start, token.end))}</span>`,
-  ).join("") : highlightCode(source, language);
   const label = /^(powershell|pwsh|ps1|ps)$/iu.test(language) ? "PowerShell"
     : language.toLowerCase() === "bash" ? "Bash" : language;
-  return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><div class="agent-markdown__code-header"><span>${renderer.utils.escapeHtml(label)}</span><button aria-label="复制代码" title="复制代码" class="agent-markdown__code-copy" data-action="copy-code" type="button">${copyIcon}</button></div><pre><code class="hljs">${highlightedSource}</code></pre></div>\n`;
+  const htmlPreview = /^html?$/iu.test(language) && typeof environment === "object" && environment !== null && "htmlPreview" in environment && environment.htmlPreview === true
+    && token?.map != null && "markdown" in environment && typeof environment.markdown === "string"
+    && isClosedFence(environment.markdown.split("\n")[token.map[1] - 1] ?? "", token.markup);
+  if (htmlPreview) return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><template data-html-code-source>${renderer.utils.escapeHtml(source)}</template><div data-html-code-preview-slot></div></div>\n`;
+  const header = `<div class="agent-markdown__code-header"><span>${renderer.utils.escapeHtml(label)}</span><button aria-label="复制代码" title="复制代码" class="agent-markdown__code-copy" data-action="copy-code" type="button">${copyIcon}</button></div>`;
+  if (isLargeCodeSource(source) && typeof environment === "object" && environment !== null && "virtualCodeSources" in environment && environment.virtualCodeSources === true) {
+    return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}">${header}<template data-code-source data-language="${renderer.utils.escapeHtml(language)}">${renderer.utils.escapeHtml(source)}</template><div data-code-source-slot></div></div>\n`;
+  }
+  const shell = /^(bash|sh|shell|zsh|powershell|pwsh|ps1|ps|cmd|bat|batch)$/iu.test(language);
+  const highlightedSource = shell && !isLargeCodeSource(source) ? terminalTokens(source, true).map((token) =>
+    `<span class="agent-markdown__shell-${token.kind}">${renderer.utils.escapeHtml(source.slice(token.start, token.end))}</span>`,
+  ).join("") : highlightCode(source, language);
+  return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}">${header}<pre><code class="hljs">${highlightedSource}</code></pre></div>\n`;
 };
 
 const defaultImage = renderer.renderer.rules.image;
@@ -186,13 +208,45 @@ renderer.renderer.rules.image = (tokens, index, options, environment, self) => {
   return caption == null ? renderedImage : `<figure>${renderedImage}<figcaption>${renderer.utils.escapeHtml(String(caption))}</figcaption></figure>`;
 };
 
-export function AgentMarkdown({ content }: { content: string }): ReactElement {
+export const AgentMarkdown = memo(function AgentMarkdown({ content, streaming = false }: { content: string; streaming?: boolean }): ReactElement {
+  const scrollHostRef = useRef<HTMLDivElement>(null);
+  useStreamingScroll(scrollHostRef, content, streaming);
+  return <AgentMarkdownContent key={`${streaming}:${content}`} content={content} streaming={streaming} scrollHostRef={scrollHostRef} />;
+});
+
+function AgentMarkdownContent({ content, streaming, scrollHostRef }: { content: string; streaming: boolean; scrollHostRef: RefObject<HTMLDivElement | null> }): ReactElement {
   const hostRef = useRef<HTMLDivElement>(null);
+  const [codePreviews, setCodePreviews] = useState<Array<{ source: string; mount: Element }>>([]);
+  const [sourceViews, setSourceViews] = useState<Array<{ source: string; language: string; mount: Element }>>([]);
   const theme = useWorkbenchUiStore((state) => state.themeMode);
-  const html = useMemo(() => renderAgentMarkdown(content), [content]);
+  const previewContext = useContext(HtmlPreviewContext);
+  const workspaceContext = useContext(WorkspaceFileContext);
+  const [activePreview, setActivePreview] = useState<{ source: HtmlPreviewSource; mount: Element } | null>(null);
+  const [diagramMenu, setDiagramMenu] = useState<{ source: string; x: number; y: number } | null>(null);
+  const [copyingImage, setCopyingImage] = useState(false);
+  const [copyImageError, setCopyImageError] = useState<string | null>(null);
+  const canPreview = previewContext !== null;
+  // Streaming replaces parser-owned DOM on each chunk. Mount the virtual editor
+  // once the output settles, rather than repeatedly clearing its measured viewport.
+  const html = useMemo(() => renderAgentMarkdown(content, canPreview, !streaming), [content, canPreview, streaming]);
   // Keep parser-owned DOM intact on theme changes: native details state, source
   // toggles and diagram height must survive while the next SVG is rendering.
   const markup = useMemo(() => ({ __html: html }), [html]);
+  const bindHost = useCallback((host: HTMLDivElement | null): void => {
+    hostRef.current = host;
+    scrollHostRef.current = host;
+    if (host === null) return;
+    const previews = [...host.querySelectorAll<HTMLTemplateElement>("[data-html-code-source]")].flatMap(template => {
+      const mount = template.parentElement?.querySelector("[data-html-code-preview-slot]");
+      return mount == null ? [] : [{ source: template.content.textContent ?? "", mount }];
+    });
+    if (previews.length > 0) setCodePreviews(previews);
+    const sources = [...host.querySelectorAll<HTMLTemplateElement>("[data-code-source]")].flatMap(template => {
+      const mount = template.parentElement?.querySelector("[data-code-source-slot]");
+      return mount == null ? [] : [{ source: template.content.textContent ?? "", language: template.dataset.language ?? "text", mount }];
+    });
+    if (sources.length > 0) setSourceViews(sources);
+  }, [scrollHostRef]);
   useEffect(() => {
     let alive = true;
     for (const card of hostRef.current?.querySelectorAll<HTMLElement>(".agent-markdown__mermaid") ?? []) {
@@ -210,6 +264,19 @@ export function AgentMarkdown({ content }: { content: string }): ReactElement {
   }, [html, theme]);
   const handleClick = useCallback((event: MouseEvent<HTMLDivElement>): void => {
     if (!(event.target instanceof Element)) return;
+    const link = event.target.closest<HTMLAnchorElement>("a[href]");
+    const href = link?.getAttribute("href") ?? "";
+    if (previewContext !== null && href && !/^[a-z][a-z\d+.-]*:/iu.test(href) && /\.html?(?:[?#].*)?$/iu.test(href)) {
+      const mount = event.currentTarget.querySelector("[data-html-file-preview-slot]");
+      if (mount !== null) { event.preventDefault();
+        try { setActivePreview({ source: { kind: "file", path: decodeURIComponent(href.split(/[?#]/u)[0]!) }, mount }); } catch { /* Invalid encoded links retain their original text. */ }
+      }
+      return;
+    }
+    if (href && workspaceContext !== undefined) {
+      const path = resolveWorkspaceFileLink(href);
+      if (path !== null) { event.preventDefault(); workspaceContext(path); return; }
+    }
     const image = event.target.closest<HTMLImageElement>("img[data-action='preview-image']");
     if (image !== null && event.currentTarget.contains(image)) {
       requestMediaPreview({
@@ -223,13 +290,24 @@ export function AgentMarkdown({ content }: { content: string }): ReactElement {
     const card = action?.closest<HTMLElement>(".agent-markdown__mermaid");
     if (card != null && action != null) {
       const source = card.querySelector<HTMLElement>("[data-mermaid-source]");
-      if (action.dataset.action === "toggle-mermaid-source" && source !== null) { source.hidden = !source.hidden; action.setAttribute("aria-expanded", String(!source.hidden)); return; }
+      if (action.dataset.action === "toggle-mermaid-source" && source !== null) {
+        source.hidden = !source.hidden;
+        const preview = card.querySelector<HTMLElement>("[data-mermaid-canvas]");
+        const caption = card.querySelector<HTMLElement>(".agent-markdown__mermaid-caption");
+        if (preview !== null) preview.hidden = !source.hidden;
+        if (caption !== null) caption.hidden = !source.hidden;
+        action.setAttribute("aria-expanded", String(!source.hidden));
+        action.setAttribute("aria-label", source.hidden ? "查看 Mermaid 源码" : "预览 Mermaid 图表");
+        action.title = source.hidden ? "查看源码" : "切回预览";
+        return;
+      }
       if (action.dataset.action === "copy-mermaid") { void navigator.clipboard.writeText(source?.textContent ?? "").catch(() => undefined); return; }
-      if (action.dataset.action === "preview-mermaid") { const svg = card.querySelector("svg"); if (svg !== null) requestMediaPreview({ src: svgDataUrl(svg.outerHTML), title: "Mermaid 图表" }); return; }
+      if (action.dataset.action === "preview-mermaid") { const svg = card.querySelector("[data-mermaid-canvas] svg"); if (svg !== null) requestMediaPreview({ src: svgDataUrl(svg.outerHTML), title: "Mermaid 图表" }); return; }
     }
     const button = event.target.closest<HTMLButtonElement>("[data-action='copy-code']");
     if (button === null || !event.currentTarget.contains(button)) return;
-    const code = button.closest(".agent-markdown__code-block")?.querySelector("code")?.textContent;
+    const block = button.closest(".agent-markdown__code-block");
+    const code = block?.querySelector<HTMLTemplateElement>("[data-code-source]")?.content.textContent ?? block?.querySelector("code")?.textContent;
     if (code === null || code === undefined) return;
 
     void navigator.clipboard.writeText(code).then(() => {
@@ -244,7 +322,7 @@ export function AgentMarkdown({ content }: { content: string }): ReactElement {
         }
       }, 1_500);
     }).catch(() => undefined);
-  }, []);
+  }, [previewContext, workspaceContext]);
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>): void => {
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -257,15 +335,62 @@ export function AgentMarkdown({ content }: { content: string }): ReactElement {
     });
   }, []);
 
-  return (
+  const handleDiagramContextMenu = (event: MouseEvent<HTMLDivElement>): void => {
+    if (!(event.target instanceof Element)) return;
+    const canvas = event.target.closest<HTMLElement>("[data-mermaid-canvas]");
+    if (canvas === null || canvas.hidden || canvas.querySelector("svg") === null) return;
+    const source = canvas.closest(".agent-markdown__mermaid")?.querySelector("[data-mermaid-source] code")?.textContent;
+    if (source === undefined || source === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setCopyImageError(null);
+    setDiagramMenu({ source, x: event.clientX, y: event.clientY });
+  };
+
+  const copyDiagramImage = async (event: MouseEvent<HTMLButtonElement>): Promise<void> => {
+    if (diagramMenu === null) return;
+    const menu = diagramMenu;
+    const clipboard = event.currentTarget.ownerDocument.defaultView?.navigator.clipboard;
+    setCopyingImage(true);
+    setCopyImageError(null);
+    try {
+      if (clipboard?.write === undefined || typeof ClipboardItem === "undefined") throw new Error("Image clipboard is unavailable.");
+      // Start the clipboard request in the focused menu document while the click
+      // still supplies user activation; PNG rendering can finish asynchronously.
+      const image = mermaidToPngDataUrl(menu.source, theme === "dark").then(async (url) => (await fetch(url)).blob());
+      await clipboard.write([new ClipboardItem({ "image/png": image })]);
+      setDiagramMenu((current) => current === menu ? null : current);
+    } catch {
+      setCopyImageError("无法复制图表图片，请重试。");
+    } finally {
+      setCopyingImage(false);
+    }
+  };
+
+  return (<>
     <div
-      ref={hostRef}
+      ref={bindHost}
       className="agent-markdown"
       dangerouslySetInnerHTML={markup}
       onClick={handleClick}
       onKeyDown={handleKeyDown}
+      onContextMenu={handleDiagramContextMenu}
     />
-  );
+    {codePreviews.map((preview, index) => createPortal(<HtmlPreviewCard source={{ kind: "code", html: preview.source }} embedded />, preview.mount, String(index)))}
+    {sourceViews.map((view, index) => createPortal(<CodeSourceView source={view.source} language={view.language} />, view.mount, `source:${index}`))}
+    {activePreview !== null ? createPortal(<HtmlPreviewCard key={activePreview.source.kind === "file" ? activePreview.source.path : activePreview.source.html} source={activePreview.source} />, activePreview.mount) : null}
+    <Popover open={diagramMenu !== null} onOpenChange={(open) => { if (!open) setDiagramMenu(null); }}>
+      <PopoverAnchor asChild><span aria-hidden="true" className="pointer-events-none fixed size-0" style={{ left: diagramMenu?.x ?? 0, top: diagramMenu?.y ?? 0 }} /></PopoverAnchor>
+      <PopoverContent align="start" side="bottom" sideOffset={0} role="menu" aria-label="Mermaid 图表菜单"
+        className="min-w-36 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] p-1 text-[length:var(--app-font-size-control)] text-[var(--app-foreground)] shadow-lg">
+        <button type="button" role="menuitem" disabled={copyingImage} onClick={(event) => void copyDiagramImage(event)}
+          className="flex h-8 w-full items-center gap-2 rounded-[var(--app-radius-small)] px-2 text-left hover:bg-[var(--app-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] disabled:opacity-50">
+          {copyingImage ? <Spinner size={14} /> : <Copy aria-hidden="true" size={14} />}{copyingImage ? "正在复制图片…" : "复制图片"}
+        </button>
+        {copyImageError === null ? null : <p role="status" className="px-2 py-1 text-[var(--app-status-danger-fg)]">{copyImageError}</p>}
+      </PopoverContent>
+    </Popover>
+  </>);
 }
 
 function isClosedFence(line: string, opening: string): boolean {
@@ -273,8 +398,8 @@ function isClosedFence(line: string, opening: string): boolean {
   return closing !== undefined && closing[0] === opening[0] && closing.length >= opening.length;
 }
 
-export function renderAgentMarkdown(content: string): string {
+export function renderAgentMarkdown(content: string, htmlPreview = false, virtualCodeSources = false): string {
   const extracted = extractExplicitImageCaptions(separateMarkdownCallouts(content));
   const markdown = normalizeAdjacentBoldTableCaptions(extracted.markdown);
-  return renderer.render(markdown, { markdown, imageCaptions: extracted.captionsByImageIndex });
+  return renderer.render(markdown, { markdown, htmlPreview, virtualCodeSources, imageCaptions: extracted.captionsByImageIndex }) + (htmlPreview ? '<div data-html-file-preview-slot></div>' : "");
 }

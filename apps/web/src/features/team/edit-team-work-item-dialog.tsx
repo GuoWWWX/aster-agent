@@ -1,3 +1,4 @@
+import { Spinner } from "../../components/ui/loading.js";
 import type { TeamWorkItemView } from "@agent/protocol";
 import { Save } from "lucide-react";
 import { useState, type FormEvent, type ReactElement } from "react";
@@ -113,7 +114,7 @@ function EditTeamWorkItemForm({
               disabled={!canSubmit}
               type="submit"
             >
-              <Save aria-hidden="true" size={14} />{isSubmitting ? "保存中" : "保存修改"}
+              {isSubmitting ? <Spinner size={14} /> : <Save aria-hidden="true" size={14} />}{isSubmitting ? "保存中" : "保存修改"}
             </button>
           </DialogFooter>
     </form>

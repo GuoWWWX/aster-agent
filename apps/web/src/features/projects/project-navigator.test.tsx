@@ -30,6 +30,66 @@ afterEach(() => {
 });
 
 describe("ProjectNavigator", () => {
+  it("moves conversations to another project or temporary group by dropping them", async () => {
+    const first = createProject();
+    const second = { ...first, id: "00000000-0000-4000-8000-000000000002", name: "Other" };
+    const session = createProjectSession(first.id, [], "source-session");
+    const onSetSessionProject = vi.fn(() => Promise.resolve(true));
+    const tree = { ...createTreeController(first), projects: [first, second] };
+    const container = renderNavigator(first, [session], { tree, onSetSessionProject });
+    const source = container.querySelector<HTMLElement>('[data-navigator-key="session:source-session"]')!
+      .closest<HTMLElement>(".project-navigator__session-shell")!;
+    const other = Array.from(container.querySelectorAll<HTMLElement>(".project-navigator__project-row"))
+      .find((row) => row.querySelector(".project-navigator__project-button")?.textContent === "Other")!;
+    const folderColors = Array.from(container.querySelectorAll<HTMLElement>(".project-navigator__folder-icon"))
+      .map((icon) => icon.style.getPropertyValue("--project-folder-accent-start"));
+    expect(folderColors[0]).not.toBe(folderColors[1]);
+    expect(source.draggable).toBe(true);
+    dispatchDrag(source, "dragstart");
+    dispatchDrag(other, "dragover");
+    await act(async () => { dispatchDrag(other, "drop"); await Promise.resolve(); });
+    expect(onSetSessionProject).toHaveBeenCalledWith(session.id, second.id);
+
+    dispatchDrag(source, "dragstart");
+    const temporary = container.querySelector<HTMLElement>('.project-navigator__temporary')!;
+    dispatchDrag(temporary, "dragover");
+    await act(async () => { dispatchDrag(temporary, "drop"); await Promise.resolve(); });
+    expect(onSetSessionProject).toHaveBeenLastCalledWith(session.id, null);
+  });
+
+  it("moves a temporary conversation into a project", async () => {
+    const project = createProject();
+    const temporary = createProjectSession(null, [], "temporary-session");
+    const onSetSessionProject = vi.fn(() => Promise.resolve(true));
+    const container = renderNavigator(project, [temporary], { onSetSessionProject });
+    act(() => { container.querySelector<HTMLButtonElement>('[aria-label="展开 临时"]')?.click(); });
+    const source = container.querySelector<HTMLElement>('[data-navigator-key="session:temporary-session"]')!
+      .closest<HTMLElement>(".project-navigator__session-shell")!;
+    const destination = container.querySelector<HTMLElement>(".project-navigator__projects .project-navigator__project-row")!;
+    dispatchDrag(source, "dragstart");
+    dispatchDrag(destination, "dragover");
+    await act(async () => { dispatchDrag(destination, "drop"); await Promise.resolve(); });
+    expect(onSetSessionProject).toHaveBeenCalledWith(temporary.id, project.id);
+  });
+
+  it("passes the complete project group when sorting conversations while some are hidden", () => {
+    const project = createProject();
+    const sessions = Array.from({ length: 7 }, (_, index) =>
+      createProjectSession(project.id, [], `session-${index}`));
+    const onReorderSessions = vi.fn(() => Promise.resolve(true));
+    const container = renderNavigator(project, sessions, { onReorderSessions });
+    const source = container.querySelector<HTMLElement>('[data-navigator-key="session:session-0"]')!
+      .closest<HTMLElement>(".project-navigator__session-shell")!;
+    const target = container.querySelector<HTMLElement>('[data-navigator-key="session:session-1"]')!
+      .closest<HTMLElement>(".project-navigator__session-shell")!;
+    dispatchDrag(source, "dragstart");
+    dispatchDrag(target, "dragover");
+    dispatchDrag(target, "drop");
+    expect(onReorderSessions).toHaveBeenCalledWith([
+      "session-1", "session-0", "session-2", "session-3", "session-4", "session-5", "session-6",
+    ]);
+  });
+
   it("only toggles the project list when its folder/name row is clicked", () => {
     const project = createProject();
     const session = createProjectSession(project.id, [], "active-session");
@@ -252,6 +312,7 @@ describe("ProjectNavigator", () => {
           onRenameSession={() => Promise.resolve(true)}
           onRenameTeamInstance={() => Promise.resolve(true)}
           onReorderSessions={() => Promise.resolve(true)}
+          onSetSessionProject={() => Promise.resolve(true)}
           onReorderTeamInstances={() => Promise.resolve(true)}
           onSelectSession={() => undefined}
           onSetSessionArchived={() => Promise.resolve(true)}
@@ -278,6 +339,21 @@ describe("ProjectNavigator", () => {
     expect(onSetTeamInstanceArchived).toHaveBeenCalledWith(teamInstance.id, true);
   });
 });
+
+function dispatchDrag(target: HTMLElement, type: string): void {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.assign(event, {
+    clientX: 0,
+    clientY: 0,
+    dataTransfer: {
+      dropEffect: "move",
+      effectAllowed: "move",
+      setData: vi.fn(),
+      setDragImage: vi.fn(),
+    },
+  });
+  act(() => { target.dispatchEvent(event); });
+}
 
 function createTreeController(project: ProjectSummary): ProjectTreeController {
   return {
@@ -361,6 +437,7 @@ function renderNavigator(
         onRenameSession={() => Promise.resolve(true)}
         onRenameTeamInstance={() => Promise.resolve(true)}
         onReorderSessions={() => Promise.resolve(true)}
+        onSetSessionProject={() => Promise.resolve(true)}
         onReorderTeamInstances={() => Promise.resolve(true)}
         onSelectSession={() => undefined}
         onSetSessionArchived={() => Promise.resolve(true)}

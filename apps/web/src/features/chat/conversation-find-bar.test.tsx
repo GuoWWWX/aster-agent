@@ -30,6 +30,31 @@ describe("conversation text search", () => {
     expect(findConversationTextRanges(root, "找")).toHaveLength(1);
   });
 
+  it("expands a folded user message before scrolling to its search match", () => {
+    const root = document.createElement("div");
+    root.innerHTML = '<div data-conversation-timeline-item="one"><div data-user-message-content><p>隐藏的定位词</p><button aria-expanded="false" data-conversation-find-ignore>展开全文</button></div></div>';
+    const [range] = findConversationTextRanges(root, "定位词");
+    const button = root.querySelector<HTMLButtonElement>("button")!;
+    button.onclick = () => button.setAttribute("aria-expanded", "true");
+    const scrollIntoView = vi.fn();
+    Object.assign(root.firstElementChild!, { scrollIntoView });
+    let frame: FrameRequestCallback | undefined;
+    const animationFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frame = callback;
+      return 1;
+    });
+    try {
+      scrollConversationMatchIntoView(root, range!);
+      expect(button.getAttribute("aria-expanded")).toBe("true");
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      frame?.(0);
+      expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
+      expect(findConversationTextRanges(root, "展开全文")).toHaveLength(0);
+    } finally {
+      animationFrame.mockRestore();
+    }
+  });
+
   it("registers every match and a separate active highlight", async () => {
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
     const originalHighlight = Object.getOwnPropertyDescriptor(globalThis, "Highlight");

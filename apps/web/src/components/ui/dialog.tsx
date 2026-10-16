@@ -3,11 +3,16 @@ import { X } from "lucide-react";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 
 import { cn } from "../../lib/cn.js";
+import { useNativeOverlayContainer } from "./native-overlay-provider.js";
 
 export const Dialog = DialogPrimitive.Root;
 export const DialogClose = DialogPrimitive.Close;
-export const DialogPortal = DialogPrimitive.Portal;
 export const DialogTrigger = DialogPrimitive.Trigger;
+
+export function DialogPortal(props: ComponentProps<typeof DialogPrimitive.Portal>): ReactElement {
+  const container = useNativeOverlayContainer();
+  return <DialogPrimitive.Portal container={container} {...props} />;
+}
 
 export function DialogOverlay({
   className,
@@ -17,6 +22,7 @@ export function DialogOverlay({
     <DialogPrimitive.Overlay
       className={cn("fixed inset-0 z-[100] bg-black/45", className)}
       data-slot="dialog-overlay"
+      data-native-view-overlay=""
       {...props}
     />
   );

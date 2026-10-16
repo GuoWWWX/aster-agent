@@ -1,3 +1,4 @@
+import { Spinner } from "../../components/ui/loading.js";
 import { Plus, Send } from "lucide-react";
 import { useState, type FormEvent, type ReactElement } from "react";
 import type {
@@ -26,7 +27,7 @@ import {
 export type NewTeamWorkItemDraft = {
   acceptanceCriteria: string[];
   priority: TeamWorkItemPriority;
-  projectId: string;
+  projectId: string | null;
   requirement: string;
   teamInstanceId: string;
   title: string;
@@ -51,7 +52,7 @@ export function NewTeamWorkItemDialog({
   const [projectId, setProjectId] = useState(
     initialInstance?.scope === "project"
       ? initialInstance.projectId ?? ""
-      : defaultProjectId ?? projects[0]?.id ?? "",
+      : defaultProjectId ?? "none",
   );
   const [priority, setPriority] = useState<TeamWorkItemPriority>("normal");
   const [title, setTitle] = useState("");
@@ -80,7 +81,7 @@ export function NewTeamWorkItemDialog({
             criterion.length > 0 && criteria.indexOf(criterion) === index
           )),
         priority,
-        projectId,
+        projectId: projectId === "none" ? null : projectId,
         requirement: requirement.trim(),
         teamInstanceId,
         title: title.trim(),
@@ -104,7 +105,7 @@ export function NewTeamWorkItemDialog({
           setTeamInstanceId(instance?.id ?? "");
           setProjectId(instance?.scope === "project"
             ? instance.projectId ?? ""
-            : defaultProjectId ?? projects[0]?.id ?? "");
+            : defaultProjectId ?? "none");
         }
         setOpen(nextOpen);
       }}
@@ -113,7 +114,7 @@ export function NewTeamWorkItemDialog({
         <button
           aria-label="新建团队任务"
           className="inline-flex h-[30px] items-center gap-[5px] rounded-[var(--app-radius)] bg-[var(--app-primary-action)] px-[10px] text-[length:var(--app-font-size-control)] font-semibold text-[var(--app-primary-action-foreground)] shadow-sm hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1"
-          disabled={projects.length === 0 || teamInstances.length === 0}
+          disabled={teamInstances.length === 0}
           type="button"
         >
           <Plus aria-hidden="true" size={14} />新建任务
@@ -124,7 +125,7 @@ export function NewTeamWorkItemDialog({
           <DialogHeader className="pr-[30px]">
             <DialogTitle>新建团队任务</DialogTitle>
             <DialogDescription>
-              任务会关联到所选项目，并由当前团队直接进入调度队列。
+              任务直接交给团队负责人并进入队列。独立团队可使用专属工作区，无需绑定项目；默认完全访问。
             </DialogDescription>
           </DialogHeader>
 
@@ -137,7 +138,7 @@ export function NewTeamWorkItemDialog({
                   setTeamInstanceId(value);
                   setProjectId(instance?.scope === "project"
                     ? instance.projectId ?? ""
-                    : defaultProjectId ?? projects[0]?.id ?? "");
+                    : defaultProjectId ?? "none");
                 }}
               >
                 <SelectTrigger aria-label="选择团队实例" className="h-[32px] w-full bg-[var(--app-panel)] text-[length:var(--app-font-size-control)]">
@@ -158,6 +159,7 @@ export function NewTeamWorkItemDialog({
                   <SelectValue placeholder="选择项目" />
                 </SelectTrigger>
                 <SelectContent>
+                  {selectedInstance?.scope === "global" ? <SelectItem value="none">不绑定项目 · 独立工作区</SelectItem> : null}
                   {availableProjects.map((project) => (
                     <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>
                   ))}
@@ -226,7 +228,7 @@ export function NewTeamWorkItemDialog({
               disabled={!canSubmit}
               type="submit"
             >
-              <Send aria-hidden="true" size={14} />{isSubmitting ? "创建中" : "创建并发布"}
+              {isSubmitting ? <Spinner size={14} /> : <Send aria-hidden="true" size={14} />}{isSubmitting ? "创建中" : "创建并发布"}
             </button>
           </DialogFooter>
         </form>

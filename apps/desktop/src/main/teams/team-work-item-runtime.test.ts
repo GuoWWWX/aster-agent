@@ -20,6 +20,60 @@ afterEach(() => {
 });
 
 describe("TeamWorkItemRuntime", () => {
+  it("executes an independent Team task with its persistent members and no project lookup", () => {
+    const database = new AgentDatabase(":memory:"); databases.push(database);
+    const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
+    database.syncTeamDirectory(directory);
+    const selection = { providerId: crypto.randomUUID(), modelId: "fixture-model", reasoning: null };
+    const getProject = vi.fn();
+    const sendMessage = vi.fn((input: SendConversationMessageInput, _emit: unknown, options?: { beforeRunScheduled?: (accepted: { runId: string }) => void }) => {
+      const run = database.createRunWithUserMessage(input.conversationId, input.content, selection.modelId);
+      options?.beforeRunScheduled?.({ runId: run.runId });
+      return { kind: "started" as const, runId: run.runId, userMessage: run.userMessage };
+    });
+    const lifecycle = { createConversation: (projectId: string | null, options: Parameters<AgentDatabase["createConversation"]>[1]) => database.createConversation(projectId, options) } as unknown as ConversationLifecycleService;
+    const runtime = new TeamWorkItemRuntime(database, lifecycle, { sendMessage } as unknown as AgentRuntime,
+      { getPreferredSelection: () => selection } as ModelCredentialStore, { getProject } as unknown as ProjectRegistry, { getConfiguration: () => directory });
+    const instance = runtime.createInstance({ teamId: "default-team", scope: "global" });
+    expect(database.getConversation(instance.rootConversationId!).permissionMode).toBe("full_access");
+    expect(database.listTeamMemberConversations(instance.rootConversationId!).every(member => member.permissionMode === "full_access")).toBe(true);
+    const roleId = directory.teams[0]!.memberIds.find(id => id !== directory.teams[0]!.leadAgentId)!;
+    const workers = runtime.resizeWorkers({ conversationId: instance.rootConversationId!, agentId: roleId, count: 2 });
+    expect(workers).toHaveLength(2);
+    expect(workers[0]?.id).not.toBe(workers[1]?.id);
+    const busy = database.createRunWithUserMessage(workers[1]!.id, "仍在执行的任务", selection.modelId);
+    expect(() => runtime.resizeWorkers({ conversationId: instance.rootConversationId!, agentId: roleId, count: 1 })).toThrow("仍有执行");
+    database.finishRun(busy.runId, "completed", null);
+    expect(runtime.resizeWorkers({ conversationId: instance.rootConversationId!, agentId: roleId, count: 1 })).toHaveLength(1);
+    expect(database.getConversation(workers[1]!.id).isArchived).toBe(true);
+    const submitted = runtime.submit({ teamId: instance.teamId, teamInstanceId: instance.id, projectId: null,
+      title: "独立调研", requirement: "检查资料并交付结论", acceptanceCriteria: [], priority: "normal", permissionMode: "full_access" }, () => undefined);
+    expect(database.getTeamWorkItem(submitted.id)).toMatchObject({ projectId: null, permissionMode: "full_access", status: "running", executionConversationId: instance.rootConversationId });
+    expect(getProject).not.toHaveBeenCalled();
+    expect(sendMessage.mock.calls[0]?.[0]).toMatchObject({ conversationId: instance.rootConversationId, permissionMode: "full_access" });
+    expect(database.listTeamMemberConversations(instance.rootConversationId!).every(member => member.projectId === null)).toBe(true);
+    expect(database.getTeamTaskContext(instance.rootConversationId!, { limit: 10 }).tasks).toMatchObject([{ id: submitted.id, title: "独立调研" }]);
+    database.addTeamWorkItemComment({ workItemId: submitted.id, content: "同一个任务的新一轮沟通" });
+    expect(database.getTeamTaskContext(workers[0]!.id, { limit: 10 }).tasks).toHaveLength(1);
+    const stranger = database.createConversation(null);
+    expect(() => database.getTeamTaskContext(stranger.id, { limit: 10 })).toThrow("不属于");
+    for (let index = 0; index < 24; index += 1) {
+      database.createTeamWorkItem({ teamId: instance.teamId, teamInstanceId: instance.id, projectId: null,
+        title: "独立任务 " + index, requirement: "详细需求".repeat(500), acceptanceCriteria: [], priority: "normal", permissionMode: "full_access" }, selection);
+    }
+    const context = database.getTeamTaskContext(workers[0]!.id, { limit: 20 });
+    expect(JSON.stringify(context).length).toBeLessThan(17_000);
+    expect(context.nextBeforeWorkItemId).not.toBeNull();
+    const older = database.getTeamTaskContext(workers[0]!.id, { limit: 20, beforeWorkItemId: context.nextBeforeWorkItemId! });
+    expect(new Set([...context.tasks, ...older.tasks].map(task => task.id)).size).toBe(25);
+    expect(database.getTeamTaskContext(workers[0]!.id, { limit: 20, memberConversationId: workers[0]!.id }).tasks).toHaveLength(0);
+    expect(() => database.getTeamTaskContext(workers[0]!.id, { limit: 21 })).toThrow("最多");
+    const other = runtime.createInstance({ teamId: "default-team", scope: "global" });
+    const otherTask = database.createTeamWorkItem({ teamId: other.teamId, teamInstanceId: other.id, projectId: null,
+      title: "其他团队任务", requirement: "不得跨团队读取", acceptanceCriteria: [], priority: "normal", permissionMode: "full_access" }, selection);
+    expect(() => database.getTeamTaskContext(workers[0]!.id, { limit: 10, beforeWorkItemId: otherTask.id })).toThrow("不属于");
+    expect(() => database.getTeamTaskContext(workers[0]!.id, { limit: 10, memberConversationId: other.rootConversationId! })).toThrow("不属于");
+  });
   it("continues an answered Team question through the WorkItem lifecycle and frozen model policy", () => {
     const database = new AgentDatabase(":memory:"); databases.push(database);
     database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
@@ -635,7 +689,7 @@ describe("TeamWorkItemRuntime", () => {
     const database = new AgentDatabase(":memory:");
     databases.push(database);
     const configuration = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
-    configuration.teams[0] = { ...configuration.teams[0]!, maxWorkers: 2 };
+    configuration.teams[0] = { ...configuration.teams[0]!, maxWorkers: 1 };
     database.syncTeamDirectory(configuration);
     const project = {
       id: "00000000-0000-4000-8000-000000000031",

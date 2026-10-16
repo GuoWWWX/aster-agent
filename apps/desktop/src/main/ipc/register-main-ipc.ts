@@ -1,5 +1,7 @@
+import { htmlPreviewRequestSchema, htmlPreviewResponseSchema } from "@agent/protocol";
+import type { HtmlPreviewServer } from "../preview/html-preview-server.js";
 import { scheduledTaskListSchema, scheduledTaskSchema, saveScheduledTaskIpcArgumentsSchema, scheduledTaskReferenceIpcArgumentsSchema } from "@agent/protocol";
-import { userQuestionSchema, userQuestionReferenceSchema, answerUserQuestionInputSchema, backgroundCommandSchema, stopBackgroundCommandInputSchema } from "@agent/protocol";
+import { userQuestionSchema, userQuestionReferenceSchema, answerUserQuestionInputSchema, backgroundCommandSchema, stopBackgroundCommandInputSchema, backgroundCommandOutputSchema, readBackgroundCommandInputSchema } from "@agent/protocol";
 import type { ScheduledTaskController } from "../schedules/scheduled-task-controller.js";
 import {
   app,
@@ -288,6 +290,7 @@ type MainIpcDependencies = {
   integrationConfiguration: IntegrationConfigurationStore;
   gitReview: GitReviewReader;
   managedBrowser: ManagedBrowserController;
+  htmlPreviews: HtmlPreviewServer;
   projectRegistry: ProjectRegistry;
   threadLogLegacyImporter: ThreadLogLegacyImporter;
   skillDocuments: SkillDocumentStore;
@@ -339,6 +342,7 @@ export function registerMainIpcHandlers(
     integrationConfiguration,
     gitReview,
     managedBrowser,
+    htmlPreviews,
     projectRegistry,
     threadLogLegacyImporter,
     skillDocuments,
@@ -377,6 +381,36 @@ export function registerMainIpcHandlers(
   ipcMain.handle(IPC_CHANNELS.scheduledTaskRun, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow); const [input] = scheduledTaskReferenceIpcArgumentsSchema.parse(args);
     return scheduledTaskSchema.parse(scheduledTasks.run(input.id));
+  });
+  ipcMain.handle(IPC_CHANNELS.htmlPreview, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    if (event.senderFrame !== event.sender.mainFrame) throw new Error("Rejected HTML preview request from a subframe.");
+    const [input] = z.tuple([htmlPreviewRequestSchema]).parse(args);
+    if (input.kind === "release") { htmlPreviews.release(input.id, input.conversationId); return null; }
+    const conversation = database.getConversation(input.conversationId);
+    if (input.kind !== "browser") return htmlPreviewResponseSchema.parse(await htmlPreviews.create(input));
+    const preview = htmlPreviews.get(input.id, input.conversationId);
+    htmlPreviews.retain(input.id, input.conversationId);
+    let retained = true;
+    let sessionId: string | undefined;
+    const release = (): void => {
+      if (retained) { retained = false; htmlPreviews.release(input.id, input.conversationId); }
+    };
+    try {
+      const session = await managedBrowser.open({}, { isolated: true, onClose: release });
+      sessionId = session.sessionId;
+      await workspaceBrowserTabs.open({ conversationId: conversation.id, projectId: conversation.projectId ?? conversation.id,
+        requestedName: preview.title, session, signal: new AbortController().signal });
+      await managedBrowser.navigate({ sessionId, url: preview.url });
+      return null;
+    } catch (error) {
+      if (sessionId !== undefined) {
+        workspaceBrowserTabs.close({ conversationId: conversation.id, sessionId });
+        managedBrowser.close({ sessionId });
+      }
+      release();
+      throw error;
+    }
   });
   const disposeApplicationSettingsListener = applicationSettings.onChanged((settings) => {
     const window = getMainWindow();
@@ -471,6 +505,11 @@ export function registerMainIpcHandlers(
     getTrustedWindow(event, getMainWindow);
     const [input] = z.tuple([stopBackgroundCommandInputSchema]).parse(args);
     return backgroundCommandSchema.parse(await agentRuntime.stopBackgroundCommand(input.conversationId, input.commandId));
+  });
+  ipcMain.handle(IPC_CHANNELS.backgroundCommandRead, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([readBackgroundCommandInputSchema]).parse(args);
+    return backgroundCommandOutputSchema.parse(agentRuntime.readBackgroundCommand(input));
   });
 
   ipcMain.handle(IPC_CHANNELS.pluginList, (event, ...args: unknown[]) => {
@@ -770,6 +809,7 @@ export function registerMainIpcHandlers(
       conversationLifecycle.setConversationPermissionMode(
         input.conversationId,
         input.permissionMode,
+        input.coordinationMode,
       ),
     );
   });
@@ -1334,6 +1374,12 @@ export function registerMainIpcHandlers(
     return modelCatalogSchema.parse(modelCatalog.getCatalog());
   });
 
+  ipcMain.handle(IPC_CHANNELS.modelSaveCatalog, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [catalog] = z.tuple([modelCatalogSchema]).parse(args);
+    return modelCatalogSchema.parse(modelCatalog.saveCatalog(catalog));
+  });
+
   ipcMain.handle(IPC_CHANNELS.modelGetApiKey, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = getModelApiKeyIpcArgumentsSchema.parse(args);
@@ -1648,6 +1694,7 @@ export function registerMainIpcHandlers(
   ipcMain.handle(IPC_CHANNELS.managedBrowserOpen, async (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = managedBrowserOpenIpcArgumentsSchema.parse(args);
+    if (input.conversationId !== undefined) database.getConversation(input.conversationId);
     return managedBrowserSessionSchema.parse(await managedBrowser.open(input));
   });
 

@@ -1,4 +1,5 @@
-import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput } from "@agent/protocol";
+import type { HtmlPreview, HtmlPreviewRequest } from "@agent/protocol";
+import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
 import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
 import type {
   CapabilitySet,
@@ -145,6 +146,7 @@ import type {
  * dependency and keeps host-specific globals outside UI components.
  */
 export class DesktopAgentClientAdapter implements AgentClient {
+  public htmlPreview(input: HtmlPreviewRequest): Promise<HtmlPreview | null> { return this.desktopBridge.htmlPreview(input); }
   private readonly conversationRunEventListeners = new Set<ConversationRunEventListener>();
   private disposeConversationRunEventBridge: (() => void) | null = null;
 
@@ -344,6 +346,10 @@ export class DesktopAgentClientAdapter implements AgentClient {
 
   public getModelCatalog(): Promise<ModelCatalog> {
     return this.desktopBridge.getModelCatalog();
+  }
+
+  public saveModelCatalog(catalog: ModelCatalog): Promise<ModelCatalog> {
+    return this.desktopBridge.saveModelCatalog(catalog);
   }
 
   public getModelStatus(): Promise<ModelRuntimeStatus> {
@@ -563,6 +569,7 @@ export class DesktopAgentClientAdapter implements AgentClient {
   public answerUserQuestion(input: AnswerUserQuestionInput): Promise<UserQuestion> { return this.desktopBridge.answerUserQuestion(input); }
   public markUserQuestionViewed(input: { questionId: string }): Promise<UserQuestion> { return this.desktopBridge.markUserQuestionViewed(input); }
   public listBackgroundCommands(input: ConversationReferenceInput): Promise<BackgroundCommand[]> { return this.desktopBridge.listBackgroundCommands(input); }
+  public readBackgroundCommand(input: ReadBackgroundCommandInput): Promise<BackgroundCommandOutput> { return this.desktopBridge.readBackgroundCommand(input); }
   public stopBackgroundCommand(input: StopBackgroundCommandInput): Promise<BackgroundCommand> { return this.desktopBridge.stopBackgroundCommand(input); }
 
   public listProjectEntries(

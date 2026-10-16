@@ -1,7 +1,8 @@
+import { HtmlPresentationTool } from "../tools/html-presentation-tool.js";
 import { createHash, randomUUID } from "node:crypto";
 import { UserQuestionService } from "./user-question-service.js";
 import { UserQuestionTool } from "./user-question-tool.js";
-import type { BackgroundCommand, AnswerUserQuestionInput, UserQuestion } from "@agent/protocol";
+import type { BackgroundCommand, BackgroundCommandOutput, ReadBackgroundCommandInput, AnswerUserQuestionInput, UserQuestion } from "@agent/protocol";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { interrupt, isGraphInterrupt } from "@langchain/langgraph";
@@ -618,7 +619,7 @@ const DEFAULT_APPLICATION_PERMISSION_POLICIES: ApplicationPermissionPolicies = {
 };
 
 const PROJECT_READ_TOOL_NAMES = new Set([
-  "list_directory",
+  "present_html",
   "read_file",
   "view_image",
   "view_attachments",
@@ -986,6 +987,8 @@ function agentResultReceiptContent(input: {
 
 export class AgentRuntime {
   private readonly runCoordinator = new RunCoordinator();
+  private stoppingRuns = false;
+  private stopRunsPromise: Promise<void> | null = null;
   private readonly pendingAgentWakes = new Map<string, { timer: ReturnType<typeof setTimeout>; depth: number }>();
   private readonly pendingQueuePaused = new Map<string, boolean>();
   private readonly latestRequestUsage = new Map<string, ModelProviderTokenUsage | null>();
@@ -1098,6 +1101,12 @@ export class AgentRuntime {
       list: (id) => this.database.listUserQuestions(id),
       get: (id) => this.database.getUserQuestion(id),
       delivered: (id, conversationId) => this.database.wasUserQuestionAnswerDelivered(id, conversationId),
+      validateAttachments: (question, ids) => {
+        if (ids.length === 0) return;
+        if (this.attachments === null) throw new Error("附件服务不可用。");
+        const drafts = new Set(this.database.listDraftConversationAttachments(question.conversationId).map(attachment => attachment.id));
+        if (ids.some(id => !drafts.has(id))) throw new Error("回答附件必须属于发起提问的对话，且尚未发送。");
+      },
       save: (question) => {
         const event = { type: "user_question_updated" as const, payload: { question } };
         if (this.threadLog !== null && this.eventProjector !== null) this.appendWriteAheadThreadLog(question.displayConversationId, event);
@@ -1112,6 +1121,7 @@ export class AgentRuntime {
         const previous = this.database.getLatestRunExecutionSnapshot(conversationId);
         const selection = target.modelSelection ?? (previous?.providerId === null || previous?.providerId === undefined ? null : { providerId: previous.providerId, modelId: previous.modelId, reasoning: previous.reasoning });
         const input: SendConversationMessageInput = { conversationId, content, deliveryMode: "steer", permissionMode: target.permissionMode ?? previous?.permissionMode ?? DEFAULT_PERMISSION_MODE,
+          ...(conversationId !== question.conversationId || (question.answerAttachmentIds?.length ?? 0) === 0 ? {} : { attachmentIds: question.answerAttachmentIds }),
           ...(selection === null ? {} : { providerId: selection.providerId, modelId: selection.modelId, ...(selection.reasoning === null ? {} : { reasoning: selection.reasoning }) }) };
         if (target.teamWorkItemId !== null) {
           if (this.teamWorkItemDispatcher?.deliverQuestionAnswer === undefined) throw new Error("团队提问暂时无法继续，请重试送达。");
@@ -1122,7 +1132,10 @@ export class AgentRuntime {
     this.userQuestionTool = new UserQuestionTool(this.userQuestions);
     this.taskListTool = new TaskListTool(database);
     this.referenceHistory = threadLog === null ? database : new ThreadLogReferenceReader(database, threadLog);
-    this.agentCommunicationTool = new AgentCommunicationTool(database, this.referenceHistory);
+    this.agentCommunicationTool = new AgentCommunicationTool(database, this.referenceHistory, input => {
+      if (this.teamWorkItemDispatcher?.resizeWorkers === undefined) throw new Error("团队扩缩容服务尚不可用。");
+      return this.teamWorkItemDispatcher.resizeWorkers(input);
+    });
     const getModelStatus = credentials.getStatus;
     this.subagentTool = new SubagentTool(
       database,
@@ -1232,7 +1245,17 @@ export class AgentRuntime {
   }
 
   private createToolHandlerRegistry(): ToolHandlerRegistry<RuntimeToolContext> {
+    const htmlPresentationTool = new HtmlPresentationTool(async conversationId => {
+      const conversation = this.database.getConversation(conversationId);
+      return (await this.projects.ensureWorkspaceRoot(conversation.projectId ?? conversation.id)).rootPath;
+    });
     const handlers: ToolHandler<RuntimeToolContext>[] = [
+      {
+        execute: ({ context, rawArguments }) => htmlPresentationTool.execute(context.conversationId, rawArguments, context.signal),
+        getDefinitions: () => htmlPresentationTool.getDefinitions(),
+        getExecutionPolicy: () => ({ kind: "serial" }),
+        isAvailable: () => true,
+      },
       {
         execute: ({ context, rawArguments, toolName }) => this.userQuestionTool.execute({ toolName, rawArguments,
           conversationId: context.conversationId, runId: context.runId, toolCallId: context.toolCallId ?? context.runId, signal: context.signal, emit: context.emit }),
@@ -1269,9 +1292,21 @@ export class AgentRuntime {
           signal: context.signal,
           toolName,
         }),
-        getDefinitions: () => this.agentCommunicationTool.getConversationReadDefinitions(),
+        getDefinitions: () => this.agentCommunicationTool.getConversationReadDefinitions()
+          .filter(definition => definition.name !== "get_team_context"),
         getExecutionPolicy: ({ toolName }) => this.agentCommunicationTool.getExecutionPolicy(toolName),
         isAvailable: ({ conversationId }) => conversationId !== undefined,
+      },
+      {
+        execute: ({ context, rawArguments, toolName }) => this.agentCommunicationTool.execute({
+          arguments: rawArguments, conversationId: context.conversationId, runId: context.runId,
+          signal: context.signal, toolName,
+        }),
+        getDefinitions: () => this.agentCommunicationTool.getConversationReadDefinitions()
+          .filter(definition => definition.name === "get_team_context"),
+        getExecutionPolicy: ({ toolName }) => this.agentCommunicationTool.getExecutionPolicy(toolName),
+        isAvailable: ({ conversationId }) => conversationId !== undefined
+          && this.database.getTeamInstanceForConversation(conversationId) !== null,
       },
       {
         execute: ({ context, rawArguments, toolName }) => this.agentCommunicationTool.execute({
@@ -1282,13 +1317,27 @@ export class AgentRuntime {
             messageIds,
           ),
           onMessageSent: (message) => this.handleAgentMessageSent(message, context.emit),
+          permissionMode: context.permissionMode,
           runId: context.runId,
           signal: context.signal,
           toolName,
         }),
-        getDefinitions: () => this.agentCommunicationTool.getCoordinationDefinitions(),
+        getDefinitions: () => this.agentCommunicationTool.getCoordinationDefinitions()
+          .filter(definition => definition.name !== "resize_team_workers"),
         getExecutionPolicy: ({ toolName }) => this.agentCommunicationTool.getExecutionPolicy(toolName),
         isAvailable: ({ conversationId }) => this.canUseAgentCommunication(conversationId),
+      },
+      {
+        execute: ({ context, rawArguments, toolName }) => this.agentCommunicationTool.execute({
+          arguments: rawArguments, conversationId: context.conversationId, runId: context.runId,
+          signal: context.signal, permissionMode: context.permissionMode, toolName,
+        }),
+        getDefinitions: () => this.agentCommunicationTool.getCoordinationDefinitions()
+          .filter(definition => definition.name === "resize_team_workers"),
+        getExecutionPolicy: ({ toolName }) => this.agentCommunicationTool.getExecutionPolicy(toolName),
+        isAvailable: ({ conversationId }) => conversationId !== undefined
+          && this.database.getConversation(conversationId).threadKind === "team_lead"
+          && this.database.getTeamInstanceForConversation(conversationId) !== null,
       },
       {
         execute: ({ context, rawArguments, toolName }) => this.subagentTool.execute({
@@ -1533,6 +1582,7 @@ export class AgentRuntime {
     emit: RunEventEmitter,
     options?: SendMessageOptions,
   ): ConversationMessageSubmission {
+    if (this.stoppingRuns) throw new Error("Agent execution is stopping.");
     const input = sendConversationMessageInputSchema.parse(rawInput);
     this.eventProjector?.ensureConversationHistoryProjected(input.conversationId);
     const conversation = this.database.getConversation(input.conversationId);
@@ -1605,6 +1655,7 @@ export class AgentRuntime {
     rawInput: ReplaceLatestConversationMessageInput,
     emit: RunEventEmitter,
   ): Promise<RunAccepted> {
+    if (this.stoppingRuns) throw new Error("Agent execution is stopping.");
     const input = replaceLatestConversationMessageInputSchema.parse(rawInput);
     this.eventProjector?.ensureConversationHistoryProjected(input.conversationId);
     const conversation = this.database.getConversation(input.conversationId);
@@ -1635,6 +1686,7 @@ export class AgentRuntime {
       this.runCoordinator.markReplacing(sourceRunId);
       this.cancelSingleRun(sourceRunId);
       await activeRun.finished;
+      if (this.stoppingRuns) throw new Error("Agent execution is stopping.");
       source = this.database.getLatestUserMessageReplacementSource(
         input.conversationId,
         input.messageId,
@@ -1877,6 +1929,7 @@ export class AgentRuntime {
   }
 
   public resumePendingMessages(emit: RunEventEmitter): void {
+    if (this.stoppingRuns) return;
     this.userQuestions.resumeUndelivered(emit, (error) => reportMainError(toMainAgentError(error, { operation: "user_question.resume" }), error));
     for (const recovery of this.database.listAgentReplyRecoveries()) {
       this.eventProjector?.ensureConversationHistoryProjected(recovery.trigger.conversationId);
@@ -2041,6 +2094,7 @@ export class AgentRuntime {
     titleOverride?: string,
     questionAnswerId?: string,
   ): RunAccepted {
+    if (this.stoppingRuns) throw new Error("Agent execution is stopping.");
     const { configuration, input } = prepared;
     const executionSnapshot = createRunExecutionSnapshot({
       configuration,
@@ -2198,6 +2252,7 @@ export class AgentRuntime {
   }
 
   private startNextPendingRun(conversationId: string, emit: RunEventEmitter, explicitlyRequested = false): void {
+    if (this.stoppingRuns) return;
     if (this.database.isConversationExecutionPaused(conversationId)) return;
     if (!explicitlyRequested && this.isPendingQueuePaused(conversationId)) return;
     this.eventProjector?.ensureConversationHistoryProjected(conversationId);
@@ -2232,12 +2287,19 @@ export class AgentRuntime {
     imageMessages: ModelMessage[],
     emit: RunEventEmitter
   ): boolean {
-    const records = this.database.listPendingMessageRecords(conversationId, "steer");
+    const coordinating = this.database.getConversation(conversationId).coordinationMode === "parallel_queue";
+    const records = [
+      ...this.database.listPendingMessageRecords(conversationId, "steer"),
+      ...(coordinating && !this.isPendingQueuePaused(conversationId)
+        ? this.database.listPendingMessageRecords(conversationId, "queue").slice(0, 5) : []),
+    ];
     if (records.length === 0) return false;
     const consumedMessages: ConversationMessageItem[] = [];
     for (const record of records) {
       const prepared = this.prepareConversationMessage(record.input);
-      const modelInputContent = steerModelContent(prepared.modelInputContent);
+      const modelInputContent = record.message.deliveryMode === "queue"
+        ? `[Independent queued request ${record.message.id}]\nKeep earlier assignments and their results. Register this request in the task list, delegate independent work to a reusable or new Subagent, and track its completion without waiting before accepting more queued requests.\n${prepared.modelInputContent}\n[End queued request]`
+        : steerModelContent(prepared.modelInputContent);
       const userMessage = this.threadLog !== null && this.eventProjector !== null
         ? (() => {
             const pendingConsumption = this.database.preparePendingMessageConsumption(
@@ -2365,6 +2427,33 @@ export class AgentRuntime {
       return;
     }
     this.cancelSingleRun(runId);
+  }
+
+  /** Drain current work before the window or persistence owners are released. */
+  public stopAllRuns(): Promise<void> {
+    if (this.stopRunsPromise !== null) return this.stopRunsPromise;
+    this.stoppingRuns = true;
+    for (const wake of this.pendingAgentWakes.values()) clearTimeout(wake.timer);
+    this.pendingAgentWakes.clear();
+    const errors: unknown[] = [];
+    try {
+      for (const conversation of this.database.listAgentConversations()) {
+        if (conversation.activeRunId === null) continue;
+        try { this.setExecutionPaused(conversation.id, true); } catch (error) { errors.push(error); }
+        try { this.cancelSingleRun(conversation.activeRunId); } catch (error) { errors.push(error); }
+      }
+    } catch (error) {
+      errors.push(error);
+    }
+    this.stopRunsPromise = this.runCoordinator.cancelAll()
+      .then(() => { if (errors.length > 0) throw new AggregateError(errors, "Run shutdown persistence failed."); })
+      .finally(() => { this.stopRunsPromise = null; });
+    return this.stopRunsPromise;
+  }
+
+  public resumeAfterWindowOpen(): void {
+    if (this.stopRunsPromise !== null) throw new Error("Agent execution is still stopping.");
+    this.stoppingRuns = false;
   }
 
   public cancelConversation(conversationId: string): void {
@@ -2578,6 +2667,7 @@ export class AgentRuntime {
   }
 
   public approveToolChange(rawInput: unknown): void {
+    if (this.stoppingRuns) throw new ToolApprovalExpiredError();
     const input = approveToolChangeInputSchema.parse(rawInput);
     const pending = this.pendingChangeApprovals.get(input.toolId);
     if (pending === undefined || pending.runId !== input.runId) {
@@ -3154,6 +3244,7 @@ export class AgentRuntime {
       });
     } finally {
       this.clearPendingChangeApprovals(runId);
+      this.browserToolPlugin?.closeBackground(conversationId);
       for (const tool of this.database.expirePendingToolApprovalsForRun(runId)) {
         this.appendShadowThreadLog(tool.conversationId, {
           payload: {
@@ -3260,6 +3351,7 @@ export class AgentRuntime {
     if (team === undefined) return [];
     const members = this.database.listTeamMemberConversations(conversation.id)
       .filter((member) => member.agentId !== null
+        && !member.isArchived
         && member.agentId !== team.leadAgentId
         && team.memberIds.includes(member.agentId)
         && directory?.agents.some((agent) => agent.id === member.agentId && agent.enabled) === true)
@@ -3274,8 +3366,11 @@ export class AgentRuntime {
       ? []
       : [
         "This is a persistent Agent Team. Do not create Subagents for Team work.",
+        "Use get_team_context on demand to see the shared task timeline, participant responsibilities and compact results. One task can span several Runs. Read full member evidence only when needed; do not continually reload the whole Team history.",
         `Delegate only through send_agent_message with a member conversationId: ${members.join("; ")}`,
         "Every Team WorkItem must delegate to at least one durable member with expectReply=true before the Team Lead gives a final answer. For simple work choose only the best-matched member; add more roles only when the task genuinely needs them.",
+        "For implementation tasks, assign independent review and actual validation to a member who did not implement the change. If no independent member is available, explicitly take responsibility for the review. Distinguish executed checks from suggested checks and unresolved risks; a role label or final answer does not prove a check passed.",
+        "Use resize_team_workers only when independent work is waiting and the appropriate role is busy. Assign file or module ownership before parallel changes, reread current content after a conflict and integrate deliberately; never force overwrite, reset or blindly merge another member's work.",
         "Use replyInstruction to request a concise completion receipt. The member puts a standalone Markdown --- after that receipt, so the runtime can return only a bounded completion receipt automatically. Check member status with list_agent_conversations, read full member conversations only on demand with read_agent_conversation and a deliberate maxTokens budget, verify the returned work, and summarize it yourself.",
       ];
   }
@@ -3296,12 +3391,22 @@ export class AgentRuntime {
     if (!this.database.isTeamMemberConversation(conversation.id)) return [];
     return [
       "You are a persistent Team member. Work only on messages assigned through Agent communication. Do not create Subagents. Report progress or clarification with send_agent_message to a participant in the same Team. Start your final answer with the requested concise completion receipt, add a standalone Markdown --- line, then keep supporting detail after it in this conversation; the runtime returns only a bounded completion receipt before that divider.",
+      "The shared get_team_context timeline tells you what the Team and individual members have already done. Reuse verified facts, keep the current assignment as the scope, and use read_agent_conversation for evidence instead of loading every member's full history.",
     ];
   }
 
   private teamDispatchContext(conversation: ConversationSummary): string[] {
     const catalogPrompt = this.teamWorkItemTool.getCatalogPrompt(conversation.id);
     return catalogPrompt === null ? [] : [catalogPrompt];
+  }
+
+  private coordinationContext(conversation: ConversationSummary): string[] {
+    if (conversation.coordinationMode !== "parallel_queue") return [];
+    return [
+      "Quick coordination mode is enabled with full_access. You own a persistent queue of independent user requests and coordinate reusable Subagents. Record each request and its assigned child IDs in the durable task list; accept new queued requests at runtime-safe model boundaries instead of polling the inbox. New requests do not replace or cancel earlier assignments.",
+      "Delegate independent work promptly and continue accepting requests while workers run. Reuse an idle suitable child and its context; create another only when independent parallel work justifies it. Keep at most 8 children actively working; leave remaining work pending in the task list. Use the existing list_subagents, send_agent_message, wait_for_subagents and end_subagent tools, and reconcile every request and child result before declaring the whole batch complete. Failed children require explicit retry/reassignment or a truthful failure report, never silent omission.",
+      "Give each coding worker a distinct file/module ownership scope. Backend locks reject conflicting or stale writes; ask the owner to finish, reread current files and integrate deliberately. Do not force-reset or blindly merge another worker's edits. For substantive changes assign independent checking/testing before final delivery and distinguish actual test results from proposed checks.",
+    ];
   }
 
   private spawnSubagent(input: {
@@ -3319,6 +3424,7 @@ export class AgentRuntime {
     modelSelection: ConversationModelSelection | undefined;
     task: string;
   }): SubagentTask {
+    if (this.stoppingRuns) throw new Error("Agent execution is stopping.");
     const parent = this.database.getConversation(input.parentConversationId);
     if (parent.isArchived) throw new Error("An archived conversation cannot start a Subagent.");
     if (
@@ -3761,6 +3867,7 @@ export class AgentRuntime {
     emit: RunEventEmitter,
     flush = false,
   ): void {
+    if (this.stoppingRuns) return;
     if (!this.database.isOpen() || !this.database.hasConversation(conversationId) || this.database.isConversationExecutionPaused(conversationId)) return;
     this.eventProjector?.ensureConversationHistoryProjected(conversationId);
     const unreadMessages = this.database.listUnreadAgentMessages(conversationId);
@@ -3836,7 +3943,12 @@ export class AgentRuntime {
         : null;
       const permissionMode = managedWorkItem?.permissionMode
         ?? previousSubagentSnapshot?.permissionMode
+        ?? (targetConversation.coordinationMode === "parallel_queue" && targetConversation.permissionMode === "full_access"
+          ? "full_access" : undefined)
         ?? DEFAULT_PERMISSION_MODE;
+      if (managedWorkItem !== null) {
+        (this.conversationLifecycle ?? this.database).setConversationPermissionMode(conversationId, permissionMode);
+      }
       const contextCompressionConfiguration = structuredClone(
         resolveContextCompressionConfiguration(
           configuration,
@@ -4037,6 +4149,10 @@ export class AgentRuntime {
     )?.id;
     this.emit(input.emit, {
       conversationId: input.conversationId,
+      estimatedInputTokens: input.messages.reduce((total, message) => {
+        const estimate = estimateModelMessageTokens(message);
+        return total + estimate.contentTokens + estimate.attachmentTokens + estimate.toolCallTokens;
+      }, estimateContextTokens(JSON.stringify(input.tools))),
       runId: input.runId,
       type: "model.request_started"
     });
@@ -4444,6 +4560,7 @@ export class AgentRuntime {
       isError: true,
       kind: "completed",
     };
+    const toolImageRefs: ConversationAttachment[] = [];
     try {
       const unavailableReason = this.unavailableToolReason(input.toolCall.name);
       if (unavailableReason !== null) {
@@ -4520,6 +4637,15 @@ export class AgentRuntime {
               })
           : proposal;
       }
+      if (!execution.isError && this.attachments !== null && input.toolCall.name === "browser_control") {
+        const screenshot = execution.modelAttachments?.find((image) => image.source === "browser" && image.kind === "image");
+        if (screenshot?.kind === "image" && screenshot.data !== null) {
+          const image = await this.attachments.saveToolScreenshot(input.conversationId, startedTool.id, { ...screenshot, data: screenshot.data });
+          toolImageRefs.push(image);
+          const result = z.object({ ok: z.literal(true), value: z.record(z.string(), z.unknown()) }).parse(JSON.parse(execution.content));
+          execution = { ...execution, content: JSON.stringify({ ...result, value: { ...result.value, image } }) };
+        }
+      }
     } catch (error) {
       // Approval interrupts and cancellation must escape so LangGraph can
       // suspend/resume or terminate the run. Other tool failures are turned
@@ -4542,6 +4668,7 @@ export class AgentRuntime {
     });
     const resultEvent = {
       payload: {
+        ...(toolImageRefs.length === 0 ? {} : { attachmentRefs: toolImageRefs }),
         content: execution.content,
         resultCharacters: execution.content.length,
         runId: input.runId,
@@ -4605,6 +4732,17 @@ export class AgentRuntime {
       tool: completedTool,
       type: "tool.completed",
     });
+    if (execution.commandCompletion !== undefined) {
+      void execution.commandCompletion.then((finalResult) => {
+        this.persistRuntimeActivity(conversationToolItemSchema.parse({
+          ...completedTool,
+          result: finalResult.content,
+          status: finalResult.isError ? "failed" : "completed",
+        }), input.emit);
+      }).catch((error: unknown) => {
+        reportMainError(toMainAgentError(error, { operation: "command.completion.persist" }), error);
+      });
+    }
     return envelope;
   }
 
@@ -5219,6 +5357,8 @@ export class AgentRuntime {
       (output) => {
         this.emit(input.emit, {
           commandId: output.commandId,
+          startedAt: output.startedAt,
+          completedAt: output.completedAt,
           conversationId: input.startedTool.conversationId,
           delta: output.delta,
           done: output.done,
@@ -5304,6 +5444,7 @@ export class AgentRuntime {
         ...conversationIdentityContext(conversation, agent),
         ...this.agentDelegationContext(conversation),
         ...this.teamWorkerContext(conversation),
+        ...this.coordinationContext(conversation),
         ...this.teamDispatchContext(conversation),
         this.skillRuntime === null
           ? "A Skill is a task instruction and capability bundle injected from SKILL.md. No Skill Runtime is currently available, so do not label general abilities as Skills. Git is a command-line program available through run_command, not a Skill or dedicated Git tool; use it only when the task requires it and the workspace is a Git repository."
@@ -5313,7 +5454,7 @@ export class AgentRuntime {
             ? `This temporary conversation has no workspace. It may still use the ${this.tools.getCommandEnvironmentDescription()} command tool, read_external_file, web_search, and Agent/Subagent collaboration tools. Commands run in an isolated temporary directory. Project file, directory, and search tools require an attached working directory. Every external file read still requires approval.`
             : `This temporary conversation has no workspace. It may still use read_attachment, view_attachments, the ${this.tools.getCommandEnvironmentDescription()} command tool, read_external_file, web_search, and Agent/Subagent collaboration tools. Commands run in an isolated temporary directory. Project file, directory, and search tools require an attached working directory. Every external file read still requires approval.`
           : `The current workspace supports file reads, search, controlled file changes, the ${this.tools.getCommandEnvironmentDescription()} command tool, and web_search. Commands and writes remain subject to this run's permission policy.`,
-        `One model turn may return at most ${MAX_TOOL_CALLS_PER_MODEL_TURN} mixed Tool Calls. Independent reads such as read_file, search_text, find_files, read_attachment, and view_attachments run concurrently in groups of up to ${MAX_PARALLEL_READ_TOOL_CALLS}, with results matched by call ID. File changes, approvals, Agent messages, and task state remain ordered; stale same-file changes in one batch are rejected. Outside read_only mode, consecutive independent run_command calls run in parallel by default in groups of up to ${MAX_PARALLEL_COMMAND_TOOL_CALLS}; set parallel=false for dependencies or shared mutable state. ask_before_changes still approves each command separately, after which independent commands may overlap. If a turn exceeds the limit, none of its tools run; split the work across turns. Prefer passing multiple IDs at once to wait_for_commands and wait_for_subagents.`,
+        `One model turn may return at most ${MAX_TOOL_CALLS_PER_MODEL_TURN} mixed Tool Calls. Independent reads such as read_file, search_text, find_files, read_attachment, and view_attachments run concurrently in groups of up to ${MAX_PARALLEL_READ_TOOL_CALLS}, with results matched by call ID. File changes, approvals, Agent messages, and task state remain ordered; stale same-file changes in one batch are rejected. Outside read_only mode, consecutive independent run_command calls run in parallel by default in groups of up to ${MAX_PARALLEL_COMMAND_TOOL_CALLS}; set parallel=false for dependencies or shared mutable state. run_command may yield with running and a commandId before a finite command finishes. Continue independent work; use read_command_output with that ID and incremental offsets to confirm exit status before dependent steps or reporting completion. Never treat a running receipt as success or rerun a command to read its logs. ask_before_changes still approves each command separately, after which independent commands may overlap. If a turn exceeds the limit, none of its tools run; split the work across turns. Prefer passing multiple IDs at once to wait_for_subagents.`,
         `Permission mode selected for this task: ${permissionModeLabel(permissionMode)}.`,
         ...(workspace === null
           ? []
@@ -5404,10 +5545,10 @@ export class AgentRuntime {
         runId,
         status: "running",
       });
-      this.persistContextCompactionActivity(activity, emit);
+      this.persistRuntimeActivity(activity, emit);
     } else if (forceCompaction) {
       const createdAt = new Date().toISOString();
-      this.persistContextCompactionActivity(conversationToolItemSchema.parse({
+      this.persistRuntimeActivity(conversationToolItemSchema.parse({
         arguments: JSON.stringify({ trigger: "manual" }),
         batchId: null,
         conversationId,
@@ -5502,7 +5643,7 @@ export class AgentRuntime {
       } catch (error) {
         if (signal.aborted || isAbortError(error)) {
           if (activity !== null) {
-            this.persistContextCompactionActivity(conversationToolItemSchema.parse({
+            this.persistRuntimeActivity(conversationToolItemSchema.parse({
               ...activity,
               result: JSON.stringify({
                 compactionPassCount,
@@ -5530,7 +5671,7 @@ export class AgentRuntime {
       }
     }
     if (activity !== null) {
-      this.persistContextCompactionActivity(conversationToolItemSchema.parse({
+      this.persistRuntimeActivity(conversationToolItemSchema.parse({
         ...activity,
         result: JSON.stringify({
           compactionPassCount,
@@ -5545,7 +5686,7 @@ export class AgentRuntime {
     return context;
   }
 
-  private persistContextCompactionActivity(
+  private persistRuntimeActivity(
     tool: ConversationToolItem,
     emit: RunEventEmitter,
   ): void {
@@ -5835,6 +5976,9 @@ export class AgentRuntime {
   public answerUserQuestion(input: AnswerUserQuestionInput, emit: RunEventEmitter): UserQuestion { return this.userQuestions.answer(input, emit); }
   public markUserQuestionViewed(id: string, emit: RunEventEmitter): UserQuestion { return this.userQuestions.markViewed(id, emit); }
   public listBackgroundCommands(conversationId: string): BackgroundCommand[] { return this.tools.listConversationCommands(this.commandOwners(conversationId)); }
+  public readBackgroundCommand(input: ReadBackgroundCommandInput): BackgroundCommandOutput {
+    return this.tools.readConversationCommand(input.commandId, this.commandOwners(input.conversationId), input.maxChars);
+  }
   public stopBackgroundCommand(conversationId: string, commandId: string): Promise<BackgroundCommand> { return this.tools.stopConversationCommand(commandId, this.commandOwners(conversationId)); }
   private commandOwners(conversationId: string): string[] {
     this.database.getConversation(conversationId);

@@ -49,7 +49,7 @@ export type TeamWorkItemPrototype = {
   plan: string;
   priority: "high" | "normal" | "low";
   project: string;
-  projectId: string;
+  projectId: string | null;
   source: "conversation" | "direct";
   status: TeamWorkItemStatus;
   tasks: TeamTaskPrototype[];

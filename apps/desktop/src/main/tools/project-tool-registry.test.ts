@@ -7,6 +7,7 @@ import { DEFAULT_TERMINAL_CONFIGURATION } from "@agent/protocol";
 
 import { ProjectRegistry } from "../projects/project-registry.js";
 import { decodeTerminalOutput, ProjectToolRegistry } from "./project-tool-registry.js";
+import type { CommandOutputEvent } from "./project-tool-registry.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -50,6 +51,80 @@ async function createLargeFixture(fileCount = 400) {
 }
 
 describe("ProjectToolRegistry", () => {
+  it("retires list_directory from the manifest and rejects stale model calls", async () => {
+    const { project, projects, tools } = await createFixture();
+    expect(tools.getDefinitions().map((tool) => tool.name)).not.toContain("list_directory");
+    expect(tools.getDefinitions().map((tool) => tool.name)).not.toContain("wait_for_commands");
+    expect(() => tools.getExecutionPolicy("list_directory", "{}", false)).toThrow("Unknown project tool");
+    const result = await tools.execute("list_directory", "{}", project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("Unknown tool: list_directory");
+    await expect(projects.listEntries({ directoryPath: "src", projectId: project.id }))
+      .resolves.toMatchObject({ entries: [expect.objectContaining({ name: "index.ts" })] });
+  });
+
+  it("lists a requested directory through an approved shell command", async () => {
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const proposal = await tools.execute("run_command", JSON.stringify({
+      command: "Get-ChildItem -LiteralPath src -Name",
+    }), project.id, signal);
+    if (proposal.kind !== "command") throw new Error(proposal.content);
+    const result = await tools.executePreparedCommand(proposal.command, project.id, signal);
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain("index.ts");
+    await tools.dispose();
+  }, 20_000);
+
+  it("waits for owned batch and service process trees during disposal", async () => {
+    if (process.platform !== "win32") return;
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const owner = { conversationId: crypto.randomUUID(), conversationTitle: "退出清理", runId: crypto.randomUUID() };
+    const executions = ["batch", "service"].map(async (mode) => {
+      const proposal = await tools.execute("run_command", JSON.stringify({
+        command: `$cleanupChild = Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 60' -PassThru; Set-Content -LiteralPath ${mode}.pid -Encoding ascii -Value $cleanupChild.Id; Start-Sleep -Seconds 60`,
+        mode, parallel: true, serviceName: mode === "service" ? "cleanup fixture" : undefined,
+        timeoutMs: 90_000, yieldTimeMs: 0,
+      }), project.id, signal, owner);
+      if (proposal.kind !== "command") throw new Error(proposal.content);
+      return tools.executePreparedCommand(proposal.command, project.id, signal, owner);
+    });
+    try {
+      const pids: number[] = [];
+      await vi.waitFor(async () => {
+        const values = await Promise.all(["batch", "service"].map(async (mode) =>
+          Number((await readFile(path.join(project.rootPath, `${mode}.pid`), "utf8")).trim())));
+        expect(values.every((pid) => pid > 0)).toBe(true);
+        pids.splice(0, pids.length, ...values);
+      }, { timeout: 8_000 });
+      await tools.dispose();
+      for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow();
+      expect(tools.listConversationCommands([owner.conversationId])).toEqual([]);
+      await expect(Promise.all(executions)).resolves.toHaveLength(2);
+    } finally {
+      await tools.dispose();
+      await Promise.all(executions);
+    }
+  }, 20_000);
+
+  it("reads completed output with Unicode, stderr, failure status and a bounded recent tail", async () => {
+    const { project, tools } = await createFixture(); const conversationId = crypto.randomUUID();
+    const owner = { conversationId, conversationTitle: "输出检查", runId: crypto.randomUUID() };
+    const signal = new AbortController().signal;
+    try {
+      const prepared = await tools.execute("run_command", JSON.stringify({ command: "node -e \"process.stdout.write('后台输出中文\\nabcdefghijklmnopqrstuvwxyz\\n'); process.stderr.write('problem\\n'); process.exit(3)\"" }), project.id, signal, owner);
+      if (prepared.kind !== "command") throw new Error("Expected command proposal.");
+      const result = await tools.executePreparedCommand(prepared.command, project.id, signal, owner);
+      const commandId = (JSON.parse(result.content) as { value: { commandId: string } }).value.commandId;
+      const full = tools.readConversationCommand(commandId, [conversationId]);
+      expect(full.stdout).toContain("后台输出中文"); expect(full.stderr).toContain("problem");
+      expect(full.command.status).toBe("failed"); expect(full.command.exitCode).toBeGreaterThan(0);
+      const tail = tools.readConversationCommand(commandId, [conversationId], 8);
+      expect(tail.stdout.length).toBeLessThanOrEqual(8); expect(tail.stdout).toBe(full.stdout.slice(-8));
+      expect(tail.truncated).toBe(true);
+    } finally { await tools.dispose(); }
+  });
   it("exposes owned programs to the UI, rejects another conversation's stop and terminates a child process tree", async () => {
     if (process.platform !== "win32") return;
     const { project, tools } = await createFixture(); const conversationId = crypto.randomUUID(); const otherId = crypto.randomUUID();
@@ -65,6 +140,8 @@ describe("ProjectToolRegistry", () => {
       commandId = (JSON.parse(started.content) as { value: { commandId: string } }).value.commandId;
       expect(tools.listConversationCommands([conversationId])).toContainEqual(expect.objectContaining({ commandId, serviceName: "Spring Boot fixture", status: "running" }));
       expect(tools.listConversationCommands([otherId])).toEqual([]);
+      expect(() => tools.readConversationCommand(commandId!, [otherId])).toThrow("当前对话");
+      expect(tools.readConversationCommand(commandId, [conversationId])).toMatchObject({ command: { commandId, status: "running" }, stdout: "", stderr: "" });
       await expect(tools.stopConversationCommand(commandId, [otherId])).rejects.toThrow("当前对话");
       let childPid = 0;
       await vi.waitFor(async () => { childPid = Number((await readFile(path.join(project.rootPath, "child.pid"), "utf8")).trim()); expect(childPid).toBeGreaterThan(0); }, { timeout: 8000 });
@@ -73,7 +150,7 @@ describe("ProjectToolRegistry", () => {
       await vi.waitFor(() => { expect(() => process.kill(childPid, 0)).toThrow(); }, { timeout: 5000 });
       const completed = tools.listConversationCommands([conversationId]).find((item) => item.commandId === commandId);
       expect(completed?.status).toBe("cancelled"); expect(typeof completed?.completedAt).toBe("string");
-    } finally { try { if (commandId !== undefined) await tools.stopConversationCommand(commandId, [conversationId]); } finally { tools.dispose(); } }
+    } finally { try { if (commandId !== undefined) await tools.stopConversationCommand(commandId, [conversationId]); } finally { await tools.dispose(); } }
   }, 20_000);
   it("views a workspace image as visual input without persisting image bytes in tool text", async () => {
     const { project, tools } = await createFixture();
@@ -360,7 +437,7 @@ describe("ProjectToolRegistry", () => {
 
     expect(tools.getCommandDefinitions().map((tool) => tool.name)).toEqual([
       "list_background_commands",
-      "wait_for_commands",
+      "read_command_output",
       "stop_command",
       "run_command",
     ]);
@@ -398,7 +475,7 @@ describe("ProjectToolRegistry", () => {
     const { project, tools } = await createFixture();
     const signal = new AbortController().signal;
 
-    const listing = await tools.execute("list_directory", JSON.stringify({ path: "src" }), project.id, signal);
+    const listing = await tools.execute("find_files", JSON.stringify({ path: "src", pattern: "*" }), project.id, signal);
     expect(listing.isError).toBe(false);
     expect(listing.content).toContain("index.ts");
 
@@ -497,9 +574,8 @@ describe("ProjectToolRegistry", () => {
       "list_project_operations",
       "wait_for_project_operation",
       "list_background_commands",
-      "wait_for_commands",
+      "read_command_output",
       "stop_command",
-      "list_directory",
       "read_file",
       "read_external_file",
       "search_text",
@@ -1031,13 +1107,14 @@ describe("ProjectToolRegistry", () => {
     const { project, tools } = await createFixture();
     const proposal = await tools.execute(
       "run_command",
-      JSON.stringify({ command: "Write-Output agent-command-ok", timeoutMs: 10_000 }),
+      JSON.stringify({ command: "Write-Output agent-command-ok", description: "检查命令执行通路", timeoutMs: 10_000 }),
       project.id,
       new AbortController().signal
     );
 
     if (proposal.kind !== "command") throw new Error(proposal.content);
     expect(proposal.content).toContain("awaiting_approval");
+    expect(proposal.command.description).toBe("检查命令执行通路");
     const result = await tools.executePreparedCommand(
       proposal.command,
       project.id,
@@ -1052,7 +1129,7 @@ describe("ProjectToolRegistry", () => {
     expect(payload.value.workingDirectory).toBe(project.rootPath);
   });
 
-  it("waits for a batch command to finish even when yieldTimeMs is zero", async () => {
+  it.each([undefined, null])("yields a batch command with timeoutMs=%s and reads its final output", async (timeoutMs) => {
     if (process.platform !== "win32") return;
 
     const { project, tools } = await createFixture();
@@ -1061,6 +1138,7 @@ describe("ProjectToolRegistry", () => {
       "run_command",
       JSON.stringify({
         command: 'Write-Output "batch-start"; Start-Sleep -Milliseconds 250; Write-Output "batch-finished"',
+        timeoutMs,
         yieldTimeMs: 0,
       }),
       project.id,
@@ -1070,17 +1148,90 @@ describe("ProjectToolRegistry", () => {
 
     const result = await tools.executePreparedCommand(proposal.command, project.id, signal);
     const payload = JSON.parse(result.content) as {
-      value?: { mode?: unknown; status?: unknown; stdout?: unknown; timeoutMs?: unknown };
+      value: { commandId: string; mode?: unknown; status?: unknown; stdout?: unknown; timeoutMs?: unknown };
     };
 
     expect(result.isError).toBe(false);
     expect(payload.value).toMatchObject({
       mode: "batch",
-      status: "completed",
-      timeoutMs: 30 * 60_000,
+      status: "running",
+      timeoutMs: timeoutMs === undefined ? 30 * 60_000 : null,
     });
-    expect(payload.value?.stdout).toContain("batch-start");
-    expect(payload.value?.stdout).toContain("batch-finished");
+    const read = await tools.execute("read_command_output", JSON.stringify({
+      commandId: payload.value.commandId, yieldTimeMs: 10_000,
+    }), project.id, signal);
+    expect(read.kind).toBe("completed");
+    expect(JSON.parse(read.content)).toMatchObject({ value: {
+      status: "completed", exitCode: 0,
+    } });
+    expect(read.content).toContain("batch-start");
+    expect(read.content).toContain("batch-finished");
+    await tools.dispose();
+  });
+
+  it("retains a yielded batch lock, permits independent commands and paginates owned logs", async () => {
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const owner = { conversationId: "yield-owner", conversationTitle: "Yield", runId: "yield-run" };
+    try {
+      const proposal = await tools.execute("run_command", JSON.stringify({
+        command: 'Write-Output "first-中文"; Start-Sleep -Milliseconds 1200; [Console]::Error.WriteLine("last-error"); exit 7',
+        yieldTimeMs: 0,
+      }), project.id, signal, owner);
+      if (proposal.kind !== "command") throw new Error(proposal.content);
+      const result = await tools.executePreparedCommand(proposal.command, project.id, signal, owner);
+      const { value: { commandId } } = JSON.parse(result.content) as { value: { commandId: string } };
+      expect(result.commandCompletion).toBeDefined();
+      const conflict = await tools.executePreparedCommand({ ...proposal.command, parallel: false }, project.id, signal, owner);
+      expect(conflict.content).toContain("conflict");
+      const other = await tools.executePreparedCommand({ ...proposal.command, command: 'Write-Output "independent"', yieldTimeMs: 10_000 }, project.id, signal, owner);
+      expect(other.content).toContain("independent");
+      const denied = await tools.execute("read_command_output", JSON.stringify({ commandId, yieldTimeMs: 0 }), project.id, signal, { ...owner, conversationId: "other" });
+      expect(denied.isError).toBe(true);
+      const final = await tools.execute("read_command_output", JSON.stringify({ commandId, maxChars: 5 }), project.id, signal, owner);
+      const payload = JSON.parse(final.content) as { value: { stdout: string; stderr: string; nextStdoutOffset: number; nextStderrOffset: number } };
+      expect(JSON.parse(final.content)).toMatchObject({ value: { status: "failed", exitCode: 7, hasMoreOutput: true } });
+      const next = await tools.execute("read_command_output", JSON.stringify({ commandId, stdoutOffset: payload.value.nextStdoutOffset, stderrOffset: payload.value.nextStderrOffset, yieldTimeMs: 0 }), project.id, signal, owner);
+      const page = JSON.parse(next.content) as { value: { stdout: string; stderr: string } };
+      expect(payload.value.stdout + page.value.stdout).toContain("first-中文");
+      expect(payload.value.stderr + page.value.stderr).toContain("last-error");
+      const empty = await tools.execute("read_command_output", JSON.stringify({ commandId, stdoutOffset: 99999, stderrOffset: 99999, yieldTimeMs: 0 }), project.id, signal, owner);
+      expect(JSON.parse(empty.content)).toMatchObject({ value: { stdout: "", stderr: "", status: "failed" } });
+      await expect(result.commandCompletion).resolves.toMatchObject({ isError: true });
+    } finally { await tools.dispose(); }
+  });
+
+  it.each(["batch", "service"] as const)("observes %s output until exit or the requested yield window", async (mode) => {
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    try {
+      const proposal = await tools.execute("run_command", JSON.stringify({
+        command: 'Write-Output "observed"', mode, yieldTimeMs: 10_000,
+      }), project.id, signal);
+      if (proposal.kind !== "command") throw new Error(proposal.content);
+      const result = await tools.executePreparedCommand(proposal.command, project.id, signal);
+      expect(JSON.parse(result.content)).toMatchObject({ value: { status: "completed" } });
+      expect(result.content).toContain("observed");
+      expect(result.commandCompletion).toBeUndefined();
+    } finally { await tools.dispose(); }
+  });
+
+  it.each([false, true])("returns cancellation/timeout after yielding without using a wait tool (timeout=%s)", async (timedOut) => {
+    const { project, tools } = await createFixture();
+    const controller = new AbortController();
+    try {
+      const proposal = await tools.execute("run_command", JSON.stringify({
+        command: 'Start-Sleep -Seconds 20', yieldTimeMs: 0, timeoutMs: timedOut ? 1000 : 20_000,
+      }), project.id, controller.signal);
+      if (proposal.kind !== "command") throw new Error(proposal.content);
+      const result = await tools.executePreparedCommand(proposal.command, project.id, controller.signal);
+      if (!timedOut) controller.abort();
+      const final = await result.commandCompletion;
+      if (final === undefined) throw new Error("Expected yielded completion.");
+      expect(final.isError).toBe(true);
+      expect(JSON.parse(final.content)).toMatchObject({ value: { status: timedOut ? "failed" : "cancelled", timedOut } });
+      expect(final.content).not.toContain('"completedAt":null');
+    } finally { await tools.dispose(); }
   });
 
   it("streams command output before the command completes", async () => {
@@ -1105,7 +1256,7 @@ describe("ProjectToolRegistry", () => {
     );
     if (proposal.kind !== "command") throw new Error(proposal.content);
 
-    const outputEvents: Array<{ delta: string; done: boolean; stream: string }> = [];
+    const outputEvents: CommandOutputEvent[] = [];
     let resolveFirstOutput: (() => void) | undefined;
     const firstOutput = new Promise<void>((resolve) => {
       resolveFirstOutput = resolve;
@@ -1115,8 +1266,9 @@ describe("ProjectToolRegistry", () => {
       project.id,
       signal,
       owner,
-      ({ delta, done, stream }) => {
-        outputEvents.push({ delta, done, stream });
+      (event) => {
+        const { delta, stream } = event;
+        outputEvents.push(event);
         if (stream === "stdout" && delta.includes("stream-first")) resolveFirstOutput?.();
       },
     );
@@ -1146,6 +1298,9 @@ describe("ProjectToolRegistry", () => {
     expect(outputEvents.some((event) => event.stream === "stderr" && event.delta.includes("stream-error")))
       .toBe(true);
     expect(outputEvents.some((event) => event.done)).toBe(true);
+    expect(outputEvents[0]).toMatchObject({ delta: "", status: "running", completedAt: null });
+    expect(Number.isFinite(Date.parse(outputEvents[0]?.startedAt ?? ""))).toBe(true);
+    expect(outputEvents.filter(event => event.done).every(event => event.completedAt !== null)).toBe(true);
   });
 
   it("makes the bundled ripgrep executable available to shell commands", async () => {
@@ -1474,6 +1629,9 @@ describe("ProjectToolRegistry", () => {
       signal,
       owner,
     );
+    // stop_command returns a receipt before exit; wait before removing the working directory.
+    await tools.execute("wait_for_commands", JSON.stringify({ commandIds: [payload.value.commandId], timeoutMs: 5000 }), project.id, signal, owner);
+    await tools.dispose();
   });
 
   it("keeps independent read tools responsive on a large workspace", async () => {

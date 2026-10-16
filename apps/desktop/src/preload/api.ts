@@ -1,4 +1,5 @@
-import type { AnswerUserQuestionInput, StopBackgroundCommandInput } from "@agent/protocol";
+import type { HtmlPreviewRequest } from "@agent/protocol";
+import type { AnswerUserQuestionInput, StopBackgroundCommandInput, ReadBackgroundCommandInput } from "@agent/protocol";
 import type { SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
 import { ipcRenderer, type IpcRendererEvent } from "electron";
 import { IPC_CHANNELS } from "../../../../packages/protocol/src/ipc-channels.js";
@@ -133,6 +134,7 @@ async function invoke<Result>(channel: IpcChannel, input?: unknown): Promise<Res
 
 export function createDesktopBridge(): DesktopBridge {
   return {
+    htmlPreview(input: HtmlPreviewRequest) { return invoke<BridgeResult<"htmlPreview">>(IPC_CHANNELS.htmlPreview, input); },
     addProject() {
       return invoke<BridgeResult<"addProject">>(IPC_CHANNELS.projectAdd);
     },
@@ -392,6 +394,9 @@ export function createDesktopBridge(): DesktopBridge {
     getModelCatalog() {
       return invoke<BridgeResult<"getModelCatalog">>(IPC_CHANNELS.modelGetCatalog);
     },
+    saveModelCatalog(catalog) {
+      return invoke<BridgeResult<"saveModelCatalog">>(IPC_CHANNELS.modelSaveCatalog, catalog);
+    },
     getIntegrationConfiguration() {
       return invoke<BridgeResult<"getIntegrationConfiguration">>(
         IPC_CHANNELS.integrationGetConfiguration
@@ -573,6 +578,7 @@ export function createDesktopBridge(): DesktopBridge {
     answerUserQuestion(input: AnswerUserQuestionInput) { return invoke<BridgeResult<"answerUserQuestion">>(IPC_CHANNELS.userQuestionAnswer, input); },
     markUserQuestionViewed(input: { questionId: string }) { return invoke<BridgeResult<"markUserQuestionViewed">>(IPC_CHANNELS.userQuestionMarkViewed, input); },
     listBackgroundCommands(input: ConversationReferenceInput) { return invoke<BridgeResult<"listBackgroundCommands">>(IPC_CHANNELS.backgroundCommandList, input); },
+    readBackgroundCommand(input: ReadBackgroundCommandInput) { return invoke<BridgeResult<"readBackgroundCommand">>(IPC_CHANNELS.backgroundCommandRead, input); },
     stopBackgroundCommand(input: StopBackgroundCommandInput) { return invoke<BridgeResult<"stopBackgroundCommand">>(IPC_CHANNELS.backgroundCommandStop, input); },
     listConversations() {
       return invoke<BridgeResult<"listConversations">>(IPC_CHANNELS.conversationList);

@@ -5,7 +5,7 @@ import { TextDecoder } from "node:util";
 const commands = { projects: "projects.list", list: "conversations.list", create: "conversations.create",
   read: "conversations.read", send: "messages.send", cancel: "runs.cancel", open: "conversations.open", "configure-model": "models.configure",
   models: "models.status", questions: "user_questions.list", answer: "user_questions.answer", approve: "approvals.resolve",
-  programs: "background_commands.list", "stop-program": "background_commands.stop", permission: "conversations.set_permission",
+  programs: "background_commands.list", "program-output": "background_commands.read", "stop-program": "background_commands.stop", permission: "conversations.set_permission",
   rename: "conversations.rename", archive: "conversations.archive" };
 
 export async function* controlEvents(response) {

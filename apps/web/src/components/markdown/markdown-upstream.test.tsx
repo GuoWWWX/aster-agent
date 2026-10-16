@@ -6,7 +6,8 @@ import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 const fakeRender = vi.hoisted(() => vi.fn((_source: string, dark: boolean) => Promise.resolve({
   svg: `<svg viewBox="0 0 100 50" data-theme-result="${dark ? "dark" : "light"}"></svg>`, width: 100, height: 50,
 })));
-vi.mock("../../lib/mermaid.js", async (original) => ({ ...await original<typeof import("../../lib/mermaid.js")>(), renderMermaid: fakeRender }));
+const fakePng = vi.hoisted(() => vi.fn().mockResolvedValue("data:image/png;base64,aW1hZ2U="));
+vi.mock("../../lib/mermaid.js", async (original) => ({ ...await original<typeof import("../../lib/mermaid.js")>(), renderMermaid: fakeRender, mermaidToPngDataUrl: fakePng }));
 import { AgentMarkdown, renderAgentMarkdown } from "./agent-markdown.js";
 
 function preview(source: string): HTMLDivElement {
@@ -95,14 +96,65 @@ describe("MDKing features in conversation Markdown", () => {
     const source = "flowchart LR\nA-->B\n";
     await act(async () => { root.render(createElement(AgentMarkdown, { content: "```mermaid\n" + source + "```" })); await Promise.resolve(); });
     expect(node.querySelector("svg[data-theme-result='light']")).not.toBeNull();
-    const canvas = node.querySelector("[data-mermaid-canvas]");
+    const canvas = node.querySelector<HTMLElement>("[data-mermaid-canvas]");
     act(() => node.querySelector<HTMLButtonElement>("[data-action='toggle-mermaid-source']")?.click());
     expect(node.querySelector<HTMLPreElement>("[data-mermaid-source]")?.hidden).toBe(false);
+    expect(canvas?.hidden).toBe(true);
     await act(async () => { node.querySelector<HTMLButtonElement>("[data-action='copy-mermaid']")?.click(); await Promise.resolve(); });
     expect(writeText).toHaveBeenCalledWith(source);
     await act(async () => { useWorkbenchUiStore.setState({ themeMode: "dark" }); await Promise.resolve(); });
     expect(node.querySelector("[data-mermaid-canvas]")).toBe(canvas);
     expect(node.querySelector("svg[data-theme-result='dark']")).not.toBeNull();
+    act(() => node.querySelector<HTMLButtonElement>("[data-action='toggle-mermaid-source']")?.click());
+    expect(node.querySelector<HTMLPreElement>("[data-mermaid-source]")?.hidden).toBe(true);
+    expect(canvas?.hidden).toBe(false);
     act(() => root.unmount()); node.remove();
+  });
+  it("opens the rendered diagram rather than a toolbar icon in the image viewer", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const node = document.createElement("div"); document.body.append(node);
+    const root = createRoot(node);
+    await act(async () => { root.render(createElement(AgentMarkdown, { content: "```mermaid\nflowchart LR\nA-->B\n```" })); await Promise.resolve(); });
+    const request = vi.fn();
+    window.addEventListener("md-king:open-media-preview", request);
+    act(() => node.querySelector<HTMLButtonElement>("[data-action='preview-mermaid']")?.click());
+    const event = request.mock.calls[0]?.[0] as CustomEvent<{ src: string }>;
+    expect(decodeURIComponent(event.detail.src)).toContain('data-theme-result="');
+    expect(decodeURIComponent(event.detail.src)).not.toContain("lucide-maximize");
+    window.removeEventListener("md-king:open-media-preview", request);
+    act(() => root.unmount()); node.remove();
+  });
+  it("copies a PNG from the diagram menu and keeps a failed copy available for retry", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const write = vi.fn<(items: Array<{ data: Record<string, Promise<Blob>> }>) => Promise<void>>()
+      .mockRejectedValueOnce(new Error("Clipboard unavailable")).mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { write } });
+    vi.stubGlobal("ClipboardItem", class {
+      constructor(readonly data: Record<string, Promise<Blob>>) {}
+    });
+    const png = new Blob(["image"], { type: "image/png" });
+    const fetchPng = vi.fn().mockResolvedValue({ blob: () => Promise.resolve(png) });
+    vi.stubGlobal("fetch", fetchPng);
+    useWorkbenchUiStore.setState({ themeMode: "dark" });
+    const node = document.createElement("div"); document.body.append(node);
+    const root = createRoot(node);
+    const source = "flowchart LR\nA-->B\n";
+    try {
+      await act(async () => { root.render(createElement(AgentMarkdown, { content: "```mermaid\n" + source + "```" })); await Promise.resolve(); });
+      act(() => { node.querySelector(".agent-markdown__code-header")?.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true })); });
+      expect(document.querySelector("[role=menu]")).toBeNull();
+      act(() => { node.querySelector("[data-mermaid-canvas] svg")?.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 80 })); });
+      const copy = document.querySelector<HTMLButtonElement>("[role=menuitem]");
+      expect(copy?.textContent).toBe("复制图片");
+      await act(async () => { copy?.click(); await Promise.resolve(); });
+      expect(document.querySelector("[role=status]")?.textContent).toContain("无法复制图表图片");
+      expect(copy?.disabled).toBe(false);
+      await act(async () => { copy?.click(); await Promise.resolve(); });
+      expect(fakePng).toHaveBeenLastCalledWith(source, true);
+      expect(fetchPng).toHaveBeenCalledWith("data:image/png;base64,aW1hZ2U=");
+      expect(write).toHaveBeenCalledTimes(2);
+      expect(await write.mock.calls[1]?.[0][0]?.data["image/png"]).toBe(png);
+      expect(document.querySelector("[role=menu]")).toBeNull();
+    } finally { act(() => root.unmount()); node.remove(); }
   });
 });

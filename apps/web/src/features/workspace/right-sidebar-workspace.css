@@ -19,7 +19,7 @@
   flex: 0 0 auto;
   align-items: stretch;
   border-bottom: 1px solid var(--app-border);
-  background: var(--app-titlebar);
+  background: var(--app-panel);
 }
 
 .right-sidebar-workspace__tabs {
@@ -53,10 +53,11 @@
   border-color: var(--app-selection-border);
   background: var(--app-selection);
   color: var(--app-selection-foreground);
+  box-shadow: var(--app-selection-shadow);
 }
 
 .right-sidebar-workspace__tab-shell:hover:not([data-active="true"]) {
-  background: var(--app-hover);
+  background: var(--app-navigation-hover);
   color: var(--app-foreground);
 }
 
@@ -498,16 +499,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.right-sidebar-workspace__spin {
-  animation: right-sidebar-workspace-spin 1s linear infinite;
-}
-
-@keyframes right-sidebar-workspace-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 [data-theme="dark"] .right-sidebar-workspace__menu {

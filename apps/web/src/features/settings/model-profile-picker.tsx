@@ -23,6 +23,7 @@ import {
   PopoverTrigger,
 } from "../../components/ui/popover.js";
 import { IconButton } from "../../components/ui/icon-button.js";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select.js";
 import { cn } from "../../lib/cn.js";
 import { ProviderLogo } from "./provider-logo.js";
 import "./model-profile-picker.css";
@@ -57,6 +58,7 @@ export function ModelProfilePicker({
   className,
   defaultContextCompression,
   models,
+  providerFilter = false,
   selectedModelId,
   selectedProviderId,
   side = "bottom",
@@ -68,6 +70,7 @@ export function ModelProfilePicker({
   className?: string;
   defaultContextCompression: ContextCompressionThreshold;
   models: readonly ModelProfile[];
+  providerFilter?: boolean;
   selectedModelId: string | null;
   selectedProviderId: string | null;
   side?: "bottom" | "left" | "right" | "top";
@@ -76,6 +79,7 @@ export function ModelProfilePicker({
 }): ReactElement {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [filterProviderId, setFilterProviderId] = useState<string | null>(selectedProviderId);
   const [collapsedProviderIds, setCollapsedProviderIds] = useState<Set<string>>(
     () => defaultCollapsedProviderIds(models, selectedProviderId, selectedModelId),
   );
@@ -99,10 +103,13 @@ export function ModelProfilePicker({
     }
     return [...groups.values()];
   }, [models]);
+  const activeFilterProviderId = providerGroups.some(provider => provider.id === filterProviderId)
+    ? filterProviderId : providerGroups[0]?.id;
   const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
   const filteredGroups = providerGroups.flatMap((provider) => {
-    const matchesProvider = normalizedQuery.length === 0 || [provider.name, provider.baseUrl]
-      .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
+    if (providerFilter && provider.id !== activeFilterProviderId) return [];
+    const matchesProvider = normalizedQuery.length === 0 || (!providerFilter && [provider.name, provider.baseUrl]
+      .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)));
     const filteredModels = matchesProvider
       ? provider.models
       : provider.models.filter((model) => [model.displayName, model.modelId]
@@ -126,6 +133,7 @@ export function ModelProfilePicker({
       onOpenChange={(nextOpen) => {
         setIsOpen(nextOpen);
         if (nextOpen) {
+          setFilterProviderId(selectedProviderId);
           setCollapsedProviderIds(defaultCollapsedProviderIds(
             models,
             selectedProviderId,
@@ -140,17 +148,38 @@ export function ModelProfilePicker({
       <PopoverContent
         align={align}
         className={cn("model-profile-picker", className)}
+        data-provider-filter={providerFilter}
         collisionPadding={8}
         side={side}
         sideOffset={5}
       >
+        {providerFilter ? (
+          <Select value={activeFilterProviderId ?? ""} onValueChange={(value) => {
+            setFilterProviderId(value);
+            setSearchQuery("");
+          }}>
+            <SelectTrigger aria-label="筛选供应商" className="w-full">
+              <SelectValue placeholder="选择供应商" />
+            </SelectTrigger>
+            <SelectContent>
+              {providerGroups.map(provider => (
+                <SelectItem key={provider.id} value={provider.id}>
+                  <span className="flex min-w-0 items-center gap-[5px]">
+                    <ProviderLogo icon={provider.icon} providerName={provider.name} size="small" />
+                    <span className="truncate">{provider.name}</span>
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : null}
         <div className="model-profile-picker__toolbar">
           <label className="model-profile-picker__search app-search-field">
             <Search aria-hidden="true" size={14} />
             <input
               aria-label="搜索模型"
               autoFocus
-              placeholder="搜索供应商、地址、模型 ID 或名称"
+              placeholder={providerFilter ? "搜索模型 ID 或名称" : "搜索供应商、地址、模型 ID 或名称"}
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
             />
@@ -202,7 +231,7 @@ export function ModelProfilePicker({
               </div>
             </PopoverContent>
           </Popover>
-          <IconButton
+          {providerFilter ? null : <IconButton
             disabled={!canToggleAllProviders}
             label={allProvidersCollapsed ? "全部展开供应商模型" : "全部收起供应商模型"}
             size="compact"
@@ -218,11 +247,11 @@ export function ModelProfilePicker({
             ) : (
               <ChevronsDownUp aria-hidden="true" size={15} />
             )}
-          </IconButton>
+          </IconButton>}
         </div>
         <div className="model-profile-picker__options" role="listbox" aria-label={ariaLabel}>
           {sortedGroups.map((provider) => {
-            const isCollapsed = normalizedQuery.length === 0
+            const isCollapsed = !providerFilter && normalizedQuery.length === 0
               && collapsedProviderIds.has(provider.id);
             return (
               <section
@@ -231,7 +260,7 @@ export function ModelProfilePicker({
                 className="model-profile-picker__provider"
                 role="group"
               >
-                <header>
+                {providerFilter ? null : <header>
                   <button
                     aria-expanded={!isCollapsed}
                     aria-label={`${isCollapsed ? "展开" : "收起"} ${provider.name}`}
@@ -266,7 +295,7 @@ export function ModelProfilePicker({
                   >
                     {provider.baseUrl}
                   </a>
-                </header>
+                </header>}
                 {isCollapsed ? null : provider.models.map((model) => {
                   const isSelected =
                     model.providerId === selectedProviderId

@@ -15,6 +15,15 @@ const SESSION = {
 };
 
 describe("WorkspaceBrowserTabController", () => {
+  it("publishes a silent background tab without waiting for a Renderer acknowledgement", async () => {
+    const controller = new WorkspaceBrowserTabController();
+    const notify = vi.fn(() => true); controller.onOpenRequested(notify);
+    await expect(controller.open({ background: true, conversationId: CONVERSATION_ID, projectId: PROJECT_ID,
+      requestedName: "后台验收", session: SESSION, signal: new AbortController().signal,
+    })).resolves.toEqual({ requestedName: "后台验收", resolvedName: "后台验收" });
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ background: true, session: SESSION }));
+    controller.dispose();
+  });
   it("returns the exact Renderer-resolved browser tab name", async () => {
     const controller = new WorkspaceBrowserTabController();
     controller.onOpenRequested((request) => {

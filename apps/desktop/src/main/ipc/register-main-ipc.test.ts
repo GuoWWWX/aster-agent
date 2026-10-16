@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserWindow, IpcMainInvokeEvent } from "electron";
-import { DEFAULT_BROWSER_CONFIGURATION, IPC_CHANNELS, type ConversationSummary } from "@agent/protocol";
+import { DEFAULT_BROWSER_CONFIGURATION, DEFAULT_MODEL_CATALOG, IPC_CHANNELS, type ConversationSummary } from "@agent/protocol";
+import { WorkspaceBrowserTabController } from "../tools/workspace-browser-tab-controller.js";
 import { registerMainIpcHandlers } from "./register-main-ipc.js";
 
 const electron = vi.hoisted(() => ({
@@ -66,6 +67,156 @@ describe("result viewed IPC notification", () => {
   });
   afterEach(() => { dispose?.(); dispose = undefined; });
 
+  it("shows the HTML browser tab before waiting for page resources to finish loading", async () => {
+    const preview = { id: conversation.id, title: "demo.html", url: "http://127.0.0.1:1234/token/demo.html", source: "<p>demo</p>" };
+    const session = { sessionId: conversation.id };
+    let finishLoad: () => void = () => {};
+    const loaded = new Promise<void>((resolve) => { finishLoad = resolve; });
+    const navigate = vi.fn(() => loaded);
+    const openBrowser = vi.fn(async (input: { url?: string }) => {
+      if (input.url !== undefined) await navigate();
+      return session;
+    });
+    const openTab = vi.fn(() => Promise.resolve(undefined));
+    Object.assign(dependencies, {
+      htmlPreviews: { get: () => preview, retain: vi.fn(), release: vi.fn() },
+      database: { getConversation: () => conversation },
+    });
+    Object.assign(dependencies.managedBrowser, { open: openBrowser, navigate });
+    Object.assign(dependencies.workspaceBrowserTabs, { open: openTab });
+    dispose?.();
+    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(window);
+    dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
+    const handler = electron.handle.mock.calls.filter(([channel]) => channel === IPC_CHANNELS.htmlPreview).at(-1)![1];
+    const frame = {};
+    const trusted = { sender: { mainFrame: frame }, senderFrame: frame } as IpcMainInvokeEvent;
+    const opening = handler(trusted, { kind: "browser", conversationId: conversation.id, id: preview.id });
+    let completed = false;
+    void opening.then(() => { completed = true; });
+    try {
+      await vi.waitFor(() => expect(openTab).toHaveBeenCalledOnce(), { timeout: 150 });
+      expect(openBrowser).toHaveBeenCalledWith({}, expect.objectContaining({ isolated: true }));
+      expect(navigate).toHaveBeenCalledWith({ sessionId: session.sessionId, url: preview.url });
+      expect(openTab.mock.invocationCallOrder[0]).toBeLessThan(navigate.mock.invocationCallOrder[0]!);
+      expect(completed).toBe(false);
+    } finally {
+      finishLoad();
+      await opening;
+    }
+    expect(completed).toBe(true);
+  });
+
+  it("validates HTML preview sources and owns isolated browser references through close and failure", async () => {
+    const preview = { id: conversation.id, title: "demo.html", url: "http://127.0.0.1:1234/token/demo.html", source: "<p>demo</p>" };
+    const htmlPreviews = { create: vi.fn(() => Promise.resolve(preview)), get: vi.fn(() => preview), retain: vi.fn(), release: vi.fn() };
+    let closed: (() => void) | undefined;
+    const openBrowser = vi.fn((_input: unknown, options: { isolated?: boolean; onClose?: () => void }) => {
+      closed = options.onClose;
+      return Promise.resolve({ sessionId: conversation.id });
+    });
+    const openTab = vi.fn(() => Promise.resolve(undefined));
+    const navigate = vi.fn(() => Promise.resolve());
+    const closeTab = vi.fn();
+    const closeBrowser = vi.fn(() => closed?.());
+    Object.assign(dependencies, { htmlPreviews, database: { getConversation: () => conversation } });
+    Object.assign(dependencies.managedBrowser, { open: openBrowser, close: closeBrowser, navigate });
+    Object.assign(dependencies.workspaceBrowserTabs, { open: openTab, close: closeTab });
+    dispose?.();
+    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(window);
+    dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
+    const handler = electron.handle.mock.calls.filter(([channel]) => channel === IPC_CHANNELS.htmlPreview).at(-1)![1];
+    const frame = {};
+    const trusted = { sender: { mainFrame: frame }, senderFrame: frame } as IpcMainInvokeEvent;
+    const source = { kind: "file", conversationId: conversation.id, path: "demo.html" };
+    await expect(handler(trusted, source)).resolves.toEqual(preview);
+    await expect(handler(trusted, { ...source, root: "C:/" })).rejects.toThrow();
+    await expect(handler({ ...trusted, senderFrame: {} } as IpcMainInvokeEvent, source)).rejects.toThrow();
+    electron.fromWebContents.mockReturnValueOnce(null);
+    await expect(handler(trusted, source)).rejects.toThrow();
+    expect(htmlPreviews.create).toHaveBeenCalledTimes(1);
+    const browser = { kind: "browser", conversationId: conversation.id, id: preview.id };
+    await handler(trusted, browser);
+    expect(openBrowser).toHaveBeenCalledWith({}, expect.objectContaining({ isolated: true }));
+    expect(openTab).toHaveBeenCalledWith(expect.objectContaining({ conversationId: conversation.id, projectId: conversation.id, requestedName: "demo.html" }));
+    expect(htmlPreviews.retain.mock.invocationCallOrder[0]).toBeLessThan(openBrowser.mock.invocationCallOrder[0]!);
+    closed?.(); closed?.();
+    expect(htmlPreviews.release).toHaveBeenCalledTimes(1);
+    openTab.mockRejectedValueOnce(new Error("tab failed"));
+    await expect(handler(trusted, browser)).rejects.toThrow();
+    expect(closeBrowser).toHaveBeenCalledTimes(1);
+    expect(htmlPreviews.release).toHaveBeenCalledTimes(2);
+    expect(closeTab).toHaveBeenCalledWith({ conversationId: conversation.id, sessionId: conversation.id });
+    navigate.mockRejectedValueOnce(new Error("page load failed"));
+    await expect(handler(trusted, browser)).rejects.toThrow("AGENT_ERROR:");
+    expect(closeBrowser).toHaveBeenCalledTimes(2);
+    expect(closeTab).toHaveBeenCalledTimes(2);
+    expect(htmlPreviews.release).toHaveBeenCalledTimes(3);
+    openBrowser.mockRejectedValueOnce(new Error("load failed"));
+    await expect(handler(trusted, browser)).rejects.toThrow();
+    expect(closeTab).toHaveBeenCalledTimes(2);
+    expect(htmlPreviews.release).toHaveBeenCalledTimes(4);
+    await handler(trusted, { ...browser, kind: "release" });
+    expect(htmlPreviews.release).toHaveBeenCalledTimes(5);
+    htmlPreviews.create.mockResolvedValueOnce({ ...preview, url: "https://example.com" });
+    await expect(handler(trusted, source)).rejects.toThrow();
+  });
+
+  it("releases the HTML browser when shutdown cancels its pending tab acknowledgement", async () => {
+    const preview = { id: conversation.id, title: "demo.html", url: "http://127.0.0.1:1234/token/demo.html", source: "<p>demo</p>" };
+    const htmlPreviews = { get: () => preview, retain: vi.fn(), release: vi.fn() };
+    const tabs = new WorkspaceBrowserTabController();
+    const closeTab = vi.spyOn(tabs, "close");
+    let closed: (() => void) | undefined;
+    const closeBrowser = vi.fn(() => closed?.());
+    const navigate = vi.fn(() => Promise.resolve());
+    Object.assign(dependencies, { htmlPreviews, database: { getConversation: () => conversation }, workspaceBrowserTabs: tabs });
+    Object.assign(dependencies.managedBrowser, {
+      open: vi.fn((_input: unknown, options: { onClose?: () => void }) => {
+        closed = options.onClose;
+        return Promise.resolve({ sessionId: conversation.id, canGoBack: false, canGoForward: false,
+          isLoading: false, title: "新标签页", url: "", zoomPercent: 100 });
+      }),
+      close: closeBrowser,
+      navigate,
+    });
+    dispose?.();
+    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(window);
+    dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
+    const handler = electron.handle.mock.calls.filter(([channel]) => channel === IPC_CHANNELS.htmlPreview).at(-1)![1];
+    const frame = {};
+    const trusted = { sender: { mainFrame: frame }, senderFrame: frame } as IpcMainInvokeEvent;
+    const opening = expect(handler(trusted, { kind: "browser", conversationId: conversation.id, id: preview.id })).rejects.toThrow("AGENT_ERROR:");
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(IPC_CHANNELS.workspaceBrowserOpenRequested, expect.any(Object)));
+    tabs.dispose();
+    await opening;
+    expect(navigate).not.toHaveBeenCalled();
+    expect(closeBrowser).toHaveBeenCalledOnce();
+    expect(closeTab).toHaveBeenCalledWith({ conversationId: conversation.id, sessionId: conversation.id });
+    expect(htmlPreviews.retain).toHaveBeenCalledOnce();
+    expect(htmlPreviews.release).toHaveBeenCalledOnce();
+  });
+
+  it("validates catalog updates and rejects untrusted senders before saving", async () => {
+    dispose?.();
+    const saveCatalog = vi.fn((value: typeof DEFAULT_MODEL_CATALOG) => value);
+    Object.assign(dependencies, { modelCatalog: { saveCatalog } });
+    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(window);
+    dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
+    const handler = electron.handle.mock.calls.filter(([channel]) => channel === IPC_CHANNELS.modelSaveCatalog).at(-1)![1];
+    const frame = {};
+    const trusted = { sender: { mainFrame: frame }, senderFrame: frame } as IpcMainInvokeEvent;
+    await expect(handler(trusted, DEFAULT_MODEL_CATALOG)).resolves.toEqual(DEFAULT_MODEL_CATALOG);
+    expect(saveCatalog).toHaveBeenCalledTimes(1);
+    await expect(handler(trusted, { ...DEFAULT_MODEL_CATALOG, reasoningRules: [{ id: "bad" }] })).rejects.toBeDefined();
+    electron.fromWebContents.mockReturnValueOnce(null);
+    await expect(handler({ sender: {} } as IpcMainInvokeEvent, DEFAULT_MODEL_CATALOG)).rejects.toBeDefined();
+    expect(saveCatalog).toHaveBeenCalledTimes(1);
+  });
+
   it("publishes IPC creation through the shared observer after persistence", async () => {
     dispose?.();
     // The trusted window is the same object returned to the sender validator.
@@ -100,6 +251,24 @@ describe("result viewed IPC notification", () => {
     expect(scheduledTasks.save).toHaveBeenCalledExactlyOnceWith(scheduleInput);
     expect(scheduledTasks.run).toHaveBeenCalledExactlyOnceWith(scheduledTask.id);
     expect(scheduledTasks.delete).toHaveBeenCalledExactlyOnceWith(scheduledTask.id);
+  });
+  it("validates bounded command output reads and rejects untrusted senders", async () => {
+    const read = vi.fn(() => ({ command: { commandId: conversation.id, conversationId: conversation.id, command: "echo ok", mode: "batch", serviceName: null,
+      workingDirectory: ".", startedAt: "2026-10-14T01:00:00Z", completedAt: "2026-10-14T01:00:01Z", status: "completed", exitCode: 0 },
+      stdout: "ok", stderr: "", error: null, timedOut: false, truncated: false }));
+    dependencies.agentRuntime = { readBackgroundCommand: read } as unknown as typeof dependencies.agentRuntime;
+    dispose?.();
+    const trustedWindow = { isDestroyed: () => false, on: vi.fn(), webContents: { send } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(trustedWindow);
+    dispose = registerMainIpcHandlers(() => trustedWindow, dependencies, { resumePendingMessages: false });
+    const handler = electron.handle.mock.calls.filter(([name]) => name === IPC_CHANNELS.backgroundCommandRead).at(-1)![1];
+    const frame = {}; const trusted = { sender: { mainFrame: frame }, senderFrame: frame } as IpcMainInvokeEvent;
+    const input = { conversationId: conversation.id, commandId: conversation.id };
+    await expect(handler(trusted, input)).resolves.toMatchObject({ stdout: "ok" });
+    await expect(handler(trusted, { ...input, maxChars: 64001 })).rejects.toThrow();
+    electron.fromWebContents.mockReturnValueOnce(undefined);
+    await expect(handler(trusted, input)).rejects.toThrow();
+    expect(read).toHaveBeenCalledExactlyOnceWith(input);
   });
 
   it("validates deletion inputs and trusted senders and unregisters both deletion handlers", async () => {

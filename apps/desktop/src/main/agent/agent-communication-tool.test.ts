@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_AGENT_DIRECTORY_CONFIGURATION } from "@agent/protocol";
 
 import { AgentDatabase } from "../storage/agent-database.js";
@@ -6,6 +6,23 @@ import { agentMessageModelContent } from "../storage/agent-database.js";
 import { AgentCommunicationTool } from "./agent-communication-tool.js";
 
 describe("AgentCommunicationTool", () => {
+  it("permits role resizing only for the full-access leader and honors the frozen Run permission", async () => {
+    const database = new AgentDatabase(":memory:");
+    const lead = database.createConversation(null, { threadKind: "team_lead", teamId: "default-team" });
+    const member = database.createConversation(null);
+    database.setConversationPermissionMode(lead.id, "full_access");
+    const resize = vi.fn(() => []);
+    const tool = new AgentCommunicationTool(database, database, resize);
+    const input = { arguments: JSON.stringify({ agentId: "developer", count: 2 }), conversationId: lead.id,
+      runId: crypto.randomUUID(), signal: new AbortController().signal, toolName: "resize_team_workers" };
+    expect(await tool.execute({ ...input, conversationId: member.id, permissionMode: "full_access" })).toMatchObject({ isError: true });
+    expect(await tool.execute({ ...input, permissionMode: "read_only" })).toMatchObject({ isError: true });
+    expect(await tool.execute({ ...input, arguments: JSON.stringify({ agentId: "developer", count: 9 }) })).toMatchObject({ isError: true });
+    expect(resize).not.toHaveBeenCalled();
+    expect(await tool.execute({ ...input, permissionMode: "full_access" })).toMatchObject({ isError: false });
+    expect(resize).toHaveBeenCalledExactlyOnceWith({ conversationId: lead.id, agentId: "developer", count: 2 });
+    database.close();
+  });
   it("reads and searches one execution without leaking another run or conversation", async () => {
     const database = new AgentDatabase(":memory:");
     const parent = database.createConversation(null);
@@ -34,11 +51,13 @@ describe("AgentCommunicationTool", () => {
     expect(tool.getConversationReadDefinitions().map((definition) => definition.name)).toEqual([
       "list_agent_conversations",
       "read_agent_conversation",
+      "get_team_context",
     ]);
     expect(tool.getCoordinationDefinitions().map((definition) => definition.name)).toEqual([
       "send_agent_message",
       "set_team_collaboration_plan",
       "wait_for_agent_message",
+      "resize_team_workers",
     ]);
     database.close();
   });

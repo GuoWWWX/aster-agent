@@ -137,7 +137,7 @@ Anthropic 的配置 `baseUrl` 延续项目原有的版本化格式（例如 `htt
 
 1. `maxRetries`、可重试错误和空响应规则由 Runtime 提供给 Graph Middleware；Provider SDK 不得隐式重放带副作用的回合。
 2. `AbortSignal` 必须贯穿 ChatModel stream；收到可见文本或 Tool Call 后不能自动重放该请求。
-3. Provider-specific reasoning、附件和原始响应只在 adapter 内转换；业务 Runtime 不判断供应商字段。Adapter 将可读输出归一为完整内容、摘要或面向用户的短进度，并把不可读签名/加密推理留在 Provider State 中原样重放。OpenAI Chat 兼容协议的 `reasoning_content` 本身没有内容类型标记：默认按兼容模型的完整内容处理，GPT-5.6 系列按其供应商摘要语义处理，不生成持久 `reasoningContent`。
+3. Provider-specific reasoning、附件和原始响应只在 adapter 内转换；业务 Runtime 不判断供应商字段。Adapter 将可读输出归一为完整内容、摘要或面向用户的短进度，并把不可读签名/加密推理留在 Provider State 中原样重放。OpenAI Chat 兼容协议的 `reasoning_content` 本身没有内容类型标记：默认按兼容模型的完整内容处理，GPT 数字版本系列（含供应商前缀，排除 GPT-OSS）按其供应商摘要语义处理，不生成持久 `reasoningContent`。
 4. LangChain `AIMessage`/`ToolMessage` 只在图和 adapter 内使用；落库继续使用当前中立 `ModelMessage` 合同。
 5. 旧 `model-protocol-adapter.ts`、`openai-compatible-adapter.ts` 和 AI SDK adapter 在新 adapter 通过回归后删除，不保留生产双路回退。
 6. 新快照只写 LangChain 版本 2；迁移期只读转换 AI SDK 版本 1 的 Assistant Provider State。OpenAI Chat 的兼容端点字段 `reasoning_content` 由 Adapter 在序列化后的请求体中窄范围补回，其他 Provider 使用 LangChain 原生消息块。

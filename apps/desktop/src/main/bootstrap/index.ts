@@ -1,3 +1,4 @@
+import { HtmlPreviewServer } from "../preview/html-preview-server.js";
 import { ScheduledTaskController } from "../schedules/scheduled-task-controller.js";
 import { ScheduledTaskStore } from "../schedules/scheduled-task-store.js";
 import { AgentScheduledTaskRunner } from "../schedules/agent-scheduled-task-runner.js";
@@ -61,12 +62,15 @@ import { createMainWindow } from "../windows/main-window.js";
 import { publishConversationAttentionEvent } from "../windows/conversation-attention.js";
 import { attachNativeConversationAttention } from "../windows/native-conversation-attention.js";
 import { ManagedBrowserController } from "../windows/managed-browser-controller.js";
+import { NativeOverlayController } from "../windows/native-overlay-controller.js";
 import { parseBackendSendCommand } from "./backend-command.js";
 import { dispatchBackendSendCommand as submitBackendSendCommand } from "./backend-command-dispatch.js";
 import { ConversationControl } from "../control/conversation-control.js";
 import { LocalControlServer } from "../control/local-control-server.js";
+import { stopDesktopWork } from "./desktop-work-lifecycle.js";
 
 type DesktopServices = {
+  htmlPreviews: HtmlPreviewServer;
   scheduledTasks: ScheduledTaskController;
   agentRuntime: AgentRuntime;
   applicationStorageLocation: ApplicationStorageLocationStore;
@@ -103,6 +107,40 @@ let disposeIpcHandlers: (() => void) | undefined;
 let services: DesktopServices | undefined;
 let localControl: LocalControlServer | undefined;
 let archivedConversationCleanupTimer: ReturnType<typeof setInterval> | undefined;
+let stoppingDesktopWork: Promise<void> | undefined;
+let shutdownPromise: Promise<void> | undefined;
+let shutdownComplete = false;
+
+function stopOwnedDesktopWork(): Promise<void> {
+  if (stoppingDesktopWork !== undefined) return stoppingDesktopWork;
+  if (services === undefined) return Promise.resolve();
+  stoppingDesktopWork = stopDesktopWork(services).finally(() => { stoppingDesktopWork = undefined; });
+  return stoppingDesktopWork;
+}
+
+async function shutdownDesktop(): Promise<void> {
+  disposeIpcHandlers?.();
+  disposeIpcHandlers = undefined;
+  if (archivedConversationCleanupTimer !== undefined) {
+    clearInterval(archivedConversationCleanupTimer);
+    archivedConversationCleanupTimer = undefined;
+  }
+  const closingControl = localControl;
+  localControl = undefined;
+  const results = await Promise.allSettled([closingControl?.close(), stopOwnedDesktopWork()]);
+  for (const result of results) {
+    if (result.status === "rejected") reportUnhandledError(result.reason, "desktop.shutdown");
+  }
+  try {
+    services?.eventProjector.checkpointInactiveConversations();
+  } catch (error) {
+    reportMainError(toMainAgentError(error, { operation: "thread_log.shutdown_checkpoint" }), error);
+  }
+  services?.graphCheckpointer.close();
+  services?.htmlPreviews.dispose();
+  services?.database.close();
+  services = undefined;
+}
 
 
 const ARCHIVED_CONVERSATION_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1_000;
@@ -348,6 +386,10 @@ async function initializeServices(): Promise<DesktopServices> {
   const terminalSessions = new TerminalSessionController(projectRegistry, terminalConfiguration);
   const workspaceTerminalTabs = new WorkspaceTerminalTabController();
   const workspaceBrowserTabs = new WorkspaceBrowserTabController();
+  const htmlPreviews = new HtmlPreviewServer(async (conversationId) => {
+    const conversation = database.getConversation(conversationId);
+    return (await projectRegistry.ensureWorkspaceRoot(conversation.projectId ?? conversation.id)).rootPath;
+  });
   const managedBrowser = new ManagedBrowserController(
     () => mainWindow,
     browserConfiguration,
@@ -433,6 +475,7 @@ async function initializeServices(): Promise<DesktopServices> {
     workspaceTerminalTabs,
     workspaceBrowserTabs,
     managedBrowser,
+    htmlPreviews,
     tools,
   };
 }
@@ -462,16 +505,21 @@ function sendConversationRunEvent(event: unknown): void {
 }
 
 async function openMainWindow(): Promise<void> {
+  getServices().agentRuntime.resumeAfterWindowOpen();
   const window = createMainWindow();
   let rendererRecoveryAttempted = false;
   mainWindow = window;
   const disposeAttention = attachNativeConversationAttention(window, getServices().database);
   window.once("closed", disposeAttention);
+  const detachBrowserRenderer = getServices().managedBrowser.attachRenderer(window,
+    (error) => reportUnhandledError(error, "browser.renderer_cleanup"));
+  window.once("closed", detachBrowserRenderer);
   disposeIpcHandlers = registerMainIpcHandlers(() => mainWindow, getServices(), {
     resumePendingMessages: process.env.AGENT_SKIP_PENDING_RUN_RESUMPTION !== "1",
     emitConversationRunEvent: sendConversationRunEvent,
   });
-  const rendererTarget = applyRendererSecurityPolicy(window);
+  const nativeOverlay = new NativeOverlayController(window);
+  const rendererTarget = applyRendererSecurityPolicy(window, nativeOverlay);
 
   window.webContents.on("console-message", (details) => {
     if (details.level === "error") reportUnhandledError(new Error(details.message), "electron.renderer_console");
@@ -505,12 +553,12 @@ async function openMainWindow(): Promise<void> {
   });
 
   window.once("closed", () => {
+    nativeOverlay.dispose();
     if (mainWindow === window) {
       disposeIpcHandlers?.();
       disposeIpcHandlers = undefined;
-      services?.managedBrowser.dispose();
-      services?.terminalSessions.dispose();
       mainWindow = undefined;
+      void stopOwnedDesktopWork().catch((error: unknown) => reportUnhandledError(error, "desktop.window_closed"));
     }
   });
 
@@ -546,6 +594,7 @@ function focusMainWindow(): void {
 }
 
 function dispatchBackendSendCommand(commandLine: readonly string[]): void {
+  if (shutdownPromise !== undefined || stoppingDesktopWork !== undefined) return;
   const command = parseBackendSendCommand(commandLine);
   if (command === undefined || services === undefined) return;
   try {
@@ -557,6 +606,7 @@ function dispatchBackendSendCommand(commandLine: readonly string[]): void {
 
 if (hasSingleInstanceLock) {
   app.on("second-instance", (_event, commandLine) => {
+    if (shutdownPromise !== undefined) return;
     focusMainWindow();
     dispatchBackendSendCommand(commandLine);
   });
@@ -604,7 +654,12 @@ async function bootstrap(): Promise<void> {
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      void openMainWindow().catch(reportStartupError);
+      void (async () => {
+        await stoppingDesktopWork;
+        if (shutdownPromise !== undefined) return;
+        await openMainWindow();
+        services?.scheduledTasks.start();
+      })().catch(reportStartupError);
     }
   });
 
@@ -614,30 +669,12 @@ async function bootstrap(): Promise<void> {
     }
   });
 
-  app.once("before-quit", (event) => {
-    const closingControl = localControl;
-    if (closingControl !== undefined) {
-      event.preventDefault();
-      localControl = undefined;
-      void closingControl.close().catch((error: unknown) => reportUnhandledError(error, "local_control.close"))
-        .finally(() => app.quit());
-    }
-    if (archivedConversationCleanupTimer !== undefined) {
-      clearInterval(archivedConversationCleanupTimer);
-      archivedConversationCleanupTimer = undefined;
-    }
-    try {
-      services?.eventProjector.checkpointInactiveConversations();
-    } catch (error) {
-      reportMainError(toMainAgentError(error, { operation: "thread_log.shutdown_checkpoint" }), error);
-    }
-    services?.scheduledTasks.dispose();
-    services?.graphCheckpointer.close();
-    services?.managedBrowser.dispose();
-    services?.terminalSessions.dispose();
-    services?.tools.dispose();
-    services?.database.close();
-    services = undefined;
+  app.on("before-quit", (event) => {
+    if (shutdownComplete) return;
+    event.preventDefault();
+    shutdownPromise ??= shutdownDesktop()
+      .catch((error: unknown) => reportUnhandledError(error, "desktop.shutdown"))
+      .finally(() => { shutdownComplete = true; app.quit(); });
   });
 }
 

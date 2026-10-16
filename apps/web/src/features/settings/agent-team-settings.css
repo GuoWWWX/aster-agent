@@ -66,6 +66,7 @@
 .team-management-tabs button[aria-selected="true"] {
   background: var(--app-selection);
   color: var(--app-selection-foreground);
+  box-shadow: inset 0 0 0 1px var(--app-selection-border), var(--app-selection-shadow);
 }
 
 .team-management-tabs button:focus-visible,

@@ -25,6 +25,7 @@ const TITLEBAR_CONTEXT = {
 const TITLEBAR_LEFT_CONTROL_WIDTH = 32;
 const WORKBENCH_MAIN_LEFT_INSET = 0;
 const WORKBENCH_NAVIGATOR_TO_MAIN_GAP = 5;
+const WORKBENCH_ACTIVITY_BAR_WIDTH = 44;
 
 type AppShellProps = {
   activeProject?: ProjectSummary | null;
@@ -68,6 +69,12 @@ export function AppShell({
   onMoveConversationTab,
 }: AppShellProps): ReactElement {
   const [isFilePanelResizing, setFilePanelResizing] = useState(false);
+  const filePanelRef = useRef<HTMLDivElement>(null);
+  const filePanelDraggingRef = useRef(false);
+  const liveFilePanelWidthRef = useRef(0);
+  useEffect(() => {
+    if (!isFilePanelResizing) filePanelRef.current?.style.removeProperty("--app-live-file-panel-width");
+  }, [isFilePanelResizing]);
   const [isProjectNavigatorResizing, setProjectNavigatorResizing] = useState(false);
   const isFilePanelOpen = useWorkbenchUiStore(
     (state) => state.isFilePanelOpen,
@@ -98,7 +105,7 @@ export function AppShell({
   }, [isProjectNavigatorOpen, activeActivity]);
   const scheduleNavigatorPeek = (visible: boolean): void => {
     cancelPeekTimer();
-    if (isProjectNavigatorOpen) return;
+    if (isProjectNavigatorOpen || activeActivity !== "conversations") return;
     peekTimer.current = setTimeout(() => {
       peekTimer.current = null;
       setNavigatorPeek(visible);
@@ -200,11 +207,20 @@ export function AppShell({
   const activeFilePanelWidth = isConversationWorkspace && activeConversationId !== null
     ? conversationFilePanelWidth ?? filePanelWidth
     : filePanelWidth;
-  const filePanelStyle = { width: `${activeFilePanelWidth}px` } as CSSProperties;
+  const filePanelStyle = {
+    width: isFilePanelResizing ? `var(--app-live-file-panel-width, ${activeFilePanelWidth}px)` : `${activeFilePanelWidth}px`,
+  } as CSSProperties;
+  const saveFilePanelWidth = (width: number): void => {
+    if (isConversationWorkspace && activeConversationId !== null) {
+      setFilePanelWidthForConversation(activeConversationId, width);
+    } else {
+      setFilePanelWidth(width);
+    }
+  };
   const projectNavigatorStyle = {
     width: `${projectNavigatorWidth}px`,
   } as CSSProperties;
-  const conversationTabsLeadingWidth = 48 + WORKBENCH_MAIN_LEFT_INSET
+  const conversationTabsLeadingWidth = WORKBENCH_ACTIVITY_BAR_WIDTH + WORKBENCH_MAIN_LEFT_INSET
     + (isProjectNavigatorOpen
       ? projectNavigatorWidth + WORKBENCH_NAVIGATOR_TO_MAIN_GAP
       : 0)
@@ -251,19 +267,22 @@ export function AppShell({
         data-active-activity={activeActivity}
         data-full-page={String(!isConversationWorkspace)}
       >
-        <ActivityBar {...(onOpenGlobalSearch === undefined ? {} : { onOpenGlobalSearch })} />
+        <ActivityBar
+          {...(onOpenGlobalSearch === undefined ? {} : { onOpenGlobalSearch })}
+          onConversationHoverChange={scheduleNavigatorPeek}
+        />
         {canShowProjectNavigator && !isProjectNavigatorOpen && !navigatorPeek ? (
           <div
             aria-hidden="true"
             data-navigator-hover-edge
-            className="absolute inset-y-0 left-[48px] z-30 w-1"
+            className="absolute inset-y-0 left-[44px] z-30 w-1"
             onMouseEnter={() => scheduleNavigatorPeek(true)}
             onMouseLeave={cancelPeekTimer}
           />
         ) : null}
         {isProjectNavigatorOpen || navigatorPeek ? (
           <div
-            className={`workbench-sidebar workbench-sidebar--left${!isProjectNavigatorOpen ? " absolute! inset-y-0 left-[48px] z-30 max-w-full bg-[var(--app-panel)] shadow-xl" : ""}`}
+            className={`workbench-sidebar workbench-sidebar--left${!isProjectNavigatorOpen ? " absolute! inset-y-0 left-[44px] z-30 max-w-full bg-[var(--app-panel)] shadow-xl" : ""}`}
             data-navigator-peek={!isProjectNavigatorOpen || undefined}
             hidden={!canShowProjectNavigator}
             style={projectNavigatorStyle}
@@ -299,17 +318,24 @@ export function AppShell({
           min={FILE_PANEL_WIDTH_RANGE.min}
           size={activeFilePanelWidth}
           onCollapsedChange={(isCollapsed) => setActiveFilePanelOpen(!isCollapsed)}
-          onDraggingChange={setFilePanelResizing}
+          onDraggingChange={(dragging) => {
+            filePanelDraggingRef.current = dragging;
+            if (dragging) liveFilePanelWidthRef.current = activeFilePanelWidth;
+            else saveFilePanelWidth(liveFilePanelWidthRef.current);
+            setFilePanelResizing(dragging);
+          }}
           onResize={(width) => {
-            if (isConversationWorkspace && activeConversationId !== null) {
-              setFilePanelWidthForConversation(activeConversationId, width);
+            if (filePanelDraggingRef.current) {
+              liveFilePanelWidthRef.current = width;
+              filePanelRef.current?.style.setProperty("--app-live-file-panel-width", `${width}px`);
               return;
             }
-            setFilePanelWidth(width);
+            saveFilePanelWidth(width);
           }}
         /> : null}
         <div
           className="workbench-sidebar workbench-sidebar--right"
+          ref={filePanelRef}
           hidden={!canShowFileWorkspace || !activeFilePanelOpen}
           style={filePanelStyle}
         >

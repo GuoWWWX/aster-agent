@@ -68,6 +68,7 @@ describe("model tool definitions", () => {
       ["wait_for_agent_message", "conversationId"],
       ["wait_for_project_operation", "operationId"],
       ["stop_command", "commandId"],
+      ["read_command_output", "commandId"],
     ];
     for (const [toolName, propertyName] of uuidParameters) {
       expect(property(definitions, toolName, propertyName)).toMatchObject({
@@ -76,9 +77,7 @@ describe("model tool definitions", () => {
       });
     }
 
-    expect(property(definitions, "wait_for_commands", "commandIds")).toMatchObject({
-      items: { format: "uuid", type: "string" },
-    });
+    expect(definitions.some((tool) => tool.name === "wait_for_commands")).toBe(false);
     expect(property(definitions, "wait_for_subagents", "taskIds")).toMatchObject({
       items: { format: "uuid", type: "string" },
     });
@@ -114,10 +113,18 @@ describe("model tool definitions", () => {
     expect(property(definitions, "run_command", "command")).toMatchObject({
       maxLength: 4_000,
     });
+    expect(property(definitions, "run_command", "description")).toMatchObject({ type: "string", maxLength: 200 });
+    expect(definition(definitions, "run_command").parameters.required).not.toContain("description");
     expect(property(definitions, "run_command", "mode")).toMatchObject({
       default: "batch",
       enum: ["batch", "service"],
     });
+    expect(property(definitions, "run_command", "timeoutMs")).toMatchObject({
+      anyOf: [{ type: "integer", minimum: 1_000, maximum: 30 * 60_000 }, { type: "null" }],
+    });
+    expect(property(definitions, "read_command_output", "maxChars")).toMatchObject({ maximum: 32_000, default: 12_000 });
+    expect(property(definitions, "read_command_output", "yieldTimeMs")).toMatchObject({ maximum: 30_000, default: 10_000 });
+    expect(definition(definitions, "read_command_output").parameters.required).toEqual(["commandId"]);
     expect(property(definitions, "apply_patch", "patch")).toMatchObject({
       maxLength: 200_000,
     });

@@ -1,3 +1,4 @@
+import { Spinner } from "../../components/ui/loading.js";
 import {
   Check,
   ChevronDown,
@@ -162,7 +163,7 @@ export function ConversationProjectPicker({
           type="button"
           onClick={() => void addProjectAndSelect()}
         >
-          <FolderPlus aria-hidden="true" size={16} />
+          {isAddingProject ? <Spinner size={16} /> : <FolderPlus aria-hidden="true" size={16} />}
           <span>{isAddingProject ? "正在添加项目" : "添加项目"}</span>
         </button>
         <button

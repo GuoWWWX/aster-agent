@@ -365,14 +365,6 @@
   white-space: nowrap;
 }
 
-.configuration-file-workspace__spin {
-  animation: configuration-file-workspace-spin 0.9s linear infinite;
-}
-
-@keyframes configuration-file-workspace-spin {
-  to { transform: rotate(360deg); }
-}
-
 [data-theme="dark"] .configuration-file-workspace__backdrop {
   background: rgba(2, 6, 23, 0.68);
 }

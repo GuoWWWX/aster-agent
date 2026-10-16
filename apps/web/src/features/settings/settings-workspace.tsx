@@ -1,3 +1,4 @@
+import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import {
   Archive,
   ArchiveRestore,
@@ -15,7 +16,6 @@ import {
   FolderOpen,
   FileCode2,
   Globe2,
-  LoaderCircle,
   MessageSquareText,
   MonitorCog,
   Palette,
@@ -36,6 +36,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
+import { ModelReasoningCatalogSettings } from "./model-reasoning-catalog-settings.js";
 
 import {
   useCallback,
@@ -125,6 +126,7 @@ import {
 import { useApplicationSettingsStore } from "../../stores/application-settings-store.js";
 import { ModelReasoningOptionsEditor } from "./model-reasoning-options-editor.js";
 import { ModelProfilePicker } from "./model-profile-picker.js";
+import { formatModelContextWindow, parseModelContextWindow } from "./model-context-window.js";
 import { ProviderIconPicker, ProviderLogo } from "./provider-logo.js";
 import { SettingsCategoryHeading, SettingsConfigurationCard, SettingsConfigurationGroup } from "./settings-configuration-card.js";
 import { matchesSettingsQuery, SETTINGS_SEARCH_ITEMS, type SettingsSearchItem } from "./settings-search.js";
@@ -182,6 +184,7 @@ const SETTINGS_NAVIGATION: readonly SettingsNavItem[] = [
   { id: "appearance", label: "外观", icon: MonitorCog, group: "应用" },
   { id: "permissions", label: "权限", icon: ShieldCheck, group: "应用" },
   { id: "models", label: "模型配置", icon: Boxes, group: "智能体" },
+  { id: "reasoning", label: "推理程度", icon: SlidersHorizontal, group: "智能体" },
   { id: "agents", label: "Agent 与团队", icon: UsersRound, group: "智能体" },
   { id: "mcp", label: "MCP", icon: PlugZap, group: "集成" },
   { id: "skills", label: "Skill", icon: Sparkles, group: "集成" },
@@ -409,6 +412,7 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
           {activeSection === "models" ? (
             <ModelsSettings agentClient={agentClient} />
           ) : null}
+          {activeSection === "reasoning" ? <ModelReasoningCatalogSettings agentClient={agentClient} /> : null}
           {activeSection === "agents" ? <AgentTeamSettings searchTarget={searchTarget} /> : null}
           {activeSection === "mcp" ? (
             <McpSettings agentClient={agentClient} />
@@ -660,7 +664,7 @@ function GeneralSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
                 onClick={() => void chooseStorageLocation()}
               >
                 {storageLocationBusy ? (
-                  <LoaderCircle aria-hidden="true" className="settings-spin" size={14} />
+                  <Spinner aria-hidden="true" size={14} />
                 ) : (
                   <FolderOpen aria-hidden="true" size={14} />
                 )}
@@ -819,6 +823,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
     configuredModelDrafts.length > 0 &&
     normalizedModelIds.every((modelId) => modelId.length > 0) &&
     configuredModelDrafts.every((model) => model.displayName.trim().length > 0) &&
+    configuredModelDrafts.every((model) => parseModelContextWindow(model.contextWindow) !== null) &&
     new Set(normalizedModelIds).size === normalizedModelIds.length;
   const testableModels = configuredModelDrafts.filter((model) => model.modelId.trim().length > 0);
   const selectedTestableModelCount = testableModels.filter((model) => modelTestSelection.includes(model.id)).length;
@@ -836,10 +841,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
           baseUrl: draft.baseUrl,
           models: configuredModelDrafts.map((model) => ({
             contextCompression: model.contextCompression,
-            contextWindow: Math.max(
-              0,
-              Number(model.contextWindow) || 0,
-            ),
+            contextWindow: parseModelContextWindow(model.contextWindow) ?? 0,
             displayName: model.displayName.trim(),
             modelId: model.modelId.trim(),
             reasoningOptions: model.reasoningOptions,
@@ -930,7 +932,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
     const modelDrafts = providerModels.map((model) => ({
       contextCompression: model.contextCompression
         ?? contextCompressionThreshold(globalContextCompressionRef.current),
-      contextWindow: String(model.contextWindow),
+      contextWindow: formatModelContextWindow(model.contextWindow),
       displayName: model.displayName,
       id: `model-${nextModelDraftIdRef.current++}`,
       modelId: model.modelId,
@@ -1008,7 +1010,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
       return {
         ...model,
         contextWindow: shouldApplyContextWindowDefault
-          ? String(defaultModelContextWindow(value, modelCatalog))
+          ? formatModelContextWindow(defaultModelContextWindow(value, modelCatalog))
           : model.contextWindow,
         displayName: model.displayName.length === 0 || model.displayName === model.modelId
           ? value
@@ -1037,7 +1039,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
     newModelReasoningDefaultIdsRef.current.add(id);
     setConfiguredModelDrafts((current) => [...current, {
       contextCompression: contextCompressionThreshold(globalContextCompressionRef.current),
-      contextWindow: String(defaultModelContextWindow("", modelCatalog)),
+      contextWindow: formatModelContextWindow(defaultModelContextWindow("", modelCatalog)),
       displayName: "",
       id,
       modelId: "",
@@ -1127,7 +1129,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
       try {
         setModelCatalog(await agentClient.getModelCatalog());
       } catch {
-        setOperationError("模型目录配置格式错误，请检查 model-catalog.json");
+        setOperationError("模型目录配置格式错误，请检查 settings.jsonc 中的 modelCatalog");
       }
     } catch {
       setOperationError("获取模型失败，请检查接口地址、密钥和 OpenAI 兼容协议");
@@ -1510,14 +1512,6 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                       }}
                     >
                       <summary>
-                        {model.displayName || model.modelId || "未配置模型"}
-                        <span className="ml-3 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
-                          {model.modelId || "点击配置模型参数"}
-                          {model.contextWindow === "" ? null : ` · ${Number(model.contextWindow) / 1000} K`}
-                        </span>
-                      </summary>
-                      <div className="settings-model-option">
-                      <label className="settings-model-field settings-model-field--name">
                         {isTestingModel ? (
                           <span
                             aria-label="正在测试"
@@ -1533,6 +1527,37 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                             title={connectionStatusLabel(connectionStatus)}
                           />
                         )}
+                        <span className="min-w-0 flex-1 truncate" title={model.displayName || model.modelId || "未配置模型"}>
+                          {model.displayName || model.modelId || "未配置模型"}
+                        </span>
+                        <span className="min-w-0 max-w-[40%] truncate text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
+                          {model.modelId || "点击配置模型参数"}
+                          {model.contextWindow === "" ? null : ` · ${model.contextWindow}`}
+                        </span>
+                        <span className="inline-flex shrink-0 items-center gap-0.5">
+                          <IconButton
+                            label={`测试 ${model.displayName || model.modelId || "模型"}`}
+                            tooltip="连通测试"
+                            disabled={selectedProviderId === null || model.modelId.trim().length === 0
+                              || providerSaveState === "pending" || providerSaveState === "saving"
+                              || providerSaveState === "incomplete" || isAnyModelTesting}
+                            onClick={(event) => { event.preventDefault(); event.stopPropagation(); void testModelConnection(model.modelId); }}
+                          >
+                            {isTestingModel ? <Spinner aria-hidden="true" size={15} /> : <TestTube2 aria-hidden="true" size={15} />}
+                          </IconButton>
+                          <IconButton
+                            label={`删除 ${model.displayName || model.modelId || "模型"}`}
+                            tooltip={configuredModelDrafts.length === 1 ? "供应商至少保留一个模型" : "删除模型"}
+                            disabled={configuredModelDrafts.length === 1}
+                            variant="destructive"
+                            onClick={(event) => { event.preventDefault(); event.stopPropagation(); removeModel(model.id); }}
+                          >
+                            <Trash2 aria-hidden="true" size={16} />
+                          </IconButton>
+                        </span>
+                      </summary>
+                      <div className="settings-model-option">
+                      <label className="settings-model-field settings-model-field--name">
                         <input
                           aria-label={`${model.modelId || "模型"}的模型名称`}
                           placeholder="模型名称"
@@ -1575,6 +1600,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                           side="bottom"
                         >
                           <ModelReasoningOptionsEditor
+                            catalog={modelCatalog}
                             apiFormat={draft.apiFormat}
                             modelId={model.modelId}
                             modelName={model.displayName || model.modelId || "此模型"}
@@ -1588,16 +1614,13 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                         <label className="settings-model-field settings-model-field--context">
                           <input
                             aria-label={`${model.modelId || "模型"}的上下文窗口`}
-                            title="上下文窗口，单位 K（1 K = 1000 Token）"
-                            max="10000"
-                            min="0"
-                            step="0.001"
-                            placeholder="上下文窗口（K）"
-                            type="number"
-                            value={model.contextWindow === "" ? "" : Number(model.contextWindow) / 1000}
-                            onChange={(event) => setContextWindow(model.id, event.target.value === "" ? "" : String(Math.round(Number(event.target.value) * 1000)))}
+                            title="上下文窗口：不带单位为 Token，支持 K、M（如 128K、1.5M）"
+                            aria-invalid={parseModelContextWindow(model.contextWindow) === null || undefined}
+                            placeholder="Token / K / M"
+                            type="text"
+                            value={model.contextWindow}
+                            onChange={(event) => setContextWindow(model.id, event.target.value)}
                           />
-                          <span className="text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">K</span>
                         </label>
 
                         <ModelContextCompressionEditor
@@ -1608,38 +1631,6 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                             setModelContextCompression(model.id, contextCompression)
                           }
                         />
-                      </div>
-
-                      <div className="settings-model-actions">
-                        <button
-                          aria-label={`测试 ${model.displayName || model.modelId || "模型"}`}
-                          className="settings-model-test"
-                          disabled={
-                            selectedProviderId === null ||
-                            model.modelId.trim().length === 0 ||
-                            providerSaveState === "pending" ||
-                            providerSaveState === "saving" ||
-                            providerSaveState === "incomplete" ||
-                            isAnyModelTesting
-                          }
-                          title="连通测试"
-                          type="button"
-                          onClick={() => void testModelConnection(model.modelId)}
-                        >
-                          {isTestingModel
-                            ? <LoaderCircle aria-hidden="true" className="settings-spin" size={15} />
-                            : <TestTube2 aria-hidden="true" size={15} />}
-                        </button>
-                        <button
-                          aria-label={`删除 ${model.displayName || model.modelId || "模型"}`}
-                          className="settings-model-delete"
-                          disabled={configuredModelDrafts.length === 1}
-                          title={configuredModelDrafts.length === 1 ? "供应商至少保留一个模型" : "删除模型"}
-                          type="button"
-                          onClick={() => removeModel(model.id)}
-                        >
-                          <Trash2 aria-hidden="true" size={16} />
-                        </button>
                       </div>
 
                       {testResult?.kind === "failed" ? (
@@ -3031,9 +3022,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
               <SettingsConfigurationGroup cardAriaLabel="Skill 文档预览" icon={Eye} title="文档预览">
                 <div className="min-w-0">
                   {skillPreview === null ? (
-                    <p className="text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
-                      {isDiscovering ? "正在读取文档…" : "未找到 Skill 文档。"}
-                    </p>
+                    isDiscovering ? <LoadingState label="正在读取文档…" compact /> : <p className="text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">未找到 Skill 文档。</p>
                   ) : (
                     <>
                       <p className="mb-4 text-[length:var(--app-font-size-body)] text-[var(--app-muted-foreground)]">{skillPreview.metadata.description}</p>
@@ -3065,7 +3054,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
           {skillDeleteError === null ? null : <p className="m-0 text-[var(--app-destructive)]" role="alert">{skillDeleteError}</p>}
           <div className="flex justify-end gap-2">
             <button className="settings-secondary-button" disabled={isDeletingSkill} type="button" onClick={() => setSkillToDelete(null)}>取消</button>
-            <button className="settings-danger-button" disabled={isDeletingSkill} type="button" onClick={() => void deleteSkill()}>{isDeletingSkill ? "正在删除…" : "删除目录和文件"}</button>
+            <button className="settings-danger-button" disabled={isDeletingSkill} type="button" onClick={() => void deleteSkill()}>{isDeletingSkill ? <><Spinner size={14} />正在删除…</> : "删除目录和文件"}</button>
           </div>
         </DialogContent>
       </Dialog>
@@ -3075,9 +3064,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
 
 function ConfigurationStatus({ error }: { error: string | null }): ReactElement {
   return (
-    <div className="settings-configuration-status" role={error === null ? "status" : "alert"}>
-      {error ?? "正在读取配置..."}
-    </div>
+    error === null ? <LoadingState label="正在读取配置…" className="h-full flex-1" /> : <div className="settings-configuration-status" role="alert">{error}</div>
   );
 }
 
@@ -3525,10 +3512,7 @@ function ArchivedConversationsSettings({
         <p className="settings-operation-error" role="alert">{operationError}</p>
       )}
       {isLoading ? (
-        <div className="settings-archived-empty" role="status">
-          <LoaderCircle aria-hidden="true" className="settings-spin" size={18} />
-          正在读取归档记录
-        </div>
+        <LoadingState label="正在读取归档记录" className="h-full flex-1" />
       ) : archivedConversations.length === 0 ? (
         <div className="settings-archived-empty">
           <Archive aria-hidden="true" size={22} />
@@ -3576,7 +3560,7 @@ function ArchivedConversationsSettings({
                     onClick={() => void restoreConversation(conversation)}
                   >
                     {isRestoring ? (
-                      <LoaderCircle aria-hidden="true" className="settings-spin" size={14} />
+                      <Spinner aria-hidden="true" size={14} />
                     ) : (
                       <ArchiveRestore aria-hidden="true" size={14} />
                     )}
@@ -3589,7 +3573,7 @@ function ArchivedConversationsSettings({
                     onClick={() => setPendingDelete(conversation)}
                   >
                     {isDeleting ? (
-                      <LoaderCircle aria-hidden="true" className="settings-spin" size={14} />
+                      <Spinner aria-hidden="true" size={14} />
                     ) : (
                       <Trash2 aria-hidden="true" size={14} />
                     )}
@@ -3639,7 +3623,7 @@ function ArchivedConversationsSettings({
                 onClick={() => void permanentlyDeleteConversation(pendingDelete)}
               >
                 {busyConversationId === pendingDelete.id && busyOperation === "delete" ? (
-                  <LoaderCircle aria-hidden="true" className="settings-spin" size={14} />
+                  <Spinner aria-hidden="true" size={14} />
                 ) : (
                   <Trash2 aria-hidden="true" size={14} />
                 )}
@@ -4059,7 +4043,7 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
           </div>
           {passwordListError === null ? null : <p className="px-4 pb-3 text-[length:var(--app-font-size-control)] text-[var(--app-destructive)]" role="alert">{passwordListError}</p>}
           {savedPasswords === null ? (
-            passwordListError === null ? <p className="px-4 pb-4 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]" role="status">正在读取已保存密码…</p> : null
+            passwordListError === null ? <LoadingState label="正在读取已保存密码…" compact /> : null
           ) : savedPasswords.length === 0 ? (
             <p className="px-4 pb-4 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">还没有已保存的密码。</p>
           ) : savedPasswords.map((entry) => {
@@ -4075,7 +4059,7 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
                     className="h-8 w-44 min-w-0 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] px-2 text-[length:var(--app-font-size-control)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]" />
                   <IconButton label={`${password === null ? "查看" : "隐藏"} ${entry.origin} 的密码`} tooltip={password === null ? "查看密码" : "隐藏密码"}
                     disabled={revealingOrigin !== null} onClick={() => void showPassword(entry.origin)}>
-                    {revealingOrigin === entry.origin ? <LoaderCircle aria-hidden="true" className="settings-spin" size={14} /> : password === null ? <Eye aria-hidden="true" size={14} /> : <EyeOff aria-hidden="true" size={14} />}
+                    {revealingOrigin === entry.origin ? <Spinner aria-hidden="true" size={14} /> : password === null ? <Eye aria-hidden="true" size={14} /> : <EyeOff aria-hidden="true" size={14} />}
                   </IconButton>
                 </div>
               </article>
@@ -4101,7 +4085,7 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
               type="button"
               onClick={() => void clearBrowserData()}
             >
-              <Trash2 aria-hidden="true" size={14} />
+              {clearState === "clearing" ? <Spinner size={14} /> : <Trash2 aria-hidden="true" size={14} />}
               {clearState === "clearing" ? "正在清除" : "清除浏览数据"}
             </button>
           </article>
