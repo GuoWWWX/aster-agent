@@ -221,8 +221,8 @@ const runCommandArgumentsSchema = z
       .describe("batch waits for a finite command such as a build or test to exit; service returns after its startup observation window and keeps the process running."),
     parallel: z.boolean().default(true)
       .describe("Run alongside other independent commands from the same model turn by default; set false when this command depends on another command or shared mutable state."),
-    timeoutMs: z.number().int().min(1_000).max(MAX_COMMAND_TIMEOUT_MS).optional()
-      .describe("Optional execution limit in milliseconds. batch defaults to 30 minutes; service has no automatic timeout when omitted."),
+    timeoutMs: z.number().int().min(1_000).max(MAX_COMMAND_TIMEOUT_MS).nullable().optional()
+      .describe("Execution safety limit in milliseconds, not the requested task duration. Omit for batch's 30-minute default or service's unlimited lifetime; null explicitly disables the limit for long builds. A finite command must still exit by itself."),
     serviceName: z.string().trim().min(1).max(MAX_SERVICE_NAME_LENGTH).optional()
       .describe("Human-readable name for a service command, such as Vite development server."),
     yieldTimeMs: z.number().int().min(0).max(MAX_COMMAND_YIELD_MS).default(10_000)
@@ -579,7 +579,7 @@ export class ProjectToolRegistry {
       },
       {
         description:
-          `Run one non-interactive ${commandEnvironment} command. This is the default choice for ordinary commands and does not open a visible terminal tab. Use the default mode=batch for every finite command, including long builds, checks, tests, packaging, and migrations: batch streams progress but does not return to the model until the process really exits, and it defaults to a 30-minute execution limit. Use mode=service only for a process intentionally expected to stay alive, such as a development server or watcher: startup output streams in the same tool item, then the tool returns a commandId after yieldTimeMs while the service continues without an automatic timeout unless timeoutMs is explicitly provided. Give service mode a concise serviceName so list_background_commands can recover its ID later. Never use this tool for SSH, a REPL, password prompts, or any command requiring later input; use terminal_control for those interactive PTY sessions. Any nonzero final exit code marks the command failed even when stdout contains useful data, so keep expected-negative probes separate from unrelated checks and prefer search_text/find_files when no match is acceptable. Commands run in the current authorized workspace; conversations without a project use their own persistent ${APPLICATION_DISPLAY_NAME} workspace. The bundled rg command is always available. Independent commands returned in the same model turn run in parallel by default whenever the permission mode allows commands; set parallel=false when this command depends on another command or shared mutable state. In ask-before-changes mode each command still requires its own approval, and approved independent commands can overlap.`,
+          `Run one non-interactive ${commandEnvironment} command. This is the default choice for ordinary commands and does not open a visible terminal tab. Use the default mode=batch for every finite command, including long builds, checks, tests, packaging, and migrations: batch streams progress but does not return to the model until the process really exits, and it defaults to a 30-minute execution limit; set timeoutMs=null for a build known to need longer. When the user requests a fixed duration, make the command exit normally after that duration (bounded count or deadline); do not use an infinite command plus the tool timeout as a timer. Use mode=service only for a process intentionally expected to stay alive, such as a development server or watcher: startup output streams in the same tool item, then the tool returns a commandId after yieldTimeMs while the service continues without an automatic timeout unless timeoutMs is explicitly provided. Give service mode a concise serviceName so list_background_commands can recover its ID later. Never use this tool for SSH, a REPL, password prompts, or any command requiring later input; use terminal_control for those interactive PTY sessions. Any nonzero final exit code marks the command failed even when stdout contains useful data, so keep expected-negative probes separate from unrelated checks and prefer search_text/find_files when no match is acceptable. Commands run in the current authorized workspace; conversations without a project use their own persistent ${APPLICATION_DISPLAY_NAME} workspace. The bundled rg command is always available. Independent commands returned in the same model turn run in parallel by default whenever the permission mode allows commands; set parallel=false when this command depends on another command or shared mutable state. In ask-before-changes mode each command still requires its own approval, and approved independent commands can overlap.`,
         name: "run_command",
         parameters: modelToolParameters(runCommandArgumentsSchema)
       }
@@ -1233,7 +1233,7 @@ export class ProjectToolRegistry {
     const command: PreparedCommand = {
       ...input,
       mode,
-      timeoutMs: input.timeoutMs ?? (mode === "batch" ? MAX_COMMAND_TIMEOUT_MS : null),
+      timeoutMs: input.timeoutMs === undefined ? (mode === "batch" ? MAX_COMMAND_TIMEOUT_MS : null) : input.timeoutMs,
     };
     return {
       command,

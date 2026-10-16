@@ -8504,6 +8504,7 @@ export class AgentDatabase {
         }
       }
       this.expirePendingToolApprovalsForTerminalRunsInTransaction();
+      this.interruptRunningToolsForTerminalRunsInTransaction();
     });
     return true;
   }
@@ -9338,6 +9339,24 @@ export class AgentDatabase {
         .prepare("UPDATE conversation_timeline SET payload_json = ? WHERE id = ? AND kind = 'tool'")
         .run(JSON.stringify(tool), tool.id);
       this.touchConversation(tool.conversationId, new Date().toISOString());
+    }
+  }
+
+  private interruptRunningToolsForTerminalRunsInTransaction(): void {
+    const rows = this.database.prepare(
+      `SELECT timeline.payload_json FROM conversation_timeline AS timeline
+       JOIN runs ON runs.id = timeline.run_id
+       WHERE timeline.kind = 'tool'
+         AND runs.status IN ('completed', 'failed', 'cancelled')
+         AND json_extract(timeline.payload_json, '$.status') = 'running'`,
+    ).all() as DatabaseRow[];
+    for (const row of rows) {
+      const current = conversationToolItemSchema.parse(parseJson(asString(row, "payload_json"), "tool"));
+      const tool = conversationToolItemSchema.parse({
+        ...current, status: "failed",
+        result: JSON.stringify({ ok: false, error: "执行已中断：所属运行已结束，未收到完成结果。不会在重启后自动重放。" }),
+      });
+      this.updateTool(tool);
     }
   }
 
@@ -11317,6 +11336,7 @@ export class AgentDatabase {
       for (const row of taskRows) {
         this.deliverSubagentTaskResultInTransaction(asString(row, "id"), false);
       }
+      this.interruptRunningToolsForTerminalRunsInTransaction();
     });
   }
 

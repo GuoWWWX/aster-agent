@@ -1750,6 +1750,16 @@ describe("EventProjector", () => {
       type: "model_retry_updated",
     });
 
+    const command = conversationToolItemSchema.parse({
+      id: crypto.randomUUID(), kind: "tool", conversationId: creation.conversation.id,
+      runId: run.runId, batchId: null, createdAt: retry.createdAt,
+      name: "run_command", arguments: '{"command":"ping -n 4 example.test"}',
+      status: "running", result: null, diff: null,
+    });
+    threadLog.append(creation.conversation.id, {
+      type: "tool_call_requested", payload: { runId: run.runId, tool: command, toolCallId: "call-ping" },
+    });
+
     const recovered = new AgentDatabase(":memory:");
     new EventProjector(recovered, threadLog).projectAllConversationLogs();
     expect(recovered.getConversation(creation.conversation.id).lastRunStatus).toBe("running");
@@ -1758,7 +1768,10 @@ describe("EventProjector", () => {
       status: "retrying",
     }));
 
-    recovered.interruptRecoveredThreadLogRuns();
+    const projector = new EventProjector(recovered, threadLog);
+    for (const recovery of recovered.interruptRecoveredThreadLogRuns()) {
+      projector.projectEvent(recovery.conversationId, threadLog.append(recovery.conversationId, recovery.event));
+    }
     expect(recovered.getConversation(creation.conversation.id).lastRunStatus).toBe("failed");
     expect(recovered.listQueuedRunRecoveries()).toEqual([]);
     expect(recovered.listTimeline(creation.conversation.id)).toContainEqual(expect.objectContaining({
@@ -1767,8 +1780,52 @@ describe("EventProjector", () => {
       retryInMs: null,
       status: "failed",
     }));
+    expect(recovered.listTimeline(creation.conversation.id)).toContainEqual(expect.objectContaining({
+      id: command.id, status: "failed",
+    }));
+    const interrupted = recovered.listTimeline(creation.conversation.id).find(item => item.id === command.id);
+    expect(interrupted?.kind === "tool" ? interrupted.result : null).toContain("执行已中断");
+    const restarted = new AgentDatabase(":memory:");
+    const restartedProjector = new EventProjector(restarted, threadLog);
+    restartedProjector.projectAllConversationLogs({ releaseHistory: true });
+    expect(restartedProjector.listTimelinePage({ conversationId: creation.conversation.id, limit: 20 }).items)
+      .toContainEqual(expect.objectContaining({ id: command.id, status: "failed" }));
+    expect(restarted.interruptRecoveredThreadLogRuns()).toEqual([]);
+    restarted.close();
     source.close();
     recovered.close();
+  });
+
+  it.each(["completed", "failed", "cancelled"] as const)("settles legacy running tools under a %s Run without changing completed output", async (status) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-stale-command-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const log = new ThreadLog(directory);
+    const creation = source.prepareConversationCreation(null);
+    const conversationId = creation.conversation.id;
+    const runId = crypto.randomUUID();
+    log.append(conversationId, { type: "conversation_created", payload: creation });
+    log.append(conversationId, { type: "run_created", payload: { runId, modelId: "test-model" } });
+    log.append(conversationId, { type: "run_started", payload: { runId } });
+    const running = conversationToolItemSchema.parse({
+      id: crypto.randomUUID(), kind: "tool", conversationId, runId, batchId: null,
+      createdAt: new Date().toISOString(), name: "run_command", arguments: '{"command":"echo test"}',
+      status: "running", result: null, diff: null,
+    });
+    const completed = { ...running, id: crypto.randomUUID(), status: "completed", result: "kept output" };
+    log.append(conversationId, { type: "tool_call_requested", payload: { tool: running } });
+    log.append(conversationId, { type: "tool_result", payload: { tool: completed } });
+    log.append(conversationId, { type: "run_finished", payload: { runId, status } });
+    const recovered = new AgentDatabase(":memory:");
+    const projector = new EventProjector(recovered, log);
+    projector.projectAllConversationLogs({ releaseHistory: true });
+    const page = projector.listTimelinePage({ conversationId, limit: 20 });
+    expect(page.items).toContainEqual(expect.objectContaining({ id: running.id, status: "failed" }));
+    const interrupted = page.items.find(item => item.id === running.id);
+    expect(interrupted?.kind === "tool" ? interrupted.result : null).toContain("执行已中断");
+    expect(page.items).toContainEqual(completed);
+    expect(recovered.interruptRecoveredThreadLogRuns()).toEqual([]);
+    recovered.close(); source.close();
   });
 
   it("restores a pending Tool approval before startup marks its Run interrupted", async () => {

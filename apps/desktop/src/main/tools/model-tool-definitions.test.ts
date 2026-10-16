@@ -116,6 +116,9 @@ describe("model tool definitions", () => {
       default: "batch",
       enum: ["batch", "service"],
     });
+    expect(property(definitions, "run_command", "timeoutMs")).toMatchObject({
+      anyOf: [{ type: "integer", minimum: 1_000, maximum: 30 * 60_000 }, { type: "null" }],
+    });
     expect(property(definitions, "apply_patch", "patch")).toMatchObject({
       maxLength: 200_000,
     });

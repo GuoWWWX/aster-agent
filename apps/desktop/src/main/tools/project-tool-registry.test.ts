@@ -1125,7 +1125,7 @@ describe("ProjectToolRegistry", () => {
     expect(payload.value.workingDirectory).toBe(project.rootPath);
   });
 
-  it("waits for a batch command to finish even when yieldTimeMs is zero", async () => {
+  it.each([undefined, null])("waits for a batch command with timeoutMs=%s even when yieldTimeMs is zero", async (timeoutMs) => {
     if (process.platform !== "win32") return;
 
     const { project, tools } = await createFixture();
@@ -1134,6 +1134,7 @@ describe("ProjectToolRegistry", () => {
       "run_command",
       JSON.stringify({
         command: 'Write-Output "batch-start"; Start-Sleep -Milliseconds 250; Write-Output "batch-finished"',
+        timeoutMs,
         yieldTimeMs: 0,
       }),
       project.id,
@@ -1150,7 +1151,7 @@ describe("ProjectToolRegistry", () => {
     expect(payload.value).toMatchObject({
       mode: "batch",
       status: "completed",
-      timeoutMs: 30 * 60_000,
+      timeoutMs: timeoutMs === undefined ? 30 * 60_000 : null,
     });
     expect(payload.value?.stdout).toContain("batch-start");
     expect(payload.value?.stdout).toContain("batch-finished");
