@@ -51,6 +51,15 @@ describe("prompt assets", () => {
     expect(BASE_SYSTEM_PROMPT).not.toMatch(/\r/u);
   });
 
+  it("allows inline HTML fragments without requiring files or document wrappers", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain("output an `html` fenced code block directly");
+    expect(BASE_SYSTEM_PROMPT).toContain("even a single `<div>`");
+    expect(BASE_SYSTEM_PROMPT).toContain("`<!DOCTYPE html>`, `<html>`, `<head>`, and `<body>` wrappers are not required");
+    expect(BASE_SYSTEM_PROMPT).toContain("Create or edit files according to the user's needs and task; inline rendering does not require an HTML file");
+    expect(BASE_SYSTEM_PROMPT).not.toContain("one complete `html` fenced code block");
+    expect(BASE_SYSTEM_PROMPT).not.toContain("finish creating and verifying its files first");
+  });
+
   it("loads the bundled browser Skill", () => {
     expect(BROWSER_USE_SKILL).toContain("name: browser-use");
     expect(BROWSER_USE_SKILL).toContain("single `browser_control` tool");
