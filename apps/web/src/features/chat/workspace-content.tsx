@@ -1,3 +1,4 @@
+import { ConversationTaskDirectory } from "../team/task-context-directory.js";
 import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import { ConversationWorkIndicator, toolWorkPhase } from "./conversation-work-state.js";
 import { ConversationChangesBadge, ConversationChangesCard } from "./conversation-file-changes.js";
@@ -6,6 +7,9 @@ import { HtmlPreviewCard, HtmlPreviewScope } from "../../components/html-preview
 import { HtmlPreviewGallery } from "../../components/html-preview/html-preview-gallery.js";
 import { QueryTextarea } from "./query-textarea.js";
 import { UserMessageContent } from "./user-message-content.js";
+import { ChatMessageBubble } from "./chat-message-bubble.js";
+import { TeamChatWorkspace } from "../team/team-chat-workspace.js";
+import { TeamChatPanel } from "../team/team-chat-panel.js";
 import { createPastedTextAttachment } from "./pasted-text-attachment.js";
 import { MAX_DRAFT_ATTACHMENTS, MAX_DRAFT_ATTACHMENT_BYTES, getClipboardAttachmentFiles, pastedAttachmentName, readAttachmentFileAsBase64 } from "./clipboard-attachments.js";
 import { ScheduledTasksWorkspace } from "../schedules/scheduled-tasks-workspace.js";
@@ -226,6 +230,7 @@ type WorkspaceContentProps = {
   locateTimelineItem?: { conversationId: string; id: string; requestId: number } | null;
   projects: readonly ProjectSummary[];
   protectedSessionIds?: readonly string[];
+  openTeamChatInstanceIds?: readonly string[];
   sessions: readonly ProjectSession[];
   teamInstances?: readonly TeamInstanceView[];
   onAddProject: () => Promise<ProjectSummary | null>;
@@ -761,12 +766,14 @@ export function WorkspaceContent({
   onSessionUpdated,
   onSessionViewed,
   protectedSessionIds,
+  openTeamChatInstanceIds = [],
   sessions,
   teamInstances = [],
 }: WorkspaceContentProps): ReactElement {
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
+  const teamChatTarget = useWorkbenchUiStore((state) => state.teamChatTarget);
   const retainedSessions = useConversationWorkspaceCache(
-    activeActivity === "conversations" ? activeSession : null,
+    activeActivity === "conversations" && teamChatTarget === null ? activeSession : null,
     sessions,
     protectedSessionIds,
   );
@@ -788,7 +795,7 @@ export function WorkspaceContent({
           useWorkbenchUiStore.getState().setActiveActivity("conversations");
           onSessionSelected(id);
         });
-      }} /> : activeActivity === "settings" ? <SettingsWorkspace agentClient={agentClient} /> : activeSession === null ? (
+      }} /> : activeActivity === "settings" ? <SettingsWorkspace agentClient={agentClient} /> : activeSession === null && teamChatTarget === null ? (
       <ProjectConversationEmpty
         activeProject={activeProject}
         isCreatingSession={isCreatingSession}
@@ -796,9 +803,17 @@ export function WorkspaceContent({
         onCreateTemporarySession={onCreateTemporarySession}
       />
     ) : null}
-    <div className={activeActivity === "conversations" && activeSession !== null ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"}>
+    {teamInstances.filter(instance => openTeamChatInstanceIds.includes(instance.id) && !instance.isArchived).map(instance => {
+      const active = activeActivity === "conversations" && teamChatTarget?.instanceId === instance.id;
+      return <div key={instance.id} className={active ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"} aria-hidden={!active}>
+        <TeamChatWorkspace agentClient={agentClient} instance={instance} active={active} sessions={sessions} projects={projects} onSessionUpdated={onSessionUpdated}
+          {...(active && teamChatTarget?.messageId !== undefined ? { focusMessageId: teamChatTarget.messageId } : {})}
+          onOpenConversation={(conversation, messageId) => onOpenTeamConversation({ ...conversation, pinOrder: conversation.pinOrder ?? null }, undefined, messageId)} />
+      </div>;
+    })}
+    <div className={activeActivity === "conversations" && teamChatTarget === null && activeSession !== null ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"}>
       {retainedSessions.map((session) => {
-        const isActive = activeActivity === "conversations" && session.id === activeSession?.id;
+        const isActive = activeActivity === "conversations" && teamChatTarget === null && session.id === activeSession?.id;
         const conversationProject = session.projectId === null
           ? null
           : projects.find((project) => project.id === session.projectId) ?? null;
@@ -880,6 +895,7 @@ export function ConversationWorkspace({
   session,
   teamInstances = [],
   teamManaged = false,
+  groupChat = null,
 }: {
   active?: boolean;
   agentClient: AgentClient;
@@ -912,6 +928,7 @@ export function ConversationWorkspace({
   teamInstances?: readonly TeamInstanceView[];
   /** A Team WorkItem owns execution policy; its Timeline still supports controlled user input. */
   teamManaged?: boolean;
+  groupChat?: { instanceId: string; focusMessageId?: string } | null;
 }): ReactElement {
   const headingId = useId();
   const agentProfiles = useAgentDirectoryStore((state) => state.agents);
@@ -940,6 +957,7 @@ export function ConversationWorkspace({
   );
   const [composerValue, setComposerValue] = useState("");
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const groupRequestRef = useRef<{ fingerprint: string; id: string } | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [forkingMessageId, setForkingMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -2150,6 +2168,24 @@ export function ConversationWorkspace({
       return;
     }
 
+    if (groupChat !== null) {
+      setIsSending(true); setOperationError(null);
+      try {
+        if (draftAttachments.length > 0) throw new Error("群聊附件发送尚未接入，附件已保留。可先在成员对话中发送。");
+        const roster = await agentClient.getTeamChatMembers({ teamInstanceId: groupChat.instanceId });
+        const body = { teamInstanceId: groupChat.instanceId, content, intent: "request" as const,
+          recipientConversationIds: selectedConversationMentions.map(item => item.id).filter(id => roster.some(member => member.conversationId === id)) };
+        const fingerprint = JSON.stringify(body);
+        if (groupRequestRef.current?.fingerprint !== fingerprint) groupRequestRef.current = { fingerprint, id: crypto.randomUUID() };
+        await agentClient.postTeamChat({ ...body, requestId: groupRequestRef.current.id });
+        groupRequestRef.current = null;
+        setComposerValue(""); setMentionQuery(null); setSlashQuery(null); setSelectedConversationMentions([]);
+        setSelectedTeamMentions([]); setSelectedProjectFileMentions([]);
+      } catch (error) { setOperationError(getUserErrorMessage(error, "群消息发送失败")); }
+      finally { setIsSending(false); refocusComposer(); }
+      return;
+    }
+
     if (editingPendingMessageId !== null) {
       setPendingMessageActionId(editingPendingMessageId);
       setOperationError(null);
@@ -2567,10 +2603,11 @@ export function ConversationWorkspace({
       !mentionQuery.query.includes("/")
       && selectedConversationMentions.length < MAX_SELECTED_CONVERSATION_MENTIONS
     ) {
-      const conversations = [...new Map([
+      const conversations = groupChat === null ? [...new Map([
         ...relatedSessions.filter((candidate) => candidate.parentConversationId === session.id && !candidate.isArchived),
         ...availableConversationMentions,
-      ].map((candidate) => [candidate.id, candidate])).values()];
+      ].map((candidate) => [candidate.id, candidate])).values()] : relatedSessions.filter(candidate =>
+        !candidate.isArchived && (candidate.id === session.id || candidate.parentConversationId === session.id));
       options.push(...conversations
         .filter((conversation) =>
           !selectedConversationMentions.some((selected) => selected.id === conversation.id)
@@ -2624,6 +2661,7 @@ export function ConversationWorkspace({
     session.threadKind,
     teamManaged,
     teamInstances,
+    groupChat,
   ]);
 
   const slashOptions = useMemo(() => {
@@ -3186,7 +3224,7 @@ export function ConversationWorkspace({
       onPointerDownCapture={markVisibleResult}
       onWheelCapture={markVisibleResult}
     >
-      <header className="conversation-workspace__header">
+      {groupChat !== null ? null : <header className="conversation-workspace__header">
         <div className="conversation-workspace__path" aria-label="对话路径">
           {pathScope.kind === "project" && project !== null ? (
             <button
@@ -3270,11 +3308,14 @@ export function ConversationWorkspace({
             onOpenSubagent={(subagent) => onOpenTeamConversation?.(subagent, session.id)}
           />
         )}
-      </header>
+      </header>}
 
       <div
         className="conversation-workspace__surface"
       >
+        {groupChat !== null ? <TeamChatPanel agentClient={agentClient} teamInstanceId={groupChat.instanceId} active={active} composerClearance={composerOverlayHeight}
+          {...(groupChat.focusMessageId === undefined ? {} : { focusMessageId: groupChat.focusMessageId })}
+          onOpenConversation={(conversation, messageId) => onOpenTeamConversation?.({ ...conversation, pinOrder: conversation.pinOrder ?? null }, undefined, messageId)} /> : <>
         <ConversationFindBar
           active={active}
           containerRef={messagesRef}
@@ -3502,7 +3543,8 @@ export function ConversationWorkspace({
           />
         </div>
 
-        {isScrolledAwayFromBottom ? (
+        </>}
+        {groupChat === null && isScrolledAwayFromBottom ? (
           <IconButton
             className="absolute left-1/2 z-[5] -translate-x-1/2 rounded-full border border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-foreground)] shadow-md hover:bg-[var(--app-hover)]"
             label="回到对话底部"
@@ -3516,7 +3558,9 @@ export function ConversationWorkspace({
         ) : null}
 
         <div ref={composerOverlayRef} className="conversation-workspace__composer-overlay">
-          {taskList !== null ? (
+          {groupChat === null ? <ConversationTaskDirectory key={session.id} agentClient={agentClient} conversationId={session.id}
+            onOpenConversation={(conversation, messageId) => { if (onOpenTeamConversation !== undefined) onOpenTeamConversation({ ...conversation, pinOrder: conversation.pinOrder ?? null }, session.id, messageId); else onSessionSelected?.(conversation.id); }} /> : null}
+          {groupChat !== null ? null : taskList !== null ? (
             <ConversationTaskListPanel
               active={active}
               allowClose={teamManaged || !isEndedSubagent}
@@ -3530,7 +3574,7 @@ export function ConversationWorkspace({
             />
           ) : activeFileChanges !== undefined ? <div className="mx-auto mb-[5px] max-w-full"><ConversationChangesBadge summary={activeFileChanges} onReview={path => openChangeReview(activeRunId, path)} /></div> : null}
 
-          {queuedMessages.length > 0 ? (
+          {groupChat === null && queuedMessages.length > 0 ? (
             <ConversationPendingMessageQueue
               agentClient={agentClient}
               actioningMessageId={pendingMessageActionId}
@@ -3555,7 +3599,7 @@ export function ConversationWorkspace({
             />
           ) : null}
 
-          {subagentApprovals.length > 0 ? (
+          {groupChat === null && subagentApprovals.length > 0 ? (
             <SubagentApprovalQueue
               approvalErrors={approvalErrors}
               approvals={subagentApprovals}
@@ -3578,7 +3622,8 @@ export function ConversationWorkspace({
             />
           ) : null}
 
-          <UserQuestionPanel key={session.id} agentClient={agentClient} conversationId={session.id} active={active} />
+          {groupChat === null ? <UserQuestionPanel key={session.id} agentClient={agentClient} conversationId={session.id} active={active} /> : null}
+          {groupChat !== null && operationError !== null ? <p role="alert" className="mx-auto mb-[5px] w-full max-w-[var(--conversation-content-max-width)] text-[var(--app-destructive)]">{operationError}</p> : null}
           <form className="conversation-workspace__composer" onSubmit={(event) => void handleSubmit(event)}>
           <div className="conversation-workspace__composer-surface">
             {isEditingComposerMessage ? (
@@ -6080,7 +6125,7 @@ function TimelineItem({
     <div className="chat-message-group" data-role={item.role}>
       {item.role === "user" ? messageAttachments : null}
       {hasMessageBody ? (
-        <article className="chat-message" data-role={item.role} data-status={item.status}>
+        <ChatMessageBubble role={item.role} status={item.status}>
           {questionAnswer === null ? null : (
             <button type="button" onClick={() => void onLocateQuestion(questionAnswer)}
               title={`跳到提问：${questionAnswer.questions.map((prompt) => prompt.question).join("；")}`}
@@ -6119,7 +6164,7 @@ function TimelineItem({
           ) : (
             renderedMessageContent.length > 0 ? <UserMessageContent content={renderedMessageContent} /> : null
           )}
-        </article>
+        </ChatMessageBubble>
       ) : null}
       {item.role === "assistant" ? messageAttachments : null}
       {afterMessage}

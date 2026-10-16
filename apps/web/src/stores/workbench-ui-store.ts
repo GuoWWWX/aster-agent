@@ -93,6 +93,9 @@ type WorkbenchUiState = {
   activeActivity: ActivityView;
   teamWorkspaceTarget: { teamId: string; instanceId: string } | null;
   openTeamWorkspace: (target: { teamId: string; instanceId: string }) => void;
+  teamChatTarget: { instanceId: string; messageId?: string } | null;
+  openTeamChat: (target: { instanceId: string; messageId?: string }) => void;
+  closeTeamChat: () => void;
   agentPromptWorkspaceTarget: AgentPromptWorkspaceTarget | null;
   configurationWorkspaceRevision: number;
   configurationWorkspaceTarget: ConfigurationWorkspaceTarget | null;
@@ -152,6 +155,9 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
   activeActivity: "conversations",
   teamWorkspaceTarget: null,
   openTeamWorkspace: (target) => set({ activeActivity: "team", teamWorkspaceTarget: target }),
+  teamChatTarget: null,
+  openTeamChat: (target) => set({ activeActivity: "conversations", teamChatTarget: target, isProjectNavigatorOpen: true }),
+  closeTeamChat: () => set({ teamChatTarget: null }),
   agentPromptWorkspaceTarget: null,
   configurationWorkspaceRevision: 0,
   configurationWorkspaceTarget: null,

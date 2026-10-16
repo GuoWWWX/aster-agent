@@ -1,3 +1,5 @@
+import type { ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput } from "./task-context.js";
+import type { ReadTeamChatInput, TeamChatPage, PostTeamChatInput, TeamChatMessage, TeamChatMember, MarkTeamChatReadInput } from "./team-chat.js";
 import type { HtmlPreview, HtmlPreviewRequest } from "./html-preview.js";
 import type { AnswerUserQuestionInput, UserQuestion } from "./user-question.js";
 import type { BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "./background-command.js";
@@ -212,6 +214,17 @@ export interface DesktopBridge {
     input: EnsureTeamInstanceMemberConversationInput,
   ): Promise<TeamMemberConversationView>;
   sendTeamMessage(input: SendTeamMessageInput): Promise<ConversationMessageSubmission>;
+  listTaskContexts(input: ListTaskContextsInput): Promise<TaskContextPage>;
+  getTaskContext(input: { id: string; beforeSourceSequence?: number; limit?: number }): Promise<TaskContextDetail>;
+  updateTaskContext(input: UpdateTaskContextInput): Promise<TaskContext>;
+  linkTaskContext(input: LinkTaskContextInput): Promise<void>;
+  mergeTaskContexts(input: MergeTaskContextsInput): Promise<TaskContext>;
+  readTeamChat(input: ReadTeamChatInput): Promise<TeamChatPage>;
+  postTeamChat(input: PostTeamChatInput): Promise<TeamChatMessage>;
+  getTeamChatMembers(input: { teamInstanceId: string }): Promise<TeamChatMember[]>;
+  markTeamChatRead(input: MarkTeamChatReadInput): Promise<void>;
+  resumeTeamChatDelivery(input: { id: string }): Promise<void>;
+  cancelTeamChatDelivery(input: { id: string }): Promise<void>;
   listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]>;
   getTeamWorkItemExecution(
     input: GetTeamWorkItemExecutionInput,

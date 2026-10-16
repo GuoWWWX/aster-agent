@@ -1,3 +1,5 @@
+import { teamInstanceReferenceInputSchema } from "@agent/protocol";
+import { getTaskContextInputSchema, linkTaskContextInputSchema, listTaskContextsInputSchema, markTeamChatReadInputSchema, mergeTaskContextsInputSchema, postTeamChatInputSchema, readTeamChatInputSchema, taskContextDetailSchema, taskContextPageSchema, taskContextReferenceSchema, taskContextSchema, teamChatMessageSchema, teamChatPageSchema, updateTaskContextInputSchema, teamChatMemberSchema } from "@agent/protocol";
 import { htmlPreviewRequestSchema, htmlPreviewResponseSchema } from "@agent/protocol";
 import type { HtmlPreviewServer } from "../preview/html-preview-server.js";
 import { scheduledTaskListSchema, scheduledTaskSchema, saveScheduledTaskIpcArgumentsSchema, scheduledTaskReferenceIpcArgumentsSchema } from "@agent/protocol";
@@ -1128,6 +1130,77 @@ export function registerMainIpcHandlers(
     },
   );
 
+  ipcMain.handle(IPC_CHANNELS.taskContextList, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    database.collaboration.syncWorkItems(database.listTeamWorkItems({}));
+    const [input] = z.tuple([listTaskContextsInputSchema]).parse(args);
+    const result = taskContextPageSchema.parse(database.collaboration.listTasks(input));
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.taskContextGet, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    database.collaboration.syncWorkItems(database.listTeamWorkItems({}));
+    const [input] = z.tuple([getTaskContextInputSchema]).parse(args);
+    const result = taskContextDetailSchema.parse(database.collaboration.getTask(input.id, input));
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.taskContextUpdate, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([updateTaskContextInputSchema]).parse(args);
+    const result = taskContextSchema.parse(database.collaboration.updateTask(input));
+    emitConversationRunEvent({ type: "collaboration.changed", conversationId: input.conversationId });
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.taskContextLink, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([linkTaskContextInputSchema]).parse(args);
+    const result = database.collaboration.linkTask(input);
+    emitConversationRunEvent({ type: "collaboration.changed", conversationId: database.collaboration.getTask(input.id).task.ownerConversationId });
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.taskContextMerge, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([mergeTaskContextsInputSchema]).parse(args);
+    const result = taskContextSchema.parse(database.collaboration.mergeTasks(input));
+    emitConversationRunEvent({ type: "collaboration.changed", conversationId: result.ownerConversationId });
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.teamChatRead, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([readTeamChatInputSchema]).parse(args);
+    const result = teamChatPageSchema.parse(database.collaboration.readMessages(input));
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.teamChatPost, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([postTeamChatInputSchema]).parse(args);
+    const result = teamChatMessageSchema.parse(agentRuntime.postTeamChat(input, emitConversationRunEvent));
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.teamChatMembers, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([teamInstanceReferenceInputSchema]).parse(args);
+    const result = z.array(teamChatMemberSchema).parse(database.collaboration.members(input.teamInstanceId));
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.teamChatMarkRead, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([markTeamChatReadInputSchema]).parse(args);
+    const result = database.collaboration.markRead(input, null);
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.teamChatResume, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([taskContextReferenceSchema]).parse(args);
+    agentRuntime.resumeTeamChatDelivery(input.id, emitConversationRunEvent);
+    return null;
+  });
+  ipcMain.handle(IPC_CHANNELS.teamChatCancel, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([taskContextReferenceSchema]).parse(args);
+    const result = database.collaboration.cancelDelivery(input.id);
+    return result;
+  });
   ipcMain.handle(
     IPC_CHANNELS.teamWorkItemList,
     (event, ...args: unknown[]) => {

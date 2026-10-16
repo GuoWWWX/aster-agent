@@ -1,3 +1,4 @@
+import type { ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput, ReadTeamChatInput, TeamChatPage, PostTeamChatInput, TeamChatMessage, TeamChatMember, MarkTeamChatReadInput } from "@agent/protocol";
 import type { HtmlPreview, HtmlPreviewRequest } from "@agent/protocol";
 import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
 import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
@@ -588,6 +589,17 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.listProjects();
   }
 
+  public listTaskContexts(input: ListTaskContextsInput): Promise<TaskContextPage> { return this.desktopBridge.listTaskContexts(input); }
+  public getTaskContext(input: { id: string; beforeSourceSequence?: number; limit?: number }): Promise<TaskContextDetail> { return this.desktopBridge.getTaskContext(input); }
+  public updateTaskContext(input: UpdateTaskContextInput): Promise<TaskContext> { return this.desktopBridge.updateTaskContext(input); }
+  public linkTaskContext(input: LinkTaskContextInput): Promise<void> { return this.desktopBridge.linkTaskContext(input); }
+  public mergeTaskContexts(input: MergeTaskContextsInput): Promise<TaskContext> { return this.desktopBridge.mergeTaskContexts(input); }
+  public readTeamChat(input: ReadTeamChatInput): Promise<TeamChatPage> { return this.desktopBridge.readTeamChat(input); }
+  public postTeamChat(input: PostTeamChatInput): Promise<TeamChatMessage> { return this.desktopBridge.postTeamChat(input); }
+  public getTeamChatMembers(input: { teamInstanceId: string }): Promise<TeamChatMember[]> { return this.desktopBridge.getTeamChatMembers(input); }
+  public markTeamChatRead(input: MarkTeamChatReadInput): Promise<void> { return this.desktopBridge.markTeamChatRead(input); }
+  public resumeTeamChatDelivery(input: { id: string }): Promise<void> { return this.desktopBridge.resumeTeamChatDelivery(input); }
+  public cancelTeamChatDelivery(input: { id: string }): Promise<void> { return this.desktopBridge.cancelTeamChatDelivery(input); }
   public listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]> {
     return this.desktopBridge.listTeamWorkItems(input);
   }

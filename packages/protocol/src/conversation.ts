@@ -1189,6 +1189,7 @@ const runFinishedEventSchema = z
   .strict();
 
 export const conversationRunEventSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("collaboration.changed"), conversationId: conversationIdSchema, teamInstanceId: z.string().uuid().optional() }).strict(),
   z.object({ type: z.literal("user_question.updated"), conversationId: conversationIdSchema, question: userQuestionSchema,
     reason: z.enum(["created", "answered", "viewed", "cancelled"]) }).strict(),
   z.object({ type: z.literal("notification.activated"), conversationId: conversationIdSchema }).strict(),

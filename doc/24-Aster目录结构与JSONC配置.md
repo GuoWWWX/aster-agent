@@ -259,3 +259,7 @@ MCP 的 `command`、`args`、`env`、`headers`、`url` 等服务定义统一在 
 - [应用与 Agent/团队字段](../packages/protocol/src/application-settings.ts)、[模型与思考选项](../packages/protocol/src/conversation.ts)：当前字段依据；本文只调整配置落盘分组，示例未展开全部可选字段。
 - [终端](../packages/protocol/src/terminal.ts)、[浏览器](../packages/protocol/src/browser.ts)、[压缩](../packages/protocol/src/context-compression.ts)、[集成](../packages/protocol/src/integration.ts)：各分区业务参数。
 - [目标 ER 图](./21-数据库实体关系图.md)、[JSONL 结构](./22-JSONL对话存储与归属设计.md)：配置以外的数据，不在本文重复定义。
+
+## 2026-10-17 任务与群聊数据归属
+
+任务目录、修订、消息来源、Run 绑定、群公开正文、投递及读取进度随既有 db.sqlite 备份。成员执行与原始证据仍随原 Conversation JSONL、附件和产物备份。本功能不新增 JSONC 配置、独立 Agent Home 或第二份用户数据目录。

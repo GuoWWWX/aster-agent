@@ -53,7 +53,11 @@ export class EventProjector {
     private readonly database: AgentDatabase,
     private readonly threadLog: ThreadLog,
     private readonly attachmentPathResolver: ThreadLogAttachmentPathResolver | null = null,
-  ) { this.timeline = new ThreadLogTimeline(threadLog); }
+  ) {
+    this.timeline = new ThreadLogTimeline(threadLog);
+    database.collaboration.setSourceResolver(source => database.hasConversation(source.containerId)
+      && this.timeline.page({ conversationId: source.containerId, aroundItemId: source.messageId, limit: 20 }).items.some(item => item.id === source.messageId));
+  }
 
   public listTimelinePage(input: ConversationTimelinePageInput): ConversationTimelinePage {
     this.database.getConversation(input.conversationId);

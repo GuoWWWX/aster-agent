@@ -910,6 +910,16 @@
   padding: 0;
 }
 
+.chat-message[data-role="assistant"].chat-message--enclosed {
+  width: fit-content;
+  max-width: 90%;
+  align-self: flex-start;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-large);
+  background: var(--app-hover);
+  padding: 8px 11px;
+}
+
 .chat-message__meta {
   display: flex;
   min-height: 24px;

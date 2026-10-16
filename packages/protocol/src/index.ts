@@ -680,3 +680,5 @@ export * from "./scheduled-task.js";
 export { localControlCommandSchema, type LocalControlCommand } from "./local-control.js";
 export * from "./user-question.js";
 export * from "./background-command.js";
+export * from "./task-context.js";
+export * from "./team-chat.js";

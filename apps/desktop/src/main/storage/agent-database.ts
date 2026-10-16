@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { DatabaseMigrationRunner } from "./database-migration-runner.js";
+import { CollaborationStore, COLLABORATION_SCHEMA } from "./collaboration-store.js";
 import { z } from "zod";
 import {
   MAX_TEAM_COLLABORATION_OUTPUT_LENGTH,
@@ -291,6 +292,8 @@ export type ConversationDeletionTask = {
 };
 
 export type SendAgentMessageInput = {
+  id?: string;
+  autoWake?: boolean;
   content: string;
   executionStatus?: "completed" | "failed" | "cancelled";
   summaryStatus?: "provided" | "missing";
@@ -1338,6 +1341,7 @@ export class AgentDatabase {
   private readonly database: SqliteDatabase;
   private readonly databasePath: string;
   private volatileConversationProjectionActive = false;
+  public readonly collaboration: CollaborationStore;
 
   public constructor(databasePath: string) {
     this.databasePath = databasePath;
@@ -1348,6 +1352,18 @@ export class AgentDatabase {
     }
     try {
       this.migrate();
+      this.collaboration = new CollaborationStore(this.database, {
+        conversation: id => this.getConversation(id), team: id => this.getTeamInstance(id),
+        teamForConversation: id => this.getTeamInstanceForConversation(id),
+        members: id => {
+          const roots = this.database.prepare("SELECT conversation_id FROM team_execution_conversations WHERE team_instance_id = ?").all(id);
+          const ids = new Set(roots.map(row => String(row.conversation_id)));
+          const main = this.getTeamInstance(id).rootConversationId; if (main !== null) ids.add(main);
+          return [...ids].flatMap(root => [this.getConversation(root), ...this.listTeamMemberConversations(root)]);
+        }, binding: id => this.getConversationAgentBinding(id),
+        sourceExists: source => this.listTimeline(source.containerId).some(item => item.id === source.messageId),
+        outcome: (id, runId) => this.getConversationRunOutcome(id, runId),
+      });
       if (this.isJsonlConversationStorageFinalized()) {
         this.activateVolatileConversationProjection();
       }
@@ -2267,6 +2283,7 @@ export class AgentDatabase {
     if (this.hasActiveTeamInstanceWork(current.id)) {
       throw new Error("A Team instance with active work cannot be deleted.");
     }
+    this.collaboration.cancelRoom(current.id);
     const now = new Date().toISOString();
     this.database.prepare(
       `UPDATE team_instances SET archived_at = COALESCE(archived_at, ?), deleted_at = ?, updated_at = ?
@@ -5290,7 +5307,7 @@ export class AgentDatabase {
          WHERE parent_conversation_id IN (${placeholders})
             OR child_conversation_id IN (${placeholders})`,
       ).run(...task.conversationIds, ...task.conversationIds);
-      for (const id of task.conversationIds) this.writeTaskListProjection(id, null);
+      for (const id of task.conversationIds) { this.collaboration.cancelPending(id); this.writeTaskListProjection(id, null); }
       for (const tableName of [
         "conversation_timeline",
         "model_messages",
@@ -5922,8 +5939,9 @@ export class AgentDatabase {
       ...(input.executionError === undefined ? {} : { executionError: input.executionError }),
       createdAt: now,
       fileChanges: input.fileChanges ?? [],
-      id: randomUUID(),
+      id: input.id ?? randomUUID(),
       kind: "agent_message",
+      ...(input.autoWake === false ? { autoWake: false } : {}),
       messageType: input.messageType ?? "message",
       readAt: null,
       replyInstruction: input.replyInstruction ?? null,
@@ -11013,6 +11031,13 @@ export class AgentDatabase {
         },
         version: 31,
       },
+      { name: "task-context-directory-and-team-chat", version: 32,
+        up: database => { database.exec(COLLABORATION_SCHEMA); } },
+      { name: "team-chat-run-provenance-and-receipts", version: 33, up: database => {
+        database.exec("CREATE TABLE IF NOT EXISTS team_chat_run_sources (run_id TEXT NOT NULL, message_id TEXT NOT NULL, PRIMARY KEY(run_id, message_id))");
+        const columns = database.prepare("PRAGMA table_info(team_chat_deliveries)").all() as DatabaseRow[];
+        if (!columns.some(column => column.name === "receipt_recorded")) database.exec("ALTER TABLE team_chat_deliveries ADD COLUMN receipt_recorded INTEGER NOT NULL DEFAULT 0");
+      } },
     ]);
   }
 
