@@ -11004,6 +11004,8 @@ export class AgentDatabase {
       {
         name: "conversation-parallel-queue-mode",
         up: (database) => {
+          // JSONL storage recreates this column in the TEMP projection at startup.
+          if (this.isJsonlConversationStorageFinalized()) return;
           const columns = database.prepare("PRAGMA table_info(conversations)").all() as DatabaseRow[];
           if (!columns.some(column => column.name === "coordination_mode")) {
             database.exec("ALTER TABLE conversations ADD COLUMN coordination_mode TEXT NOT NULL DEFAULT 'direct' CHECK(coordination_mode IN ('direct','parallel_queue'));");

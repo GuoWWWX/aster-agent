@@ -120,6 +120,36 @@ describe("AgentDatabase", () => {
     reopened.close();
   });
 
+  it.each([29, 31])("upgrades post-cutover storage with migrations from version %i pending", async (pendingVersion) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-post-cutover-upgrade-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "db.sqlite");
+    const original = new AgentDatabase(databasePath);
+    const project = { id: crypto.randomUUID(), name: "Retained project", rootPath: "D:\\workspace\\retained", isPinned: false };
+    original.saveProject(project);
+    original.activateVolatileConversationProjection();
+    original.finalizeJsonlConversationStorage();
+    original.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(pendingVersion);
+    legacy.close();
+
+    const upgraded = new AgentDatabase(databasePath);
+    expect(upgraded.isJsonlConversationStorageFinalized()).toBe(true);
+    expect(upgraded.listProjects()).toEqual([project]);
+    expect(upgraded.createConversation(null).coordinationMode).toBe("direct");
+    upgraded.close();
+
+    const persisted = new DatabaseSync(databasePath);
+    expect(persisted.prepare("SELECT name FROM sqlite_master WHERE name = 'conversations'").get()).toBeUndefined();
+    expect(persisted.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(31);
+    persisted.close();
+    const reopened = new AgentDatabase(databasePath);
+    expect(reopened.listProjects()).toEqual([project]);
+    reopened.close();
+  });
+
   it("records the current schema version and keeps it stable across restarts", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-"));
     temporaryDirectories.push(directory);
