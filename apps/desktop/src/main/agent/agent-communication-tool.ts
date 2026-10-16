@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { ConversationAgentMessageItem } from "@agent/protocol";
+import type { ConversationAgentMessageItem, ConversationSummary } from "@agent/protocol";
 
 import { toolErrorContent } from "../errors/tool-error.js";
 import type { ModelToolDefinition } from "../model/model-contracts.js";
@@ -14,19 +14,33 @@ const READ_AGENT_CONVERSATION_TOOL_NAME = "read_agent_conversation";
 const SEND_AGENT_MESSAGE_TOOL_NAME = "send_agent_message";
 const SET_TEAM_COLLABORATION_PLAN_TOOL_NAME = "set_team_collaboration_plan";
 const WAIT_FOR_AGENT_MESSAGE_TOOL_NAME = "wait_for_agent_message";
+const GET_TEAM_CONTEXT_TOOL_NAME = "get_team_context";
+const RESIZE_TEAM_WORKERS_TOOL_NAME = "resize_team_workers";
 const toolNames = new Set([
   LIST_AGENT_CONVERSATIONS_TOOL_NAME,
   READ_AGENT_CONVERSATION_TOOL_NAME,
   SEND_AGENT_MESSAGE_TOOL_NAME,
   SET_TEAM_COLLABORATION_PLAN_TOOL_NAME,
   WAIT_FOR_AGENT_MESSAGE_TOOL_NAME,
+  GET_TEAM_CONTEXT_TOOL_NAME,
+  RESIZE_TEAM_WORKERS_TOOL_NAME,
 ]);
 const conversationReadToolNames = new Set([
   LIST_AGENT_CONVERSATIONS_TOOL_NAME,
   READ_AGENT_CONVERSATION_TOOL_NAME,
+  GET_TEAM_CONTEXT_TOOL_NAME,
 ]);
 
 const emptyArgumentsSchema = z.object({}).strict();
+const teamContextArgumentsSchema = z.object({
+  limit: z.number().int().min(1).max(20).default(10),
+  beforeWorkItemId: z.string().uuid().optional(),
+  memberConversationId: z.string().uuid().optional(),
+}).strict();
+const resizeTeamWorkersArgumentsSchema = z.object({
+  agentId: z.string().trim().min(1).max(200).describe("Configured member Agent profile ID from list_agent_conversations."),
+  count: z.number().int().min(1).max(8).describe("Desired persistent worker count for this role, including its original worker. Scale only independent work, and shrink only idle workers."),
+}).strict();
 const readConversationArgumentsSchema = z.object({
   runId: z.string().uuid().optional()
     .describe("Optional execution UUID from a receipt. Restricts reading and search to that run; includes uncompressed recent output."),
@@ -91,6 +105,7 @@ export class AgentCommunicationTool {
   public constructor(
     private readonly database: AgentDatabase,
     private readonly history: ConversationReferenceHistory = database,
+    private readonly resizeWorkers?: (input: { conversationId: string; agentId: string; count: number }) => ConversationSummary[],
   ) {}
 
   public getDefinitions(): ModelToolDefinition[] {
@@ -120,6 +135,16 @@ export class AgentCommunicationTool {
         name: WAIT_FOR_AGENT_MESSAGE_TOOL_NAME,
         parameters: modelToolParameters(waitForMessageArgumentsSchema),
       },
+      {
+        description: "Read the current persistent Team instance's compact shared task timeline. Each entry represents one task across all its messages and rework rounds, with participant conversation IDs, status and bounded result excerpts. Use memberConversationId to inspect a member's tasks or nextBeforeWorkItemId as beforeWorkItemId for older tasks. Read full evidence on demand with read_agent_conversation; never copy every member history or poll this timeline continuously.",
+        name: GET_TEAM_CONTEXT_TOOL_NAME,
+        parameters: modelToolParameters(teamContextArgumentsSchema),
+      },
+      {
+        description: "Scale one role in the current persistent Team to 1–8 independent persistent worker conversations (maximum 32 workers per instance). Only a Team Lead with full_access may call this. Add workers only for independent queued work; do not expand just because a task is slow or files conflict. Reducing a busy worker is rejected, and retired conversations and task evidence are retained. List conversations again to allocate by their exact conversation IDs.",
+        name: RESIZE_TEAM_WORKERS_TOOL_NAME,
+        parameters: modelToolParameters(resizeTeamWorkersArgumentsSchema),
+      },
     ];
   }
 
@@ -139,8 +164,10 @@ export class AgentCommunicationTool {
     switch (toolName) {
       case LIST_AGENT_CONVERSATIONS_TOOL_NAME:
       case READ_AGENT_CONVERSATION_TOOL_NAME:
+      case GET_TEAM_CONTEXT_TOOL_NAME:
         return { group: "read", kind: "parallel" };
       case SEND_AGENT_MESSAGE_TOOL_NAME:
+      case RESIZE_TEAM_WORKERS_TOOL_NAME:
       case SET_TEAM_COLLABORATION_PLAN_TOOL_NAME:
       case WAIT_FOR_AGENT_MESSAGE_TOOL_NAME:
         return { kind: "serial" };
@@ -154,6 +181,7 @@ export class AgentCommunicationTool {
     conversationId: string;
     onMessagesRead?: (messageIds: readonly string[]) => void;
     onMessageSent?: (message: ConversationAgentMessageItem) => void;
+    permissionMode?: "read_only" | "ask_before_changes" | "full_access";
     runId: string;
     signal: AbortSignal;
     toolName: string;
@@ -161,6 +189,16 @@ export class AgentCommunicationTool {
     try {
       const argumentsValue = parseToolArguments(input.arguments);
       switch (input.toolName) {
+        case RESIZE_TEAM_WORKERS_TOOL_NAME: {
+          const caller = this.database.getConversation(input.conversationId);
+          if (caller.threadKind !== "team_lead" || (input.permissionMode ?? caller.permissionMode) !== "full_access" || this.resizeWorkers === undefined) {
+            throw new Error("仅完全访问模式下的团队负责人可扩缩容。");
+          }
+          const workers = this.resizeWorkers({ ...resizeTeamWorkersArgumentsSchema.parse(argumentsValue), conversationId: caller.id });
+          return success({ workers: workers.map(worker => ({ conversationId: worker.id, agentId: worker.agentId, title: worker.title })) });
+        }
+        case GET_TEAM_CONTEXT_TOOL_NAME:
+          return success(this.database.getTeamTaskContext(input.conversationId, teamContextArgumentsSchema.parse(argumentsValue)));
         case LIST_AGENT_CONVERSATIONS_TOOL_NAME: {
           emptyArgumentsSchema.parse(argumentsValue);
           const conversations = this.database.listAgentConversations()

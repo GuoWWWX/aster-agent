@@ -653,6 +653,28 @@ it("shows an answered question without an agent label and opens the original pro
 });
 
 describe("Automatic continuation answer", () => {
+  it("enables quick coordination with full access and persists an explicit mode toggle", async () => {
+    const client = new MockAgentClient();
+    const conversation = await client.createConversation({ projectId: null });
+    const save = vi.spyOn(client, "setConversationPermissionMode");
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+        session={session({ id: conversation.id, title: "快速协作验收" })} /></TooltipProvider>);
+      await flushConversationWorkspace();
+    });
+    const toggle = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "快速协作");
+    expect(toggle?.getAttribute("aria-pressed")).toBe("false");
+    await act(async () => { toggle?.click(); await flushConversationWorkspace(); });
+    expect(save).toHaveBeenLastCalledWith({ conversationId: conversation.id, permissionMode: "full_access", coordinationMode: "parallel_queue" });
+    expect(toggle?.getAttribute("aria-pressed")).toBe("true");
+    expect(container.querySelector('[aria-label="权限模式"]')?.textContent).toContain("完全访问");
+    await act(async () => { toggle?.click(); await flushConversationWorkspace(); });
+    expect(save).toHaveBeenLastCalledWith({ conversationId: conversation.id, permissionMode: "full_access", coordinationMode: "direct" });
+    expect(toggle?.getAttribute("aria-pressed")).toBe("false");
+  });
   it("renders one running work-process status after a team request, never above its bubble", async () => {
     const client = new MockAgentClient();
     const target = session({ id: PARENT_ID, title: "团队成员", activeRunId: RUN_ID });

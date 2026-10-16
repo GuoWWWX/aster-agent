@@ -163,10 +163,10 @@ describe("AgentDatabase", () => {
       .all() as Array<Record<string, unknown>>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(28);
-    expect(firstRow.name).toBe("thread-log-projection-source-signature");
+    expect(firstRow.version).toBe(31);
+    expect(firstRow.name).toBe("conversation-parallel-queue-mode");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(28);
+    expect(migrationCount.count).toBe(31);
     expect(historyIndexes.map((row) => row.name)).toEqual([
       "conversation_timeline_conversation_sequence",
       "model_messages_conversation_sequence",
@@ -176,6 +176,57 @@ describe("AgentDatabase", () => {
       "source_modified_at_ms",
       "source_size_bytes",
     ]));
+  });
+
+  it("upgrades version 28 team data without losing tasks, members, indexes or foreign keys", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "team-v28-upgrade-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "team.sqlite");
+    const original = new AgentDatabase(databasePath);
+    original.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+    const project = { id: crypto.randomUUID(), name: "Migration", rootPath: "D:\\workspace\\team-upgrade", isPinned: false };
+    original.saveProject(project);
+    const instance = original.createTeamInstance({ teamId: "default-team", scope: "project", projectId: project.id });
+    const lead = original.createConversation(project.id, { threadKind: "team_lead", teamId: instance.teamId });
+    original.bindTeamExecutionConversation({ conversationId: lead.id, projectId: project.id, sourceConversationId: null, teamId: instance.teamId, teamInstanceId: instance.id });
+    const agent = { id: "developer", name: "开发", role: "开发", instructions: "", isDefault: false };
+    const member = original.createConversation(project.id, { agent, parentConversationId: lead.id, teamId: instance.teamId, threadKind: "agent" });
+    original.bindTeamMemberConversation({ agentId: agent.id, conversationId: member.id, teamExecutionConversationId: lead.id });
+    const selection = { providerId: crypto.randomUUID(), modelId: "migration-model", reasoning: null };
+    const task = original.createTeamWorkItem({ teamId: instance.teamId, teamInstanceId: instance.id, projectId: project.id,
+      title: "保留任务", requirement: "保留验收历史", acceptanceCriteria: ["保留"], priority: "normal", permissionMode: "read_only" }, selection);
+    original.close();
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec("PRAGMA foreign_keys = OFF; DROP INDEX team_member_conversations_role; DROP TABLE team_instance_worker_counts;");
+    for (const name of ["team_work_items", "team_member_conversations"]) {
+      const table = legacy.prepare("SELECT sql FROM sqlite_master WHERE name = ? AND type = 'table'").get(name)!;
+      const indexes = legacy.prepare("SELECT sql FROM sqlite_master WHERE tbl_name = ? AND type = 'index' AND sql IS NOT NULL").all(name);
+      let sql = String(table.sql).replace(new RegExp('^(CREATE\\s+TABLE\\s+)(?:"' + name + '"|' + name + ')', "u"), "$1" + name + "_v28");
+      if (name === "team_work_items") sql = sql.replace(/\bproject_id\s+TEXT(?!\s+NOT\s+NULL)/u, "project_id TEXT NOT NULL");
+      else sql = sql.replace("conversation_id TEXT NOT NULL PRIMARY KEY", "conversation_id TEXT NOT NULL UNIQUE")
+        .replace(/\)\s*$/u, ", PRIMARY KEY (team_execution_conversation_id, agent_id))");
+      legacy.exec(sql);
+      legacy.exec("INSERT INTO " + name + "_v28 SELECT * FROM " + name + "; DROP TABLE " + name + "; ALTER TABLE " + name + "_v28 RENAME TO " + name);
+      for (const index of indexes) legacy.exec(String(index.sql));
+    }
+    legacy.exec("ALTER TABLE conversations DROP COLUMN coordination_mode; DELETE FROM schema_migrations WHERE version >= 29;");
+    expect(legacy.prepare("PRAGMA table_info(team_work_items)").all().find(column => column.name === "project_id")?.notnull).toBe(1);
+    expect(legacy.prepare("PRAGMA table_info(team_member_conversations)").all().filter(column => Number(column.pk) > 0)).toHaveLength(2);
+    legacy.close();
+    const upgraded = new AgentDatabase(databasePath);
+    expect(upgraded.getTeamWorkItem(task.id)).toMatchObject({ title: "保留任务", permissionMode: "read_only", acceptanceCriteria: ["保留"] });
+    expect(upgraded.listTeamMemberConversations(lead.id).map(value => value.id)).toEqual([member.id]);
+    const second = upgraded.createConversation(project.id, { agent, parentConversationId: lead.id, teamId: instance.teamId, threadKind: "agent" });
+    upgraded.bindTeamMemberConversation({ agentId: agent.id, conversationId: second.id, teamExecutionConversationId: lead.id, replica: true });
+    expect(upgraded.listTeamMemberConversations(lead.id)).toHaveLength(2);
+    upgraded.close();
+    const metadata = new DatabaseSync(databasePath);
+    expect(metadata.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(metadata.prepare("PRAGMA table_info(team_work_items)").all().find(column => column.name === "project_id")?.notnull).toBe(0);
+    metadata.close();
+    const reopened = new AgentDatabase(databasePath);
+    expect(reopened.listTeamMemberConversations(lead.id)).toHaveLength(2);
+    reopened.close();
   });
 
   it("imports former standalone LangGraph checkpoints idempotently", async () => {
@@ -243,7 +294,7 @@ describe("AgentDatabase", () => {
     migrated.close();
 
     expect(checkpointCount.count).toBe(0);
-    expect(migrationCount.count).toBe(28);
+    expect(migrationCount.count).toBe(31);
   });
 
   it("adds hidden turn summaries when upgrading an existing version 19 database", async () => {
@@ -701,7 +752,7 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 28",
+      "newer than supported version 31",
     );
   });
 
@@ -2035,6 +2086,9 @@ describe("AgentDatabase", () => {
       { version: 26 },
       { version: 27 },
       { version: 28 },
+      { version: 29 },
+      { version: 30 },
+      { version: 31 },
     ]);
     metadata.close();
   });

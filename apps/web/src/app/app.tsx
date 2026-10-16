@@ -312,13 +312,14 @@ export function App(): ReactElement {
     setTeamInstanceError(null);
     try {
       await agentClient.createTeamInstance(input);
+      if (input.projectId !== undefined) await projectTree.setProjectTeamsInNavigator(input.projectId, true);
       await refreshTeamState();
       return true;
     } catch (error) {
       setTeamInstanceError(getUserErrorMessage(error, "无法创建团队"));
       return false;
     }
-  }, [agentClient, refreshTeamState]);
+  }, [agentClient, projectTree, refreshTeamState]);
 
   const renameTeamInstance = useCallback(async (
     teamInstanceId: string,
@@ -327,18 +328,21 @@ export function App(): ReactElement {
   ): Promise<boolean> => {
     setTeamInstanceError(null);
     try {
-      await agentClient.renameTeamInstance({
+      const renamed = await agentClient.renameTeamInstance({
         name,
         teamInstanceId,
         ...(projectId === undefined ? {} : { projectId }),
       });
+      if (renamed.projectId !== null && renamed.projectId !== teamInstances.find(instance => instance.id === teamInstanceId)?.projectId) {
+        await projectTree.setProjectTeamsInNavigator(renamed.projectId, true);
+      }
       await refreshTeamState();
       return true;
     } catch (error) {
       setTeamInstanceError(getUserErrorMessage(error, "无法编辑团队"));
       return false;
     }
-  }, [agentClient, refreshTeamState]);
+  }, [agentClient, projectTree, refreshTeamState, teamInstances]);
 
   const reorderTeamInstances = useCallback(async (
     teamInstanceIds: string[],
@@ -726,6 +730,7 @@ export function App(): ReactElement {
           onDeleteSession={(sessionId) => projectSessions.deleteSession(sessionId)}
           onDeleteTeamInstance={deleteTeamInstance}
           onOpenTeamMember={(teamInstanceId, agentId, session) => {
+            if (session !== null) { openTeamMemberSession(session); return; }
             void projectSessions.ensureTeamInstanceMemberSession(
               teamInstanceId,
               agentId,

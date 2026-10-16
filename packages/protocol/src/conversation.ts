@@ -190,6 +190,7 @@ export const conversationSummarySchema = z
     modelSelection: conversationModelSelectionSchema.nullable().default(null),
     parentConversationId: conversationIdSchema.nullable().default(null),
     permissionMode: conversationPermissionModeSchema.optional(),
+    coordinationMode: z.enum(["direct", "parallel_queue"]).optional(),
     pinOrder: z.number().int().positive().nullable().optional(),
     projectId: projectIdSchema.nullable(),
     subagentTaskStatus: z.enum([
@@ -316,6 +317,7 @@ export const setConversationPermissionModeInputSchema = z
   .object({
     conversationId: conversationIdSchema,
     permissionMode: conversationPermissionModeSchema,
+    coordinationMode: z.enum(["direct", "parallel_queue"]).optional(),
   })
   .strict();
 

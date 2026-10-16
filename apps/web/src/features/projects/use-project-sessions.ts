@@ -56,6 +56,7 @@ function toProjectSession(conversation: ConversationSummary): ProjectSession {
     modelSelection: conversation.modelSelection,
     parentConversationId: conversation.parentConversationId,
     permissionMode: conversation.permissionMode,
+    coordinationMode: conversation.coordinationMode,
     pinOrder: conversation.pinOrder ?? null,
     projectId: conversation.projectId,
     subagentTaskStatus: conversation.subagentTaskStatus,

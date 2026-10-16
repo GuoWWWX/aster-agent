@@ -1132,7 +1132,10 @@ export class AgentRuntime {
     this.userQuestionTool = new UserQuestionTool(this.userQuestions);
     this.taskListTool = new TaskListTool(database);
     this.referenceHistory = threadLog === null ? database : new ThreadLogReferenceReader(database, threadLog);
-    this.agentCommunicationTool = new AgentCommunicationTool(database, this.referenceHistory);
+    this.agentCommunicationTool = new AgentCommunicationTool(database, this.referenceHistory, input => {
+      if (this.teamWorkItemDispatcher?.resizeWorkers === undefined) throw new Error("团队扩缩容服务尚不可用。");
+      return this.teamWorkItemDispatcher.resizeWorkers(input);
+    });
     const getModelStatus = credentials.getStatus;
     this.subagentTool = new SubagentTool(
       database,
@@ -1289,9 +1292,21 @@ export class AgentRuntime {
           signal: context.signal,
           toolName,
         }),
-        getDefinitions: () => this.agentCommunicationTool.getConversationReadDefinitions(),
+        getDefinitions: () => this.agentCommunicationTool.getConversationReadDefinitions()
+          .filter(definition => definition.name !== "get_team_context"),
         getExecutionPolicy: ({ toolName }) => this.agentCommunicationTool.getExecutionPolicy(toolName),
         isAvailable: ({ conversationId }) => conversationId !== undefined,
+      },
+      {
+        execute: ({ context, rawArguments, toolName }) => this.agentCommunicationTool.execute({
+          arguments: rawArguments, conversationId: context.conversationId, runId: context.runId,
+          signal: context.signal, toolName,
+        }),
+        getDefinitions: () => this.agentCommunicationTool.getConversationReadDefinitions()
+          .filter(definition => definition.name === "get_team_context"),
+        getExecutionPolicy: ({ toolName }) => this.agentCommunicationTool.getExecutionPolicy(toolName),
+        isAvailable: ({ conversationId }) => conversationId !== undefined
+          && this.database.getTeamInstanceForConversation(conversationId) !== null,
       },
       {
         execute: ({ context, rawArguments, toolName }) => this.agentCommunicationTool.execute({
@@ -1302,13 +1317,27 @@ export class AgentRuntime {
             messageIds,
           ),
           onMessageSent: (message) => this.handleAgentMessageSent(message, context.emit),
+          permissionMode: context.permissionMode,
           runId: context.runId,
           signal: context.signal,
           toolName,
         }),
-        getDefinitions: () => this.agentCommunicationTool.getCoordinationDefinitions(),
+        getDefinitions: () => this.agentCommunicationTool.getCoordinationDefinitions()
+          .filter(definition => definition.name !== "resize_team_workers"),
         getExecutionPolicy: ({ toolName }) => this.agentCommunicationTool.getExecutionPolicy(toolName),
         isAvailable: ({ conversationId }) => this.canUseAgentCommunication(conversationId),
+      },
+      {
+        execute: ({ context, rawArguments, toolName }) => this.agentCommunicationTool.execute({
+          arguments: rawArguments, conversationId: context.conversationId, runId: context.runId,
+          signal: context.signal, permissionMode: context.permissionMode, toolName,
+        }),
+        getDefinitions: () => this.agentCommunicationTool.getCoordinationDefinitions()
+          .filter(definition => definition.name === "resize_team_workers"),
+        getExecutionPolicy: ({ toolName }) => this.agentCommunicationTool.getExecutionPolicy(toolName),
+        isAvailable: ({ conversationId }) => conversationId !== undefined
+          && this.database.getConversation(conversationId).threadKind === "team_lead"
+          && this.database.getTeamInstanceForConversation(conversationId) !== null,
       },
       {
         execute: ({ context, rawArguments, toolName }) => this.subagentTool.execute({
@@ -2258,12 +2287,19 @@ export class AgentRuntime {
     imageMessages: ModelMessage[],
     emit: RunEventEmitter
   ): boolean {
-    const records = this.database.listPendingMessageRecords(conversationId, "steer");
+    const coordinating = this.database.getConversation(conversationId).coordinationMode === "parallel_queue";
+    const records = [
+      ...this.database.listPendingMessageRecords(conversationId, "steer"),
+      ...(coordinating && !this.isPendingQueuePaused(conversationId)
+        ? this.database.listPendingMessageRecords(conversationId, "queue").slice(0, 5) : []),
+    ];
     if (records.length === 0) return false;
     const consumedMessages: ConversationMessageItem[] = [];
     for (const record of records) {
       const prepared = this.prepareConversationMessage(record.input);
-      const modelInputContent = steerModelContent(prepared.modelInputContent);
+      const modelInputContent = record.message.deliveryMode === "queue"
+        ? `[Independent queued request ${record.message.id}]\nKeep earlier assignments and their results. Register this request in the task list, delegate independent work to a reusable or new Subagent, and track its completion without waiting before accepting more queued requests.\n${prepared.modelInputContent}\n[End queued request]`
+        : steerModelContent(prepared.modelInputContent);
       const userMessage = this.threadLog !== null && this.eventProjector !== null
         ? (() => {
             const pendingConsumption = this.database.preparePendingMessageConsumption(
@@ -3315,6 +3351,7 @@ export class AgentRuntime {
     if (team === undefined) return [];
     const members = this.database.listTeamMemberConversations(conversation.id)
       .filter((member) => member.agentId !== null
+        && !member.isArchived
         && member.agentId !== team.leadAgentId
         && team.memberIds.includes(member.agentId)
         && directory?.agents.some((agent) => agent.id === member.agentId && agent.enabled) === true)
@@ -3329,8 +3366,11 @@ export class AgentRuntime {
       ? []
       : [
         "This is a persistent Agent Team. Do not create Subagents for Team work.",
+        "Use get_team_context on demand to see the shared task timeline, participant responsibilities and compact results. One task can span several Runs. Read full member evidence only when needed; do not continually reload the whole Team history.",
         `Delegate only through send_agent_message with a member conversationId: ${members.join("; ")}`,
         "Every Team WorkItem must delegate to at least one durable member with expectReply=true before the Team Lead gives a final answer. For simple work choose only the best-matched member; add more roles only when the task genuinely needs them.",
+        "For implementation tasks, assign independent review and actual validation to a member who did not implement the change. If no independent member is available, explicitly take responsibility for the review. Distinguish executed checks from suggested checks and unresolved risks; a role label or final answer does not prove a check passed.",
+        "Use resize_team_workers only when independent work is waiting and the appropriate role is busy. Assign file or module ownership before parallel changes, reread current content after a conflict and integrate deliberately; never force overwrite, reset or blindly merge another member's work.",
         "Use replyInstruction to request a concise completion receipt. The member puts a standalone Markdown --- after that receipt, so the runtime can return only a bounded completion receipt automatically. Check member status with list_agent_conversations, read full member conversations only on demand with read_agent_conversation and a deliberate maxTokens budget, verify the returned work, and summarize it yourself.",
       ];
   }
@@ -3351,12 +3391,22 @@ export class AgentRuntime {
     if (!this.database.isTeamMemberConversation(conversation.id)) return [];
     return [
       "You are a persistent Team member. Work only on messages assigned through Agent communication. Do not create Subagents. Report progress or clarification with send_agent_message to a participant in the same Team. Start your final answer with the requested concise completion receipt, add a standalone Markdown --- line, then keep supporting detail after it in this conversation; the runtime returns only a bounded completion receipt before that divider.",
+      "The shared get_team_context timeline tells you what the Team and individual members have already done. Reuse verified facts, keep the current assignment as the scope, and use read_agent_conversation for evidence instead of loading every member's full history.",
     ];
   }
 
   private teamDispatchContext(conversation: ConversationSummary): string[] {
     const catalogPrompt = this.teamWorkItemTool.getCatalogPrompt(conversation.id);
     return catalogPrompt === null ? [] : [catalogPrompt];
+  }
+
+  private coordinationContext(conversation: ConversationSummary): string[] {
+    if (conversation.coordinationMode !== "parallel_queue") return [];
+    return [
+      "Quick coordination mode is enabled with full_access. You own a persistent queue of independent user requests and coordinate reusable Subagents. Record each request and its assigned child IDs in the durable task list; accept new queued requests at runtime-safe model boundaries instead of polling the inbox. New requests do not replace or cancel earlier assignments.",
+      "Delegate independent work promptly and continue accepting requests while workers run. Reuse an idle suitable child and its context; create another only when independent parallel work justifies it. Keep at most 8 children actively working; leave remaining work pending in the task list. Use the existing list_subagents, send_agent_message, wait_for_subagents and end_subagent tools, and reconcile every request and child result before declaring the whole batch complete. Failed children require explicit retry/reassignment or a truthful failure report, never silent omission.",
+      "Give each coding worker a distinct file/module ownership scope. Backend locks reject conflicting or stale writes; ask the owner to finish, reread current files and integrate deliberately. Do not force-reset or blindly merge another worker's edits. For substantive changes assign independent checking/testing before final delivery and distinguish actual test results from proposed checks.",
+    ];
   }
 
   private spawnSubagent(input: {
@@ -3893,7 +3943,12 @@ export class AgentRuntime {
         : null;
       const permissionMode = managedWorkItem?.permissionMode
         ?? previousSubagentSnapshot?.permissionMode
+        ?? (targetConversation.coordinationMode === "parallel_queue" && targetConversation.permissionMode === "full_access"
+          ? "full_access" : undefined)
         ?? DEFAULT_PERMISSION_MODE;
+      if (managedWorkItem !== null) {
+        (this.conversationLifecycle ?? this.database).setConversationPermissionMode(conversationId, permissionMode);
+      }
       const contextCompressionConfiguration = structuredClone(
         resolveContextCompressionConfiguration(
           configuration,
@@ -5389,6 +5444,7 @@ export class AgentRuntime {
         ...conversationIdentityContext(conversation, agent),
         ...this.agentDelegationContext(conversation),
         ...this.teamWorkerContext(conversation),
+        ...this.coordinationContext(conversation),
         ...this.teamDispatchContext(conversation),
         this.skillRuntime === null
           ? "A Skill is a task instruction and capability bundle injected from SKILL.md. No Skill Runtime is currently available, so do not label general abilities as Skills. Git is a command-line program available through run_command, not a Skill or dedicated Git tool; use it only when the task requires it and the workspace is a Git repository."
