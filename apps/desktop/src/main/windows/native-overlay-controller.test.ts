@@ -157,7 +157,7 @@ describe("native overlay host", () => {
       x: 20, y: 30, width: 1200, height: 800,
       frame: false, transparent: true, show: false, skipTaskbar: true, hasShadow: false,
       resizable: false, thickFrame: false, backgroundColor: "#00000000",
-      webPreferences: { nodeIntegration: false, sandbox: true, contextIsolation: true, webSecurity: true, webviewTag: false },
+      webPreferences: { nodeIntegration: false, sandbox: true, contextIsolation: true, webSecurity: true, webviewTag: false, backgroundThrottling: false },
     } });
     const options = controller.allowWindow(HOST);
     expect(options).toEqual({ action: "deny" });

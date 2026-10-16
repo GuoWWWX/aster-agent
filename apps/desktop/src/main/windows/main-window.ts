@@ -28,6 +28,7 @@ function getPreloadPath(): string {
 
 export function createMainWindow(): BrowserWindow {
   const webPreferences: SecuredWebPreferences = {
+    backgroundThrottling: false,
     contextIsolation: true,
     enableRemoteModule: false,
     nodeIntegration: false,

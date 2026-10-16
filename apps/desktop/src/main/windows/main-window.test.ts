@@ -10,6 +10,10 @@ vi.mock("electron", () => ({
 import { createMainWindow } from "./main-window.js";
 
 describe("createMainWindow", () => {
+  it("keeps frames and timers active when native notifications or overlays cover the window", () => {
+    const window = createMainWindow() as unknown as { options: Record<string, unknown> };
+    expect(window.options.webPreferences).toMatchObject({ backgroundThrottling: false });
+  });
   it("allows width and height to resize independently", () => {
     const window = createMainWindow() as unknown as {
       options: Record<string, unknown>;

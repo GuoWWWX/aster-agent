@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { createPortal } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ModelWorkingIndicator } from "./model-working-indicator.js";
 import { modelWorkingPose, type ModelWorkPhase } from "./model-working-motion.js";
@@ -27,6 +28,28 @@ function advance(time: number) {
 }
 
 describe("model working particles", () => {
+  it("animates popup particles with their own document clock while the parent is hidden", () => {
+    const iframe = document.createElement("iframe"); document.body.append(iframe);
+    const child = iframe.contentWindow!;
+    const frames = new Map<number, FrameRequestCallback>(); let nextId = 0;
+    Object.defineProperty(child, "requestAnimationFrame", { value: (callback: FrameRequestCallback) => { frames.set(++nextId, callback); return nextId; }, configurable: true });
+    Object.defineProperty(child, "cancelAnimationFrame", { value: (id: number) => { frames.delete(id); }, configurable: true });
+    vi.spyOn(child.document, "hidden", "get").mockReturnValue(false);
+    act(() => root.render(<><ModelWorkingIndicator />{createPortal(<ModelWorkingIndicator />, child.document.body)}</>));
+    vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(callbacks.size).toBe(0);
+    const dot = child.document.querySelector<HTMLElement>("[data-model-working] > span")!;
+    const before = dot.style.transform;
+    for (const time of [1000, 1060]) {
+      const next = frames.entries().next().value!; frames.delete(next[0]); next[1](time);
+    }
+    expect(dot.style.transform).not.toBe(before);
+    expect(frames.size).toBe(1);
+    act(() => root.unmount());
+    expect(frames.size).toBe(0);
+    iframe.remove();
+  });
   it("uses exactly three particles and one frame clock across indicators", () => {
     act(() => root.render(<><ModelWorkingIndicator /><ModelWorkingIndicator aria-label="正在工作" /></>));
     expect(node.querySelectorAll("[data-model-working] > span")).toHaveLength(6);
