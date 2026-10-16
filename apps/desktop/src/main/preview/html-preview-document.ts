@@ -3,7 +3,7 @@ import { HTML_PREVIEW_MAX_HEIGHT } from "@agent/protocol";
 
 /** Add a size reporter without rewriting the authored document or its source view. */
 export function htmlPreviewDocument(source: string, id: string): string {
-  const offset = previewReporterOffset(source);
+  const { offset, hasDoctype } = previewDocumentPrefix(source);
   const reporter = `<script data-aster-preview-resize>(() => {
     if (window.parent === window) return;
     const id = ${JSON.stringify(id)};
@@ -66,18 +66,20 @@ export function htmlPreviewDocument(source: string, id: string): string {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
     else start();
   })();</script>`;
-  return source.slice(0, offset) + reporter + source.slice(offset);
+  // Quirks mode reports body.scrollHeight as at least the iframe viewport height,
+  // which prevents short fragments from shrinking below the initial frame size.
+  return (hasDoctype ? "" : "<!doctype html>\n") + source.slice(0, offset) + reporter + source.slice(offset);
 }
 
 /** Only the document prefix determines the insertion point; do not parse the entire page on Main. */
-function previewReporterOffset(source: string): number {
-  let offset = 0, initial = true, stopped = false;
+function previewDocumentPrefix(source: string): { offset: number; hasDoctype: boolean } {
+  let offset = 0, initial = true, stopped = false, hasDoctype = false;
   const stop = (): void => { stopped = true; tokenizer.pause(); };
   const tokenizer = new Tokenizer({ sourceCodeLocationInfo: true }, {
     onComment() {}, onWhitespaceCharacter() {}, onEof() {},
     onDoctype(token) {
       if (stopped) return;
-      if (initial) offset = token.location?.endOffset ?? 0;
+      if (initial) { offset = token.location?.endOffset ?? 0; hasDoctype = true; }
       initial = false;
     },
     onStartTag(token) {
@@ -94,5 +96,5 @@ function previewReporterOffset(source: string): number {
     onCharacter: stop, onNullCharacter: stop,
   });
   tokenizer.write(source, true);
-  return offset;
+  return { offset, hasDoctype };
 }

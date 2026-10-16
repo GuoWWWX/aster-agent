@@ -22,8 +22,9 @@ describe("HTML preview server", () => {
     const preview = await server.create({ kind: "file", conversationId, path: "pages/demo.html" });
     const response = await fetch(preview.url);
     const document = await response.text();
-    expect(document.replace(/<script data-aster-preview-resize>[\s\S]*?<\/script>/u, "")).toBe(preview.source);
+    expect(document.replace(/<script data-aster-preview-resize>[\s\S]*?<\/script>/u, "")).toBe("<!doctype html>\n" + preview.source);
     expect(preview.source).not.toContain("data-aster-preview-resize");
+    expect(preview.source).not.toContain("<!doctype");
     expect(response.headers.get("content-security-policy")).toContain("sandbox allow-scripts;");
     expect(response.headers.get("content-security-policy")).not.toContain("allow-same-origin");
     expect(response.headers.get("content-security-policy")).toContain("connect-src 'none'");

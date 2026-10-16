@@ -4,6 +4,11 @@ import { parse } from "parse5";
 import { htmlPreviewDocument } from "./html-preview-document.js";
 
 describe("preview height instrumentation", () => {
+  it.each(["<div>short</div>", "<!-- <!doctype html> --><div>short</div>", "<html><body><div>short</div></body></html>"])("uses standards mode for a fragment without changing its authored content: %s", source => {
+    const document = htmlPreviewDocument(source, "preview-id");
+    expect(parse(document).mode).toBe("no-quirks");
+    expect(document.replace(/<script data-aster-preview-resize>[\s\S]*?<\/script>/u, "")).toBe("<!doctype html>\n" + source);
+  });
   it.each([
     "", "<!doctype html>", '<!doctype html><!-- <head> decoy --><html><head><meta charset="utf-8">',
     '<html lang="zh"><head data-name="<head>"><title>页面</title>',
@@ -21,8 +26,9 @@ describe("preview height instrumentation", () => {
     const expected = head && "tagName" in head ? head.sourceCodeLocation?.startTag?.endOffset ?? doctype?.sourceCodeLocation?.endOffset ?? 0
       : doctype?.sourceCodeLocation?.endOffset ?? 0;
     const document = htmlPreviewDocument(source, "preview-id");
-    expect(document.indexOf('<script data-aster-preview-resize>')).toBe(expected);
-    expect(document.replace(/<script data-aster-preview-resize>[\s\S]*?<\/script>/u, "")).toBe(source);
+    const standardPrefix = doctype === undefined ? "<!doctype html>\n" : "";
+    expect(document.indexOf('<script data-aster-preview-resize>')).toBe(expected + standardPrefix.length);
+    expect(document.replace(/<script data-aster-preview-resize>[\s\S]*?<\/script>/u, "")).toBe(standardPrefix + source);
   });
 
   it("preserves the authored source and doctype and inserts before restrictive metadata", () => {
@@ -37,7 +43,7 @@ describe("preview height instrumentation", () => {
 
   it.each(['<!doctype html><p>fragment</p>', '<svg viewBox="0 0 10 10"></svg>'])("handles fragments without an explicit head", source => {
     const document = htmlPreviewDocument(source, "00000000-0000-4000-8000-000000000001");
-    expect(document.replace(/<script data-aster-preview-resize>[\s\S]*?<\/script>/u, "")).toBe(source);
+    expect(document.replace(/<script data-aster-preview-resize>[\s\S]*?<\/script>/u, "")).toBe((source.startsWith("<!doctype") ? "" : "<!doctype html>\n") + source);
     if (source.startsWith("<!doctype")) expect(document.startsWith("<!doctype html><script")).toBe(true);
   });
 
