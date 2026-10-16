@@ -1650,6 +1650,32 @@ export class AgentDatabase {
         type: "agent_message", payload: { message, content: message.content, modelContent: agentMessageModelContent(message) },
       } });
     }
+    // A yielded ToolCall is complete while its process receipt is still
+    // running. After restart that process session can no longer be controlled.
+    const commands = this.database.prepare(
+      `SELECT payload_json FROM conversation_timeline
+       WHERE kind = 'tool' AND json_extract(payload_json, '$.name') = 'run_command'`,
+    ).all() as DatabaseRow[];
+    for (const row of commands) {
+      const current = conversationToolItemSchema.parse(parseJson(asString(row, "payload_json"), "command tool"));
+      if (current.result === null) continue;
+      let receipt: unknown;
+      try { receipt = JSON.parse(current.result); } catch { continue; }
+      const parsed = z.object({ value: z.object({ status: z.literal("running") }).passthrough() }).passthrough().safeParse(receipt);
+      if (!parsed.success) continue;
+      const tool = conversationToolItemSchema.parse({
+        ...current,
+        status: "cancelled",
+        result: JSON.stringify({ ...parsed.data, ok: false, value: {
+          ...parsed.data.value, status: "cancelled", completedAt: new Date().toISOString(), exitCode: null,
+          error: "Command session was interrupted by application shutdown; it will not be replayed automatically.",
+        } }),
+      });
+      this.updateTool(tool);
+      events.push({ conversationId: tool.conversationId, event: {
+        type: "runtime_activity_updated", payload: { tool, toolId: tool.id, runId: tool.runId, writeAhead: true },
+      } });
+    }
     return events;
   }
 

@@ -5085,7 +5085,8 @@ function formatLocalClock(timestamp: Date): string {
 export function groupRunActivities(
   timeline: ConversationTimelineItem[],
 ): TimelineDisplayItem[] {
-  timeline = timeline.filter(item => item.kind !== "tool" || item.name !== "wait_for_commands");
+  timeline = timeline.filter(item => item.kind !== "tool"
+    || (item.name !== "wait_for_commands" && (item.name !== "read_command_output" || item.status === "failed")));
   const userIndexesByRun = new Map<string, number[]>();
   const restoredRunStarts = new Map<string, number>();
   for (const [index, item] of timeline.entries()) {

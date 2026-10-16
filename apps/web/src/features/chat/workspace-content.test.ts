@@ -59,8 +59,9 @@ import {
 
 describe("tool details visibility", () => {
   it("omits legacy command waits from the work process while retaining the command and final answer", () => {
-    const projected = groupRunActivities([{ ...tool, name: "run_command" }, { ...tool, id: "wait", name: "wait_for_commands" }, assistantMessage("answer", "已完成")]);
+    const projected = groupRunActivities([{ ...tool, name: "run_command" }, { ...tool, id: "wait", name: "wait_for_commands" }, { ...tool, id: "read", name: "read_command_output" }, assistantMessage("answer", "已完成")]);
     expect(JSON.stringify(projected)).not.toContain("wait_for_commands");
+    expect(JSON.stringify(projected)).not.toContain("read_command_output");
     expect(JSON.stringify(projected)).toContain("run_command");
     expect(projected.at(-1)).toMatchObject({ content: "已完成" });
   });

@@ -2937,6 +2937,7 @@ describe("AgentRuntime", () => {
       "list_subagents",
       "present_html",
       "read_agent_conversation",
+      "read_command_output",
       "read_external_file",
       "request_user_input",
       "run_command",
@@ -6894,6 +6895,66 @@ describe("AgentRuntime", () => {
     expect(events.filter((event) => event.type === "model.retry_updated")).toHaveLength(0);
     expect(events.filter((event) => event.type === "assistant.delta")).toHaveLength(1);
     database.close();
+  });
+
+  it("continues model work after a finite command yields and persists completion into the original card", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-yield-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const tools = new ProjectToolRegistry(projects);
+    const threadLog = new ThreadLog(path.join(root, "conversations"));
+    const events: ConversationRunEvent[] = [];
+    let turn = 0;
+    const model: ModelProviderAdapter = {
+      completeTurn(input) {
+        turn += 1;
+        if (turn === 1) return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{
+          id: "yield-command", name: "run_command", arguments: JSON.stringify({
+            command: 'Write-Output "started"; Start-Sleep -Milliseconds 1500; Write-Output "finished"', yieldTimeMs: 0,
+          }),
+        }] });
+        const receipt = input.messages.find(message => message.role === "tool" && message.toolCallId === "yield-command");
+        expect(receipt?.content).toContain('"status":"running"');
+        expect(tools.listConversationCommands([conversation.id])[0]?.status).toBe("running");
+        input.onTextDelta("Independent analysis while the command runs");
+        return Promise.resolve({ content: "Independent analysis while the command runs", finishReason: "stop", toolCalls: [] });
+      },
+    };
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({
+      apiKey: "secret", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+      modelId: "test-model", reasoningOptions: [],
+    }) }, projects, tools, model, undefined, undefined, null, null, null, null, undefined, undefined, null,
+    threadLog, new EventProjector(database, threadLog));
+    try {
+      await new Promise<void>((resolve) => {
+        runtime.sendMessage({ content: "yield", conversationId: conversation.id, permissionMode: "full_access" }, event => {
+          events.push(event);
+          if (event.type === "run.finished") resolve();
+        });
+      });
+      const command = database.listTimeline(conversation.id).find(item => item.kind === "tool" && item.name === "run_command");
+      if (command?.kind !== "tool") throw new Error("Expected command card.");
+      expect(command.result).toContain('"status":"running"');
+      await vi.waitFor(() => {
+        const final = database.listTimeline(conversation.id).find(item => item.id === command.id);
+        expect(final?.kind === "tool" ? final.result : null).toContain('"status":"completed"');
+        expect(final?.kind === "tool" ? final.result : null).toContain("finished");
+      }, { timeout: 10_000 });
+      expect(database.listTimeline(conversation.id).filter(item => item.kind === "tool")).toHaveLength(1);
+      expect(database.listModelMessages(conversation.id).filter(message => message.role === "tool")).toHaveLength(1);
+      expect(threadLog.read(conversation.id)?.events).toContainEqual(expect.objectContaining({ type: "runtime_activity_updated" }));
+      const updates = events.filter(event => event.type === "tool.completed");
+      expect(updates).toHaveLength(2);
+      expect(updates.every(event => event.type === "tool.completed" && event.tool.id === command.id)).toBe(true);
+      // Reprojection must retain final UI state without adding model ToolMessages.
+      new EventProjector(database, threadLog).projectConversation(conversation.id);
+      const replayed = database.listTimeline(conversation.id).find(item => item.id === command.id);
+      expect(replayed?.kind === "tool" ? replayed.result : null).toContain('"status":"completed"');
+      expect(database.listModelMessages(conversation.id).filter(message => message.role === "tool")).toHaveLength(1);
+    } finally { await tools.dispose(); database.close(); }
   });
 
   it("waits for command approval before executing PowerShell in the project root", async () => {

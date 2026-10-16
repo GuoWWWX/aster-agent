@@ -4677,6 +4677,17 @@ export class AgentRuntime {
       tool: completedTool,
       type: "tool.completed",
     });
+    if (execution.commandCompletion !== undefined) {
+      void execution.commandCompletion.then((finalResult) => {
+        this.persistRuntimeActivity(conversationToolItemSchema.parse({
+          ...completedTool,
+          result: finalResult.content,
+          status: finalResult.isError ? "failed" : "completed",
+        }), input.emit);
+      }).catch((error: unknown) => {
+        reportMainError(toMainAgentError(error, { operation: "command.completion.persist" }), error);
+      });
+    }
     return envelope;
   }
 
@@ -5387,7 +5398,7 @@ export class AgentRuntime {
             ? `This temporary conversation has no workspace. It may still use the ${this.tools.getCommandEnvironmentDescription()} command tool, read_external_file, web_search, and Agent/Subagent collaboration tools. Commands run in an isolated temporary directory. Project file, directory, and search tools require an attached working directory. Every external file read still requires approval.`
             : `This temporary conversation has no workspace. It may still use read_attachment, view_attachments, the ${this.tools.getCommandEnvironmentDescription()} command tool, read_external_file, web_search, and Agent/Subagent collaboration tools. Commands run in an isolated temporary directory. Project file, directory, and search tools require an attached working directory. Every external file read still requires approval.`
           : `The current workspace supports file reads, search, controlled file changes, the ${this.tools.getCommandEnvironmentDescription()} command tool, and web_search. Commands and writes remain subject to this run's permission policy.`,
-        `One model turn may return at most ${MAX_TOOL_CALLS_PER_MODEL_TURN} mixed Tool Calls. Independent reads such as read_file, search_text, find_files, read_attachment, and view_attachments run concurrently in groups of up to ${MAX_PARALLEL_READ_TOOL_CALLS}, with results matched by call ID. File changes, approvals, Agent messages, and task state remain ordered; stale same-file changes in one batch are rejected. Outside read_only mode, consecutive independent run_command calls run in parallel by default in groups of up to ${MAX_PARALLEL_COMMAND_TOOL_CALLS}; set parallel=false for dependencies or shared mutable state. All batch commands finish before the next model analysis. ask_before_changes still approves each command separately, after which independent commands may overlap. If a turn exceeds the limit, none of its tools run; split the work across turns. Prefer passing multiple IDs at once to wait_for_subagents.`,
+        `One model turn may return at most ${MAX_TOOL_CALLS_PER_MODEL_TURN} mixed Tool Calls. Independent reads such as read_file, search_text, find_files, read_attachment, and view_attachments run concurrently in groups of up to ${MAX_PARALLEL_READ_TOOL_CALLS}, with results matched by call ID. File changes, approvals, Agent messages, and task state remain ordered; stale same-file changes in one batch are rejected. Outside read_only mode, consecutive independent run_command calls run in parallel by default in groups of up to ${MAX_PARALLEL_COMMAND_TOOL_CALLS}; set parallel=false for dependencies or shared mutable state. run_command may yield with running and a commandId before a finite command finishes. Continue independent work; use read_command_output with that ID and incremental offsets to confirm exit status before dependent steps or reporting completion. Never treat a running receipt as success or rerun a command to read its logs. ask_before_changes still approves each command separately, after which independent commands may overlap. If a turn exceeds the limit, none of its tools run; split the work across turns. Prefer passing multiple IDs at once to wait_for_subagents.`,
         `Permission mode selected for this task: ${permissionModeLabel(permissionMode)}.`,
         ...(workspace === null
           ? []
@@ -5478,10 +5489,10 @@ export class AgentRuntime {
         runId,
         status: "running",
       });
-      this.persistContextCompactionActivity(activity, emit);
+      this.persistRuntimeActivity(activity, emit);
     } else if (forceCompaction) {
       const createdAt = new Date().toISOString();
-      this.persistContextCompactionActivity(conversationToolItemSchema.parse({
+      this.persistRuntimeActivity(conversationToolItemSchema.parse({
         arguments: JSON.stringify({ trigger: "manual" }),
         batchId: null,
         conversationId,
@@ -5576,7 +5587,7 @@ export class AgentRuntime {
       } catch (error) {
         if (signal.aborted || isAbortError(error)) {
           if (activity !== null) {
-            this.persistContextCompactionActivity(conversationToolItemSchema.parse({
+            this.persistRuntimeActivity(conversationToolItemSchema.parse({
               ...activity,
               result: JSON.stringify({
                 compactionPassCount,
@@ -5604,7 +5615,7 @@ export class AgentRuntime {
       }
     }
     if (activity !== null) {
-      this.persistContextCompactionActivity(conversationToolItemSchema.parse({
+      this.persistRuntimeActivity(conversationToolItemSchema.parse({
         ...activity,
         result: JSON.stringify({
           compactionPassCount,
@@ -5619,7 +5630,7 @@ export class AgentRuntime {
     return context;
   }
 
-  private persistContextCompactionActivity(
+  private persistRuntimeActivity(
     tool: ConversationToolItem,
     emit: RunEventEmitter,
   ): void {

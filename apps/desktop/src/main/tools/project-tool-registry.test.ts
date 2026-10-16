@@ -437,6 +437,7 @@ describe("ProjectToolRegistry", () => {
 
     expect(tools.getCommandDefinitions().map((tool) => tool.name)).toEqual([
       "list_background_commands",
+      "read_command_output",
       "stop_command",
       "run_command",
     ]);
@@ -573,6 +574,7 @@ describe("ProjectToolRegistry", () => {
       "list_project_operations",
       "wait_for_project_operation",
       "list_background_commands",
+      "read_command_output",
       "stop_command",
       "read_file",
       "read_external_file",
@@ -1127,7 +1129,7 @@ describe("ProjectToolRegistry", () => {
     expect(payload.value.workingDirectory).toBe(project.rootPath);
   });
 
-  it.each([undefined, null])("waits for a batch command with timeoutMs=%s even when yieldTimeMs is zero", async (timeoutMs) => {
+  it.each([undefined, null])("yields a batch command with timeoutMs=%s and reads its final output", async (timeoutMs) => {
     if (process.platform !== "win32") return;
 
     const { project, tools } = await createFixture();
@@ -1146,17 +1148,90 @@ describe("ProjectToolRegistry", () => {
 
     const result = await tools.executePreparedCommand(proposal.command, project.id, signal);
     const payload = JSON.parse(result.content) as {
-      value?: { mode?: unknown; status?: unknown; stdout?: unknown; timeoutMs?: unknown };
+      value: { commandId: string; mode?: unknown; status?: unknown; stdout?: unknown; timeoutMs?: unknown };
     };
 
     expect(result.isError).toBe(false);
     expect(payload.value).toMatchObject({
       mode: "batch",
-      status: "completed",
+      status: "running",
       timeoutMs: timeoutMs === undefined ? 30 * 60_000 : null,
     });
-    expect(payload.value?.stdout).toContain("batch-start");
-    expect(payload.value?.stdout).toContain("batch-finished");
+    const read = await tools.execute("read_command_output", JSON.stringify({
+      commandId: payload.value.commandId, yieldTimeMs: 10_000,
+    }), project.id, signal);
+    expect(read.kind).toBe("completed");
+    expect(JSON.parse(read.content)).toMatchObject({ value: {
+      status: "completed", exitCode: 0,
+    } });
+    expect(read.content).toContain("batch-start");
+    expect(read.content).toContain("batch-finished");
+    await tools.dispose();
+  });
+
+  it("retains a yielded batch lock, permits independent commands and paginates owned logs", async () => {
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    const owner = { conversationId: "yield-owner", conversationTitle: "Yield", runId: "yield-run" };
+    try {
+      const proposal = await tools.execute("run_command", JSON.stringify({
+        command: 'Write-Output "first-中文"; Start-Sleep -Milliseconds 1200; [Console]::Error.WriteLine("last-error"); exit 7',
+        yieldTimeMs: 0,
+      }), project.id, signal, owner);
+      if (proposal.kind !== "command") throw new Error(proposal.content);
+      const result = await tools.executePreparedCommand(proposal.command, project.id, signal, owner);
+      const { value: { commandId } } = JSON.parse(result.content) as { value: { commandId: string } };
+      expect(result.commandCompletion).toBeDefined();
+      const conflict = await tools.executePreparedCommand({ ...proposal.command, parallel: false }, project.id, signal, owner);
+      expect(conflict.content).toContain("conflict");
+      const other = await tools.executePreparedCommand({ ...proposal.command, command: 'Write-Output "independent"', yieldTimeMs: 10_000 }, project.id, signal, owner);
+      expect(other.content).toContain("independent");
+      const denied = await tools.execute("read_command_output", JSON.stringify({ commandId, yieldTimeMs: 0 }), project.id, signal, { ...owner, conversationId: "other" });
+      expect(denied.isError).toBe(true);
+      const final = await tools.execute("read_command_output", JSON.stringify({ commandId, maxChars: 5 }), project.id, signal, owner);
+      const payload = JSON.parse(final.content) as { value: { stdout: string; stderr: string; nextStdoutOffset: number; nextStderrOffset: number } };
+      expect(JSON.parse(final.content)).toMatchObject({ value: { status: "failed", exitCode: 7, hasMoreOutput: true } });
+      const next = await tools.execute("read_command_output", JSON.stringify({ commandId, stdoutOffset: payload.value.nextStdoutOffset, stderrOffset: payload.value.nextStderrOffset, yieldTimeMs: 0 }), project.id, signal, owner);
+      const page = JSON.parse(next.content) as { value: { stdout: string; stderr: string } };
+      expect(payload.value.stdout + page.value.stdout).toContain("first-中文");
+      expect(payload.value.stderr + page.value.stderr).toContain("last-error");
+      const empty = await tools.execute("read_command_output", JSON.stringify({ commandId, stdoutOffset: 99999, stderrOffset: 99999, yieldTimeMs: 0 }), project.id, signal, owner);
+      expect(JSON.parse(empty.content)).toMatchObject({ value: { stdout: "", stderr: "", status: "failed" } });
+      await expect(result.commandCompletion).resolves.toMatchObject({ isError: true });
+    } finally { await tools.dispose(); }
+  });
+
+  it.each(["batch", "service"] as const)("observes %s output until exit or the requested yield window", async (mode) => {
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    try {
+      const proposal = await tools.execute("run_command", JSON.stringify({
+        command: 'Write-Output "observed"', mode, yieldTimeMs: 10_000,
+      }), project.id, signal);
+      if (proposal.kind !== "command") throw new Error(proposal.content);
+      const result = await tools.executePreparedCommand(proposal.command, project.id, signal);
+      expect(JSON.parse(result.content)).toMatchObject({ value: { status: "completed" } });
+      expect(result.content).toContain("observed");
+      expect(result.commandCompletion).toBeUndefined();
+    } finally { await tools.dispose(); }
+  });
+
+  it.each([false, true])("returns cancellation/timeout after yielding without using a wait tool (timeout=%s)", async (timedOut) => {
+    const { project, tools } = await createFixture();
+    const controller = new AbortController();
+    try {
+      const proposal = await tools.execute("run_command", JSON.stringify({
+        command: 'Start-Sleep -Seconds 20', yieldTimeMs: 0, timeoutMs: timedOut ? 1000 : 20_000,
+      }), project.id, controller.signal);
+      if (proposal.kind !== "command") throw new Error(proposal.content);
+      const result = await tools.executePreparedCommand(proposal.command, project.id, controller.signal);
+      if (!timedOut) controller.abort();
+      const final = await result.commandCompletion;
+      if (final === undefined) throw new Error("Expected yielded completion.");
+      expect(final.isError).toBe(true);
+      expect(JSON.parse(final.content)).toMatchObject({ value: { status: timedOut ? "failed" : "cancelled", timedOut } });
+      expect(final.content).not.toContain('"completedAt":null');
+    } finally { await tools.dispose(); }
   });
 
   it("streams command output before the command completes", async () => {

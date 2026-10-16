@@ -40,6 +40,11 @@ function tool(name: string, options: Partial<ConversationToolItem> = {}): Conver
 }
 
 describe("formatConversationRunMarkdown", () => {
+  it("keeps command reads in the original command rather than copying duplicate logs", () => {
+    const result = formatConversationRunMarkdown([tool("read_command_output", { result: "DUPLICATE_READ_LOG" })], message("已完成"));
+    expect(result).not.toContain("DUPLICATE_READ_LOG");
+    expect(result).toContain("已完成");
+  });
   it("omits legacy command waits from the copied reply", () => {
     const result = formatConversationRunMarkdown([tool("wait_for_commands", { result: "DUPLICATE_WAIT_LOG" })], message("已完成"));
     expect(result).not.toContain("DUPLICATE_WAIT_LOG");

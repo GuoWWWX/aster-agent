@@ -68,6 +68,7 @@ describe("model tool definitions", () => {
       ["wait_for_agent_message", "conversationId"],
       ["wait_for_project_operation", "operationId"],
       ["stop_command", "commandId"],
+      ["read_command_output", "commandId"],
     ];
     for (const [toolName, propertyName] of uuidParameters) {
       expect(property(definitions, toolName, propertyName)).toMatchObject({
@@ -121,6 +122,9 @@ describe("model tool definitions", () => {
     expect(property(definitions, "run_command", "timeoutMs")).toMatchObject({
       anyOf: [{ type: "integer", minimum: 1_000, maximum: 30 * 60_000 }, { type: "null" }],
     });
+    expect(property(definitions, "read_command_output", "maxChars")).toMatchObject({ maximum: 32_000, default: 12_000 });
+    expect(property(definitions, "read_command_output", "yieldTimeMs")).toMatchObject({ maximum: 30_000, default: 10_000 });
+    expect(definition(definitions, "read_command_output").parameters.required).toEqual(["commandId"]);
     expect(property(definitions, "apply_patch", "patch")).toMatchObject({
       maxLength: 200_000,
     });
