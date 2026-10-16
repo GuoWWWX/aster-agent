@@ -238,6 +238,26 @@ export class ManagedBrowserController {
     private readonly passwords?: BrowserPasswordStore,
   ) {}
 
+  /** Foreground views belong to one renderer document, unlike background Agent pages. */
+  public attachRenderer(window: BrowserWindow, onError: (error: unknown) => void): () => void {
+    const contents = window.webContents;
+    const release = (): void => {
+      for (const [sessionId, session] of this.sessions) {
+        if (session.background) continue;
+        try { this.close({ sessionId }); } catch (error) { onError(error); }
+      }
+    };
+    const navigate = (event: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>): void => {
+      if (event.isMainFrame && !event.isSameDocument) release();
+    };
+    contents.on("did-start-navigation", navigate);
+    contents.on("render-process-gone", release);
+    return () => {
+      contents.removeListener("did-start-navigation", navigate);
+      contents.removeListener("render-process-gone", release);
+    };
+  }
+
   public async open(input: ManagedBrowserOpenInput, options: BackgroundBrowserOptions & { isolated?: boolean; onClose?: () => void } = {}): Promise<ManagedBrowserSession> {
     options.signal?.throwIfAborted();
     const window = this.requireWindow();

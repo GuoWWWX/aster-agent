@@ -146,6 +146,13 @@ export function ManagedBrowserWorkspace({
     return () => {
       mountedRef.current = false;
       dispose();
+      const current = sessionRef.current;
+      // StrictMode replays effects synchronously; only a real unmount loses ownership.
+      queueMicrotask(() => {
+        if (!mountedRef.current && current !== null) {
+          void agentClient.closeManagedBrowser({ sessionId: current.sessionId }).catch(() => undefined);
+        }
+      });
     };
   }, [agentClient]);
 

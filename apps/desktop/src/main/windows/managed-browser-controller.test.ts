@@ -1,6 +1,7 @@
 import { type BrowserWindow, type MenuItemConstructorOptions } from "electron";
 import path from "node:path";
 import os from "node:os";
+import { EventEmitter } from "node:events";
 import type { BrowserConfiguration, ManagedBrowserEvent } from "@agent/protocol";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -237,6 +238,61 @@ it("downloads into the configured directory and avoids overwriting reserved name
 });
 
 describe("ManagedBrowserController", () => {
+  it.each(["reload", "crash"])("releases renderer-owned pages on %s and ignores their late bounds without stopping background work", async (cause) => {
+    const contents = new EventEmitter();
+    const window = Object.assign(createFakeWindow(), { webContents: contents });
+    const foreground = createFakePage();
+    const background = createFakePage();
+    const controller = new ManagedBrowserController(() => window,
+      { getConfiguration: () => browserConfiguration() },
+      vi.fn().mockReturnValueOnce(foreground).mockReturnValueOnce(background));
+    const onError = vi.fn();
+    const detach = controller.attachRenderer(window, onError);
+    const onClose = vi.fn();
+    const session = await controller.open({}, { onClose });
+    const worker = await controller.open({}, { background: { width: 800, height: 600 } });
+    const bounds = { sessionId: session.sessionId, visible: true, x: 500, y: 100, width: 700, height: 600 };
+    controller.setBounds(bounds);
+    contents.emit("did-start-navigation", { isMainFrame: false, isSameDocument: false });
+    contents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: true });
+    expect(foreground.close).not.toHaveBeenCalled();
+    if (cause === "reload") contents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+    else contents.emit("render-process-gone", {}, { reason: "crashed" });
+    expect(foreground.close).toHaveBeenCalledOnce();
+    expect(onClose).toHaveBeenCalledOnce();
+    controller.setBounds(bounds);
+    expect(foreground.setVisible).toHaveBeenCalledTimes(1);
+    await controller.capture({ sessionId: worker.sessionId });
+    expect(background.capture).toHaveBeenCalledOnce();
+    expect(background.close).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+    detach();
+    expect(contents.eventNames()).toEqual([]);
+    controller.dispose();
+  });
+
+  it("releases every foreground page even when one fails to close", async () => {
+    const contents = new EventEmitter();
+    const window = Object.assign(createFakeWindow(), { webContents: contents });
+    const first = createFakePage();
+    const second = createFakePage();
+    const error = new Error("native close failed");
+    first.close.mockImplementationOnce(() => { throw error; });
+    const controller = new ManagedBrowserController(() => window,
+      { getConfiguration: () => browserConfiguration() },
+      vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second));
+    const onError = vi.fn();
+    const detach = controller.attachRenderer(window, onError);
+    await controller.open({});
+    await controller.open({});
+    contents.emit("render-process-gone");
+    expect(first.close).toHaveBeenCalledOnce();
+    expect(second.close).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledWith(error);
+    detach();
+    controller.dispose();
+  });
+
   it.each([true, false])("preserves authored preview colors without changing ordinary browser dark mode (isolated=%s)", async (isolated) => {
     electronMocks.nativeTheme.shouldUseDarkColors = true;
     const controller = new ManagedBrowserController(() => createFakeWindow(),

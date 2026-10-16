@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -61,23 +61,36 @@ function renderBrowser(
   root = createRoot(container);
   act(() => root?.render(
     <TooltipProvider>
-      <ManagedBrowserWorkspace
-        active
-        agentClient={client}
-        colorScheme="light"
-        initialUrl={SESSION.url}
-        menuRequest={menuRequest}
-        session={SESSION}
-        onSessionChanged={vi.fn()}
-        onWorkspaceAddMenuAction={vi.fn()}
-        onWorkspaceTabMenuAction={vi.fn()}
-      />
+      <StrictMode>
+        <ManagedBrowserWorkspace
+          active
+          agentClient={client}
+          colorScheme="light"
+          initialUrl={SESSION.url}
+          menuRequest={menuRequest}
+          session={SESSION}
+          onSessionChanged={vi.fn()}
+          onWorkspaceAddMenuAction={vi.fn()}
+          onWorkspaceTabMenuAction={vi.fn()}
+        />
+      </StrictMode>
     </TooltipProvider>,
   ));
   return container;
 }
 
 describe("ManagedBrowserWorkspace", () => {
+  it("closes its native page after unmount without closing it during StrictMode effect replay", async () => {
+    const client = new MockAgentClient();
+    const close = vi.spyOn(client, "closeManagedBrowser").mockResolvedValue();
+    vi.spyOn(client, "setManagedBrowserBounds").mockResolvedValue();
+    renderBrowser(client);
+    await act(async () => { await Promise.resolve(); });
+    expect(close).not.toHaveBeenCalled();
+    await act(async () => { root?.unmount(); root = null; await Promise.resolve(); });
+    expect(close).toHaveBeenCalledExactlyOnceWith({ sessionId: SESSION.sessionId });
+  });
+
   it("opens page find with Ctrl+F while the browser toolbar has focus", async () => {
     const client = new MockAgentClient();
     const command = vi.spyOn(client, "commandManagedBrowser").mockResolvedValue(undefined);

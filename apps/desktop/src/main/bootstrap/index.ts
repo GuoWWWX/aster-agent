@@ -511,6 +511,9 @@ async function openMainWindow(): Promise<void> {
   mainWindow = window;
   const disposeAttention = attachNativeConversationAttention(window, getServices().database);
   window.once("closed", disposeAttention);
+  const detachBrowserRenderer = getServices().managedBrowser.attachRenderer(window,
+    (error) => reportUnhandledError(error, "browser.renderer_cleanup"));
+  window.once("closed", detachBrowserRenderer);
   disposeIpcHandlers = registerMainIpcHandlers(() => mainWindow, getServices(), {
     resumePendingMessages: process.env.AGENT_SKIP_PENDING_RUN_RESUMPTION !== "1",
     emitConversationRunEvent: sendConversationRunEvent,
