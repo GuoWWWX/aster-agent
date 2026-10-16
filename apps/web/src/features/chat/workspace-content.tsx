@@ -1,4 +1,5 @@
 import { LoadingState, Spinner } from "../../components/ui/loading.js";
+import { ConversationWorkIndicator, toolWorkPhase } from "./conversation-work-state.js";
 import { ConversationChangesBadge, ConversationChangesCard } from "./conversation-file-changes.js";
 import { htmlPresentationDeliveries } from "./html-presentations.js";
 import { HtmlPreviewCard, HtmlPreviewScope } from "../../components/html-preview/html-preview-card.js";
@@ -3304,7 +3305,7 @@ export function ConversationWorkspace({
                       )
                     )
                     .map((progress) => (
-                      <RunProgressIndicator key={progress.runId ?? "pending"} />
+                      <RunProgressIndicator key={progress.runId ?? "pending"} runId={progress.runId} />
                     ))}
                   {modelActivity !== null
                     && modelActivityInsertIndex === index
@@ -3422,7 +3423,7 @@ export function ConversationWorkspace({
                   progress.runId === null || !runningContextCompactionRunIds.has(progress.runId)
                 )
                 .map((progress) => (
-                  <RunProgressIndicator key={progress.runId ?? "pending"} />
+                  <RunProgressIndicator key={progress.runId ?? "pending"} runId={progress.runId} />
                 ))}
               {modelActivity !== null && modelActivityInsertIndex === displayTimeline.length ? (
                 <ModelActivityIndicator activity={modelActivity} />
@@ -4249,23 +4250,25 @@ function ModelActivityIndicator({ activity }: { activity: ModelActivity }): Reac
   return (
     <div
       aria-live="polite"
-      className="conversation-model-activity"
+      className="conversation-model-activity flex items-start gap-[5px]"
       data-has-preview={String(hasPreview)}
       data-status={activity.status}
       role="status"
     >
-      <span className="conversation-model-activity__label" title={label}>{label}</span>
+      <ConversationWorkIndicator runId={activity.runId} size={15} className="mt-0.5" />
+      <span className="conversation-model-activity__label min-w-0" title={label}>{label}</span>
     </div>
   );
 }
 
-function RunProgressIndicator(): ReactElement {
+function RunProgressIndicator({ runId }: { runId: string | null }): ReactElement {
   return (
     <div
       aria-label="推理中"
-      className="conversation-run-progress"
+      className="conversation-run-progress flex items-center gap-[5px]"
       role="status"
     >
+      <ConversationWorkIndicator runId={runId} size={15} />
       <span className="conversation-run-progress__label">推理中</span>
     </div>
   );
@@ -6594,6 +6597,11 @@ function RunActivityTimelineItem({
   const contentId = useId();
   const label = isInProgress ? "推理中" : item.durationMs === null
     ? "已处理" : `已处理 ${formatRunDuration(0, item.durationMs)}`;
+  const activeTool = item.items.findLast(entry => entry.kind === "tool" && entry.runId === activeRunId
+    && (entry.status === "running" || entry.status === "awaiting_approval"));
+  const workPhase = activeTool?.kind === "tool"
+    ? activeTool.status === "awaiting_approval" ? "waiting" : toolWorkPhase(activeTool.name)
+    : runProgress?.outputStartedAt != null ? "writing" : "thinking";
   const displayItems = groupRunActivityItems(item.items);
   const hasReasoning = displayItems.some((entry) => entry.kind === "activity_reasoning");
   const reasoningStreaming = displayItems.some((entry) =>
@@ -6682,6 +6690,7 @@ function RunActivityTimelineItem({
         type="button"
         onClick={() => setIsExpanded((current) => !current)}
       >
+        {isInProgress ? <ConversationWorkIndicator runId={isActive ? activeRunId : runProgress?.runId ?? null} fallback={workPhase} size={15} /> : null}
         <span className="min-w-0 truncate" aria-live={isInProgress ? "polite" : undefined}>{label}</span>
         <ChevronRight
           aria-hidden="true"
@@ -6771,7 +6780,9 @@ function ToolBatchTimelineItem({
             type="button"
             onClick={() => setIsExpanded((current) => !current)}
           >
-            <ToolTypeIcon name={representativeToolName(item.tools)} />
+            {hasActiveTool || modelActivity !== null ? <ConversationWorkIndicator runId={currentTool?.runId ?? item.tools.find(tool => tool.status === "running" || tool.status === "awaiting_approval")?.runId ?? null}
+              fallback={modelActivity !== null ? "thinking" : currentTool?.status === "awaiting_approval" ? "waiting" : toolWorkPhase(currentTool?.name ?? representativeToolName(item.tools))} size={15} />
+              : <ToolTypeIcon name={representativeToolName(item.tools)} />}
             <span className="min-w-0 truncate" aria-live={isCurrentBatch || modelActivity !== null ? "polite" : undefined}>{label}</span>
           </button>
           {hasFailure ? <span className="tool-activity-batch__status">有失败项</span> : null}

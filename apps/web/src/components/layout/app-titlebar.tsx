@@ -1,4 +1,4 @@
-import { Spinner } from "../ui/loading.js";
+import { ConversationWorkIndicator } from "../../features/chat/conversation-work-state.js";
 import {
   ArrowLeft,
   ArrowRight,
@@ -62,6 +62,7 @@ export type AppTitlebarConversationTab = {
   icon?: ReactElement;
   id: string;
   isRunning: boolean;
+  activeRunId?: string | null;
   title: string;
 };
 
@@ -347,12 +348,12 @@ export function AppTitlebar({
                     >
                       <span className="relative grid size-5 shrink-0 place-items-center overflow-visible">
                         {tab.icon ?? (tab.isRunning ? (
-                          <Spinner aria-label={`${tab.title} 正在工作`} size={13} />
+                          <ConversationWorkIndicator runId={tab.activeRunId ?? null} aria-label={`${tab.title} 正在工作`} size={13} />
                         ) : (
                           <MessageSquareText aria-hidden="true" size={13} />
                         ))}
                         {tab.icon !== undefined && tab.isRunning ? (
-                          <Spinner aria-label={`${tab.title} 正在工作`} className="absolute -right-0.5 -bottom-0.5 rounded-full bg-[var(--app-titlebar)]" size={9} />
+                          <ConversationWorkIndicator runId={tab.activeRunId ?? null} aria-label={`${tab.title} 正在工作`} className="absolute -right-0.5 -bottom-0.5 rounded-full bg-[var(--app-titlebar)]" size={9} />
                         ) : null}
                       </span>
                       <span className={`app-titlebar__conversation-tab-title${tab.isPreview ? " italic" : ""}`}>{tab.title}</span>

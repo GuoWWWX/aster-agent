@@ -1,4 +1,5 @@
 import { LoadingState, Spinner } from "../../components/ui/loading.js";
+import { ConversationWorkIndicator } from "../chat/conversation-work-state.js";
 import {
   Archive,
   ArchiveRestore,
@@ -1924,7 +1925,7 @@ function sessionStatusLabel(session: ProjectSession): string | null {
 function SessionStatusIndicator({ session }: { session: ProjectSession }): ReactElement | null {
   if (isSessionRunning(session)) {
     return (
-      <Spinner aria-label="正在运行" className="project-navigator__session-status project-navigator__session-status--running" size={14} />
+      <ConversationWorkIndicator runId={session.activeRunId} aria-label="正在运行" className="project-navigator__session-status project-navigator__session-status--running" size={14} />
     );
   }
   if (hasFailedUnreadSessionResult(session)) {

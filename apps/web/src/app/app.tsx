@@ -25,6 +25,7 @@ import {
 } from "../features/chat/conversation-tabs.js";
 import { FUNCTION_TABS, isFunctionTab, reconcileWorkbenchTabs, type WorkbenchTabs } from "../features/chat/workbench-tabs.js";
 import { ConversationActivity } from "../features/chat/conversation-activity.js";
+import { ConversationWorkProvider } from "../features/chat/conversation-work-state.js";
 import {
   ProjectNavigator,
   type ProjectNavigatorLocateRequest,
@@ -239,6 +240,7 @@ export function App(): ReactElement {
         id: session.id,
         ...(icon === undefined ? {} : { icon }),
         isRunning,
+        activeRunId: session.activeRunId,
         title: session.title,
         kind: "conversation" as const,
         isPreview: tabState.previewId === session.id,
@@ -658,7 +660,7 @@ export function App(): ReactElement {
   };
 
   return (
-    <>
+    <ConversationWorkProvider agentClient={agentClient}>
       <AppShell
         activeProject={projectTree.projects.find((project) => project.id === projectSessions.activeSession?.projectId) ?? null}
         projects={projectTree.projects}
@@ -827,6 +829,6 @@ export function App(): ReactElement {
         onSelect={selectGlobalSearchResult}
       />
       <MediaPreviewDialogHost />
-    </>
+    </ConversationWorkProvider>
   );
 }

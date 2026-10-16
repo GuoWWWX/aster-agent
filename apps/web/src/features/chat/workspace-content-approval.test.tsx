@@ -25,6 +25,7 @@ import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 import { TooltipProvider } from "../../components/ui/tooltip.js";
 import type { ProjectSession } from "../projects/project-session-model.js";
 import { ConversationWorkspace, WorkspaceContent } from "./workspace-content.js";
+import { ConversationWorkProvider } from "./conversation-work-state.js";
 
 const PARENT_ID = "00000000-0000-4000-8000-000000000001";
 const CHILD_ID = "00000000-0000-4000-8000-000000000002";
@@ -199,6 +200,36 @@ it("keeps the outer work-process title fixed while reasoning, tools and the fina
   expect(header()?.textContent).toBe("推理中");
   act(() => listener({ type: "assistant.delta", conversationId: PARENT_ID, runId: RUN_ID, delta: "已完成。", messageId: MESSAGE_ID, modelId: "gpt-6.1-sol" }));
   expect(container.textContent).not.toContain("Creating SVG animation page");
+});
+
+it("switches particles on real events while preserving the work-process lifecycle", async () => {
+  const client = new MockAgentClient();
+  const listeners = new Set<(event: ConversationRunEvent) => void>();
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { listeners.add(callback); return () => { listeners.delete(callback); }; });
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([]);
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => {
+    root?.render(<ConversationWorkProvider agentClient={client}><TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      session={session({ id: PARENT_ID, title: "工作状态粒子", activeRunId: RUN_ID })} /></TooltipProvider></ConversationWorkProvider>);
+    await flushConversationWorkspace();
+  });
+  const emit = (event: ConversationRunEvent) => { act(() => { listeners.forEach(listener => listener(event)); }); };
+  const header = () => container.querySelector<HTMLButtonElement>(".conversation-run-activity > button");
+  const phase = () => header()?.querySelector("[data-model-working]")?.getAttribute("data-phase");
+  emit({ type: "model.request_started", conversationId: PARENT_ID, runId: RUN_ID });
+  expect(phase()).toBe("thinking");
+  const tool: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID, batchId: null,
+    createdAt: "2026-10-16T00:00:00Z", name: "web_search", arguments: '{"query":"ui"}', result: null, diff: null, status: "running" };
+  emit({ type: "tool.started", conversationId: PARENT_ID, runId: RUN_ID, tool });
+  expect(phase()).toBe("searching");
+  emit({ type: "tool.completed", conversationId: PARENT_ID, runId: RUN_ID, tool: { ...tool, status: "completed", result: "[]" } });
+  expect(phase()).toBe("thinking");
+  emit({ type: "assistant.delta", conversationId: PARENT_ID, runId: RUN_ID, delta: "回复内容", messageId: MESSAGE_ID, modelId: "model" });
+  expect(phase()).toBe("writing");
+  expect(header()?.textContent).toBe("推理中");
+  emit({ type: "run.finished", conversationId: PARENT_ID, runId: RUN_ID, status: "completed", error: null });
+  expect(header()?.textContent).toContain("已处理");
+  expect(container.querySelector("[data-model-working]")).toBeNull();
 });
 
 it("shows only the latest batch status until assistant text closes the group", async () => {
