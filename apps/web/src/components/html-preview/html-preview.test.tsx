@@ -45,6 +45,7 @@ describe("conversation HTML previews", () => {
     await click("预览 HTML");
     expect(request).toHaveBeenCalledWith({ kind: "code", conversationId, html: "<h1>页面</h1>\n" });
     const frame = node.querySelector("iframe");
+    act(() => { frame!.dispatchEvent(new Event("load")); });
     expect(frame?.getAttribute("sandbox")).toBe("allow-scripts");
     expect(frame?.getAttribute("src")).toBe(result.url);
     expect(block?.querySelectorAll("header")).toHaveLength(1);
@@ -73,6 +74,38 @@ describe("conversation HTML previews", () => {
     expect(request).not.toHaveBeenCalled();
     expect(node.querySelector("iframe")).toBeNull();
     expect(node.querySelector("code")?.textContent).toBe("pages/demo.html\n");
+  });
+
+  it("keeps loading feedback after the preview URL is created until the frame is ready", async () => {
+    await render(<HtmlPreviewCard source={{ kind: "code", html: "<p>页面</p>" }} initialMode="source" />);
+    await click("预览 HTML");
+    const frame = node.querySelector("iframe")!;
+    expect(node.querySelector('[role="status"]')?.textContent).toContain("正在加载页面");
+    expect(node.querySelector('[aria-label="显示源码"]')?.getAttribute("aria-busy")).toBe("true");
+    act(() => { frame.dispatchEvent(new Event("load")); });
+    expect(node.querySelector('[role="status"]')).toBeNull();
+    expect(node.querySelector('[aria-label="显示源码"]')?.getAttribute("aria-busy")).toBe("false");
+    await click("显示源码");
+    await click("预览 HTML");
+    expect(node.querySelector('[role="status"]')).not.toBeNull();
+    await click("显示源码");
+    expect(node.querySelector("iframe")).toBeNull();
+    expect(node.querySelector('[role="status"]')).toBeNull();
+    expect(node.querySelector(".cm-content")?.textContent).toBe("<p>页面</p>");
+  });
+
+  it("clears loading feedback on its own usable size report without waiting for all page resources", async () => {
+    await render(<HtmlPreviewCard source={{ kind: "code", html: "<p>页面</p>" }} />);
+    const frame = node.querySelector("iframe")!;
+    vi.spyOn(frame, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 720, 320));
+    const message = (source: MessageEventSource | null): void => {
+      act(() => { window.dispatchEvent(new MessageEvent("message", { source, origin: "null", data: { type: "html-preview.resize", id: result.id, height: 40 } })); });
+    };
+    message(window);
+    expect(node.querySelector('[role="status"]')).not.toBeNull();
+    message(frame.contentWindow);
+    expect(node.querySelector('[role="status"]')).toBeNull();
+    expect(frame.style.height).toBe("40px");
   });
 
   it("shows a one-line HTML source without a trailing blank line and copies the original", async () => {

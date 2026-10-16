@@ -1,14 +1,9 @@
-import { parse } from "parse5";
+import { Tokenizer } from "parse5";
 import { HTML_PREVIEW_MAX_HEIGHT } from "@agent/protocol";
 
 /** Add a size reporter without rewriting the authored document or its source view. */
 export function htmlPreviewDocument(source: string, id: string): string {
-  const document = parse(source, { sourceCodeLocationInfo: true });
-  const html = document.childNodes.find(node => "tagName" in node && node.tagName === "html");
-  const head = html && "childNodes" in html ? html.childNodes.find(node => "tagName" in node && node.tagName === "head") : undefined;
-  const doctype = document.childNodes.find(node => node.nodeName === "#documentType");
-  const offset = head && "tagName" in head ? head.sourceCodeLocation?.startTag?.endOffset ?? doctype?.sourceCodeLocation?.endOffset ?? 0
-    : doctype?.sourceCodeLocation?.endOffset ?? 0;
+  const offset = previewReporterOffset(source);
   const reporter = `<script data-aster-preview-resize>(() => {
     if (window.parent === window) return;
     const id = ${JSON.stringify(id)};
@@ -72,4 +67,32 @@ export function htmlPreviewDocument(source: string, id: string): string {
     else start();
   })();</script>`;
   return source.slice(0, offset) + reporter + source.slice(offset);
+}
+
+/** Only the document prefix determines the insertion point; do not parse the entire page on Main. */
+function previewReporterOffset(source: string): number {
+  let offset = 0, initial = true, stopped = false;
+  const stop = (): void => { stopped = true; tokenizer.pause(); };
+  const tokenizer = new Tokenizer({ sourceCodeLocationInfo: true }, {
+    onComment() {}, onWhitespaceCharacter() {}, onEof() {},
+    onDoctype(token) {
+      if (stopped) return;
+      if (initial) offset = token.location?.endOffset ?? 0;
+      initial = false;
+    },
+    onStartTag(token) {
+      if (stopped) return;
+      initial = false;
+      if (token.tagName === "html") return;
+      if (token.tagName === "head") offset = token.location?.endOffset ?? offset;
+      stop();
+    },
+    onEndTag(token) {
+      initial = false;
+      if (["head", "body", "html", "br"].includes(token.tagName)) stop();
+    },
+    onCharacter: stop, onNullCharacter: stop,
+  });
+  tokenizer.write(source, true);
+  return offset;
 }
