@@ -6,6 +6,8 @@ import type { AgentClient } from "../../runtime/agent-client.js";
 import { IconButton } from "../ui/icon-button.js";
 import { CodeSourceView } from "../markdown/code-source-view.js";
 
+const HTML_PREVIEW_BASE_HEIGHT = 520;
+
 export const HtmlPreviewContext = createContext<{ client: AgentClient; conversationId: string } | null>(null);
 export type HtmlPreviewSource = { kind: "code"; html: string } | { kind: "file"; path: string };
 export function HtmlPreviewScope({ client, conversationId, children }: { client: AgentClient; conversationId: string; children: ReactNode }): ReactElement {
@@ -68,7 +70,7 @@ function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange, i
       if (event.source !== frame.contentWindow || event.origin !== "null" || frame.getBoundingClientRect().width === 0) return;
       const message = htmlPreviewResizeMessageSchema.safeParse(event.data);
       if (message.success && message.data.id === preview.id) {
-        const measured = Math.min(520, message.data.height);
+        const measured = message.data.height <= HTML_PREVIEW_BASE_HEIGHT * 4 / 3 ? message.data.height : HTML_PREVIEW_BASE_HEIGHT;
         setHeight(measured); onPreviewHeight?.(measured); setLoadingFrame(false);
       }
     };

@@ -218,6 +218,12 @@ describe("conversation HTML previews", () => {
     expect(frame.style.height).toBe("24px");
     resize(360);
     expect(frame.style.height).toBe("360px");
+    for (const height of [520, 521, 600, 693]) {
+      resize(height);
+      expect(frame.style.height).toBe(`${height}px`);
+    }
+    resize(694);
+    expect(frame.style.height).toBe("520px");
     resize(20_000);
     expect(frame.style.height).toBe("520px");
     resize(360);
