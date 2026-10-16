@@ -47,7 +47,7 @@ describe("preview height instrumentation", () => {
     if (source.startsWith("<!doctype")) expect(document.startsWith("<!doctype html><script")).toBe(true);
   });
 
-  it.each([0, 12])("keeps the last usable height with a %ipx root margin when a cached frame has no rendered width", async (rootMargin) => {
+  it.each([[0, 480, 480], [12, 480, 492], [0, 480.00003, 480], [0, 480.4, 481]])("measures a %ipx root margin and %fpx body without adding a pixel for floating-point noise", async (rootMargin, bodyHeight, expectedHeight) => {
     vi.useFakeTimers();
     try {
       let width = 0;
@@ -60,7 +60,7 @@ describe("preview height instrumentation", () => {
           style: { setProperty: (name: string, value: string) => properties.set(name, value), getPropertyValue: (name: string) => properties.get(name) ?? "", getPropertyPriority: () => "", removeProperty: (name: string) => properties.delete(name) },
           get scrollHeight() { return width === 0 ? 0 : 480; },
           get offsetHeight() { return width === 0 ? 0 : 480; },
-          getBoundingClientRect: () => ({ top: 0, width, height: width === 0 ? 0 : 480 }),
+          getBoundingClientRect: () => ({ top: 0, width, height: width === 0 ? 0 : bodyHeight }),
         };
       };
       const script = htmlPreviewDocument("<p>preview</p>", "preview-id").match(/<script data-aster-preview-resize>([\s\S]*?)<\/script>/u)?.[1];
@@ -80,7 +80,7 @@ describe("preview height instrumentation", () => {
       width = 720;
       events.get("load")?.();
       await vi.advanceTimersByTimeAsync(60);
-      expect(postMessage).toHaveBeenCalledWith({ type: "html-preview.resize", id: "preview-id", height: 480 + rootMargin }, "*");
+      expect(postMessage).toHaveBeenCalledWith({ type: "html-preview.resize", id: "preview-id", height: expectedHeight }, "*");
       postMessage.mockClear();
       width = 0;
       events.get("load")?.();

@@ -55,7 +55,7 @@ it("reuses the same loaded iframe when returning to an option", async () => {
   expect(first.parentElement?.querySelector('[role="status"]')).toBeNull();
 });
 
-it("keeps the first measured height through switching, loading and different option sizes", async () => {
+it("reserves the previous height while loading, then follows each option's natural height", async () => {
   await render();
   const first = host.querySelector("iframe")!;
   vi.spyOn(first, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 720, 320));
@@ -66,9 +66,18 @@ it("keeps the first measured height through switching, loading and different opt
   expect(second.parentElement?.querySelector('[role="status"]')).not.toBeNull();
   vi.spyOn(second, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 720, 420));
   act(() => { window.dispatchEvent(new MessageEvent("message", { source: second.contentWindow, origin: "null", data: { type: "html-preview.resize", id: "00000000-0000-4000-8000-000000000002", height: 160 } })); });
-  expect(second.style.height).toBe("420px");
+  expect(second.style.height).toBe("160px");
   await click("上一个方案");
   expect(first.style.height).toBe("420px");
+});
+
+it("lets source view shrink to its code content instead of reserving the preview height", async () => {
+  await render();
+  const frame = host.querySelector("iframe")!;
+  vi.spyOn(frame, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 720, 320));
+  act(() => { window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, origin: "null", data: { type: "html-preview.resize", id: conversationId, height: 420 } })); });
+  await click("显示源码");
+  expect(host.querySelector('[data-virtual-code-source]')?.parentElement?.style.height).not.toBe("420px");
 });
 
 it("expires hidden options while keeping a visible option alive, then reloads on return", async () => {

@@ -1,18 +1,25 @@
-import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { HtmlPresentationPage } from "@agent/protocol";
 import { IconButton } from "../ui/icon-button.js";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "../ui/select.js";
 import { HtmlPreviewCard } from "./html-preview-card.js";
 
-export function HtmlPreviewGallery({ pages, cacheTtlMs }: { pages: readonly HtmlPresentationPage[]; cacheTtlMs: number }): ReactElement {
+export function HtmlPreviewGallery({ pages, cacheTtlMs, onResize }: { pages: readonly HtmlPresentationPage[]; cacheTtlMs: number; onResize?: () => void }): ReactElement {
+  const host = useRef<HTMLElement>(null);
   const [index, setIndex] = useState(0);
   const [visited, setVisited] = useState(() => new Set([0]));
   const [height, setHeight] = useState<number>();
-  const measure = useCallback((measured: number) => { setHeight(current => current ?? measured); }, []);
+  const measure = useCallback((measured: number) => { setHeight(measured); }, []);
   const select = (next: number): void => { setVisited(current => new Set([...current, next])); setIndex(next); };
+  useLayoutEffect(() => {
+    if (host.current === null || onResize === undefined) return;
+    const observer = new ResizeObserver(onResize);
+    observer.observe(host.current);
+    return () => observer.disconnect();
+  }, [onResize]);
   const page = pages[index]!;
-  return <section aria-label="HTML 方案对比" className="my-[5px] min-w-0 overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-foreground)]">
+  return <section ref={host} aria-label="HTML 方案对比" className="my-[5px] min-w-0 overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-foreground)]">
     {pages.map((option, optionIndex) => visited.has(optionIndex) ? <CachedOption key={optionIndex} page={option} active={optionIndex === index} height={height} onHeight={measure} cacheTtlMs={cacheTtlMs} /> : null)}
     <footer className="flex min-w-0 items-center justify-center gap-[5px] border-t border-[var(--app-border)] px-2 py-1">
       <IconButton label="上一个方案" size="compact" disabled={index === 0} onClick={() => select(index - 1)}><ChevronLeft size={14} /></IconButton>
@@ -53,6 +60,6 @@ function CachedOption({ page, active, height, onHeight, cacheTtlMs }: {
     return () => { clearTimeout(timer); observer.disconnect(); };
   }, [cacheTtlMs]);
   return <div ref={host} hidden={!active}>
-    <HtmlPreviewCard source={page} embedded suspended={!resident} previewHeight={height} onPreviewHeight={onHeight} />
+    <HtmlPreviewCard source={page} embedded suspended={!resident} initialHeight={height} onPreviewHeight={onHeight} />
   </div>;
 }

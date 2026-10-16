@@ -21,9 +21,10 @@ export function htmlPreviewDocument(source: string, id: string): string {
       for (const item of saved) item.node.style.setProperty(item.property, item.property === 'height' ? 'auto' : '0px', 'important');
       const rect = body.getBoundingClientRect(), bodyStyle = getComputedStyle(body), rootStyle = getComputedStyle(root);
       const number = value => parseFloat(value) || 0;
+      // Avoid an extra white pixel from zoom-related floating-point noise.
       const height = Math.min(maxHeight, Math.max(1, Math.ceil(Math.max(body.scrollHeight, body.offsetHeight, rect.height)
         + Math.max(0, rect.top + scrollY) + number(bodyStyle.marginBottom) + number(rootStyle.marginBottom)
-        + number(rootStyle.paddingBottom) + number(rootStyle.borderBottomWidth))));
+        + number(rootStyle.paddingBottom) + number(rootStyle.borderBottomWidth) - 0.001)));
       for (const item of saved) {
         if (item.value) item.node.style.setProperty(item.property, item.value, item.priority);
         else item.node.style.removeProperty(item.property);

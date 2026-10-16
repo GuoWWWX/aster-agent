@@ -152,3 +152,45 @@ it.each(["batch", "detail"] as const)("keeps the bottom when expanding a %s and 
   act(() => toggle().click());
   expect(messages.scrollTop).toBe(240);
 });
+
+it("keeps paginated HTML navigation anchored at the bottom through growth and shrinkage without moving history readers", async () => {
+  const resizes = new Map<Element, () => void>();
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(private callback: ResizeObserverCallback) {}
+    observe(target: Element): void { resizes.set(target, () => this.callback([], this as unknown as ResizeObserver)); }
+    disconnect(): void {}
+  });
+  const client = new MockAgentClient();
+  const pages = [{ title: "A", kind: "code", html: "<p>A</p>" }, { title: "B", kind: "code", html: "<p>B</p>" }];
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([
+    { ...tool, name: "present_html", arguments: JSON.stringify({ pages }), result: JSON.stringify({ ok: true, value: { presentation: { kind: "html_gallery", pages } } }) },
+    { ...answer, status: "completed", durationMs: 12000 },
+  ]);
+  vi.spyOn(client, "htmlPreview").mockImplementation(input => Promise.resolve(input.kind === "code" ? {
+    id: runId, title: "demo", source: input.html, url: "http://127.0.0.1:1234/preview",
+  } : null));
+  await render(client, null);
+  const gallery = container.querySelector('[aria-label="HTML 方案对比"]')!;
+  const frame = gallery.querySelector("iframe")!;
+  const messages = container.querySelector<HTMLElement>(".conversation-workspace__messages")!;
+  vi.spyOn(frame, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 720, 320));
+  let top = 520;
+  Object.defineProperties(messages, {
+    clientHeight: { configurable: true, value: 600 },
+    scrollHeight: { configurable: true, get: () => 800 + Number.parseFloat(frame.style.height) },
+    scrollTop: { configurable: true, get: () => top, set: (value: number) => { top = Math.min(value, messages.scrollHeight - messages.clientHeight); } },
+  });
+  act(() => { messages.dispatchEvent(new Event("scroll")); });
+  const resize = (height: number): void => {
+    act(() => { window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, origin: "null", data: { type: "html-preview.resize", id: runId, height } })); });
+    act(() => { resizes.get(gallery)?.(); });
+  };
+  resize(480);
+  expect(top).toBe(680);
+  resize(160);
+  expect(top).toBe(360);
+  top = 240;
+  act(() => { messages.dispatchEvent(new Event("scroll")); });
+  resize(420);
+  expect(top).toBe(240);
+});

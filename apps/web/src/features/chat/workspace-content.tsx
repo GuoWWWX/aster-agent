@@ -1913,6 +1913,12 @@ export function ConversationWorkspace({
     setDisclosureRevision((current) => current + 1);
   }, [active]);
 
+  const handleHtmlGalleryResize = useCallback((): void => {
+    const messages = messagesRef.current;
+    if (!active || messages === null || !shouldStickToBottomRef.current || timelineAfterSequenceRef.current !== null) return;
+    scrollConversationToBottom(messages);
+  }, [active]);
+
   useLayoutEffect(() => {
     const overlay = composerOverlayRef.current;
     if (overlay === null) return;
@@ -2999,6 +3005,7 @@ export function ConversationWorkspace({
   const activeRunActivityIndex = activeRunId === null ? -1 : displayTimeline.findLastIndex((item) =>
     item.kind === "run_activity" && item.runIds.includes(activeRunId));
   const htmlDeliveries = htmlPresentationDeliveries(timeline, displayTimeline, activeRunId);
+  const hasHtmlGallery = [...htmlDeliveries.values()].some(deliveries => deliveries.some(delivery => "pages" in delivery));
   const locateQuestion = async (question: UserQuestion): Promise<void> => {
     try {
       const visibleTool = question.conversationId === session.id
@@ -3259,7 +3266,7 @@ export function ConversationWorkspace({
         />
         <div
           ref={messagesRef}
-          className="conversation-workspace__messages"
+          className={hasHtmlGallery ? "conversation-workspace__messages justify-end-safe" : "conversation-workspace__messages"}
           aria-label="对话记录"
           onClickCapture={handleTimelineDisclosureInteraction}
           onScroll={handleMessagesScroll}
@@ -3285,7 +3292,7 @@ export function ConversationWorkspace({
                   <div className="chat-message-group gap-[5px]" data-role="assistant">
                     {deliveries.map(delivery => (
                       <div data-html-delivery={delivery.id} key={delivery.id}>
-                        {"pages" in delivery ? <HtmlPreviewGallery pages={delivery.pages} cacheTtlMs={CONVERSATION_WORKSPACE_CACHE_TTL_MS} /> : <HtmlPreviewCard source={{ kind: "file", path: delivery.path }} />}
+                        {"pages" in delivery ? <HtmlPreviewGallery pages={delivery.pages} cacheTtlMs={CONVERSATION_WORKSPACE_CACHE_TTL_MS} onResize={handleHtmlGalleryResize} /> : <HtmlPreviewCard source={{ kind: "file", path: delivery.path }} />}
                       </div>
                     ))}
                   </div>
