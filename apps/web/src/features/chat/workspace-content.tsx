@@ -3587,7 +3587,7 @@ export function ConversationWorkspace({
         ) : null}
 
         <div ref={composerOverlayRef} className="conversation-workspace__composer-overlay">
-          {groupChat === null ? <ConversationTaskDirectory key={session.id} agentClient={agentClient} conversationId={session.id}
+          {groupChat === null ? <ConversationTaskDirectory key={`task-context:${session.id}`} agentClient={agentClient} conversationId={session.id}
             onOpenConversation={(conversation, messageId) => { if (onOpenTeamConversation !== undefined) onOpenTeamConversation({ ...conversation, pinOrder: conversation.pinOrder ?? null }, session.id, messageId); else onSessionSelected?.(conversation.id); }} /> : null}
           {groupChat !== null ? null : taskList !== null ? (
             <ConversationTaskListPanel

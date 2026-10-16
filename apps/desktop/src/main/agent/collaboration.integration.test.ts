@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { DEFAULT_AGENT_DIRECTORY_CONFIGURATION, type ConversationRunEvent } from "@agent/protocol";
 import { CollaborationTool } from "./collaboration-tool.js";
@@ -76,6 +76,43 @@ async function fixture(withThreadLog = false) {
   return { db, lead, member, instance, runtime, model, tools, log };
 }
 describe("group execution integration", () => {
+  it("lets a later-started member publish while the first member is still thinking", async () => {
+    const { db, instance, lead, member, runtime, model, tools } = await fixture(true);
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<void>(resolve => { releaseSlow = resolve; });
+    const entered = new Set<string>(); const finished = new Set<string>(); const starts: string[] = [];
+    vi.spyOn(model, "completeTurn").mockImplementation(async (input): Promise<ModelTurnResult> => {
+      const source = input.messages.findLast(message => message.role === "user" && message.content.startsWith("[Team group input;"))!;
+      const context = z.object({ deliveryId: z.string(), messageId: z.string() }).parse(JSON.parse(source.content.slice(source.content.indexOf("\n") + 1)));
+      const target = db.collaboration.message(context.messageId).deliveries.find(delivery => delivery.id === context.deliveryId)!.conversationId;
+      const toolCallId = `${context.deliveryId}-public`;
+      if (input.messages.some(message => message.role === "tool" && message.toolCallId === toolCallId)) {
+        return { content: "私有处理完成", finishReason: "stop", toolCalls: [] };
+      }
+      entered.add(target);
+      if (target === lead.id) await slowGate;
+      return { content: "", finishReason: "tool_calls", toolCalls: [{ id: toolCallId, name: "post_team_message",
+        arguments: JSON.stringify({ content: target === lead.id ? "较慢成员的回复" : "较快成员的回复", intent: "notify", replyToId: context.messageId }) }] };
+    });
+    try {
+      runtime.postTeamChat({ teamInstanceId: instance.id, content: "请两位各自回答", allMembers: true, requestId: randomUUID() }, event => {
+        if (event.type === "run.started") starts.push(event.conversationId);
+        if (event.type === "run.finished") finished.add(event.conversationId);
+      });
+      await vi.waitFor(() => { expect(entered.size).toBe(2); });
+      expect(starts).toEqual([lead.id, member.id]);
+      await vi.waitFor(() => { expect(finished.has(member.id)).toBe(true); });
+      expect(db.getConversation(lead.id).activeRunId).not.toBeNull();
+      expect(db.collaboration.readMessages({ teamInstanceId: instance.id }).messages.slice(1).map(message => message.senderConversationId)).toEqual([member.id]);
+      releaseSlow();
+      await vi.waitFor(() => { expect(finished.size).toBe(2); });
+      expect(db.collaboration.readMessages({ teamInstanceId: instance.id }).messages.slice(1).map(message => message.senderConversationId)).toEqual([member.id, lead.id]);
+    } finally {
+      releaseSlow();
+      await vi.waitFor(() => { expect(finished.size).toBe(2); });
+      await tools.dispose(); db.close();
+    }
+  });
   it("cancels an idle member's saved pending group requests when the user stops that member", async () => {
     const { db, instance, lead, member, runtime, tools } = await fixture();
     try {

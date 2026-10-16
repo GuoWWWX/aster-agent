@@ -8,6 +8,7 @@ import { TeamChatPanel } from "./team-chat-panel.js";
 import { TeamChatWorkspace } from "./team-chat-workspace.js";
 import { TooltipProvider } from "../../components/ui/tooltip.js";
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
+import { ConversationWorkspace } from "../chat/workspace-content.js";
 
 let root: Root | null = null;
 beforeEach(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} }); });
@@ -60,6 +61,15 @@ async function groupFixture(client: MockAgentClient) {
   const sessions = (await client.listConversationHierarchy()).map(conversation => ({ ...conversation, pinOrder: conversation.pinOrder ?? null }));
   return { instance, sessions };
 }
+
+it("keeps task context and user questions distinct when reusing the ordinary conversation composer", async () => {
+  const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
+  const session = sessions.find(item => item.id === instance.rootConversationId)!;
+  const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  mount();
+  await act(() => Promise.resolve().then(() => { root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} session={session} project={null} projects={[]} active onSessionUpdated={() => undefined} /></TooltipProvider>); }));
+  expect(errors.mock.calls.filter(call => String(call[0]).includes("Encountered two children with the same key"))).toEqual([]);
+});
 
 it("mentions only current group members with their profile avatars, names and roles", async () => {
   const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
@@ -144,7 +154,7 @@ it.each([{ intervening: 0, sameThread: false }, { intervening: 1, sameThread: fa
   expect(response.textContent?.includes("回复：原来的问题")).toBe(intervening >= 4 && !sameThread);
 });
 
-it("shows who is preparing a reply and clears that indication after they publish", async () => {
+it("shows only published replies without reserving a member's place while they work", async () => {
   const client = new MockAgentClient(); const { instance } = await groupFixture(client);
   const member = (await client.getTeamChatMembers({ teamInstanceId: instance.id }))[0]!;
   const request = await client.postTeamChat({ teamInstanceId: instance.id, content: "你们好", requestId: crypto.randomUUID() });
@@ -156,11 +166,33 @@ it("shows who is preparing a reply and clears that indication after they publish
   vi.spyOn(client, "onConversationRunEvent").mockImplementation(listener => { listeners.push(listener); return () => undefined; });
   const container = mount();
   await act(() => Promise.resolve().then(() => { root?.render(<TeamChatPanel agentClient={client} teamInstanceId={instance.id} onOpenConversation={() => undefined} />); }));
-  expect(container.querySelector('[role="status"]')?.textContent).toContain("正在回复");
+  expect(container.querySelector('[role="status"]')).toBeNull();
+  expect(container.textContent).not.toContain("正在回复");
+  expect(container.textContent).not.toContain("等待回复");
   messages = [pending, { ...request, id: crypto.randomUUID(), sequence: 2, content: "你好！", senderConversationId: member.conversationId, sourceRunId: runId, deliveries: [] }];
   await act(() => Promise.resolve().then(() => { listeners.forEach(listener => listener({ type: "collaboration.changed", conversationId: member.conversationId, teamInstanceId: instance.id })); }));
   expect(container.querySelector('[role="status"]')).toBeNull();
   expect(container.querySelector('[data-group-message][data-role="assistant"]')?.textContent).toContain("你好！");
+});
+
+it("refreshes group messages only for that room or its members", async () => {
+  const client = new MockAgentClient(); const { instance } = await groupFixture(client);
+  const member = (await client.getTeamChatMembers({ teamInstanceId: instance.id }))[0]!;
+  const read = vi.spyOn(client, "readTeamChat");
+  const listeners = new Set<Parameters<MockAgentClient["onConversationRunEvent"]>[0]>();
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(listener => { listeners.add(listener); return () => { listeners.delete(listener); }; });
+  mount();
+  await act(() => Promise.resolve().then(() => { root?.render(<TeamChatPanel agentClient={client} teamInstanceId={instance.id} onOpenConversation={() => undefined} />); }));
+  const initialReads = read.mock.calls.length;
+  await act(() => Promise.resolve().then(() => {
+    listeners.forEach(listener => listener({ type: "collaboration.changed", conversationId: crypto.randomUUID(), teamInstanceId: crypto.randomUUID() }));
+    listeners.forEach(listener => listener({ type: "collaboration.changed", conversationId: crypto.randomUUID() }));
+  }));
+  expect(read).toHaveBeenCalledTimes(initialReads);
+  await act(() => Promise.resolve().then(() => { listeners.forEach(listener => listener({ type: "collaboration.changed", conversationId: member.conversationId, teamInstanceId: instance.id })); }));
+  expect(read).toHaveBeenCalledTimes(initialReads + 1);
+  await act(() => Promise.resolve().then(() => { listeners.forEach(listener => listener({ type: "collaboration.changed", conversationId: member.conversationId })); }));
+  expect(read).toHaveBeenCalledTimes(initialReads + 2);
 });
 
 it("follows a new user message after visiting an older group source instead of repeatedly pinning that source", async () => {

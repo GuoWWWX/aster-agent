@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
-import { LoaderCircle } from "lucide-react";
 import type { ConversationSummary, TeamChatMember, TeamChatMessage } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import { AgentMarkdown } from "../../components/markdown/agent-markdown.js";
@@ -49,10 +48,14 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
   }, [agentClient, teamInstanceId]);
   useEffect(() => { void Promise.resolve().then(() => load()); return () => { loadVersion.current += 1; }; }, [load]);
   useEffect(() => agentClient.onConversationRunEvent(event => {
-    if (event.type === "collaboration.changed" || event.type === "run.started" || event.type === "run.finished") {
+    if (event.type !== "collaboration.changed" && event.type !== "run.finished") return;
+    const memberEvent = members.some(member => member.conversationId === event.conversationId);
+    if (event.type === "collaboration.changed") {
+      if (event.teamInstanceId === teamInstanceId || (event.teamInstanceId === undefined && memberEvent)) void load();
+    } else if (event.type === "run.finished" && memberEvent) {
       void load();
     }
-  }), [agentClient, load, teamInstanceId]);
+  }), [agentClient, load, teamInstanceId, members]);
   useLayoutEffect(() => {
     if (!active) return;
     const ownSequence = messages.findLast(message => message.senderConversationId === null)?.sequence ?? null;
@@ -68,10 +71,6 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
     }
     if (atBottom.current && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
   }, [messages, focusMessageId, cursor, load, active, composerClearance]);
-
-  const pendingReplies = messages.flatMap(message => message.deliveries.filter(delivery =>
-    ["pending", "delivered", "consumed"].includes(delivery.status)
-    && !(delivery.runId !== null && messages.some(reply => reply.senderConversationId === delivery.conversationId && reply.sourceRunId === delivery.runId))));
 
   const openProcess = async (conversationId: string, runId: string | null) => {
     try {
@@ -145,16 +144,6 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
           {delivery.status === "pending" ? <button type="button" className="ml-1 hover:underline" onClick={() => { void agentClient.cancelTeamChatDelivery({ id: delivery.id }).then(() => load()).catch(reason => setError(String(reason))); }}>取消投递</button> : null}
         </span>)}</div>
       </li>; })}</ol>
-      {pendingReplies.filter((delivery, index) => pendingReplies.findIndex(item => item.conversationId === delivery.conversationId) === index).map(delivery => {
-        const member = members.find(item => item.conversationId === delivery.conversationId);
-        const conversation = conversations.find(item => item.id === delivery.conversationId);
-        const avatar = agents.find(item => item.id === conversation?.agentId)?.avatar;
-        return <div role="status" key={delivery.conversationId} className="my-[10px] flex items-center gap-[5px] text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">
-          {avatar === undefined ? <SubagentAvatar icon={conversation?.avatarIcon} seed={delivery.conversationId} size="compact" /> : <AgentAvatar avatar={avatar} size="compact" />}
-          <span>{member?.name ?? "成员"} · {delivery.status === "consumed" ? "正在回复…" : "等待回复…"}</span>
-          <LoaderCircle aria-hidden="true" className="animate-spin" size={13} />
-        </div>;
-      })}
       <div aria-hidden="true" className="w-full shrink-0" style={{ height: `${composerClearance}px` }} />
     </div>
   </section>;
