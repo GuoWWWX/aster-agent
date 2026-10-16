@@ -211,10 +211,10 @@ renderer.renderer.rules.image = (tokens, index, options, environment, self) => {
 export const AgentMarkdown = memo(function AgentMarkdown({ content, streaming = false }: { content: string; streaming?: boolean }): ReactElement {
   const scrollHostRef = useRef<HTMLDivElement>(null);
   useStreamingScroll(scrollHostRef, content, streaming);
-  return <AgentMarkdownContent key={content} content={content} scrollHostRef={scrollHostRef} />;
+  return <AgentMarkdownContent key={`${streaming}:${content}`} content={content} streaming={streaming} scrollHostRef={scrollHostRef} />;
 });
 
-function AgentMarkdownContent({ content, scrollHostRef }: { content: string; scrollHostRef: RefObject<HTMLDivElement | null> }): ReactElement {
+function AgentMarkdownContent({ content, streaming, scrollHostRef }: { content: string; streaming: boolean; scrollHostRef: RefObject<HTMLDivElement | null> }): ReactElement {
   const hostRef = useRef<HTMLDivElement>(null);
   const [codePreviews, setCodePreviews] = useState<Array<{ source: string; mount: Element }>>([]);
   const [sourceViews, setSourceViews] = useState<Array<{ source: string; language: string; mount: Element }>>([]);
@@ -226,7 +226,9 @@ function AgentMarkdownContent({ content, scrollHostRef }: { content: string; scr
   const [copyingImage, setCopyingImage] = useState(false);
   const [copyImageError, setCopyImageError] = useState<string | null>(null);
   const canPreview = previewContext !== null;
-  const html = useMemo(() => renderAgentMarkdown(content, canPreview, true), [content, canPreview]);
+  // Streaming replaces parser-owned DOM on each chunk. Mount the virtual editor
+  // once the output settles, rather than repeatedly clearing its measured viewport.
+  const html = useMemo(() => renderAgentMarkdown(content, canPreview, !streaming), [content, canPreview, streaming]);
   // Keep parser-owned DOM intact on theme changes: native details state, source
   // toggles and diagram height must survive while the next SVG is rendering.
   const markup = useMemo(() => ({ __html: html }), [html]);

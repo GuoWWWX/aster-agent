@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AgentMarkdown } from "./agent-markdown.js";
 import { useStreamingScroll } from "../ui/use-streaming-scroll.js";
+import { EditorView } from "@codemirror/view";
 
 let root: Root;
 let mount: HTMLElement;
@@ -56,6 +57,20 @@ it("follows growing Markdown fences across DOM replacement, pauses on upward scr
 it("opens completed historical code at the beginning", () => {
   act(() => root.render(<AgentMarkdown content={markdown(20)} />));
   expect(mount.querySelector("pre")?.scrollTop).toBe(0);
+});
+it("keeps long streaming code visible and renders the final line when switching to a virtual viewport", async () => {
+  const content = "```javascript\n" + Array.from({ length: 320 }, (_, index) => `console.log('ROW_${index + 1}');`).join("\n");
+  act(() => root.render(<AgentMarkdown content={content} streaming />));
+  expect(mount.querySelector(".cm-editor")).toBeNull();
+  expect(mount.querySelector("pre")?.textContent).toContain("ROW_320");
+  await act(async () => {
+    root.render(<AgentMarkdown content={content} streaming={false} />);
+    await new Promise(resolve => setTimeout(resolve, 50));
+  });
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+  const editor = EditorView.findFromDOM(mount.querySelector<HTMLElement>(".cm-editor")!)!;
+  expect(editor.viewport.to).toBe(editor.state.doc.length);
+  expect(mount.querySelector(".cm-content")?.textContent).toContain("ROW_320");
 });
 function Output({ text, running }: { text: string; running: boolean }) {
   const host = useRef<HTMLDivElement>(null);

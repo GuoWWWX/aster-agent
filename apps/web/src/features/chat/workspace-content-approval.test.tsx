@@ -145,13 +145,15 @@ it.each(["run_command", "wait_for_commands"])("copies %s command and output thro
   expect(container.querySelector('[aria-label="已复制终端内容"]')).not.toBeNull();
 });
 
-it("follows real command output events while respecting manual scrolling", async () => {
+it.each(["running", "completed"] as const)("follows real command output events while the tool is %s, respecting manual scrolling", async (status) => {
   const client = new MockAgentClient();
   let listener: ((event: ConversationRunEvent) => void) | undefined;
   vi.spyOn(client, "onConversationRunEvent").mockImplementation((callback) => { listener = callback; return () => {}; });
   const tool: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID,
     batchId: null, createdAt: "2026-10-16T00:00:00Z", name: "run_command", arguments: '{"command":"echo output"}',
-    result: null, diff: null, status: "running" };
+    result: status === "running" ? null : JSON.stringify({ ok: true, value: { command: "echo output", commandId: TOOL_ID,
+      workingDirectory: ".", exitCode: null, stdout: "", stderr: "", timedOut: false, truncated: false, status: "running" } }),
+    diff: null, status };
   vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool]);
   const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   await act(async () => {

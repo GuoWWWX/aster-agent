@@ -1,3 +1,4 @@
+import { EditorView } from "@codemirror/view";
 import { useLayoutEffect, useRef, type RefObject } from "react";
 
 type ScrollPosition = { top: number; left: number; following: boolean };
@@ -35,8 +36,12 @@ export function useStreamingScroll(
         tracked.set(element, position);
         positions.current.set(key, position);
         if (!known) resize.observe(element);
-        if (follow && position.following) element.scrollTop = element.scrollHeight;
-        else if (!known && saved !== undefined) element.scrollTop = position.top;
+        const editor = element.classList.contains("cm-scroller") ? EditorView.findFromDOM(element) : null;
+        if (follow && position.following) {
+          if (editor === null) element.scrollTop = element.scrollHeight;
+          else if (!known) editor.dispatch({ effects: EditorView.scrollIntoView(editor.state.doc.length, { y: "end" }) });
+        } else if (!known && saved !== undefined) element.scrollTop = position.top;
+        if (!known && editor !== null) editor.requestMeasure();
         if (!known) element.scrollLeft = position.left;
         position.top = element.scrollTop;
         position.left = element.scrollLeft;

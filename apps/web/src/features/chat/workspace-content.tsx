@@ -7992,7 +7992,7 @@ function CommandTerminal({
   const output = commandTerminalOutput(resultPayload, status, liveOutput);
   const clipboardText = commandTerminalClipboardText(command, output);
   const scrollHost = useRef<HTMLElement>(null);
-  useStreamingScroll(scrollHost, output, status === "running");
+  useStreamingScroll(scrollHost, output, (liveOutput?.status ?? result?.status ?? status) === "running");
 
   return (
     <section ref={scrollHost} className="tool-timeline-item__payload tool-structured-result tool-command-terminal">
