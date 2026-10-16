@@ -182,7 +182,7 @@ import { AgentAvatar, SubagentAvatar } from "../team/agent-avatar.js";
 import { ToolConversationContext, ToolConversationIdentity, toolConversationTarget } from "./tool-conversation-identity.js";
 import { TeamWorkspace } from "../team/team-workspace.js";
 import { CollaborationProjectionGraph } from "../team/collaboration/collaboration-graph.js";
-import { useConversationWorkspaceCache } from "./conversation-workspace-cache.js";
+import { CONVERSATION_WORKSPACE_CACHE_TTL_MS, useConversationWorkspaceCache } from "./conversation-workspace-cache.js";
 import { formatConversationRunMarkdown } from "./conversation-copy.js";
 import { TerminalText } from "../../components/ui/terminal-text.js";
 import { ConversationFindBar } from "./conversation-find-bar.js";
@@ -3285,7 +3285,7 @@ export function ConversationWorkspace({
                   <div className="chat-message-group gap-[5px]" data-role="assistant">
                     {deliveries.map(delivery => (
                       <div data-html-delivery={delivery.id} key={delivery.id}>
-                        {"pages" in delivery ? <HtmlPreviewGallery pages={delivery.pages} /> : <HtmlPreviewCard source={{ kind: "file", path: delivery.path }} />}
+                        {"pages" in delivery ? <HtmlPreviewGallery pages={delivery.pages} cacheTtlMs={CONVERSATION_WORKSPACE_CACHE_TTL_MS} /> : <HtmlPreviewCard source={{ kind: "file", path: delivery.path }} />}
                       </div>
                     ))}
                   </div>

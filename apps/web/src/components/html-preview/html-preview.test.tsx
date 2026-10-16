@@ -29,7 +29,7 @@ describe("conversation HTML previews", () => {
     await act(async () => { root.render(<TooltipProvider><HtmlPreviewScope client={client} conversationId={conversationId}>{children}</HtmlPreviewScope></TooltipProvider>); await Promise.resolve(); });
   }
   async function click(label: string): Promise<void> {
-    const button = [...node.querySelectorAll<HTMLButtonElement>("button")].find(button => button.getAttribute("aria-label") === label || button.textContent === label);
+    const button = [...node.querySelectorAll<HTMLButtonElement>("button")].find(button => !button.closest("[hidden]") && (button.getAttribute("aria-label") === label || button.textContent === label));
     expect(button, label).toBeDefined();
     await act(async () => { button!.click(); await Promise.resolve(); });
   }
@@ -77,10 +77,10 @@ describe("conversation HTML previews", () => {
     expect(node.querySelector("code")?.textContent).toBe("pages/demo.html\n");
   });
 
-  it("loads only the selected alternative, releases the previous preview and copies the current page", async () => {
+  it("lazily retains visited alternatives and copies only the current page", async () => {
     const writeText = vi.fn(() => Promise.resolve());
     vi.stubGlobal("navigator", { clipboard: { writeText } });
-    await render(<HtmlPreviewGallery pages={[
+    await render(<HtmlPreviewGallery cacheTtlMs={60_000} pages={[
       { title: "清爽版", kind: "code", html: "<div>A</div>" },
       { title: "紧凑版", kind: "code", html: "<button>B</button>" },
       { title: "文件版", kind: "file", path: "pages/c.html" },
@@ -91,8 +91,8 @@ describe("conversation HTML previews", () => {
     expect(request.mock.calls.filter(([input]) => input.kind === "code")).toHaveLength(1);
     await click("下一个方案");
     expect(node.querySelector('[aria-label="选择预览方案"]')?.textContent).toContain("2 / 3 · 紧凑版");
-    expect(request).toHaveBeenCalledWith({ kind: "release", id: result.id, conversationId });
-    expect(node.querySelectorAll("iframe")).toHaveLength(1);
+    expect(request.mock.calls.filter(([input]) => input.kind === "release")).toHaveLength(0);
+    expect(node.querySelectorAll("iframe")).toHaveLength(2);
     await click("显示源码");
     expect(node.querySelector(".cm-content")?.textContent).toBe("<button>B</button>");
     await click("复制代码");
@@ -102,7 +102,8 @@ describe("conversation HTML previews", () => {
     expect(request).toHaveBeenCalledWith({ kind: "file", path: "pages/c.html", conversationId });
     await click("上一个方案");
     expect(node.querySelector('[aria-label="选择预览方案"]')?.textContent).toContain("2 / 3 · 紧凑版");
-    expect(node.querySelectorAll("iframe")).toHaveLength(1);
+    expect(node.querySelectorAll("iframe")).toHaveLength(2);
+    expect(request.mock.calls.filter(([input]) => input.kind === "code")).toHaveLength(2);
   });
 
   it("keeps loading feedback after the preview URL is created until the frame is ready", async () => {

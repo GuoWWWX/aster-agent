@@ -13,21 +13,23 @@ export function HtmlPreviewScope({ client, conversationId, children }: { client:
   return <HtmlPreviewContext.Provider value={value}>{children}</HtmlPreviewContext.Provider>;
 }
 
-export function HtmlPreviewCard({ source, embedded = false, initialMode = "preview" }: {
+export function HtmlPreviewCard({ source, embedded = false, initialMode = "preview", suspended = false, previewHeight, onPreviewHeight }: {
   source: HtmlPreviewSource; embedded?: boolean; initialMode?: "preview" | "source";
+  suspended?: boolean; previewHeight?: number | undefined; onPreviewHeight?: (height: number) => void;
 }): ReactElement {
   const context = useContext(HtmlPreviewContext);
   const [revision, setRevision] = useState(0);
   const [mode, setMode] = useState(initialMode);
   const [requested, setRequested] = useState(initialMode === "preview" || source.kind === "file");
   const value = source.kind === "code" ? source.html : source.path;
-  return <HtmlPreviewContent key={`${context?.conversationId}:${source.kind}:${value}:${revision}:${requested}`} source={source} embedded={embedded} mode={mode} requested={requested}
+  return <HtmlPreviewContent key={`${context?.conversationId}:${source.kind}:${value}:${revision}:${requested}:${suspended}`} source={source} embedded={embedded} mode={mode} requested={requested && !suspended} previewHeight={previewHeight} onPreviewHeight={onPreviewHeight}
     onModeChange={next => { setMode(next); if (next === "preview") { setRequested(true); setRevision(current => current + 1); } }} />;
 }
 
-function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange }: {
+function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange, previewHeight, onPreviewHeight }: {
   source: HtmlPreviewSource; embedded: boolean;
   mode: "preview" | "source"; requested: boolean; onModeChange: (mode: "preview" | "source") => void;
+  previewHeight: number | undefined; onPreviewHeight: ((height: number) => void) | undefined;
 }): ReactElement {
   const context = useContext(HtmlPreviewContext);
   const [preview, setPreview] = useState<HtmlPreview | null>(null);
@@ -65,11 +67,15 @@ function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange }:
     const resize = (event: MessageEvent<unknown>): void => {
       if (event.source !== frame.contentWindow || event.origin !== "null" || frame.getBoundingClientRect().width === 0) return;
       const message = htmlPreviewResizeMessageSchema.safeParse(event.data);
-      if (message.success && message.data.id === preview.id) { setHeight(Math.min(520, message.data.height)); setLoadingFrame(false); }
+      if (message.success && message.data.id === preview.id) {
+        const measured = Math.min(520, message.data.height);
+        setHeight(measured); onPreviewHeight?.(measured); setLoadingFrame(false);
+      }
     };
     window.addEventListener("message", resize);
     return () => { observer.disconnect(); window.removeEventListener("message", resize); };
-  }, [preview, mode]);
+  }, [preview, mode, onPreviewHeight]);
+  const displayHeight = previewHeight ?? height;
   const sourceText = source.kind === "code" ? source.html : preview?.source;
   const title = source.kind === "file" ? source.path.split(/[\\/]/u).at(-1) : "html";
   const loading = mode === "preview" && error === null && (preview === null || loadingFrame);
@@ -93,12 +99,13 @@ function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange }:
       }}><Copy size={14} /></IconButton>
     </header>
     {mode === "source" && sourceText !== undefined
-      ? <CodeSourceView source={sourceText} language="html" />
-      : preview === null ? error === null ? <div style={{ height }}><LoadingState label="正在加载页面…" className="h-full" /></div> : null
+      ? <div style={previewHeight === undefined ? undefined : { height: displayHeight }} className="overflow-auto"><CodeSourceView source={sourceText} language="html" /></div>
+      : preview === null ? error === null ? <div style={{ height: displayHeight }}><LoadingState label="正在加载页面…" className="h-full" /></div>
+        : previewHeight === undefined ? null : <div style={{ height: displayHeight }} />
       : <div className="relative">
         {loading ? <LoadingState label="正在加载页面…" className="pointer-events-none absolute inset-0 z-10 bg-[var(--app-panel)]" /> : null}
         <iframe ref={frameRef} title={`${preview.title} 页面效果`} src={preview.url} sandbox="allow-scripts" referrerPolicy="no-referrer"
-        className="block w-full border-0 bg-white" style={{ height }} onLoad={() => {
+        className="block w-full border-0 bg-white" style={{ height: displayHeight }} onLoad={() => {
           setLoadingFrame(false);
           frameRef.current?.contentWindow?.postMessage({ type: "html-preview.measure", id: preview.id }, "*");
         }} />

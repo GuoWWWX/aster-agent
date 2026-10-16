@@ -66,6 +66,7 @@ describe("prompt assets", () => {
     expect(BASE_SYSTEM_PROMPT).toContain("prefer one paginated `present_html` delivery with `pages`");
     expect(BASE_SYSTEM_PROMPT).toContain('each `{title, kind:"code", html}`');
     expect(BASE_SYSTEM_PROMPT).toContain("automatically group unrelated pages");
+    expect(BASE_SYSTEM_PROMPT).toContain("Keep all options in a comparison at the same intended preview height");
   });
 
   it("loads the bundled browser Skill", () => {
