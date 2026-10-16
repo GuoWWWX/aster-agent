@@ -1,10 +1,10 @@
+import { ConversationWorkIndicator } from "../../features/chat/conversation-work-state.js";
 import {
   ArrowLeft,
   ArrowRight,
   Undo2,
   Redo2,
   Copy,
-  LoaderCircle,
   MessageSquareText,
   Minus,
   PanelLeftClose,
@@ -16,6 +16,7 @@ import {
   Pin,
 } from "lucide-react";
 import { createPortal } from "react-dom";
+import { useNativeOverlayContainer } from "../ui/native-overlay-provider.js";
 import {
   useEffect,
   useLayoutEffect,
@@ -61,6 +62,7 @@ export type AppTitlebarConversationTab = {
   icon?: ReactElement;
   id: string;
   isRunning: boolean;
+  activeRunId?: string | null;
   title: string;
 };
 
@@ -103,6 +105,7 @@ export function AppTitlebar({
   canToggleFilePanel = true,
   canToggleProjectNavigator = true,
 }: AppTitlebarProps): ReactElement {
+  const nativeOverlayContainer = useNativeOverlayContainer();
   const tabsRef = useRef<HTMLDivElement>(null);
   const tabIds = conversationTabs.map((tab) => tab.id).join(",");
   useLayoutEffect(() => {
@@ -345,20 +348,12 @@ export function AppTitlebar({
                     >
                       <span className="relative grid size-5 shrink-0 place-items-center overflow-visible">
                         {tab.icon ?? (tab.isRunning ? (
-                          <LoaderCircle
-                            aria-label={`${tab.title} 正在工作`}
-                            className="animate-spin"
-                            size={13}
-                          />
+                          <ConversationWorkIndicator runId={tab.activeRunId ?? null} aria-label={`${tab.title} 正在工作`} size={13} />
                         ) : (
                           <MessageSquareText aria-hidden="true" size={13} />
                         ))}
                         {tab.icon !== undefined && tab.isRunning ? (
-                          <LoaderCircle
-                            aria-label={`${tab.title} 正在工作`}
-                            className="absolute -right-0.5 -bottom-0.5 animate-spin rounded-full bg-[var(--app-titlebar)]"
-                            size={9}
-                          />
+                          <ConversationWorkIndicator runId={tab.activeRunId ?? null} aria-label={`${tab.title} 正在工作`} className="absolute -right-0.5 -bottom-0.5 rounded-full bg-[var(--app-titlebar)]" size={9} />
                         ) : null}
                       </span>
                       <span className={`app-titlebar__conversation-tab-title${tab.isPreview ? " italic" : ""}`}>{tab.title}</span>
@@ -455,6 +450,7 @@ export function AppTitlebar({
           <div
             aria-hidden="true"
             className="app-titlebar__conversation-context-menu-backdrop"
+            data-native-view-overlay=""
             onMouseDown={() => setConversationTabContextMenu(null)}
           />
           <div
@@ -510,7 +506,7 @@ export function AppTitlebar({
             </button>
           </div>
         </>,
-        document.body,
+        nativeOverlayContainer ?? document.body,
       ) : null}
     </header>
   );

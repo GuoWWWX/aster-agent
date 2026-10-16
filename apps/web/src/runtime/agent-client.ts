@@ -1,4 +1,5 @@
-import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput } from "@agent/protocol";
+import type { HtmlPreview, HtmlPreviewRequest } from "@agent/protocol";
+import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
 import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
 import type {
   CapabilitySet,
@@ -148,10 +149,12 @@ export type ManagedBrowserEventListener = (event: ManagedBrowserEvent) => void;
  * browser mock and Electron preload surface stay interchangeable.
  */
 export interface AgentClient {
+  htmlPreview(input: HtmlPreviewRequest): Promise<HtmlPreview | null>;
   listUserQuestions(input: ConversationReferenceInput): Promise<UserQuestion[]>;
   answerUserQuestion(input: AnswerUserQuestionInput): Promise<UserQuestion>;
   markUserQuestionViewed(input: { questionId: string }): Promise<UserQuestion>;
   listBackgroundCommands(input: ConversationReferenceInput): Promise<BackgroundCommand[]>;
+  readBackgroundCommand(input: ReadBackgroundCommandInput): Promise<BackgroundCommandOutput>;
   stopBackgroundCommand(input: StopBackgroundCommandInput): Promise<BackgroundCommand>;
   listScheduledTasks(): Promise<ScheduledTask[]>;
   saveScheduledTask(input: SaveScheduledTaskInput): Promise<ScheduledTask>;
@@ -223,6 +226,7 @@ export interface AgentClient {
   deleteModelProvider(providerId: string): Promise<ModelRuntimeStatus>;
   getCapabilities(): Promise<CapabilitySet>;
   getModelCatalog(): Promise<ModelCatalog>;
+  saveModelCatalog(catalog: ModelCatalog): Promise<ModelCatalog>;
   getModelStatus(): Promise<ModelRuntimeStatus>;
   getContextCompressionConfiguration(): Promise<ContextCompressionConfiguration>;
   getApplicationSettings(): Promise<ApplicationSettings>;

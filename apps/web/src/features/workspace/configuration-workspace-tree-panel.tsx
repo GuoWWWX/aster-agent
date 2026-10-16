@@ -1,3 +1,4 @@
+import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import {
   ArrowDownAZ,
   ArrowDownUp,
@@ -11,7 +12,6 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
-  LoaderCircle,
   LocateFixed,
   Search,
   Trash2,
@@ -27,6 +27,7 @@ import {
   type ReactElement,
 } from "react";
 import { createPortal } from "react-dom";
+import { useNativeOverlayContainer } from "../../components/ui/native-overlay-provider.js";
 
 import type { ConfigurationWorkspaceEntry } from "@agent/protocol";
 
@@ -108,6 +109,7 @@ export function ConfigurationWorkspaceTreePanel({
   onDeleteEntry,
   onOpenFile,
 }: ConfigurationWorkspaceTreePanelProps): ReactElement {
+  const nativeOverlayContainer = useNativeOverlayContainer();
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [createKind, setCreateKind] = useState<"directory" | "file" | null>(null);
   const [draftName, setDraftName] = useState("");
@@ -345,7 +347,6 @@ export function ConfigurationWorkspaceTreePanel({
       <header className="project-tree-panel__header">
         <div className="project-tree-panel__heading-row">
           <div>
-            <p className="panel-eyebrow">工作区文件</p>
             <h2 id="configuration-workspace-tree-heading" title={target.title}>{target.title}</h2>
           </div>
         </div>
@@ -532,6 +533,7 @@ export function ConfigurationWorkspaceTreePanel({
       {createKind !== null ? createPortal(
         <div
           className="project-tree-panel__dialog-backdrop"
+          data-native-view-overlay=""
           onMouseDown={(event) => {
             if (event.target === event.currentTarget && !isCreating) setCreateKind(null);
           }}
@@ -571,7 +573,7 @@ export function ConfigurationWorkspaceTreePanel({
             </div>
           </form>
         </div>,
-        document.body,
+        nativeOverlayContainer ?? document.body,
       ) : null}
     </section>
   );
@@ -633,7 +635,7 @@ function ConfigurationWorkspaceTreeNode({
             onClick={() => onToggleDirectory(entry.path)}
           >
             {loadingDirectories.has(entry.path) ? (
-              <LoaderCircle aria-hidden="true" className="project-tree-panel__spin" size={14} />
+              <Spinner aria-hidden="true" size={14} />
             ) : isExpanded ? (
               <ChevronDown aria-hidden="true" size={14} />
             ) : (
@@ -706,9 +708,10 @@ function ConfigurationWorkspaceEmpty({
   label: string;
   loading?: boolean;
 }): ReactElement {
+  if (loading) return <LoadingState label={label} compact className="w-full" />;
   return (
     <div className="project-tree-panel__empty" data-loading={String(loading)}>
-      {loading ? <LoaderCircle aria-hidden="true" size={17} /> : <Folder aria-hidden="true" size={19} />}
+      <Folder aria-hidden="true" size={19} />
       <p>{label}</p>
     </div>
   );

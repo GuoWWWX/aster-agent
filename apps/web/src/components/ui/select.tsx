@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 import type { ComponentProps, ReactElement } from "react";
 
 import { cn } from "../../lib/cn.js";
+import { useNativeOverlayContainer } from "./native-overlay-provider.js";
 
 export function Select(
   props: ComponentProps<typeof SelectPrimitive.Root>,
@@ -53,8 +54,9 @@ export function SelectContent({
   sideOffset = 4,
   ...props
 }: ComponentProps<typeof SelectPrimitive.Content>): ReactElement {
+  const container = useNativeOverlayContainer();
   return (
-    <SelectPrimitive.Portal>
+    <SelectPrimitive.Portal container={container}>
       <SelectPrimitive.Content
         className={cn(
           "z-[100] max-h-[var(--radix-select-content-available-height)] w-max min-w-[var(--radix-select-trigger-width)] max-w-[var(--radix-select-content-available-width)] overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-foreground)] shadow-[0_12px_28px_rgba(15,23,42,0.16)]",
@@ -62,6 +64,7 @@ export function SelectContent({
         )}
         collisionPadding={collisionPadding}
         data-slot="select-content"
+        data-native-view-overlay=""
         position={position}
         sideOffset={sideOffset}
         {...props}

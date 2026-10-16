@@ -26,7 +26,7 @@ describe("ConversationControl", () => {
   const settings = { getConfiguration: () => DEFAULT_APPLICATION_SETTINGS };
   const teams = { sendExecutionGuidance: vi.fn(sendMessage) };
   const models = { resolveSelection: vi.fn((selection: ConversationModelSelection) => selection), saveConfiguration: vi.fn(), getStatus: vi.fn() };
-  const interactions = { listUserQuestions: vi.fn(() => []), answerUserQuestion: vi.fn(), approveToolChange: vi.fn(), listBackgroundCommands: vi.fn(() => []), stopBackgroundCommand: vi.fn() };
+  const interactions = { listUserQuestions: vi.fn(() => []), answerUserQuestion: vi.fn(), approveToolChange: vi.fn(), listBackgroundCommands: vi.fn(() => []), readBackgroundCommand: vi.fn(), stopBackgroundCommand: vi.fn() };
   beforeEach(async () => {
     vi.clearAllMocks();
     directory = await mkdtemp(path.join(os.tmpdir(), "aster-conversation-control-"));
@@ -39,6 +39,15 @@ describe("ConversationControl", () => {
   });
   afterEach(async () => { database.close(); await rm(directory, { force: true, recursive: true }); });
   const execute = (command: unknown) => control.execute(localControlCommandSchema.parse(command));
+  it("routes command output reads through the scoped runtime", async () => {
+    const conversationId = randomUUID(); const commandId = randomUUID();
+    const output = { command: { commandId, conversationId, command: "echo ok", mode: "batch", serviceName: null, workingDirectory: ".",
+      startedAt: "2026-10-14T01:00:00Z", completedAt: "2026-10-14T01:00:01Z", status: "completed", exitCode: 0 },
+      stdout: "ok", stderr: "", error: null, timedOut: false, truncated: false };
+    interactions.readBackgroundCommand.mockReturnValue(output);
+    await expect(execute({ command: "background_commands.read", input: { conversationId, commandId } })).resolves.toEqual(output);
+    expect(interactions.readBackgroundCommand).toHaveBeenCalledExactlyOnceWith({ conversationId, commandId });
+  });
 
   it("persists creation before broadcasting and recovers it from JSONL", async () => {
     await execute({ command: "conversations.create", input: {} });

@@ -9,11 +9,15 @@ import type { WorkspaceBrowserTabPort } from "../tools/workspace-browser-tab-con
 import type {
   ManagedBrowserAutomationPort,
   ManagedBrowserInteraction,
+  ManagedBrowserObservation,
 } from "../windows/managed-browser-controller.js";
 
 const browserIdSchema = z.string().uuid();
 
 const browserOpenArgumentsSchema = z.object({
+  background: z.boolean().default(false),
+  width: z.number().int().min(320).max(2560).optional(),
+  height: z.number().int().min(240).max(2160).optional(),
   name: z.string().trim().min(1).max(120).optional(),
   url: z.string().trim().min(1).max(8_192),
 }).strict();
@@ -106,6 +110,7 @@ const browserControlArgumentsSchema = z.object({
   action: z.enum([
     "open",
     "list",
+    "show",
     "observe",
     "screenshot",
     "navigate",
@@ -125,9 +130,20 @@ const browserControlArgumentsSchema = z.object({
     "scroll",
     "wait",
     "close",
+    "close_tabs",
   ]).describe("Browser action to perform."),
   browserId: browserIdSchema.optional()
-    .describe("Browser ID returned by action=open/list. Required for every action except open and list."),
+    .describe("Browser ID returned by action=open/list. Required except for open, list and close_tabs."),
+  browserIds: z.array(browserIdSchema).max(100).optional()
+    .describe("For close_tabs, close exactly these IDs from list. Omit both ID lists to close all current-conversation tabs."),
+  exceptBrowserIds: z.array(browserIdSchema).max(100).optional()
+    .describe("For close_tabs, keep these IDs and close the other current-conversation tabs. Do not combine with browserIds."),
+  background: z.boolean().optional()
+    .describe("For open, true registers a sidebar tab silently without selecting it or opening the sidebar. Users can inspect the same live page. Defaults to false."),
+  width: z.number().int().min(320).max(2560).optional()
+    .describe("CSS viewport width for background open, defaults to 1280."),
+  height: z.number().int().min(240).max(2160).optional()
+    .describe("CSS viewport height for background open, defaults to 800."),
   deltaX: z.number().int().min(-20_000).max(20_000).optional()
     .describe("Horizontal pixel delta for action=scroll; defaults to 0."),
   deltaY: z.number().int().min(-20_000).max(20_000).optional()
@@ -180,6 +196,7 @@ export const BROWSER_TOOL_NAMES = {
 } as const;
 
 type OwnedBrowser = {
+  background: boolean;
   conversationId: string;
   projectId: string;
 };
@@ -201,7 +218,7 @@ export class BrowserToolPlugin {
   public getDefinitions(): readonly ModelToolDefinition[] {
     return [
       {
-        description: "Control the isolated, user-visible browser through one bounded action surface. Load the browser-use Skill before non-trivial browser work. Prefer observe plus elementId because semantic targets are more reliable; use screenshot plus pixel coordinates for canvas, icon-only or otherwise unobservable targets. Coordinates are CSS pixels in the returned screenshot. Observe again after page changes because element references expire. Supports navigation, screenshots, real mouse clicks/movement/dragging, keyboard input, scrolling, form controls and waits. HTTP/HTTPS only; permission prompts and arbitrary page JavaScript are blocked.",
+        description: "Control current-conversation browser tabs through one bounded action surface. For page verification prefer open with background=true: it registers a sidebar tab silently without opening the sidebar, selecting a tab or stealing focus; the user can inspect the same live page. Background sessions are temporary and released when this Run ends. Set background=false when the user requests a visible browser. Reuse a known browserId from open/list. Use list only when IDs are unknown or the tab set needs reconciliation, including manually opened sidebar tabs; do not list before every action or to acknowledge completion. For visual-only inspection call screenshot directly; it never requires a preliminary observe. Use observe with browserId when DOM text or semantic element references are needed: it returns DOM text, element references and a screenshot together, displayed in the same tool record. Do not call screenshot after observe for an unchanged page; screenshot is only for a fresh image without DOM information. Use show with browserId only when the user requests viewing the existing sidebar tab. Screenshots are model vision input and saved in the tool details for the user. Use close for one tab; close_tabs with browserIds closes a selection, with exceptBrowserIds keeps that selection, and with neither closes all tabs in this conversation. Load browser-use before non-trivial browser work. Prefer fresh observe elementId references; use screenshot CSS pixel coordinates for canvas and visual checks. Supports navigation, pointer/keyboard input, scrolling and forms. HTTP/HTTPS only; permission prompts and arbitrary page JavaScript are blocked.",
         name: BROWSER_TOOL_NAMES.control,
         parameters: modelToolParameters(browserControlArgumentsSchema),
       },
@@ -263,9 +280,23 @@ export class BrowserToolPlugin {
     });
     switch (arguments_.action) {
       case "open":
-        return this.prepareOpen(forwarded({ name: arguments_.name, url: arguments_.url }));
+        return this.prepareOpen(forwarded({ background: arguments_.background, width: arguments_.width,
+          height: arguments_.height, name: arguments_.name, url: arguments_.url }));
       case "list":
         return this.list(input.conversationId, input.projectId);
+      case "show": {
+        const target = browserReferenceArgumentsSchema.parse({ browserId: arguments_.browserId });
+        this.requireOwnedBrowser(input.conversationId, input.projectId, target.browserId);
+        return this.approvedAction(`show ${target.browserId}`, "The user rejected showing this browser tab.", async () => {
+          this.requireOwnedBrowser(input.conversationId, input.projectId, target.browserId);
+          const session = this.browser.getSession({ sessionId: target.browserId });
+          await this.workspaceTabs.open({ conversationId: input.conversationId, projectId: input.projectId,
+            requestedName: null, session, signal: input.signal });
+          return this.success({ browserId: target.browserId, shown: true });
+        });
+      }
+      case "close_tabs":
+        return this.prepareCloseTabs(input, arguments_.browserIds, arguments_.exceptBrowserIds);
       case "observe":
         return this.observe(forwarded({ browserId: arguments_.browserId }));
       case "screenshot":
@@ -379,9 +410,14 @@ export class BrowserToolPlugin {
     rawArguments: string;
     signal: AbortSignal;
   }, arguments_: z.infer<typeof browserOpenArgumentsSchema>): Promise<ToolExecutionResult> {
-    const session = await this.browser.open({ url: arguments_.url });
+    input.signal.throwIfAborted();
+    const session = await this.browser.open({ url: arguments_.url }, arguments_.background
+      ? { background: { width: arguments_.width ?? 1280, height: arguments_.height ?? 800 }, signal: input.signal }
+      : undefined);
     try {
+      input.signal.throwIfAborted();
       const tab = await this.workspaceTabs.open({
+        background: arguments_.background,
         conversationId: input.conversationId,
         projectId: input.projectId,
         requestedName: arguments_.name ?? null,
@@ -389,11 +425,13 @@ export class BrowserToolPlugin {
         signal: input.signal,
       });
       this.browsers.set(session.sessionId, {
+        background: arguments_.background,
         conversationId: input.conversationId,
         projectId: input.projectId,
       });
       return this.success({
         browserId: session.sessionId,
+        background: arguments_.background,
         nameAdjusted: tab.requestedName !== null && tab.requestedName !== tab.resolvedName,
         requestedName: tab.requestedName,
         resolvedName: tab.resolvedName,
@@ -409,14 +447,16 @@ export class BrowserToolPlugin {
   private async observe(input: { conversationId: string; projectId: string; rawArguments: string }): Promise<ToolExecution> {
     const arguments_ = browserReferenceArgumentsSchema.parse(parseToolArguments(input.rawArguments));
     this.requireOwnedBrowser(input.conversationId, input.projectId, arguments_.browserId);
-    return this.success(await this.browser.observe({ sessionId: arguments_.browserId }));
+    const observation = await this.browser.observe({ sessionId: arguments_.browserId });
+    return this.screenshot(input, observation);
   }
 
   private list(conversationId: string, projectId: string): ToolExecutionResult {
+    this.adoptConversationTabs(conversationId, projectId);
     const sessions = [...this.browsers.entries()].flatMap(([browserId, owner]) => {
       if (owner.conversationId !== conversationId || owner.projectId !== projectId) return [];
       try {
-        return [this.browser.getSession({ sessionId: browserId })];
+        return [{ ...this.browser.getSession({ sessionId: browserId }), browserId, background: owner.background }];
       } catch {
         this.browsers.delete(browserId);
         return [];
@@ -429,7 +469,7 @@ export class BrowserToolPlugin {
     conversationId: string;
     projectId: string;
     rawArguments: string;
-  }): Promise<ToolExecutionResult> {
+  }, observation?: ManagedBrowserObservation): Promise<ToolExecutionResult> {
     const arguments_ = browserReferenceArgumentsSchema.parse(parseToolArguments(input.rawArguments));
     this.requireOwnedBrowser(input.conversationId, input.projectId, arguments_.browserId);
     const snapshot = await this.browser.capture({ sessionId: arguments_.browserId });
@@ -439,6 +479,7 @@ export class BrowserToolPlugin {
       content: JSON.stringify({
         ok: true,
         value: {
+          ...observation,
           browserId: arguments_.browserId,
           coordinateSpace: "screenshot_css_pixels",
           height: snapshot.height,
@@ -580,6 +621,16 @@ export class BrowserToolPlugin {
     return this.success({ browserId: arguments_.browserId, closed: true });
   }
 
+  public closeBackground(conversationId: string): void {
+    for (const [browserId, owner] of this.browsers) {
+      if (owner.background && owner.conversationId === conversationId) {
+        this.workspaceTabs.close({ conversationId, sessionId: browserId });
+        this.browser.close({ sessionId: browserId });
+        this.browsers.delete(browserId);
+      }
+    }
+  }
+
   private interactionFor(kind: ManagedBrowserInteraction["kind"], rawArguments: unknown): (
     ManagedBrowserInteraction & { browserId: string }
   ) {
@@ -662,10 +713,37 @@ export class BrowserToolPlugin {
   }
 
   private requireOwnedBrowser(conversationId: string, projectId: string, browserId: string): void {
+    this.adoptConversationTabs(conversationId, projectId);
     const browser = this.browsers.get(browserId);
     if (browser === undefined || browser.conversationId !== conversationId || browser.projectId !== projectId) {
       throw new Error("The browser tab does not belong to this conversation.");
     }
+  }
+
+  private adoptConversationTabs(conversationId: string, projectId: string): void {
+    for (const session of this.browser.listForConversation?.(conversationId) ?? []) {
+      if (!this.browsers.has(session.sessionId)) this.browsers.set(session.sessionId, { background: false, conversationId, projectId });
+    }
+  }
+
+  private prepareCloseTabs(input: { conversationId: string; projectId: string }, selected?: string[], except?: string[]): ToolExecution {
+    if (selected !== undefined && except !== undefined) throw new Error("Use browserIds or exceptBrowserIds, not both.");
+    this.list(input.conversationId, input.projectId);
+    for (const id of selected ?? except ?? []) this.requireOwnedBrowser(input.conversationId, input.projectId, id);
+    const ids = selected ?? [...this.browsers.entries()]
+      .filter(([id, owner]) => owner.conversationId === input.conversationId && owner.projectId === input.projectId && !except?.includes(id))
+      .map(([id]) => id);
+    const targets = [...new Set(ids)];
+    return this.approvedAction(`close_tabs ${targets.join(" ")}`, "The user rejected closing these browser tabs.", () => {
+      const closedBrowserIds: string[] = [];
+      for (const browserId of targets) {
+        if (!this.browsers.has(browserId)) continue;
+        this.requireOwnedBrowser(input.conversationId, input.projectId, browserId);
+        this.close(input, { browserId });
+        closedBrowserIds.push(browserId);
+      }
+      return Promise.resolve(this.success({ closedBrowserIds }));
+    });
   }
 
   private approvedAction(

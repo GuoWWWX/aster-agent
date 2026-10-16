@@ -10,6 +10,14 @@ export default defineConfig({
   // Electron loads the production renderer through file:// rather than an HTTP origin.
   base: "./",
   plugins: [react(), tailwindcss()],
+  build: {
+    rolldownOptions: {
+      input: {
+        main: fileURLToPath(new URL("index.html", import.meta.url)),
+        nativeOverlay: fileURLToPath(new URL("native-overlay.html", import.meta.url)),
+      },
+    },
+  },
   resolve: {
     alias: {
       "@agent/protocol": fileURLToPath(

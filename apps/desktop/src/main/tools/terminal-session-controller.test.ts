@@ -111,7 +111,7 @@ describe("TerminalSessionController", () => {
       .toEqual({ data: " prompt\r\n", nextCursor: 14, truncated: false });
   });
 
-  it("kills active PTYs during application disposal", () => {
+  it("kills active PTYs during application disposal", async () => {
     const fake = createFakePty();
     const controller = new TerminalSessionController(
       { getProject: () => ({ id: projectId, isPinned: false, name: "Agent", rootPath: "D:\\Agent" }) },
@@ -120,9 +120,31 @@ describe("TerminalSessionController", () => {
     );
     controller.open({ columns: 80, projectId, rows: 24 });
 
-    controller.dispose();
+    await controller.dispose();
 
     expect(fake.process.kill).toHaveBeenCalledOnce();
+  });
+
+  it("waits for the owned PTY process tree before releasing its handle", async () => {
+    const fake = createFakePty();
+    let finishTree: () => void = () => undefined;
+    const stopTree = vi.fn(() => new Promise<void>((resolve) => { finishTree = resolve; }));
+    const controller = new TerminalSessionController(
+      { getProject: () => ({ id: projectId, isPinned: false, name: "Agent", rootPath: "D:\\Agent" }) },
+      { getConfiguration: () => DEFAULT_TERMINAL_CONFIGURATION },
+      () => ({ ...fake.process, pid: 12345 }),
+      stopTree,
+    );
+    const session = controller.open({ columns: 80, projectId, rows: 24 });
+    const disposed = controller.dispose();
+    try {
+      expect(stopTree).toHaveBeenCalledExactlyOnceWith(12345);
+      expect(fake.process.kill).not.toHaveBeenCalled();
+    } finally { finishTree(); await disposed; }
+    expect(fake.process.kill).toHaveBeenCalledOnce();
+    expect(controller.isActive({ sessionId: session.sessionId })).toBe(false);
+    await controller.dispose();
+    expect(stopTree).toHaveBeenCalledOnce();
   });
 
   it("keeps event cursors aligned with the transcript across bounded chunks", async () => {
@@ -144,7 +166,7 @@ describe("TerminalSessionController", () => {
     expect(chunks.map((chunk) => chunk.data).join("")).toBe(data + "PS> ");
     expect(controller.readOutput({ afterCursor: data.length, maxChars: 100, sessionId: session.sessionId }))
       .toEqual({ data: "PS> ", nextCursor: data.length + 4, truncated: false });
-    controller.dispose();
+    await controller.dispose();
   });
 
   it("prefers the configured executable path for the selected shell", () => {

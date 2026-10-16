@@ -198,10 +198,31 @@ function pruneToolOutput(message: ManagedContextSourceMessage): ManagedContextSo
 export function normalizeModelFacingToolOutputs(
   messages: readonly ModelMessage[],
 ): ModelMessage[] {
-  return messages.map((message) => {
+  return withoutCommandWaitMessages(messages).map((message) => {
     if (message.role !== "tool") return message;
     const content = boundedToolOutput(message.content);
     return content === message.content ? message : { ...message, content };
+  });
+}
+
+function withoutCommandWaitMessages<T extends Pick<ModelMessage, "role" | "content" | "toolCallId" | "toolCalls"> & {
+  providerState?: ModelMessage["providerState"];
+  attachments?: ModelMessageAttachment[];
+  attachmentIds?: string[];
+}>(messages: readonly T[], references: readonly Pick<ModelMessage, "toolCalls">[] = messages): T[] {
+  const waitIds = new Set(references.flatMap(message => message.toolCalls
+    .filter(call => call.name === "wait_for_commands").map(call => call.id)));
+  return messages.flatMap(message => {
+    if (message.role === "tool" && message.toolCallId !== null && waitIds.has(message.toolCallId)) return [];
+    if (message.role !== "assistant") return [message];
+    const toolCalls = message.toolCalls.filter(call => call.name !== "wait_for_commands");
+    if (toolCalls.length === message.toolCalls.length) return [message];
+    if (toolCalls.length === 0 && message.content.trim().length === 0
+      && (message.attachments?.length ?? 0) === 0 && (message.attachmentIds?.length ?? 0) === 0) return [];
+    const next = { ...message, toolCalls };
+    // Opaque provider state may still contain the removed function calls.
+    delete next.providerState;
+    return [next];
   });
 }
 
@@ -457,7 +478,7 @@ function calculateUsage(
 
 export function buildManagedContext(input: BuildManagedContextInput): ManagedContextPlan {
   const coveredThroughSequence = input.checkpoint?.coveredThroughSequence ?? 0;
-  const uncoveredMessages = input.sourceMessages.filter(
+  const uncoveredMessages = withoutCommandWaitMessages(input.sourceMessages).filter(
     (message) => message.sequence > coveredThroughSequence
   );
   const summaryMessage = checkpointMessage(input.checkpoint);
@@ -516,7 +537,7 @@ export function buildManagedContext(input: BuildManagedContextInput): ManagedCon
     }
   }
   const retainedSequences = new Set(retained.map((message) => message.sequence));
-  const relevantCandidates = (input.relevantMessages ?? []).filter(
+  const relevantCandidates = withoutCommandWaitMessages(input.relevantMessages ?? [], input.sourceMessages).filter(
     (message) => !retainedSequences.has(message.sequence),
   );
   const availableRelevantTokens = Math.max(
@@ -562,7 +583,7 @@ export function createContextCompactionMessages(
   previousSummary: string | null,
   messages: readonly ManagedContextSourceMessage[]
 ): ModelMessage[] {
-  const history = messages.map((message) => JSON.stringify({
+  const history = withoutCommandWaitMessages(messages).map((message) => JSON.stringify({
     content: message.role === "tool" ? compactionToolOutput(message.content) : message.content,
     attachments: (message.attachments ?? []).map((attachment) => ({
       contextTokens: attachment.contextTokens,

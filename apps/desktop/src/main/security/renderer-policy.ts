@@ -1,6 +1,7 @@
-import { app, shell, type BrowserWindow, type WebContents } from "electron";
+import { app, shell, type BrowserWindow, type WebContents, type WindowOpenHandlerResponse } from "electron";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { NATIVE_OVERLAY_FRAME_NAME } from "@agent/protocol";
 
 type RendererTarget =
   | {
@@ -58,18 +59,6 @@ function isAllowedNavigation(target: RendererTarget, navigationUrl: string): boo
   }
 }
 
-function denyPermissionRequest(
-  _webContents: WebContents,
-  _permission: string,
-  callback: (permissionGranted: boolean) => void
-): void {
-  callback(false);
-}
-
-function denyPermissionCheck(): boolean {
-  return false;
-}
-
 export function externalHttpUrl(value: string): string | null {
   if (!/^https?:\/\//iu.test(value) || value.includes("\\")
     || Array.from(value).some((character) => character.charCodeAt(0) < 32)) return null;
@@ -81,15 +70,38 @@ export function externalHttpUrl(value: string): string | null {
   }
 }
 
-export function applyRendererSecurityPolicy(window: BrowserWindow): RendererTarget {
+export function getNativeOverlayUrl(target: RendererTarget): string {
+  return target.kind === "url"
+    ? new URL("native-overlay.html", target.value).href
+    : pathToFileURL(path.join(path.dirname(target.value), "native-overlay.html")).href;
+}
+
+export function applyRendererSecurityPolicy(
+  window: BrowserWindow,
+  nativeOverlay?: { allowWindow(url: string): WindowOpenHandlerResponse },
+): RendererTarget {
   const target = getRendererTarget();
+  const nativeOverlayUrl = getNativeOverlayUrl(target);
+  const canWriteClipboard = (
+    contents: WebContents | null, permission: string,
+    details: { isMainFrame: boolean; requestingUrl?: string },
+  ): boolean => {
+    if (permission !== "clipboard-sanitized-write" || contents === null || contents.isDestroyed()
+      || !details.isMainFrame || details.requestingUrl !== contents.getURL()) return false;
+    if (contents === window.webContents) return isAllowedNavigation(target, contents.getURL());
+    return contents.getURL() === nativeOverlayUrl
+      && window.getChildWindows().some((child) => child.webContents === contents);
+  };
   const denyUnexpectedNavigation = (event: Electron.Event, navigationUrl: string): void => {
     if (!isAllowedNavigation(target, navigationUrl)) {
       event.preventDefault();
     }
   };
 
-  window.webContents.setWindowOpenHandler(({ url }) => {
+  window.webContents.setWindowOpenHandler(({ url, frameName }) => {
+    if (nativeOverlay !== undefined && frameName === NATIVE_OVERLAY_FRAME_NAME && url === nativeOverlayUrl) {
+      return nativeOverlay.allowWindow(url);
+    }
     const external = externalHttpUrl(url);
     if (external !== null) {
       void shell.openExternal(external).catch(() => {
@@ -100,8 +112,10 @@ export function applyRendererSecurityPolicy(window: BrowserWindow): RendererTarg
   });
   window.webContents.on("will-navigate", denyUnexpectedNavigation);
   window.webContents.on("will-redirect", denyUnexpectedNavigation);
-  window.webContents.session.setPermissionCheckHandler(denyPermissionCheck);
-  window.webContents.session.setPermissionRequestHandler(denyPermissionRequest);
+  window.webContents.session.setPermissionCheckHandler((contents, permission, _origin, details) =>
+    canWriteClipboard(contents, permission, details));
+  window.webContents.session.setPermissionRequestHandler((contents, permission, callback, details) =>
+    callback(canWriteClipboard(contents, permission, details)));
 
   return target;
 }

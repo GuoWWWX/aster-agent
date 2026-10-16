@@ -247,7 +247,7 @@
 }
 
 [data-theme="dark"] .context-usage-indicator__content {
-  background: var(--app-panel-subtle);
+  background: var(--app-panel);
 }
 
 [data-theme="dark"] .context-usage-indicator__meter {

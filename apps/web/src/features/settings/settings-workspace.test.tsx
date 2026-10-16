@@ -214,7 +214,7 @@ describe("SettingsWorkspace", () => {
     searchFor("没有此分区");
     expect(container.querySelector('.settings-navigation [role="status"]')?.textContent).toBe("无匹配的设置");
     searchFor("");
-    expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(10);
+    expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(11);
     expect(useWorkbenchUiStore.getState().settingsSection).toBe("general");
   });
 
@@ -245,7 +245,7 @@ describe("SettingsWorkspace", () => {
       searchFor("API KEY");
       expect(container.querySelector('[aria-label="模型配置：API Key"]')).not.toBeNull();
       searchFor("");
-      expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(10);
+      expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(11);
     } finally {
       Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
     }
@@ -288,7 +288,13 @@ describe("SettingsWorkspace", () => {
     expect(container.querySelector('[data-settings-search-highlight]')?.getAttribute("data-config-path")).toBe("env");
   });
 
-  it("shows context windows in K while saving integer Token counts", async () => {
+  it.each([
+    ["200500", 200500],
+    ["200.5K", 200500],
+    ["200.5k", 200500],
+    ["1.5M", 1500000],
+    ["1.5m", 1500000],
+  ])("accepts context window %s and saves integer Token counts", async (value, tokens) => {
     const client = new MockAgentClient();
     await client.saveModelConfiguration(saveModelConfigurationInputSchema.parse({
       apiKey: "example-key", apiFormat: "openai-responses", baseUrl: "https://example.com/v1",
@@ -298,15 +304,33 @@ describe("SettingsWorkspace", () => {
     useWorkbenchUiStore.setState({ settingsSection: "models" });
     const container = await renderSettings(client);
     const input = container.querySelector<HTMLInputElement>('input[aria-label="example-model的上下文窗口"]');
-    expect(input?.value).toBe("128");
+    expect(input?.value).toBe("128K");
     act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "200.5");
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, value);
       input?.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await act(async () => {
       await vi.waitFor(() => expect(save).toHaveBeenCalled(), { timeout: 2000 });
     });
-    expect(save.mock.calls.at(-1)?.[0].models[0]?.contextWindow).toBe(200500);
+    expect(save.mock.calls.at(-1)?.[0].models[0]?.contextWindow).toBe(tokens);
+  });
+
+  it("keeps model connection status and actions in the collapsed title", async () => {
+    const client = new MockAgentClient();
+    await client.saveModelConfiguration(saveModelConfigurationInputSchema.parse({
+      apiKey: "example-key", apiFormat: "openai-responses", baseUrl: "https://example.com/v1",
+      providerName: "Example", models: [{ modelId: "example-model", displayName: "Example model", contextWindow: 128000, reasoningOptions: [] }],
+    }));
+    useWorkbenchUiStore.setState({ settingsSection: "models" });
+    const container = await renderSettings(client);
+    const disclosure = container.querySelector<HTMLDetailsElement>(".settings-model-disclosure");
+    const summary = disclosure?.querySelector("summary");
+    expect(disclosure?.open).toBe(false);
+    expect(summary?.querySelector(".settings-model-connection-status")).not.toBeNull();
+    expect(summary?.querySelector('[aria-label="测试 Example model"]')).not.toBeNull();
+    expect(summary?.querySelector('[aria-label="删除 Example model"]')).not.toBeNull();
+    act(() => summary?.querySelector<HTMLButtonElement>('[aria-label="测试 Example model"]')?.click());
+    expect(disclosure?.open).toBe(false);
   });
 
   it("resizes only the settings menu and resets it to its default width", async () => {

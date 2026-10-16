@@ -2077,7 +2077,7 @@
 
 [data-theme="dark"] .mk-table-context-menu {
     border-color: #3f3f46;
-    background: #18181b;
+    background: var(--app-panel);
     color: #f4f4f5;
     box-shadow: 0 12px 30px rgba(0, 0, 0, 0.42);
   }

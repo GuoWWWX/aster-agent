@@ -25,6 +25,7 @@ import {
 } from "../features/chat/conversation-tabs.js";
 import { FUNCTION_TABS, isFunctionTab, reconcileWorkbenchTabs, type WorkbenchTabs } from "../features/chat/workbench-tabs.js";
 import { ConversationActivity } from "../features/chat/conversation-activity.js";
+import { ConversationWorkProvider } from "../features/chat/conversation-work-state.js";
 import {
   ProjectNavigator,
   type ProjectNavigatorLocateRequest,
@@ -239,6 +240,7 @@ export function App(): ReactElement {
         id: session.id,
         ...(icon === undefined ? {} : { icon }),
         isRunning,
+        activeRunId: session.activeRunId,
         title: session.title,
         kind: "conversation" as const,
         isPreview: tabState.previewId === session.id,
@@ -643,8 +645,22 @@ export function App(): ReactElement {
     }));
   }, [openTeamConversation, projectSessions, projectTree, setActiveActivity]);
 
+  const locateConversationItem = (conversationId: string, itemId: string): void => {
+    const target = projectSessions.sessions.find((candidate) => candidate.id === conversationId);
+    if (target === undefined) return;
+    if (target.parentConversationId !== null && target.threadKind !== "subagent") {
+      openTeamConversation(target, undefined, itemId);
+      return;
+    }
+    if (target.projectId !== null) projectTree.selectProject(target.projectId);
+    selectSession(conversationId);
+    setConversationLocateRequest((current) => ({
+      conversationId, id: itemId, requestId: (current?.requestId ?? 0) + 1,
+    }));
+  };
+
   return (
-    <>
+    <ConversationWorkProvider agentClient={agentClient}>
       <AppShell
         activeProject={projectTree.projects.find((project) => project.id === projectSessions.activeSession?.projectId) ?? null}
         projects={projectTree.projects}
@@ -729,6 +745,13 @@ export function App(): ReactElement {
           }
           onRenameTeamInstance={renameTeamInstance}
           onReorderSessions={(sessionIds) => projectSessions.reorderSessions(sessionIds)}
+          onSetSessionProject={async (sessionId, projectId) => {
+            const moved = await projectSessions.setSessionProject(sessionId, projectId);
+            if (moved && projectSessions.activeSessionId === sessionId) {
+              projectTree.selectProject(projectId);
+            }
+            return moved;
+          }}
           onReorderTeamInstances={reorderTeamInstances}
           onSelectSession={(sessionId) => {
             setNavigatorLocateRequest(null);
@@ -767,6 +790,7 @@ export function App(): ReactElement {
           onForkConversation={forkConversationFromMessage}
           onLocateProject={(projectId) => locateInProjectNavigator("project", projectId)}
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}
+          onLocateConversationItem={locateConversationItem}
           onOpenProjectFile={requestOpenProjectFile}
           onOpenGitReview={requestOpenGitReview}
           onOpenTeamConversation={openTeamConversation}
@@ -791,6 +815,7 @@ export function App(): ReactElement {
           teamMemberOpenRequest={teamMemberOpenRequest}
           onLocateProject={(projectId) => locateInProjectNavigator("project", projectId)}
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}
+          onLocateConversationItem={locateConversationItem}
           onSessionViewed={(sessionId) => projectSessions.markSessionResultViewed(sessionId, true)}
           onSessionUpdated={(conversation) => projectSessions.updateSession(conversation)}
           tree={projectTree}
@@ -804,6 +829,6 @@ export function App(): ReactElement {
         onSelect={selectGlobalSearchResult}
       />
       <MediaPreviewDialogHost />
-    </>
+    </ConversationWorkProvider>
   );
 }

@@ -22,10 +22,12 @@ import { ProjectRegistry } from "../projects/project-registry.js";
 import { TerminalConfigurationStore } from "../settings/terminal-configuration-store.js";
 import { commandEnvironmentWithBundledRipgrep } from "./project-tool-registry.js";
 import { resolveTerminalExecutable } from "./terminal-executable-resolver.js";
+import { terminateProcessTree } from "./terminate-process-tree.js";
 
 type Disposable = { dispose(): void };
 
 type PtyProcess = {
+  readonly pid?: number;
   kill(): void;
   onData(listener: (data: string) => void): Disposable;
   onExit(listener: (event: { exitCode: number }) => void): Disposable;
@@ -98,6 +100,7 @@ export class TerminalSessionController {
     private readonly projects: Pick<ProjectRegistry, "getProject">,
     private readonly terminalConfiguration: Pick<TerminalConfigurationStore, "getConfiguration">,
     private readonly createPty: PtyFactory = defaultPtyFactory,
+    private readonly stopProcessTree: (pid: number) => Promise<void> = terminateProcessTree,
   ) {}
 
   public open(input: TerminalSessionOpenInput): TerminalSession {
@@ -191,9 +194,20 @@ export class TerminalSessionController {
     return () => this.listeners.delete(listener);
   }
 
-  public dispose(): void {
+  public async dispose(): Promise<void> {
     this.listeners.clear();
-    for (const sessionId of [...this.sessions.keys()]) this.disposeSession(sessionId, true);
+    const results = await Promise.allSettled([...this.sessions.entries()].map(async ([sessionId, session]) => {
+      // Kill descendants while the PTY still owns its Shell PID. Closing ConPTY
+      // first can detach descendants before the process-tree stop reaches them.
+      try {
+        if (session.process.pid !== undefined) await this.stopProcessTree(session.process.pid);
+      } finally {
+        this.disposeSession(sessionId, true);
+      }
+    }));
+    const errors: unknown[] = [];
+    for (const result of results) { if (result.status === "rejected") errors.push(result.reason); }
+    if (errors.length > 0) throw new AggregateError(errors, "Terminal process cleanup failed.");
   }
 
   private requireSession(sessionId: string): ActiveTerminalSession {

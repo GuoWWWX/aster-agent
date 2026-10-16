@@ -13,6 +13,7 @@ import {
 const OPEN_REQUEST_TIMEOUT_MS = 10_000;
 
 export type OpenWorkspaceBrowserTabInput = {
+  background?: boolean;
   conversationId: string;
   projectId: string;
   requestedName: string | null;
@@ -80,12 +81,17 @@ export class WorkspaceBrowserTabController implements WorkspaceBrowserTabPort {
   public open(input: OpenWorkspaceBrowserTabInput): Promise<OpenedWorkspaceBrowserTab> {
     if (input.signal.aborted) return Promise.reject(abortError(input.signal));
     const request = workspaceBrowserTabOpenRequestSchema.parse({
+      ...(input.background === undefined ? {} : { background: input.background }),
       conversationId: input.conversationId,
       projectId: input.projectId,
       requestedName: input.requestedName,
       requestId: randomUUID(),
       session: input.session,
     });
+    if (input.background === true) {
+      for (const listener of this.listeners) listener(request);
+      return Promise.resolve({ requestedName: input.requestedName, resolvedName: input.requestedName ?? input.session.title });
+    }
     return new Promise<OpenedWorkspaceBrowserTab>((resolve, reject) => {
       const settle = (reason?: Error, result?: OpenedWorkspaceBrowserTab): void => {
         const pending = this.pending.get(request.requestId);

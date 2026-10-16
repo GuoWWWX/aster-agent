@@ -18,6 +18,30 @@ afterEach(async () => {
 });
 
 describe("AgentDatabase", () => {
+  it("interrupts yielded command receipts after restart without discarding logs or changing confirmed results", () => {
+    const database = new AgentDatabase(":memory:");
+    const conversation = database.createConversation(null);
+    const run = database.createRunWithUserMessage(conversation.id, "command", "test-model");
+    database.markRunRunning(run.runId);
+    const ids = [crypto.randomUUID(), crypto.randomUUID()];
+    for (const [index, id] of ids.entries()) database.upsertRuntimeActivity({
+      id, kind: "tool", name: "run_command", conversationId: conversation.id, runId: run.runId,
+      arguments: "{}", batchId: null, diff: null, createdAt: new Date().toISOString(), status: "completed",
+      result: JSON.stringify({ ok: true, value: { status: index === 0 ? "running" : "completed", stdout: "retained log", exitCode: index === 0 ? null : 0 } }),
+    });
+    const events = database.interruptRecoveredThreadLogRuns();
+    const commands = database.listTimeline(conversation.id).filter(item => item.kind === "tool");
+    const interrupted = commands.find(item => item.id === ids[0]);
+    const completed = commands.find(item => item.id === ids[1]);
+    expect(interrupted).toMatchObject({ status: "cancelled" });
+    expect(interrupted?.result).toContain("retained log");
+    expect(completed).toMatchObject({ status: "completed" });
+    expect(completed?.result).toContain('"exitCode":0');
+    expect(events.filter(event => event.event.type === "runtime_activity_updated")).toHaveLength(1);
+    expect(database.interruptRecoveredThreadLogRuns().filter(event => event.event.type === "runtime_activity_updated")).toHaveLength(0);
+    database.close();
+  });
+
   it("keeps post-cutover task lists in memory and rolls them back with failed event batches", () => {
     const database = new AgentDatabase(":memory:");
     database.activateVolatileConversationProjection();

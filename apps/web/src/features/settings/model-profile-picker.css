@@ -16,7 +16,15 @@
 }
 
 .model-profile-picker--conversation {
-  width: min(360px, calc(100vw - 24px));
+  width: min(320px, calc(100vw - 24px));
+}
+
+.model-profile-picker[data-provider-filter="true"] {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.model-profile-picker[data-provider-filter="true"] .model-profile-picker__option {
+  padding-left: 8px;
 }
 
 .model-profile-picker__toolbar {

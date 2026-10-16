@@ -20,6 +20,12 @@ describe("prompt assets", () => {
     expect(BASE_SYSTEM_PROMPT).toContain("# Commands and Task Management");
     expect(BASE_SYSTEM_PROMPT).toContain("# Command and Terminal Choice");
     expect(BASE_SYSTEM_PROMPT).toContain("# Browser Choice");
+    expect(BASE_SYSTEM_PROMPT).toContain("# HTML Presentations");
+    expect(BASE_SYSTEM_PROMPT).toContain("call `present_html` with the existing entry file's workspace-relative `path`");
+    expect(BASE_SYSTEM_PROMPT).toContain("File-edit tool records show only their diffs");
+    expect(BASE_SYSTEM_PROMPT).toContain("Once the HTML code block is complete, it displays a preview by default");
+    expect(BASE_SYSTEM_PROMPT).toContain("preview/source panel before the final explanation");
+    expect(BASE_SYSTEM_PROMPT).toContain("Place final inline HTML deliverables before their explanatory text");
     expect(BASE_SYSTEM_PROMPT).toContain("# Conflict Recovery");
     expect(BASE_SYSTEM_PROMPT).toContain(
       "The application language is Simplified Chinese (zh-CN).",
@@ -28,6 +34,8 @@ describe("prompt assets", () => {
       "Use `run_command` with its default `batch` mode for every finite non-interactive command",
     );
     expect(BASE_SYSTEM_PROMPT).toContain("Use `run_command` with `mode=service` only");
+    expect(BASE_SYSTEM_PROMPT).toContain("all results return before you continue analysis");
+    expect(BASE_SYSTEM_PROMPT).toContain("do not wait for a service to exit");
     expect(BASE_SYSTEM_PROMPT).toContain(
       "A terminal tab opened manually by the user is not automatically owned by this conversation",
     );
@@ -47,12 +55,38 @@ describe("prompt assets", () => {
     expect(BASE_SYSTEM_PROMPT).not.toMatch(/\r/u);
   });
 
+  it("allows inline HTML fragments without requiring files or document wrappers", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain("output an `html` fenced code block directly");
+    expect(BASE_SYSTEM_PROMPT).toContain("even a single `<div>`");
+    expect(BASE_SYSTEM_PROMPT).toContain("`<!DOCTYPE html>`, `<html>`, `<head>`, and `<body>` wrappers are not required");
+    expect(BASE_SYSTEM_PROMPT).toContain("Create or edit files according to the user's needs and task; inline rendering does not require an HTML file");
+    expect(BASE_SYSTEM_PROMPT).not.toContain("one complete `html` fenced code block");
+    expect(BASE_SYSTEM_PROMPT).not.toContain("finish creating and verifying its files first");
+    expect(BASE_SYSTEM_PROMPT).toContain("multiple page or component designs to compare and choose");
+    expect(BASE_SYSTEM_PROMPT).toContain("prefer one paginated `present_html` delivery with `pages`");
+    expect(BASE_SYSTEM_PROMPT).toContain('each `{title, kind:"code", html}`');
+    expect(BASE_SYSTEM_PROMPT).toContain("automatically group unrelated pages");
+    expect(BASE_SYSTEM_PROMPT).toContain("Keep all options in a comparison at the same intended preview height");
+  });
+
   it("loads the bundled browser Skill", () => {
     expect(BROWSER_USE_SKILL).toContain("name: browser-use");
     expect(BROWSER_USE_SKILL).toContain("single `browser_control` tool");
     expect(BROWSER_USE_SKILL).toContain("Perform one state-changing action, then observe or screenshot again");
     expect(BROWSER_USE_SKILL).toContain("`click` performs real browser pointer input");
     expect(BROWSER_USE_SKILL).not.toMatch(/\r/u);
+  });
+
+  it("limits workspace discovery and uses the built-in static HTML preview", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain("Do not routinely inspect the workspace for ordinary questions");
+    expect(BASE_SYSTEM_PROMPT).toContain("The authorized workspace root is already supplied");
+    expect(BASE_SYSTEM_PROMPT).toContain("Get-ChildItem -LiteralPath src -Name");
+    expect(BASE_SYSTEM_PROMPT).toContain("`ls -A`");
+    expect(BASE_SYSTEM_PROMPT).toContain("`rg --files -g");
+    expect(BASE_SYSTEM_PROMPT).toContain("`rg -n");
+    expect(BASE_SYSTEM_PROMPT).toContain("Do not start Python, http.server, or another ad hoc server just to display static HTML");
+    expect(BASE_SYSTEM_PROMPT).toContain("application's own isolated preview server");
+    expect(BASE_SYSTEM_PROMPT).not.toContain("list_directory");
   });
 
   it("loads the strict context compaction prompt from bundled Markdown", () => {

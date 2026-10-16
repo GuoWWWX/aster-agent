@@ -1,3 +1,4 @@
+import { Spinner } from "../../components/ui/loading.js";
 import {
   CheckCircle2,
   ChevronLeft,
@@ -280,7 +281,7 @@ export function TeamWorkItemBoard({
             <DialogFooter className="border-t border-[var(--app-border)] pt-[12px]">
               <button className="h-[32px] rounded-[var(--app-radius)] px-[10px] text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)]" type="button" onClick={() => setDeleteTarget(null)}>取消</button>
               <button className="inline-flex h-[32px] items-center gap-[5px] rounded-[var(--app-radius)] bg-[var(--app-destructive)] px-[12px] text-[length:var(--app-font-size-control)] font-semibold text-white hover:brightness-95 disabled:cursor-wait disabled:opacity-50" disabled={isDeleting} type="button" onClick={() => void confirmDelete()}>
-                <Trash2 aria-hidden="true" size={14} />{isDeleting ? "删除中" : "确认删除"}
+                {isDeleting ? <Spinner size={14} /> : <Trash2 aria-hidden="true" size={14} />}{isDeleting ? "删除中" : "确认删除"}
               </button>
             </DialogFooter>
           </div>

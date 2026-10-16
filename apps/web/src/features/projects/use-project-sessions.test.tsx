@@ -23,6 +23,27 @@ afterEach(() => {
 });
 
 describe("useProjectSessions", () => {
+  it("updates the visible conversation when its project changes", async () => {
+    const conversation = createConversation();
+    const projectId = "00000000-0000-4000-8000-000000000002";
+    const setConversationProject = vi.fn((input: { conversationId: string; projectId: string | null }) =>
+      Promise.resolve({ ...conversation, projectId: input.projectId }));
+    const client = {
+      listConversationHierarchy: () => Promise.resolve([conversation]),
+      onConversationRunEvent: () => () => {},
+      setConversationProject,
+    } as unknown as AgentClient;
+    let controller!: ReturnType<typeof useProjectSessions>;
+    function Harness(): null { controller = useProjectSessions(client, null); return null; }
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<Harness />); await Promise.resolve(); });
+    await act(async () => { expect(await controller.setSessionProject(conversation.id, projectId)).toBe(true); });
+    expect(setConversationProject).toHaveBeenCalledWith({ conversationId: conversation.id, projectId });
+    expect(controller.sessions.find(({ id }) => id === conversation.id)?.projectId).toBe(projectId);
+  });
+
   it("selects a backend-opened conversation immediately without reload", async () => {
     let emit: ((event: ConversationRunEvent) => void) | null = null;
     const client = { listConversationHierarchy: () => Promise.resolve([]), onConversationRunEvent(listener: (event: ConversationRunEvent) => void) { emit = listener; return () => {}; } } as unknown as AgentClient;

@@ -1,6 +1,9 @@
-import { Check, ChevronDown, LoaderCircle, MessageSquareText, Search, ShieldAlert, ShieldCheck, X } from "lucide-react";
+import { Spinner } from "../../components/ui/loading.js";
+import { ConversationWorkIndicator } from "./conversation-work-state.js";
+import { Check, ChevronDown, MessageSquareText, Search, ShieldAlert, ShieldCheck, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useNativeOverlayContainer } from "../../components/ui/native-overlay-provider.js";
 import {
   AgentClientError,
   parseSerializedAgentError,
@@ -118,6 +121,7 @@ export function ConversationActivity({ agentClient, sessions, projects, onSelect
   onSelect: (id: string, timelineItemId?: string, ownerConversationId?: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const nativeOverlayContainer = useNativeOverlayContainer();
   const [query, setQuery] = useState("");
   const [tools, setTools] = useState<LiveTools>({});
   const [loadError, setLoadError] = useState(false);
@@ -330,7 +334,7 @@ export function ConversationActivity({ agentClient, sessions, projects, onSelect
                   }}
                     className="flex min-w-0 flex-1 items-start gap-2 py-1 text-left">
                     {hasUnreadResult ? <span aria-label="未读" className="mt-1.5 size-1.5 shrink-0 rounded-full bg-[var(--app-accent)]" />
-                      : group === "进行中" ? <LoaderCircle size={14} className="mt-0.5 shrink-0 animate-spin" /> : <MessageSquareText size={14} className="mt-0.5 shrink-0" />}
+                      : group === "进行中" ? <ConversationWorkIndicator runId={session.activeRunId} size={14} className="mt-0.5" /> : <MessageSquareText size={14} className="mt-0.5 shrink-0" />}
                     <span className="min-w-0 flex-1"><span className="block truncate font-medium">{session.title}</span>
                       <span className="block truncate text-[var(--app-muted-foreground)]">{projectNames.get(session.projectId ?? "") ?? (session.teamId === null ? "临时对话" : "团队对话")} · {group === "未读" && unreadSession !== undefined && unreadSession.id !== session.id ? `${unreadSession.title} · ` : ""}{status}</span></span>
                     {group === "待处理" ? <span className="shrink-0 rounded-[var(--app-radius-small)] bg-[var(--app-status-danger-bg)] px-1.5 py-0.5 text-[length:var(--app-font-size-caption)] text-[var(--app-status-danger-fg)]">审批</span> : null}
@@ -386,7 +390,7 @@ export function ConversationActivity({ agentClient, sessions, projects, onSelect
       />
     )}
     {approvalNotice !== null ? createPortal(
-      <div role="alert" data-app-drag-region="false"
+      <div role="alert" data-app-drag-region="false" data-native-view-overlay="" data-native-overlay-interactive="false"
         className="fixed right-3 top-12 z-[110] flex w-[min(360px,calc(100vw-24px))] items-start gap-2 rounded-[var(--app-radius-large)] border border-[var(--app-border)] bg-[var(--app-panel)] p-2 shadow-xl">
         <button type="button" className="flex min-w-0 flex-1 items-start gap-2 rounded-[var(--app-radius)] p-1 text-left hover:bg-[var(--app-hover)]"
           onClick={() => { const notice = approvalNotice; setApprovalNotice(null); void openApproval(notice.conversationId, notice.toolId); }}>
@@ -408,7 +412,7 @@ export function ConversationActivity({ agentClient, sessions, projects, onSelect
         <button type="button" aria-label="关闭审批提示" className="rounded-[var(--app-radius-small)] p-1 text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)] hover:text-[var(--app-foreground)]"
           onClick={() => setApprovalNotice(null)}><X size={14} /></button>
       </div>,
-      document.body,
+      nativeOverlayContainer ?? document.body,
     ) : null}
     </span>
   </>;
@@ -448,7 +452,7 @@ function ActivityApprovalActions({
         type="button"
         onClick={() => onApprove("once")}
       >
-        {isApproving ? <LoaderCircle aria-hidden="true" className="animate-spin" size={14} /> : <Check aria-hidden="true" size={14} />}
+        {isApproving ? <Spinner aria-hidden="true" size={14} /> : <Check aria-hidden="true" size={14} />}
       </button>
       {canApproveForSession(tool) ? (
         <button

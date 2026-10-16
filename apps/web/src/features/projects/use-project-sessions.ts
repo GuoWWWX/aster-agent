@@ -31,6 +31,7 @@ export type ProjectSessionsController = {
   markSessionResultViewed(sessionId: string, onlySelected?: boolean): void;
   renameSession(sessionId: string, title: string): Promise<boolean>;
   reorderSessions(sessionIds: string[]): Promise<boolean>;
+  setSessionProject(sessionId: string, projectId: string | null): Promise<boolean>;
   sessions: ProjectSession[];
   clearOperationError(): void;
   clearSessionSelection(): void;
@@ -294,6 +295,20 @@ export function useProjectSessions(
     }
   }, [agentClient]);
 
+  const setSessionProject = useCallback(async (
+    sessionId: string,
+    projectId: string | null,
+  ): Promise<boolean> => {
+    setOperationError(null);
+    try {
+      updateSession(await agentClient.setConversationProject({ conversationId: sessionId, projectId }));
+      return true;
+    } catch {
+      setOperationError("无法修改对话所属项目");
+      return false;
+    }
+  }, [agentClient, updateSession]);
+
   const setSessionPinned = useCallback(async (
     sessionId: string,
     pinned: boolean,
@@ -410,6 +425,7 @@ export function useProjectSessions(
     refreshSessions: loadSessions,
     renameSession,
     reorderSessions,
+    setSessionProject,
     selectProject,
     selectSession,
     setSessionArchived,

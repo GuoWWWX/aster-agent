@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { IPC_CHANNELS } from "@agent/protocol";
+import { IPC_CHANNELS, DEFAULT_MODEL_CATALOG } from "@agent/protocol";
 
 const electronMocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -16,6 +16,10 @@ vi.mock("electron", () => ({
 import { createDesktopBridge } from "./api.js";
 
 describe("Desktop preload bridge", () => {
+  it("sends model catalog updates through their dedicated IPC channel", async () => {
+    await createDesktopBridge().saveModelCatalog(DEFAULT_MODEL_CATALOG);
+    expect(electronMocks.invoke).toHaveBeenCalledWith(IPC_CHANNELS.modelSaveCatalog, DEFAULT_MODEL_CATALOG);
+  });
   it("keeps browser path, password listing and explicit reveal requests separate", async () => {
     const bridge = createDesktopBridge();
     await bridge.getBrowserDefaultDownloadDirectory();

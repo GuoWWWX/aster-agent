@@ -1,3 +1,4 @@
+import { LoadingState } from "../../../components/ui/loading.js";
 import { ArrowRight, ArrowUpRight, GitBranch, LocateFixed, MessageSquareText, PanelRightOpen } from "lucide-react";
 import {
   useEffect,
@@ -13,6 +14,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import { useNativeOverlayContainer } from "../../../components/ui/native-overlay-provider.js";
 import {
   MAX_TEAM_COLLABORATION_OUTPUT_LENGTH,
   type ConversationRunEvent,
@@ -85,6 +87,7 @@ export function CollaborationGraph({
   variant: CollaborationGraphVariant;
 }): ReactElement {
   const markerPrefix = useId().replaceAll(":", "");
+  const nativeOverlayContainer = useNativeOverlayContainer();
   const isMini = variant === "mini";
   const [contextMenu, setContextMenu] = useState<NodeContextMenu | null>(null);
   const [isPanning, setIsPanning] = useState(false);
@@ -444,6 +447,7 @@ export function CollaborationGraph({
           <div
             aria-hidden="true"
             className="fixed inset-0 z-40"
+            data-native-view-overlay=""
             onContextMenu={(event) => {
               event.preventDefault();
               setContextMenu(null);
@@ -479,7 +483,7 @@ export function CollaborationGraph({
             )}
           </div>
         </>,
-        document.body,
+        nativeOverlayContainer ?? document.body,
       )}
     </>
   );
@@ -541,7 +545,7 @@ export function CollaborationProjectionGraph({
     return <div className="flex min-h-[92px] items-center justify-center p-3 text-center text-[length:var(--app-font-size-auxiliary)] text-[var(--app-destructive)]" role="alert">{error}</div>;
   }
   if (projection === null) {
-    return <div className="flex min-h-[92px] items-center justify-center p-3 text-center text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]" role="status">正在加载 Agent 协作图…</div>;
+    return <LoadingState label="正在加载 Agent 协作图…" compact className="min-h-[92px]" />;
   }
   return (
     <CollaborationGraph

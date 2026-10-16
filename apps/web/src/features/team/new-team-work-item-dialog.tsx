@@ -1,3 +1,4 @@
+import { Spinner } from "../../components/ui/loading.js";
 import { Plus, Send } from "lucide-react";
 import { useState, type FormEvent, type ReactElement } from "react";
 import type {
@@ -226,7 +227,7 @@ export function NewTeamWorkItemDialog({
               disabled={!canSubmit}
               type="submit"
             >
-              <Send aria-hidden="true" size={14} />{isSubmitting ? "创建中" : "创建并发布"}
+              {isSubmitting ? <Spinner size={14} /> : <Send aria-hidden="true" size={14} />}{isSubmitting ? "创建中" : "创建并发布"}
             </button>
           </DialogFooter>
         </form>

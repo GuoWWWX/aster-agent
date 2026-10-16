@@ -7,11 +7,25 @@ import {
   getCachedModelStatus,
   loadModelStatus,
   rememberModelStatus,
+  subscribeModelStatus,
 } from "./model-status-cache.js";
 
 const status = { configured: false, models: [] } as unknown as ModelRuntimeStatus;
 
 describe("model status cache", () => {
+  it("notifies mounted consumers and stops after unsubscribe", () => {
+    const client = {} as AgentClient;
+    rememberModelStatus(client, status);
+    const listener = vi.fn();
+    const unsubscribe = subscribeModelStatus(client, listener);
+    expect(listener).toHaveBeenCalledExactlyOnceWith(status);
+    const updated = { ...status, configured: true };
+    rememberModelStatus(client, updated);
+    expect(listener).toHaveBeenLastCalledWith(updated);
+    unsubscribe();
+    rememberModelStatus(client, status);
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
   it("exposes the latest status synchronously", () => {
     const client = {} as AgentClient;
 

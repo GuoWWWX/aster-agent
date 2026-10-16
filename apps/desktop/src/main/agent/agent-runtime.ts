@@ -1,7 +1,8 @@
+import { HtmlPresentationTool } from "../tools/html-presentation-tool.js";
 import { createHash, randomUUID } from "node:crypto";
 import { UserQuestionService } from "./user-question-service.js";
 import { UserQuestionTool } from "./user-question-tool.js";
-import type { BackgroundCommand, AnswerUserQuestionInput, UserQuestion } from "@agent/protocol";
+import type { BackgroundCommand, BackgroundCommandOutput, ReadBackgroundCommandInput, AnswerUserQuestionInput, UserQuestion } from "@agent/protocol";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { interrupt, isGraphInterrupt } from "@langchain/langgraph";
@@ -618,7 +619,7 @@ const DEFAULT_APPLICATION_PERMISSION_POLICIES: ApplicationPermissionPolicies = {
 };
 
 const PROJECT_READ_TOOL_NAMES = new Set([
-  "list_directory",
+  "present_html",
   "read_file",
   "view_image",
   "view_attachments",
@@ -986,6 +987,8 @@ function agentResultReceiptContent(input: {
 
 export class AgentRuntime {
   private readonly runCoordinator = new RunCoordinator();
+  private stoppingRuns = false;
+  private stopRunsPromise: Promise<void> | null = null;
   private readonly pendingAgentWakes = new Map<string, { timer: ReturnType<typeof setTimeout>; depth: number }>();
   private readonly pendingQueuePaused = new Map<string, boolean>();
   private readonly latestRequestUsage = new Map<string, ModelProviderTokenUsage | null>();
@@ -1098,6 +1101,12 @@ export class AgentRuntime {
       list: (id) => this.database.listUserQuestions(id),
       get: (id) => this.database.getUserQuestion(id),
       delivered: (id, conversationId) => this.database.wasUserQuestionAnswerDelivered(id, conversationId),
+      validateAttachments: (question, ids) => {
+        if (ids.length === 0) return;
+        if (this.attachments === null) throw new Error("附件服务不可用。");
+        const drafts = new Set(this.database.listDraftConversationAttachments(question.conversationId).map(attachment => attachment.id));
+        if (ids.some(id => !drafts.has(id))) throw new Error("回答附件必须属于发起提问的对话，且尚未发送。");
+      },
       save: (question) => {
         const event = { type: "user_question_updated" as const, payload: { question } };
         if (this.threadLog !== null && this.eventProjector !== null) this.appendWriteAheadThreadLog(question.displayConversationId, event);
@@ -1112,6 +1121,7 @@ export class AgentRuntime {
         const previous = this.database.getLatestRunExecutionSnapshot(conversationId);
         const selection = target.modelSelection ?? (previous?.providerId === null || previous?.providerId === undefined ? null : { providerId: previous.providerId, modelId: previous.modelId, reasoning: previous.reasoning });
         const input: SendConversationMessageInput = { conversationId, content, deliveryMode: "steer", permissionMode: target.permissionMode ?? previous?.permissionMode ?? DEFAULT_PERMISSION_MODE,
+          ...(conversationId !== question.conversationId || (question.answerAttachmentIds?.length ?? 0) === 0 ? {} : { attachmentIds: question.answerAttachmentIds }),
           ...(selection === null ? {} : { providerId: selection.providerId, modelId: selection.modelId, ...(selection.reasoning === null ? {} : { reasoning: selection.reasoning }) }) };
         if (target.teamWorkItemId !== null) {
           if (this.teamWorkItemDispatcher?.deliverQuestionAnswer === undefined) throw new Error("团队提问暂时无法继续，请重试送达。");
@@ -1232,7 +1242,17 @@ export class AgentRuntime {
   }
 
   private createToolHandlerRegistry(): ToolHandlerRegistry<RuntimeToolContext> {
+    const htmlPresentationTool = new HtmlPresentationTool(async conversationId => {
+      const conversation = this.database.getConversation(conversationId);
+      return (await this.projects.ensureWorkspaceRoot(conversation.projectId ?? conversation.id)).rootPath;
+    });
     const handlers: ToolHandler<RuntimeToolContext>[] = [
+      {
+        execute: ({ context, rawArguments }) => htmlPresentationTool.execute(context.conversationId, rawArguments, context.signal),
+        getDefinitions: () => htmlPresentationTool.getDefinitions(),
+        getExecutionPolicy: () => ({ kind: "serial" }),
+        isAvailable: () => true,
+      },
       {
         execute: ({ context, rawArguments, toolName }) => this.userQuestionTool.execute({ toolName, rawArguments,
           conversationId: context.conversationId, runId: context.runId, toolCallId: context.toolCallId ?? context.runId, signal: context.signal, emit: context.emit }),
@@ -1533,6 +1553,7 @@ export class AgentRuntime {
     emit: RunEventEmitter,
     options?: SendMessageOptions,
   ): ConversationMessageSubmission {
+    if (this.stoppingRuns) throw new Error("Agent execution is stopping.");
     const input = sendConversationMessageInputSchema.parse(rawInput);
     this.eventProjector?.ensureConversationHistoryProjected(input.conversationId);
     const conversation = this.database.getConversation(input.conversationId);
@@ -1605,6 +1626,7 @@ export class AgentRuntime {
     rawInput: ReplaceLatestConversationMessageInput,
     emit: RunEventEmitter,
   ): Promise<RunAccepted> {
+    if (this.stoppingRuns) throw new Error("Agent execution is stopping.");
     const input = replaceLatestConversationMessageInputSchema.parse(rawInput);
     this.eventProjector?.ensureConversationHistoryProjected(input.conversationId);
     const conversation = this.database.getConversation(input.conversationId);
@@ -1635,6 +1657,7 @@ export class AgentRuntime {
       this.runCoordinator.markReplacing(sourceRunId);
       this.cancelSingleRun(sourceRunId);
       await activeRun.finished;
+      if (this.stoppingRuns) throw new Error("Agent execution is stopping.");
       source = this.database.getLatestUserMessageReplacementSource(
         input.conversationId,
         input.messageId,
@@ -1877,6 +1900,7 @@ export class AgentRuntime {
   }
 
   public resumePendingMessages(emit: RunEventEmitter): void {
+    if (this.stoppingRuns) return;
     this.userQuestions.resumeUndelivered(emit, (error) => reportMainError(toMainAgentError(error, { operation: "user_question.resume" }), error));
     for (const recovery of this.database.listAgentReplyRecoveries()) {
       this.eventProjector?.ensureConversationHistoryProjected(recovery.trigger.conversationId);
@@ -2041,6 +2065,7 @@ export class AgentRuntime {
     titleOverride?: string,
     questionAnswerId?: string,
   ): RunAccepted {
+    if (this.stoppingRuns) throw new Error("Agent execution is stopping.");
     const { configuration, input } = prepared;
     const executionSnapshot = createRunExecutionSnapshot({
       configuration,
@@ -2198,6 +2223,7 @@ export class AgentRuntime {
   }
 
   private startNextPendingRun(conversationId: string, emit: RunEventEmitter, explicitlyRequested = false): void {
+    if (this.stoppingRuns) return;
     if (this.database.isConversationExecutionPaused(conversationId)) return;
     if (!explicitlyRequested && this.isPendingQueuePaused(conversationId)) return;
     this.eventProjector?.ensureConversationHistoryProjected(conversationId);
@@ -2365,6 +2391,33 @@ export class AgentRuntime {
       return;
     }
     this.cancelSingleRun(runId);
+  }
+
+  /** Drain current work before the window or persistence owners are released. */
+  public stopAllRuns(): Promise<void> {
+    if (this.stopRunsPromise !== null) return this.stopRunsPromise;
+    this.stoppingRuns = true;
+    for (const wake of this.pendingAgentWakes.values()) clearTimeout(wake.timer);
+    this.pendingAgentWakes.clear();
+    const errors: unknown[] = [];
+    try {
+      for (const conversation of this.database.listAgentConversations()) {
+        if (conversation.activeRunId === null) continue;
+        try { this.setExecutionPaused(conversation.id, true); } catch (error) { errors.push(error); }
+        try { this.cancelSingleRun(conversation.activeRunId); } catch (error) { errors.push(error); }
+      }
+    } catch (error) {
+      errors.push(error);
+    }
+    this.stopRunsPromise = this.runCoordinator.cancelAll()
+      .then(() => { if (errors.length > 0) throw new AggregateError(errors, "Run shutdown persistence failed."); })
+      .finally(() => { this.stopRunsPromise = null; });
+    return this.stopRunsPromise;
+  }
+
+  public resumeAfterWindowOpen(): void {
+    if (this.stopRunsPromise !== null) throw new Error("Agent execution is still stopping.");
+    this.stoppingRuns = false;
   }
 
   public cancelConversation(conversationId: string): void {
@@ -2578,6 +2631,7 @@ export class AgentRuntime {
   }
 
   public approveToolChange(rawInput: unknown): void {
+    if (this.stoppingRuns) throw new ToolApprovalExpiredError();
     const input = approveToolChangeInputSchema.parse(rawInput);
     const pending = this.pendingChangeApprovals.get(input.toolId);
     if (pending === undefined || pending.runId !== input.runId) {
@@ -3154,6 +3208,7 @@ export class AgentRuntime {
       });
     } finally {
       this.clearPendingChangeApprovals(runId);
+      this.browserToolPlugin?.closeBackground(conversationId);
       for (const tool of this.database.expirePendingToolApprovalsForRun(runId)) {
         this.appendShadowThreadLog(tool.conversationId, {
           payload: {
@@ -3319,6 +3374,7 @@ export class AgentRuntime {
     modelSelection: ConversationModelSelection | undefined;
     task: string;
   }): SubagentTask {
+    if (this.stoppingRuns) throw new Error("Agent execution is stopping.");
     const parent = this.database.getConversation(input.parentConversationId);
     if (parent.isArchived) throw new Error("An archived conversation cannot start a Subagent.");
     if (
@@ -3761,6 +3817,7 @@ export class AgentRuntime {
     emit: RunEventEmitter,
     flush = false,
   ): void {
+    if (this.stoppingRuns) return;
     if (!this.database.isOpen() || !this.database.hasConversation(conversationId) || this.database.isConversationExecutionPaused(conversationId)) return;
     this.eventProjector?.ensureConversationHistoryProjected(conversationId);
     const unreadMessages = this.database.listUnreadAgentMessages(conversationId);
@@ -4037,6 +4094,10 @@ export class AgentRuntime {
     )?.id;
     this.emit(input.emit, {
       conversationId: input.conversationId,
+      estimatedInputTokens: input.messages.reduce((total, message) => {
+        const estimate = estimateModelMessageTokens(message);
+        return total + estimate.contentTokens + estimate.attachmentTokens + estimate.toolCallTokens;
+      }, estimateContextTokens(JSON.stringify(input.tools))),
       runId: input.runId,
       type: "model.request_started"
     });
@@ -4444,6 +4505,7 @@ export class AgentRuntime {
       isError: true,
       kind: "completed",
     };
+    const toolImageRefs: ConversationAttachment[] = [];
     try {
       const unavailableReason = this.unavailableToolReason(input.toolCall.name);
       if (unavailableReason !== null) {
@@ -4520,6 +4582,15 @@ export class AgentRuntime {
               })
           : proposal;
       }
+      if (!execution.isError && this.attachments !== null && input.toolCall.name === "browser_control") {
+        const screenshot = execution.modelAttachments?.find((image) => image.source === "browser" && image.kind === "image");
+        if (screenshot?.kind === "image" && screenshot.data !== null) {
+          const image = await this.attachments.saveToolScreenshot(input.conversationId, startedTool.id, { ...screenshot, data: screenshot.data });
+          toolImageRefs.push(image);
+          const result = z.object({ ok: z.literal(true), value: z.record(z.string(), z.unknown()) }).parse(JSON.parse(execution.content));
+          execution = { ...execution, content: JSON.stringify({ ...result, value: { ...result.value, image } }) };
+        }
+      }
     } catch (error) {
       // Approval interrupts and cancellation must escape so LangGraph can
       // suspend/resume or terminate the run. Other tool failures are turned
@@ -4542,6 +4613,7 @@ export class AgentRuntime {
     });
     const resultEvent = {
       payload: {
+        ...(toolImageRefs.length === 0 ? {} : { attachmentRefs: toolImageRefs }),
         content: execution.content,
         resultCharacters: execution.content.length,
         runId: input.runId,
@@ -4605,6 +4677,17 @@ export class AgentRuntime {
       tool: completedTool,
       type: "tool.completed",
     });
+    if (execution.commandCompletion !== undefined) {
+      void execution.commandCompletion.then((finalResult) => {
+        this.persistRuntimeActivity(conversationToolItemSchema.parse({
+          ...completedTool,
+          result: finalResult.content,
+          status: finalResult.isError ? "failed" : "completed",
+        }), input.emit);
+      }).catch((error: unknown) => {
+        reportMainError(toMainAgentError(error, { operation: "command.completion.persist" }), error);
+      });
+    }
     return envelope;
   }
 
@@ -5219,6 +5302,8 @@ export class AgentRuntime {
       (output) => {
         this.emit(input.emit, {
           commandId: output.commandId,
+          startedAt: output.startedAt,
+          completedAt: output.completedAt,
           conversationId: input.startedTool.conversationId,
           delta: output.delta,
           done: output.done,
@@ -5313,7 +5398,7 @@ export class AgentRuntime {
             ? `This temporary conversation has no workspace. It may still use the ${this.tools.getCommandEnvironmentDescription()} command tool, read_external_file, web_search, and Agent/Subagent collaboration tools. Commands run in an isolated temporary directory. Project file, directory, and search tools require an attached working directory. Every external file read still requires approval.`
             : `This temporary conversation has no workspace. It may still use read_attachment, view_attachments, the ${this.tools.getCommandEnvironmentDescription()} command tool, read_external_file, web_search, and Agent/Subagent collaboration tools. Commands run in an isolated temporary directory. Project file, directory, and search tools require an attached working directory. Every external file read still requires approval.`
           : `The current workspace supports file reads, search, controlled file changes, the ${this.tools.getCommandEnvironmentDescription()} command tool, and web_search. Commands and writes remain subject to this run's permission policy.`,
-        `One model turn may return at most ${MAX_TOOL_CALLS_PER_MODEL_TURN} mixed Tool Calls. Independent reads such as read_file, search_text, find_files, read_attachment, and view_attachments run concurrently in groups of up to ${MAX_PARALLEL_READ_TOOL_CALLS}, with results matched by call ID. File changes, approvals, Agent messages, and task state remain ordered; stale same-file changes in one batch are rejected. Outside read_only mode, consecutive independent run_command calls run in parallel by default in groups of up to ${MAX_PARALLEL_COMMAND_TOOL_CALLS}; set parallel=false for dependencies or shared mutable state. ask_before_changes still approves each command separately, after which independent commands may overlap. If a turn exceeds the limit, none of its tools run; split the work across turns. Prefer passing multiple IDs at once to wait_for_commands and wait_for_subagents.`,
+        `One model turn may return at most ${MAX_TOOL_CALLS_PER_MODEL_TURN} mixed Tool Calls. Independent reads such as read_file, search_text, find_files, read_attachment, and view_attachments run concurrently in groups of up to ${MAX_PARALLEL_READ_TOOL_CALLS}, with results matched by call ID. File changes, approvals, Agent messages, and task state remain ordered; stale same-file changes in one batch are rejected. Outside read_only mode, consecutive independent run_command calls run in parallel by default in groups of up to ${MAX_PARALLEL_COMMAND_TOOL_CALLS}; set parallel=false for dependencies or shared mutable state. run_command may yield with running and a commandId before a finite command finishes. Continue independent work; use read_command_output with that ID and incremental offsets to confirm exit status before dependent steps or reporting completion. Never treat a running receipt as success or rerun a command to read its logs. ask_before_changes still approves each command separately, after which independent commands may overlap. If a turn exceeds the limit, none of its tools run; split the work across turns. Prefer passing multiple IDs at once to wait_for_subagents.`,
         `Permission mode selected for this task: ${permissionModeLabel(permissionMode)}.`,
         ...(workspace === null
           ? []
@@ -5404,10 +5489,10 @@ export class AgentRuntime {
         runId,
         status: "running",
       });
-      this.persistContextCompactionActivity(activity, emit);
+      this.persistRuntimeActivity(activity, emit);
     } else if (forceCompaction) {
       const createdAt = new Date().toISOString();
-      this.persistContextCompactionActivity(conversationToolItemSchema.parse({
+      this.persistRuntimeActivity(conversationToolItemSchema.parse({
         arguments: JSON.stringify({ trigger: "manual" }),
         batchId: null,
         conversationId,
@@ -5502,7 +5587,7 @@ export class AgentRuntime {
       } catch (error) {
         if (signal.aborted || isAbortError(error)) {
           if (activity !== null) {
-            this.persistContextCompactionActivity(conversationToolItemSchema.parse({
+            this.persistRuntimeActivity(conversationToolItemSchema.parse({
               ...activity,
               result: JSON.stringify({
                 compactionPassCount,
@@ -5530,7 +5615,7 @@ export class AgentRuntime {
       }
     }
     if (activity !== null) {
-      this.persistContextCompactionActivity(conversationToolItemSchema.parse({
+      this.persistRuntimeActivity(conversationToolItemSchema.parse({
         ...activity,
         result: JSON.stringify({
           compactionPassCount,
@@ -5545,7 +5630,7 @@ export class AgentRuntime {
     return context;
   }
 
-  private persistContextCompactionActivity(
+  private persistRuntimeActivity(
     tool: ConversationToolItem,
     emit: RunEventEmitter,
   ): void {
@@ -5835,6 +5920,9 @@ export class AgentRuntime {
   public answerUserQuestion(input: AnswerUserQuestionInput, emit: RunEventEmitter): UserQuestion { return this.userQuestions.answer(input, emit); }
   public markUserQuestionViewed(id: string, emit: RunEventEmitter): UserQuestion { return this.userQuestions.markViewed(id, emit); }
   public listBackgroundCommands(conversationId: string): BackgroundCommand[] { return this.tools.listConversationCommands(this.commandOwners(conversationId)); }
+  public readBackgroundCommand(input: ReadBackgroundCommandInput): BackgroundCommandOutput {
+    return this.tools.readConversationCommand(input.commandId, this.commandOwners(input.conversationId), input.maxChars);
+  }
   public stopBackgroundCommand(conversationId: string, commandId: string): Promise<BackgroundCommand> { return this.tools.stopConversationCommand(commandId, this.commandOwners(conversationId)); }
   private commandOwners(conversationId: string): string[] {
     this.database.getConversation(conversationId);

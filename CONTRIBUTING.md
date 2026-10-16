@@ -36,7 +36,7 @@ git push -u origin feature/short-description
 
 ## 修改要求
 
-日常启动统一使用根目录 `pnpm dev` 或 `pnpm start`，包括 Codex 修改后的 UI 验收；不要直接运行 Electron 或默认启动静态产物。只修改 React/CSS 时保留当前开发窗口，通过 HMR 验证；Main/Preload 才需要自动重启。`pnpm build` 仅编译，`pnpm preview` 显式验证生产产物，`pnpm package:win` 显式生成安装包。开发启动不得在 Vite 不可用时静默回退到 dist，也不得复用其他 worktree 的开发页面。
+日常启动统一使用根目录 `pnpm dev` 或 `pnpm start`，包括 Codex 修改后的 UI 验收；不要直接运行 Electron 或默认启动静态产物。继续功能验收时复用活跃 worktree 的既有窗口和既有数据目录；未经用户明确要求，不另设 ASTER_HOME／AGENT_HOME、不复制配置或数据库、不另开隔离桌面窗口。对话测试在既有应用内新建验收对话，避免临时数据目录迁入旧会话和模型配置。只修改 React/CSS 时保留当前开发窗口，通过 HMR 验证；Main/Preload 才需要自动重启。`pnpm build` 仅编译，`pnpm preview` 显式验证生产产物，`pnpm package:win` 显式生成安装包。开发启动不得在 Vite 不可用时静默回退到 dist，也不得复用其他 worktree 的开发页面。
 
 - 变更 Protocol、IPC、持久化数据、工具权限或设置语义时，同步更新对应 `doc/` 文档和测试。
 - Bug 修复优先加入失败复现；新增行为必须有自动化或可重复的手工验证步骤。

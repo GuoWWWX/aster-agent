@@ -23,6 +23,12 @@ export class RunCoordinator {
       ?.controller.abort(new DOMException("Run cancelled by the user.", "AbortError"));
   }
 
+  public async cancelAll(): Promise<void> {
+    const runs = [...this.activeRuns.entries()];
+    for (const [runId] of runs) this.cancel(runId);
+    await Promise.all(runs.map(([, active]) => active.finished));
+  }
+
   public complete(runId: string): { activeRun: ActiveRun | undefined; wasReplacing: boolean } {
     const activeRun = this.activeRuns.get(runId);
     this.activeRuns.delete(runId);

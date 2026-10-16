@@ -1,3 +1,4 @@
+import { LoadingState } from "../../components/ui/loading.js";
 import {
   Bot,
   ChevronDown,
@@ -178,95 +179,66 @@ export function ConversationHeaderControls({
   return (
     <div className="conversation-header-controls">
       {conversationId === undefined ? null : <BackgroundPrograms key={conversationId} agentClient={agentClient} conversationId={conversationId} />}
-      <div
-        aria-label={`${activeSubagents.length} 个活跃子代理`}
-        className="conversation-header-subagents"
-      >
-        <span className="conversation-header-subagents__avatars">
-          {activeSubagents.length === 0 ? (
-            <span
-              aria-hidden="true"
-              className="conversation-header-subagents__placeholder"
-              title="暂无活跃子代理"
-            >
-              <Bot size={12} />
-            </span>
-          ) : (
-            activeSubagents.slice(0, 4).map((subagent) => (
-              <button
-                aria-label={`打开活跃子代理 ${subagent.title}`}
-                className="conversation-header-subagents__avatar"
-                key={subagent.id}
-                title={subagent.title}
-                type="button"
-                onClick={() => onOpenSubagent?.(subagent)}
-              >
-                <SubagentStatusAvatar subagent={subagent} />
-              </button>
-            ))
+      <Popover open={subagentOpen} onOpenChange={setSubagentOpen}>
+        <PopoverTrigger asChild>
+          <button
+            aria-label="查看全部子代理"
+            className="conversation-header-control"
+            data-open={subagentOpen}
+            title={`${activeSubagents.length} 个活跃子代理 · ${visibleSubagents.length} 个子代理`}
+            type="button"
+          >
+            <Bot aria-hidden="true" size={14} />
+            <span>Agent</span>
+            <span aria-label={`${activeSubagents.length} 个活跃子代理`} className="conversation-header-control__count">{activeSubagents.length}</span>
+            <ChevronDown aria-hidden="true" className="conversation-header-control__chevron" size={13} />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="end"
+          className="conversation-header-popover conversation-header-popover--subagents"
+          side="bottom"
+          sideOffset={5}
+        >
+          {visibleSubagents.length === 0 ? <p className="conversation-header-popover__empty">暂无子代理</p> : null}
+          <SubagentGroup
+            deletingSubagentId={deletingSubagentId}
+            label="正在运行"
+            previews={subagentPreviews}
+            subagents={activeSubagents}
+            onDelete={(subagent) => void deleteSubagent(subagent)}
+            onOpen={(subagent) => {
+              setSubagentOpen(false);
+              onOpenSubagent?.(subagent);
+            }}
+          />
+          <SubagentGroup
+            deletingSubagentId={deletingSubagentId}
+            label="完成工作"
+            previews={subagentPreviews}
+            subagents={completedSubagents}
+            onDelete={(subagent) => void deleteSubagent(subagent)}
+            onOpen={(subagent) => {
+              setSubagentOpen(false);
+              onOpenSubagent?.(subagent);
+            }}
+          />
+          <SubagentGroup
+            deletingSubagentId={deletingSubagentId}
+            label="已结束"
+            previews={subagentPreviews}
+            subagents={endedSubagents}
+            onDelete={(subagent) => void deleteSubagent(subagent)}
+            onOpen={(subagent) => {
+              setSubagentOpen(false);
+              onOpenSubagent?.(subagent);
+            }}
+          />
+          {subagentActionError === null ? null : (
+            <p className="conversation-header-popover__error" role="alert">{subagentActionError}</p>
           )}
-        </span>
-        <span className="conversation-header-control__count">{activeSubagents.length}</span>
-      </div>
-
-      {visibleSubagents.length === 0 ? null : (
-          <Popover open={subagentOpen} onOpenChange={setSubagentOpen}>
-            <PopoverTrigger asChild>
-              <button
-                aria-label="查看全部子代理"
-                className="conversation-header-control conversation-header-control--subagent-menu"
-                data-open={subagentOpen}
-                title={`${visibleSubagents.length} 个子代理`}
-                type="button"
-              >
-                <ChevronDown aria-hidden="true" className="conversation-header-control__chevron" size={13} />
-              </button>
-            </PopoverTrigger>
-            <PopoverContent
-              align="end"
-              className="conversation-header-popover conversation-header-popover--subagents"
-              side="bottom"
-              sideOffset={5}
-            >
-            <SubagentGroup
-              deletingSubagentId={deletingSubagentId}
-              label="正在运行"
-              previews={subagentPreviews}
-              subagents={activeSubagents}
-              onDelete={(subagent) => void deleteSubagent(subagent)}
-              onOpen={(subagent) => {
-                setSubagentOpen(false);
-                onOpenSubagent?.(subagent);
-              }}
-            />
-            <SubagentGroup
-              deletingSubagentId={deletingSubagentId}
-              label="完成工作"
-              previews={subagentPreviews}
-              subagents={completedSubagents}
-              onDelete={(subagent) => void deleteSubagent(subagent)}
-              onOpen={(subagent) => {
-                setSubagentOpen(false);
-                onOpenSubagent?.(subagent);
-              }}
-            />
-            <SubagentGroup
-              deletingSubagentId={deletingSubagentId}
-              label="已结束"
-              previews={subagentPreviews}
-              subagents={endedSubagents}
-              onDelete={(subagent) => void deleteSubagent(subagent)}
-              onOpen={(subagent) => {
-                setSubagentOpen(false);
-                onOpenSubagent?.(subagent);
-              }}
-            />
-              {subagentActionError === null ? null : (
-                <p className="conversation-header-popover__error" role="alert">{subagentActionError}</p>
-              )}
-            </PopoverContent>
-          </Popover>
-      )}
+        </PopoverContent>
+      </Popover>
 
       {project === null || !gitAvailable ? null : (
         <Popover open={gitOpen} onOpenChange={setGitOpen}>
@@ -305,7 +277,7 @@ export function ConversationHeaderControls({
               </span>
             </div> : null}
             {gitSnapshot === null ? (
-              <p className="conversation-header-popover__empty">正在读取 Git 状态…</p>
+              <LoadingState label="正在读取 Git 状态…" compact />
             ) : !gitSnapshot.isRepository ? (
               <p className="conversation-header-popover__empty">当前项目不是 Git 仓库</p>
             ) : gitSnapshot.changes.length === 0 ? (

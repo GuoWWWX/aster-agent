@@ -8,6 +8,7 @@ type QuestionPort = {
   get(id: string): UserQuestion;
   save(question: UserQuestion): void;
   delivered(id: string, conversationId: string): boolean;
+  validateAttachments(question: UserQuestion, ids: string[]): void;
   deliver(question: UserQuestion, conversationId: string, content: string, emit: Emit): void;
 };
 
@@ -35,13 +36,16 @@ export class UserQuestionService {
   public answer(rawInput: AnswerUserQuestionInput, emit: Emit): UserQuestion {
     const input = answerUserQuestionInputSchema.parse(rawInput);
     let question = this.port.get(input.questionId);
+    const attachmentIds = input.attachmentIds ?? question.answerAttachmentIds ?? [];
     if (question.status === "cancelled") throw new Error("该提问已取消。");
     const expected = question.questions.map((prompt) => prompt.id).sort();
     if (JSON.stringify(Object.keys(input.answers).sort()) !== JSON.stringify(expected)) throw new Error("请回答这组提问中的每一个问题。");
     if (question.status === "answered") {
-      if (expected.some((id) => question.answers?.[id] !== input.answers[id])) throw new Error("回答已提交，请通过对话发送补充内容。");
+      if (expected.some((id) => question.answers?.[id] !== input.answers[id])
+        || JSON.stringify(attachmentIds) !== JSON.stringify(question.answerAttachmentIds ?? [])) throw new Error("回答已提交，请通过对话发送补充内容。");
     } else {
-      question = { ...question, answers: input.answers, answeredAt: new Date().toISOString(), viewed: true, status: "answered" };
+      this.port.validateAttachments(question, attachmentIds);
+      question = { ...question, answers: input.answers, ...(attachmentIds.length === 0 ? {} : { answerAttachmentIds: attachmentIds }), answeredAt: new Date().toISOString(), viewed: true, status: "answered" };
       this.update(question, "answered", emit);
     }
     this.deliverAnswer(question, emit);

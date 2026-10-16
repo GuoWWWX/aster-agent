@@ -8,6 +8,7 @@
     "pnpm": ">=10 <11"
   },
   "scripts": {
+    "catalog:audit": "node scripts/audit-model-catalog.mjs",
     "control": "node scripts/aster-control.mjs",
     "start": "pnpm dev",
     "dev": "node scripts/dev.mjs",

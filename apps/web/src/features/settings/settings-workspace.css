@@ -89,6 +89,7 @@
 .settings-navigation__item[data-active="true"] {
   background: var(--app-selection);
   color: var(--app-selection-foreground);
+  box-shadow: inset 0 0 0 1px var(--app-selection-border), var(--app-selection-shadow);
   font-weight: 600;
 }
 
@@ -2580,16 +2581,6 @@
   }
 }
 
-.settings-spin {
-  animation: settings-spin 0.9s linear infinite;
-}
-
-@keyframes settings-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 .settings-configuration-list,
 .settings-skill-list,
 .settings-permission-list {
@@ -3787,7 +3778,7 @@
   }
 
   .settings-model-option {
-    grid-template-columns: minmax(0, 1fr) 28px;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .settings-model-field--name {
@@ -3841,7 +3832,8 @@
 .settings-terminal-grid > .settings-field + .settings-field { border-top: 1px solid var(--app-border); }
 .settings-terminal-grid > .settings-field > span { color: var(--app-foreground); font-size: var(--app-font-size-body); }
 .settings-model-disclosure { border: 1px solid var(--app-border); border-radius: var(--app-radius); overflow: hidden; margin-bottom: 8px; }
-.settings-model-disclosure > summary { cursor: pointer; padding: 14px 16px; background: var(--app-panel); color: var(--app-foreground); font-size: var(--app-font-size-body); }
+.settings-model-disclosure > summary { display: flex; min-width: 0; min-height: 38px; align-items: center; gap: 8px; list-style: none; cursor: pointer; padding: 2px 9px; background: var(--app-panel); color: var(--app-foreground); font-size: var(--app-font-size-body); }
+.settings-model-disclosure > summary::-webkit-details-marker { display: none; }
 .settings-model-disclosure > summary:focus-visible { outline: 2px solid var(--app-focus-ring); outline-offset: -2px; }
 .settings-model-disclosure[open] > summary { border-bottom: 1px solid var(--app-border); }
 .settings-model-option .settings-model-field--name,

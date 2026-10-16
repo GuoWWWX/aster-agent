@@ -17,7 +17,7 @@ describe("workbench prompt workspace", () => {
     expect(useWorkbenchUiStore.getState().settingsNavigationWidth).toBe(200);
     store.setSettingsNavigationWidth(250.4);
     expect(useWorkbenchUiStore.getState()).toMatchObject({
-      settingsNavigationWidth: 250, projectNavigatorWidth: 288, filePanelWidth: 520,
+      settingsNavigationWidth: 250, projectNavigatorWidth: 328, filePanelWidth: 560,
     });
   });
 

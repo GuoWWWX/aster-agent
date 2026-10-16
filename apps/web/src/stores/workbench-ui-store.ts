@@ -12,6 +12,7 @@ export type ActivityView = "conversations" | "team" | "tasks" | "settings" | "sc
 export type SettingsSection =
   | "general"
   | "models"
+  | "reasoning"
   | "agents"
   | "mcp"
   | "skills"
@@ -22,6 +23,7 @@ export type SettingsSection =
   | "appearance";
 
 export type ThemeMode = "light" | "dark";
+export type ConversationReviewViewRequest = { requestId: string; conversationId: string; runId: string | null; path: string | null };
 
 export type ConfigurationWorkspaceTarget = {
   configurationId: string;
@@ -80,6 +82,10 @@ export function clampWorkbenchPanelWidth(
 }
 
 type WorkbenchUiState = {
+  conversationReviewViewRequest: ConversationReviewViewRequest | null;
+  openConversationReview: (input: Omit<ConversationReviewViewRequest, "requestId">) => void;
+  backgroundCommandViewRequest: { requestId: string; conversationId: string; commandId: string; name: string } | null;
+  openBackgroundCommandView: (input: { conversationId: string; commandId: string; name: string }) => void;
   uiFontSize: number;
   chatFontSize: number;
   codeFontSize: number;
@@ -129,6 +135,14 @@ type WorkbenchUiState = {
  * tasks, and agent execution will be queried from AgentClient when available.
  */
 export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
+  conversationReviewViewRequest: null,
+  openConversationReview: input => set(state => ({ conversationReviewViewRequest: { ...input, requestId: crypto.randomUUID() },
+    filePanelOpenByConversationId: { ...state.filePanelOpenByConversationId, [input.conversationId]: true } })),
+  backgroundCommandViewRequest: null,
+  openBackgroundCommandView: (input) => set(state => ({
+    backgroundCommandViewRequest: { ...input, requestId: crypto.randomUUID() },
+    filePanelOpenByConversationId: { ...state.filePanelOpenByConversationId, [input.conversationId]: true },
+  })),
   uiFontSize: DEFAULT_APPLICATION_SETTINGS.appearance.uiFontSize,
   chatFontSize: DEFAULT_APPLICATION_SETTINGS.appearance.chatFontSize,
   codeFontSize: DEFAULT_APPLICATION_SETTINGS.appearance.codeFontSize,
@@ -138,7 +152,7 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
   configurationWorkspaceRevision: 0,
   configurationWorkspaceTarget: null,
   filePanelOpenByConversationId: {},
-  filePanelWidth: 520,
+  filePanelWidth: DEFAULT_APPLICATION_SETTINGS.appearance.filePanelWidth,
   filePanelWidthsByConversationId: {},
   isFilePanelOpen: true,
   isProjectNavigatorOpen: true,
@@ -174,7 +188,7 @@ export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
     configurationWorkspaceTarget,
     isSettingsFilePanelOpen: true,
   }),
-  projectNavigatorWidth: 288,
+  projectNavigatorWidth: DEFAULT_APPLICATION_SETTINGS.appearance.projectNavigatorWidth,
   settingsSection: "general",
   settingsNavigationWidth: 240,
   setSettingsNavigationWidth: (width) => set({

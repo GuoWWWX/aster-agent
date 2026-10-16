@@ -4,6 +4,10 @@ import powershell from "highlight.js/lib/languages/powershell";
 hljs.registerLanguage("powershell", powershell);
 hljs.registerAliases(["ps", "ps1", "pwsh"], { languageName: "powershell" });
 
+// Bound synchronous work while streaming. Settled large blocks use a virtual
+// editor; exceeding that editor's DOM threshold must not erase existing color.
+const MAX_SYNCHRONOUS_HIGHLIGHT_CHARS = 64_000;
+
 const languageAliases: Record<string, string> = {
   "c#": "csharp",
   "c++": "cpp",
@@ -31,10 +35,26 @@ export function highlightCode(source: string, language: string): string {
   }
 
   try {
-    return hljs.highlight(source, { ignoreIllegals: true, language: normalizedLanguage }).value;
+    const prefix = source.slice(0, MAX_SYNCHRONOUS_HIGHLIGHT_CHARS).replace(/[\uD800-\uDBFF]$/u, "");
+    return hljs.highlight(prefix, { ignoreIllegals: true, language: normalizedLanguage }).value
+      + escapeHtml(source.slice(prefix.length));
   } catch {
     return escapeHtml(source);
   }
+}
+
+export function isLargeCodeSource(source: string): boolean {
+  if (source.length > 20_000) return true;
+  let lineLength = 0;
+  let lines = 1;
+  for (let index = 0; index < source.length; index += 1) {
+    if (source.charCodeAt(index) === 10) {
+      lines += 1;
+      lineLength = 0;
+      if (lines > 200) return true;
+    } else if (++lineLength > 1_000) return true;
+  }
+  return false;
 }
 
 export function languageFromPath(path: string): string {

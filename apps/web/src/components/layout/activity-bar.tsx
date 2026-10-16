@@ -25,7 +25,10 @@ const ACTIVITY_ITEMS: readonly ActivityItem[] = [
   { id: "schedules", label: "定时任务", icon: CalendarClock },
 ];
 
-export function ActivityBar({ onOpenGlobalSearch }: { onOpenGlobalSearch?: () => void }): ReactElement {
+export function ActivityBar({ onOpenGlobalSearch, onConversationHoverChange }: {
+  onOpenGlobalSearch?: () => void;
+  onConversationHoverChange?: (isHovered: boolean) => void;
+}): ReactElement {
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
   const setActiveActivity = useWorkbenchUiStore(
     (state) => state.setActiveActivity,
@@ -54,16 +57,19 @@ export function ActivityBar({ onOpenGlobalSearch }: { onOpenGlobalSearch?: () =>
             <IconButton
               key={item.id}
               aria-pressed={isActive}
+              className={isActive ? "bg-[var(--app-chrome-selection)] ring-[var(--app-chrome-selection-border)]" : "hover:bg-[var(--app-navigation-hover)]"}
               label={item.label}
               size="activity"
               variant={isActive ? "selected" : "quiet"}
               onClick={() => setActiveActivity(item.id)}
+              onMouseEnter={item.id === "conversations" ? () => onConversationHoverChange?.(true) : undefined}
+              onMouseLeave={item.id === "conversations" ? () => onConversationHoverChange?.(false) : undefined}
             >
               <ItemIcon aria-hidden="true" size={18} strokeWidth={1.8} />
             </IconButton>
           );
         })}
-        <IconButton label="搜索所有对话" size="activity" variant="quiet" onClick={onOpenGlobalSearch}>
+        <IconButton className="hover:bg-[var(--app-navigation-hover)]" label="搜索所有对话" size="activity" variant="quiet" onClick={onOpenGlobalSearch}>
           <Search aria-hidden="true" size={18} strokeWidth={1.8} />
         </IconButton>
       </nav>
@@ -76,6 +82,7 @@ export function ActivityBar({ onOpenGlobalSearch }: { onOpenGlobalSearch?: () =>
 
       <div className="activity-bar__footer">
         <IconButton
+          className="hover:bg-[var(--app-navigation-hover)]"
           label={themeLabel}
           size="compact"
           variant="quiet"
@@ -85,6 +92,7 @@ export function ActivityBar({ onOpenGlobalSearch }: { onOpenGlobalSearch?: () =>
         </IconButton>
         <IconButton
           aria-pressed={activeActivity === "settings"}
+          className={activeActivity === "settings" ? "bg-[var(--app-chrome-selection)] ring-[var(--app-chrome-selection-border)]" : "hover:bg-[var(--app-navigation-hover)]"}
           label="设置"
           size="activity"
           variant={activeActivity === "settings" ? "selected" : "quiet"}

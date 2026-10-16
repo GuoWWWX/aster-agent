@@ -162,6 +162,7 @@ export type ManagedBrowserInteraction =
   | { kind: "scroll"; deltaX: number; deltaY: number; x?: number; y?: number };
 
 export type ManagedBrowserAutomationPort = {
+  listForConversation?(conversationId: string): ManagedBrowserSession[];
   back(input: ManagedBrowserReferenceInput): void;
   capture(input: ManagedBrowserReferenceInput): Promise<ManagedBrowserSnapshot>;
   close(input: ManagedBrowserReferenceInput): void;
@@ -170,7 +171,7 @@ export type ManagedBrowserAutomationPort = {
   interact(input: ManagedBrowserInteraction & ManagedBrowserReferenceInput): Promise<void>;
   navigate(input: ManagedBrowserNavigateInput): Promise<void>;
   observe(input: ManagedBrowserReferenceInput): Promise<ManagedBrowserObservation>;
-  open(input: ManagedBrowserOpenInput): Promise<ManagedBrowserSession>;
+  open(input: ManagedBrowserOpenInput, options?: BackgroundBrowserOptions): Promise<ManagedBrowserSession>;
   reload(input: ManagedBrowserReferenceInput): Promise<void>;
   stop(input: ManagedBrowserReferenceInput): void;
 };
@@ -210,9 +211,15 @@ type ManagedBrowserPage = {
   zoomOut(): void;
 };
 
-type BrowserPageFactory = (window: BrowserWindow, shortcuts: BrowserPageShortcuts, passwords?: BrowserPasswordStore) => ManagedBrowserPage;
+type BrowserViewport = { width: number; height: number };
+type BackgroundBrowserOptions = { background?: BrowserViewport; signal?: AbortSignal };
+type BrowserPageFactory = (window: BrowserWindow, shortcuts: BrowserPageShortcuts, passwords?: BrowserPasswordStore, isolated?: boolean, background?: BrowserViewport) => ManagedBrowserPage;
 
 type ActiveBrowserSession = {
+  conversationId: string | null;
+  onClose?: () => void;
+  background: boolean;
+  disposeAbort: () => void;
   bounds: Rectangle | null;
   disposeError: () => void;
   disposeFindResult: () => void;
@@ -233,7 +240,28 @@ export class ManagedBrowserController {
     private readonly passwords?: BrowserPasswordStore,
   ) {}
 
-  public async open(input: ManagedBrowserOpenInput): Promise<ManagedBrowserSession> {
+  /** Foreground views belong to one renderer document, unlike background Agent pages. */
+  public attachRenderer(window: BrowserWindow, onError: (error: unknown) => void): () => void {
+    const contents = window.webContents;
+    const release = (): void => {
+      for (const [sessionId, session] of this.sessions) {
+        if (session.background) continue;
+        try { this.close({ sessionId }); } catch (error) { onError(error); }
+      }
+    };
+    const navigate = (event: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>): void => {
+      if (event.isMainFrame && !event.isSameDocument) release();
+    };
+    contents.on("did-start-navigation", navigate);
+    contents.on("render-process-gone", release);
+    return () => {
+      contents.removeListener("did-start-navigation", navigate);
+      contents.removeListener("render-process-gone", release);
+    };
+  }
+
+  public async open(input: ManagedBrowserOpenInput, options: BackgroundBrowserOptions & { isolated?: boolean; onClose?: () => void } = {}): Promise<ManagedBrowserSession> {
+    options.signal?.throwIfAborted();
     const window = this.requireWindow();
     const sessionId = randomUUID();
     const page = this.createPage(window, {
@@ -241,23 +269,30 @@ export class ManagedBrowserController {
       onGlobalSearch: () => {
         if (this.sessions.has(sessionId)) this.emit({ sessionId, type: "openGlobalSearch" });
       },
-    }, this.passwords);
+    }, options.isolated || options.background !== undefined ? undefined : this.passwords, options.isolated, options.background);
     const configuration = this.browserConfiguration.getConfiguration();
     page.setAskForDownloadLocation(configuration.askForDownloadLocation);
     page.setDownloadDirectory(configuration.downloadDirectory);
-    page.setSavePasswords(configuration.savePasswords);
+    page.setSavePasswords(options.background === undefined && configuration.savePasswords);
+    if (options.background !== undefined) page.setBounds({ x: 0, y: 0, ...options.background });
     const disposeState = page.onStateChanged(() => this.emitState(sessionId));
     const disposeError = page.onError((message) => {
       this.emit({ message, sessionId, type: "error" });
     });
     const disposeFindResult = page.onFindResult((result) => this.updateFindResult(sessionId, result));
+    const onAbort = (): void => this.close({ sessionId });
     this.sessions.set(sessionId, {
+      conversationId: input.conversationId ?? null,
+      ...(options.onClose === undefined ? {} : { onClose: options.onClose }),
+      background: options.background !== undefined,
+      disposeAbort: () => options.signal?.removeEventListener("abort", onAbort),
       bounds: null,
       disposeError,
       disposeFindResult,
       disposeState,
       page,
     });
+    options.signal?.addEventListener("abort", onAbort, { once: true });
     try {
       await page.showStartPage();
       await page.setColorScheme(this.colorScheme);
@@ -265,7 +300,8 @@ export class ManagedBrowserController {
         await page.load(resolveManagedBrowserAddress(input.url, configuration.searchEngine));
       }
       page.setAskForDownloadLocation(configuration.askForDownloadLocation);
-      page.setZoomPercent(configuration.defaultZoomPercent);
+      page.setZoomPercent(options.background === undefined ? configuration.defaultZoomPercent : 100);
+      options.signal?.throwIfAborted();
       return this.sessionState(sessionId);
     } catch (error) {
       this.close({ sessionId });
@@ -404,10 +440,15 @@ export class ManagedBrowserController {
     if (session === undefined) return;
     if (this.browserMenuOverlay?.sessionId === input.sessionId) this.closeBrowserMenuOverlay();
     this.sessions.delete(input.sessionId);
+    session.disposeAbort();
     session.disposeError();
     session.disposeFindResult();
     session.disposeState();
-    session.page.close();
+    try { session.page.close(); } finally { session.onClose?.(); }
+  }
+
+  public listForConversation(conversationId: string): ManagedBrowserSession[] {
+    return [...this.sessions.entries()].flatMap(([id, session]) => session.conversationId === conversationId ? [this.sessionState(id)] : []);
   }
 
   public onEvent(listener: BrowserEventListener): () => void {
@@ -416,9 +457,13 @@ export class ManagedBrowserController {
   }
 
   public dispose(): void {
-    this.closeBrowserMenuOverlay();
+    const errors: unknown[] = [];
+    try { this.closeBrowserMenuOverlay(); } catch (error) { errors.push(error); }
     this.listeners.clear();
-    for (const sessionId of [...this.sessions.keys()]) this.close({ sessionId });
+    for (const sessionId of [...this.sessions.keys()]) {
+      try { this.close({ sessionId }); } catch (error) { errors.push(error); }
+    }
+    if (errors.length > 0) throw new AggregateError(errors, "Managed browser cleanup failed.");
   }
 
   private emitState(sessionId: string): void {
@@ -901,21 +946,34 @@ function isLikelyBrowserHost(value: string): boolean {
   }
 }
 
-function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPageShortcuts, passwords?: BrowserPasswordStore): ManagedBrowserPage {
-  const view = new WebContentsView({
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      partition: MANAGED_BROWSER_PARTITION,
-      preload: path.resolve(__dirname, "../preload/browser-passwords.cjs"),
-      sandbox: true,
-      webSecurity: true,
-    },
+function createElectronBrowserPage(ownerWindow: BrowserWindow, shortcuts: BrowserPageShortcuts, passwords?: BrowserPasswordStore, isolated = false, background?: BrowserViewport): ManagedBrowserPage {
+  const webPreferences = {
+    contextIsolation: true,
+    nodeIntegration: false,
+    partition: background !== undefined ? `browser-background:${randomUUID()}` : isolated ? `html-preview:${randomUUID()}` : MANAGED_BROWSER_PARTITION,
+    sandbox: true,
+    webSecurity: true,
+  };
+  const backgroundWindow = background === undefined ? undefined : new BrowserWindow({
+    ...background, show: false, useContentSize: true, frame: false, skipTaskbar: true, enableLargerThanScreen: true,
+    webPreferences: { ...webPreferences, backgroundThrottling: false },
   });
-  window.contentView.addChildView(view);
-  view.setBackgroundColor(nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff");
-  view.setVisible(false);
-  const webContents = view.webContents;
+  const window = backgroundWindow ?? ownerWindow;
+  let view = backgroundWindow === undefined ? new WebContentsView({
+    webPreferences: { ...webPreferences, ...(isolated ? {} : { preload: path.resolve(__dirname, "../preload/browser-passwords.cjs") }) },
+  }) : undefined;
+  if (view !== undefined) {
+    window.contentView.addChildView(view);
+    view.setVisible(false);
+  }
+  const setBackgroundColor = (color: string): void => {
+    if (view !== undefined) view.setBackgroundColor(color);
+    else window.setBackgroundColor(color);
+  };
+  setBackgroundColor(!isolated && nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff");
+  const webContents = view?.webContents ?? window.webContents;
+  let latestBounds: Rectangle | undefined;
+  let backgroundViewport = background;
   const downloads: BrowserDownload[] = [];
   const history: BrowserHistoryEntry[] = [];
   const stateListeners = new Set<() => void>();
@@ -994,6 +1052,7 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
       try {
         browserDebugger.attach("1.3");
       } catch {
+        if (background !== undefined) throw new Error("Background browser input requires the Chromium automation connection.");
         await action(sendElectronMouseInput);
         return;
       }
@@ -1014,7 +1073,7 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
   });
   const applyZoomPercent = (percent: number): void => {
     zoomPercent = Math.min(500, Math.max(25, Math.round(percent)));
-    webContents.setZoomFactor(managedBrowserZoomFactor(zoomPercent));
+    webContents.setZoomFactor(background === undefined ? managedBrowserZoomFactor(zoomPercent) : zoomPercent / 100);
   };
   const emitState = (): void => {
     for (const listener of stateListeners) listener();
@@ -1025,8 +1084,15 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
   const passwordController = passwords === undefined ? undefined : installBrowserPasswords(
     webContents, window, passwords, () => savePasswords, emitError,
   );
+  const applyBackgroundViewport = async (): Promise<void> => {
+    if (background !== undefined) await withAutomationDebugger(async (send) => {
+      // A renderer must exist before Chromium can apply its device metrics.
+      await send("Emulation.setDeviceMetricsOverride", { ...backgroundViewport, deviceScaleFactor: 1, mobile: false });
+    });
+  };
   const showStartPage = async (): Promise<void> => {
     await webContents.loadURL("about:blank");
+    await applyBackgroundViewport();
     await webContents.executeJavaScript(managedBrowserStartPageScript(), true);
   };
   const recordHistory = (url: string): void => {
@@ -1040,11 +1106,12 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
     if (history.length > 100) history.length = 100;
   };
   const handleDownload = (
-    _event: ElectronEvent,
+    event: ElectronEvent,
     item: DownloadItem,
     source: WebContents,
   ): void => {
     if (source.id !== webContents.id) return;
+    if (background !== undefined) { event.preventDefault(); return; }
     const download: BrowserDownload = {
       fileName: item.getFilename() || "download",
       receivedBytes: 0,
@@ -1076,12 +1143,12 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
   webContents.on("did-stop-loading", emitState);
   webContents.on("devtools-closed", () => {
     if (closed || webContents.isDestroyed()) return;
-    void applyManagedBrowserColorScheme(webContents, colorScheme).catch((error: unknown) => {
+    void applyManagedBrowserColorScheme(webContents, colorScheme, !isolated).catch((error: unknown) => {
       emitError(error instanceof Error ? error.message : "浏览器主题恢复失败。");
     });
   });
   webContents.on("did-navigate", (_event, url) => {
-    applyZoomPercent(zoomPercent);
+    if (background === undefined) applyZoomPercent(zoomPercent);
     recordHistory(url);
     emitState();
   });
@@ -1097,6 +1164,7 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
     emitState();
   });
   webContents.on("before-input-event", (event, input) => {
+    if (background !== undefined) return;
     if (input.type !== "keyDown" || (!input.control && !input.meta) || input.alt) return;
     if (input.key.toLocaleLowerCase() !== "f") return;
     event.preventDefault();
@@ -1138,7 +1206,8 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
       if (webContents.navigationHistory.canGoBack()) webContents.navigationHistory.goBack();
     },
     capture: async () => {
-      const sourceImage = await webContents.capturePage();
+      const sourceImage = await webContents.capturePage(undefined, { stayHidden: background !== undefined });
+      if (sourceImage.isEmpty()) throw new Error("The browser has not rendered a screenshot yet. Wait for the page and retry.");
       const size = await viewport();
       const sourceSize = sourceImage.getSize();
       const image = sourceSize.width === size.width && sourceSize.height === size.height
@@ -1162,15 +1231,18 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
       );
     },
     close: () => {
+      if (closed) return;
       closed = true;
       passwordController?.dispose();
       stateListeners.clear();
       errorListeners.clear();
       findResultListeners.clear();
+      if (view !== undefined && !ownerWindow.isDestroyed()) ownerWindow.contentView.removeChildView(view);
+      if (webContents.isDestroyed()) return;
       webContents.session.removeListener("will-download", handleDownload);
-      window.contentView.removeChildView(view);
       if (webContents.debugger.isAttached()) webContents.debugger.detach();
-      if (!webContents.isDestroyed()) webContents.close();
+      if (backgroundWindow !== undefined) backgroundWindow.destroy();
+      else if (!webContents.isDestroyed()) webContents.close();
     },
     forward: () => {
       if (webContents.navigationHistory.canGoForward()) webContents.navigationHistory.goForward();
@@ -1189,7 +1261,8 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
       zoomPercent,
     }),
     load: async (url) => {
-      await applyManagedBrowserColorScheme(webContents, colorScheme, url);
+      await applyManagedBrowserColorScheme(webContents, colorScheme, !isolated, url);
+      await applyBackgroundViewport();
     },
     onError: (listener) => {
       errorListeners.add(listener);
@@ -1227,6 +1300,16 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
           return;
         }
         case "key": {
+          if (background !== undefined) {
+            const modifiers = input.modifiers.reduce((bits, modifier) => bits | ({ alt: 1, control: 2, meta: 4, shift: 8 }[modifier]), 0);
+            await withAutomationDebugger(async (send) => {
+              const event = { key: input.key, modifiers,
+                ...(input.key.length === 1 && (modifiers & 7) === 0 ? { text: input.key } : {}) };
+              await send("Input.dispatchKeyEvent", { ...event, type: "keyDown" });
+              await send("Input.dispatchKeyEvent", { key: input.key, modifiers, type: "keyUp" });
+            });
+            return;
+          }
           window.focus();
           webContents.focus();
           const event = { keyCode: input.key, modifiers: input.modifiers };
@@ -1238,6 +1321,10 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
           return;
         }
         case "type":
+          if (background !== undefined) {
+            await withAutomationDebugger(async (send) => { await send("Input.insertText", { text: input.text }); });
+            return;
+          }
           window.focus();
           webContents.focus();
           await webContents.insertText(input.text);
@@ -1369,21 +1456,38 @@ function createElectronBrowserPage(window: BrowserWindow, shortcuts: BrowserPage
       savePasswords = enabled;
       passwordController?.refresh();
     },
-    setBounds: (bounds) => view.setBounds(bounds),
+    setBounds: (bounds) => {
+      latestBounds = bounds;
+      if (view !== undefined) view.setBounds(bounds);
+      else window.setContentSize(bounds.width, bounds.height);
+      if (background !== undefined) {
+        backgroundViewport = { width: bounds.width, height: bounds.height };
+        if (webContents.getURL() !== "") void applyBackgroundViewport().catch((error: unknown) => emitError(error instanceof Error ? error.message : "Browser viewport failed."));
+      }
+    },
     setColorScheme: async (nextColorScheme) => {
       const changed = colorScheme !== nextColorScheme;
       colorScheme = nextColorScheme;
-      view.setBackgroundColor(nextColorScheme === "dark" ? "#171717" : "#ffffff");
+      setBackgroundColor(!isolated && nextColorScheme === "dark" ? "#171717" : "#ffffff");
       await applyManagedBrowserColorScheme(
         webContents,
         nextColorScheme,
+        !isolated,
         undefined,
         changed && /^https?:/iu.test(webContents.getURL()),
       );
     },
-    setVisible: (visible) => view.setVisible(visible),
+    setVisible: (visible) => {
+      if (visible && view === undefined) {
+        // Adopt the same live page; opening its sidebar tab never reloads it.
+        view = new WebContentsView({ webContents });
+        ownerWindow.contentView.addChildView(view);
+        if (latestBounds !== undefined) view.setBounds(latestBounds);
+      }
+      view?.setVisible(visible);
+    },
     setZoomPercent: (percent) => {
-      applyZoomPercent(percent);
+      if (background === undefined || percent !== zoomPercent) applyZoomPercent(percent);
       emitState();
     },
     showStartPage,
@@ -1447,6 +1551,7 @@ export function resolveBrowserDownloadPath(
 async function applyManagedBrowserColorScheme(
   webContents: WebContents,
   colorScheme: "dark" | "light",
+  automaticDarkMode: boolean,
   navigateUrl?: string,
   reload = false,
 ): Promise<void> {
@@ -1457,7 +1562,8 @@ async function applyManagedBrowserColorScheme(
   });
   await browserDebugger.sendCommand(
     "Emulation.setAutoDarkModeOverride",
-    colorScheme === "dark" ? { enabled: true } : {},
+    // HTML deliveries retain authored colors, matching their in-conversation iframe.
+    colorScheme === "dark" ? { enabled: automaticDarkMode } : {},
   );
   if (colorScheme === "light" && browserDebugger.isAttached()) browserDebugger.detach();
   if (navigateUrl !== undefined) await webContents.loadURL(navigateUrl);

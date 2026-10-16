@@ -130,6 +130,25 @@ export type CancelledPendingMessageAttachmentCleanup = {
   pendingMessageId: string;
 };
 
+const toolScreenshotPayloadSchema = z.object({ ok: z.literal(true), value: z.object({ image: conversationAttachmentSchema }).passthrough() });
+
+function toolScreenshotImage(item: ConversationTimelineItem): ConversationAttachment | null {
+  if (item.kind !== "tool" || item.name !== "browser_control" || item.result === null) return null;
+  try {
+    const result = toolScreenshotPayloadSchema.safeParse(JSON.parse(item.result));
+    if (!result.success) return null;
+    const image = result.data.value.image;
+    return image.source === "browser" && image.conversationId === item.conversationId && image.messageId === item.id ? image : null;
+  } catch { return null; }
+}
+
+function remapToolScreenshot(item: ConversationToolItem, conversationId: string, toolId: string, ids: Map<string, string>): string {
+  const result = toolScreenshotPayloadSchema.parse(JSON.parse(item.result!));
+  const id = ids.get(result.value.image.id);
+  if (id === undefined) throw new Error("Forked browser image could not be mapped.");
+  return JSON.stringify({ ...result, value: { ...result.value, image: { ...result.value.image, id, conversationId, messageId: toolId } } });
+}
+
 export type PreparedPendingMessage = StoredPendingMessage;
 
 export type PreparedPendingMessageConsumption = {
@@ -1629,6 +1648,32 @@ export class AgentDatabase {
       const message = conversationAgentMessageItemSchema.parse(parseJson(asString(stored, "payload_json"), "recovered result"));
       events.push({ conversationId: task.parentConversationId, event: {
         type: "agent_message", payload: { message, content: message.content, modelContent: agentMessageModelContent(message) },
+      } });
+    }
+    // A yielded ToolCall is complete while its process receipt is still
+    // running. After restart that process session can no longer be controlled.
+    const commands = this.database.prepare(
+      `SELECT payload_json FROM conversation_timeline
+       WHERE kind = 'tool' AND json_extract(payload_json, '$.name') = 'run_command'`,
+    ).all() as DatabaseRow[];
+    for (const row of commands) {
+      const current = conversationToolItemSchema.parse(parseJson(asString(row, "payload_json"), "command tool"));
+      if (current.result === null) continue;
+      let receipt: unknown;
+      try { receipt = JSON.parse(current.result); } catch { continue; }
+      const parsed = z.object({ value: z.object({ status: z.literal("running") }).passthrough() }).passthrough().safeParse(receipt);
+      if (!parsed.success) continue;
+      const tool = conversationToolItemSchema.parse({
+        ...current,
+        status: "cancelled",
+        result: JSON.stringify({ ...parsed.data, ok: false, value: {
+          ...parsed.data.value, status: "cancelled", completedAt: new Date().toISOString(), exitCode: null,
+          error: "Command session was interrupted by application shutdown; it will not be replayed automatically.",
+        } }),
+      });
+      this.updateTool(tool);
+      events.push({ conversationId: tool.conversationId, event: {
+        type: "runtime_activity_updated", payload: { tool, toolId: tool.id, runId: tool.runId, writeAhead: true },
       } });
     }
     return events;
@@ -4312,10 +4357,14 @@ export class AgentDatabase {
           "model message attachment identifiers",
         )),
       );
+      const screenshotIds = new Set(sourceTimelineItems.flatMap((item) => {
+        const image = toolScreenshotImage(item);
+        return image === null ? [] : [image.id];
+      }));
       const sourceAttachments = this.listStoredAttachments(
         "conversation_id = ? AND message_id IS NOT NULL",
         [sourceConversationId]
-      ).filter((attachment) => inheritedAttachmentIds.has(attachment.id));
+      ).filter((attachment) => inheritedAttachmentIds.has(attachment.id) || screenshotIds.has(attachment.id));
       const attachmentIdMap = new Map<string, string>();
       const insertAttachment = this.database.prepare(
         `INSERT INTO conversation_attachments
@@ -4393,6 +4442,9 @@ export class AgentDatabase {
           ...sourceItem,
           conversationId: conversation.id,
           id: copiedId,
+          ...(sourceItem.kind === "tool" && toolScreenshotImage(sourceItem) !== null ? {
+            result: remapToolScreenshot(sourceItem, conversation.id, copiedId, attachmentIdMap),
+          } : {}),
           runId: copiedRunId,
         });
       }
@@ -5185,6 +5237,21 @@ export class AgentDatabase {
   }
 
   public createConversationAttachment(input: StoredConversationAttachment): ConversationAttachment {
+    if (input.messageId !== null) throw new Error("A new conversation attachment must be a draft.");
+    return this.insertConversationAttachment(input);
+  }
+
+  /** Tool images use the existing timeline-owner column and never become user drafts. */
+  public createToolImageAttachment(input: StoredConversationAttachment): ConversationAttachment {
+    if (input.kind !== "image" || input.messageId === null || this.database.prepare(
+      "SELECT 1 FROM conversation_timeline WHERE id = ? AND conversation_id = ? AND kind = 'tool'",
+    ).get(input.messageId, input.conversationId) === undefined) {
+      throw new Error("Image owner must be a tool in this conversation.");
+    }
+    return this.insertConversationAttachment(input);
+  }
+
+  private insertConversationAttachment(input: StoredConversationAttachment): ConversationAttachment {
     this.getConversation(input.conversationId);
     const validated = conversationAttachmentSchema.parse({
       contextTokens: input.contextTokens,
@@ -5200,20 +5267,18 @@ export class AgentDatabase {
       source: input.source,
       truncated: input.truncated
     });
-    if (validated.messageId !== null) {
-      throw new Error("A new conversation attachment must be a draft.");
-    }
     this.database
       .prepare(
         `INSERT INTO conversation_attachments
            (id, conversation_id, message_id, source, kind, name, mime_type,
             size_bytes, project_path, stored_path, extracted_text_path,
             context_tokens, truncated, created_at)
-         VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         validated.id,
         validated.conversationId,
+        validated.messageId,
         validated.source,
         validated.kind,
         validated.name,
@@ -7781,6 +7846,9 @@ export class AgentDatabase {
     for (const event of events) {
       if (event.type === "legacy_snapshot_imported" && Array.isArray(event.payload.timeline)) {
         for (const item of event.payload.timeline) {
+          const tool = conversationToolItemSchema.safeParse(item);
+          const image = tool.success ? toolScreenshotImage(tool.data) : null;
+          if (image !== null && image.conversationId === conversationId) byId.set(image.id, image);
           const message = conversationMessageItemSchema.safeParse(item);
           if (!message.success) continue;
           for (const attachment of message.data.attachments) {
@@ -8504,6 +8572,7 @@ export class AgentDatabase {
         }
       }
       this.expirePendingToolApprovalsForTerminalRunsInTransaction();
+      this.interruptRunningToolsForTerminalRunsInTransaction();
     });
     return true;
   }
@@ -9338,6 +9407,24 @@ export class AgentDatabase {
         .prepare("UPDATE conversation_timeline SET payload_json = ? WHERE id = ? AND kind = 'tool'")
         .run(JSON.stringify(tool), tool.id);
       this.touchConversation(tool.conversationId, new Date().toISOString());
+    }
+  }
+
+  private interruptRunningToolsForTerminalRunsInTransaction(): void {
+    const rows = this.database.prepare(
+      `SELECT timeline.payload_json FROM conversation_timeline AS timeline
+       JOIN runs ON runs.id = timeline.run_id
+       WHERE timeline.kind = 'tool'
+         AND runs.status IN ('completed', 'failed', 'cancelled')
+         AND json_extract(timeline.payload_json, '$.status') = 'running'`,
+    ).all() as DatabaseRow[];
+    for (const row of rows) {
+      const current = conversationToolItemSchema.parse(parseJson(asString(row, "payload_json"), "tool"));
+      const tool = conversationToolItemSchema.parse({
+        ...current, status: "failed",
+        result: JSON.stringify({ ok: false, error: "执行已中断：所属运行已结束，未收到完成结果。不会在重启后自动重放。" }),
+      });
+      this.updateTool(tool);
     }
   }
 
@@ -11317,6 +11404,7 @@ export class AgentDatabase {
       for (const row of taskRows) {
         this.deliverSubagentTaskResultInTransaction(asString(row, "id"), false);
       }
+      this.interruptRunningToolsForTerminalRunsInTransaction();
     });
   }
 

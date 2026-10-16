@@ -1,4 +1,5 @@
-import { Bot, LoaderCircle, MessageSquareText, Search, UserRound } from "lucide-react";
+import { Spinner } from "../../components/ui/loading.js";
+import { Bot, MessageSquareText, Search, UserRound } from "lucide-react";
 import { useEffect, useRef, useState, type ReactElement } from "react";
 
 import type { ConversationSearchResult } from "@agent/protocol";
@@ -101,7 +102,7 @@ export function GlobalConversationSearchDialog({
               }
             }}
           />
-          {isLoading ? <LoaderCircle aria-label="正在搜索" className="animate-spin text-[var(--app-muted-foreground)]" size={15} /> : null}
+          {isLoading ? <Spinner aria-label="正在搜索" className="text-[var(--app-muted-foreground)]" size={15} /> : null}
         </label>
         <div className="min-h-56 overflow-y-auto p-4" aria-live="polite">
           {error !== null ? <p className="rounded-md bg-red-500/10 px-3 py-2 text-sm text-red-600 dark:text-red-400">{error}</p> : null}

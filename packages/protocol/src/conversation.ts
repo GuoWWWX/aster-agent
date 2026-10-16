@@ -120,7 +120,7 @@ export const conversationAttachmentSchema = z
     name: z.string().trim().min(1).max(255),
     projectPath: z.string().trim().min(1).max(4_096).nullable(),
     sizeBytes: z.number().int().nonnegative().max(MAX_ATTACHMENT_BYTES),
-    source: z.enum(["project", "upload"]),
+    source: z.enum(["project", "upload", "browser"]),
     truncated: z.boolean()
   })
   .strict();
@@ -681,19 +681,16 @@ export const modelApiFormatSchema = z.enum([
   "google-gemini"
 ]);
 
-const OPENAI_CHAT_REASONING_EFFORTS = new Set(["low", "medium", "high"]);
-const GPT_5_6_REASONING_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
-const GEMINI_3_THINKING_LEVELS = new Set(["minimal", "low", "medium", "high"]);
+const GEMINI_THINKING_LEVELS = new Set(["minimal", "low", "medium", "high"]);
 
-export function isGpt56ReasoningModel(modelId: string): boolean {
-  const normalizedModelId = modelId.trim().toLocaleLowerCase();
-  return normalizedModelId === "gpt-5.6" || normalizedModelId.startsWith("gpt-5.6-");
+export function isGptReasoningSummaryModel(modelId: string): boolean {
+  const normalizedModelId = modelId.trim().toLocaleLowerCase().split("/").at(-1) ?? "";
+  return /^gpt-\d+(?:[.-]|$)/u.test(normalizedModelId);
 }
 
-export function isGemini3ReasoningModel(modelId: string): boolean {
+export function isGeminiThinkingLevelModel(modelId: string): boolean {
   const normalizedModelId = modelId.trim().toLocaleLowerCase().replace(/^models\//, "");
-  return normalizedModelId === "gemini-3" || normalizedModelId.startsWith("gemini-3.")
-    || normalizedModelId.startsWith("gemini-3-");
+  return /^gemini-[34](?:[.-]|$)/u.test(normalizedModelId);
 }
 
 export type ModelReasoningOption = z.infer<typeof modelReasoningOptionSchema>;
@@ -701,33 +698,20 @@ export type ModelReasoningOption = z.infer<typeof modelReasoningOptionSchema>;
 export function isReasoningOptionSupportedByApiFormat(
   apiFormat: ModelApiFormat,
   option: ModelReasoningOption,
-  modelId = ""
+  _modelId = ""
 ): boolean {
-  if (apiFormat === "openai-chat-completions") {
-    return option.kind === "custom_effort" || (
-      option.kind === "effort" && (
-        isGpt56ReasoningModel(modelId)
-          ? GPT_5_6_REASONING_EFFORTS.has(option.value)
-          : OPENAI_CHAT_REASONING_EFFORTS.has(option.value)
-      )
-    );
-  }
-  if (apiFormat === "openai-responses") {
-    return option.kind === "custom_effort" || (
-      option.kind === "effort" && (
-        !isGpt56ReasoningModel(modelId) || GPT_5_6_REASONING_EFFORTS.has(option.value)
-      )
-    );
+  // This boundary validates transport shape. Model-specific supported levels
+  // belong to the editable reasoning catalog, not protocol-wide allowlists.
+  void _modelId; // Retain the existing call signature for saved-profile callers.
+  if (apiFormat === "openai-chat-completions" || apiFormat === "openai-responses") {
+    return option.kind === "custom_effort" || option.kind === "effort";
   }
   if (apiFormat === "anthropic-messages") {
-    return option.kind === "token_budget" && option.value >= 1_024 && option.value < 8_192;
+    return option.kind === "effort" || option.kind === "custom_effort"
+      || (option.kind === "token_budget" && option.value >= 1_024 && option.value < 8_192);
   }
-  if (isGemini3ReasoningModel(modelId)) {
-    return option.kind === "effort" && GEMINI_3_THINKING_LEVELS.has(option.value);
-  }
-  return option.kind === "token_budget" && (
-    option.value === -1 || option.value >= 0
-  );
+  return (option.kind === "effort" && GEMINI_THINKING_LEVELS.has(option.value))
+    || (option.kind === "token_budget" && option.value >= -1);
 }
 
 export function isReasoningOptionEnabled(option: ModelReasoningOption): boolean {
@@ -1055,6 +1039,7 @@ const runStartedEventSchema = z
 const modelRequestStartedEventSchema = z
   .object({
     conversationId: conversationIdSchema,
+    estimatedInputTokens: z.number().int().nonnegative().optional(),
     runId: runIdSchema,
     type: z.literal("model.request_started")
   })
@@ -1139,6 +1124,8 @@ const toolStartedEventSchema = z
 
 const toolOutputDeltaEventSchema = z
   .object({
+    startedAt: z.string().datetime().optional(),
+    completedAt: z.string().datetime().nullable().optional(),
     commandId: z.string().uuid(),
     conversationId: conversationIdSchema,
     delta: z.string().max(MAX_MESSAGE_LENGTH),

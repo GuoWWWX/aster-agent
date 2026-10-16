@@ -1,6 +1,8 @@
-import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput } from "@agent/protocol";
+import type { HtmlPreview, HtmlPreviewRequest } from "@agent/protocol";
+import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
 import { saveScheduledTaskInputSchema, type ScheduledTask, type SaveScheduledTaskInput, type ScheduledTaskReference } from "@agent/protocol";
 import {
+  modelCatalogSchema,
   createSkillMarkdown,
   DEFAULT_BROWSER_CONFIGURATION,
   DEFAULT_APPLICATION_SETTINGS,
@@ -263,6 +265,7 @@ function resolveMockForkBoundary(
  * deterministic fixture, not a substitute for a persistent runtime.
  */
 export class MockAgentClient implements AgentClient {
+  public htmlPreview(input: HtmlPreviewRequest): Promise<HtmlPreview | null> { void input; return Promise.reject(new Error("HTML 本地预览请在桌面应用中使用。")); }
   private scheduledTasks: ScheduledTask[] = [];
   private readonly activeRuns = new Map<string, MockRun>();
 
@@ -1271,8 +1274,15 @@ export class MockAgentClient implements AgentClient {
     return this.getModelStatus();
   }
 
+  private modelCatalog = structuredClone(DEFAULT_MODEL_CATALOG);
+
   public getModelCatalog(): Promise<ModelCatalog> {
-    return Promise.resolve(structuredClone(DEFAULT_MODEL_CATALOG));
+    return Promise.resolve(structuredClone(this.modelCatalog));
+  }
+
+  public saveModelCatalog(catalog: ModelCatalog): Promise<ModelCatalog> {
+    this.modelCatalog = modelCatalogSchema.parse(catalog);
+    return this.getModelCatalog();
   }
 
   public getModelStatus(): Promise<ModelRuntimeStatus> {
@@ -1554,6 +1564,7 @@ export class MockAgentClient implements AgentClient {
   public answerUserQuestion(input: AnswerUserQuestionInput): Promise<UserQuestion> { return Promise.reject(new Error(`演示环境中没有提问 ${input.questionId}。`)); }
   public markUserQuestionViewed(input: { questionId: string }): Promise<UserQuestion> { return Promise.reject(new Error(`演示环境中没有提问 ${input.questionId}。`)); }
   public listBackgroundCommands(input: ConversationReferenceInput): Promise<BackgroundCommand[]> { void input; return Promise.resolve([]); }
+  public readBackgroundCommand(input: ReadBackgroundCommandInput): Promise<BackgroundCommandOutput> { return Promise.reject(new Error(`演示环境中没有后台程序 ${input.commandId}。`)); }
   public stopBackgroundCommand(input: StopBackgroundCommandInput): Promise<BackgroundCommand> { return Promise.reject(new Error(`演示环境中没有后台程序 ${input.commandId}。`)); }
 
   public listConversations(): Promise<ConversationSummary[]> {

@@ -68,11 +68,11 @@ describe("ToolHandlerRegistry", () => {
   it("sorts the model-visible manifest by name independently of registration order", () => {
     const registry = new ToolHandlerRegistry([
       handler(["write_file"], () => Promise.resolve(completed("write"))),
-      handler(["list_directory", "read_file"], () => Promise.resolve(completed("read"))),
+      handler(["find_files", "read_file"], () => Promise.resolve(completed("read"))),
     ]);
 
     expect(registry.getDefinitions({ projectId: undefined }).map((tool) => tool.name)).toEqual([
-      "list_directory",
+      "find_files",
       "read_file",
       "write_file",
     ]);
