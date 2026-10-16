@@ -25,6 +25,7 @@ describe("preview height instrumentation", () => {
       let width = 0;
       const events = new Map<string, () => void>();
       const postMessage = vi.fn();
+      const appendStyle = vi.fn<(style: { textContent: string }) => void>();
       const surface = () => {
         const properties = new Map<string, string>();
         return {
@@ -39,11 +40,12 @@ describe("preview height instrumentation", () => {
       runInNewContext(script!, {
         innerWidth: 720, innerHeight: 320, scrollY: 0, setTimeout, clearTimeout,
         window: { parent: { postMessage }, addEventListener: (name: string, listener: () => void) => events.set(name, listener) },
-        document: { readyState: "complete", body: surface(), documentElement: surface(), fonts: { ready: Promise.resolve(), addEventListener() {} } },
+        document: { readyState: "complete", head: { append: appendStyle }, createElement: () => ({ textContent: "" }), body: surface(), documentElement: surface(), fonts: { ready: Promise.resolve(), addEventListener() {} } },
         getComputedStyle: () => ({ marginBottom: "0", paddingBottom: "0", borderBottomWidth: "0" }),
         ResizeObserver: class { observe() {} }, MutationObserver: class { observe() {} },
       });
       await vi.advanceTimersByTimeAsync(60);
+      expect(appendStyle.mock.calls[0]?.[0].textContent).toContain("scrollbar-width: thin");
       expect(postMessage).not.toHaveBeenCalled();
       width = 720;
       events.get("load")?.();

@@ -35,6 +35,15 @@ export function htmlPreviewDocument(source: string, id: string): string {
       if (height !== lastHeight) { lastHeight = height; window.parent.postMessage({ type: 'html-preview.resize', id, height }, '*'); }
     }
     function start() {
+      // CSS trigger #2: iframe documents cannot inherit the workbench scrollbar pseudo-elements.
+      const scrollbar = document.createElement('style');
+      scrollbar.textContent = '* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--app-muted-foreground, currentColor) 30%, transparent) transparent; }'
+        + '*::-webkit-scrollbar { width: 10px; height: 10px; }'
+        + '*::-webkit-scrollbar-track, *::-webkit-scrollbar-corner { background: transparent; }'
+        + '*::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: color-mix(in srgb, var(--app-muted-foreground, currentColor) 30%, transparent); background-clip: padding-box; }'
+        + '*::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--app-muted-foreground, currentColor) 58%, transparent); }'
+        + '*::-webkit-scrollbar-thumb:active { background-color: color-mix(in srgb, var(--app-foreground, currentColor) 68%, transparent); }';
+      document.head.append(scrollbar);
       // Include root padding in viewport-sized boxes instead of adding it again.
       for (const node of [document.documentElement, document.body]) node.style.setProperty('box-sizing', 'border-box', 'important');
       const observer = new ResizeObserver(() => {
