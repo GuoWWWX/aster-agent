@@ -1,3 +1,4 @@
+import { LoadingState } from "../../components/ui/loading.js";
 import {
   Bot,
   ChevronDown,
@@ -276,7 +277,7 @@ export function ConversationHeaderControls({
               </span>
             </div> : null}
             {gitSnapshot === null ? (
-              <p className="conversation-header-popover__empty">正在读取 Git 状态…</p>
+              <LoadingState label="正在读取 Git 状态…" compact />
             ) : !gitSnapshot.isRepository ? (
               <p className="conversation-header-popover__empty">当前项目不是 Git 仓库</p>
             ) : gitSnapshot.changes.length === 0 ? (

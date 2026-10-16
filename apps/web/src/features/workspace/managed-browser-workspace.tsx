@@ -1,9 +1,9 @@
+import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import {
   ArrowLeft,
   ArrowRight,
   Download,
   EllipsisVertical,
-  LoaderCircle,
   RefreshCw,
   X,
 } from "lucide-react";
@@ -367,7 +367,7 @@ export function ManagedBrowserWorkspace({
           </button>
         </div>
         <input aria-label="网址或搜索内容" className="h-7 min-w-0 flex-1 rounded-md border border-[var(--app-border)] bg-[var(--app-input)] px-2 text-xs outline-none focus:border-[var(--app-accent)]" placeholder="输入网址或搜索内容" value={address} onChange={(event) => setAddress(event.target.value)} onFocus={(event) => event.currentTarget.select()} />
-        {session === null ? <LoaderCircle aria-hidden="true" className="animate-spin text-[var(--app-muted-foreground)]" size={15} /> : null}
+        {session === null ? <Spinner aria-hidden="true" className="text-[var(--app-muted-foreground)]" size={15} /> : null}
         <div className="flex shrink-0 items-center gap-0">
           <IconButton label="下载内容" size="compact" variant="quiet" onClick={(event) => showAnchoredMenu("showDownloads", event)}>
             <Download aria-hidden="true" size={15} />
@@ -382,7 +382,9 @@ export function ManagedBrowserWorkspace({
         className="min-h-0 flex-1 bg-[var(--app-canvas)]"
         data-managed-browser-surface
         ref={surfaceRef}
-      />
+      >
+        {session === null && error === null ? <LoadingState label="正在打开浏览器…" className="h-full" /> : null}
+      </div>
     </section>
   );
 }

@@ -1,3 +1,4 @@
+import { LoadingState } from "../../components/ui/loading.js";
 import { useEffect, useState } from "react";
 import { readProjectPreviewImageInputSchema } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/index.js";
@@ -38,9 +39,7 @@ export function ProjectImageResult({ agentClient, payload }: { agentClient: Agen
   const current = preview?.payload === payload ? preview : null;
   const url = current?.url;
   return <div className="flex min-w-0 flex-col items-start gap-1">
-    {url == null ? <p className="text-[var(--app-muted-foreground)]" role={current?.error ? "alert" : "status"}>
-      {current?.error ? "图片无法加载，文件可能已移动或删除" : "正在读取图片…"}
-    </p> : <span className="conversation-attachment conversation-attachment--image-preview"><button type="button" aria-label={`预览图片 ${imagePath}`} title="预览图片"
+    {url == null ? current?.error ? <p className="text-[var(--app-muted-foreground)]" role="alert">图片无法加载，文件可能已移动或删除</p> : <LoadingState label="正在读取图片…" compact className="w-full" /> : <span className="conversation-attachment conversation-attachment--image-preview"><button type="button" aria-label={`预览图片 ${imagePath}`} title="预览图片"
       className="conversation-attachment__image-button"
       onClick={() => requestMediaPreview({ src: url, title: imagePath, alt: imagePath })}>
       <img src={url} alt={imagePath} />

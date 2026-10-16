@@ -81,6 +81,7 @@ describe("conversation HTML previews", () => {
     await click("预览 HTML");
     const frame = node.querySelector("iframe")!;
     expect(node.querySelector('[role="status"]')?.textContent).toContain("正在加载页面");
+    expect(node.querySelector('[role="status"] .app-loading-bone')).not.toBeNull();
     expect(node.querySelector('[aria-label="显示源码"]')?.getAttribute("aria-busy")).toBe("true");
     act(() => { frame.dispatchEvent(new Event("load")); });
     expect(node.querySelector('[role="status"]')).toBeNull();

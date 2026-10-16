@@ -1,3 +1,4 @@
+import { Spinner } from "../../components/ui/loading.js";
 import {
   GitBranch,
   LayoutDashboard,
@@ -908,7 +909,7 @@ function TeamWorkItemStatusPanel({
       type="button"
       onClick={onPublish}
     >
-      <Send aria-hidden="true" className={isPublishing ? "animate-pulse" : undefined} size={13} />
+      {isPublishing ? <Spinner size={13} /> : <Send aria-hidden="true" size={13} />}
       {isPublishing ? "发布中" : item.status === "queued" ? "发布处理" : "重新发布"}
     </button>
   ) : null;

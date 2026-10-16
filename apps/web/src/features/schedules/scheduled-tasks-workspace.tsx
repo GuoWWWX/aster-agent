@@ -1,3 +1,4 @@
+import { Spinner } from "../../components/ui/loading.js";
 import { CalendarClock, Clock3, FileText, Folder, History, Pause, Play, Plus, Search, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactElement, type FormEvent } from "react";
 import type { ProjectSummary, SaveScheduledTaskInput, ScheduledTask } from "@agent/protocol";
@@ -103,7 +104,7 @@ export function ScheduledTasksWorkspace({ agentClient, projects, onOpenConversat
         {draft !== null ? <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
           <header className="flex h-[50px] shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] px-4">
             <h2 className="text-[length:var(--app-font-size-title)] font-semibold">{draft.id ? "编辑定时任务" : "新建定时任务"}</h2>
-            <div className="flex gap-[5px]"><button type="button" className={BUTTON} disabled={busy} onClick={() => setDraft(null)}>取消</button><button type="submit" className={`${BUTTON} border-transparent bg-[var(--app-primary-action)]! text-[var(--app-primary-action-foreground)]`} disabled={busy}>{busy ? "保存中…" : "保存"}</button></div>
+            <div className="flex gap-[5px]"><button type="button" className={BUTTON} disabled={busy} onClick={() => setDraft(null)}>取消</button><button type="submit" className={`${BUTTON} border-transparent bg-[var(--app-primary-action)]! text-[var(--app-primary-action-foreground)]`} disabled={busy}>{busy ? <><Spinner size={14} />保存中…</> : "保存"}</button></div>
           </header>
           <fieldset disabled={busy} className="min-h-0 flex-1 overflow-y-auto p-5">
             <div className="mx-auto grid w-full max-w-[720px] gap-5">

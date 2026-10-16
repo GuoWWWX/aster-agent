@@ -1,4 +1,5 @@
-import { Check, ChevronDown, LoaderCircle, MessageSquareText, Search, ShieldAlert, ShieldCheck, X } from "lucide-react";
+import { Spinner } from "../../components/ui/loading.js";
+import { Check, ChevronDown, MessageSquareText, Search, ShieldAlert, ShieldCheck, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNativeOverlayContainer } from "../../components/ui/native-overlay-provider.js";
@@ -332,7 +333,7 @@ export function ConversationActivity({ agentClient, sessions, projects, onSelect
                   }}
                     className="flex min-w-0 flex-1 items-start gap-2 py-1 text-left">
                     {hasUnreadResult ? <span aria-label="未读" className="mt-1.5 size-1.5 shrink-0 rounded-full bg-[var(--app-accent)]" />
-                      : group === "进行中" ? <LoaderCircle size={14} className="mt-0.5 shrink-0 animate-spin" /> : <MessageSquareText size={14} className="mt-0.5 shrink-0" />}
+                      : group === "进行中" ? <Spinner size={14} className="mt-0.5 shrink-0" /> : <MessageSquareText size={14} className="mt-0.5 shrink-0" />}
                     <span className="min-w-0 flex-1"><span className="block truncate font-medium">{session.title}</span>
                       <span className="block truncate text-[var(--app-muted-foreground)]">{projectNames.get(session.projectId ?? "") ?? (session.teamId === null ? "临时对话" : "团队对话")} · {group === "未读" && unreadSession !== undefined && unreadSession.id !== session.id ? `${unreadSession.title} · ` : ""}{status}</span></span>
                     {group === "待处理" ? <span className="shrink-0 rounded-[var(--app-radius-small)] bg-[var(--app-status-danger-bg)] px-1.5 py-0.5 text-[length:var(--app-font-size-caption)] text-[var(--app-status-danger-fg)]">审批</span> : null}
@@ -450,7 +451,7 @@ function ActivityApprovalActions({
         type="button"
         onClick={() => onApprove("once")}
       >
-        {isApproving ? <LoaderCircle aria-hidden="true" className="animate-spin" size={14} /> : <Check aria-hidden="true" size={14} />}
+        {isApproving ? <Spinner aria-hidden="true" size={14} /> : <Check aria-hidden="true" size={14} />}
       </button>
       {canApproveForSession(tool) ? (
         <button

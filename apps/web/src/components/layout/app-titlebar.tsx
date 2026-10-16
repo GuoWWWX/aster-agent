@@ -1,10 +1,10 @@
+import { Spinner } from "../ui/loading.js";
 import {
   ArrowLeft,
   ArrowRight,
   Undo2,
   Redo2,
   Copy,
-  LoaderCircle,
   MessageSquareText,
   Minus,
   PanelLeftClose,
@@ -347,20 +347,12 @@ export function AppTitlebar({
                     >
                       <span className="relative grid size-5 shrink-0 place-items-center overflow-visible">
                         {tab.icon ?? (tab.isRunning ? (
-                          <LoaderCircle
-                            aria-label={`${tab.title} 正在工作`}
-                            className="animate-spin"
-                            size={13}
-                          />
+                          <Spinner aria-label={`${tab.title} 正在工作`} size={13} />
                         ) : (
                           <MessageSquareText aria-hidden="true" size={13} />
                         ))}
                         {tab.icon !== undefined && tab.isRunning ? (
-                          <LoaderCircle
-                            aria-label={`${tab.title} 正在工作`}
-                            className="absolute -right-0.5 -bottom-0.5 animate-spin rounded-full bg-[var(--app-titlebar)]"
-                            size={9}
-                          />
+                          <Spinner aria-label={`${tab.title} 正在工作`} className="absolute -right-0.5 -bottom-0.5 rounded-full bg-[var(--app-titlebar)]" size={9} />
                         ) : null}
                       </span>
                       <span className={`app-titlebar__conversation-tab-title${tab.isPreview ? " italic" : ""}`}>{tab.title}</span>

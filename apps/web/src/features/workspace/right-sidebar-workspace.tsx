@@ -1,3 +1,4 @@
+import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import {
   Check,
   ChevronRight,
@@ -5,7 +6,6 @@ import {
   Folder,
   FolderOpen,
   Globe2,
-  LoaderCircle,
   MessageSquarePlus,
   PanelRightClose,
   PanelRightOpen,
@@ -2471,7 +2471,7 @@ export function RightSidebarWorkspace({
                 onClick={() => void createSideChat()}
               >
                 {isCreatingChat ? (
-                  <LoaderCircle aria-hidden="true" className="right-sidebar-workspace__spin" size={15} />
+                  <Spinner aria-hidden="true" size={15} />
                 ) : (
                   <SquarePen aria-hidden="true" size={15} />
                 )}
@@ -3060,10 +3060,7 @@ function FilePreview({
         </div>
       </header>
       {state === undefined || state.isLoading ? (
-        <div className="right-sidebar-file__state" role="status">
-          <LoaderCircle aria-hidden="true" className="right-sidebar-workspace__spin" size={17} />
-          正在读取文件
-        </div>
+        <LoadingState label="正在读取文件" className="h-full flex-1" />
       ) : isImagePreview ? (
         state.error !== null || state.imageDataUrl === null ? (
           <div className="right-sidebar-file__state">
@@ -3306,7 +3303,7 @@ function ConfigurationFilePreview({
             onClick={onSave}
           >
             {state?.isSaving ? (
-              <LoaderCircle aria-hidden="true" className="right-sidebar-workspace__spin" size={14} />
+              <Spinner aria-hidden="true" size={14} />
             ) : (
               <Check aria-hidden="true" size={15} />
             )}
@@ -3326,10 +3323,7 @@ function ConfigurationFilePreview({
         </div>
       </header>
       {state === undefined || state.isLoading ? (
-        <div className="right-sidebar-file__state" role="status">
-          <LoaderCircle aria-hidden="true" className="right-sidebar-workspace__spin" size={17} />
-          正在读取文件
-        </div>
+        <LoadingState label="正在读取文件" className="h-full flex-1" />
       ) : state.error !== null ? (
         <div className="right-sidebar-file__state" role="alert">
           <p>{state.error}</p>

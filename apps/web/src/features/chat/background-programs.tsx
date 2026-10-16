@@ -1,3 +1,4 @@
+import { Spinner } from "../../components/ui/loading.js";
 import apachemaven from "@iconify-icons/simple-icons/apachemaven";
 import springboot from "@iconify-icons/simple-icons/springboot";
 import gradle from "@iconify-icons/simple-icons/gradle";
@@ -5,7 +6,7 @@ import nodedotjs from "@iconify-icons/simple-icons/nodedotjs";
 import python from "@iconify-icons/simple-icons/python";
 import docker from "@iconify-icons/simple-icons/docker";
 import { Icon, type IconifyIcon } from "@iconify/react";
-import { ChevronDown, LoaderCircle, Square, Terminal } from "lucide-react";
+import { ChevronDown, Square, Terminal } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import type { BackgroundCommand } from "@agent/protocol";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover.js";
@@ -74,7 +75,7 @@ export function BackgroundPrograms({ agentClient, conversationId }: { agentClien
                 <span className="block truncate text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]" title={command.workingDirectory}>{command.workingDirectory} · {new Date(command.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}{command.exitCode === null ? "" : ` · 退出 ${command.exitCode}`}</span>
               </span>
             </button>
-            {command.status === "running" ? <button aria-label={`停止 ${command.serviceName || presentation.label}`} title="停止程序及其子进程" type="button" disabled={stopping !== null} onClick={() => void stop(command.commandId)} className="rounded p-1.5 text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)] hover:text-[var(--app-foreground)] disabled:opacity-40">{stopping === command.commandId ? <LoaderCircle aria-hidden="true" className="animate-spin" size={14} /> : <Square aria-hidden="true" size={14} />}</button> : null}
+            {command.status === "running" ? <button aria-label={`停止 ${command.serviceName || presentation.label}`} title="停止程序及其子进程" type="button" disabled={stopping !== null} onClick={() => void stop(command.commandId)} className="rounded p-1.5 text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)] hover:text-[var(--app-foreground)] disabled:opacity-40">{stopping === command.commandId ? <Spinner aria-hidden="true" size={14} /> : <Square aria-hidden="true" size={14} />}</button> : null}
           </li>;
         })}
       </ul>}

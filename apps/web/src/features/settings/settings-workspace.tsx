@@ -1,3 +1,4 @@
+import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import {
   Archive,
   ArchiveRestore,
@@ -15,7 +16,6 @@ import {
   FolderOpen,
   FileCode2,
   Globe2,
-  LoaderCircle,
   MessageSquareText,
   MonitorCog,
   Palette,
@@ -664,7 +664,7 @@ function GeneralSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
                 onClick={() => void chooseStorageLocation()}
               >
                 {storageLocationBusy ? (
-                  <LoaderCircle aria-hidden="true" className="settings-spin" size={14} />
+                  <Spinner aria-hidden="true" size={14} />
                 ) : (
                   <FolderOpen aria-hidden="true" size={14} />
                 )}
@@ -1543,7 +1543,7 @@ function ModelsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                               || providerSaveState === "incomplete" || isAnyModelTesting}
                             onClick={(event) => { event.preventDefault(); event.stopPropagation(); void testModelConnection(model.modelId); }}
                           >
-                            {isTestingModel ? <LoaderCircle aria-hidden="true" className="settings-spin" size={15} /> : <TestTube2 aria-hidden="true" size={15} />}
+                            {isTestingModel ? <Spinner aria-hidden="true" size={15} /> : <TestTube2 aria-hidden="true" size={15} />}
                           </IconButton>
                           <IconButton
                             label={`删除 ${model.displayName || model.modelId || "模型"}`}
@@ -3022,9 +3022,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
               <SettingsConfigurationGroup cardAriaLabel="Skill 文档预览" icon={Eye} title="文档预览">
                 <div className="min-w-0">
                   {skillPreview === null ? (
-                    <p className="text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
-                      {isDiscovering ? "正在读取文档…" : "未找到 Skill 文档。"}
-                    </p>
+                    isDiscovering ? <LoadingState label="正在读取文档…" compact /> : <p className="text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">未找到 Skill 文档。</p>
                   ) : (
                     <>
                       <p className="mb-4 text-[length:var(--app-font-size-body)] text-[var(--app-muted-foreground)]">{skillPreview.metadata.description}</p>
@@ -3056,7 +3054,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
           {skillDeleteError === null ? null : <p className="m-0 text-[var(--app-destructive)]" role="alert">{skillDeleteError}</p>}
           <div className="flex justify-end gap-2">
             <button className="settings-secondary-button" disabled={isDeletingSkill} type="button" onClick={() => setSkillToDelete(null)}>取消</button>
-            <button className="settings-danger-button" disabled={isDeletingSkill} type="button" onClick={() => void deleteSkill()}>{isDeletingSkill ? "正在删除…" : "删除目录和文件"}</button>
+            <button className="settings-danger-button" disabled={isDeletingSkill} type="button" onClick={() => void deleteSkill()}>{isDeletingSkill ? <><Spinner size={14} />正在删除…</> : "删除目录和文件"}</button>
           </div>
         </DialogContent>
       </Dialog>
@@ -3066,9 +3064,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
 
 function ConfigurationStatus({ error }: { error: string | null }): ReactElement {
   return (
-    <div className="settings-configuration-status" role={error === null ? "status" : "alert"}>
-      {error ?? "正在读取配置..."}
-    </div>
+    error === null ? <LoadingState label="正在读取配置…" className="h-full flex-1" /> : <div className="settings-configuration-status" role="alert">{error}</div>
   );
 }
 
@@ -3516,10 +3512,7 @@ function ArchivedConversationsSettings({
         <p className="settings-operation-error" role="alert">{operationError}</p>
       )}
       {isLoading ? (
-        <div className="settings-archived-empty" role="status">
-          <LoaderCircle aria-hidden="true" className="settings-spin" size={18} />
-          正在读取归档记录
-        </div>
+        <LoadingState label="正在读取归档记录" className="h-full flex-1" />
       ) : archivedConversations.length === 0 ? (
         <div className="settings-archived-empty">
           <Archive aria-hidden="true" size={22} />
@@ -3567,7 +3560,7 @@ function ArchivedConversationsSettings({
                     onClick={() => void restoreConversation(conversation)}
                   >
                     {isRestoring ? (
-                      <LoaderCircle aria-hidden="true" className="settings-spin" size={14} />
+                      <Spinner aria-hidden="true" size={14} />
                     ) : (
                       <ArchiveRestore aria-hidden="true" size={14} />
                     )}
@@ -3580,7 +3573,7 @@ function ArchivedConversationsSettings({
                     onClick={() => setPendingDelete(conversation)}
                   >
                     {isDeleting ? (
-                      <LoaderCircle aria-hidden="true" className="settings-spin" size={14} />
+                      <Spinner aria-hidden="true" size={14} />
                     ) : (
                       <Trash2 aria-hidden="true" size={14} />
                     )}
@@ -3630,7 +3623,7 @@ function ArchivedConversationsSettings({
                 onClick={() => void permanentlyDeleteConversation(pendingDelete)}
               >
                 {busyConversationId === pendingDelete.id && busyOperation === "delete" ? (
-                  <LoaderCircle aria-hidden="true" className="settings-spin" size={14} />
+                  <Spinner aria-hidden="true" size={14} />
                 ) : (
                   <Trash2 aria-hidden="true" size={14} />
                 )}
@@ -4050,7 +4043,7 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
           </div>
           {passwordListError === null ? null : <p className="px-4 pb-3 text-[length:var(--app-font-size-control)] text-[var(--app-destructive)]" role="alert">{passwordListError}</p>}
           {savedPasswords === null ? (
-            passwordListError === null ? <p className="px-4 pb-4 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]" role="status">正在读取已保存密码…</p> : null
+            passwordListError === null ? <LoadingState label="正在读取已保存密码…" compact /> : null
           ) : savedPasswords.length === 0 ? (
             <p className="px-4 pb-4 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">还没有已保存的密码。</p>
           ) : savedPasswords.map((entry) => {
@@ -4066,7 +4059,7 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
                     className="h-8 w-44 min-w-0 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] px-2 text-[length:var(--app-font-size-control)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]" />
                   <IconButton label={`${password === null ? "查看" : "隐藏"} ${entry.origin} 的密码`} tooltip={password === null ? "查看密码" : "隐藏密码"}
                     disabled={revealingOrigin !== null} onClick={() => void showPassword(entry.origin)}>
-                    {revealingOrigin === entry.origin ? <LoaderCircle aria-hidden="true" className="settings-spin" size={14} /> : password === null ? <Eye aria-hidden="true" size={14} /> : <EyeOff aria-hidden="true" size={14} />}
+                    {revealingOrigin === entry.origin ? <Spinner aria-hidden="true" size={14} /> : password === null ? <Eye aria-hidden="true" size={14} /> : <EyeOff aria-hidden="true" size={14} />}
                   </IconButton>
                 </div>
               </article>
@@ -4092,7 +4085,7 @@ function BrowserSettings({ agentClient }: { agentClient: AgentClient }): ReactEl
               type="button"
               onClick={() => void clearBrowserData()}
             >
-              <Trash2 aria-hidden="true" size={14} />
+              {clearState === "clearing" ? <Spinner size={14} /> : <Trash2 aria-hidden="true" size={14} />}
               {clearState === "clearing" ? "正在清除" : "清除浏览数据"}
             </button>
           </article>

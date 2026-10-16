@@ -1,3 +1,4 @@
+import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import {
   Archive,
   ArchiveRestore,
@@ -17,7 +18,6 @@ import {
   FolderOpen,
   FolderPlus,
   Folders,
-  LoaderCircle,
   MessageSquareText,
   MoreHorizontal,
   Pencil,
@@ -912,11 +912,7 @@ export function ProjectNavigator({
               onClick={() => void tree.addProject()}
             >
               {tree.isAddingProject ? (
-                <LoaderCircle
-                  aria-hidden="true"
-                  className="project-navigator__spin"
-                  size={16}
-                />
+                <Spinner aria-hidden="true" size={16} />
               ) : (
                 <FolderPlus aria-hidden="true" size={16} />
               )}
@@ -1157,11 +1153,7 @@ export function ProjectNavigator({
                   action={{
                     disabled: !tree.canAddProjects || tree.isAddingProject,
                     icon: tree.isAddingProject ? (
-                      <LoaderCircle
-                        aria-hidden="true"
-                        className="project-navigator__spin"
-                        size={15}
-                      />
+                      <Spinner aria-hidden="true" size={15} />
                     ) : (
                       <Plus aria-hidden="true" size={15} />
                     ),
@@ -1932,11 +1924,7 @@ function sessionStatusLabel(session: ProjectSession): string | null {
 function SessionStatusIndicator({ session }: { session: ProjectSession }): ReactElement | null {
   if (isSessionRunning(session)) {
     return (
-      <LoaderCircle
-        aria-label="正在运行"
-        className="project-navigator__session-status project-navigator__session-status--running project-navigator__spin"
-        size={14}
-      />
+      <Spinner aria-label="正在运行" className="project-navigator__session-status project-navigator__session-status--running" size={14} />
     );
   }
   if (hasFailedUnreadSessionResult(session)) {
@@ -2538,7 +2526,7 @@ function NavigatorManagementDialog({
             type="submit"
           >
             {isSubmitting
-              ? "处理中…"
+              ? <><Spinner size={14} className="mr-[5px]" />处理中…</>
               : isCreate ? "创建" : isRename || isEditTeam ? "保存" : "确认"}
           </button>
         </div>
@@ -2558,13 +2546,10 @@ function NavigatorEmpty({
   loading?: boolean;
   onAction?: () => void;
 }): ReactElement {
+  if (loading) return <LoadingState label={label} compact className="w-full" />;
   return (
     <div className="project-navigator__empty" data-loading={String(loading)}>
-      {loading ? (
-        <LoaderCircle aria-hidden="true" size={17} />
-      ) : (
-        <Folder aria-hidden="true" size={19} />
-      )}
+      <Folder aria-hidden="true" size={19} />
       <p>{label}</p>
       {actionLabel && onAction ? (
         <button type="button" onClick={onAction}>

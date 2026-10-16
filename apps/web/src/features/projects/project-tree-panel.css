@@ -342,11 +342,6 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
   text-align: center;
 }
 
-.project-tree-panel__empty[data-loading="true"] svg,
-.project-tree-panel__spin {
-  animation: project-tree-spin 1s linear infinite;
-}
-
 .project-tree-panel__empty p {
   max-width: 210px;
   margin: 0;
@@ -461,12 +456,6 @@ body:has(.app-shell[data-theme="dark"]) .project-tree-panel__sort-menu button:fo
 
 .project-tree-panel__dialog-actions button:disabled {
   opacity: 0.5;
-}
-
-@keyframes project-tree-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 [data-theme="dark"] .project-tree-panel__heading-row h2,

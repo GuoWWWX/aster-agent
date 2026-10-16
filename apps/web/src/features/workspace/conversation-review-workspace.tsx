@@ -1,3 +1,4 @@
+import { LoadingState } from "../../components/ui/loading.js";
 import { ChevronDown, ChevronRight, FileDiff, RefreshCw } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
 
@@ -69,7 +70,7 @@ export function ConversationReviewWorkspace({ agentClient, conversationId, runId
     </header>
     {error === null ? null : <p role="alert" className="m-0 p-2 text-[length:var(--app-font-size-body)] text-[var(--app-destructive)]">{error}</p>}
     <div className="min-h-0 flex-1 overflow-auto">
-      {files.length === 0 ? <p className="p-3 text-[length:var(--app-font-size-body)] text-[var(--app-muted-foreground)]">{loaded ? "本轮没有可显示的文件变更。" : "正在读取变更…"}</p> : null}
+      {files.length === 0 ? loaded ? <p className="p-3 text-[length:var(--app-font-size-body)] text-[var(--app-muted-foreground)]">本轮没有可显示的文件变更。</p> : <LoadingState label="正在读取变更…" className="h-full" /> : null}
       {files.map(file => <article key={file.path} data-review-file={file.path} ref={element => { if (element === null) rows.current.delete(file.path); else rows.current.set(file.path, element); }} className="min-w-0 border-b border-[var(--app-border)]">
         <button type="button" aria-expanded={expanded.has(file.path)} title={file.path} onClick={() => setExpanded(current => {
           const next = new Set(current); if (next.has(file.path)) next.delete(file.path); else next.add(file.path); return next;

@@ -1,3 +1,4 @@
+import { LoadingState } from "../../components/ui/loading.js";
 import { type ConversationContextUsage } from "@agent/protocol";
 import { ArrowDown, ArrowUp, Gauge, Target, Timer } from "lucide-react";
 import { Fragment, type CSSProperties, type ReactElement } from "react";
@@ -234,7 +235,7 @@ export function ProviderCacheStatus({
       </PopoverTrigger>
       <PopoverContent align="center" className="context-usage-indicator__content">
         {usage === null ? (
-          <p className="context-usage-indicator__loading">正在读取 Provider 缓存计量…</p>
+          <LoadingState label="正在读取 Provider 缓存计量…" compact />
         ) : (
           <ProviderCacheDetails usage={usage} />
         )}

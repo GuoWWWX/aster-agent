@@ -1,4 +1,5 @@
-import { FileText, Image, LoaderCircle, Paperclip, Send, X } from "lucide-react";
+import { Spinner } from "../../components/ui/loading.js";
+import { FileText, Image, Paperclip, Send, X } from "lucide-react";
 import { useEffect, useRef, useState, type ClipboardEvent, type ReactElement } from "react";
 import type { ConversationAttachment } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/index.js";
@@ -24,7 +25,7 @@ export function QuestionAnswerInput({ label, value, onChange, onPaste, disabled,
       </IconButton>
       <button type="submit" disabled={submitDisabled} aria-label={sending ? "提交中" : "提交回答"}
         className="inline-flex size-7 items-center justify-center rounded-[var(--app-radius)] border-0 bg-[var(--app-primary-action)] text-[var(--app-primary-action-foreground)] disabled:opacity-40">
-        {sending ? <LoaderCircle aria-hidden="true" size={15} className="animate-spin" /> : <Send aria-hidden="true" size={15} />}
+        {sending ? <Spinner aria-hidden="true" size={15} /> : <Send aria-hidden="true" size={15} />}
       </button>
     </div>}
   </div>;
@@ -86,7 +87,7 @@ export function QuestionAnswerAttachments({ agentClient, attachments, busy, onRe
       busy={busy} {...(onRemove === undefined ? {} : { onRemove: () => onRemove(attachment) })} />)}
     {onChoose === undefined ? null : <IconButton type="button" size="compact" disabled={busy || attachments.length >= MAX_DRAFT_ATTACHMENTS}
       label={busy ? "正在添加回答附件" : "添加回答文件或图片"} onClick={onChoose}>
-      {busy ? <LoaderCircle size={14} /> : <Paperclip size={14} />}
+      {busy ? <Spinner size={14} /> : <Paperclip size={14} />}
     </IconButton>}
   </div>;
 }

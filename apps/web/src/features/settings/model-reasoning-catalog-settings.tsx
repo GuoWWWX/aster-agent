@@ -1,3 +1,4 @@
+import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import { useEffect, useState, type ReactElement } from "react";
 import { Boxes, ChevronDown, ChevronRight, CirclePlus, ListPlus, Pencil, RotateCcw, Search, SlidersHorizontal, Trash2 } from "lucide-react";
 import { DEFAULT_MODEL_CATALOG, DEFAULT_MODEL_REASONING_PROVIDERS, DEFAULT_MODEL_REASONING_RULES, modelCatalogSchema,
@@ -125,12 +126,12 @@ export function ModelReasoningCatalogSettings({ agentClient }: { agentClient: Ag
         </nav>
       </div>
       <button type="button" className="settings-primary-button" disabled={catalog === null || saving || !dirty} onClick={() => void save()}>
-        {saving ? "保存中…" : dirty ? "保存修改" : "已保存"}
+        {saving ? <><Spinner size={14} />保存中…</> : dirty ? "保存修改" : "已保存"}
       </button>
     </header>
     <div className="settings-section__body settings-section__body--models">
       {error !== null ? <p role="alert" className="m-0 text-[var(--app-destructive)]">{error}</p> : null}
-      {catalog === null ? error === null ? <p role="status">正在读取配置…</p> : null : <div className="settings-provider-manager">
+      {catalog === null ? error === null ? <LoadingState label="正在读取配置…" /> : null : <div className="settings-provider-manager">
         <aside className="settings-provider-list" aria-label="推理程度供应商与模型">
           <header className="settings-provider-list__heading">
             <strong>供应商与模型</strong>

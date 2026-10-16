@@ -1,3 +1,4 @@
+import { LoadingState } from "../../../components/ui/loading.js";
 import { ArrowRight, ArrowUpRight, GitBranch, LocateFixed, MessageSquareText, PanelRightOpen } from "lucide-react";
 import {
   useEffect,
@@ -544,7 +545,7 @@ export function CollaborationProjectionGraph({
     return <div className="flex min-h-[92px] items-center justify-center p-3 text-center text-[length:var(--app-font-size-auxiliary)] text-[var(--app-destructive)]" role="alert">{error}</div>;
   }
   if (projection === null) {
-    return <div className="flex min-h-[92px] items-center justify-center p-3 text-center text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]" role="status">正在加载 Agent 协作图…</div>;
+    return <LoadingState label="正在加载 Agent 协作图…" compact className="min-h-[92px]" />;
   }
   return (
     <CollaborationGraph

@@ -2581,16 +2581,6 @@
   }
 }
 
-.settings-spin {
-  animation: settings-spin 0.9s linear infinite;
-}
-
-@keyframes settings-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 .settings-configuration-list,
 .settings-skill-list,
 .settings-permission-list {

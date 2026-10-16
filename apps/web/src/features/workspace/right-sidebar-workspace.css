@@ -501,16 +501,6 @@
   white-space: nowrap;
 }
 
-.right-sidebar-workspace__spin {
-  animation: right-sidebar-workspace-spin 1s linear infinite;
-}
-
-@keyframes right-sidebar-workspace-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 [data-theme="dark"] .right-sidebar-workspace__menu {
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
 }

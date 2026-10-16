@@ -1,5 +1,6 @@
+import { LoadingState, Spinner } from "../ui/loading.js";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
-import { CircleAlert, CodeXml, Copy, ExternalLink, LoaderCircle, Play } from "lucide-react";
+import { CircleAlert, CodeXml, Copy, ExternalLink, Play } from "lucide-react";
 import { htmlPreviewResizeMessageSchema, type HtmlPreview } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import { IconButton } from "../ui/icon-button.js";
@@ -79,23 +80,23 @@ function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange }:
       <CodeXml size={15} className="shrink-0" /><span className="min-w-0 flex-1 truncate text-[length:var(--app-font-size-control)]" title={source.kind === "file" ? source.path : "HTML 代码块"}>{title}</span>
       {error !== null ? <IconButton label="HTML 预览错误" tooltip={error} size="compact" className="text-[var(--app-destructive)]"><CircleAlert size={14} /></IconButton> : null}
       <IconButton label={mode === "source" ? "预览 HTML" : "显示源码"} aria-busy={loading} size="compact" onClick={() => onModeChange(mode === "source" ? "preview" : "source")}>
-        {mode === "source" ? <Play size={14} /> : loading ? <LoaderCircle size={14} className="animate-spin" /> : <CodeXml size={14} />}
+        {mode === "source" ? <Play size={14} /> : loading ? <Spinner size={14} /> : <CodeXml size={14} />}
       </IconButton>
       <IconButton label="在侧边浏览器打开 HTML" tooltip={openingBrowser ? "正在打开侧边浏览器…" : "在侧边浏览器打开 HTML"} size="compact" disabled={preview === null || openingBrowser} aria-busy={openingBrowser} onClick={() => {
         if (preview === null || context === null || openingBrowser) return;
         setOpeningBrowser(true);
         void context.client.htmlPreview({ kind: "browser", id: preview.id, conversationId: context.conversationId }).then(() => setError(null))
           .catch(reason => setError(reason instanceof Error ? reason.message : "浏览器打开失败。")).finally(() => setOpeningBrowser(false));
-      }}>{openingBrowser ? <LoaderCircle size={14} className="animate-spin" /> : <ExternalLink size={14} />}</IconButton>
+      }}>{openingBrowser ? <Spinner size={14} /> : <ExternalLink size={14} />}</IconButton>
       <IconButton label="复制代码" size="compact" disabled={sourceText === undefined} onClick={() => {
         if (sourceText !== undefined) void navigator.clipboard.writeText(sourceText).catch(() => setError("复制失败，请重试。"));
       }}><Copy size={14} /></IconButton>
     </header>
     {mode === "source" && sourceText !== undefined
       ? <CodeSourceView source={sourceText} language="html" />
-      : preview === null ? error === null ? <p role="status" className="m-0 p-2 text-[length:var(--app-font-size-control)]">正在加载页面…</p> : null
+      : preview === null ? error === null ? <div style={{ height }}><LoadingState label="正在加载页面…" className="h-full" /></div> : null
       : <div className="relative">
-        {loading ? <p role="status" className="pointer-events-none absolute left-2 top-2 z-10 m-0 rounded-[var(--app-radius-small)] bg-[var(--app-panel)] px-2 py-1 text-[length:var(--app-font-size-control)]">正在加载页面…</p> : null}
+        {loading ? <LoadingState label="正在加载页面…" className="pointer-events-none absolute inset-0 z-10 bg-[var(--app-panel)]" /> : null}
         <iframe ref={frameRef} title={`${preview.title} 页面效果`} src={preview.url} sandbox="allow-scripts" referrerPolicy="no-referrer"
         className="block w-full border-0 bg-white" style={{ height }} onLoad={() => {
           setLoadingFrame(false);

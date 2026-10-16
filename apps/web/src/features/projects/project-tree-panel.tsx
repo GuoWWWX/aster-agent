@@ -1,3 +1,4 @@
+import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import {
   ArrowDownAZ,
   ArrowDownUp,
@@ -12,7 +13,6 @@ import {
   FolderPlus,
   GripVertical,
   LocateFixed,
-  LoaderCircle,
   Search,
   X,
 } from "lucide-react";
@@ -539,7 +539,7 @@ export function ProjectTreePanel({
                 取消
               </button>
               <button disabled={isCreating || draftName.trim().length === 0} type="submit">
-                {isCreating ? "正在创建…" : "创建"}
+                {isCreating ? <><Spinner size={14} className="mr-[5px]" />正在创建…</> : "创建"}
               </button>
             </div>
           </form>
@@ -581,13 +581,10 @@ function EmptyProjectTree({
   loading?: boolean;
   onAction?: () => void;
 }): ReactElement {
+  if (loading) return <LoadingState label={label} compact className="w-full" />;
   return (
     <div className="project-tree-panel__empty" data-loading={String(loading)}>
-      {loading ? (
-        <LoaderCircle aria-hidden="true" size={17} />
-      ) : (
-        <Folder aria-hidden="true" size={19} />
-      )}
+      <Folder aria-hidden="true" size={19} />
       <p>{label}</p>
       {actionLabel && onAction ? (
         <button type="button" onClick={onAction}>

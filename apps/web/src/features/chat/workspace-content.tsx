@@ -1,3 +1,4 @@
+import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import { ConversationChangesBadge, ConversationChangesCard } from "./conversation-file-changes.js";
 import { htmlPresentationDeliveries } from "./html-presentations.js";
 import { HtmlPreviewCard, HtmlPreviewScope } from "../../components/html-preview/html-preview-card.js";
@@ -3258,17 +3259,12 @@ export function ConversationWorkspace({
         >
           {isLoadingOlderTimeline ? (
             <div className="conversation-workspace__history-loading" role="status">
-              <LoaderCircle aria-hidden="true" size={14} />
+              <Spinner aria-hidden="true" size={14} />
               <span>正在加载更早记录</span>
             </div>
           ) : null}
           {isLoadingTimeline ? (
-            <div className="conversation-workspace__loading" role="status">
-              <span className="conversation-workspace__loading-mark" aria-hidden="true">
-                <MessageSquareText size={23} strokeWidth={1.75} />
-              </span>
-              <span>正在加载对话</span>
-            </div>
+            <LoadingState label="正在加载对话" className="flex-1 self-stretch" />
           ) : displayTimeline.length === 0 && runProgresses.length === 0 && modelActivity === null ? (
             <div className="conversation-workspace__blank">等待任务</div>
           ) : (
@@ -3799,11 +3795,7 @@ export function ConversationWorkspace({
                   onClick={() => void handleChooseAttachments()}
                 >
                   {isAddingAttachments ? (
-                    <LoaderCircle
-                      aria-hidden="true"
-                      className="conversation-workspace__spin"
-                      size={15}
-                    />
+                    <Spinner aria-hidden="true" size={15} />
                   ) : (
                     <Paperclip aria-hidden="true" size={15} />
                   )}
@@ -4000,12 +3992,12 @@ export function ConversationWorkspace({
                 >
                   {shouldShowStopButton ? (
                     isCancelling ? (
-                      <LoaderCircle aria-hidden="true" className="conversation-workspace__spin" size={15} />
+                      <Spinner aria-hidden="true" size={15} />
                     ) : (
                       <Square aria-hidden="true" size={14} />
                     )
                   ) : isSending ? (
-                    <LoaderCircle aria-hidden="true" className="conversation-workspace__spin" size={15} />
+                    <Spinner aria-hidden="true" size={15} />
                   ) : (
                     <ArrowUp aria-hidden="true" size={17} strokeWidth={2.25} />
                   )}
@@ -4628,7 +4620,7 @@ function ConversationPendingMessageQueue({
               </span>
               <span className="conversation-pending-queue__actions">
                 {isActioning ? (
-                  <LoaderCircle aria-hidden="true" className="conversation-workspace__spin" size={14} />
+                  <Spinner aria-hidden="true" size={14} />
                 ) : (
                   <>
                     <IconButton
@@ -4751,7 +4743,7 @@ function SubagentApprovalQueue({
                 type="button"
                 onClick={() => void onChangeApproval(approval.tool, true)}
               >
-                <Check aria-hidden="true" size={13} />
+                {isApproving ? <Spinner size={13} /> : <Check aria-hidden="true" size={13} />}
                 {isApproving ? "提交中" : "允许一次"}
               </button>
               {isExternalRead ? null : (
@@ -4857,12 +4849,7 @@ function ConversationTaskListPanel({
                     {displayStatus === "completed" ? (
                       <Check aria-hidden="true" size={15} strokeWidth={2.4} />
                     ) : displayStatus === "running" ? (
-                      <LoaderCircle
-                        aria-hidden="true"
-                        className="conversation-workspace__spin"
-                        size={15}
-                        strokeWidth={2.2}
-                      />
+                      <Spinner aria-hidden="true" size={15} />
                     ) : displayStatus === "blocked" ? (
                       <CircleAlert aria-hidden="true" size={15} strokeWidth={2.2} />
                     ) : displayStatus === "paused" ? (
@@ -4899,11 +4886,7 @@ function ConversationTaskListPanel({
             ) : summaryStatus === "stopped" || summaryStatus === "interrupted" ? (
               <X aria-hidden="true" className="conversation-task-list__summary-status" size={15} />
             ) : runningCount > 0 ? (
-              <LoaderCircle
-                aria-hidden="true"
-                className="conversation-task-list__summary-status conversation-workspace__spin"
-                size={15}
-              />
+              <Spinner aria-hidden="true" className="conversation-task-list__summary-status" size={15} />
             ) : (
               <ListTodo aria-hidden="true" size={15} strokeWidth={1.9} />
             )}
@@ -4944,7 +4927,7 @@ function ConversationTaskListPanel({
         onClick={onClose}
       >
         {isActioning ? (
-          <LoaderCircle aria-hidden="true" className="conversation-workspace__spin" size={14} />
+          <Spinner aria-hidden="true" size={14} />
         ) : (
           <X aria-hidden="true" size={15} />
         )}
@@ -6107,11 +6090,7 @@ function TimelineItem({
               onClick={() => void onForkMessage(item)}
             >
               {isForking ? (
-                <LoaderCircle
-                  aria-hidden="true"
-                  className="conversation-workspace__spin"
-                  size={14}
-                />
+                <Spinner aria-hidden="true" size={14} />
               ) : (
                 <GitFork aria-hidden="true" size={14} />
               )}
@@ -6221,7 +6200,7 @@ function AttachmentChip({
           onClick={onRemove}
         >
           {isRemoving ? (
-            <LoaderCircle aria-hidden="true" className="conversation-workspace__spin" size={13} />
+            <Spinner aria-hidden="true" size={13} />
           ) : (
             <X aria-hidden="true" size={13} />
           )}
@@ -7156,7 +7135,7 @@ function ToolTimelineItem({
               type="button"
               onClick={() => void onChangeApproval(item, true)}
             >
-              <Check aria-hidden="true" size={14} />
+              {isApproving ? <Spinner size={14} /> : <Check aria-hidden="true" size={14} />}
               {isApproving ? "提交中" : "允许一次"}
             </button>
             {isExternalRead ? null : (

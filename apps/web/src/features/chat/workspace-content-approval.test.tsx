@@ -353,8 +353,8 @@ it("centers the loading state in the message area while keeping the composer ava
     root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
       session={session({ id: PARENT_ID, title: "加载中的对话" })} /></TooltipProvider>);
   });
-  expect(container.querySelector('[aria-label="对话记录"] > .conversation-workspace__loading')).not.toBeNull();
-  expect(container.querySelector(".conversation-workspace__loading-mark")).not.toBeNull();
+  expect(container.querySelector('[aria-label="对话记录"] > [role="status"]')).not.toBeNull();
+  expect(container.querySelector(".app-loading-bone")).not.toBeNull();
   expect(container.querySelector(".conversation-workspace__composer")).not.toBeNull();
 
   await act(async () => {
@@ -362,7 +362,7 @@ it("centers the loading state in the message area while keeping the composer ava
     await timeline;
     await flushConversationWorkspace();
   });
-  expect(container.querySelector(".conversation-workspace__loading")).toBeNull();
+  expect(container.querySelector('[aria-label="对话记录"] > [role="status"]')).toBeNull();
 });
 
 it("expands an ordinary HTML edit as a diff without requesting a preview", async () => {
@@ -2776,7 +2776,7 @@ describe("Subagent approval queue", () => {
     });
 
     expect(container.querySelector(".conversation-task-list")).not.toBeNull();
-    expect(container.querySelector(".conversation-task-list .conversation-workspace__spin")).not.toBeNull();
+    expect(container.querySelector(".conversation-task-list .app-spinner")).not.toBeNull();
     expect(container.querySelector(".conversation-task-list__summary")?.textContent)
       .toContain("2 项进行中");
     const delegationStop = container.querySelector<HTMLButtonElement>('[aria-label="停止任务"]');
@@ -2791,7 +2791,7 @@ describe("Subagent approval queue", () => {
       await flushConversationWorkspace();
     });
 
-    expect(container.querySelector(".conversation-task-list .conversation-workspace__spin")).toBeNull();
+    expect(container.querySelector(".conversation-task-list .app-spinner")).toBeNull();
     expect(container.querySelector(".conversation-task-list__summary")?.textContent)
       .toContain("0/2 已完成");
     expect(container.querySelector(".conversation-task-list__summary")?.textContent)

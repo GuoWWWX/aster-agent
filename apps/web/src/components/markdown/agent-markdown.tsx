@@ -1,3 +1,4 @@
+import { Spinner } from "../ui/loading.js";
 import { createPortal } from "react-dom";
 import { HtmlPreviewCard, HtmlPreviewContext, type HtmlPreviewSource } from "../html-preview/html-preview-card.js";
 import { markdownMathPlugin } from "../../lib/markdown-math-plugin.js";
@@ -378,7 +379,7 @@ function AgentMarkdownContent({ content }: { content: string }): ReactElement {
         className="min-w-36 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] p-1 text-[length:var(--app-font-size-control)] text-[var(--app-foreground)] shadow-lg">
         <button type="button" role="menuitem" disabled={copyingImage} onClick={(event) => void copyDiagramImage(event)}
           className="flex h-8 w-full items-center gap-2 rounded-[var(--app-radius-small)] px-2 text-left hover:bg-[var(--app-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] disabled:opacity-50">
-          <Copy aria-hidden="true" size={14} />{copyingImage ? "正在复制图片…" : "复制图片"}
+          {copyingImage ? <Spinner size={14} /> : <Copy aria-hidden="true" size={14} />}{copyingImage ? "正在复制图片…" : "复制图片"}
         </button>
         {copyImageError === null ? null : <p role="status" className="px-2 py-1 text-[var(--app-status-danger-fg)]">{copyImageError}</p>}
       </PopoverContent>

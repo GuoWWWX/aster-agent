@@ -1,3 +1,4 @@
+import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import {
   ArrowDownAZ,
   ArrowDownUp,
@@ -11,7 +12,6 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
-  LoaderCircle,
   LocateFixed,
   Search,
   Trash2,
@@ -635,7 +635,7 @@ function ConfigurationWorkspaceTreeNode({
             onClick={() => onToggleDirectory(entry.path)}
           >
             {loadingDirectories.has(entry.path) ? (
-              <LoaderCircle aria-hidden="true" className="project-tree-panel__spin" size={14} />
+              <Spinner aria-hidden="true" size={14} />
             ) : isExpanded ? (
               <ChevronDown aria-hidden="true" size={14} />
             ) : (
@@ -708,9 +708,10 @@ function ConfigurationWorkspaceEmpty({
   label: string;
   loading?: boolean;
 }): ReactElement {
+  if (loading) return <LoadingState label={label} compact className="w-full" />;
   return (
     <div className="project-tree-panel__empty" data-loading={String(loading)}>
-      {loading ? <LoaderCircle aria-hidden="true" size={17} /> : <Folder aria-hidden="true" size={19} />}
+      <Folder aria-hidden="true" size={19} />
       <p>{label}</p>
     </div>
   );

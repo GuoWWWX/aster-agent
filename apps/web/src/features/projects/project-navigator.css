@@ -860,22 +860,11 @@ button.project-navigator__team-member:focus-visible {
   text-align: center;
 }
 
-.project-navigator__empty[data-loading="true"] svg,
-.project-navigator__spin {
-  animation: project-navigator-spin 1s linear infinite;
-}
-
 .project-navigator__empty p {
   max-width: 210px;
   margin: 0;
   font-size: var(--app-font-size-control);
   line-height: 1.5;
-}
-
-@keyframes project-navigator-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 [data-theme="dark"] .project-navigator__notice {

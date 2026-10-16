@@ -1,3 +1,4 @@
+import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import { Copy, RefreshCw, Square, Terminal } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
 import type { BackgroundCommandOutput } from "@agent/protocol";
@@ -63,7 +64,7 @@ export function BackgroundCommandWorkspace({ agentClient, conversationId, comman
       <Terminal aria-hidden="true" size={14} /><strong className="min-w-0 flex-1 truncate">{output?.command.serviceName || "命令执行"}</strong>
       <span>{error !== null ? "读取失败" : output === null ? "加载中" : statusLabels[output.command.status]}</span>
       <IconButton type="button" size="compact" label="刷新执行输出" onClick={() => setRevision(value => value + 1)}><RefreshCw size={14} /></IconButton>
-      {output?.command.status === "running" ? <IconButton type="button" size="compact" disabled={stopping} label={stopping ? "正在停止程序" : "停止程序及其子进程"} onClick={() => void stop()}><Square size={14} /></IconButton> : null}
+      {output?.command.status === "running" ? <IconButton type="button" size="compact" disabled={stopping} label={stopping ? "正在停止程序" : "停止程序及其子进程"} onClick={() => void stop()}>{stopping ? <Spinner size={14} /> : <Square size={14} />}</IconButton> : null}
     </header>
     {output === null ? null : <div aria-label="执行命令" className="group/command relative shrink-0 space-y-1 border-b border-[var(--app-border)] px-3 py-2 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
       <code className="block select-text break-all pr-9 text-[var(--app-foreground)]">{output.command.command}</code>
@@ -75,6 +76,7 @@ export function BackgroundCommandWorkspace({ agentClient, conversationId, comman
     {error === null ? null : <p role="alert" className="m-0 shrink-0 px-3 py-2 text-[length:var(--app-font-size-body)] text-[var(--app-destructive)]">{error}</p>}
     {copyError === null ? null : <p role="alert" className="m-0 shrink-0 px-3 py-2 text-[length:var(--app-font-size-body)] text-[var(--app-destructive)]">{copyError}</p>}
     <div aria-label="执行输出" className="group/output relative min-h-0 flex-1">
+      {output === null && error === null ? <LoadingState label="正在读取执行输出…" className="absolute inset-0" /> : null}
       <div ref={log} aria-label="命令输出" className="h-full select-text overflow-auto p-3 pr-12 font-mono text-[length:var(--app-font-size-control)] leading-relaxed" onScroll={() => {
         const element = log.current;
         if (element !== null) setFollow(element.scrollHeight - element.scrollTop - element.clientHeight < 30);
