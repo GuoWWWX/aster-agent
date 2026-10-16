@@ -452,12 +452,13 @@ it("shows merged file changes without a task list, then keeps the review card af
 });
 
 it.each([
-  { name: "final code", content: "```html\n<h1>动画</h1>\n```", status: "completed" as const, intermediate: false, kind: "code" },
-  { name: "final file", content: "```html-preview\nexamples/demo.html\n```", status: "completed" as const, intermediate: false, kind: "file" },
-  { name: "streaming code", content: "```html\n<h1>动画</h1>\n```", status: "streaming" as const, intermediate: false, kind: null },
-  { name: "failed code", content: "```html\n<h1>动画</h1>\n```", status: "failed" as const, intermediate: false, kind: null },
-  { name: "intermediate code", content: "```html\n<h1>动画</h1>\n```", status: "completed" as const, intermediate: true, kind: null },
-])("keeps Markdown HTML source until the user clicks preview: $name", async ({ content, status, intermediate }) => {
+  { name: "final code", content: "```html\n<h1>动画</h1>\n```", status: "completed" as const, intermediate: false, shouldPreview: true },
+  { name: "final file", content: "```html-preview\nexamples/demo.html\n```", status: "completed" as const, intermediate: false, shouldPreview: false },
+  { name: "closed code while reply streams", content: "```html\n<h1>动画</h1>\n```", status: "streaming" as const, intermediate: false, shouldPreview: true },
+  { name: "unfinished code", content: "```html\n<h1>动画</h1>", status: "streaming" as const, intermediate: false, shouldPreview: false },
+  { name: "failed code", content: "```html\n<h1>动画</h1>\n```", status: "failed" as const, intermediate: false, shouldPreview: false },
+  { name: "intermediate code", content: "```html\n<h1>动画</h1>\n```", status: "completed" as const, intermediate: true, shouldPreview: true },
+])("previews closed Markdown HTML blocks automatically: $name", async ({ content, status, intermediate, shouldPreview }) => {
   const client = new MockAgentClient();
   const message: ConversationTimelineItem = { id: MESSAGE_ID, kind: "message", conversationId: PARENT_ID,
     runId: RUN_ID, attachments: [], modelId: null, role: "assistant", status, content, createdAt: "2026-10-15T00:00:00Z" };
@@ -471,10 +472,14 @@ it.each([
   const render = (activeRunId: string | null) => <TooltipProvider><ConversationWorkspace agentClient={client} project={null}
     session={session({ id: PARENT_ID, title: "显式展示 HTML", activeRunId })} /></TooltipProvider>;
   await act(async () => { root?.render(render(RUN_ID)); await flushConversationWorkspace(); });
-  expect(preview).not.toHaveBeenCalled();
+  expect(preview.mock.calls.some(([input]) => input.kind === "code")).toBe(shouldPreview);
   await act(async () => { root?.render(render(null)); await flushConversationWorkspace(); });
-  expect(preview).not.toHaveBeenCalled();
-  expect(container.querySelector("iframe")).toBeNull();
+  expect(preview.mock.calls.some(([input]) => input.kind === "code")).toBe(shouldPreview);
+  if (intermediate) {
+    expandWorkProcess(container);
+    await act(async () => { await flushConversationWorkspace(); });
+  }
+  expect(container.querySelector("iframe") !== null).toBe(shouldPreview);
 });
 
 it("shows a successful presentation tool as the final delivery outside the work process", async () => {

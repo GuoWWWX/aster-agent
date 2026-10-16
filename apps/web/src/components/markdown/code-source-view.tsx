@@ -10,7 +10,7 @@ import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 // CodeMirror's viewport and long-line gaps bound DOM size without truncating source.
 const sourceTheme = EditorView.theme({
   "&": { backgroundColor: "var(--app-muted)", color: "var(--app-foreground)", fontSize: "var(--app-font-size-body)" },
-  "&.cm-focused": { outline: "2px solid var(--app-focus-ring)", outlineOffset: "-2px" },
+  "&.cm-focused": { outline: "none" },
   ".cm-scroller": { maxHeight: "var(--app-code-block-max-height)", overflow: "auto", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", lineHeight: "1.55" },
   ".cm-content": { padding: "8px 0" },
   ".cm-line": { padding: "0 9px" },

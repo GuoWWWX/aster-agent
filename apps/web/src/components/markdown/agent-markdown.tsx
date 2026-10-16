@@ -370,7 +370,7 @@ function AgentMarkdownContent({ content }: { content: string }): ReactElement {
       onKeyDown={handleKeyDown}
       onContextMenu={handleDiagramContextMenu}
     />
-    {codePreviews.map((preview, index) => createPortal(<HtmlPreviewCard source={{ kind: "code", html: preview.source }} embedded initialMode="source" />, preview.mount, String(index)))}
+    {codePreviews.map((preview, index) => createPortal(<HtmlPreviewCard source={{ kind: "code", html: preview.source }} embedded />, preview.mount, String(index)))}
     {sourceViews.map((view, index) => createPortal(<CodeSourceView source={view.source} language={view.language} />, view.mount, `source:${index}`))}
     {activePreview !== null ? createPortal(<HtmlPreviewCard key={activePreview.source.kind === "file" ? activePreview.source.path : activePreview.source.html} source={activePreview.source} />, activePreview.mount) : null}
     <Popover open={diagramMenu !== null} onOpenChange={(open) => { if (!open) setDiagramMenu(null); }}>

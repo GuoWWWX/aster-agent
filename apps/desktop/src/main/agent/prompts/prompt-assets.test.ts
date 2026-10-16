@@ -23,7 +23,7 @@ describe("prompt assets", () => {
     expect(BASE_SYSTEM_PROMPT).toContain("# HTML Presentations");
     expect(BASE_SYSTEM_PROMPT).toContain("call `present_html` with the existing entry file's workspace-relative `path`");
     expect(BASE_SYSTEM_PROMPT).toContain("File-edit tool records show only their diffs");
-    expect(BASE_SYSTEM_PROMPT).toContain("It starts in source mode and the user can click Preview");
+    expect(BASE_SYSTEM_PROMPT).toContain("Once the HTML code block is complete, it displays a preview by default");
     expect(BASE_SYSTEM_PROMPT).toContain("# Conflict Recovery");
     expect(BASE_SYSTEM_PROMPT).toContain(
       "The application language is Simplified Chinese (zh-CN).",

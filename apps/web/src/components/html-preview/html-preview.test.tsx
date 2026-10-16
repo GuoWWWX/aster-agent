@@ -33,16 +33,16 @@ describe("conversation HTML previews", () => {
     await act(async () => { button!.click(); await Promise.resolve(); });
   }
 
-  it("offers code preview only for closed HTML fences in a conversation", async () => {
+  it("automatically previews closed HTML fences and keeps unfinished fences as source", async () => {
     expect(renderAgentMarkdown("```html\n<h1>页面</h1>\n``` ")).not.toContain("preview-html");
     await render(<AgentMarkdown content={"```html\n<h1>页面</h1>"} />);
     expect(node.querySelector('[data-action="preview-html"]')).toBeNull();
+    expect(node.querySelector("iframe")).toBeNull();
+    expect(request).not.toHaveBeenCalled();
     await render(<AgentMarkdown content={"```html\n<h1>页面</h1>\n```"} />);
     const block = node.querySelector(".agent-markdown__code-block");
     expect(block?.querySelectorAll("header")).toHaveLength(1);
-    expect(block?.querySelector(".cm-content")?.textContent).toBe("<h1>页面</h1>");
-    expect(request).not.toHaveBeenCalled();
-    await click("预览 HTML");
+    expect(block?.querySelector(".cm-editor")).toBeNull();
     expect(request).toHaveBeenCalledWith({ kind: "code", conversationId, html: "<h1>页面</h1>\n" });
     const frame = node.querySelector("iframe");
     act(() => { frame!.dispatchEvent(new Event("load")); });
@@ -125,11 +125,13 @@ describe("conversation HTML previews", () => {
     vi.stubGlobal("navigator", { clipboard: { writeText } });
     const source = '<g class="pelican"><circle cx="30" cy="40" r="20"/></g>\n'.repeat(1000);
     await render(<AgentMarkdown content={"```html\n" + source + "```"} />);
+    expect(node.querySelector("iframe")).not.toBeNull();
+    await click("显示源码");
     expect(node.querySelector(".cm-editor")).not.toBeNull();
     expect(node.querySelector('[contenteditable="true"]')).toBeNull();
     await click("复制代码");
     expect(writeText).toHaveBeenCalledWith(source);
-    expect(request).not.toHaveBeenCalled();
+    expect(request.mock.calls.filter(([input]) => input.kind === "code")).toHaveLength(1);
     await click("预览 HTML");
     expect(node.querySelector(".cm-editor")).toBeNull();
     expect(node.querySelector("iframe")).not.toBeNull();
@@ -139,6 +141,7 @@ describe("conversation HTML previews", () => {
     const highlight = vi.spyOn(highlighter, "highlightCode");
     const content = "```html\n<h1>示例</h1>\n```";
     await render(<AgentMarkdown content={content} />);
+    await click("显示源码");
     const editor = node.querySelector(".cm-editor");
     expect(editor).not.toBeNull();
     expect(editor?.querySelector(".cm-line span[class]")).not.toBeNull();
@@ -153,7 +156,8 @@ describe("conversation HTML previews", () => {
     await render(<AgentMarkdown content={"```html\n<p>第一个</p>\n```\n\n```html\n<p>第二个</p>\n```"} />);
     const blocks = node.querySelectorAll(".agent-markdown__code-block");
     expect(blocks).toHaveLength(2);
-    await act(async () => { blocks[0]!.querySelector<HTMLButtonElement>('[aria-label="预览 HTML"]')!.click(); await Promise.resolve(); });
+    expect([...blocks].every(block => block.querySelector("iframe") !== null)).toBe(true);
+    await act(async () => { blocks[1]!.querySelector<HTMLButtonElement>('[aria-label="显示源码"]')!.click(); await Promise.resolve(); });
     expect(blocks[0]!.querySelector("iframe")).not.toBeNull();
     expect(blocks[0]!.querySelector("pre")).toBeNull();
     expect(blocks[1]!.querySelector(".cm-content")?.textContent).toBe("<p>第二个</p>");
