@@ -4,7 +4,7 @@ import { act, type ReactElement } from "react";
 import { createPortal } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { NativeOverlayResizePointer } from "@agent/protocol";
+import type { NativeOverlayResizePointer, NativeOverlayTooltipPointer } from "@agent/protocol";
 
 import { emitLivePanelResize } from "../layout/live-panel-resize.js";
 import { NativeOverlayProvider, useNativeOverlayContainer } from "./native-overlay-provider.js";
@@ -15,6 +15,7 @@ let mount: HTMLElement;
 const update = vi.fn();
 let parentFocus: () => void;
 let resizePointer: (pointer: NativeOverlayResizePointer) => void;
+let tooltipPointer: (pointer: NativeOverlayTooltipPointer) => void;
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -30,6 +31,7 @@ beforeEach(() => {
     update,
     onParentFocus: (listener: () => void) => { parentFocus = listener; return vi.fn(); },
     onResizePointer: (listener: typeof resizePointer) => { resizePointer = listener; return vi.fn(); },
+    onTooltipPointer: (listener: typeof tooltipPointer) => { tooltipPointer = listener; return vi.fn(); },
   } });
   vi.spyOn(host, "close").mockImplementation(() => undefined);
   vi.spyOn(window, "open").mockReturnValue(host);
@@ -78,6 +80,20 @@ it("keeps the popup in the native host, mirrors theme, and removes its input reg
   await vi.waitFor(() => {
     expect(update).toHaveBeenLastCalledWith({ regions: [], interactive: false, resizing: false });
   });
+});
+
+it("marks tooltip-only regions and forwards native cursor positions without requiring DOM input", async () => {
+  const popup = await ready();
+  popup.dataset.nativeOverlayTooltip = "";
+  popup.dataset.nativeOverlayInteractive = "false";
+  await vi.waitFor(() => {
+    expect(update).toHaveBeenLastCalledWith({ regions: [{ x: 595, y: 75, width: 310, height: 210 }], interactive: false, resizing: false, tooltipOnly: true });
+  });
+  const move = vi.fn();
+  window.addEventListener("aster:native-tooltip-pointer", move);
+  tooltipPointer({ x: -10, y: 600 });
+  expect(move).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ detail: { x: -10, y: 600 } }));
+  window.removeEventListener("aster:native-tooltip-pointer", move);
 });
 
 it("preserves outside gesture targets and dismisses when focus returns from the native page", async () => {

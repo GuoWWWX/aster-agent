@@ -17,9 +17,10 @@ describe("native overlay preload", () => {
       update(input: unknown): void;
       onParentFocus(listener: () => void): () => void;
       onResizePointer(listener: (pointer: unknown) => void): () => void;
+      onTooltipPointer(listener: (pointer: unknown) => void): () => void;
     }];
     expect(name).toBe("nativeOverlay");
-    expect(Object.keys(bridge)).toEqual(["update", "onParentFocus", "onResizePointer"]);
+    expect(Object.keys(bridge)).toEqual(["update", "onParentFocus", "onResizePointer", "onTooltipPointer"]);
     const input = { regions: [{ x: 1, y: 2, width: 300, height: 150 }], interactive: true };
     bridge.update(input);
     expect(electron.send).toHaveBeenCalledWith(NATIVE_OVERLAY_CHANNEL, input);
@@ -40,6 +41,15 @@ describe("native overlay preload", () => {
     relay({}, { phase: "move", x: Number.NaN, y: 200 });
     expect(pointerListener).toHaveBeenCalledExactlyOnceWith({ phase: "move", x: 400, y: 200 });
     stopPointer();
+    expect(electron.removeListener.mock.calls).toEqual(electron.on.mock.calls);
+    const tooltipListener = vi.fn();
+    const stopTooltip = bridge.onTooltipPointer(tooltipListener);
+    const tooltipRelay = electron.on.mock.calls.at(-1)?.[1] as (event: unknown, pointer: unknown) => void;
+    tooltipRelay({}, { x: -30, y: 200 });
+    tooltipRelay({}, { x: Number.NaN, y: 200 });
+    tooltipRelay({}, { x: 10, y: 20, channel: "application" });
+    expect(tooltipListener).toHaveBeenCalledExactlyOnceWith({ x: -30, y: 200 });
+    stopTooltip();
     expect(electron.removeListener.mock.calls).toEqual(electron.on.mock.calls);
   });
 });

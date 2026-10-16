@@ -69,6 +69,20 @@ it("dismisses when the application window loses focus", async () => {
   act(() => { window.dispatchEvent(new FocusEvent("blur")); });
   expect(document.querySelector("[role=tooltip]")).toBeNull();
 });
+it("closes from native cursor updates when mouse events are consumed by another native view", async () => {
+  const [first] = render();
+  await hover(first!);
+  vi.spyOn(first!, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 100, 40, 30));
+  const popup = document.querySelector<HTMLElement>('[data-native-view-overlay]')!;
+  vi.spyOn(popup, "getBoundingClientRect").mockReturnValue(new DOMRect(60, 60, 120, 30));
+  const cursor = (x: number, y: number): void => { act(() => { window.dispatchEvent(new CustomEvent("aster:native-tooltip-pointer", { detail: { x, y } })); }); };
+  cursor(120, 110);
+  cursor(120, 95);
+  cursor(120, 75);
+  expect(document.querySelector("[role=tooltip]")).not.toBeNull();
+  cursor(400, 300);
+  expect(document.querySelector("[role=tooltip]")).toBeNull();
+});
 it.each([false, true])("stays over its popup and closes when leaving both surfaces (native portal: %s)", async (native) => {
   const iframe = document.createElement("iframe");
   if (native) { document.body.append(iframe); portal.current = iframe.contentDocument!.body; }

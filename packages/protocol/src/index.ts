@@ -669,10 +669,12 @@ export {
   NATIVE_OVERLAY_CHANNEL,
   NATIVE_OVERLAY_BLUR_CHANNEL,
   NATIVE_OVERLAY_RESIZE_POINTER_CHANNEL,
+  NATIVE_OVERLAY_TOOLTIP_POINTER_CHANNEL,
   nativeOverlayRegionsInputSchema,
   nativeOverlayResizePointerSchema,
+  nativeOverlayTooltipPointerSchema,
 } from "./native-overlay.js";
-export type { NativeOverlayRegionsInput, NativeOverlayResizePointer } from "./native-overlay.js";
+export type { NativeOverlayRegionsInput, NativeOverlayResizePointer, NativeOverlayTooltipPointer } from "./native-overlay.js";
 
 export * from "./scheduled-task.js";
 export { localControlCommandSchema, type LocalControlCommand } from "./local-control.js";

@@ -5,6 +5,7 @@ import {
   NATIVE_OVERLAY_BLUR_CHANNEL,
   NATIVE_OVERLAY_FRAME_NAME,
   NATIVE_OVERLAY_RESIZE_POINTER_CHANNEL,
+  NATIVE_OVERLAY_TOOLTIP_POINTER_CHANNEL,
   nativeOverlayRegionsInputSchema,
   type NativeOverlayRegionsInput,
 } from "@agent/protocol";
@@ -21,6 +22,9 @@ export class NativeOverlayController {
   private readonly resizeContents = new Set<WebContents>();
   private lastBounds: Rectangle | undefined;
   private readonly parentContents: WebContents;
+  private tooltipPointerTimer: ReturnType<typeof setInterval> | undefined;
+  private tooltipPointerIgnored: boolean | undefined;
+  private lastTooltipPointer: { x: number; y: number } | undefined;
 
   public constructor(private readonly parentWindow: BrowserWindow) {
     this.parentContents = parentWindow.webContents;
@@ -186,6 +190,41 @@ export class NativeOverlayController {
     this.resizeContents.clear();
   }
 
+  private startTooltipPointer(): void {
+    this.updateTooltipPointer();
+    this.tooltipPointerTimer ??= setInterval(this.updateTooltipPointer, 16);
+    this.tooltipPointerTimer.unref();
+  }
+
+  private readonly updateTooltipPointer = (): void => {
+    const window = this.overlayWindow;
+    if (window === undefined || window.isDestroyed() || !this.visible) return;
+    const cursor = screen.getCursorScreenPoint();
+    const bounds = this.parentWindow.getContentBounds();
+    const zoom = this.parentContents.getZoomFactor();
+    const point = { x: (cursor.x - bounds.x) / zoom, y: (cursor.y - bounds.y) / zoom };
+    const ignore = !this.input.regions.some((region) => point.x >= region.x && point.x < region.x + region.width
+      && point.y >= region.y && point.y < region.y + region.height);
+    // Releasing input must not depend on the Renderer receiving a DOM leave event.
+    if (ignore !== this.tooltipPointerIgnored) {
+      if (ignore) window.setIgnoreMouseEvents(true, { forward: true });
+      else window.setIgnoreMouseEvents(false);
+      this.tooltipPointerIgnored = ignore;
+    }
+    if (ignore && window.isFocused()) this.parentWindow.focus();
+    if (this.lastTooltipPointer?.x !== point.x || this.lastTooltipPointer.y !== point.y) {
+      this.lastTooltipPointer = point;
+      window.webContents.send(NATIVE_OVERLAY_TOOLTIP_POINTER_CHANNEL, point);
+    }
+  };
+
+  private stopTooltipPointer(): void {
+    if (this.tooltipPointerTimer !== undefined) clearInterval(this.tooltipPointerTimer);
+    this.tooltipPointerTimer = undefined;
+    this.tooltipPointerIgnored = undefined;
+    this.lastTooltipPointer = undefined;
+  }
+
   private readonly synchronize = (): void => {
     const window = this.overlayWindow;
     if (window === undefined || window.isDestroyed() || this.parentWindow.isDestroyed()) return;
@@ -209,21 +248,31 @@ export class NativeOverlayController {
       const restoreFocus = window.isFocused() && this.parentWindow.isVisible() && !this.parentWindow.isMinimized();
       this.visible = false;
       this.interactive = false;
+      this.stopTooltipPointer();
+      window.setIgnoreMouseEvents(true, { forward: true });
       window.hide();
       if (restoreFocus) this.parentWindow.focus();
       return;
     }
     window.setShape(regions);
-    window.setIgnoreMouseEvents(false);
     window.setFocusable(this.input.interactive);
     if (!this.visible) window.showInactive();
-    if (this.input.interactive && !this.interactive) window.focus();
+    const focus = this.input.interactive && !this.interactive;
     this.visible = true;
     this.interactive = this.input.interactive;
+    if (this.input.tooltipOnly === true) {
+      this.startTooltipPointer();
+      if (focus && !this.tooltipPointerIgnored) window.focus();
+    } else {
+      this.stopTooltipPointer();
+      window.setIgnoreMouseEvents(false);
+      if (focus) window.focus();
+    }
   };
 
   private releaseOverlay(destroy: boolean): void {
     this.stopResize();
+    this.stopTooltipPointer();
     const window = this.overlayWindow;
     this.detachOverlay?.();
     this.detachOverlay = undefined;

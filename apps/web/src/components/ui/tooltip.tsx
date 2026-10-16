@@ -2,6 +2,8 @@ import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import { useCallback, useEffect, useRef, useState, type ComponentProps, type ReactElement, type ReactNode } from "react";
 
 import { cn } from "../../lib/cn.js";
+import { NATIVE_TOOLTIP_POINTER } from "../../lib/native-overlay.js";
+import type { NativeOverlayTooltipPointer } from "@agent/protocol";
 import { useNativeOverlayContainer } from "./native-overlay-provider.js";
 
 export function TooltipProvider({
@@ -46,7 +48,7 @@ export function TooltipAnchor({
   const isOpen = open ?? visible;
   const changeOpen = useCallback((value: boolean): void => {
     setVisible(value);
-    if (!value) setSelecting(false);
+    if (!value) { setSelecting(false); pointerRef.current = null; }
     onOpenChange?.(value);
   }, [onOpenChange]);
   useEffect(() => {
@@ -62,11 +64,21 @@ export function TooltipAnchor({
       pointerRef.current = { clientX: event.clientX, clientY: event.clientY };
       if (!withinTooltip(triggerRef.current, contentRef.current, event)) close();
     };
+    const nativeMove = (event: Event): void => {
+      const { x, y } = (event as CustomEvent<NativeOverlayTooltipPointer>).detail;
+      const point = { clientX: x, clientY: y };
+      // A keyboard-opened hint stays until the pointer actually moves.
+      if (pointerRef.current === null) { pointerRef.current = point; return; }
+      pointerRef.current = point;
+      if (!withinTooltip(triggerRef.current, contentRef.current, { ...point, target: null })) close();
+    };
+    window.addEventListener(NATIVE_TOOLTIP_POINTER, nativeMove);
     for (const doc of documents) {
       doc?.addEventListener("pointermove", move, true);
       doc?.defaultView?.addEventListener("blur", blur);
     }
     return () => {
+      window.removeEventListener(NATIVE_TOOLTIP_POINTER, nativeMove);
       for (const doc of documents) {
         doc?.removeEventListener("pointermove", move, true);
         doc?.defaultView?.removeEventListener("blur", blur);
@@ -75,11 +87,17 @@ export function TooltipAnchor({
   }, [isOpen, changeOpen, container]);
   const trigger = disabled ? <span className="inline-flex">{children}</span> : children;
   return (
-    <TooltipPrimitive.Root open={isOpen} onOpenChange={changeOpen}>
-      <TooltipPrimitive.Trigger ref={triggerRef} asChild onBlur={(event) => {
+    <TooltipPrimitive.Root disableHoverableContent open={isOpen} onOpenChange={changeOpen}>
+      <TooltipPrimitive.Trigger ref={triggerRef} asChild onPointerMove={(event) => {
+        if (event.pointerType === "touch") return;
+        event.preventDefault();
+        pointerRef.current = { clientX: event.clientX, clientY: event.clientY };
+        if (!isOpen) changeOpen(true);
+      }} onBlur={(event) => {
         if (pointerRef.current !== null && pointerWithin(contentRef.current, { ...pointerRef.current, target: event.relatedTarget })) event.preventDefault();
         else changeOpen(false);
       }} onPointerLeave={(event) => {
+        event.preventDefault();
         if (!withinTooltip(triggerRef.current, contentRef.current, { target: event.relatedTarget, clientX: event.clientX, clientY: event.clientY })) changeOpen(false);
       }}>{trigger}</TooltipPrimitive.Trigger>
       <TooltipPrimitive.Portal container={container}>
@@ -90,6 +108,7 @@ export function TooltipAnchor({
             if (!withinTooltip(triggerRef.current, contentRef.current, { target: event.relatedTarget, clientX: event.clientX, clientY: event.clientY })) changeOpen(false);
           }}
           data-native-view-overlay=""
+          data-native-overlay-tooltip=""
           data-native-overlay-interactive={selecting ? "true" : "false"}
           className={cn(
             "z-[120] max-w-64 select-text rounded-[var(--app-radius)] border border-[var(--app-tooltip-background)] bg-[var(--app-tooltip-background)] px-2 py-1 text-[length:var(--app-font-size-caption)] font-medium leading-4 text-[var(--app-tooltip-foreground)] shadow-md",

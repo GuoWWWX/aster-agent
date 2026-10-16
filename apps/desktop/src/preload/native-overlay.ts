@@ -4,10 +4,13 @@ import {
   NATIVE_OVERLAY_CHANNEL,
   NATIVE_OVERLAY_BLUR_CHANNEL,
   NATIVE_OVERLAY_RESIZE_POINTER_CHANNEL,
+  NATIVE_OVERLAY_TOOLTIP_POINTER_CHANNEL,
+  nativeOverlayTooltipPointerSchema,
   nativeOverlayResizePointerSchema,
   nativeOverlayRegionsInputSchema,
   type NativeOverlayRegionsInput,
   type NativeOverlayResizePointer,
+  type NativeOverlayTooltipPointer,
 } from "../../../../packages/protocol/src/native-overlay.js";
 
 // The overlay host receives no application or raw IPC bridge.
@@ -27,5 +30,13 @@ contextBridge.exposeInMainWorld("nativeOverlay", {
     };
     ipcRenderer.on(NATIVE_OVERLAY_RESIZE_POINTER_CHANNEL, notify);
     return () => { ipcRenderer.removeListener(NATIVE_OVERLAY_RESIZE_POINTER_CHANNEL, notify); };
+  },
+  onTooltipPointer(listener: (pointer: NativeOverlayTooltipPointer) => void): () => void {
+    const notify = (_event: Electron.IpcRendererEvent, input: unknown): void => {
+      const parsed = nativeOverlayTooltipPointerSchema.safeParse(input);
+      if (parsed.success) listener(parsed.data);
+    };
+    ipcRenderer.on(NATIVE_OVERLAY_TOOLTIP_POINTER_CHANNEL, notify);
+    return () => { ipcRenderer.removeListener(NATIVE_OVERLAY_TOOLTIP_POINTER_CHANNEL, notify); };
   },
 });

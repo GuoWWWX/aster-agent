@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { nativeOverlayRegionsInputSchema } from "./native-overlay.js";
+import { nativeOverlayRegionsInputSchema, nativeOverlayTooltipPointerSchema } from "./native-overlay.js";
 
 describe("native overlay regions", () => {
   const region = { x: 0, y: 0, width: 16_384, height: 100 };
+  it("accepts tooltip tracking and finite cursor positions outside the window", () => {
+    expect(nativeOverlayRegionsInputSchema.parse({ regions: [region], interactive: false, tooltipOnly: true }).tooltipOnly).toBe(true);
+    expect(nativeOverlayTooltipPointerSchema.parse({ x: -200, y: 12.5 })).toEqual({ x: -200, y: 12.5 });
+    for (const input of [{ x: Infinity, y: 0 }, { x: NaN, y: 0 }, { x: 0, y: 0, channel: "application" }]) {
+      expect(nativeOverlayTooltipPointerSchema.safeParse(input).success).toBe(false);
+    }
+  });
 
   it("accepts empty regions and bounded integer rectangles", () => {
     expect(nativeOverlayRegionsInputSchema.parse({ regions: [], interactive: false }).regions).toEqual([]);

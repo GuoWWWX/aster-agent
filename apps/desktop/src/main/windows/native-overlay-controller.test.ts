@@ -3,10 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserWindow } from "electron";
 import { NATIVE_OVERLAY_BLUR_CHANNEL, NATIVE_OVERLAY_CHANNEL, NATIVE_OVERLAY_FRAME_NAME } from "@agent/protocol";
 
-const electron = vi.hoisted(() => ({ on: vi.fn(), removeListener: vi.fn(), appOn: vi.fn(), appRemoveListener: vi.fn() }));
+const electron = vi.hoisted(() => ({ on: vi.fn(), removeListener: vi.fn(), appOn: vi.fn(), appRemoveListener: vi.fn(), cursor: { x: 0, y: 0 } }));
 vi.mock("electron", () => ({
   ipcMain: { on: electron.on, removeListener: electron.removeListener },
   app: { on: electron.appOn, removeListener: electron.appRemoveListener },
+  screen: { getCursorScreenPoint: () => electron.cursor },
 }));
 import { NativeOverlayController } from "./native-overlay-controller.js";
 
@@ -70,6 +71,47 @@ afterEach(() => {
 });
 
 describe("native overlay host", () => {
+  it("releases tooltip mouse interception without a DOM move or blank click, including after selecting text", () => {
+    vi.useFakeTimers();
+    const { parent, child, controller, open, update } = fixture();
+    parent.webContents.zoom = 2;
+    electron.cursor = { x: 40, y: 60 };
+    open();
+    const input = { regions: [{ x: 100, y: 50, width: 200, height: 60 }], interactive: false, tooltipOnly: true };
+    update(input);
+    expect(child.setIgnoreMouseEvents).toHaveBeenLastCalledWith(true, { forward: true });
+    expect(child.focus).not.toHaveBeenCalled();
+    electron.cursor = { x: 260, y: 170 };
+    vi.advanceTimersByTime(16);
+    expect(child.setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
+    expect(child.webContents.send).toHaveBeenLastCalledWith("native_overlay.tooltip_pointer", { x: 120, y: 70 });
+    update({ ...input, interactive: true });
+    child.focused = true;
+    electron.cursor = { x: 40, y: 60 };
+    vi.advanceTimersByTime(16);
+    expect(child.setIgnoreMouseEvents).toHaveBeenLastCalledWith(true, { forward: true });
+    expect(parent.focus).toHaveBeenCalledOnce();
+    update({ regions: [], interactive: false });
+    expect(vi.getTimerCount()).toBe(0);
+    controller.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("stops cursor tracking for ordinary overlays and releases an active tracker on destruction", () => {
+    vi.useFakeTimers();
+    const { child, controller, open, update } = fixture();
+    electron.cursor = { x: 120, y: 130 };
+    open();
+    const input = { regions: [{ x: 90, y: 90, width: 100, height: 60 }], interactive: false, tooltipOnly: true };
+    update(input);
+    expect(vi.getTimerCount()).toBe(1);
+    update({ ...input, tooltipOnly: false, interactive: true });
+    expect(vi.getTimerCount()).toBe(0);
+    expect(child.setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
+    update(input);
+    expect(vi.getTimerCount()).toBe(1);
+    controller.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it.each(["parent", "child"] as const)("releases %s after Electron invalidates the window's webContents getter", (target) => {
     const { parent, child, controller, open } = fixture();
     open();

@@ -1,7 +1,7 @@
 import { NATIVE_OVERLAY_FRAME_NAME, type NativeOverlayRegionsInput, type NativeOverlayResizePointer } from "@agent/protocol";
 import { createContext, useContext, useEffect, useState, type ReactElement, type ReactNode } from "react";
 
-import { NATIVE_OVERLAY_READY } from "../../lib/native-overlay.js";
+import { NATIVE_OVERLAY_READY, NATIVE_TOOLTIP_POINTER } from "../../lib/native-overlay.js";
 import { LIVE_PANEL_RESIZE_EVENT, type LivePanelResizeDetail } from "../layout/live-panel-resize.js";
 
 const NativeOverlayContext = createContext<HTMLElement | undefined>(undefined);
@@ -77,19 +77,22 @@ function connectOverlayHost(child: Window, root: HTMLElement): () => void {
       && [...document.querySelectorAll<HTMLElement>("[data-managed-browser-surface]")]
         .some((surface) => surface.getBoundingClientRect().width > 0);
     resizing = draggingBrowser;
+    const tooltipOnly = overlays.length > 0 && overlays.every((element) => element.hasAttribute("data-native-overlay-tooltip"));
     const regions = overlays.flatMap((element) => {
       const bounds = element.getBoundingClientRect();
       if (bounds.width <= 0 || bounds.height <= 0 || child.getComputedStyle(element).visibility === "hidden") return [];
-      const x = Math.max(0, Math.floor(bounds.left) - 12);
-      const y = Math.max(0, Math.floor(bounds.top) - 12);
-      const right = Math.min(window.innerWidth, Math.ceil(bounds.right) + 12);
-      const bottom = Math.min(window.innerHeight, Math.ceil(bounds.bottom) + 12);
+      const padding = tooltipOnly ? 5 : 12;
+      const x = Math.max(0, Math.floor(bounds.left) - padding);
+      const y = Math.max(0, Math.floor(bounds.top) - padding);
+      const right = Math.min(window.innerWidth, Math.ceil(bounds.right) + padding);
+      const bottom = Math.min(window.innerHeight, Math.ceil(bounds.bottom) + padding);
       return right > x && bottom > y ? [{ x, y, width: right - x, height: bottom - y }] : [];
     });
     const input: NativeOverlayRegionsInput = {
       regions,
       interactive: regions.length > 0 && overlays.some((element) => element.dataset.nativeOverlayInteractive !== "false"),
       resizing: draggingBrowser,
+      ...(tooltipOnly ? { tooltipOnly: true } : {}),
     };
     interactive = input.interactive;
     const key = JSON.stringify(input);
@@ -141,6 +144,9 @@ function connectOverlayHost(child: Window, root: HTMLElement): () => void {
   };
   const outsideEvents = ["pointerdown", "pointerup", "mousedown", "mouseup", "click"];
   for (const type of outsideEvents) window.addEventListener(type, forwardOutside);
+  const stopTooltipPointer = bridge.onTooltipPointer((pointer) => {
+    window.dispatchEvent(new CustomEvent(NATIVE_TOOLTIP_POINTER, { detail: pointer }));
+  });
   let pointerTimer: number | undefined;
   let latestPointer: NativeOverlayResizePointer | undefined;
   const flushPointer = (): void => {
@@ -230,6 +236,7 @@ function connectOverlayHost(child: Window, root: HTMLElement): () => void {
     if (!child.closed) returnFocus();
     for (const type of outsideEvents) window.removeEventListener(type, forwardOutside);
     if (!child.closed) {
+      stopTooltipPointer();
       stopResizePointer();
       child.removeEventListener("keydown", forwardKey);
       child.document.removeEventListener("focusin", focusContent);
