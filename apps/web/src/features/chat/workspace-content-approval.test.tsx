@@ -120,15 +120,15 @@ it("routes the assistant's relative QuickSort links into the existing workspace 
   expect(openFile.mock.calls).toEqual([["QuickSortDegenerate.java"], ["quicksort_degenerate.py"], ["quicksort-degenerate.js"]]);
 });
 
-it.each(["run_command", "wait_for_commands"])("copies %s command and output through the host clipboard when browser clipboard is denied", async (name) => {
+it("copies command and output through the host clipboard when browser clipboard is denied", async () => {
   const client = new MockAgentClient();
   const nativeWrite = vi.spyOn(client, "writeClipboardText").mockResolvedValue();
   const browserWrite = vi.fn().mockRejectedValue(new Error("Document is not focused"));
   vi.stubGlobal("navigator", { clipboard: { writeText: browserWrite } });
   const command = { command: "node sort.js", workingDirectory: ".", exitCode: 0, stdout: "sorted", stderr: "warning", timedOut: false, truncated: false };
   const tool: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID,
-    batchId: null, createdAt: "2026-10-16T00:00:00Z", name, arguments: '{"command":"node sort.js"}',
-    result: JSON.stringify({ ok: true, value: name === "run_command" ? command : { commands: [command], waitStatus: "finished" } }),
+    batchId: null, createdAt: "2026-10-16T00:00:00Z", name: "run_command", arguments: '{"command":"node sort.js"}',
+    result: JSON.stringify({ ok: true, value: command }),
     diff: null, status: "completed" };
   vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool]);
   const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -166,6 +166,7 @@ it.each(["running", "completed"] as const)("follows real command output events w
   }
   const pre = container.querySelector<HTMLElement>(".tool-command-terminal pre")!;
   expect(pre).not.toBeNull();
+  expect(pre.textContent).not.toContain("进程退出代码：未知");
   Object.defineProperties(pre, {
     clientHeight: { get: () => 100 },
     scrollHeight: { get: () => (pre.textContent?.length ?? 0) * 10 },

@@ -5069,6 +5069,7 @@ function formatLocalClock(timestamp: Date): string {
 export function groupRunActivities(
   timeline: ConversationTimelineItem[],
 ): TimelineDisplayItem[] {
+  timeline = timeline.filter(item => item.kind !== "tool" || item.name !== "wait_for_commands");
   const userIndexesByRun = new Map<string, number[]>();
   const restoredRunStarts = new Map<string, number>();
   for (const [index, item] of timeline.entries()) {
@@ -9426,7 +9427,7 @@ function commandTerminalOutputValue(result: CommandResultPayload): string {
   if (result.status === "cancelled") lines.push("[命令已停止]");
   if (result.timedOut) lines.push("[命令执行超时]");
   if (result.truncated) lines.push("[输出已截断]");
-  if (result.exitCode !== 0 && !result.timedOut) {
+  if (result.status !== "running" && result.exitCode !== 0 && !result.timedOut) {
     lines.push(`[进程退出代码：${result.exitCode ?? "未知"}]`);
   }
   if (lines.length === 0 && result.status === "completed") {

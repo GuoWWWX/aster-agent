@@ -237,6 +237,11 @@ describe("conversation turn navigator", () => {
     expect(document.querySelector("[role=tooltip]")?.textContent).toContain("回答");
     expect(markers[0]?.querySelector<HTMLElement>("span")?.style.width).toBe("32px");
     expect(markers[0]?.querySelector("span")?.className).toContain("bg-[var(--app-foreground)]");
+    const popup = document.querySelector<HTMLElement>('[data-native-view-overlay]')!;
+    act(() => { markers[0]?.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: popup })); });
+    expect(document.querySelector("[role=tooltip]")).not.toBeNull();
+    act(() => { popup.dispatchEvent(new MouseEvent("pointerout", { bubbles: true, relatedTarget: document.body })); });
+    expect(document.querySelector("[role=tooltip]")).toBeNull();
     Object.defineProperties(navigator!, {
       clientHeight: { configurable: true, value: 100 },
       scrollHeight: { configurable: true, value: 300 },

@@ -2944,7 +2944,6 @@ describe("AgentRuntime", () => {
       "stop_command",
       "update_task_list",
       "wait_for_agent_message",
-      "wait_for_commands",
       "wait_for_subagents",
       "wait_for_user_input",
       "web_search"

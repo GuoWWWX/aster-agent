@@ -525,13 +525,7 @@ export class ProjectToolRegistry {
         parameters: modelToolParameters(listBackgroundCommandsArgumentsSchema),
       },
       {
-        description:
-          "Wait for one or more background commands returned by run_command. waitFor=any returns when one finishes; waitFor=all waits for every command. timeoutMs only bounds this wait and does not stop commands.",
-        name: "wait_for_commands",
-        parameters: modelToolParameters(waitForCommandsArgumentsSchema),
-      },
-      {
-        description: "Stop one running background command by the commandId returned from run_command. Returns a compact status receipt without command output; completedAt=null means process exit is not yet confirmed. Only call wait_for_commands separately if output is needed. If the ID is no longer in recent context, call list_background_commands first instead of guessing or reusing an old ID.",
+        description: "Stop one running background command by the commandId returned from run_command. Returns a compact status receipt without command output; completedAt=null means process exit is not yet confirmed. If the ID is no longer in recent context, call list_background_commands first instead of guessing or reusing an old ID.",
         name: "stop_command",
         parameters: modelToolParameters(stopCommandArgumentsSchema),
       },

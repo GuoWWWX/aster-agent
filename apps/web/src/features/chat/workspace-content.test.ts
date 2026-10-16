@@ -58,6 +58,12 @@ import {
 } from "./workspace-content.js";
 
 describe("tool details visibility", () => {
+  it("omits legacy command waits from the work process while retaining the command and final answer", () => {
+    const projected = groupRunActivities([{ ...tool, name: "run_command" }, { ...tool, id: "wait", name: "wait_for_commands" }, assistantMessage("answer", "已完成")]);
+    expect(JSON.stringify(projected)).not.toContain("wait_for_commands");
+    expect(JSON.stringify(projected)).toContain("run_command");
+    expect(projected.at(-1)).toMatchObject({ content: "已完成" });
+  });
   const tool: ConversationToolItem = { id: "tool", kind: "tool", conversationId: "conversation", runId: "run", batchId: null,
     createdAt: "2026-10-16T00:00:00Z", name: "browser_control", arguments: '{"action":"open"}', result: '{"ok":true,"value":{"url":"https://example.com"}}', diff: null, status: "completed" };
   it("hides placeholder-only browser results and preserves errors, approval and screenshot details", () => {

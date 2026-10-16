@@ -53,6 +53,7 @@ describe("ProjectToolRegistry", () => {
   it("retires list_directory from the manifest and rejects stale model calls", async () => {
     const { project, projects, tools } = await createFixture();
     expect(tools.getDefinitions().map((tool) => tool.name)).not.toContain("list_directory");
+    expect(tools.getDefinitions().map((tool) => tool.name)).not.toContain("wait_for_commands");
     expect(() => tools.getExecutionPolicy("list_directory", "{}", false)).toThrow("Unknown project tool");
     const result = await tools.execute("list_directory", "{}", project.id, new AbortController().signal);
     expect(result.isError).toBe(true);
@@ -435,7 +436,6 @@ describe("ProjectToolRegistry", () => {
 
     expect(tools.getCommandDefinitions().map((tool) => tool.name)).toEqual([
       "list_background_commands",
-      "wait_for_commands",
       "stop_command",
       "run_command",
     ]);
@@ -572,7 +572,6 @@ describe("ProjectToolRegistry", () => {
       "list_project_operations",
       "wait_for_project_operation",
       "list_background_commands",
-      "wait_for_commands",
       "stop_command",
       "read_file",
       "read_external_file",

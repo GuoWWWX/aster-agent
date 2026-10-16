@@ -40,6 +40,12 @@ function tool(name: string, options: Partial<ConversationToolItem> = {}): Conver
 }
 
 describe("formatConversationRunMarkdown", () => {
+  it("omits legacy command waits from the copied reply", () => {
+    const result = formatConversationRunMarkdown([tool("wait_for_commands", { result: "DUPLICATE_WAIT_LOG" })], message("已完成"));
+    expect(result).not.toContain("DUPLICATE_WAIT_LOG");
+    expect(result).not.toContain("命令等待");
+    expect(result).toContain("已完成");
+  });
   it("keeps a plain assistant response compatible", () => {
     const result = formatConversationRunMarkdown([], message("# 已完成\n\n正文"));
     expect(result).toBe("## 模型回复\n\n# 已完成\n\n正文\n");

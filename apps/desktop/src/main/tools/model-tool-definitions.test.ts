@@ -76,9 +76,7 @@ describe("model tool definitions", () => {
       });
     }
 
-    expect(property(definitions, "wait_for_commands", "commandIds")).toMatchObject({
-      items: { format: "uuid", type: "string" },
-    });
+    expect(definitions.some((tool) => tool.name === "wait_for_commands")).toBe(false);
     expect(property(definitions, "wait_for_subagents", "taskIds")).toMatchObject({
       items: { format: "uuid", type: "string" },
     });

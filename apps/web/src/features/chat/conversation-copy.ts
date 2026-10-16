@@ -60,7 +60,7 @@ export function formatConversationRunMarkdown(
     : source.filter(
       (item): item is ConversationMessageItem | ConversationToolItem =>
         (includesContinuation || item.runId === runId)
-        && (item.kind === "message" || (item.kind === "tool" && item.name !== "compact_context")),
+        && (item.kind === "message" || (item.kind === "tool" && item.name !== "compact_context" && item.name !== "wait_for_commands")),
     );
   const assistantItems = runItems.filter(
     (item): item is ConversationMessageItem =>

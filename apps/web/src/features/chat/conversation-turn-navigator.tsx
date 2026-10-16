@@ -403,6 +403,10 @@ export function ConversationTurnNavigator({
               key={turn.id}
               contentClassName="!w-fit !max-w-96 overflow-hidden !px-2.5 !py-2 !text-[length:var(--app-font-size-control)] !leading-[1.4]"
               open={hoveredIndex === index}
+              onOpenChange={(value) => {
+                if (value) setHoveredIndex(index);
+                else if (dragPointerRef.current === null) setHoveredIndex(null);
+              }}
               side="right"
               content={(
                 <span className="grid min-w-0 max-w-[22rem] gap-1 overflow-hidden text-left">
@@ -425,14 +429,8 @@ export function ConversationTurnNavigator({
                     : `calc(50% + ${offset}px)`,
                 }}
                 type="button"
-                onBlur={() => {
-                  if (dragPointerRef.current === null) setHoveredIndex(null);
-                }}
                 onFocus={() => setHoveredIndex(index)}
                 onMouseEnter={() => setHoveredIndex(index)}
-                onMouseLeave={() => {
-                  if (dragPointerRef.current === null) setHoveredIndex(null);
-                }}
                 onPointerDown={(event) => {
                   if (event.button !== 0) return;
                   event.preventDefault();
