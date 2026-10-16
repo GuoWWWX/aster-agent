@@ -2,7 +2,7 @@ import { htmlPresentationResultSchema, presentHtmlInputSchema } from "@agent/pro
 import { toolErrorContent } from "../errors/tool-error.js";
 import type { ModelToolDefinition } from "../model/model-contracts.js";
 import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
-import { readHtmlPreviewFile } from "../preview/html-preview-file.js";
+import { HTML_PREVIEW_MAX_BYTES, readHtmlPreviewFile } from "../preview/html-preview-file.js";
 import type { ToolExecution } from "./project-tool-registry.js";
 
 export class HtmlPresentationTool {
@@ -10,16 +10,26 @@ export class HtmlPresentationTool {
 
   public getDefinitions(): ModelToolDefinition[] {
     return [{ name: "present_html", parameters: modelToolParameters(presentHtmlInputSchema),
-      description: "Present an existing workspace HTML page to the user as a final delivery, with interactive preview and source tabs. Call this after creating and verifying the page, near the end of the task. Ordinary HTML project edits only need file changes; do not call unless the user wants to see the page in the conversation. This does not write files, start a dev server, or open a browser tab." }];
+      description: "Deliver HTML near the end of the task after verification. Use path for an existing workspace page, or pages for multiple named design alternatives in one paginated comparison card. Each option can be inline HTML (kind=code, html; fragments supported, no file required) or an existing file (kind=file, path). Prefer pages when the user requests multiple designs to compare or choose; do not group unrelated pages automatically. This does not write files, start a dev server, open a browser, or end the run." }];
   }
 
   public async execute(conversationId: string, rawArguments: string, signal: AbortSignal): Promise<ToolExecution> {
     try {
       signal.throwIfAborted();
       const input = presentHtmlInputSchema.parse(parseToolArguments(rawArguments));
-      await readHtmlPreviewFile(await this.workspaceRoot(conversationId), input.path);
+      const paths = input.path !== undefined ? [input.path] : input.pages!.flatMap(page => page.kind === "file" ? [page.path] : []);
+      if (paths.length > 0) {
+        const root = await this.workspaceRoot(conversationId);
+        for (const path of paths) {
+          signal.throwIfAborted();
+          await readHtmlPreviewFile(root, path);
+        }
+      }
+      const inlineBytes = input.pages?.reduce((bytes, page) => bytes + (page.kind === "code" ? Buffer.byteLength(page.html) : 0), 0) ?? 0;
+      if (inlineBytes > HTML_PREVIEW_MAX_BYTES) throw new Error("方案中的 HTML 内容合计不能超过 1 MB。");
       signal.throwIfAborted();
-      const result = htmlPresentationResultSchema.parse({ ok: true, value: { presentation: { kind: "html", path: input.path } } });
+      const presentation = input.path !== undefined ? { kind: "html", path: input.path } : { kind: "html_gallery", pages: input.pages };
+      const result = htmlPresentationResultSchema.parse({ ok: true, value: { presentation } });
       return { kind: "completed", isError: false, content: JSON.stringify(result) };
     } catch (error) {
       return { kind: "completed", isError: true, content: toolErrorContent(error, "tool:present_html") };

@@ -58,6 +58,10 @@ describe("prompt assets", () => {
     expect(BASE_SYSTEM_PROMPT).toContain("Create or edit files according to the user's needs and task; inline rendering does not require an HTML file");
     expect(BASE_SYSTEM_PROMPT).not.toContain("one complete `html` fenced code block");
     expect(BASE_SYSTEM_PROMPT).not.toContain("finish creating and verifying its files first");
+    expect(BASE_SYSTEM_PROMPT).toContain("multiple page or component designs to compare and choose");
+    expect(BASE_SYSTEM_PROMPT).toContain("prefer one paginated `present_html` delivery with `pages`");
+    expect(BASE_SYSTEM_PROMPT).toContain('each `{title, kind:"code", html}`');
+    expect(BASE_SYSTEM_PROMPT).toContain("automatically group unrelated pages");
   });
 
   it("loads the bundled browser Skill", () => {

@@ -482,11 +482,13 @@ it.each([
   expect(container.querySelector("iframe") !== null).toBe(shouldPreview);
 });
 
-it("shows a successful presentation tool as the final delivery outside the work process", async () => {
+it.each([false, true])("shows a successful presentation tool as the final delivery outside the work process (gallery=%s)", async gallery => {
   const client = new MockAgentClient();
   const tool: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID,
     batchId: null, name: "present_html", status: "completed", arguments: '{"path":"examples/demo.html"}',
-    result: JSON.stringify({ ok: true, value: { presentation: { kind: "html", path: "examples/demo.html" } } }),
+    result: JSON.stringify({ ok: true, value: { presentation: gallery
+      ? { kind: "html_gallery", pages: [{ title: "方案 A", kind: "file", path: "examples/demo.html" }, { title: "方案 B", kind: "code", html: "<div>B</div>" }] }
+      : { kind: "html", path: "examples/demo.html" } } }),
     diff: null, createdAt: "2026-10-15T00:00:00Z" };
   const answer: ConversationTimelineItem = { id: MESSAGE_ID, kind: "message", conversationId: PARENT_ID,
     runId: RUN_ID, attachments: [], modelId: null, role: "assistant", status: "completed", content: "页面已完成。", createdAt: "2026-10-15T00:00:01Z" };
@@ -504,6 +506,7 @@ it("shows a successful presentation tool as the final delivery outside the work 
   expect(preview).toHaveBeenCalledWith({ kind: "file", conversationId: PARENT_ID, path: "examples/demo.html" });
   expect(container.querySelectorAll("iframe")).toHaveLength(1);
   const card = container.querySelector('[data-html-delivery]');
+  expect(card?.querySelector('[aria-label="HTML 方案对比"]') !== null).toBe(gallery);
   expect(card?.closest(".conversation-run-activity")).toBeNull();
   expect(container.textContent.indexOf("页面已完成。")).toBeLessThan(container.textContent.indexOf("demo.html"));
   const copy = container.querySelector('[aria-label="复制完整回复"]');

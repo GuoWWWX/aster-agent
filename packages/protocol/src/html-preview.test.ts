@@ -21,6 +21,18 @@ describe("HTML preview contracts", () => {
       { kind: "browser", conversationId: id, id: "invalid" },
     ]) expect(htmlPreviewRequestSchema.safeParse(input).success).toBe(false);
   });
+  it("accepts named comparison pages from files or inline fragments without changing single-page inputs", () => {
+    const pages = [{ title: "清爽版", kind: "code", html: "<div>方案 A</div>" }, { title: "紧凑版", kind: "file", path: "pages/b.html" }];
+    expect(presentHtmlInputSchema.safeParse({ pages }).success).toBe(true);
+    expect(htmlPresentationResultSchema.safeParse({ ok: true, value: { presentation: { kind: "html_gallery", pages } } }).success).toBe(true);
+    for (const input of [{}, { path: "demo.html", pages }, { pages: [] }, { pages: pages.slice(0, 1) },
+      { pages: Array.from({ length: 13 }, () => pages[0]) },
+      { pages: [{ ...pages[0], title: "" }, pages[1]] },
+      { pages: [pages[0], { ...pages[1], path: "../outside.html" }] },
+      { pages: [{ ...pages[0], html: "x".repeat(500_001) }, { ...pages[0], html: "x".repeat(500_001) }] },
+      { pages: [{ ...pages[0], path: "demo.html" }, pages[1]] },
+    ]) expect(presentHtmlInputSchema.safeParse(input).success).toBe(false);
+  });
   it("only returns loopback HTTP origins", () => {
     const preview = { id, title: "示例", source: "test", url: "http://127.0.0.1:1234/token/index.html" };
     expect(htmlPreviewSchema.safeParse(preview).success).toBe(true);

@@ -1,4 +1,4 @@
-export { htmlPreviewRequestSchema, htmlPreviewSchema, htmlPreviewResponseSchema, htmlPreviewResizeMessageSchema, presentHtmlInputSchema, htmlPresentationResultSchema, HTML_PREVIEW_MAX_HEIGHT, type HtmlPreviewRequest, type HtmlPreview } from "./html-preview.js";
+export { htmlPreviewRequestSchema, htmlPreviewSchema, htmlPreviewResponseSchema, htmlPreviewResizeMessageSchema, presentHtmlInputSchema, htmlPresentationResultSchema, htmlPresentationPageSchema, HTML_PREVIEW_MAX_HEIGHT, type HtmlPreviewRequest, type HtmlPreview, type HtmlPresentationPage } from "./html-preview.js";
 export { capabilitySetSchema } from "./capability.js";
 export type { CapabilitySet } from "./capability.js";
 export {

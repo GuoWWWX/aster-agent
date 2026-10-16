@@ -3,6 +3,7 @@ import { ConversationWorkIndicator, toolWorkPhase } from "./conversation-work-st
 import { ConversationChangesBadge, ConversationChangesCard } from "./conversation-file-changes.js";
 import { htmlPresentationDeliveries } from "./html-presentations.js";
 import { HtmlPreviewCard, HtmlPreviewScope } from "../../components/html-preview/html-preview-card.js";
+import { HtmlPreviewGallery } from "../../components/html-preview/html-preview-gallery.js";
 import { QueryTextarea } from "./query-textarea.js";
 import { UserMessageContent } from "./user-message-content.js";
 import { createPastedTextAttachment } from "./pasted-text-attachment.js";
@@ -3279,7 +3280,7 @@ export function ConversationWorkspace({
                   <div className="chat-message-group gap-[5px]" data-role="assistant">
                     {deliveries.map(delivery => (
                       <div data-html-delivery={delivery.id} key={delivery.id}>
-                        <HtmlPreviewCard source={{ kind: "file", path: delivery.path }} />
+                        {"pages" in delivery ? <HtmlPreviewGallery pages={delivery.pages} /> : <HtmlPreviewCard source={{ kind: "file", path: delivery.path }} />}
                       </div>
                     ))}
                     {changes.map(change => <ConversationChangesCard key={change.runId} summary={change.summary} onReview={path => openChangeReview(change.runId, path)} />)}
@@ -7377,6 +7378,7 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
     case "view_image":
       return `${completed ? "已查看图片" : "查看图片"} ${path === null ? "" : fileNameFromPath(path)}`.trim();
     case "present_html":
+      if (Array.isArray(argumentsValue?.pages)) return `${completed ? "已展示" : "展示"} ${argumentsValue.pages.length} 个 HTML 方案`;
       return `${completed ? "已展示" : "展示"} HTML${path === null ? "" : ` · ${path}`}`;
     case "view_attachments": {
       if (Array.isArray(argumentsValue?.paths)) return `${completed ? "已查看" : "查看"} ${argumentsValue.paths.length} 张图片`;

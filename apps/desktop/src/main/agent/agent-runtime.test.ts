@@ -1726,7 +1726,8 @@ class ModelBackedContextCompactorFixture implements ModelProviderAdapter {
 }
 
 describe("AgentRuntime", () => {
-  it.each([{ temporary: false, blocked: false }, { temporary: true, blocked: false }, { temporary: false, blocked: true }])("persists present_html with workspace policy (temporary=$temporary, blocked=$blocked)", async ({ temporary, blocked }) => {
+  it.each([{ temporary: false, blocked: false }, { temporary: true, blocked: false }, { temporary: false, blocked: true }]
+    .flatMap(value => [{ ...value, gallery: false }, { ...value, gallery: true }]))("persists present_html with workspace policy (temporary=$temporary, blocked=$blocked, gallery=$gallery)", async ({ temporary, blocked, gallery }) => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-present-html-"));
     temporaryDirectories.push(directory);
     await writeFile(path.join(directory, "demo.html"), "<h1>交付</h1>");
@@ -1740,7 +1741,9 @@ describe("AgentRuntime", () => {
     const model: ModelProviderAdapter = { completeTurn(input) {
       requests.push({ ...input, messages: [...input.messages] });
       if (requests.length === 1) return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [
-        { id: "present-page", name: "present_html", arguments: '{"path":"demo.html"}' },
+        { id: "present-page", name: "present_html", arguments: JSON.stringify(gallery
+          ? { pages: [{ title: "文件版", kind: "file", path: "demo.html" }, { title: "片段版", kind: "code", html: "<div>备选</div>" }] }
+          : { path: "demo.html" }) },
       ] });
       input.onTextDelta("页面已交付");
       return Promise.resolve({ content: "页面已交付", finishReason: "stop", toolCalls: [] });
@@ -1761,7 +1764,7 @@ describe("AgentRuntime", () => {
     expect(entry).toMatchObject({ status: blocked ? "failed" : "completed", executionMode: "serial" });
     const result = requests[1]?.messages.find(message => message.role === "tool" && message.toolCallId === "present-page")?.content;
     if (blocked) expect(result).not.toContain('"presentation"');
-    else expect(result).toContain('"kind":"html"');
+    else expect(result).toContain(gallery ? '"kind":"html_gallery"' : '"kind":"html"');
     database.close();
     const reopened = new AgentDatabase(databasePath);
     expect(reopened.listTimeline(conversation.id).find(item => item.id === entry?.id)).toEqual(entry);

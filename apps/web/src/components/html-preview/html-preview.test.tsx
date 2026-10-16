@@ -8,6 +8,7 @@ import { TooltipProvider } from "../ui/tooltip.js";
 import { AgentMarkdown, renderAgentMarkdown } from "../markdown/agent-markdown.js";
 import * as highlighter from "../markdown/code-highlighter.js";
 import { HtmlPreviewCard, HtmlPreviewScope } from "./html-preview-card.js";
+import { HtmlPreviewGallery } from "./html-preview-gallery.js";
 
 const conversationId = "00000000-0000-4000-8000-000000000001";
 const result: HtmlPreview = { id: conversationId, title: "demo.html", url: "http://127.0.0.1:1234/token/demo.html", source: "<h1>页面</h1>" };
@@ -74,6 +75,34 @@ describe("conversation HTML previews", () => {
     expect(request).not.toHaveBeenCalled();
     expect(node.querySelector("iframe")).toBeNull();
     expect(node.querySelector("code")?.textContent).toBe("pages/demo.html\n");
+  });
+
+  it("loads only the selected alternative, releases the previous preview and copies the current page", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    await render(<HtmlPreviewGallery pages={[
+      { title: "清爽版", kind: "code", html: "<div>A</div>" },
+      { title: "紧凑版", kind: "code", html: "<button>B</button>" },
+      { title: "文件版", kind: "file", path: "pages/c.html" },
+    ]} />);
+    expect(node.querySelectorAll("iframe")).toHaveLength(1);
+    expect(node.querySelector('[aria-label="选择预览方案"]')?.textContent).toContain("1 / 3 · 清爽版");
+    expect(node.querySelector<HTMLButtonElement>('[aria-label="上一个方案"]')?.disabled).toBe(true);
+    expect(request.mock.calls.filter(([input]) => input.kind === "code")).toHaveLength(1);
+    await click("下一个方案");
+    expect(node.querySelector('[aria-label="选择预览方案"]')?.textContent).toContain("2 / 3 · 紧凑版");
+    expect(request).toHaveBeenCalledWith({ kind: "release", id: result.id, conversationId });
+    expect(node.querySelectorAll("iframe")).toHaveLength(1);
+    await click("显示源码");
+    expect(node.querySelector(".cm-content")?.textContent).toBe("<button>B</button>");
+    await click("复制代码");
+    expect(writeText).toHaveBeenCalledWith("<button>B</button>");
+    await click("下一个方案");
+    expect(node.querySelector<HTMLButtonElement>('[aria-label="下一个方案"]')?.disabled).toBe(true);
+    expect(request).toHaveBeenCalledWith({ kind: "file", path: "pages/c.html", conversationId });
+    await click("上一个方案");
+    expect(node.querySelector('[aria-label="选择预览方案"]')?.textContent).toContain("2 / 3 · 紧凑版");
+    expect(node.querySelectorAll("iframe")).toHaveLength(1);
   });
 
   it("keeps loading feedback after the preview URL is created until the frame is ready", async () => {

@@ -15,6 +15,15 @@ describe("HTML delivery projection", () => {
     expect(htmlPresentationDeliveries([tool], [{ id: "process", runIds: ["run"] }], null).has("process")).toBe(true);
     expect(htmlPresentationDeliveries([tool], [{ id: "merged", runId: "other", continuationMessages: [{ runId: "run" }, { runId: "other" }] }], null).has("merged")).toBe(true);
   });
+  it("keeps a comparison as one ordered delivery after completion and after history reload", () => {
+    const pages = [{ title: "A", kind: "code", html: "<div>A</div>" }, { title: "B", kind: "file", path: "b.html" }];
+    const gallery = { ...tool, result: JSON.stringify({ ok: true, value: { presentation: { kind: "html_gallery", pages } } }) };
+    const anchors = [{ id: "answer", runId: "run" }];
+    expect(htmlPresentationDeliveries([gallery], anchors, "run").size).toBe(0);
+    expect(htmlPresentationDeliveries([JSON.parse(JSON.stringify(gallery))], anchors, null).get("answer"))
+      .toEqual([{ id: "delivery", pages }]);
+    expect(htmlPresentationDeliveries([{ ...gallery, status: "failed" }], anchors, null).size).toBe(0);
+  });
   it("keeps only the latest delivery for the same path across runs", () => {
     const next = { ...tool, id: "latest", runId: "next-run" };
     const anchors = [{ id: "answer", runId: "run" }, { id: "next-answer", runId: "next-run" }];

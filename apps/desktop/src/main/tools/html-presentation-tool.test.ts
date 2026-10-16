@@ -36,6 +36,35 @@ describe("HTML presentation tool", () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
+  it("delivers named inline alternatives without resolving a workspace or creating files", async () => {
+    const resolve = vi.fn(() => Promise.resolve(root));
+    tool = new HtmlPresentationTool(resolve);
+    const pages = [{ title: "A", kind: "code", html: "<div>A</div>" }, { title: "B", kind: "code", html: "<button>B</button>" }];
+    const result = await tool.execute(conversationId, JSON.stringify({ pages }), signal());
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toEqual({ ok: true, value: { presentation: { kind: "html_gallery", pages } } });
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it("validates every referenced file before delivering a mixed comparison", async () => {
+    const pages = [{ title: "文件方案", kind: "file", path: "pages/demo.html" }, { title: "片段方案", kind: "code", html: "<div>B</div>" }];
+    const result = await tool.execute(conversationId, JSON.stringify({ pages }), signal());
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).toEqual({ ok: true, value: { presentation: { kind: "html_gallery", pages } } });
+    const failed = await tool.execute(conversationId, JSON.stringify({ pages: [...pages, { title: "缺失", kind: "file", path: "missing.html" }] }), signal());
+    expect(failed.isError).toBe(true);
+    expect(failed.content).not.toContain('"presentation"');
+    const escaped = await tool.execute(conversationId, JSON.stringify({ pages: [pages[1], { title: "越界", kind: "file", path: "../demo.html" }] }), signal());
+    expect(escaped.isError).toBe(true);
+  });
+
+  it("bounds combined inline UTF-8 bytes and checks cancellation for an inline delivery", async () => {
+    const pages = [{ title: "A", kind: "code", html: "汉".repeat(200_000) }, { title: "B", kind: "code", html: "字".repeat(200_000) }];
+    expect((await tool.execute(conversationId, JSON.stringify({ pages }), signal())).isError).toBe(true);
+    const controller = new AbortController(); controller.abort();
+    expect((await tool.execute(conversationId, JSON.stringify({ pages: pages.map(page => ({ ...page, html: "<div>内容</div>" })) }), controller.signal)).isError).toBe(true);
+  });
+
   it("rejects missing, hidden, binary, oversized and symlink-escaped files", async () => {
     const outside = await mkdtemp(path.join(os.tmpdir(), "aster-html-outside-"));
     try {
