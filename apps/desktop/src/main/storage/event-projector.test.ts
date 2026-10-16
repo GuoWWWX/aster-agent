@@ -24,6 +24,48 @@ afterEach(async () => {
 });
 
 describe("EventProjector", () => {
+  it.each(["event", "snapshot"] as const)("recovers tool screenshot bytes from %s references without creating drafts", async (mode) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-browser-image-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const creation = source.prepareConversationCreation(null);
+    source.projectConversationCreated(creation);
+    const id = creation.conversation.id;
+    const run = source.createRunWithUserMessage(id, "截图", "demo");
+    const tool = conversationToolItemSchema.parse({
+      arguments: '{"action":"screenshot"}', batchId: null, conversationId: id,
+      createdAt: new Date().toISOString(), diff: null, executionMode: "serial",
+      id: crypto.randomUUID(), kind: "tool", name: "browser_control", result: null,
+      runId: run.runId, status: "running",
+    });
+    source.appendToolStarted(tool);
+    const root = path.join(directory, "managed");
+    const store = new ConversationAttachmentStore(source, new ProjectRegistry(source), root);
+    const image = await store.saveToolScreenshot(id, tool.id, { data: "c2NyZWVuc2hvdA==", mimeType: "image/jpeg", contextTokens: 1024 });
+    const completed = { ...tool, status: "completed" as const, result: JSON.stringify({ ok: true, value: { image, width: 800, height: 600 } }) };
+    source.completeTool({ providerCallId: "screenshot-call", result: completed.result, tool: completed });
+    source.finishRun(run.runId, "completed", null);
+    const log = new ThreadLog(path.join(directory, "conversations"));
+    log.append(id, { type: "conversation_created", payload: creation });
+    if (mode === "snapshot") {
+      log.append(id, { type: "legacy_snapshot_imported", payload: { ...source.exportThreadLogLegacySnapshot(id), attachmentRefs: [] } });
+    } else {
+      log.append(id, { type: "run_created", payload: { runId: run.runId, modelId: "demo" } });
+      log.append(id, { type: "user_message", payload: { message: run.userMessage, content: "截图", runId: run.runId } });
+      log.append(id, { type: "tool_call_requested", payload: { tool, toolCallId: "screenshot-call", runId: run.runId } });
+      log.append(id, { type: "tool_result", payload: { tool: completed, content: completed.result, toolCallId: "screenshot-call", runId: run.runId, attachmentRefs: [image] } });
+      log.append(id, { type: "run_finished", payload: { runId: run.runId, status: "completed", error: null } });
+    }
+    const recovered = new AgentDatabase(":memory:");
+    const recoveredStore = new ConversationAttachmentStore(recovered, new ProjectRegistry(recovered), root);
+    try {
+      new EventProjector(recovered, log, ref => recoveredStore.resolveThreadLogPaths(ref)).projectAllConversationLogs();
+      expect(recoveredStore.readImagePreview(id, image.id).data).toBe("c2NyZWVuc2hvdA==");
+      expect(recoveredStore.listDrafts(id)).toEqual([]);
+      expect(recovered.getConversationAttachment(id, image.id).messageId).toBe(tool.id);
+      expect(recovered.listTimeline(id)).toContainEqual(expect.objectContaining({ id: tool.id, result: completed.result }));
+    } finally { source.close(); recovered.close(); }
+  });
   it("rehydrates a conversation with an orphaned Subagent task before a new message", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-orphaned-subagent-"));
     temporaryDirectories.push(directory);

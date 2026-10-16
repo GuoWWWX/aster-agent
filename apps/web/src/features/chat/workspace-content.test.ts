@@ -75,6 +75,7 @@ describe("tool details visibility", () => {
     expect(toolHasDisplayableDetails({ ...tool, status: "awaiting_approval" })).toBe(true);
     expect(toolHasDisplayableDetails({ ...tool, result: '{"ok":false,"error":"Page closed"}' })).toBe(true);
     expect(toolHasDisplayableDetails({ ...tool, result: '{"ok":true,"value":{"coordinateSpace":"screenshot_css_pixels","width":800,"height":600,"mimeType":"image/jpeg"}}' })).toBe(true);
+    expect(toolHasDisplayableDetails({ ...tool, arguments: '{"action":"observe"}', result: '{"ok":true,"value":{"text":"计数：1","elements":[],"coordinateSpace":"screenshot_css_pixels","width":800,"height":600,"mimeType":"image/jpeg"}}' })).toBe(true);
   });
   it("distinguishes a command still running from a completed empty tool result", () => {
     expect(toolHasDisplayableDetails({ ...tool, name: "run_command", arguments: '{"command":"ping localhost"}', status: "running", result: null })).toBe(true);

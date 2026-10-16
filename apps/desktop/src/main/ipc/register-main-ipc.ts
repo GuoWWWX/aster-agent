@@ -1693,6 +1693,7 @@ export function registerMainIpcHandlers(
   ipcMain.handle(IPC_CHANNELS.managedBrowserOpen, async (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = managedBrowserOpenIpcArgumentsSchema.parse(args);
+    if (input.conversationId !== undefined) database.getConversation(input.conversationId);
     return managedBrowserSessionSchema.parse(await managedBrowser.open(input));
   });
 

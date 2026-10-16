@@ -4501,6 +4501,7 @@ export class AgentRuntime {
       isError: true,
       kind: "completed",
     };
+    const toolImageRefs: ConversationAttachment[] = [];
     try {
       const unavailableReason = this.unavailableToolReason(input.toolCall.name);
       if (unavailableReason !== null) {
@@ -4577,6 +4578,15 @@ export class AgentRuntime {
               })
           : proposal;
       }
+      if (!execution.isError && this.attachments !== null && input.toolCall.name === "browser_control") {
+        const screenshot = execution.modelAttachments?.find((image) => image.source === "browser" && image.kind === "image");
+        if (screenshot?.kind === "image" && screenshot.data !== null) {
+          const image = await this.attachments.saveToolScreenshot(input.conversationId, startedTool.id, { ...screenshot, data: screenshot.data });
+          toolImageRefs.push(image);
+          const result = z.object({ ok: z.literal(true), value: z.record(z.string(), z.unknown()) }).parse(JSON.parse(execution.content));
+          execution = { ...execution, content: JSON.stringify({ ...result, value: { ...result.value, image } }) };
+        }
+      }
     } catch (error) {
       // Approval interrupts and cancellation must escape so LangGraph can
       // suspend/resume or terminate the run. Other tool failures are turned
@@ -4599,6 +4609,7 @@ export class AgentRuntime {
     });
     const resultEvent = {
       payload: {
+        ...(toolImageRefs.length === 0 ? {} : { attachmentRefs: toolImageRefs }),
         content: execution.content,
         resultCharacters: execution.content.length,
         runId: input.runId,

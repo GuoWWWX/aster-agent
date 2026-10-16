@@ -65,6 +65,7 @@ export function ManagedBrowserWorkspace({
   active,
   agentClient,
   colorScheme,
+  conversationId,
   initialUrl,
   menuRequest,
   session,
@@ -75,6 +76,7 @@ export function ManagedBrowserWorkspace({
   active: boolean;
   agentClient: AgentClient;
   colorScheme: "light" | "dark";
+  conversationId?: string;
   initialUrl: string;
   menuRequest: ManagedBrowserWorkspaceMenuRequest | null;
   session: ManagedBrowserSession | null;
@@ -160,7 +162,8 @@ export function ManagedBrowserWorkspace({
     if (!active || sessionRef.current !== null || openingRef.current) return;
     openingRef.current = true;
     const initialAddress = addressRef.current.trim();
-    void agentClient.openManagedBrowser(initialAddress.length === 0 ? {} : { url: initialAddress }).then((opened) => {
+    void agentClient.openManagedBrowser({ ...(initialAddress.length === 0 ? {} : { url: initialAddress }),
+      ...(conversationId === undefined ? {} : { conversationId }) }).then((opened) => {
       if (!mountedRef.current) {
         return agentClient.closeManagedBrowser({ sessionId: opened.sessionId });
       }
@@ -172,7 +175,7 @@ export function ManagedBrowserWorkspace({
     }).finally(() => {
       openingRef.current = false;
     });
-  }, [active, agentClient, session]);
+  }, [active, agentClient, conversationId, session]);
 
   useEffect(() => {
     if (menuRequest == null || handledMenuRequestIdRef.current === menuRequest.id) return;

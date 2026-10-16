@@ -187,6 +187,7 @@ export const terminalSessionEventSchema = z.discriminatedUnion("type", [
 ]);
 
 export const managedBrowserOpenInputSchema = z.object({
+  conversationId: conversationIdSchema.optional(),
   url: z.string().trim().min(1).max(8_192).optional(),
 }).strict();
 
@@ -288,6 +289,7 @@ export const managedBrowserSnapshotSchema = z.object({
 
 /** Main asks the Renderer to attach an Agent browser session to a visible workspace tab. */
 export const workspaceBrowserTabOpenRequestSchema = z.object({
+  background: z.boolean().optional(),
   conversationId: conversationIdSchema,
   projectId: projectIdSchema,
   requestedName: terminalTabNameSchema.nullable(),

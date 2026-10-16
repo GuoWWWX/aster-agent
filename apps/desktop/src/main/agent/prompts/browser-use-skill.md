@@ -9,10 +9,11 @@ Use this Skill when the task requires interacting with a rendered webpage, reusi
 
 The browser is controlled through the single `browser_control` tool. It accepts an `action` plus only the fields required by that action:
 
-- `open`: `url`, optional `name`, `background`, `width`, `height`; returns `browserId` and `background`. For page verification use `background: true` (no visible tab); the viewport defaults to 1280 by 800 CSS pixels and can be set to 320–2560 by 240–2160. Omit background or set false for a user-visible tab. Background sessions have isolated temporary storage and no password autofill or downloads.
-- `list`: no browser ID; returns live browser sessions owned by the current conversation. Use it to recover an ID after compaction or a long task, not before every action.
-- `observe`: `browserId`; returns bounded visible text, viewport size, element bounds, and fresh element references.
-- `screenshot`: `browserId`; returns the visible page as model vision input. Its width and height define the CSS-pixel coordinate space used by pointer actions.
+- `open`: `url`, optional `name`, `background`, `width`, `height`; returns `browserId` and `background`. For page verification use `background: true` (a silent sidebar tab; no automatic selection or sidebar expansion); the viewport defaults to 1280 by 800 CSS pixels and can be set to 320–2560 by 240–2160. Omit background or set false for a user-visible tab. Background sessions have isolated temporary storage and no password autofill or downloads.
+- `list`: no browser ID; returns live browser sessions owned by the current conversation, including manually opened sidebar tabs; each has browserId, title, URL and background state. Use it to recover an ID after compaction or a long task, not before every action.
+- `show`: `browserId`; selects the existing sidebar tab and expands the sidebar when the user asks to view it. It reuses the live page, preserving page state; observation and screenshots do not require showing a tab.
+- `observe`: `browserId`; returns bounded visible text, viewport size, element bounds, fresh element references, and a current screenshot as model vision input. The same tool record displays the saved screenshot to the user. Use it when DOM text or element references are needed; do not call screenshot again for the same unchanged page.
+- `screenshot`: `browserId`; captures only pixels for visual inspection, directly without a preliminary observe call. Observe already includes a screenshot, so do not add this after observe just to display the page. Both actions return CSS-pixel dimensions for pointer input and save a user-viewable image in their own tool details.
 - `navigate`: `browserId`, `url`.
 - `back`, `forward`, `reload`, `stop`: `browserId`.
 - `click`: `browserId`, then either `elementId` or both `x` and `y`; optional `button` and `clickCount`.
@@ -25,13 +26,13 @@ The browser is controlled through the single `browser_control` tool. It accepts 
 - `key`: `browserId`, `key`; optional `modifiers` (`alt`, `control`, `meta`, `shift`).
 - `scroll`: `browserId`, `deltaY`; optional `deltaX` and an `x`/`y` anchor.
 - `wait`: `browserId`, optional `timeoutMs`, `text`, and `urlIncludes`. With a condition it polls bounded page state; without one it performs a short delay.
-- `close`: `browserId`.
+- `close`: `browserId` to close one tab. `close_tabs` closes all current-conversation tabs when neither ID list is supplied; pass `browserIds` to close only those IDs, or `exceptBrowserIds` to keep those IDs and close the others. Never combine both lists. For example, use list, then close_tabs with exceptBrowserIds containing the result tab to keep it.
 
 ## Workflow
 
 1. Open a browser only when there is no suitable browser ID already returned in the current task. Prefer background mode for screenshots and layout checks. If testing a local app, start its development server through `run_command` service mode and confirm HTTP readiness before opening its URL. A background screenshot verifies the rendered webpage, not an unlaunched desktop application's native window.
-2. Observe first. Prefer a fresh semantic `elementId`: it is more stable than pixels and works across viewport changes.
-3. Use a screenshot only when the target is missing from observation, is visual/canvas content, or visible verification matters. Coordinates must come from the latest screenshot; never infer them from an older capture after resizing, navigation, scrolling, or layout changes.
+2. Choose the needed evidence: for visual-only inspection call screenshot directly, without observe. When page text or semantic interaction targets are needed, call observe and prefer a fresh elementId. Observe also includes an image, so there is no need for another screenshot of that unchanged state.
+3. Inspect the screenshot returned by observe for visual verification and canvas targets. Do not take a second screenshot of that unchanged page. Use screenshot alone only when a fresh image is needed without DOM information. Coordinates must come from the latest image; never infer them from an older capture after resizing, navigation, scrolling, or layout changes.
 4. `click` performs real browser pointer input. Use `clickCount: 2` for double-click and `button: right` for a context click. Use `move` for hover states and `drag` for bounded gestures. Reserve separate `mouse_down`/`mouse_up` for interactions that cannot be expressed as a drag, and always release a pressed button.
 5. Perform one state-changing action, then observe or screenshot again. Navigation, clicks, filling, selection, scrolling, and dynamic page updates can invalidate every earlier element reference and screenshot coordinate.
 6. Use `fill` rather than simulated typing when a normal text control has an element reference. Use `type` after focusing a canvas/editor or when keystroke-style insertion matters. Use `key` for shortcuts, submission, focus traversal, or controls that require key events.

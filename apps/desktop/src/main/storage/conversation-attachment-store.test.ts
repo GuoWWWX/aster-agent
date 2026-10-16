@@ -1,4 +1,4 @@
-import { access, cp, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -71,6 +71,19 @@ function createPdfFixture(): Buffer {
 }
 
 describe("ConversationAttachmentStore", () => {
+  it("rejects screenshot owners from another conversation and removes the rejected file", async () => {
+    const { conversation, database, managedRoot, store } = await createFixture();
+    const other = database.createConversation(null);
+    const run = database.createRunWithUserMessage(other.id, "Other conversation", "demo");
+    await expect(store.saveToolScreenshot(conversation.id, run.userMessage.id, {
+      data: "c2NyZWVuc2hvdA==", mimeType: "image/jpeg", contextTokens: 1024,
+    })).rejects.toThrow("Image owner must be a tool in this conversation.");
+    expect(await readdir(path.join(managedRoot, conversation.id, "attachments"))).toEqual([]);
+    expect(store.listDrafts(conversation.id)).toEqual([]);
+    await expect(store.saveToolScreenshot(conversation.id, run.userMessage.id, {
+      data: "", mimeType: "image/jpeg", contextTokens: 1024,
+    })).rejects.toThrow("Invalid browser screenshot.");
+  });
   it("rebases legacy managed attachment paths without deleting the legacy snapshot", async () => {
     const { conversation, database, managedRoot, store } = await createFixture();
     const attachment = await store.importBytes(conversation.id, {

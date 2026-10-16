@@ -8,6 +8,49 @@ const PROJECT_ID = "00000000-0000-4000-8000-000000000002";
 const BROWSER_ID = "00000000-0000-4000-8000-000000000003";
 
 describe("BrowserToolPlugin", () => {
+  it.each(["selected", "except", "all"] as const)("discovers manual tabs and closes %s tabs only after approval", async (mode) => {
+    const ids = [BROWSER_ID, "00000000-0000-4000-8000-000000000004", "00000000-0000-4000-8000-000000000005"];
+    const session = (id: string) => ({ sessionId: id, title: id, url: "https://example.test/", zoomPercent: 100, isLoading: false, canGoBack: false, canGoForward: false });
+    const alive = new Set(ids);
+    const browser = { back: vi.fn(), capture: vi.fn().mockResolvedValue({ data: "aGVsbG8=", height: 600, width: 800, mimeType: "image/jpeg" }), close: vi.fn(({ sessionId }: { sessionId: string }) => { alive.delete(sessionId); }),
+      forward: vi.fn(), getSession: vi.fn(({ sessionId }: { sessionId: string }) => session(sessionId)), interact: vi.fn(), navigate: vi.fn(),
+      observe: vi.fn().mockResolvedValue({ text: "Current page", title: "Example", elements: [] }), open: vi.fn(), reload: vi.fn(), stop: vi.fn(),
+      listForConversation: vi.fn((id: string) => id === CONVERSATION_ID ? [...alive].map(session) : []),
+    };
+    const tabs = new WorkspaceBrowserTabController(); const closed = vi.fn(() => true); tabs.onCloseRequested(closed);
+    const plugin = new BrowserToolPlugin(browser, tabs);
+    const execute = (arguments_: unknown) => plugin.execute({ conversationId: CONVERSATION_ID, projectId: PROJECT_ID,
+      rawArguments: JSON.stringify(arguments_), signal: new AbortController().signal, toolName: "browser_control" });
+    const list = await execute({ action: "list" });
+    expect(JSON.parse(list.content)).toMatchObject({ value: { sessions: ids.map(browserId => ({ browserId })) } });
+    await execute({ action: "observe", browserId: ids[1] });
+    expect(browser.observe).toHaveBeenCalledWith({ sessionId: ids[1] });
+    const shown = vi.fn((request: { requestId: string }) => {
+      tabs.confirmOpened({ requestId: request.requestId, resolvedName: "Existing page" });
+      return true;
+    });
+    tabs.onOpenRequested(shown);
+    const show = await execute({ action: "show", browserId: ids[1] });
+    expect(shown).not.toHaveBeenCalled();
+    if (show.kind !== "approved_action") throw new Error("Expected approval");
+    expect(JSON.parse((await show.action.execute()).content)).toMatchObject({ value: { browserId: ids[1], shown: true } });
+    expect(shown).toHaveBeenCalledOnce();
+    expect((await execute({ action: "show", browserId: PROJECT_ID })).isError).toBe(true);
+    const rejected = await execute({ action: "close_tabs", browserIds: [PROJECT_ID] });
+    expect(rejected.isError).toBe(true);
+    const invalid = await execute({ action: "close_tabs", browserIds: ids, exceptBrowserIds: [] });
+    expect(invalid.isError).toBe(true);
+    const proposal = await execute({ action: "close_tabs", ...(mode === "selected" ? { browserIds: [ids[1]] }
+      : mode === "except" ? { exceptBrowserIds: [ids[1]] } : {}) });
+    expect(browser.close).not.toHaveBeenCalled();
+    if (proposal.kind !== "approved_action") throw new Error("Expected approval");
+    const result = await proposal.action.execute();
+    const expected = mode === "selected" ? [ids[1]] : mode === "except" ? [ids[0], ids[2]] : ids;
+    expect(JSON.parse(result.content)).toMatchObject({ value: { closedBrowserIds: expected } });
+    expect(closed).toHaveBeenCalledTimes(expected.length);
+    expect(browser.close.mock.calls.map(([input]) => input.sessionId)).toEqual(expected);
+    tabs.dispose();
+  });
   it.each([false, true].flatMap(background => [PROJECT_ID, CONVERSATION_ID].map(projectId => ({ background, projectId }))))("opens and controls an owned browser in $projectId with background=$background", async ({ background, projectId }) => {
     const browser = {
       back: vi.fn(),
@@ -78,7 +121,7 @@ describe("BrowserToolPlugin", () => {
       ok: true,
       value: { browserId: BROWSER_ID, background, resolvedName: background ? "资料" : "资料 (1)" },
     });
-    expect(tabRequested).toHaveBeenCalledTimes(background ? 0 : 1);
+    expect(tabRequested).toHaveBeenCalledTimes(1);
     expect(browser.open).toHaveBeenCalledWith({ url: "https://example.test" }, background
       ? expect.objectContaining({ background: { width: 1280, height: 800 } }) : undefined);
 
@@ -94,6 +137,15 @@ describe("BrowserToolPlugin", () => {
       value: { sessions: [{ sessionId: BROWSER_ID, title: "Example" }] },
     });
 
+    const directScreenshot = await plugin.execute({
+      conversationId: CONVERSATION_ID, projectId,
+      rawArguments: JSON.stringify({ action: "screenshot", browserId: BROWSER_ID }),
+      signal: new AbortController().signal, toolName: BROWSER_TOOL_NAMES.control,
+    });
+    expect(directScreenshot.isError).toBe(false);
+    expect(browser.observe).not.toHaveBeenCalled();
+    expect(browser.capture).toHaveBeenCalledOnce();
+
     const observed = await plugin.execute({
       conversationId: CONVERSATION_ID,
       projectId,
@@ -103,8 +155,12 @@ describe("BrowserToolPlugin", () => {
     });
     expect(JSON.parse(observed.content)).toMatchObject({
       ok: true,
-      value: { elements: [{ id: "agent-1-0" }], title: "Example" },
+      value: { elements: [{ id: "agent-1-0" }], title: "Example", coordinateSpace: "screenshot_css_pixels", width: 800, height: 600 },
     });
+    expect(observed.kind === "completed" ? observed.modelAttachments : undefined).toEqual([
+      expect.objectContaining({ data: "aGVsbG8=", kind: "image", source: "browser" }),
+    ]);
+    expect(browser.capture).toHaveBeenCalledTimes(2);
 
     const screenshot = await plugin.execute({
       conversationId: CONVERSATION_ID,
@@ -189,7 +245,7 @@ describe("BrowserToolPlugin", () => {
       ok: true,
       value: { browserId: BROWSER_ID, closed: true },
     });
-    expect(closeRequested).toHaveBeenCalledTimes(background ? 0 : 1);
+    expect(closeRequested).toHaveBeenCalledTimes(1);
     expect(browser.close).toHaveBeenCalledWith({ sessionId: BROWSER_ID });
     if (background) {
       const reopened = await plugin.execute({ conversationId: CONVERSATION_ID, projectId: PROJECT_ID,

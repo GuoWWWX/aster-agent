@@ -120,7 +120,7 @@ export const conversationAttachmentSchema = z
     name: z.string().trim().min(1).max(255),
     projectPath: z.string().trim().min(1).max(4_096).nullable(),
     sizeBytes: z.number().int().nonnegative().max(MAX_ATTACHMENT_BYTES),
-    source: z.enum(["project", "upload"]),
+    source: z.enum(["project", "upload", "browser"]),
     truncated: z.boolean()
   })
   .strict();

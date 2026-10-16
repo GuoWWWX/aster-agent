@@ -11,6 +11,7 @@ import { MAX_DRAFT_ATTACHMENTS, MAX_DRAFT_ATTACHMENT_BYTES, getClipboardAttachme
 import { ScheduledTasksWorkspace } from "../schedules/scheduled-tasks-workspace.js";
 import { useComposerHistory } from "./use-composer-history.js";
 import { ProjectImageResult } from "./project-image-result.js";
+import { BrowserScreenshotResult } from "./browser-screenshot-result.js";
 import { ToolDisclosureContext, ToolRevealContext, useToolDisclosure } from "./tool-disclosure-state.js";
 import { CommandExecutionStatus, type CommandExecutionState } from "./command-execution-status.js";
 import { findComposerReferenceRanges } from "./composer-reference-ranges.js";
@@ -7423,6 +7424,8 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
           return completed ? "网页已打开" : "打开网页";
         case "observe":
           return completed ? "已查看页面" : "查看页面";
+        case "screenshot":
+          return completed ? "已截取页面" : "截取页面";
         case "navigate":
           return completed ? "已跳转网页" : "跳转网页";
         case "click":
@@ -7439,6 +7442,10 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
           return completed ? "页面等待结束" : "等待页面";
         case "close":
           return completed ? "网页已关闭" : "关闭网页";
+        case "close_tabs":
+          return completed ? "网页标签已关闭" : "关闭网页标签";
+        case "show":
+          return completed ? "已显示网页标签" : "显示网页标签";
         default:
           return completed ? "浏览器操作已完成" : "操作浏览器";
       }
@@ -7793,7 +7800,10 @@ function ToolDetail({
   onOpenProjectFile: ((path: string) => void) | undefined;
 }): ReactElement {
   const screenshot = item.name === "browser_control" && item.result !== null ? parseBrowserScreenshot(item.result) : null;
-  if (screenshot !== null) return <StructuredToolResult summary="网页截图"><p className="m-0">{screenshot.width} × {screenshot.height} · {screenshot.mimeType}</p></StructuredToolResult>;
+  if (screenshot !== null) return <StructuredToolResult summary="网页截图">
+    {screenshot.image === null ? null : <BrowserScreenshotResult agentClient={agentClient} image={screenshot.image} />}
+    <p className="m-0">{screenshot.width} × {screenshot.height} · {screenshot.mimeType}</p>
+  </StructuredToolResult>;
   if (item.name === "request_user_input") {
     const questions: unknown = parseToolPayload(item.arguments)?.questions;
     const prompts: unknown[] = Array.isArray(questions) ? questions : [];
@@ -7937,11 +7947,12 @@ function ToolDetail({
   return <ToolResultNotice result={item.result} status={item.status} />;
 }
 
-function parseBrowserScreenshot(payload: string): { width: number; height: number; mimeType: string } | null {
+function parseBrowserScreenshot(payload: string): { width: number; height: number; mimeType: string; image: ConversationAttachment | null } | null {
   const result = parseToolValue(payload);
+  const image = conversationAttachmentListSchema.safeParse([result?.image]);
   return result?.coordinateSpace === "screenshot_css_pixels" && typeof result.width === "number"
     && typeof result.height === "number" && typeof result.mimeType === "string"
-    ? { width: result.width, height: result.height, mimeType: result.mimeType } : null;
+    ? { width: result.width, height: result.height, mimeType: result.mimeType, image: image.success ? image.data[0] ?? null : null } : null;
 }
 
 export function toolHasDisplayableDetails(item: ConversationToolItem): boolean {

@@ -223,6 +223,32 @@ export class ConversationAttachmentStore {
     return this.database.listDraftConversationAttachments(conversationId);
   }
 
+  public async saveToolScreenshot(conversationId: string, toolId: string, image: {
+    data: string; mimeType: string; contextTokens: number;
+  }): Promise<ConversationAttachment> {
+    this.database.getConversation(conversationId);
+    const bytes = Buffer.from(image.data, "base64");
+    if (bytes.length === 0 || bytes.length > MAX_ATTACHMENT_BYTES || image.mimeType !== "image/jpeg") {
+      throw new Error("Invalid browser screenshot.");
+    }
+    const id = randomUUID();
+    const directory = this.getAttachmentDirectory(conversationId);
+    await mkdir(directory, { recursive: true });
+    const storedPath = path.join(directory, `${id}.jpg`);
+    await writeFile(storedPath, bytes);
+    try {
+      return this.database.createToolImageAttachment({
+        contextTokens: image.contextTokens, conversationId, createdAt: new Date().toISOString(),
+        extractedTextPath: null, id, kind: "image", messageId: toolId, pendingMessageId: null,
+        mimeType: image.mimeType, name: `browser-${conversationId}-${id}.jpg`, projectPath: null, sizeBytes: bytes.length,
+        source: "browser", storedPath, truncated: false,
+      });
+    } catch (error) {
+      await this.removeFile(storedPath);
+      throw error;
+    }
+  }
+
   public readImagePreview(
     conversationId: string,
     attachmentId: string,
@@ -246,6 +272,11 @@ export class ConversationAttachmentStore {
     extractedTextPath: string | null;
     storedPath: string;
   } {
+    if (attachment.source === "browser") {
+      const reference = /^browser-([0-9a-f-]{36})-([0-9a-f-]{36})\.jpg$/iu.exec(attachment.name);
+      if (reference === null) throw new Error("Invalid browser image storage reference.");
+      return { extractedTextPath: null, storedPath: path.join(this.getAttachmentDirectory(reference[1]!), `${reference[2]}.jpg`) };
+    }
     const directory = this.getAttachmentDirectory(attachment.conversationId);
     const extension = path.extname(attachment.name).toLowerCase();
     const storedPath = path.join(directory, `${attachment.id}${extension}`);
@@ -399,7 +430,8 @@ export class ConversationAttachmentStore {
     const match = /^attachments\/([0-9a-f-]{36})\.[a-z0-9]+$/iu.exec(imagePath);
     if (match?.[1] === undefined) throw new Error("Invalid conversation attachment path.");
     const attachment = this.database.getConversationAttachment(conversationId, match[1]);
-    if (imagePath !== `attachments/${path.basename(attachment.storedPath)}` || attachment.kind !== "image") {
+    const expectedPath = attachment.source === "browser" ? `attachments/${attachment.id}.jpg` : `attachments/${path.basename(attachment.storedPath)}`;
+    if (imagePath !== expectedPath || attachment.kind !== "image") {
       throw new Error("Path is not an image belonging to this conversation.");
     }
     return this.viewAttachments(conversationId, [attachment.id]);
@@ -597,7 +629,7 @@ export class ConversationAttachmentStore {
       if (describeImage) {
         const content = [
           "[历史图片未自动重复发送]",
-          modelImageAttachmentCaption({ ...attachment, readPath: `attachments/${path.basename(attachment.storedPath)}` }),
+          modelImageAttachmentCaption({ ...attachment, readPath: `attachments/${attachment.source === "browser" ? `${attachment.id}.jpg` : path.basename(attachment.storedPath)}` }),
           "需要重新查看图片内容时调用 view_attachments，paths 使用上面的 path。",
         ].join("\n");
         return {
@@ -615,7 +647,7 @@ export class ConversationAttachmentStore {
       }
       return {
         contextTokens: attachment.contextTokens,
-        readPath: `attachments/${path.basename(attachment.storedPath)}`,
+        readPath: `attachments/${attachment.source === "browser" ? `${attachment.id}.jpg` : path.basename(attachment.storedPath)}`,
         data: includeImageData
           ? readFileSync(attachment.storedPath).toString("base64")
           : null,

@@ -16,6 +16,8 @@ const electronMocks = vi.hoisted(() => {
   return {
     backgroundWebContentsDestroyed: false,
     backgroundWindowOptions: [] as unknown[],
+    backgroundContents: [] as unknown[],
+    viewOptions: [] as unknown[],
     backgroundNativeCalls: [] as string[],
     backgroundNativeCommands: [] as { method: string; parameters: unknown }[],
     backgroundColors: [] as string[],
@@ -78,6 +80,7 @@ vi.mock("electron", () => ({
         setWindowOpenHandler: vi.fn(),
         setZoomFactor: vi.fn(),
       };
+      electronMocks.backgroundContents.push(this.webContents);
     }
   },
   dialog: { showMessageBox: electronMocks.showMessageBox },
@@ -94,7 +97,8 @@ vi.mock("electron", () => ({
     public readonly setVisible = vi.fn();
     public readonly webContents;
 
-    public constructor() {
+    public constructor(options?: unknown) {
+      electronMocks.viewOptions.push(options);
       const handlers = new Map<string, Array<(...args: unknown[]) => void>>();
       const addHandler = (event: string, handler: (...args: unknown[]) => void): void => {
         handlers.set(event, [...(handlers.get(event) ?? []), handler]);
@@ -318,6 +322,8 @@ describe("ManagedBrowserController", () => {
     electronMocks.backgroundColors.length = 0;
     electronMocks.backgroundNativeCommands.length = 0;
     electronMocks.backgroundWindowOptions.length = 0;
+    electronMocks.backgroundContents.length = 0;
+    electronMocks.viewOptions.length = 0;
     electronMocks.backgroundNativeCalls.length = 0;
     electronMocks.backgroundWebContentsDestroyed = false;
     electronMocks.destroyBackgroundWindow.mockClear();
@@ -332,7 +338,8 @@ describe("ManagedBrowserController", () => {
     const session = await controller.open({ url: "https://example.test" }, { background: { width: 620, height: 900 } });
     expect(electronMocks.backgroundWindowOptions).toHaveLength(1);
     const options = electronMocks.backgroundWindowOptions[0];
-    expect(options).toMatchObject({ show: false, webPreferences: { offscreen: true, nodeIntegration: false, sandbox: true } });
+    expect(options).toMatchObject({ show: false, webPreferences: { nodeIntegration: false, sandbox: true } });
+    expect(options).not.toHaveProperty("webPreferences.offscreen", true);
     const calls = electronMocks.backgroundNativeCalls;
     expect(calls.indexOf("Emulation.setDeviceMetricsOverride")).toBeGreaterThan(calls.indexOf("load:about:blank"));
     expect(calls.lastIndexOf("Emulation.setDeviceMetricsOverride")).toBeGreaterThan(calls.indexOf("load:https://example.test/"));
@@ -347,6 +354,29 @@ describe("ManagedBrowserController", () => {
     await controller.open({ url: "https://example.test" }, { background: { width: 620, height: 900 } });
     electronMocks.backgroundWebContentsDestroyed = true;
     expect(() => controller.dispose()).not.toThrow();
+  });
+
+  it("reveals the existing background contents without creating or loading another page", async () => {
+    const window = createFakeWindow();
+    const addView = vi.spyOn(window.contentView, "addChildView");
+    const removeView = vi.spyOn(window.contentView, "removeChildView");
+    const controller = new ManagedBrowserController(() => window,
+      { getConfiguration: () => browserConfiguration() });
+    const session = await controller.open({ url: "https://example.test" }, { background: { width: 620, height: 900 } });
+    expect(addView).not.toHaveBeenCalled();
+    const loads = electronMocks.backgroundNativeCalls.filter(call => call.startsWith("load:"));
+    controller.setBounds({ sessionId: session.sessionId, x: 10, y: 20, width: 460, height: 600, visible: true });
+    controller.setBounds({ sessionId: session.sessionId, x: 10, y: 20, width: 460, height: 600, visible: false });
+    controller.setBounds({ sessionId: session.sessionId, x: 10, y: 20, width: 460, height: 600, visible: true });
+    expect(electronMocks.viewOptions).toHaveLength(1);
+    expect(electronMocks.viewOptions[0]).toHaveProperty("webContents", electronMocks.backgroundContents[0]);
+    expect(addView).toHaveBeenCalledOnce();
+    expect(electronMocks.backgroundWindowOptions).toHaveLength(1);
+    expect(electronMocks.backgroundNativeCalls.filter(call => call.startsWith("load:"))).toEqual(loads);
+    controller.close({ sessionId: session.sessionId });
+    expect(removeView).toHaveBeenCalledOnce();
+    expect(electronMocks.destroyBackgroundWindow).toHaveBeenCalledOnce();
+    controller.dispose();
   });
 
   it("closes remaining managed pages when one native close fails", async () => {
@@ -376,7 +406,9 @@ describe("ManagedBrowserController", () => {
     expect(page.setSavePasswords).toHaveBeenCalledWith(false);
     expect(page.setZoomPercent).toHaveBeenLastCalledWith(100);
     controller.setBounds({ sessionId: session.sessionId, x: 0, y: 0, width: 800, height: 600, visible: true });
-    expect(page.setVisible).not.toHaveBeenCalledWith(true);
+    expect(page.setVisible).toHaveBeenLastCalledWith(true);
+    controller.setBounds({ sessionId: session.sessionId, x: 0, y: 0, width: 800, height: 600, visible: false });
+    expect(page.setVisible).toHaveBeenLastCalledWith(false);
     await controller.capture({ sessionId: session.sessionId });
     expect(page.capture).toHaveBeenCalledOnce();
     abort.abort();

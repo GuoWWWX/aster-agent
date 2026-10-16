@@ -162,6 +162,7 @@ export type ManagedBrowserInteraction =
   | { kind: "scroll"; deltaX: number; deltaY: number; x?: number; y?: number };
 
 export type ManagedBrowserAutomationPort = {
+  listForConversation?(conversationId: string): ManagedBrowserSession[];
   back(input: ManagedBrowserReferenceInput): void;
   capture(input: ManagedBrowserReferenceInput): Promise<ManagedBrowserSnapshot>;
   close(input: ManagedBrowserReferenceInput): void;
@@ -215,6 +216,7 @@ type BackgroundBrowserOptions = { background?: BrowserViewport; signal?: AbortSi
 type BrowserPageFactory = (window: BrowserWindow, shortcuts: BrowserPageShortcuts, passwords?: BrowserPasswordStore, isolated?: boolean, background?: BrowserViewport) => ManagedBrowserPage;
 
 type ActiveBrowserSession = {
+  conversationId: string | null;
   onClose?: () => void;
   background: boolean;
   disposeAbort: () => void;
@@ -280,6 +282,7 @@ export class ManagedBrowserController {
     const disposeFindResult = page.onFindResult((result) => this.updateFindResult(sessionId, result));
     const onAbort = (): void => this.close({ sessionId });
     this.sessions.set(sessionId, {
+      conversationId: input.conversationId ?? null,
       ...(options.onClose === undefined ? {} : { onClose: options.onClose }),
       background: options.background !== undefined,
       disposeAbort: () => options.signal?.removeEventListener("abort", onAbort),
@@ -413,7 +416,6 @@ export class ManagedBrowserController {
     const window = this.requireWindow();
     const session = this.sessions.get(input.sessionId);
     if (session === undefined) return;
-    if (session.background) return;
     const page = session.page;
     if (!input.visible || input.width === 0 || input.height === 0) {
       page.setVisible(false);
@@ -443,6 +445,10 @@ export class ManagedBrowserController {
     session.disposeFindResult();
     session.disposeState();
     try { session.page.close(); } finally { session.onClose?.(); }
+  }
+
+  public listForConversation(conversationId: string): ManagedBrowserSession[] {
+    return [...this.sessions.entries()].flatMap(([id, session]) => session.conversationId === conversationId ? [this.sessionState(id)] : []);
   }
 
   public onEvent(listener: BrowserEventListener): () => void {
@@ -950,10 +956,10 @@ function createElectronBrowserPage(ownerWindow: BrowserWindow, shortcuts: Browse
   };
   const backgroundWindow = background === undefined ? undefined : new BrowserWindow({
     ...background, show: false, useContentSize: true, frame: false, skipTaskbar: true, enableLargerThanScreen: true,
-    webPreferences: { ...webPreferences, backgroundThrottling: false, offscreen: true },
+    webPreferences: { ...webPreferences, backgroundThrottling: false },
   });
   const window = backgroundWindow ?? ownerWindow;
-  const view = backgroundWindow === undefined ? new WebContentsView({
+  let view = backgroundWindow === undefined ? new WebContentsView({
     webPreferences: { ...webPreferences, ...(isolated ? {} : { preload: path.resolve(__dirname, "../preload/browser-passwords.cjs") }) },
   }) : undefined;
   if (view !== undefined) {
@@ -966,6 +972,8 @@ function createElectronBrowserPage(ownerWindow: BrowserWindow, shortcuts: Browse
   };
   setBackgroundColor(!isolated && nativeTheme.shouldUseDarkColors ? "#171717" : "#ffffff");
   const webContents = view?.webContents ?? window.webContents;
+  let latestBounds: Rectangle | undefined;
+  let backgroundViewport = background;
   const downloads: BrowserDownload[] = [];
   const history: BrowserHistoryEntry[] = [];
   const stateListeners = new Set<() => void>();
@@ -1079,7 +1087,7 @@ function createElectronBrowserPage(ownerWindow: BrowserWindow, shortcuts: Browse
   const applyBackgroundViewport = async (): Promise<void> => {
     if (background !== undefined) await withAutomationDebugger(async (send) => {
       // A renderer must exist before Chromium can apply its device metrics.
-      await send("Emulation.setDeviceMetricsOverride", { ...background, deviceScaleFactor: 1, mobile: false });
+      await send("Emulation.setDeviceMetricsOverride", { ...backgroundViewport, deviceScaleFactor: 1, mobile: false });
     });
   };
   const showStartPage = async (): Promise<void> => {
@@ -1229,7 +1237,7 @@ function createElectronBrowserPage(ownerWindow: BrowserWindow, shortcuts: Browse
       stateListeners.clear();
       errorListeners.clear();
       findResultListeners.clear();
-      if (view !== undefined && !window.isDestroyed()) window.contentView.removeChildView(view);
+      if (view !== undefined && !ownerWindow.isDestroyed()) ownerWindow.contentView.removeChildView(view);
       if (webContents.isDestroyed()) return;
       webContents.session.removeListener("will-download", handleDownload);
       if (webContents.debugger.isAttached()) webContents.debugger.detach();
@@ -1449,8 +1457,13 @@ function createElectronBrowserPage(ownerWindow: BrowserWindow, shortcuts: Browse
       passwordController?.refresh();
     },
     setBounds: (bounds) => {
+      latestBounds = bounds;
       if (view !== undefined) view.setBounds(bounds);
       else window.setContentSize(bounds.width, bounds.height);
+      if (background !== undefined) {
+        backgroundViewport = { width: bounds.width, height: bounds.height };
+        if (webContents.getURL() !== "") void applyBackgroundViewport().catch((error: unknown) => emitError(error instanceof Error ? error.message : "Browser viewport failed."));
+      }
     },
     setColorScheme: async (nextColorScheme) => {
       const changed = colorScheme !== nextColorScheme;
@@ -1464,7 +1477,15 @@ function createElectronBrowserPage(ownerWindow: BrowserWindow, shortcuts: Browse
         changed && /^https?:/iu.test(webContents.getURL()),
       );
     },
-    setVisible: (visible) => view?.setVisible(visible),
+    setVisible: (visible) => {
+      if (visible && view === undefined) {
+        // Adopt the same live page; opening its sidebar tab never reloads it.
+        view = new WebContentsView({ webContents });
+        ownerWindow.contentView.addChildView(view);
+        if (latestBounds !== undefined) view.setBounds(latestBounds);
+      }
+      view?.setVisible(visible);
+    },
     setZoomPercent: (percent) => {
       if (background === undefined || percent !== zoomPercent) applyZoomPercent(percent);
       emitState();

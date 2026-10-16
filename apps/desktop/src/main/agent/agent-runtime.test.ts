@@ -3,10 +3,12 @@ import { writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import {
   DEFAULT_AGENT_DIRECTORY_CONFIGURATION,
   DEFAULT_APPLICATION_SETTINGS,
+  conversationAttachmentSchema,
 } from "@agent/protocol";
 import type {
   ConversationAgentMessageItem,
@@ -845,7 +847,7 @@ class BrowserScreenshotFixtureModel implements ModelProviderAdapter {
         finishReason: "tool_calls",
         toolCalls: [{
           arguments: JSON.stringify({
-            action: "screenshot",
+            action: "observe",
             browserId: "00000000-0000-4000-8000-000000000003",
           }),
           id: "call_browser_screenshot",
@@ -7344,7 +7346,7 @@ describe("AgentRuntime", () => {
       getSession: vi.fn(() => session),
       interact: vi.fn(),
       navigate: vi.fn(),
-      observe: vi.fn(),
+      observe: vi.fn().mockResolvedValue({ elements: [], text: "Example", title: "Example", url: session.url, viewport: { width: 800, height: 600 } }),
       open: vi.fn().mockResolvedValue(session),
       reload: vi.fn(),
       stop: vi.fn(),
@@ -7355,6 +7357,7 @@ describe("AgentRuntime", () => {
       return true;
     });
     const model = new BrowserScreenshotFixtureModel(background);
+    const screenshotStore = new ConversationAttachmentStore(database, projects, path.join(root, "managed"));
     const runtime = new AgentRuntime(
       database,
       {
@@ -7372,7 +7375,7 @@ describe("AgentRuntime", () => {
       undefined,
       undefined,
       null,
-      null,
+      screenshotStore,
       null,
       null,
       null,
@@ -7403,6 +7406,24 @@ describe("AgentRuntime", () => {
 
     await expect(finished).resolves.toMatchObject({ status: "completed" });
     expect(browser.capture).toHaveBeenCalledWith({ sessionId: browserId });
+    const screenshotTool = database.listTimeline(conversation.id).find((item) => item.kind === "tool" && item.arguments.includes('"observe"'));
+    if (screenshotTool?.kind !== "tool" || screenshotTool.result === null) throw new Error("Expected screenshot tool");
+    const screenshotResultSchema = z.object({ value: z.object({ image: conversationAttachmentSchema }) });
+    const image = screenshotResultSchema.parse(JSON.parse(screenshotTool.result)).value.image;
+    expect(image).toMatchObject({ conversationId: conversation.id, messageId: screenshotTool.id, kind: "image" });
+    expect(screenshotStore.listDrafts(conversation.id)).toEqual([]);
+    expect(screenshotStore.readImagePreview(conversation.id, image.id).data).toBe("YnJvd3Nlci1waXhlbHM=");
+    expect(screenshotTool.result).not.toContain("YnJvd3Nlci1waXhlbHM=");
+    const lastReply = database.listTimeline(conversation.id).findLast((item) => item.kind === "message" && item.role === "assistant");
+    if (lastReply === undefined) throw new Error("Expected assistant boundary");
+    const fork = database.forkConversation(conversation.id, "sibling", lastReply.id);
+    const forkTool = database.listTimeline(fork.id).find((item) => item.kind === "tool" && item.arguments.includes('"observe"'));
+    if (forkTool?.kind !== "tool" || forkTool.result === null) throw new Error("Expected forked screenshot");
+    const forkImage = screenshotResultSchema.parse(JSON.parse(forkTool.result)).value.image;
+    expect(forkImage).toMatchObject({ conversationId: fork.id, messageId: forkTool.id, source: "browser" });
+    expect(screenshotStore.readImagePreview(fork.id, forkImage.id).data).toBe("YnJvd3Nlci1waXhlbHM=");
+    const resolved = screenshotStore.resolveThreadLogPaths(forkImage);
+    expect(resolved.storedPath).toBe(database.getConversationAttachment(fork.id, forkImage.id).storedPath);
     expect(browser.close).toHaveBeenCalledTimes(background ? 1 : 0);
     expect(model.requests[2]?.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({

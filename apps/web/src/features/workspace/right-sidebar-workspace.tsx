@@ -145,6 +145,8 @@ type TerminalTab = ToolTabBase & {
 };
 
 type ManagedBrowserTab = ToolTabBase & {
+  background?: boolean;
+  conversationId: string | null;
   kind: "managed-browser";
   session: ManagedBrowserSession | null;
   url: string;
@@ -855,6 +857,8 @@ export function RightSidebarWorkspace({
   const openManagedBrowser = useCallback((
     requestedName?: string,
     session: ManagedBrowserSession | null = null,
+    background = false,
+    conversationId = activeSessionId,
   ): string | null => {
     if (!capabilities.managedBrowser) return null;
     const id = `managed-browser:${crypto.randomUUID()}`;
@@ -869,17 +873,22 @@ export function RightSidebarWorkspace({
     setToolTabs((current) => [...current, {
       id,
       kind: "managed-browser",
+      conversationId,
+      background,
       lastAccessedAt: now,
       name,
       session,
       url: session?.url ?? "",
     }]);
-    setActiveTabForCurrentSession(id);
-    setFilePanelOpen(true);
-    setIsFileBrowserOpen(false);
-    setMenuOpen(false);
+    if (!background) {
+      setActiveTabForCurrentSession(id);
+      setFilePanelOpen(true);
+      setIsFileBrowserOpen(false);
+      setMenuOpen(false);
+    }
     return name;
   }, [
+    activeSessionId,
     capabilities.managedBrowser,
     fileTabs,
     setActiveTabForCurrentSession,
@@ -1127,13 +1136,19 @@ export function RightSidebarWorkspace({
         ? activeSession
         : sideSessions.find((session) => session.id === request.conversationId && openChatIds.has(session.id));
       if (
-        conversation === null || conversation === undefined
-        || request.projectId !== (conversation.projectId ?? conversation.id)
+        (conversation != null && request.projectId !== (conversation.projectId ?? conversation.id))
+        || (request.background !== true && conversation == null)
         || !capabilities.managedBrowser
       ) {
         return;
       }
-      const resolvedName = openManagedBrowser(request.requestedName ?? undefined, request.session);
+      const existing = toolTabs.find((tab) => tab.kind === "managed-browser" && tab.session?.sessionId === request.session.sessionId);
+      if (existing !== undefined && request.background !== true) {
+        setActiveTabForCurrentSession(existing.id);
+        setFilePanelOpen(true);
+        setIsFileBrowserOpen(false);
+      }
+      const resolvedName = existing?.name ?? openManagedBrowser(request.requestedName ?? undefined, request.session, request.background === true, request.conversationId);
       if (resolvedName === null) return;
       void agentClient.confirmWorkspaceBrowserTabOpened({
         requestId: request.requestId,
@@ -1148,17 +1163,16 @@ export function RightSidebarWorkspace({
     fileTabs,
     openChatIds,
     openManagedBrowser,
+    setActiveTabForCurrentSession,
+    setFilePanelOpen,
     sideSessions,
     toolTabs,
   ]);
 
   useEffect(() => {
     return agentClient.onWorkspaceBrowserTabCloseRequested((request) => {
-      if (request.conversationId !== activeSessionId && !openChatIds.has(request.conversationId)) {
-        return;
-      }
       const closedTabIds = new Set(toolTabs
-        .filter((tab) => tab.kind === "managed-browser" && tab.session?.sessionId === request.sessionId)
+        .filter((tab) => tab.kind === "managed-browser" && tab.conversationId === request.conversationId && tab.session?.sessionId === request.sessionId)
         .map((tab) => tab.id));
       if (closedTabIds.size === 0) return;
       const openTabs = [
@@ -2391,6 +2405,7 @@ export function RightSidebarWorkspace({
                       />
                     )}
                     <span>{tab.name}</span>
+                    {tab.kind === "managed-browser" && tab.background === true ? <small className="shrink-0 text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">后台</small> : null}
                   </button>
                   <button
                     aria-label={`关闭 ${tab.name}`}
@@ -2533,6 +2548,7 @@ export function RightSidebarWorkspace({
                   />
                 ) : (
                   <ManagedBrowserWorkspace
+                    {...(tab.conversationId === null ? {} : { conversationId: tab.conversationId })}
                     active={isActive && sidebarVisible && activeActivity === "conversations"}
                     agentClient={agentClient}
                     colorScheme={isDark ? "dark" : "light"}
