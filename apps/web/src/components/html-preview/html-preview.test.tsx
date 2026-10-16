@@ -134,7 +134,9 @@ describe("conversation HTML previews", () => {
       act(() => { window.dispatchEvent(new MessageEvent("message", { source, origin, data: { type: "html-preview.resize", id, height } })); });
     };
     resize(80);
-    expect(frame.style.height).toBe("160px");
+    expect(frame.style.height).toBe("80px");
+    resize(24);
+    expect(frame.style.height).toBe("24px");
     resize(360);
     expect(frame.style.height).toBe("360px");
     resize(20_000);

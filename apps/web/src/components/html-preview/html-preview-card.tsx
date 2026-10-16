@@ -63,7 +63,7 @@ function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange }:
     const resize = (event: MessageEvent<unknown>): void => {
       if (event.source !== frame.contentWindow || event.origin !== "null" || frame.getBoundingClientRect().width === 0) return;
       const message = htmlPreviewResizeMessageSchema.safeParse(event.data);
-      if (message.success && message.data.id === preview.id) setHeight(Math.min(520, Math.max(160, message.data.height)));
+      if (message.success && message.data.id === preview.id) setHeight(Math.min(520, message.data.height));
     };
     window.addEventListener("message", resize);
     return () => { observer.disconnect(); window.removeEventListener("message", resize); };
