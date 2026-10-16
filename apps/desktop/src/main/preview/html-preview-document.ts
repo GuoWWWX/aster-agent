@@ -27,7 +27,8 @@ export function htmlPreviewDocument(source: string, id: string): string {
       const rect = body.getBoundingClientRect(), bodyStyle = getComputedStyle(body), rootStyle = getComputedStyle(root);
       const number = value => parseFloat(value) || 0;
       const height = Math.min(maxHeight, Math.max(1, Math.ceil(Math.max(body.scrollHeight, body.offsetHeight, rect.height)
-        + Math.max(0, rect.top + scrollY) + number(bodyStyle.marginBottom) + number(rootStyle.paddingBottom) + number(rootStyle.borderBottomWidth))));
+        + Math.max(0, rect.top + scrollY) + number(bodyStyle.marginBottom) + number(rootStyle.marginBottom)
+        + number(rootStyle.paddingBottom) + number(rootStyle.borderBottomWidth))));
       for (const item of saved) {
         if (item.value) item.node.style.setProperty(item.property, item.value, item.priority);
         else item.node.style.removeProperty(item.property);
@@ -37,13 +38,16 @@ export function htmlPreviewDocument(source: string, id: string): string {
     function start() {
       // CSS trigger #2: iframe documents cannot inherit the workbench scrollbar pseudo-elements.
       const scrollbar = document.createElement('style');
-      scrollbar.textContent = '* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--app-muted-foreground, currentColor) 30%, transparent) transparent; }'
+      scrollbar.textContent = '@layer aster-preview-defaults { :where(body) { display: flow-root; margin: 0; } }'
+        + '* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--app-muted-foreground, currentColor) 30%, transparent) transparent; }'
         + '*::-webkit-scrollbar { width: 10px; height: 10px; }'
         + '*::-webkit-scrollbar-track, *::-webkit-scrollbar-corner { background: transparent; }'
         + '*::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: color-mix(in srgb, var(--app-muted-foreground, currentColor) 30%, transparent); background-clip: padding-box; }'
         + '*::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--app-muted-foreground, currentColor) 58%, transparent); }'
         + '*::-webkit-scrollbar-thumb:active { background-color: color-mix(in srgb, var(--app-foreground, currentColor) 68%, transparent); }';
-      document.head.append(scrollbar);
+      // Contain child margins for natural measurement and avoid default margins overflowing 100vh.
+      // Zero specificity and early placement let authored spacing and layout win.
+      document.head.prepend(scrollbar);
       // Include root padding in viewport-sized boxes instead of adding it again.
       for (const node of [document.documentElement, document.body]) node.style.setProperty('box-sizing', 'border-box', 'important');
       const observer = new ResizeObserver(() => {

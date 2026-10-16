@@ -19,13 +19,13 @@ describe("preview height instrumentation", () => {
     if (source.startsWith("<!doctype")) expect(document.startsWith("<!doctype html><script")).toBe(true);
   });
 
-  it("keeps the last usable height when a cached frame has no rendered width", async () => {
+  it.each([0, 12])("keeps the last usable height with a %ipx root margin when a cached frame has no rendered width", async (rootMargin) => {
     vi.useFakeTimers();
     try {
       let width = 0;
       const events = new Map<string, () => void>();
       const postMessage = vi.fn();
-      const appendStyle = vi.fn<(style: { textContent: string }) => void>();
+      const prependStyle = vi.fn<(style: { textContent: string }) => void>();
       const surface = () => {
         const properties = new Map<string, string>();
         return {
@@ -37,20 +37,22 @@ describe("preview height instrumentation", () => {
       };
       const script = htmlPreviewDocument("<p>preview</p>", "preview-id").match(/<script data-aster-preview-resize>([\s\S]*?)<\/script>/u)?.[1];
       expect(script).toBeDefined();
+      const body = surface(), root = surface();
       runInNewContext(script!, {
         innerWidth: 720, innerHeight: 320, scrollY: 0, setTimeout, clearTimeout,
         window: { parent: { postMessage }, addEventListener: (name: string, listener: () => void) => events.set(name, listener) },
-        document: { readyState: "complete", head: { append: appendStyle }, createElement: () => ({ textContent: "" }), body: surface(), documentElement: surface(), fonts: { ready: Promise.resolve(), addEventListener() {} } },
-        getComputedStyle: () => ({ marginBottom: "0", paddingBottom: "0", borderBottomWidth: "0" }),
+        document: { readyState: "complete", head: { prepend: prependStyle }, createElement: () => ({ textContent: "" }), body, documentElement: root, fonts: { ready: Promise.resolve(), addEventListener() {} } },
+        getComputedStyle: (node: typeof root) => ({ marginBottom: node === root ? String(rootMargin) : "0", paddingBottom: "0", borderBottomWidth: "0" }),
         ResizeObserver: class { observe() {} }, MutationObserver: class { observe() {} },
       });
       await vi.advanceTimersByTimeAsync(60);
-      expect(appendStyle.mock.calls[0]?.[0].textContent).toContain("scrollbar-width: thin");
+      expect(prependStyle.mock.calls[0]?.[0].textContent).toContain(":where(body) { display: flow-root; margin: 0; }");
+      expect(prependStyle.mock.calls[0]?.[0].textContent).toContain("scrollbar-width: thin");
       expect(postMessage).not.toHaveBeenCalled();
       width = 720;
       events.get("load")?.();
       await vi.advanceTimersByTimeAsync(60);
-      expect(postMessage).toHaveBeenCalledWith({ type: "html-preview.resize", id: "preview-id", height: 480 }, "*");
+      expect(postMessage).toHaveBeenCalledWith({ type: "html-preview.resize", id: "preview-id", height: 480 + rootMargin }, "*");
       postMessage.mockClear();
       width = 0;
       events.get("load")?.();
