@@ -42,6 +42,29 @@ async function elapse(ms: number): Promise<void> { await act(async () => { await
 function creates(): number { return request.mock.calls.filter(([input]) => input.kind === "code").length; }
 function releases(): number { return request.mock.calls.filter(([input]) => input.kind === "release").length; }
 
+it("prevents repeated footer presses from starting text selection without blocking ordinary focus or surrounding text", async () => {
+  await render();
+  const footer = host.querySelector("footer")!;
+  const label = footer.querySelector("span[aria-live]")!;
+  const previous = footer.querySelector('[aria-label="上一个方案"]')!;
+  for (const target of [footer, label, previous]) {
+    for (const detail of [2, 3]) {
+      const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, detail });
+      act(() => { target.dispatchEvent(down); });
+      expect(down.defaultPrevented).toBe(true);
+    }
+  }
+  const single = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, detail: 1 });
+  act(() => { footer.dispatchEvent(single); });
+  expect(single.defaultPrevented).toBe(false);
+  const text = document.createElement("p"); text.textContent = "正文可以正常选择复制"; host.append(text);
+  const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, detail: 2 });
+  act(() => { text.dispatchEvent(down); });
+  expect(down.defaultPrevented).toBe(false);
+  await click("下一个方案");
+  expect(footer.textContent).toContain("2 / 2");
+});
+
 it("reuses the same loaded iframe when returning to an option", async () => {
   await render();
   const first = host.querySelector("iframe")!;

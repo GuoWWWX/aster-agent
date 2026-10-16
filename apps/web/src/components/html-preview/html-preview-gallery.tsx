@@ -21,7 +21,8 @@ export function HtmlPreviewGallery({ pages, cacheTtlMs, onResize }: { pages: rea
   const page = pages[index]!;
   return <section ref={host} aria-label="HTML 方案对比" className="my-[5px] min-w-0 overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-foreground)]">
     {pages.map((option, optionIndex) => visited.has(optionIndex) ? <CachedOption key={optionIndex} page={option} active={optionIndex === index} height={height} onHeight={measure} cacheTtlMs={cacheTtlMs} /> : null)}
-    <footer className="flex min-w-0 items-center justify-center gap-[5px] border-t border-[var(--app-border)] px-2 py-1">
+    <footer className="flex min-w-0 select-none items-center justify-center gap-[5px] border-t border-[var(--app-border)] px-2 py-1"
+      onMouseDownCapture={event => { if (event.button === 0 && event.detail > 1) event.preventDefault(); }}>
       <IconButton label="上一个方案" size="compact" disabled={index === 0} onClick={() => select(index - 1)}><ChevronLeft size={14} /></IconButton>
       <Select value={String(index)} onValueChange={value => select(Number(value))}>
         <SelectTrigger aria-label="选择预览方案" className="h-7 max-w-[min(320px,70%)] border-transparent shadow-none">
