@@ -11,6 +11,39 @@ import {
   type ConversationAgentBinding, type TeamWorkItemView,
 } from "@agent/protocol";
 
+/** Recognize a direct opening address, not an arbitrary mention of a member. */
+function addressedUserRecipients(content: string, members: readonly TeamChatMember[]): string[] {
+  const names = [...members].sort((left, right) => right.name.length - left.name.length);
+  let remaining = content.trimStart();
+  if (!names.some(member => remaining.toLowerCase().startsWith(member.name.toLowerCase()))) {
+    remaining = remaining.replace(/^(?:你好|您好|嗨)[,，\s]+/u, "");
+  }
+  const polite = names.some(member => remaining.toLowerCase().startsWith(member.name.toLowerCase()))
+    ? null : /^(?:请|麻烦)\s*/u.exec(remaining);
+  if (polite !== null) remaining = remaining.slice(polite[0].length);
+  const recipients: string[] = [];
+  while (remaining.length > 0) {
+    const token = remaining.replace(/^[@＠]\s*/u, "");
+    const matching = names.filter(member => token.toLowerCase().startsWith(member.name.toLowerCase()));
+    const member = matching[0];
+    if (member === undefined || matching.filter(candidate => candidate.name.toLowerCase() === member.name.toLowerCase()).length > 1) return [];
+    recipients.push(member.conversationId);
+    const after = token.slice(member.name.length);
+    const separator = /^(?:\s*(?:[,，、]|以及|和|与|及)\s*|\s+)/u.exec(after);
+    if (separator !== null) {
+      const next = after.slice(separator[0].length);
+      const nextToken = next.replace(/^[@＠]\s*/u, "").toLowerCase();
+      if (names.some(candidate => nextToken.startsWith(candidate.name.toLowerCase()))) { remaining = next; continue; }
+    }
+    if (((polite !== null || token !== remaining) && /^\s+/u.test(after)) || after.trim().length === 0
+      || /^\s*(?:[,，:：!！?？]|你好|您好|早上好|下午好|晚上好|早安|晚安|在吗|请|麻烦|帮我|帮忙|能否|能不能|你|各|都|一起|看看|看一下|说说|聊聊|检查|评审|分析|回答)/u.test(after)) {
+      return [...new Set(recipients)];
+    }
+    return [];
+  }
+  return [];
+}
+
 export const COLLABORATION_SCHEMA = `
   CREATE TABLE IF NOT EXISTS task_contexts (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, project_id TEXT,
     team_instance_id TEXT, work_item_id TEXT UNIQUE, updated_at TEXT NOT NULL, payload_json TEXT NOT NULL);
@@ -267,9 +300,12 @@ export class CollaborationStore {
       if (input.taskContextId !== null && this.task(input.taskContextId).teamInstanceId !== instance.id) throw new CollaborationError("TASK_SCOPE", "Task belongs to another team.");
       let recipients: string[] = [];
       if (input.intent === "request") {
-        recipients = input.allMembers ? active.map(member => member.conversationId).filter(id => id !== senderId)
-          : input.recipientConversationIds.length > 0 ? input.recipientConversationIds
-          : senderId === null && instance.rootConversationId !== null ? [instance.rootConversationId] : [];
+        if (input.allMembers) recipients = active.map(member => member.conversationId).filter(id => id !== senderId);
+        else if (input.recipientConversationIds.length > 0) recipients = input.recipientConversationIds;
+        else if (senderId === null && instance.rootConversationId !== null) {
+          recipients = addressedUserRecipients(input.content, active);
+          if (recipients.length === 0) recipients = [instance.rootConversationId];
+        }
         for (const id of recipients) if (id === senderId || !active.some(member => member.conversationId === id)) throw new CollaborationError("TEAM_MEMBER", "Recipient must be another active room member.");
       }
       const id = randomUUID(); const sequence = Number(this.db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS next FROM team_chat_messages WHERE team_instance_id = ?").get(instance.id)?.next);

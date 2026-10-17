@@ -22,6 +22,72 @@ function fixture(file = ":memory:") {
   return { db, instance, lead, member };
 }
 afterEach(() => { for (const db of opened.splice(0)) if (db.isOpen()) db.close(); for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true }); });
+function namedFixture() {
+  const state = fixture();
+  state.db.bindConversationAgent(state.member.id, { ...state.db.getConversationAgentBinding(state.member.id)!, name: "需求分析师" });
+  const architect = state.db.createConversation(null, { teamId: state.instance.teamId, threadKind: "agent", parentConversationId: state.lead.id,
+    agent: { id: "architect", name: "架构师", role: "架构", instructions: "", isDefault: false } });
+  state.db.bindTeamMemberConversation({ conversationId: architect.id, teamExecutionConversationId: state.lead.id, agentId: "architect" });
+  return { ...state, architect };
+}
+
+describe("natural group addressing", () => {
+  it.each(["需求分析师你好", "需求分析师，你好", "@需求分析师 你好", "请需求分析师帮我看看", "你好，需求分析师", "需求分析师"])("delivers %s only to the addressed member", content => {
+    const { db, instance, member } = namedFixture();
+    const message = db.collaboration.postMessage({ teamInstanceId: instance.id, content, requestId: randomUUID() }, null);
+    expect(message.recipientConversationIds).toEqual([member.id]);
+    expect(message.deliveries.map(delivery => delivery.conversationId)).toEqual([member.id]);
+  });
+  it.each(["需求分析师和架构师，各提一个想法", "@需求分析师 @架构师 你好"])("delivers %s to both addressed members", content => {
+    const { db, instance, member, architect } = namedFixture();
+    const message = db.collaboration.postMessage({ teamInstanceId: instance.id, content, requestId: randomUUID() }, null);
+    expect(message.recipientConversationIds).toEqual([member.id, architect.id]);
+  });
+  it.each(["你们好", "需求分析师的职责是什么", "我刚才问了需求分析师", "“需求分析师你好”这句话怎么说", "请负责人安排需求分析师回答", "需求分析师和架构师的职责是什么", "@需求分析师助手 你好", "请需求分析师助手帮我看看"])("leaves %s with the lead rather than treating a name mention as an address", content => {
+    const { db, instance, lead } = namedFixture();
+    const message = db.collaboration.postMessage({ teamInstanceId: instance.id, content, requestId: randomUUID() }, null);
+    expect(message.recipientConversationIds).toEqual([lead.id]);
+  });
+  it("keeps structured recipients and explicit broadcasts authoritative", () => {
+    const { db, instance, lead, member, architect } = namedFixture();
+    const post = { teamInstanceId: instance.id, content: "需求分析师你好" };
+    expect(db.collaboration.postMessage({ ...post, requestId: randomUUID(), recipientConversationIds: [architect.id] }, null).recipientConversationIds).toEqual([architect.id]);
+    expect(db.collaboration.postMessage({ ...post, requestId: randomUUID(), allMembers: true }, null).recipientConversationIds.sort()).toEqual([lead.id, member.id, architect.id].sort());
+  });
+  it("matches the complete longer name and treats name punctuation literally", () => {
+    const { db, instance, architect } = namedFixture();
+    const binding = db.getConversationAgentBinding(architect.id)!;
+    db.bindConversationAgent(architect.id, { ...binding, name: "需求分析师助手" });
+    expect(db.collaboration.postMessage({ teamInstanceId: instance.id, content: "需求分析师助手你好", requestId: randomUUID() }, null).recipientConversationIds).toEqual([architect.id]);
+    db.bindConversationAgent(architect.id, { ...binding, name: "QA(1)+" });
+    expect(db.collaboration.postMessage({ teamInstanceId: instance.id, content: "QA(1)+你好", requestId: randomUUID() }, null).recipientConversationIds).toEqual([architect.id]);
+    db.bindConversationAgent(architect.id, { ...binding, name: "请问" });
+    expect(db.collaboration.postMessage({ teamInstanceId: instance.id, content: "请问你好", requestId: randomUUID() }, null).recipientConversationIds).toEqual([architect.id]);
+    expect(db.collaboration.postMessage({ teamInstanceId: instance.id, content: "你好，请问你好", requestId: randomUUID() }, null).recipientConversationIds).toEqual([architect.id]);
+  });
+  it("does not turn notifications or a member's plain text into new requests", () => {
+    const { db, instance, lead } = namedFixture();
+    const post = { teamInstanceId: instance.id, content: "需求分析师你好" };
+    expect(db.collaboration.postMessage({ ...post, requestId: randomUUID(), intent: "notify" }, null).deliveries).toEqual([]);
+    expect(db.collaboration.postMessage({ ...post, requestId: randomUUID(), intent: "request" }, lead.id).deliveries).toEqual([]);
+  });
+  it("returns the saved recipient on an idempotent retry after a member is renamed", () => {
+    const { db, instance, member } = namedFixture();
+    const post = { teamInstanceId: instance.id, content: "需求分析师你好", requestId: randomUUID() };
+    const original = db.collaboration.postMessage(post, null);
+    db.bindConversationAgent(member.id, { ...db.getConversationAgentBinding(member.id)!, name: "分析同学" });
+    expect(db.collaboration.postMessage(post, null)).toEqual(original);
+    expect(original.recipientConversationIds).toEqual([member.id]);
+  });
+  it("does not guess between members with the same name or wake an archived member", () => {
+    const { db, instance, lead, member, architect } = namedFixture();
+    db.bindConversationAgent(architect.id, { ...db.getConversationAgentBinding(architect.id)!, name: "需求分析师" });
+    expect(db.collaboration.postMessage({ teamInstanceId: instance.id, content: "需求分析师你好", requestId: randomUUID() }, null).recipientConversationIds).toEqual([lead.id]);
+    db.setConversationArchived(architect.id, true); db.setConversationArchived(member.id, true);
+    expect(db.collaboration.postMessage({ teamInstanceId: instance.id, content: "需求分析师你好", requestId: randomUUID() }, null).recipientConversationIds).toEqual([lead.id]);
+  });
+});
+
 describe("durable collaboration", () => {
 
   it("recovers saved requests without replaying completed work and requires explicit resume for pending delivery", () => {

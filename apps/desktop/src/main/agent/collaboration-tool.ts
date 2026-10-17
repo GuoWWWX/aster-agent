@@ -16,7 +16,7 @@ const listSchema = listTaskContextsInputSchema.omit({ conversationId: true, proj
 const updateSchema = z.object(updateTaskContextInputSchema.shape).omit({ conversationId: true, requestId: true });
 const postSchema = z.object(postTeamChatInputSchema.shape).omit({ teamInstanceId: true, requestId: true }).extend({
   intent: z.enum(["notify", "request"]).default("notify"),
-  content: postTeamChatInputSchema.shape.content.describe("The public message itself, in the conversation's language. Speak naturally in the first person from your configured role, with a concrete observation or question when useful. The UI shows your name and avatar: omit name/job-title prefixes, repeated quotations and boilerplate receipts."),
+  content: postTeamChatInputSchema.shape.content.describe("The public message itself, in the conversation's language. Speak naturally in the first person from your configured role, with a concrete observation or question when useful. The UI shows your name and avatar: start with your answer, without a name/job-title prefix, repeated quotation or boilerplate receipt, even if older messages used those forms. Reply directly to greetings and casual conversation; do not explain routing or tell the speaker to use mentions unless they ask."),
 });
 const readSchema = readTeamChatInputSchema.omit({ teamInstanceId: true }).extend({
   limit: z.number().int().min(1).max(5).default(3),

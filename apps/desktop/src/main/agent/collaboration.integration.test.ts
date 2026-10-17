@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { DEFAULT_AGENT_DIRECTORY_CONFIGURATION, type ConversationRunEvent } from "@agent/protocol";
+import { DEFAULT_AGENT_DIRECTORY_CONFIGURATION, type ConversationRunEvent, type TeamChatMessage } from "@agent/protocol";
 import { CollaborationTool } from "./collaboration-tool.js";
 import { AgentRuntime } from "./agent-runtime.js";
 import { AgentDatabase } from "../storage/agent-database.js";
@@ -77,14 +77,43 @@ async function fixture(withThreadLog = false) {
   return { db, lead, member, instance, runtime, model, tools, log };
 }
 describe("group execution integration", () => {
-  it("accepts a bound member's follow-up after 502 retries without reposting its completed group message", async () => {
+  it("runs only the naturally addressed member and publishes their own greeting", async () => {
+    const { db, instance, lead, member, runtime, model, tools } = await fixture(true);
+    const events: ConversationRunEvent[] = [];
+    vi.spyOn(model, "completeTurn").mockImplementation((input): Promise<ModelTurnResult> => Promise.resolve(
+      input.messages.some(message => message.role === "tool" && message.toolCallId === "greeting")
+        ? { content: "好。", finishReason: "stop", toolCalls: [] }
+        : { content: "", finishReason: "tool_calls", toolCalls: [{ id: "greeting", name: "post_team_message",
+          arguments: JSON.stringify({ content: "你好呀，我在。", intent: "notify" }) }] },
+    ));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        runtime.postTeamChat({ teamInstanceId: instance.id, content: "开发你好", requestId: randomUUID() }, event => {
+          events.push(event);
+          if (event.type === "run.finished") { if (event.status === "completed") resolve(); else reject(new Error(event.error ?? "Run failed")); }
+        });
+      });
+      const messages = db.collaboration.readMessages({ teamInstanceId: instance.id }).messages;
+      expect(messages[0]?.recipientConversationIds).toEqual([member.id]);
+      expect(messages.slice(1).map(message => [message.senderConversationId, message.content])).toEqual([[member.id, "你好呀，我在。"]]);
+      expect(events.filter(event => event.type === "run.started").map(event => event.conversationId)).toEqual([member.id]);
+      expect(db.listTimeline(lead.id)).toEqual([]);
+      expect(db.collaboration.listTasks({ conversationId: member.id }).items).toEqual([]);
+    } finally { await tools.dispose(); db.close(); }
+  });
+  it.each(["private", "group"])("accepts a bound member's %s follow-up after 502 retries without reposting its completed group message", async (entry) => {
     const { db, instance, member, runtime, model, tools } = await fixture(true);
     let recovered = false;
     let followUpAttempts = 0;
     const requests = vi.spyOn(model, "completeTurn").mockImplementation((input): Promise<ModelTurnResult> => {
-      if (recovered) return ++followUpAttempts === 1
-        ? Promise.reject(new ModelRequestError(503, "Upstream is recovering"))
-        : Promise.resolve({ content: "连接已恢复，可以继续。", finishReason: "stop", toolCalls: [] });
+      if (recovered) {
+        if (++followUpAttempts === 1) return Promise.reject(new ModelRequestError(503, "Upstream is recovering"));
+        if (entry === "group" && !input.messages.some(message => message.role === "tool" && message.toolCallId === "resumed-public")) {
+          return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id: "resumed-public", name: "post_team_message",
+            arguments: JSON.stringify({ content: "连接恢复，可以继续聊了。", intent: "notify" }) }] });
+        }
+        return Promise.resolve({ content: "连接已恢复，可以继续。", finishReason: "stop", toolCalls: [] });
+      }
       if (!input.messages.some(message => message.role === "tool" && message.toolCallId === "published-once")) {
         return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id: "published-once", name: "post_team_message",
           arguments: JSON.stringify({ content: "已核实结果。", intent: "notify" }) }] });
@@ -102,16 +131,25 @@ describe("group execution integration", () => {
       expect(db.getConversation(member.id).activeRunId).toBeNull();
       const binding = db.getConversationAgentBinding(member.id)!;
       recovered = true;
+      let followUp: TeamChatMessage | null = null;
       const resumed = await new Promise<Extract<ConversationRunEvent, { type: "run.finished" }>>(resolve => {
-        runtime.sendMessage({ conversationId: member.id, content: "继续", agent: binding },
-          event => { if (event.type === "run.finished") resolve(event); });
+        const onEvent = (event: ConversationRunEvent) => { if (event.type === "run.finished") resolve(event); };
+        if (entry === "group") followUp = runtime.postTeamChat({ teamInstanceId: instance.id, content: "开发，继续", requestId: randomUUID() }, onEvent);
+        else runtime.sendMessage({ conversationId: member.id, content: "继续", agent: binding }, onEvent);
       });
       expect(resumed).toMatchObject({ status: "completed", error: null });
       expect(resumed.runId).not.toBe(failed.runId);
-      expect(requests).toHaveBeenCalledTimes(9);
+      expect(requests).toHaveBeenCalledTimes(entry === "group" ? 10 : 9);
       expect(db.listTimeline(member.id)).toContainEqual(expect.objectContaining({ kind: "model_retry", runId: resumed.runId, status: "completed", attempt: 1 }));
       expect(db.getConversationAgentBinding(member.id)).toEqual(binding);
-      expect(db.collaboration.readMessages({ teamInstanceId: instance.id }).messages.map(message => message.content)).toEqual(["先在群里公开结果", "已核实结果。"]);
+      const messages = db.collaboration.readMessages({ teamInstanceId: instance.id }).messages;
+      expect(messages.map(message => message.content)).toEqual(entry === "group"
+        ? ["先在群里公开结果", "已核实结果。", "开发，继续", "连接恢复，可以继续聊了。"] : ["先在群里公开结果", "已核实结果。"]);
+      if (entry === "group") {
+        expect(followUp).toMatchObject({ recipientConversationIds: [member.id] });
+        expect(messages.at(-1)?.rootMessageId).toBe(messages[2]?.id);
+        expect(messages[2]?.deliveries[0]?.status).toBe("completed");
+      }
     } finally { await tools.dispose(); db.close(); }
   });
   it("lets a later-started member publish while the first member is still thinking", async () => {
