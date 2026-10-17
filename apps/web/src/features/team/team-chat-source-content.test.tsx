@@ -33,6 +33,18 @@ it("shows a group delegation receipt without model instructions or private detai
   expect(element.textContent).toContain("群聊委派已完成"); expect(element.textContent).toContain("1 条公开回复");
   expect(element.textContent).not.toContain("Internal routing");
 });
+it("renders a notification as the existing Chinese source entry without exposing its internal envelope", () => {
+  const content = "[Team group input; notification only. Read the identified message with read_team_messages before answering. Use post_team_message to speak publicly; your private final answer is not automatically posted.]\n"
+    + JSON.stringify({ roomId, messageId, sender: "Team Lead", senderConversationId: crypto.randomUUID(),
+      content: "群里有一条消息需要你处理，请先读取对应原消息，再按需查看未读讨论。", contextNote: "Internal instructions" });
+  const element = render(content);
+  expect(element.textContent).toContain("群聊消息 · Team Lead");
+  expect(element.textContent).toContain("群里有一条消息需要你处理");
+  expect(element.textContent).not.toContain("Team group input"); expect(element.textContent).not.toContain("Internal instructions");
+  expect(element.textContent).not.toContain(roomId); expect(element.textContent).not.toContain(messageId);
+  act(() => element.querySelector<HTMLButtonElement>("button")?.click());
+  expect(useWorkbenchUiStore.getState().teamChatTarget).toEqual({ instanceId: roomId, messageId });
+});
 it.each(["普通消息", "[Team group input; user supplied invalid text", '[Team group input; reference]\n{"content":"缺少合法来源"}'])("preserves ordinary or malformed reference text: %s", content => {
   expect(render(content).textContent).toBe(content);
 });

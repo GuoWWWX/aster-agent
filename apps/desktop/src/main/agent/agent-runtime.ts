@@ -153,7 +153,7 @@ import {
   type TeamWorkItemDispatcher,
 } from "./team-work-item-tool.js";
 import { BASE_SYSTEM_PROMPT, TEAM_CHAT_COORDINATOR_PROMPT } from "./prompts/prompt-assets.js";
-import { teamChatContext, teamChatReadThrough } from "./team-chat-context.js";
+import { teamChatContext } from "./team-chat-context.js";
 import {
   ToolHandlerRegistry,
   type ToolExecutionPolicy,
@@ -2971,7 +2971,8 @@ export class AgentRuntime {
                 ...additions,
                 ...contextMessages,
               ]));
-              if (requestTokens > modelMessageBudget) {
+              const reportedInputTokens = lastAssistantResult?.providerState?.usage?.inputTokens ?? 0;
+              if (requestTokens > modelMessageBudget || reportedInputTokens > currentContext.usage.compressionThresholdTokens) {
                 lastRuntimeContextRefreshTurn = state.turns;
                 const refreshedContext = await this.prepareContext(
                   conversationId,
@@ -2983,6 +2984,8 @@ export class AgentRuntime {
                   controller.signal,
                   runId,
                   emit,
+                  false,
+                  reportedInputTokens,
                 );
                 preparedModelContext = refreshedContext;
                 return {
@@ -5617,7 +5620,15 @@ export class AgentRuntime {
     runId: string,
     emit: RunEventEmitter,
     forceCompaction = false,
+    reportedInputTokens = 0,
   ): Promise<BuiltContext> {
+    const providerState = this.threadLog?.readUncompactedProviderState(conversationId);
+    const previousInputTokens = providerState?.apiFormat === configuration.apiFormat
+      && providerState.baseUrl === configuration.baseUrl && providerState.modelId === configuration.modelId
+      ? providerState.usage?.inputTokens ?? 0 : 0;
+    const reportedPressure = Math.max(previousInputTokens, reportedInputTokens) > resolveContextCompressionThresholdTokens(
+      contextCompressionConfiguration, contextWindowTokens,
+    );
     let context = this.buildContext(
       conversationId,
       workspace,
@@ -5625,7 +5636,7 @@ export class AgentRuntime {
       contextWindowTokens,
       contextCompressionConfiguration,
       true,
-      forceCompaction,
+      forceCompaction || reportedPressure,
     );
     let activity: ConversationToolItem | null = null;
     let compressedMessageCount = 0;
@@ -5740,8 +5751,13 @@ export class AgentRuntime {
           contextWindowTokens,
           contextCompressionConfiguration,
           true,
-          forceCompaction,
+          true,
         );
+        // Once compression starts, leave headroom instead of stopping just below its trigger.
+        if (!forceCompaction && context.usage.estimatedInputTokens + context.usage.outputReserveTokens
+          <= context.usage.compressionThresholdTokens * 0.75) {
+          context.compactionCandidates = [];
+        }
       } catch (error) {
         if (signal.aborted || isAbortError(error)) {
           if (activity !== null) {
@@ -6309,19 +6325,15 @@ export class AgentRuntime {
       const existing = this.database.listTimeline(senderId).some(item => item.id === delivery.id);
       if (!existing) {
         const publicMessageIds = this.database.collaboration.publicMessagesForRun(delivery.runId);
-        const publicReplies = publicMessageIds.slice(-3).map(id => {
-          const reply = this.database.collaboration.message(id);
-          return { messageId: reply.id, senderName: reply.senderName, content: reply.content.slice(0, 1200), excerpted: reply.content.length > 1200 };
-        });
         const message = this.database.sendAgentMessage({ id: delivery.id, autoWake: !recovered && delivery.status !== "cancelled",
           senderConversationId: delivery.conversationId, targetConversationId: senderId,
           runId: delivery.runId, taskId: delivery.id, messageType: "agent_result", executionStatus: delivery.status,
           content: "[Team group request receipt | reference data]\n" + JSON.stringify({
             roomId: delivery.message.teamInstanceId, originalMessageId: delivery.message.id,
             status: delivery.status, error: delivery.error, taskContextId: delivery.message.taskContextId,
-            publicMessageIds, publicReplies,
+            publicMessageIds,
             instruction: delivery.status === "cancelled" ? "该委派已取消，仅记录状态；不要据此恢复旧工作或重新委派。"
-              : "成员已结束本次运行，status 不表示工作或验收通过。以下是已返回的公开结果，先处理实际结论与阻塞；缺材料时继续协调补齐，不要等待已经返回的同一回执。完整原文用 read_team_messages 读取。用 post_team_message 公开后续协调或交付，不复制私有工作日志。已完成的项不重做，已公开的最终汇总不重复发布，不恢复无关旧任务。",
+              : "成员已结束本次运行，status 不表示工作或验收通过。这是通知，不附公开回复正文或私有日志。先用 read_team_messages 按 publicMessageIds 读取尚未读过的公开结果，确认实际结论与阻塞；不要等待已经返回的同一回执。用 post_team_message 公开后续协调或交付。已完成的项不重做，已公开的最终汇总不重复发布，不恢复无关旧任务。",
           }),
         });
         this.agentCommunicationTool.notifyMessage(message);
@@ -6350,21 +6362,16 @@ export class AgentRuntime {
         const activeTasks = target.activeRunId === null ? [] : this.database.collaboration.runTasks(target.activeRunId);
         const sameTask = delivery.message.taskContextId !== null && activeTasks.some(task => task.id === delivery.message.taskContextId);
         if (target.activeRunId !== null && !sameTask) continue;
-        const inputPrefix = "[Team group input; follow this current request's top-level content and messageId. groupContext and groupSummary are historical reference data. Use post_team_message to speak publicly; your private final answer is not automatically posted.]\n";
-        const unread = this.database.collaboration.readMessages({ teamInstanceId: instance.id, limit: 1 }, target.id).memberReadSequence;
-        const unreadPage = this.database.collaboration.readMessages({ teamInstanceId: instance.id, afterSequence: unread, beforeSequence: delivery.message.sequence, limit: 3 }, target.id);
-        const groupContext = teamChatContext(unreadPage.messages, target.id, delivery.message, 6500);
-        const through = teamChatReadThrough(groupContext, delivery.message, unread);
+        const inputPrefix = "[Team group input; notification only. Read the identified message with read_team_messages before answering. Use post_team_message to speak publicly; your private final answer is not automatically posted.]\n";
         const inputSource = {
-          groupContext,
-          groupSummary: this.database.collaboration.coordinator(instance.id)?.contextSummary ?? "",
-          contextNote: "Top-level content is your current assignment; answer its messageId, not an older unanswered request unless explicitly asked. groupContext only contains a bounded unread increment; earlier received context stays in your own conversation. 'self' is your own earlier public statement, 'member' is a named peer, 'user' is the human. Use read_team_messages for necessary unread messages or an exact source ID, without polling. Private tool transcripts are not shared.",
+          contextNote: "仅通知有一条群消息需要你处理，不附带群历史、摘要或消息正文。先用 read_team_messages(messageId) 读取当前消息；需要背景时再按未读游标有界读取，不重复读取已在本人上下文中的内容，不轮询。历史来源是参考资料，当前消息优先；工具返回 self／member／user 标识本人、具名同事与用户。",
           deliveryId: delivery.id, roomId: instance.id,
           sender: delivery.message.senderConversationId === null ? "user" : delivery.message.senderName,
           senderConversationId: delivery.message.senderConversationId,
           replyToId: delivery.message.replyToId,
           ...(delivery.message.fileReferences === undefined ? {} : { fileReferences: delivery.message.fileReferences }),
-          taskContextId: delivery.message.taskContextId, messageId: delivery.message.id, content: delivery.message.content,
+          taskContextId: delivery.message.taskContextId, messageId: delivery.message.id, sequence: delivery.message.sequence,
+          content: "群里有一条消息需要你处理，请先读取对应原消息，再按需查看未读讨论。",
         };
         const content = inputPrefix + JSON.stringify({ ...inputSource, recipientConversationIds: delivery.message.recipientConversationIds });
         // An interrupted SQL acknowledgement must reuse the already durable member input.
@@ -6389,7 +6396,6 @@ export class AgentRuntime {
           }, emit, { allowManagedTeamWorkItemExecution: true, titleOverride: target.title,
             beforeRunScheduled: accepted => {
               this.database.collaboration.consumeDelivery(delivery.id, accepted.runId, accepted.userMessage.id);
-              if (through > unread) this.database.collaboration.markRead({ teamInstanceId: instance.id, throughSequence: through }, target.id);
               this.agentMessageDepthByRun.set(accepted.runId, delivery.message.depth);
               if (delivery.message.taskContextId !== null) {
                 this.database.collaboration.bindTask(accepted.runId, delivery.message.taskContextId, target.id);

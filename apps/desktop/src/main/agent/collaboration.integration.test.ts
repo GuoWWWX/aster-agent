@@ -51,8 +51,12 @@ class GroupFixture implements ModelProviderAdapter {
     }
     const source = input.messages.findLast(message => message.role === "user" && message.content.startsWith("[Team group input;"));
     if (!source) throw new Error("Missing original group request");
-    const context = z.object({ deliveryId: z.string(), messageId: z.string(), content: z.string() }).parse(JSON.parse(source.content.slice(source.content.indexOf("\n") + 1)));
-    if (context.content !== "委派验收" && this.memberGate !== null) await this.memberGate;
+    const context = z.object({ deliveryId: z.string(), messageId: z.string() }).parse(JSON.parse(source.content.slice(source.content.indexOf("\n") + 1)));
+    const readId = `read-${context.deliveryId}`;
+    const read = input.messages.find(message => message.role === "tool" && message.toolCallId === readId);
+    if (read === undefined) return { content: "", finishReason: "tool_calls", toolCalls: [{ id: readId, name: "read_team_messages", arguments: JSON.stringify({ messageId: context.messageId }) }] };
+    const content = z.object({ value: z.object({ messages: z.array(z.object({ content: z.string() })) }) }).parse(JSON.parse(read.content)).value.messages[0]?.content;
+    if (content !== "委派验收" && this.memberGate !== null) await this.memberGate;
     const step = this.steps.get(context.deliveryId) ?? 0; this.steps.set(context.deliveryId, step + 1);
     const candidateText = input.messages.findLast(message => message.role === "tool" && message.toolCallId === `${context.deliveryId}-0`)?.content;
     const candidate = candidateText === undefined ? null : z.object({ value: z.object({ items: z.array(z.object({ id: z.string(), revision: z.number() })) }) }).safeParse(JSON.parse(candidateText));
@@ -63,7 +67,7 @@ class GroupFixture implements ModelProviderAdapter {
       { name: "read_file", arguments: { path: "fact.txt" } },
       { name: "post_team_message", arguments: { content: "已核实文件内容为 evidence。", intent: "notify", replyToId: context.messageId, ...(this.keepWorkingAfterPost ? { continueWork: true } : {}) } },
     ];
-    const operation = context.content === "委派验收" && this.delegateTo !== null
+    const operation = content === "委派验收" && this.delegateTo !== null
       ? step === 0 ? { name: "post_team_message", arguments: { content: "请查证文件", intent: "request", replyToId: context.messageId, recipientConversationIds: [this.delegateTo] } } : undefined
       : operations[step];
     if (operation) return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ name: operation.name, arguments: JSON.stringify(operation.arguments), id: `${context.deliveryId}-${step}` }] });
@@ -131,24 +135,35 @@ describe("group execution integration", () => {
       expect(context).toContain("历史概要用于查重"); expect(context).not.toContain("历史决策不应自动恢复"); expect(context).not.toContain("历史动作不应自动恢复");
     } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
   });
-  it("passes only unread context increments to a member and keeps received messages in its own history", async () => {
+  it("delivers only a notification and leaves original group content unread until the member reads it", async () => {
     const { db, instance, member, runtime, model, tools, log } = await fixture(true, true);
-    const received: { messageId: string; groupContext: { messageId: string; content: string }[] }[] = [];
+    const received: string[] = [];
     vi.spyOn(model, "completeTurn").mockImplementation(input => {
       const source = input.messages.findLast(message => message.content.startsWith("[Team group input;"))!;
-      const context = z.object({ messageId: z.string(), groupContext: z.array(z.object({ messageId: z.string(), content: z.string() })) }).parse(JSON.parse(source.content.slice(source.content.indexOf("\n") + 1)));
-      received.push(context);
+      const context = z.object({ messageId: z.string() }).parse(JSON.parse(source.content.slice(source.content.indexOf("\n") + 1)));
+      const readId = `read-${context.messageId}`;
+      if (!input.messages.some(message => message.toolCallId === readId)) {
+        received.push(source.content);
+        expect(db.collaboration.readMessages({ teamInstanceId: instance.id, limit: 1 }, member.id).memberReadSequence).toBe(context.messageId === first.id ? 0 : first.sequence);
+        return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id: readId, name: "read_team_messages", arguments: JSON.stringify({ messageId: context.messageId, contentLimit: 16000 }) }] });
+      }
       return Promise.resolve({ content: "已读取本次请求。", finishReason: "stop", toolCalls: [] });
     });
+    let first: TeamChatMessage;
     try {
-      const first = runtime.postTeamChat({ teamInstanceId: instance.id, content: "第一条需要保留的请求", recipientConversationIds: [member.id], requestId: randomUUID() }, () => undefined);
+      first = runtime.postTeamChat({ teamInstanceId: instance.id, content: "第一条需要保留的请求" + "很长的公开正文".repeat(1500), recipientConversationIds: [member.id], requestId: randomUUID() }, () => undefined);
       await vi.waitFor(() => expect(db.collaboration.message(first.id).deliveries[0]?.status).toBe("completed"));
       await vi.waitFor(() => expect(db.getConversation(member.id).activeRunId).toBeNull());
       const second = runtime.postTeamChat({ teamInstanceId: instance.id, content: "仅处理第二条请求", recipientConversationIds: [member.id], requestId: randomUUID() }, () => undefined);
       await vi.waitFor(() => expect(db.collaboration.message(second.id).deliveries[0]?.status).toBe("completed"));
-      expect(received.find(item => item.messageId === second.id)?.groupContext.some(item => item.messageId === first.id)).toBe(false);
+      expect(received).toHaveLength(2);
+      for (const notification of received) {
+        expect(notification.length).toBeLessThan(1600);
+        expect(notification).not.toContain("groupContext"); expect(notification).not.toContain("groupSummary");
+        expect(notification).not.toContain("很长的公开正文"); expect(notification).toContain("read_team_messages");
+      }
       expect(db.collaboration.readMessages({ teamInstanceId: instance.id, limit: 1 }, member.id).memberReadSequence).toBe(second.sequence);
-      expect(new ThreadLogTimeline(log!).page({ conversationId: member.id, limit: 50 }).items.some(message => message.kind === "message" && message.content.includes(first.content))).toBe(true);
+      expect(log!.readContext(member.id)?.messages.some(message => message.role === "tool" && message.content.includes("第一条需要保留的请求"))).toBe(true);
     } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
   });
   it("pauses parallel group members outside the visible history page without stopping unrelated conversations", async () => {
@@ -237,10 +252,10 @@ describe("group execution integration", () => {
     });
     vi.spyOn(model, "completeTurn").mockImplementation(input => {
       const source = input.messages.findLast(message => message.content.startsWith("[Team group input;"))!;
-      const context = z.object({ deliveryId: z.string(), content: z.string() }).parse(JSON.parse(source.content.slice(source.content.indexOf("\n") + 1)));
+      const context = z.object({ deliveryId: z.string(), messageId: z.string() }).parse(JSON.parse(source.content.slice(source.content.indexOf("\n") + 1)));
       if (input.messages.some(message => message.toolCallId === context.deliveryId)) return Promise.resolve({ content: "已发言", finishReason: "stop", toolCalls: [] });
       return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id: context.deliveryId, name: "post_team_message",
-        arguments: JSON.stringify({ content: context.content, intent: "notify" }) }] });
+        arguments: JSON.stringify({ content: db.collaboration.message(context.messageId).content, intent: "notify" }) }] });
     });
     try {
       const first = runtime.postTeamChat({ teamInstanceId: instance.id, content: "第一条", recipientConversationIds: [member.id], requestId: randomUUID() }, () => undefined);
@@ -285,7 +300,7 @@ describe("group execution integration", () => {
         }
         return { content: "已收取公开回复回执", finishReason: "stop", toolCalls: [] };
       }
-      if (context.content === "负责人，请公开邀请两位讨论后汇总") {
+      if (db.collaboration.message(context.messageId).content === "负责人，请公开邀请两位讨论后汇总") {
         expect(input.messages[0]?.content).toContain("Delegate through post_team_message");
         expect(input.messages[0]?.content).toContain("the runtime resumes you when member completion receipts arrive");
         expect(input.messages[0]?.content).toContain("完成当前请求后结束本轮");
@@ -438,7 +453,7 @@ describe("group execution integration", () => {
       expect(db.collaboration.message(message.id).deliveries).toEqual([]);
     } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
   });
-  it("routes with the owning Agent in the background and gives the selected member an attributed public transcript", async () => {
+  it("routes with the owning Agent and lets the selected member read attributed public messages on demand", async () => {
     const { db, instance, lead, member, runtime, model, tools } = await fixture(true, true);
     const leadHistory = db.listTimeline(lead.id);
     db.collaboration.postMessage({ teamInstanceId: instance.id, content: "界面只使用蓝色按钮", intent: "notify", requestId: randomUUID() }, null);
@@ -448,6 +463,7 @@ describe("group execution integration", () => {
     vi.spyOn(model, "completeTurn").mockImplementation(input => {
       model.requests.push(input);
       if (isCoordinationInput(input)) return Promise.resolve(routingResult(input, [member.id], { contextSummary: "用户要求使用蓝色按钮，开发正在处理。" }));
+      if (!input.messages.some(message => message.toolCallId === "read-public")) return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id: "read-public", name: "read_team_messages", arguments: JSON.stringify({ limit: 5 }) }] });
       if (input.messages.some(message => message.toolCallId === "public-reply")) return Promise.resolve({ content: "已回复", finishReason: "stop", toolCalls: [] });
       return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id: "public-reply", name: "post_team_message", arguments: JSON.stringify({ content: "蓝色按钮已确认", intent: "notify" }) }] });
     });
@@ -461,10 +477,13 @@ describe("group execution integration", () => {
       expect(routing.messages.findLast(message => message.content.startsWith("[群聊协调参考上下文"))?.content).toContain("界面只使用蓝色按钮");
       const memberRequest = model.requests.find(input => input.tools.some(tool => tool.name === "post_team_message"))!;
       const source = memberRequest.messages.findLast(message => message.content.startsWith("[Team group input;"))!;
-      const payload = z.object({ groupContext: z.array(z.object({ senderName: z.string(), perspective: z.string(), content: z.string() })) }).parse(JSON.parse(source.content.slice(source.content.indexOf("\n") + 1)));
-      expect(payload.groupContext.map(message => message.perspective)).toEqual(["user", "self", "member"]);
-      expect(payload.groupContext[1]?.content).toBe("我会按蓝色按钮处理");
-      expect(payload.groupContext[2]?.senderName).toBeTruthy();
+      expect(source.content).not.toContain("groupContext"); expect(source.content).not.toContain("groupSummary");
+      expect(source.content).not.toContain("蓝色按钮");
+      const read = model.requests.flatMap(input => input.messages).find(message => message.toolCallId === "read-public")!;
+      const payload = z.object({ value: z.object({ messages: z.array(z.object({ senderName: z.string(), perspective: z.string(), content: z.string() })) }) }).parse(JSON.parse(read.content));
+      expect(payload.value.messages.map(message => message.perspective)).toEqual(["user", "self", "member", "user"]);
+      expect(payload.value.messages[1]?.content).toBe("我会按蓝色按钮处理");
+      expect(payload.value.messages[2]?.senderName).toBeTruthy();
       expect(db.collaboration.coordinator(instance.id)?.contextSummary).toContain("蓝色按钮");
     } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
   });
@@ -725,8 +744,10 @@ describe("group execution integration", () => {
       expect(receipt).toMatchObject({ messageType: "agent_result", taskId: receiptId, executionStatus: "completed" });
       expect(receipt && "content" in receipt ? receipt.content : "").not.toContain("成员私有的执行总结");
       const content = receipt && "content" in receipt ? receipt.content : "";
-      const result = z.object({ publicReplies: z.array(z.object({ messageId: z.string(), content: z.string().max(1200), excerpted: z.boolean() })).max(3) }).parse(JSON.parse(content.slice(content.indexOf("\n") + 1)));
-      expect(result.publicReplies).toEqual([expect.objectContaining({ messageId: page.messages[2]!.id, content: "已核实文件内容为 evidence。", excerpted: false })]);
+      const result = z.object({ publicMessageIds: z.array(z.string()) }).parse(JSON.parse(content.slice(content.indexOf("\n") + 1)));
+      expect(result.publicMessageIds).toEqual([page.messages[2]!.id]);
+      expect(content).not.toContain("publicReplies"); expect(content).not.toContain("已核实文件内容为 evidence。");
+      expect(content).toContain("read_team_messages");
       expect(content).toContain("status 不表示工作或验收通过");
       expect(db.collaboration.receiptsToRecover()).toEqual([]);
     } finally { await tools.dispose(); db.close(); }

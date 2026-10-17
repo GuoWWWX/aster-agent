@@ -135,6 +135,7 @@ export type ThreadLogContext = {
 type ContextLocation = { record: ThreadLogRecordLocation; legacyIndex: number };
 type ContextIndex = {
   context: ThreadLogContext;
+  checkpointOffset: number;
   locations: ContextLocation[];
   cursor: ThreadLogScanCursor | null;
 };
@@ -508,6 +509,15 @@ export class ThreadLog {
       message.providerState === undefined ? [] : [message.providerState]));
   }
 
+  /** Older request usage no longer describes the input after a successful compaction. */
+  public readUncompactedProviderState(conversationId: string): ModelProviderState | null {
+    const index = this.contextIndex(conversationId);
+    if (index === null) return null;
+    const position = index.context.messages.findLastIndex(message => message.providerState?.usage !== undefined);
+    if (position < 0 || index.locations[position]!.record.offset <= index.checkpointOffset) return null;
+    return structuredClone(index.context.messages[position]!.providerState ?? null);
+  }
+
   public searchCoveredContext(conversationId: string, query: string): ThreadLogContextMessage[] {
     const words = query.toLowerCase().match(/[\p{L}\p{N}_./-]{2,}/gu) ?? [];
     const terms = [...new Set(words.flatMap((word) => /^[\p{Script=Han}]+$/u.test(word)
@@ -539,7 +549,7 @@ export class ThreadLog {
     if (!this.hasConversation(id)) return null;
     let index = this.contextIndexes.get(id);
     if (index === undefined || index.cursor === null || !this.canContinueScan(id, index.cursor)) {
-      index = { context: { checkpoint: null, messages: [] }, locations: [], cursor: null };
+      index = { context: { checkpoint: null, messages: [] }, checkpointOffset: -1, locations: [], cursor: null };
     }
     const target = index;
     try {
@@ -550,7 +560,11 @@ export class ThreadLog {
           target.locations = target.locations.filter((_, position) => target.context.messages[position]?.runId !== replaced);
         }
         const oldLength = target.locations.length;
+        const checkpoint = target.context.checkpoint;
         applyContextEvent(target.context, event);
+        if (target.context.checkpoint !== checkpoint) {
+          target.checkpointOffset = target.context.checkpoint === null ? -1 : record.offset;
+        }
         for (let position = oldLength; position < target.context.messages.length; position += 1) {
           const message = target.context.messages[position]!;
           target.locations.push({ record, legacyIndex: position - oldLength });

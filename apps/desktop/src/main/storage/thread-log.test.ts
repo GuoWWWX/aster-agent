@@ -25,6 +25,19 @@ async function createThreadLog(): Promise<ThreadLog> {
 }
 
 describe("ThreadLog", () => {
+  it("uses provider usage only from requests after the last compaction, including after restart", async () => {
+    const log = await createThreadLog();
+    const providerState = { apiFormat: "openai-responses", baseUrl: "https://example.test/v1", modelId: "test-model", payload: { opaque: "large" },
+      usage: { inputTokens: 290_000, outputTokens: 100, totalTokens: 290_100 } };
+    log.append(conversationId, { type: "assistant_message", payload: { content: "reply", providerState } });
+    expect(log.readUncompactedProviderState(conversationId)).toMatchObject({ ...providerState, payload: null });
+    log.append(conversationId, { type: "context_checkpoint", payload: { summary: "summary", coveredThroughContextSequence: 1 } });
+    expect(log.readUncompactedProviderState(conversationId)).toBeNull();
+    const restored = new ThreadLog(path.dirname(path.dirname(log.getPath(conversationId))));
+    expect(restored.readUncompactedProviderState(conversationId)).toBeNull();
+    restored.append(conversationId, { type: "assistant_message", payload: { content: "reply after compaction", providerState } });
+    expect(restored.readUncompactedProviderState(conversationId)?.usage?.inputTokens).toBe(290_000);
+  });
   it("opens one record reader for a context batch and closes it when a search stops early", async () => {
     const log = await createThreadLog();
     for (let index = 0; index < 60; index += 1) {

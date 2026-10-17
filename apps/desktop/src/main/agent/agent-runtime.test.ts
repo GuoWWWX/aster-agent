@@ -6715,6 +6715,52 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
+  it.each(["previous", "current"])("compacts underestimated provider input from the %s request without reusing pre-compaction usage", async pressureWhen => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-provider-context-pressure-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const log = new ThreadLog(path.join(root, "conversations"));
+    const compactor = new FixtureContextCompactor();
+    const model = new ContinuousConversationFixtureModel();
+    const complete = model.completeTurn.bind(model);
+    vi.spyOn(model, "completeTurn").mockImplementation(async input => {
+      const result = await complete(input);
+      const pressure = model.requests.length === (pressureWhen === "previous" ? 3 : 4);
+      return { ...result, providerState: { apiFormat: input.configuration.apiFormat, baseUrl: input.configuration.baseUrl,
+        modelId: input.configuration.modelId, payload: null,
+        usage: { inputTokens: pressure ? 190_000 : 2000, outputTokens: 100, totalTokens: pressure ? 190_100 : 2100 } },
+        ...(pressure && pressureWhen === "current" ? { content: "", finishReason: "tool_calls" as const,
+          toolCalls: [{ id: "inspect-members", name: "list_agent_conversations", arguments: "{}" }] } : {}) };
+    });
+    const tools = new ProjectToolRegistry(projects);
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({ apiKey: "secret", apiFormat: "openai-chat-completions",
+      baseUrl: "https://example.test/v1", contextWindow: 200_000, modelId: "test-model", reasoningOptions: [] }) }, projects, tools, model,
+      undefined, { getConfiguration: () => ({ mode: "tokens", tokenThreshold: 100_000, percentageThreshold: 80, version: 1 }) }, compactor,
+      null, null, null, undefined, undefined, null, log, new EventProjector(database, log));
+    const send = (content: string) => new Promise<void>((resolve, reject) => {
+      runtime.sendMessage({ conversationId: conversation.id, content }, event => {
+        if (event.type !== "run.finished") return;
+        if (event.status === "completed") resolve(); else reject(new Error(event.error ?? event.status));
+      });
+    });
+    try {
+      await send("第一轮短消息"); await send("第二轮短消息"); await send("第三轮短消息");
+      expect(compactor.requests).toHaveLength(0);
+      await send("第四轮继续工作");
+      expect(compactor.requests).toHaveLength(1);
+      expect(log.readUncoveredContext(conversation.id)?.checkpoint?.coveredThroughSequence).toBe(4);
+      const messages = model.requests.at(-1)!.messages.map(message => message.content);
+      expect(messages).not.toContain("第一轮短消息"); expect(messages).not.toContain("第二轮短消息");
+      expect(messages).toContain("第三轮短消息"); expect(messages).toContain("第四轮继续工作");
+      expect(runtime.getContextUsage({ conversationId: conversation.id, permissionMode: "ask_before_changes" }).estimatedInputTokens).toBeLessThan(75_000);
+      await send("第五轮继续工作");
+      expect(compactor.requests).toHaveLength(1);
+      expect(log.readContext(conversation.id)?.messages.some(message => message.content === "第一轮短消息")).toBe(true);
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); database.close(); }
+  });
+
   it("persists a ThreadLog compaction checkpoint when SQLite sequences are globally offset", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-compact-thread-log-"));
     temporaryDirectories.push(root);
