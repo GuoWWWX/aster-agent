@@ -233,6 +233,12 @@ export class EventProjector {
       return this.projectConversation(conversationId);
     }
     const cursor = this.database.getThreadLogProjectionCursor(conversationId);
+    if (event.type === "conversation_result_viewed" && !this.hydratedConversationIds.has(conversationId)) {
+      // A read receipt only changes compact state. Leave the history cursor
+      // untouched so a later execution still replays its complete prefix.
+      this.database.projectThreadLogBusinessEvents(conversationId, [event]);
+      return { cursor, projectedEventCount: 1 };
+    }
     if (event.sequence !== (cursor?.lastSequence ?? 0) + 1) {
       return this.projectConversation(conversationId);
     }

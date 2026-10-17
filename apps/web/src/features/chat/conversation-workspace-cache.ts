@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { ProjectSession } from "../projects/project-session-model.js";
 import {
@@ -11,17 +11,17 @@ import {
 export const CONVERSATION_WORKSPACE_CACHE_MAX_RETAINED = WORKSPACE_CACHE_MAX_RETAINED;
 export const CONVERSATION_WORKSPACE_CACHE_TTL_MS = WORKSPACE_CACHE_TTL_MS;
 
-export type ConversationWorkspaceCacheEntry = {
+export type ConversationWorkspaceCacheEntry<T extends { id: string } = ProjectSession> = {
   lastAccessedAt: number;
-  session: ProjectSession;
+  session: T;
 };
 
-export function retainConversationWorkspace(
-  entries: readonly ConversationWorkspaceCacheEntry[],
-  activeSession: ProjectSession | null,
+export function retainConversationWorkspace<T extends { id: string }>(
+  entries: readonly ConversationWorkspaceCacheEntry<T>[],
+  activeSession: T | null,
   now: number,
   protectedSessionIds: ReadonlySet<string> = new Set(),
-): ConversationWorkspaceCacheEntry[] {
+): readonly ConversationWorkspaceCacheEntry<T>[] {
   const activeSessionId = activeSession?.id ?? null;
   const ordered = activeSession === null
     ? [...entries]
@@ -35,16 +35,17 @@ export function retainConversationWorkspace(
     activeSessionId,
     now,
   );
-  return ordered.filter((entry) =>
+  const retained = ordered.filter((entry) =>
     retainedIds.has(entry.session.id) || protectedSessionIds.has(entry.session.id)
   );
+  return retained.length === entries.length && retained.every((entry, index) => entry === entries[index]) ? entries : retained;
 }
 
-export function conversationWorkspaceSessions(
-  entries: readonly ConversationWorkspaceCacheEntry[],
-  activeSession: ProjectSession | null,
+export function conversationWorkspaceSessions<T extends { id: string }>(
+  entries: readonly ConversationWorkspaceCacheEntry<T>[],
+  activeSession: T | null,
   availableSessionIds: ReadonlySet<string> | null = null,
-): readonly ProjectSession[] {
+): readonly T[] {
   const availableActiveSession = activeSession;
   const cachedSessions = entries
     .filter((entry) => entry.session.id !== availableActiveSession?.id)
@@ -55,11 +56,11 @@ export function conversationWorkspaceSessions(
     : [availableActiveSession, ...cachedSessions];
 }
 
-export function useConversationWorkspaceCache(
-  activeSession: ProjectSession | null,
-  availableSessions?: readonly ProjectSession[],
+export function useConversationWorkspaceCache<T extends { id: string; isArchived?: boolean }>(
+  activeSession: T | null,
+  availableSessions?: readonly T[],
   protectedSessionIds?: readonly string[],
-): readonly ProjectSession[] {
+): readonly T[] {
   const availableSessionIds = useMemo(
     () => availableSessions === undefined
       ? null
@@ -75,33 +76,32 @@ export function useConversationWorkspaceCache(
     () => new Set(protectedSessionIds ?? []),
     [protectedSessionIds],
   );
-  const [entries, setEntries] = useState<ConversationWorkspaceCacheEntry[]>(() =>
+  const [entries, setEntries] = useState<readonly ConversationWorkspaceCacheEntry<T>[]>(() =>
     retainConversationWorkspace([], availableActiveSession, Date.now())
   );
+  const retainEntries = useCallback((current: readonly ConversationWorkspaceCacheEntry<T>[]) => {
+    const next = retainConversationWorkspace(
+      current.filter((entry) => availableSessionIds?.has(entry.session.id) ?? true),
+      availableActiveSession,
+      Date.now(),
+      protectedIds,
+    );
+    return next.length === current.length && next.every((entry, index) => entry === current[index]) ? current : next;
+  }, [availableActiveSession, availableSessionIds, protectedIds]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
-      setEntries((current) => retainConversationWorkspace(
-        current.filter((entry) => availableSessionIds?.has(entry.session.id) ?? true),
-        availableActiveSession,
-        Date.now(),
-        protectedIds,
-      ));
+      setEntries(retainEntries);
     });
     return () => window.clearTimeout(timeout);
-  }, [availableActiveSession, availableSessionIds, protectedIds]);
+  }, [retainEntries]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
-      setEntries((current) => retainConversationWorkspace(
-        current.filter((entry) => availableSessionIds?.has(entry.session.id) ?? true),
-        availableActiveSession,
-        Date.now(),
-        protectedIds,
-      ));
+      setEntries(retainEntries);
     }, WORKSPACE_CACHE_SWEEP_INTERVAL_MS);
     return () => window.clearInterval(interval);
-  }, [availableActiveSession, availableSessionIds, protectedIds]);
+  }, [retainEntries]);
 
   return useMemo(
     () => conversationWorkspaceSessions(entries, availableActiveSession, availableSessionIds),

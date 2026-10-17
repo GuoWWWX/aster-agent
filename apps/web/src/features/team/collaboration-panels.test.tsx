@@ -9,12 +9,58 @@ import { TeamChatPanel } from "./team-chat-panel.js";
 import { TeamChatWorkspace } from "./team-chat-workspace.js";
 import { TooltipProvider } from "../../components/ui/tooltip.js";
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
-import { ConversationWorkspace } from "../chat/workspace-content.js";
+import { ConversationWorkspace, WorkspaceContent } from "../chat/workspace-content.js";
+import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 
 let root: Root | null = null;
 beforeEach(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} }); });
 afterEach(() => { act(() => root?.unmount()); root = null; document.body.replaceChildren(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const mount = () => { const element = document.createElement("div"); document.body.append(element); root = createRoot(element); return element; };
+
+it("retains the group pane, draft and reading position when a preview tab is replaced", async () => {
+  const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
+  await client.postTeamChat({ teamInstanceId: instance.id, content: "cached group", intent: "notify", requestId: crypto.randomUUID() });
+  const read = vi.spyOn(client, "readTeamChat"); const container = mount();
+  const show = async (group: boolean) => { await act(async () => {
+    useWorkbenchUiStore.setState({ activeActivity: "conversations", teamChatTarget: group ? { instanceId: instance.id } : null });
+    root?.render(<TooltipProvider><WorkspaceContent agentClient={client} activeProject={null} activeSession={sessions[0]!}
+      projects={[]} sessions={sessions} teamInstances={[instance]} openTeamChatInstanceIds={group ? [instance.id] : []}
+      canAddProjects={false} isAddingProject={false} isCreatingSession={false}
+      onAddProject={() => Promise.resolve(null)} onCreateProjectSession={() => undefined} onCreateTemporarySession={() => undefined}
+      onForkConversation={() => Promise.resolve(undefined)} onLocateProject={() => undefined} onLocateSession={() => undefined}
+      onOpenTeamConversation={() => undefined} onProjectSelected={() => undefined} onSessionSelected={() => undefined}
+      onSessionUpdated={() => undefined} onSessionViewed={() => undefined} /></TooltipProvider>);
+    for (let i = 0; i < 15; i++) await Promise.resolve();
+  }); };
+  try {
+    await show(true);
+    const viewport = container.querySelector<HTMLElement>('[aria-label="群消息"]')!;
+    Object.defineProperties(viewport, { clientHeight: { configurable: true, value: 600 }, scrollHeight: { configurable: true, value: 2000 } });
+    const composer = container.querySelector<HTMLTextAreaElement>('[aria-label="输入任务"]')!;
+    act(() => { input(composer, "尚未发送的群聊草稿"); viewport.scrollTop = 75; viewport.dispatchEvent(new Event("scroll")); });
+    const reads = read.mock.calls.length;
+    await show(false);
+    expect(viewport.isConnected).toBe(true);
+    await show(true);
+    expect(container.querySelector('[aria-label="群消息"]')).toBe(viewport);
+    expect(viewport.scrollTop).toBe(75);
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="输入任务"]')?.value).toBe("尚未发送的群聊草稿");
+    expect(read).toHaveBeenCalledTimes(reads);
+  } finally { useWorkbenchUiStore.setState({ teamChatTarget: null }); }
+});
+
+it("does not load the leader private queue or task list to open a group composer", async () => {
+  const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
+  const pending = vi.spyOn(client, "getConversationPendingQueuePaused");
+  const tasks = vi.spyOn(client, "getConversationTaskList");
+  mount();
+  await act(async () => {
+    root?.render(<TooltipProvider><TeamChatWorkspace agentClient={client} instance={instance} sessions={sessions} projects={[]}
+      onSessionUpdated={() => undefined} active onOpenConversation={() => undefined} /></TooltipProvider>);
+    for (let i = 0; i < 15; i++) await Promise.resolve();
+  });
+  expect(pending).not.toHaveBeenCalled(); expect(tasks).not.toHaveBeenCalled();
+});
 function input(element: HTMLTextAreaElement | HTMLInputElement, value: string) {
   Object.getOwnPropertyDescriptor(element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, "value")?.set?.call(element, value); element.dispatchEvent(new Event("input", { bubbles: true }));
 }

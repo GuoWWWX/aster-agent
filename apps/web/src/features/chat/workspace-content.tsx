@@ -220,6 +220,8 @@ import "./workspace-content.css";
 
 const DEFAULT_COMPOSER_CLEARANCE_PX = 120;
 const TIMELINE_PAGE_SIZE = 120;
+const EMPTY_TEAM_INSTANCES: readonly TeamInstanceView[] = [];
+const EMPTY_TEAM_CHAT_IDS: readonly string[] = [];
 const TIMELINE_PREFETCH_VIEWPORTS = 1.5;
 
 type WorkspaceContentProps = {
@@ -768,9 +770,9 @@ export function WorkspaceContent({
   onSessionUpdated,
   onSessionViewed,
   protectedSessionIds,
-  openTeamChatInstanceIds = [],
+  openTeamChatInstanceIds = EMPTY_TEAM_CHAT_IDS,
   sessions,
-  teamInstances = [],
+  teamInstances = EMPTY_TEAM_INSTANCES,
 }: WorkspaceContentProps): ReactElement {
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
   const teamChatTarget = useWorkbenchUiStore((state) => state.teamChatTarget);
@@ -778,6 +780,11 @@ export function WorkspaceContent({
     activeActivity === "conversations" && teamChatTarget === null ? activeSession : null,
     sessions,
     protectedSessionIds,
+  );
+  const retainedTeamChats = useConversationWorkspaceCache(
+    activeActivity === "conversations" ? teamInstances.find(instance => !instance.isArchived && instance.id === teamChatTarget?.instanceId) ?? null : null,
+    teamInstances,
+    openTeamChatInstanceIds,
   );
 
   return <>
@@ -805,7 +812,7 @@ export function WorkspaceContent({
         onCreateTemporarySession={onCreateTemporarySession}
       />
     ) : null}
-    {teamInstances.filter(instance => openTeamChatInstanceIds.includes(instance.id) && !instance.isArchived).map(instance => {
+    {retainedTeamChats.map(instance => {
       const active = activeActivity === "conversations" && teamChatTarget?.instanceId === instance.id;
       return <div key={instance.id} className={active ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"} aria-hidden={!active}>
         <TeamChatWorkspace agentClient={agentClient} instance={instance} active={active} sessions={sessions} projects={projects} onSessionUpdated={onSessionUpdated}
@@ -1093,6 +1100,8 @@ export function ConversationWorkspace({
     [relatedSessions, session.id],
   );
   const contextUsageRequestRef = useRef(0);
+  const contextUsageInputKeyRef = useRef<string | null>(null);
+  const contextUsageDirtyRef = useRef(true);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const composerOverlayRef = useRef<HTMLDivElement | null>(null);
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(
@@ -1338,27 +1347,30 @@ export function ConversationWorkspace({
 
   const loadContextUsage = useCallback(async (): Promise<void> => {
     if (!active || groupInstanceId !== undefined) return;
-    const requestId = contextUsageRequestRef.current + 1;
-    contextUsageRequestRef.current = requestId;
-
+    const input = {
+      attachmentIds: draftAttachments.map((attachment) => attachment.id),
+      conversationId: session.id,
+      ...(usageModelId === undefined ? {} : { modelId: usageModelId }),
+      ...(usageProviderId === undefined ? {} : { providerId: usageProviderId }),
+      permissionMode,
+      ...(selectedConversationMentions.length === 0
+        ? {}
+        : {
+          referencedConversationIds: selectedConversationMentions.map((mention) => mention.id),
+        }),
+      ...(activeProjectFileMentions.length === 0
+        ? {}
+        : {
+          referencedProjectPaths: activeProjectFileMentions.map((mention) => mention.path),
+        }),
+    };
+    const inputKey = JSON.stringify(input);
+    if (!contextUsageDirtyRef.current && contextUsageInputKeyRef.current === inputKey) return;
+    contextUsageInputKeyRef.current = inputKey;
+    contextUsageDirtyRef.current = false;
+    const requestId = ++contextUsageRequestRef.current;
     try {
-      const nextUsage = await agentClient.getConversationContextUsage({
-        attachmentIds: draftAttachments.map((attachment) => attachment.id),
-        conversationId: session.id,
-        ...(usageModelId === undefined ? {} : { modelId: usageModelId }),
-        ...(usageProviderId === undefined ? {} : { providerId: usageProviderId }),
-        permissionMode,
-        ...(selectedConversationMentions.length === 0
-          ? {}
-          : {
-            referencedConversationIds: selectedConversationMentions.map((mention) => mention.id),
-          }),
-        ...(activeProjectFileMentions.length === 0
-          ? {}
-          : {
-            referencedProjectPaths: activeProjectFileMentions.map((mention) => mention.path),
-          }),
-      });
+      const nextUsage = await agentClient.getConversationContextUsage(input);
       if (contextUsageRequestRef.current === requestId) {
         setContextUsage(nextUsage);
         // Keep the entire last completed measurement stable while the next request streams.
@@ -1368,6 +1380,7 @@ export function ConversationWorkspace({
       }
     } catch {
       if (contextUsageRequestRef.current === requestId) {
+        contextUsageDirtyRef.current = true;
         setContextUsage(null);
       }
     }
@@ -1612,14 +1625,16 @@ export function ConversationWorkspace({
   }, [active, agentClient, subagentSessions]);
 
   const loadTaskList = useCallback(async (): Promise<void> => {
+    if (groupInstanceId !== undefined) return;
     try {
       setTaskList(await agentClient.getConversationTaskList({ conversationId: session.id }));
     } catch {
       setTaskList(null);
     }
-  }, [agentClient, session.id]);
+  }, [agentClient, session.id, groupInstanceId]);
 
   const loadPendingMessages = useCallback(async (): Promise<void> => {
+    if (groupInstanceId !== undefined) return;
     try {
       const [messages, paused] = await Promise.all([
         agentClient.listConversationPendingMessages({ conversationId: session.id }),
@@ -1630,7 +1645,7 @@ export function ConversationWorkspace({
     } catch {
       setPendingMessages([]);
     }
-  }, [agentClient, session.id]);
+  }, [agentClient, session.id, groupInstanceId]);
 
   const loadDraftAttachments = useCallback(async (): Promise<void> => {
     try {
@@ -1725,17 +1740,11 @@ export function ConversationWorkspace({
       });
       return () => { disposed = true; };
     }
-    void agentClient.listConversations()
-      .then(async (conversations) => {
-        const forks = await Promise.all(
-          conversations.map((conversation) =>
-            agentClient.listConversationForks({ conversationId: conversation.id })
-              .catch(() => []),
-          ),
-        );
+    void agentClient.listConversationHierarchy()
+      .then((conversations) => {
         if (disposed) return;
         setAvailableConversationMentions(
-          [...conversations, ...forks.flat()]
+          conversations
             .filter((conversation) =>
               conversation.id !== session.id
               && !conversation.isArchived
@@ -1848,6 +1857,7 @@ export function ConversationWorkspace({
       if (!active) {
         if ("conversationId" in event && (event.conversationId === session.id || subagentSessions.some(item => item.id === event.conversationId))) {
           inactiveTimelineDirtyRef.current = true;
+          contextUsageDirtyRef.current = true;
         }
         return;
       }
@@ -1933,6 +1943,7 @@ export function ConversationWorkspace({
         && event.type !== "tool.output_delta"
         && event.type !== "model.retry_updated"
       ) {
+        contextUsageDirtyRef.current = true;
         void loadContextUsage();
       }
     }, active ? [session.id] : []);
@@ -2361,6 +2372,7 @@ export function ConversationWorkspace({
       setSelectedConversationMentions([]);
       setSelectedTeamMentions([]);
       setSelectedProjectFileMentions([]);
+      contextUsageDirtyRef.current = true;
       void loadContextUsage();
     } catch (error) {
       if (activeRunId === null) {
@@ -2423,6 +2435,7 @@ export function ConversationWorkspace({
           accepted.pendingMessage,
         ]);
       }
+      contextUsageDirtyRef.current = true;
       void loadContextUsage();
     } catch (error) {
       discardPendingRunProgress(setRunProgresses);

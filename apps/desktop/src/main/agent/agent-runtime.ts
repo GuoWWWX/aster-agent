@@ -1834,7 +1834,6 @@ export class AgentRuntime {
   }
 
   public isPendingQueuePaused(conversationId: string): boolean {
-    this.eventProjector?.ensureConversationHistoryProjected(conversationId);
     this.database.getConversation(conversationId);
     return this.pendingQueuePaused.get(conversationId)
       ?? this.database.listPendingMessages(conversationId).length > 0;

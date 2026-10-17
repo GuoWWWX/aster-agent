@@ -36,6 +36,16 @@ async function render(client: MockAgentClient, activeRunId: string | null): Prom
 }
 const header = (): HTMLButtonElement => container.querySelector<HTMLButtonElement>(".conversation-run-activity > button")!;
 
+it("loads mention candidates in one hierarchy query instead of querying forks per conversation", async () => {
+  const client = new MockAgentClient();
+  for (let index = 0; index < 6; index += 1) await client.createConversation({});
+  const forks = vi.spyOn(client, "listConversationForks");
+  const hierarchy = vi.spyOn(client, "listConversationHierarchy");
+  await render(client, null);
+  expect(hierarchy).toHaveBeenCalled();
+  expect(forks).not.toHaveBeenCalled();
+});
+
 it.each([false, true])("does not compile the private history for an inactive or group composer (group=%s)", async (group) => {
   const client = new MockAgentClient();
   const usage = vi.spyOn(client, "getConversationContextUsage");
@@ -56,9 +66,12 @@ it.each([false, true])("does not compile the private history for an inactive or 
 
 it("retains a cached timeline across switches and refreshes only after background changes", async () => {
   const client = new MockAgentClient();
+  const usageConversation = await client.createConversation({});
+  const cachedUsage = await client.getConversationContextUsage({ conversationId: usageConversation.id, permissionMode: "full_access" });
   let emit: (event: ConversationRunEvent) => void = () => {};
   vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { emit = callback; return () => {}; });
   const history = vi.spyOn(client, "listConversationTimeline").mockResolvedValue([{ ...answer, content: "cached answer", status: "completed" }]);
+  const usage = vi.spyOn(client, "getConversationContextUsage").mockResolvedValue(cachedUsage);
   const pending = vi.spyOn(client, "listConversationPendingMessages").mockResolvedValue([]);
   const show = async (active: boolean): Promise<void> => {
     await act(async () => {
@@ -68,6 +81,7 @@ it("retains a cached timeline across switches and refreshes only after backgroun
   };
   await show(true);
   const initialCalls = history.mock.calls.length;
+  const initialUsageCalls = usage.mock.calls.length;
   expect(container.textContent).toContain("cached answer");
   const messages = container.querySelector<HTMLElement>(".conversation-workspace__messages")!;
   Object.defineProperties(messages, { clientHeight: { configurable: true, value: 600 }, scrollHeight: { configurable: true, value: 1400 } });
@@ -76,6 +90,7 @@ it("retains a cached timeline across switches and refreshes only after backgroun
   await show(false);
   await show(true);
   expect(history).toHaveBeenCalledTimes(initialCalls);
+  expect(usage).toHaveBeenCalledTimes(initialUsageCalls);
   expect(container.querySelector(".conversation-workspace__messages")).toBe(messages);
   expect(messages.scrollTop).toBe(120);
   await show(false);
@@ -86,6 +101,7 @@ it("retains a cached timeline across switches and refreshes only after backgroun
   history.mockResolvedValue([{ ...answer, content: "new background answer", status: "completed" }]);
   await show(true);
   expect(history).toHaveBeenCalledTimes(initialCalls + 1);
+  expect(usage).toHaveBeenCalledTimes(initialUsageCalls + 1);
   expect(container.textContent).toContain("new background answer");
   expect(container.querySelector(".conversation-pending-queue")?.textContent).toContain("queued while hidden");
 });

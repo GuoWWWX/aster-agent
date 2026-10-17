@@ -119,8 +119,12 @@ export function AppTitlebar({
       if (tab.left < bounds.left) list.scrollLeft += tab.left - bounds.left;
       else if (tab.right > bounds.right) list.scrollLeft += tab.right - bounds.right;
     };
-    revealActive();
-    if (typeof ResizeObserver === "undefined") return;
+    if (typeof ResizeObserver === "undefined") {
+      const frame = window.requestAnimationFrame(revealActive);
+      return () => window.cancelAnimationFrame(frame);
+    }
+    // The initial observer notification already follows layout. Measuring
+    // during React's commit forces the newly visible conversation to reflow.
     const observer = new ResizeObserver(revealActive);
     observer.observe(list);
     return () => observer.disconnect();

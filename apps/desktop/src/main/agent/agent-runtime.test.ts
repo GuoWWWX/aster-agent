@@ -1728,6 +1728,26 @@ class ModelBackedContextCompactorFixture implements ModelProviderAdapter {
 }
 
 describe("AgentRuntime", () => {
+  it("reads retained pending queue state without rehydrating the conversation history", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-queue-status-"));
+    temporaryDirectories.push(directory);
+    const database = new AgentDatabase(":memory:"); const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null); const log = new ThreadLog(directory);
+    const projector = new EventProjector(database, log);
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({ apiKey: "secret", apiFormat: "openai-chat-completions",
+      baseUrl: "https://example.test/v1", modelId: "test-model", reasoningOptions: [] }) }, projects, new ProjectToolRegistry(projects),
+      new FixtureModel(), undefined, undefined, null, null, null, null, null, undefined, null, log, projector);
+    try {
+      database.enqueuePendingMessage({ conversationId: conversation.id, content: "waiting", deliveryMode: "queue" });
+      database.clearVolatileConversationHistory(conversation.id);
+      const hydrate = vi.spyOn(projector, "ensureConversationHistoryProjected");
+      expect(runtime.isPendingQueuePaused(conversation.id)).toBe(true);
+      runtime.setPendingQueuePaused(conversation.id, false, () => undefined);
+      expect(runtime.isPendingQueuePaused(conversation.id)).toBe(false);
+      expect(hydrate).not.toHaveBeenCalled();
+      expect(runtime.listPendingMessages(conversation.id)).toHaveLength(1);
+    } finally { database.close(); }
+  });
   it.each([{ temporary: false, blocked: false }, { temporary: true, blocked: false }, { temporary: false, blocked: true }]
     .flatMap(value => [{ ...value, gallery: false }, { ...value, gallery: true }]))("persists present_html with workspace policy (temporary=$temporary, blocked=$blocked, gallery=$gallery)", async ({ temporary, blocked, gallery }) => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-present-html-"));
