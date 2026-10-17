@@ -1,4 +1,4 @@
-import { taskContextSchema, updateTaskContextInputSchema, listTaskContextsInputSchema, postTeamChatInputSchema, type ListTaskContextsInput, type TaskContextPage, type TaskContextDetail, type UpdateTaskContextInput, type TaskContext, type LinkTaskContextInput, type MergeTaskContextsInput, type ReadTeamChatInput, type TeamChatPage, type PostTeamChatInput, type TeamChatMessage, type TeamChatMember, type MarkTeamChatReadInput } from "@agent/protocol";
+import { taskContextSchema, updateTaskContextInputSchema, listTaskContextsInputSchema, postTeamChatInputSchema, type TaskContextScope, type TaskCompletionPolicy, type SetTaskCompletionPolicyInput, type ResolveChatReferencesInput, type ChatReference, type ListTaskContextsInput, type TaskContextPage, type TaskContextDetail, type UpdateTaskContextInput, type TaskContext, type LinkTaskContextInput, type MergeTaskContextsInput, type ReadTeamChatInput, type TeamChatPage, type PostTeamChatInput, type TeamChatMessage, type TeamChatMember, type MarkTeamChatReadInput } from "@agent/protocol";
 import type { HtmlPreview, HtmlPreviewRequest } from "@agent/protocol";
 import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
 import { saveScheduledTaskInputSchema, type ScheduledTask, type SaveScheduledTaskInput, type ScheduledTaskReference } from "@agent/protocol";
@@ -1673,6 +1673,28 @@ export class MockAgentClient implements AgentClient {
   private groupMessages: TeamChatMessage[] = [];
   private readonly pausedGroupIds = new Set<string>();
   private groupRead = new Map<string, number>();
+  private readonly taskCompletionPolicies = new Map<string, boolean>();
+  public getTaskCompletionPolicy(input: TaskContextScope): Promise<TaskCompletionPolicy> {
+    return Promise.resolve({ allowAgentCompletion: this.taskCompletionPolicies.get(input.teamInstanceId ?? input.conversationId!) ?? false });
+  }
+  public setTaskCompletionPolicy(input: SetTaskCompletionPolicyInput): Promise<TaskCompletionPolicy> {
+    this.taskCompletionPolicies.set(input.teamInstanceId ?? input.conversationId!, input.allowAgentCompletion);
+    return Promise.resolve({ allowAgentCompletion: input.allowAgentCompletion });
+  }
+  public resolveChatReferences(input: ResolveChatReferencesInput): Promise<ChatReference[]> {
+    const result: ChatReference[] = [];
+    for (const id of new Set(input.ids)) {
+      const task = this.directoryTasks.find(item => item.id === id && (input.teamInstanceId !== undefined
+        ? item.teamInstanceId === input.teamInstanceId : item.ownerConversationId === input.conversationId
+          || this.directorySources.get(item.id)?.some(source => source.containerId === input.conversationId)));
+      if (task) { result.push({ kind: "task", id, title: task.title, ownerConversationId: task.ownerConversationId, teamInstanceId: task.teamInstanceId }); continue; }
+      const group = this.groupMessages.find(item => item.id === id && item.teamInstanceId === input.teamInstanceId);
+      if (group) { result.push({ kind: "message", id, sourceKind: "group", containerId: group.teamInstanceId, senderName: group.senderName, content: group.content.slice(0, 2000), createdAt: group.createdAt }); continue; }
+      const message = input.conversationId === undefined ? undefined : this.timelines.get(input.conversationId)?.find(item => item.kind === "message" && item.id === id);
+      if (message?.kind === "message") result.push({ kind: "message", id, sourceKind: "conversation", containerId: input.conversationId!, senderName: message.role === "user" ? "你" : "Agent", content: message.content.slice(0, 2000), createdAt: message.createdAt });
+    }
+    return Promise.resolve(result);
+  }
   public listTaskContexts(raw: ListTaskContextsInput): Promise<TaskContextPage> {
     const input = listTaskContextsInputSchema.parse(raw);
     let items = this.directoryTasks.filter(task => task.mergedIntoId === null
@@ -1680,9 +1702,10 @@ export class MockAgentClient implements AgentClient {
       && (input.teamInstanceId === undefined || task.teamInstanceId === input.teamInstanceId)
       && (input.projectId === undefined || task.projectId === input.projectId)
       && (input.status === undefined || task.status === input.status)
-      && (!input.query || task.title.includes(input.query) || task.goal.includes(input.query))).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
+      && (!input.query || task.title.includes(input.query) || task.goal.includes(input.query) || this.directorySources.get(task.id)?.some(source => source.role === "user" && source.content?.includes(input.query!)))).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
+    const total = items.length;
     if (input.beforeId) items = items.slice(items.findIndex(task => task.id === input.beforeId) + 1);
-    return Promise.resolve({ items: structuredClone(items.slice(0, input.limit)), unclassified: [], nextBeforeId: items.length > input.limit ? items[input.limit - 1]!.id : null });
+    return Promise.resolve({ total, items: structuredClone(items.slice(0, input.limit).map(task => ({ ...task, userMessageCount: this.directorySources.get(task.id)?.filter(source => source.role === "user").length ?? 0 }))), unclassified: [], nextBeforeId: items.length > input.limit ? items[input.limit - 1]!.id : null });
   }
   public getTaskContext(input: { id: string; beforeSourceSequence?: number; limit?: number }): Promise<TaskContextDetail> {
     const task = this.directoryTasks.find(task => task.id === input.id);
@@ -1704,16 +1727,21 @@ export class MockAgentClient implements AgentClient {
     const task = taskContextSchema.parse({ ...fields, id: previous?.id ?? crypto.randomUUID(),
       ownerConversationId: previous?.ownerConversationId ?? input.conversationId, projectId: conversation.projectId,
       teamInstanceId: instance?.id ?? null, workItemId: null, revision: (previous?.revision ?? 0) + 1,
-      createdAt: previous?.createdAt ?? now, updatedAt: now, mergedIntoId: null,
+      createdAt: previous?.createdAt ?? now, updatedAt: now, mergedIntoId: null, completionRequested: false, completedBy: input.status === "completed" ? "user" : null,
     });
     this.directoryTasks = [...this.directoryTasks.filter(item => item.id !== task.id), task];
     if (input.source) await this.linkTaskContext({ id: task.id, source: input.source });
-    this.emitConversationRunEvent({ type: "collaboration.changed", conversationId: input.conversationId });
+    this.emitConversationRunEvent({ type: "collaboration.changed", conversationId: input.conversationId,
+      ...(task.teamInstanceId === null ? {} : { teamInstanceId: task.teamInstanceId }) });
     return structuredClone(task);
   }
   public linkTaskContext(input: LinkTaskContextInput): Promise<void> {
     const sources = (this.directorySources.get(input.id) ?? []).filter(source => !(source.containerId === input.source.containerId && source.messageId === input.source.messageId));
-    if (!input.remove) sources.push({ sequence: Math.max(0, ...sources.map(source => source.sequence)) + 1, ...input.source, runId: input.source.runId ?? null, purpose: input.source.purpose ?? "progress", available: true, title: this.conversations.find(item => item.id === input.source.containerId)?.title ?? "团队群聊" });
+    const original = input.source.kind === "group" ? this.groupMessages.find(item => item.id === input.source.messageId)
+      : this.timelines.get(input.source.containerId)?.find(item => item.id === input.source.messageId && item.kind === "message");
+    if (!input.remove) sources.push({ content: original && "content" in original ? original.content : null,
+      role: original && "role" in original ? original.role : original && "senderConversationId" in original ? original.senderConversationId === null ? "user" : "assistant" : null,
+      createdAt: original?.createdAt ?? null, sequence: Math.max(0, ...sources.map(source => source.sequence)) + 1, ...input.source, runId: input.source.runId ?? null, purpose: input.source.purpose ?? "progress", available: true, title: this.conversations.find(item => item.id === input.source.containerId)?.title ?? "团队群聊" });
     this.directorySources.set(input.id, sources); return Promise.resolve();
   }
   public async mergeTaskContexts(input: MergeTaskContextsInput): Promise<TaskContext> {

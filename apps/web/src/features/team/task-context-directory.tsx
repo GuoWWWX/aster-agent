@@ -1,122 +1,207 @@
-import { taskContextStatusSchema } from "@agent/protocol";
-import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
-import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
-import { ChevronDown, ChevronRight, ListTree, Pencil, Plus, X } from "lucide-react";
-import type { ConversationSummary, ListTaskContextsInput, TaskContext, TaskContextDetail, TaskSource } from "@agent/protocol";
-import type { AgentClient } from "../../runtime/agent-client.js";
+import { taskContextStatusSchema, type ConversationSummary, type TaskContext, type TaskContextDetail, type TaskContextPage, type TaskContextScope } from "@agent/protocol";
+import { useEffect, useRef, useState, type ReactElement } from "react";
+import { ArrowLeft, ArrowUpRight, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleHelp, ListTodo, MessageSquare, PanelRightOpen, Search } from "lucide-react";
+import { IconButton } from "../../components/ui/icon-button.js";
+import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover.js";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select.js";
+import { LoadingState } from "../../components/ui/loading.js";
+import type { AgentClient } from "../../runtime/agent-client.js";
+import { getUserErrorMessage } from "../../runtime/index.js";
+import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
+import { UserMessageContent } from "../chat/user-message-content.js";
+import { formatConversationTime } from "../chat/chat-message-meta.js";
 
 export const taskContextStatusLabels: Record<TaskContext["status"], string> = {
-  pending: "待处理", running: "进行中", blocked: "受阻", completed: "已完成", failed: "失败", cancelled: "已取消",
+  pending: "待开始", running: "进行中", blocked: "受阻", completed: "已完成", failed: "失败", cancelled: "已取消",
 };
-const inputClass = "min-w-0 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-canvas)] px-2 py-1 text-[length:var(--app-font-size-control)]";
+const pageSize = 5;
+const linkClass = "inline-flex min-w-0 items-center gap-[5px] text-[var(--app-accent)] hover:underline focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)]";
+type Source = TaskContextDetail["sources"][number];
+type DirectoryProps = { agentClient: AgentClient; scope: TaskContextScope; active?: boolean };
+
+function useTaskPage({ agentClient, scope, active = true }: DirectoryProps) {
+  const [query, setQuery] = useState("");
+  const [search, setSearch] = useState("");
+  const [cursors, setCursors] = useState<(string | undefined)[]>([undefined]);
+  const [page, setPage] = useState<TaskContextPage | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [revision, refresh] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const dirty = useRef(true);
+  const changeVersion = useRef(0);
+  const currentPage = useRef<TaskContextPage | null>(null);
+  const loadedRequest = useRef<string | null>(null);
+  const conversationId = scope.conversationId; const teamInstanceId = scope.teamInstanceId;
+  useEffect(() => {
+    const timer = window.setTimeout(() => { setSearch(query.trim()); setCursors([undefined]); }, 200);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+  useEffect(() => {
+    if (!active) return;
+    const key = JSON.stringify([conversationId, teamInstanceId, search, cursors, revision]);
+    if (loadedRequest.current === key && !dirty.current) return;
+    let disposed = false;
+    const version = changeVersion.current;
+    void Promise.resolve().then(async () => {
+      if (disposed) return;
+      setLoading(true);
+      try {
+        const result = await agentClient.listTaskContexts({ ...(conversationId === undefined ? {} : { conversationId }),
+          ...(teamInstanceId === undefined ? {} : { teamInstanceId }), query: search, limit: pageSize,
+          ...(cursors.at(-1) === undefined ? {} : { beforeId: cursors.at(-1)! }) });
+        if (!disposed) { setPage(result); currentPage.current = result; setError(null); dirty.current = changeVersion.current !== version; loadedRequest.current = key; }
+      } catch (reason) { if (!disposed) setError(getUserErrorMessage(reason, "任务列表读取失败")); }
+      finally { if (!disposed) setLoading(false); }
+    });
+    return () => { disposed = true; };
+  }, [agentClient, conversationId, teamInstanceId, search, cursors, active, revision]);
+  useEffect(() => {
+    let timer: number | undefined;
+    const unsubscribe = agentClient.onConversationRunEvent(event => {
+      if (event.type !== "collaboration.changed") return;
+      const ownerChanged = currentPage.current?.items.some(task => task.ownerConversationId === event.conversationId) ?? false;
+      const relevant = teamInstanceId === undefined ? event.conversationId === conversationId || ownerChanged
+        : event.teamInstanceId === teamInstanceId || (event.teamInstanceId === undefined && ownerChanged);
+      if (!relevant) return;
+      dirty.current = true; changeVersion.current += 1;
+      if (active) { window.clearTimeout(timer); timer = window.setTimeout(() => refresh(value => value + 1), 200); }
+    });
+    return () => { unsubscribe(); window.clearTimeout(timer); };
+  }, [agentClient, conversationId, teamInstanceId, active]);
+  return { query, setQuery, page, error, loading, pageNumber: cursors.length,
+    reload: () => refresh(value => value + 1),
+    previous: () => setCursors(values => values.slice(0, -1)),
+    next: () => { if (page?.nextBeforeId) setCursors(values => [...values, page.nextBeforeId!]); } };
+}
+type TaskPage = ReturnType<typeof useTaskPage>;
+
+function TaskStatus({ task }: { task: TaskContext }): ReactElement {
+  const label = task.completionRequested || task.workItemStatus === "reviewing" ? "待确认" : taskContextStatusLabels[task.status];
+  return <span className={task.status === "completed" ? "text-[var(--app-status-success-fg)]" : task.completionRequested ? "text-[var(--app-status-warning-fg)]" : task.status === "running" ? "text-[var(--app-accent)]" : "text-[var(--app-muted-foreground)]"}>{label}</span>;
+}
+function TaskRows({ data, selectedId, onSelect }: { data: TaskPage; selectedId?: string | null; onSelect: (task: TaskContext) => void }): ReactElement {
+  return <><div className="relative m-3 shrink-0"><Search size={15} aria-hidden="true" className="absolute left-2 top-2 text-[var(--app-muted-foreground)]" />
+    <input aria-label="搜索任务或用户消息" placeholder="搜索任务或用户消息" value={data.query} onChange={event => data.setQuery(event.target.value)} className="h-8 w-full min-w-0 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] pl-8 pr-2 outline-none focus:border-[var(--app-focus-ring)]" /></div>
+    {data.error ? <p role="alert" className="mx-3 text-[var(--app-destructive)]">{data.error}<button type="button" onClick={data.reload} className="ml-2 underline">重试</button></p> : null}
+    {data.page === null && !data.error ? <LoadingState label="正在读取任务列表" /> : null}
+    <ul aria-label="任务" aria-busy={data.loading} className="m-0 min-h-0 flex-1 list-none overflow-y-auto p-0">{data.page?.items.map(task => <li key={task.id}>
+      <button type="button" aria-pressed={selectedId === task.id} onClick={() => onSelect(task)} className={`flex w-full min-w-0 items-start gap-2 border-l-2 px-3 py-3 text-left hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] ${selectedId === task.id ? "border-[var(--app-accent)] bg-[var(--app-selection)]" : "border-transparent"}`}>
+        {task.status === "completed" ? <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-[var(--app-status-success-fg)]" /> : task.completionRequested ? <CircleHelp size={16} className="mt-0.5 shrink-0 text-[var(--app-status-warning-fg)]" /> : <Circle size={16} className="mt-0.5 shrink-0 text-[var(--app-muted-foreground)]" />}
+        <span className="min-w-0 flex-1"><span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"><strong className="min-w-0 flex-1 break-words font-medium">{task.title}</strong><span className="shrink-0 text-[length:var(--app-font-size-caption)]"><TaskStatus task={task} /></span></span>
+          <span className="mt-1 block text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">{task.userMessageCount ?? 0} 条用户消息 · {formatConversationTime(task.updatedAt)}</span></span>
+      </button></li>)}</ul>
+    {data.page?.items.length === 0 ? <p className="px-3 text-[var(--app-muted-foreground)]">{data.query ? "没有匹配的任务" : "暂无任务"}</p> : null}
+    <footer className="flex shrink-0 items-center gap-1 border-t border-[var(--app-border)] px-3 py-[5px] text-[var(--app-muted-foreground)]">
+      <span className="min-w-0 flex-1">共 {data.page?.total ?? data.page?.items.length ?? 0} 项</span>
+      <IconButton label="上一页任务" disabled={data.pageNumber === 1 || data.loading} onClick={data.previous}><ChevronLeft size={14} /></IconButton>
+      <span>{data.pageNumber} / {Math.max(data.pageNumber, Math.ceil((data.page?.total ?? 0) / pageSize), 1)}</span>
+      <IconButton label="下一页任务" disabled={!data.page?.nextBeforeId || data.loading} onClick={data.next}><ChevronRight size={14} /></IconButton>
+    </footer></>;
+}
+
+export function TaskListLauncher({ agentClient, scope, workspaceId, active = true }: DirectoryProps & { workspaceId: string }): ReactElement {
+  const [open, setOpen] = useState(false);
+  const data = useTaskPage({ agentClient, scope, active: active && open });
+  const openSidebar = (taskId?: string): void => { useWorkbenchUiStore.getState().openTaskList({ workspaceId, scope, ...(taskId === undefined ? {} : { taskId }) }); setOpen(false); };
+  return <Popover open={open && active} onOpenChange={setOpen}>
+    <PopoverTrigger asChild><button type="button" aria-label="查看任务列表" className="inline-flex shrink-0 items-center gap-[5px] rounded-[var(--app-radius)] px-2 py-1 text-[length:var(--app-font-size-control)] hover:bg-[var(--app-hover)]"><ListTodo size={14} />任务列表<ChevronDown size={12} /></button></PopoverTrigger>
+    <PopoverContent side="bottom" align="end" className="flex w-[400px] max-w-[calc(100vw-20px)] flex-col overflow-hidden rounded-[var(--app-radius-large)] border border-[var(--app-border)] bg-[var(--app-panel)] text-[length:var(--app-font-size-control)] text-[var(--app-foreground)] shadow-lg">
+      <header className="flex items-center gap-2 border-b border-[var(--app-border)] px-3 py-2"><strong className="flex-1 font-medium">任务列表</strong><button type="button" className={linkClass} onClick={() => openSidebar()}><PanelRightOpen size={14} />在侧边打开</button></header>
+      <div className="flex max-h-[min(480px,65vh)] min-h-0 flex-col"><TaskRows data={data} onSelect={task => openSidebar(task.id)} /></div>
+    </PopoverContent>
+  </Popover>;
+}
+
+export function TaskListWorkspace({ agentClient, scope, active = true, requestedTaskId, requestId, onOpenConversation }: DirectoryProps & {
+  requestedTaskId?: string; requestId?: string;
+  onOpenConversation: (conversation: ConversationSummary, messageId?: string) => void;
+}): ReactElement {
+  const data = useTaskPage({ agentClient, scope, active });
+  const [chosenId, setSelectedId] = useState<string | null>(requestedTaskId ?? null);
+  const selectedId = chosenId ?? data.page?.items[0]?.id ?? null;
+  const [previousRequest, setPreviousRequest] = useState({ requestedTaskId, requestId });
+  const [detail, setDetail] = useState<TaskContextDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [allowCompletion, setAllowCompletion] = useState<boolean | null>(null);
+  const [detailRevision, reloadDetail] = useState(0);
+  const [showDetail, setShowDetail] = useState(requestedTaskId !== undefined);
+  const conversationId = scope.conversationId; const teamInstanceId = scope.teamInstanceId;
+  const detailsVersion = useRef(0);
+  if (previousRequest.requestedTaskId !== requestedTaskId || previousRequest.requestId !== requestId) {
+    setPreviousRequest({ requestedTaskId, requestId });
+    if (requestedTaskId !== undefined) { setSelectedId(requestedTaskId); setShowDetail(true); }
+  }
+  useEffect(() => {
+    if (!active) return;
+    let disposed = false;
+    void agentClient.getTaskCompletionPolicy({ ...(conversationId === undefined ? {} : { conversationId }), ...(teamInstanceId === undefined ? {} : { teamInstanceId }) }).then(policy => { if (!disposed) setAllowCompletion(policy.allowAgentCompletion); }).catch(reason => { if (!disposed) setError(getUserErrorMessage(reason, "完成权限读取失败")); });
+    return () => { disposed = true; };
+  }, [agentClient, conversationId, teamInstanceId, active]);
+  useEffect(() => {
+    if (selectedId === null || !active) return;
+    const version = ++detailsVersion.current;
+    void agentClient.getTaskContext({ id: selectedId, limit: 50 }).then(value => { if (version === detailsVersion.current) { setDetail(value); setError(null); } }).catch(reason => { if (version === detailsVersion.current) setError(getUserErrorMessage(reason, "任务读取失败")); });
+    return () => { detailsVersion.current += 1; };
+  }, [agentClient, selectedId, active, detailRevision, data.page]);
+  const task = detail?.task.id === selectedId ? detail.task : null;
+  const saveStatus = async (status: TaskContext["status"]): Promise<void> => {
+    if (task === null || busy) return;
+    setBusy(true);
+    try {
+      if (task.workItemId !== null) throw new Error("请在团队任务的验收流程中确认此任务");
+      await agentClient.updateTaskContext({ id: task.id, conversationId: task.ownerConversationId, expectedRevision: task.revision,
+        title: task.title, goal: task.goal, summary: task.summary, decisions: task.decisions, nextStep: task.nextStep, status, requestId: crypto.randomUUID() });
+      data.reload(); reloadDetail(value => value + 1);
+    } catch (reason) { setError(getUserErrorMessage(reason, "任务状态更新失败，请重新读取后重试")); }
+    finally { setBusy(false); }
+  };
+  const openSource = async (source: Source): Promise<void> => {
+    if (source.kind === "group") { useWorkbenchUiStore.getState().openTeamChat({ instanceId: source.containerId, messageId: source.messageId }); return; }
+    try {
+      const conversation = (await agentClient.listConversationHierarchy()).find(item => item.id === source.containerId);
+      if (conversation === undefined) throw new Error("来源对话已删除");
+      onOpenConversation(conversation, source.messageId);
+    } catch (reason) { setError(getUserErrorMessage(reason, "无法定位原消息")); }
+  };
+  const sources = detail?.task.id === selectedId ? detail.sources.filter(source => source.role === "user" || !source.available) : [];
+  const groups = [...new Set(sources.map(source => `${source.kind}:${source.containerId}`))].map(key => sources.filter(source => `${source.kind}:${source.containerId}` === key));
+  return <section aria-label="任务列表工作区" className="@container flex h-full min-h-0 w-full min-w-0 flex-1 flex-col bg-[var(--app-panel)] text-[length:var(--app-font-size-control)] text-[var(--app-foreground)]">
+    <header className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-[var(--app-border)] px-4 py-3">
+      <span className="inline-flex items-center gap-2 font-medium"><ListTodo size={16} />任务列表</span>
+      <label className="flex cursor-pointer items-center gap-2 text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]" title="仅作用于本对话或本群聊。关闭时，Agent 提交完成结果后仍需你确认。">
+        允许 Agent 自动确认完成<span className="relative inline-flex shrink-0"><input aria-label="允许 Agent 自动确认完成" type="checkbox" role="switch" checked={allowCompletion ?? false} disabled={allowCompletion === null || busy}
+          className="peer sr-only" onChange={event => { const checked = event.target.checked; setBusy(true); void agentClient.setTaskCompletionPolicy({ ...scope, allowAgentCompletion: checked }).then(policy => setAllowCompletion(policy.allowAgentCompletion)).catch(reason => setError(getUserErrorMessage(reason, "完成权限保存失败"))).finally(() => setBusy(false)); }} /><span aria-hidden="true" className="h-[18px] w-8 rounded-full bg-[var(--app-border)] after:absolute after:left-[3px] after:top-[3px] after:size-3 after:rounded-full after:bg-[var(--app-muted-foreground)] after:transition-transform peer-checked:bg-[var(--app-accent)] peer-checked:after:translate-x-[14px] peer-checked:after:bg-[var(--app-accent-foreground)] peer-focus-visible:ring-2 peer-focus-visible:ring-[var(--app-focus-ring)] peer-disabled:opacity-50" /></span>
+      </label>
+    </header>
+    {error ? <p role="alert" className="m-0 flex shrink-0 gap-2 px-4 py-2 text-[var(--app-destructive)]">{error}<button type="button" className="shrink-0 underline" onClick={() => { data.reload(); reloadDetail(value => value + 1); }}>重新读取</button></p> : null}
+    <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 @min-[640px]:grid-cols-[minmax(220px,30%)_minmax(0,1fr)]">
+      <nav aria-label="选择任务" className={`${showDetail ? "hidden @min-[640px]:flex" : "flex"} min-h-0 min-w-0 flex-col border-r border-[var(--app-border)]`}><TaskRows data={data} selectedId={selectedId} onSelect={item => { setSelectedId(item.id); setShowDetail(true); }} /></nav>
+      <article aria-label="任务详情" className={`${showDetail ? "flex" : "hidden @min-[640px]:flex"} min-h-0 min-w-0 flex-col overflow-y-auto p-4 @min-[800px]:p-5`}>
+        <button type="button" className={`${linkClass} mb-3 shrink-0 self-start @min-[640px]:hidden`} onClick={() => setShowDetail(false)}><ArrowLeft size={14} />返回任务列表</button>
+        {task === null ? <p className="text-[var(--app-muted-foreground)]">{selectedId === null ? "选择一个任务，查看目标、进展和关联消息" : error ? "任务暂时无法读取" : "正在读取任务…"}</p> : <>
+          <div className="mb-4 flex min-w-0 shrink-0 flex-wrap items-start gap-3"><div className="min-w-0 flex-1 basis-full @min-[800px]:basis-auto"><h2 className="m-0 break-words text-[length:var(--app-font-size-title)] font-semibold">{task.title}</h2><p className="mb-0 mt-2 inline-flex items-center gap-[5px] text-[var(--app-muted-foreground)]"><Bot size={14} />{task.completedBy === "user" ? "由你确认完成" : task.completedBy === "agent" ? "Agent 已确认完成" : task.completionRequested ? "Agent 已提交，等待你确认" : "最近更新"} · {formatConversationTime(task.updatedAt)}</p></div>
+            <div className="flex flex-wrap items-center gap-2"><Select value={task.status} disabled={busy || task.workItemId !== null} onValueChange={value => { void saveStatus(taskContextStatusSchema.parse(value)); }}><SelectTrigger aria-label="修改任务状态" className="w-28"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(taskContextStatusLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select>
+              <button type="button" disabled={busy || task.status === "completed" || task.workItemId !== null} onClick={() => void saveStatus("completed")} className="inline-flex h-8 items-center gap-[5px] rounded-[var(--app-radius)] bg-[var(--app-accent)] px-3 text-[var(--app-accent-foreground)] disabled:opacity-50"><Check size={14} />{task.status === "completed" ? "已完成" : "确认完成"}</button></div>
+          </div>
+          {task.workItemId !== null ? <p className="mb-3 mt-0 text-[var(--app-muted-foreground)]">此任务由团队工作项维护，请在团队任务中验收。</p> : null}
+          <dl className="m-0 grid shrink-0 grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-3 border-b border-[var(--app-border)] pb-4"><dt className="text-[var(--app-muted-foreground)]">目标</dt><dd className="m-0 whitespace-pre-wrap break-words">{task.goal}</dd><dt className="text-[var(--app-muted-foreground)]">进展</dt><dd className="m-0 whitespace-pre-wrap break-words">{task.summary || "暂无进展记录"}</dd>{task.nextStep ? <><dt className="text-[var(--app-muted-foreground)]">下一步</dt><dd className="m-0 whitespace-pre-wrap break-words">{task.nextStep}</dd></> : null}{task.decisions ? <><dt className="text-[var(--app-muted-foreground)]">约束</dt><dd className="m-0 whitespace-pre-wrap break-words">{task.decisions}</dd></> : null}</dl>
+          <h3 className="mb-3 mt-5 inline-flex shrink-0 items-center gap-2 text-[length:var(--app-font-size-control)] font-semibold"><MessageSquare size={16} />关联用户消息 · {task.userMessageCount ?? sources.length} 条</h3>
+          {groups.length === 0 ? <p className="text-[var(--app-muted-foreground)]">尚无关联的用户消息</p> : groups.map(group => <details open key={`${group[0]!.kind}:${group[0]!.containerId}`} className="mb-4 shrink-0"><summary className="cursor-pointer break-words py-2 text-[var(--app-muted-foreground)]">{group[0]!.title} · {group.length} 条</summary><ul className="m-0 flex list-none flex-col gap-[5px] p-0">{group.map(source => <li key={source.messageId} className="rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] p-3">
+            <div className="mb-2 flex items-center gap-2 text-[var(--app-muted-foreground)]"><span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[var(--app-selection)] text-[var(--app-accent)]">你</span><strong className="flex-1 font-medium">你</strong>{source.createdAt ? <time dateTime={source.createdAt}>{formatConversationTime(source.createdAt)}</time> : null}</div>
+            <div className="whitespace-pre-wrap break-words [&_p]:m-0"><UserMessageContent content={source.content ?? "原消息已不可用"} /></div>
+            <div className="mt-2 flex justify-end"><button type="button" disabled={!source.available} className={`${linkClass} disabled:text-[var(--app-muted-foreground)]`} onClick={() => void openSource(source)}><ArrowUpRight size={14} />定位原消息</button></div>
+          </li>)}</ul></details>)}
+          {detail?.nextBeforeSourceSequence == null ? null : <button type="button" disabled={busy} className={`${linkClass} self-start`} onClick={() => { const version = detailsVersion.current; setBusy(true); void agentClient.getTaskContext({ id: task.id, beforeSourceSequence: detail.nextBeforeSourceSequence!, limit: 50 }).then(page => { if (version === detailsVersion.current) setDetail(previous => previous?.task.id === page.task.id ? { ...page, sources: [...previous.sources, ...page.sources] } : previous); }).catch(reason => setError(getUserErrorMessage(reason, "关联消息读取失败"))).finally(() => setBusy(false)); }}>加载更早关联消息</button>}
+        </>}
+      </article>
+    </div>
+  </section>;
+}
 
 export function TaskContextDirectory({ agentClient, conversationId, teamInstanceId, onOpenConversation }: {
   agentClient: AgentClient; conversationId?: string; teamInstanceId?: string;
   onOpenConversation: (conversation: ConversationSummary, messageId?: string) => void;
 }): ReactElement {
-  const [query, setQuery] = useState(""); const [status, setStatus] = useState("all");
-  const [tasks, setTasks] = useState<TaskContext[]>([]); const [cursor, setCursor] = useState<string | null>(null);
-  const [detail, setDetail] = useState<TaskContextDetail | null>(null); const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({ title: "", goal: "", summary: "", decisions: "", nextStep: "", status: "running" as TaskContext["status"] });
-  const [unclassified, setUnclassified] = useState<TaskSource[]>([]); const [newSource, setNewSource] = useState<TaskSource | null>(null);
-  const [mergeTarget, setMergeTarget] = useState(""); const [owner, setOwner] = useState(conversationId ?? "");
-  const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
-  const version = useRef(0);
-  const load = useCallback(async (beforeId?: string) => {
-    const request = ++version.current;
-    try {
-      const filter: ListTaskContextsInput = { query, ...(conversationId === undefined ? {} : { conversationId }),
-        ...(teamInstanceId === undefined ? {} : { teamInstanceId }), ...(beforeId === undefined ? {} : { beforeId }) };
-      const selected = Object.entries(taskContextStatusLabels).find(([key]) => key === status);
-      if (selected !== undefined) filter.status = taskContextStatusSchema.parse(selected[0]);
-      const page = await agentClient.listTaskContexts(filter);
-      if (request !== version.current) return;
-      setTasks(previous => beforeId === undefined ? page.items : [...new Map([...previous, ...page.items].map(task => [task.id, task])).values()]); setUnclassified(page.unclassified); setCursor(page.nextBeforeId); setError(null);
-    } catch (reason) { if (request === version.current) setError(reason instanceof Error ? reason.message : "任务目录加载失败"); }
-  }, [agentClient, conversationId, teamInstanceId, query, status]);
-  useEffect(() => { void Promise.resolve().then(() => load()); return () => { version.current += 1; }; }, [load]);
-  useEffect(() => agentClient.onConversationRunEvent(event => {
-    if (event.type === "collaboration.changed" || event.type === "run.finished") void load();
-  }), [agentClient, load]);
-  useEffect(() => {
-    if (teamInstanceId === undefined) return;
-    let disposed = false;
-    void agentClient.getTeamChatMembers({ teamInstanceId }).then(members => {
-      if (!disposed) setOwner(members.find(member => member.isLead)?.conversationId ?? "");
-    }).catch(reason => { if (!disposed) setError(String(reason)); });
-    return () => { disposed = true; };
-  }, [agentClient, teamInstanceId]);
-
-  const open = async (task: TaskContext) => {
-    if (detail?.task.id === task.id) { setDetail(null); setEditing(false); return; }
-    try { setDetail(await agentClient.getTaskContext({ id: task.id })); setEditing(false); setMergeTarget(""); }
-    catch (reason) { setError(String(reason)); }
-  };
-  const edit = (task?: TaskContext) => {
-    setForm(task === undefined ? { title: "", goal: "", summary: "", decisions: "", nextStep: "", status: "running" }
-      : { title: task.title, goal: task.goal, summary: task.summary, decisions: task.decisions, nextStep: task.nextStep, status: task.status });
-    if (task === undefined) setDetail(null); setEditing(true);
-  };
-  const save = async () => {
-    if (busy || !owner) return; setBusy(true);
-    try {
-      const task = await agentClient.updateTaskContext({ ...form, conversationId: detail?.task.ownerConversationId ?? owner,
-        ...(detail === null ? {} : { id: detail.task.id, expectedRevision: detail.task.revision }), ...(newSource === null ? {} : { source: newSource }), requestId: crypto.randomUUID() });
-      setDetail(await agentClient.getTaskContext({ id: task.id })); setEditing(false); setNewSource(null); await load();
-    } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
-  };
-  const openSource = async (source: TaskSource) => {
-    if (source.kind === "group") { useWorkbenchUiStore.getState().openTeamChat({ instanceId: source.containerId, messageId: source.messageId }); return; }
-    try {
-      const target = (await agentClient.listConversationHierarchy()).find(item => item.id === source.containerId);
-      if (target === undefined) throw new Error("来源对话已删除"); onOpenConversation(target, source.messageId);
-    } catch (reason) { setError(String(reason)); }
-  };
-  return <section aria-label="任务上下文目录" className="flex min-h-0 min-w-0 flex-1 flex-col gap-[5px] text-[length:var(--app-font-size-control)]">
-    <div className="flex shrink-0 items-center gap-[5px]">
-      <input className={`${inputClass} flex-1`} aria-label="搜索任务上下文" placeholder="搜索任务目标" value={query} onChange={event => setQuery(event.target.value)} />
-      <Select value={status} onValueChange={setStatus}><SelectTrigger aria-label="任务状态" className="w-28"><SelectValue /></SelectTrigger><SelectContent>
-        <SelectItem value="all">全部状态</SelectItem>{Object.entries(taskContextStatusLabels).map(([key, label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}
-      </SelectContent></Select>
-      <button type="button" aria-label="新增任务上下文" title="新增任务" disabled={!owner} onClick={() => { setNewSource(null); edit(); }} className="rounded-[var(--app-radius)] p-1 hover:bg-[var(--app-hover)]"><Plus size={16} /></button>
-    </div>
-    {error === null ? null : <p role="alert" className="m-0 text-[var(--app-destructive)]">{error}<button type="button" className="ml-2 underline" onClick={() => void load()}>重新读取</button></p>}
-    <div className="min-h-0 flex-1 overflow-auto">
-      {unclassified.length === 0 ? null : <details className="mb-2 text-[var(--app-muted-foreground)]"><summary>最近 {unclassified.length} 条输入尚未关联任务（含无需归档的日常消息）</summary><ul className="m-0 list-none p-0">{unclassified.map(source => <li key={source.messageId} className="flex items-center gap-[5px]"><button type="button" onClick={() => void openSource(source)} className="hover:underline">查看原消息</button><button type="button" disabled={detail === null} onClick={() => { if (detail !== null) void agentClient.linkTaskContext({ id: detail.task.id, source }).then(async () => { setDetail(await agentClient.getTaskContext({ id: detail.task.id })); await load(); }).catch(reason => setError(String(reason))); }}>关联到展开任务</button><button type="button" onClick={() => { edit(); setNewSource(source); }}>创建任务</button></li>)}</ul></details>}
-      {tasks.length === 0 && !editing ? <p className="text-[var(--app-muted-foreground)]">暂无任务上下文。Agent 处理新目标时会创建记录，后续进展更新同一任务。</p> : null}
-      <ul className="m-0 grid list-none gap-[5px] p-0">{tasks.map(task => <li key={task.id} className="min-w-0 rounded-[var(--app-radius)] border border-[var(--app-border)] p-2">
-        <button type="button" onClick={() => void open(task)} aria-expanded={detail?.task.id === task.id} className="flex w-full min-w-0 items-center gap-[5px] text-left">
-          {detail?.task.id === task.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}<span className="min-w-0 flex-1 truncate font-semibold">{task.title}</span><span className="shrink-0 text-[var(--app-muted-foreground)]">{task.workItemStatus === "reviewing" ? "待验收" : task.workItemStatus === "waiting_user" ? "等待用户" : taskContextStatusLabels[task.status]}</span>
-        </button><p className="my-1 whitespace-pre-wrap break-words text-[var(--app-muted-foreground)]">{task.summary || task.goal}</p>
-        <time className="text-[var(--app-subtle-foreground)]" dateTime={task.updatedAt}>{new Date(task.updatedAt).toLocaleString()}</time>
-        {detail?.task.id !== task.id ? null : <div className="mt-2 border-t border-[var(--app-border)] pt-2">
-          <div className="flex items-center gap-[5px]"><span className="flex-1">目标：{detail.task.goal}</span>{task.workItemId === null ? <button type="button" aria-label="编辑任务上下文" onClick={() => edit(detail.task)}><Pencil size={14} /></button> : <span className="text-[var(--app-muted-foreground)]">由工作项维护状态</span>}</div>
-          {detail.task.decisions ? <p className="whitespace-pre-wrap">有效决定：{detail.task.decisions}</p> : null}
-          {detail.task.nextStep ? <p className="whitespace-pre-wrap">下一步：{detail.task.nextStep}</p> : null}
-          <ul className="m-0 list-none space-y-1 p-0">{detail.sources.map(source => <li key={`${source.kind}:${source.containerId}:${source.messageId}`} className="flex min-w-0 items-center gap-[5px]">
-            <button type="button" disabled={!source.available} onClick={() => void openSource(source)} className="min-w-0 flex-1 truncate text-left hover:underline disabled:text-[var(--app-muted-foreground)]">{source.kind === "group" ? "群聊" : source.title} · {source.purpose}{source.available ? "" : " · 原始记录已删除"}</button>
-            <button type="button" aria-label="解除消息关联" title="解除关联" onClick={() => { void agentClient.linkTaskContext({ id: task.id, source: { kind: source.kind, containerId: source.containerId, messageId: source.messageId, runId: source.runId, purpose: source.purpose }, remove: true }).then(() => agentClient.getTaskContext({ id: task.id })).then(setDetail).catch(reason => setError(String(reason))); }}><X size={12} /></button>
-          </li>)}</ul>
-          {detail.nextBeforeSourceSequence === null ? null : <button type="button" className="my-1 underline" onClick={() => { void agentClient.getTaskContext({ id: task.id, beforeSourceSequence: detail.nextBeforeSourceSequence! }).then(page => setDetail(previous => previous?.task.id === page.task.id ? { ...page, sources: [...previous.sources, ...page.sources] } : previous)).catch(reason => setError(String(reason))); }}>加载更早关联消息</button>}
-          {detail.sources.length === 0 ? <p className="text-[var(--app-muted-foreground)]">尚无关联消息。</p> : null}
-          {task.workItemId !== null ? null : <div className="mt-2 flex items-center gap-[5px]"><Select value={mergeTarget} onValueChange={setMergeTarget}><SelectTrigger aria-label="归并到其他任务" className="min-w-0 flex-1"><SelectValue placeholder="选择同目标的任务进行归并" /></SelectTrigger><SelectContent>{tasks.filter(item => item.id !== task.id && item.workItemId === null).map(item => <SelectItem key={item.id} value={item.id}>{item.title}</SelectItem>)}</SelectContent></Select>
-            <button type="button" disabled={!mergeTarget || busy} onClick={() => { setBusy(true); void agentClient.mergeTaskContexts({ id: detail.task.id, intoId: mergeTarget, expectedRevision: detail.task.revision }).then(() => { setDetail(null); return load(); }).catch(reason => setError(String(reason))).finally(() => setBusy(false)); }}>确认归并</button></div>}
-        </div>}
-      </li>)}</ul>
-      {cursor === null ? null : <button type="button" className="my-2 underline" onClick={() => void load(cursor)}>加载更早任务</button>}
-      {!editing ? null : <form aria-label="编辑任务记录" onSubmit={event => { event.preventDefault(); void save(); }} className="mt-2 grid gap-[5px] border-t border-[var(--app-border)] pt-2">
-        {([['title', '任务名称'], ['goal', '任务目标与完成条件'], ['summary', '当前结论'], ['decisions', '有效决定与约束'], ['nextStep', '下一步']] as const).map(([field, label]) => <label key={field} className="grid gap-1">{label}<textarea className={inputClass} required={field === "title" || field === "goal"} aria-label={label} rows={field === "title" ? 1 : 2} value={form[field]} onChange={event => setForm(previous => ({ ...previous, [field]: event.target.value }))} /></label>)}
-        <Select value={form.status} onValueChange={value => { const found = Object.keys(taskContextStatusLabels).find(key => key === value); if (found) setForm(previous => ({ ...previous, status: taskContextStatusSchema.parse(found) })); }}><SelectTrigger aria-label="修改任务状态"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(taskContextStatusLabels).map(([key, label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent></Select>
-        <div className="flex gap-2"><button type="submit" disabled={busy} className="rounded-[var(--app-radius)] bg-[var(--app-accent)] px-3 py-1 text-[var(--app-accent-foreground)]">保存</button><button type="button" onClick={() => setEditing(false)}>取消</button></div>
-      </form>}
-    </div>
-  </section>;
-}
-
-export function ConversationTaskDirectory(props: { agentClient: AgentClient; conversationId: string; onOpenConversation: (conversation: ConversationSummary, messageId?: string) => void }): ReactElement {
-  const [open, setOpen] = useState(false);
-  return <div className="mb-[5px] min-w-0"><button type="button" aria-expanded={open} onClick={() => setOpen(value => !value)} className="inline-flex items-center gap-[5px] rounded-[var(--app-radius)] px-2 py-1 text-[length:var(--app-font-size-control)] hover:bg-[var(--app-hover)]"><ListTree size={14} />任务上下文{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</button>
-    {open ? <div className="flex h-64 min-h-0 border-t border-[var(--app-border)] p-2"><TaskContextDirectory {...props} /></div> : null}
-  </div>;
+  return <TaskListWorkspace agentClient={agentClient} scope={teamInstanceId === undefined ? { conversationId: conversationId! } : { teamInstanceId }} onOpenConversation={onOpenConversation} />;
 }

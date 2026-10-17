@@ -1,5 +1,8 @@
+import { TaskListWorkspace } from "../team/task-context-directory.js";
+import type { TaskListViewRequest } from "../../stores/workbench-ui-store.js";
 import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import {
+  ListTodo,
   Check,
   ChevronRight,
   FileText,
@@ -158,8 +161,9 @@ type ManagedBrowserTab = ToolTabBase & {
 
 type BackgroundCommandTab = ToolTabBase & { kind: "background-command"; conversationId: string; commandId: string };
 type ConversationReviewTab = ToolTabBase & { kind: "conversation-review"; conversationId: string; runId: string | null };
+type TaskListTab = ToolTabBase & { kind: "task-list"; request: TaskListViewRequest };
 type TeamChatDetailsTab = ToolTabBase & { kind: "group-details"; instance: TeamInstanceView; section: TeamChatDetailsSection };
-type ToolTab = GitReviewTab | TerminalTab | ManagedBrowserTab | BackgroundCommandTab | ConversationReviewTab | TeamChatDetailsTab;
+type ToolTab = TaskListTab | GitReviewTab | TerminalTab | ManagedBrowserTab | BackgroundCommandTab | ConversationReviewTab | TeamChatDetailsTab;
 
 type SidebarTab =
   | FileTab
@@ -656,6 +660,8 @@ export function RightSidebarWorkspace({
   const handledConversationReviewRequest = useRef<string | null>(null);
   const activeSessionId = activeSession?.id ?? null;
   const workspaceId = teamChat === null ? activeSessionId : teamChatTabId(teamChat.id);
+  const taskListViewRequest = useWorkbenchUiStore(state => state.taskListViewRequest);
+  const handledTaskListRequest = useRef<string | null>(null);
   const coordinationTarget = useWorkbenchUiStore(state => state.teamChatCoordinationTarget);
   const detailsTarget = useWorkbenchUiStore(state => state.teamChatDetailsTarget);
   const handledDetailsRequest = useRef<string | null>(null);
@@ -1264,6 +1270,18 @@ export function RightSidebarWorkspace({
     );
     setIsFileBrowserOpen(false);
   }, [activeActivity, workspaceId]);
+
+  useEffect(() => {
+    const request = taskListViewRequest;
+    if (activeActivity !== "conversations" || request === null || request.workspaceId !== workspaceId
+      || handledTaskListRequest.current === request.requestId) return;
+    handledTaskListRequest.current = request.requestId;
+    const id = `tasks:${workspaceId}`;
+    setToolTabs(current => current.some(tab => tab.id === id)
+      ? current.map(tab => tab.id === id ? { id, name: "任务列表", kind: "task-list" as const, request, lastAccessedAt: Date.now() } : tab)
+      : [...current, { id, name: "任务列表", kind: "task-list", request, lastAccessedAt: Date.now() }]);
+    setActiveTabForCurrentSession(id); setIsFileBrowserOpen(false); setFilePanelOpen(true);
+  }, [activeActivity, workspaceId, taskListViewRequest, setActiveTabForCurrentSession, setFilePanelOpen]);
 
   useEffect(() => {
     if (activeActivity !== "conversations" || teamChat === null || coordinationTarget?.instanceId !== teamChat.id
@@ -1917,6 +1935,7 @@ export function RightSidebarWorkspace({
         retainedToolTabIds.has(tab.id)
         || tab.kind === "git-review"
         || tab.kind === "background-command"
+        || tab.kind === "task-list"
         || tab.kind === "conversation-review"
         || tab.kind === "group-details"
         || tab.session === null
@@ -2452,6 +2471,8 @@ export function RightSidebarWorkspace({
                       ) : (
                         <AgentAvatar avatar={tabAgent.avatar} size="compact" />
                       )
+                    ) : tab.kind === "task-list" ? (
+                      <ListTodo aria-hidden="true" size={14} />
                     ) : (tab.kind === "git-review" || tab.kind === "conversation-review") ? (
                       <SquareCheckBig aria-hidden="true" size={14} />
                     ) : tab.kind === "terminal" || tab.kind === "background-command" ? (
@@ -2575,7 +2596,15 @@ export function RightSidebarWorkspace({
                 className={isActive ? "flex h-full min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"}
                 key={tab.id}
               >
-                {tab.kind === "group-details" ? (
+                {tab.kind === "task-list" ? (
+                  <TaskListWorkspace agentClient={agentClient} scope={tab.request.scope}
+                    active={isActive && sidebarVisible && activeActivity === "conversations"}
+                    requestId={tab.request.requestId} {...(tab.request.taskId === undefined ? {} : { requestedTaskId: tab.request.taskId })}
+                    onOpenConversation={(conversation, messageId) => {
+                      if (messageId !== undefined && onLocateConversationItem !== undefined) onLocateConversationItem(conversation.id, messageId);
+                      else onLocateSession(conversation.id);
+                      }} />
+                ) : tab.kind === "group-details" ? (
                   <TeamChatDetails agentClient={agentClient} instance={teamChat?.id === tab.instance.id ? teamChat : tab.instance}
                     active={isActive && sidebarVisible && activeActivity === "conversations" && teamChat?.id === tab.instance.id} section={tab.section}
                     onSectionChanged={section => setToolTabs(current => current.map(item => item.id === tab.id && item.kind === "group-details" ? { ...item, section } : item))}
@@ -2844,7 +2873,8 @@ export function RightSidebarWorkspace({
               onSave={() => void flushConfigurationFile(activeConfigurationTab)}
               onToggleTree={() => setIsTreeCollapsed((current) => !current)}
             />
-          ) : activeTab?.kind === "git-review"
+          ) : activeTab?.kind === "task-list"
+            || activeTab?.kind === "git-review"
             || activeTab?.kind === "group-details"
             || activeTab?.kind === "background-command"
             || activeTab?.kind === "conversation-review"

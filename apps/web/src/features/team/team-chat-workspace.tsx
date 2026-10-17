@@ -1,11 +1,12 @@
-import { useState, type ReactElement } from "react";
-import { ListTree, UsersRound, Search, Settings2 } from "lucide-react";
+import { teamChatTabId } from "../chat/workbench-tabs.js";
+import { type ReactElement } from "react";
+import { UsersRound, Search, Settings2 } from "lucide-react";
 import type { ConversationSummary, ProjectSummary, TeamInstanceView } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import { ConversationWorkspace } from "../chat/workspace-content.js";
 import type { ProjectSession } from "../projects/project-session-model.js";
 import { LoadingState } from "../../components/ui/loading.js";
-import { TaskContextDirectory } from "./task-context-directory.js";
+import { TaskListLauncher } from "./task-context-directory.js";
 import { TeamChatCoordinationResults } from "./team-chat-coordination-results.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 
@@ -15,9 +16,6 @@ export function TeamChatWorkspace({ agentClient, instance, active, focusMessageI
   onOpenConversation: (conversation: ConversationSummary, messageId?: string) => void;
   onOpenFile?: (conversationId: string, path: string) => void;
 }): ReactElement {
-  const [directoryOpen, setDirectoryOpen] = useState(false);
-  const [previousFocus, setPreviousFocus] = useState(focusMessageId);
-  if (previousFocus !== focusMessageId) { setPreviousFocus(focusMessageId); setDirectoryOpen(false); }
   const lead = sessions.find(session => session.id === instance.rootConversationId);
   const sourceAgentId = sessions.find(session => session.id === instance.sourceConversationId)?.agentId;
   return <section aria-label={`${instance.name}群聊对话`} className="conversation-workspace">
@@ -26,16 +24,15 @@ export function TeamChatWorkspace({ agentClient, instance, active, focusMessageI
       <div className="flex shrink-0 items-center gap-[5px]">
         <button type="button" aria-label="查询群聊历史消息" title="聊天记录" className="rounded-[var(--app-radius)] p-1 hover:bg-[var(--app-hover)]" onClick={() => useWorkbenchUiStore.getState().openTeamChatDetails({ instanceId: instance.id, section: "history" })}><Search size={14} /></button>
         <button type="button" aria-label="群资料与设置" title="群资料与设置" className="rounded-[var(--app-radius)] p-1 hover:bg-[var(--app-hover)]" onClick={() => useWorkbenchUiStore.getState().openTeamChatDetails({ instanceId: instance.id, section: "info" })}><Settings2 size={14} /></button>
-        <TeamChatCoordinationResults agentClient={agentClient} teamInstanceId={instance.id} active={active && !directoryOpen} />
-        <button type="button" className="inline-flex shrink-0 items-center gap-[5px] rounded-[var(--app-radius)] px-2 py-1 text-[length:var(--app-font-size-control)] hover:bg-[var(--app-hover)]" aria-expanded={directoryOpen} onClick={() => setDirectoryOpen(value => !value)}><ListTree size={14} />{directoryOpen ? "返回群聊" : "任务上下文"}</button>
+        <TeamChatCoordinationResults agentClient={agentClient} teamInstanceId={instance.id} active={active} />
+        <TaskListLauncher agentClient={agentClient} scope={{ teamInstanceId: instance.id }} workspaceId={teamChatTabId(instance.id)} active={active} />
       </div>
     </header>
-    <div className={directoryOpen ? "hidden" : "conversation-workspace__surface"}>
-      {lead === undefined ? <LoadingState label="正在加载团队对话" /> : <ConversationWorkspace agentClient={agentClient} session={lead} active={active && !directoryOpen}
+    <div className="conversation-workspace__surface">
+      {lead === undefined ? <LoadingState label="正在加载团队对话" /> : <ConversationWorkspace agentClient={agentClient} session={lead} active={active}
         project={projects.find(project => project.id === lead.projectId) ?? null} projects={projects} relatedSessions={sessions} onSessionUpdated={onSessionUpdated}
         onOpenTeamConversation={(conversation, _sourceConversationId, messageId) => { void agentClient.listConversationHierarchy().then(hierarchy => { const original = hierarchy.find(item => item.id === conversation.id); if (original) onOpenConversation(original, messageId); }); }}
         groupChat={{ instanceId: instance.id, ...(onOpenFile === undefined ? {} : { onOpenFile }), ...(sourceAgentId == null ? {} : { initialAgentId: sourceAgentId }), ...(focusMessageId === undefined ? {} : { focusMessageId }) }} />}
     </div>
-    {directoryOpen ? <div className="flex min-h-0 flex-1 p-3"><TaskContextDirectory agentClient={agentClient} teamInstanceId={instance.id} onOpenConversation={onOpenConversation} /></div> : null}
   </section>;
 }

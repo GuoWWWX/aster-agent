@@ -6388,6 +6388,10 @@ export class AgentRuntime {
   }
 
   private emit(emit: RunEventEmitter, event: ConversationRunEvent): void {
+    if (event.type === "collaboration.changed" && event.teamInstanceId === undefined) {
+      const instance = this.database.getTeamInstanceForConversation(event.conversationId);
+      if (instance !== null) event = { ...event, teamInstanceId: instance.id };
+    }
     if (event.type === "run.finished" && event.status === "cancelled") this.userQuestions.cancelForConversation(event.conversationId, emit);
     let validated: ConversationRunEvent;
     try {

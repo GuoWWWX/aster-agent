@@ -1364,6 +1364,10 @@ export class AgentDatabase {
           return [...ids].flatMap(root => [this.getConversation(root), ...this.listTeamMemberConversations(root)]);
         }, binding: id => this.getConversationAgentBinding(id),
         sourceExists: source => this.listTimeline(source.containerId).some(item => item.id === source.messageId),
+        message: (conversationId, messageId) => {
+          const message = this.getTimelineItem(conversationId, messageId);
+          return message?.kind === "message" ? { content: message.content, role: message.role, createdAt: message.createdAt } : null;
+        },
         outcome: (id, runId) => this.getConversationRunOutcome(id, runId),
         isExecutionPaused: id => this.isConversationExecutionPaused(id),
       }, teamChatJournal ?? new TeamChatJournal(databasePath === ":memory:" ? null : path.join(path.dirname(databasePath), "team-chats")));
@@ -5868,6 +5872,14 @@ export class AgentDatabase {
       throw new Error("The Subagent result changed before delivery could be committed.");
     }
     return message;
+  }
+
+  public getTimelineItem(conversationId: string, id: string): ConversationTimelineItem | null {
+    this.getConversation(conversationId);
+    const row = this.database.prepare(`SELECT t.payload_json, r.created_at AS run_created_at,
+      r.status AS run_status, r.updated_at AS run_completed_at FROM conversation_timeline t
+      LEFT JOIN runs r ON r.id = t.run_id WHERE t.conversation_id = ? AND t.id = ?`).get(conversationId, id);
+    return row === undefined ? null : this.toConversationTimelineItem(row);
   }
 
   public listTimeline(conversationId: string): ConversationTimelineItem[] {
@@ -11085,6 +11097,9 @@ export class AgentDatabase {
       } },
       { name: "langgraph-versioned-channel-blobs", version: 34,
         up: database => { database.exec(LANGGRAPH_CHECKPOINT_BLOBS_SCHEMA); } },
+      { name: "task-completion-policies", version: 35, up: database => {
+        database.exec("CREATE TABLE IF NOT EXISTS task_completion_policies (scope_key TEXT PRIMARY KEY, allow_agent_completion INTEGER NOT NULL CHECK(allow_agent_completion IN (0,1)))");
+      } },
     ]);
   }
 

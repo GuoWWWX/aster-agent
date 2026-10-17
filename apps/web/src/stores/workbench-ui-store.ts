@@ -1,3 +1,4 @@
+import type { TaskContextScope } from "@agent/protocol";
 import { create } from "zustand";
 import { teamChatTabId } from "../features/chat/workbench-tabs.js";
 import {
@@ -82,7 +83,11 @@ export function clampWorkbenchPanelWidth(
   return Math.min(range.max, Math.max(range.min, Math.round(width)));
 }
 
+export type TaskListViewRequest = { workspaceId: string; scope: TaskContextScope; taskId?: string; requestId: string };
+
 type WorkbenchUiState = {
+  taskListViewRequest: TaskListViewRequest | null;
+  openTaskList: (input: Omit<TaskListViewRequest, "requestId">) => void;
   teamChatDetailsTarget: { instanceId: string; section: "info" | "history" | "settings"; requestId: string } | null;
   openTeamChatDetails: (input: { instanceId: string; section: "info" | "history" | "settings" }) => void;
   teamChatCoordinationTarget: { instanceId: string; agentId?: string; timelineItemId?: string; messageId?: string; sequence?: number; requestId: string } | null;
@@ -145,6 +150,9 @@ type WorkbenchUiState = {
  * tasks, and agent execution will be queried from AgentClient when available.
  */
 export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
+  taskListViewRequest: null,
+  openTaskList: input => set(state => ({ taskListViewRequest: { ...input, requestId: crypto.randomUUID() },
+    filePanelOpenByConversationId: { ...state.filePanelOpenByConversationId, [input.workspaceId]: true } })),
   teamChatDetailsTarget: null,
   openTeamChatDetails: input => set(state => ({ teamChatDetailsTarget: { ...input, requestId: crypto.randomUUID() },
     filePanelOpenByConversationId: { ...state.filePanelOpenByConversationId, [teamChatTabId(input.instanceId)]: true } })),

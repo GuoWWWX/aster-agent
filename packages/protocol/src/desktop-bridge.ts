@@ -1,4 +1,4 @@
-import type { ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput } from "./task-context.js";
+import type { TaskContextScope, TaskCompletionPolicy, SetTaskCompletionPolicyInput, ResolveChatReferencesInput, ChatReference, ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput } from "./task-context.js";
 import type { ReadTeamChatInput, TeamChatPage, PostTeamChatInput, TeamChatMessage, TeamChatMember, MarkTeamChatReadInput } from "./team-chat.js";
 import type { HtmlPreview, HtmlPreviewRequest } from "./html-preview.js";
 import type { AnswerUserQuestionInput, UserQuestion } from "./user-question.js";
@@ -214,6 +214,9 @@ export interface DesktopBridge {
     input: EnsureTeamInstanceMemberConversationInput,
   ): Promise<TeamMemberConversationView>;
   sendTeamMessage(input: SendTeamMessageInput): Promise<ConversationMessageSubmission>;
+  getTaskCompletionPolicy(input: TaskContextScope): Promise<TaskCompletionPolicy>;
+  setTaskCompletionPolicy(input: SetTaskCompletionPolicyInput): Promise<TaskCompletionPolicy>;
+  resolveChatReferences(input: ResolveChatReferencesInput): Promise<ChatReference[]>;
   listTaskContexts(input: ListTaskContextsInput): Promise<TaskContextPage>;
   getTaskContext(input: { id: string; beforeSourceSequence?: number; limit?: number }): Promise<TaskContextDetail>;
   updateTaskContext(input: UpdateTaskContextInput): Promise<TaskContext>;

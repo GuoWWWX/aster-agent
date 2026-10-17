@@ -1,4 +1,4 @@
-import type { ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput, ReadTeamChatInput, TeamChatPage, PostTeamChatInput, TeamChatMessage, TeamChatMember, MarkTeamChatReadInput } from "@agent/protocol";
+import type { TaskContextScope, TaskCompletionPolicy, SetTaskCompletionPolicyInput, ResolveChatReferencesInput, ChatReference, ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput, ReadTeamChatInput, TeamChatPage, PostTeamChatInput, TeamChatMessage, TeamChatMember, MarkTeamChatReadInput } from "@agent/protocol";
 import type { HtmlPreview, HtmlPreviewRequest } from "@agent/protocol";
 import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
 import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
@@ -593,6 +593,9 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.listProjects();
   }
 
+  public getTaskCompletionPolicy(input: TaskContextScope): Promise<TaskCompletionPolicy> { return this.desktopBridge.getTaskCompletionPolicy(input); }
+  public setTaskCompletionPolicy(input: SetTaskCompletionPolicyInput): Promise<TaskCompletionPolicy> { return this.desktopBridge.setTaskCompletionPolicy(input); }
+  public resolveChatReferences(input: ResolveChatReferencesInput): Promise<ChatReference[]> { return this.desktopBridge.resolveChatReferences(input); }
   public listTaskContexts(input: ListTaskContextsInput): Promise<TaskContextPage> { return this.desktopBridge.listTaskContexts(input); }
   public getTaskContext(input: { id: string; beforeSourceSequence?: number; limit?: number }): Promise<TaskContextDetail> { return this.desktopBridge.getTaskContext(input); }
   public updateTaskContext(input: UpdateTaskContextInput): Promise<TaskContext> { return this.desktopBridge.updateTaskContext(input); }
