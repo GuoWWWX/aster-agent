@@ -19,6 +19,20 @@ function fixture() {
     coordinator: { agentId: "default-agent", modelSelection: null, status: "pending", error: null } });
   return { root, room, journal, message };
 }
+it("restores the owner conversation mapping before the first public message without making it a group member", () => {
+  const { root, room, journal, message } = fixture();
+  const conversationId = randomUUID();
+  journal.bindCoordinator(room, "default-agent", conversationId);
+  journal.bindCoordinator(room, "default-agent", conversationId);
+  expect(journal.ids(room)).toEqual([]); expect(journal.lastSequence(room)).toBe(0);
+  journal.appendMessage(message, null);
+  const reopened = new TeamChatJournal(root);
+  expect(reopened.coordinators(room)).toEqual([["default-agent", conversationId]]);
+  expect(reopened.ids(room)).toEqual([message.id]);
+  expect(readFileSync(journal.file(room), "utf8").split('"coordinator_conversation"')).toHaveLength(2);
+  reopened.bindCoordinator(room, "another-agent", conversationId);
+  expect(new TeamChatJournal(root).coordinators(room)).toEqual([["another-agent", conversationId]]);
+});
 it("preserves text and coordinator decisions across restart without repeating the message body", () => {
   const { root, room, journal, message } = fixture();
   journal.appendMessage(message, { id: "request-1", fingerprint: "hash" });
@@ -46,6 +60,13 @@ it("retains bounded append-only coordination steps through terminal state patche
   const lines = readFileSync(journal.file(room), "utf8").trim().split("\n").map(line => JSON.parse(line) as { type: string; coordinator?: { steps?: unknown[] } });
   expect(lines.filter(line => line.type === "coordination_step")).toHaveLength(70);
   expect(lines.at(-1)?.coordinator?.steps).toBeUndefined();
+});
+it("restores a user-paused coordinator without turning the pause into a failure", () => {
+  const { root, room, journal, message } = fixture();
+  journal.appendMessage(message, null);
+  journal.coordinate({ ...message, coordinator: { ...message.coordinator!, status: "paused", error: null } }, {
+    type: "paused", at: new Date().toISOString(), detail: "用户暂停" });
+  expect(new TeamChatJournal(root).message(room, message.id)?.coordinator).toMatchObject({ status: "paused", error: null, steps: [{ type: "paused" }] });
 });
 it("rejects traversal and corrupt or incomplete canonical records without replacing the original", () => {
   const { root, room, journal, message } = fixture(); journal.appendMessage(message, null);

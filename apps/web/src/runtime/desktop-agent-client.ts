@@ -600,10 +600,12 @@ export class DesktopAgentClientAdapter implements AgentClient {
   public mergeTaskContexts(input: MergeTaskContextsInput): Promise<TaskContext> { return this.desktopBridge.mergeTaskContexts(input); }
   public readTeamChat(input: ReadTeamChatInput): Promise<TeamChatPage> { return this.desktopBridge.readTeamChat(input); }
   public postTeamChat(input: PostTeamChatInput): Promise<TeamChatMessage> { return this.desktopBridge.postTeamChat(input); }
+  public getTeamChatCoordinationConversation(input: { teamInstanceId: string; agentId?: string }): Promise<ConversationSummary> { return this.desktopBridge.getTeamChatCoordinationConversation(input); }
   public getTeamChatMembers(input: { teamInstanceId: string }): Promise<TeamChatMember[]> { return this.desktopBridge.getTeamChatMembers(input); }
   public markTeamChatRead(input: MarkTeamChatReadInput): Promise<void> { return this.desktopBridge.markTeamChatRead(input); }
   public resumeTeamChatDelivery(input: { id: string }): Promise<void> { return this.desktopBridge.resumeTeamChatDelivery(input); }
   public cancelTeamChatDelivery(input: { id: string }): Promise<void> { return this.desktopBridge.cancelTeamChatDelivery(input); }
+  public pauseTeamChat(input: { teamInstanceId: string }): Promise<void> { return this.desktopBridge.pauseTeamChat(input); }
   public listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]> {
     return this.desktopBridge.listTeamWorkItems(input);
   }

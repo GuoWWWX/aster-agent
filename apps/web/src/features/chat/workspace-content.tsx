@@ -11,9 +11,10 @@ import { TeamChatSourceContent } from "../team/team-chat-source-content.js";
 import { ChatMessageBubble } from "./chat-message-bubble.js";
 import { TeamChatWorkspace } from "../team/team-chat-workspace.js";
 import { ChatMessageMeta, formatConversationTime, formatConversationDateTime } from "./chat-message-meta.js";
-import type { PostTeamChatInput } from "@agent/protocol";
+import type { PostTeamChatInput, TeamChatActivity } from "@agent/protocol";
 export { formatConversationTime } from "./chat-message-meta.js";
 import { TeamChatPanel } from "../team/team-chat-panel.js";
+import { TeamChatCoordinatorControl } from "../team/team-chat-coordinator-control.js";
 import { createPastedTextAttachment } from "./pasted-text-attachment.js";
 import { MAX_DRAFT_ATTACHMENTS, MAX_DRAFT_ATTACHMENT_BYTES, getClipboardAttachmentFiles, pastedAttachmentName, readAttachmentFileAsBase64 } from "./clipboard-attachments.js";
 import { ScheduledTasksWorkspace } from "../schedules/scheduled-tasks-workspace.js";
@@ -883,99 +884,7 @@ export function WorkspaceContent({
   </>;
 }
 
-type ConversationTranscript = {
-  title: string;
-  avatar: AgentProfile["avatar"] | null;
-  items: readonly ConversationMessageItem[];
-  loading: boolean;
-  error: string | null;
-  retryingMessageId: string | null;
-  onRetryMessage: (messageId: string) => void;
-  onLoadOlder?: (() => void) | undefined;
-};
-
-export function ConversationWorkspace(props: Parameters<typeof InteractiveConversationWorkspace>[0] | {
-  active: boolean;
-  agentClient: AgentClient;
-  compact: boolean;
-  locateTimelineItem?: { id: string; requestId: number | string } | null;
-  transcript: ConversationTranscript;
-}): ReactElement {
-  return "transcript" in props
-    ? <ConversationTranscriptWorkspace {...props} />
-    : <InteractiveConversationWorkspace {...props} />;
-}
-
-/** Read-only histories share the same message renderer as interactive side conversations. */
-function ConversationTranscriptWorkspace({ active, agentClient, compact, locateTimelineItem, transcript }: {
-  active: boolean; agentClient: AgentClient; compact: boolean;
-  locateTimelineItem?: { id: string; requestId: number | string } | null;
-  transcript: ConversationTranscript;
-}): ReactElement {
-  const messagesRef = useRef<HTMLDivElement>(null);
-  const stickToBottom = useRef(true);
-  const focusedRequest = useRef<number | string | null>(null);
-  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
-  const [copyError, setCopyError] = useState<string | null>(null);
-  useEffect(() => {
-    if (copiedMessageId === null) return;
-    const timeout = window.setTimeout(() => setCopiedMessageId(null), 1_500);
-    return () => window.clearTimeout(timeout);
-  }, [copiedMessageId]);
-  useEffect(() => {
-    const container = messagesRef.current;
-    if (!active || container === null) return;
-    if (locateTimelineItem != null && focusedRequest.current !== locateTimelineItem.requestId) {
-      const target = [...container.querySelectorAll<HTMLElement>("[data-conversation-timeline-item]")]
-        .find(element => element.dataset.conversationTimelineItem === locateTimelineItem.id);
-      if (target !== undefined) {
-        target.scrollIntoView?.({ block: "center" });
-        focusedRequest.current = locateTimelineItem.requestId;
-        stickToBottom.current = false;
-        return;
-      }
-    }
-    if (stickToBottom.current) container.scrollTop = container.scrollHeight;
-  }, [active, locateTimelineItem, transcript.items]);
-  const copy = async (message: ConversationMessageItem): Promise<void> => {
-    try { await agentClient.writeClipboardText(message.content); setCopiedMessageId(message.id); setCopyError(null); }
-    catch (error) { setCopyError(getUserErrorMessage(error, "无法复制消息")); }
-  };
-  return <section className="conversation-workspace" data-compact={String(compact)} aria-label={transcript.title}>
-    <header className="conversation-workspace__header">
-      <div className="conversation-workspace__path">
-        {transcript.avatar === null ? <MessageSquareText aria-hidden="true" size={14} /> : <AgentAvatar avatar={transcript.avatar} size="compact" />}
-        <h1 className="min-w-0 truncate">{transcript.title}</h1>
-      </div>
-    </header>
-    <div className="conversation-workspace__surface">
-      <div className="conversation-workspace__messages pb-[18px]" aria-label="对话记录" ref={messagesRef} onScroll={() => {
-        const container = messagesRef.current;
-        if (container !== null) stickToBottom.current = container.scrollHeight - container.scrollTop - container.clientHeight < 48;
-      }}>
-        {transcript.onLoadOlder === undefined ? null : <button type="button" className="conversation-workspace__history-loading" disabled={transcript.loading} onClick={transcript.onLoadOlder}>加载更早消息</button>}
-        {transcript.loading && transcript.items.length === 0 ? <LoadingState label="正在加载对话" /> : null}
-        {!transcript.loading && transcript.items.length === 0 && transcript.error === null ? <div className="conversation-workspace__blank">等待任务</div> : null}
-        {transcript.items.map(item => <div key={item.id} className="contents" data-conversation-timeline-item={item.id}>
-          <TimelineItem agentClient={agentClient} item={item} questionAnswer={null} agentAvatar={null} agentAvatarSeed={null}
-            teamManaged={false} activeRunId={null} latestActiveToolId={null} currentToolId={null} modelActivity={null} runProgress={null}
-            approvalErrors={{}} approvingToolId={null} canCopyMessage={item.content.length > 0} canForceContextCompaction={false}
-            canForkMessage={false} canShowCompletionTime={item.role === "assistant" && item.status !== "streaming"}
-            copiedMessageId={copiedMessageId} editingMessageId={null} forkingMessageId={null} latestUserMessageId={null}
-            onCopyMessage={copy} onEditMessage={() => undefined} onOpenProjectFile={undefined} onSessionSelected={undefined} liveToolOutputs={{}}
-            onLocateQuestion={() => Promise.resolve()} onChangeApproval={() => Promise.resolve()} onForkMessage={() => Promise.resolve()}
-            onForceContextCompaction={() => Promise.resolve()}
-            afterMessage={item.role === "assistant" && item.status === "failed" ? <button type="button" className="self-start text-[var(--app-accent)] hover:underline"
-              disabled={transcript.retryingMessageId === item.id} onClick={() => transcript.onRetryMessage(item.id)}>重试协调</button> : null} />
-        </div>)}
-        {transcript.error === null ? null : <ConversationErrorItem content={transcript.error} />}
-        {copyError === null ? null : <ConversationErrorItem content={copyError} />}
-      </div>
-    </div>
-  </section>;
-}
-
-function InteractiveConversationWorkspace({
+export function ConversationWorkspace({
   active = true,
   agentClient,
   canAddProjects = false,
@@ -1171,6 +1080,7 @@ function InteractiveConversationWorkspace({
       : modelReasoningOptionKey(initialModelSelection.reasoning)
   ));
   const groupOwnerRef = useRef<PostTeamChatInput["coordinator"] | null>(null);
+  const [groupActivity, setGroupActivity] = useState<TeamChatActivity | null>(null);
   const loadGroupOwner = useCallback((owner: PostTeamChatInput["coordinator"] | null): void => {
     if (owner == null) return;
     groupOwnerRef.current = owner;
@@ -2025,6 +1935,12 @@ function InteractiveConversationWorkspace({
       if (event.type === "conversation.open_requested" || event.conversationId !== session.id) {
         return;
       }
+      if (event.type === "collaboration.changed" && session.coordinationTeamInstanceId !== undefined
+        && session.coordinationTeamInstanceId === event.teamInstanceId) {
+        timelineRevisionRef.current += 1;
+        void loadTimeline();
+        return;
+      }
 
       timelineRevisionRef.current += 1;
       handleRunEvent(
@@ -2062,6 +1978,7 @@ function InteractiveConversationWorkspace({
     loadTaskList,
     loadTimeline,
     session.id,
+    session.coordinationTeamInstanceId,
     subagentSessions,
   ]);
 
@@ -3487,8 +3404,11 @@ function InteractiveConversationWorkspace({
       <div
         className="conversation-workspace__surface"
       >
-        {groupChat !== null ? <TeamChatPanel agentClient={agentClient} teamInstanceId={groupChat.instanceId} active={active} composerClearance={composerOverlayHeight}
-          onCoordinatorLoaded={loadGroupOwner} editingMessageId={editingMessageId}
+        {groupChat !== null ? <>
+          {selectedAgent === undefined ? null : <TeamChatCoordinatorControl agentClient={agentClient} teamInstanceId={groupChat.instanceId}
+            agent={selectedAgent} activity={groupActivity} active={active} />}
+          <TeamChatPanel agentClient={agentClient} teamInstanceId={groupChat.instanceId} active={active} composerClearance={composerOverlayHeight}
+          onCoordinatorLoaded={loadGroupOwner} onActivityLoaded={setGroupActivity} editingMessageId={editingMessageId}
           onEditMessage={message => {
             setEditingMessageId(message.id); setEditingPendingMessageId(null); setEditingAttachments([]); setComposerValue(message.content);
             setSelectedConversationMentions(relatedSessions.filter(item => message.recipientConversationIds.includes(item.id)));
@@ -3496,7 +3416,7 @@ function InteractiveConversationWorkspace({
             queueMicrotask(() => composerRef.current?.focus());
           }}
           {...(groupChat.focusMessageId === undefined ? {} : { focusMessageId: groupChat.focusMessageId })}
-          onOpenConversation={(conversation, messageId) => onOpenTeamConversation?.({ ...conversation, pinOrder: conversation.pinOrder ?? null }, undefined, messageId)} /> : <>
+          onOpenConversation={(conversation, messageId) => onOpenTeamConversation?.({ ...conversation, pinOrder: conversation.pinOrder ?? null }, undefined, messageId)} /></> : <>
         <ConversationFindBar
           active={active}
           containerRef={messagesRef}

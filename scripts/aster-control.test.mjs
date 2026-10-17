@@ -57,7 +57,7 @@ test("CLI rejects invalid commands and safe errors never include the connection 
 }));
 
 test("CLI exposes model status, question answers, approvals and scoped program controls", async () => fixture(async (connection) => {
-  const mapping = { models: "models.status", questions: "user_questions.list", answer: "user_questions.answer", approve: "approvals.resolve", programs: "background_commands.list", "program-output": "background_commands.read", "stop-program": "background_commands.stop", permission: "conversations.set_permission", rename: "conversations.rename", archive: "conversations.archive", "team-chat-send": "team_chat.post", "team-chat-read": "team_chat.read", "team-chat-members": "team_chat.members" };
+  const mapping = { models: "models.status", questions: "user_questions.list", answer: "user_questions.answer", approve: "approvals.resolve", programs: "background_commands.list", "program-output": "background_commands.read", "stop-program": "background_commands.stop", permission: "conversations.set_permission", rename: "conversations.rename", archive: "conversations.archive", "team-chat-send": "team_chat.post", "team-chat-read": "team_chat.read", "team-chat-members": "team_chat.members", "team-chat-pause": "team_chat.pause" };
   for (const [name, command] of Object.entries(mapping)) {
     let actual;
     assert.equal(await runControl(["--connection", connection, name, '{"fixture":true}'], { fetchControl: async (_url, options) => { actual = JSON.parse(options.body); return new Response("{}"); }, out: () => {} }), 0);

@@ -83,8 +83,8 @@ export function clampWorkbenchPanelWidth(
 }
 
 type WorkbenchUiState = {
-  teamChatCoordinationTarget: { instanceId: string; messageId?: string; sequence?: number; requestId: string } | null;
-  openTeamChatCoordination: (input: { instanceId: string; messageId?: string; sequence?: number }) => void;
+  teamChatCoordinationTarget: { instanceId: string; agentId?: string; timelineItemId?: string; messageId?: string; sequence?: number; requestId: string } | null;
+  openTeamChatCoordination: (input: { instanceId: string; agentId?: string; timelineItemId?: string; messageId?: string; sequence?: number }) => void;
   conversationReviewViewRequest: ConversationReviewViewRequest | null;
   openConversationReview: (input: Omit<ConversationReviewViewRequest, "requestId">) => void;
   backgroundCommandViewRequest: { requestId: string; conversationId: string; commandId: string; name: string } | null;

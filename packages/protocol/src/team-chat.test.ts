@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { postTeamChatInputSchema, teamChatMessageSchema, teamChatPageSchema } from "./team-chat.js";
+import { postTeamChatInputSchema, teamChatMessageSchema, teamChatPageSchema, teamChatCoordinationConversationInputSchema } from "./team-chat.js";
 
 let nextId = 0;
 const randomUUID = () => `10000000-0000-4000-8000-${String(++nextId).padStart(12, "0")}`;
@@ -24,4 +24,11 @@ it("reads old message/page shapes and validates bounded coordination memory with
   const step = { type: "model_requested", at: new Date().toISOString(), attempt: 1, modelId: "fixture" };
   expect(teamChatMessageSchema.safeParse({ ...coordinated, coordinator: { ...coordinated.coordinator, steps: [step] } }).success).toBe(true);
   expect(teamChatMessageSchema.safeParse({ ...coordinated, coordinator: { ...coordinated.coordinator, steps: Array.from({ length: 65 }, () => step) } }).success).toBe(false);
+});
+
+it("accepts only a scoped owner-conversation request and validates actual Run references", () => {
+  const teamInstanceId = "00000000-0000-4000-8000-000000000001";
+  expect(teamChatCoordinationConversationInputSchema.parse({ teamInstanceId, agentId: "default-agent" })).toEqual({ teamInstanceId, agentId: "default-agent" });
+  expect(teamChatCoordinationConversationInputSchema.safeParse({ teamInstanceId: "invalid" }).success).toBe(false);
+  expect(teamChatCoordinationConversationInputSchema.safeParse({ teamInstanceId, conversationId: teamInstanceId }).success).toBe(false);
 });

@@ -93,6 +93,8 @@ export const IPC_CHANNELS = {
   teamChatMarkRead: "collaboration.markTeamChatRead",
   teamChatResume: "collaboration.resumeTeamChatDelivery",
   teamChatCancel: "collaboration.cancelTeamChatDelivery",
+  teamChatPause: "collaboration.pauseTeamChat",
+  teamChatCoordinationConversation: "collaboration.getTeamChatCoordinationConversation",
   teamWorkItemList: "team.work_item.list",
   teamWorkItemGetExecution: "team.work_item.get_execution",
   teamCollaborationGetProjection: "team.collaboration.get_projection",

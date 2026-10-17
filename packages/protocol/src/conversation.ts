@@ -176,6 +176,7 @@ export const importConversationAttachmentBytesInputSchema = z
 
 export const conversationSummarySchema = z
   .object({
+    coordinationTeamInstanceId: z.string().uuid().optional(),
     activeSubagentCount: z.number().int().nonnegative().default(0),
     activeRunId: runIdSchema.nullable(),
     agentId: z.string().trim().min(1).max(200).nullable().default(null),

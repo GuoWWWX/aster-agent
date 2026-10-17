@@ -106,6 +106,24 @@ it("retains a cached timeline across switches and refreshes only after backgroun
   expect(container.querySelector(".conversation-pending-queue")?.textContent).toContain("queued while hidden");
 });
 
+it.each([false, true])("reloads shared group messages only for their coordinator conversation (coordinator=%s)", async coordinator => {
+  const client = new MockAgentClient();
+  let emit: (event: ConversationRunEvent) => void = () => {};
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { emit = callback; return () => {}; });
+  const history = vi.spyOn(client, "listConversationTimeline").mockResolvedValue([]);
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      session={{ ...session, ...(coordinator ? { coordinationTeamInstanceId: continuationId } : {}) }} /></TooltipProvider>);
+    await flush();
+  });
+  const calls = history.mock.calls.length;
+  await act(async () => {
+    emit({ type: "collaboration.changed", conversationId, ...(coordinator ? { teamInstanceId: continuationId } : {}) });
+    await flush();
+  });
+  expect(history).toHaveBeenCalledTimes(calls + (coordinator ? 1 : 0));
+});
+
 it.each([true, false])("keeps a stream snapshot when history arrives afterwards (cached question=%s)", async (cachedQuestion) => {
   const client = new MockAgentClient();
   let emit: (event: ConversationRunEvent) => void = () => {};

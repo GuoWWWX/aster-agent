@@ -61,7 +61,7 @@ it("does not load the leader private queue or task list to open a group composer
   });
   expect(pending).not.toHaveBeenCalled(); expect(tasks).not.toHaveBeenCalled();
 });
-it("opens group coordination from the header and the original message without changing the composer", async () => {
+it("opens group coordination from its centered large avatar and original message without changing the composer", async () => {
   const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
   const recipient = (await client.getTeamChatMembers({ teamInstanceId: instance.id })).find(member => !member.isLead)!;
   const message = await client.postTeamChat({ teamInstanceId: instance.id, content: "查看这条协调", requestId: crypto.randomUUID(),
@@ -70,6 +70,9 @@ it("opens group coordination from the header and the original message without ch
   await act(async () => { root?.render(<TooltipProvider><TeamChatWorkspace agentClient={client} instance={instance} sessions={sessions}
     projects={[]} onSessionUpdated={() => undefined} active onOpenConversation={() => undefined} /></TooltipProvider>); await Promise.resolve(); });
   const composer = container.querySelector('[aria-label="输入任务"]');
+  const coordinator = container.querySelector('[aria-label="群聊协调 Agent"]')!;
+  expect(coordinator.closest('.conversation-workspace__surface')).not.toBeNull();
+  expect(coordinator.querySelector('[data-size="large"]')).not.toBeNull();
   await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="查看后台协调"]')!.click(); await Promise.resolve(); });
   expect(useWorkbenchUiStore.getState().teamChatCoordinationTarget).toMatchObject({ instanceId: instance.id });
   const messageAction = container.querySelector<HTMLButtonElement>('[aria-label="查看协调过程"]')!;

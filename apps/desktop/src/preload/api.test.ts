@@ -16,6 +16,16 @@ vi.mock("electron", () => ({
 import { createDesktopBridge } from "./api.js";
 
 describe("Desktop preload bridge", () => {
+  it("opens the actual group coordination conversation through the scoped bridge", async () => {
+    const input = { teamInstanceId: "00000000-0000-4000-8000-000000000001", agentId: "default-agent" };
+    await createDesktopBridge().getTeamChatCoordinationConversation(input);
+    expect(electronMocks.invoke).toHaveBeenCalledWith(IPC_CHANNELS.teamChatCoordinationConversation, input);
+  });
+  it("pauses a group through its own scoped channel", async () => {
+    const input = { teamInstanceId: "00000000-0000-4000-8000-000000000001" };
+    await createDesktopBridge().pauseTeamChat(input);
+    expect(electronMocks.invoke).toHaveBeenCalledWith(IPC_CHANNELS.teamChatPause, input);
+  });
   it("sends model catalog updates through their dedicated IPC channel", async () => {
     await createDesktopBridge().saveModelCatalog(DEFAULT_MODEL_CATALOG);
     expect(electronMocks.invoke).toHaveBeenCalledWith(IPC_CHANNELS.modelSaveCatalog, DEFAULT_MODEL_CATALOG);

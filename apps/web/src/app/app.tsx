@@ -26,8 +26,6 @@ import {
 import { FUNCTION_TABS, isFunctionTab, teamChatTabId, teamChatInstanceId, reconcileWorkbenchTabs, type WorkbenchTabs } from "../features/chat/workbench-tabs.js";
 import { ConversationActivity } from "../features/chat/conversation-activity.js";
 import { ConversationWorkProvider } from "../features/chat/conversation-work-state.js";
-import { useConversationWorkspaceCache } from "../features/chat/conversation-workspace-cache.js";
-import { TeamChatCoordinationWorkspace } from "../features/team/team-chat-coordination-workspace.js";
 import {
   ProjectNavigator,
   type ProjectNavigatorLocateRequest,
@@ -139,10 +137,12 @@ export function App(): ReactElement {
   const [tabState, setTabState] = useState<WorkbenchTabs>({ ids: [], previewId: null });
   const openConversationIds = tabState.ids.filter((id) => !isFunctionTab(id) && teamChatInstanceId(id) === null);
   const openTeamChatInstanceIds = useMemo(() => tabState.ids.flatMap(id => { const instanceId = teamChatInstanceId(id); return instanceId === null ? [] : [instanceId]; }), [tabState.ids]);
-  const retainedCoordinationGroups = useConversationWorkspaceCache(
-    activeActivity === "conversations" ? teamInstances.find(instance => !instance.isArchived && instance.id === teamChatTarget?.instanceId) ?? null : null,
-    teamInstances, openTeamChatInstanceIds,
-  );
+  const activeTeamChat = activeActivity === "conversations"
+    ? teamInstances.find(instance => !instance.isArchived && instance.id === teamChatTarget?.instanceId) ?? null : null;
+  const sidebarSession = activeTeamChat === null ? projectSessions.activeSession
+    : projectSessions.sessions.find(session => session.id === (activeTeamChat.sourceConversationId ?? activeTeamChat.rootConversationId)) ?? null;
+  const sidebarProject = activeTeamChat === null ? projectTree.activeProject
+    : projectTree.projects.find(project => project.id === activeTeamChat.projectId) ?? null;
   const activeTabId = activeActivity === "settings" ? "page:settings"
     : activeActivity === "schedules" ? "page:schedules"
     : activeActivity === "team" || activeActivity === "tasks" ? "page:team"
@@ -844,12 +844,10 @@ export function App(): ReactElement {
         />
       }
       filePanel={
-        <>
-        <div aria-hidden={activeActivity === "conversations" && teamChatTarget !== null} className={activeActivity === "conversations" && teamChatTarget !== null ? "hidden" : "flex h-full min-h-0 min-w-0 flex-1"}>
         <RightSidebarWorkspace
-          active={activeActivity !== "conversations" || teamChatTarget === null}
-          activeProject={projectTree.activeProject}
-          activeSession={projectSessions.activeSession}
+          activeProject={sidebarProject}
+          activeSession={sidebarSession}
+          teamChat={activeTeamChat}
           agentClient={agentClient}
           fileOpenRequest={fileOpenRequest}
           gitReviewOpenRequest={gitReviewOpenRequest}
@@ -861,14 +859,6 @@ export function App(): ReactElement {
           onSessionUpdated={(conversation) => projectSessions.updateSession(conversation)}
           tree={projectTree}
         />
-        </div>
-        {retainedCoordinationGroups.map(instance => {
-          const visible = activeActivity === "conversations" && instance.id === teamChatTarget?.instanceId;
-          return <div key={instance.id} aria-hidden={!visible} className={visible ? "flex h-full min-h-0 min-w-0 flex-1" : "hidden"}>
-            <TeamChatCoordinationWorkspace agentClient={agentClient} teamInstanceId={instance.id} teamName={instance.name} active={visible} />
-          </div>;
-        })}
-        </>
       }
       />
       <GlobalConversationSearchDialog

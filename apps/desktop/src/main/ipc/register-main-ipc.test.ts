@@ -67,6 +67,48 @@ describe("result viewed IPC notification", () => {
   });
   afterEach(() => { dispose?.(); dispose = undefined; });
 
+  it("validates the real coordination conversation lookup and disposes its IPC handler", async () => {
+    const result = { ...conversation, threadKind: "agent", coordinationTeamInstanceId: conversation.id };
+    const getTeamChatCoordinationConversation = vi.fn(() => result);
+    Object.assign(dependencies, { agentRuntime: { getTeamChatCoordinationConversation } });
+    dispose?.();
+    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send, isDestroyed: () => false } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(window);
+    dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
+    const handler = electron.handle.mock.calls.filter(([channel]) => channel === IPC_CHANNELS.teamChatCoordinationConversation).at(-1)![1];
+    const trusted = { sender: window.webContents } as IpcMainInvokeEvent;
+    const input = { teamInstanceId: conversation.id, agentId: "default-agent" };
+    await expect(handler(trusted, input)).resolves.toEqual(result);
+    expect(getTeamChatCoordinationConversation).toHaveBeenCalledExactlyOnceWith(input);
+    await expect(handler(trusted, { teamInstanceId: "invalid" })).rejects.toThrow();
+    await expect(handler(trusted, { ...input, conversationId: conversation.id })).rejects.toThrow();
+    electron.fromWebContents.mockReturnValue(null);
+    await expect(handler(trusted, input)).rejects.toThrow();
+    expect(getTeamChatCoordinationConversation).toHaveBeenCalledTimes(1);
+    dispose?.(); dispose = undefined;
+    expect(electron.removeHandler).toHaveBeenCalledWith(IPC_CHANNELS.teamChatCoordinationConversation);
+  });
+  it("validates and scopes group pause requests and disposes the channel", async () => {
+    const pauseTeamChat = vi.fn(() => Promise.resolve());
+    Object.assign(dependencies, { agentRuntime: { pauseTeamChat } });
+    dispose?.();
+    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send, isDestroyed: () => false } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(window);
+    dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
+    const handler = electron.handle.mock.calls.filter(([channel]) => channel === IPC_CHANNELS.teamChatPause).at(-1)![1];
+    const trusted = { sender: window.webContents } as IpcMainInvokeEvent;
+    const teamInstanceId = conversation.id;
+    await expect(handler(trusted, { teamInstanceId })).resolves.toBeNull();
+    expect(pauseTeamChat).toHaveBeenCalledExactlyOnceWith(teamInstanceId, expect.any(Function));
+    await expect(handler(trusted, { teamInstanceId: "invalid" })).rejects.toThrow();
+    await expect(handler(trusted, { teamInstanceId, extra: true })).rejects.toThrow();
+    electron.fromWebContents.mockReturnValue(null);
+    await expect(handler(trusted, { teamInstanceId })).rejects.toThrow();
+    expect(pauseTeamChat).toHaveBeenCalledTimes(1);
+    dispose?.(); dispose = undefined;
+    expect(electron.removeHandler).toHaveBeenCalledWith(IPC_CHANNELS.teamChatPause);
+  });
+
   it("shows the HTML browser tab before waiting for page resources to finish loading", async () => {
     const preview = { id: conversation.id, title: "demo.html", url: "http://127.0.0.1:1234/token/demo.html", source: "<p>demo</p>" };
     const session = { sessionId: conversation.id };

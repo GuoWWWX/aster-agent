@@ -1365,6 +1365,7 @@ export class AgentDatabase {
         }, binding: id => this.getConversationAgentBinding(id),
         sourceExists: source => this.listTimeline(source.containerId).some(item => item.id === source.messageId),
         outcome: (id, runId) => this.getConversationRunOutcome(id, runId),
+        isExecutionPaused: id => this.isConversationExecutionPaused(id),
       }, teamChatJournal ?? new TeamChatJournal(databasePath === ":memory:" ? null : path.join(path.dirname(databasePath), "team-chats")));
       if (this.isJsonlConversationStorageFinalized()) {
         this.activateVolatileConversationProjection();
@@ -1873,7 +1874,11 @@ export class AgentDatabase {
                   conversations.updated_at DESC, conversations.created_at ASC`
       )
       .all() as DatabaseRow[];
-    return rows.map(toConversation);
+    return rows.map(row => {
+      const conversation = toConversation(row);
+      const room = this.collaboration?.coordinatorRoom(conversation.id);
+      return { ...conversation, ...(room == null ? {} : { coordinationTeamInstanceId: room.teamInstanceId }) };
+    });
   }
 
   public listAgentConversations(): ConversationSummary[] {
@@ -1963,7 +1968,8 @@ export class AgentDatabase {
     if (row === undefined) {
       throw new Error("Conversation was not found.");
     }
-    return toConversation(row);
+    const room = this.collaboration?.coordinatorRoom(conversationId);
+    return { ...toConversation(row), ...(room == null ? {} : { coordinationTeamInstanceId: room.teamInstanceId }) };
   }
 
   /**
@@ -4175,7 +4181,7 @@ export class AgentDatabase {
   ): ConversationSummary {
     const agent = conversationAgentBindingSchema.parse(rawAgent);
     const conversation = this.getConversation(conversationId);
-    if (conversation.agentId !== null && conversation.agentId !== agent.id) {
+    if (conversation.agentId !== null && conversation.agentId !== agent.id && conversation.coordinationTeamInstanceId === undefined) {
       throw new Error("This conversation is already bound to another Agent.");
     }
     this.database
@@ -8329,6 +8335,14 @@ export class AgentDatabase {
           continue;
         }
 
+        if (event.type === "group_message") {
+          const message = conversationMessageItemSchema.parse(payload.message);
+          if (message.conversationId !== conversationId || message.runId !== null) throw new Error("Group context belongs to another conversation.");
+          this.insertThreadLogTimeline(message);
+          this.insertThreadLogModelMessage({ attachmentIds: [], content: message.content, conversationId, eventId: event.eventId,
+            role: message.role, runId: null, toolCallId: null, toolCalls: [], createdAt: message.createdAt });
+          continue;
+        }
         if (
           (event.type === "user_message" || event.type === "user_message_replaced")
           && event.payload.writeAhead !== true

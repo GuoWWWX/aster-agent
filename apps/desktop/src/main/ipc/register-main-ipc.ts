@@ -1,6 +1,6 @@
 import { teamInstanceReferenceInputSchema } from "@agent/protocol";
 import { ConversationStreamSubscriptions } from "./conversation-stream-subscriptions.js";
-import { getTaskContextInputSchema, linkTaskContextInputSchema, listTaskContextsInputSchema, markTeamChatReadInputSchema, mergeTaskContextsInputSchema, postTeamChatInputSchema, readTeamChatInputSchema, taskContextDetailSchema, taskContextPageSchema, taskContextReferenceSchema, taskContextSchema, teamChatMessageSchema, teamChatPageSchema, updateTaskContextInputSchema, teamChatMemberSchema } from "@agent/protocol";
+import { getTaskContextInputSchema, linkTaskContextInputSchema, listTaskContextsInputSchema, markTeamChatReadInputSchema, mergeTaskContextsInputSchema, postTeamChatInputSchema, readTeamChatInputSchema, teamChatCoordinationConversationInputSchema, taskContextDetailSchema, taskContextPageSchema, taskContextReferenceSchema, taskContextSchema, teamChatMessageSchema, teamChatPageSchema, updateTaskContextInputSchema, teamChatMemberSchema } from "@agent/protocol";
 import { htmlPreviewRequestSchema, htmlPreviewResponseSchema } from "@agent/protocol";
 import type { HtmlPreviewServer } from "../preview/html-preview-server.js";
 import { scheduledTaskListSchema, scheduledTaskSchema, saveScheduledTaskIpcArgumentsSchema, scheduledTaskReferenceIpcArgumentsSchema } from "@agent/protocol";
@@ -1186,6 +1186,11 @@ export function registerMainIpcHandlers(
     const result = teamChatMessageSchema.parse(agentRuntime.postTeamChat(input, emitConversationRunEvent));
     return result;
   });
+  ipcMain.handle(IPC_CHANNELS.teamChatCoordinationConversation, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([teamChatCoordinationConversationInputSchema]).parse(args);
+    return conversationSummarySchema.parse(agentRuntime.getTeamChatCoordinationConversation(input));
+  });
   ipcMain.handle(IPC_CHANNELS.teamChatMembers, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = z.tuple([teamInstanceReferenceInputSchema]).parse(args);
@@ -1209,6 +1214,12 @@ export function registerMainIpcHandlers(
     const [input] = z.tuple([taskContextReferenceSchema]).parse(args);
     const result = database.collaboration.cancelDelivery(input.id);
     return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.teamChatPause, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([teamInstanceReferenceInputSchema]).parse(args);
+    await agentRuntime.pauseTeamChat(input.teamInstanceId, emitConversationRunEvent);
+    return null;
   });
   ipcMain.handle(
     IPC_CHANNELS.teamWorkItemList,

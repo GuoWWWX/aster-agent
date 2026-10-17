@@ -12,6 +12,7 @@ export const localControlCommandSchema = z.discriminatedUnion("command", [
   z.object({ command: z.literal("models.status"), input: z.object({}).strict() }).strict(),
   z.object({ command: z.literal("team_chat.post"), input: postTeamChatInputSchema }).strict(),
   z.object({ command: z.literal("team_chat.read"), input: readTeamChatInputSchema }).strict(),
+  z.object({ command: z.literal("team_chat.pause"), input: z.object({ teamInstanceId: z.string().uuid() }).strict() }).strict(),
   z.object({ command: z.literal("team_chat.members"), input: teamInstanceReferenceInputSchema }).strict(),
   z.object({ command: z.literal("user_questions.list"), input: conversationReferenceInputSchema }).strict(),
   z.object({ command: z.literal("user_questions.answer"), input: answerUserQuestionInputSchema }).strict(),

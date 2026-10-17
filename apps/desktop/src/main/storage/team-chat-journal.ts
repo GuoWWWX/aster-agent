@@ -7,6 +7,7 @@ import { z } from "zod";
 import { teamChatMessageSchema, teamChatCoordinationStepSchema, type TeamChatMessage, type TeamChatCoordinationStep } from "@agent/protocol";
 
 const eventSchema = z.discriminatedUnion("type", [
+  z.object({ version: z.literal(1), type: z.literal("coordinator_conversation"), agentId: z.string().min(1), conversationId: z.string().uuid() }).strict(),
   z.object({ version: z.literal(1), type: z.literal("message"), message: teamChatMessageSchema,
     request: z.object({ id: z.string(), fingerprint: z.string() }).nullable() }).strict(),
   z.object({ version: z.literal(1), type: z.literal("coordination"), messageId: z.string().uuid(),
@@ -17,7 +18,7 @@ const eventSchema = z.discriminatedUnion("type", [
 ]);
 type Event = z.infer<typeof eventSchema>;
 type Position = { offset: number; length: number };
-type Index = { size: number; lastSequence: number; positions: Map<string, Position[]>; requests: Map<string, { fingerprint: string; messageId: string }> };
+type Index = { size: number; lastSequence: number; positions: Map<string, Position[]>; requests: Map<string, { fingerprint: string; messageId: string }>; coordinators: Map<string, string> };
 
 /** One-time online SQLite backup; never block the UI copying a live database/WAL. */
 export async function backupLegacyTeamChatDatabase(databasePath: string): Promise<void> {
@@ -53,6 +54,11 @@ export class TeamChatJournal {
   public lastSequence(roomId: string): number { return this.index(roomId).lastSequence; }
   public request(roomId: string, id: string) { return this.index(roomId).requests.get(id); }
   public requests(roomId: string) { return [...this.index(roomId).requests.entries()]; }
+  public coordinators(roomId: string) { return [...this.index(roomId).coordinators.entries()]; }
+  public bindCoordinator(roomId: string, agentId: string, conversationId: string): void {
+    if (this.index(roomId).coordinators.get(agentId) === conversationId) return;
+    this.append(roomId, { version: 1, type: "coordinator_conversation", agentId, conversationId });
+  }
   public message(roomId: string, id: string): TeamChatMessage | null {
     return this.messages(roomId, [id])[0] ?? null;
   }
@@ -69,6 +75,7 @@ export class TeamChatJournal {
           if (fd === null) Buffer.from(this.memory.get(roomId) ?? "").copy(bytes, 0, position.offset, position.offset + position.length);
           else if (readSync(fd, bytes, 0, bytes.length, position.offset) !== bytes.length) throw new Error("Group journal changed during read.");
           const event = eventSchema.parse(JSON.parse(bytes.toString("utf8")));
+          if (event.type === "coordinator_conversation") throw new Error("Group message position points to coordinator metadata.");
           if (event.type === "message" ? event.message.id !== id || event.message.teamInstanceId !== roomId : event.messageId !== id) throw new Error("Group journal source identity changed.");
           if (event.type === "message") message = event.message;
           else if (message !== null) {
@@ -102,14 +109,15 @@ export class TeamChatJournal {
   }
   private append(roomId: string, input: Event): void {
     const event = eventSchema.parse(input); const index = this.index(roomId);
-    if (event.type === "message" ? index.positions.has(event.message.id) || event.message.sequence <= index.lastSequence
-      : !index.positions.has(event.messageId)) throw new Error("Group journal event does not follow its canonical history.");
+    if (event.type !== "coordinator_conversation" && (event.type === "message" ? index.positions.has(event.message.id) || event.message.sequence <= index.lastSequence
+      : !index.positions.has(event.messageId))) throw new Error("Group journal event does not follow its canonical history.");
     const line = JSON.stringify(event); const bytes = Buffer.byteLength(line);
     if (this.root === null) this.memory.set(roomId, (this.memory.get(roomId) ?? "") + line + "\n");
     else { mkdirSync(path.dirname(this.file(roomId)), { recursive: true }); appendFileSync(this.file(roomId), line + "\n", "utf8"); }
     this.add(index, event, { offset: index.size, length: bytes }); index.size += bytes + 1;
   }
   private add(index: Index, event: Event, position: Position): void {
+    if (event.type === "coordinator_conversation") { index.coordinators.clear(); index.coordinators.set(event.agentId, event.conversationId); return; }
     const id = event.type === "message" ? event.message.id : event.messageId;
     if (event.type === "message") {
       if (index.positions.has(id)) throw new Error("Duplicate group journal message.");
@@ -127,7 +135,7 @@ export class TeamChatJournal {
     const file = this.file(roomId);
     const size = this.root === null ? Buffer.byteLength(this.memory.get(roomId) ?? "") : existsSync(file) ? statSync(file).size : 0;
     const cached = this.indexes.get(roomId); if (cached?.size === size) return cached;
-    const index: Index = { size, lastSequence: 0, positions: new Map(), requests: new Map() };
+    const index: Index = { size, lastSequence: 0, positions: new Map(), requests: new Map(), coordinators: new Map() };
     if (size > 0) {
       const fd = this.root === null ? null : openSync(file, "r");
       let offset = 0; let pending = Buffer.alloc(0);

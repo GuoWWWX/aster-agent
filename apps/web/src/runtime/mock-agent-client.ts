@@ -1671,6 +1671,7 @@ export class MockAgentClient implements AgentClient {
   private directoryTasks: TaskContext[] = [];
   private directorySources = new Map<string, TaskContextDetail["sources"]>();
   private groupMessages: TeamChatMessage[] = [];
+  private readonly pausedGroupIds = new Set<string>();
   private groupRead = new Map<string, number>();
   public listTaskContexts(raw: ListTaskContextsInput): Promise<TaskContextPage> {
     const input = listTaskContextsInputSchema.parse(raw);
@@ -1723,6 +1724,22 @@ export class MockAgentClient implements AgentClient {
     this.directorySources.set(target.id, [...(this.directorySources.get(target.id) ?? []), ...(this.directorySources.get(source.id) ?? [])]);
     return target;
   }
+  private readonly coordinationConversations = new Map<string, string>();
+  public async getTeamChatCoordinationConversation(input: { teamInstanceId: string; agentId?: string }): Promise<ConversationSummary> {
+    const instance = this.teamInstances.find(candidate => candidate.id === input.teamInstanceId);
+    if (instance === undefined || instance.isArchived) throw new Error("团队不可用");
+    const owner = this.applicationSettings.agentDirectory.agents.find(agent => agent.id === (input.agentId ?? "default-agent"));
+    if (owner === undefined) throw new Error("Agent 不可用");
+    const key = instance.id;
+    const existing = this.conversations.find(conversation => conversation.id === this.coordinationConversations.get(key));
+    if (existing !== undefined) { existing.agentId = owner.id; existing.title = `${owner.name} · 后台协调`; return structuredClone(existing); }
+    const created = await this.createConversation({ projectId: instance.projectId,
+      agent: { id: owner.id, name: owner.name, role: owner.role, instructions: owner.instructions, isDefault: owner.isDefault } });
+    const conversation = this.conversations.find(candidate => candidate.id === created.id)!;
+    conversation.title = `${owner.name} · 后台协调`; conversation.coordinationTeamInstanceId = instance.id;
+    this.coordinationConversations.set(key, conversation.id);
+    return structuredClone(conversation);
+  }
   public getTeamChatMembers(input: { teamInstanceId: string }): Promise<TeamChatMember[]> {
     const instance = this.teamInstances.find(item => item.id === input.teamInstanceId);
     return Promise.resolve(this.conversations.filter(item => instance && (item.id === instance.rootConversationId || item.parentConversationId === instance.rootConversationId)).map(item => ({
@@ -1730,13 +1747,18 @@ export class MockAgentClient implements AgentClient {
     })));
   }
   public readTeamChat(input: ReadTeamChatInput): Promise<TeamChatPage> {
-    const all = this.groupMessages.filter(message => message.teamInstanceId === input.teamInstanceId && (input.beforeSequence === undefined || message.sequence < input.beforeSequence));
+    const roomMessages = this.groupMessages.filter(message => message.teamInstanceId === input.teamInstanceId);
+    const all = roomMessages.filter(message => input.beforeSequence === undefined || message.sequence < input.beforeSequence);
     const messages = all.slice(-(input.limit ?? 30));
     return Promise.resolve(structuredClone({ messages, nextBeforeSequence: all.length > messages.length ? messages[0]!.sequence : null, userReadSequence: this.groupRead.get(input.teamInstanceId) ?? 0, memberReadSequence: 0,
-      coordinator: this.groupMessages.findLast(message => message.teamInstanceId === input.teamInstanceId && message.coordinator != null)?.coordinator ?? null }));
+      coordinator: this.groupMessages.findLast(message => message.teamInstanceId === input.teamInstanceId && message.coordinator != null)?.coordinator ?? null,
+      activity: { status: this.pausedGroupIds.has(input.teamInstanceId) ? "paused" : roomMessages.some(message => message.coordinator?.status === "pending") ? "coordinating"
+        : roomMessages.some(message => message.deliveries.some(delivery => ["pending", "consumed", "delivered"].includes(delivery.status))) ? "working" : "idle",
+        activeMemberCount: 0, pendingDeliveryCount: roomMessages.flatMap(message => message.deliveries).filter(delivery => delivery.status === "pending").length } }));
   }
   public async postTeamChat(raw: PostTeamChatInput): Promise<TeamChatMessage> {
     const input = postTeamChatInputSchema.parse(raw); const members = await this.getTeamChatMembers(input);
+    this.pausedGroupIds.delete(input.teamInstanceId);
     const id = crypto.randomUUID();
     const recipients = input.intent === "notify" ? [] : input.allMembers ? members.filter(member => !member.isArchived).map(member => member.conversationId)
       : input.recipientConversationIds.length ? input.recipientConversationIds : members.filter(member => member.isLead).map(member => member.conversationId);
@@ -1761,6 +1783,16 @@ export class MockAgentClient implements AgentClient {
   public cancelTeamChatDelivery(input: { id: string }): Promise<void> {
     for (const message of this.groupMessages) for (const delivery of message.deliveries) if (delivery.id === input.id && delivery.status === "pending") delivery.status = "cancelled";
     return Promise.resolve();
+  }
+  public async pauseTeamChat(input: { teamInstanceId: string }): Promise<void> {
+    const members = await this.getTeamChatMembers(input);
+    this.pausedGroupIds.add(input.teamInstanceId);
+    for (const message of this.groupMessages.filter(message => message.teamInstanceId === input.teamInstanceId)) {
+      if (message.coordinator?.status === "pending") message.coordinator = { ...message.coordinator, status: "paused", error: null };
+      for (const delivery of message.deliveries) if (["pending", "consumed", "delivered"].includes(delivery.status)) delivery.status = "cancelled";
+    }
+    const root = members.find(member => member.isLead);
+    if (root) this.emitConversationRunEvent({ type: "collaboration.changed", conversationId: root.conversationId, teamInstanceId: input.teamInstanceId });
   }
 
   public listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]> {

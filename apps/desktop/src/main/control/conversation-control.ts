@@ -19,7 +19,7 @@ export class ConversationControl {
   public constructor(
     private readonly database: Pick<AgentDatabase, "listProjects" | "listConversationHierarchy" | "getConversation" | "isTeamWorkItemExecutionTreeConversation" | "collaboration">,
     private readonly lifecycle: Pick<ConversationLifecycleService, "createConversation" | "setConversationPermissionMode" | "setConversationModelSelection" | "renameConversation" | "setConversationArchived">,
-    private readonly runtime: Pick<AgentRuntime, "sendMessage" | "cancelConversation" | "listUserQuestions" | "answerUserQuestion" | "approveToolChange" | "listBackgroundCommands" | "readBackgroundCommand" | "stopBackgroundCommand" | "postTeamChat">,
+    private readonly runtime: Pick<AgentRuntime, "sendMessage" | "cancelConversation" | "listUserQuestions" | "answerUserQuestion" | "approveToolChange" | "listBackgroundCommands" | "readBackgroundCommand" | "stopBackgroundCommand" | "postTeamChat" | "pauseTeamChat">,
     private readonly projector: Pick<EventProjector, "prepareTimeline" | "listTimelinePage">,
     private readonly settings: Pick<ApplicationSettingsStore, "getConfiguration">,
     private readonly teams: Pick<TeamWorkItemRuntime, "sendExecutionGuidance">,
@@ -34,6 +34,7 @@ export class ConversationControl {
       case "models.configure": return modelRuntimeStatusSchema.parse(this.models.saveConfiguration(command.input));
       case "team_chat.post": return teamChatMessageSchema.parse(this.runtime.postTeamChat(command.input, this.emit));
       case "team_chat.read": return teamChatPageSchema.parse(this.database.collaboration.readMessages(command.input));
+      case "team_chat.pause": await this.runtime.pauseTeamChat(command.input.teamInstanceId, this.emit); return null;
       case "team_chat.members": return z.array(teamChatMemberSchema).parse(this.database.collaboration.members(command.input.teamInstanceId));
       case "conversations.rename": {
         const conversation = conversationSummarySchema.parse(this.lifecycle.renameConversation(command.input.conversationId, command.input.title));

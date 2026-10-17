@@ -26,6 +26,7 @@ const THREAD_LOG_CONTEXT_CACHE_BYTES = 16 * 1_024 * 1_024;
 const THREAD_LOG_METADATA_CACHE_LIMIT = 64;
 
 const threadLogEventTypeSchema = z.enum([
+  "group_message",
   "user_question_updated",
  "agent_message",
   "agent_message_read",
@@ -872,6 +873,10 @@ function contextMessageForEvent(
   event: ThreadLogEvent,
   sequence: number,
 ): ThreadLogContextMessage | null {
+  if (event.type === "group_message") {
+    const message = z.object({ role: z.enum(["user", "assistant"]), content: z.string() }).parse(event.payload.message);
+    return { attachmentIds: [], content: message.content, role: message.role, runId: null, sequence, toolCallId: null, toolCalls: [] };
+  }
   if (event.type === "agent_message") {
     const content = typeof event.payload.modelContent === "string"
       ? event.payload.modelContent

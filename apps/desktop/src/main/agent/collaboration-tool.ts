@@ -23,9 +23,19 @@ const readSchema = readTeamChatInputSchema.omit({ teamInstanceId: true }).extend
   messageId: z.string().uuid().optional(), contentOffset: z.number().int().nonnegative().default(0),
   contentLimit: z.number().int().min(1).max(16000).default(2000),
 });
+const selectMembersSchema = z.object({
+  messageId: z.string().uuid(), recipientConversationIds: z.array(z.string().uuid()).min(1).max(32),
+  decisionSummary: z.string().min(1).max(500), contextSummary: z.string().max(2000).optional(),
+}).strict();
 
 export class CollaborationTool {
   public constructor(private readonly database: AgentDatabase) {}
+  public coordinatorDefinitions(): ModelToolDefinition[] {
+    return [...this.definitions(true).filter(tool => tool.name === "read_team_messages"), {
+      name: "select_team_chat_members", parameters: modelToolParameters(selectMembersSchema),
+      description: "Select the active group members who should answer this original user message. This delivers the original request and attributed public context through the existing group queue. Use the exact supplied messageId and member conversation IDs. Explain the choice briefly in the user's language. Repeating an already completed selection does not redeliver it.",
+    }];
+  }
   public definitions(team: boolean): ModelToolDefinition[] {
     const result = [
       { name: "list_task_contexts", parameters: modelToolParameters(listSchema), description: "Find persistent tasks before creating a new task. Compare goals and acceptance criteria, not only titles. Results are scoped to the current project/team or conversation and paginated." },
@@ -43,17 +53,28 @@ export class CollaborationTool {
     return name.startsWith("list_") || name.startsWith("get_") || name.startsWith("read_") ? { kind: "parallel", group: "read" } : { kind: "serial" };
   }
   public execute(input: { name: string; arguments: string; conversationId: string; runId: string; toolCallId: string;
-    post: (message: PostTeamChatInput) => TeamChatMessage; changed: () => void }): Promise<ToolExecution> {
+    post: (message: PostTeamChatInput) => TeamChatMessage; changed: () => void; routed?: () => void }): Promise<ToolExecution> {
     try {
       const args = parseToolArguments(input.arguments);
       const requestId = createHash("sha256").update(`${input.runId}:${input.toolCallId}`).digest("hex");
       const store = this.database.collaboration; const conversation = this.database.getConversation(input.conversationId);
-      const instance = this.database.getTeamInstanceForConversation(conversation.id);
+      const coordinatorRoom = store.coordinatorRoom(conversation.id);
+      const instance = coordinatorRoom === null ? this.database.getTeamInstanceForConversation(conversation.id)
+        : this.database.getTeamInstance(coordinatorRoom.teamInstanceId);
       if (input.name !== "read_team_messages" && input.name !== "post_team_message") {
         store.syncWorkItems(this.database.listTeamWorkItems({ ...(instance === null ? {} : { teamId: instance.teamId }) }));
       }
       let result: unknown;
       switch (input.name) {
+        case "select_team_chat_members": {
+          const parsed = selectMembersSchema.parse(args);
+          const message = store.message(parsed.messageId);
+          if (coordinatorRoom?.teamInstanceId !== message.teamInstanceId || message.coordinator?.conversationId !== conversation.id
+            || message.coordinator.runId !== input.runId) throw new Error("TEAM_SCOPE: This Run cannot route another request.");
+          if (message.coordinator.status === "paused" || message.coordinator.status === "cancelled") throw new Error("群聊协调已暂停或取消。");
+          result = store.finishCoordination(message.id, parsed.recipientConversationIds, null, parsed.contextSummary, parsed.decisionSummary);
+          input.routed?.(); input.changed(); break;
+        }
         case "list_task_contexts": {
           const scope = instance !== null ? { teamInstanceId: instance.id } : conversation.projectId !== null
             ? { projectId: conversation.projectId } : { conversationId: conversation.id };
@@ -86,9 +107,10 @@ export class CollaborationTool {
         case "read_team_messages": {
           if (instance === null) throw new Error("TEAM_MEMBER: Conversation is not in a team.");
           const { messageId, contentOffset, contentLimit, ...paging } = readSchema.parse(args);
-          const marker = store.readMessages({ teamInstanceId: instance.id, limit: 1 }, conversation.id).memberReadSequence;
+          const readerId = coordinatorRoom === null ? conversation.id : null;
+          const marker = coordinatorRoom === null ? store.readMessages({ teamInstanceId: instance.id, limit: 1 }, readerId).memberReadSequence : 0;
           const page = store.readMessages({ ...paging, teamInstanceId: instance.id,
-            ...(paging.beforeSequence === undefined && paging.afterSequence === undefined ? { afterSequence: marker } : {}) }, conversation.id);
+            ...(paging.beforeSequence === undefined && paging.afterSequence === undefined ? { afterSequence: marker } : {}) }, readerId);
           const selected = messageId === undefined ? page.messages : [store.message(messageId)];
           if (selected.some(message => message.teamInstanceId !== instance.id)) throw new Error("TEAM_SCOPE: Message belongs to another room.");
           const messages = selected.map(message => ({ ...message, content: message.content.slice(contentOffset, contentOffset + (messageId === undefined ? Math.min(contentLimit, 2000) : contentLimit)),
@@ -98,7 +120,7 @@ export class CollaborationTool {
             if (message.sequence !== through + 1 || message.contentOffset !== 0 || message.nextContentOffset !== null) break;
             through = message.sequence;
           }
-          if (through > marker) store.markRead({ teamInstanceId: instance.id, throughSequence: through }, conversation.id);
+          if (through > marker && coordinatorRoom === null) store.markRead({ teamInstanceId: instance.id, throughSequence: through }, conversation.id);
           result = { ...page, messages: messages.map(message => ({ ...message,
             coordinator: message.coordinator == null ? message.coordinator : { ...message.coordinator, steps: undefined },
             perspective: message.senderConversationId === null ? "user" : message.senderConversationId === conversation.id ? "self" : "member" })),

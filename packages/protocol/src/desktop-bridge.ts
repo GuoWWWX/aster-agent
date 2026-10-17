@@ -222,9 +222,11 @@ export interface DesktopBridge {
   readTeamChat(input: ReadTeamChatInput): Promise<TeamChatPage>;
   postTeamChat(input: PostTeamChatInput): Promise<TeamChatMessage>;
   getTeamChatMembers(input: { teamInstanceId: string }): Promise<TeamChatMember[]>;
+  getTeamChatCoordinationConversation(input: { teamInstanceId: string; agentId?: string }): Promise<ConversationSummary>;
   markTeamChatRead(input: MarkTeamChatReadInput): Promise<void>;
   resumeTeamChatDelivery(input: { id: string }): Promise<void>;
   cancelTeamChatDelivery(input: { id: string }): Promise<void>;
+  pauseTeamChat(input: { teamInstanceId: string }): Promise<void>;
   listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]>;
   getTeamWorkItemExecution(
     input: GetTeamWorkItemExecutionInput,

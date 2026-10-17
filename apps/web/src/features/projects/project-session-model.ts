@@ -10,6 +10,7 @@ import type {
 } from "@agent/protocol";
 
 export type ProjectSession = {
+  coordinationTeamInstanceId?: string | undefined;
   activeSideConversationCount?: number;
   activeSubagentCount?: number;
   activeRunId: string | null;

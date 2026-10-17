@@ -24,6 +24,7 @@ describe("ConversationControl", () => {
   } }));
   const cancelConversation = vi.fn();
   const postTeamChat = vi.fn();
+  const pauseTeamChat = vi.fn();
   const settings = { getConfiguration: () => DEFAULT_APPLICATION_SETTINGS };
   const teams = { sendExecutionGuidance: vi.fn(sendMessage) };
   const models = { resolveSelection: vi.fn((selection: ConversationModelSelection) => selection), saveConfiguration: vi.fn(), getStatus: vi.fn() };
@@ -35,7 +36,7 @@ describe("ConversationControl", () => {
     log = new ThreadLog(directory);
     projector = new EventProjector(database, log);
     lifecycle = new ConversationLifecycleService(database, log, projector);
-    control = new ConversationControl(database, lifecycle, { sendMessage, cancelConversation, postTeamChat, ...interactions }, projector, settings, teams, emit,
+    control = new ConversationControl(database, lifecycle, { sendMessage, cancelConversation, postTeamChat, pauseTeamChat, ...interactions }, projector, settings, teams, emit,
       models);
   });
   afterEach(async () => { database.close(); await rm(directory, { force: true, recursive: true }); });
@@ -52,6 +53,8 @@ describe("ConversationControl", () => {
     expect(postTeamChat).toHaveBeenCalledExactlyOnceWith(expect.objectContaining(input), emit);
     expect(await execute({ command: "team_chat.read", input: { teamInstanceId: instance.id } })).toMatchObject({ messages: [message] });
     expect(await execute({ command: "team_chat.members", input: { teamInstanceId: instance.id } })).toEqual([expect.objectContaining({ conversationId: lead.id, isLead: true })]);
+    expect(await execute({ command: "team_chat.pause", input: { teamInstanceId: instance.id } })).toBeNull();
+    expect(pauseTeamChat).toHaveBeenCalledExactlyOnceWith(instance.id, emit);
   });
   it("routes command output reads through the scoped runtime", async () => {
     const conversationId = randomUUID(); const commandId = randomUUID();

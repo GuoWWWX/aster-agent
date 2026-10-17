@@ -269,10 +269,12 @@ export function createDesktopBridge(): DesktopBridge {
     mergeTaskContexts(input: MergeTaskContextsInput) { return invoke<BridgeResult<"mergeTaskContexts">>(IPC_CHANNELS.taskContextMerge, input); },
     readTeamChat(input: ReadTeamChatInput) { return invoke<BridgeResult<"readTeamChat">>(IPC_CHANNELS.teamChatRead, input); },
     postTeamChat(input: PostTeamChatInput) { return invoke<BridgeResult<"postTeamChat">>(IPC_CHANNELS.teamChatPost, input); },
+    getTeamChatCoordinationConversation(input: { teamInstanceId: string; agentId?: string }) { return invoke<BridgeResult<"getTeamChatCoordinationConversation">>(IPC_CHANNELS.teamChatCoordinationConversation, input); },
     getTeamChatMembers(input: { teamInstanceId: string }) { return invoke<BridgeResult<"getTeamChatMembers">>(IPC_CHANNELS.teamChatMembers, input); },
     markTeamChatRead(input: MarkTeamChatReadInput) { return invoke<BridgeResult<"markTeamChatRead">>(IPC_CHANNELS.teamChatMarkRead, input); },
     resumeTeamChatDelivery(input: { id: string }) { return invoke<BridgeResult<"resumeTeamChatDelivery">>(IPC_CHANNELS.teamChatResume, input); },
     cancelTeamChatDelivery(input: { id: string }) { return invoke<BridgeResult<"cancelTeamChatDelivery">>(IPC_CHANNELS.teamChatCancel, input); },
+    pauseTeamChat(input: { teamInstanceId: string }) { return invoke<BridgeResult<"pauseTeamChat">>(IPC_CHANNELS.teamChatPause, input); },
     listTeamWorkItems(input: ListTeamWorkItemsInput) {
       return invoke<BridgeResult<"listTeamWorkItems">>(IPC_CHANNELS.teamWorkItemList, input);
     },

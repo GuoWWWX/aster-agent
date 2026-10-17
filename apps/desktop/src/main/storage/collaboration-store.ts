@@ -78,11 +78,13 @@ type StoreContext = {
   binding(id: string): ConversationAgentBinding | null;
   sourceExists: (source: TaskSource) => boolean;
   outcome(conversationId: string, runId: string): { status: string; error: string | null } | null;
+  isExecutionPaused(conversationId: string): boolean;
 };
 
 /** Durable task and team communication facts; member histories remain in ThreadLog. */
 export class CollaborationStore {
   private sourceExists: StoreContext["sourceExists"];
+  private readonly coordinatorRooms = new Map<string, { teamInstanceId: string; agentId: string }>();
   public constructor(private readonly db: DatabaseSync, private readonly context: StoreContext,
     private readonly journal = new TeamChatJournal(null)) {
     this.sourceExists = context.sourceExists;
@@ -108,6 +110,7 @@ export class CollaborationStore {
     }
     // JSONL is already durable. A failed SQL projection is recovered on the next start.
     for (const room of this.journal.rooms()) {
+      for (const [agentId, conversationId] of this.journal.coordinators(room)) this.coordinatorRooms.set(conversationId, { teamInstanceId: room, agentId });
       const messages = this.journal.messages(room, this.journal.ids(room));
       this.write(() => {
         for (const message of messages) this.projectMessage(message);
@@ -126,7 +129,9 @@ export class CollaborationStore {
   private messageMetadata(message: TeamChatMessage): string {
     return JSON.stringify({ ...message, content: "", deliveries: [], coordinator: message.coordinator == null ? null : {
       agentId: message.coordinator.agentId, modelSelection: message.coordinator.modelSelection,
-      status: message.coordinator.status, error: message.coordinator.error } });
+      status: message.coordinator.status, error: message.coordinator.error,
+      conversationId: message.coordinator.conversationId, runId: message.coordinator.runId, userMessageId: message.coordinator.userMessageId,
+      pendingMessageId: message.coordinator.pendingMessageId } });
   }
   private projectMessage(message: TeamChatMessage): void {
     this.db.prepare(`INSERT INTO team_chat_messages VALUES (?, ?, ?, ?) ON CONFLICT(id)
@@ -334,6 +339,12 @@ export class CollaborationStore {
       isLead: member.threadKind === "team_lead", isArchived: member.isArchived,
     }));
   }
+  public executionMembers(teamInstanceId: string): ConversationSummary[] {
+    const root = this.context.team(teamInstanceId).rootConversationId;
+    if (root === null) return [];
+    return [...new Map([this.context.conversation(root), ...this.context.members(teamInstanceId)].map(member => [member.id, member])).values()]
+      .filter(member => !member.isArchived && member.teamWorkItemId == null && member.threadKind !== "subagent");
+  }
   private assertMember(teamInstanceId: string, conversationId: string | null, allowArchived = false): void {
     const instance = this.context.team(teamInstanceId);
     if (instance.isArchived && !allowArchived) throw new CollaborationError("TEAM_ARCHIVED", "The room is archived.");
@@ -419,11 +430,41 @@ export class CollaborationStore {
       });
     }
   }
+  public hasGroupRequest(teamInstanceId: string, requestId: string): boolean {
+    return this.journal.request(teamInstanceId, requestId) !== undefined
+      || this.db.prepare("SELECT 1 FROM collaboration_requests WHERE request_id = ?").get(`group:${requestId}`) !== undefined;
+  }
   public coordinator(teamInstanceId: string) {
     const row = this.db.prepare("SELECT payload_json FROM team_chat_messages WHERE team_instance_id = ? AND json_extract(payload_json, '$.coordinator') IS NOT NULL ORDER BY sequence DESC LIMIT 1").get(teamInstanceId);
     if (row === undefined) return null;
     const metadata = teamChatMessageSchema.parse(JSON.parse(String(row.payload_json)));
     return this.journal.message(teamInstanceId, metadata.id)?.coordinator ?? null;
+  }
+  public coordinatorRoom(conversationId: string) { return this.coordinatorRooms.get(conversationId) ?? null; }
+  public coordinatorConversation(teamInstanceId: string): string | null {
+    return this.journal.coordinators(teamInstanceId)[0]?.[1] ?? null;
+  }
+  public bindCoordinatorConversation(teamInstanceId: string, agentId: string, conversationId: string): void {
+    this.context.team(teamInstanceId);
+    const previous = this.coordinatorConversation(teamInstanceId);
+    this.journal.bindCoordinator(teamInstanceId, agentId, conversationId);
+    if (previous !== null) this.coordinatorRooms.delete(previous);
+    this.coordinatorRooms.set(conversationId, { teamInstanceId, agentId });
+  }
+  public coordinatorConversations(teamInstanceId: string): ConversationSummary[] {
+    return this.journal.coordinators(teamInstanceId).map(([, id]) => this.context.conversation(id));
+  }
+  public attachCoordinationRun(id: string, reference: { conversationId: string; runId?: string; userMessageId?: string; pendingMessageId?: string }): void {
+    const message = this.message(id);
+    if (message.coordinator?.status !== "pending") return;
+    const room = this.coordinatorRoom(reference.conversationId);
+    if (room?.teamInstanceId !== message.teamInstanceId || this.context.binding(reference.conversationId)?.id !== message.coordinator.agentId) throw new Error("Coordination conversation belongs to another owner.");
+    const next = { ...message, coordinator: { ...message.coordinator, ...reference } };
+    this.journal.coordinate(next); this.write(() => this.projectMessage(next));
+  }
+  public coordinationForRun(runId: string): TeamChatMessage | null {
+    const row = this.db.prepare("SELECT id FROM team_chat_messages WHERE json_extract(payload_json, '$.coordinator.runId') = ? LIMIT 1").get(runId);
+    return row === undefined ? null : this.message(String(row.id));
   }
   public recordCoordinationStep(id: string, step: TeamChatCoordinationStep): void {
     const message = this.message(id);
@@ -432,7 +473,7 @@ export class CollaborationStore {
   }
   public finishCoordination(id: string, recipients: string[], error: string | null, contextSummary?: string, decisionSummary?: string): TeamChatMessage {
     const current = this.message(id);
-    if (current.coordinator?.status === "cancelled") return current;
+    if (current.coordinator?.status === "cancelled" || current.coordinator?.status === "paused") return current;
     this.assertMember(current.teamInstanceId, null, error !== null);
     if (current.coordinator == null) throw new Error("Group message has no coordinator.");
     if (current.coordinator.status === "completed") return current;
@@ -449,9 +490,20 @@ export class CollaborationStore {
   }
   public beginCoordination(id: string): TeamChatMessage {
     const message = this.message(id);
-    if (message.coordinator?.status !== "failed") return message;
+    if (message.coordinator?.status !== "failed" && message.coordinator?.status !== "paused") return message;
     const pending: TeamChatMessage = { ...message, coordinator: { ...message.coordinator, status: "pending", error: null } };
     this.journal.coordinate(pending); this.write(() => this.projectMessage(pending)); return this.message(id);
+  }
+  public pendingCoordinations(teamInstanceId: string): string[] {
+    return this.db.prepare("SELECT id FROM team_chat_messages WHERE team_instance_id = ? AND json_extract(payload_json, '$.coordinator.status') = 'pending'")
+      .all(teamInstanceId).map(row => String(row.id));
+  }
+  public pauseCoordination(id: string): void {
+    const message = this.message(id);
+    if (message.coordinator?.status !== "pending") return;
+    const paused: TeamChatMessage = { ...message, coordinator: { ...message.coordinator, status: "paused", error: null } };
+    this.journal.coordinate(paused, { type: "paused", at: new Date().toISOString(), detail: "用户已暂停本群协调。" });
+    this.write(() => this.projectMessage(paused));
   }
   public readMessages(raw: ReadTeamChatInput, memberId: string | null = null): TeamChatPage {
     const input = readTeamChatInputSchema.parse(raw); this.assertMember(input.teamInstanceId, memberId, true);
@@ -470,8 +522,15 @@ export class CollaborationStore {
     const messages = ascending ? selected : selected.reverse();
     const read = (reader: string) => Number(this.db.prepare("SELECT sequence FROM team_chat_reads WHERE team_instance_id = ? AND reader_id = ?").get(input.teamInstanceId, reader)?.sequence ?? 0);
     const coordinator = this.coordinator(input.teamInstanceId);
+    const coordinatorActive = this.coordinatorConversations(input.teamInstanceId).some(conversation => conversation.activeRunId !== null);
+    const members = this.executionMembers(input.teamInstanceId);
+    const activeMemberCount = members.filter(member => member.activeRunId !== null).length;
+    const pendingDeliveryCount = Number(this.db.prepare("SELECT COUNT(*) AS count FROM team_chat_deliveries d JOIN team_chat_messages m ON m.id = d.message_id WHERE m.team_instance_id = ? AND d.status = 'pending' AND d.error IS NULL").get(input.teamInstanceId)?.count ?? 0);
+    const paused = members.length > 0 && members.every(member => this.context.isExecutionPaused(member.id));
     return { messages, nextBeforeSequence: rows.length > input.limit ? messages[0]?.sequence ?? null : null,
       userReadSequence: read("user"), memberReadSequence: memberId === null ? 0 : read(memberId),
+      activity: { status: paused ? "paused" : coordinatorActive || this.pendingCoordinations(input.teamInstanceId).length > 0 ? "coordinating"
+        : activeMemberCount > 0 || pendingDeliveryCount > 0 ? "working" : coordinator?.status === "failed" ? "failed" : "idle", activeMemberCount, pendingDeliveryCount },
       coordinator: coordinator === null ? null : { agentId: coordinator.agentId, modelSelection: coordinator.modelSelection } };
   }
   public markRead(input: MarkTeamChatReadInput, memberId: string | null): void {
@@ -495,6 +554,11 @@ export class CollaborationStore {
     this.db.prepare("UPDATE team_chat_deliveries SET status = 'delivered', input_id = ? WHERE id = ? AND status = 'pending'").run(inputId, id);
   }
   public bindInput(inputId: string, runId: string, messageId: string): void {
+    const coordination = this.db.prepare("SELECT id FROM team_chat_messages WHERE json_extract(payload_json, '$.coordinator.pendingMessageId') = ? AND json_extract(payload_json, '$.coordinator.status') = 'pending'").get(inputId);
+    if (coordination !== undefined) {
+      const source = this.message(String(coordination.id));
+      if (source.coordinator?.conversationId !== undefined) this.attachCoordinationRun(source.id, { conversationId: source.coordinator.conversationId, runId, userMessageId: messageId });
+    }
     const row = this.db.prepare("SELECT id, message_id, conversation_id FROM team_chat_deliveries WHERE input_id = ? AND status = 'delivered'").get(inputId);
     if (row !== undefined) {
       this.consumeDelivery(String(row.id), runId, messageId);
@@ -507,6 +571,9 @@ export class CollaborationStore {
   }
   public runMessages(runId: string): TeamChatMessage[] {
     return this.db.prepare("SELECT message_id FROM team_chat_run_sources WHERE run_id = ? UNION SELECT message_id FROM team_chat_deliveries WHERE run_id = ?").all(runId, runId).map(row => this.message(String(row.message_id)));
+  }
+  public assignedRunMessages(runId: string): TeamChatMessage[] {
+    return this.db.prepare("SELECT message_id FROM team_chat_deliveries WHERE run_id = ? ORDER BY rowid").all(runId).map(row => this.message(String(row.message_id)));
   }
   public relateRun(runId: string, messageId: string): void {
     this.db.prepare("INSERT OR IGNORE INTO team_chat_run_sources VALUES (?, ?)").run(runId, messageId);
@@ -544,7 +611,7 @@ export class CollaborationStore {
     this.db.prepare("UPDATE team_chat_deliveries SET status = 'cancelled', error = '成员已停止' WHERE conversation_id = ? AND status = 'pending'").run(conversationId);
   }
   public cancelRoom(teamInstanceId: string): void {
-    for (const row of this.db.prepare("SELECT id FROM team_chat_messages WHERE team_instance_id = ? AND json_extract(payload_json, '$.coordinator.status') IN ('pending', 'failed')").all(teamInstanceId)) {
+    for (const row of this.db.prepare("SELECT id FROM team_chat_messages WHERE team_instance_id = ? AND json_extract(payload_json, '$.coordinator.status') IN ('pending', 'failed', 'paused')").all(teamInstanceId)) {
       const message = this.message(String(row.id));
       if (message.coordinator != null) {
         const cancelled: TeamChatMessage = { ...message, coordinator: { ...message.coordinator, status: "cancelled", error: "团队已删除" } };

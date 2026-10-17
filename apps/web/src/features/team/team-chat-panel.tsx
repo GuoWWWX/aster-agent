@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
-import type { ConversationSummary, PostTeamChatInput, TeamChatMember, TeamChatMessage } from "@agent/protocol";
+import type { ConversationSummary, PostTeamChatInput, TeamChatMember, TeamChatMessage, TeamChatActivity } from "@agent/protocol";
 import { ExternalLink, Workflow } from "lucide-react";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import { AgentMarkdown } from "../../components/markdown/agent-markdown.js";
@@ -15,11 +15,12 @@ import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 const deliveryLabels = { pending: "待处理", delivered: "已送达", consumed: "处理中", completed: "处理结束", failed: "处理失败", cancelled: "已取消" };
 
 export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation, focusMessageId, active = true, composerClearance = 0,
-  onEditMessage, editingMessageId, onCoordinatorLoaded }: {
+  onEditMessage, editingMessageId, onCoordinatorLoaded, onActivityLoaded }: {
   agentClient: AgentClient; teamInstanceId: string; focusMessageId?: string; active?: boolean; composerClearance?: number;
   onOpenConversation: (conversation: ConversationSummary, messageId?: string) => void;
   onEditMessage?: (message: TeamChatMessage) => void; editingMessageId?: string | null;
   onCoordinatorLoaded?: (coordinator: PostTeamChatInput["coordinator"] | null) => void;
+  onActivityLoaded?: (activity: TeamChatActivity | null) => void;
 }): ReactElement {
   const [messages, setMessages] = useState<TeamChatMessage[]>([]); const [members, setMembers] = useState<TeamChatMember[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -40,6 +41,7 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
       const page = await agentClient.readTeamChat({ teamInstanceId, ...(beforeSequence === undefined ? {} : { beforeSequence }) });
       if (version !== loadVersion.current) return;
       if (!hasLoaded.current) onCoordinatorLoaded?.(page.coordinator ?? null);
+      onActivityLoaded?.(page.activity ?? null);
       setMessages(previous => [...new Map([...previous, ...page.messages].map(message => [message.id, message])).values()].sort((a, b) => a.sequence - b.sequence));
       if (beforeSequence !== undefined || !hasLoaded.current) setCursor(page.nextBeforeSequence);
       hasLoaded.current = true;
@@ -50,7 +52,7 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
       setError(null);
     } catch (reason) { if (version === loadVersion.current) setError(reason instanceof Error ? reason.message : "群聊加载失败"); }
   // Existing pages are retained when new messages arrive; pagination owns the older cursor.
-  }, [agentClient, teamInstanceId, active, onCoordinatorLoaded]);
+  }, [agentClient, teamInstanceId, active, onCoordinatorLoaded, onActivityLoaded]);
   useEffect(() => {
     let disposed = false;
     void Promise.all([agentClient.getTeamChatMembers({ teamInstanceId }), agentClient.listConversationHierarchy()]).then(([roster, hierarchy]) => {
@@ -63,7 +65,7 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
     return () => { loadVersion.current += 1; };
   }, [load, active]);
   useEffect(() => agentClient.onConversationRunEvent(event => {
-    if (event.type !== "collaboration.changed" && event.type !== "run.finished") return;
+    if (event.type !== "collaboration.changed" && event.type !== "run.finished" && event.type !== "run.started") return;
     const memberEvent = members.some(member => member.conversationId === event.conversationId);
     const relevant = event.type === "collaboration.changed"
       ? event.teamInstanceId === teamInstanceId || (event.teamInstanceId === undefined && memberEvent)
@@ -72,7 +74,7 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
     if (!active) { needsRefresh.current = true; return; }
     if (event.type === "collaboration.changed") {
       if (event.teamInstanceId === teamInstanceId || (event.teamInstanceId === undefined && memberEvent)) void load();
-    } else if (event.type === "run.finished" && memberEvent) {
+    } else if (memberEvent) {
       void load();
     }
   }), [agentClient, load, teamInstanceId, members, active]);
@@ -166,9 +168,10 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
           {message.sourceRunId && message.senderConversationId ? <IconButton label="查看工作过程" size="compact" type="button" variant="quiet"
             onClick={() => void openProcess(message.senderConversationId!, message.sourceRunId)}><ExternalLink aria-hidden="true" size={14} /></IconButton> : null}
           {message.coordinator != null ? <IconButton label="查看协调过程" size="compact" variant="quiet"
-            onClick={() => useWorkbenchUiStore.getState().openTeamChatCoordination({ instanceId: teamInstanceId, messageId: message.id, sequence: message.sequence })}><Workflow size={14} /></IconButton> : null}
+            onClick={() => useWorkbenchUiStore.getState().openTeamChatCoordination({ instanceId: teamInstanceId, agentId: message.coordinator!.agentId, ...(message.coordinator!.userMessageId === undefined ? {} : { timelineItemId: message.coordinator!.userMessageId }), messageId: message.id, sequence: message.sequence })}><Workflow size={14} /></IconButton> : null}
         </ChatMessageMeta>
-        {message.coordinator?.status === "failed" || message.coordinator?.status === "pending" ? <div className="flex flex-wrap items-center gap-[5px] text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">
+        {message.coordinator?.status === "failed" || message.coordinator?.status === "pending" || message.coordinator?.status === "paused" ? <div className="flex flex-wrap items-center gap-[5px] text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">
+          {message.coordinator.status === "paused" ? <span>协调已暂停</span> : null}
           {message.coordinator.status === "failed" ? <span className="text-[var(--app-destructive)]">{message.coordinator.error ?? "协调失败"}</span> : null}
           <button type="button" className="hover:underline" onClick={() => { void agentClient.resumeTeamChatDelivery({ id: message.id }).then(() => load()).catch(reason => setError(String(reason))); }}>{message.coordinator.status === "failed" ? "重试协调" : "继续协调"}</button>
         </div> : null}
