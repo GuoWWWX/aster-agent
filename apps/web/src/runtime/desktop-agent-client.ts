@@ -149,6 +149,10 @@ import type {
 export class DesktopAgentClientAdapter implements AgentClient {
   public htmlPreview(input: HtmlPreviewRequest): Promise<HtmlPreview | null> { return this.desktopBridge.htmlPreview(input); }
   private readonly conversationRunEventListeners = new Set<ConversationRunEventListener>();
+  private readonly conversationStreamScopes = new Map<ConversationRunEventListener, readonly string[]>();
+  private streamSubscriptionUpdatePending = false;
+  private requestedStreamScope: string | null = null;
+  private streamReplayRequested = false;
   private disposeConversationRunEventBridge: (() => void) | null = null;
 
   public constructor(private readonly desktopBridge: DesktopBridge) {}
@@ -683,7 +687,11 @@ export class DesktopAgentClientAdapter implements AgentClient {
 
   public onConversationRunEvent(
     listener: ConversationRunEventListener,
+    streamingConversationIds: readonly string[] = [],
   ): () => void {
+    this.conversationStreamScopes.set(listener, streamingConversationIds);
+    this.streamReplayRequested ||= streamingConversationIds.length > 0;
+    this.scheduleStreamSubscriptions();
     this.conversationRunEventListeners.add(listener);
     this.disposeConversationRunEventBridge ??= this.desktopBridge.onConversationRunEvent((event) => {
       for (const currentListener of [...this.conversationRunEventListeners]) {
@@ -696,11 +704,31 @@ export class DesktopAgentClientAdapter implements AgentClient {
       if (disposed) return;
       disposed = true;
       this.conversationRunEventListeners.delete(listener);
+      this.conversationStreamScopes.delete(listener);
+      this.scheduleStreamSubscriptions();
       if (this.conversationRunEventListeners.size === 0) {
         this.disposeConversationRunEventBridge?.();
         this.disposeConversationRunEventBridge = null;
       }
     };
+  }
+
+  private scheduleStreamSubscriptions(): void {
+    if (this.streamSubscriptionUpdatePending) return;
+    this.streamSubscriptionUpdatePending = true;
+    queueMicrotask(() => {
+      this.streamSubscriptionUpdatePending = false;
+      const ids = [...new Set([...this.conversationStreamScopes.values()].flat())].sort();
+      const key = ids.join(",");
+      const replay = this.streamReplayRequested;
+      this.streamReplayRequested = false;
+      if (key === this.requestedStreamScope && !replay) return;
+      this.requestedStreamScope = key;
+      void this.desktopBridge.setConversationStreamSubscriptions(ids).catch(error => {
+        this.requestedStreamScope = null;
+        console.error("Unable to update conversation stream subscriptions.", error);
+      });
+    });
   }
 
   public onApplicationSettingsChanged(

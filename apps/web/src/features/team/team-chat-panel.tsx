@@ -24,7 +24,9 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
   const revealedMessage = useRef<string | undefined>(undefined);
   const latestOwnSequence = useRef<number | null>(null);
   const loadVersion = useRef(0);
+  const needsRefresh = useRef(true);
   const load = useCallback(async (beforeSequence?: number) => {
+    if (beforeSequence === undefined) needsRefresh.current = true;
     const version = ++loadVersion.current;
     try {
       const page = await agentClient.readTeamChat({ teamInstanceId, ...(beforeSequence === undefined ? {} : { beforeSequence }) });
@@ -32,6 +34,7 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
       setMessages(previous => [...new Map([...previous, ...page.messages].map(message => [message.id, message])).values()].sort((a, b) => a.sequence - b.sequence));
       if (beforeSequence !== undefined || !hasLoaded.current) setCursor(page.nextBeforeSequence);
       hasLoaded.current = true;
+      if (beforeSequence === undefined) needsRefresh.current = false;
       if (active && beforeSequence === undefined && atBottom.current && page.messages.length > 0 && document.visibilityState === "visible") {
         await agentClient.markTeamChatRead({ teamInstanceId, throughSequence: page.messages.at(-1)!.sequence });
       }
@@ -46,16 +49,24 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
     }).catch(reason => { if (!disposed) setError(String(reason)); });
     return () => { disposed = true; };
   }, [agentClient, teamInstanceId]);
-  useEffect(() => { void Promise.resolve().then(() => load()); return () => { loadVersion.current += 1; }; }, [load]);
+  useEffect(() => {
+    if (active && (!hasLoaded.current || needsRefresh.current)) void Promise.resolve().then(() => load());
+    return () => { loadVersion.current += 1; };
+  }, [load, active]);
   useEffect(() => agentClient.onConversationRunEvent(event => {
     if (event.type !== "collaboration.changed" && event.type !== "run.finished") return;
     const memberEvent = members.some(member => member.conversationId === event.conversationId);
+    const relevant = event.type === "collaboration.changed"
+      ? event.teamInstanceId === teamInstanceId || (event.teamInstanceId === undefined && memberEvent)
+      : memberEvent;
+    if (!relevant) return;
+    if (!active) { needsRefresh.current = true; return; }
     if (event.type === "collaboration.changed") {
       if (event.teamInstanceId === teamInstanceId || (event.teamInstanceId === undefined && memberEvent)) void load();
     } else if (event.type === "run.finished" && memberEvent) {
       void load();
     }
-  }), [agentClient, load, teamInstanceId, members]);
+  }), [agentClient, load, teamInstanceId, members, active]);
   useLayoutEffect(() => {
     if (!active) return;
     const ownSequence = messages.findLast(message => message.senderConversationId === null)?.sequence ?? null;

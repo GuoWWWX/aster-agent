@@ -1063,6 +1063,8 @@ const modelRetryUpdatedEventSchema = z
   })
   .strict();
 
+export const conversationStreamSubscriptionSchema = z.array(conversationIdSchema).max(1_000);
+
 const assistantDeltaEventSchema = z
   .object({
     conversationId: conversationIdSchema,
@@ -1071,6 +1073,7 @@ const assistantDeltaEventSchema = z
     modelId: z.string().min(1).max(200),
     runId: runIdSchema,
     teamWorkItemId: z.string().uuid().optional(),
+    reset: z.boolean().optional(),
     type: z.literal("assistant.delta")
   })
   .strict();
@@ -1126,6 +1129,7 @@ const toolStartedEventSchema = z
 
 const toolOutputDeltaEventSchema = z
   .object({
+    reset: z.boolean().optional(),
     startedAt: z.string().datetime().optional(),
     completedAt: z.string().datetime().nullable().optional(),
     commandId: z.string().uuid(),

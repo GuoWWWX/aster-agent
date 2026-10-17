@@ -143,7 +143,7 @@ describe("AgentDatabase", () => {
 
     const persisted = new DatabaseSync(databasePath);
     expect(persisted.prepare("SELECT name FROM sqlite_master WHERE name = 'conversations'").get()).toBeUndefined();
-    expect(persisted.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(33);
+    expect(persisted.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(34);
     persisted.close();
     const reopened = new AgentDatabase(databasePath);
     expect(reopened.listProjects()).toEqual([project]);
@@ -193,10 +193,10 @@ describe("AgentDatabase", () => {
       .all() as Array<Record<string, unknown>>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(33);
-    expect(firstRow.name).toBe("team-chat-run-provenance-and-receipts");
+    expect(firstRow.version).toBe(34);
+    expect(firstRow.name).toBe("langgraph-versioned-channel-blobs");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(33);
+    expect(migrationCount.count).toBe(34);
     expect(historyIndexes.map((row) => row.name)).toEqual([
       "conversation_timeline_conversation_sequence",
       "model_messages_conversation_sequence",
@@ -324,7 +324,7 @@ describe("AgentDatabase", () => {
     migrated.close();
 
     expect(checkpointCount.count).toBe(0);
-    expect(migrationCount.count).toBe(33);
+    expect(migrationCount.count).toBe(34);
   });
 
   it("adds hidden turn summaries when upgrading an existing version 19 database", async () => {
@@ -782,7 +782,7 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 33",
+      "newer than supported version 34",
     );
   });
 
@@ -1631,6 +1631,9 @@ describe("AgentDatabase", () => {
     expect(database.getConversation(recursive.id).teamWorkItemId).toBe(workItem.id);
     expect(database.getConversation(sideChat.id).teamWorkItemId).toBeNull();
     expect(database.getConversation(sideChatSubagent.id).teamWorkItemId).toBeNull();
+    for (const conversation of database.listConversationHierarchy()) {
+      expect(database.getConversation(conversation.id).teamWorkItemId).toBe(conversation.teamWorkItemId);
+    }
     expect(database.isTeamWorkItemExecutionTreeConversation(execution.id)).toBe(true);
     expect(database.isTeamWorkItemExecutionTreeConversation(direct.id)).toBe(true);
     expect(database.isTeamWorkItemExecutionTreeConversation(sideChat.id)).toBe(false);
@@ -2121,6 +2124,7 @@ describe("AgentDatabase", () => {
       { version: 31 },
       { version: 32 },
       { version: 33 },
+      { version: 34 },
     ]);
     metadata.close();
   });

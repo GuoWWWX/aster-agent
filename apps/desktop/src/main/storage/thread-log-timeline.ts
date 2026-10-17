@@ -7,6 +7,8 @@ import {
 import { ThreadLog, type ThreadLogEvent, type ThreadLogRecordLocation, type ThreadLogScanCursor } from "./thread-log.js";
 import { setImmediate } from "node:timers/promises";
 
+const TIMELINE_INDEX_CACHE_LIMIT = 64;
+
 type Entry = {
   id: string;
   runId: string | null;
@@ -139,7 +141,7 @@ export class ThreadLogTimeline {
     };
     this.indexes.delete(conversationId);
     this.indexes.set(conversationId, result);
-    while (this.indexes.size > 4) {
+    while (this.indexes.size > TIMELINE_INDEX_CACHE_LIMIT) {
       const first = this.indexes.keys().next().value;
       if (first !== undefined) this.indexes.delete(first);
     }

@@ -36,6 +36,85 @@ async function render(client: MockAgentClient, activeRunId: string | null): Prom
 }
 const header = (): HTMLButtonElement => container.querySelector<HTMLButtonElement>(".conversation-run-activity > button")!;
 
+it.each([false, true])("does not compile the private history for an inactive or group composer (group=%s)", async (group) => {
+  const client = new MockAgentClient();
+  const usage = vi.spyOn(client, "getConversationContextUsage");
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={session}
+      active={group} {...(group ? { groupChat: { instanceId: continuationId } } : {})} /></TooltipProvider>);
+    await flush();
+  });
+  expect(usage).not.toHaveBeenCalled();
+  if (!group) {
+    await act(async () => {
+      root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={session} active /></TooltipProvider>);
+      await flush();
+    });
+    expect(usage).toHaveBeenCalled();
+  }
+});
+
+it("retains a cached timeline across switches and refreshes only after background changes", async () => {
+  const client = new MockAgentClient();
+  let emit: (event: ConversationRunEvent) => void = () => {};
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { emit = callback; return () => {}; });
+  const history = vi.spyOn(client, "listConversationTimeline").mockResolvedValue([{ ...answer, content: "cached answer", status: "completed" }]);
+  const pending = vi.spyOn(client, "listConversationPendingMessages").mockResolvedValue([]);
+  const show = async (active: boolean): Promise<void> => {
+    await act(async () => {
+      root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={session} active={active} /></TooltipProvider>);
+      await flush();
+    });
+  };
+  await show(true);
+  const initialCalls = history.mock.calls.length;
+  expect(container.textContent).toContain("cached answer");
+  const messages = container.querySelector<HTMLElement>(".conversation-workspace__messages")!;
+  Object.defineProperties(messages, { clientHeight: { configurable: true, value: 600 }, scrollHeight: { configurable: true, value: 1400 } });
+  messages.scrollTop = 120;
+  act(() => { messages.dispatchEvent(new Event("scroll")); });
+  await show(false);
+  await show(true);
+  expect(history).toHaveBeenCalledTimes(initialCalls);
+  expect(container.querySelector(".conversation-workspace__messages")).toBe(messages);
+  expect(messages.scrollTop).toBe(120);
+  await show(false);
+  pending.mockResolvedValue([{ id: continuationId, conversationId, createdAt: answer.createdAt, content: "queued while hidden", deliveryMode: "queue",
+    attachmentIds: [], referencedConversationIds: [], referencedProjectPaths: [] }]);
+  await act(async () => { emit({ type: "run.finished", conversationId, runId, status: "completed", error: null }); await flush(); });
+  expect(history).toHaveBeenCalledTimes(initialCalls);
+  history.mockResolvedValue([{ ...answer, content: "new background answer", status: "completed" }]);
+  await show(true);
+  expect(history).toHaveBeenCalledTimes(initialCalls + 1);
+  expect(container.textContent).toContain("new background answer");
+  expect(container.querySelector(".conversation-pending-queue")?.textContent).toContain("queued while hidden");
+});
+
+it.each([true, false])("keeps a stream snapshot when history arrives afterwards (cached question=%s)", async (cachedQuestion) => {
+  const client = new MockAgentClient();
+  let emit: (event: ConversationRunEvent) => void = () => {};
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { emit = callback; return () => {}; });
+  const persisted: ConversationTimelineItem[] = [{ ...answer, id: continuationId, role: "user", content: "new question", status: "completed" }];
+  const history = vi.spyOn(client, "listConversationTimeline").mockResolvedValue(cachedQuestion ? persisted : []);
+  const show = async (active: boolean) => { await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={{ ...session, activeRunId: runId }} active={active} /></TooltipProvider>);
+    await flush();
+  }); };
+  await show(true); await show(false);
+  act(() => emit({ type: "model.request_started", conversationId, runId }));
+  let resolve: (items: ConversationTimelineItem[]) => void = () => {};
+  history.mockResolvedValue(persisted).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+  await show(true);
+  await act(async () => {
+    emit({ type: "assistant.delta", conversationId, runId, messageId: answer.id, modelId: "test-model", reset: true, delta: "complete snapshot" });
+    resolve(persisted); await flush();
+  });
+  expect(container.textContent).toContain("new question");
+  expect(container.textContent).toContain("complete snapshot");
+  act(() => emit({ type: "assistant.delta", conversationId, runId, messageId: answer.id, modelId: "test-model", delta: " plus new output" }));
+  expect(container.textContent).toContain("complete snapshot plus new output");
+});
+
 it("uses the running fallback before a model request and while a text-only final answer streams", async () => {
   const client = new MockAgentClient();
   let emit: (event: ConversationRunEvent) => void = () => {};

@@ -71,6 +71,7 @@ export const IPC_CHANNELS = {
   conversationCancelRun: "conversation.cancel_run",
   conversationApproveToolChange: "conversation.approve_tool_change",
   conversationRunEvent: "conversation.run_event",
+  conversationSetStreamSubscriptions: "conversation.set_stream_subscriptions",
   teamSetCoordinator: "team.set_coordinator",
   teamEnsureMemberConversation: "team.ensure_member_conversation",
   teamInstanceList: "team.instance.list",

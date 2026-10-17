@@ -818,7 +818,7 @@ describe("LangChainModelAdapter", () => {
         'data: {"type":"response.created","response":{"id":"resp_1","model":"test-model"}}\n\n',
         'data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","summary_index":0,"delta":"Checking files"}\n\n',
         'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"Checking files"}]}}\n\n',
-        'data: {"type":"response.completed","response":{"id":"resp_1","model":"test-model","output":[{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"Checking files"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n',
+        'data: {"type":"response.completed","response":{"id":"resp_1","model":"test-model","instructions":"echoed system rules","tools":[{"type":"function","name":"echoed_tool"}],"output":[{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"Checking files"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n',
       ]))
       .mockResolvedValueOnce(createStreamResponse([
         'data: {"type":"response.completed","response":{"id":"resp_2","model":"test-model","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n',
@@ -831,6 +831,8 @@ describe("LangChainModelAdapter", () => {
       onTextDelta: (delta) => textDeltas.push(delta),
     }));
     if (first.providerState === undefined) throw new Error("Expected Responses provider state.");
+    for (const field of ["instructions", "tools", "usage"]) expect(first.providerState.payload).not.toHaveProperty(`responseMetadata.${field}`);
+    expect(first.providerState.usage).toMatchObject({ inputTokens: 1, outputTokens: 1, totalTokens: 2 });
 
     expect(first.content).toBe("");
     expect(first).not.toHaveProperty("reasoningContent");

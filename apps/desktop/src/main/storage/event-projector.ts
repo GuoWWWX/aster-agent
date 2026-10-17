@@ -27,7 +27,7 @@ const conversationCreatedPayloadSchema = z.object({
   conversation: conversationSummarySchema,
 }).strict();
 
-const HYDRATED_CONVERSATION_HISTORY_LIMIT = 4;
+const HYDRATED_CONVERSATION_HISTORY_LIMIT = 8;
 
 export type ThreadLogProjectionResult = {
   cursor: ThreadLogProjectionCursor | null;
@@ -424,15 +424,11 @@ export class EventProjector {
   }
 
   private evictExcessConversationHistories(protectedConversationId: string): void {
-    while (this.hydratedConversationIds.size > HYDRATED_CONVERSATION_HISTORY_LIMIT) {
-      const candidate = this.hydratedConversationIds.keys().next().value;
-      if (candidate === undefined) return;
-      this.hydratedConversationIds.delete(candidate);
-      if (candidate === protectedConversationId) {
-        this.touchHydratedConversation(candidate);
-        continue;
-      }
+    for (const candidate of this.hydratedConversationIds.keys()) {
+      if (this.hydratedConversationIds.size <= HYDRATED_CONVERSATION_HISTORY_LIMIT) break;
+      if (candidate === protectedConversationId) continue;
       if (this.database.getConversation(candidate).activeRunId !== null) continue;
+      this.hydratedConversationIds.delete(candidate);
       this.database.clearVolatileConversationHistory(candidate);
     }
   }

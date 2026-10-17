@@ -329,7 +329,7 @@ export interface AgentClient {
   requestTeamWorkItemRework(input: RequestTeamWorkItemReworkInput): Promise<TeamWorkItemView>;
   acceptTeamWorkItem(input: AcceptTeamWorkItemInput): Promise<TeamWorkItemView>;
   minimizeWindow(): Promise<void>;
-  onConversationRunEvent(listener: ConversationRunEventListener): () => void;
+  onConversationRunEvent(listener: ConversationRunEventListener, streamingConversationIds?: readonly string[]): () => void;
   onApplicationSettingsChanged(listener: ApplicationSettingsListener): () => void;
   onWindowStateChanged(listener: WindowStateListener): () => void;
   renameConversation(input: {

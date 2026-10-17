@@ -45,7 +45,7 @@ describe("result viewed IPC notification", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send } } as unknown as BrowserWindow;
+    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send, isDestroyed: () => false } } as unknown as BrowserWindow;
     electron.fromWebContents.mockReturnValue(window);
     markViewed.mockReturnValue(conversation);
     const unsubscribe = () => undefined;
@@ -346,6 +346,16 @@ describe("result viewed IPC notification", () => {
       type: "conversation.updated", conversation,
     });
     expect(markViewed.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]!);
+  });
+
+  it("validates conversation stream subscriptions and rejects untrusted senders", async () => {
+    const subscribe = electron.handle.mock.calls.find(([channel]) => channel === IPC_CHANNELS.conversationSetStreamSubscriptions)![1];
+    await expect(subscribe(event, [conversation.id])).resolves.toBeUndefined();
+    await expect(subscribe({ ...event, senderFrame: {} } as IpcMainInvokeEvent, [])).rejects.toThrow();
+    await expect(subscribe(event, ["invalid"])).rejects.toThrow();
+    await expect(subscribe(event, [], "extra")).rejects.toThrow();
+    electron.fromWebContents.mockReturnValueOnce(undefined);
+    await expect(subscribe(event, [])).rejects.toThrow();
   });
 
   it("does not broadcast a viewed result when persistence fails", async () => {

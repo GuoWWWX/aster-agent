@@ -39,7 +39,7 @@ export function LiveProviderCacheStatus({ agentClient, conversationId, usage }: 
         if (event.type === "model.first_token_received") {
           latency = event.latencyMs; firstOutputAt = performance.now(); publish();
         } else if (event.type === "assistant.delta") {
-          firstOutputAt ??= performance.now(); text += event.delta;
+          firstOutputAt ??= performance.now(); text = event.reset ? event.delta : text + event.delta;
         } else if (event.type === "assistant.reasoning_delta" && event.kind !== "progress") {
           firstOutputAt ??= performance.now(); reasoning = event.reset ? event.delta : reasoning + event.delta;
         } else if (event.type === "run.finished" || event.type === "tool.started"

@@ -2595,6 +2595,7 @@ export function RightSidebarWorkspace({
                 >
                   <ConversationWorkspace
                     compact
+                    active={sidebarVisible && isActive}
                     agentClient={agentClient}
                     locateTimelineItem={teamMemberOpenRequest?.conversation.id === session.id
                       && teamMemberOpenRequest.timelineItemId !== null

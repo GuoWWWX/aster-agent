@@ -38,6 +38,7 @@ import type {
 } from "../model/model-contracts.js";
 import { normalizeModelFacingToolOutputs } from "./context-manager.js";
 import type { SkillSnapshotRef } from "./skill-runtime.js";
+import { compactProviderReplayState } from "../model/provider-replay-state.js";
 
 export type AgentGraphState = {
   activeSkills: SkillSnapshotRef[];
@@ -252,6 +253,10 @@ function toolCallsOf(result: ModelTurnResult | null): ModelToolCall[] {
 }
 
 function toLangChainMessage(message: ModelMessage): BaseMessage {
+  if (message.providerState !== undefined) {
+    const providerState = compactProviderReplayState(message.providerState);
+    if (providerState !== message.providerState) message = { ...message, providerState };
+  }
   const metadata = { [MODEL_MESSAGE_METADATA_KEY]: message };
   if (message.role === "system") return new SystemMessage({ content: message.content, additional_kwargs: metadata });
   if (message.role === "user") return new HumanMessage({ content: message.content, additional_kwargs: metadata });

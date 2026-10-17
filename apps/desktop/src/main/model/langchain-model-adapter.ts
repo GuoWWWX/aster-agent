@@ -33,6 +33,7 @@ import {
 } from "./model-request-error.js";
 import { parseToolArguments } from "./tool-arguments.js";
 import { requestFingerprint, type RequestFingerprint } from "./request-fingerprint.js";
+import { compactProviderReplayState } from "./provider-replay-state.js";
 
 const LANGCHAIN_PROVIDER_STATE_VERSION = 2;
 const AI_SDK_PROVIDER_STATE_VERSION = 1;
@@ -351,7 +352,7 @@ function matchingProviderState(
   return state?.apiFormat === input.configuration.apiFormat
     && state.baseUrl === input.configuration.baseUrl
     && state.modelId === input.configuration.modelId
-    ? state
+    ? compactProviderReplayState(state)
     : null;
 }
 
@@ -817,7 +818,7 @@ function providerState(
   ) {
     return undefined;
   }
-  return {
+  return compactProviderReplayState({
     apiFormat: input.configuration.apiFormat,
     baseUrl: input.configuration.baseUrl,
     modelId: input.configuration.modelId,
@@ -829,7 +830,7 @@ function providerState(
       ...(fingerprint === undefined ? {} : { requestFingerprint: fingerprint }),
     },
     ...(usage === undefined ? {} : { usage }),
-  };
+  });
 }
 
 function mergeMessageChunks(

@@ -1,4 +1,5 @@
 import { teamInstanceReferenceInputSchema } from "@agent/protocol";
+import { ConversationStreamSubscriptions } from "./conversation-stream-subscriptions.js";
 import { getTaskContextInputSchema, linkTaskContextInputSchema, listTaskContextsInputSchema, markTeamChatReadInputSchema, mergeTaskContextsInputSchema, postTeamChatInputSchema, readTeamChatInputSchema, taskContextDetailSchema, taskContextPageSchema, taskContextReferenceSchema, taskContextSchema, teamChatMessageSchema, teamChatPageSchema, updateTaskContextInputSchema, teamChatMemberSchema } from "@agent/protocol";
 import { htmlPreviewRequestSchema, htmlPreviewResponseSchema } from "@agent/protocol";
 import type { HtmlPreviewServer } from "../preview/html-preview-server.js";
@@ -54,6 +55,7 @@ import {
   conversationSearchResponseSchema,
   forkConversationIpcArgumentsSchema,
   conversationRunEventSchema,
+  conversationStreamSubscriptionSchema,
   conversationSummarySchema,
   conversationTaskListResponseSchema,
   conversationTimelineResponseSchema,
@@ -305,22 +307,20 @@ type MainIpcDependencies = {
 };
 
 type MainIpcRegistrationOptions = {
+  eventStreams?: ConversationStreamSubscriptions;
   resumePendingMessages?: boolean;
   emitConversationRunEvent?: (event: unknown) => void;
 };
 
 function sendWindowConversationRunEvent(
   getMainWindow: () => BrowserWindow | undefined,
-  event: unknown
+  event: unknown,
+  eventStreams: ConversationStreamSubscriptions,
 ): void {
   const parsed = conversationRunEventSchema.parse(event);
   publishConversationAttentionEvent(parsed);
   const window = getMainWindow();
-  if (window === undefined || window.isDestroyed()) return;
-  window.webContents.send(
-    IPC_CHANNELS.conversationRunEvent,
-    parsed
-  );
+  eventStreams.publish(window === undefined || window.isDestroyed() ? undefined : window.webContents, parsed);
 }
 
 export function registerMainIpcHandlers(
@@ -355,9 +355,11 @@ export function registerMainIpcHandlers(
     workspaceBrowserTabs,
     tools,
   }: MainIpcDependencies,
-  { resumePendingMessages = true, emitConversationRunEvent = (event) =>
-    sendWindowConversationRunEvent(getMainWindow, event) }: MainIpcRegistrationOptions = {},
+  { resumePendingMessages = true, eventStreams: configuredStreams, emitConversationRunEvent: configuredEmitter }: MainIpcRegistrationOptions = {},
 ): () => void {
+  const eventStreams = configuredStreams ?? new ConversationStreamSubscriptions();
+  const emitConversationRunEvent = configuredEmitter ?? ((event: unknown) =>
+    sendWindowConversationRunEvent(getMainWindow, event, eventStreams));
   const ipcMain = createIpcHandlerRegistrar<IpcHandler>({
     handle(channel, handler): void {
       electronIpcMain.handle(channel, (event, ...args: unknown[]) =>
@@ -367,6 +369,13 @@ export function registerMainIpcHandlers(
     removeHandler(channel): void {
       electronIpcMain.removeHandler(channel);
     },
+  });
+  ipcMain.handle(IPC_CHANNELS.conversationSetStreamSubscriptions, (event, ...args: unknown[]) => {
+    const window = getTrustedWindow(event, getMainWindow);
+    if (event.senderFrame !== event.sender.mainFrame) throw new Error("Rejected stream subscription from a subframe.");
+    const [ids] = z.tuple([conversationStreamSubscriptionSchema]).parse(args);
+    eventStreams.subscribe(window.webContents, ids);
+    return voidIpcResponseSchema.parse(undefined);
   });
   ipcMain.handle(IPC_CHANNELS.scheduledTaskList, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow); emptyIpcArgumentsSchema.parse(args);
@@ -1951,6 +1960,7 @@ export function registerMainIpcHandlers(
   try {
     ipcMain.assertRegisteredChannels(DESKTOP_IPC_HANDLER_CHANNELS);
   } catch (error) {
+    if (configuredStreams === undefined) eventStreams.dispose();
     disposeApplicationSettingsListener();
     disposeTerminalSessionListener();
     disposeWorkspaceTerminalTabListener();
@@ -1976,6 +1986,7 @@ export function registerMainIpcHandlers(
   }
 
   return () => {
+    if (configuredStreams === undefined) eventStreams.dispose();
     disposeApplicationSettingsListener();
     disposeTerminalSessionListener();
     disposeWorkspaceTerminalTabListener();

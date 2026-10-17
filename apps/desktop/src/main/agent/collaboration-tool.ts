@@ -49,7 +49,9 @@ export class CollaborationTool {
       const requestId = createHash("sha256").update(`${input.runId}:${input.toolCallId}`).digest("hex");
       const store = this.database.collaboration; const conversation = this.database.getConversation(input.conversationId);
       const instance = this.database.getTeamInstanceForConversation(conversation.id);
-      store.syncWorkItems(this.database.listTeamWorkItems({ ...(instance === null ? {} : { teamId: instance.teamId }) }));
+      if (input.name !== "read_team_messages" && input.name !== "post_team_message") {
+        store.syncWorkItems(this.database.listTeamWorkItems({ ...(instance === null ? {} : { teamId: instance.teamId }) }));
+      }
       let result: unknown;
       switch (input.name) {
         case "list_task_contexts": {

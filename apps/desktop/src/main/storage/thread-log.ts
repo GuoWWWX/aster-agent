@@ -23,6 +23,7 @@ import type { ModelProviderState, ModelToolCall } from "../model/model-contracts
 const THREAD_LOG_READ_CHUNK_BYTES = 256 * 1_024;
 const THREAD_LOG_CONTEXT_CACHE_LIMIT = 4;
 const THREAD_LOG_CONTEXT_CACHE_BYTES = 16 * 1_024 * 1_024;
+const THREAD_LOG_METADATA_CACHE_LIMIT = 64;
 
 const threadLogEventTypeSchema = z.enum([
   "user_question_updated",
@@ -225,7 +226,7 @@ export class ThreadLog {
       const value = event.payload[uniquePayloadField];
       if (event.type === input.type && typeof value === "string") values.add(value);
     }, after);
-    setBoundedCacheEntry(this.uniqueEventCache, key, { cursor, values }, THREAD_LOG_CONTEXT_CACHE_LIMIT);
+    setBoundedCacheEntry(this.uniqueEventCache, key, { cursor, values }, THREAD_LOG_METADATA_CACHE_LIMIT);
     if (values.has(uniqueValue)) return null;
     return this.append(conversationId, input);
   }
@@ -431,19 +432,23 @@ export class ThreadLog {
     }
     const descriptor = openSync(this.getPath(conversationId), "r");
     try {
-      const bytes = Buffer.allocUnsafe(location.length);
-      let consumed = 0;
-      while (consumed < bytes.length) {
-        const count = readSync(descriptor, bytes, consumed, bytes.length - consumed, location.offset + consumed);
-        if (count === 0) throw new Error("ThreadLog record is no longer available.");
-        consumed += count;
-      }
-      const event = threadLogEventSchema.parse(JSON.parse(bytes.toString("utf8")));
-      if (event.conversationId !== conversationId) throw new Error("ThreadLog record belongs to another conversation.");
-      return event;
+      return this.readRecordFromDescriptor(descriptor, conversationId, location);
     } finally {
       closeSync(descriptor);
     }
+  }
+
+  private readRecordFromDescriptor(descriptor: number, conversationId: string, location: ThreadLogRecordLocation): ThreadLogEvent {
+    const bytes = Buffer.allocUnsafe(location.length);
+    let consumed = 0;
+    while (consumed < bytes.length) {
+      const count = readSync(descriptor, bytes, consumed, bytes.length - consumed, location.offset + consumed);
+      if (count === 0) throw new Error("ThreadLog record is no longer available.");
+      consumed += count;
+    }
+    const event = threadLogEventSchema.parse(JSON.parse(bytes.toString("utf8")));
+    if (event.conversationId !== conversationId) throw new Error("ThreadLog record belongs to another conversation.");
+    return event;
   }
 
   /**
@@ -562,25 +567,31 @@ export class ThreadLog {
       this.contextIndexes.delete(id);
       throw error;
     }
-    setBoundedCacheEntry(this.contextIndexes, id, target, THREAD_LOG_CONTEXT_CACHE_LIMIT);
+    setBoundedCacheEntry(this.contextIndexes, id, target, THREAD_LOG_METADATA_CACHE_LIMIT);
     return target;
   }
 
   private *readContextLocations(conversationId: string, index: ContextIndex, positions: readonly number[]): IterableIterator<ThreadLogContextMessage> {
+    if (positions.length === 0) return;
+    const descriptor = openSync(this.getPath(conversationId), "r");
     let previousOffset = -1;
     let recordMessages: ThreadLogContextMessage[] = [];
-    for (const position of positions) {
-      const location = index.locations[position]!;
-      if (location.record.offset !== previousOffset) {
-        const event = this.readRecord(conversationId, location.record);
-        const message = contextMessageForEvent(event, 1);
-        recordMessages = event.type === "legacy_snapshot_imported" ? readLegacyContextMessages(event.payload)
-          : message === null ? [] : [message];
-        previousOffset = location.record.offset;
+    try {
+      for (const position of positions) {
+        const location = index.locations[position]!;
+        if (location.record.offset !== previousOffset) {
+          const event = this.readRecordFromDescriptor(descriptor, conversationId, location.record);
+          const message = contextMessageForEvent(event, 1);
+          recordMessages = event.type === "legacy_snapshot_imported" ? readLegacyContextMessages(event.payload)
+            : message === null ? [] : [message];
+          previousOffset = location.record.offset;
+        }
+        const message = recordMessages[location.legacyIndex];
+        if (message === undefined) throw new Error("ThreadLog context location is no longer available.");
+        yield { ...message, sequence: index.context.messages[position]!.sequence };
       }
-      const message = recordMessages[location.legacyIndex];
-      if (message === undefined) throw new Error("ThreadLog context location is no longer available.");
-      yield { ...message, sequence: index.context.messages[position]!.sequence };
+    } finally {
+      closeSync(descriptor);
     }
   }
 

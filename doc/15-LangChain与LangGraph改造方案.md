@@ -178,6 +178,9 @@ LangGraph 的 Checkpoint 只负责图恢复，不替代现有业务状态：
 
 - `thread_id` 使用稳定的 `runId`/图线程标识，不能使用模型提供的任意值。
 - `NodeSqliteCheckpointSaver` 实现 LangGraph `BaseCheckpointSaver` 的 `getTuple/list/put/putWrites/deleteThread` 合同。
+- 检查点按 `thread_id + checkpoint_ns + channel + channel_version` 复用已保存的通道值；每个检查点只保存恢复元数据和通道引用，同版本值不重复序列化。Middleware 可能为相同历史生成新版本；这类值及相同 pending writes 经序列化后用内容哈希识别，保存指向已有值的引用，避免重复压缩和落盘。通道数据与引用在同一个 SQLite 事务内提交，线程清理同时删除通道数据；独立旧库导入也携带通道表。旧完整检查点保持可读，不回写历史数据。
+- 64 KiB 以上的通道值及 pending writes 在 Node 工作线程池中异步 deflate 压缩，仅在体积缩小时采用；序列化类型保留原格式，读取时异步解压后交给原 serde。压缩不截断上下文、不减少安全边界，也不改变 interrupt/resume 的特殊写入语义。
+- Responses v2 的 Provider 回放状态不保存响应中回显的 `instructions/tools`，已有标准化 usage 时也移除重复原始 usage；响应 ID、输出、加密推理与其他 Provider 字段继续保留。新响应落盘和旧历史进入图状态时执行同一精简规则，不重写已有 JSONL，也不改变当前请求的系统提示或工具配置。
 - Checkpoint 表和 writes 表使用独立命名空间或独立数据库文件，迁移由项目 `DatabaseMigrationRunner` 管理。
 - `putWrites` 必须允许在对应 Checkpoint 行落库前保存 interrupt、resume 等中间写入；writes 表不能用指向 Checkpoint 表的数据库外键强制错误的调用顺序，二者由相同的 `thread_id + checkpoint_ns + checkpoint_id` 逻辑键关联，并由 `deleteThread` 同时清理。普通节点写入保持首次结果以避免重放副作用，`interrupt/resume/error/scheduled` 等负索引特殊写入必须按 LangGraph Checkpointer 合同覆盖旧值，否则新的审批决定会被旧恢复值吞掉并错误跳过原 Tool Call。
 - 业务数据库先提交可见事实，再发事件；图 Checkpoint 只在节点安全边界写入，恢复时重新读取并校验业务 Run 状态。

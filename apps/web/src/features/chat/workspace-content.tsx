@@ -1074,6 +1074,7 @@ export function ConversationWorkspace({
   const [timelineHasMore, setTimelineHasMore] = useState(false);
   const [isLoadingOlderTimeline, setIsLoadingOlderTimeline] = useState(false);
   const timelineRef = useRef<ConversationTimelineItem[]>([]);
+  const inactiveTimelineDirtyRef = useRef(false);
   const timelineBeforeSequenceRef = useRef<number | null>(null);
   const timelineAfterSequenceRef = useRef<number | null>(null);
   const timelineRevealRequestRef = useRef(0);
@@ -1336,6 +1337,7 @@ export function ConversationWorkspace({
   );
 
   const loadContextUsage = useCallback(async (): Promise<void> => {
+    if (!active || groupInstanceId !== undefined) return;
     const requestId = contextUsageRequestRef.current + 1;
     contextUsageRequestRef.current = requestId;
 
@@ -1370,6 +1372,8 @@ export function ConversationWorkspace({
       }
     }
   }, [
+    active,
+    groupInstanceId,
     usageModelId,
     usageProviderId,
     activeProjectFileMentions,
@@ -1401,9 +1405,7 @@ export function ConversationWorkspace({
         const resetsPaging = forceLatest || shouldResetTimelinePaging(timelineRef.current, page.items);
         timelineRevisionRef.current += 1;
         setTimeline((current) => {
-          const nextTimeline = resetsPaging
-            ? page.items
-            : mergeLatestTimelinePage(current, page.items);
+          const nextTimeline = mergeLatestTimelinePage(current, page.items, resetsPaging);
           timelineRef.current = nextTimeline;
           return nextTimeline;
         });
@@ -1576,6 +1578,7 @@ export function ConversationWorkspace({
   );
 
   useEffect(() => {
+    if (!active) return;
     let disposed = false;
     const activeSubagents = subagentSessions.filter((subagent) => subagent.activeRunId !== null);
     if (activeSubagents.length === 0) {
@@ -1606,7 +1609,7 @@ export function ConversationWorkspace({
     return () => {
       disposed = true;
     };
-  }, [agentClient, subagentSessions]);
+  }, [active, agentClient, subagentSessions]);
 
   const loadTaskList = useCallback(async (): Promise<void> => {
     try {
@@ -1640,8 +1643,17 @@ export function ConversationWorkspace({
   }, [agentClient, session.id]);
 
   useEffect(() => {
-    void Promise.resolve().then(() => loadTimeline());
-  }, [loadTimeline]);
+    if (groupInstanceId === undefined) void Promise.resolve().then(() => loadTimeline());
+  }, [loadTimeline, groupInstanceId]);
+
+  useEffect(() => {
+    if (!active || groupInstanceId !== undefined || !inactiveTimelineDirtyRef.current) return;
+    inactiveTimelineDirtyRef.current = false;
+    void loadTimeline();
+    void loadTaskList();
+    void loadContextUsage();
+    void loadPendingMessages();
+  }, [active, groupInstanceId, loadTimeline, loadTaskList, loadContextUsage, loadPendingMessages]);
 
   useEffect(() => {
     void Promise.resolve().then(loadTaskList);
@@ -1831,7 +1843,14 @@ export function ConversationWorkspace({
   }, [session.activeRunId, timeline]);
 
   useEffect(() => {
+    if (groupInstanceId !== undefined) return;
     return agentClient.onConversationRunEvent((event) => {
+      if (!active) {
+        if ("conversationId" in event && (event.conversationId === session.id || subagentSessions.some(item => item.id === event.conversationId))) {
+          inactiveTimelineDirtyRef.current = true;
+        }
+        return;
+      }
       const sourceSubagent = "conversationId" in event
         ? subagentSessions.find((candidate) => candidate.id === event.conversationId)
         : undefined;
@@ -1916,8 +1935,10 @@ export function ConversationWorkspace({
       ) {
         void loadContextUsage();
       }
-    });
+    }, active ? [session.id] : []);
   }, [
+    active,
+    groupInstanceId,
     agentClient,
     loadContextUsage,
     loadTaskList,
@@ -4153,7 +4174,7 @@ export function ConversationWorkspace({
               </div>
             </div>
           </div>
-          {showContextUsage ? (
+          {showContextUsage && active ? (
             <LiveProviderCacheStatus
               key={session.id}
               agentClient={agentClient}
@@ -4372,7 +4393,7 @@ function handleRunEvent(
           ...previous,
           ...(event.startedAt === undefined ? {} : { startedAt: event.startedAt }),
           ...(event.completedAt === undefined ? {} : { completedAt: event.completedAt }),
-          [event.stream]: `${previous[event.stream]}${event.delta}`,
+          [event.stream]: event.reset ? event.delta : `${previous[event.stream]}${event.delta}`,
           exitCode: event.exitCode,
           status: event.status,
           timedOut: event.timedOut,
@@ -5106,8 +5127,19 @@ function upsertTimelineItem(
 function mergeLatestTimelinePage(
   current: ConversationTimelineItem[],
   latest: ConversationTimelineItem[],
+  resetPaging = false,
 ): ConversationTimelineItem[] {
   if (current.length === 0) return latest;
+  const latestRuns = new Set(latest.map(item => item.runId));
+  const persisted = new Map(latest.map(item => [item.id, item]));
+  // Current output is volatile until the model turn is committed. A history
+  // refresh must not erase a snapshot already replayed by Main.
+  for (const item of current) {
+    if (item.kind !== "message" || item.role !== "assistant" || item.status !== "streaming" || !latestRuns.has(item.runId)) continue;
+    const stored = persisted.get(item.id);
+    if (stored === undefined || (stored.kind === "message" && stored.status === "streaming")) latest = upsertTimelineItem(latest, item);
+  }
+  if (resetPaging) return latest;
   const latestIds = new Set(latest.map((item) => item.id));
   const overlapIndex = current.findIndex((item) => latestIds.has(item.id));
   if (overlapIndex >= 0) return [...current.slice(0, overlapIndex), ...latest];

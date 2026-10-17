@@ -61,6 +61,7 @@ export {
   forkConversationInputSchema,
   conversationRunStatusSchema,
   conversationRunEventSchema,
+  conversationStreamSubscriptionSchema,
   conversationSummarySchema,
   conversationThreadKindSchema,
   conversationTaskListResponseSchema,

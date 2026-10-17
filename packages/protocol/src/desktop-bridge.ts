@@ -341,6 +341,7 @@ export interface DesktopBridge {
   openProjectDirectory(input: ProjectReferenceInput): Promise<void>;
   minimizeWindow(): Promise<void>;
   onConversationRunEvent(listener: (event: ConversationRunEvent) => void): () => void;
+  setConversationStreamSubscriptions(conversationIds: readonly string[]): Promise<void>;
   onApplicationSettingsChanged(listener: (settings: ApplicationSettings) => void): () => void;
   toggleMaximizeWindow(): Promise<void>;
   closeWindow(): Promise<void>;

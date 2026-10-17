@@ -624,6 +624,9 @@ export function createDesktopBridge(): DesktopBridge {
         );
       };
     },
+    async setConversationStreamSubscriptions(conversationIds: readonly string[]) {
+      await invoke<void>(IPC_CHANNELS.conversationSetStreamSubscriptions, conversationIds);
+    },
     onApplicationSettingsChanged(listener) {
       const handleApplicationSettingsChanged = (
         _event: IpcRendererEvent,

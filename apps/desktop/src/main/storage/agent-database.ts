@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { DatabaseMigrationRunner } from "./database-migration-runner.js";
+import { LANGGRAPH_CHECKPOINT_BLOBS_SCHEMA } from "./langgraph-checkpoint-schema.js";
 import { CollaborationStore, COLLABORATION_SCHEMA } from "./collaboration-store.js";
 import { z } from "zod";
 import {
@@ -1557,7 +1558,7 @@ export class AgentDatabase {
         const rows = this.database.prepare(
           `SELECT name FROM legacy_checkpoints.sqlite_master
            WHERE type = 'table' AND name IN (
-             'langgraph_checkpoints', 'langgraph_checkpoint_writes'
+             'langgraph_checkpoints', 'langgraph_checkpoint_writes', 'langgraph_checkpoint_blobs'
            )`,
         ).all() as DatabaseRow[];
         const tableNames = new Set(rows.map((row) => asString(row, "name")));
@@ -1588,6 +1589,14 @@ export class AgentDatabase {
               channel, value_type, value_blob, created_at
             FROM legacy_checkpoints.langgraph_checkpoint_writes;
           `);
+          if (tableNames.has("langgraph_checkpoint_blobs")) {
+            this.database.exec(`
+              INSERT OR IGNORE INTO langgraph_checkpoint_blobs
+                (thread_id, checkpoint_ns, channel, version, value_type, value_blob)
+              SELECT thread_id, checkpoint_ns, channel, version, value_type, value_blob
+              FROM legacy_checkpoints.langgraph_checkpoint_blobs;
+            `);
+          }
           this.database.prepare(
             `INSERT INTO storage_imports (source_kind, source_identity, completed_at)
              VALUES ('langgraph-checkpoints', ?, ?)`,
@@ -1901,7 +1910,19 @@ export class AgentDatabase {
   public getConversation(conversationId: string): ConversationSummary {
     const row = this.database
       .prepare(
-        `${teamWorkItemExecutionTreeCte}
+        `WITH RECURSIVE execution_ancestors(conversation_id) AS (
+           SELECT ?
+           UNION
+           SELECT members.team_execution_conversation_id
+           FROM execution_ancestors
+           JOIN team_member_conversations AS members
+             ON members.conversation_id = execution_ancestors.conversation_id
+           UNION
+           SELECT tasks.parent_conversation_id
+           FROM execution_ancestors
+           JOIN subagent_tasks AS tasks
+             ON tasks.child_conversation_id = execution_ancestors.conversation_id
+         )
          SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
             selected_provider_id, selected_model_id, selected_reasoning_json, permission_mode, coordination_mode,
             thread_kind, agent_id, avatar_icon, team_id, title, created_at, conversations.updated_at,
@@ -1927,13 +1948,17 @@ export class AgentDatabase {
               )) AS active_subagent_count
            ,(SELECT status FROM subagent_tasks
              WHERE child_conversation_id = conversations.id LIMIT 1) AS subagent_task_status
-           ,team_execution_tree_projection.work_item_id AS team_work_item_id
+           ,(SELECT id FROM team_work_items
+             WHERE execution_conversation_id IN (SELECT conversation_id FROM execution_ancestors)
+             ORDER BY CASE status
+               WHEN 'running' THEN 0 WHEN 'reviewing' THEN 1 WHEN 'waiting_user' THEN 2
+               WHEN 'planned' THEN 3 WHEN 'queued' THEN 4 ELSE 5
+             END, updated_at DESC, rowid DESC
+             LIMIT 1) AS team_work_item_id
          FROM conversations
-         LEFT JOIN team_execution_tree_projection
-           ON team_execution_tree_projection.conversation_id = conversations.id
          WHERE conversations.id = ? AND deletion_pending = 0`
       )
-      .get(conversationId) as DatabaseRow | undefined;
+      .get(conversationId, conversationId) as DatabaseRow | undefined;
     if (row === undefined) {
       throw new Error("Conversation was not found.");
     }
@@ -11041,6 +11066,8 @@ export class AgentDatabase {
         const columns = database.prepare("PRAGMA table_info(team_chat_deliveries)").all() as DatabaseRow[];
         if (!columns.some(column => column.name === "receipt_recorded")) database.exec("ALTER TABLE team_chat_deliveries ADD COLUMN receipt_recorded INTEGER NOT NULL DEFAULT 0");
       } },
+      { name: "langgraph-versioned-channel-blobs", version: 34,
+        up: database => { database.exec(LANGGRAPH_CHECKPOINT_BLOBS_SCHEMA); } },
     ]);
   }
 

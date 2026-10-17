@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { ConversationRunEvent } from "@agent/protocol";
 import { MockAgentClient } from "../../runtime/mock-agent-client.js";
 import { TaskContextDirectory } from "./task-context-directory.js";
 import { TeamChatPanel } from "./team-chat-panel.js";
@@ -132,12 +133,42 @@ it("uses the conversation bubbles with the user's message on the right and a mem
   expect(container.querySelector('.conversation-workspace__composer-surface')).not.toBeNull();
 });
 
-it("does not mark messages read while a retained group tab is hidden", async () => {
+it("defers reading and marking group history until a hidden tab is opened", async () => {
   const client = new MockAgentClient(); const instance = await client.createTeamInstance({ teamId: "default-team", scope: "global" });
   await client.postTeamChat({ teamInstanceId: instance.id, content: "notification", intent: "notify", requestId: crypto.randomUUID() });
-  const mark = vi.spyOn(client, "markTeamChatRead"); const container = mount();
+  const mark = vi.spyOn(client, "markTeamChatRead"); const read = vi.spyOn(client, "readTeamChat"); const container = mount();
   await act(() => Promise.resolve().then(() => { root?.render(<TooltipProvider><TeamChatPanel agentClient={client} teamInstanceId={instance.id} active={false} onOpenConversation={() => undefined} /></TooltipProvider>); }));
-  expect(container.querySelector('[data-group-message]')).not.toBeNull(); expect(mark).not.toHaveBeenCalled();
+  expect(container.querySelector('[data-group-message]')).toBeNull(); expect(mark).not.toHaveBeenCalled(); expect(read).not.toHaveBeenCalled();
+  await act(() => Promise.resolve().then(() => { root?.render(<TooltipProvider><TeamChatPanel agentClient={client} teamInstanceId={instance.id} active onOpenConversation={() => undefined} /></TooltipProvider>); }));
+  expect(container.querySelector('[data-group-message]')).not.toBeNull(); expect(read).toHaveBeenCalledOnce();
+});
+
+it("reuses cached group history and retries a refresh interrupted by a tab switch", async () => {
+  const client = new MockAgentClient(); const { instance } = await groupFixture(client);
+  await client.postTeamChat({ teamInstanceId: instance.id, content: "cached", intent: "notify", requestId: crypto.randomUUID() });
+  let emit: (event: ConversationRunEvent) => void = () => {};
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(listener => { emit = listener; return () => {}; });
+  const read = vi.spyOn(client, "readTeamChat"); const container = mount();
+  const show = async (active: boolean) => { await act(async () => {
+    root?.render(<TeamChatPanel agentClient={client} teamInstanceId={instance.id} active={active} onOpenConversation={() => undefined} />);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  }); };
+  await show(true);
+  const messages = container.querySelector('[aria-label="群消息"]');
+  const count = read.mock.calls.length;
+  await show(false); await show(true);
+  expect(read).toHaveBeenCalledTimes(count);
+  expect(container.querySelector('[aria-label="群消息"]')).toBe(messages);
+  const page = await client.readTeamChat({ teamInstanceId: instance.id });
+  let resolve: (value: typeof page) => void = () => {};
+  read.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+  act(() => emit({ type: "collaboration.changed", conversationId: crypto.randomUUID(), teamInstanceId: instance.id }));
+  await show(false);
+  await act(async () => { resolve(page); await Promise.resolve(); });
+  const beforeReturn = read.mock.calls.length;
+  await show(true);
+  expect(read).toHaveBeenCalledTimes(beforeReturn + 1);
+  expect(container.textContent).toContain("cached");
 });
 
 it.each([{ intervening: 0, sameThread: false }, { intervening: 1, sameThread: false }, { intervening: 4, sameThread: false }, { intervening: 4, sameThread: true }])("quotes only after unrelated chat: $intervening / same discussion $sameThread", async ({ intervening, sameThread }) => {

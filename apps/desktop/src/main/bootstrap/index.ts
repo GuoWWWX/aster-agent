@@ -14,7 +14,6 @@ import {
   ARCHIVED_CONVERSATION_RETENTION_DAYS,
   LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
   conversationRunEventSchema,
-  IPC_CHANNELS,
 } from "@agent/protocol";
 
 import { AgentRuntime } from "../agent/agent-runtime.js";
@@ -22,6 +21,7 @@ import { SkillRuntime } from "../agent/skill-runtime.js";
 import { SYSTEM_SKILLS } from "../agent/prompts/prompt-assets.js";
 import { reportMainError, toMainAgentError } from "../errors/agent-error.js";
 import { registerMainIpcHandlers } from "../ipc/register-main-ipc.js";
+import { ConversationStreamSubscriptions } from "../ipc/conversation-stream-subscriptions.js";
 import { ModelCatalogStore } from "../model/model-catalog-store.js";
 import { ModelCredentialStore } from "../model/model-credential-store.js";
 import {
@@ -488,16 +488,15 @@ function getServices(): DesktopServices {
   return services;
 }
 
+const conversationEventStreams = new ConversationStreamSubscriptions();
+
 function sendConversationRunEvent(event: unknown): void {
   const validated = conversationRunEventSchema.parse(event);
   localControl?.publish(validated);
   publishConversationAttentionEvent(validated);
   const window = mainWindow;
+  conversationEventStreams.publish(window === undefined || window.isDestroyed() ? undefined : window.webContents, validated);
   if (window === undefined || window.isDestroyed()) return;
-  window.webContents.send(
-    IPC_CHANNELS.conversationRunEvent,
-    validated,
-  );
   if (validated.type === "conversation.open_requested") {
     if (window.isMinimized()) window.restore();
     window.show();
@@ -518,6 +517,7 @@ async function openMainWindow(): Promise<void> {
   disposeIpcHandlers = registerMainIpcHandlers(() => mainWindow, getServices(), {
     resumePendingMessages: process.env.AGENT_SKIP_PENDING_RUN_RESUMPTION !== "1",
     emitConversationRunEvent: sendConversationRunEvent,
+    eventStreams: conversationEventStreams,
   });
   const nativeOverlay = new NativeOverlayController(window);
   const rendererTarget = applyRendererSecurityPolicy(window, nativeOverlay);
@@ -672,6 +672,7 @@ async function bootstrap(): Promise<void> {
 
   app.on("before-quit", (event) => {
     if (shutdownComplete) return;
+    conversationEventStreams.dispose();
     event.preventDefault();
     shutdownPromise ??= shutdownDesktop()
       .catch((error: unknown) => reportUnhandledError(error, "desktop.shutdown"))
