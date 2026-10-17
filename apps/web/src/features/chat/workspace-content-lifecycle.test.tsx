@@ -36,6 +36,120 @@ async function render(client: MockAgentClient, activeRunId: string | null): Prom
 }
 const header = (): HTMLButtonElement => container.querySelector<HTMLButtonElement>(".conversation-run-activity > button")!;
 
+it("animates only the latest work segment across compaction and a new input, including after reopening", async () => {
+  const client = new MockAgentClient();
+  const user: ConversationMessageItem = { ...answer, id: crypto.randomUUID(), role: "user", content: "当前任务", status: "completed" };
+  const compact: ConversationToolItem = { ...tool, id: crypto.randomUUID(), name: "compact_context", result: '{"durationMs":6000}' };
+  const nextInput: ConversationMessageItem = { ...user, id: crypto.randomUUID(), content: "继续当前任务" };
+  const oldOutput = { ...answer, id: crypto.randomUUID(), content: "早先的工作进展" };
+  const wait: ConversationToolItem = { ...tool, id: crypto.randomUUID(), name: "wait_for_agent_message", status: "running" };
+  const history = [user, oldOutput, compact, tool, nextInput, wait, { ...wait, id: crypto.randomUUID() }];
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue(history);
+  let emit: (event: ConversationRunEvent) => void = () => {};
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { emit = callback; return () => {}; });
+  await render(client, runId);
+  const assertLatestOnly = () => {
+    const processes = container.querySelectorAll<HTMLDivElement>(".conversation-run-activity");
+    expect(processes).toHaveLength(2);
+    expect(processes[0]!.querySelector("[data-model-working]")).toBeNull();
+    expect(processes[0]!.querySelector("button")?.disabled).toBe(false);
+    expect(processes[1]!.querySelector("button")?.disabled).toBe(true);
+    expect(container.querySelectorAll(".conversation-workspace__messages [data-model-working]")).toHaveLength(1);
+    expect(processes[1]!.querySelector("[data-model-working]")).not.toBeNull();
+  };
+  assertLatestOnly();
+  await act(async () => { emit({ type: "model.request_started", conversationId, runId }); await flush(); });
+  assertLatestOnly();
+  act(() => container.querySelector<HTMLButtonElement>(".conversation-run-activity > button")?.click());
+  expect(container.textContent).toContain("早先的工作进展");
+  assertLatestOnly();
+  act(() => { root?.unmount(); root = createRoot(container); });
+  await render(client, runId);
+  assertLatestOnly();
+  const runningCompaction = { ...compact, id: crypto.randomUUID(), status: "running" as const, result: null };
+  await act(async () => { emit({ type: "tool.started", conversationId, runId, tool: runningCompaction }); await flush(); });
+  expect(container.querySelectorAll(".conversation-workspace__messages [data-model-working]")).toHaveLength(0);
+  await act(async () => {
+    emit({ type: "tool.completed", conversationId, runId, tool: { ...runningCompaction, status: "completed" } });
+    emit({ type: "model.request_started", conversationId, runId }); await flush();
+  });
+  assertLatestOnly();
+  await act(async () => { emit({ type: "run.finished", conversationId, runId, status: "completed", error: null }); await flush(); });
+  expect(container.querySelectorAll(".conversation-workspace__messages [data-model-working]")).toHaveLength(0);
+});
+
+it("moves the only working indicator to a new input before that input has any tools", async () => {
+  const client = new MockAgentClient();
+  const first: ConversationMessageItem = { ...answer, id: crypto.randomUUID(), role: "user", content: "第一段", status: "completed" };
+  const next: ConversationMessageItem = { ...first, id: crypto.randomUUID(), content: "新的插队要求" };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([first, tool, next]);
+  let emit: (event: ConversationRunEvent) => void = () => {};
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { emit = callback; return () => {}; });
+  await render(client, runId);
+  await act(async () => { emit({ type: "model.request_started", conversationId, runId }); await flush(); });
+  expect(container.querySelector(".conversation-run-activity [data-model-working]")).toBeNull();
+  expect(container.querySelectorAll(".conversation-workspace__messages [data-model-working]")).toHaveLength(1);
+  expect(container.querySelector(".conversation-run-progress [data-model-working]")).not.toBeNull();
+});
+
+it("keeps an outstanding approval actionable when a later input owns the only working indicator", async () => {
+  const client = new MockAgentClient();
+  const first: ConversationMessageItem = { ...answer, id: crypto.randomUUID(), role: "user", content: "第一段", status: "completed" };
+  const next: ConversationMessageItem = { ...first, id: crypto.randomUUID(), content: "新的补充要求" };
+  const approval: ConversationToolItem = { ...tool, name: "write_file", arguments: '{"path":"fact.txt","content":"ok"}', status: "awaiting_approval" };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([first, approval, next]);
+  await render(client, runId);
+  act(() => header().click());
+  expect(container.textContent).not.toContain("该审批已随运行结束失效");
+  const allow = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(button => button.textContent?.includes("允许一次"));
+  expect(allow).toBeDefined(); expect(allow?.disabled).toBe(false);
+  expect(container.querySelectorAll(".conversation-workspace__messages [data-model-working]")).toHaveLength(1);
+});
+
+it("keeps the only working indicator after an incoming group receipt while preserving earlier tools", async () => {
+  const client = new MockAgentClient();
+  const receipt: ConversationTimelineItem = { id: crypto.randomUUID(), kind: "agent_message", conversationId,
+    runId: continuationId, senderConversationId: continuationId, senderTitle: "需求分析师", content: "公开回复已发送。",
+    createdAt: "2026-10-16T00:00:05Z", messageType: "agent_result", readAt: null, replyInstruction: null, status: "unread", taskId: null, fileChanges: [] };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool, receipt, { ...tool, id: crypto.randomUUID() }]);
+  let emit: (event: ConversationRunEvent) => void = () => {};
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { emit = callback; return () => {}; });
+  await render(client, runId);
+  await act(async () => { emit({ type: "model.request_started", conversationId, runId }); await flush(); });
+  expect(container.querySelectorAll(".conversation-workspace__messages [data-model-working]")).toHaveLength(1);
+  expect(container.querySelector(".conversation-run-activity [data-model-working]")).toBeNull();
+  const source = container.querySelector(`[data-conversation-timeline-item="${receipt.id}"]`)!;
+  const progress = container.querySelector(".conversation-run-progress")!;
+  expect(source.compareDocumentPosition(progress) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  act(() => header().click());
+  act(() => container.querySelector<HTMLButtonElement>(".tool-activity-batch__toggle")?.click());
+  expect(container.querySelectorAll(".tool-activity-row")).toHaveLength(2);
+  expect(container.querySelectorAll(".conversation-workspace__messages [data-model-working]")).toHaveLength(1);
+});
+
+it("places a pending new request after cached history without animating that history", async () => {
+  const client = new MockAgentClient();
+  let emit: (event: ConversationRunEvent) => void = () => {};
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { emit = callback; return () => {}; });
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool, answer]);
+  vi.spyOn(client, "sendConversationMessage").mockImplementation(() => new Promise(() => {}));
+  await render(client, null);
+  const composer = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入任务"]')!;
+  // React tracks the instance setter; input must go through the native setter.
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+  act(() => { setter?.call(composer, "新的请求"); composer.dispatchEvent(new InputEvent("input", { bubbles: true })); });
+  act(() => container.querySelector<HTMLFormElement>("form")?.requestSubmit());
+  expect(container.querySelectorAll(".conversation-workspace__messages [data-model-working]")).toHaveLength(1);
+  expect(container.querySelector(".conversation-run-activity [data-model-working]")).toBeNull();
+  const process = container.querySelector(".conversation-run-activity")!;
+  const progress = container.querySelector(".conversation-run-progress")!;
+  expect(process.compareDocumentPosition(progress) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  act(() => emit({ type: "run.started", conversationId, runId: continuationId, modelId: "test-model" }));
+  expect(container.querySelectorAll(".conversation-workspace__messages [data-model-working]")).toHaveLength(1);
+  expect(process.compareDocumentPosition(container.querySelector(".conversation-run-progress")!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+});
+
 it("loads mention candidates in one hierarchy query instead of querying forks per conversation", async () => {
   const client = new MockAgentClient();
   for (let index = 0; index < 6; index += 1) await client.createConversation({});

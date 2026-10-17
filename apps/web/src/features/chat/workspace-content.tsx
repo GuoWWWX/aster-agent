@@ -3168,8 +3168,6 @@ export function ConversationWorkspace({
     });
     displayTimeline = combineAutomaticContinuationDurations(displayTimeline);
   }
-  const activeRunActivityIndex = activeRunId === null ? -1 : displayTimeline.findLastIndex((item) =>
-    item.kind === "run_activity" && item.runIds.includes(activeRunId));
   const htmlDeliveries = htmlPresentationDeliveries(timeline, displayTimeline, activeRunId);
   const hasHtmlGallery = [...htmlDeliveries.values()].some(deliveries => deliveries.some(delivery => "pages" in delivery));
   const locateQuestion = async (question: UserQuestion): Promise<void> => {
@@ -3197,6 +3195,13 @@ export function ConversationWorkspace({
         : [],
     ),
   );
+  const latestInputIndex = getConversationRunProgressInsertIndex(displayTimeline,
+    displayRunProgresses.find(progress => progress.runId === activeRunId)?.anchorTimelineItemId ?? null);
+  const currentRunActivityIndex = activeRunId === null && displayRunProgresses.some(progress => progress.runId === null)
+    ? -1 : displayTimeline.findLastIndex((item, index) =>
+    index >= latestInputIndex && item.kind === "run_activity"
+    && (activeRunId === null ? item.streaming
+      : item.runIds.includes(activeRunId) && !runningContextCompactionRunIds.has(activeRunId)));
   useEffect(() => {
     if (locateTimelineItem === null || isLoadingTimeline
       || locatedTimelineLoadRequestRef.current === locateTimelineItem.requestId) return;
@@ -3243,25 +3248,34 @@ export function ConversationWorkspace({
   const runProgressesByInsertIndex = useMemo(() => {
     const progressByIndex = new Map<number, RunProgress[]>();
     for (const progress of displayRunProgresses) {
-      const insertIndex = getConversationRunProgressInsertIndex(
+      const inputIndex = getConversationRunProgressInsertIndex(
         displayTimeline,
         progress.anchorTimelineItemId,
       );
+      const insertIndex = progress.runId === activeRunId && currentRunActivityIndex >= inputIndex
+        ? currentRunActivityIndex
+        : progress.runId === null || !displayTimeline.some(item => "runId" in item && item.runId === progress.runId)
+          ? displayTimeline.length : inputIndex;
       const items = progressByIndex.get(insertIndex) ?? [];
       items.push(progress);
       progressByIndex.set(insertIndex, items);
     }
     return progressByIndex;
-  }, [displayTimeline, displayRunProgresses]);
+  }, [displayTimeline, displayRunProgresses, activeRunId, currentRunActivityIndex]);
   const modelActivityInsertIndex = modelActivity === null
     ? -1
-    : getModelActivityInsertIndex(
+    : Math.max(modelActivity.runId === activeRunId ? currentRunActivityIndex : -1, getModelActivityInsertIndex(
         displayTimeline,
         modelActivity.runId,
         displayRunProgresses.find((progress) => progress.runId === modelActivity.runId)
           ?.anchorTimelineItemId
           ?? modelActivity.anchorTimelineItemId,
-      );
+      ));
+  const showModelActivityIndicator = modelActivity !== null && (
+    (modelActivity.preview?.trim().length ?? 0) > 0
+    || !displayRunProgresses.some(progress => progress.runId === modelActivity.runId
+      || (modelActivity.runId === null && progress.runId === activeRunId))
+  );
   const canChangeProject =
     !compact
     && !isLoadingTimeline
@@ -3517,6 +3531,7 @@ export function ConversationWorkspace({
                   {(runProgressesByInsertIndex.get(index) ?? [])
                     .filter((progress) =>
                       (progress.runId === null || !runningContextCompactionRunIds.has(progress.runId))
+                      && (!showModelActivityIndicator || modelActivity?.runId !== progress.runId)
                       && (
                         item.kind !== "run_activity"
                         || progress.runId === null
@@ -3526,7 +3541,7 @@ export function ConversationWorkspace({
                     .map((progress) => (
                       <RunProgressIndicator key={progress.runId ?? "pending"} runId={progress.runId} />
                     ))}
-                  {modelActivity !== null
+                  {modelActivity !== null && showModelActivityIndicator
                     && modelActivityInsertIndex === index
                     && item.kind !== "tool_batch"
                     && item.kind !== "run_activity" ? (
@@ -3559,7 +3574,8 @@ export function ConversationWorkspace({
                           ? item.senderConversationId
                           : null}
                         teamManaged={teamManaged}
-                        activeRunId={item.kind === "run_activity" && index !== activeRunActivityIndex ? null : activeRunId}
+                        activeRunId={activeRunId}
+                        isCurrentActivity={index === currentRunActivityIndex}
                         latestActiveToolId={latestActiveToolId}
                         currentToolId={currentToolId}
                         modelActivity={modelActivity !== null
@@ -3568,11 +3584,8 @@ export function ConversationWorkspace({
                           ? modelActivity
                           : null}
                         runProgress={item.kind === "run_activity"
-                          ? displayRunProgresses.find((progress) =>
+                          ? runProgressesByInsertIndex.get(index)?.find((progress) =>
                               progress.runId !== null && item.runIds.includes(progress.runId)
-                              && index >= getConversationRunProgressInsertIndex(
-                                displayTimeline, progress.anchorTimelineItemId,
-                              )
                             )
                             ?? null
                           : null}
@@ -3641,12 +3654,13 @@ export function ConversationWorkspace({
               ); })}
               {(runProgressesByInsertIndex.get(displayTimeline.length) ?? [])
                 .filter((progress) =>
-                  progress.runId === null || !runningContextCompactionRunIds.has(progress.runId)
+                  (progress.runId === null || !runningContextCompactionRunIds.has(progress.runId))
+                  && (!showModelActivityIndicator || modelActivity?.runId !== progress.runId)
                 )
                 .map((progress) => (
                   <RunProgressIndicator key={progress.runId ?? "pending"} runId={progress.runId} />
                 ))}
-              {modelActivity !== null && modelActivityInsertIndex === displayTimeline.length ? (
+              {modelActivity !== null && showModelActivityIndicator && modelActivityInsertIndex === displayTimeline.length ? (
                 <ModelActivityIndicator activity={modelActivity} />
               ) : null}
               </ToolRevealContext.Provider>
@@ -6058,6 +6072,7 @@ function TimelineItem({
   agentAvatarSeed,
   teamManaged,
   activeRunId,
+  isCurrentActivity,
   latestActiveToolId,
   currentToolId,
   modelActivity,
@@ -6092,6 +6107,7 @@ function TimelineItem({
   agentAvatarSeed: string | null;
   teamManaged: boolean;
   activeRunId: string | null;
+  isCurrentActivity: boolean;
   latestActiveToolId: string | null;
   currentToolId: string | null;
   modelActivity: ModelActivity | null;
@@ -6132,6 +6148,7 @@ function TimelineItem({
         item={item}
         teamManaged={teamManaged}
         activeRunId={activeRunId}
+        isCurrentActivity={isCurrentActivity}
         latestActiveToolId={latestActiveToolId}
         currentToolId={currentToolId}
         modelActivity={modelActivity}
@@ -6753,6 +6770,7 @@ function RunActivityTimelineItem({
   item,
   teamManaged,
   activeRunId,
+  isCurrentActivity,
   latestActiveToolId,
   currentToolId,
   modelActivity,
@@ -6768,6 +6786,7 @@ function RunActivityTimelineItem({
   item: RunActivityTimelineItem;
   teamManaged: boolean;
   activeRunId: string | null;
+  isCurrentActivity: boolean;
   latestActiveToolId: string | null;
   currentToolId: string | null;
   modelActivity: ModelActivity | null;
@@ -6784,7 +6803,7 @@ function RunActivityTimelineItem({
   liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
 }): ReactElement {
   const isActive = activeRunId !== null && item.runIds.includes(activeRunId);
-  const isInProgress = isActive || runProgress !== null || item.streaming;
+  const isInProgress = isCurrentActivity && (isActive || runProgress !== null || item.streaming);
   const reveal = useContext(ToolRevealContext);
   const disclosureChoices = useContext(ToolDisclosureContext);
   const revealThisRun = item.items.some((entry) => entry.kind === "tool" && entry.id === reveal?.id);
@@ -6824,7 +6843,7 @@ function RunActivityTimelineItem({
           className="min-w-0 py-[5px] text-[length:var(--app-font-size-body)] text-[var(--app-foreground)]"
           key={entry.id}
         >
-          <AgentMarkdown content={entry.content} streaming={entry.streaming} />
+          <AgentMarkdown content={entry.content} streaming={isInProgress && entry.streaming} />
         </div>
       );
     }
@@ -6834,7 +6853,7 @@ function RunActivityTimelineItem({
           className="py-[5px] text-[length:var(--app-font-size-body)] text-[var(--app-foreground)]"
           key={entry.id}
         >
-          <AgentMarkdown content={entry.content} streaming={entry.streaming} />
+          <AgentMarkdown content={entry.content} streaming={isInProgress && entry.streaming} />
         </div>
       );
     }
@@ -6843,6 +6862,7 @@ function RunActivityTimelineItem({
         <ToolBatchTimelineItem
           agentClient={agentClient}
           activeRunId={activeRunId}
+          showWorkIndicator={false}
           approvalErrors={approvalErrors}
           approvingToolId={approvingToolId}
           item={entry}
@@ -6901,7 +6921,7 @@ function RunActivityTimelineItem({
       {isExpanded ? (
         <div className="flex min-w-0 flex-col gap-[5px] pt-[5px]" id={contentId}>
           {hasReasoning ? (
-            <ReasoningDisclosure key={revealThisRun ? reveal?.requestId : "normal"} streaming={reasoningStreaming} reveal={revealThisRun}>
+            <ReasoningDisclosure key={revealThisRun ? reveal?.requestId : "normal"} streaming={isInProgress && reasoningStreaming} reveal={revealThisRun}>
               {activityContent}
             </ReasoningDisclosure>
           ) : (
@@ -6920,6 +6940,7 @@ function ToolBatchTimelineItem({
   item,
   teamManaged,
   activeRunId,
+  showWorkIndicator = true,
   latestActiveToolId,
   currentToolId,
   modelActivity,
@@ -6934,6 +6955,7 @@ function ToolBatchTimelineItem({
   item: Extract<TimelineDisplayItem, { kind: "tool_batch" }>;
   teamManaged: boolean;
   activeRunId: string | null;
+  showWorkIndicator?: boolean;
   latestActiveToolId: string | null;
   currentToolId: string | null;
   modelActivity: ModelActivity | null;
@@ -6980,7 +7002,7 @@ function ToolBatchTimelineItem({
             type="button"
             onClick={() => setIsExpanded((current) => !current)}
           >
-            {hasActiveTool || modelActivity !== null ? <ConversationWorkIndicator runId={currentTool?.runId ?? item.tools.find(tool => tool.status === "running" || tool.status === "awaiting_approval")?.runId ?? null}
+            {showWorkIndicator && ((isCurrentBatch && hasActiveTool) || modelActivity !== null) ? <ConversationWorkIndicator runId={currentTool?.runId ?? item.tools.find(tool => tool.status === "running" || tool.status === "awaiting_approval")?.runId ?? null}
               fallback={modelActivity !== null ? "thinking" : currentTool?.status === "awaiting_approval" ? "waiting" : toolWorkPhase(currentTool?.name ?? representativeToolName(item.tools))} size={15} />
               : <ToolTypeIcon name={representativeToolName(item.tools)} />}
             <span className="min-w-0 truncate" aria-live={isCurrentBatch || modelActivity !== null ? "polite" : undefined}>{label}</span>
