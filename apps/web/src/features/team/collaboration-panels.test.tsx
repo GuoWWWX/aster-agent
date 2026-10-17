@@ -80,6 +80,13 @@ it("opens group coordination from its centered large avatar and original message
   await act(async () => { messageAction.click(); await Promise.resolve(); });
   expect(useWorkbenchUiStore.getState().teamChatCoordinationTarget).toMatchObject({ instanceId: instance.id, messageId: message.id, sequence: message.sequence });
   expect(container.querySelector('[aria-label="输入任务"]')).toBe(composer);
+  const results = container.querySelector<HTMLButtonElement>('[aria-label="查看协调结果"]')!;
+  expect(results.closest('.conversation-workspace__header')).not.toBeNull();
+  await act(async () => { results.click(); for (let i = 0; i < 15; i++) await Promise.resolve(); });
+  expect(document.querySelector('[aria-label="协调结果"]')?.textContent).toContain(message.content);
+  await act(async () => { document.querySelector<HTMLButtonElement>('[aria-label="查看这条消息的完整协调对话"]')!.click(); await Promise.resolve(); });
+  expect(useWorkbenchUiStore.getState().teamChatCoordinationTarget).toMatchObject({ instanceId: instance.id, messageId: message.id, sequence: message.sequence });
+  expect(container.querySelector('[aria-label="输入任务"]')).toBe(composer);
 });
 function input(element: HTMLTextAreaElement | HTMLInputElement, value: string) {
   Object.getOwnPropertyDescriptor(element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, "value")?.set?.call(element, value); element.dispatchEvent(new Event("input", { bubbles: true }));
