@@ -17,6 +17,9 @@ export const taskContextSchema = z.object({
   workItemId: z.string().uuid().nullable(), workItemStatus: z.string().max(40).nullable().default(null), revision: z.number().int().positive(),
   createdAt: z.string().datetime(), updatedAt: z.string().datetime(),
   mergedIntoId: z.string().uuid().nullable(),
+  completionRequested: z.boolean().optional(),
+  completedBy: z.enum(["user", "agent"]).nullable().optional(),
+  userMessageCount: z.number().int().nonnegative().optional(),
 }).strict();
 export const listTaskContextsInputSchema = z.object({
   conversationId: z.string().uuid().optional(), projectId: z.string().uuid().optional(),
@@ -27,10 +30,12 @@ export const listTaskContextsInputSchema = z.object({
 export const taskContextPageSchema = z.object({
   items: z.array(taskContextSchema).max(20), nextBeforeId: z.string().uuid().nullable(),
   unclassified: z.array(taskSourceSchema).max(10).default([]),
+  total: z.number().int().nonnegative().optional(),
 }).strict();
 export const taskContextDetailSchema = z.object({
   task: taskContextSchema,
-  sources: z.array(taskSourceSchema.extend({ available: z.boolean(), title: z.string(), sequence: z.number().int().positive() })),
+  sources: z.array(taskSourceSchema.extend({ available: z.boolean(), title: z.string(), sequence: z.number().int().positive(),
+    content: z.string().nullable().optional(), role: z.enum(["user", "assistant"]).nullable().optional(), createdAt: z.string().datetime().nullable().optional() })),
   nextBeforeSourceSequence: z.number().int().positive().nullable(),
 }).strict();
 export const updateTaskContextInputSchema = z.object({
@@ -61,3 +66,21 @@ export type TaskContextDetail = z.infer<typeof taskContextDetailSchema>;
 export type UpdateTaskContextInput = z.input<typeof updateTaskContextInputSchema>;
 export type LinkTaskContextInput = z.input<typeof linkTaskContextInputSchema>;
 export type MergeTaskContextsInput = z.infer<typeof mergeTaskContextsInputSchema>;
+
+export const taskContextScopeSchema = z.object({
+  conversationId: z.string().uuid().optional(), teamInstanceId: z.string().uuid().optional(),
+}).strict().refine(input => (input.conversationId === undefined) !== (input.teamInstanceId === undefined), "Select one task scope.");
+export const taskCompletionPolicySchema = z.object({ allowAgentCompletion: z.boolean() }).strict();
+export const setTaskCompletionPolicyInputSchema = taskContextScopeSchema.safeExtend({ allowAgentCompletion: z.boolean() });
+export const resolveChatReferencesInputSchema = taskContextScopeSchema.safeExtend({ ids: z.array(z.string().uuid()).min(1).max(20) });
+export const chatReferenceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("task"), id: z.string().uuid(), title: z.string(), ownerConversationId: z.string().uuid(), teamInstanceId: z.string().uuid().nullable() }).strict(),
+  z.object({ kind: z.literal("message"), id: z.string().uuid(), sourceKind: z.enum(["conversation", "group"]), containerId: z.string().uuid(),
+    senderName: z.string(), content: z.string(), createdAt: z.string().datetime() }).strict(),
+]);
+export const chatReferencesSchema = z.array(chatReferenceSchema).max(20);
+export type TaskContextScope = z.infer<typeof taskContextScopeSchema>;
+export type TaskCompletionPolicy = z.infer<typeof taskCompletionPolicySchema>;
+export type SetTaskCompletionPolicyInput = z.infer<typeof setTaskCompletionPolicyInputSchema>;
+export type ResolveChatReferencesInput = z.infer<typeof resolveChatReferencesInputSchema>;
+export type ChatReference = z.infer<typeof chatReferenceSchema>;

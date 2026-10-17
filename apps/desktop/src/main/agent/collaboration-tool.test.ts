@@ -44,3 +44,13 @@ it("still imports existing board tasks when listing the task directory", async (
   const response = z.object({ value: z.object({ items: z.array(z.object({ id: z.string() })) }) }).parse(JSON.parse(result.content));
   expect(response.value.items).toContainEqual({ id: task.id });
 });
+
+it("records Agent completion as awaiting user confirmation and rejects self-granted permission", async () => {
+  const { database, lead, tool } = fixture(); const runId = randomUUID();
+  const execute = (args: unknown) => tool.execute({ name: "update_task_context", arguments: JSON.stringify(args), conversationId: lead.id,
+    runId, toolCallId: randomUUID(), changed: vi.fn(), post: input => database.collaboration.postMessage(input, lead.id) });
+  const args = { title: "需用户确认", goal: "权限由用户控制", status: "completed" };
+  expect(await execute({ ...args, allowAgentCompletion: true })).toMatchObject({ isError: true });
+  const result = await execute(args); expect(result).toMatchObject({ isError: false });
+  expect(database.collaboration.listTasks({ conversationId: lead.id }).items).toEqual([expect.objectContaining({ status: "running", completionRequested: true })]);
+});

@@ -111,17 +111,18 @@ function input(element: HTMLTextAreaElement | HTMLInputElement, value: string) {
 }
 it("shows one task with sources and opens the original message", async () => {
   const client = new MockAgentClient(); const conversation = await client.createConversation({});
-  const task = await client.updateTaskContext({ conversationId: conversation.id, title: "排查遮挡", goal: "弹框可点击", requestId: crypto.randomUUID() });
-  const messageId = crypto.randomUUID(); await client.linkTaskContext({ id: task.id, source: { kind: "conversation", containerId: conversation.id, messageId, purpose: "verification" } });
+  await client.updateTaskContext({ conversationId: conversation.id, title: "排查遮挡", goal: "弹框可点击", requestId: crypto.randomUUID() });
+  const messageId = crypto.randomUUID();
+  const sources: Awaited<ReturnType<typeof client.getTaskContext>>["sources"] = [{ kind: "conversation", containerId: conversation.id, messageId, runId: null, purpose: "verification", available: true, title: conversation.title, sequence: 1, role: "user", content: "检查原始需求消息", createdAt: new Date().toISOString() }];
+  const get = client.getTaskContext.bind(client);
+  vi.spyOn(client, "getTaskContext").mockImplementation(async input => ({ ...await get(input), sources }));
   const open = vi.fn(); const container = mount();
-  await act(() => Promise.resolve().then(() => { root?.render(<TooltipProvider><TaskContextDirectory agentClient={client} conversationId={conversation.id} onOpenConversation={open} /></TooltipProvider>); }));
+  await act(async () => { root?.render(<TooltipProvider><TaskContextDirectory agentClient={client} conversationId={conversation.id} onOpenConversation={open} /></TooltipProvider>); for (let i = 0; i < 10; i++) await Promise.resolve(); });
   expect(container.textContent).toContain("排查遮挡"); expect(container.textContent).toContain("进行中");
-  const expand = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("排查遮挡"));
-  await act(() => Promise.resolve().then(() => { expand?.click(); }));
-  const source = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("verification"));
-  await act(() => Promise.resolve().then(() => { source?.click(); }));
+  expect(container.textContent).toContain("检查原始需求消息");
+  await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="任务详情"] button')?.click();
+    [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("定位原消息"))?.click(); await Promise.resolve(); });
   expect(open).toHaveBeenCalledWith(expect.objectContaining({ id: conversation.id }), messageId);
-  expect(container.querySelectorAll("ul > li").length).toBeGreaterThan(1);
 });
 it("reuses the ordinary composer and sends its selected member references as group recipients", async () => {
   const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);

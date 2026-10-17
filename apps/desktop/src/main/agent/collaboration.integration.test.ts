@@ -712,6 +712,9 @@ describe("group execution integration", () => {
       await completed;
       const page = db.collaboration.readMessages({ teamInstanceId: instance.id });
       expect(page.messages.map(message => message.content)).toEqual(["请查证文件", "已核实文件内容为 evidence。"]);
+      const memberChanges = events.filter(event => event.type === "collaboration.changed" && event.conversationId === member.id);
+      expect(memberChanges.length).toBeGreaterThan(0);
+      for (const event of memberChanges) expect(event).toMatchObject({ teamInstanceId: instance.id });
       expect(page.messages[1]?.senderConversationId).toBe(member.id);
       expect(page.messages[1]?.deliveries).toEqual([]);
       expect(page.messages[0]?.deliveries[0]?.status).toBe("completed");

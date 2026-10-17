@@ -188,3 +188,19 @@ it("keeps each room's coordination tab and reloads only the active room after hi
   expect(f.read).toHaveBeenCalledTimes(reads + 1);
   expect(f.read.mock.calls.at(-1)?.[0].conversationId).toBe(f.coordinator.id);
 });
+
+it("opens task details as one ordinary sidebar tab without replacing the primary chat", async () => {
+  const f = await coordinationFixture();
+  const task = await f.client.updateTaskContext({ conversationId: f.owner.id, title: "侧边任务定位", goal: "保持主群聊", requestId: crypto.randomUUID() });
+  await f.show();
+  await act(async () => { useWorkbenchUiStore.getState().openTaskList({ workspaceId: teamChatTabId(f.instance.id), scope: { teamInstanceId: f.instance.id }, taskId: task.id }); for (let turn = 0; turn < 15; turn++) await Promise.resolve(); });
+  const shell = f.container.querySelector('.right-sidebar-workspace');
+  expect(f.container.querySelectorAll('.right-sidebar-workspace')).toHaveLength(1);
+  expect(shell?.querySelector('[role="tab"][title="任务列表"]')?.getAttribute("aria-selected")).toBe("true");
+  expect(shell?.querySelector('[aria-label="任务详情"]')?.textContent).toContain("侧边任务定位");
+  expect(f.container.textContent).toContain("主对话");
+  expect(shell?.querySelector(".right-sidebar-workspace__empty")).toBeNull();
+  await f.show(null); await f.show();
+  expect(f.container.querySelector('.right-sidebar-workspace')).toBe(shell);
+  expect(shell?.querySelector('[aria-label="任务详情"]')?.textContent).toContain("侧边任务定位");
+});

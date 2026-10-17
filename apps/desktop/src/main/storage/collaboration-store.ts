@@ -12,6 +12,7 @@ import {
   type MarkTeamChatReadInput, type ConversationSummary, type TeamInstanceView, type TeamChatMember,
   type ConversationAgentBinding, type TeamWorkItemView,
   type TeamChatCoordinationStep,
+  type TaskContextScope, type TaskCompletionPolicy, type SetTaskCompletionPolicyInput, type ResolveChatReferencesInput, type ChatReference,
 } from "@agent/protocol";
 
 /** Recognize a direct opening address, not an arbitrary mention of a member. */
@@ -77,6 +78,7 @@ type StoreContext = {
   members(rootId: string): ConversationSummary[];
   binding(id: string): ConversationAgentBinding | null;
   sourceExists: (source: TaskSource) => boolean;
+  message(conversationId: string, messageId: string): { content: string; role: "user" | "assistant"; createdAt: string } | null;
   outcome(conversationId: string, runId: string): { status: string; error: string | null } | null;
   isExecutionPaused(conversationId: string): boolean;
 };
@@ -151,6 +153,57 @@ export class CollaborationStore {
   }
   public setSourceResolver(resolve: StoreContext["sourceExists"]): void { this.sourceExists = resolve; }
 
+  private policyKey(scope: TaskContextScope): string {
+    if (scope.teamInstanceId !== undefined) { this.context.team(scope.teamInstanceId); return `team:${scope.teamInstanceId}`; }
+    if (scope.conversationId === undefined) throw new CollaborationError("TASK_SCOPE", "Task scope is required.");
+    this.context.conversation(scope.conversationId); return `conversation:${scope.conversationId}`;
+  }
+  public getCompletionPolicy(scope: TaskContextScope): TaskCompletionPolicy {
+    return { allowAgentCompletion: this.db.prepare("SELECT allow_agent_completion FROM task_completion_policies WHERE scope_key = ?").get(this.policyKey(scope))?.allow_agent_completion === 1 };
+  }
+  public setCompletionPolicy(input: SetTaskCompletionPolicyInput): TaskCompletionPolicy {
+    this.db.prepare("INSERT INTO task_completion_policies VALUES (?, ?) ON CONFLICT(scope_key) DO UPDATE SET allow_agent_completion = excluded.allow_agent_completion")
+      .run(this.policyKey(input), input.allowAgentCompletion ? 1 : 0);
+    return { allowAgentCompletion: input.allowAgentCompletion };
+  }
+
+  public resolveReferences(input: ResolveChatReferencesInput): ChatReference[] {
+    this.policyKey(input);
+    const result: ChatReference[] = [];
+    for (const id of new Set(input.ids.map(id => id.toLowerCase()))) {
+      if (this.db.prepare("SELECT 1 FROM task_contexts WHERE id = ?").get(id) !== undefined) {
+        let task: TaskContext;
+        try {
+          task = input.conversationId === undefined ? this.task(id) : this.assertTaskAccess(id, input.conversationId);
+          if (input.teamInstanceId !== undefined && task.teamInstanceId !== input.teamInstanceId) continue;
+        } catch (error) { if (error instanceof CollaborationError) continue; throw error; }
+        result.push({ kind: "task", id, title: task.title, ownerConversationId: task.ownerConversationId, teamInstanceId: task.teamInstanceId });
+      } else if (input.teamInstanceId !== undefined) {
+        const row = this.db.prepare("SELECT 1 FROM team_chat_messages WHERE id = ? AND team_instance_id = ?").get(id, input.teamInstanceId);
+        if (row === undefined) continue;
+        const message = this.message(id);
+        result.push({ kind: "message", id, sourceKind: "group", containerId: message.teamInstanceId, senderName: message.senderName,
+          content: message.content.slice(0, 2000), createdAt: message.createdAt });
+      } else if (input.conversationId !== undefined) {
+        const message = this.context.message(input.conversationId, id);
+        if (message !== null) result.push({ kind: "message", id, sourceKind: "conversation", containerId: input.conversationId,
+          senderName: message.role === "user" ? "你" : this.context.conversation(input.conversationId).title, content: message.content.slice(0, 2000), createdAt: message.createdAt });
+      }
+    }
+    return result;
+  }
+
+  private userMessageCount(id: string): number {
+    const row = this.db.prepare(`SELECT count(*) AS count FROM task_context_sources s
+      WHERE s.task_id = ? AND ((s.kind = 'conversation' AND EXISTS (SELECT 1 FROM conversation_timeline t
+        WHERE t.id = s.message_id AND t.conversation_id = s.container_id AND t.kind = 'message'
+          AND json_extract(t.payload_json, '$.role') = 'user'
+          AND substr(json_extract(t.payload_json, '$.content'), 1, 12) != '[Team group '))
+      OR (s.kind = 'group' AND EXISTS (SELECT 1 FROM team_chat_messages m WHERE m.id = s.message_id
+        AND m.team_instance_id = s.container_id AND json_extract(m.payload_json, '$.senderConversationId') IS NULL)))`).get(id);
+    return Number(row?.count ?? 0);
+  }
+
   private write<T>(operation: () => T): T {
     this.db.exec("SAVEPOINT collaboration_write");
     try { const result = operation(); this.db.exec("RELEASE collaboration_write"); return result; }
@@ -183,7 +236,7 @@ export class CollaborationStore {
   }
 
   public getTask(id: string, options: { beforeSourceSequence?: number | undefined; limit?: number | undefined } = {}): TaskContextDetail {
-    const task = this.task(id);
+    const stored = this.task(id); const task = { ...stored, userMessageCount: this.userMessageCount(id) };
     const limit = options.limit ?? 20;
     const rows = this.db.prepare("SELECT sequence, payload_json FROM task_context_sources WHERE task_id = ? AND sequence < ? ORDER BY sequence DESC LIMIT ?").all(id, options.beforeSourceSequence ?? Number.MAX_SAFE_INTEGER, limit + 1);
     return { task, nextBeforeSourceSequence: rows.length > limit ? Number(rows[limit - 1]!.sequence) : null, sources: rows.slice(0, limit).map(row => {
@@ -193,7 +246,12 @@ export class CollaborationStore {
         available = source.kind === "group" ? this.message(source.messageId).teamInstanceId === source.containerId : this.sourceExists(source);
         title = source.kind === "group" ? this.context.team(source.containerId).name : this.context.conversation(source.containerId).title;
       } catch { /* A source can be deleted while its task remains. */ }
-      return { ...source, available, title, sequence: Number(row.sequence) };
+      let content: string | null = null; let role: "user" | "assistant" | null = null; let createdAt: string | null = null;
+      if (available) {
+        if (source.kind === "group") { const message = this.message(source.messageId); content = message.content; role = message.senderConversationId === null ? "user" : "assistant"; createdAt = message.createdAt; }
+        else { const message = this.context.message(source.containerId, source.messageId); if (message !== null) { content = message.content; role = content.startsWith("[Team group ") ? null : message.role; createdAt = message.createdAt; } }
+      }
+      return { ...source, available, title, sequence: Number(row.sequence), content, role, createdAt };
     }) };
   }
 
@@ -207,13 +265,33 @@ export class CollaborationStore {
     if (input.teamInstanceId !== undefined) { clauses.push("team_instance_id = ?"); params.push(input.teamInstanceId); }
     if (input.status !== undefined) { clauses.push("json_extract(payload_json, '$.status') = ?"); params.push(input.status); }
     clauses.push("json_extract(payload_json, '$.mergedIntoId') IS NULL");
-    if (input.query) { clauses.push("(instr(lower(json_extract(payload_json, '$.title')), lower(?)) > 0 OR instr(lower(json_extract(payload_json, '$.goal')), lower(?)) > 0)"); params.push(input.query, input.query); }
+    if (input.query) {
+      const linked = this.db.prepare(`SELECT s.task_id, s.container_id, s.message_id FROM task_context_sources s
+        WHERE s.kind = 'group' AND s.task_id IN (SELECT id FROM task_contexts WHERE ${clauses.join(" AND ")})`).all(...params);
+      const matched = new Set<string>();
+      const needle = input.query.toLowerCase();
+      for (const roomId of new Set(linked.map(row => String(row.container_id)))) {
+        const sources = linked.filter(row => row.container_id === roomId);
+        const messages = this.journal.messages(roomId, [...new Set(sources.map(row => String(row.message_id)))]);
+        const ids = new Set(messages.filter(message => message.senderConversationId === null && message.content.toLowerCase().includes(needle)).map(message => message.id));
+        for (const source of sources) if (ids.has(String(source.message_id))) matched.add(String(source.task_id));
+      }
+      clauses.push(`(instr(lower(json_extract(payload_json, '$.title')), lower(?)) > 0
+        OR instr(lower(json_extract(payload_json, '$.goal')), lower(?)) > 0
+        OR EXISTS (SELECT 1 FROM task_context_sources s JOIN conversation_timeline t ON t.conversation_id = s.container_id AND t.id = s.message_id
+          WHERE s.task_id = task_contexts.id AND s.kind = 'conversation' AND t.kind = 'message' AND json_extract(t.payload_json, '$.role') = 'user'
+            AND substr(json_extract(t.payload_json, '$.content'), 1, 12) <> '[Team group '
+            AND instr(lower(json_extract(t.payload_json, '$.content')), lower(?)) > 0)
+        OR id IN (SELECT value FROM json_each(?)))`);
+      params.push(input.query, input.query, input.query, JSON.stringify([...matched]));
+    }
+    const total = Number(this.db.prepare(`SELECT count(*) AS count FROM task_contexts WHERE ${clauses.join(" AND ")}`).get(...params)?.count ?? 0);
     if (input.beforeId !== undefined) {
       const before = this.task(input.beforeId);
       clauses.push("(updated_at < ? OR (updated_at = ? AND id < ?))"); params.push(before.updatedAt, before.updatedAt, before.id);
     }
     const rows = this.db.prepare(`SELECT payload_json FROM task_contexts WHERE ${clauses.join(" AND ")} ORDER BY updated_at DESC, id DESC LIMIT ?`).all(...params, input.limit + 1);
-    const items = rows.slice(0, input.limit).map(row => taskContextSchema.parse(JSON.parse(String(row.payload_json))));
+    const items = rows.slice(0, input.limit).map(row => { const task = taskContextSchema.parse(JSON.parse(String(row.payload_json))); return { ...task, userMessageCount: this.userMessageCount(task.id) }; });
     const unclassified = input.conversationId === undefined ? [] : this.db.prepare(`SELECT t.id, t.run_id FROM conversation_timeline t
       WHERE t.conversation_id = ? AND t.kind = 'message' AND json_extract(t.payload_json, '$.role') = 'user'
       AND NOT EXISTS (SELECT 1 FROM task_context_sources s WHERE s.message_id = t.id AND s.container_id = t.conversation_id)
@@ -221,7 +299,7 @@ export class CollaborationStore {
       ORDER BY t.sequence DESC LIMIT 10`).all(input.conversationId).map(row => taskSourceSchema.parse({
         kind: "conversation", containerId: input.conversationId, messageId: row.id, runId: row.run_id, purpose: "request",
       }));
-    return { items, nextBeforeId: rows.length > input.limit ? items.at(-1)?.id ?? null : null, unclassified };
+    return { items, nextBeforeId: rows.length > input.limit ? items.at(-1)?.id ?? null : null, unclassified, total };
   }
 
   public syncWorkItems(items: readonly TeamWorkItemView[]): void {
@@ -245,7 +323,7 @@ export class CollaborationStore {
     }
   }
 
-  public updateTask(raw: UpdateTaskContextInput): TaskContext {
+  public updateTask(raw: UpdateTaskContextInput, actor: "user" | "agent" = "user"): TaskContext {
     const input = updateTaskContextInputSchema.parse(raw); const fingerprint = JSON.stringify(input);
     return this.write(() => {
       const saved = this.db.prepare("SELECT * FROM collaboration_requests WHERE request_id = ?").get(`task:${input.requestId}`);
@@ -260,11 +338,17 @@ export class CollaborationStore {
       if (previous !== null && previous.revision !== input.expectedRevision) throw new CollaborationError("TASK_REVISION_CONFLICT", "Read the current revision before updating.");
       if (previous !== null && previous.ownerConversationId !== owner.id && !(owner.threadKind === "team_lead" && previous.teamInstanceId !== null && this.context.teamForConversation(owner.id)?.id === previous.teamInstanceId)) throw new CollaborationError("TASK_OWNER", "Only the owner maintains the overall summary; link member results instead.");
       const now = new Date().toISOString();
+      const teamInstanceId = previous?.teamInstanceId ?? this.context.teamForConversation(owner.id)?.id ?? null;
+      const completionRequested = actor === "agent" && input.status === "completed" && !this.getCompletionPolicy(teamInstanceId !== null && (input.source?.kind === "group"
+        || this.db.prepare("SELECT 1 FROM task_context_sources WHERE task_id = ? AND kind = 'group' LIMIT 1").get(previous?.id ?? "") !== undefined)
+        ? { teamInstanceId } : { conversationId: previous?.ownerConversationId ?? owner.id }).allowAgentCompletion;
       const task = taskContextSchema.parse({
         id: previous?.id ?? randomUUID(), title: input.title, goal: input.goal, summary: input.summary,
-        decisions: input.decisions, nextStep: input.nextStep, status: input.status,
+        decisions: input.decisions, nextStep: input.nextStep, status: completionRequested ? previous?.status === "completed" ? "completed" : previous?.status ?? "running" : input.status,
+        completionRequested: completionRequested && previous?.status !== "completed",
+        completedBy: completionRequested && previous?.status === "completed" ? previous.completedBy ?? null : !completionRequested && input.status === "completed" ? actor : null,
         ownerConversationId: previous?.ownerConversationId ?? owner.id, projectId: previous?.projectId ?? owner.projectId,
-        teamInstanceId: previous?.teamInstanceId ?? this.context.teamForConversation(owner.id)?.id ?? null,
+        teamInstanceId,
         workItemId: previous?.workItemId ?? null, createdAt: previous?.createdAt ?? now, updatedAt: now,
         revision: (previous?.revision ?? 0) + 1, mergedIntoId: null,
       });

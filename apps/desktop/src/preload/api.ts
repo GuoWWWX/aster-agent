@@ -1,4 +1,4 @@
-import type { ListTaskContextsInput, UpdateTaskContextInput, LinkTaskContextInput, MergeTaskContextsInput, ReadTeamChatInput, PostTeamChatInput, MarkTeamChatReadInput } from "@agent/protocol";
+import type { TaskContextScope, SetTaskCompletionPolicyInput, ResolveChatReferencesInput, ListTaskContextsInput, UpdateTaskContextInput, LinkTaskContextInput, MergeTaskContextsInput, ReadTeamChatInput, PostTeamChatInput, MarkTeamChatReadInput } from "@agent/protocol";
 import type { HtmlPreviewRequest } from "@agent/protocol";
 import type { AnswerUserQuestionInput, StopBackgroundCommandInput, ReadBackgroundCommandInput } from "@agent/protocol";
 import type { SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
@@ -262,6 +262,9 @@ export function createDesktopBridge(): DesktopBridge {
     sendTeamMessage(input: SendTeamMessageInput) {
       return invoke<BridgeResult<"sendTeamMessage">>(IPC_CHANNELS.teamSendMessage, input);
     },
+    getTaskCompletionPolicy(input: TaskContextScope) { return invoke<BridgeResult<"getTaskCompletionPolicy">>(IPC_CHANNELS.taskCompletionPolicyGet, input); },
+    setTaskCompletionPolicy(input: SetTaskCompletionPolicyInput) { return invoke<BridgeResult<"setTaskCompletionPolicy">>(IPC_CHANNELS.taskCompletionPolicySet, input); },
+    resolveChatReferences(input: ResolveChatReferencesInput) { return invoke<BridgeResult<"resolveChatReferences">>(IPC_CHANNELS.chatReferencesResolve, input); },
     listTaskContexts(input: ListTaskContextsInput) { return invoke<BridgeResult<"listTaskContexts">>(IPC_CHANNELS.taskContextList, input); },
     getTaskContext(input: { id: string; beforeSourceSequence?: number; limit?: number }) { return invoke<BridgeResult<"getTaskContext">>(IPC_CHANNELS.taskContextGet, input); },
     updateTaskContext(input: UpdateTaskContextInput) { return invoke<BridgeResult<"updateTaskContext">>(IPC_CHANNELS.taskContextUpdate, input); },

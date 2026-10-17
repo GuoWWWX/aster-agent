@@ -1,3 +1,4 @@
+import { taskContextScopeSchema, taskCompletionPolicySchema, setTaskCompletionPolicyInputSchema, resolveChatReferencesInputSchema, chatReferencesSchema } from "@agent/protocol";
 import { teamInstanceReferenceInputSchema } from "@agent/protocol";
 import { ConversationStreamSubscriptions } from "./conversation-stream-subscriptions.js";
 import { getTaskContextInputSchema, linkTaskContextInputSchema, listTaskContextsInputSchema, markTeamChatReadInputSchema, mergeTaskContextsInputSchema, postTeamChatInputSchema, readTeamChatInputSchema, teamChatCoordinationConversationInputSchema, taskContextDetailSchema, taskContextPageSchema, taskContextReferenceSchema, taskContextSchema, teamChatMessageSchema, teamChatPageSchema, updateTaskContextInputSchema, teamChatMemberSchema } from "@agent/protocol";
@@ -1139,6 +1140,21 @@ export function registerMainIpcHandlers(
     },
   );
 
+  ipcMain.handle(IPC_CHANNELS.taskCompletionPolicyGet, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([taskContextScopeSchema]).parse(args);
+    return taskCompletionPolicySchema.parse(database.collaboration.getCompletionPolicy(input));
+  });
+  ipcMain.handle(IPC_CHANNELS.taskCompletionPolicySet, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([setTaskCompletionPolicyInputSchema]).parse(args);
+    return taskCompletionPolicySchema.parse(database.collaboration.setCompletionPolicy(input));
+  });
+  ipcMain.handle(IPC_CHANNELS.chatReferencesResolve, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([resolveChatReferencesInputSchema]).parse(args);
+    return chatReferencesSchema.parse(database.collaboration.resolveReferences(input));
+  });
   ipcMain.handle(IPC_CHANNELS.taskContextList, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     database.collaboration.syncWorkItems(database.listTeamWorkItems({}));
@@ -1157,21 +1173,27 @@ export function registerMainIpcHandlers(
     getTrustedWindow(event, getMainWindow);
     const [input] = z.tuple([updateTaskContextInputSchema]).parse(args);
     const result = taskContextSchema.parse(database.collaboration.updateTask(input));
-    emitConversationRunEvent({ type: "collaboration.changed", conversationId: input.conversationId });
+    emitConversationRunEvent({ type: "collaboration.changed", conversationId: input.conversationId,
+      ...(result.teamInstanceId === null ? {} : { teamInstanceId: result.teamInstanceId }) });
     return result;
   });
   ipcMain.handle(IPC_CHANNELS.taskContextLink, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = z.tuple([linkTaskContextInputSchema]).parse(args);
     const result = database.collaboration.linkTask(input);
-    emitConversationRunEvent({ type: "collaboration.changed", conversationId: database.collaboration.getTask(input.id).task.ownerConversationId });
+    const task = database.collaboration.getTask(input.id).task;
+    emitConversationRunEvent({ type: "collaboration.changed", conversationId: task.ownerConversationId,
+      ...(task.teamInstanceId === null ? {} : { teamInstanceId: task.teamInstanceId }) });
+    if (input.source.kind === "conversation" && input.source.containerId !== task.ownerConversationId)
+      emitConversationRunEvent({ type: "collaboration.changed", conversationId: input.source.containerId });
     return result;
   });
   ipcMain.handle(IPC_CHANNELS.taskContextMerge, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = z.tuple([mergeTaskContextsInputSchema]).parse(args);
     const result = taskContextSchema.parse(database.collaboration.mergeTasks(input));
-    emitConversationRunEvent({ type: "collaboration.changed", conversationId: result.ownerConversationId });
+    emitConversationRunEvent({ type: "collaboration.changed", conversationId: result.ownerConversationId,
+      ...(result.teamInstanceId === null ? {} : { teamInstanceId: result.teamInstanceId }) });
     return result;
   });
   ipcMain.handle(IPC_CHANNELS.teamChatRead, (event, ...args: unknown[]) => {

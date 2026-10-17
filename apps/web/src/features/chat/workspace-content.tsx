@@ -1,4 +1,6 @@
-import { ConversationTaskDirectory } from "../team/task-context-directory.js";
+import type { ChatReference } from "@agent/protocol";
+import { ChatReferenceScope } from "../../components/markdown/chat-reference-scope.js";
+import { TaskListLauncher } from "../team/task-context-directory.js";
 import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import { ConversationWorkIndicator, toolWorkPhase } from "./conversation-work-state.js";
 import { ConversationChangesBadge, ConversationChangesCard } from "./conversation-file-changes.js";
@@ -3305,7 +3307,20 @@ export function ConversationWorkspace({
     : agentProfiles.find((agent) => agent.id === session.agentId);
   const pathIconKind = resolveConversationPathIconKind(pathScope.kind, session);
 
+  const referenceTeamId = groupChat?.instanceId;
+  const richReferenceWorkspaceId = referenceTeamId === undefined ? session.id : teamChatTabId(referenceTeamId);
+  const resolveReferences = useCallback((ids: string[]) => agentClient.resolveChatReferences(referenceTeamId === undefined
+    ? { conversationId: session.id, ids } : { teamInstanceId: referenceTeamId, ids }), [agentClient, referenceTeamId, session.id]);
+  const openReference = useCallback((reference: ChatReference): void => {
+    if (reference.kind === "task") {
+      useWorkbenchUiStore.getState().openTaskList({ workspaceId: richReferenceWorkspaceId, taskId: reference.id,
+        scope: reference.teamInstanceId === null ? { conversationId: reference.ownerConversationId } : { teamInstanceId: reference.teamInstanceId } });
+    } else if (reference.sourceKind === "group") useWorkbenchUiStore.getState().openTeamChat({ instanceId: reference.containerId, messageId: reference.id });
+    else onLocateConversationItem?.(reference.containerId, reference.id);
+  }, [onLocateConversationItem, richReferenceWorkspaceId]);
+
   return (
+    <ChatReferenceScope scopeKey={richReferenceWorkspaceId} resolve={resolveReferences} onOpen={openReference}>
     <AgentMarkdownWorkspaceScope onOpenFile={onOpenProjectFile}>
     <HtmlPreviewScope client={agentClient} conversationId={session.id}>
     <ToolConversationContext.Provider value={toolConversations}>
@@ -3378,6 +3393,7 @@ export function ConversationWorkspace({
             <h1 id={headingId}>{session.title}</h1>
           </button>
         </div>
+        <TaskListLauncher agentClient={agentClient} scope={{ conversationId: session.id }} workspaceId={session.id} active={active} />
         {compact ? null : (
           <ConversationHeaderControls
             agentClient={agentClient}
@@ -3665,8 +3681,7 @@ export function ConversationWorkspace({
         ) : null}
 
         <div ref={composerOverlayRef} className="conversation-workspace__composer-overlay">
-          {groupChat === null ? <ConversationTaskDirectory key={`task-context:${session.id}`} agentClient={agentClient} conversationId={session.id}
-            onOpenConversation={(conversation, messageId) => { if (onOpenTeamConversation !== undefined) onOpenTeamConversation({ ...conversation, pinOrder: conversation.pinOrder ?? null }, session.id, messageId); else onSessionSelected?.(conversation.id); }} /> : null}
+
           {groupChat !== null ? null : taskList !== null ? (
             <ConversationTaskListPanel
               active={active}
@@ -4252,6 +4267,7 @@ export function ConversationWorkspace({
     </ToolConversationContext.Provider>
     </HtmlPreviewScope>
     </AgentMarkdownWorkspaceScope>
+    </ChatReferenceScope>
   );
 }
 

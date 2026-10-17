@@ -67,6 +67,28 @@ describe("result viewed IPC notification", () => {
   });
   afterEach(() => { dispose?.(); dispose = undefined; });
 
+  it("validates user completion grants and bounded reference lookups from the trusted window only", async () => {
+    const collaboration = { getCompletionPolicy: vi.fn(() => ({ allowAgentCompletion: false })),
+      setCompletionPolicy: vi.fn(() => ({ allowAgentCompletion: true })), resolveReferences: vi.fn(() => []) };
+    Object.assign(dependencies, { database: { collaboration } }); dispose?.();
+    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send, isDestroyed: () => false } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(window);
+    dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
+    const trusted = { sender: window.webContents } as IpcMainInvokeEvent;
+    const handler = (channel: string) => electron.handle.mock.calls.filter(([name]) => name === channel).at(-1)![1];
+    expect(await handler(IPC_CHANNELS.taskCompletionPolicyGet)(trusted, { conversationId: conversation.id })).toEqual({ allowAgentCompletion: false });
+    expect(await handler(IPC_CHANNELS.taskCompletionPolicySet)(trusted, { teamInstanceId: conversation.id, allowAgentCompletion: true })).toEqual({ allowAgentCompletion: true });
+    expect(await handler(IPC_CHANNELS.chatReferencesResolve)(trusted, { conversationId: conversation.id, ids: [conversation.id] })).toEqual([]);
+    await expect(handler(IPC_CHANNELS.taskCompletionPolicyGet)(trusted, { conversationId: conversation.id, teamInstanceId: conversation.id })).rejects.toThrow();
+    await expect(handler(IPC_CHANNELS.taskCompletionPolicySet)(trusted, { conversationId: conversation.id, allowAgentCompletion: true, extra: true })).rejects.toThrow();
+    await expect(handler(IPC_CHANNELS.chatReferencesResolve)(trusted, { conversationId: conversation.id, ids: Array.from({ length: 21 }, () => conversation.id) })).rejects.toThrow();
+    electron.fromWebContents.mockReturnValue(null);
+    await expect(handler(IPC_CHANNELS.taskCompletionPolicySet)(trusted, { conversationId: conversation.id, allowAgentCompletion: true })).rejects.toThrow();
+    expect(collaboration.setCompletionPolicy).toHaveBeenCalledTimes(1);
+    dispose?.(); dispose = undefined;
+    for (const channel of [IPC_CHANNELS.taskCompletionPolicyGet, IPC_CHANNELS.taskCompletionPolicySet, IPC_CHANNELS.chatReferencesResolve]) expect(electron.removeHandler).toHaveBeenCalledWith(channel);
+  });
+
   it("validates the real coordination conversation lookup and disposes its IPC handler", async () => {
     const result = { ...conversation, threadKind: "agent", coordinationTeamInstanceId: conversation.id };
     const getTeamChatCoordinationConversation = vi.fn(() => result);

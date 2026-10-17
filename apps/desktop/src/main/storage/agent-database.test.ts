@@ -143,7 +143,7 @@ describe("AgentDatabase", () => {
 
     const persisted = new DatabaseSync(databasePath);
     expect(persisted.prepare("SELECT name FROM sqlite_master WHERE name = 'conversations'").get()).toBeUndefined();
-    expect(persisted.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(34);
+    expect(persisted.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(35);
     persisted.close();
     const reopened = new AgentDatabase(databasePath);
     expect(reopened.listProjects()).toEqual([project]);
@@ -193,10 +193,10 @@ describe("AgentDatabase", () => {
       .all() as Array<Record<string, unknown>>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(34);
-    expect(firstRow.name).toBe("langgraph-versioned-channel-blobs");
+    expect(firstRow.version).toBe(35);
+    expect(firstRow.name).toBe("task-completion-policies");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(34);
+    expect(migrationCount.count).toBe(35);
     expect(historyIndexes.map((row) => row.name)).toEqual([
       "conversation_timeline_conversation_sequence",
       "model_messages_conversation_sequence",
@@ -324,7 +324,7 @@ describe("AgentDatabase", () => {
     migrated.close();
 
     expect(checkpointCount.count).toBe(0);
-    expect(migrationCount.count).toBe(34);
+    expect(migrationCount.count).toBe(35);
   });
 
   it("adds hidden turn summaries when upgrading an existing version 19 database", async () => {
@@ -782,7 +782,7 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 34",
+      "newer than supported version 35",
     );
   });
 
@@ -2125,6 +2125,7 @@ describe("AgentDatabase", () => {
       { version: 32 },
       { version: 33 },
       { version: 34 },
+      { version: 35 },
     ]);
     metadata.close();
   });

@@ -1,4 +1,4 @@
-import type { ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput, ReadTeamChatInput, TeamChatPage, PostTeamChatInput, TeamChatMessage, TeamChatMember, MarkTeamChatReadInput } from "@agent/protocol";
+import type { TaskContextScope, TaskCompletionPolicy, SetTaskCompletionPolicyInput, ResolveChatReferencesInput, ChatReference, ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput, ReadTeamChatInput, TeamChatPage, PostTeamChatInput, TeamChatMessage, TeamChatMember, MarkTeamChatReadInput } from "@agent/protocol";
 import type { HtmlPreview, HtmlPreviewRequest } from "@agent/protocol";
 import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
 import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
@@ -296,6 +296,9 @@ export interface AgentClient {
     input: ListConfigurationWorkspaceEntriesInput,
   ): Promise<ConfigurationWorkspaceDirectoryListing>;
   listProjects(): Promise<ProjectSummary[]>;
+  getTaskCompletionPolicy(input: TaskContextScope): Promise<TaskCompletionPolicy>;
+  setTaskCompletionPolicy(input: SetTaskCompletionPolicyInput): Promise<TaskCompletionPolicy>;
+  resolveChatReferences(input: ResolveChatReferencesInput): Promise<ChatReference[]>;
   listTaskContexts(input: ListTaskContextsInput): Promise<TaskContextPage>;
   getTaskContext(input: { id: string; beforeSourceSequence?: number; limit?: number }): Promise<TaskContextDetail>;
   updateTaskContext(input: UpdateTaskContextInput): Promise<TaskContext>;

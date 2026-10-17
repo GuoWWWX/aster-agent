@@ -1,3 +1,4 @@
+import { useChatReferences, type InlineReference } from "./chat-reference-scope.js";
 import { Spinner } from "../ui/loading.js";
 import { createPortal } from "react-dom";
 import { HtmlPreviewCard, HtmlPreviewContext, type HtmlPreviewSource } from "../html-preview/html-preview-card.js";
@@ -116,21 +117,29 @@ renderer.core.ruler.after("inline", "message_references", state => {
   if (labels.length === 0) return;
   for (const block of state.tokens) {
     if (block.type !== "inline" || block.children === null) continue;
-    let linked = false;
+    let linked = false; let replacingLink = false;
     block.children = block.children.flatMap(token => {
-      if (token.type === "link_open") linked = true;
-      if (token.type === "link_close") linked = false;
-      if (token.type !== "text" || linked) return [token];
+      if (token.type === "link_open") {
+        linked = true;
+        const id = /^(?:task|message):\/\/([0-9a-f-]{36})$/iu.exec(String(token.attrGet("href") ?? ""))?.[1];
+        const index = id === undefined ? -1 : labels.findIndex(label => label.toLowerCase() === id.toLowerCase());
+        if (index >= 0) { replacingLink = true; const slot = new state.Token("message_reference", "span", 0); slot.content = String(index); return [slot]; }
+      }
+      if (token.type === "link_close") { linked = false; if (replacingLink) { replacingLink = false; return []; } }
+      if (replacingLink) return [];
+      if ((token.type !== "text" && token.type !== "code_inline") || linked) return [token];
       const matches = labels.flatMap((label, index) => {
+        if (token.type === "code_inline") return token.content === label && /^[0-9a-f-]{36}$/iu.test(label) ? [{ start: 0, end: label.length, index }] : [];
         const found: { start: number; end: number; index: number }[] = [];
         let from = 0;
         for (;;) {
           const start = token.content.indexOf(label, from); if (start < 0) break;
           const end = start + label.length; from = end;
-          if ((start === 0 || /\s/u.test(token.content[start - 1]!)) && (end === token.content.length || /[\s，。！？、,.;:!?；：]/u.test(token.content[end]!))) found.push({ start, end, index });
+          if (/^[0-9a-f-]{36}$/iu.test(label) || ((start === 0 || /\s/u.test(token.content[start - 1]!)) && (end === token.content.length || /[\s，。！？、,.;:!?；：]/u.test(token.content[end]!)))) found.push({ start, end, index });
         }
         return found;
       }).sort((a, b) => a.start - b.start || b.end - a.end);
+      if (matches.length === 0) return [token];
       const result = []; let through = 0;
       for (const match of matches) {
         if (match.start < through) continue;
@@ -242,12 +251,13 @@ renderer.renderer.rules.image = (tokens, index, options, environment, self) => {
   return caption == null ? renderedImage : `<figure>${renderedImage}<figcaption>${renderer.utils.escapeHtml(String(caption))}</figcaption></figure>`;
 };
 
-type InlineReference = { label: string; content: ReactNode };
 const noInlineReferences: readonly InlineReference[] = [];
 export const AgentMarkdown = memo(function AgentMarkdown({ content, streaming = false, inlineReferences = noInlineReferences }: { content: string; streaming?: boolean; inlineReferences?: readonly InlineReference[] }): ReactElement {
+  const chatReferences = useChatReferences(content, streaming);
+  const references = [...inlineReferences, ...chatReferences];
   const scrollHostRef = useRef<HTMLDivElement>(null);
   useStreamingScroll(scrollHostRef, content, streaming);
-  return <AgentMarkdownContent key={`${streaming}:${content}`} content={content} streaming={streaming} scrollHostRef={scrollHostRef} inlineReferences={inlineReferences} />;
+  return <AgentMarkdownContent key={`${streaming}:${content}`} content={content} streaming={streaming} scrollHostRef={scrollHostRef} inlineReferences={references} />;
 });
 
 function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferences }: { content: string; streaming: boolean; scrollHostRef: RefObject<HTMLDivElement | null>; inlineReferences: readonly InlineReference[] }): ReactElement {
@@ -275,7 +285,7 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferen
     scrollHostRef.current = host;
     if (host === null) return;
     const mounts = referenceKey === "[]" ? [] : [...host.querySelectorAll<HTMLElement>("[data-message-reference]")].map(mount => ({ index: Number(mount.dataset.messageReference), mount }));
-    if (mounts.length > 0) setReferenceMounts(mounts);
+    setReferenceMounts(mounts);
     const previews = [...host.querySelectorAll<HTMLTemplateElement>("[data-html-code-source]")].flatMap(template => {
       const mount = template.parentElement?.querySelector("[data-html-code-preview-slot]");
       return mount == null ? [] : [{ source: template.content.textContent ?? "", mount }];
