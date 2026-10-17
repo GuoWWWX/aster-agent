@@ -11,6 +11,7 @@ import { AgentDatabase } from "../storage/agent-database.js";
 import { ConversationLifecycleService } from "../storage/conversation-lifecycle-service.js";
 import { EventProjector } from "../storage/event-projector.js";
 import { ThreadLog } from "../storage/thread-log.js";
+import { NodeSqliteCheckpointSaver } from "../storage/node-sqlite-checkpoint-saver.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
 import { ProjectToolRegistry } from "../tools/project-tool-registry.js";
 import type { CompleteTurnInput, ModelProviderAdapter, ModelTurnResult } from "../model/model-contracts.js";
@@ -56,7 +57,7 @@ class GroupFixture implements ModelProviderAdapter {
     return Promise.resolve({ content: "成员私有的执行总结。", finishReason: "stop", toolCalls: [] });
   }
 }
-async function fixture(withThreadLog = false) {
+async function fixture(withThreadLog = false, withCoordinator = false, graphCheckpointer: NodeSqliteCheckpointSaver | null = null) {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-group-integration-")); roots.push(root);
   await writeFile(path.join(root, "fact.txt"), "evidence", "utf8");
   const db = new AgentDatabase(":memory:"); const projects = new ProjectRegistry(db); const project = await projects.registerDirectory(root);
@@ -73,10 +74,190 @@ async function fixture(withThreadLog = false) {
   db.bindTeamMemberConversation({ conversationId: member.id, agentId: "developer", teamExecutionConversationId: lead.id });
   const model = new GroupFixture(); const tools = new ProjectToolRegistry(projects);
   const runtime = new AgentRuntime(db, { getConfiguration: () => ({ apiKey: "fixture", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1", modelId: "fixture", reasoningOptions: [] }) }, projects, tools, model,
-    (_delay, signal) => { signal.throwIfAborted(); return Promise.resolve(); }, undefined, null, null, null, null, null, undefined, null, log, projector);
+    (_delay, signal) => { signal.throwIfAborted(); return Promise.resolve(); }, undefined, null, null,
+    withCoordinator ? { getConfiguration: () => structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION) } : null, null, graphCheckpointer, undefined, null, log, projector);
   return { db, lead, member, instance, runtime, model, tools, log };
 }
 describe("group execution integration", () => {
+  it.each([false, true])("waits for checkpoint cleanup before starting the next group delivery (resumePaused=%s)", async resumePaused => {
+    const checkpointer = new NodeSqliteCheckpointSaver(":memory:");
+    const { db, instance, member, runtime, model, tools } = await fixture(true, false, checkpointer);
+    const removeCheckpoint = checkpointer.deleteThread.bind(checkpointer);
+    let releaseCleanup!: () => void; let cleanupEntered = false;
+    const cleanupGate = new Promise<void>(resolve => { releaseCleanup = resolve; });
+    vi.spyOn(checkpointer, "deleteThread").mockImplementation(async id => {
+      if (!cleanupEntered) { cleanupEntered = true; await cleanupGate; }
+      await removeCheckpoint(id);
+    });
+    vi.spyOn(model, "completeTurn").mockImplementation(input => {
+      const source = input.messages.findLast(message => message.content.startsWith("[Team group input;"))!;
+      const context = z.object({ deliveryId: z.string(), content: z.string() }).parse(JSON.parse(source.content.slice(source.content.indexOf("\n") + 1)));
+      if (input.messages.some(message => message.toolCallId === context.deliveryId)) return Promise.resolve({ content: "已发言", finishReason: "stop", toolCalls: [] });
+      return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id: context.deliveryId, name: "post_team_message",
+        arguments: JSON.stringify({ content: context.content, intent: "notify" }) }] });
+    });
+    try {
+      const first = runtime.postTeamChat({ teamInstanceId: instance.id, content: "第一条", recipientConversationIds: [member.id], requestId: randomUUID() }, () => undefined);
+      let second = runtime.postTeamChat({ teamInstanceId: instance.id, content: "第二条", recipientConversationIds: [member.id], requestId: randomUUID() }, () => undefined);
+      await vi.waitFor(() => expect(cleanupEntered).toBe(true));
+      if (resumePaused) {
+        runtime.cancelConversation(member.id);
+        expect(db.collaboration.message(second.id).deliveries[0]?.status).toBe("cancelled");
+        second = runtime.postTeamChat({ teamInstanceId: instance.id, content: "第二条", recipientConversationIds: [member.id], requestId: randomUUID() }, () => undefined);
+        expect(db.isConversationExecutionPaused(member.id)).toBe(false);
+      }
+      // Let the run.finished timer fire while the old executor still owns this conversation.
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(db.collaboration.message(first.id).deliveries[0]?.status).toBe("completed");
+      expect(db.collaboration.message(second.id).deliveries[0]?.status).toBe("pending");
+      expect(db.getConversation(member.id).activeRunId).toBeNull();
+      releaseCleanup();
+      await vi.waitFor(() => expect(db.collaboration.message(second.id).deliveries[0]?.status).toBe("completed"));
+      expect(db.collaboration.readMessages({ teamInstanceId: instance.id }).messages.filter(message => message.senderConversationId === member.id).map(message => message.content)).toEqual(["第一条", "第二条"]);
+    } finally { releaseCleanup(); await runtime.stopAllRuns(); await tools.dispose(); db.close(); checkpointer.close(); }
+  });
+  it("publishes a leader's invitation before parallel member replies and resumes the leader for a public synthesis", async () => {
+    const { db, instance, lead, member, runtime, model, tools } = await fixture(true, true);
+    const reviewer = db.createConversation(lead.projectId, { teamId: instance.teamId, parentConversationId: lead.id, threadKind: "agent",
+      agent: { id: "qa-engineer", name: "测试", role: "测试", instructions: "", isDefault: false } });
+    db.bindTeamMemberConversation({ conversationId: reviewer.id, agentId: "qa-engineer", teamExecutionConversationId: lead.id });
+    const recipients = [member.id, reviewer.id]; const entered = new Set<string>();
+    let releaseMembers!: () => void;
+    const membersStarted = new Promise<void>(resolve => { releaseMembers = resolve; });
+    const events: ConversationRunEvent[] = [];
+    let original: TeamChatMessage;
+    vi.spyOn(model, "completeTurn").mockImplementation(async input => {
+      if (input.tools.length === 0) return { content: JSON.stringify({ recipientConversationIds: [lead.id] }), finishReason: "stop", toolCalls: [] };
+      const source = input.messages.findLast(message => message.content.startsWith("[Team group input;"))!;
+      const context = z.object({ deliveryId: z.string(), messageId: z.string(), content: z.string() }).parse(JSON.parse(source.content.slice(source.content.indexOf("\n") + 1)));
+      const page = db.collaboration.readMessages({ teamInstanceId: instance.id });
+      const publicReplies = page.messages.filter(message => recipients.includes(message.senderConversationId ?? ""));
+      if (input.messages.some(message => message.content.includes("[Team group request receipt | reference data]"))) {
+        if (publicReplies.length === 2 && !page.messages.some(message => message.content === "两位的意见已汇总")) {
+          return { content: "", finishReason: "tool_calls", toolCalls: [{ id: "synthesis", name: "post_team_message",
+            arguments: JSON.stringify({ content: "两位的意见已汇总", intent: "notify", replyToId: original.id }) }] };
+        }
+        return { content: "已收取公开回复回执", finishReason: "stop", toolCalls: [] };
+      }
+      if (context.content === "负责人，请公开邀请两位讨论后汇总") {
+        expect(input.messages[0]?.content).toContain("Delegate through post_team_message");
+        if (page.messages.some(message => message.intent === "request" && message.senderConversationId === lead.id)) return { content: "已公开邀请", finishReason: "stop", toolCalls: [] };
+        return { content: "", finishReason: "tool_calls", toolCalls: [{ id: "invitation", name: "post_team_message",
+          arguments: JSON.stringify({ content: "@开发 @测试 请各给一条意见", intent: "request", recipientConversationIds: recipients, replyToId: context.messageId }) }] };
+      }
+      entered.add(context.deliveryId); if (entered.size === 2) releaseMembers();
+      await membersStarted;
+      if (input.messages.some(message => message.toolCallId === "opinion")) return { content: "私有工作已结束", finishReason: "stop", toolCalls: [] };
+      return { content: "", finishReason: "tool_calls", toolCalls: [{ id: "opinion", name: "post_team_message",
+        arguments: JSON.stringify({ content: "我的意见", intent: "notify", replyToId: context.messageId }) }] };
+    });
+    try {
+      original = runtime.postTeamChat({ teamInstanceId: instance.id, content: "负责人，请公开邀请两位讨论后汇总", requestId: randomUUID() }, event => { events.push(event); });
+      await vi.waitFor(() => {
+        expect(db.collaboration.readMessages({ teamInstanceId: instance.id }).messages.at(-1)?.content).toBe("两位的意见已汇总");
+        expect([lead.id, ...recipients].every(id => db.getConversation(id).activeRunId === null)).toBe(true);
+      });
+      const messages = db.collaboration.readMessages({ teamInstanceId: instance.id }).messages;
+      expect(messages).toHaveLength(5); expect(messages[0]?.recipientConversationIds).toEqual([lead.id]);
+      expect(messages[1]).toMatchObject({ senderConversationId: lead.id, intent: "request", recipientConversationIds: recipients, rootMessageId: original.id });
+      expect(messages.slice(2, 4).map(message => message.senderConversationId).sort()).toEqual([...recipients].sort());
+      expect(messages[4]).toMatchObject({ senderConversationId: lead.id, intent: "notify", rootMessageId: original.id });
+      expect(messages.flatMap(message => message.deliveries).every(delivery => delivery.status === "completed")).toBe(true);
+      const firstMemberFinished = events.findIndex(event => event.type === "run.finished" && recipients.includes(event.conversationId));
+      for (const id of recipients) expect(events.findIndex(event => event.type === "run.started" && event.conversationId === id)).toBeLessThan(firstMemberFinished);
+      expect(events.filter(event => event.type === "run.started" && event.conversationId === lead.id).length).toBeGreaterThanOrEqual(2);
+      expect(db.collaboration.receiptsToRecover()).toEqual([]);
+      expect(db.collaboration.listTasks({ teamInstanceId: instance.id }).items).toEqual([]);
+    } finally { releaseMembers(); await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
+  it("retries an incomplete decision and accepts a fenced JSON response before starting a member", async () => {
+    const { db, instance, member, runtime, model, tools } = await fixture(true, true); let attempts = 0;
+    vi.spyOn(model, "completeTurn").mockImplementation(input => {
+      if (input.tools.length === 0) {
+        attempts += 1; expect(input.maxOutputTokens).toBeGreaterThanOrEqual(3000);
+        return Promise.resolve({ content: attempts === 1 ? '{"recipientConversationIds":[' : '```json\n' + JSON.stringify({ recipientConversationIds: [member.id] }) + '\n```', finishReason: attempts === 1 ? "length" : "stop", toolCalls: [] });
+      }
+      return Promise.resolve({ content: "完成", finishReason: "stop", toolCalls: [] });
+    });
+    try {
+      const message = runtime.postTeamChat({ teamInstanceId: instance.id, content: "请合适的成员回答", requestId: randomUUID() }, () => undefined);
+      await vi.waitFor(() => expect(db.collaboration.message(message.id).deliveries[0]?.status).toBe("completed"));
+      expect(attempts).toBe(2); expect(db.collaboration.readMessages({ teamInstanceId: instance.id }).messages).toHaveLength(1);
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
+  it("rejects invented recipients without executing a member", async () => {
+    const { db, instance, runtime, model, tools } = await fixture(true, true);
+    const started: string[] = [];
+    vi.spyOn(model, "completeTurn").mockResolvedValue({ content: JSON.stringify({ recipientConversationIds: [randomUUID()] }), finishReason: "stop", toolCalls: [] });
+    try {
+      const message = runtime.postTeamChat({ teamInstanceId: instance.id, content: "请安排成员回答", requestId: randomUUID() }, event => { if (event.type === "run.started") started.push(event.conversationId); });
+      await vi.waitFor(() => expect(db.collaboration.message(message.id).coordinator?.status).toBe("failed"));
+      expect(started).toEqual([]); expect(db.collaboration.message(message.id).deliveries).toEqual([]);
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
+  it("drains and records an interrupted coordinator without waking anyone", async () => {
+    const { db, instance, runtime, model, tools } = await fixture(true, true);
+    let entered = false;
+    vi.spyOn(model, "completeTurn").mockImplementation(input => new Promise((_resolve, reject) => {
+      entered = true; input.signal.addEventListener("abort", () => reject(new Error("Coordinator cancelled")), { once: true });
+    }));
+    try {
+      const message = runtime.postTeamChat({ teamInstanceId: instance.id, content: "请协调一下", requestId: randomUUID() }, () => undefined);
+      await vi.waitFor(() => expect(entered).toBe(true)); await runtime.stopAllRuns();
+      expect(db.collaboration.message(message.id).coordinator?.status).toBe("failed");
+      expect(db.collaboration.message(message.id).deliveries).toEqual([]);
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
+  it("routes with the owning Agent in the background and gives the selected member an attributed public transcript", async () => {
+    const { db, instance, lead, member, runtime, model, tools } = await fixture(true, true);
+    const leadHistory = db.listTimeline(lead.id);
+    db.collaboration.postMessage({ teamInstanceId: instance.id, content: "界面只使用蓝色按钮", intent: "notify", requestId: randomUUID() }, null);
+    db.collaboration.postMessage({ teamInstanceId: instance.id, content: "我会按蓝色按钮处理", intent: "notify", requestId: randomUUID() }, member.id);
+    db.collaboration.postMessage({ teamInstanceId: instance.id, content: "我负责确认接口", intent: "notify", requestId: randomUUID() }, lead.id);
+    const started: string[] = [];
+    vi.spyOn(model, "completeTurn").mockImplementation(input => {
+      model.requests.push(input);
+      if (input.tools.length === 0) return Promise.resolve({ content: JSON.stringify({ recipientConversationIds: [member.id], contextSummary: "用户要求使用蓝色按钮，开发正在处理。" }), finishReason: "stop", toolCalls: [] });
+      if (input.messages.some(message => message.toolCallId === "public-reply")) return Promise.resolve({ content: "已回复", finishReason: "stop", toolCalls: [] });
+      return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id: "public-reply", name: "post_team_message", arguments: JSON.stringify({ content: "蓝色按钮已确认", intent: "notify" }) }] });
+    });
+    try {
+      const request = runtime.postTeamChat({ teamInstanceId: instance.id, content: "继续确认刚才那个按钮", requestId: randomUUID(),
+        coordinator: { agentId: "default-agent", modelSelection: null } }, event => { if (event.type === "run.started") started.push(event.conversationId); });
+      await vi.waitFor(() => expect(db.collaboration.message(request.id).deliveries[0]?.status).toBe("completed"));
+      expect(started).toEqual([member.id]); expect(db.listTimeline(lead.id)).toEqual(leadHistory);
+      const routing = model.requests.find(input => input.tools.length === 0)!;
+      expect(routing.messages[1]?.content).toContain('"id":"default-agent"');
+      expect(routing.messages[1]?.content).toContain("界面只使用蓝色按钮");
+      const memberRequest = model.requests.find(input => input.tools.some(tool => tool.name === "post_team_message"))!;
+      const source = memberRequest.messages.findLast(message => message.content.startsWith("[Team group input;"))!;
+      const payload = z.object({ groupContext: z.array(z.object({ senderName: z.string(), perspective: z.string(), content: z.string() })) }).parse(JSON.parse(source.content.slice(source.content.indexOf("\n") + 1)));
+      expect(payload.groupContext.map(message => message.perspective)).toEqual(["user", "self", "member"]);
+      expect(payload.groupContext[1]?.content).toBe("我会按蓝色按钮处理");
+      expect(payload.groupContext[2]?.senderName).toBeTruthy();
+      expect(db.collaboration.coordinator(instance.id)?.contextSummary).toContain("蓝色按钮");
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
+  it("retries a failed background coordination without adding another user message or starting the leader", async () => {
+    const { db, instance, lead, member, runtime, model, tools } = await fixture(true, true);
+    let recovered = false; const started: string[] = []; const requests = vi.spyOn(model, "completeTurn").mockImplementation(input => {
+      if (input.tools.length === 0) {
+        if (!recovered) return Promise.reject(new ModelRequestError(502, "upstream unavailable"));
+        return Promise.resolve({ content: JSON.stringify({ recipientConversationIds: [member.id] }), finishReason: "stop", toolCalls: [] });
+      }
+      return Promise.resolve({ content: "处理完毕", finishReason: "stop", toolCalls: [] });
+    });
+    try {
+      const message = runtime.postTeamChat({ teamInstanceId: instance.id, content: "帮忙看一下", requestId: randomUUID() }, event => { if (event.type === "run.started") started.push(event.conversationId); });
+      await vi.waitFor(() => expect(db.collaboration.message(message.id).coordinator?.status).toBe("failed"));
+      expect(requests).toHaveBeenCalledTimes(6); expect(started).toEqual([]);
+      recovered = true;
+      runtime.resumeTeamChatDelivery(message.id, event => { if (event.type === "run.started") started.push(event.conversationId); });
+      await vi.waitFor(() => expect(db.collaboration.message(message.id).deliveries[0]?.status).toBe("completed"));
+      expect(started).toEqual([member.id]); expect(db.listTimeline(lead.id)).toEqual([]);
+      expect(db.collaboration.readMessages({ teamInstanceId: instance.id }).messages).toHaveLength(1);
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
   it("runs only the naturally addressed member and publishes their own greeting", async () => {
     const { db, instance, lead, member, runtime, model, tools } = await fixture(true);
     const events: ConversationRunEvent[] = [];

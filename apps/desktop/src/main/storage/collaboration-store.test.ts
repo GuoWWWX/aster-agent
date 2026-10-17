@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_AGENT_DIRECTORY_CONFIGURATION } from "@agent/protocol";
 import { AgentDatabase } from "./agent-database.js";
@@ -89,6 +90,44 @@ describe("natural group addressing", () => {
 });
 
 describe("durable collaboration", () => {
+  it("recovers a durable post and coordination after a SQL projection failure, without duplicate messages or deliveries", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "agent-group-journal-failure-")); roots.push(root);
+    const file = path.join(root, "state.sqlite"); const { db, instance, member } = fixture(file);
+    const sql = new DatabaseSync(file);
+    try {
+      const input = { teamInstanceId: instance.id, content: "持久原文", requestId: randomUUID(), coordinator: { agentId: "default-agent", modelSelection: null } };
+      sql.exec("CREATE TRIGGER fail_group_post BEFORE INSERT ON team_chat_messages BEGIN SELECT RAISE(ABORT, 'injected post failure'); END");
+      expect(() => db.collaboration.postMessage(input, null)).toThrow("injected post failure");
+      sql.exec("DROP TRIGGER fail_group_post");
+      const intervening = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "在恢复前收到的新消息", intent: "notify", requestId: randomUUID() }, null);
+      const message = db.collaboration.postMessage(input, null);
+      expect(intervening.sequence).toBe(message.sequence + 1);
+      expect(db.collaboration.postMessage(input, null).id).toBe(message.id);
+      sql.exec("CREATE TRIGGER fail_group_delivery BEFORE INSERT ON team_chat_deliveries BEGIN SELECT RAISE(ABORT, 'injected delivery failure'); END");
+      expect(() => db.collaboration.finishCoordination(message.id, [member.id], null, "需要开发确认")).toThrow("injected delivery failure");
+      sql.exec("DROP TRIGGER fail_group_delivery");
+      const page = db.collaboration.readMessages({ teamInstanceId: instance.id });
+      expect(page.messages).toHaveLength(2); expect(page.messages[0]?.deliveries).toHaveLength(1);
+      expect(page.messages[0]?.coordinator?.contextSummary).toBe("需要开发确认");
+      const metadata = String(sql.prepare("SELECT payload_json FROM team_chat_messages WHERE id = ?").get(message.id)?.payload_json);
+      expect(metadata).not.toContain("持久原文"); expect(metadata).not.toContain("需要开发确认");
+      expect(String(sql.prepare("SELECT fingerprint FROM collaboration_requests WHERE result_id = ?").get(message.id)?.fingerprint)).toMatch(/^[a-f0-9]{64}$/u);
+    } finally { sql.close(); }
+  });
+  it("retains old evidence when the user edits the latest completed message and does not reuse its deliveries", () => {
+    const { db, instance, lead, member } = fixture();
+    const original = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "最初的问题", recipientConversationIds: [member.id], requestId: randomUUID() }, null);
+    const run = db.createRunWithUserMessage(member.id, "原问题", "fixture");
+    db.collaboration.consumeDelivery(original.deliveries[0]!.id, run.runId);
+    expect(() => db.collaboration.postMessage({ teamInstanceId: instance.id, content: "修订的问题", supersedesId: original.id, requestId: randomUUID() }, null)).toThrow("GROUP_EDIT_BUSY");
+    db.collaboration.finishRun(run.runId, "completed", null);
+    const edited = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "修订的问题", supersedesId: original.id, recipientConversationIds: [member.id], requestId: randomUUID() }, null);
+    expect(edited.supersedesId).toBe(original.id); expect(edited.deliveries[0]?.id).not.toBe(original.deliveries[0]?.id);
+    expect(db.collaboration.message(original.id).content).toBe("最初的问题");
+    expect(db.collaboration.message(original.id).deliveries[0]?.status).toBe("completed");
+    expect(() => db.collaboration.postMessage({ teamInstanceId: instance.id, content: "再次修订旧消息", supersedesId: original.id, requestId: randomUUID() }, null)).toThrow("GROUP_EDIT_INVALID");
+    expect(() => db.collaboration.postMessage({ teamInstanceId: instance.id, content: "成员不能编辑用户消息", supersedesId: edited.id, requestId: randomUUID() }, lead.id)).toThrow("GROUP_EDIT_INVALID");
+  });
 
   it("recovers saved requests without replaying completed work and requires explicit resume for pending delivery", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "agent-group-recovery-")); roots.push(root);

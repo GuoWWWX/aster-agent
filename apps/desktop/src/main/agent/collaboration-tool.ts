@@ -14,7 +14,7 @@ import type { ToolExecutionPolicy } from "../tools/tool-execution-policy.js";
 
 const listSchema = listTaskContextsInputSchema.omit({ conversationId: true, projectId: true, teamInstanceId: true });
 const updateSchema = z.object(updateTaskContextInputSchema.shape).omit({ conversationId: true, requestId: true });
-const postSchema = z.object(postTeamChatInputSchema.shape).omit({ teamInstanceId: true, requestId: true }).extend({
+const postSchema = z.object(postTeamChatInputSchema.shape).omit({ teamInstanceId: true, requestId: true, coordinator: true, supersedesId: true }).extend({
   intent: z.enum(["notify", "request"]).default("notify"),
   content: postTeamChatInputSchema.shape.content.describe("The public message itself, in the conversation's language. Speak naturally in the first person from your configured role, with a concrete observation or question when useful. The UI shows your name and avatar: start with your answer, without a name/job-title prefix, repeated quotation or boilerplate receipt, even if older messages used those forms. Reply directly to greetings and casual conversation; do not explain routing or tell the speaker to use mentions unless they ask."),
 });
@@ -99,7 +99,9 @@ export class CollaborationTool {
             through = message.sequence;
           }
           if (through > marker) store.markRead({ teamInstanceId: instance.id, throughSequence: through }, conversation.id);
-          result = { ...page, messages, memberReadSequence: through, nextAfterSequence: messages.at(-1)?.sequence ?? marker, members: store.members(instance.id) }; break;
+          result = { ...page, messages: messages.map(message => ({ ...message,
+            perspective: message.senderConversationId === null ? "user" : message.senderConversationId === conversation.id ? "self" : "member" })),
+            memberReadSequence: through, nextAfterSequence: messages.at(-1)?.sequence ?? marker, members: store.members(instance.id) }; break;
         }
         case "post_team_message": {
           if (instance === null) throw new Error("TEAM_MEMBER: Conversation is not in a team.");

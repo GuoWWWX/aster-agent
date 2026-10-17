@@ -10,6 +10,9 @@ import { UserMessageContent } from "./user-message-content.js";
 import { TeamChatSourceContent } from "../team/team-chat-source-content.js";
 import { ChatMessageBubble } from "./chat-message-bubble.js";
 import { TeamChatWorkspace } from "../team/team-chat-workspace.js";
+import { ChatMessageMeta, formatConversationTime, formatConversationDateTime } from "./chat-message-meta.js";
+import type { PostTeamChatInput } from "@agent/protocol";
+export { formatConversationTime } from "./chat-message-meta.js";
 import { TeamChatPanel } from "../team/team-chat-panel.js";
 import { createPastedTextAttachment } from "./pasted-text-attachment.js";
 import { MAX_DRAFT_ATTACHMENTS, MAX_DRAFT_ATTACHMENT_BYTES, getClipboardAttachmentFiles, pastedAttachmentName, readAttachmentFileAsBase64 } from "./clipboard-attachments.js";
@@ -940,7 +943,7 @@ export function ConversationWorkspace({
   teamInstances?: readonly TeamInstanceView[];
   /** A Team WorkItem owns execution policy; its Timeline still supports controlled user input. */
   teamManaged?: boolean;
-  groupChat?: { instanceId: string; focusMessageId?: string } | null;
+  groupChat?: { instanceId: string; focusMessageId?: string; initialAgentId?: string } | null;
 }): ReactElement {
   const headingId = useId();
   const agentProfiles = useAgentDirectoryStore((state) => state.agents);
@@ -963,8 +966,8 @@ export function ConversationWorkspace({
   );
   const [selectedAgentId, setSelectedAgentId] = useState(() =>
     readConversationAgentSelection(
-      session.id,
-      session.agentId ?? defaultAgent?.id ?? "",
+      groupChat?.instanceId ?? session.id,
+      (groupChat === null ? session.agentId : groupChat.initialAgentId) ?? defaultAgent?.id ?? "",
     ),
   );
   const [composerValue, setComposerValue] = useState("");
@@ -1075,6 +1078,16 @@ export function ConversationWorkspace({
       ? "auto"
       : modelReasoningOptionKey(initialModelSelection.reasoning)
   ));
+  const groupOwnerRef = useRef<PostTeamChatInput["coordinator"] | null>(null);
+  const loadGroupOwner = useCallback((owner: PostTeamChatInput["coordinator"] | null): void => {
+    if (owner == null) return;
+    groupOwnerRef.current = owner;
+    setSelectedAgentId(owner.agentId);
+    if (owner.modelSelection != null) {
+      setSelectedModelKey(modelKey(owner.modelSelection));
+      setSelectedReasoningOptionKey(owner.modelSelection.reasoning == null ? "auto" : modelReasoningOptionKey(owner.modelSelection.reasoning));
+    }
+  }, []);
   const [taskListAction, setTaskListAction] = useState<"closing" | null>(null);
   const [taskList, setTaskList] = useState<ConversationTaskList | null>(null);
   const [timeline, setTimeline] = useState<ConversationTimelineItem[]>([]);
@@ -1161,7 +1174,7 @@ export function ConversationWorkspace({
         }]
         : [];
   const enabledAgentProfiles = agentProfiles.filter((agent) => agent.enabled);
-  const selectedAgent = session.agentId === null
+  const selectedAgent = groupChat !== null || session.agentId === null
     ? enabledAgentProfiles.find((agent) => agent.id === selectedAgentId) ?? defaultAgent ?? enabledAgentProfiles[0]
     : agentProfiles.find((agent) => agent.id === session.agentId);
   const slashMenuOpen = slashQuery !== null;
@@ -1201,7 +1214,8 @@ export function ConversationWorkspace({
   const modelDisplayName = activeModel?.displayName ?? session.modelSelection?.modelId ?? "未配置模型";
 
   useEffect(() => {
-    const selection = session.modelSelection ?? modelStatus?.recentSelection ?? null;
+    const selection = groupInstanceId !== undefined ? groupOwnerRef.current?.modelSelection ?? session.modelSelection ?? modelStatus?.recentSelection ?? null
+      : session.modelSelection ?? modelStatus?.recentSelection ?? null;
     setSelectedModelKey(selection === null
       ? ""
       : modelKey({ modelId: selection.modelId, providerId: selection.providerId }));
@@ -1210,6 +1224,7 @@ export function ConversationWorkspace({
       : modelReasoningOptionKey(selection.reasoning));
   }, [
     modelStatus?.recentSelection,
+    groupInstanceId,
     session.id,
     session.modelSelection,
   ]);
@@ -2222,12 +2237,15 @@ export function ConversationWorkspace({
         if (draftAttachments.length > 0) throw new Error("群聊附件发送尚未接入，附件已保留。可先在成员对话中发送。");
         const roster = await agentClient.getTeamChatMembers({ teamInstanceId: groupChat.instanceId });
         const body = { teamInstanceId: groupChat.instanceId, content, intent: "request" as const,
-          recipientConversationIds: selectedConversationMentions.map(item => item.id).filter(id => roster.some(member => member.conversationId === id)) };
+          recipientConversationIds: selectedConversationMentions.map(item => item.id).filter(id => roster.some(member => member.conversationId === id)),
+          supersedesId: editingMessageId,
+          ...(selectedAgent === undefined ? {} : { coordinator: { agentId: selectedAgent.id,
+            modelSelection: activeModel === undefined ? null : { providerId: activeModel.providerId, modelId: activeModel.modelId, reasoning: selectedReasoningOption ?? null } } }) };
         const fingerprint = JSON.stringify(body);
         if (groupRequestRef.current?.fingerprint !== fingerprint) groupRequestRef.current = { fingerprint, id: crypto.randomUUID() };
         await agentClient.postTeamChat({ ...body, requestId: groupRequestRef.current.id });
         groupRequestRef.current = null;
-        setComposerValue(""); setMentionQuery(null); setSlashQuery(null); setSelectedConversationMentions([]);
+        setComposerValue(""); setEditingMessageId(null); setEditingAttachments(null); setMentionQuery(null); setSlashQuery(null); setSelectedConversationMentions([]);
         setSelectedTeamMentions([]); setSelectedProjectFileMentions([]);
       } catch (error) { setOperationError(getUserErrorMessage(error, "群消息发送失败")); }
       finally { setIsSending(false); refocusComposer(); }
@@ -3111,7 +3129,7 @@ export function ConversationWorkspace({
   const isModelUnavailable = !isMockRuntime && modelStatus?.configured === false;
   const hasActiveModelRun = activeRunId !== null;
   const isRunning = hasActiveModelRun || activeSubagentCount > 0;
-  const shouldShowStopButton = isRunning && !isEditingComposerMessage;
+  const shouldShowStopButton = groupChat === null && isRunning && !isEditingComposerMessage;
   const subagentConversationIds = useMemo(
     () => new Set([session, ...relatedSessions]
       .filter((candidate) => candidate.threadKind === "subagent")
@@ -3233,10 +3251,10 @@ export function ConversationWorkspace({
     && onAddProject !== undefined
     && onSessionUpdated !== undefined;
   const canChangeAgent =
-    !isLoadingTimeline
+    groupChat !== null || (!isLoadingTimeline
     && session.agentId === null
     && !isEndedSubagent
-    && !teamManaged;
+    && !teamManaged);
   const changeSummaries = useMemo(() => conversationChangeSummaries(timeline), [timeline]);
   const activeFileChanges = activeRunId === null ? undefined : changeSummaries.get(activeRunId);
   const changeCards = conversationChangeAnchors(changeSummaries, displayTimeline, activeRunId);
@@ -3378,6 +3396,13 @@ export function ConversationWorkspace({
         className="conversation-workspace__surface"
       >
         {groupChat !== null ? <TeamChatPanel agentClient={agentClient} teamInstanceId={groupChat.instanceId} active={active} composerClearance={composerOverlayHeight}
+          onCoordinatorLoaded={loadGroupOwner} editingMessageId={editingMessageId}
+          onEditMessage={message => {
+            setEditingMessageId(message.id); setEditingPendingMessageId(null); setEditingAttachments([]); setComposerValue(message.content);
+            setSelectedConversationMentions(relatedSessions.filter(item => message.recipientConversationIds.includes(item.id)));
+            setSelectedTeamMentions([]); setSelectedProjectFileMentions([]); setOperationError(null);
+            queueMicrotask(() => composerRef.current?.focus());
+          }}
           {...(groupChat.focusMessageId === undefined ? {} : { focusMessageId: groupChat.focusMessageId })}
           onOpenConversation={(conversation, messageId) => onOpenTeamConversation?.({ ...conversation, pinOrder: conversation.pinOrder ?? null }, undefined, messageId)} /> : <>
         <ConversationFindBar
@@ -4013,7 +4038,7 @@ export function ConversationWorkspace({
                     value={selectedAgent.id}
                     onValueChange={(agentId) => {
                       setSelectedAgentId(agentId);
-                      saveConversationAgentSelection(session.id, agentId);
+                      saveConversationAgentSelection(groupChat?.instanceId ?? session.id, agentId);
                     }}
                   >
                     <SelectTrigger
@@ -5224,38 +5249,6 @@ export function projectSubagentMessagesForParentTimeline(
   return projected;
 }
 
-export function formatConversationTime(createdAt: string, now = new Date()): string {
-  const timestamp = new Date(createdAt);
-  if (Number.isNaN(timestamp.getTime())) return "";
-
-  const isSameDay = timestamp.getFullYear() === now.getFullYear()
-    && timestamp.getMonth() === now.getMonth()
-    && timestamp.getDate() === now.getDate();
-  if (isSameDay) return formatLocalClock(timestamp);
-
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  const isYesterday = timestamp.getFullYear() === yesterday.getFullYear()
-    && timestamp.getMonth() === yesterday.getMonth()
-    && timestamp.getDate() === yesterday.getDate();
-  if (isYesterday) return `昨天 ${formatLocalClock(timestamp)}`;
-
-  if (timestamp.getFullYear() === now.getFullYear()) {
-    return `${timestamp.getMonth() + 1}月${timestamp.getDate()}日 ${formatLocalClock(timestamp)}`;
-  }
-  return `${timestamp.getFullYear()}年${timestamp.getMonth() + 1}月${timestamp.getDate()}日 ${formatLocalClock(timestamp)}`;
-}
-
-function formatConversationDateTime(createdAt: string): string {
-  const timestamp = new Date(createdAt);
-  if (Number.isNaN(timestamp.getTime())) return "";
-  return `${timestamp.getFullYear()}年${timestamp.getMonth() + 1}月${timestamp.getDate()}日 ${formatLocalClock(timestamp)}`;
-}
-
-function formatLocalClock(timestamp: Date): string {
-  return `${String(timestamp.getHours()).padStart(2, "0")}:${String(timestamp.getMinutes()).padStart(2, "0")}`;
-}
-
 export function groupRunActivities(
   timeline: ConversationTimelineItem[],
 ): TimelineDisplayItem[] {
@@ -6257,65 +6250,15 @@ function TimelineItem({
       ) : null}
       {item.role === "assistant" ? messageAttachments : null}
       {afterMessage}
-      {showMessageMeta ? <div className="chat-message__meta">
-        {item.role === "user" ? (
-          <time dateTime={item.createdAt} title={formatConversationDateTime(item.createdAt)}>
-            {formatConversationTime(item.createdAt)}
-          </time>
-        ) : null}
-        {canCopyMessage ? (
-          <IconButton
-            disabled={item.content.length === 0}
-            label={copied
-              ? item.role === "user" ? "已复制消息" : "已复制完整回复"
-              : item.role === "user" ? "复制消息" : "复制完整回复"}
-            size="compact"
-            type="button"
-            variant="quiet"
-            onClick={() => void onCopyMessage(item)}
-          >
-            {copied ? (
-              <Check aria-hidden="true" size={14} />
-            ) : (
-              <Copy aria-hidden="true" size={14} />
-            )}
-          </IconButton>
-        ) : null}
-        {item.role === "assistant" ? (
-          canForkMessage ? (
-            <IconButton
-              disabled={isForking}
-              label={isForking ? "正在创建分支对话" : "从此回复创建分支对话"}
-              size="compact"
-              type="button"
-              variant="quiet"
-              onClick={() => void onForkMessage(item)}
-            >
-              {isForking ? (
-                <Spinner aria-hidden="true" size={14} />
-              ) : (
-                <GitFork aria-hidden="true" size={14} />
-              )}
-            </IconButton>
-          ) : null
-        ) : canEdit ? (
-          <IconButton
-            disabled={editing}
-            label={editing ? "正在编辑" : "编辑并重新生成"}
-            size="compact"
-            type="button"
-            variant={editing ? "selected" : "quiet"}
-            onClick={() => onEditMessage(item)}
-          >
-            <Pencil aria-hidden="true" size={14} />
-          </IconButton>
-        ) : null}
-        {item.role === "assistant" && canShowCompletionTime && item.completedAt != null ? (
-          <time dateTime={item.completedAt} title={formatConversationDateTime(item.completedAt)}>
-            {formatConversationTime(item.completedAt)}
-          </time>
-        ) : null}
-      </div> : null}
+      {showMessageMeta ? <ChatMessageMeta role={item.role} content={item.content} createdAt={item.createdAt}
+        completedAt={canShowCompletionTime ? item.completedAt ?? null : null} copied={copied} editing={editing}
+        {...(canCopyMessage ? { onCopy: () => void onCopyMessage(item) } : {})}
+        {...(canEdit ? { onEdit: () => onEditMessage(item) } : {})}>
+        {item.role === "assistant" && canForkMessage ? <IconButton disabled={isForking}
+          label={isForking ? "正在创建分支对话" : "从此回复创建分支对话"} size="compact" type="button" variant="quiet" onClick={() => void onForkMessage(item)}>
+          {isForking ? <Spinner aria-hidden="true" size={14} /> : <GitFork aria-hidden="true" size={14} />}
+        </IconButton> : null}
+      </ChatMessageMeta> : null}
     </div>
   );
 }

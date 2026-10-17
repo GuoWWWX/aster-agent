@@ -7,6 +7,7 @@ import path from "node:path";
 import { DatabaseMigrationRunner } from "./database-migration-runner.js";
 import { LANGGRAPH_CHECKPOINT_BLOBS_SCHEMA } from "./langgraph-checkpoint-schema.js";
 import { CollaborationStore, COLLABORATION_SCHEMA } from "./collaboration-store.js";
+import { TeamChatJournal } from "./team-chat-journal.js";
 import { z } from "zod";
 import {
   MAX_TEAM_COLLABORATION_OUTPUT_LENGTH,
@@ -1344,7 +1345,7 @@ export class AgentDatabase {
   private volatileConversationProjectionActive = false;
   public readonly collaboration: CollaborationStore;
 
-  public constructor(databasePath: string) {
+  public constructor(databasePath: string, teamChatJournal?: TeamChatJournal) {
     this.databasePath = databasePath;
     this.database = new DatabaseSync(databasePath);
     this.database.exec("PRAGMA foreign_keys = ON;");
@@ -1364,7 +1365,7 @@ export class AgentDatabase {
         }, binding: id => this.getConversationAgentBinding(id),
         sourceExists: source => this.listTimeline(source.containerId).some(item => item.id === source.messageId),
         outcome: (id, runId) => this.getConversationRunOutcome(id, runId),
-      });
+      }, teamChatJournal ?? new TeamChatJournal(databasePath === ":memory:" ? null : path.join(path.dirname(databasePath), "team-chats")));
       if (this.isJsonlConversationStorageFinalized()) {
         this.activateVolatileConversationProjection();
       }

@@ -16,6 +16,7 @@ export function TeamChatWorkspace({ agentClient, instance, active, focusMessageI
   const [previousFocus, setPreviousFocus] = useState(focusMessageId);
   if (previousFocus !== focusMessageId) { setPreviousFocus(focusMessageId); setDirectoryOpen(false); }
   const lead = sessions.find(session => session.id === instance.rootConversationId);
+  const sourceAgentId = sessions.find(session => session.id === instance.sourceConversationId)?.agentId;
   return <section aria-label={`${instance.name}群聊对话`} className="conversation-workspace">
     <header className="conversation-workspace__header">
       <div className="conversation-workspace__path"><UsersRound size={14} /><strong className="min-w-0 truncate">{instance.name}</strong><span>群聊</span></div>
@@ -25,7 +26,7 @@ export function TeamChatWorkspace({ agentClient, instance, active, focusMessageI
       {lead === undefined ? <LoadingState label="正在加载团队对话" /> : <ConversationWorkspace agentClient={agentClient} session={lead} active={active && !directoryOpen}
         project={projects.find(project => project.id === lead.projectId) ?? null} projects={projects} relatedSessions={sessions} onSessionUpdated={onSessionUpdated}
         onOpenTeamConversation={(conversation, _sourceConversationId, messageId) => { void agentClient.listConversationHierarchy().then(hierarchy => { const original = hierarchy.find(item => item.id === conversation.id); if (original) onOpenConversation(original, messageId); }); }}
-        groupChat={{ instanceId: instance.id, ...(focusMessageId === undefined ? {} : { focusMessageId }) }} />}
+        groupChat={{ instanceId: instance.id, ...(sourceAgentId == null ? {} : { initialAgentId: sourceAgentId }), ...(focusMessageId === undefined ? {} : { focusMessageId }) }} />}
     </div>
     {directoryOpen ? <div className="flex min-h-0 flex-1 p-3"><TaskContextDirectory agentClient={agentClient} teamInstanceId={instance.id} onOpenConversation={onOpenConversation} /></div> : null}
   </section>;

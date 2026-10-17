@@ -1732,7 +1732,8 @@ export class MockAgentClient implements AgentClient {
   public readTeamChat(input: ReadTeamChatInput): Promise<TeamChatPage> {
     const all = this.groupMessages.filter(message => message.teamInstanceId === input.teamInstanceId && (input.beforeSequence === undefined || message.sequence < input.beforeSequence));
     const messages = all.slice(-(input.limit ?? 30));
-    return Promise.resolve(structuredClone({ messages, nextBeforeSequence: all.length > messages.length ? messages[0]!.sequence : null, userReadSequence: this.groupRead.get(input.teamInstanceId) ?? 0, memberReadSequence: 0 }));
+    return Promise.resolve(structuredClone({ messages, nextBeforeSequence: all.length > messages.length ? messages[0]!.sequence : null, userReadSequence: this.groupRead.get(input.teamInstanceId) ?? 0, memberReadSequence: 0,
+      coordinator: this.groupMessages.findLast(message => message.teamInstanceId === input.teamInstanceId && message.coordinator != null)?.coordinator ?? null }));
   }
   public async postTeamChat(raw: PostTeamChatInput): Promise<TeamChatMessage> {
     const input = postTeamChatInputSchema.parse(raw); const members = await this.getTeamChatMembers(input);
@@ -1744,6 +1745,7 @@ export class MockAgentClient implements AgentClient {
       content: input.content, senderConversationId: null, senderName: "你", intent: input.intent,
       recipientConversationIds: recipients, taskContextId: input.taskContextId, replyToId: input.replyToId,
       createdAt: new Date().toISOString(), sourceRunId: null, rootMessageId: id, depth: 0,
+      supersedesId: input.supersedesId, coordinator: input.coordinator === undefined ? null : { ...input.coordinator, modelSelection: input.coordinator.modelSelection ?? null, status: "completed", error: null },
       deliveries: recipients.map(conversationId => ({ id: crypto.randomUUID(), conversationId, status: "pending", runId: null, error: null })),
     };
     this.groupMessages.push(message);

@@ -17,6 +17,7 @@ import {
 } from "@agent/protocol";
 
 import { AgentRuntime } from "../agent/agent-runtime.js";
+import { backupLegacyTeamChatDatabase, TeamChatJournal } from "../storage/team-chat-journal.js";
 import { SkillRuntime } from "../agent/skill-runtime.js";
 import { SYSTEM_SKILLS } from "../agent/prompts/prompt-assets.js";
 import { reportMainError, toMainAgentError } from "../errors/agent-error.js";
@@ -240,7 +241,9 @@ async function initializeServices(): Promise<DesktopServices> {
   const settings = new SettingsJsoncFile(agentHome.paths.settingsPath);
   settings.ensureFile();
   migrateLegacyPluginSettings(settings, agentHome.paths.databasePath);
-  const database = new AgentDatabase(agentHome.paths.databasePath);
+  await backupLegacyTeamChatDatabase(agentHome.paths.databasePath);
+  const database = new AgentDatabase(agentHome.paths.databasePath,
+    new TeamChatJournal(path.join(agentHome.paths.rootPath, "team-chats")));
   database.importLegacyCheckpointDatabases(agentHome.legacyCheckpointDatabasePaths);
   const pluginCatalog = new PluginCatalog(settings, agentHome.paths.pluginsPath);
   await pluginCatalog.synchronize();

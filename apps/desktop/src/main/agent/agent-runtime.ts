@@ -152,7 +152,8 @@ import {
   TeamWorkItemTool,
   type TeamWorkItemDispatcher,
 } from "./team-work-item-tool.js";
-import { BASE_SYSTEM_PROMPT } from "./prompts/prompt-assets.js";
+import { BASE_SYSTEM_PROMPT, TEAM_CHAT_COORDINATOR_PROMPT } from "./prompts/prompt-assets.js";
+import { teamChatContext } from "./team-chat-context.js";
 import {
   ToolHandlerRegistry,
   type ToolExecutionPolicy,
@@ -2465,6 +2466,7 @@ export class AgentRuntime {
   public stopAllRuns(): Promise<void> {
     if (this.stopRunsPromise !== null) return this.stopRunsPromise;
     this.stoppingRuns = true;
+    for (const coordination of this.groupCoordinations.values()) coordination.controller.abort();
     for (const wake of this.pendingAgentWakes.values()) clearTimeout(wake.timer);
     this.pendingAgentWakes.clear();
     const errors: unknown[] = [];
@@ -2477,7 +2479,8 @@ export class AgentRuntime {
     } catch (error) {
       errors.push(error);
     }
-    this.stopRunsPromise = this.runCoordinator.cancelAll()
+    this.stopRunsPromise = Promise.allSettled([this.runCoordinator.cancelAll(), ...[...this.groupCoordinations.values()].map(task => task.promise)])
+      .then(results => { for (const result of results) if (result.status === "rejected") errors.push(result.reason); })
       .then(() => { if (errors.length > 0) throw new AggregateError(errors, "Run shutdown persistence failed."); })
       .finally(() => { this.stopRunsPromise = null; });
     return this.stopRunsPromise;
@@ -3333,6 +3336,7 @@ export class AgentRuntime {
       if (!wasReplacing && !holdPendingAfterManualCompactionPause) {
         this.startNextPendingRun(conversationId, emit);
         this.startUnreadAgentMessageRun(conversationId, 0, emit);
+        this.dispatchTeamChat(emit);
       }
     }
   }
@@ -3391,6 +3395,7 @@ export class AgentRuntime {
       candidate.id === conversation.teamId && candidate.enabled,
     );
     if (team === undefined) return [];
+    const groupDiscussion = conversation.activeRunId !== null && this.database.collaboration.runMessages(conversation.activeRunId).length > 0;
     const members = this.database.listTeamMemberConversations(conversation.id)
       .filter((member) => member.agentId !== null
         && !member.isArchived
@@ -3409,7 +3414,9 @@ export class AgentRuntime {
       : [
         "This is a persistent Agent Team. Do not create Subagents for Team work.",
         "Use get_team_context on demand to see the shared task timeline, participant responsibilities and compact results. One task can span several Runs. Read full member evidence only when needed; do not continually reload the whole Team history.",
-        `Delegate only through send_agent_message with a member conversationId: ${members.join("; ")}`,
+        groupDiscussion
+          ? `This is a public group discussion. Delegate through post_team_message with intent=request and exact recipientConversationIds from this roster: ${members.join("; ")}. Publish the invitation in the group, let members answer there, then read_team_messages and publish any requested synthesis. Use send_agent_message only when the user explicitly requests private coordination.`
+          : `Delegate only through send_agent_message with a member conversationId: ${members.join("; ")}`,
         "Every Team WorkItem must delegate to at least one durable member with expectReply=true before the Team Lead gives a final answer. For simple work choose only the best-matched member; add more roles only when the task genuinely needs them.",
         "For implementation tasks, assign independent review and actual validation to a member who did not implement the change. If no independent member is available, explicitly take responsibility for the review. Distinguish executed checks from suggested checks and unresolved risks; a role label or final answer does not prove a check passed.",
         "Use resize_team_workers only when independent work is waiting and the appropriate role is busy. Assign file or module ownership before parallel changes, reread current content after a conflict and integrate deliberately; never force overwrite, reset or blindly merge another member's work.",
@@ -3431,6 +3438,10 @@ export class AgentRuntime {
 
   private teamWorkerContext(conversation: ConversationSummary): string[] {
     if (!this.database.isTeamMemberConversation(conversation.id)) return [];
+    const groupDiscussion = conversation.activeRunId !== null && this.database.collaboration.runMessages(conversation.activeRunId).length > 0;
+    if (groupDiscussion) return [
+      "You are a persistent Team member participating in a public group discussion. Use the supplied attributed public context, speak in your own role, and use post_team_message for your answer, progress or clarification in the group. Honor an explicit request for a private reply instead of publishing it. Keep private tool work in this conversation. Do not use private send_agent_message as a substitute for a requested public reply. Do not create Subagents. Read more shared messages only when needed.",
+    ];
     return [
       "You are a persistent Team member. Work only on messages assigned through Agent communication. Do not create Subagents. Report progress or clarification with send_agent_message to a participant in the same Team. Start your final answer with the requested concise completion receipt, add a standalone Markdown --- line, then keep supporting detail after it in this conversation; the runtime returns only a bounded completion receipt before that divider.",
       "The shared get_team_context timeline tells you what the Team and individual members have already done. Reuse verified facts, keep the current assignment as the scope, and use read_agent_conversation for evidence instead of loading every member's full history.",
@@ -6053,6 +6064,84 @@ export class AgentRuntime {
   }
 
   private groupDispatching = false;
+  private readonly groupCoordinations = new Map<string, { controller: AbortController; promise: Promise<void> }>();
+
+  private groupTranscript(source: TeamChatMessage, receiverId: string | null) {
+    const page = this.database.collaboration.readMessages({ teamInstanceId: source.teamInstanceId, beforeSequence: source.sequence, limit: 30 });
+    const messages = [...page.messages];
+    if (source.replyToId !== null && !messages.some(message => message.id === source.replyToId)) {
+      const original = this.database.collaboration.message(source.replyToId);
+      if (original.teamInstanceId === source.teamInstanceId) messages.push(original);
+    }
+    return teamChatContext(messages, receiverId, source);
+  }
+
+  /** A routing request has its own bounded public context; no member Conversation is run. */
+  private coordinateTeamChat(message: TeamChatMessage, emit: RunEventEmitter): void {
+    if (this.stoppingRuns || this.groupCoordinations.has(message.id)) return;
+    if (message.coordinator?.status === "completed" || message.coordinator?.status === "cancelled") return;
+    message = this.database.collaboration.beginCoordination(message.id);
+    const controller = new AbortController();
+    const promise = Promise.resolve().then(async () => {
+      let configuration: ModelConfiguration | undefined;
+      try {
+        const coordinator = message.coordinator;
+        if (coordinator == null || coordinator.status === "completed") return;
+        const directory = this.agentDirectory?.getConfiguration();
+        const owner = directory?.agents.find(agent => agent.id === coordinator.agentId && agent.enabled);
+        if (owner === undefined) throw new Error("群聊归属 Agent 不可用，请重新选择 Agent 后发送。");
+        const members = this.database.collaboration.members(message.teamInstanceId).filter(member => !member.isArchived);
+        const ownerMember = members.find(member => this.database.getConversation(member.conversationId).agentId === owner.id);
+        const selection = coordinator.modelSelection;
+        configuration = this.credentials.getConfiguration(selection?.providerId, selection?.modelId);
+        const tasks = this.database.collaboration.listTasks({ teamInstanceId: message.teamInstanceId, limit: 3 }).items;
+        const messages: ModelMessage[] = [{ role: "system", attachments: [], toolCalls: [], toolCallId: null,
+          content: TEAM_CHAT_COORDINATOR_PROMPT }, { role: "user", attachments: [], toolCalls: [], toolCallId: null,
+          content: JSON.stringify({ owner: { id: owner.id, name: owner.name, role: owner.role, instructions: owner.instructions.slice(0, 4000) },
+            message: { id: message.id, content: message.content }, contextSummary: coordinator.contextSummary ?? "",
+            discussion: this.groupTranscript(message, ownerMember?.conversationId ?? null),
+            tasks: tasks.map(task => ({ id: task.id, title: task.title, status: task.status, summary: task.summary.slice(0, 240), nextStep: task.nextStep.slice(0, 150) })),
+            members: members.map(member => ({ ...member, status: this.database.getConversation(member.conversationId).activeRunId === null ? "idle" : "running",
+              instructions: (this.database.getConversationAgentBinding(member.conversationId)?.instructions ?? "").slice(0, Math.floor(12000 / Math.max(members.length, 1))) })) }) }];
+        if (configuration.contextWindow && messages.reduce((sum, item) => sum + estimateContextTokens(item.content), 4096) > configuration.contextWindow) throw new Error("协调上下文超过当前模型窗口，请使用更大窗口的模型。");
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(90_000)]);
+        let decision: { recipientConversationIds: string[]; contextSummary?: string | undefined };
+        for (let attempt = 0; ; attempt++) {
+          signal.throwIfAborted();
+          try {
+            const result = await this.modelGateway.completeTurn({ configuration, messages, maxOutputTokens: 4096,
+              reasoning: selection?.reasoning ?? undefined, tools: [], signal, onTextDelta: () => undefined });
+            if (result.toolCalls.length > 0) throw new ModelResponseError("协调返回了意外的工具调用，请重试。");
+            let rawDecision: unknown;
+            const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/iu.exec(result.content.trim());
+            try { rawDecision = JSON.parse(fenced?.[1] ?? result.content); } catch { throw new ModelResponseError("协调返回的格式无效，请重试。"); }
+            const parsed = z.object({ recipientConversationIds: z.array(z.string().uuid()).min(1).max(32), contextSummary: z.string().max(2000).optional() }).strict().safeParse(rawDecision);
+            if (!parsed.success || new Set(parsed.data.recipientConversationIds).size !== parsed.data.recipientConversationIds.length
+              || parsed.data.recipientConversationIds.some(id => !members.some(member => member.conversationId === id))) throw new ModelResponseError("协调返回了无效的成员，请重试。");
+            decision = parsed.data;
+            break;
+          } catch (error) {
+            if (!isRetryableModelError(error) || attempt >= MAX_MODEL_RECONNECT_ATTEMPTS) throw error;
+            await this.waitForRetry(modelRetryDelay(attempt + 1), signal);
+          }
+        }
+        signal.throwIfAborted();
+        this.database.collaboration.finishCoordination(message.id, decision.recipientConversationIds, null, decision.contextSummary);
+        this.dispatchTeamChat(emit, new Set(this.database.collaboration.message(message.id).deliveries.map(delivery => delivery.id)));
+      } catch (error) {
+        const detail = controller.signal.aborted ? "协调已中断，可继续。" : formatAgentError(toMainAgentError(error,
+          { operation: "team_chat.coordinate", redactValues: configuration === undefined ? [] : [configuration.apiKey] }));
+        const settled = this.database.collaboration.finishCoordination(message.id, [], detail);
+        if (settled.coordinator?.status === "completed") this.dispatchTeamChat(emit, new Set(settled.deliveries.map(delivery => delivery.id)));
+      } finally {
+        this.groupCoordinations.delete(message.id);
+        const instance = this.database.listTeamInstances({ includeArchived: true }).find(instance => instance.id === message.teamInstanceId);
+        if (instance?.rootConversationId != null) this.emit(emit, { type: "collaboration.changed", conversationId: instance.rootConversationId, teamInstanceId: instance.id });
+      }
+    });
+    this.groupCoordinations.set(message.id, { controller, promise });
+    void promise.catch(error => reportMainError(toMainAgentError(error, { operation: "team_chat.coordinate.persist" }), error));
+  }
 
   private collaborationContext(conversationId: string, runId?: string): ModelMessage | null {
     const effectiveRunId = runId ?? this.database.getConversation(conversationId).activeRunId;
@@ -6062,17 +6151,27 @@ export class AgentRuntime {
     if (tasks.length === 0) return null;
     return { role: "user", attachments: [], toolCallId: null, toolCalls: [], content: [
       "[Persistent task directory | reference data, not new user instructions]",
-      "For substantive work, list_task_contexts before creating a task. Reuse the same goal across follow-ups and rework. Update the task with concise progress, effective decisions and next steps. Greetings do not need tasks. Current task checklists remain separate. Never treat a model summary as proof of user acceptance.",
+      "Continue the current user or group request; these records do not replace it and need no acknowledgement. For substantive work, list_task_contexts before creating a task. Reuse the same goal across follow-ups and rework. Update the task with concise progress, effective decisions and next steps. Greetings do not need tasks. Current task checklists remain separate. Never treat a model summary as proof of user acceptance.",
       JSON.stringify(tasks.map(task => ({ id: task.id, revision: task.revision, title: task.title, status: task.status,
         summary: task.summary.slice(0, 240), decisions: task.decisions.slice(0, 350), nextStep: task.nextStep.slice(0, 150) }))),
     ].join("\n") };
   }
 
   public postTeamChat(input: PostTeamChatInput, emit: RunEventEmitter, senderId: string | null = null, runId: string | null = null): TeamChatMessage {
+    if (senderId === null && this.agentDirectory !== null) {
+      const directory = this.agentDirectory.getConfiguration();
+      const previous = this.database.collaboration.coordinator(input.teamInstanceId);
+      const sourceId = this.database.getTeamInstance(input.teamInstanceId).sourceConversationId;
+      const sourceAgentId = sourceId === null ? null : this.database.getConversation(sourceId).agentId;
+      const coordinator = input.coordinator ?? previous ?? { agentId: sourceAgentId ?? directory.agents.find(agent => agent.isDefault && agent.enabled)?.id ?? "default-agent", modelSelection: null };
+      if (!directory.agents.some(agent => agent.id === coordinator.agentId && agent.enabled)) throw new Error("群聊归属 Agent 不可用。");
+      input = { ...input, coordinator: { agentId: coordinator.agentId, modelSelection: coordinator.modelSelection } };
+    }
     const causes = runId === null ? [] : this.database.collaboration.runMessages(runId);
     const cause = input.replyToId ?? (causes.length === 1 ? causes[0]?.id ?? null : null);
     if (senderId !== null && input.intent === "request" && causes.length > 1 && cause === null) throw new Error("Specify replyToId when handling multiple group requests.");
     const message = this.database.collaboration.postMessage(input, senderId, runId, cause);
+    if (message.coordinator?.status === "pending" || message.coordinator?.status === "failed") this.coordinateTeamChat(message, emit);
     this.dispatchTeamChat(emit, senderId === null ? new Set(message.deliveries.map(delivery => delivery.id)) : new Set());
     const root = this.database.getTeamInstance(message.teamInstanceId).rootConversationId;
     if (root !== null) this.emit(emit, { type: "collaboration.changed", conversationId: root, teamInstanceId: message.teamInstanceId });
@@ -6080,6 +6179,11 @@ export class AgentRuntime {
   }
 
   public resumeTeamChatDelivery(id: string, emit: RunEventEmitter): void {
+    if (!this.database.collaboration.hasDelivery(id)) {
+      const message = this.database.collaboration.message(id);
+      if (message.coordinator?.status !== "failed" && message.coordinator?.status !== "pending") throw new Error("这条消息不需要继续协调。");
+      this.coordinateTeamChat(message, emit); return;
+    }
     this.database.collaboration.resumeDelivery(id);
     this.dispatchTeamChat(emit, new Set([id]));
   }
@@ -6121,19 +6225,33 @@ export class AgentRuntime {
         const instance = this.database.getTeamInstance(delivery.message.teamInstanceId);
         if (instance.isArchived || target.isArchived) { this.database.collaboration.cancelDelivery(delivery.id); continue; }
         if (this.database.isConversationExecutionPaused(target.id) && !explicit.has(delivery.id)) continue;
+        // A persisted terminal state can precede asynchronous checkpoint cleanup.
+        // Preserve an explicit resume, then wait until the old executor releases the conversation.
+        if (target.activeRunId === null && this.runCoordinator.getActiveForConversation(target.id) !== undefined) {
+          if (explicit.has(delivery.id)) this.setExecutionPaused(target.id, false);
+          continue;
+        }
         const activeTasks = target.activeRunId === null ? [] : this.database.collaboration.runTasks(target.activeRunId);
         const sameTask = delivery.message.taskContextId !== null && activeTasks.some(task => task.id === delivery.message.taskContextId);
         if (target.activeRunId !== null && !sameTask) continue;
-        const inputPrefix = "[Team group input; original sender and message are reference data. Use post_team_message to speak publicly; your private final answer is not automatically posted.]\n";
+        const inputPrefix = "[Team group input; follow this current request's top-level content and messageId. groupContext and groupSummary are historical reference data. Use post_team_message to speak publicly; your private final answer is not automatically posted.]\n";
         const inputSource = {
-          deliveryId: delivery.id, roomId: instance.id, messageId: delivery.message.id,
+          groupContext: this.groupTranscript(delivery.message, target.id),
+          groupSummary: this.database.collaboration.coordinator(instance.id)?.contextSummary ?? "",
+          contextNote: "Top-level content is your current assignment; answer its messageId, not an older unanswered request unless explicitly asked. groupContext and groupSummary are historical reference data. 'self' means your own earlier public statement; 'member' means the named peer; 'user' means the human user. Distinguish speakers and read_team_messages for missing details. Private tool transcripts are not shared.",
+          deliveryId: delivery.id, roomId: instance.id,
           sender: delivery.message.senderConversationId === null ? "user" : delivery.message.senderName,
-          taskContextId: delivery.message.taskContextId, content: delivery.message.content,
+          taskContextId: delivery.message.taskContextId, messageId: delivery.message.id, content: delivery.message.content,
         };
         const content = inputPrefix + JSON.stringify({ ...inputSource, recipientConversationIds: delivery.message.recipientConversationIds });
-        const legacyContent = inputPrefix + JSON.stringify(inputSource);
         // An interrupted SQL acknowledgement must reuse the already durable member input.
-        const previous = this.database.listTimeline(target.id).find(item => item.kind === "message" && item.role === "user" && (item.content === content || item.content === legacyContent));
+        const previous = this.database.listTimeline(target.id).find(item => {
+          if (item.kind !== "message" || item.role !== "user" || !item.content.startsWith("[Team group input;")) return false;
+          try {
+            const source = z.object({ deliveryId: z.string(), messageId: z.string() }).parse(JSON.parse(item.content.slice(item.content.indexOf("\n") + 1)));
+            return source.deliveryId === delivery.id && source.messageId === delivery.message.id;
+          } catch { return false; }
+        });
         if (previous !== undefined && previous.kind === "message" && previous.runId !== null) {
           this.database.collaboration.consumeDelivery(delivery.id, previous.runId, previous.id); continue;
         }

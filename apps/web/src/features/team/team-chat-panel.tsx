@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
-import type { ConversationSummary, TeamChatMember, TeamChatMessage } from "@agent/protocol";
+import type { ConversationSummary, PostTeamChatInput, TeamChatMember, TeamChatMessage } from "@agent/protocol";
+import { ExternalLink } from "lucide-react";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import { AgentMarkdown } from "../../components/markdown/agent-markdown.js";
 import { ChatMessageBubble } from "../chat/chat-message-bubble.js";
+import { ChatMessageMeta } from "../chat/chat-message-meta.js";
+import { IconButton } from "../../components/ui/icon-button.js";
 import { UserMessageContent } from "../chat/user-message-content.js";
 import { findComposerReferenceRanges } from "../chat/composer-reference-ranges.js";
 import { AgentAvatar, SubagentAvatar } from "./agent-avatar.js";
@@ -10,15 +13,19 @@ import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
 
 const deliveryLabels = { pending: "待处理", delivered: "已送达", consumed: "处理中", completed: "处理结束", failed: "处理失败", cancelled: "已取消" };
 
-export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation, focusMessageId, active = true, composerClearance = 0 }: {
+export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation, focusMessageId, active = true, composerClearance = 0,
+  onEditMessage, editingMessageId, onCoordinatorLoaded }: {
   agentClient: AgentClient; teamInstanceId: string; focusMessageId?: string; active?: boolean; composerClearance?: number;
   onOpenConversation: (conversation: ConversationSummary, messageId?: string) => void;
+  onEditMessage?: (message: TeamChatMessage) => void; editingMessageId?: string | null;
+  onCoordinatorLoaded?: (coordinator: PostTeamChatInput["coordinator"] | null) => void;
 }): ReactElement {
   const [messages, setMessages] = useState<TeamChatMessage[]>([]); const [members, setMembers] = useState<TeamChatMember[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const agents = useAgentDirectoryStore(state => state.agents);
   const [cursor, setCursor] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const viewport = useRef<HTMLDivElement>(null);
   const atBottom = useRef(focusMessageId === undefined); const hasLoaded = useRef(false);
   const revealedMessage = useRef<string | undefined>(undefined);
@@ -31,6 +38,7 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
     try {
       const page = await agentClient.readTeamChat({ teamInstanceId, ...(beforeSequence === undefined ? {} : { beforeSequence }) });
       if (version !== loadVersion.current) return;
+      if (!hasLoaded.current) onCoordinatorLoaded?.(page.coordinator ?? null);
       setMessages(previous => [...new Map([...previous, ...page.messages].map(message => [message.id, message])).values()].sort((a, b) => a.sequence - b.sequence));
       if (beforeSequence !== undefined || !hasLoaded.current) setCursor(page.nextBeforeSequence);
       hasLoaded.current = true;
@@ -41,7 +49,7 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
       setError(null);
     } catch (reason) { if (version === loadVersion.current) setError(reason instanceof Error ? reason.message : "群聊加载失败"); }
   // Existing pages are retained when new messages arrive; pagination owns the older cursor.
-  }, [agentClient, teamInstanceId, active]);
+  }, [agentClient, teamInstanceId, active, onCoordinatorLoaded]);
   useEffect(() => {
     let disposed = false;
     void Promise.all([agentClient.getTeamChatMembers({ teamInstanceId }), agentClient.listConversationHierarchy()]).then(([roster, hierarchy]) => {
@@ -121,12 +129,18 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
       </span>;
     })}{message.content.slice(ranges.at(-1)!.end)}</>;
   };
+  const superseded = new Set(messages.flatMap(message => message.supersedesId ? [message.supersedesId] : []));
+  const latestUserId = messages.findLast(message => message.senderConversationId === null)?.id;
+  const copyMessage = async (message: TeamChatMessage) => {
+    try { await navigator.clipboard.writeText(message.content); setCopiedMessageId(message.id); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "复制失败"); }
+  };
   return <section aria-label="团队群聊" className="flex min-h-0 min-w-0 flex-1 flex-col gap-[5px] text-[length:var(--app-font-size-control)]">
     {error === null ? null : <p role="alert" className="m-0 text-[var(--app-destructive)]">{error}<button type="button" onClick={() => void load()} className="ml-2 underline">重试读取</button></p>}
     <div ref={viewport} role="log" aria-label="群消息" className="conversation-workspace__messages" onScroll={() => { const element = viewport.current; if (element) { atBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 32; const last = messages.at(-1); if (active && atBottom.current && last && document.visibilityState === "visible") void agentClient.markTeamChatRead({ teamInstanceId, throughSequence: last.sequence }).catch(reason => setError(String(reason))); } }}>
       {cursor === null ? null : <button type="button" className="my-2 underline" onClick={() => void load(cursor)}>加载更早消息</button>}
       {messages.length === 0 ? <p className="text-[var(--app-muted-foreground)]">暂无群消息。可以直接提问，或输入 @ 选择需要回答的成员。</p> : null}
-      <ol className="m-0 flex list-none flex-col gap-5 p-0">{messages.map(message => {
+      <ol className="m-0 flex list-none flex-col gap-5 p-0">{messages.filter(message => !superseded.has(message.id)).map(message => {
         const role = message.senderConversationId === null ? "user" : "assistant";
         const conversation = conversations.find(item => item.id === message.senderConversationId);
         const agent = agents.find(item => item.id === conversation?.agentId);
@@ -143,10 +157,18 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
           {showReplyQuote ? <p className="mb-1 line-clamp-2 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">回复：{replySource?.content.slice(0, 100) ?? "较早的群消息"}</p> : null}
           {role === "user" ? <UserMessageContent content={message.content}>{renderMemberMentions(message)}</UserMessageContent> : <AgentMarkdown content={message.content} />}
         </ChatMessageBubble>
-        <div className="flex flex-wrap items-center gap-[5px] text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">
-          <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString()}</time>
-          {message.sourceRunId && message.senderConversationId ? <button type="button" className="hover:underline" onClick={() => void openProcess(message.senderConversationId!, message.sourceRunId)}>查看工作过程</button> : null}
-        </div>
+        <ChatMessageMeta role={role} content={message.content} createdAt={message.createdAt} completedAt={message.createdAt}
+          copied={copiedMessageId === message.id} editing={editingMessageId === message.id} onCopy={() => void copyMessage(message)}
+          {...(role === "user" && message.id === latestUserId && onEditMessage !== undefined
+            && message.coordinator?.status !== "pending" && !message.deliveries.some(delivery => ["consumed", "delivered"].includes(delivery.status))
+            ? { onEdit: () => onEditMessage(message) } : {})}>
+          {message.sourceRunId && message.senderConversationId ? <IconButton label="查看工作过程" size="compact" type="button" variant="quiet"
+            onClick={() => void openProcess(message.senderConversationId!, message.sourceRunId)}><ExternalLink aria-hidden="true" size={14} /></IconButton> : null}
+        </ChatMessageMeta>
+        {message.coordinator?.status === "failed" || message.coordinator?.status === "pending" ? <div className="flex flex-wrap items-center gap-[5px] text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">
+          {message.coordinator.status === "failed" ? <span className="text-[var(--app-destructive)]">{message.coordinator.error ?? "协调失败"}</span> : null}
+          <button type="button" className="hover:underline" onClick={() => { void agentClient.resumeTeamChatDelivery({ id: message.id }).then(() => load()).catch(reason => setError(String(reason))); }}>{message.coordinator.status === "failed" ? "重试协调" : "继续协调"}</button>
+        </div> : null}
         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">{message.deliveries.filter(delivery => delivery.status !== "completed" && delivery.status !== "consumed" && delivery.status !== "delivered").map(delivery => <span key={delivery.id}>
           @{members.find(member => member.conversationId === delivery.conversationId)?.name ?? "成员"} · {deliveryLabels[delivery.status]}
           {delivery.error ? <span className="ml-1 text-[var(--app-destructive)]">{delivery.error}</span> : null}

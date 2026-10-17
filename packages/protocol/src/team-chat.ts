@@ -1,4 +1,14 @@
 import { z } from "zod";
+import { conversationModelSelectionSchema } from "./conversation.js";
+
+export const teamChatCoordinatorSchema = z.object({
+  agentId: z.string().min(1).max(200),
+  modelSelection: conversationModelSelectionSchema.nullable().default(null),
+}).strict();
+const teamChatCoordinationSchema = teamChatCoordinatorSchema.extend({
+  status: z.enum(["pending", "completed", "failed", "cancelled"]), error: z.string().nullable(),
+  contextSummary: z.string().max(2000).optional(),
+});
 
 export const postTeamChatInputSchema = z.object({
   teamInstanceId: z.string().uuid(), content: z.string().trim().min(1).max(16000),
@@ -8,6 +18,8 @@ export const postTeamChatInputSchema = z.object({
   taskContextId: z.string().uuid().nullable().default(null),
   replyToId: z.string().uuid().nullable().default(null),
   requestId: z.string().min(1).max(200),
+  coordinator: teamChatCoordinatorSchema.optional(),
+  supersedesId: z.string().uuid().nullable().default(null),
 }).strict().refine(input => new Set(input.recipientConversationIds).size === input.recipientConversationIds.length,
   { message: "Recipients must be unique.", path: ["recipientConversationIds"] });
 export const teamChatDeliverySchema = z.object({
@@ -22,6 +34,8 @@ export const teamChatMessageSchema = z.object({
   taskContextId: z.string().uuid().nullable(), replyToId: z.string().uuid().nullable(),
   createdAt: z.string().datetime(), rootMessageId: z.string().uuid(), depth: z.number().int().nonnegative(),
   sourceRunId: z.string().uuid().nullable(), deliveries: z.array(teamChatDeliverySchema),
+  coordinator: teamChatCoordinationSchema.nullable().optional(),
+  supersedesId: z.string().uuid().nullable().optional(),
 }).strict();
 export const readTeamChatInputSchema = z.object({
   teamInstanceId: z.string().uuid(), beforeSequence: z.number().int().positive().optional(),
@@ -31,6 +45,7 @@ export const readTeamChatInputSchema = z.object({
 export const teamChatPageSchema = z.object({
   messages: z.array(teamChatMessageSchema).max(50), nextBeforeSequence: z.number().int().positive().nullable(),
   userReadSequence: z.number().int().nonnegative(), memberReadSequence: z.number().int().nonnegative(),
+  coordinator: teamChatCoordinatorSchema.nullable().optional(),
 }).strict();
 export const markTeamChatReadInputSchema = z.object({
   teamInstanceId: z.string().uuid(), throughSequence: z.number().int().nonnegative(),

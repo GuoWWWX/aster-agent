@@ -109,6 +109,19 @@ async function groupFixture(client: MockAgentClient) {
   return { instance, sessions };
 }
 
+it("keeps the group send button available while the leader works in its own conversation", async () => {
+  const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
+  const working = sessions.map(session => session.id === instance.rootConversationId ? { ...session, activeRunId: crypto.randomUUID() } : session);
+  const post = vi.spyOn(client, "postTeamChat"); const container = mount();
+  await act(() => Promise.resolve().then(() => { root?.render(<TooltipProvider><TeamChatWorkspace agentClient={client} instance={instance}
+    sessions={working} projects={[]} onSessionUpdated={() => undefined} active onOpenConversation={() => undefined} /></TooltipProvider>); }));
+  expect(container.querySelector('[aria-label="停止任务"]')).toBeNull();
+  const composer = container.querySelector<HTMLTextAreaElement>('[aria-label="输入任务"]')!;
+  await act(() => Promise.resolve().then(() => { input(composer, "另外一个问题"); }));
+  await act(() => Promise.resolve().then(() => { container.querySelector<HTMLButtonElement>('[aria-label="发送任务"]')!.click(); }));
+  expect(post.mock.calls[0]?.[0].content).toBe("另外一个问题");
+});
+
 it("keeps task context and user questions distinct when reusing the ordinary conversation composer", async () => {
   const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
   const session = sessions.find(item => item.id === instance.rootConversationId)!;
@@ -177,6 +190,32 @@ it("uses the conversation bubbles with the user's message on the right and a mem
   expect(identity.nextElementSibling?.classList.contains("chat-message--enclosed")).toBe(true);
   expect(response.querySelector('.chat-message[data-role="assistant"]')?.textContent?.trim()).toBe("核对完成");
   expect(container.querySelector('.conversation-workspace__composer-surface')).not.toBeNull();
+  const user = container.querySelector('.chat-message-group[data-role="user"]')!;
+  expect(user.querySelector('.chat-message__meta time')).not.toBeNull();
+  expect(user.querySelector('[aria-label="复制消息"]')).not.toBeNull();
+  expect(user.querySelector('[aria-label="编辑并重新生成"]')).not.toBeNull();
+  expect(response.querySelector('.chat-message__meta [aria-label="复制完整回复"]')).not.toBeNull();
+  expect(response.querySelector('[aria-label="编辑并重新生成"]')).toBeNull();
+  expect(response.querySelector('.chat-message__meta time')).not.toBeNull();
+});
+
+it("edits the latest group message in the ordinary composer and sends a linked revision with its owning Agent", async () => {
+  const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
+  const original = await client.postTeamChat({ teamInstanceId: instance.id, content: "旧问题", intent: "notify", requestId: crypto.randomUUID(),
+    coordinator: { agentId: "default-agent", modelSelection: null } });
+  const post = vi.spyOn(client, "postTeamChat"); const container = mount();
+  await act(() => Promise.resolve().then(() => { root?.render(<TooltipProvider><TeamChatWorkspace agentClient={client} instance={instance} sessions={sessions} projects={[]}
+    onSessionUpdated={() => undefined} active onOpenConversation={() => undefined} /></TooltipProvider>); }));
+  expect(container.querySelector('[aria-label="对话 Agent"]')?.textContent).toContain("默认 Agent");
+  await act(() => Promise.resolve().then(() => { container.querySelector<HTMLButtonElement>('[aria-label="编辑并重新生成"]')!.click(); }));
+  const composer = container.querySelector<HTMLTextAreaElement>('[aria-label="输入任务"]')!;
+  expect(composer.value).toBe("旧问题");
+  await act(() => Promise.resolve().then(() => { input(composer, "修改后的问题"); }));
+  await act(() => Promise.resolve().then(() => { container.querySelector<HTMLButtonElement>('[aria-label="保存并重新生成"]')!.click(); }));
+  expect(post.mock.calls[0]?.[0]).toMatchObject({ content: "修改后的问题", supersedesId: original.id });
+  expect(post.mock.calls[0]?.[0].coordinator?.agentId).toBe("default-agent");
+  expect(container.querySelectorAll('[data-group-message]')).toHaveLength(1);
+  expect(container.querySelector('[data-group-message] .chat-message')?.textContent).toBe("修改后的问题");
 });
 
 it("defers reading and marking group history until a hidden tab is opened", async () => {
@@ -196,7 +235,7 @@ it("reuses cached group history and retries a refresh interrupted by a tab switc
   vi.spyOn(client, "onConversationRunEvent").mockImplementation(listener => { emit = listener; return () => {}; });
   const read = vi.spyOn(client, "readTeamChat"); const container = mount();
   const show = async (active: boolean) => { await act(async () => {
-    root?.render(<TeamChatPanel agentClient={client} teamInstanceId={instance.id} active={active} onOpenConversation={() => undefined} />);
+    root?.render(<TooltipProvider><TeamChatPanel agentClient={client} teamInstanceId={instance.id} active={active} onOpenConversation={() => undefined} /></TooltipProvider>);
     for (let i = 0; i < 10; i++) await Promise.resolve();
   }); };
   await show(true);
@@ -225,7 +264,7 @@ it.each([{ intervening: 0, sameThread: false }, { intervening: 1, sameThread: fa
     { ...request, id: crypto.randomUUID(), sequence: intervening + 2, content: "直接回答", senderConversationId: member.conversationId, senderName: member.name, replyToId: request.id, deliveries: [] }];
   vi.spyOn(client, "readTeamChat").mockResolvedValue({ messages, nextBeforeSequence: null, userReadSequence: 0, memberReadSequence: 0 });
   const container = mount();
-  await act(() => Promise.resolve().then(() => { root?.render(<TeamChatPanel agentClient={client} teamInstanceId={instance.id} onOpenConversation={() => undefined} />); }));
+  await act(() => Promise.resolve().then(() => { root?.render(<TooltipProvider><TeamChatPanel agentClient={client} teamInstanceId={instance.id} onOpenConversation={() => undefined} /></TooltipProvider>); }));
   const response = container.querySelector('[data-group-message][data-role="assistant"]')!;
   expect(response.textContent).toContain("直接回答");
   expect(response.textContent?.includes("回复：原来的问题")).toBe(intervening >= 4 && !sameThread);
@@ -242,7 +281,7 @@ it("shows only published replies without reserving a member's place while they w
   const listeners: Array<Parameters<MockAgentClient["onConversationRunEvent"]>[0]> = [];
   vi.spyOn(client, "onConversationRunEvent").mockImplementation(listener => { listeners.push(listener); return () => undefined; });
   const container = mount();
-  await act(() => Promise.resolve().then(() => { root?.render(<TeamChatPanel agentClient={client} teamInstanceId={instance.id} onOpenConversation={() => undefined} />); }));
+  await act(() => Promise.resolve().then(() => { root?.render(<TooltipProvider><TeamChatPanel agentClient={client} teamInstanceId={instance.id} onOpenConversation={() => undefined} /></TooltipProvider>); }));
   expect(container.querySelector('[role="status"]')).toBeNull();
   expect(container.textContent).not.toContain("正在回复");
   expect(container.textContent).not.toContain("等待回复");
@@ -259,7 +298,7 @@ it("refreshes group messages only for that room or its members", async () => {
   const listeners = new Set<Parameters<MockAgentClient["onConversationRunEvent"]>[0]>();
   vi.spyOn(client, "onConversationRunEvent").mockImplementation(listener => { listeners.add(listener); return () => { listeners.delete(listener); }; });
   mount();
-  await act(() => Promise.resolve().then(() => { root?.render(<TeamChatPanel agentClient={client} teamInstanceId={instance.id} onOpenConversation={() => undefined} />); }));
+  await act(() => Promise.resolve().then(() => { root?.render(<TooltipProvider><TeamChatPanel agentClient={client} teamInstanceId={instance.id} onOpenConversation={() => undefined} /></TooltipProvider>); }));
   const initialReads = read.mock.calls.length;
   await act(() => Promise.resolve().then(() => {
     listeners.forEach(listener => listener({ type: "collaboration.changed", conversationId: crypto.randomUUID(), teamInstanceId: crypto.randomUUID() }));
@@ -285,7 +324,7 @@ it("follows a new user message after visiting an older group source instead of r
     const listeners: Array<Parameters<MockAgentClient["onConversationRunEvent"]>[0]> = [];
     vi.spyOn(client, "onConversationRunEvent").mockImplementation(listener => { listeners.push(listener); return () => undefined; });
     const container = mount();
-    await act(() => Promise.resolve().then(() => { root?.render(<TeamChatPanel agentClient={client} teamInstanceId={instance.id} focusMessageId={original.id} onOpenConversation={() => undefined} />); }));
+    await act(() => Promise.resolve().then(() => { root?.render(<TooltipProvider><TeamChatPanel agentClient={client} teamInstanceId={instance.id} focusMessageId={original.id} onOpenConversation={() => undefined} /></TooltipProvider>); }));
     const viewport = container.querySelector<HTMLElement>('[role="log"]')!;
     Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 500 });
     act(() => { viewport.scrollTop = 0; viewport.dispatchEvent(new Event("scroll", { bubbles: true })); });

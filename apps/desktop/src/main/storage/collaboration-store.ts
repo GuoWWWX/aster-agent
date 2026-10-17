@@ -1,5 +1,7 @@
 import { CollaborationError } from "../errors/collaboration-error.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { z } from "zod";
+import { TeamChatJournal } from "./team-chat-journal.js";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import {
   taskContextSchema, taskSourceSchema, updateTaskContextInputSchema, listTaskContextsInputSchema,
@@ -80,7 +82,67 @@ type StoreContext = {
 /** Durable task and team communication facts; member histories remain in ThreadLog. */
 export class CollaborationStore {
   private sourceExists: StoreContext["sourceExists"];
-  public constructor(private readonly db: DatabaseSync, private readonly context: StoreContext) { this.sourceExists = context.sourceExists; }
+  public constructor(private readonly db: DatabaseSync, private readonly context: StoreContext,
+    private readonly journal = new TeamChatJournal(null)) {
+    this.sourceExists = context.sourceExists;
+    this.restoreJournal();
+  }
+
+  private groupFingerprint(value: string): string { return createHash("sha256").update(value).digest("hex"); }
+
+  /** Export and verify original text before replacing SQL payloads with metadata. */
+  private restoreJournal(): void {
+    const rows = this.db.prepare("SELECT payload_json FROM team_chat_messages ORDER BY team_instance_id, sequence").all();
+    for (const row of rows) {
+      const message = teamChatMessageSchema.parse(JSON.parse(String(row.payload_json)));
+      if (message.content.length === 0) continue;
+      const requestRow = this.db.prepare("SELECT request_id, fingerprint FROM collaboration_requests WHERE result_id = ? AND request_id LIKE 'group:%'").get(message.id);
+      let request: { id: string; fingerprint: string } | null = null;
+      if (requestRow !== undefined) {
+        const { senderId, ...raw } = z.object({ senderId: z.string().nullable() }).passthrough().parse(JSON.parse(String(requestRow.fingerprint)));
+        request = { id: String(requestRow.request_id).slice(6), fingerprint: this.groupFingerprint(JSON.stringify({ ...postTeamChatInputSchema.parse(raw), senderId })) };
+      }
+      this.journal.appendMessage({ ...message, deliveries: this.messageDeliveries(message.id) }, request);
+      if (this.journal.message(message.teamInstanceId, message.id)?.content !== message.content) throw new Error("Group history export verification failed.");
+    }
+    // JSONL is already durable. A failed SQL projection is recovered on the next start.
+    for (const room of this.journal.rooms()) {
+      const messages = this.journal.messages(room, this.journal.ids(room));
+      this.write(() => {
+        for (const message of messages) this.projectMessage(message);
+        for (const [id, request] of this.journal.requests(room)) this.db.prepare(
+          "INSERT INTO collaboration_requests VALUES (?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET fingerprint = excluded.fingerprint, result_id = excluded.result_id",
+        ).run(`group:${id}`, request.fingerprint, request.messageId);
+      });
+    }
+  }
+
+  private messageDeliveries(id: string) {
+    return this.db.prepare("SELECT * FROM team_chat_deliveries WHERE message_id = ? ORDER BY rowid").all(id).map(row => teamChatDeliverySchema.parse({
+      id: row.id, conversationId: row.conversation_id, status: row.status, runId: row.run_id, error: row.error,
+    }));
+  }
+  private messageMetadata(message: TeamChatMessage): string {
+    return JSON.stringify({ ...message, content: "", deliveries: [], coordinator: message.coordinator == null ? null : {
+      agentId: message.coordinator.agentId, modelSelection: message.coordinator.modelSelection,
+      status: message.coordinator.status, error: message.coordinator.error } });
+  }
+  private projectMessage(message: TeamChatMessage): void {
+    this.db.prepare(`INSERT INTO team_chat_messages VALUES (?, ?, ?, ?) ON CONFLICT(id)
+      DO UPDATE SET payload_json = excluded.payload_json WHERE team_chat_messages.payload_json <> excluded.payload_json`).run(message.id, message.teamInstanceId, message.sequence,
+      this.messageMetadata(message));
+    for (const delivery of message.deliveries) this.db.prepare(
+      "INSERT OR IGNORE INTO team_chat_deliveries(id, message_id, conversation_id, status, run_id, error) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(delivery.id, message.id, delivery.conversationId, delivery.status, delivery.runId, delivery.error);
+    if (message.supersedesId) this.db.prepare("UPDATE team_chat_deliveries SET status = 'cancelled', error = '消息已修订' WHERE message_id = ? AND status = 'pending'").run(message.supersedesId);
+    if (message.taskContextId !== null && this.db.prepare("SELECT 1 FROM task_contexts WHERE id = ?").get(message.taskContextId) !== undefined) {
+      if (this.task(message.taskContextId).teamInstanceId !== message.teamInstanceId) throw new CollaborationError("TASK_SCOPE", "Group source belongs to another room.");
+      const source = taskSourceSchema.parse({ kind: "group", containerId: message.teamInstanceId, messageId: message.id,
+        runId: message.sourceRunId, purpose: message.intent === "request" ? "request" : "result" });
+      this.db.prepare("INSERT OR IGNORE INTO task_context_sources(task_id, kind, container_id, message_id, payload_json) VALUES (?, ?, ?, ?, ?)")
+        .run(message.taskContextId, source.kind, source.containerId, source.messageId, JSON.stringify(source));
+    }
+  }
   public setSourceResolver(resolve: StoreContext["sourceExists"]): void { this.sourceExists = resolve; }
 
   private write<T>(operation: () => T): T {
@@ -277,17 +339,30 @@ export class CollaborationStore {
     if (conversationId !== null && !this.members(teamInstanceId).some(member => member.conversationId === conversationId && !member.isArchived)) throw new CollaborationError("TEAM_MEMBER", "Sender is not an active room member.");
   }
   public message(id: string): TeamChatMessage {
-    const row = this.db.prepare("SELECT payload_json FROM team_chat_messages WHERE id = ?").get(id);
-    if (typeof row?.payload_json !== "string") throw new CollaborationError("GROUP_MESSAGE_NOT_FOUND", "Message is unavailable.");
-    const message = teamChatMessageSchema.parse(JSON.parse(row.payload_json));
-    return { ...message, deliveries: this.db.prepare("SELECT * FROM team_chat_deliveries WHERE message_id = ? ORDER BY rowid").all(id).map(row => teamChatDeliverySchema.parse({
-      id: row.id, conversationId: row.conversation_id, status: row.status, runId: row.run_id, error: row.error,
-    })) };
+    const row = this.db.prepare("SELECT team_instance_id, payload_json FROM team_chat_messages WHERE id = ?").get(id);
+    if (typeof row?.team_instance_id !== "string") throw new CollaborationError("GROUP_MESSAGE_NOT_FOUND", "Message is unavailable.");
+    const message = this.journal.message(row.team_instance_id, id);
+    if (message === null) throw new Error("Canonical group history is missing; SQL metadata cannot replace it.");
+    let deliveries = this.messageDeliveries(id);
+    if (row.payload_json !== this.messageMetadata(message) || deliveries.length !== message.deliveries.length) {
+      this.write(() => this.projectMessage(message)); deliveries = this.messageDeliveries(id);
+    }
+    return { ...message, deliveries };
   }
   public postMessage(raw: PostTeamChatInput, senderId: string | null, runId: string | null = null, causeId: string | null = null): TeamChatMessage {
     const input = postTeamChatInputSchema.parse(raw); this.assertMember(input.teamInstanceId, senderId);
-    const fingerprint = JSON.stringify({ ...input, senderId });
-    return this.write(() => {
+    const fingerprint = this.groupFingerprint(JSON.stringify({ ...input, senderId }));
+    const canonical = this.journal.request(input.teamInstanceId, input.requestId);
+    if (canonical !== undefined) {
+      if (canonical.fingerprint !== fingerprint) throw new CollaborationError("IDEMPOTENCY_CONFLICT", "Message content changed.");
+      const message = this.journal.message(input.teamInstanceId, canonical.messageId)!;
+      this.write(() => {
+        this.projectMessage(message);
+        this.db.prepare("INSERT OR IGNORE INTO collaboration_requests VALUES (?, ?, ?)").run(`group:${input.requestId}`, fingerprint, message.id);
+      });
+      return this.message(message.id);
+    }
+    {
       const saved = this.db.prepare("SELECT * FROM collaboration_requests WHERE request_id = ?").get(`group:${input.requestId}`);
       if (saved !== undefined) {
         if (saved.fingerprint !== fingerprint) throw new CollaborationError("IDEMPOTENCY_CONFLICT", "Message content changed.");
@@ -304,11 +379,20 @@ export class CollaborationStore {
         else if (input.recipientConversationIds.length > 0) recipients = input.recipientConversationIds;
         else if (senderId === null && instance.rootConversationId !== null) {
           recipients = addressedUserRecipients(input.content, active);
-          if (recipients.length === 0) recipients = [instance.rootConversationId];
+          if (recipients.length === 0 && input.coordinator === undefined) recipients = [instance.rootConversationId];
         }
         for (const id of recipients) if (id === senderId || !active.some(member => member.conversationId === id)) throw new CollaborationError("TEAM_MEMBER", "Recipient must be another active room member.");
       }
-      const id = randomUUID(); const sequence = Number(this.db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS next FROM team_chat_messages WHERE team_instance_id = ?").get(instance.id)?.next);
+      const lastSequence = this.journal.lastSequence(instance.id);
+      const projectedSequence = Number(this.db.prepare("SELECT COALESCE(MAX(sequence), 0) AS last FROM team_chat_messages WHERE team_instance_id = ?").get(instance.id)?.last);
+      if (lastSequence < projectedSequence) throw new Error("Canonical group history is missing or truncated; original records were preserved.");
+      const id = randomUUID(); const sequence = lastSequence + 1;
+      if (input.supersedesId !== null) {
+        const original = this.message(input.supersedesId);
+        const latest = this.db.prepare("SELECT id FROM team_chat_messages WHERE team_instance_id = ? AND json_extract(payload_json, '$.senderConversationId') IS NULL ORDER BY sequence DESC LIMIT 1").get(instance.id);
+        if (senderId !== null || original.teamInstanceId !== instance.id || latest?.id !== original.id) throw new CollaborationError("GROUP_EDIT_INVALID", "只能编辑自己最近的一条群消息。");
+        if (original.coordinator?.status === "pending" || original.deliveries.some(delivery => ["consumed", "delivered"].includes(delivery.status))) throw new CollaborationError("GROUP_EDIT_BUSY", "请等待这条消息处理结束，或停止相关成员后再编辑。");
+      }
       const message = teamChatMessageSchema.parse({
         id, teamInstanceId: instance.id, sequence, content: input.content,
         senderConversationId: senderId, senderName: senderId === null ? "你" : members.find(member => member.conversationId === senderId)?.name,
@@ -316,26 +400,69 @@ export class CollaborationStore {
         replyToId: input.replyToId, createdAt: new Date().toISOString(), sourceRunId: runId,
         rootMessageId: senderId === null ? id : parent?.rootMessageId ?? id,
         depth: senderId === null ? 0 : (parent?.depth ?? 0) + 1, deliveries: [],
+        coordinator: senderId === null && input.coordinator !== undefined ? { ...input.coordinator,
+          status: recipients.length === 0 && input.intent === "request" ? "pending" : "completed", error: null,
+          contextSummary: this.coordinator(instance.id)?.contextSummary ?? "" } : null,
+        supersedesId: input.supersedesId,
       });
-      this.db.prepare("INSERT INTO team_chat_messages VALUES (?, ?, ?, ?)").run(id, instance.id, sequence, JSON.stringify(message));
-      for (const recipient of recipients) this.db.prepare("INSERT INTO team_chat_deliveries(id, message_id, conversation_id, status, error) VALUES (?, ?, ?, ?, ?)")
-        .run(randomUUID(), id, recipient, message.depth > 4 ? "failed" : "pending", message.depth > 4 ? "讨论已暂停：达到自动协作深度上限。" : null);
+      message.deliveries = recipients.map(conversationId => ({ id: randomUUID(), conversationId, runId: null,
+        status: message.depth > 4 ? "failed" : "pending", error: message.depth > 4 ? "讨论已暂停：达到自动协作深度上限。" : null }));
+      this.journal.appendMessage(message, { id: input.requestId, fingerprint });
+      return this.write(() => {
+      this.projectMessage(message);
       this.db.prepare("INSERT INTO collaboration_requests VALUES (?, ?, ?)").run(`group:${input.requestId}`, fingerprint, id);
-      if (message.taskContextId !== null) this.linkTask({ id: message.taskContextId,
-        source: { kind: "group", containerId: instance.id, messageId: id, runId, purpose: input.intent === "request" ? "request" : "result" } });
       return this.message(id);
-    });
+      });
+    }
+  }
+  public coordinator(teamInstanceId: string) {
+    const row = this.db.prepare("SELECT payload_json FROM team_chat_messages WHERE team_instance_id = ? AND json_extract(payload_json, '$.coordinator') IS NOT NULL ORDER BY sequence DESC LIMIT 1").get(teamInstanceId);
+    if (row === undefined) return null;
+    const metadata = teamChatMessageSchema.parse(JSON.parse(String(row.payload_json)));
+    return this.journal.message(teamInstanceId, metadata.id)?.coordinator ?? null;
+  }
+  public finishCoordination(id: string, recipients: string[], error: string | null, contextSummary?: string): TeamChatMessage {
+    const current = this.message(id);
+    if (current.coordinator?.status === "cancelled") return current;
+    this.assertMember(current.teamInstanceId, null, error !== null);
+    if (current.coordinator == null) throw new Error("Group message has no coordinator.");
+    if (current.coordinator.status === "completed") return current;
+    if (recipients.length === 0 && error === null) throw new Error("Coordination must select at least one member.");
+    const active = this.members(current.teamInstanceId).filter(member => !member.isArchived);
+    if (new Set(recipients).size !== recipients.length || recipients.some(id => !active.some(member => member.conversationId === id))) throw new Error("Coordination selected an unavailable member.");
+    const message: TeamChatMessage = { ...current, recipientConversationIds: recipients,
+      coordinator: { ...current.coordinator, status: error === null ? "completed" : "failed", error,
+        ...(contextSummary === undefined ? {} : { contextSummary }) },
+      deliveries: recipients.map(conversationId => ({ id: randomUUID(), conversationId, status: "pending", runId: null, error: null })) };
+    this.journal.coordinate(message);
+    this.write(() => this.projectMessage(message)); return this.message(id);
+  }
+  public beginCoordination(id: string): TeamChatMessage {
+    const message = this.message(id);
+    if (message.coordinator?.status !== "failed") return message;
+    const pending: TeamChatMessage = { ...message, coordinator: { ...message.coordinator, status: "pending", error: null } };
+    this.journal.coordinate(pending); this.write(() => this.projectMessage(pending)); return this.message(id);
   }
   public readMessages(raw: ReadTeamChatInput, memberId: string | null = null): TeamChatPage {
     const input = readTeamChatInputSchema.parse(raw); this.assertMember(input.teamInstanceId, memberId, true);
     const ascending = input.afterSequence !== undefined;
-    const rows = this.db.prepare(`SELECT id FROM team_chat_messages WHERE team_instance_id = ? AND sequence < ? AND sequence > ? ORDER BY sequence ${ascending ? "ASC" : "DESC"} LIMIT ?`)
+    const rows = this.db.prepare(`SELECT id, payload_json FROM team_chat_messages WHERE team_instance_id = ? AND sequence < ? AND sequence > ? ORDER BY sequence ${ascending ? "ASC" : "DESC"} LIMIT ?`)
       .all(input.teamInstanceId, input.beforeSequence ?? Number.MAX_SAFE_INTEGER, input.afterSequence ?? 0, input.limit + 1);
-    const selected = rows.slice(0, input.limit).map(row => this.message(String(row.id)));
+    const selected = this.journal.messages(input.teamInstanceId, rows.slice(0, input.limit).map(row => String(row.id)))
+      .map(message => {
+        let deliveries = this.messageDeliveries(message.id);
+        if (rows.find(row => row.id === message.id)?.payload_json !== this.messageMetadata(message) || deliveries.length !== message.deliveries.length) {
+          this.write(() => this.projectMessage(message)); deliveries = this.messageDeliveries(message.id);
+        }
+        return { ...message, deliveries };
+      });
+    if (selected.length !== Math.min(rows.length, input.limit)) throw new Error("Canonical group messages are missing; SQL metadata cannot replace them.");
     const messages = ascending ? selected : selected.reverse();
     const read = (reader: string) => Number(this.db.prepare("SELECT sequence FROM team_chat_reads WHERE team_instance_id = ? AND reader_id = ?").get(input.teamInstanceId, reader)?.sequence ?? 0);
+    const coordinator = this.coordinator(input.teamInstanceId);
     return { messages, nextBeforeSequence: rows.length > input.limit ? messages[0]?.sequence ?? null : null,
-      userReadSequence: read("user"), memberReadSequence: memberId === null ? 0 : read(memberId) };
+      userReadSequence: read("user"), memberReadSequence: memberId === null ? 0 : read(memberId),
+      coordinator: coordinator === null ? null : { agentId: coordinator.agentId, modelSelection: coordinator.modelSelection } };
   }
   public markRead(input: MarkTeamChatReadInput, memberId: string | null): void {
     this.assertMember(input.teamInstanceId, memberId, true);
@@ -396,6 +523,7 @@ export class CollaborationStore {
   public resumeDelivery(id: string): void {
     this.db.prepare("UPDATE team_chat_deliveries SET error = NULL WHERE id = ? AND status = 'pending'").run(id);
   }
+  public hasDelivery(id: string): boolean { return this.db.prepare("SELECT 1 FROM team_chat_deliveries WHERE id = ?").get(id) !== undefined; }
   public finishRun(runId: string, status: "completed" | "failed" | "cancelled", error: string | null): void {
     this.db.prepare("UPDATE team_chat_deliveries SET status = ?, error = ? WHERE run_id = ? AND status IN ('consumed','delivered')").run(status, error, runId);
   }
@@ -406,9 +534,19 @@ export class CollaborationStore {
     this.db.prepare("UPDATE team_chat_deliveries SET status = 'cancelled', error = '成员已停止' WHERE conversation_id = ? AND status = 'pending'").run(conversationId);
   }
   public cancelRoom(teamInstanceId: string): void {
+    for (const row of this.db.prepare("SELECT id FROM team_chat_messages WHERE team_instance_id = ? AND json_extract(payload_json, '$.coordinator.status') IN ('pending', 'failed')").all(teamInstanceId)) {
+      const message = this.message(String(row.id));
+      if (message.coordinator != null) {
+        const cancelled: TeamChatMessage = { ...message, coordinator: { ...message.coordinator, status: "cancelled", error: "团队已删除" } };
+        this.journal.coordinate(cancelled); this.write(() => this.projectMessage(cancelled));
+      }
+    }
     this.db.prepare("UPDATE team_chat_deliveries SET status = 'cancelled', error = '团队已删除' WHERE status = 'pending' AND message_id IN (SELECT id FROM team_chat_messages WHERE team_instance_id = ?)").run(teamInstanceId);
   }
   public recoverDeliveries(): void {
+    for (const row of this.db.prepare("SELECT id FROM team_chat_messages WHERE json_extract(payload_json, '$.coordinator.status') = 'pending'").all()) {
+      this.finishCoordination(String(row.id), [], "上次协调已中断，请继续协调。");
+    }
     this.db.prepare("UPDATE team_chat_deliveries SET error = 'Restart paused this request; resume explicitly.' WHERE status = 'pending'").run();
     const rows = this.db.prepare("SELECT * FROM team_chat_deliveries WHERE status = 'consumed'").all();
     for (const row of rows) {
