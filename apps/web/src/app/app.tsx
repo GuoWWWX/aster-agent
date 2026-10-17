@@ -860,6 +860,7 @@ export function App(): ReactElement {
           fileOpenRequest={fileOpenRequest}
           gitReviewOpenRequest={gitReviewOpenRequest}
           teamMemberOpenRequest={teamMemberOpenRequest}
+          onRenameTeamInstance={renameTeamInstance}
           onLocateProject={(projectId) => locateInProjectNavigator("project", projectId)}
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}
           onLocateConversationItem={locateConversationItem}

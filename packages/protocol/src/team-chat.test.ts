@@ -1,8 +1,17 @@
 import { expect, it } from "vitest";
-import { postTeamChatInputSchema, teamChatMessageSchema, teamChatPageSchema, teamChatCoordinationConversationInputSchema } from "./team-chat.js";
+import { postTeamChatInputSchema, readTeamChatInputSchema, teamChatMessageSchema, teamChatPageSchema, teamChatCoordinationConversationInputSchema } from "./team-chat.js";
 
 let nextId = 0;
 const randomUUID = () => `10000000-0000-4000-8000-${String(++nextId).padStart(12, "0")}`;
+
+it("validates bounded keyword, sender and date filters without changing ordinary history reads", () => {
+  const teamInstanceId = randomUUID();
+  expect(readTeamChatInputSchema.parse({ teamInstanceId })).toEqual({ teamInstanceId, limit: 30 });
+  expect(readTeamChatInputSchema.parse({ teamInstanceId, query: " HTML ", senderConversationId: null }).query).toBe("HTML");
+  expect(readTeamChatInputSchema.safeParse({ teamInstanceId, query: "x".repeat(201) }).success).toBe(false);
+  expect(readTeamChatInputSchema.safeParse({ teamInstanceId, senderConversationId: "other" }).success).toBe(false);
+  expect(readTeamChatInputSchema.safeParse({ teamInstanceId, createdAfter: "2026-10-20T00:00:00.000Z", createdBefore: "2026-10-01T00:00:00.000Z" }).success).toBe(false);
+});
 
 it("accepts owner/model selection and a linked edit, but rejects unknown config and duplicate recipients", () => {
   const base = { teamInstanceId: randomUUID(), content: "新的群消息", requestId: randomUUID() };

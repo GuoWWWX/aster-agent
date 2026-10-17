@@ -343,13 +343,15 @@ function AgentManagementView({
   );
 }
 
-function TeamConfigurationPane({
+export function TeamConfigurationPane({
+  compact = false,
   agent,
   agents,
   onOpenAgent,
   onSelectMember,
   team,
 }: {
+  compact?: boolean;
   agent: AgentProfile | undefined;
   agents: AgentProfile[];
   onOpenAgent: (agentId: string) => void;
@@ -369,7 +371,7 @@ function TeamConfigurationPane({
     : team.memberConfigurations[agent.id];
 
   return (
-    <aside className="team-configuration-pane" aria-label={`${team.name} 配置`}>
+    <aside className={`team-configuration-pane${compact ? " px-0!" : ""}`} aria-label={`${team.name} 配置`}>
       <div className="management-detail-body">
       <SettingsConfigurationGroup cardAriaLabel="团队基本配置" cardClassName="management-profile-card p-0" icon={Settings2} title="基本配置">
       <div className="management-detail-heading">

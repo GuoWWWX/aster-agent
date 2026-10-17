@@ -44,3 +44,17 @@ it("still imports existing board tasks when listing the task directory", async (
   const response = z.object({ value: z.object({ items: z.array(z.object({ id: z.string() })) }) }).parse(JSON.parse(result.content));
   expect(response.value.items).toContainEqual({ id: task.id });
 });
+
+it("searches already-read history on explicit filters and still validates the full date range", async () => {
+  const { database, instance, lead, tool } = fixture();
+  const message = database.collaboration.postMessage({ teamInstanceId: instance.id, content: "已读的 HTML 交付", intent: "notify", requestId: randomUUID() }, null);
+  database.collaboration.markRead({ teamInstanceId: instance.id, throughSequence: message.sequence }, lead.id);
+  const execute = (args: unknown) => tool.execute({ name: "read_team_messages", arguments: JSON.stringify(args), conversationId: lead.id,
+    runId: randomUUID(), toolCallId: randomUUID(), changed: vi.fn(), post: input => database.collaboration.postMessage(input, lead.id) });
+  const result = await execute({ query: "html" });
+  expect(result).toMatchObject({ kind: "completed", isError: false });
+  if (result.kind !== "completed") throw new Error("Expected history results.");
+  const response = z.object({ value: z.object({ messages: z.array(z.object({ id: z.string() })) }) }).parse(JSON.parse(result.content));
+  expect(response.value.messages.map(item => item.id)).toEqual([message.id]);
+  expect(await execute({ createdAfter: "2026-10-20T00:00:00.000Z", createdBefore: "2026-10-01T00:00:00.000Z" })).toMatchObject({ kind: "completed", isError: true });
+});

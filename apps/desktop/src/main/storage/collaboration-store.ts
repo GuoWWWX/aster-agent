@@ -416,7 +416,7 @@ export class CollaborationStore {
       const message = teamChatMessageSchema.parse({
         id, teamInstanceId: instance.id, sequence, content: input.content,
         senderConversationId: senderId, senderName: senderId === null ? "你" : members.find(member => member.conversationId === senderId)?.name,
-        intent: input.intent, recipientConversationIds: recipients, taskContextId: input.taskContextId ?? parent?.taskContextId ?? null,
+        intent: input.intent, recipientConversationIds: recipients, allMembers: input.allMembers, taskContextId: input.taskContextId ?? parent?.taskContextId ?? null,
         replyToId: input.replyToId, createdAt: new Date().toISOString(), sourceRunId: runId,
         rootMessageId: parent?.rootMessageId ?? id,
         depth: senderId === null ? 0 : (parent?.depth ?? 0) + 1, deliveries: [],
@@ -517,9 +517,20 @@ export class CollaborationStore {
   public readMessages(raw: ReadTeamChatInput, memberId: string | null = null): TeamChatPage {
     const input = readTeamChatInputSchema.parse(raw); this.assertMember(input.teamInstanceId, memberId, true);
     const ascending = input.afterSequence !== undefined;
-    const rows = this.db.prepare(`SELECT id, payload_json FROM team_chat_messages WHERE team_instance_id = ? AND sequence < ? AND sequence > ? ORDER BY sequence ${ascending ? "ASC" : "DESC"} LIMIT ?`)
-      .all(input.teamInstanceId, input.beforeSequence ?? Number.MAX_SAFE_INTEGER, input.afterSequence ?? 0, input.limit + 1);
-    const selected = this.journal.messages(input.teamInstanceId, rows.slice(0, input.limit).map(row => String(row.id)))
+    const searching = input.query !== undefined || input.senderConversationId !== undefined || input.createdAfter !== undefined || input.createdBefore !== undefined;
+    const scanLimit = searching ? 100 : input.limit;
+    const rows = this.db.prepare(`SELECT id, sequence, payload_json FROM team_chat_messages WHERE team_instance_id = ? AND sequence < ? AND sequence > ?
+      AND (? = 0 OR json_extract(payload_json, '$.senderConversationId') IS ?)
+      AND (? IS NULL OR json_extract(payload_json, '$.createdAt') >= ?)
+      AND (? IS NULL OR json_extract(payload_json, '$.createdAt') <= ?)
+      ORDER BY sequence ${ascending ? "ASC" : "DESC"} LIMIT ?`)
+      .all(input.teamInstanceId, input.beforeSequence ?? Number.MAX_SAFE_INTEGER, input.afterSequence ?? 0,
+        input.senderConversationId === undefined ? 0 : 1, input.senderConversationId ?? null,
+        input.createdAfter ?? null, input.createdAfter ?? null, input.createdBefore ?? null, input.createdBefore ?? null, scanLimit + 1);
+    const candidates = this.journal.messages(input.teamInstanceId, rows.slice(0, scanLimit).map(row => String(row.id)));
+    if (candidates.length !== Math.min(rows.length, scanLimit)) throw new Error("Canonical group messages are missing; SQL metadata cannot replace them.");
+    const matches = candidates.filter(message => input.query === undefined || message.content.toLocaleLowerCase().includes(input.query.toLocaleLowerCase()));
+    const selected = matches.slice(0, input.limit)
       .map(message => {
         let deliveries = this.messageDeliveries(message.id);
         if (rows.find(row => row.id === message.id)?.payload_json !== this.messageMetadata(message) || deliveries.length !== message.deliveries.length) {
@@ -527,7 +538,6 @@ export class CollaborationStore {
         }
         return { ...message, deliveries };
       });
-    if (selected.length !== Math.min(rows.length, input.limit)) throw new Error("Canonical group messages are missing; SQL metadata cannot replace them.");
     const messages = ascending ? selected : selected.reverse();
     const read = (reader: string) => Number(this.db.prepare("SELECT sequence FROM team_chat_reads WHERE team_instance_id = ? AND reader_id = ?").get(input.teamInstanceId, reader)?.sequence ?? 0);
     const coordinator = this.coordinator(input.teamInstanceId);
@@ -536,7 +546,9 @@ export class CollaborationStore {
     const activeMemberCount = members.filter(member => member.activeRunId !== null).length;
     const pendingDeliveryCount = Number(this.db.prepare("SELECT COUNT(*) AS count FROM team_chat_deliveries d JOIN team_chat_messages m ON m.id = d.message_id WHERE m.team_instance_id = ? AND d.status = 'pending' AND d.error IS NULL").get(input.teamInstanceId)?.count ?? 0);
     const paused = members.length > 0 && members.every(member => this.context.isExecutionPaused(member.id));
-    return { messages, nextBeforeSequence: rows.length > input.limit ? messages[0]?.sequence ?? null : null,
+    const hasMore = matches.length > input.limit || rows.length > scanLimit;
+    const lastScanned = matches.length > input.limit ? matches[input.limit - 1]?.sequence : rows[Math.min(rows.length, scanLimit) - 1]?.sequence;
+    return { messages, nextBeforeSequence: searching ? hasMore ? Number(lastScanned) : null : rows.length > input.limit ? messages[0]?.sequence ?? null : null,
       userReadSequence: read("user"), memberReadSequence: memberId === null ? 0 : read(memberId),
       activity: { status: paused ? "paused" : coordinatorActive || this.pendingCoordinations(input.teamInstanceId).length > 0 ? "coordinating"
         : activeMemberCount > 0 || pendingDeliveryCount > 0 ? "working" : coordinator?.status === "failed" ? "failed" : "idle", activeMemberCount, pendingDeliveryCount },

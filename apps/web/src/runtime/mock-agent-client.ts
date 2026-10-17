@@ -1748,7 +1748,12 @@ export class MockAgentClient implements AgentClient {
   }
   public readTeamChat(input: ReadTeamChatInput): Promise<TeamChatPage> {
     const roomMessages = this.groupMessages.filter(message => message.teamInstanceId === input.teamInstanceId);
-    const all = roomMessages.filter(message => input.beforeSequence === undefined || message.sequence < input.beforeSequence);
+    const all = roomMessages.filter(message => (input.beforeSequence === undefined || message.sequence < input.beforeSequence)
+      && (input.afterSequence === undefined || message.sequence > input.afterSequence)
+      && (input.query === undefined || message.content.toLocaleLowerCase().includes(input.query.toLocaleLowerCase()))
+      && (input.senderConversationId === undefined || message.senderConversationId === input.senderConversationId)
+      && (input.createdAfter === undefined || message.createdAt >= input.createdAfter)
+      && (input.createdBefore === undefined || message.createdAt <= input.createdBefore));
     const messages = all.slice(-(input.limit ?? 30));
     return Promise.resolve(structuredClone({ messages, nextBeforeSequence: all.length > messages.length ? messages[0]!.sequence : null, userReadSequence: this.groupRead.get(input.teamInstanceId) ?? 0, memberReadSequence: 0,
       coordinator: this.groupMessages.findLast(message => message.teamInstanceId === input.teamInstanceId && message.coordinator != null)?.coordinator ?? null,
@@ -1768,7 +1773,7 @@ export class MockAgentClient implements AgentClient {
     const message: TeamChatMessage = { id, teamInstanceId: input.teamInstanceId,
       sequence: this.groupMessages.filter(item => item.teamInstanceId === input.teamInstanceId).length + 1,
       content: input.content, senderConversationId: null, senderName: "你", intent: input.intent,
-      recipientConversationIds: recipients, taskContextId: input.taskContextId, replyToId: input.replyToId,
+      recipientConversationIds: recipients, allMembers: input.allMembers, taskContextId: input.taskContextId, replyToId: input.replyToId,
       createdAt: new Date().toISOString(), sourceRunId: null, rootMessageId: quoted?.rootMessageId ?? id, depth: 0,
       supersedesId: input.supersedesId, coordinator: input.coordinator === undefined ? null : { ...input.coordinator, modelSelection: input.coordinator.modelSelection ?? null, status: "completed", error: null },
       deliveries: recipients.map(conversationId => ({ id: crypto.randomUUID(), conversationId, status: "pending", runId: null, error: null })),

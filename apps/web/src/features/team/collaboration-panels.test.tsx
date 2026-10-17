@@ -154,6 +154,30 @@ async function groupFixture(client: MockAgentClient) {
   return { instance, sessions };
 }
 
+it.each([0, 5])("selects all current group members even after %s individual mentions and renders the effective mention", async count => {
+  const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
+  const post = vi.spyOn(client, "postTeamChat"); const container = mount();
+  await act(async () => { root?.render(<TooltipProvider><TeamChatWorkspace agentClient={client} instance={instance} sessions={sessions} projects={[]}
+    active onSessionUpdated={() => undefined} onOpenConversation={() => undefined} /></TooltipProvider>); for (let i = 0; i < 15; i++) await Promise.resolve(); });
+  const textarea = container.querySelector<HTMLTextAreaElement>('[aria-label="输入任务"]')!;
+  for (let i = 0; i < count; i++) {
+    await act(async () => { input(textarea, textarea.value + "@"); await Promise.resolve(); });
+    act(() => container.querySelector<HTMLButtonElement>('[role="option"][data-group-member]')!.click());
+  }
+  await act(async () => { input(textarea, textarea.value + "@"); await Promise.resolve(); });
+  const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(button => button.querySelector("strong")?.textContent === "全体成员")!;
+  expect(option).toBeDefined(); act(() => option.click());
+  expect(textarea.value).toContain("全体成员"); act(() => input(textarea, textarea.value + "请各自确认"));
+  await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="发送任务"]')!.click(); for (let i = 0; i < 15; i++) await Promise.resolve(); });
+  expect(post).toHaveBeenCalledWith(expect.objectContaining({ allMembers: true }));
+  expect(post.mock.calls[0]![0].recipientConversationIds).toHaveLength(count);
+  const message = (await client.readTeamChat({ teamInstanceId: instance.id })).messages[0]!;
+  expect(message.recipientConversationIds).toHaveLength((await client.getTeamChatMembers({ teamInstanceId: instance.id })).filter(member => !member.isArchived).length);
+  const mention = [...container.querySelectorAll<HTMLButtonElement>('[data-group-message] button')].find(button => button.textContent === "全体成员")!;
+  expect(mention.className).toContain("--app-accent"); act(() => mention.click());
+  expect(useWorkbenchUiStore.getState().teamChatDetailsTarget?.instanceId).toBe(instance.id);
+});
+
 it.each([false, true])("replies to the quoted member without requiring another mention and optionally invites a peer (extra=%s)", async extra => {
   const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
   const members = (await client.getTeamChatMembers({ teamInstanceId: instance.id })).filter(member => !member.isLead);
@@ -227,7 +251,7 @@ it("mentions only current group members with their profile avatars, names and ro
     const menu = container.querySelector('[role="listbox"][aria-label="选择群成员"]')!;
     expect(menu).not.toBeNull();
     expect(menu.querySelector('[role="presentation"]')?.textContent).toBe("群成员");
-    expect(menu.querySelectorAll('[role="option"]')).toHaveLength(members.length - 1);
+    expect(menu.querySelectorAll('[role="option"]')).toHaveLength(members.length);
     expect(menu.textContent).not.toContain("临时对话");
     expect(menu.textContent).not.toContain(conversation.title);
     expect(menu.textContent).not.toContain(unrelated.title);

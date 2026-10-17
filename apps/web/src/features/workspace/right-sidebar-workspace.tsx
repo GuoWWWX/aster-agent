@@ -12,6 +12,7 @@ import {
   Plus,
   SquarePen,
   SquareCheckBig,
+  UsersRound,
   Terminal,
   X,
   type LucideIcon,
@@ -77,6 +78,7 @@ import { useConversationWorkspaceCache } from "../chat/conversation-workspace-ca
 import { ConversationWorkspace } from "../chat/workspace-content.js";
 import { teamChatTabId } from "../chat/workbench-tabs.js";
 import { AgentAvatar, SubagentAvatar } from "../team/agent-avatar.js";
+import { TeamChatDetails, type TeamChatDetailsSection } from "../team/team-chat-details.js";
 import { ConfigurationWorkspaceTreePanel } from "./configuration-workspace-tree-panel.js";
 import { getGitReviewCache } from "./git-review-cache.js";
 import { ConversationReviewWorkspace } from "./conversation-review-workspace.js";
@@ -156,7 +158,8 @@ type ManagedBrowserTab = ToolTabBase & {
 
 type BackgroundCommandTab = ToolTabBase & { kind: "background-command"; conversationId: string; commandId: string };
 type ConversationReviewTab = ToolTabBase & { kind: "conversation-review"; conversationId: string; runId: string | null };
-type ToolTab = GitReviewTab | TerminalTab | ManagedBrowserTab | BackgroundCommandTab | ConversationReviewTab;
+type TeamChatDetailsTab = ToolTabBase & { kind: "group-details"; instance: TeamInstanceView; section: TeamChatDetailsSection };
+type ToolTab = GitReviewTab | TerminalTab | ManagedBrowserTab | BackgroundCommandTab | ConversationReviewTab | TeamChatDetailsTab;
 
 type SidebarTab =
   | FileTab
@@ -623,11 +626,12 @@ export function RightSidebarWorkspace({
   onLocateConversationItem,
   onSessionViewed,
   onSessionUpdated,
+  onRenameTeamInstance,
   tree,
 }: {
   activeProject: ProjectSummary | null;
   activeSession: ProjectSession | null;
-  teamChat?: Pick<TeamInstanceView, "id" | "name"> | null;
+  teamChat?: TeamInstanceView | null;
   agentClient: AgentClient;
   fileOpenRequest: ProjectFileOpenRequest | null;
   gitReviewOpenRequest?: GitReviewOpenRequest | null;
@@ -637,6 +641,7 @@ export function RightSidebarWorkspace({
   onLocateConversationItem?: (conversationId: string, itemId: string) => void;
   onSessionViewed: (sessionId: string) => void;
   onSessionUpdated: (conversation: ConversationSummary) => void;
+  onRenameTeamInstance?: (instanceId: string, name: string) => Promise<boolean>;
   tree: ProjectTreeController;
 }): ReactElement {
   const gitReviewCache = getGitReviewCache(agentClient);
@@ -652,6 +657,8 @@ export function RightSidebarWorkspace({
   const activeSessionId = activeSession?.id ?? null;
   const workspaceId = teamChat === null ? activeSessionId : teamChatTabId(teamChat.id);
   const coordinationTarget = useWorkbenchUiStore(state => state.teamChatCoordinationTarget);
+  const detailsTarget = useWorkbenchUiStore(state => state.teamChatDetailsTarget);
+  const handledDetailsRequest = useRef<string | null>(null);
   const sidebarVisible = useWorkbenchUiStore((state) => activeActivity === "settings"
     ? state.isSettingsFilePanelOpen
     : activeActivity === "conversations" && workspaceId !== null
@@ -1051,6 +1058,16 @@ export function RightSidebarWorkspace({
     teamMemberOpenRequest,
     updateOpenChatIds,
   ]);
+
+  useEffect(() => {
+    if (teamChat === null || detailsTarget?.instanceId !== teamChat.id || handledDetailsRequest.current === detailsTarget.requestId) return;
+    handledDetailsRequest.current = detailsTarget.requestId;
+    const id = `group-details:${teamChat.id}`;
+    setToolTabs(current => current.some(tab => tab.id === id)
+      ? current.map(tab => tab.id === id ? { ...tab, section: detailsTarget.section, lastAccessedAt: Date.now() } : tab)
+      : [...current, { id, kind: "group-details", instance: teamChat, section: detailsTarget.section, name: "群资料", lastAccessedAt: Date.now() }]);
+    setActiveTabForCurrentSession(id); setIsFileBrowserOpen(false);
+  }, [detailsTarget, teamChat, setActiveTabForCurrentSession]);
 
   useEffect(() => {
     const request = conversationReviewViewRequest;
@@ -1833,7 +1850,7 @@ export function RightSidebarWorkspace({
       ? visibleFileTabs
       : [
         ...visibleFileTabs,
-        ...toolTabs,
+        ...toolTabs.filter(tab => tab.kind !== "group-details" || workspaceId === teamChatTabId(tab.instance.id)),
         ...openSideSessions
         .map((session): SidebarTab => ({
           id: `chat:${session.id}`,
@@ -1842,7 +1859,7 @@ export function RightSidebarWorkspace({
           session,
         })),
       ],
-    [activeActivity, openSideSessions, toolTabs, visibleFileTabs],
+    [activeActivity, openSideSessions, toolTabs, visibleFileTabs, workspaceId],
   );
   const nextTabOrder = appendNewTabIds(tabOrder, unorderedTabs.map((tab) => tab.id));
   if (nextTabOrder !== tabOrder) setTabOrder(nextTabOrder);
@@ -1901,6 +1918,7 @@ export function RightSidebarWorkspace({
         || tab.kind === "git-review"
         || tab.kind === "background-command"
         || tab.kind === "conversation-review"
+        || tab.kind === "group-details"
         || tab.session === null
         || releasingToolTabIdsRef.current.has(tab.id)
       ) {
@@ -2440,6 +2458,8 @@ export function RightSidebarWorkspace({
                       <Terminal aria-hidden="true" size={14} />
                     ) : tab.kind === "managed-browser" ? (
                       <Globe2 aria-hidden="true" size={14} />
+                    ) : tab.kind === "group-details" ? (
+                      <UsersRound aria-hidden="true" size={14} />
                     ) : tab.kind === "agent-prompt" ? (
                       <FileText aria-hidden="true" size={14} />
                     ) : (
@@ -2555,7 +2575,18 @@ export function RightSidebarWorkspace({
                 className={isActive ? "flex h-full min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"}
                 key={tab.id}
               >
-                {tab.kind === "git-review" ? (
+                {tab.kind === "group-details" ? (
+                  <TeamChatDetails agentClient={agentClient} instance={teamChat?.id === tab.instance.id ? teamChat : tab.instance}
+                    active={isActive && sidebarVisible && activeActivity === "conversations" && teamChat?.id === tab.instance.id} section={tab.section}
+                    onSectionChanged={section => setToolTabs(current => current.map(item => item.id === tab.id && item.kind === "group-details" ? { ...item, section } : item))}
+                    onRename={async name => onRenameTeamInstance?.(tab.instance.id, name) ?? false}
+                    onOpenMember={conversation => {
+                      const session = toProjectSession(conversation);
+                      setSideSessions(current => current.some(item => item.id === session.id) ? current : [...current, session]);
+                      updateOpenChatIds(current => new Set(current).add(session.id));
+                      setActiveTabForCurrentSession(`chat:${session.id}`); onSessionViewed(session.id);
+                    }} />
+                ) : tab.kind === "git-review" ? (
                   <GitReviewWorkspace
                     active={isActive && sidebarVisible && activeActivity === "conversations"}
                     agentClient={agentClient}
@@ -2814,6 +2845,7 @@ export function RightSidebarWorkspace({
               onToggleTree={() => setIsTreeCollapsed((current) => !current)}
             />
           ) : activeTab?.kind === "git-review"
+            || activeTab?.kind === "group-details"
             || activeTab?.kind === "background-command"
             || activeTab?.kind === "conversation-review"
             || activeTab?.kind === "terminal"

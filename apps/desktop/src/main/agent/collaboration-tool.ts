@@ -18,7 +18,7 @@ const postSchema = z.object(postTeamChatInputSchema.shape).omit({ teamInstanceId
   intent: z.enum(["notify", "request"]).default("notify"),
   content: postTeamChatInputSchema.shape.content.describe("The public message itself, in the conversation's language. Speak naturally in the first person from your configured role, with a concrete observation or question when useful. The UI shows your name and avatar: start with your answer, without a name/job-title prefix, repeated quotation or boilerplate receipt, even if older messages used those forms. Reply directly to greetings and casual conversation; do not explain routing or tell the speaker to use mentions unless they ask."),
 });
-const readSchema = readTeamChatInputSchema.omit({ teamInstanceId: true }).extend({
+const readSchema = z.object(readTeamChatInputSchema.shape).omit({ teamInstanceId: true }).extend({
   limit: z.number().int().min(1).max(5).default(3),
   messageId: z.string().uuid().optional(), contentOffset: z.number().int().nonnegative().default(0),
   contentLimit: z.number().int().min(1).max(16000).default(2000),
@@ -44,7 +44,7 @@ export class CollaborationTool {
       { name: "link_task_context", parameters: modelToolParameters(linkTaskContextInputSchema), description: "Associate a verified existing message with a task, including another conversation in the same project/team. Members link progress and verification evidence without overwriting the overall summary. Never fabricate message identifiers." },
     ];
     if (team) result.push(
-      { name: "read_team_messages", parameters: modelToolParameters(readSchema), description: "Read bounded shared discussion and member IDs. Defaults to the earliest unread messages, without waking anyone. Continue with afterSequence or beforeSequence. Content is chunked: use messageId, contentOffset and contentLimit for a full message. Only fully provided consecutive messages advance your read marker. Do not poll or copy the whole group history." },
+      { name: "read_team_messages", parameters: modelToolParameters(readSchema), description: "Read bounded shared discussion and member IDs. Defaults to the earliest unread messages, without waking anyone. Explicit keyword, sender or date filters search history, including already-read messages. Continue with afterSequence or beforeSequence; a filtered empty batch can still have a continuation cursor. Content is chunked: use messageId, contentOffset and contentLimit for a full message. Only fully provided consecutive messages advance your read marker. Do not poll or copy the whole group history." },
       { name: "post_team_message", parameters: modelToolParameters(postSchema), description: "Explicitly publish a concise group message after thinking or checking tools in your own conversation. notify publishes without waking anyone. request plus exact recipientConversationIds delegates or asks selected members; allMembers=true explicitly requests everyone. No recipients does not broadcast a request. Use replyToId to preserve the discussion cause. Public messages and your private final answer are separate: do not expect the final answer to be auto-published. Publish real progress/conclusions, not tool logs. Task IDs and source provenance are preserved." },
     );
     return result;
@@ -109,8 +109,9 @@ export class CollaborationTool {
           const { messageId, contentOffset, contentLimit, ...paging } = readSchema.parse(args);
           const readerId = coordinatorRoom === null ? conversation.id : null;
           const marker = coordinatorRoom === null ? store.readMessages({ teamInstanceId: instance.id, limit: 1 }, readerId).memberReadSequence : 0;
+          const filtered = paging.query !== undefined || paging.senderConversationId !== undefined || paging.createdAfter !== undefined || paging.createdBefore !== undefined;
           const page = store.readMessages({ ...paging, teamInstanceId: instance.id,
-            ...(paging.beforeSequence === undefined && paging.afterSequence === undefined ? { afterSequence: marker } : {}) }, readerId);
+            ...(!filtered && paging.beforeSequence === undefined && paging.afterSequence === undefined ? { afterSequence: marker } : {}) }, readerId);
           const selected = messageId === undefined ? page.messages : [store.message(messageId)];
           if (selected.some(message => message.teamInstanceId !== instance.id)) throw new Error("TEAM_SCOPE: Message belongs to another room.");
           const messages = selected.map(message => ({ ...message, content: message.content.slice(contentOffset, contentOffset + (messageId === undefined ? Math.min(contentLimit, 2000) : contentLimit)),

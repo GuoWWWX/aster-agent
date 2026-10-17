@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import type { ConversationSummary, PostTeamChatInput, TeamChatMember, TeamChatMessage, TeamChatActivity } from "@agent/protocol";
-import { ExternalLink, MessageSquareReply, Workflow } from "lucide-react";
+import { ExternalLink, MessageSquareReply, Workflow, UsersRound } from "lucide-react";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import { AgentMarkdown, AgentMarkdownWorkspaceScope } from "../../components/markdown/agent-markdown.js";
 import { HtmlPreviewScope } from "../../components/html-preview/html-preview-card.js";
@@ -128,7 +128,7 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
       references.set(`@${conversation.title}`, { member, conversation });
       references.set(`@${member.name}`, { member, conversation });
     }
-    return [...references].map(([label, { member, conversation }]) => {
+    const result = [...references].map(([label, { member, conversation }]) => {
       const avatar = agents.find(item => item.id === conversation.agentId)?.avatar
         ?? (conversation.avatarIcon ? { kind: "icon" as const, icon: conversation.avatarIcon } : null);
       return { label, content: <button type="button" aria-label={`打开成员 ${member.name} 的对话`} title={`打开 ${member.name} 的对话`}
@@ -138,6 +138,9 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
           <span className="min-w-0 truncate">{member.name}</span>
         </button> };
     });
+    if (message.allMembers) result.push({ label: "@全体成员", content: <button type="button" className="inline-flex items-center gap-[5px] align-middle text-[var(--app-accent)] hover:underline"
+      onClick={() => useWorkbenchUiStore.getState().openTeamChatDetails({ instanceId: teamInstanceId, section: "info" })}><UsersRound size={14} />全体成员</button> });
+    return result;
   };
   const renderMemberMentions = (message: TeamChatMessage, references: ReturnType<typeof memberReferences>): ReactNode => {
     const ranges = findComposerReferenceRanges(message.content, references.map(reference => reference.label));

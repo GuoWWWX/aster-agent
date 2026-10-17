@@ -500,12 +500,13 @@ type TeamMention = {
 };
 
 type MentionOption =
+  | { kind: "all"; value: { id: string; name: string } }
   | { kind: "conversation"; value: ConversationMention; member?: TeamChatMember }
   | { kind: "directory"; value: ProjectFileMention }
   | { kind: "file"; value: ProjectFileMention }
   | { kind: "team"; value: TeamMention };
 
-const MENTION_GROUPS = { conversation: "对话", team: "团队", directory: "文件夹", file: "文件" };
+const MENTION_GROUPS = { all: "群成员", conversation: "对话", team: "团队", directory: "文件夹", file: "文件" };
 
 type MentionQuery = {
   end: number;
@@ -2248,6 +2249,7 @@ export function ConversationWorkspace({
         if (draftAttachments.length > 0) throw new Error("群聊附件发送尚未接入，附件已保留。可先在成员对话中发送。");
         const roster = await agentClient.getTeamChatMembers({ teamInstanceId: groupChat.instanceId });
         const body = { teamInstanceId: groupChat.instanceId, content, intent: "request" as const,
+          allMembers: findComposerReferenceRanges(content, ["@全体成员"]).length > 0,
           recipientConversationIds: selectedConversationMentions.map(item => item.id).filter(id => roster.some(member => member.conversationId === id)),
           supersedesId: editingMessageId,
           replyToId: groupReply?.id ?? null,
@@ -2654,16 +2656,17 @@ export function ConversationWorkspace({
     const normalizedQuery = mentionQuery.query.toLocaleLowerCase();
     if (groupChat !== null) {
       if (groupMentionRoster?.instanceId !== groupChat.instanceId
-        || mentionQuery.query.includes("/")
-        || selectedConversationMentions.length >= MAX_SELECTED_CONVERSATION_MENTIONS) return [];
-      return groupMentionRoster.members.filter(member => !member.isArchived
+        || mentionQuery.query.includes("/")) return [];
+      if ("全体成员".includes(normalizedQuery) && findComposerReferenceRanges(composerValue, ["@全体成员"]).length === 0) options.push({ kind: "all", value: { id: "all-members", name: "全体成员" } });
+      if (selectedConversationMentions.length >= MAX_SELECTED_CONVERSATION_MENTIONS) return options;
+      return [...options, ...groupMentionRoster.members.filter(member => !member.isArchived
         && member.name.toLocaleLowerCase().includes(normalizedQuery)
         && !selectedConversationMentions.some(selected => selected.id === member.conversationId))
         .flatMap((member): MentionOption[] => {
           const conversation = relatedSessions.find(candidate => candidate.id === member.conversationId);
           return conversation === undefined ? [] : [{ kind: "conversation", member,
             value: { ...conversation, title: member.name } }];
-        }).slice(0, 12);
+        })].slice(0, 12);
     }
     const canMentionTeams = session.parentConversationId === null
       && session.threadKind === "agent"
@@ -2738,6 +2741,7 @@ export function ConversationWorkspace({
     const groupOrder = ["conversation", "team", "directory", "file"];
     return options.sort((a, b) => groupOrder.indexOf(a.kind) - groupOrder.indexOf(b.kind));
   }, [
+    composerValue,
     activeProjectFileMentions,
     availableConversationMentions,
     mentionQuery,
@@ -2788,6 +2792,7 @@ export function ConversationWorkspace({
   }, [selectedAgent, session.projectId, session.teamId, slashQuery, slashSkills]);
 
   const composerReferences = findComposerReferenceRanges(composerValue, [
+    ...(groupChat === null ? [] : ["@全体成员"]),
     ...selectedConversationMentions.map((mention) => `@${mention.title}`),
     ...selectedTeamMentions.map((mention) => `@${mention.name}`),
     ...activeProjectFileMentions.map((mention) => `@${mention.path}`),
@@ -2812,7 +2817,7 @@ export function ConversationWorkspace({
       ? `@${option.value.path}/`
       : `@${option.kind === "conversation"
         ? option.value.title
-        : option.kind === "team" ? option.value.name : option.value.path} `;
+        : option.kind === "team" || option.kind === "all" ? option.value.name : option.value.path} `;
     const nextValue = `${composerValue.slice(0, mentionQuery.start)}${insertedText}${composerValue.slice(mentionQuery.end)}`;
     const nextCaret = mentionQuery.start + insertedText.length;
     changeComposerValue(nextValue, nextCaret);
@@ -3826,9 +3831,9 @@ export function ConversationWorkspace({
                       )?.name
                       : null;
                     return (
-                      <Fragment key={option.kind === "conversation" || option.kind === "team"
+                      <Fragment key={option.kind === "conversation" || option.kind === "team" || option.kind === "all"
                         ? `${option.kind}:${option.value.id}` : `${option.kind}:${option.value.path}`}>
-                      {mentionOptions[index - 1]?.kind === option.kind ? null : (
+                      {index > 0 && (groupChat !== null || mentionOptions[index - 1]?.kind === option.kind) ? null : (
                         <div role="presentation" className="px-2 py-1 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
                           {member === undefined ? MENTION_GROUPS[option.kind] : "群成员"}
                         </div>
@@ -3838,7 +3843,7 @@ export function ConversationWorkspace({
                         className={index === mentionSelectionIndex ? "is-selected" : undefined}
                         data-option-index={index}
                         data-group-member={member?.conversationId}
-                        key={option.kind === "conversation" || option.kind === "team"
+                        key={option.kind === "conversation" || option.kind === "team" || option.kind === "all"
                           ? `${option.kind}:${option.value.id}`
                           : `${option.kind}:${option.value.path}`}
                         role="option"
@@ -3851,7 +3856,7 @@ export function ConversationWorkspace({
                             {memberAvatar === undefined ? <SubagentAvatar icon={null} seed={member.conversationId} size="compact" />
                               : <AgentAvatar avatar={memberAvatar} size="compact" />}
                           </div>
-                        ) : option.kind === "team" ? (
+                        ) : option.kind === "team" || option.kind === "all" ? (
                           <UsersRound aria-hidden="true" size={15} />
                         ) : option.kind === "conversation" ? (
                           child?.parentConversationId != null ? (
@@ -3868,7 +3873,7 @@ export function ConversationWorkspace({
                             : option.kind === "team" ? option.value.name : option.value.name}</strong>
                           <small>{member !== undefined ? member.role : option.kind === "conversation"
                             ? `${projectName ?? "临时对话"} · ${threadKindLabel(option.value.threadKind)}`
-                            : option.kind === "team"
+                            : option.kind === "all" ? "通知所有当前群成员并请求回复" : option.kind === "team"
                               ? option.value.scope === "global"
                                 ? "全局团队"
                                 : option.value.scope === "project"
@@ -3941,6 +3946,7 @@ export function ConversationWorkspace({
                   if (label === "/review") return <FileSearch size={12} aria-hidden="true" />;
                   if (label === "/test") return <Terminal size={12} aria-hidden="true" />;
                   if (label.startsWith("/")) return <Sparkles size={12} aria-hidden="true" />;
+                  if (groupChat !== null && label === "@全体成员") return <UsersRound size={12} aria-hidden="true" />;
                   if (selectedTeamMentions.some((item) => `@${item.name}` === label)) return <UsersRound size={12} aria-hidden="true" />;
                   const file = activeProjectFileMentions.find((item) => `@${item.path}` === label);
                   if (file !== undefined) return <FileTypeIcon path={file.path} size={12} />;

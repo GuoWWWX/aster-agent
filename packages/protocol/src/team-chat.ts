@@ -43,6 +43,7 @@ export const teamChatMessageSchema = z.object({
   id: z.string().uuid(), teamInstanceId: z.string().uuid(), sequence: z.number().int().positive(),
   content: z.string(), senderConversationId: z.string().uuid().nullable(), senderName: z.string(),
   intent: z.enum(["notify", "request"]), recipientConversationIds: z.array(z.string().uuid()),
+  allMembers: z.boolean().optional(),
   taskContextId: z.string().uuid().nullable(), replyToId: z.string().uuid().nullable(),
   createdAt: z.string().datetime(), rootMessageId: z.string().uuid(), depth: z.number().int().nonnegative(),
   sourceRunId: z.string().uuid().nullable(), deliveries: z.array(teamChatDeliverySchema),
@@ -52,8 +53,13 @@ export const teamChatMessageSchema = z.object({
 export const readTeamChatInputSchema = z.object({
   teamInstanceId: z.string().uuid(), beforeSequence: z.number().int().positive().optional(),
   afterSequence: z.number().int().nonnegative().optional(),
+  query: z.string().trim().max(200).optional(),
+  senderConversationId: z.string().uuid().nullable().optional(),
+  createdAfter: z.string().datetime().optional(),
+  createdBefore: z.string().datetime().optional(),
   limit: z.number().int().min(1).max(50).default(30),
-}).strict();
+}).strict().refine(input => input.createdAfter === undefined || input.createdBefore === undefined || input.createdAfter <= input.createdBefore,
+  { message: "Start time must precede end time.", path: ["createdBefore"] });
 export const teamChatPageSchema = z.object({
   messages: z.array(teamChatMessageSchema).max(50), nextBeforeSequence: z.number().int().positive().nullable(),
   userReadSequence: z.number().int().nonnegative(), memberReadSequence: z.number().int().nonnegative(),

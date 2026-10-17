@@ -33,6 +33,31 @@ function namedFixture() {
 }
 
 describe("natural group addressing", () => {
+  it("searches canonical message text by keyword, sender and date without marking history read", () => {
+    const { db, instance, member } = namedFixture();
+    db.collaboration.postMessage({ teamInstanceId: instance.id, content: "用户 HTML 说明", intent: "notify", requestId: randomUUID() }, null);
+    const result = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "已交付 Html 页面", intent: "notify", requestId: randomUUID() }, member.id);
+    const page = db.collaboration.readMessages({ teamInstanceId: instance.id, query: "html", senderConversationId: member.id });
+    expect(page.messages.map(message => message.id)).toEqual([result.id]); expect(page.userReadSequence).toBe(0);
+    expect(db.collaboration.readMessages({ teamInstanceId: instance.id, query: "HTML", senderConversationId: null }).messages).toHaveLength(1);
+    expect(db.collaboration.readMessages({ teamInstanceId: instance.id, createdBefore: "2000-01-01T00:00:00.000Z" }).messages).toEqual([]);
+  });
+  it("bounds each keyword scan and keeps a cursor even when that batch has no matches", () => {
+    const { db, instance } = namedFixture();
+    const first = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "很早的目标内容", intent: "notify", requestId: randomUUID() }, null);
+    for (let i = 0; i < 101; i++) db.collaboration.postMessage({ teamInstanceId: instance.id, content: "其他聊天", intent: "notify", requestId: randomUUID() }, null);
+    const page = db.collaboration.readMessages({ teamInstanceId: instance.id, query: "目标" });
+    expect(page.messages).toEqual([]); expect(page.nextBeforeSequence).not.toBeNull();
+    expect(db.collaboration.readMessages({ teamInstanceId: instance.id, query: "目标", beforeSequence: page.nextBeforeSequence! }).messages.map(message => message.id)).toEqual([first.id]);
+  });
+  it("paginates matching history without duplicates and treats search metacharacters literally", () => {
+    const { db, instance } = namedFixture();
+    for (let i = 0; i < 4; i++) db.collaboration.postMessage({ teamInstanceId: instance.id, content: `目标 ${i} %_`, intent: "notify", requestId: randomUUID() }, null);
+    const page = db.collaboration.readMessages({ teamInstanceId: instance.id, query: "%_", limit: 2 });
+    expect(page.messages.map(message => message.sequence)).toEqual([3, 4]); expect(page.nextBeforeSequence).toBe(3);
+    const next = db.collaboration.readMessages({ teamInstanceId: instance.id, query: "%_", limit: 2, beforeSequence: page.nextBeforeSequence! });
+    expect(next.messages.map(message => message.sequence)).toEqual([1, 2]); expect(next.nextBeforeSequence).toBeNull();
+  });
   it("routes a quoted member reply to its author and adds explicitly mentioned recipients", () => {
     const { db, instance, lead, member, architect } = namedFixture();
     const original = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "需求已梳理", intent: "notify", requestId: randomUUID() }, member.id);

@@ -67,6 +67,43 @@ afterEach(() => {
 });
 async function flush(): Promise<void> { for (let i = 0; i < 35; i++) await Promise.resolve(); }
 
+it("uses one native sidebar tab for group info, history and shared settings while preserving the group draft", async () => {
+  const client = new MockAgentClient(); vi.spyOn(hostClient, "createAgentClientForCurrentHost").mockReturnValue(client);
+  const instance = await client.createTeamInstance({ teamId: "default-team", scope: "global" });
+  const other = await client.createTeamInstance({ teamId: "default-team", scope: "global", name: "另一个群" });
+  const message = await client.postTeamChat({ teamInstanceId: instance.id, content: "查询目标内容", intent: "notify", requestId: crypto.randomUUID() });
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => { root?.render(<TooltipProvider><App /></TooltipProvider>); await flush(); });
+  await act(async () => { useWorkbenchUiStore.getState().openTeamChat({ instanceId: instance.id }); await flush(); });
+  const group = container.querySelector('.workbench-main [aria-label="团队群聊"]')!;
+  const composer = group.closest('.conversation-workspace')!.querySelector<HTMLTextAreaElement>('[aria-label="输入任务"]')!;
+  act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(composer, "未发送的群草稿"); composer.dispatchEvent(new Event("input", { bubbles: true })); });
+  await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="群资料与设置"]')!.click(); await flush(); });
+  const sidebar = container.querySelector('.right-sidebar-workspace')!;
+  expect(sidebar.textContent).toContain("群成员"); expect(sidebar.textContent).toContain("身份与团队职责");
+  const read = vi.spyOn(client, "readTeamChat");
+  await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="查询群聊历史消息"]')!.click(); await flush(); });
+  expect(sidebar.querySelectorAll('.right-sidebar-workspace__tabs [role="tab"]')).toHaveLength(1);
+  act(() => { const field = sidebar.querySelector<HTMLInputElement>('[aria-label="消息关键词"]')!; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "目标"); field.dispatchEvent(new Event("input", { bubbles: true })); });
+  await act(async () => { sidebar.querySelector('form[aria-label="查询聊天记录"]')!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); await flush(); });
+  expect(read).toHaveBeenCalledWith(expect.objectContaining({ query: "目标", teamInstanceId: instance.id }));
+  await act(async () => { sidebar.querySelector<HTMLButtonElement>('[title="定位到群中原消息"]')!.click(); await flush(); });
+  expect(useWorkbenchUiStore.getState().teamChatTarget).toEqual({ instanceId: instance.id, messageId: message.id });
+  expect(container.querySelector('.workbench-main [aria-label="团队群聊"]')).toBe(group); expect(composer.value).toBe("未发送的群草稿");
+  await act(async () => { [...sidebar.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(button => button.textContent === "群设置")!.click(); await flush(); });
+  expect(sidebar.querySelector('[aria-label="团队指令"]')).not.toBeNull();
+  const rename = vi.spyOn(client, "renameTeamInstance");
+  act(() => { const field = sidebar.querySelector<HTMLInputElement>('[aria-label="当前群名称"]')!; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "新的群名称"); field.dispatchEvent(new Event("input", { bubbles: true })); });
+  await act(async () => { sidebar.querySelector<HTMLButtonElement>('button[type="submit"]')!.click(); await flush(); });
+  expect(rename).toHaveBeenCalledWith({ teamInstanceId: instance.id, name: "新的群名称" });
+  expect(container.querySelector('.workbench-main')?.textContent).toContain("新的群名称");
+  await act(async () => { useWorkbenchUiStore.getState().openTeamChat({ instanceId: other.id }); await flush(); });
+  expect(sidebar.querySelectorAll('.right-sidebar-workspace__tabs [role="tab"]')).toHaveLength(0);
+  await act(async () => { useWorkbenchUiStore.getState().openTeamChat({ instanceId: instance.id }); await flush(); });
+  expect(sidebar.querySelectorAll('.right-sidebar-workspace__tabs [role="tab"]')).toHaveLength(1);
+  expect(composer.value).toBe("未发送的群草稿");
+});
+
 it("opens a global group file in its publishing member's authorized workspace without navigating away", async () => {
   const client = new MockAgentClient(); vi.spyOn(hostClient, "createAgentClientForCurrentHost").mockReturnValue(client);
   const instance = await client.createTeamInstance({ teamId: "default-team", scope: "global" });
