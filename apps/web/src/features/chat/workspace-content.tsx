@@ -1151,9 +1151,9 @@ export function ConversationWorkspace({
         }]
         : [];
   const enabledAgentProfiles = agentProfiles.filter((agent) => agent.enabled);
-  const selectedAgent = enabledAgentProfiles.find((agent) => agent.id === selectedAgentId)
-    ?? defaultAgent
-    ?? enabledAgentProfiles[0];
+  const selectedAgent = session.agentId === null
+    ? enabledAgentProfiles.find((agent) => agent.id === selectedAgentId) ?? defaultAgent ?? enabledAgentProfiles[0]
+    : agentProfiles.find((agent) => agent.id === session.agentId);
   const slashMenuOpen = slashQuery !== null;
   useEffect(() => {
     if (!slashMenuOpen) return;
@@ -3200,6 +3200,7 @@ export function ConversationWorkspace({
     && onSessionUpdated !== undefined;
   const canChangeAgent =
     !isLoadingTimeline
+    && session.agentId === null
     && !isEndedSubagent
     && !teamManaged;
   const changeSummaries = useMemo(() => conversationChangeSummaries(timeline), [timeline]);

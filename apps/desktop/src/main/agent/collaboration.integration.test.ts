@@ -14,6 +14,7 @@ import { ThreadLog } from "../storage/thread-log.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
 import { ProjectToolRegistry } from "../tools/project-tool-registry.js";
 import type { CompleteTurnInput, ModelProviderAdapter, ModelTurnResult } from "../model/model-contracts.js";
+import { ModelRequestError } from "../model/model-request-error.js";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { force: true, recursive: true }); });
@@ -72,10 +73,47 @@ async function fixture(withThreadLog = false) {
   db.bindTeamMemberConversation({ conversationId: member.id, agentId: "developer", teamExecutionConversationId: lead.id });
   const model = new GroupFixture(); const tools = new ProjectToolRegistry(projects);
   const runtime = new AgentRuntime(db, { getConfiguration: () => ({ apiKey: "fixture", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1", modelId: "fixture", reasoningOptions: [] }) }, projects, tools, model,
-    undefined, undefined, null, null, null, null, null, undefined, null, log, projector);
+    (_delay, signal) => { signal.throwIfAborted(); return Promise.resolve(); }, undefined, null, null, null, null, null, undefined, null, log, projector);
   return { db, lead, member, instance, runtime, model, tools, log };
 }
 describe("group execution integration", () => {
+  it("accepts a bound member's follow-up after 502 retries without reposting its completed group message", async () => {
+    const { db, instance, member, runtime, model, tools } = await fixture(true);
+    let recovered = false;
+    let followUpAttempts = 0;
+    const requests = vi.spyOn(model, "completeTurn").mockImplementation((input): Promise<ModelTurnResult> => {
+      if (recovered) return ++followUpAttempts === 1
+        ? Promise.reject(new ModelRequestError(503, "Upstream is recovering"))
+        : Promise.resolve({ content: "连接已恢复，可以继续。", finishReason: "stop", toolCalls: [] });
+      if (!input.messages.some(message => message.role === "tool" && message.toolCallId === "published-once")) {
+        return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id: "published-once", name: "post_team_message",
+          arguments: JSON.stringify({ content: "已核实结果。", intent: "notify" }) }] });
+      }
+      return Promise.reject(new ModelRequestError(502, "Upstream service temporarily unavailable"));
+    });
+    try {
+      const failed = await new Promise<Extract<ConversationRunEvent, { type: "run.finished" }>>(resolve => {
+        runtime.postTeamChat({ teamInstanceId: instance.id, content: "先在群里公开结果", recipientConversationIds: [member.id], requestId: randomUUID() },
+          event => { if (event.type === "run.finished") resolve(event); });
+      });
+      expect(failed.status).toBe("failed");
+      expect(requests).toHaveBeenCalledTimes(7);
+      expect(db.listTimeline(member.id)).toContainEqual(expect.objectContaining({ kind: "model_retry", status: "failed", attempt: 5 }));
+      expect(db.getConversation(member.id).activeRunId).toBeNull();
+      const binding = db.getConversationAgentBinding(member.id)!;
+      recovered = true;
+      const resumed = await new Promise<Extract<ConversationRunEvent, { type: "run.finished" }>>(resolve => {
+        runtime.sendMessage({ conversationId: member.id, content: "继续", agent: binding },
+          event => { if (event.type === "run.finished") resolve(event); });
+      });
+      expect(resumed).toMatchObject({ status: "completed", error: null });
+      expect(resumed.runId).not.toBe(failed.runId);
+      expect(requests).toHaveBeenCalledTimes(9);
+      expect(db.listTimeline(member.id)).toContainEqual(expect.objectContaining({ kind: "model_retry", runId: resumed.runId, status: "completed", attempt: 1 }));
+      expect(db.getConversationAgentBinding(member.id)).toEqual(binding);
+      expect(db.collaboration.readMessages({ teamInstanceId: instance.id }).messages.map(message => message.content)).toEqual(["先在群里公开结果", "已核实结果。"]);
+    } finally { await tools.dispose(); db.close(); }
+  });
   it("lets a later-started member publish while the first member is still thinking", async () => {
     const { db, instance, lead, member, runtime, model, tools } = await fixture(true);
     let releaseSlow!: () => void;
