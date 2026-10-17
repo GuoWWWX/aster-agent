@@ -11,6 +11,7 @@ import {
   type PostTeamChatInput, type ReadTeamChatInput, type TeamChatMessage, type TeamChatPage,
   type MarkTeamChatReadInput, type ConversationSummary, type TeamInstanceView, type TeamChatMember,
   type ConversationAgentBinding, type TeamWorkItemView,
+  type TeamChatCoordinationStep,
 } from "@agent/protocol";
 
 /** Recognize a direct opening address, not an arbitrary mention of a member. */
@@ -402,7 +403,10 @@ export class CollaborationStore {
         depth: senderId === null ? 0 : (parent?.depth ?? 0) + 1, deliveries: [],
         coordinator: senderId === null && input.coordinator !== undefined ? { ...input.coordinator,
           status: recipients.length === 0 && input.intent === "request" ? "pending" : "completed", error: null,
-          contextSummary: this.coordinator(instance.id)?.contextSummary ?? "" } : null,
+          contextSummary: this.coordinator(instance.id)?.contextSummary ?? "",
+          ...(recipients.length === 0 && input.intent === "request" ? {} : { steps: [{ type: "completed", at: new Date().toISOString(),
+            detail: input.intent === "notify" ? "通知仅发布，不唤醒成员。" : input.allMembers ? "按全员请求直接投递，未调用协调模型。"
+              : "按明确点名的成员直接投递，未调用协调模型。", recipientConversationIds: recipients }] }) } : null,
         supersedesId: input.supersedesId,
       });
       message.deliveries = recipients.map(conversationId => ({ id: randomUUID(), conversationId, runId: null,
@@ -421,7 +425,12 @@ export class CollaborationStore {
     const metadata = teamChatMessageSchema.parse(JSON.parse(String(row.payload_json)));
     return this.journal.message(teamInstanceId, metadata.id)?.coordinator ?? null;
   }
-  public finishCoordination(id: string, recipients: string[], error: string | null, contextSummary?: string): TeamChatMessage {
+  public recordCoordinationStep(id: string, step: TeamChatCoordinationStep): void {
+    const message = this.message(id);
+    if (message.coordinator?.status !== "pending") return;
+    this.journal.coordinationStep(message.teamInstanceId, id, step);
+  }
+  public finishCoordination(id: string, recipients: string[], error: string | null, contextSummary?: string, decisionSummary?: string): TeamChatMessage {
     const current = this.message(id);
     if (current.coordinator?.status === "cancelled") return current;
     this.assertMember(current.teamInstanceId, null, error !== null);
@@ -434,7 +443,8 @@ export class CollaborationStore {
       coordinator: { ...current.coordinator, status: error === null ? "completed" : "failed", error,
         ...(contextSummary === undefined ? {} : { contextSummary }) },
       deliveries: recipients.map(conversationId => ({ id: randomUUID(), conversationId, status: "pending", runId: null, error: null })) };
-    this.journal.coordinate(message);
+    this.journal.coordinate(message, { type: error === null ? "completed" : "failed", at: new Date().toISOString(),
+      detail: (error ?? decisionSummary ?? "已选择回答成员。").slice(0, 2000), recipientConversationIds: recipients });
     this.write(() => this.projectMessage(message)); return this.message(id);
   }
   public beginCoordination(id: string): TeamChatMessage {
@@ -538,7 +548,7 @@ export class CollaborationStore {
       const message = this.message(String(row.id));
       if (message.coordinator != null) {
         const cancelled: TeamChatMessage = { ...message, coordinator: { ...message.coordinator, status: "cancelled", error: "团队已删除" } };
-        this.journal.coordinate(cancelled); this.write(() => this.projectMessage(cancelled));
+        this.journal.coordinate(cancelled, { type: "cancelled", at: new Date().toISOString(), detail: "团队已删除" }); this.write(() => this.projectMessage(cancelled));
       }
     }
     this.db.prepare("UPDATE team_chat_deliveries SET status = 'cancelled', error = '团队已删除' WHERE status = 'pending' AND message_id IN (SELECT id FROM team_chat_messages WHERE team_instance_id = ?)").run(teamInstanceId);

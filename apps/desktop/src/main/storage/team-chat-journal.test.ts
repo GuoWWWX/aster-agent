@@ -31,6 +31,22 @@ it("preserves text and coordinator decisions across restart without repeating th
   reopened.appendMessage(message, { id: "request-1", fingerprint: "hash" });
   expect(reopened.ids(room)).toEqual([message.id]);
 });
+it("retains bounded append-only coordination steps through terminal state patches and restart", () => {
+  const { root, room, journal, message } = fixture();
+  journal.appendMessage(message, null);
+  for (let attempt = 1; attempt <= 70; attempt++) journal.coordinationStep(room, message.id, {
+    type: "model_requested", at: new Date().toISOString(), attempt, modelId: "fixture" });
+  const current = journal.message(room, message.id)!;
+  journal.coordinate({ ...current, coordinator: { ...current.coordinator!, status: "completed" } }, {
+    type: "completed", at: new Date().toISOString(), detail: "选择与当前问题相关的成员", recipientConversationIds: [] });
+  const restored = new TeamChatJournal(root).message(room, message.id)!;
+  expect(restored.coordinator?.status).toBe("completed");
+  expect(restored.coordinator?.steps).toHaveLength(64);
+  expect(restored.coordinator?.steps?.at(-1)?.detail).toBe("选择与当前问题相关的成员");
+  const lines = readFileSync(journal.file(room), "utf8").trim().split("\n").map(line => JSON.parse(line) as { type: string; coordinator?: { steps?: unknown[] } });
+  expect(lines.filter(line => line.type === "coordination_step")).toHaveLength(70);
+  expect(lines.at(-1)?.coordinator?.steps).toBeUndefined();
+});
 it("rejects traversal and corrupt or incomplete canonical records without replacing the original", () => {
   const { root, room, journal, message } = fixture(); journal.appendMessage(message, null);
   expect(() => journal.file("../other")).toThrow();

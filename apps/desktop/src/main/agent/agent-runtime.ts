@@ -154,6 +154,7 @@ import {
 } from "./team-work-item-tool.js";
 import { BASE_SYSTEM_PROMPT, TEAM_CHAT_COORDINATOR_PROMPT } from "./prompts/prompt-assets.js";
 import { teamChatContext } from "./team-chat-context.js";
+import type { TeamChatCoordinationStep } from "@agent/protocol";
 import {
   ToolHandlerRegistry,
   type ToolExecutionPolicy,
@@ -6082,11 +6083,17 @@ export class AgentRuntime {
     if (message.coordinator?.status === "completed" || message.coordinator?.status === "cancelled") return;
     message = this.database.collaboration.beginCoordination(message.id);
     const controller = new AbortController();
+    const recordStep = (step: Omit<TeamChatCoordinationStep, "at">): void => {
+      this.database.collaboration.recordCoordinationStep(message.id, { ...step, at: new Date().toISOString() });
+      const instance = this.database.listTeamInstances({ includeArchived: true }).find(instance => instance.id === message.teamInstanceId);
+      if (instance?.rootConversationId != null && !instance.isArchived) this.emit(emit, { type: "collaboration.changed", conversationId: instance.rootConversationId, teamInstanceId: instance.id });
+    };
     const promise = Promise.resolve().then(async () => {
       let configuration: ModelConfiguration | undefined;
       try {
         const coordinator = message.coordinator;
         if (coordinator == null || coordinator.status === "completed") return;
+        recordStep({ type: "started" });
         const directory = this.agentDirectory?.getConfiguration();
         const owner = directory?.agents.find(agent => agent.id === coordinator.agentId && agent.enabled);
         if (owner === undefined) throw new Error("群聊归属 Agent 不可用，请重新选择 Agent 后发送。");
@@ -6105,31 +6112,34 @@ export class AgentRuntime {
               instructions: (this.database.getConversationAgentBinding(member.conversationId)?.instructions ?? "").slice(0, Math.floor(12000 / Math.max(members.length, 1))) })) }) }];
         if (configuration.contextWindow && messages.reduce((sum, item) => sum + estimateContextTokens(item.content), 4096) > configuration.contextWindow) throw new Error("协调上下文超过当前模型窗口，请使用更大窗口的模型。");
         const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(90_000)]);
-        let decision: { recipientConversationIds: string[]; contextSummary?: string | undefined };
+        let decision: { recipientConversationIds: string[]; contextSummary?: string | undefined; decisionSummary?: string | undefined };
         for (let attempt = 0; ; attempt++) {
           signal.throwIfAborted();
           try {
+            recordStep({ type: "model_requested", attempt: attempt + 1, modelId: configuration.modelId });
             const result = await this.modelGateway.completeTurn({ configuration, messages, maxOutputTokens: 4096,
               reasoning: selection?.reasoning ?? undefined, tools: [], signal, onTextDelta: () => undefined });
             if (result.toolCalls.length > 0) throw new ModelResponseError("协调返回了意外的工具调用，请重试。");
             let rawDecision: unknown;
             const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/iu.exec(result.content.trim());
             try { rawDecision = JSON.parse(fenced?.[1] ?? result.content); } catch { throw new ModelResponseError("协调返回的格式无效，请重试。"); }
-            const parsed = z.object({ recipientConversationIds: z.array(z.string().uuid()).min(1).max(32), contextSummary: z.string().max(2000).optional() }).strict().safeParse(rawDecision);
+            const parsed = z.object({ recipientConversationIds: z.array(z.string().uuid()).min(1).max(32), contextSummary: z.string().max(2000).optional(), decisionSummary: z.string().max(500).optional() }).strict().safeParse(rawDecision);
             if (!parsed.success || new Set(parsed.data.recipientConversationIds).size !== parsed.data.recipientConversationIds.length
               || parsed.data.recipientConversationIds.some(id => !members.some(member => member.conversationId === id))) throw new ModelResponseError("协调返回了无效的成员，请重试。");
             decision = parsed.data;
             break;
           } catch (error) {
             if (!isRetryableModelError(error) || attempt >= MAX_MODEL_RECONNECT_ATTEMPTS) throw error;
+            recordStep({ type: "retry_scheduled", attempt: attempt + 1, detail: formatAgentError(toMainAgentError(error,
+              { operation: "team_chat.coordinate", redactValues: [configuration.apiKey] })).slice(0, 2000) });
             await this.waitForRetry(modelRetryDelay(attempt + 1), signal);
           }
         }
         signal.throwIfAborted();
-        this.database.collaboration.finishCoordination(message.id, decision.recipientConversationIds, null, decision.contextSummary);
+        this.database.collaboration.finishCoordination(message.id, decision.recipientConversationIds, null, decision.contextSummary, decision.decisionSummary);
         this.dispatchTeamChat(emit, new Set(this.database.collaboration.message(message.id).deliveries.map(delivery => delivery.id)));
       } catch (error) {
-        const detail = controller.signal.aborted ? "协调已中断，可继续。" : formatAgentError(toMainAgentError(error,
+        const detail = controller.signal.aborted ? "协调已中断，可继续。" : error instanceof DOMException && error.name === "TimeoutError" ? "群聊协调超时，可重试协调继续。" : formatAgentError(toMainAgentError(error,
           { operation: "team_chat.coordinate", redactValues: configuration === undefined ? [] : [configuration.apiKey] }));
         const settled = this.database.collaboration.finishCoordination(message.id, [], detail);
         if (settled.coordinator?.status === "completed") this.dispatchTeamChat(emit, new Set(settled.deliveries.map(delivery => delivery.id)));

@@ -79,6 +79,29 @@ async function fixture(withThreadLog = false, withCoordinator = false, graphChec
   return { db, lead, member, instance, runtime, model, tools, log };
 }
 describe("group execution integration", () => {
+  it("records routing requests, retries and the selection without running the leader", async () => {
+    const { db, instance, lead, member, runtime, model, tools } = await fixture(true, true);
+    let requests = 0;
+    vi.spyOn(model, "completeTurn").mockImplementation(input => {
+      if (input.tools.length > 0) return Promise.resolve({ content: "已完成", finishReason: "stop", toolCalls: [] });
+      if (++requests === 1) return Promise.reject(new ModelRequestError(502, "fixture upstream unavailable"));
+      return Promise.resolve({ content: JSON.stringify({ recipientConversationIds: [member.id], decisionSummary: "开发成员继续回答当前问题。" }), finishReason: "stop", toolCalls: [] });
+    });
+    try {
+      const message = runtime.postTeamChat({ teamInstanceId: instance.id, content: "继续这个问题", requestId: randomUUID() }, () => undefined);
+      await vi.waitFor(() => expect(db.collaboration.message(message.id).deliveries[0]?.status).toBe("completed"));
+      const coordinator = db.collaboration.message(message.id).coordinator!;
+      expect(coordinator.agentId).toBe("default-agent");
+      expect(coordinator.steps?.map(step => step.type)).toEqual(["started", "model_requested", "retry_scheduled", "model_requested", "completed"]);
+      expect(coordinator.steps?.filter(step => step.type === "model_requested").map(step => step.attempt)).toEqual([1, 2]);
+      expect(coordinator.steps?.at(-1)).toMatchObject({ detail: "开发成员继续回答当前问题。", recipientConversationIds: [member.id] });
+      expect(db.listTimeline(lead.id)).toEqual([]);
+      const shared = await new CollaborationTool(db).execute({ name: "read_team_messages", arguments: "{}", conversationId: member.id,
+        runId: randomUUID(), toolCallId: randomUUID(), changed: () => undefined, post: () => { throw new Error("Read must not post"); } });
+      expect(shared.kind).toBe("completed");
+      if (shared.kind === "completed") expect(shared.content).not.toContain('"steps"');
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
   it.each([false, true])("waits for checkpoint cleanup before starting the next group delivery (resumePaused=%s)", async resumePaused => {
     const checkpointer = new NodeSqliteCheckpointSaver(":memory:");
     const { db, instance, member, runtime, model, tools } = await fixture(true, false, checkpointer);

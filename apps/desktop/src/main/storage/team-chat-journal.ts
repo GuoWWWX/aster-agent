@@ -4,14 +4,16 @@ import { rename, rm } from "node:fs/promises";
 import { backup, DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { teamChatMessageSchema, type TeamChatMessage } from "@agent/protocol";
+import { teamChatMessageSchema, teamChatCoordinationStepSchema, type TeamChatMessage, type TeamChatCoordinationStep } from "@agent/protocol";
 
 const eventSchema = z.discriminatedUnion("type", [
   z.object({ version: z.literal(1), type: z.literal("message"), message: teamChatMessageSchema,
     request: z.object({ id: z.string(), fingerprint: z.string() }).nullable() }).strict(),
   z.object({ version: z.literal(1), type: z.literal("coordination"), messageId: z.string().uuid(),
     coordinator: teamChatMessageSchema.shape.coordinator, recipientConversationIds: z.array(z.string().uuid()),
-    deliveries: z.array(teamChatMessageSchema.shape.deliveries.element) }).strict(),
+    deliveries: z.array(teamChatMessageSchema.shape.deliveries.element), step: teamChatCoordinationStepSchema.optional() }).strict(),
+  z.object({ version: z.literal(1), type: z.literal("coordination_step"), messageId: z.string().uuid(),
+    step: teamChatCoordinationStepSchema }).strict(),
 ]);
 type Event = z.infer<typeof eventSchema>;
 type Position = { offset: number; length: number };
@@ -69,8 +71,13 @@ export class TeamChatJournal {
           const event = eventSchema.parse(JSON.parse(bytes.toString("utf8")));
           if (event.type === "message" ? event.message.id !== id || event.message.teamInstanceId !== roomId : event.messageId !== id) throw new Error("Group journal source identity changed.");
           if (event.type === "message") message = event.message;
-          else if (message !== null) message = teamChatMessageSchema.parse(Object.assign({}, message, { coordinator: event.coordinator,
-            recipientConversationIds: event.recipientConversationIds, deliveries: event.deliveries }));
+          else if (message !== null) {
+            const steps = [...(message.coordinator?.steps ?? []), ...(event.step === undefined ? [] : [event.step])].slice(-64);
+            const coordinator = event.type === "coordination" ? event.coordinator : message.coordinator;
+            message = teamChatMessageSchema.parse({ ...message,
+              ...(event.type === "coordination" ? { recipientConversationIds: event.recipientConversationIds, deliveries: event.deliveries } : {}),
+              coordinator: coordinator == null ? coordinator : { ...coordinator, ...(steps.length === 0 ? {} : { steps }) } });
+          }
         }
         if (message !== null) result.push(message);
       }
@@ -85,9 +92,13 @@ export class TeamChatJournal {
     }
     this.append(message.teamInstanceId, { version: 1, type: "message", message, request });
   }
-  public coordinate(message: TeamChatMessage): void {
+  public coordinate(message: TeamChatMessage, step?: TeamChatCoordinationStep): void {
     this.append(message.teamInstanceId, { version: 1, type: "coordination", messageId: message.id,
-      coordinator: message.coordinator, recipientConversationIds: message.recipientConversationIds, deliveries: message.deliveries });
+      coordinator: message.coordinator == null ? message.coordinator : { ...message.coordinator, steps: undefined },
+      recipientConversationIds: message.recipientConversationIds, deliveries: message.deliveries, ...(step === undefined ? {} : { step }) });
+  }
+  public coordinationStep(roomId: string, messageId: string, step: TeamChatCoordinationStep): void {
+    this.append(roomId, { version: 1, type: "coordination_step", messageId, step });
   }
   private append(roomId: string, input: Event): void {
     const event = eventSchema.parse(input); const index = this.index(roomId);

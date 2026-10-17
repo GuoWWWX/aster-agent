@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { teamChatTabId } from "../features/chat/workbench-tabs.js";
 import {
   DEFAULT_APPLICATION_SETTINGS,
   DEFAULT_TERMINAL_CONFIGURATION,
@@ -82,6 +83,8 @@ export function clampWorkbenchPanelWidth(
 }
 
 type WorkbenchUiState = {
+  teamChatCoordinationTarget: { instanceId: string; messageId?: string; sequence?: number; requestId: string } | null;
+  openTeamChatCoordination: (input: { instanceId: string; messageId?: string; sequence?: number }) => void;
   conversationReviewViewRequest: ConversationReviewViewRequest | null;
   openConversationReview: (input: Omit<ConversationReviewViewRequest, "requestId">) => void;
   backgroundCommandViewRequest: { requestId: string; conversationId: string; commandId: string; name: string } | null;
@@ -140,6 +143,9 @@ type WorkbenchUiState = {
  * tasks, and agent execution will be queried from AgentClient when available.
  */
 export const useWorkbenchUiStore = create<WorkbenchUiState>()((set) => ({
+  teamChatCoordinationTarget: null,
+  openTeamChatCoordination: input => set(state => ({ teamChatCoordinationTarget: { ...input, requestId: crypto.randomUUID() },
+    filePanelOpenByConversationId: { ...state.filePanelOpenByConversationId, [teamChatTabId(input.instanceId)]: true } })),
   conversationReviewViewRequest: null,
   openConversationReview: input => set(state => ({ conversationReviewViewRequest: { ...input, requestId: crypto.randomUUID() },
     filePanelOpenByConversationId: { ...state.filePanelOpenByConversationId, [input.conversationId]: true } })),

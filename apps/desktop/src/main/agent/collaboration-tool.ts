@@ -100,6 +100,7 @@ export class CollaborationTool {
           }
           if (through > marker) store.markRead({ teamInstanceId: instance.id, throughSequence: through }, conversation.id);
           result = { ...page, messages: messages.map(message => ({ ...message,
+            coordinator: message.coordinator == null ? message.coordinator : { ...message.coordinator, steps: undefined },
             perspective: message.senderConversationId === null ? "user" : message.senderConversationId === conversation.id ? "self" : "member" })),
             memberReadSequence: through, nextAfterSequence: messages.at(-1)?.sequence ?? marker, members: store.members(instance.id) }; break;
         }

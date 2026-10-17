@@ -1942,6 +1942,7 @@ function SessionStatusIndicator({ session }: { session: ProjectSession }): React
     return (
       <span
         aria-label="上次运行失败"
+        title="有未读的失败结果"
         className="project-navigator__session-status project-navigator__session-status--failed"
         role="img"
       />
@@ -1951,6 +1952,7 @@ function SessionStatusIndicator({ session }: { session: ProjectSession }): React
     return (
       <span
         aria-label="上次运行完成"
+        title="有未读回复"
         className="project-navigator__session-status project-navigator__session-status--completed"
         role="img"
       />

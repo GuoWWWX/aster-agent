@@ -607,6 +607,7 @@ function saveConflictFor(reason: unknown): FileSaveConflict | null {
 }
 
 export function RightSidebarWorkspace({
+  active = true,
   activeProject,
   activeSession,
   agentClient,
@@ -620,6 +621,7 @@ export function RightSidebarWorkspace({
   onSessionUpdated,
   tree,
 }: {
+  active?: boolean;
   activeProject: ProjectSummary | null;
   activeSession: ProjectSession | null;
   agentClient: AgentClient;
@@ -644,7 +646,7 @@ export function RightSidebarWorkspace({
   const conversationReviewViewRequest = useWorkbenchUiStore(state => state.conversationReviewViewRequest);
   const handledConversationReviewRequest = useRef<string | null>(null);
   const activeSessionId = activeSession?.id ?? null;
-  const sidebarVisible = useWorkbenchUiStore((state) => activeActivity === "settings"
+  const sidebarVisible = useWorkbenchUiStore((state) => !active ? false : activeActivity === "settings"
     ? state.isSettingsFilePanelOpen
     : activeActivity === "conversations" && activeSessionId !== null
       ? state.filePanelOpenByConversationId[activeSessionId] ?? false

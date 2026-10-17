@@ -5,9 +5,16 @@ export const teamChatCoordinatorSchema = z.object({
   agentId: z.string().min(1).max(200),
   modelSelection: conversationModelSelectionSchema.nullable().default(null),
 }).strict();
+export const teamChatCoordinationStepSchema = z.object({
+  type: z.enum(["started", "model_requested", "retry_scheduled", "completed", "failed", "cancelled"]),
+  at: z.string().datetime(), attempt: z.number().int().positive().max(100).optional(),
+  modelId: z.string().min(1).max(200).optional(), detail: z.string().max(2000).optional(),
+  recipientConversationIds: z.array(z.string().uuid()).max(32).optional(),
+}).strict();
 const teamChatCoordinationSchema = teamChatCoordinatorSchema.extend({
   status: z.enum(["pending", "completed", "failed", "cancelled"]), error: z.string().nullable(),
   contextSummary: z.string().max(2000).optional(),
+  steps: z.array(teamChatCoordinationStepSchema).max(64).optional(),
 });
 
 export const postTeamChatInputSchema = z.object({
@@ -58,4 +65,5 @@ export type ReadTeamChatInput = z.input<typeof readTeamChatInputSchema>;
 export type TeamChatMessage = z.infer<typeof teamChatMessageSchema>;
 export type TeamChatPage = z.infer<typeof teamChatPageSchema>;
 export type TeamChatMember = z.infer<typeof teamChatMemberSchema>;
+export type TeamChatCoordinationStep = z.infer<typeof teamChatCoordinationStepSchema>;
 export type MarkTeamChatReadInput = z.infer<typeof markTeamChatReadInputSchema>;

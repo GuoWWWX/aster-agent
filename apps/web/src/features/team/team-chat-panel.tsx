@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import type { ConversationSummary, PostTeamChatInput, TeamChatMember, TeamChatMessage } from "@agent/protocol";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Workflow } from "lucide-react";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import { AgentMarkdown } from "../../components/markdown/agent-markdown.js";
 import { ChatMessageBubble } from "../chat/chat-message-bubble.js";
@@ -10,6 +10,7 @@ import { UserMessageContent } from "../chat/user-message-content.js";
 import { findComposerReferenceRanges } from "../chat/composer-reference-ranges.js";
 import { AgentAvatar, SubagentAvatar } from "./agent-avatar.js";
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
+import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 
 const deliveryLabels = { pending: "待处理", delivered: "已送达", consumed: "处理中", completed: "处理结束", failed: "处理失败", cancelled: "已取消" };
 
@@ -164,6 +165,8 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
             ? { onEdit: () => onEditMessage(message) } : {})}>
           {message.sourceRunId && message.senderConversationId ? <IconButton label="查看工作过程" size="compact" type="button" variant="quiet"
             onClick={() => void openProcess(message.senderConversationId!, message.sourceRunId)}><ExternalLink aria-hidden="true" size={14} /></IconButton> : null}
+          {message.coordinator != null ? <IconButton label="查看协调过程" size="compact" variant="quiet"
+            onClick={() => useWorkbenchUiStore.getState().openTeamChatCoordination({ instanceId: teamInstanceId, messageId: message.id, sequence: message.sequence })}><Workflow size={14} /></IconButton> : null}
         </ChatMessageMeta>
         {message.coordinator?.status === "failed" || message.coordinator?.status === "pending" ? <div className="flex flex-wrap items-center gap-[5px] text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">
           {message.coordinator.status === "failed" ? <span className="text-[var(--app-destructive)]">{message.coordinator.error ?? "协调失败"}</span> : null}

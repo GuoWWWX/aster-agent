@@ -21,4 +21,7 @@ it("reads old message/page shapes and validates bounded coordination memory with
   const coordinated = { ...message, coordinator: { ...owner, status: "completed", error: null, contextSummary: "仍待确认" } };
   expect(teamChatPageSchema.parse({ messages: [coordinated], nextBeforeSequence: null, userReadSequence: 0, memberReadSequence: 0, coordinator: owner }).messages).toHaveLength(1);
   expect(teamChatMessageSchema.safeParse({ ...coordinated, coordinator: { ...coordinated.coordinator, contextSummary: "a".repeat(2001) } }).success).toBe(false);
+  const step = { type: "model_requested", at: new Date().toISOString(), attempt: 1, modelId: "fixture" };
+  expect(teamChatMessageSchema.safeParse({ ...coordinated, coordinator: { ...coordinated.coordinator, steps: [step] } }).success).toBe(true);
+  expect(teamChatMessageSchema.safeParse({ ...coordinated, coordinator: { ...coordinated.coordinator, steps: Array.from({ length: 65 }, () => step) } }).success).toBe(false);
 });
