@@ -2523,6 +2523,62 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
+  it("streams and persists progress between tool batches separately from the final handoff", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-progress-"));
+    temporaryDirectories.push(root);
+    await writeFile(path.join(root, "source.txt"), "verified source", "utf8");
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const log = new ThreadLog(path.join(root, "logs"));
+    const texts = ["我先检查输入。", "已确认输入，接着核对结果。", "检查通过，结果已确认。"];
+    const requests: CompleteTurnInput[] = [];
+    const model: ModelProviderAdapter = {
+      completeTurn(input) {
+        const turn = requests.length;
+        requests.push(input);
+        const content = texts[turn] ?? "";
+        input.onTextDelta(content);
+        return Promise.resolve({
+          content,
+          finishReason: turn < 2 ? "tool_calls" : "stop",
+          toolCalls: turn < 2 ? [{ id: `read-${turn}`, name: "read_file",
+            arguments: JSON.stringify({ path: "source.txt" }) }] : [],
+        });
+      },
+    };
+    const runtime = new AgentRuntime(database, {
+      getConfiguration: () => ({ apiKey: "secret", apiFormat: "openai-chat-completions",
+        baseUrl: "https://example.test/v1", modelId: "test-model", reasoningOptions: [] }),
+    }, projects, new ProjectToolRegistry(projects), model,
+    undefined, undefined, null, null, null, null, null, undefined, null, log);
+    const events: ConversationRunEvent[] = [];
+    try {
+      await new Promise<void>((resolve) => {
+        runtime.sendMessage({ content: "分两批检查输入和结果", conversationId: conversation.id,
+          permissionMode: "read_only" }, (event) => {
+          events.push(event);
+          if (event.type === "run.finished") resolve();
+        });
+      });
+      expect(database.getConversation(conversation.id).lastRunStatus).toBe("completed");
+      expect(events.flatMap((event) => event.type === "assistant.delta" ? [event.delta]
+        : event.type === "tool.started" ? ["tool"] : [])).toEqual([
+        texts[0], "tool", texts[1], "tool", texts[2],
+      ]);
+      expect(database.listTimeline(conversation.id).flatMap((item) =>
+        item.kind === "message" && item.role === "assistant" ? [item.content] : [])).toEqual(texts);
+      expect(log.read(conversation.id)?.events.filter((event) => event.type === "assistant_message")
+        .map((event) => event.payload.content)).toEqual(texts);
+      expect(requests[2]?.messages.filter((message) => message.role === "assistant")
+        .map((message) => message.content)).toEqual(texts.slice(0, 2));
+      expect(requests[0]?.messages[0]?.content).toContain("# Work Progress");
+    } finally {
+      database.close();
+    }
+  });
+
   it("injects loaded Skill instructions into the next model turn without polluting the timeline", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-skill-"));
     temporaryDirectories.push(root);

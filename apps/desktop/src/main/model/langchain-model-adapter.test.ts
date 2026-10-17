@@ -385,6 +385,27 @@ describe("LangChainModelAdapter", () => {
     });
   });
 
+  it.each(["openai-chat-completions", "openai-responses", "anthropic-messages", "google-gemini"] as const)(
+    "keeps visible progress together with a streamed tool call (%s)", async (apiFormat) => {
+      const model = new FakeStreamingChatModel({ sleep: 0, chunks: [
+        new AIMessageChunk({ content: "已定位重复值丢失，" }),
+        new AIMessageChunk({ content: "接着验证修复。", tool_call_chunks: [{
+          name: "read_file", args: '{"path":"source.txt"}', id: "read-source", index: 0,
+        }] }),
+      ] });
+      const deltas: string[] = [];
+      const adapter = new LangChainModelAdapter(apiFormat, fetch, () => model);
+      const result = await adapter.completeTurn(inputFor(apiFormat, {
+        onTextDelta: (delta) => deltas.push(delta),
+      }));
+      expect(deltas).toEqual(["已定位重复值丢失，", "接着验证修复。"]);
+      expect(result.content).toBe(deltas.join(""));
+      expect(result.toolCalls).toEqual([{
+        name: "read_file", arguments: '{"path":"source.txt"}', id: "read-source",
+      }]);
+    },
+  );
+
   it.each([undefined, 0, 54, 80])("preserves normalized provider cache token usage (%s)", async (cached) => {
     const model = {
       async *stream() {

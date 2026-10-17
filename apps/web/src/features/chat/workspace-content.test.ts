@@ -580,6 +580,28 @@ describe("run activity projection", () => {
     expect(projected[1]).toMatchObject({ content: "检查完成。", kind: "message" });
   });
 
+  it("preserves progress between batches in one foldable process after history reload", () => {
+    const timeline = [
+      assistantMessage("start", "先复现重复值问题。"),
+      { ...tool("run_command"), id: "reproduce" },
+      assistantMessage("finding", "已复现重复值丢失，接着验证修复。"),
+      { ...tool("run_command"), id: "verify" },
+      assistantMessage("final", "修复通过，随机对照 2000 组通过。", { durationMs: 12_000 }),
+    ];
+    const projected = groupRunActivities(JSON.parse(JSON.stringify(timeline)) as typeof timeline);
+    expect(projected).toHaveLength(2);
+    expect(projected[0]?.kind === "run_activity"
+      ? projected[0].items.map((item) => item.kind) : []).toEqual([
+      "activity_progress", "tool", "activity_progress", "tool",
+    ]);
+    expect(projected[0]?.kind === "run_activity"
+      ? projected[0].items.filter((item) => item.kind === "activity_progress")
+        .map((item) => item.content) : []).toEqual([
+      "先复现重复值问题。", "已复现重复值丢失，接着验证修复。",
+    ]);
+    expect(projected[1]).toMatchObject({ id: "final", kind: "message" });
+  });
+
   it("hides a leading tagged thinking summary from completed work history", () => {
     const taggedSummary = assistantMessage(
       "assistant-tagged-reasoning",
