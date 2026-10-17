@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
 import type { ConversationSummary, PostTeamChatInput, TeamChatMember, TeamChatMessage, TeamChatActivity } from "@agent/protocol";
 import { ExternalLink, MessageSquareReply, Workflow, UsersRound } from "lucide-react";
 import type { AgentClient } from "../../runtime/agent-client.js";
@@ -9,7 +9,7 @@ import { ChatMessageBubble } from "../chat/chat-message-bubble.js";
 import { ChatMessageMeta } from "../chat/chat-message-meta.js";
 import { IconButton } from "../../components/ui/icon-button.js";
 import { UserMessageContent } from "../chat/user-message-content.js";
-import { findComposerReferenceRanges } from "../chat/composer-reference-ranges.js";
+import { MessageReferenceQuote } from "../../components/markdown/message-reference-quote.js";
 import { AgentAvatar, SubagentAvatar } from "./agent-avatar.js";
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
@@ -29,6 +29,7 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
   const [messages, setMessages] = useState<TeamChatMessage[]>([]); const [members, setMembers] = useState<TeamChatMember[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const agents = useAgentDirectoryStore(state => state.agents);
+  const navigationTarget = useWorkbenchUiStore(state => state.teamChatTarget);
   const [cursor, setCursor] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
@@ -36,6 +37,7 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
   const messageList = useRef<HTMLOListElement>(null);
   const atBottom = useRef(focusMessageId === undefined); const hasLoaded = useRef(false);
   const revealedMessage = useRef<string | undefined>(undefined);
+  const revealedNavigation = useRef<typeof navigationTarget>(null);
   const latestOwnSequence = useRef<number | null>(null);
   const loadVersion = useRef(0);
   const needsRefresh = useRef(true);
@@ -85,19 +87,25 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
   }), [agentClient, load, teamInstanceId, members, active]);
   useLayoutEffect(() => {
     if (!active) return;
+    const messageId = focusMessageId ?? (navigationTarget?.instanceId === teamInstanceId ? navigationTarget.messageId : undefined);
+    if (messageId !== undefined && navigationTarget?.instanceId === teamInstanceId && revealedNavigation.current !== navigationTarget) {
+      revealedNavigation.current = navigationTarget;
+      revealedMessage.current = undefined;
+    }
     const ownSequence = messages.findLast(message => message.senderConversationId === null)?.sequence ?? null;
     if (ownSequence !== null && latestOwnSequence.current !== null && ownSequence > latestOwnSequence.current) {
       atBottom.current = true;
       revealedMessage.current = focusMessageId;
     }
     latestOwnSequence.current = ownSequence;
-    if (focusMessageId !== undefined && revealedMessage.current !== focusMessageId) {
-      const target = viewport.current?.querySelector(`[data-group-message="${CSS.escape(focusMessageId)}"]`);
-      if (target) { target.scrollIntoView({ block: "center" }); revealedMessage.current = focusMessageId; return; }
+    if (messageId !== undefined && revealedMessage.current !== messageId) {
+      atBottom.current = false;
+      const target = viewport.current?.querySelector(`[data-group-message="${CSS.escape(messageId)}"]`);
+      if (target) { target.scrollIntoView({ block: "center" }); revealedMessage.current = messageId; return; }
       if (cursor !== null) { void Promise.resolve().then(() => load(cursor)); return; }
     }
     if (atBottom.current && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
-  }, [messages, focusMessageId, cursor, load, active, composerClearance]);
+  }, [messages, focusMessageId, navigationTarget, teamInstanceId, cursor, load, active, composerClearance]);
   useLayoutEffect(() => {
     if (!active || messageList.current === null || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
@@ -136,18 +144,12 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
           onClick={() => onOpenConversation(conversation)}
           className="inline-flex max-w-full items-center gap-[5px] rounded-[var(--app-radius-small)] align-middle text-[var(--app-accent)] hover:underline focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)]">
           {avatar === null ? <SubagentAvatar icon={null} seed={member.conversationId} size="compact" /> : <AgentAvatar avatar={avatar} size="compact" />}
-          <span className="min-w-0 truncate">{member.name}</span>
+          <span className="min-w-0 truncate">@{member.name}</span>
         </button> };
     });
     if (message.allMembers) result.push({ label: "@全体成员", content: <button type="button" className="inline-flex items-center gap-[5px] align-middle text-[var(--app-accent)] hover:underline"
-      onClick={() => useWorkbenchUiStore.getState().openTeamChatDetails({ instanceId: teamInstanceId, section: "info" })}><UsersRound size={14} />全体成员</button> });
+      onClick={() => useWorkbenchUiStore.getState().openTeamChatDetails({ instanceId: teamInstanceId, section: "info" })}><UsersRound size={14} />@全体成员</button> });
     return result;
-  };
-  const renderMemberMentions = (message: TeamChatMessage, references: ReturnType<typeof memberReferences>): ReactNode => {
-    const ranges = findComposerReferenceRanges(message.content, references.map(reference => reference.label));
-    return <>{ranges.map((range, index) => <span key={range.start}>{message.content.slice(ranges[index - 1]?.end ?? 0, range.start)}
-      {references.find(reference => reference.label === message.content.slice(range.start, range.end))?.content}
-    </span>)}{message.content.slice(ranges.at(-1)?.end ?? 0)}</>;
   };
   const superseded = new Set(messages.flatMap(message => message.supersedesId ? [message.supersedesId] : []));
   const latestUserId = messages.findLast(message => message.senderConversationId === null)?.id;
@@ -167,7 +169,10 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
         const agent = agents.find(item => item.id === conversation?.agentId);
         const avatar = agent?.avatar ?? (conversation?.avatarIcon ? { kind: "icon" as const, icon: conversation.avatarIcon } : null);
         const replySource = message.replyToId === null ? undefined : messages.find(item => item.id === message.replyToId);
-        const showReplyQuote = message.replyToId !== null && (replySource === undefined || messages.filter(item =>
+        const replyConversation = conversations.find(item => item.id === replySource?.senderConversationId);
+        const replyAvatar = agents.find(item => item.id === replyConversation?.agentId)?.avatar
+          ?? (replyConversation?.avatarIcon ? { kind: "icon" as const, icon: replyConversation.avatarIcon } : null);
+        const showReplyQuote = message.replyToId !== null && (role === "user" || replySource === undefined || messages.filter(item =>
           item.sequence > replySource.sequence && item.sequence < message.sequence && item.rootMessageId !== message.rootMessageId).length >= 4);
         return <li key={message.id} data-group-message={message.id} data-role={role} className="chat-message-group">
         {role === "user" ? null : <div data-group-sender className="mb-[5px] flex min-w-0 items-center gap-[5px] text-[var(--app-muted-foreground)]">
@@ -175,8 +180,11 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
           <strong className="min-w-0 truncate">{message.senderName}</strong>
         </div>}
         <ChatMessageBubble role={role} enclosed={role === "assistant"}>
-          {showReplyQuote ? <p className="mb-1 line-clamp-2 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">回复：{replySource?.content.slice(0, 100) ?? "较早的群消息"}</p> : null}
-          {role === "user" ? <UserMessageContent content={message.content}>{renderMemberMentions(message, references)}</UserMessageContent>
+          {showReplyQuote ? <MessageReferenceQuote senderName={replySource?.senderName ?? "较早的群消息"} content={replySource?.content ?? "点击查看原消息"}
+            avatar={replySource?.senderConversationId == null ? undefined : replyAvatar === null
+              ? <SubagentAvatar icon={null} seed={replySource.senderConversationId} size="compact" /> : <AgentAvatar avatar={replyAvatar} size="compact" />}
+            onOpen={() => useWorkbenchUiStore.getState().openTeamChat({ instanceId: teamInstanceId, messageId: message.replyToId! })} /> : null}
+          {role === "user" ? <UserMessageContent content={message.content} inlineReferences={references} />
             : <AgentMarkdownWorkspaceScope onOpenFile={onOpenFile === undefined ? undefined : path => onOpenFile(message.fileReferences?.find(file => file.path === path)?.conversationId ?? message.senderConversationId!, path)}>
               <HtmlPreviewScope client={agentClient} conversationId={message.senderConversationId!}><AgentMarkdown content={message.content} inlineReferences={references} /></HtmlPreviewScope>
             </AgentMarkdownWorkspaceScope>}

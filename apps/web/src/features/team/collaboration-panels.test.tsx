@@ -14,7 +14,7 @@ import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 
 let root: Root | null = null;
 beforeEach(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} }); });
-afterEach(() => { act(() => root?.unmount()); root = null; document.body.replaceChildren(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { act(() => root?.unmount()); root = null; document.body.replaceChildren(); useWorkbenchUiStore.getState().closeTeamChat(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const mount = () => { const element = document.createElement("div"); document.body.append(element); root = createRoot(element); return element; };
 
 it("follows a loaded preview at the bottom and preserves a reader's older position", async () => {
@@ -193,7 +193,7 @@ it.each([0, 5])("selects all current group members even after %s individual ment
   expect(post.mock.calls[0]![0].recipientConversationIds).toHaveLength(count);
   const message = (await client.readTeamChat({ teamInstanceId: instance.id })).messages[0]!;
   expect(message.recipientConversationIds).toHaveLength((await client.getTeamChatMembers({ teamInstanceId: instance.id })).filter(member => !member.isArchived).length);
-  const mention = [...container.querySelectorAll<HTMLButtonElement>('[data-group-message] button')].find(button => button.textContent === "全体成员")!;
+  const mention = [...container.querySelectorAll<HTMLButtonElement>('[data-group-message] button')].find(button => button.textContent === "@全体成员")!;
   expect(mention.className).toContain("--app-accent"); act(() => mention.click());
   expect(useWorkbenchUiStore.getState().teamChatDetailsTarget?.instanceId).toBe(instance.id);
 });
@@ -214,7 +214,10 @@ it.each([false, true])("replies to the quoted member without requiring another m
     active onSessionUpdated={() => undefined} onOpenConversation={() => undefined} /></TooltipProvider>); for (let i = 0; i < 15; i++) await Promise.resolve(); });
   const textarea = container.querySelector<HTMLTextAreaElement>('[aria-label="输入任务"]')!;
   act(() => container.querySelector<HTMLButtonElement>(`[aria-label="回复 ${members[0]!.name} 的消息"]`)!.click());
-  expect(container.textContent).toContain(`回复 ${members[0]!.name}：成员原始说明`);
+  const composerQuote = container.querySelector('.conversation-workspace__composer-surface [data-message-reference-quote]')!;
+  expect(composerQuote.textContent).toContain(members[0]!.name);
+  expect(composerQuote.textContent).toContain("成员原始说明");
+  expect(composerQuote.querySelector('[data-size="compact"]')).not.toBeNull();
   if (extra) {
     await act(async () => { input(textarea, "@"); await Promise.resolve(); });
     const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(button => button.textContent?.includes(members[1]!.name))!;
@@ -385,7 +388,16 @@ it.each([{ intervening: 0, sameThread: false }, { intervening: 1, sameThread: fa
   await act(() => Promise.resolve().then(() => { root?.render(<TooltipProvider><TeamChatPanel agentClient={client} teamInstanceId={instance.id} onOpenConversation={() => undefined} /></TooltipProvider>); }));
   const response = container.querySelector('[data-group-message][data-role="assistant"]')!;
   expect(response.textContent).toContain("直接回答");
-  expect(response.textContent?.includes("回复：原来的问题")).toBe(intervening >= 4 && !sameThread);
+  const quote = response.querySelector<HTMLButtonElement>('[data-message-reference-quote]');
+  expect(quote !== null).toBe(intervening >= 4 && !sameThread);
+  if (quote) {
+    expect(quote.textContent).toContain("原来的问题");
+    const previous = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
+    try { act(() => quote.click()); }
+    finally { if (previous === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView"); else Object.defineProperty(HTMLElement.prototype, "scrollIntoView", previous); }
+    expect(useWorkbenchUiStore.getState().teamChatTarget).toEqual({ instanceId: instance.id, messageId: request.id });
+  }
 });
 
 it("shows only published replies without reserving a member's place while they work", async () => {
@@ -453,6 +465,64 @@ it("follows a new user message after visiting an older group source instead of r
   } finally { if (previous === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView"); else Object.defineProperty(HTMLElement.prototype, "scrollIntoView", previous); }
 });
 
+it("renders user references through the real group scope and the source member's profile avatar", async () => {
+  const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
+  const member = (await client.getTeamChatMembers({ teamInstanceId: instance.id })).find(item => !item.isLead)!;
+  const conversation = sessions.find(item => item.id === member.conversationId)!;
+  const profile = useAgentDirectoryStore.getState().agents.find(item => item.id === conversation.agentId)!;
+  const originalAvatar = profile.avatar;
+  const image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=";
+  useAgentDirectoryStore.getState().updateAgent(profile.id, { avatar: { kind: "image", dataUrl: image, fileName: "member.png" } });
+  const source = await client.postTeamChat({ teamInstanceId: instance.id, content: "原成果说明", intent: "notify", requestId: crypto.randomUUID() });
+  const taskId = crypto.randomUUID();
+  const request = await client.postTeamChat({ teamInstanceId: instance.id, content: `沿用任务 ${taskId}，参考消息 ${source.id}`, intent: "notify", requestId: crypto.randomUUID() });
+  vi.spyOn(client, "resolveChatReferences").mockResolvedValue([
+    { kind: "task", id: taskId, title: "原成果交付", ownerConversationId: instance.rootConversationId!, teamInstanceId: instance.id },
+    { kind: "message", id: source.id, sourceKind: "group", containerId: instance.id,
+      senderName: member.name, senderConversationId: member.conversationId, content: source.content, createdAt: source.createdAt },
+  ]);
+  const container = mount();
+  try {
+    await act(async () => {
+      root?.render(<TooltipProvider><TeamChatWorkspace agentClient={client} instance={instance} sessions={sessions} projects={[]} active onSessionUpdated={() => undefined} onOpenConversation={() => undefined} /></TooltipProvider>);
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    });
+    const bubble = container.querySelector(`[data-group-message="${request.id}"] .chat-message`)!;
+    expect(bubble.textContent).toContain("@原成果交付"); expect(bubble.textContent).toContain(`@${member.name}的消息`);
+    expect(bubble.textContent).not.toContain(taskId); expect(bubble.textContent).not.toContain(source.id);
+    expect(bubble.querySelector(`[aria-label="定位 ${member.name} 的引用消息"] img`)?.getAttribute("src")).toBe(image);
+    act(() => bubble.querySelector<HTMLButtonElement>('[aria-label="打开任务 原成果交付"]')!.click());
+    expect(useWorkbenchUiStore.getState().taskListViewRequest).toMatchObject({ taskId, scope: { teamInstanceId: instance.id } });
+  } finally { useAgentDirectoryStore.getState().updateAgent(profile.id, { avatar: originalAvatar }); }
+});
+
+it("loads an older quoted message on click and permits locating it again without changing the main conversation", async () => {
+  const client = new MockAgentClient(); const { instance } = await groupFixture(client);
+  const member = (await client.getTeamChatMembers({ teamInstanceId: instance.id }))[0]!;
+  const source = await client.postTeamChat({ teamInstanceId: instance.id, content: "较早的消息", intent: "notify", requestId: crypto.randomUUID() });
+  const reply = { ...source, id: crypto.randomUUID(), sequence: 6, content: "补充验收", replyToId: source.id, senderConversationId: member.conversationId, senderName: member.name };
+  const intervening = Array.from({ length: 4 }, (_, index) => ({ ...source, id: crypto.randomUUID(), rootMessageId: crypto.randomUUID(), sequence: index + 2, content: "其他讨论" }));
+  const read = vi.spyOn(client, "readTeamChat").mockImplementation(input => Promise.resolve({ messages: input.beforeSequence === undefined ? [...intervening, reply] : [source],
+    nextBeforeSequence: input.beforeSequence === undefined ? 2 : null, userReadSequence: 0, memberReadSequence: 0 }));
+  const mark = vi.spyOn(client, "markTeamChatRead"); const open = vi.fn();
+  const previous = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+  const scroll = vi.fn(); Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scroll });
+  vi.stubGlobal("CSS", { escape: (value: string) => value });
+  const container = mount();
+  try {
+    await act(async () => { root?.render(<TooltipProvider><TeamChatPanel agentClient={client} teamInstanceId={instance.id} onOpenConversation={open} /></TooltipProvider>); for (let i = 0; i < 10; i++) await Promise.resolve(); });
+    const quote = container.querySelector<HTMLButtonElement>('[data-message-reference-quote]')!;
+    mark.mockClear();
+    await act(async () => { quote.click(); for (let i = 0; i < 10; i++) await Promise.resolve(); });
+    expect(read).toHaveBeenCalledWith({ teamInstanceId: instance.id, beforeSequence: 2 });
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(scroll.mock.instances[0]).toBe(container.querySelector(`[data-group-message="${source.id}"]`));
+    const currentQuote = container.querySelector<HTMLButtonElement>('[data-message-reference-quote]')!;
+    act(() => currentQuote.click()); expect(scroll).toHaveBeenCalledTimes(2);
+    expect(mark).not.toHaveBeenCalled(); expect(open).not.toHaveBeenCalled();
+  } finally { if (previous === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView"); else Object.defineProperty(HTMLElement.prototype, "scrollIntoView", previous); }
+});
+
 it("renders selected group mentions as member avatars and blue names that open their own conversations", async () => {
   const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
   const roster = await client.getTeamChatMembers({ teamInstanceId: instance.id });
@@ -468,7 +538,7 @@ it("renders selected group mentions as member avatars and blue names that open t
   const bubble = container.querySelector('.chat-message[data-role="user"]')!;
   const mentions = bubble.querySelectorAll<HTMLButtonElement>(`button[aria-label="打开成员 ${name} 的对话"]`);
   expect(mentions).toHaveLength(2);
-  expect(mentions[0]?.textContent).toBe(name);
+  expect(mentions[0]?.textContent).toBe(`@${name}`);
   expect(mentions[0]?.querySelector("svg")).not.toBeNull();
   expect(mentions[0]?.classList.contains("text-[var(--app-accent)]")).toBe(true);
   expect(bubble.textContent).not.toContain(conversation.title);

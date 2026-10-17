@@ -23,6 +23,17 @@ function fixture(file = ":memory:") {
   return { db, instance, lead, member };
 }
 afterEach(() => { for (const db of opened.splice(0)) if (db.isOpen()) db.close(); for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true }); });
+it("resolves the actual member identity for a quote and keeps other rooms out of scope", () => {
+  const { db, instance, member } = fixture();
+  const message = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "已完成 [页面](out/card.html)",
+    intent: "notify", requestId: randomUUID() }, member.id);
+  expect(db.collaboration.resolveReferences({ teamInstanceId: instance.id, ids: [message.id] })).toEqual([
+    expect.objectContaining({ id: message.id, senderConversationId: member.id, content: message.content }),
+  ]);
+  const other = db.createTeamInstance({ teamId: instance.teamId, scope: "global" });
+  expect(db.collaboration.resolveReferences({ teamInstanceId: other.id, ids: [message.id] })).toEqual([]);
+});
+
 function namedFixture() {
   const state = fixture();
   state.db.bindConversationAgent(state.member.id, { ...state.db.getConversationAgentBinding(state.member.id)!, name: "需求分析师" });

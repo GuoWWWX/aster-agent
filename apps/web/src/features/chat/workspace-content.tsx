@@ -1,5 +1,6 @@
 import type { ChatReference } from "@agent/protocol";
 import { ChatReferenceScope } from "../../components/markdown/chat-reference-scope.js";
+import { MessageReferenceQuote } from "../../components/markdown/message-reference-quote.js";
 import { TaskListLauncher } from "../team/task-context-directory.js";
 import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import { ConversationWorkIndicator, toolWorkPhase } from "./conversation-work-state.js";
@@ -3323,9 +3324,15 @@ export function ConversationWorkspace({
     } else if (reference.sourceKind === "group") useWorkbenchUiStore.getState().openTeamChat({ instanceId: reference.containerId, messageId: reference.id });
     else onLocateConversationItem?.(reference.containerId, reference.id);
   }, [onLocateConversationItem, richReferenceWorkspaceId]);
+  const renderReferenceAvatar = useCallback((reference: Extract<ChatReference, { kind: "message" }>): ReactNode => {
+    const id = reference.senderConversationId;
+    if (id == null) return undefined;
+    const avatar = conversationAgentAvatars.get(id);
+    return avatar === undefined ? <SubagentAvatar icon={null} seed={id} size="compact" /> : <AgentAvatar avatar={avatar} size="compact" />;
+  }, [conversationAgentAvatars]);
 
   return (
-    <ChatReferenceScope scopeKey={richReferenceWorkspaceId} resolve={resolveReferences} onOpen={openReference}>
+    <ChatReferenceScope scopeKey={richReferenceWorkspaceId} resolve={resolveReferences} onOpen={openReference} renderMessageAvatar={renderReferenceAvatar}>
     <AgentMarkdownWorkspaceScope onOpenFile={onOpenProjectFile}>
     <HtmlPreviewScope client={agentClient} conversationId={session.id}>
     <ToolConversationContext.Provider value={toolConversations}>
@@ -3755,7 +3762,10 @@ export function ConversationWorkspace({
           <div className="conversation-workspace__composer-surface">
             {groupChat !== null && groupReply !== null ? <div className="flex min-w-0 items-center gap-[5px] border-b border-[var(--app-border)] px-2 py-[5px] text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]" role="status">
               <MessageSquareText size={14} className="shrink-0" />
-              <span className="min-w-0 flex-1 truncate" title={groupReply.content}>回复 {groupReply.senderName}：{groupReply.content}</span>
+              <div className="min-w-0 flex-1"><MessageReferenceQuote senderName={groupReply.senderName} content={groupReply.content}
+                avatar={groupReply.senderConversationId === null ? undefined : renderReferenceAvatar({ kind: "message", id: groupReply.id, sourceKind: "group", containerId: groupChat.instanceId,
+                  senderName: groupReply.senderName, senderConversationId: groupReply.senderConversationId, content: groupReply.content, createdAt: groupReply.createdAt })}
+                onOpen={() => useWorkbenchUiStore.getState().openTeamChat({ instanceId: groupChat.instanceId, messageId: groupReply.id })} /></div>
               <IconButton label="取消引用回复" size="compact" onClick={() => setGroupReply(null)}><X size={14} /></IconButton>
             </div> : null}
             {isEditingComposerMessage ? (
@@ -6216,7 +6226,7 @@ function TimelineItem({
           data-role="user"
           data-status={item.status}
         >
-          <TeamChatSourceContent content={item.content}><p>{item.content}</p></TeamChatSourceContent>
+          <TeamChatSourceContent content={item.content} />
         </article>
       </div>
     );

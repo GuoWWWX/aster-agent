@@ -1689,9 +1689,9 @@ export class MockAgentClient implements AgentClient {
           || this.directorySources.get(item.id)?.some(source => source.containerId === input.conversationId)));
       if (task) { result.push({ kind: "task", id, title: task.title, ownerConversationId: task.ownerConversationId, teamInstanceId: task.teamInstanceId }); continue; }
       const group = this.groupMessages.find(item => item.id === id && item.teamInstanceId === input.teamInstanceId);
-      if (group) { result.push({ kind: "message", id, sourceKind: "group", containerId: group.teamInstanceId, senderName: group.senderName, content: group.content.slice(0, 2000), createdAt: group.createdAt }); continue; }
+      if (group) { result.push({ kind: "message", id, sourceKind: "group", containerId: group.teamInstanceId, senderName: group.senderName, senderConversationId: group.senderConversationId, content: group.content.slice(0, 2000), createdAt: group.createdAt }); continue; }
       const message = input.conversationId === undefined ? undefined : this.timelines.get(input.conversationId)?.find(item => item.kind === "message" && item.id === id);
-      if (message?.kind === "message") result.push({ kind: "message", id, sourceKind: "conversation", containerId: input.conversationId!, senderName: message.role === "user" ? "你" : "Agent", content: message.content.slice(0, 2000), createdAt: message.createdAt });
+      if (message?.kind === "message") result.push({ kind: "message", id, sourceKind: "conversation", containerId: input.conversationId!, senderName: message.role === "user" ? "你" : "Agent", senderConversationId: message.role === "user" ? null : input.conversationId!, content: message.content.slice(0, 2000), createdAt: message.createdAt });
     }
     return Promise.resolve(result);
   }

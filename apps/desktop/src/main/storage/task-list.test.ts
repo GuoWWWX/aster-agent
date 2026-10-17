@@ -47,7 +47,7 @@ it("searches original user messages before pagination and returns readable sourc
   const page = database.collaboration.listTasks({ conversationId: owner.id, query: "检验候选" });
   expect(page.total).toBe(1); expect(page.items[0]).toMatchObject({ id: task.id, userMessageCount: 1 });
   expect(database.collaboration.getTask(task.id).sources[0]).toMatchObject({ role: "user", content: "原始用户需求：检验候选分页", available: true });
-  expect(database.collaboration.resolveReferences({ conversationId: owner.id, ids: [run.userMessage.id] })).toEqual([expect.objectContaining({ kind: "message", senderName: "你", content: "原始用户需求：检验候选分页" })]);
+  expect(database.collaboration.resolveReferences({ conversationId: owner.id, ids: [run.userMessage.id] })).toEqual([expect.objectContaining({ kind: "message", senderName: "你", senderConversationId: null, content: "原始用户需求：检验候选分页" })]);
 });
 it("isolates group completion grants from member-private conversations and resolves group quotes in scope", () => {
   const { database } = fixture(); database.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));

@@ -182,12 +182,13 @@ export class CollaborationStore {
         const row = this.db.prepare("SELECT 1 FROM team_chat_messages WHERE id = ? AND team_instance_id = ?").get(id, input.teamInstanceId);
         if (row === undefined) continue;
         const message = this.message(id);
-        result.push({ kind: "message", id, sourceKind: "group", containerId: message.teamInstanceId, senderName: message.senderName,
+        result.push({ kind: "message", id, sourceKind: "group", containerId: message.teamInstanceId, senderName: message.senderName, senderConversationId: message.senderConversationId,
           content: message.content.slice(0, 2000), createdAt: message.createdAt });
       } else if (input.conversationId !== undefined) {
         const message = this.context.message(input.conversationId, id);
         if (message !== null) result.push({ kind: "message", id, sourceKind: "conversation", containerId: input.conversationId,
-          senderName: message.role === "user" ? "你" : this.context.conversation(input.conversationId).title, content: message.content.slice(0, 2000), createdAt: message.createdAt });
+          senderName: message.role === "user" ? "你" : this.context.conversation(input.conversationId).title,
+          senderConversationId: message.role === "user" ? null : input.conversationId, content: message.content.slice(0, 2000), createdAt: message.createdAt });
       }
     }
     return result;

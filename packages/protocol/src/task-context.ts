@@ -76,7 +76,7 @@ export const resolveChatReferencesInputSchema = taskContextScopeSchema.safeExten
 export const chatReferenceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("task"), id: z.string().uuid(), title: z.string(), ownerConversationId: z.string().uuid(), teamInstanceId: z.string().uuid().nullable() }).strict(),
   z.object({ kind: z.literal("message"), id: z.string().uuid(), sourceKind: z.enum(["conversation", "group"]), containerId: z.string().uuid(),
-    senderName: z.string(), content: z.string(), createdAt: z.string().datetime() }).strict(),
+    senderName: z.string(), senderConversationId: z.string().uuid().nullable().optional(), content: z.string(), createdAt: z.string().datetime() }).strict(),
 ]);
 export const chatReferencesSchema = z.array(chatReferenceSchema).max(20);
 export type TaskContextScope = z.infer<typeof taskContextScopeSchema>;
