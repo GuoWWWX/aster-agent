@@ -218,6 +218,7 @@ export type GitReviewOpenRequest = {
 export type TeamMemberOpenRequest = {
   conversation: ProjectSession;
   requestId: number;
+  /** The owning ordinary conversation or group workspace key; never a member API target. */
   sourceConversationId: string;
   timelineItemId: string | null;
 };
@@ -955,7 +956,7 @@ export function RightSidebarWorkspace({
         return;
       }
       const request = teamMemberOpenRequestRef.current;
-      const requestedMember = request?.sourceConversationId === activeSessionId
+      const requestedMember = request?.sourceConversationId === workspaceId
         ? request.conversation
         : null;
       if (!shouldLoadSideConversations(activeSession)) {
@@ -969,7 +970,7 @@ export function RightSidebarWorkspace({
         const loaded = await listSideConversations(agentClient, activeSession, activeTeam);
         if (disposed) return;
         const latestRequest = teamMemberOpenRequestRef.current;
-        const latestRequestedMember = latestRequest?.sourceConversationId === activeSessionId
+        const latestRequestedMember = latestRequest?.sourceConversationId === workspaceId
           ? latestRequest.conversation
           : null;
         const groupCoordinators = [...coordinationSessions.current.values()].filter(session => session.coordinationTeamInstanceId === teamChat?.id);
@@ -1033,7 +1034,7 @@ export function RightSidebarWorkspace({
   useEffect(() => {
     if (
       teamMemberOpenRequest === null
-      || teamMemberOpenRequest.sourceConversationId !== activeSessionId
+      || teamMemberOpenRequest.sourceConversationId !== workspaceId
       || handledTeamMemberOpenRequestIdRef.current === teamMemberOpenRequest.requestId
     ) return;
     handledTeamMemberOpenRequestIdRef.current = teamMemberOpenRequest.requestId;
@@ -1045,7 +1046,7 @@ export function RightSidebarWorkspace({
     setActiveTabForCurrentSession(`chat:${session.id}`);
     setIsFileBrowserOpen(false);
   }, [
-    activeSessionId,
+    workspaceId,
     setActiveTabForCurrentSession,
     teamMemberOpenRequest,
     updateOpenChatIds,

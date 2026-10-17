@@ -10,6 +10,7 @@ import { UserMessageContent } from "./user-message-content.js";
 import { TeamChatSourceContent } from "../team/team-chat-source-content.js";
 import { ChatMessageBubble } from "./chat-message-bubble.js";
 import { TeamChatWorkspace } from "../team/team-chat-workspace.js";
+import { teamChatTabId } from "./workbench-tabs.js";
 import { ChatMessageMeta, formatConversationTime, formatConversationDateTime } from "./chat-message-meta.js";
 import type { PostTeamChatInput, TeamChatActivity } from "@agent/protocol";
 export { formatConversationTime } from "./chat-message-meta.js";
@@ -822,8 +823,7 @@ export function WorkspaceContent({
         <TeamChatWorkspace agentClient={agentClient} instance={instance} active={active} sessions={sessions} projects={projects} onSessionUpdated={onSessionUpdated}
           {...(active && teamChatTarget?.messageId !== undefined ? { focusMessageId: teamChatTarget.messageId } : {})}
           onOpenConversation={(conversation, messageId) => {
-            if (messageId === undefined) onSessionSelected(conversation.id);
-            else onOpenTeamConversation({ ...conversation, pinOrder: conversation.pinOrder ?? null }, undefined, messageId);
+            onOpenTeamConversation({ ...conversation, pinOrder: conversation.pinOrder ?? null }, teamChatTabId(instance.id), messageId);
           }} />
       </div>;
     })}

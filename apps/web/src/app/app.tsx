@@ -634,13 +634,15 @@ export function App(): ReactElement {
     sourceConversationId?: string,
     timelineItemId?: string,
   ): void => {
-    useWorkbenchUiStore.getState().closeTeamChat();
     setActiveActivity("conversations");
     const ownerConversationId = sourceConversationId
       ?? sourceConversationIdForMember(conversation, projectSessions.sessions)
       ?? conversation.id;
-    if (conversation.projectId !== null) projectTree.selectProject(conversation.projectId);
-    projectSessions.selectSession(ownerConversationId);
+    if (teamChatInstanceId(ownerConversationId) === null) {
+      useWorkbenchUiStore.getState().closeTeamChat();
+      if (conversation.projectId !== null) projectTree.selectProject(conversation.projectId);
+      projectSessions.selectSession(ownerConversationId);
+    }
     setFilePanelOpenForConversation(ownerConversationId, true);
     setTeamMemberOpenRequest((current) => ({
       conversation,
