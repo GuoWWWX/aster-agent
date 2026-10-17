@@ -286,7 +286,7 @@ describe("NodeSqliteCheckpointSaver", () => {
     const current = new AgentDatabase(databasePath);
     current.close();
     const old = new DatabaseSync(databasePath);
-    old.exec("DROP TABLE langgraph_checkpoint_blobs; DELETE FROM schema_migrations WHERE version=34;");
+    old.exec("DROP TABLE langgraph_checkpoint_blobs; DROP TABLE task_completion_policies; DELETE FROM schema_migrations WHERE version>=34;");
     old.prepare("INSERT INTO langgraph_checkpoints VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
       "legacy-run", "", "00000000000000000000000001", null,
       "json", Buffer.from(JSON.stringify(checkpoint("00000000000000000000000001", "preserved history"))),

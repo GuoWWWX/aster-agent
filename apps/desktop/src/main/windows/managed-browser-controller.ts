@@ -1303,10 +1303,14 @@ function createElectronBrowserPage(ownerWindow: BrowserWindow, shortcuts: Browse
           if (background !== undefined) {
             const modifiers = input.modifiers.reduce((bits, modifier) => bits | ({ alt: 1, control: 2, meta: 4, shift: 8 }[modifier]), 0);
             await withAutomationDebugger(async (send) => {
-              const event = { key: input.key, modifiers,
-                ...(input.key.length === 1 && (modifiers & 7) === 0 ? { text: input.key } : {}) };
-              await send("Input.dispatchKeyEvent", { ...event, type: "keyDown" });
-              await send("Input.dispatchKeyEvent", { key: input.key, modifiers, type: "keyUp" });
+              const key = input.key === "Space" ? " " : input.key;
+              const activation = key === "Enter" ? { code: "Enter", windowsVirtualKeyCode: 13 }
+                : key === " " ? { code: "Space", windowsVirtualKeyCode: 32 } : {};
+              const text = key === "Enter" ? "\r" : key.length === 1 ? key : undefined;
+              const event = { key, modifiers, ...activation };
+              await send("Input.dispatchKeyEvent", { ...event, type: "keyDown",
+                ...(text !== undefined && (modifiers & 7) === 0 ? { text, unmodifiedText: text } : {}) });
+              await send("Input.dispatchKeyEvent", { ...event, type: "keyUp" });
             });
             return;
           }

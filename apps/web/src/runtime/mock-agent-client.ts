@@ -1801,7 +1801,14 @@ export class MockAgentClient implements AgentClient {
     const message: TeamChatMessage = { id, teamInstanceId: input.teamInstanceId,
       sequence: this.groupMessages.filter(item => item.teamInstanceId === input.teamInstanceId).length + 1,
       content: input.content, senderConversationId: null, senderName: "你", intent: input.intent,
-      recipientConversationIds: recipients, allMembers: input.allMembers, taskContextId: input.taskContextId, replyToId: input.replyToId,
+      recipientConversationIds: recipients, allMembers: input.allMembers,
+      ...(input.fileReferences === undefined ? {} : { fileReferences: input.fileReferences.map(file => {
+        if (file.sourceMessageId === undefined) throw new Error("A user must reference an already-published member file.");
+        const source = this.groupMessages.find(message => message.id === file.sourceMessageId);
+        const original = source?.fileReferences?.find(item => item.path === file.path);
+        if (source?.teamInstanceId !== input.teamInstanceId || original === undefined) throw new Error("Invalid public file source.");
+        return { ...file, sourceMessageId: file.sourceMessageId, conversationId: original.conversationId };
+      }) }), taskContextId: input.taskContextId, replyToId: input.replyToId,
       createdAt: new Date().toISOString(), sourceRunId: null, rootMessageId: quoted?.rootMessageId ?? id, depth: 0,
       supersedesId: input.supersedesId, coordinator: input.coordinator === undefined ? null : { ...input.coordinator, modelSelection: input.coordinator.modelSelection ?? null, status: "completed", error: null },
       deliveries: recipients.map(conversationId => ({ id: crypto.randomUUID(), conversationId, status: "pending", runId: null, error: null })),

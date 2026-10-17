@@ -4,6 +4,14 @@ import { postTeamChatInputSchema, readTeamChatInputSchema, teamChatMessageSchema
 let nextId = 0;
 const randomUUID = () => `10000000-0000-4000-8000-${String(++nextId).padStart(12, "0")}`;
 
+it("publishes own files and forwards explicit sources without allowing caller-supplied ownership or unsafe paths", () => {
+  const base = { teamInstanceId: randomUUID(), content: "交付", requestId: randomUUID() };
+  expect(postTeamChatInputSchema.parse(base).fileReferences).toBeUndefined();
+  expect(postTeamChatInputSchema.parse({ ...base, fileReferences: [{ path: "out/card.html" }] }).fileReferences).toEqual([{ path: "out/card.html" }]);
+  expect(postTeamChatInputSchema.safeParse({ ...base, fileReferences: [{ sourceMessageId: randomUUID(), path: "out/card.html", conversationId: randomUUID() }] }).success).toBe(false);
+  for (const path of ["../private.txt", "/tmp/private.txt", ""]) expect(postTeamChatInputSchema.safeParse({ ...base, fileReferences: [{ path }] }).success).toBe(false);
+});
+
 it("validates bounded keyword, sender and date filters without changing ordinary history reads", () => {
   const teamInstanceId = randomUUID();
   expect(readTeamChatInputSchema.parse({ teamInstanceId })).toEqual({ teamInstanceId, limit: 30 });

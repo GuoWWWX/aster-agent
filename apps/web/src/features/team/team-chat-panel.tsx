@@ -3,7 +3,8 @@ import type { ConversationSummary, PostTeamChatInput, TeamChatMember, TeamChatMe
 import { ExternalLink, MessageSquareReply, Workflow, UsersRound } from "lucide-react";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import { AgentMarkdown, AgentMarkdownWorkspaceScope } from "../../components/markdown/agent-markdown.js";
-import { HtmlPreviewScope } from "../../components/html-preview/html-preview-card.js";
+import { HtmlPreviewCard, HtmlPreviewScope } from "../../components/html-preview/html-preview-card.js";
+import { FileTypeIcon } from "../../components/ui/file-type-icon.js";
 import { ChatMessageBubble } from "../chat/chat-message-bubble.js";
 import { ChatMessageMeta } from "../chat/chat-message-meta.js";
 import { IconButton } from "../../components/ui/icon-button.js";
@@ -176,9 +177,11 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
         <ChatMessageBubble role={role} enclosed={role === "assistant"}>
           {showReplyQuote ? <p className="mb-1 line-clamp-2 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">回复：{replySource?.content.slice(0, 100) ?? "较早的群消息"}</p> : null}
           {role === "user" ? <UserMessageContent content={message.content}>{renderMemberMentions(message, references)}</UserMessageContent>
-            : <AgentMarkdownWorkspaceScope onOpenFile={onOpenFile === undefined ? undefined : path => onOpenFile(message.senderConversationId!, path)}>
+            : <AgentMarkdownWorkspaceScope onOpenFile={onOpenFile === undefined ? undefined : path => onOpenFile(message.fileReferences?.find(file => file.path === path)?.conversationId ?? message.senderConversationId!, path)}>
               <HtmlPreviewScope client={agentClient} conversationId={message.senderConversationId!}><AgentMarkdown content={message.content} inlineReferences={references} /></HtmlPreviewScope>
             </AgentMarkdownWorkspaceScope>}
+          {message.fileReferences?.map(file => <GroupFileReference key={file.path} file={file} agentClient={agentClient} active={active}
+            senderName={members.find(member => member.conversationId === file.conversationId)?.name ?? "原作者"} onOpenFile={onOpenFile} />)}
         </ChatMessageBubble>
         <ChatMessageMeta role={role} content={message.content} createdAt={message.createdAt} completedAt={message.createdAt}
           copied={copiedMessageId === message.id} editing={editingMessageId === message.id} onCopy={() => void copyMessage(message)}
@@ -207,4 +210,19 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
       <div aria-hidden="true" className="w-full shrink-0" style={{ height: `${composerClearance}px` }} />
     </div>
   </section>;
+}
+
+function GroupFileReference({ file, agentClient, active, senderName, onOpenFile }: {
+  file: NonNullable<TeamChatMessage["fileReferences"]>[number]; agentClient: AgentClient; active: boolean; senderName: string;
+  onOpenFile: ((conversationId: string, path: string) => void) | undefined;
+}): ReactElement {
+  const [preview, setPreview] = useState(false);
+  const visual = /\.html?$/iu.test(file.path);
+  return <div className="mt-[5px] flex min-w-0 flex-col gap-[5px] border-t border-[var(--app-border)] pt-[5px]" data-group-file-source={file.conversationId}>
+    <button type="button" disabled={onOpenFile === undefined} aria-label={`打开原始成果 ${file.path}`} onClick={() => onOpenFile?.(file.conversationId, file.path)}
+      className="inline-flex min-w-0 items-center gap-[5px] text-left text-[var(--app-accent)] hover:underline"><FileTypeIcon path={file.path} size={14} /><span className="min-w-0 truncate">{file.path.split("/").at(-1)}</span></button>
+    <span className="truncate text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">成果来源：{senderName}</span>
+    {visual ? <button type="button" className="self-start text-[var(--app-accent)] hover:underline" aria-expanded={preview} onClick={() => setPreview(value => !value)}>{preview ? "收起预览" : "预览页面"}</button> : null}
+    {visual && preview ? <HtmlPreviewScope client={agentClient} conversationId={file.conversationId}><HtmlPreviewCard embedded suspended={!active} source={{ kind: "file", path: file.path }} /></HtmlPreviewScope> : null}
+  </div>;
 }

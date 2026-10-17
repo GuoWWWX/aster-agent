@@ -17,7 +17,7 @@ export function teamChatContext(messages: readonly TeamChatMessage[], receiverId
       recipientConversationIds: message.recipientConversationIds, replyToId: message.replyToId, rootMessageId: message.rootMessageId,
       senderName: message.senderConversationId === null ? "用户" : message.senderName,
       perspective: message.senderConversationId === null ? "user" : message.senderConversationId === receiverId ? "self" : "member",
-      content, excerpted: content.length < message.content.length };
+      ...(message.fileReferences === undefined ? {} : { fileReferences: message.fileReferences }), content, excerpted: content.length < message.content.length };
     let size = JSON.stringify(item).length;
     while (size > remaining && item.content.length > 0) {
       item.content = item.content.slice(0, Math.max(0, item.content.length - (size - remaining)));

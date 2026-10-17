@@ -1,5 +1,10 @@
 import { z } from "zod";
 import { conversationModelSelectionSchema } from "./conversation.js";
+import { relativeProjectPathSchema } from "./project.js";
+
+const teamChatFileInputSchema = z.object({ sourceMessageId: z.string().uuid().optional(),
+  path: relativeProjectPathSchema.refine(path => path.length > 0, "File path cannot be empty.") }).strict();
+export const teamChatFileReferenceSchema = teamChatFileInputSchema.extend({ sourceMessageId: z.string().uuid(), conversationId: z.string().uuid() }).strict();
 
 export const teamChatCoordinatorSchema = z.object({
   agentId: z.string().min(1).max(200),
@@ -27,6 +32,7 @@ export const postTeamChatInputSchema = z.object({
   intent: z.enum(["notify", "request"]).default("request"),
   recipientConversationIds: z.array(z.string().uuid()).max(32).default([]),
   allMembers: z.boolean().default(false),
+  fileReferences: z.array(teamChatFileInputSchema).max(8).optional(),
   taskContextId: z.string().uuid().nullable().default(null),
   replyToId: z.string().uuid().nullable().default(null),
   requestId: z.string().min(1).max(200),
@@ -44,6 +50,7 @@ export const teamChatMessageSchema = z.object({
   content: z.string(), senderConversationId: z.string().uuid().nullable(), senderName: z.string(),
   intent: z.enum(["notify", "request"]), recipientConversationIds: z.array(z.string().uuid()),
   allMembers: z.boolean().optional(),
+  fileReferences: z.array(teamChatFileReferenceSchema).max(8).optional(),
   taskContextId: z.string().uuid().nullable(), replyToId: z.string().uuid().nullable(),
   createdAt: z.string().datetime(), rootMessageId: z.string().uuid(), depth: z.number().int().nonnegative(),
   sourceRunId: z.string().uuid().nullable(), deliveries: z.array(teamChatDeliverySchema),

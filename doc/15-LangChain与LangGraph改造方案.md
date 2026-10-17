@@ -246,3 +246,5 @@ LangGraph 的 Checkpoint 只负责图恢复，不替代现有业务状态：
 ## 10. 当前未宣称的能力
 
 本方案本身不表示 MCP Runtime、Skill 脚本执行、running Run 自动恢复、完整长期团队 Supervisor、受管浏览器或远程 Agent Server 已实现。代码和 Capability 只有在对应测试与端到端证据齐备后才更新为已实现。
+
+群公开回复的完成边（2026-10-18）：Runtime 仅对本轮群请求、来自成功 post_team_message 的工具结果给出 finishRun；普通工具与私聊不受影响。现有 ToolNode 完成本工具批后保存 finishAfterTools，框架 beforeModel 完成门沿 jumpTo=end 收尾，位于模型调用上限检查之前，避免最后一次合法发布被误判为超限；不靠取消 Run，也不新增模型循环。新 Steer／成员输入优先消费，进展消息可显式继续。旧检查点缺少标记时默认 false；中断恢复仍走原幂等工具事实，成功发布不重放。

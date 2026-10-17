@@ -12,9 +12,11 @@ it("distinguishes the user, the receiver's own statements and named peers within
     rootMessageId: thread, depth: 0, sourceRunId: null, deliveries: [],
   }));
   const source = { ...messages[23]!, sequence: 25, replyToId: messages[0]!.id };
+  messages[0]!.fileReferences = [{ path: "out/card.html", sourceMessageId: messages[0]!.id, conversationId: receiver }];
   const context = teamChatContext(messages, receiver, source, 6000);
   expect(JSON.stringify(context).length).toBeLessThanOrEqual(6000);
   expect(context[0]?.messageId).toBe(messages[0]!.id);
+  expect(context[0]?.fileReferences).toEqual(messages[0]!.fileReferences);
   expect(new Set(context.map(item => item.perspective))).toEqual(new Set(["user", "self", "member"]));
   expect(context.some(item => item.excerpted)).toBe(true);
   expect(context.map(item => item.sequence)).toEqual(context.map(item => item.sequence).sort((a, b) => a - b));

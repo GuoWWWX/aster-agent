@@ -488,9 +488,23 @@ export class CollaborationStore {
         for (const id of recipients) if (id === senderId || !active.some(member => member.conversationId === id)) throw new CollaborationError("TEAM_MEMBER", "Recipient must be another active room member.");
       }
       const lastSequence = this.journal.lastSequence(instance.id);
+      const id = randomUUID();
+      const fileReferences = input.fileReferences?.map(reference => {
+        if (reference.sourceMessageId === undefined) {
+          if (senderId === null) throw new CollaborationError("TEAM_SOURCE", "请引用成员已经公开的成果消息。");
+          return { ...reference, sourceMessageId: id, conversationId: senderId };
+        }
+        const source = this.message(reference.sourceMessageId);
+        if (source.teamInstanceId !== instance.id) throw new CollaborationError("TEAM_SCOPE", "成果来源不属于当前群。");
+        const forwarded = source.fileReferences?.find(file => file.path === reference.path);
+        if (forwarded === undefined) throw new CollaborationError("TEAM_SOURCE", "文件尚未发布可转交引用，请原作者使用 fileReferences 补发原文件引用，无需复制或重写文件。");
+        if (!members.some(member => member.conversationId === forwarded.conversationId)) throw new CollaborationError("TEAM_MEMBER", "成果来源成员已不可用。");
+        return { ...reference, conversationId: forwarded.conversationId };
+      });
+      if (fileReferences !== undefined && new Set(fileReferences.map(file => file.path)).size !== fileReferences.length) throw new CollaborationError("TEAM_SOURCE", "同一交付消息中的文件路径不能重复。");
       const projectedSequence = Number(this.db.prepare("SELECT COALESCE(MAX(sequence), 0) AS last FROM team_chat_messages WHERE team_instance_id = ?").get(instance.id)?.last);
       if (lastSequence < projectedSequence) throw new Error("Canonical group history is missing or truncated; original records were preserved.");
-      const id = randomUUID(); const sequence = lastSequence + 1;
+      const sequence = lastSequence + 1;
       if (input.supersedesId !== null) {
         const original = this.message(input.supersedesId);
         const latest = this.db.prepare("SELECT id FROM team_chat_messages WHERE team_instance_id = ? AND json_extract(payload_json, '$.senderConversationId') IS NULL ORDER BY sequence DESC LIMIT 1").get(instance.id);
@@ -500,7 +514,8 @@ export class CollaborationStore {
       const message = teamChatMessageSchema.parse({
         id, teamInstanceId: instance.id, sequence, content: input.content,
         senderConversationId: senderId, senderName: senderId === null ? "你" : members.find(member => member.conversationId === senderId)?.name,
-        intent: input.intent, recipientConversationIds: recipients, allMembers: input.allMembers, taskContextId: input.taskContextId ?? parent?.taskContextId ?? null,
+        intent: input.intent, recipientConversationIds: recipients, allMembers: input.allMembers,
+        ...(fileReferences === undefined ? {} : { fileReferences }), taskContextId: input.taskContextId ?? parent?.taskContextId ?? null,
         replyToId: input.replyToId, createdAt: new Date().toISOString(), sourceRunId: runId,
         rootMessageId: parent?.rootMessageId ?? id,
         depth: senderId === null ? 0 : (parent?.depth ?? 0) + 1, deliveries: [],

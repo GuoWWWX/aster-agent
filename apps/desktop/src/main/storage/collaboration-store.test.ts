@@ -33,6 +33,20 @@ function namedFixture() {
 }
 
 describe("natural group addressing", () => {
+  it("delivers the original member's published file without changing file ownership on forwarding", () => {
+    const { db, instance, lead, member } = namedFixture();
+    const source = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "已完成页面", fileReferences: [{ path: "out/card.html" }], intent: "notify", requestId: randomUUID() }, member.id);
+    const first = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "实现与独立验证已通过，现交付。", intent: "notify",
+      fileReferences: [{ sourceMessageId: source.id, path: "out/card.html" }], requestId: randomUUID() }, lead.id);
+    expect(first.fileReferences).toEqual([{ sourceMessageId: source.id, path: "out/card.html", conversationId: member.id }]);
+    expect(db.collaboration.readMessages({ teamInstanceId: instance.id }).messages.find(message => message.id === first.id)?.fileReferences).toEqual(first.fileReferences);
+    const forwarded = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "继续引用原成果", intent: "notify",
+      fileReferences: [{ sourceMessageId: first.id, path: "out/card.html" }], requestId: randomUUID() }, lead.id);
+    expect(forwarded.fileReferences?.[0]?.conversationId).toBe(member.id);
+    expect(() => db.collaboration.postMessage({ teamInstanceId: instance.id, content: "private", fileReferences: [{ sourceMessageId: source.id, path: "private.txt" }], requestId: randomUUID() }, lead.id)).toThrow("文件尚未");
+    const other = db.createTeamInstance({ teamId: instance.teamId, scope: "global" });
+    expect(() => db.collaboration.postMessage({ teamInstanceId: other.id, content: "cross room", fileReferences: [{ sourceMessageId: source.id, path: "out/card.html" }], requestId: randomUUID() }, null)).toThrow("成果来源不属于当前群");
+  });
   it("searches canonical message text by keyword, sender and date without marking history read", () => {
     const { db, instance, member } = namedFixture();
     db.collaboration.postMessage({ teamInstanceId: instance.id, content: "用户 HTML 说明", intent: "notify", requestId: randomUUID() }, null);

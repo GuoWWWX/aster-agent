@@ -37,6 +37,7 @@ class GroupFixture implements ModelProviderAdapter {
   public delegateTo: string | null = null;
   public delegateAgainOnReceipt = false;
   public memberGate: Promise<void> | null = null;
+  public keepWorkingAfterPost = false;
   private receiptTurns = 0;
   private readonly steps = new Map<string, number>();
   public async completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
@@ -60,7 +61,7 @@ class GroupFixture implements ModelProviderAdapter {
       { name: "list_task_contexts", arguments: {} },
       { name: "update_task_context", arguments: { title: "查证文件", goal: "确认 fact.txt 内容", summary: "正在检查", status: "running", ...(existing === undefined ? {} : { id: existing.id, expectedRevision: existing.revision }) } },
       { name: "read_file", arguments: { path: "fact.txt" } },
-      { name: "post_team_message", arguments: { content: "已核实文件内容为 evidence。", intent: "notify", replyToId: context.messageId } },
+      { name: "post_team_message", arguments: { content: "已核实文件内容为 evidence。", intent: "notify", replyToId: context.messageId, ...(this.keepWorkingAfterPost ? { continueWork: true } : {}) } },
     ];
     const operation = context.content === "委派验收" && this.delegateTo !== null
       ? step === 0 ? { name: "post_team_message", arguments: { content: "请查证文件", intent: "request", replyToId: context.messageId, recipientConversationIds: [this.delegateTo] } } : undefined
@@ -70,14 +71,14 @@ class GroupFixture implements ModelProviderAdapter {
     return Promise.resolve({ content: "成员私有的执行总结。", finishReason: "stop", toolCalls: [] });
   }
 }
-async function fixture(withThreadLog = false, withCoordinator = false, graphCheckpointer: NodeSqliteCheckpointSaver | null = null) {
+async function fixture(withThreadLog = false, withCoordinator = false, graphCheckpointer: NodeSqliteCheckpointSaver | null = null, directory = DEFAULT_AGENT_DIRECTORY_CONFIGURATION) {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-group-integration-")); roots.push(root);
   await writeFile(path.join(root, "fact.txt"), "evidence", "utf8");
   const db = new AgentDatabase(":memory:"); const projects = new ProjectRegistry(db); const project = await projects.registerDirectory(root);
   const log = withThreadLog ? new ThreadLog(path.join(root, "conversations")) : null;
   const projector = log === null ? null : new EventProjector(db, log);
   const lifecycle = log === null || projector === null ? db : new ConversationLifecycleService(db, log, projector);
-  db.syncTeamDirectory(structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION));
+  db.syncTeamDirectory(structuredClone(directory));
   const instance = db.createTeamInstance({ teamId: "default-team", scope: "project", projectId: project.id });
   const lead = lifecycle.createConversation(project.id, { teamId: instance.teamId, threadKind: "team_lead" });
   db.bindTeamExecutionConversation({ conversationId: lead.id, teamId: instance.teamId, teamInstanceId: instance.id, projectId: project.id, sourceConversationId: null });
@@ -88,10 +89,48 @@ async function fixture(withThreadLog = false, withCoordinator = false, graphChec
   const model = new GroupFixture(); const tools = new ProjectToolRegistry(projects);
   const runtime = new AgentRuntime(db, { getConfiguration: () => ({ apiKey: "fixture", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1", modelId: "fixture", reasoningOptions: [] }) }, projects, tools, model,
     (_delay, signal) => { signal.throwIfAborted(); return Promise.resolve(); }, undefined, null, null,
-    withCoordinator ? { getConfiguration: () => structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION) } : null, null, graphCheckpointer, undefined, null, log, projector);
+    withCoordinator ? { getConfiguration: () => structuredClone(directory) } : null, null, graphCheckpointer, undefined, null, log, projector);
   return { db, lead, member, instance, runtime, model, tools, log };
 }
 describe("group execution integration", () => {
+  it.each(["final", "progress", "retry"])("finishes a successful public reply without repeating it (%s)", async mode => {
+    const { db, instance, member, runtime, model, tools } = await fixture(true, true);
+    let calls = 0; let original!: TeamChatMessage;
+    vi.spyOn(model, "completeTurn").mockImplementation(() => {
+      calls += 1;
+      const args = mode === "retry" && calls === 1 ? { content: "无效自投递", intent: "request", recipientConversationIds: [member.id] }
+        : mode === "progress" && calls === 1 ? { content: "进展", intent: "notify", continueWork: true }
+        : { content: "结论", intent: "notify" };
+      return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id: `public-${calls}`, name: "post_team_message", arguments: JSON.stringify({ ...args, replyToId: original.id }) }] });
+    });
+    try {
+      original = runtime.postTeamChat({ teamInstanceId: instance.id, content: "完成本轮回复", recipientConversationIds: [member.id], requestId: randomUUID() }, () => undefined);
+      await vi.waitFor(() => expect(db.collaboration.message(original.id).deliveries[0]?.status).toBe("completed"));
+      expect(calls).toBe(mode === "final" ? 1 : 2);
+      expect(db.collaboration.readMessages({ teamInstanceId: instance.id }).messages.filter(message => message.senderConversationId === member.id).map(message => message.content))
+        .toEqual(mode === "progress" ? ["进展", "结论"] : ["结论"]);
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
+  it("keeps base Agent identity distinct from its current group responsibility", async () => {
+    const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
+    directory.agents.push({ ...directory.agents[0]!, id: "developer", name: "通用开发 Agent", role: "通用实现能力", isDefault: false });
+    directory.teams[0]!.memberIds.push("developer"); directory.teams[0]!.memberConfigurations.developer = { role: "本群前端实现", instructions: "只维护本轮分配的页面" };
+    const { db, instance, member, runtime, model, tools } = await fixture(true, true, null, directory);
+    db.bindConversationAgent(member.id, { id: "developer", name: "通用开发 Agent", role: "本群前端实现", instructions: "只维护本轮分配的页面", isDefault: false });
+    db.collaboration.updateTask({ conversationId: member.id, title: "历史任务", goal: "此前的工作", status: "completed", summary: "历史概要用于查重",
+      decisions: "历史决策不应自动恢复", nextStep: "历史动作不应自动恢复", requestId: randomUUID() });
+    const contexts: string[] = [];
+    vi.spyOn(model, "completeTurn").mockImplementation(input => { contexts.push(...input.messages.map(message => message.content)); return Promise.resolve({ content: "完成本轮", finishReason: "stop", toolCalls: [] }); });
+    try {
+      const original = runtime.postTeamChat({ teamInstanceId: instance.id, content: "只检查你的身份分工", recipientConversationIds: [member.id], requestId: randomUUID() }, () => undefined);
+      await vi.waitFor(() => expect(db.collaboration.message(original.id).deliveries[0]?.status).toBe("completed"));
+      const context = contexts.find(content => content.includes('"groupIdentity"'))!;
+      expect(context).toContain('"baseAgent":{"name":"通用开发 Agent","role":"通用实现能力"}');
+      expect(context).toContain('"role":"本群前端实现","isLead":false');
+      expect(context).toContain("不把文件复制到自己工作区");
+      expect(context).toContain("历史概要用于查重"); expect(context).not.toContain("历史决策不应自动恢复"); expect(context).not.toContain("历史动作不应自动恢复");
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
   it("passes only unread context increments to a member and keeps received messages in its own history", async () => {
     const { db, instance, member, runtime, model, tools, log } = await fixture(true, true);
     const received: { messageId: string; groupContext: { messageId: string; content: string }[] }[] = [];
@@ -248,6 +287,7 @@ describe("group execution integration", () => {
       }
       if (context.content === "负责人，请公开邀请两位讨论后汇总") {
         expect(input.messages[0]?.content).toContain("Delegate through post_team_message");
+        expect(input.messages[0]?.content).toContain("the runtime resumes you when member completion receipts arrive");
         expect(input.messages[0]?.content).toContain("完成当前请求后结束本轮");
         if (page.messages.some(message => message.intent === "request" && message.senderConversationId === lead.id)) return { content: "已公开邀请", finishReason: "stop", toolCalls: [] };
         return { content: "", finishReason: "tool_calls", toolCalls: [{ id: "invitation", name: "post_team_message",
@@ -493,7 +533,7 @@ describe("group execution integration", () => {
       }
       if (!input.messages.some(message => message.role === "tool" && message.toolCallId === "published-once")) {
         return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id: "published-once", name: "post_team_message",
-          arguments: JSON.stringify({ content: "已核实结果。", intent: "notify" }) }] });
+          arguments: JSON.stringify({ content: "已核实结果。", intent: "notify", continueWork: true }) }] });
       }
       return Promise.reject(new ModelRequestError(502, "Upstream service temporarily unavailable"));
     });
@@ -516,7 +556,7 @@ describe("group execution integration", () => {
       });
       expect(resumed).toMatchObject({ status: "completed", error: null });
       expect(resumed.runId).not.toBe(failed.runId);
-      expect(requests).toHaveBeenCalledTimes(entry === "group" ? 10 : 9);
+      expect(requests).toHaveBeenCalledTimes(9);
       expect(db.listTimeline(member.id)).toContainEqual(expect.objectContaining({ kind: "model_retry", runId: resumed.runId, status: "completed", attempt: 1 }));
       expect(db.getConversationAgentBinding(member.id)).toEqual(binding);
       const messages = db.collaboration.readMessages({ teamInstanceId: instance.id }).messages;
@@ -666,6 +706,7 @@ describe("group execution integration", () => {
   it("returns one bounded receipt to the original delegator without publishing private work", async () => {
     const { db, lead, member, instance, runtime, model, tools } = await fixture(true);
     model.delegateTo = member.id;
+    model.keepWorkingAfterPost = true;
     try {
       await new Promise<void>((resolve, reject) => {
         let completed = 0;
@@ -683,6 +724,10 @@ describe("group execution integration", () => {
       const receipt = db.listTimeline(lead.id).find(item => item.id === receiptId);
       expect(receipt).toMatchObject({ messageType: "agent_result", taskId: receiptId, executionStatus: "completed" });
       expect(receipt && "content" in receipt ? receipt.content : "").not.toContain("成员私有的执行总结");
+      const content = receipt && "content" in receipt ? receipt.content : "";
+      const result = z.object({ publicReplies: z.array(z.object({ messageId: z.string(), content: z.string().max(1200), excerpted: z.boolean() })).max(3) }).parse(JSON.parse(content.slice(content.indexOf("\n") + 1)));
+      expect(result.publicReplies).toEqual([expect.objectContaining({ messageId: page.messages[2]!.id, content: "已核实文件内容为 evidence。", excerpted: false })]);
+      expect(content).toContain("status 不表示工作或验收通过");
       expect(db.collaboration.receiptsToRecover()).toEqual([]);
     } finally { await tools.dispose(); db.close(); }
   });
@@ -702,6 +747,7 @@ describe("group execution integration", () => {
   });
   it("performs tools in the selected member's history and publishes only explicit group messages", async () => {
     const { db, lead, member, instance, runtime, model, tools, log } = await fixture(true);
+    model.keepWorkingAfterPost = true;
     try {
       const events: ConversationRunEvent[] = [];
       const completed = new Promise<void>((resolve, reject) => {

@@ -155,6 +155,25 @@ async function groupFixture(client: MockAgentClient) {
   return { instance, sessions };
 }
 
+it("opens and previews a leader's delivered file in the original implementer's workspace", async () => {
+  const client = new MockAgentClient(); const { instance } = await groupFixture(client);
+  const members = await client.getTeamChatMembers({ teamInstanceId: instance.id }); const author = members.find(member => !member.isLead)!; const lead = members.find(member => member.isLead)!;
+  const source = await client.postTeamChat({ teamInstanceId: instance.id, content: "实现已完成", intent: "notify", requestId: crypto.randomUUID() });
+  const final = await client.postTeamChat({ teamInstanceId: instance.id, content: "验收通过：[页面](out/card.html)", intent: "notify", requestId: crypto.randomUUID() });
+  const read = client.readTeamChat.bind(client);
+  vi.spyOn(client, "readTeamChat").mockImplementation(async input => { const page = await read(input); return { ...page, messages: page.messages.map(message => message.id === final.id
+    ? { ...message, senderConversationId: lead.conversationId, senderName: lead.name, fileReferences: [{ sourceMessageId: source.id, conversationId: author.conversationId, path: "out/card.html" }] } : message) }; });
+  const preview = vi.spyOn(client, "htmlPreview").mockResolvedValue(null); const open = vi.fn(); const container = mount();
+  await act(async () => { root?.render(<TooltipProvider><TeamChatPanel agentClient={client} teamInstanceId={instance.id} onOpenConversation={() => undefined} onOpenFile={open} /></TooltipProvider>); for (let i = 0; i < 15; i++) await Promise.resolve(); });
+  expect(preview).not.toHaveBeenCalled(); expect(container.textContent).toContain(`成果来源：${author.name}`);
+  act(() => container.querySelector<HTMLButtonElement>('[aria-label="打开原始成果 out/card.html"]')!.click());
+  expect(open).toHaveBeenCalledWith(author.conversationId, "out/card.html");
+  act(() => { container.querySelector<HTMLAnchorElement>('a[href="out/card.html"]')!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })); });
+  expect(open).toHaveBeenLastCalledWith(author.conversationId, "out/card.html");
+  await act(async () => { [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === "预览页面")!.click(); await Promise.resolve(); });
+  expect(preview).toHaveBeenCalledWith({ kind: "file", conversationId: author.conversationId, path: "out/card.html" });
+});
+
 it.each([0, 5])("selects all current group members even after %s individual mentions and renders the effective mention", async count => {
   const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
   const post = vi.spyOn(client, "postTeamChat"); const container = mount();
