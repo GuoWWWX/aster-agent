@@ -1,3 +1,4 @@
+import type { TaskContextScope, SetTaskCompletionPolicyInput, ResolveChatReferencesInput, ListTaskContextsInput, UpdateTaskContextInput, LinkTaskContextInput, MergeTaskContextsInput, ReadTeamChatInput, PostTeamChatInput, MarkTeamChatReadInput } from "@agent/protocol";
 import type { HtmlPreviewRequest } from "@agent/protocol";
 import type { AnswerUserQuestionInput, StopBackgroundCommandInput, ReadBackgroundCommandInput } from "@agent/protocol";
 import type { SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
@@ -261,6 +262,22 @@ export function createDesktopBridge(): DesktopBridge {
     sendTeamMessage(input: SendTeamMessageInput) {
       return invoke<BridgeResult<"sendTeamMessage">>(IPC_CHANNELS.teamSendMessage, input);
     },
+    getTaskCompletionPolicy(input: TaskContextScope) { return invoke<BridgeResult<"getTaskCompletionPolicy">>(IPC_CHANNELS.taskCompletionPolicyGet, input); },
+    setTaskCompletionPolicy(input: SetTaskCompletionPolicyInput) { return invoke<BridgeResult<"setTaskCompletionPolicy">>(IPC_CHANNELS.taskCompletionPolicySet, input); },
+    resolveChatReferences(input: ResolveChatReferencesInput) { return invoke<BridgeResult<"resolveChatReferences">>(IPC_CHANNELS.chatReferencesResolve, input); },
+    listTaskContexts(input: ListTaskContextsInput) { return invoke<BridgeResult<"listTaskContexts">>(IPC_CHANNELS.taskContextList, input); },
+    getTaskContext(input: { id: string; beforeSourceSequence?: number; limit?: number }) { return invoke<BridgeResult<"getTaskContext">>(IPC_CHANNELS.taskContextGet, input); },
+    updateTaskContext(input: UpdateTaskContextInput) { return invoke<BridgeResult<"updateTaskContext">>(IPC_CHANNELS.taskContextUpdate, input); },
+    linkTaskContext(input: LinkTaskContextInput) { return invoke<BridgeResult<"linkTaskContext">>(IPC_CHANNELS.taskContextLink, input); },
+    mergeTaskContexts(input: MergeTaskContextsInput) { return invoke<BridgeResult<"mergeTaskContexts">>(IPC_CHANNELS.taskContextMerge, input); },
+    readTeamChat(input: ReadTeamChatInput) { return invoke<BridgeResult<"readTeamChat">>(IPC_CHANNELS.teamChatRead, input); },
+    postTeamChat(input: PostTeamChatInput) { return invoke<BridgeResult<"postTeamChat">>(IPC_CHANNELS.teamChatPost, input); },
+    getTeamChatCoordinationConversation(input: { teamInstanceId: string; agentId?: string }) { return invoke<BridgeResult<"getTeamChatCoordinationConversation">>(IPC_CHANNELS.teamChatCoordinationConversation, input); },
+    getTeamChatMembers(input: { teamInstanceId: string }) { return invoke<BridgeResult<"getTeamChatMembers">>(IPC_CHANNELS.teamChatMembers, input); },
+    markTeamChatRead(input: MarkTeamChatReadInput) { return invoke<BridgeResult<"markTeamChatRead">>(IPC_CHANNELS.teamChatMarkRead, input); },
+    resumeTeamChatDelivery(input: { id: string }) { return invoke<BridgeResult<"resumeTeamChatDelivery">>(IPC_CHANNELS.teamChatResume, input); },
+    cancelTeamChatDelivery(input: { id: string }) { return invoke<BridgeResult<"cancelTeamChatDelivery">>(IPC_CHANNELS.teamChatCancel, input); },
+    pauseTeamChat(input: { teamInstanceId: string }) { return invoke<BridgeResult<"pauseTeamChat">>(IPC_CHANNELS.teamChatPause, input); },
     listTeamWorkItems(input: ListTeamWorkItemsInput) {
       return invoke<BridgeResult<"listTeamWorkItems">>(IPC_CHANNELS.teamWorkItemList, input);
     },
@@ -611,6 +628,9 @@ export function createDesktopBridge(): DesktopBridge {
           handleConversationRunEvent
         );
       };
+    },
+    async setConversationStreamSubscriptions(conversationIds: readonly string[]) {
+      await invoke<void>(IPC_CHANNELS.conversationSetStreamSubscriptions, conversationIds);
     },
     onApplicationSettingsChanged(listener) {
       const handleApplicationSettingsChanged = (

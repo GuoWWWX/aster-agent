@@ -1728,6 +1728,26 @@ class ModelBackedContextCompactorFixture implements ModelProviderAdapter {
 }
 
 describe("AgentRuntime", () => {
+  it("reads retained pending queue state without rehydrating the conversation history", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-queue-status-"));
+    temporaryDirectories.push(directory);
+    const database = new AgentDatabase(":memory:"); const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null); const log = new ThreadLog(directory);
+    const projector = new EventProjector(database, log);
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({ apiKey: "secret", apiFormat: "openai-chat-completions",
+      baseUrl: "https://example.test/v1", modelId: "test-model", reasoningOptions: [] }) }, projects, new ProjectToolRegistry(projects),
+      new FixtureModel(), undefined, undefined, null, null, null, null, null, undefined, null, log, projector);
+    try {
+      database.enqueuePendingMessage({ conversationId: conversation.id, content: "waiting", deliveryMode: "queue" });
+      database.clearVolatileConversationHistory(conversation.id);
+      const hydrate = vi.spyOn(projector, "ensureConversationHistoryProjected");
+      expect(runtime.isPendingQueuePaused(conversation.id)).toBe(true);
+      runtime.setPendingQueuePaused(conversation.id, false, () => undefined);
+      expect(runtime.isPendingQueuePaused(conversation.id)).toBe(false);
+      expect(hydrate).not.toHaveBeenCalled();
+      expect(runtime.listPendingMessages(conversation.id)).toHaveLength(1);
+    } finally { database.close(); }
+  });
   it.each([{ temporary: false, blocked: false }, { temporary: true, blocked: false }, { temporary: false, blocked: true }]
     .flatMap(value => [{ ...value, gallery: false }, { ...value, gallery: true }]))("persists present_html with workspace policy (temporary=$temporary, blocked=$blocked, gallery=$gallery)", async ({ temporary, blocked, gallery }) => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-present-html-"));
@@ -2503,6 +2523,62 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
+  it("streams and persists progress between tool batches separately from the final handoff", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-progress-"));
+    temporaryDirectories.push(root);
+    await writeFile(path.join(root, "source.txt"), "verified source", "utf8");
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const log = new ThreadLog(path.join(root, "logs"));
+    const texts = ["我先检查输入。", "已确认输入，接着核对结果。", "检查通过，结果已确认。"];
+    const requests: CompleteTurnInput[] = [];
+    const model: ModelProviderAdapter = {
+      completeTurn(input) {
+        const turn = requests.length;
+        requests.push(input);
+        const content = texts[turn] ?? "";
+        input.onTextDelta(content);
+        return Promise.resolve({
+          content,
+          finishReason: turn < 2 ? "tool_calls" : "stop",
+          toolCalls: turn < 2 ? [{ id: `read-${turn}`, name: "read_file",
+            arguments: JSON.stringify({ path: "source.txt" }) }] : [],
+        });
+      },
+    };
+    const runtime = new AgentRuntime(database, {
+      getConfiguration: () => ({ apiKey: "secret", apiFormat: "openai-chat-completions",
+        baseUrl: "https://example.test/v1", modelId: "test-model", reasoningOptions: [] }),
+    }, projects, new ProjectToolRegistry(projects), model,
+    undefined, undefined, null, null, null, null, null, undefined, null, log);
+    const events: ConversationRunEvent[] = [];
+    try {
+      await new Promise<void>((resolve) => {
+        runtime.sendMessage({ content: "分两批检查输入和结果", conversationId: conversation.id,
+          permissionMode: "read_only" }, (event) => {
+          events.push(event);
+          if (event.type === "run.finished") resolve();
+        });
+      });
+      expect(database.getConversation(conversation.id).lastRunStatus).toBe("completed");
+      expect(events.flatMap((event) => event.type === "assistant.delta" ? [event.delta]
+        : event.type === "tool.started" ? ["tool"] : [])).toEqual([
+        texts[0], "tool", texts[1], "tool", texts[2],
+      ]);
+      expect(database.listTimeline(conversation.id).flatMap((item) =>
+        item.kind === "message" && item.role === "assistant" ? [item.content] : [])).toEqual(texts);
+      expect(log.read(conversation.id)?.events.filter((event) => event.type === "assistant_message")
+        .map((event) => event.payload.content)).toEqual(texts);
+      expect(requests[2]?.messages.filter((message) => message.role === "assistant")
+        .map((message) => message.content)).toEqual(texts.slice(0, 2));
+      expect(requests[0]?.messages[0]?.content).toContain("# Work Progress");
+    } finally {
+      database.close();
+    }
+  });
+
   it("injects loaded Skill instructions into the next model turn without polluting the timeline", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-skill-"));
     temporaryDirectories.push(root);
@@ -2931,10 +3007,13 @@ describe("AgentRuntime", () => {
     expect(requests[0]?.tools.map((tool) => tool.name)).toEqual([
       "close_task_list",
       "end_subagent",
+      "get_task_context",
+      "link_task_context",
       "list_agent_conversations",
       "list_background_commands",
       "list_models",
       "list_subagents",
+      "list_task_contexts",
       "present_html",
       "read_agent_conversation",
       "read_command_output",
@@ -2945,6 +3024,7 @@ describe("AgentRuntime", () => {
       "set_team_collaboration_plan",
       "spawn_subagent",
       "stop_command",
+      "update_task_context",
       "update_task_list",
       "wait_for_agent_message",
       "wait_for_subagents",
@@ -6633,6 +6713,52 @@ describe("AgentRuntime", () => {
       tools: [],
     });
     database.close();
+  });
+
+  it.each(["previous", "current"])("compacts underestimated provider input from the %s request without reusing pre-compaction usage", async pressureWhen => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-provider-context-pressure-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    const log = new ThreadLog(path.join(root, "conversations"));
+    const compactor = new FixtureContextCompactor();
+    const model = new ContinuousConversationFixtureModel();
+    const complete = model.completeTurn.bind(model);
+    vi.spyOn(model, "completeTurn").mockImplementation(async input => {
+      const result = await complete(input);
+      const pressure = model.requests.length === (pressureWhen === "previous" ? 3 : 4);
+      return { ...result, providerState: { apiFormat: input.configuration.apiFormat, baseUrl: input.configuration.baseUrl,
+        modelId: input.configuration.modelId, payload: null,
+        usage: { inputTokens: pressure ? 190_000 : 2000, outputTokens: 100, totalTokens: pressure ? 190_100 : 2100 } },
+        ...(pressure && pressureWhen === "current" ? { content: "", finishReason: "tool_calls" as const,
+          toolCalls: [{ id: "inspect-members", name: "list_agent_conversations", arguments: "{}" }] } : {}) };
+    });
+    const tools = new ProjectToolRegistry(projects);
+    const runtime = new AgentRuntime(database, { getConfiguration: () => ({ apiKey: "secret", apiFormat: "openai-chat-completions",
+      baseUrl: "https://example.test/v1", contextWindow: 200_000, modelId: "test-model", reasoningOptions: [] }) }, projects, tools, model,
+      undefined, { getConfiguration: () => ({ mode: "tokens", tokenThreshold: 100_000, percentageThreshold: 80, version: 1 }) }, compactor,
+      null, null, null, undefined, undefined, null, log, new EventProjector(database, log));
+    const send = (content: string) => new Promise<void>((resolve, reject) => {
+      runtime.sendMessage({ conversationId: conversation.id, content }, event => {
+        if (event.type !== "run.finished") return;
+        if (event.status === "completed") resolve(); else reject(new Error(event.error ?? event.status));
+      });
+    });
+    try {
+      await send("第一轮短消息"); await send("第二轮短消息"); await send("第三轮短消息");
+      expect(compactor.requests).toHaveLength(0);
+      await send("第四轮继续工作");
+      expect(compactor.requests).toHaveLength(1);
+      expect(log.readUncoveredContext(conversation.id)?.checkpoint?.coveredThroughSequence).toBe(4);
+      const messages = model.requests.at(-1)!.messages.map(message => message.content);
+      expect(messages).not.toContain("第一轮短消息"); expect(messages).not.toContain("第二轮短消息");
+      expect(messages).toContain("第三轮短消息"); expect(messages).toContain("第四轮继续工作");
+      expect(runtime.getContextUsage({ conversationId: conversation.id, permissionMode: "ask_before_changes" }).estimatedInputTokens).toBeLessThan(75_000);
+      await send("第五轮继续工作");
+      expect(compactor.requests).toHaveLength(1);
+      expect(log.readContext(conversation.id)?.messages.some(message => message.content === "第一轮短消息")).toBe(true);
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); database.close(); }
   });
 
   it("persists a ThreadLog compaction checkpoint when SQLite sequences are globally offset", async () => {

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_AVATAR_PICKER_PAGE_SIZE,
   filterAgentAvatarIconOptions,
-  paginateAgentAvatarIconOptions,
+  paginateAgentAvatarOptions,
 } from "./agent-avatar-picker.js";
 
 describe("AgentAvatarPicker", () => {
@@ -15,8 +15,8 @@ describe("AgentAvatarPicker", () => {
 
   it("paginates the shared icon catalog and clamps stale pages", () => {
     const options = filterAgentAvatarIconOptions("");
-    const firstPage = paginateAgentAvatarIconOptions(options, 1);
-    const lastPage = paginateAgentAvatarIconOptions(options, 99);
+    const firstPage = paginateAgentAvatarOptions(options, 1);
+    const lastPage = paginateAgentAvatarOptions(options, 99);
 
     expect(firstPage.items).toHaveLength(AGENT_AVATAR_PICKER_PAGE_SIZE);
     expect(firstPage.totalPages).toBe(3);

@@ -14,14 +14,15 @@ import {
   ARCHIVED_CONVERSATION_RETENTION_DAYS,
   LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
   conversationRunEventSchema,
-  IPC_CHANNELS,
 } from "@agent/protocol";
 
 import { AgentRuntime } from "../agent/agent-runtime.js";
+import { backupLegacyTeamChatDatabase, TeamChatJournal } from "../storage/team-chat-journal.js";
 import { SkillRuntime } from "../agent/skill-runtime.js";
 import { SYSTEM_SKILLS } from "../agent/prompts/prompt-assets.js";
 import { reportMainError, toMainAgentError } from "../errors/agent-error.js";
 import { registerMainIpcHandlers } from "../ipc/register-main-ipc.js";
+import { ConversationStreamSubscriptions } from "../ipc/conversation-stream-subscriptions.js";
 import { ModelCatalogStore } from "../model/model-catalog-store.js";
 import { ModelCredentialStore } from "../model/model-credential-store.js";
 import {
@@ -178,6 +179,7 @@ function parseLocalEnvironmentFile(contents: string): Map<string, string> {
     "AGENT_MODEL_BASE_URL",
     "AGENT_MODEL_API_KEY",
     "AGENT_MODEL_ID",
+    "ASTER_CONTROL_ENABLED",
     LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
     APPLICATION_HOME_ENVIRONMENT_VARIABLE,
   ]);
@@ -239,7 +241,9 @@ async function initializeServices(): Promise<DesktopServices> {
   const settings = new SettingsJsoncFile(agentHome.paths.settingsPath);
   settings.ensureFile();
   migrateLegacyPluginSettings(settings, agentHome.paths.databasePath);
-  const database = new AgentDatabase(agentHome.paths.databasePath);
+  await backupLegacyTeamChatDatabase(agentHome.paths.databasePath);
+  const database = new AgentDatabase(agentHome.paths.databasePath,
+    new TeamChatJournal(path.join(agentHome.paths.rootPath, "team-chats")));
   database.importLegacyCheckpointDatabases(agentHome.legacyCheckpointDatabasePaths);
   const pluginCatalog = new PluginCatalog(settings, agentHome.paths.pluginsPath);
   await pluginCatalog.synchronize();
@@ -292,6 +296,13 @@ async function initializeServices(): Promise<DesktopServices> {
       database.activateVolatileConversationProjection();
     }
     eventProjector.projectAllConversationLogs({ releaseHistory: true });
+    // Public file links retain the publishing member's default workspace across restarts.
+    // Registration only restores authorization metadata; it does not create or copy files.
+    for (const conversation of database.listConversationHierarchy()) {
+      if (conversation.teamId !== null && conversation.projectId === null && conversation.workspaceRootPath === null) {
+        projectRegistry.registerDefaultConversationWorkspace(conversation.id);
+      }
+    }
     if (!alreadyFinalized) database.finalizeJsonlConversationStorage();
     for (const recovered of database.interruptRecoveredThreadLogRuns()) {
       eventProjector.projectEvent(recovered.conversationId,
@@ -487,16 +498,15 @@ function getServices(): DesktopServices {
   return services;
 }
 
+const conversationEventStreams = new ConversationStreamSubscriptions();
+
 function sendConversationRunEvent(event: unknown): void {
   const validated = conversationRunEventSchema.parse(event);
   localControl?.publish(validated);
   publishConversationAttentionEvent(validated);
   const window = mainWindow;
+  conversationEventStreams.publish(window === undefined || window.isDestroyed() ? undefined : window.webContents, validated);
   if (window === undefined || window.isDestroyed()) return;
-  window.webContents.send(
-    IPC_CHANNELS.conversationRunEvent,
-    validated,
-  );
   if (validated.type === "conversation.open_requested") {
     if (window.isMinimized()) window.restore();
     window.show();
@@ -517,6 +527,7 @@ async function openMainWindow(): Promise<void> {
   disposeIpcHandlers = registerMainIpcHandlers(() => mainWindow, getServices(), {
     resumePendingMessages: process.env.AGENT_SKIP_PENDING_RUN_RESUMPTION !== "1",
     emitConversationRunEvent: sendConversationRunEvent,
+    eventStreams: conversationEventStreams,
   });
   const nativeOverlay = new NativeOverlayController(window);
   const rendererTarget = applyRendererSecurityPolicy(window, nativeOverlay);
@@ -671,6 +682,7 @@ async function bootstrap(): Promise<void> {
 
   app.on("before-quit", (event) => {
     if (shutdownComplete) return;
+    conversationEventStreams.dispose();
     event.preventDefault();
     shutdownPromise ??= shutdownDesktop()
       .catch((error: unknown) => reportUnhandledError(error, "desktop.shutdown"))

@@ -12,6 +12,7 @@ import {
 
 import { TooltipProvider } from "../../components/ui/tooltip.js";
 import { ProjectNavigator } from "./project-navigator.js";
+import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 import { createProjectSession, type ProjectSession } from "./project-session-model.js";
 import type { ProjectTreeController } from "./use-project-tree.js";
 
@@ -333,6 +334,13 @@ describe("ProjectNavigator", () => {
     expect(container.querySelector(`[data-navigator-key="session:${child.id}"]`)).toBeNull();
     expect(container.textContent).not.toContain("子智能体");
     expect(archiveTeamButton).not.toBeNull();
+    const chatButton = container.querySelector<HTMLButtonElement>('button[aria-label="打开团队 对话团队 群聊"]');
+    expect(chatButton).not.toBeNull();
+    expect(container.querySelector('button[aria-label="给团队 对话团队 发任务"]')).not.toBeNull();
+    const boardTarget = useWorkbenchUiStore.getState().teamWorkspaceTarget;
+    act(() => chatButton?.click());
+    expect(useWorkbenchUiStore.getState()).toMatchObject({ activeActivity: "conversations", teamChatTarget: { instanceId: teamInstance.id }, teamWorkspaceTarget: boardTarget });
+    useWorkbenchUiStore.getState().closeTeamChat();
 
     act(() => archiveTeamButton?.click());
 

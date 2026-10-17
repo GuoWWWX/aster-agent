@@ -13,7 +13,18 @@ describe("local control commands", () => {
       .toMatchObject({ input: { deliveryMode: "steer" } });
   });
 
+  it("accepts group posts, bounded history and member queries using the group contracts", () => {
+    expect(localControlCommandSchema.parse({ command: "team_chat.post", input: { teamInstanceId: conversationId, content: "hello", requestId: "test-group-request" } }))
+      .toMatchObject({ input: { intent: "request", recipientConversationIds: [] } });
+    for (const command of ["team_chat.read", "team_chat.members"]) {
+      expect(localControlCommandSchema.parse({ command, input: { teamInstanceId: conversationId } })).toMatchObject({ input: { teamInstanceId: conversationId } });
+    }
+  });
+
   it.each([
+    { command: "team_chat.post", input: { teamInstanceId: conversationId, content: "hello", requestId: "request", senderConversationId: conversationId } },
+    { command: "team_chat.post", input: { teamInstanceId: conversationId, content: "hello", requestId: "request", recipientConversationIds: ["invalid"] } },
+    { command: "team_chat.read", input: { teamInstanceId: conversationId, limit: 51 } },
     { command: "user_questions.answer", input: { questionId: "invalid", answers: { scope: "yes" } } },
     { command: "approvals.resolve", input: { runId: conversationId, toolId: conversationId, approved: "true" } },
     { command: "background_commands.stop", input: { conversationId, commandId: "invalid" } },

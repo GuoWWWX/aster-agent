@@ -73,7 +73,7 @@ export function appendAssistantDelta(
 
   return finalizedTimeline.map((item) =>
     item.id === existing.id && item.kind === "message"
-      ? { ...item, content: `${item.content}${event.delta}`, status: "streaming" }
+      ? { ...item, content: event.reset ? event.delta : `${item.content}${event.delta}`, status: "streaming" }
       : item,
   );
 }

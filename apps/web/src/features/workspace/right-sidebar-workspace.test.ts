@@ -89,6 +89,18 @@ describe("right sidebar side session state", () => {
     expect(shouldDeleteSidebarChat(member, teamLead, team)).toBe(false);
   });
 
+  it("retains a team chat when its owning conversation or team is unavailable while closing tabs", () => {
+    const member = {
+      ...sideConversation("00000000-0000-4000-8000-000000000005", "model-a", { kind: "effort", value: "medium" }),
+      agentId: "requirements-analyst",
+      teamId: team.id,
+    };
+    expect(shouldDeleteSidebarChat(member)).toBe(false);
+    expect(shouldDeleteSidebarChat(member, teamLead, null)).toBe(false);
+    expect(shouldDeleteSidebarChat(member, { ...teamLead, id: "other-conversation" }, team)).toBe(false);
+    expect(shouldDeleteSidebarChat(member, teamLead, { ...team, id: "other-team" })).toBe(false);
+  });
+
   it("keeps a Team Lead's manually created side chat as an ordinary side chat", () => {
     const sideChat = {
       ...sideConversation("00000000-0000-4000-8000-000000000006", "model-a", {

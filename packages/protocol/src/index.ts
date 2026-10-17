@@ -26,10 +26,12 @@ export {
 export type { AgentError, AgentErrorCode } from "./agent-error.js";
 export {
   AGENT_AVATAR_ICONS,
+  AGENT_AVATAR_PRESETS,
   agentAvatarIconSchema,
+  agentAvatarPresetSchema,
   agentAvatarSchema,
 } from "./agent-avatar.js";
-export type { AgentAvatar, AgentAvatarIcon } from "./agent-avatar.js";
+export type { AgentAvatar, AgentAvatarIcon, AgentAvatarPreset } from "./agent-avatar.js";
 export {
   ARCHIVED_CONVERSATION_RETENTION_DAYS,
   approveToolChangeInputSchema,
@@ -59,6 +61,7 @@ export {
   forkConversationInputSchema,
   conversationRunStatusSchema,
   conversationRunEventSchema,
+  conversationStreamSubscriptionSchema,
   conversationSummarySchema,
   conversationThreadKindSchema,
   conversationTaskListResponseSchema,
@@ -680,3 +683,5 @@ export * from "./scheduled-task.js";
 export { localControlCommandSchema, type LocalControlCommand } from "./local-control.js";
 export * from "./user-question.js";
 export * from "./background-command.js";
+export * from "./task-context.js";
+export * from "./team-chat.js";

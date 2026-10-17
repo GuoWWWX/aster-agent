@@ -29,6 +29,10 @@ function session(id: string, title = id): ProjectSession {
 }
 
 describe("conversation workspace cache", () => {
+  it("does not schedule a pane render when an inactive cache needs no pruning", () => {
+    const entries = [{ lastAccessedAt: 10, session: session("cached") }];
+    expect(retainConversationWorkspace(entries, null, 20)).toBe(entries);
+  });
   it("renders a newly selected conversation before the cache effect runs", () => {
     const sessions = conversationWorkspaceSessions([
       { lastAccessedAt: 10, session: session("previous") },

@@ -1,3 +1,4 @@
+/* CSS trigger #2: size, tone and avatar-kind attribute selectors share the existing avatar surface. */
 .agent-profile-avatar {
   display: grid;
   width: 30px;
@@ -43,6 +44,11 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.agent-profile-avatar[data-avatar-kind="preset"] svg {
+  width: 100%;
+  height: 100%;
 }
 
 .agent-profile-avatar[data-tone="blue"] {

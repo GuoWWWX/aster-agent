@@ -5,6 +5,23 @@ import type { ConversationRunEvent, DesktopBridge } from "@agent/protocol";
 import { DesktopAgentClientAdapter } from "./desktop-agent-client.js";
 
 describe("DesktopAgentClientAdapter", () => {
+  it("subscribes only to requested conversation streams and releases them with the view", async () => {
+    const subscribe = vi.fn().mockResolvedValue(undefined);
+    const client = new DesktopAgentClientAdapter({
+      onConversationRunEvent: () => () => {}, setConversationStreamSubscriptions: subscribe,
+    } as unknown as DesktopBridge);
+    const first = client.onConversationRunEvent(() => {}, ["first"]);
+    const second = client.onConversationRunEvent(() => {}, ["second"]);
+    await Promise.resolve();
+    expect(subscribe).toHaveBeenLastCalledWith(["first", "second"]);
+    first();
+    await Promise.resolve();
+    expect(subscribe).toHaveBeenLastCalledWith(["second"]);
+    second();
+    await Promise.resolve();
+    expect(subscribe).toHaveBeenLastCalledWith([]);
+  });
+
   it("shares one bridge event subscription across conversation listeners", () => {
     let bridgeListener: ((event: ConversationRunEvent) => void) | undefined;
     const disposeBridgeListener = vi.fn();
@@ -14,6 +31,7 @@ describe("DesktopAgentClientAdapter", () => {
     });
     const client = new DesktopAgentClientAdapter({
       onConversationRunEvent,
+      setConversationStreamSubscriptions: vi.fn().mockResolvedValue(undefined),
     } as unknown as DesktopBridge);
     const firstListener = vi.fn();
     const secondListener = vi.fn();

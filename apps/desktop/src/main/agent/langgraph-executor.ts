@@ -38,6 +38,7 @@ import type {
 } from "../model/model-contracts.js";
 import { normalizeModelFacingToolOutputs } from "./context-manager.js";
 import type { SkillSnapshotRef } from "./skill-runtime.js";
+import { compactProviderReplayState } from "../model/provider-replay-state.js";
 
 export type AgentGraphState = {
   activeSkills: SkillSnapshotRef[];
@@ -94,6 +95,7 @@ export type AgentGraphToolExecution = {
   activeSkills?: SkillSnapshotRef[];
   messages: ModelMessage[];
   successful: boolean;
+  finishRun?: boolean;
 };
 
 export type AgentGraphCallbacks = {
@@ -141,6 +143,7 @@ const runtimeStateSchema = z.object({
   contextPrepared: z.boolean().default(false),
   hasFollowUpInput: z.boolean().default(false),
   hasSuccessfulToolExecution: z.boolean().default(false),
+  finishAfterTools: z.boolean().default(false),
   turns: z.number().int().nonnegative().default(0),
 });
 
@@ -153,6 +156,7 @@ type RuntimeToolBatch = {
   followUpMessages: ModelMessage[];
   messages: Map<string, ModelMessage>;
   successful: boolean;
+  finishRun: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -252,6 +256,10 @@ function toolCallsOf(result: ModelTurnResult | null): ModelToolCall[] {
 }
 
 function toLangChainMessage(message: ModelMessage): BaseMessage {
+  if (message.providerState !== undefined) {
+    const providerState = compactProviderReplayState(message.providerState);
+    if (providerState !== message.providerState) message = { ...message, providerState };
+  }
   const metadata = { [MODEL_MESSAGE_METADATA_KEY]: message };
   if (message.role === "system") return new SystemMessage({ content: message.content, additional_kwargs: metadata });
   if (message.role === "user") return new HumanMessage({ content: message.content, additional_kwargs: metadata });
@@ -441,6 +449,7 @@ class RuntimeToolCoordinator {
           followUpMessages: result.messages.filter((message) => message.role !== "tool"),
           messages,
           successful: result.successful,
+          finishRun: result.finishRun === true,
         };
       })
       .finally(() => {
@@ -568,10 +577,22 @@ export class LangGraphExecutor {
     const turn = { value: 0 };
     const modelCallHooks: { current: AgentGraphModelCallHooks | undefined } = { current: undefined };
     let lastResult: ModelTurnResult | null = null;
+    const getLastResult = (): ModelTurnResult | null => lastResult;
     let contextMessages: ModelMessage[] = [];
     let continueAfterModel = false;
-    const coordinator = new RuntimeToolCoordinator(input.callbacks, () => lastResult);
+    let finishedAfterTools = false;
+    const coordinator = new RuntimeToolCoordinator(input.callbacks, getLastResult);
     const model = new CallbackChatModel(input.callbacks, turn, modelCallHooks, input.signal);
+    const completionGate = createMiddleware({
+      name: "agent-runtime-tool-completion",
+      stateSchema: runtimeStateSchema.pick({ finishAfterTools: true }),
+      beforeModel: { canJumpTo: ["end"], hook: async state => {
+        input.signal.throwIfAborted();
+        if (!state.finishAfterTools || await input.callbacks.hasFollowUpInput?.()) return {};
+        finishedAfterTools = true;
+        return { jumpTo: "end" as const, finishAfterTools: false };
+      } },
+    });
     const middleware = createMiddleware({
       name: "agent-runtime-bridge",
       stateSchema: runtimeStateSchema,
@@ -598,6 +619,7 @@ export class LangGraphExecutor {
         continueAfterModel = prepared.hasFollowUpInput;
         contextMessages = prepared.contextMessages ?? [];
         return {
+          finishAfterTools: false,
           activeSkills: state.activeSkills,
           hasFollowUpInput: prepared.hasFollowUpInput,
           messages: prepared.replaceMessages === undefined
@@ -713,6 +735,7 @@ export class LangGraphExecutor {
         }
         return new Command({
           update: {
+            finishAfterTools: batch.finishRun,
             activeSkills: batch.activeSkills,
             hasSuccessfulToolExecution:
               request.state.hasSuccessfulToolExecution || batch.successful,
@@ -728,6 +751,7 @@ export class LangGraphExecutor {
     const agent = createAgent({
       checkpointer,
       middleware: [
+        completionGate,
         // The graph thread is one persisted Run, so the framework's thread
         // counter is the durable per-Run model-call limit we need here.
         modelCallLimit,
@@ -773,7 +797,10 @@ export class LangGraphExecutor {
       if (interrupts === null) {
         if (!isInterrupted(result)) {
           const state = asAgentState(result);
-          const modelResult: ModelTurnResult | null = lastResult;
+          const latestResult = getLastResult();
+          const modelResult: ModelTurnResult | null = finishedAfterTools ? { ...latestResult,
+            content: latestResult?.content ?? modelMessagesFromState(state.messages).findLast(message => message.role === "assistant")?.content ?? "",
+            finishReason: "stop", toolCalls: [] } : latestResult;
           const shouldContinue = continueAfterModel
             && toolCallsOf(modelResult).length === 0;
           if (shouldContinue) {

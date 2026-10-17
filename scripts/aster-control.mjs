@@ -6,7 +6,8 @@ const commands = { projects: "projects.list", list: "conversations.list", create
   read: "conversations.read", send: "messages.send", cancel: "runs.cancel", open: "conversations.open", "configure-model": "models.configure",
   models: "models.status", questions: "user_questions.list", answer: "user_questions.answer", approve: "approvals.resolve",
   programs: "background_commands.list", "program-output": "background_commands.read", "stop-program": "background_commands.stop", permission: "conversations.set_permission",
-  rename: "conversations.rename", archive: "conversations.archive" };
+  rename: "conversations.rename", archive: "conversations.archive",
+  "team-chat-send": "team_chat.post", "team-chat-read": "team_chat.read", "team-chat-members": "team_chat.members", "team-chat-pause": "team_chat.pause" };
 
 export async function* controlEvents(response) {
   if (!response.ok || response.body === null) throw new Error(`Event subscription failed (${response.status}).`);

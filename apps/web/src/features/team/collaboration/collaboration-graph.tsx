@@ -506,6 +506,8 @@ export function CollaborationProjectionGraph({
 }): ReactElement {
   const [projection, setProjection] = useState<TeamCollaborationProjection | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const streamScope = projection?.nodes.flatMap(node => node.conversationId === null ? [] : [node.conversationId]).sort().join(",") ?? "";
+  useEffect(() => agentClient.onConversationRunEvent(() => {}, streamScope === "" ? [] : streamScope.split(",")), [agentClient, streamScope]);
 
   useEffect(() => {
     let active = true;
@@ -573,7 +575,7 @@ export function applyCollaborationAssistantDelta(
       : "";
     return {
       ...node,
-      latestOutput: collaborationOutputExcerpt(`${previous}${event.delta}`),
+      latestOutput: collaborationOutputExcerpt(event.reset ? event.delta : `${previous}${event.delta}`),
       latestOutputRunId: event.runId,
     };
   });

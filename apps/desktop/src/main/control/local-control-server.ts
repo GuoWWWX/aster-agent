@@ -6,6 +6,7 @@ import { conversationRunEventSchema, localControlCommandSchema, type LocalContro
 import { toMainAgentError } from "../errors/agent-error.js";
 
 const MAX_REQUEST_BYTES = 1_048_576;
+const MAX_STREAM_BUFFER_BYTES = 2_097_152;
 
 /** Opt-in loopback transport. The token is never sent to the Renderer or logs. */
 export class LocalControlServer {
@@ -52,8 +53,10 @@ export class LocalControlServer {
     const validated = conversationRunEventSchema.parse(event);
     const data = `id: ${this.instanceId}:${++this.sequence}\nevent: conversation\ndata: ${JSON.stringify(validated)}\n\n`;
     for (const stream of this.streams) {
-      // A slow or disconnected observer must never block Agent execution.
-      if (!stream.write(data)) stream.destroy();
+      // write(false) also occurs for one large event on a healthy connection.
+      // Bound queued bytes without blocking Agent execution while the socket drains.
+      if (stream.writableLength + Buffer.byteLength(data) > MAX_STREAM_BUFFER_BYTES) stream.destroy();
+      else stream.write(data);
     }
   }
 

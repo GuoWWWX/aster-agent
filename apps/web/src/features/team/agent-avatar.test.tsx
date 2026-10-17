@@ -1,5 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { AGENT_AVATAR_PRESETS } from "@agent/protocol";
+import { AGENT_AVATAR_PRESET_OPTIONS } from "./agent-character-avatar.js";
 
 import {
   AGENT_AVATAR_ICON_OPTIONS,
@@ -23,6 +25,22 @@ describe("AgentAvatar", () => {
     expect(markup).toContain("data-tone=\"rose\"");
     expect(markup).toContain("<svg");
     expect(markup).not.toContain("data:image");
+  });
+
+  it("renders a built-in character at compact size without an external image", () => {
+    const markup = renderToStaticMarkup(<AgentAvatar avatar={{ kind: "preset", preset: "fox" }} size="compact" />);
+    expect(markup).toContain('data-avatar-preset="fox"');
+    expect(markup).toContain('<svg');
+    expect(markup).toContain('viewBox="0 0 64 64"');
+    expect(markup).not.toContain('<img');
+  });
+
+  it("provides an illustration and localized name for every saved character preset", () => {
+    expect(AGENT_AVATAR_PRESET_OPTIONS.map(option => option.id)).toEqual(AGENT_AVATAR_PRESETS);
+    for (const preset of AGENT_AVATAR_PRESETS) {
+      const markup = renderToStaticMarkup(<AgentAvatar avatar={{ kind: "preset", preset }} />);
+      expect(markup).toContain('<svg'); expect(markup).not.toContain('<animate');
+    }
   });
 
   it("creates a stable symmetric pixel identity from the conversation ID", () => {

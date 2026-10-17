@@ -1825,6 +1825,10 @@ function TeamInstanceTreeItem({
             </span>
           </button>
           <div className="project-navigator__session-actions">
+            <button aria-label={`打开团队 ${group.instance.name} 群聊`} title="打开团队群聊" type="button" onClick={event => {
+              event.stopPropagation();
+              useWorkbenchUiStore.getState().openTeamChat({ instanceId: group.instance.id });
+            }}><MessageSquareText aria-hidden="true" size={13} /></button>
             <button aria-label={`给团队 ${group.instance.name} 发任务`} title="打开团队任务看板" type="button" onClick={event => {
               event.stopPropagation();
               useWorkbenchUiStore.getState().openTeamWorkspace({ teamId: group.instance.teamId, instanceId: group.instance.id });
@@ -1938,6 +1942,7 @@ function SessionStatusIndicator({ session }: { session: ProjectSession }): React
     return (
       <span
         aria-label="上次运行失败"
+        title="有未读的失败结果"
         className="project-navigator__session-status project-navigator__session-status--failed"
         role="img"
       />
@@ -1947,6 +1952,7 @@ function SessionStatusIndicator({ session }: { session: ProjectSession }): React
     return (
       <span
         aria-label="上次运行完成"
+        title="有未读回复"
         className="project-navigator__session-status project-navigator__session-status--completed"
         role="img"
       />

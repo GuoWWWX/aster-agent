@@ -28,3 +28,15 @@ describe("agent directory deletion", () => {
     expect(useAgentDirectoryStore.getState().teams.some((team) => team.id === id)).toBe(false);
   });
 });
+
+it("restores built-in character choices without replacing another Agent's uploaded avatar", () => {
+  const store = useAgentDirectoryStore.getState();
+  const [first, second] = store.agents;
+  store.updateAgent(first!.id, { avatar: { kind: "preset", preset: "fox" } });
+  store.updateAgent(second!.id, { avatar: { kind: "image", dataUrl: "data:image/png;base64,fixture", fileName: "mine.png" } });
+  const current = useAgentDirectoryStore.getState();
+  const saved = agentDirectoryConfigurationSchema.parse(JSON.parse(JSON.stringify({ agents: current.agents, teams: current.teams })));
+  store.hydrate(saved);
+  expect(useAgentDirectoryStore.getState().agents.find(agent => agent.id === first!.id)?.avatar).toEqual({ kind: "preset", preset: "fox" });
+  expect(useAgentDirectoryStore.getState().agents.find(agent => agent.id === second!.id)?.avatar).toEqual({ kind: "image", dataUrl: "data:image/png;base64,fixture", fileName: "mine.png" });
+});

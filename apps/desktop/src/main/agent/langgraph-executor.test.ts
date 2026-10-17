@@ -47,6 +47,39 @@ function callbacksFor(
 }
 
 describe("LangGraphExecutor", () => {
+  it("ends after a terminal tool batch while allowing an explicit progress batch to continue", async () => {
+    for (const finishRun of [true, false]) {
+      const callbacks = callbacksFor([result("", [{ arguments: "{}", id: "publish", name: "post_team_message" }]), result("remaining work")],
+        calls => Promise.resolve({ messages: calls.map(call => ({ attachments: [], content: "published", role: "tool" as const, toolCallId: call.id, toolCalls: [] })), successful: true, finishRun }));
+      const state = await new LangGraphExecutor().invoke({ callbacks, initialMessages: [userMessage], maxSteps: finishRun ? 1 : 4,
+        signal: new AbortController().signal, threadId: `terminal-tool-${finishRun}` });
+      expect(state.turns).toBe(finishRun ? 1 : 2); expect(state.pendingToolCalls).toEqual([]);
+      expect(state.messages.filter(message => message.role === "tool")).toHaveLength(1);
+    }
+  });
+  it("consumes a new follow-up instead of ending at a terminal tool result", async () => {
+    let pending = false;
+    const callbacks = callbacksFor([result("", [{ arguments: "{}", id: "publish", name: "post_team_message" }]), result("follow-up handled")],
+      calls => { pending = true; return Promise.resolve({ messages: calls.map(call => ({ attachments: [], content: "published", role: "tool" as const, toolCallId: call.id, toolCalls: [] })), successful: true, finishRun: true }); });
+    callbacks.hasFollowUpInput = () => pending;
+    callbacks.beforeModel = () => { const messages = pending ? [{ ...userMessage, content: "new follow-up" }] : []; pending = false; return Promise.resolve({ hasFollowUpInput: false, messages }); };
+    const state = await new LangGraphExecutor().invoke({ callbacks, initialMessages: [userMessage], maxSteps: 4,
+      signal: new AbortController().signal, threadId: "terminal-tool-follow-up" });
+    expect(state.turns).toBe(2); expect(state.lastResult?.content).toBe("follow-up handled");
+    expect(state.messages.some(message => message.content === "new follow-up")).toBe(true);
+  });
+  it("finishes an approved terminal tool without another model call or replaying its effect", async () => {
+    let effects = 0;
+    const callbacks = callbacksFor([result("", [{ arguments: "{}", id: "publish", name: "post_team_message" }])],
+      calls => {
+        interrupt({ approval: "publish" }); effects += 1;
+        return Promise.resolve({ messages: calls.map(call => ({ attachments: [], content: "published", role: "tool" as const, toolCallId: call.id, toolCalls: [] })), successful: true, finishRun: true });
+      });
+    const state = await new LangGraphExecutor().invoke({ callbacks, initialMessages: [userMessage], maxSteps: 1,
+      signal: new AbortController().signal, threadId: "terminal-tool-resume", onInterrupt: () => Promise.resolve(true) });
+    expect(effects).toBe(1); expect(state.turns).toBe(1); expect(state.pendingToolCalls).toEqual([]);
+    expect(state.lastResult).toMatchObject({ content: "", toolCalls: [] });
+  });
   it("routes a model tool call through tools and back to a final model turn", async () => {
     const callbacks = callbacksFor([
       result("", [{ arguments: "{}", id: "call-1", name: "read_file" }]),

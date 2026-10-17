@@ -1,3 +1,4 @@
+import type { TaskContextScope, TaskCompletionPolicy, SetTaskCompletionPolicyInput, ResolveChatReferencesInput, ChatReference, ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput, ReadTeamChatInput, TeamChatPage, PostTeamChatInput, TeamChatMessage, TeamChatMember, MarkTeamChatReadInput } from "@agent/protocol";
 import type { HtmlPreview, HtmlPreviewRequest } from "@agent/protocol";
 import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
 import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
@@ -295,6 +296,22 @@ export interface AgentClient {
     input: ListConfigurationWorkspaceEntriesInput,
   ): Promise<ConfigurationWorkspaceDirectoryListing>;
   listProjects(): Promise<ProjectSummary[]>;
+  getTaskCompletionPolicy(input: TaskContextScope): Promise<TaskCompletionPolicy>;
+  setTaskCompletionPolicy(input: SetTaskCompletionPolicyInput): Promise<TaskCompletionPolicy>;
+  resolveChatReferences(input: ResolveChatReferencesInput): Promise<ChatReference[]>;
+  listTaskContexts(input: ListTaskContextsInput): Promise<TaskContextPage>;
+  getTaskContext(input: { id: string; beforeSourceSequence?: number; limit?: number }): Promise<TaskContextDetail>;
+  updateTaskContext(input: UpdateTaskContextInput): Promise<TaskContext>;
+  linkTaskContext(input: LinkTaskContextInput): Promise<void>;
+  mergeTaskContexts(input: MergeTaskContextsInput): Promise<TaskContext>;
+  readTeamChat(input: ReadTeamChatInput): Promise<TeamChatPage>;
+  postTeamChat(input: PostTeamChatInput): Promise<TeamChatMessage>;
+  getTeamChatMembers(input: { teamInstanceId: string }): Promise<TeamChatMember[]>;
+  getTeamChatCoordinationConversation(input: { teamInstanceId: string; agentId?: string }): Promise<ConversationSummary>;
+  markTeamChatRead(input: MarkTeamChatReadInput): Promise<void>;
+  resumeTeamChatDelivery(input: { id: string }): Promise<void>;
+  cancelTeamChatDelivery(input: { id: string }): Promise<void>;
+  pauseTeamChat(input: { teamInstanceId: string }): Promise<void>;
   listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]>;
   getTeamWorkItemExecution(workItemId: string): Promise<TeamWorkItemExecutionView>;
   getTeamCollaborationProjection(workItemId: string): Promise<TeamCollaborationProjection>;
@@ -317,7 +334,7 @@ export interface AgentClient {
   requestTeamWorkItemRework(input: RequestTeamWorkItemReworkInput): Promise<TeamWorkItemView>;
   acceptTeamWorkItem(input: AcceptTeamWorkItemInput): Promise<TeamWorkItemView>;
   minimizeWindow(): Promise<void>;
-  onConversationRunEvent(listener: ConversationRunEventListener): () => void;
+  onConversationRunEvent(listener: ConversationRunEventListener, streamingConversationIds?: readonly string[]): () => void;
   onApplicationSettingsChanged(listener: ApplicationSettingsListener): () => void;
   onWindowStateChanged(listener: WindowStateListener): () => void;
   renameConversation(input: {

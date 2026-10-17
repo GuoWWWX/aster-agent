@@ -1879,6 +1879,61 @@ describe("Model request retry timeline", () => {
   });
 });
 
+describe("Conversation Agent identity after a failed Run", () => {
+  it("keeps Agent selection available before a conversation is bound", async () => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "新对话" });
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([]);
+    const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => {
+      root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={target} /></TooltipProvider>);
+      await flushConversationWorkspace();
+    });
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="对话 Agent"]')?.disabled).toBe(false);
+  });
+  it.each(["cached", "late-binding"])("keeps the bound member when %s selection points at the default Agent", async (mode) => {
+    const lead = DEFAULT_AGENT_DIRECTORY_CONFIGURATION.agents.find(agent => agent.id === "team-lead")!;
+    const defaultAgent = DEFAULT_AGENT_DIRECTORY_CONFIGURATION.agents.find(agent => agent.isDefault)!;
+    const storageKey = `agent-workbench.conversation-agent.${PARENT_ID}`;
+    const previousSelection = window.localStorage.getItem(storageKey);
+    window.localStorage.setItem(storageKey, defaultAgent.id);
+    try {
+      const client = new MockAgentClient();
+      const target = session({ id: PARENT_ID, title: "Team Lead", agentId: lead.id, lastRunStatus: "failed" });
+      const retry: ConversationTimelineItem = { id: TOOL_ID, kind: "model_retry", conversationId: PARENT_ID,
+        runId: RUN_ID, attempt: 5, maxAttempts: 5, status: "failed", retryInMs: null,
+        reason: "HTTP 502: Upstream service temporarily unavailable", createdAt: "2026-10-17T00:00:00Z", updatedAt: "2026-10-17T00:00:31Z" };
+      vi.spyOn(client, "listConversationTimeline").mockResolvedValue([retry]);
+      const send = vi.spyOn(client, "sendConversationMessage").mockResolvedValue({ kind: "started", runId: CHILD_ID,
+        userMessage: { id: MESSAGE_ID, kind: "message", conversationId: PARENT_ID, runId: CHILD_ID, role: "user",
+          content: "继续", modelId: null, status: "completed", attachments: [], createdAt: "2026-10-17T00:01:00Z" } });
+      const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+      await act(async () => {
+        root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+          session={mode === "late-binding" ? { ...target, agentId: null } : target} /></TooltipProvider>);
+        await flushConversationWorkspace();
+      });
+      if (mode === "late-binding") await act(async () => {
+        root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={target} /></TooltipProvider>);
+        await flushConversationWorkspace();
+      });
+      const selector = container.querySelector<HTMLButtonElement>('button[aria-label="对话 Agent"]');
+      expect(selector?.textContent).toContain(lead.name);
+      expect(selector?.disabled).toBe(true);
+      const composer = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入任务"]');
+      act(() => { setNativeTextValue(composer, "继续"); composer?.dispatchEvent(new InputEvent("input", { bubbles: true })); });
+      await act(async () => { container.querySelector<HTMLFormElement>("form")?.requestSubmit(); await flushConversationWorkspace(); });
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send.mock.calls[0]?.[0]).toMatchObject({ content: "继续", conversationId: PARENT_ID, agent: { id: lead.id } });
+      expect(container.textContent).not.toContain("操作失败");
+      expect(composer?.value).toBe("");
+    } finally {
+      if (previousSelection === null) window.localStorage.removeItem(storageKey);
+      else window.localStorage.setItem(storageKey, previousSelection);
+    }
+  });
+});
+
 describe("Run progress indicator", () => {
   it("reuses the pending indicator when run.started arrives before message submission resolves", async () => {
     const client = new MockAgentClient();

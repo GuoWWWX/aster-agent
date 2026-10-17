@@ -10,6 +10,7 @@ import type {
 } from "@agent/protocol";
 
 export type ProjectSession = {
+  coordinationTeamInstanceId?: string | undefined;
   activeSideConversationCount?: number;
   activeSubagentCount?: number;
   activeRunId: string | null;
@@ -82,6 +83,8 @@ export function aggregateSideConversationState(
   const sideConversationsByParent = new Map<string, ProjectSession[]>();
   const sessionsById = new Map(sessions.map((session) => [session.id, session]));
   for (const session of sessions) {
+    if (session.threadKind === "agent" && session.teamId !== null && session.teamWorkItemId == null
+      && session.parentConversationId !== null && sessionsById.get(session.parentConversationId)?.threadKind === "team_lead") continue;
     const rootId = session.teamWorkItemId !== null && session.teamWorkItemId !== undefined
       ? resolveConversationRootId(session, sessionsById)
       : session.parentConversationId;
@@ -120,6 +123,8 @@ export function getSessionFamilyResultIds(
   if (
     selected === undefined
     || selected.threadKind === "subagent"
+    || selected.threadKind === "team_lead"
+    || (selected.threadKind === "agent" && selected.teamId !== null && sessions.some(parent => parent.id === selected.parentConversationId && parent.threadKind === "team_lead"))
     || (selected.teamWorkItemId !== null && selected.teamWorkItemId !== undefined)
   ) return [sessionId];
   const parentId = selected.parentConversationId ?? selected.id;

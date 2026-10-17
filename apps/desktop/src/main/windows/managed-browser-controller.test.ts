@@ -348,6 +348,22 @@ describe("ManagedBrowserController", () => {
     expect(electronMocks.destroyBackgroundWindow).toHaveBeenCalledOnce();
   });
 
+  it("sends native activation keys to background pages without focusing the desktop window", async () => {
+    const controller = new ManagedBrowserController(() => createFakeWindow(),
+      { getConfiguration: () => browserConfiguration() });
+    const session = await controller.open({ url: "https://example.test" }, { background: { width: 620, height: 900 } });
+    try {
+      for (const key of ["Enter", "Space"]) await controller.interact({ sessionId: session.sessionId, kind: "key", key, modifiers: [] });
+      expect(electronMocks.backgroundNativeCommands.filter(command => command.method === "Input.dispatchKeyEvent").map(command => command.parameters)).toEqual([
+        { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, modifiers: 0, text: "\r", unmodifiedText: "\r" },
+        { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, modifiers: 0 },
+        { type: "keyDown", key: " ", code: "Space", windowsVirtualKeyCode: 32, modifiers: 0, text: " ", unmodifiedText: " " },
+        { type: "keyUp", key: " ", code: "Space", windowsVirtualKeyCode: 32, modifiers: 0 },
+      ]);
+      expect(electronMocks.backgroundWindowOptions[0]).toMatchObject({ show: false });
+    } finally { controller.dispose(); }
+  });
+
   it("releases a managed session after its native contents have already been destroyed", async () => {
     const controller = new ManagedBrowserController(() => createFakeWindow(),
       { getConfiguration: () => browserConfiguration() });

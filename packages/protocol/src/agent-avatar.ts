@@ -68,6 +68,12 @@ export const AGENT_AVATAR_ICONS = [
 
 export const agentAvatarIconSchema = z.enum(AGENT_AVATAR_ICONS);
 
+export const AGENT_AVATAR_PRESETS = [
+  "orbit", "pixel", "sprout", "ember", "luna", "cloud",
+  "robot", "fox", "cat", "panda", "astro", "owl",
+] as const;
+export const agentAvatarPresetSchema = z.enum(AGENT_AVATAR_PRESETS);
+
 export const agentAvatarSchema = z.discriminatedUnion("kind", [
   z.object({
     icon: agentAvatarIconSchema,
@@ -78,7 +84,12 @@ export const agentAvatarSchema = z.discriminatedUnion("kind", [
     fileName: z.string().trim().min(1).max(300),
     kind: z.literal("image"),
   }).strict(),
+  z.object({
+    kind: z.literal("preset"),
+    preset: agentAvatarPresetSchema,
+  }).strict(),
 ]);
 
 export type AgentAvatarIcon = z.infer<typeof agentAvatarIconSchema>;
+export type AgentAvatarPreset = z.infer<typeof agentAvatarPresetSchema>;
 export type AgentAvatar = z.infer<typeof agentAvatarSchema>;

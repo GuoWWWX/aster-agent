@@ -1,5 +1,8 @@
+import { TaskListWorkspace } from "../team/task-context-directory.js";
+import type { TaskListViewRequest } from "../../stores/workbench-ui-store.js";
 import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import {
+  ListTodo,
   Check,
   ChevronRight,
   FileText,
@@ -12,6 +15,7 @@ import {
   Plus,
   SquarePen,
   SquareCheckBig,
+  UsersRound,
   Terminal,
   X,
   type LucideIcon,
@@ -43,6 +47,7 @@ import type {
   ProjectFile,
   ProjectSummary,
   TerminalSession,
+  TeamInstanceView,
 } from "@agent/protocol";
 import { AgentClientError, parseSerializedAgentError } from "@agent/protocol";
 
@@ -74,7 +79,9 @@ import {
 import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
 import { useConversationWorkspaceCache } from "../chat/conversation-workspace-cache.js";
 import { ConversationWorkspace } from "../chat/workspace-content.js";
+import { teamChatTabId } from "../chat/workbench-tabs.js";
 import { AgentAvatar, SubagentAvatar } from "../team/agent-avatar.js";
+import { TeamChatDetails, type TeamChatDetailsSection } from "../team/team-chat-details.js";
 import { ConfigurationWorkspaceTreePanel } from "./configuration-workspace-tree-panel.js";
 import { getGitReviewCache } from "./git-review-cache.js";
 import { ConversationReviewWorkspace } from "./conversation-review-workspace.js";
@@ -154,7 +161,9 @@ type ManagedBrowserTab = ToolTabBase & {
 
 type BackgroundCommandTab = ToolTabBase & { kind: "background-command"; conversationId: string; commandId: string };
 type ConversationReviewTab = ToolTabBase & { kind: "conversation-review"; conversationId: string; runId: string | null };
-type ToolTab = GitReviewTab | TerminalTab | ManagedBrowserTab | BackgroundCommandTab | ConversationReviewTab;
+type TaskListTab = ToolTabBase & { kind: "task-list"; request: TaskListViewRequest };
+type TeamChatDetailsTab = ToolTabBase & { kind: "group-details"; instance: TeamInstanceView; section: TeamChatDetailsSection };
+type ToolTab = TaskListTab | GitReviewTab | TerminalTab | ManagedBrowserTab | BackgroundCommandTab | ConversationReviewTab | TeamChatDetailsTab;
 
 type SidebarTab =
   | FileTab
@@ -216,12 +225,14 @@ export type GitReviewOpenRequest = {
 export type TeamMemberOpenRequest = {
   conversation: ProjectSession;
   requestId: number;
+  /** The owning ordinary conversation or group workspace key; never a member API target. */
   sourceConversationId: string;
   timelineItemId: string | null;
 };
 
 function toProjectSession(conversation: ConversationSummary): ProjectSession {
   return {
+    ...(conversation.coordinationTeamInstanceId === undefined ? {} : { coordinationTeamInstanceId: conversation.coordinationTeamInstanceId }),
     activeSubagentCount: conversation.activeSubagentCount,
     activeRunId: conversation.activeRunId,
     agentId: conversation.agentId,
@@ -330,6 +341,11 @@ export function shouldDeleteSidebarChat(
   sourceConversation: SidebarConversationSource | null = null,
   team: TeamMembership | null = null,
 ): boolean {
+  // A missing or switched owner is not evidence that a Team conversation is disposable.
+  if (conversation.teamId !== null && (
+    sourceConversation?.id !== conversation.parentConversationId
+    || team?.id !== conversation.teamId
+  )) return false;
   return conversation.threadKind !== "subagent"
     && !isManagedTeamMember(conversation)
     && !isDirectTeamMemberConversation(conversation, sourceConversation, team);
@@ -604,6 +620,7 @@ function saveConflictFor(reason: unknown): FileSaveConflict | null {
 export function RightSidebarWorkspace({
   activeProject,
   activeSession,
+  teamChat = null,
   agentClient,
   fileOpenRequest,
   gitReviewOpenRequest = null,
@@ -613,10 +630,12 @@ export function RightSidebarWorkspace({
   onLocateConversationItem,
   onSessionViewed,
   onSessionUpdated,
+  onRenameTeamInstance,
   tree,
 }: {
   activeProject: ProjectSummary | null;
   activeSession: ProjectSession | null;
+  teamChat?: TeamInstanceView | null;
   agentClient: AgentClient;
   fileOpenRequest: ProjectFileOpenRequest | null;
   gitReviewOpenRequest?: GitReviewOpenRequest | null;
@@ -626,6 +645,7 @@ export function RightSidebarWorkspace({
   onLocateConversationItem?: (conversationId: string, itemId: string) => void;
   onSessionViewed: (sessionId: string) => void;
   onSessionUpdated: (conversation: ConversationSummary) => void;
+  onRenameTeamInstance?: (instanceId: string, name: string) => Promise<boolean>;
   tree: ProjectTreeController;
 }): ReactElement {
   const gitReviewCache = getGitReviewCache(agentClient);
@@ -639,10 +659,16 @@ export function RightSidebarWorkspace({
   const conversationReviewViewRequest = useWorkbenchUiStore(state => state.conversationReviewViewRequest);
   const handledConversationReviewRequest = useRef<string | null>(null);
   const activeSessionId = activeSession?.id ?? null;
+  const workspaceId = teamChat === null ? activeSessionId : teamChatTabId(teamChat.id);
+  const taskListViewRequest = useWorkbenchUiStore(state => state.taskListViewRequest);
+  const handledTaskListRequest = useRef<string | null>(null);
+  const coordinationTarget = useWorkbenchUiStore(state => state.teamChatCoordinationTarget);
+  const detailsTarget = useWorkbenchUiStore(state => state.teamChatDetailsTarget);
+  const handledDetailsRequest = useRef<string | null>(null);
   const sidebarVisible = useWorkbenchUiStore((state) => activeActivity === "settings"
     ? state.isSettingsFilePanelOpen
-    : activeActivity === "conversations" && activeSessionId !== null
-      ? state.filePanelOpenByConversationId[activeSessionId] ?? false
+    : activeActivity === "conversations" && workspaceId !== null
+      ? state.filePanelOpenByConversationId[workspaceId] ?? false
       : state.isFilePanelOpen);
   const settingsSection = useWorkbenchUiStore((state) => state.settingsSection);
   const setGlobalFilePanelOpen = useWorkbenchUiStore((state) => state.setFilePanelOpen);
@@ -683,14 +709,14 @@ export function RightSidebarWorkspace({
       setSettingsFilePanelOpen(isOpen);
       return;
     }
-    if (activeActivity === "conversations" && activeSessionId !== null) {
-      setFilePanelOpenForConversation(activeSessionId, isOpen);
+    if (activeActivity === "conversations" && workspaceId !== null) {
+      setFilePanelOpenForConversation(workspaceId, isOpen);
       return;
     }
     setGlobalFilePanelOpen(isOpen);
   }, [
     activeActivity,
-    activeSessionId,
+    workspaceId,
     setFilePanelOpenForConversation,
     setGlobalFilePanelOpen,
     setSettingsFilePanelOpen,
@@ -706,6 +732,10 @@ export function RightSidebarWorkspace({
   const [filePreviews, setFilePreviews] = useState<Record<string, FilePreviewState>>({});
   const [fileTabs, setFileTabs] = useState<FileTab[]>([]);
   const [toolTabs, setToolTabs] = useState<ToolTab[]>([]);
+  const coordinationSessions = useRef(new Map<string, ProjectSession>());
+  const [coordinationLocation, setCoordinationLocation] = useState<{ conversationId: string; id: string; requestId: number } | null>(null);
+  const coordinationLocateSequence = useRef(0);
+  const handledCoordinationRequest = useRef<string | null>(null);
   const [tabOrder, setTabOrder] = useState<string[]>([]);
   const reorderTabProps = useTabReorder((source, target, side) => {
     setTabOrder((current) => moveTabId(current, source, target, side));
@@ -719,6 +749,8 @@ export function RightSidebarWorkspace({
   } | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [openChatIds, setOpenChatIds] = useState<Set<string>>(() => new Set());
+  const openChatIdsRef = useRef(openChatIds);
+  openChatIdsRef.current = openChatIds;
   const [operationError, setOperationError] = useState<string | null>(null);
   const [sideSessions, setSideSessions] = useState<ProjectSession[]>([]);
   const [tabContextMenu, setTabContextMenu] = useState<TabContextMenuState | null>(null);
@@ -737,7 +769,7 @@ export function RightSidebarWorkspace({
   const teamMemberOpenRequestRef = useRef(teamMemberOpenRequest);
   const workspaceTabsRef = useRef<HTMLDivElement | null>(null);
   const activeTabIdsBySessionRef = useRef(new Map<string, string | null>());
-  const activeTabOwnerRef = useRef<string | null>(activeSession?.id ?? null);
+  const activeTabOwnerRef = useRef<string | null>(workspaceId);
   const openChatIdsBySessionRef = useRef(new Map<string, Set<string>>());
   const releasingToolTabIdsRef = useRef(new Set<string>());
 
@@ -786,15 +818,13 @@ export function RightSidebarWorkspace({
 
   const updateOpenChatIds = useCallback(
     (update: (current: Set<string>) => Set<string>): void => {
-      setOpenChatIds((current) => {
-        const next = update(current);
-        if (activeSessionId !== null) {
-          openChatIdsBySessionRef.current.set(activeSessionId, next);
-        }
-        return next;
-      });
+      const current = workspaceId === null ? openChatIdsRef.current : openChatIdsBySessionRef.current.get(workspaceId) ?? openChatIdsRef.current;
+      const next = update(current);
+      openChatIdsRef.current = next;
+      if (workspaceId !== null) openChatIdsBySessionRef.current.set(workspaceId, next);
+      setOpenChatIds(next);
     },
-    [activeSessionId],
+    [workspaceId],
   );
   const setActiveTabForCurrentSession = useCallback(
     (tabId: string | null): void => {
@@ -812,11 +842,11 @@ export function RightSidebarWorkspace({
           return next;
         });
       }
-      if (activeSessionId !== null) {
-        activeTabIdsBySessionRef.current.set(activeSessionId, tabId);
+      if (workspaceId !== null) {
+        activeTabIdsBySessionRef.current.set(workspaceId, tabId);
       }
     },
-    [activeActivity, activeSessionId],
+    [activeActivity, workspaceId],
   );
   const openTerminal = useCallback((
     requestedName?: string,
@@ -932,19 +962,20 @@ export function RightSidebarWorkspace({
       if (disposed) return;
       setOperationError(null);
       if (activeSession === null || activeSessionId === null) {
-        setSideSessions([]);
-        setOpenChatIds(new Set());
-        setActiveTabId(null);
+        const cached = [...coordinationSessions.current.values()].filter(session => session.coordinationTeamInstanceId === teamChat?.id);
+        setSideSessions(cached);
+        setOpenChatIds(new Set(cached.map(session => session.id)));
+        setActiveTabId(workspaceId === null ? null : activeTabIdsBySessionRef.current.get(workspaceId) ?? null);
         return;
       }
       const request = teamMemberOpenRequestRef.current;
-      const requestedMember = request?.sourceConversationId === activeSessionId
+      const requestedMember = request?.sourceConversationId === workspaceId
         ? request.conversation
         : null;
       if (!shouldLoadSideConversations(activeSession)) {
         setSideSessions(requestedMember === null ? [] : [requestedMember]);
         setOpenChatIds(requestedMember === null ? new Set() : new Set([requestedMember.id]));
-        setActiveTabId(requestedMember === null ? null : `chat:${requestedMember.id}`);
+        setActiveTabId(requestedMember === null ? activeTabIdsBySessionRef.current.get(workspaceId!) ?? null : `chat:${requestedMember.id}`);
         return;
       }
 
@@ -952,25 +983,27 @@ export function RightSidebarWorkspace({
         const loaded = await listSideConversations(agentClient, activeSession, activeTeam);
         if (disposed) return;
         const latestRequest = teamMemberOpenRequestRef.current;
-        const latestRequestedMember = latestRequest?.sourceConversationId === activeSessionId
+        const latestRequestedMember = latestRequest?.sourceConversationId === workspaceId
           ? latestRequest.conversation
           : null;
+        const groupCoordinators = [...coordinationSessions.current.values()].filter(session => session.coordinationTeamInstanceId === teamChat?.id);
+        loaded.sessions = [...new Map([...loaded.sessions, ...groupCoordinators].map(session => [session.id, session])).values()];
         const sessions = latestRequestedMember === null
           || loaded.sessions.some((session) => session.id === latestRequestedMember.id)
           ? loaded.sessions
           : [...loaded.sessions, latestRequestedMember];
         setSideSessions(sessions);
         const sessionIds = new Set(sessions.map((session) => session.id));
-        const savedOpenChatIds = openChatIdsBySessionRef.current.get(activeSessionId);
+        const savedOpenChatIds = openChatIdsBySessionRef.current.get(workspaceId!);
         const nextOpenChatIds = savedOpenChatIds === undefined
           ? new Set([
               ...loaded.autoOpenIds,
               ...(latestRequestedMember === null ? [] : [latestRequestedMember.id]),
             ])
           : new Set([...savedOpenChatIds].filter((id) => sessionIds.has(id)));
-        openChatIdsBySessionRef.current.set(activeSessionId, nextOpenChatIds);
+        openChatIdsBySessionRef.current.set(workspaceId!, nextOpenChatIds);
         setOpenChatIds(nextOpenChatIds);
-        setActiveTabId(activeTabIdsBySessionRef.current.get(activeSessionId) ?? null);
+        setActiveTabId(activeTabIdsBySessionRef.current.get(workspaceId!) ?? null);
       } catch {
         if (!disposed) setOperationError("无法加载侧边聊天");
       }
@@ -979,12 +1012,13 @@ export function RightSidebarWorkspace({
     return () => {
       disposed = true;
     };
-  }, [activeSession, activeSessionId, activeTeam, agentClient]);
+  }, [activeSession, activeSessionId, activeTeam, agentClient, teamChat?.id, workspaceId]);
 
   useEffect(() => {
     return agentClient.onConversationRunEvent((event) => {
       if (event.type === "conversation.updated") {
         const nextSession = toProjectSession(event.conversation);
+        if (event.conversation.coordinationTeamInstanceId !== undefined) coordinationSessions.current.set(nextSession.id, nextSession);
         const isOrdinarySideChat = event.conversation.parentConversationId === activeSessionId
           && isAutoOpenedSideConversation(event.conversation, activeSession, activeTeam);
         if (isOrdinarySideChat) {
@@ -995,7 +1029,7 @@ export function RightSidebarWorkspace({
           return;
         }
         if (
-          isManagedTeamMember(event.conversation)
+          event.conversation.coordinationTeamInstanceId !== undefined || isManagedTeamMember(event.conversation)
           || isDirectTeamMemberConversation(event.conversation, activeSession, activeTeam)
         ) {
           setSideSessions((current) => {
@@ -1013,7 +1047,7 @@ export function RightSidebarWorkspace({
   useEffect(() => {
     if (
       teamMemberOpenRequest === null
-      || teamMemberOpenRequest.sourceConversationId !== activeSessionId
+      || teamMemberOpenRequest.sourceConversationId !== workspaceId
       || handledTeamMemberOpenRequestIdRef.current === teamMemberOpenRequest.requestId
     ) return;
     handledTeamMemberOpenRequestIdRef.current = teamMemberOpenRequest.requestId;
@@ -1025,11 +1059,21 @@ export function RightSidebarWorkspace({
     setActiveTabForCurrentSession(`chat:${session.id}`);
     setIsFileBrowserOpen(false);
   }, [
-    activeSessionId,
+    workspaceId,
     setActiveTabForCurrentSession,
     teamMemberOpenRequest,
     updateOpenChatIds,
   ]);
+
+  useEffect(() => {
+    if (teamChat === null || detailsTarget?.instanceId !== teamChat.id || handledDetailsRequest.current === detailsTarget.requestId) return;
+    handledDetailsRequest.current = detailsTarget.requestId;
+    const id = `group-details:${teamChat.id}`;
+    setToolTabs(current => current.some(tab => tab.id === id)
+      ? current.map(tab => tab.id === id ? { ...tab, section: detailsTarget.section, lastAccessedAt: Date.now() } : tab)
+      : [...current, { id, kind: "group-details", instance: teamChat, section: detailsTarget.section, name: "群资料", lastAccessedAt: Date.now() }]);
+    setActiveTabForCurrentSession(id); setIsFileBrowserOpen(false);
+  }, [detailsTarget, teamChat, setActiveTabForCurrentSession]);
 
   useEffect(() => {
     const request = conversationReviewViewRequest;
@@ -1209,23 +1253,56 @@ export function RightSidebarWorkspace({
 
   useEffect(() => {
     if (activeActivity === "settings" || isSettingsWorkspaceTabId(activeTabId)) return;
-    if (activeTabOwnerRef.current !== activeSessionId) {
-      activeTabOwnerRef.current = activeSessionId;
+    if (activeTabOwnerRef.current !== workspaceId) {
+      activeTabOwnerRef.current = workspaceId;
       return;
     }
-    if (activeSessionId === null) return;
-    activeTabIdsBySessionRef.current.set(activeSessionId, activeTabId);
-  }, [activeActivity, activeSessionId, activeTabId]);
+    if (workspaceId === null) return;
+    activeTabIdsBySessionRef.current.set(workspaceId, activeTabId);
+  }, [activeActivity, workspaceId, activeTabId]);
 
   useEffect(() => {
     if (activeActivity === "settings") return;
     setActiveTabId(
-      activeSessionId === null
+      workspaceId === null
         ? null
-        : activeTabIdsBySessionRef.current.get(activeSessionId) ?? null,
+        : activeTabIdsBySessionRef.current.get(workspaceId) ?? null,
     );
     setIsFileBrowserOpen(false);
-  }, [activeActivity, activeSessionId]);
+  }, [activeActivity, workspaceId]);
+
+  useEffect(() => {
+    const request = taskListViewRequest;
+    if (activeActivity !== "conversations" || request === null || request.workspaceId !== workspaceId
+      || handledTaskListRequest.current === request.requestId) return;
+    handledTaskListRequest.current = request.requestId;
+    const id = `tasks:${workspaceId}`;
+    setToolTabs(current => current.some(tab => tab.id === id)
+      ? current.map(tab => tab.id === id ? { id, name: "任务列表", kind: "task-list" as const, request, lastAccessedAt: Date.now() } : tab)
+      : [...current, { id, name: "任务列表", kind: "task-list", request, lastAccessedAt: Date.now() }]);
+    setActiveTabForCurrentSession(id); setIsFileBrowserOpen(false); setFilePanelOpen(true);
+  }, [activeActivity, workspaceId, taskListViewRequest, setActiveTabForCurrentSession, setFilePanelOpen]);
+
+  useEffect(() => {
+    if (activeActivity !== "conversations" || teamChat === null || coordinationTarget?.instanceId !== teamChat.id
+      || handledCoordinationRequest.current === coordinationTarget.requestId) return;
+    let disposed = false;
+    void agentClient.getTeamChatCoordinationConversation({ teamInstanceId: teamChat.id,
+      ...(coordinationTarget.agentId === undefined ? {} : { agentId: coordinationTarget.agentId }) }).then(conversation => {
+      const session = toProjectSession(conversation);
+      coordinationSessions.current.set(session.id, session);
+      if (disposed) return;
+      handledCoordinationRequest.current = coordinationTarget.requestId;
+      setSideSessions(current => upsertSideSession(current, conversation));
+      updateOpenChatIds(current => new Set(current).add(session.id));
+      setActiveTabForCurrentSession(`chat:${session.id}`);
+      setCoordinationLocation(coordinationTarget.timelineItemId === undefined ? null : {
+        conversationId: session.id, id: coordinationTarget.timelineItemId, requestId: ++coordinationLocateSequence.current,
+      });
+      setIsFileBrowserOpen(false); setFilePanelOpen(true); setOperationError(null);
+    }).catch(error => { if (!disposed) setOperationError(getUserErrorMessage(error, "无法打开协调对话")); });
+    return () => { disposed = true; };
+  }, [activeActivity, agentClient, coordinationTarget, setActiveTabForCurrentSession, setFilePanelOpen, teamChat, updateOpenChatIds]);
 
   useEffect(() => {
     if (tabContextMenu === null) return;
@@ -1791,7 +1868,7 @@ export function RightSidebarWorkspace({
       ? visibleFileTabs
       : [
         ...visibleFileTabs,
-        ...toolTabs,
+        ...toolTabs.filter(tab => tab.kind !== "group-details" || workspaceId === teamChatTabId(tab.instance.id)),
         ...openSideSessions
         .map((session): SidebarTab => ({
           id: `chat:${session.id}`,
@@ -1800,7 +1877,7 @@ export function RightSidebarWorkspace({
           session,
         })),
       ],
-    [activeActivity, openSideSessions, toolTabs, visibleFileTabs],
+    [activeActivity, openSideSessions, toolTabs, visibleFileTabs, workspaceId],
   );
   const nextTabOrder = appendNewTabIds(tabOrder, unorderedTabs.map((tab) => tab.id));
   if (nextTabOrder !== tabOrder) setTabOrder(nextTabOrder);
@@ -1816,9 +1893,10 @@ export function RightSidebarWorkspace({
     () => toolTabs.filter((tab) => retainedToolTabIds.has(tab.id)),
     [retainedToolTabIds, toolTabs],
   );
+  const availableSideSessions = useMemo(() => [...new Map([...openSideSessions, ...coordinationSessions.current.values()].map(session => [session.id, session])).values()], [openSideSessions]);
   const retainedSideSessions = useConversationWorkspaceCache(
     activeTab?.kind === "chat" ? activeTab.session : null,
-    openSideSessions,
+    availableSideSessions,
   );
   const activeConfigurationTab = activeTab?.kind === "configuration-file" ? activeTab : null;
   const activeConfigurationTarget = activeConfigurationTab === null
@@ -1857,7 +1935,9 @@ export function RightSidebarWorkspace({
         retainedToolTabIds.has(tab.id)
         || tab.kind === "git-review"
         || tab.kind === "background-command"
+        || tab.kind === "task-list"
         || tab.kind === "conversation-review"
+        || tab.kind === "group-details"
         || tab.session === null
         || releasingToolTabIdsRef.current.has(tab.id)
       ) {
@@ -2154,6 +2234,7 @@ export function RightSidebarWorkspace({
 
     setFileTabs((current) => current.filter((candidate) => !tabIds.has(candidate.id)));
     setToolTabs((current) => current.filter((candidate) => !tabIds.has(candidate.id)));
+    for (const id of sessionIds) coordinationSessions.current.delete(id);
     setConfigurationFilePreviews((current) => Object.fromEntries(
       Object.entries(current).filter(([tabId]) => !tabIds.has(tabId)),
     ));
@@ -2212,7 +2293,7 @@ export function RightSidebarWorkspace({
         closedTabs.push(tab);
         continue;
       }
-      if (!shouldDeleteSidebarChat(tab.session, activeSession, activeTeam)) {
+      if (tab.session.coordinationTeamInstanceId !== undefined || !shouldDeleteSidebarChat(tab.session, activeSession, activeTeam)) {
         closedTabs.push(tab);
         continue;
       }
@@ -2344,8 +2425,9 @@ export function RightSidebarWorkspace({
             role="tablist"
           >
             {tabs.map((tab) => {
-              const tabAgent = tab.kind === "chat" && tab.session.agentId !== null
-                ? agentProfiles.find((agent) => agent.id === tab.session.agentId)
+              const tabAgentId = tab.kind === "chat" ? tab.session.agentId : null;
+              const tabAgent = tabAgentId !== null
+                ? agentProfiles.find((agent) => agent.id === tabAgentId)
                 : undefined;
               return (
                 <div
@@ -2389,12 +2471,16 @@ export function RightSidebarWorkspace({
                       ) : (
                         <AgentAvatar avatar={tabAgent.avatar} size="compact" />
                       )
+                    ) : tab.kind === "task-list" ? (
+                      <ListTodo aria-hidden="true" size={14} />
                     ) : (tab.kind === "git-review" || tab.kind === "conversation-review") ? (
                       <SquareCheckBig aria-hidden="true" size={14} />
                     ) : tab.kind === "terminal" || tab.kind === "background-command" ? (
                       <Terminal aria-hidden="true" size={14} />
                     ) : tab.kind === "managed-browser" ? (
                       <Globe2 aria-hidden="true" size={14} />
+                    ) : tab.kind === "group-details" ? (
+                      <UsersRound aria-hidden="true" size={14} />
                     ) : tab.kind === "agent-prompt" ? (
                       <FileText aria-hidden="true" size={14} />
                     ) : (
@@ -2510,7 +2596,26 @@ export function RightSidebarWorkspace({
                 className={isActive ? "flex h-full min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"}
                 key={tab.id}
               >
-                {tab.kind === "git-review" ? (
+                {tab.kind === "task-list" ? (
+                  <TaskListWorkspace agentClient={agentClient} scope={tab.request.scope}
+                    active={isActive && sidebarVisible && activeActivity === "conversations"}
+                    requestId={tab.request.requestId} {...(tab.request.taskId === undefined ? {} : { requestedTaskId: tab.request.taskId })}
+                    onOpenConversation={(conversation, messageId) => {
+                      if (messageId !== undefined && onLocateConversationItem !== undefined) onLocateConversationItem(conversation.id, messageId);
+                      else onLocateSession(conversation.id);
+                      }} />
+                ) : tab.kind === "group-details" ? (
+                  <TeamChatDetails agentClient={agentClient} instance={teamChat?.id === tab.instance.id ? teamChat : tab.instance}
+                    active={isActive && sidebarVisible && activeActivity === "conversations" && teamChat?.id === tab.instance.id} section={tab.section}
+                    onSectionChanged={section => setToolTabs(current => current.map(item => item.id === tab.id && item.kind === "group-details" ? { ...item, section } : item))}
+                    onRename={async name => onRenameTeamInstance?.(tab.instance.id, name) ?? false}
+                    onOpenMember={conversation => {
+                      const session = toProjectSession(conversation);
+                      setSideSessions(current => current.some(item => item.id === session.id) ? current : [...current, session]);
+                      updateOpenChatIds(current => new Set(current).add(session.id));
+                      setActiveTabForCurrentSession(`chat:${session.id}`); onSessionViewed(session.id);
+                    }} />
+                ) : tab.kind === "git-review" ? (
                   <GitReviewWorkspace
                     active={isActive && sidebarVisible && activeActivity === "conversations"}
                     agentClient={agentClient}
@@ -2590,8 +2695,9 @@ export function RightSidebarWorkspace({
                 >
                   <ConversationWorkspace
                     compact
+                    active={sidebarVisible && isActive}
                     agentClient={agentClient}
-                    locateTimelineItem={teamMemberOpenRequest?.conversation.id === session.id
+                    locateTimelineItem={coordinationLocation?.conversationId === session.id ? coordinationLocation : teamMemberOpenRequest?.conversation.id === session.id
                       && teamMemberOpenRequest.timelineItemId !== null
                       ? {
                           id: teamMemberOpenRequest.timelineItemId,
@@ -2767,7 +2873,9 @@ export function RightSidebarWorkspace({
               onSave={() => void flushConfigurationFile(activeConfigurationTab)}
               onToggleTree={() => setIsTreeCollapsed((current) => !current)}
             />
-          ) : activeTab?.kind === "git-review"
+          ) : activeTab?.kind === "task-list"
+            || activeTab?.kind === "git-review"
+            || activeTab?.kind === "group-details"
             || activeTab?.kind === "background-command"
             || activeTab?.kind === "conversation-review"
             || activeTab?.kind === "terminal"

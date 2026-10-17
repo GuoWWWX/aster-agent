@@ -385,6 +385,27 @@ describe("LangChainModelAdapter", () => {
     });
   });
 
+  it.each(["openai-chat-completions", "openai-responses", "anthropic-messages", "google-gemini"] as const)(
+    "keeps visible progress together with a streamed tool call (%s)", async (apiFormat) => {
+      const model = new FakeStreamingChatModel({ sleep: 0, chunks: [
+        new AIMessageChunk({ content: "已定位重复值丢失，" }),
+        new AIMessageChunk({ content: "接着验证修复。", tool_call_chunks: [{
+          name: "read_file", args: '{"path":"source.txt"}', id: "read-source", index: 0,
+        }] }),
+      ] });
+      const deltas: string[] = [];
+      const adapter = new LangChainModelAdapter(apiFormat, fetch, () => model);
+      const result = await adapter.completeTurn(inputFor(apiFormat, {
+        onTextDelta: (delta) => deltas.push(delta),
+      }));
+      expect(deltas).toEqual(["已定位重复值丢失，", "接着验证修复。"]);
+      expect(result.content).toBe(deltas.join(""));
+      expect(result.toolCalls).toEqual([{
+        name: "read_file", arguments: '{"path":"source.txt"}', id: "read-source",
+      }]);
+    },
+  );
+
   it.each([undefined, 0, 54, 80])("preserves normalized provider cache token usage (%s)", async (cached) => {
     const model = {
       async *stream() {
@@ -818,7 +839,7 @@ describe("LangChainModelAdapter", () => {
         'data: {"type":"response.created","response":{"id":"resp_1","model":"test-model"}}\n\n',
         'data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","summary_index":0,"delta":"Checking files"}\n\n',
         'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"Checking files"}]}}\n\n',
-        'data: {"type":"response.completed","response":{"id":"resp_1","model":"test-model","output":[{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"Checking files"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n',
+        'data: {"type":"response.completed","response":{"id":"resp_1","model":"test-model","instructions":"echoed system rules","tools":[{"type":"function","name":"echoed_tool"}],"output":[{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"Checking files"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n',
       ]))
       .mockResolvedValueOnce(createStreamResponse([
         'data: {"type":"response.completed","response":{"id":"resp_2","model":"test-model","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n',
@@ -831,6 +852,8 @@ describe("LangChainModelAdapter", () => {
       onTextDelta: (delta) => textDeltas.push(delta),
     }));
     if (first.providerState === undefined) throw new Error("Expected Responses provider state.");
+    for (const field of ["instructions", "tools", "usage"]) expect(first.providerState.payload).not.toHaveProperty(`responseMetadata.${field}`);
+    expect(first.providerState.usage).toMatchObject({ inputTokens: 1, outputTokens: 1, totalTokens: 2 });
 
     expect(first.content).toBe("");
     expect(first).not.toHaveProperty("reasoningContent");

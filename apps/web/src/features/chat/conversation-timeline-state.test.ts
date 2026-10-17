@@ -33,6 +33,14 @@ function assistantMessage(
 }
 
 describe("conversation timeline streaming state", () => {
+  it("replaces a cached partial answer when Main replays its current snapshot", () => {
+    const next = appendAssistantDelta([assistantMessage("cached", "old partial")], {
+      conversationId, runId, messageId: "cached", modelId: "test-model",
+      type: "assistant.delta", delta: "complete current output", reset: true,
+    });
+    expect(next).toMatchObject([{ id: "cached", content: "complete current output" }]);
+  });
+
   it("keeps only the assistant message receiving the current delta as streaming", () => {
     const first = assistantMessage("first", "第一段");
 
