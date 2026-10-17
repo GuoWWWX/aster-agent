@@ -1760,13 +1760,16 @@ export class MockAgentClient implements AgentClient {
     const input = postTeamChatInputSchema.parse(raw); const members = await this.getTeamChatMembers(input);
     this.pausedGroupIds.delete(input.teamInstanceId);
     const id = crypto.randomUUID();
-    const recipients = input.intent === "notify" ? [] : input.allMembers ? members.filter(member => !member.isArchived).map(member => member.conversationId)
+    let recipients = input.intent === "notify" ? [] : input.allMembers ? members.filter(member => !member.isArchived).map(member => member.conversationId)
       : input.recipientConversationIds.length ? input.recipientConversationIds : members.filter(member => member.isLead).map(member => member.conversationId);
+    const quoted = input.replyToId === null ? undefined : this.groupMessages.find(message => message.id === input.replyToId);
+    if (quoted !== undefined && quoted.teamInstanceId !== input.teamInstanceId) throw new Error("Reply belongs to another room.");
+    if (input.intent === "request" && !input.allMembers && quoted?.senderConversationId != null) recipients = [...new Set([quoted.senderConversationId, ...input.recipientConversationIds])];
     const message: TeamChatMessage = { id, teamInstanceId: input.teamInstanceId,
       sequence: this.groupMessages.filter(item => item.teamInstanceId === input.teamInstanceId).length + 1,
       content: input.content, senderConversationId: null, senderName: "你", intent: input.intent,
       recipientConversationIds: recipients, taskContextId: input.taskContextId, replyToId: input.replyToId,
-      createdAt: new Date().toISOString(), sourceRunId: null, rootMessageId: id, depth: 0,
+      createdAt: new Date().toISOString(), sourceRunId: null, rootMessageId: quoted?.rootMessageId ?? id, depth: 0,
       supersedesId: input.supersedesId, coordinator: input.coordinator === undefined ? null : { ...input.coordinator, modelSelection: input.coordinator.modelSelection ?? null, status: "completed", error: null },
       deliveries: recipients.map(conversationId => ({ id: crypto.randomUUID(), conversationId, status: "pending", runId: null, error: null })),
     };

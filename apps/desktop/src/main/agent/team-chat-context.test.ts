@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { teamChatMessageSchema } from "@agent/protocol";
-import { teamChatContext } from "./team-chat-context.js";
+import { teamChatContext, teamChatReadThrough } from "./team-chat-context.js";
 
 it("distinguishes the user, the receiver's own statements and named peers within a fixed budget", () => {
   const receiver = randomUUID(); const room = randomUUID(); const thread = randomUUID();
@@ -18,4 +18,8 @@ it("distinguishes the user, the receiver's own statements and named peers within
   expect(new Set(context.map(item => item.perspective))).toEqual(new Set(["user", "self", "member"]));
   expect(context.some(item => item.excerpted)).toBe(true);
   expect(context.map(item => item.sequence)).toEqual(context.map(item => item.sequence).sort((a, b) => a - b));
+  expect(teamChatReadThrough(context, source, 0)).toBe(0);
+  const complete = context.map((message, index) => ({ ...message, sequence: index + 1, excerpted: false }));
+  expect(teamChatReadThrough(complete, { ...source, sequence: complete.length + 1 }, 0)).toBe(complete.length + 1);
+  expect(teamChatReadThrough([{ ...complete[0]!, sequence: 2 }], { ...source, sequence: 3 }, 0)).toBe(0);
 });

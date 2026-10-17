@@ -8338,6 +8338,8 @@ export class AgentDatabase {
         if (event.type === "group_message") {
           const message = conversationMessageItemSchema.parse(payload.message);
           if (message.conversationId !== conversationId || message.runId !== null) throw new Error("Group context belongs to another conversation.");
+          message.groupSource = conversationMessageItemSchema.shape.groupSource.parse({ teamInstanceId: payload.teamInstanceId,
+            messageId: payload.groupMessageId, senderConversationId: payload.senderConversationId ?? null, senderName: payload.senderName ?? "用户" });
           this.insertThreadLogTimeline(message);
           this.insertThreadLogModelMessage({ attachmentIds: [], content: message.content, conversationId, eventId: event.eventId,
             role: message.role, runId: null, toolCallId: null, toolCalls: [], createdAt: message.createdAt });

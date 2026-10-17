@@ -8,6 +8,7 @@ import { DEFAULT_AGENT_DIRECTORY_CONFIGURATION, type ConversationRunEvent, type 
 import { CollaborationTool } from "./collaboration-tool.js";
 import { AgentRuntime } from "./agent-runtime.js";
 import { AgentDatabase } from "../storage/agent-database.js";
+import { ThreadLogTimeline } from "../storage/thread-log-timeline.js";
 import { ConversationLifecycleService } from "../storage/conversation-lifecycle-service.js";
 import { EventProjector } from "../storage/event-projector.js";
 import { ThreadLog } from "../storage/thread-log.js";
@@ -91,6 +92,26 @@ async function fixture(withThreadLog = false, withCoordinator = false, graphChec
   return { db, lead, member, instance, runtime, model, tools, log };
 }
 describe("group execution integration", () => {
+  it("passes only unread context increments to a member and keeps received messages in its own history", async () => {
+    const { db, instance, member, runtime, model, tools, log } = await fixture(true, true);
+    const received: { messageId: string; groupContext: { messageId: string; content: string }[] }[] = [];
+    vi.spyOn(model, "completeTurn").mockImplementation(input => {
+      const source = input.messages.findLast(message => message.content.startsWith("[Team group input;"))!;
+      const context = z.object({ messageId: z.string(), groupContext: z.array(z.object({ messageId: z.string(), content: z.string() })) }).parse(JSON.parse(source.content.slice(source.content.indexOf("\n") + 1)));
+      received.push(context);
+      return Promise.resolve({ content: "已读取本次请求。", finishReason: "stop", toolCalls: [] });
+    });
+    try {
+      const first = runtime.postTeamChat({ teamInstanceId: instance.id, content: "第一条需要保留的请求", recipientConversationIds: [member.id], requestId: randomUUID() }, () => undefined);
+      await vi.waitFor(() => expect(db.collaboration.message(first.id).deliveries[0]?.status).toBe("completed"));
+      await vi.waitFor(() => expect(db.getConversation(member.id).activeRunId).toBeNull());
+      const second = runtime.postTeamChat({ teamInstanceId: instance.id, content: "仅处理第二条请求", recipientConversationIds: [member.id], requestId: randomUUID() }, () => undefined);
+      await vi.waitFor(() => expect(db.collaboration.message(second.id).deliveries[0]?.status).toBe("completed"));
+      expect(received.find(item => item.messageId === second.id)?.groupContext.some(item => item.messageId === first.id)).toBe(false);
+      expect(db.collaboration.readMessages({ teamInstanceId: instance.id, limit: 1 }, member.id).memberReadSequence).toBe(second.sequence);
+      expect(new ThreadLogTimeline(log!).page({ conversationId: member.id, limit: 50 }).items.some(message => message.kind === "message" && message.content.includes(first.content))).toBe(true);
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
   it("pauses parallel group members outside the visible history page without stopping unrelated conversations", async () => {
     const { db, instance, lead, member, runtime, model, tools } = await fixture(true);
     const unrelated = db.createConversation(null);
@@ -302,6 +323,7 @@ describe("group execution integration", () => {
       const records = log!.read(coordinator.id)!.events;
       expect(records.some(event => event.type === "group_message" && JSON.stringify(event.payload).includes("群聊中的既有约束"))).toBe(true);
       expect(records.some(event => event.type === "group_message" && JSON.stringify(event.payload).includes("公开讨论的具体意见"))).toBe(true);
+      expect(new ThreadLogTimeline(log!).page({ conversationId: coordinator.id, limit: 50 }).items.some(item => item.kind === "message" && item.groupSource?.senderConversationId === member.id)).toBe(true);
       expect(records.some(event => event.type === "tool_call_requested" && JSON.stringify(event.payload).includes("read_file"))).toBe(true);
       expect(records.some(event => event.type === "tool_result" && JSON.stringify(event.payload).includes("evidence"))).toBe(true);
       expect(records.some(event => event.type === "tool_call_requested" && JSON.stringify(event.payload).includes("select_team_chat_members"))).toBe(true);
@@ -323,7 +345,8 @@ describe("group execution integration", () => {
       expect(next.id).toBe(first.id); expect(next.agentId).toBe(other.id);
       expect(log!.read(next.id)!.events.filter(event => event.type === "conversation_created")).toHaveLength(1);
       expect(db.collaboration.coordinatorConversations(instance.id).map(conversation => conversation.id)).toEqual([first.id]);
-      expect(db.getConversationAgentBinding(next.id)?.instructions).toBe(other.instructions);
+      expect(db.getConversationAgentBinding(next.id)?.instructions).toContain(other.instructions);
+      expect(db.getConversationAgentBinding(next.id)?.instructions).toContain(DEFAULT_AGENT_DIRECTORY_CONFIGURATION.teams[0]!.instructions);
     } finally { await tools.dispose(); db.close(); }
   });
   it("imports historical messages whose sender conversation no longer exists without recreating that member", async () => {

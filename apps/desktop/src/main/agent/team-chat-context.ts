@@ -28,3 +28,14 @@ export function teamChatContext(messages: readonly TeamChatMessage[], receiverId
   }
   return selected.sort((a, b) => a.sequence - b.sequence);
 }
+
+/** Never skip an unread gap or count an excerpt as fully received. */
+export function teamChatReadThrough(context: ReturnType<typeof teamChatContext>, source: TeamChatMessage, previous: number): number {
+  let through = previous;
+  for (const message of [...context, { sequence: source.sequence, excerpted: false }].sort((a, b) => a.sequence - b.sequence)) {
+    if (message.sequence <= through) continue;
+    if (message.sequence !== through + 1 || message.excerpted) break;
+    through = message.sequence;
+  }
+  return through;
+}

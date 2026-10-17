@@ -109,6 +109,40 @@ renderer.core.ruler.after("inline", "agent_task_lists", (state) => {
 renderer.renderer.rules.agent_task_checkbox = (tokens, index) => tokens[index]?.content ?? "";
 
 const defaultLinkOpen = renderer.renderer.rules.link_open;
+renderer.core.ruler.after("inline", "message_references", state => {
+  const environment: unknown = state.env;
+  if (typeof environment !== "object" || environment === null || !("referenceLabels" in environment) || !Array.isArray(environment.referenceLabels)) return;
+  const labels = environment.referenceLabels.filter((label): label is string => typeof label === "string" && label.length > 0);
+  if (labels.length === 0) return;
+  for (const block of state.tokens) {
+    if (block.type !== "inline" || block.children === null) continue;
+    let linked = false;
+    block.children = block.children.flatMap(token => {
+      if (token.type === "link_open") linked = true;
+      if (token.type === "link_close") linked = false;
+      if (token.type !== "text" || linked) return [token];
+      const matches = labels.flatMap((label, index) => {
+        const found: { start: number; end: number; index: number }[] = [];
+        let from = 0;
+        for (;;) {
+          const start = token.content.indexOf(label, from); if (start < 0) break;
+          const end = start + label.length; from = end;
+          if ((start === 0 || /\s/u.test(token.content[start - 1]!)) && (end === token.content.length || /[\s，。！？、,.;:!?；：]/u.test(token.content[end]!))) found.push({ start, end, index });
+        }
+        return found;
+      }).sort((a, b) => a.start - b.start || b.end - a.end);
+      const result = []; let through = 0;
+      for (const match of matches) {
+        if (match.start < through) continue;
+        const text = new state.Token("text", "", 0); text.content = token.content.slice(through, match.start); result.push(text);
+        const slot = new state.Token("message_reference", "span", 0); slot.content = String(match.index); result.push(slot); through = match.end;
+      }
+      const rest = new state.Token("text", "", 0); rest.content = token.content.slice(through); result.push(rest);
+      return result;
+    });
+  }
+});
+renderer.renderer.rules.message_reference = (tokens, index) => `<span data-message-reference="${renderer.utils.escapeHtml(tokens[index]?.content ?? "")}"></span>`;
 renderer.renderer.rules.link_open = (tokens, index, options, environment, self) => {
   const token = tokens[index];
   token?.attrSet("rel", "noreferrer noopener");
@@ -208,16 +242,20 @@ renderer.renderer.rules.image = (tokens, index, options, environment, self) => {
   return caption == null ? renderedImage : `<figure>${renderedImage}<figcaption>${renderer.utils.escapeHtml(String(caption))}</figcaption></figure>`;
 };
 
-export const AgentMarkdown = memo(function AgentMarkdown({ content, streaming = false }: { content: string; streaming?: boolean }): ReactElement {
+type InlineReference = { label: string; content: ReactNode };
+const noInlineReferences: readonly InlineReference[] = [];
+export const AgentMarkdown = memo(function AgentMarkdown({ content, streaming = false, inlineReferences = noInlineReferences }: { content: string; streaming?: boolean; inlineReferences?: readonly InlineReference[] }): ReactElement {
   const scrollHostRef = useRef<HTMLDivElement>(null);
   useStreamingScroll(scrollHostRef, content, streaming);
-  return <AgentMarkdownContent key={`${streaming}:${content}`} content={content} streaming={streaming} scrollHostRef={scrollHostRef} />;
+  return <AgentMarkdownContent key={`${streaming}:${content}`} content={content} streaming={streaming} scrollHostRef={scrollHostRef} inlineReferences={inlineReferences} />;
 });
 
-function AgentMarkdownContent({ content, streaming, scrollHostRef }: { content: string; streaming: boolean; scrollHostRef: RefObject<HTMLDivElement | null> }): ReactElement {
+function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferences }: { content: string; streaming: boolean; scrollHostRef: RefObject<HTMLDivElement | null>; inlineReferences: readonly InlineReference[] }): ReactElement {
   const hostRef = useRef<HTMLDivElement>(null);
   const [codePreviews, setCodePreviews] = useState<Array<{ source: string; mount: Element }>>([]);
   const [sourceViews, setSourceViews] = useState<Array<{ source: string; language: string; mount: Element }>>([]);
+  const [referenceMounts, setReferenceMounts] = useState<Array<{ index: number; mount: Element }>>([]);
+  const referenceKey = JSON.stringify(inlineReferences.map(reference => reference.label));
   const theme = useWorkbenchUiStore((state) => state.themeMode);
   const previewContext = useContext(HtmlPreviewContext);
   const workspaceContext = useContext(WorkspaceFileContext);
@@ -228,7 +266,7 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef }: { content: 
   const canPreview = previewContext !== null;
   // Streaming replaces parser-owned DOM on each chunk. Mount the virtual editor
   // once the output settles, rather than repeatedly clearing its measured viewport.
-  const html = useMemo(() => renderAgentMarkdown(content, canPreview, !streaming), [content, canPreview, streaming]);
+  const html = useMemo(() => renderAgentMarkdown(content, canPreview, !streaming, referenceKey), [content, canPreview, streaming, referenceKey]);
   // Keep parser-owned DOM intact on theme changes: native details state, source
   // toggles and diagram height must survive while the next SVG is rendering.
   const markup = useMemo(() => ({ __html: html }), [html]);
@@ -236,6 +274,8 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef }: { content: 
     hostRef.current = host;
     scrollHostRef.current = host;
     if (host === null) return;
+    const mounts = referenceKey === "[]" ? [] : [...host.querySelectorAll<HTMLElement>("[data-message-reference]")].map(mount => ({ index: Number(mount.dataset.messageReference), mount }));
+    if (mounts.length > 0) setReferenceMounts(mounts);
     const previews = [...host.querySelectorAll<HTMLTemplateElement>("[data-html-code-source]")].flatMap(template => {
       const mount = template.parentElement?.querySelector("[data-html-code-preview-slot]");
       return mount == null ? [] : [{ source: template.content.textContent ?? "", mount }];
@@ -246,7 +286,7 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef }: { content: 
       return mount == null ? [] : [{ source: template.content.textContent ?? "", language: template.dataset.language ?? "text", mount }];
     });
     if (sources.length > 0) setSourceViews(sources);
-  }, [scrollHostRef]);
+  }, [scrollHostRef, referenceKey]);
   useEffect(() => {
     let alive = true;
     for (const card of hostRef.current?.querySelectorAll<HTMLElement>(".agent-markdown__mermaid") ?? []) {
@@ -378,6 +418,7 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef }: { content: 
     />
     {codePreviews.map((preview, index) => createPortal(<HtmlPreviewCard source={{ kind: "code", html: preview.source }} embedded />, preview.mount, String(index)))}
     {sourceViews.map((view, index) => createPortal(<CodeSourceView source={view.source} language={view.language} />, view.mount, `source:${index}`))}
+    {referenceMounts.map((reference, index) => createPortal(inlineReferences[reference.index]?.content, reference.mount, `reference:${index}`))}
     {activePreview !== null ? createPortal(<HtmlPreviewCard key={activePreview.source.kind === "file" ? activePreview.source.path : activePreview.source.html} source={activePreview.source} />, activePreview.mount) : null}
     <Popover open={diagramMenu !== null} onOpenChange={(open) => { if (!open) setDiagramMenu(null); }}>
       <PopoverAnchor asChild><span aria-hidden="true" className="pointer-events-none fixed size-0" style={{ left: diagramMenu?.x ?? 0, top: diagramMenu?.y ?? 0 }} /></PopoverAnchor>
@@ -398,8 +439,8 @@ function isClosedFence(line: string, opening: string): boolean {
   return closing !== undefined && closing[0] === opening[0] && closing.length >= opening.length;
 }
 
-export function renderAgentMarkdown(content: string, htmlPreview = false, virtualCodeSources = false): string {
+export function renderAgentMarkdown(content: string, htmlPreview = false, virtualCodeSources = false, referenceKey = "[]"): string {
   const extracted = extractExplicitImageCaptions(separateMarkdownCallouts(content));
   const markdown = normalizeAdjacentBoldTableCaptions(extracted.markdown);
-  return renderer.render(markdown, { markdown, htmlPreview, virtualCodeSources, imageCaptions: extracted.captionsByImageIndex }) + (htmlPreview ? '<div data-html-file-preview-slot></div>' : "");
+  return renderer.render(markdown, { markdown, htmlPreview, virtualCodeSources, referenceLabels: JSON.parse(referenceKey), imageCaptions: extracted.captionsByImageIndex }) + (htmlPreview ? '<div data-html-file-preview-slot></div>' : "");
 }

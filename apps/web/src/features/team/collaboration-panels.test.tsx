@@ -17,6 +17,24 @@ beforeEach(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 afterEach(() => { act(() => root?.unmount()); root = null; document.body.replaceChildren(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const mount = () => { const element = document.createElement("div"); document.body.append(element); root = createRoot(element); return element; };
 
+it("follows a loaded preview at the bottom and preserves a reader's older position", async () => {
+  let resize = () => {}; const disconnect = vi.fn();
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(private readonly callback: () => void) {}
+    observe(element: Element) { if (element.hasAttribute("data-group-message-list")) resize = this.callback; }
+    disconnect() { disconnect(); }
+  });
+  const client = new MockAgentClient(); const { instance } = await groupFixture(client); const container = mount();
+  const show = async (active: boolean) => { await act(async () => { root?.render(<TooltipProvider><TeamChatPanel agentClient={client} teamInstanceId={instance.id}
+    active={active} onOpenConversation={() => undefined} /></TooltipProvider>); await Promise.resolve(); }); };
+  await show(true); const viewport = container.querySelector<HTMLElement>('[aria-label="群消息"]')!;
+  Object.defineProperties(viewport, { clientHeight: { configurable: true, value: 600 }, scrollHeight: { configurable: true, value: 2000 } });
+  act(() => resize()); expect(viewport.scrollTop).toBe(2000);
+  act(() => { viewport.scrollTop = 100; viewport.dispatchEvent(new Event("scroll")); resize(); });
+  expect(viewport.scrollTop).toBe(100);
+  await show(false); expect(disconnect).toHaveBeenCalled();
+});
+
 it("retains the group pane, draft and reading position when a preview tab is replaced", async () => {
   const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
   await client.postTeamChat({ teamInstanceId: instance.id, content: "cached group", intent: "notify", requestId: crypto.randomUUID() });
@@ -135,6 +153,35 @@ async function groupFixture(client: MockAgentClient) {
   const sessions = (await client.listConversationHierarchy()).map(conversation => ({ ...conversation, pinOrder: conversation.pinOrder ?? null }));
   return { instance, sessions };
 }
+
+it.each([false, true])("replies to the quoted member without requiring another mention and optionally invites a peer (extra=%s)", async extra => {
+  const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);
+  const members = (await client.getTeamChatMembers({ teamInstanceId: instance.id })).filter(member => !member.isLead);
+  const source = await client.postTeamChat({ teamInstanceId: instance.id, content: "成员原始说明", intent: "notify", requestId: crypto.randomUUID() });
+  const readOriginal = client.readTeamChat.bind(client);
+  vi.spyOn(client, "readTeamChat").mockImplementation(async value => {
+    const page = await readOriginal(value);
+    return { ...page, messages: page.messages.map(message => message.id === source.id
+      ? { ...message, senderConversationId: members[0]!.conversationId, senderName: members[0]!.name } : message) };
+  });
+  const post = vi.spyOn(client, "postTeamChat");
+  const container = mount();
+  await act(async () => { root?.render(<TooltipProvider><TeamChatWorkspace agentClient={client} instance={instance} sessions={sessions} projects={[]}
+    active onSessionUpdated={() => undefined} onOpenConversation={() => undefined} /></TooltipProvider>); for (let i = 0; i < 15; i++) await Promise.resolve(); });
+  const textarea = container.querySelector<HTMLTextAreaElement>('[aria-label="输入任务"]')!;
+  act(() => container.querySelector<HTMLButtonElement>(`[aria-label="回复 ${members[0]!.name} 的消息"]`)!.click());
+  expect(container.textContent).toContain(`回复 ${members[0]!.name}：成员原始说明`);
+  if (extra) {
+    await act(async () => { input(textarea, "@"); await Promise.resolve(); });
+    const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(button => button.textContent?.includes(members[1]!.name))!;
+    act(() => option.click());
+  }
+  act(() => input(textarea, `${textarea.value} 请进一步确认`));
+  await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="发送任务"]')!.click(); for (let i = 0; i < 15; i++) await Promise.resolve(); });
+  expect(post).toHaveBeenCalledWith(expect.objectContaining({ replyToId: source.id }));
+  expect(post.mock.calls[0]![0].recipientConversationIds).toEqual(extra ? [members[1]!.conversationId] : []);
+  expect(container.querySelector('[aria-label="取消引用回复"]')).toBeNull();
+});
 
 it("keeps the group send button available while the leader works in its own conversation", async () => {
   const client = new MockAgentClient(); const { instance, sessions } = await groupFixture(client);

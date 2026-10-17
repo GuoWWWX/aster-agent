@@ -33,6 +33,17 @@ function namedFixture() {
 }
 
 describe("natural group addressing", () => {
+  it("routes a quoted member reply to its author and adds explicitly mentioned recipients", () => {
+    const { db, instance, lead, member, architect } = namedFixture();
+    const original = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "需求已梳理", intent: "notify", requestId: randomUUID() }, member.id);
+    const reply = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "请继续细化", replyToId: original.id, requestId: randomUUID(),
+      coordinator: { agentId: "default-agent", modelSelection: null } }, null);
+    expect(reply.recipientConversationIds).toEqual([member.id]); expect(reply.coordinator?.status).toBe("completed");
+    const extra = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "@架构师 一起核对", replyToId: original.id,
+      recipientConversationIds: [architect.id], requestId: randomUUID() }, null);
+    expect(new Set(extra.recipientConversationIds)).toEqual(new Set([member.id, architect.id]));
+    expect(extra.recipientConversationIds).not.toContain(lead.id);
+  });
   it.each(["需求分析师你好", "需求分析师，你好", "@需求分析师 你好", "请需求分析师帮我看看", "你好，需求分析师", "需求分析师"])("delivers %s only to the addressed member", content => {
     const { db, instance, member } = namedFixture();
     const message = db.collaboration.postMessage({ teamInstanceId: instance.id, content, requestId: randomUUID() }, null);
@@ -182,6 +193,16 @@ describe("durable collaboration", () => {
     expect(message.deliveries[0]?.status).toBe("failed");
     db.deleteTeamInstance(instance.id);
     expect(db.collaboration.pendingDeliveries()).toEqual([]);
+  });
+  it("permits bounded implementation and review handoffs for an explicit task beyond the casual-chat depth", () => {
+    const { db, lead, member, instance } = fixture();
+    const task = db.collaboration.updateTask({ conversationId: lead.id, title: "快速排序验收", goal: "实现、复测和交付", requestId: randomUUID() });
+    let message = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "start", taskContextId: task.id, requestId: randomUUID() }, null);
+    for (let depth = 1; depth <= 13; depth++) {
+      const sender = depth % 2 ? lead : member; const recipient = depth % 2 ? member : lead;
+      message = db.collaboration.postMessage({ teamInstanceId: instance.id, content: `handoff ${depth}`, requestId: randomUUID(), replyToId: message.id, recipientConversationIds: [recipient.id] }, sender.id, randomUUID());
+      expect(message.taskContextId).toBe(task.id); expect(message.deliveries[0]?.status).toBe(depth <= 12 ? "pending" : "failed");
+    }
   });
   it("reuses a task across conversations, rejects stale summaries, and keeps source references after the checklist closes", () => {
     const { db, lead, member } = fixture();

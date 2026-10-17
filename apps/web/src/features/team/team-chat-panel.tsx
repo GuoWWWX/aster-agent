@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import type { ConversationSummary, PostTeamChatInput, TeamChatMember, TeamChatMessage, TeamChatActivity } from "@agent/protocol";
-import { ExternalLink, Workflow } from "lucide-react";
+import { ExternalLink, MessageSquareReply, Workflow } from "lucide-react";
 import type { AgentClient } from "../../runtime/agent-client.js";
-import { AgentMarkdown } from "../../components/markdown/agent-markdown.js";
+import { AgentMarkdown, AgentMarkdownWorkspaceScope } from "../../components/markdown/agent-markdown.js";
+import { HtmlPreviewScope } from "../../components/html-preview/html-preview-card.js";
 import { ChatMessageBubble } from "../chat/chat-message-bubble.js";
 import { ChatMessageMeta } from "../chat/chat-message-meta.js";
 import { IconButton } from "../../components/ui/icon-button.js";
@@ -15,10 +16,12 @@ import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 const deliveryLabels = { pending: "待处理", delivered: "已送达", consumed: "处理中", completed: "处理结束", failed: "处理失败", cancelled: "已取消" };
 
 export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation, focusMessageId, active = true, composerClearance = 0,
-  onEditMessage, editingMessageId, onCoordinatorLoaded, onActivityLoaded }: {
+  onEditMessage, onReplyMessage, onOpenFile, editingMessageId, onCoordinatorLoaded, onActivityLoaded }: {
   agentClient: AgentClient; teamInstanceId: string; focusMessageId?: string; active?: boolean; composerClearance?: number;
   onOpenConversation: (conversation: ConversationSummary, messageId?: string) => void;
   onEditMessage?: (message: TeamChatMessage) => void; editingMessageId?: string | null;
+  onReplyMessage?: (message: TeamChatMessage) => void;
+  onOpenFile?: (conversationId: string, path: string) => void;
   onCoordinatorLoaded?: (coordinator: PostTeamChatInput["coordinator"] | null) => void;
   onActivityLoaded?: (activity: TeamChatActivity | null) => void;
 }): ReactElement {
@@ -29,6 +32,7 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
   const [error, setError] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const viewport = useRef<HTMLDivElement>(null);
+  const messageList = useRef<HTMLOListElement>(null);
   const atBottom = useRef(focusMessageId === undefined); const hasLoaded = useRef(false);
   const revealedMessage = useRef<string | undefined>(undefined);
   const latestOwnSequence = useRef<number | null>(null);
@@ -93,6 +97,14 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
     }
     if (atBottom.current && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
   }, [messages, focusMessageId, cursor, load, active, composerClearance]);
+  useLayoutEffect(() => {
+    if (!active || messageList.current === null || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (atBottom.current && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
+    });
+    observer.observe(messageList.current);
+    return () => observer.disconnect();
+  }, [active]);
 
   const openProcess = async (conversationId: string, runId: string | null) => {
     try {
@@ -107,7 +119,7 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
       onOpenConversation(conversation, source?.id);
     } catch (reason) { setError(String(reason)); }
   };
-  const renderMemberMentions = (message: TeamChatMessage): ReactNode => {
+  const memberReferences = (message: TeamChatMessage) => {
     const references = new Map<string, { member: TeamChatMember; conversation: ConversationSummary }>();
     for (const id of message.recipientConversationIds) {
       const member = members.find(item => item.conversationId === id);
@@ -116,21 +128,22 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
       references.set(`@${conversation.title}`, { member, conversation });
       references.set(`@${member.name}`, { member, conversation });
     }
-    const ranges = findComposerReferenceRanges(message.content, [...references.keys()]);
-    if (ranges.length === 0) return message.content;
-    return <>{ranges.map((range, index) => {
-      const { member, conversation } = references.get(message.content.slice(range.start, range.end))!;
+    return [...references].map(([label, { member, conversation }]) => {
       const avatar = agents.find(item => item.id === conversation.agentId)?.avatar
         ?? (conversation.avatarIcon ? { kind: "icon" as const, icon: conversation.avatarIcon } : null);
-      return <span key={range.start}>{message.content.slice(ranges[index - 1]?.end ?? 0, range.start)}
-        <button type="button" aria-label={`打开成员 ${member.name} 的对话`} title={`打开 ${member.name} 的对话`}
+      return { label, content: <button type="button" aria-label={`打开成员 ${member.name} 的对话`} title={`打开 ${member.name} 的对话`}
           onClick={() => onOpenConversation(conversation)}
           className="inline-flex max-w-full items-center gap-[5px] rounded-[var(--app-radius-small)] align-middle text-[var(--app-accent)] hover:underline focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)]">
           {avatar === null ? <SubagentAvatar icon={null} seed={member.conversationId} size="compact" /> : <AgentAvatar avatar={avatar} size="compact" />}
           <span className="min-w-0 truncate">{member.name}</span>
-        </button>
-      </span>;
-    })}{message.content.slice(ranges.at(-1)!.end)}</>;
+        </button> };
+    });
+  };
+  const renderMemberMentions = (message: TeamChatMessage, references: ReturnType<typeof memberReferences>): ReactNode => {
+    const ranges = findComposerReferenceRanges(message.content, references.map(reference => reference.label));
+    return <>{ranges.map((range, index) => <span key={range.start}>{message.content.slice(ranges[index - 1]?.end ?? 0, range.start)}
+      {references.find(reference => reference.label === message.content.slice(range.start, range.end))?.content}
+    </span>)}{message.content.slice(ranges.at(-1)?.end ?? 0)}</>;
   };
   const superseded = new Set(messages.flatMap(message => message.supersedesId ? [message.supersedesId] : []));
   const latestUserId = messages.findLast(message => message.senderConversationId === null)?.id;
@@ -140,11 +153,12 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
   };
   return <section aria-label="团队群聊" className="flex min-h-0 min-w-0 flex-1 flex-col gap-[5px] text-[length:var(--app-font-size-control)]">
     {error === null ? null : <p role="alert" className="m-0 text-[var(--app-destructive)]">{error}<button type="button" onClick={() => void load()} className="ml-2 underline">重试读取</button></p>}
-    <div ref={viewport} role="log" aria-label="群消息" className="conversation-workspace__messages" onScroll={() => { const element = viewport.current; if (element) { atBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 32; const last = messages.at(-1); if (active && atBottom.current && last && document.visibilityState === "visible") void agentClient.markTeamChatRead({ teamInstanceId, throughSequence: last.sequence }).catch(reason => setError(String(reason))); } }}>
+    <div ref={viewport} role="log" aria-label="群消息" className="conversation-workspace__messages" style={{ scrollPaddingBottom: composerClearance }} onScroll={() => { const element = viewport.current; if (element) { atBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 32; const last = messages.at(-1); if (active && atBottom.current && last && document.visibilityState === "visible") void agentClient.markTeamChatRead({ teamInstanceId, throughSequence: last.sequence }).catch(reason => setError(String(reason))); } }}>
       {cursor === null ? null : <button type="button" className="my-2 underline" onClick={() => void load(cursor)}>加载更早消息</button>}
       {messages.length === 0 ? <p className="text-[var(--app-muted-foreground)]">暂无群消息。可以直接提问，或输入 @ 选择需要回答的成员。</p> : null}
-      <ol className="m-0 flex list-none flex-col gap-5 p-0">{messages.filter(message => !superseded.has(message.id)).map(message => {
+      <ol ref={messageList} data-group-message-list className="m-0 flex list-none flex-col gap-5 p-0">{messages.filter(message => !superseded.has(message.id)).map(message => {
         const role = message.senderConversationId === null ? "user" : "assistant";
+        const references = memberReferences(message);
         const conversation = conversations.find(item => item.id === message.senderConversationId);
         const agent = agents.find(item => item.id === conversation?.agentId);
         const avatar = agent?.avatar ?? (conversation?.avatarIcon ? { kind: "icon" as const, icon: conversation.avatarIcon } : null);
@@ -158,13 +172,17 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
         </div>}
         <ChatMessageBubble role={role} enclosed={role === "assistant"}>
           {showReplyQuote ? <p className="mb-1 line-clamp-2 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">回复：{replySource?.content.slice(0, 100) ?? "较早的群消息"}</p> : null}
-          {role === "user" ? <UserMessageContent content={message.content}>{renderMemberMentions(message)}</UserMessageContent> : <AgentMarkdown content={message.content} />}
+          {role === "user" ? <UserMessageContent content={message.content}>{renderMemberMentions(message, references)}</UserMessageContent>
+            : <AgentMarkdownWorkspaceScope onOpenFile={onOpenFile === undefined ? undefined : path => onOpenFile(message.senderConversationId!, path)}>
+              <HtmlPreviewScope client={agentClient} conversationId={message.senderConversationId!}><AgentMarkdown content={message.content} inlineReferences={references} /></HtmlPreviewScope>
+            </AgentMarkdownWorkspaceScope>}
         </ChatMessageBubble>
         <ChatMessageMeta role={role} content={message.content} createdAt={message.createdAt} completedAt={message.createdAt}
           copied={copiedMessageId === message.id} editing={editingMessageId === message.id} onCopy={() => void copyMessage(message)}
           {...(role === "user" && message.id === latestUserId && onEditMessage !== undefined
             && message.coordinator?.status !== "pending" && !message.deliveries.some(delivery => ["consumed", "delivered"].includes(delivery.status))
             ? { onEdit: () => onEditMessage(message) } : {})}>
+          {onReplyMessage === undefined || role === "user" ? null : <IconButton label={`回复 ${message.senderName} 的消息`} size="compact" variant="quiet" onClick={() => onReplyMessage(message)}><MessageSquareReply size={14} /></IconButton>}
           {message.sourceRunId && message.senderConversationId ? <IconButton label="查看工作过程" size="compact" type="button" variant="quiet"
             onClick={() => void openProcess(message.senderConversationId!, message.sourceRunId)}><ExternalLink aria-hidden="true" size={14} /></IconButton> : null}
           {message.coordinator != null ? <IconButton label="查看协调过程" size="compact" variant="quiet"

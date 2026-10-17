@@ -411,7 +411,7 @@ function TeamConfigurationPane({
         <label>
           <span className="management-field-label">
             团队指令
-            <small>所有成员继承</small>
+            <small>协调 Agent 与所有成员共用</small>
           </span>
           <textarea
             aria-label="团队指令"
@@ -421,7 +421,7 @@ function TeamConfigurationPane({
             onChange={(event) => updateTeam(team.id, { instructions: event.target.value })}
           />
           <small className="management-field-hint">
-            团队名称、成员清单、规模和当前工作项由系统按运行状态自动注入。
+            可在这里编辑群聊分流、委派和交付规则。默认未点名的新工作交给负责人，负责人委派、验收并在群里交付；明确 @ 或引用成员消息优先。团队结构和当前任务由系统自动注入。
           </small>
         </label>
         </div>

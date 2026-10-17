@@ -296,6 +296,13 @@ async function initializeServices(): Promise<DesktopServices> {
       database.activateVolatileConversationProjection();
     }
     eventProjector.projectAllConversationLogs({ releaseHistory: true });
+    // Public file links retain the publishing member's default workspace across restarts.
+    // Registration only restores authorization metadata; it does not create or copy files.
+    for (const conversation of database.listConversationHierarchy()) {
+      if (conversation.teamId !== null && conversation.projectId === null && conversation.workspaceRootPath === null) {
+        projectRegistry.registerDefaultConversationWorkspace(conversation.id);
+      }
+    }
     if (!alreadyFinalized) database.finalizeJsonlConversationStorage();
     for (const recovered of database.interruptRecoveredThreadLogRuns()) {
       eventProjector.projectEvent(recovered.conversationId,

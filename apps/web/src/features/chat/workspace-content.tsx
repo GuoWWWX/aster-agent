@@ -7,12 +7,12 @@ import { HtmlPreviewCard, HtmlPreviewScope } from "../../components/html-preview
 import { HtmlPreviewGallery } from "../../components/html-preview/html-preview-gallery.js";
 import { QueryTextarea } from "./query-textarea.js";
 import { UserMessageContent } from "./user-message-content.js";
-import { TeamChatSourceContent } from "../team/team-chat-source-content.js";
+import { TeamChatSourceContent, TeamChatSourceHeader } from "../team/team-chat-source-content.js";
 import { ChatMessageBubble } from "./chat-message-bubble.js";
 import { TeamChatWorkspace } from "../team/team-chat-workspace.js";
 import { teamChatTabId } from "./workbench-tabs.js";
 import { ChatMessageMeta, formatConversationTime, formatConversationDateTime } from "./chat-message-meta.js";
-import type { PostTeamChatInput, TeamChatActivity } from "@agent/protocol";
+import type { PostTeamChatInput, TeamChatActivity, TeamChatMessage } from "@agent/protocol";
 export { formatConversationTime } from "./chat-message-meta.js";
 import { TeamChatPanel } from "../team/team-chat-panel.js";
 import { TeamChatCoordinatorControl } from "../team/team-chat-coordinator-control.js";
@@ -821,6 +821,7 @@ export function WorkspaceContent({
       const active = activeActivity === "conversations" && teamChatTarget?.instanceId === instance.id;
       return <div key={instance.id} className={active ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"} aria-hidden={!active}>
         <TeamChatWorkspace agentClient={agentClient} instance={instance} active={active} sessions={sessions} projects={projects} onSessionUpdated={onSessionUpdated}
+          {...(onOpenProjectFile === undefined ? {} : { onOpenFile: (conversationId: string, path: string) => onOpenProjectFile(instance.projectId ?? conversationId, path) })}
           {...(active && teamChatTarget?.messageId !== undefined ? { focusMessageId: teamChatTarget.messageId } : {})}
           onOpenConversation={(conversation, messageId) => {
             onOpenTeamConversation({ ...conversation, pinOrder: conversation.pinOrder ?? null }, teamChatTabId(instance.id), messageId);
@@ -944,7 +945,7 @@ export function ConversationWorkspace({
   teamInstances?: readonly TeamInstanceView[];
   /** A Team WorkItem owns execution policy; its Timeline still supports controlled user input. */
   teamManaged?: boolean;
-  groupChat?: { instanceId: string; focusMessageId?: string; initialAgentId?: string } | null;
+  groupChat?: { instanceId: string; focusMessageId?: string; initialAgentId?: string; onOpenFile?: (conversationId: string, path: string) => void } | null;
 }): ReactElement {
   const headingId = useId();
   const agentProfiles = useAgentDirectoryStore((state) => state.agents);
@@ -1081,6 +1082,7 @@ export function ConversationWorkspace({
   ));
   const groupOwnerRef = useRef<PostTeamChatInput["coordinator"] | null>(null);
   const [groupActivity, setGroupActivity] = useState<TeamChatActivity | null>(null);
+  const [groupReply, setGroupReply] = useState<TeamChatMessage | null>(null);
   const loadGroupOwner = useCallback((owner: PostTeamChatInput["coordinator"] | null): void => {
     if (owner == null) return;
     groupOwnerRef.current = owner;
@@ -2248,13 +2250,14 @@ export function ConversationWorkspace({
         const body = { teamInstanceId: groupChat.instanceId, content, intent: "request" as const,
           recipientConversationIds: selectedConversationMentions.map(item => item.id).filter(id => roster.some(member => member.conversationId === id)),
           supersedesId: editingMessageId,
+          replyToId: groupReply?.id ?? null,
           ...(selectedAgent === undefined ? {} : { coordinator: { agentId: selectedAgent.id,
             modelSelection: activeModel === undefined ? null : { providerId: activeModel.providerId, modelId: activeModel.modelId, reasoning: selectedReasoningOption ?? null } } }) };
         const fingerprint = JSON.stringify(body);
         if (groupRequestRef.current?.fingerprint !== fingerprint) groupRequestRef.current = { fingerprint, id: crypto.randomUUID() };
         await agentClient.postTeamChat({ ...body, requestId: groupRequestRef.current.id });
         groupRequestRef.current = null;
-        setComposerValue(""); setEditingMessageId(null); setEditingAttachments(null); setMentionQuery(null); setSlashQuery(null); setSelectedConversationMentions([]);
+        setComposerValue(""); setGroupReply(null); setEditingMessageId(null); setEditingAttachments(null); setMentionQuery(null); setSlashQuery(null); setSelectedConversationMentions([]);
         setSelectedTeamMentions([]); setSelectedProjectFileMentions([]);
       } catch (error) { setOperationError(getUserErrorMessage(error, "群消息发送失败")); }
       finally { setIsSending(false); refocusComposer(); }
@@ -3409,8 +3412,10 @@ export function ConversationWorkspace({
             agent={selectedAgent} activity={groupActivity} active={active} />}
           <TeamChatPanel agentClient={agentClient} teamInstanceId={groupChat.instanceId} active={active} composerClearance={composerOverlayHeight}
           onCoordinatorLoaded={loadGroupOwner} onActivityLoaded={setGroupActivity} editingMessageId={editingMessageId}
+          {...(groupChat.onOpenFile === undefined ? {} : { onOpenFile: groupChat.onOpenFile })}
+          onReplyMessage={message => { setGroupReply(message); queueMicrotask(() => composerRef.current?.focus()); }}
           onEditMessage={message => {
-            setEditingMessageId(message.id); setEditingPendingMessageId(null); setEditingAttachments([]); setComposerValue(message.content);
+            setGroupReply(null); setEditingMessageId(message.id); setEditingPendingMessageId(null); setEditingAttachments([]); setComposerValue(message.content);
             setSelectedConversationMentions(relatedSessions.filter(item => message.recipientConversationIds.includes(item.id)));
             setSelectedTeamMentions([]); setSelectedProjectFileMentions([]); setOperationError(null);
             queueMicrotask(() => composerRef.current?.focus());
@@ -3510,6 +3515,7 @@ export function ConversationWorkspace({
                         agentClient={agentClient}
                         afterMessage={item.kind === "message" ? afterMessage : null}
                         item={item}
+                        sourceConversations={relatedSessions}
                         questionAnswer={answerQuestion}
                         onLocateQuestion={locateQuestion}
                         agentAvatar={item.kind === "agent_message"
@@ -3727,6 +3733,11 @@ export function ConversationWorkspace({
           {groupChat !== null && operationError !== null ? <p role="alert" className="mx-auto mb-[5px] w-full max-w-[var(--conversation-content-max-width)] text-[var(--app-destructive)]">{operationError}</p> : null}
           <form className="conversation-workspace__composer" onSubmit={(event) => void handleSubmit(event)}>
           <div className="conversation-workspace__composer-surface">
+            {groupChat !== null && groupReply !== null ? <div className="flex min-w-0 items-center gap-[5px] border-b border-[var(--app-border)] px-2 py-[5px] text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]" role="status">
+              <MessageSquareText size={14} className="shrink-0" />
+              <span className="min-w-0 flex-1 truncate" title={groupReply.content}>回复 {groupReply.senderName}：{groupReply.content}</span>
+              <IconButton label="取消引用回复" size="compact" onClick={() => setGroupReply(null)}><X size={14} /></IconButton>
+            </div> : null}
             {isEditingComposerMessage ? (
               <div className="conversation-workspace__editing" role="status">
                 <Pencil aria-hidden="true" size={14} />
@@ -6008,6 +6019,7 @@ function TimelineItem({
   agentClient,
   afterMessage,
   item,
+  sourceConversations,
   questionAnswer,
   onLocateQuestion,
   agentAvatar,
@@ -6041,6 +6053,7 @@ function TimelineItem({
   agentClient: AgentClient;
   afterMessage?: ReactNode;
   item: TimelineDisplayItem;
+  sourceConversations: readonly Pick<ConversationSummary, "id" | "title" | "agentId" | "avatarIcon">[];
   questionAnswer: UserQuestion | null;
   onLocateQuestion: (question: UserQuestion) => Promise<void>;
   agentAvatar: AgentProfile["avatar"] | null;
@@ -6194,7 +6207,7 @@ function TimelineItem({
   const renderedMessageContent = item.role === "assistant"
     ? stripLeadingThinkingSummary(item.content)
     : item.content;
-  const canEdit = item.role === "user" && questionAnswer === null && item.id === latestUserMessageId;
+  const canEdit = item.role === "user" && item.groupSource === undefined && questionAnswer === null && item.id === latestUserMessageId;
   const showMessageMeta = item.role === "user"
     || canShowCompletionTime
     || canCopyMessage
@@ -6217,6 +6230,7 @@ function TimelineItem({
 
   return (
     <div className="chat-message-group" data-role={item.role}>
+      {item.role === "user" ? <TeamChatSourceHeader content={item.content} source={item.groupSource} conversations={sourceConversations} onOpenConversation={onSessionSelected} /> : null}
       {item.role === "user" ? messageAttachments : null}
       {hasMessageBody ? (
         <ChatMessageBubble role={item.role} status={item.status}>
@@ -6256,7 +6270,7 @@ function TimelineItem({
                 : `${prompt.title}：${questionAnswer.answers?.[prompt.id] ?? ""}`,
             ).join("\n\n")} />
           ) : (
-            renderedMessageContent.length > 0 ? <TeamChatSourceContent content={renderedMessageContent} /> : null
+            renderedMessageContent.length > 0 ? <TeamChatSourceContent content={renderedMessageContent} source={item.groupSource} /> : null
           )}
         </ChatMessageBubble>
       ) : null}

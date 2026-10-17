@@ -8,10 +8,11 @@ import { LoadingState } from "../../components/ui/loading.js";
 import { TaskContextDirectory } from "./task-context-directory.js";
 import { TeamChatCoordinationResults } from "./team-chat-coordination-results.js";
 
-export function TeamChatWorkspace({ agentClient, instance, active, focusMessageId, onOpenConversation, sessions, projects, onSessionUpdated }: {
+export function TeamChatWorkspace({ agentClient, instance, active, focusMessageId, onOpenConversation, onOpenFile, sessions, projects, onSessionUpdated }: {
   agentClient: AgentClient; instance: TeamInstanceView; active: boolean; focusMessageId?: string;
   sessions: readonly ProjectSession[]; projects: readonly ProjectSummary[]; onSessionUpdated: (conversation: ConversationSummary) => void;
   onOpenConversation: (conversation: ConversationSummary, messageId?: string) => void;
+  onOpenFile?: (conversationId: string, path: string) => void;
 }): ReactElement {
   const [directoryOpen, setDirectoryOpen] = useState(false);
   const [previousFocus, setPreviousFocus] = useState(focusMessageId);
@@ -30,7 +31,7 @@ export function TeamChatWorkspace({ agentClient, instance, active, focusMessageI
       {lead === undefined ? <LoadingState label="正在加载团队对话" /> : <ConversationWorkspace agentClient={agentClient} session={lead} active={active && !directoryOpen}
         project={projects.find(project => project.id === lead.projectId) ?? null} projects={projects} relatedSessions={sessions} onSessionUpdated={onSessionUpdated}
         onOpenTeamConversation={(conversation, _sourceConversationId, messageId) => { void agentClient.listConversationHierarchy().then(hierarchy => { const original = hierarchy.find(item => item.id === conversation.id); if (original) onOpenConversation(original, messageId); }); }}
-        groupChat={{ instanceId: instance.id, ...(sourceAgentId == null ? {} : { initialAgentId: sourceAgentId }), ...(focusMessageId === undefined ? {} : { focusMessageId }) }} />}
+        groupChat={{ instanceId: instance.id, ...(onOpenFile === undefined ? {} : { onOpenFile }), ...(sourceAgentId == null ? {} : { initialAgentId: sourceAgentId }), ...(focusMessageId === undefined ? {} : { focusMessageId }) }} />}
     </div>
     {directoryOpen ? <div className="flex min-h-0 flex-1 p-3"><TaskContextDirectory agentClient={agentClient} teamInstanceId={instance.id} onOpenConversation={onOpenConversation} /></div> : null}
   </section>;

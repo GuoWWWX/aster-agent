@@ -141,7 +141,7 @@ export function App(): ReactElement {
     ? teamInstances.find(instance => !instance.isArchived && instance.id === teamChatTarget?.instanceId) ?? null : null;
   const sidebarSession = activeTeamChat === null ? projectSessions.activeSession
     : projectSessions.sessions.find(session => session.id === (activeTeamChat.sourceConversationId ?? activeTeamChat.rootConversationId)) ?? null;
-  const sidebarProject = activeTeamChat === null ? projectTree.activeProject
+  const sidebarBaseProject = activeTeamChat === null ? projectTree.activeProject
     : projectTree.projects.find(project => project.id === activeTeamChat.projectId) ?? null;
   const activeTabId = activeActivity === "settings" ? "page:settings"
     : activeActivity === "schedules" ? "page:schedules"
@@ -181,6 +181,11 @@ export function App(): ReactElement {
   const [navigatorLocateRequest, setNavigatorLocateRequest] =
     useState<ProjectNavigatorLocateRequest | null>(null);
   const [fileOpenRequest, setFileOpenRequest] = useState<ProjectFileOpenRequest | null>(null);
+  const groupFileConversation = activeTeamChat === null || activeTeamChat.projectId !== null ? undefined : projectSessions.sessions.find(session =>
+    session.id === fileOpenRequest?.projectId && (session.id === activeTeamChat.rootConversationId || session.parentConversationId === activeTeamChat.rootConversationId));
+  const sidebarProject = sidebarBaseProject ?? (groupFileConversation === undefined ? null : {
+    id: groupFileConversation.id, name: `${groupFileConversation.title} 工作区`, rootPath: groupFileConversation.workspaceRootPath ?? "", isPinned: false,
+  });
   const [gitReviewOpenRequest, setGitReviewOpenRequest] = useState<GitReviewOpenRequest | null>(null);
   const [teamMemberOpenRequest, setTeamMemberOpenRequest] =
     useState<TeamMemberOpenRequest | null>(null);
@@ -192,7 +197,8 @@ export function App(): ReactElement {
   } | null>(null);
   const requestOpenProjectFile = useCallback((projectId: string, path: string): void => {
     setFileOpenRequest({ path, projectId });
-    const conversationId = projectSessions.activeSessionId;
+    const group = useWorkbenchUiStore.getState().teamChatTarget;
+    const conversationId = group === null ? projectSessions.activeSessionId : teamChatTabId(group.instanceId);
     if (conversationId !== null) setFilePanelOpenForConversation(conversationId, true);
   }, [projectSessions.activeSessionId, setFilePanelOpenForConversation]);
   const requestOpenGitReview = useCallback((projectId: string, path?: string): void => {

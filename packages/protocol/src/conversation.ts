@@ -394,6 +394,10 @@ export const conversationMessageItemSchema = z
     durationMs: z.number().int().nonnegative().nullable().optional(),
     id: timelineItemIdSchema,
     kind: z.literal("message"),
+    groupSource: z.object({
+      teamInstanceId: z.string().uuid(), messageId: z.string().uuid(),
+      senderConversationId: z.string().uuid().nullable(), senderName: z.string(),
+    }).strict().optional(),
     modelId: z.string().min(1).max(200).nullable(),
     reasoningContent: z.string().max(MAX_MESSAGE_LENGTH).nullable().optional(),
     role: conversationMessageRoleSchema,

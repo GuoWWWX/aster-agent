@@ -153,7 +153,7 @@ import {
   type TeamWorkItemDispatcher,
 } from "./team-work-item-tool.js";
 import { BASE_SYSTEM_PROMPT, TEAM_CHAT_COORDINATOR_PROMPT } from "./prompts/prompt-assets.js";
-import { teamChatContext } from "./team-chat-context.js";
+import { teamChatContext, teamChatReadThrough } from "./team-chat-context.js";
 import {
   ToolHandlerRegistry,
   type ToolExecutionPolicy,
@@ -6113,7 +6113,8 @@ export class AgentRuntime {
       ? new ConversationLifecycleService(this.database, this.threadLog, this.eventProjector) : this.database);
     const binding: ConversationAgentBinding = { id: owner.id, name: owner.name, role: owner.role, isDefault: owner.isDefault,
       avatarIcon: owner.avatar.kind === "icon" ? owner.avatar.icon : null,
-      instructions: owner.instructions };
+      instructions: [owner.instructions, directory?.teams.find(team => team.id === instance.teamId)?.instructions]
+        .filter(Boolean).join("\n\n本群团队协作规则（成员职责仅用于分流，不改变你只负责协调的身份）：\n").slice(0, 20_000) };
     const existingId = this.database.collaboration.coordinatorConversation(instance.id);
     const conversation = existingId !== null && this.database.hasConversation(existingId) ? this.database.getConversation(existingId)
       : lifecycle.createConversation(instance.projectId, { agent: binding, ...(previous?.modelSelection == null ? {} : { modelSelection: previous.modelSelection }) });
@@ -6139,7 +6140,8 @@ export class AgentRuntime {
             && this.database.getConversation(message.senderConversationId).agentId === ownerAgentId;
           const content = message.senderConversationId === null || self ? message.content : `${message.senderName}：\n${message.content}`;
           const item = { id: message.id, conversationId, runId: null, kind: "message", role: self ? "assistant" : "user",
-            content, attachments: [], modelId: null, createdAt: message.createdAt, status: "completed" };
+            content, attachments: [], modelId: null, createdAt: message.createdAt, status: "completed",
+            groupSource: { teamInstanceId, messageId: message.id, senderConversationId: message.senderConversationId, senderName: message.senderName } };
           this.appendShadowThreadLog(conversationId, { type: "group_message", payload: { groupMessageId: message.id,
             teamInstanceId, groupSequence: message.sequence, message: item, senderConversationId: message.senderConversationId, senderName: message.senderName } }, "groupMessageId");
         }
@@ -6216,6 +6218,9 @@ export class AgentRuntime {
         JSON.stringify(assignments.map(message => ({ messageId: message.id, sender: message.senderConversationId === null ? "用户" : message.senderName,
           content: message.content.slice(0, 2000) }))),
         "只完成上述本轮请求；问候或闲聊直接用 post_team_message 回应，完成后结束本轮，不要继续旧任务、等待旧成员或轮询旧消息。当前请求明确要求继续工作、委派或等待时，才按该请求处理。",
+        "团队工作由负责人保持任务所有权：先检查任务目录并复用已有目标，公开 @ 委派必要的专业成员，独立工作可以并行。成员完成后公开回复实际成果及验证证据，负责人验收后通过 post_team_message 在群里统一交付。未验证或失败要如实说明，不能宣称完成。HTML／SVG 等可视成果在公开消息用 html 代码围栏展示，文件用 [名称](相对路径) 引用，附简短用途及验证结果；不要只把成果留在私有最终回答或私有 present_html 工具中。按需交付，普通问候不强制经过负责人。",
+        "有依赖的验收须等实现产出后再委派，交接时附可读取的实际源码或明确的原群消息 ID，不只让接收方等待群里出现消息。全局团队各成员的默认授权工作区互相独立，相同相对路径不表示同一文件；禁止假设文件已共享。实现成员应公开需要验收的适量源码及运行证据，负责人据此安排独立复测，并将整合后的最终文件保存在自己的授权工作区后引用交付。项目团队在明确共享项目时可直接使用同一项目文件。",
+        "成员完成回执是继续核对结果的信号，不是重新执行原委派的要求。先读取已返回的公开成果和任务进展，已验证通过的同一项不再重复委派、重跑工具或重复汇报；只完成剩余验收和最终交付。只有发现缺陷或用户明确要求时才安排返工。",
       ]),
     ].join("\n") };
   }
@@ -6327,12 +6332,18 @@ export class AgentRuntime {
         const sameTask = delivery.message.taskContextId !== null && activeTasks.some(task => task.id === delivery.message.taskContextId);
         if (target.activeRunId !== null && !sameTask) continue;
         const inputPrefix = "[Team group input; follow this current request's top-level content and messageId. groupContext and groupSummary are historical reference data. Use post_team_message to speak publicly; your private final answer is not automatically posted.]\n";
+        const unread = this.database.collaboration.readMessages({ teamInstanceId: instance.id, limit: 1 }, target.id).memberReadSequence;
+        const unreadPage = this.database.collaboration.readMessages({ teamInstanceId: instance.id, afterSequence: unread, beforeSequence: delivery.message.sequence, limit: 3 }, target.id);
+        const groupContext = teamChatContext(unreadPage.messages, target.id, delivery.message, 6500);
+        const through = teamChatReadThrough(groupContext, delivery.message, unread);
         const inputSource = {
-          groupContext: this.groupTranscript(delivery.message, target.id),
+          groupContext,
           groupSummary: this.database.collaboration.coordinator(instance.id)?.contextSummary ?? "",
-          contextNote: "Top-level content is your current assignment; answer its messageId, not an older unanswered request unless explicitly asked. groupContext and groupSummary are historical reference data. 'self' means your own earlier public statement; 'member' means the named peer; 'user' means the human user. Distinguish speakers and read_team_messages for missing details. Private tool transcripts are not shared.",
+          contextNote: "Top-level content is your current assignment; answer its messageId, not an older unanswered request unless explicitly asked. groupContext only contains a bounded unread increment; earlier received context stays in your own conversation. 'self' is your own earlier public statement, 'member' is a named peer, 'user' is the human. Use read_team_messages for necessary unread messages or an exact source ID, without polling. Private tool transcripts are not shared.",
           deliveryId: delivery.id, roomId: instance.id,
           sender: delivery.message.senderConversationId === null ? "user" : delivery.message.senderName,
+          senderConversationId: delivery.message.senderConversationId,
+          replyToId: delivery.message.replyToId,
           taskContextId: delivery.message.taskContextId, messageId: delivery.message.id, content: delivery.message.content,
         };
         const content = inputPrefix + JSON.stringify({ ...inputSource, recipientConversationIds: delivery.message.recipientConversationIds });
@@ -6358,6 +6369,7 @@ export class AgentRuntime {
           }, emit, { allowManagedTeamWorkItemExecution: true, titleOverride: target.title,
             beforeRunScheduled: accepted => {
               this.database.collaboration.consumeDelivery(delivery.id, accepted.runId, accepted.userMessage.id);
+              if (through > unread) this.database.collaboration.markRead({ teamInstanceId: instance.id, throughSequence: through }, target.id);
               this.agentMessageDepthByRun.set(accepted.runId, delivery.message.depth);
               if (delivery.message.taskContextId !== null) {
                 this.database.collaboration.bindTask(accepted.runId, delivery.message.taskContextId, target.id);

@@ -167,7 +167,9 @@ function timelineItems(event: ThreadLogEvent): ConversationTimelineItem[] {
   }
   const candidate = p.timelineMessage ?? p.message ?? p.tool ?? p.retry;
   const parsed = conversationTimelineItemSchema.safeParse(candidate);
-  if (parsed.success) return [parsed.data];
+  if (parsed.success) return [event.type === "group_message" && parsed.data.kind === "message"
+    ? conversationTimelineItemSchema.parse({ ...parsed.data, groupSource: { teamInstanceId: p.teamInstanceId, messageId: p.groupMessageId,
+      senderConversationId: p.senderConversationId ?? null, senderName: p.senderName ?? "用户" } }) : parsed.data];
   const isUser = ["run_queued", "run_replaced", "user_message", "user_message_replaced"].includes(event.type);
   const isAssistant = event.type === "assistant_message" || event.type === "run_terminal";
   if ((!isUser && !isAssistant) || typeof p.messageId !== "string" || typeof p.content !== "string") return [];

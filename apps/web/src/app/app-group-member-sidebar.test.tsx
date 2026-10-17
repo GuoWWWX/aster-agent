@@ -67,6 +67,26 @@ afterEach(() => {
 });
 async function flush(): Promise<void> { for (let i = 0; i < 35; i++) await Promise.resolve(); }
 
+it("opens a global group file in its publishing member's authorized workspace without navigating away", async () => {
+  const client = new MockAgentClient(); vi.spyOn(hostClient, "createAgentClientForCurrentHost").mockReturnValue(client);
+  const instance = await client.createTeamInstance({ teamId: "default-team", scope: "global" });
+  const member = (await client.getTeamChatMembers({ teamInstanceId: instance.id })).find(item => !item.isLead)!;
+  const message = await client.postTeamChat({ teamInstanceId: instance.id, content: "[quicksort.cjs](codex-team-acceptance/quicksort.cjs)", intent: "notify", requestId: crypto.randomUUID() });
+  vi.spyOn(client, "readTeamChat").mockResolvedValue({ messages: [{ ...message, senderConversationId: member.conversationId, senderName: member.name }], nextBeforeSequence: null, userReadSequence: 0, memberReadSequence: 0 });
+  const read = vi.spyOn(client, "readProjectFile").mockImplementation(input => Promise.resolve({ projectId: input.projectId, path: input.path, name: "quicksort.cjs",
+    content: "module.exports = values => [...values].sort((a, b) => a - b);", byteLength: 58, isBinary: false, truncated: false }));
+  vi.spyOn(client, "listProjectEntries").mockImplementation(input => Promise.resolve({ projectId: input.projectId, directoryPath: input.directoryPath, entries: [], truncated: false }));
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => { root?.render(<TooltipProvider><App /></TooltipProvider>); await flush(); });
+  await act(async () => { useWorkbenchUiStore.getState().openTeamChat({ instanceId: instance.id }); await flush(); });
+  const group = container.querySelector('.workbench-main [aria-label="团队群聊"]')!;
+  await act(async () => { group.querySelector<HTMLAnchorElement>('a[href="codex-team-acceptance/quicksort.cjs"]')!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })); await flush(); });
+  expect(read).toHaveBeenCalledWith({ projectId: member.conversationId, path: "codex-team-acceptance/quicksort.cjs" });
+  expect(container.querySelector('.workbench-main [aria-label="团队群聊"]')).toBe(group);
+  expect(container.querySelector('.right-sidebar-workspace')?.textContent).toContain("quicksort.cjs");
+  expect(useWorkbenchUiStore.getState().filePanelOpenByConversationId[teamChatTabId(instance.id)]).toBe(true);
+});
+
 it.each([true, false])("opens a group member's process only beside the group and keeps its draft (matching run=%s)", async matchingRun => {
   const client = new MockAgentClient();
   vi.spyOn(hostClient, "createAgentClientForCurrentHost").mockReturnValue(client);

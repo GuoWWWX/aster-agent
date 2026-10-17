@@ -393,6 +393,14 @@ export class CollaborationStore {
           recipients = addressedUserRecipients(input.content, active);
           if (recipients.length === 0 && input.coordinator === undefined) recipients = [instance.rootConversationId];
         }
+        if (senderId === null && input.replyToId !== null) {
+          const quoted = this.message(input.replyToId);
+          if (quoted.teamInstanceId !== instance.id) throw new CollaborationError("TEAM_SCOPE", "Reply belongs to another room.");
+          if (quoted.senderConversationId !== null && !input.allMembers) {
+            if (!active.some(member => member.conversationId === quoted.senderConversationId)) throw new CollaborationError("TEAM_MEMBER", "被回复的成员已不可用，请重新选择成员。");
+            recipients = [...new Set([quoted.senderConversationId, ...input.recipientConversationIds, ...addressedUserRecipients(input.content, active)])];
+          }
+        }
         for (const id of recipients) if (id === senderId || !active.some(member => member.conversationId === id)) throw new CollaborationError("TEAM_MEMBER", "Recipient must be another active room member.");
       }
       const lastSequence = this.journal.lastSequence(instance.id);
@@ -410,7 +418,7 @@ export class CollaborationStore {
         senderConversationId: senderId, senderName: senderId === null ? "你" : members.find(member => member.conversationId === senderId)?.name,
         intent: input.intent, recipientConversationIds: recipients, taskContextId: input.taskContextId ?? parent?.taskContextId ?? null,
         replyToId: input.replyToId, createdAt: new Date().toISOString(), sourceRunId: runId,
-        rootMessageId: senderId === null ? id : parent?.rootMessageId ?? id,
+        rootMessageId: parent?.rootMessageId ?? id,
         depth: senderId === null ? 0 : (parent?.depth ?? 0) + 1, deliveries: [],
         coordinator: senderId === null && input.coordinator !== undefined ? { ...input.coordinator,
           status: recipients.length === 0 && input.intent === "request" ? "pending" : "completed", error: null,
@@ -421,7 +429,8 @@ export class CollaborationStore {
         supersedesId: input.supersedesId,
       });
       message.deliveries = recipients.map(conversationId => ({ id: randomUUID(), conversationId, runId: null,
-        status: message.depth > 4 ? "failed" : "pending", error: message.depth > 4 ? "讨论已暂停：达到自动协作深度上限。" : null }));
+        status: message.depth > (message.taskContextId === null ? 4 : 12) ? "failed" : "pending",
+        error: message.depth > (message.taskContextId === null ? 4 : 12) ? "讨论已暂停：达到自动协作深度上限。" : null }));
       this.journal.appendMessage(message, { id: input.requestId, fingerprint });
       return this.write(() => {
       this.projectMessage(message);
