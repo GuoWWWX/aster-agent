@@ -24,6 +24,7 @@ describe("ComputerUseSettings", () => {
   it("loads defaults without writing configuration or starting a helper", async () => {
     const f = await fixture(); expect(f.checkbox("启用电脑控制").checked).toBe(false);
     expect(f.container.textContent).toContain("尚未授权任何软件"); expect(f.save).not.toHaveBeenCalled(); expect(f.start).not.toHaveBeenCalled();
+    expect(f.container.textContent).toContain("按 Esc 立即退出");
   });
   it("saves the real application grant before user startup and can revoke it", async () => {
     const f = await fixture(); vi.spyOn(f.client, "chooseComputerApplication").mockResolvedValue({ id: "11111111-1111-4111-8111-111111111111", name: "记事本", executablePath: "C:\\Windows\\notepad.exe", enabled: true });

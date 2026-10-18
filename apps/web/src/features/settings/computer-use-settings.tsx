@@ -64,7 +64,7 @@ export function ComputerUseSettings({ agentClient }: { agentClient: AgentClient 
     {error !== null ? <p role="alert" className="break-words text-[var(--app-destructive)]">{error}</p> : null}
     {!loaded ? null : <>
       <SettingsConfigurationGroup title="电脑控制" icon={MonitorCog} cardClassName="p-0">
-        <div className="settings-general-row"><div><h4>启用电脑控制</h4><p>默认关闭；添加允许操作的软件后，点击“启动控制”开始使用。</p></div>
+        <div className="settings-general-row"><div><h4>启用电脑控制</h4><p>默认关闭；添加允许操作的软件后，点击“启动控制”开始使用。控制期间屏幕四角显示蓝色边框，正常使用鼠标和键盘不会退出，在任意软件中按 Esc 立即退出。</p></div>
           <input aria-label="启用电脑控制" type="checkbox" checked={draft.enabled} disabled={busy || status?.supported === false} onChange={(event) => update({ ...draft, enabled: event.target.checked })} /></div>
         <div className="settings-general-row"><div><h4>控制进程</h4><p aria-live="polite">{status?.supported === false ? "当前环境不支持，请在 Windows 桌面版使用。" : status?.running ? status.elevated ? "运行中 · 管理员权限" : "运行中 · 普通权限" : "未启动"}</p></div>
           <div className="flex shrink-0 gap-[5px]">

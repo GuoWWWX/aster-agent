@@ -6,13 +6,122 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Windows.Automation;
+using System.Windows.Forms;
+// Only this thread owns the hook and overlays; pipe reads and slow UIAutomation calls cannot block Escape.
+public sealed class AsterControlSession : IDisposable {
+  delegate IntPtr KeyboardHook(int code, IntPtr message, IntPtr data);
+  [StructLayout(LayoutKind.Sequential)] struct KeyEvent { public uint Key,Scan,Flags,Time; public UIntPtr Extra; }
+  [DllImport("user32.dll",SetLastError=true)] static extern IntPtr SetWindowsHookEx(int type,KeyboardHook callback,IntPtr module,uint thread);
+  [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr hook);
+  [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hook,int code,IntPtr message,IntPtr data);
+  [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern IntPtr GetModuleHandle(string module);
+  [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+  [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr process,uint code);
+  internal static void Terminate(uint code) { TerminateProcess(GetCurrentProcess(),code); }
+  readonly ManualResetEventSlim ready=new ManualResetEventSlim(false);
+  readonly List<AsterControlCorner> overlays=new List<AsterControlCorner>();
+  readonly Thread thread;
+  Control dispatcher;
+  KeyboardHook callback;
+  IntPtr hook;
+  Exception failure;
+  int active;
+  AsterControlSession() { thread=new Thread(Run);thread.IsBackground=true;thread.SetApartmentState(ApartmentState.STA);thread.Start(); }
+  public static AsterControlSession Start() {
+    AsterControlSession session=new AsterControlSession();
+    if(!session.ready.Wait(5000) || session.failure!=null || Volatile.Read(ref session.active)==0) {
+      session.Dispose(); throw new InvalidOperationException("CONTROL_GUARD_UNAVAILABLE",session.failure);
+    }
+    return session;
+  }
+  static bool IsEmergencyEscape(int code,int message,uint key,uint flags) {
+    // LLKHF_INJECTED: a model's Escape must still work inside the target app without ending the session.
+    return code>=0 && (message==0x100 || message==0x104) && key==27 && (flags&0x12)==0;
+  }
+  IntPtr OnKeyboard(int code,IntPtr message,IntPtr data) {
+    if(code>=0) {
+      KeyEvent input=(KeyEvent)Marshal.PtrToStructure(data,typeof(KeyEvent));
+      if(IsEmergencyEscape(code,message.ToInt32(),input.Key,input.Flags)) {
+        Interlocked.Exchange(ref active,0);
+        // Return from the low-level hook promptly. Process exit removes overlays and closes even an elevated pipe.
+        // Terminate this disposable helper directly: CLR shutdown inside a WinForms callback can deadlock/crash.
+        dispatcher.BeginInvoke(new Action(delegate { Terminate(0); }));
+        return new IntPtr(1);
+      }
+    }
+    return CallNextHookEx(hook,code,message,data);
+  }
+  void RebuildOverlays() {
+    foreach(AsterControlCorner overlay in overlays) overlay.Dispose(); overlays.Clear();
+    foreach(Screen screen in Screen.AllScreens) for(int corner=0;corner<4;corner++) {
+      AsterControlCorner overlay=new AsterControlCorner(screen.Bounds,corner); overlays.Add(overlay);overlay.Show();
+    }
+  }
+  void DisplayChanged(object sender,EventArgs args) {
+    if(Volatile.Read(ref active)!=0) dispatcher.BeginInvoke(new Action(delegate {
+      try { RebuildOverlays(); } catch { Terminate(3); }
+    }));
+  }
+  void Run() {
+    try {
+      using(dispatcher=new Control()) {
+        dispatcher.CreateControl();callback=OnKeyboard;
+        hook=SetWindowsHookEx(13,callback,GetModuleHandle(null),0);
+        if(hook==IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        RebuildOverlays();
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged+=DisplayChanged;
+        dispatcher.BeginInvoke(new Action(delegate { Volatile.Write(ref active,1);ready.Set(); }));
+        Application.Run();
+      }
+    } catch(Exception error) { failure=error;ready.Set(); }
+    finally {
+      bool unexpected=Interlocked.Exchange(ref active,0)!=0;Microsoft.Win32.SystemEvents.DisplaySettingsChanged-=DisplayChanged;
+      if(hook!=IntPtr.Zero) UnhookWindowsHookEx(hook);
+      foreach(AsterControlCorner overlay in overlays) overlay.Dispose();overlays.Clear();
+      if(unexpected) Terminate(3);
+    }
+  }
+  public void CheckActive() { if(Volatile.Read(ref active)==0) throw new OperationCanceledException("CONTROL_STOPPED"); }
+  public void Dispose() {
+    Interlocked.Exchange(ref active,0);
+    if(dispatcher!=null && dispatcher.IsHandleCreated && !dispatcher.IsDisposed) dispatcher.BeginInvoke(new Action(Application.ExitThread));
+    if(thread!=Thread.CurrentThread) thread.Join(2000);
+  }
+}
+sealed class AsterControlCorner : Form {
+  readonly int corner;
+  public AsterControlCorner(Rectangle screen,int corner) {
+    this.corner=corner;FormBorderStyle=FormBorderStyle.None;StartPosition=FormStartPosition.Manual;
+    ShowInTaskbar=false;TopMost=true;AutoScaleMode=AutoScaleMode.None;DoubleBuffered=true;
+    BackColor=Color.Black;TransparencyKey=Color.Black;
+    Bounds=new Rectangle(corner==1||corner==2 ? screen.Right-72 : screen.Left,corner>=2 ? screen.Bottom-72 : screen.Top,72,72);
+  }
+  protected override bool ShowWithoutActivation { get { return true; } }
+  protected override CreateParams CreateParams { get { CreateParams p=base.CreateParams;p.ExStyle|=0x080800a0;return p; } }
+  protected override void WndProc(ref Message message) {
+    if(message.Msg==0x84) { message.Result=new IntPtr(-1);return; } // HTTRANSPARENT
+    if(message.Msg==0x21) { message.Result=new IntPtr(3);return; } // MA_NOACTIVATE
+    base.WndProc(ref message);
+  }
+  protected override void OnPaint(PaintEventArgs e) {
+    e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;
+    e.Graphics.TranslateTransform(36,36);e.Graphics.RotateTransform(corner*90);e.Graphics.TranslateTransform(-36,-36);
+    using(Pen pen=new Pen(Color.FromArgb(91,141,239),6)) using(GraphicsPath path=new GraphicsPath()) {
+      pen.StartCap=LineCap.Round;pen.EndCap=LineCap.Round;
+      path.AddLine(6,64,6,18);path.AddArc(6,6,24,24,180,90);path.AddLine(18,6,64,6);e.Graphics.DrawPath(pen,path);
+    }
+  }
+}
 public static class AsterComputer {
-  public static IDisposable Deadline() { return new System.Threading.Timer(delegate(object _) { Environment.Exit(3); },null,20000,System.Threading.Timeout.Infinite); }
+  public static AsterControlSession Session;
+  public static IDisposable Deadline() { return new System.Threading.Timer(delegate(object _) { AsterControlSession.Terminate(3); },null,20000,System.Threading.Timeout.Infinite); }
   public delegate bool EnumProc(IntPtr h, IntPtr p);
   [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left,Top,Right,Bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct Point { public int X,Y; }
@@ -58,6 +167,7 @@ public static class AsterComputer {
     return r;
   }
   public static void Focus(IntPtr h) {
+    Session.CheckActive();
     if(GetForegroundWindow()!=h) SetForegroundWindow(h);
     if(GetForegroundWindow()!=h) throw new Exception("FOCUS_REQUIRED");
     foreach(int vk in new int[]{0x10,0x11,0x12,0x5b,0x5c}) if(GetAsyncKeyState(vk)<0) throw new Exception("USER_INPUT_ACTIVE");
@@ -66,6 +176,7 @@ public static class AsterComputer {
     return new Input { Type=1, Data=new Union { Key=new Keyboard { Vk=unicode ? (ushort)0 : key, Scan=unicode ? key : (ushort)0, Flags=(uint)((unicode?4:0)|(up?2:0)) } } };
   }
   static void Send(IntPtr h, Input[] values) {
+    Session.CheckActive();
     if(GetForegroundWindow()!=h) throw new Exception("FOCUS_CHANGED");
     if(SendInput((uint)values.Length,values,Marshal.SizeOf(typeof(Input)))!=values.Length) throw new Exception("INPUT_BLOCKED");
   }
@@ -132,8 +243,11 @@ public static class AsterComputer {
 '@
 [AsterComputer]::Init()
 $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [IO.Pipes.PipeDirection]::InOut)
+$session = $null
 try {
   $pipe.Connect(15000)
+  $session = [AsterControlSession]::Start()
+  [AsterComputer]::Session = $session
   $reader = [IO.StreamReader]::new($pipe, [Text.UTF8Encoding]::new($false))
   $writer = [IO.StreamWriter]::new($pipe, [Text.UTF8Encoding]::new($false)); $writer.AutoFlush = $true
   $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -141,6 +255,7 @@ try {
   while ($null -ne ($line = $reader.ReadLine())) {
     $timer = [AsterComputer]::Deadline()
     try {
+      $session.CheckActive()
       $request = $line | ConvertFrom-Json
       $command = $request.command
       $allowed = @($request.applications | Where-Object { $_.enabled })
@@ -184,4 +299,4 @@ try {
     } finally { $timer.Dispose() }
     $writer.WriteLine(($response | ConvertTo-Json -Compress -Depth 12))
   }
-} finally { $pipe.Dispose() }
+} finally { if ($null -ne $session) { $session.Dispose() }; $pipe.Dispose() }

@@ -56,8 +56,10 @@ export class WindowsComputerController implements ComputerControlPort {
   }
   public execute(input: ComputerUseArguments, signal: AbortSignal): Promise<ComputerResponse> {
     const command = computerUseArgumentsSchema.parse(input);
+    const generation = this.generation;
     const result = this.queue.catch(() => undefined).then(() => {
       signal.throwIfAborted();
+      if (generation !== this.generation) throw controlError("PROCESS_CANCELLED", "电脑控制已停止；旧操作不会在重新启动后执行。");
       const configuration = this.configuration.getConfiguration();
       if (!configuration.enabled) return { ok: false as const, code: "COMPUTER_USE_DISABLED" };
       if (configuration.administrator && !this.getStatus().running) return { ok: false as const, code: "ADMINISTRATOR_START_REQUIRED" };
@@ -98,6 +100,7 @@ export class WindowsComputerController implements ComputerControlPort {
           socket.setEncoding("utf8");
           socket.setTimeout(5000, () => socket.destroy());
           const receive = (chunk: string): void => {
+            if (generation !== this.generation) { socket.destroy(); return; }
             buffer += chunk;
             if (buffer.length > 2048) { socket.destroy(); return; }
             if (!buffer.includes("\n")) return;

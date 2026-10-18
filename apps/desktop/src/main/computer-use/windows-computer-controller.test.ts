@@ -26,7 +26,7 @@ function fixture() {
     return child;
   });
   const controller = new WindowsComputerController({ getConfiguration: () => configuration }); controllers.push(controller);
-  return { controller, requests, reply: (index: number) => peer?.write(`${JSON.stringify({ id: requests[index]?.id, ok: true, value: { windows: [] } })}\n`), set: (value: Partial<ComputerUseConfiguration>) => { configuration = { ...configuration, ...value }; } };
+  return { controller, requests, disconnect: () => peer?.destroy(), failOperation: (index: number, code: string) => peer?.write(`${JSON.stringify({ id: requests[index]?.id, ok: false, code })}\n`), reply: (index: number) => peer?.write(`${JSON.stringify({ id: requests[index]?.id, ok: true, value: { windows: [] } })}\n`), set: (value: Partial<ComputerUseConfiguration>) => { configuration = { ...configuration, ...value }; } };
 }
 describe.runIf(process.platform === "win32")("Windows computer transport", () => {
   it("serializes all callers and transfers only current allowlist facts", async () => {
@@ -67,5 +67,28 @@ describe.runIf(process.platform === "win32")("Windows computer transport", () =>
     const error: unknown = await f.controller.start().catch((reason: unknown) => reason);
     expect(toMainAgentError(error, { operation: "ipc:computer_use.start" })).toMatchObject({ code: "PERMISSION_DENIED", message: "管理员启动被取消或失败，请在设置中重试。" });
     expect(f.controller.getStatus()).toMatchObject({ running: false, elevated: false });
+  });
+  it("cancels pending and queued actions when the helper exits through the emergency key", async () => {
+    const f = fixture(); await f.controller.start();
+    const pending = f.controller.execute({ action: "type", windowId: "123", text: "one" }, new AbortController().signal);
+    const rejected = expect(pending).rejects.toMatchObject({ code: "PROCESS_CANCELLED" });
+    const queued = f.controller.execute({ action: "type", windowId: "123", text: "two" }, new AbortController().signal);
+    const rejectedQueued = expect(queued).rejects.toMatchObject({ code: "PROCESS_CANCELLED" });
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1)); f.disconnect(); await rejected;
+    await rejectedQueued;
+    expect(f.controller.getStatus()).toMatchObject({ running: false, elevated: false });
+    expect(f.requests).toHaveLength(1); expect(native.spawn).toHaveBeenCalledOnce();
+  });
+  it("keeps the control session alive when ordinary user input changes focus or holds a modifier", async () => {
+    const f = fixture(); await f.controller.start();
+    for (const code of ["USER_INPUT_ACTIVE", "FOCUS_CHANGED", "WINDOW_OCCLUDED"]) {
+      const index = f.requests.length;
+      const operation = f.controller.execute({ action: "click", windowId: "123", x: 12, y: 12, button: "left" }, new AbortController().signal);
+      await vi.waitFor(() => expect(f.requests).toHaveLength(index + 1)); f.failOperation(index, code);
+      expect(await operation).toMatchObject({ ok: false, code }); expect(f.controller.getStatus().running).toBe(true);
+    }
+    const resumed = f.controller.execute({ action: "list" }, new AbortController().signal);
+    await vi.waitFor(() => expect(f.requests).toHaveLength(4)); f.reply(3); expect(await resumed).toMatchObject({ ok: true });
+    expect(native.spawn).toHaveBeenCalledOnce();
   });
 });

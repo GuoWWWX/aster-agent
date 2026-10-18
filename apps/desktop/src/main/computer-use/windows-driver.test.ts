@@ -9,7 +9,71 @@ import { DEFAULT_COMPUTER_USE_CONFIGURATION, type ComputerUseConfiguration } fro
 import { WindowsComputerController } from "./windows-computer-controller.js";
 import source from "./windows-driver.ps1";
 const exec = promisify(execFile);
+async function nativeSession(script: string) {
+  const prefix = source.slice(0, source.indexOf("[AsterComputer]::Init()"));
+  const command = "$ErrorActionPreference='Stop';try {& ([ScriptBlock]::Create([Console]::In.ReadToEnd()))} catch {[Console]::Error.WriteLine($_.Exception.ToString());exit 1}";
+  const child = exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { windowsHide: true, timeout: 20000 });
+  child.child.stdin?.end(`${prefix}\n${script}\n`);
+  try { return await child; } catch (error) {
+    if (error instanceof Error && "code" in error && "stdout" in error && "stderr" in error) throw new Error(`Native test exited ${String(error.code)}: ${String(error.stdout)} ${String(error.stderr)}`, { cause: error });
+    throw error;
+  }
+}
 describe("Windows native control boundary", () => {
+  it.runIf(process.platform === "win32")("distinguishes physical Escape and renders four nonactivating, click-through corners", async () => {
+    const result = await nativeSession(`
+$flags=[Reflection.BindingFlags]'NonPublic,Static'
+$isEscape=[AsterControlSession].GetMethod('IsEmergencyEscape',$flags)
+if(-not $isEscape.Invoke($null,@(0,256,[uint32]27,[uint32]0))){throw 'physical Escape ignored'}
+foreach($event in @(@(0,256,27,16),@(0,256,27,18),@(0,257,27,0),@(-1,256,27,0),@(0,256,13,0),@(0,256,16,0),@(0,256,65,0))){
+  if($isEscape.Invoke($null,@([int]$event[0],[int]$event[1],[uint32]$event[2],[uint32]$event[3]))){throw 'not a physical Escape press'}
+}
+$foregroundMethod=[AsterComputer].GetMethod('GetForegroundWindow',$flags)
+$foreground=$foregroundMethod.Invoke($null,@())
+$point=[AsterComputer+Point]::new();$point.X=[Windows.Forms.Screen]::PrimaryScreen.Bounds.Left+6;$point.Y=[Windows.Forms.Screen]::PrimaryScreen.Bounds.Top+30
+$hitTest=[AsterComputer].GetMethod('WindowFromPoint',$flags)
+$underCorner=$hitTest.Invoke($null,@($point))
+$session=[AsterControlSession]::Start()
+try {
+  if($foregroundMethod.Invoke($null,@()) -ne $foreground){throw 'corner stole focus'}
+  if($hitTest.Invoke($null,@($point)) -ne $underCorner){throw 'corner blocks pointer input'}
+  $fields=[Reflection.BindingFlags]'NonPublic,Instance'
+  $overlays=$session.GetType().GetField('overlays',$fields).GetValue($session)
+  if($overlays.Count -ne ([Windows.Forms.Screen]::AllScreens.Count*4)){throw 'missing screen corners'}
+  foreach($overlay in $overlays){
+    $styles=$overlay.GetType().GetProperty('CreateParams',$fields).GetValue($overlay,$null).ExStyle
+    if(($styles -band 0x080800a0) -ne 0x080800a0 -or $overlay.ShowInTaskbar -or -not $overlay.Visible){throw 'interactive or hidden corner'}
+    if($overlay.Text.Length -ne 0){throw 'overlay leaks into window listing'}
+    $image=[Drawing.Bitmap]::new($overlay.Width,$overlay.Height)
+    try {
+      $overlay.DrawToBitmap($image,[Drawing.Rectangle]::new(0,0,$image.Width,$image.Height))
+      $blue=0
+      for($y=0;$y -lt $image.Height;$y++){for($x=0;$x -lt $image.Width;$x++){$p=$image.GetPixel($x,$y);if($p.B -gt 180 -and $p.R -lt 130){$blue++}}}
+      if($blue -lt 200 -or $blue -gt ($image.Width*$image.Height/3)){throw 'incorrect corner drawing'}
+    } finally {$image.Dispose()}
+  }
+  [Console]::Out.WriteLine('native session verified')
+} finally {$session.Dispose()}
+if($overlays.Count -ne 0){throw 'corners retained after stop'}
+`);
+    expect(result.stderr).toBe(""); expect(result.stdout).toContain("native session verified");
+  }, 30_000);
+  it.runIf(process.platform === "win32")("exits the native helper on a physical Escape without sending keys to the user's desktop", async () => {
+    const result = await nativeSession(`
+$session=[AsterControlSession]::Start()
+$event=[Runtime.InteropServices.Marshal]::AllocHGlobal(32)
+try {
+  [Runtime.InteropServices.Marshal]::WriteInt32($event,0,27)
+  [Runtime.InteropServices.Marshal]::WriteInt32($event,8,0)
+  [Console]::Out.WriteLine('session ready')
+  $callback=$session.GetType().GetMethod('OnKeyboard',[Reflection.BindingFlags]'NonPublic,Instance')
+  $callback.Invoke($session,@(0,[IntPtr]256,$event))|Out-Null
+  Start-Sleep -Seconds 5
+  throw 'Escape failed to stop the helper'
+} finally {[Runtime.InteropServices.Marshal]::FreeHGlobal($event);$session.Dispose()}
+`);
+    expect(result.stderr).toBe(""); expect(result.stdout).toContain("session ready");
+  }, 30_000);
   it.runIf(process.platform === "win32")("compiles actual Win32/UIAutomation driver and denies unapproved targets", async () => {
     const controller = new WindowsComputerController({ getConfiguration: () => ({ ...DEFAULT_COMPUTER_USE_CONFIGURATION, enabled: true }) });
     try {
