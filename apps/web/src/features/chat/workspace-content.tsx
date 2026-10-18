@@ -996,6 +996,9 @@ export function ConversationWorkspace({
     useState<ProjectFileMention[]>([]);
   const [mentionQuery, setMentionQuery] = useState<MentionQuery | null>(null);
   const groupInstanceId = groupChat?.instanceId;
+  const [groupUsageConversation, setGroupUsageConversation] = useState<{ instanceId: string; conversationId: string } | null>(null);
+  const usageConversationId = groupInstanceId === undefined ? session.id
+    : groupUsageConversation?.instanceId === groupInstanceId ? groupUsageConversation.conversationId : null;
   const isGroupMentionOpen = groupChat !== null && mentionQuery !== null;
   const [groupMentionRoster, setGroupMentionRoster] = useState<{ instanceId: string; members: TeamChatMember[] } | null>(null);
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0);
@@ -1036,8 +1039,10 @@ export function ConversationWorkspace({
   const draftAttachmentPreviewUrlsRef = useRef<Record<string, string>>({});
   const [contextCompressionConfiguration, setContextCompressionConfiguration] =
     useState<ContextCompressionConfiguration>(DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION);
-  const [contextUsage, setContextUsage] =
-    useState<ConversationContextUsage | null>(null);
+  const [contextUsageMeasurement, setContextUsageMeasurement] = useState<{
+    conversationId: string; usage: ConversationContextUsage;
+  } | null>(null);
+  const contextUsage = contextUsageMeasurement?.conversationId === usageConversationId ? contextUsageMeasurement.usage : null;
   const [lastProviderUsage, setLastProviderUsage] = useState<{
     conversationId: string;
     usage: ConversationContextUsage;
@@ -1369,19 +1374,19 @@ export function ConversationWorkspace({
   );
 
   const loadContextUsage = useCallback(async (): Promise<void> => {
-    if (!active || groupInstanceId !== undefined) return;
+    if (!active || usageConversationId === null) return;
     const input = {
-      attachmentIds: draftAttachments.map((attachment) => attachment.id),
-      conversationId: session.id,
+      conversationId: usageConversationId,
       ...(usageModelId === undefined ? {} : { modelId: usageModelId }),
       ...(usageProviderId === undefined ? {} : { providerId: usageProviderId }),
       permissionMode,
-      ...(selectedConversationMentions.length === 0
+      ...(groupInstanceId === undefined ? { attachmentIds: draftAttachments.map((attachment) => attachment.id) } : {}),
+      ...(groupInstanceId !== undefined || selectedConversationMentions.length === 0
         ? {}
         : {
           referencedConversationIds: selectedConversationMentions.map((mention) => mention.id),
         }),
-      ...(activeProjectFileMentions.length === 0
+      ...(groupInstanceId !== undefined || activeProjectFileMentions.length === 0
         ? {}
         : {
           referencedProjectPaths: activeProjectFileMentions.map((mention) => mention.path),
@@ -1395,16 +1400,16 @@ export function ConversationWorkspace({
     try {
       const nextUsage = await agentClient.getConversationContextUsage(input);
       if (contextUsageRequestRef.current === requestId) {
-        setContextUsage(nextUsage);
+        setContextUsageMeasurement({ conversationId: usageConversationId, usage: nextUsage });
         // Keep the entire last completed measurement stable while the next request streams.
         if (nextUsage.providerCache?.latest != null) {
-          setLastProviderUsage({ conversationId: session.id, usage: nextUsage });
+          setLastProviderUsage({ conversationId: usageConversationId, usage: nextUsage });
         }
       }
     } catch {
       if (contextUsageRequestRef.current === requestId) {
         contextUsageDirtyRef.current = true;
-        setContextUsage(null);
+        setContextUsageMeasurement(null);
       }
     }
   }, [
@@ -1417,8 +1422,29 @@ export function ConversationWorkspace({
     draftAttachments,
     permissionMode,
     selectedConversationMentions,
-    session.id,
+    usageConversationId,
   ]);
+
+  useEffect(() => {
+    if (!active || groupInstanceId === undefined || groupUsageConversation?.instanceId === groupInstanceId) return;
+    let disposed = false;
+    void agentClient.getTeamChatCoordinationConversation({ teamInstanceId: groupInstanceId }).then(conversation => {
+      if (!disposed) setGroupUsageConversation({ instanceId: groupInstanceId, conversationId: conversation.id });
+    }).catch(reason => { if (!disposed) setOperationError(getUserErrorMessage(reason, "无法读取群聊协调对话")); });
+    return () => { disposed = true; };
+  }, [active, agentClient, groupInstanceId, groupUsageConversation?.instanceId]);
+
+  useEffect(() => {
+    if (groupInstanceId === undefined || usageConversationId === null) return;
+    return agentClient.onConversationRunEvent(event => {
+      const groupChanged = event.type === "collaboration.changed" && event.teamInstanceId === groupInstanceId;
+      const ownerChanged = "conversationId" in event && event.conversationId === usageConversationId
+        && (event.type === "run.finished" || event.type === "model.request_started" || event.type === "tool.completed");
+      if (!groupChanged && !ownerChanged) return;
+      contextUsageDirtyRef.current = true;
+      if (active) void Promise.resolve().then(loadContextUsage);
+    }, []);
+  }, [active, agentClient, groupInstanceId, usageConversationId, loadContextUsage]);
 
   const loadTimeline = useCallback(async (forceLatest = false): Promise<void> => {
     if (!forceLatest && timelineAfterSequenceRef.current !== null) return;
@@ -4282,8 +4308,8 @@ export function ConversationWorkspace({
           </div>
           {showContextUsage && active ? (
             <ProviderCacheStatus
-              key={session.id}
-              usage={lastProviderUsage?.conversationId === session.id
+              key={usageConversationId}
+              usage={lastProviderUsage?.conversationId === usageConversationId
                 ? lastProviderUsage.usage
                 : null}
             />
