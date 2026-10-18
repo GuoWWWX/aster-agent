@@ -91,6 +91,25 @@ describe("ConversationControl", () => {
     expect(emit).toHaveBeenCalledExactlyOnceWith({ type: "conversation.updated", conversation: summary });
     expect(localControlCommandSchema.safeParse({ command: "conversations.set_permission", input: { conversationId: conversation.id, permissionMode: "invalid" } }).success).toBe(false);
   });
+  it("preserves quick coordination through local control, ordinary permission changes and JSONL recovery", async () => {
+    const conversation = lifecycle.createConversation(null);
+    const summary = await execute({ command: "conversations.set_permission", input: {
+      conversationId: conversation.id, permissionMode: "full_access", coordinationMode: "parallel_queue",
+    } });
+    expect(summary).toMatchObject({ permissionMode: "full_access", coordinationMode: "parallel_queue" });
+    expect(emit).toHaveBeenCalledExactlyOnceWith({ type: "conversation.updated", conversation: summary });
+    await execute({ command: "conversations.set_permission", input: { conversationId: conversation.id, permissionMode: "full_access" } });
+    expect(database.getConversation(conversation.id).coordinationMode).toBe("parallel_queue");
+    const restored = new AgentDatabase(":memory:");
+    try {
+      new EventProjector(restored, new ThreadLog(directory)).projectConversation(conversation.id);
+      expect(restored.getConversation(conversation.id)).toMatchObject({ permissionMode: "full_access", coordinationMode: "parallel_queue" });
+    } finally { restored.close(); }
+    await execute({ command: "conversations.set_permission", input: {
+      conversationId: conversation.id, permissionMode: "full_access", coordinationMode: "direct",
+    } });
+    expect(database.getConversation(conversation.id).coordinationMode).toBe("direct");
+  });
   it("renames and archives the saved conversation while keeping its identity", async () => {
     const conversation = lifecycle.createConversation(null);
     await execute({ command: "conversations.rename", input: { conversationId: conversation.id, title: "后台全流程验收" } });

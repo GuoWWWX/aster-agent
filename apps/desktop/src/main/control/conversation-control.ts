@@ -56,7 +56,9 @@ export class ConversationControl {
       case "background_commands.read": return backgroundCommandOutputSchema.parse(this.runtime.readBackgroundCommand(command.input));
       case "background_commands.stop": return backgroundCommandSchema.parse(await this.runtime.stopBackgroundCommand(command.input.conversationId, command.input.commandId));
       case "conversations.set_permission": {
-        const conversation = conversationSummarySchema.parse(this.lifecycle.setConversationPermissionMode(command.input.conversationId, command.input.permissionMode));
+        const conversation = conversationSummarySchema.parse(this.lifecycle.setConversationPermissionMode(
+          command.input.conversationId, command.input.permissionMode, command.input.coordinationMode,
+        ));
         this.emit({ type: "conversation.updated", conversation });
         return conversation;
       }
