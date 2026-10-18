@@ -19,6 +19,9 @@ afterEach(() => { act(() => root?.unmount()); root = null; document.body.replace
 async function flush() { for (let i = 0; i < 15; i++) await Promise.resolve(); }
 async function fixture() {
   const client = new MockAgentClient(); const instanceId = crypto.randomUUID(); const memberId = crypto.randomUUID();
+  const profile = DEFAULT_AGENT_DIRECTORY_CONFIGURATION.agents.find(agent => !agent.isDefault)!;
+  const conversation = await client.createConversation({});
+  vi.spyOn(client, "listConversationHierarchy").mockResolvedValue([{ ...conversation, id: memberId, agentId: profile.id }]);
   const message: TeamChatMessage = {
     id: crypto.randomUUID(), teamInstanceId: instanceId, sequence: 1, content: "需求分析师你好", senderConversationId: null,
     senderName: "你", intent: "request", recipientConversationIds: [memberId], taskContextId: null, replyToId: null,
@@ -40,16 +43,26 @@ async function fixture() {
   const click = async (label: string) => { await act(async () => { document.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click(); await flush(); }); };
   const change = async (teamInstanceId = instanceId) => { await act(async () => { listener?.({ type: "collaboration.changed", conversationId: memberId, teamInstanceId }); await flush(); }); };
   await show();
-  return { client, instanceId, memberId, message, read, mark, show, click, change, setPage: (next: TeamChatPage) => { page = next; } };
+  return { client, instanceId, memberId, profile, message, read, mark, show, click, change, setPage: (next: TeamChatPage) => { page = next; } };
 }
 
 it("loads only when opened, displays routing outcomes and opens the existing focused side conversation", async () => {
   const f = await fixture(); expect(f.read).not.toHaveBeenCalled();
+  const image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB";
+  useAgentDirectoryStore.getState().updateAgent(f.profile.id, { avatar: { kind: "image", dataUrl: image, fileName: "member.png" } });
   await f.click("查看协调结果");
   expect(f.read).toHaveBeenCalledExactlyOnceWith({ teamInstanceId: f.instanceId, limit: 50 });
   const view = document.querySelector('[aria-label="协调结果"]')!;
-  expect(view.textContent).toContain(f.message.content); expect(view.textContent).toContain("交给被点名的需求分析师回应。");
-  expect(view.textContent).toContain("需求分析师"); expect(view.textContent).toContain("已分流");
+  expect(view.textContent).toContain(f.message.content); expect(view.textContent).not.toContain("交给被点名的需求分析师回应。");
+  const recipients = view.querySelector('[aria-label="接收成员"]')!;
+  expect(recipients.querySelector('[aria-label="需求分析师"] .agent-profile-avatar')).not.toBeNull();
+  expect(recipients.querySelector("img")?.getAttribute("src")).toBe(image);
+  expect(recipients.textContent).not.toContain("处理结束");
+  expect(view.querySelector("time")).toBeNull();
+  expect(view.textContent).not.toContain("已分流"); expect(view.textContent).not.toContain("查看完整过程");
+  const details = view.querySelector('[aria-label="查看这条消息的完整协调对话"]')!;
+  expect(details.closest("li")?.firstElementChild?.contains(details)).toBe(true);
+  expect(details.getAttribute("aria-description")).toContain("已分流");
   expect(view.textContent).not.toContain("不应出现在结果视图"); expect(f.mark).not.toHaveBeenCalled();
   await f.click("查看这条消息的完整协调对话");
   expect(useWorkbenchUiStore.getState().teamChatCoordinationTarget).toMatchObject({ instanceId: f.instanceId, messageId: f.message.id,
@@ -79,7 +92,9 @@ it("distinguishes pending, paused, cancelled, notification and member delivery f
     { ...f.message, deliveries: [{ ...f.message.deliveries[0]!, status: "failed", error: "成员请求失败" }] },
   ], nextBeforeSequence: 1, userReadSequence: 0, memberReadSequence: 0 });
   await f.click("查看协调结果"); const text = document.querySelector('[aria-label="协调结果"]')!.textContent;
-  for (const label of ["正在协调", "已暂停", "已取消", "仅通知", "成员请求失败", "查看更早记录请打开完整对话"]) expect(text).toContain(label);
+  const descriptions = [...document.querySelectorAll('[aria-label="查看这条消息的完整协调对话"]')].map(button => button.getAttribute("aria-description")).join(" ");
+  for (const label of ["正在协调", "已暂停", "已取消", "仅通知"]) expect(descriptions).toContain(label);
+  for (const label of ["成员请求失败", "查看更早记录请打开完整对话"]) expect(text).toContain(label);
   expect(text).not.toContain("任务已完成");
 });
 

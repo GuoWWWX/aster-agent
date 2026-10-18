@@ -51,7 +51,10 @@ it("opens a routing result in the ordinary coordination sidebar while keeping th
     composer.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="查看协调结果"]')!.click(); await flush(); });
-  expect(document.querySelector('[aria-label="协调结果"]')?.textContent).toContain("交给需求分析师回应。");
+  const result = document.querySelector('[aria-label="协调结果"]')!;
+  expect(result.textContent).toContain(message.content);
+  expect(result.textContent).not.toContain("交给需求分析师回应。");
+  expect(result.querySelector('[aria-label="接收成员"] .agent-profile-avatar')).not.toBeNull();
   await act(async () => { document.querySelector<HTMLButtonElement>('[aria-label="查看这条消息的完整协调对话"]')!.click(); await flush(); });
   expect(container.querySelector('.workbench-main [aria-label="团队群聊"]')).toBe(group);
   expect(composer.value).toBe("保留群聊草稿");
