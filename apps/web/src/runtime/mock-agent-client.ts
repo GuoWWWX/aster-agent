@@ -240,7 +240,7 @@ function createMockUuid(sequence: number): string {
 }
 
 function createConversationTitle(content: string): string {
-  const title = content.trim().replaceAll(/\s+/g, " ").slice(0, 36);
+  const title = Array.from(content.trim().replaceAll(/\s+/g, " ")).slice(0, 20).join("");
   return title.length > 0 ? title : "新会话";
 }
 
@@ -2491,6 +2491,7 @@ export class MockAgentClient implements AgentClient {
     if (
       !this.conversationParents.has(conversation.id) &&
       !this.inheritedTimelines.has(conversation.id) &&
+      /^新会话(?: \d+)?$/u.test(conversation.title) &&
       !timeline.some(
         (item) => item.kind === "message" && item.role === "user" && item.id !== userMessage.id,
       )

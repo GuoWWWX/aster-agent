@@ -648,7 +648,7 @@ describe("AgentCommunicationTool", () => {
           activeSubagentCount: 0,
           conversationId: target.id,
           status: "running",
-          title: "分析方案",
+          title: "架构师",
         })],
       },
     });

@@ -22,6 +22,8 @@ import {
 } from "@agent/protocol";
 
 import { AgentRuntime } from "../agent/agent-runtime.js";
+import { ConversationTitleGenerator } from "../agent/conversation-title-generator.js";
+import { ModelAdapterRegistry } from "../model/model-adapter-registry.js";
 import { backupLegacyTeamChatDatabase, TeamChatJournal } from "../storage/team-chat-journal.js";
 import { SkillRuntime } from "../agent/skill-runtime.js";
 import { SYSTEM_SKILLS } from "../agent/prompts/prompt-assets.js";
@@ -450,6 +452,7 @@ async function initializeServices(): Promise<DesktopServices> {
     { generateTurnSummaries: true },
     conversationLifecycle,
     new ComputerUseTool(computerUse, computerUseConfiguration),
+    new ConversationTitleGenerator(new ModelAdapterRegistry()),
   );
   const teamWorkItems = new TeamWorkItemRuntime(
     database,

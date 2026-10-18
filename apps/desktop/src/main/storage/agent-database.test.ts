@@ -18,6 +18,23 @@ afterEach(async () => {
 });
 
 describe("AgentDatabase", () => {
+  it("keeps a manual title set before the first message", () => {
+    const database = new AgentDatabase(":memory:");
+    try {
+      const conversation = database.createConversation(null);
+      database.renameConversation(conversation.id, "手动命名");
+      expect(database.createRunWithUserMessage(conversation.id, "这是首条消息", "fixture").conversation.title).toBe("手动命名");
+    } finally { database.close(); }
+  });
+  it.each(["请帮我设计一个支持团队并行协作和消息查询的项目管理页面", "😀".repeat(24)])("uses at most twenty characters without appending an ellipsis for the first-message title: %s", content => {
+    const database = new AgentDatabase(":memory:");
+    try {
+      const conversation = database.createConversation(null);
+      const run = database.createRunWithUserMessage(conversation.id, content, "fixture");
+      expect(run.conversation.title).toBe(Array.from(content).slice(0, 20).join(""));
+      expect(run.conversation.title).not.toMatch(/\.\.\.|…/u);
+    } finally { database.close(); }
+  });
   it("interrupts yielded command receipts after restart without discarding logs or changing confirmed results", () => {
     const database = new AgentDatabase(":memory:");
     const conversation = database.createConversation(null);

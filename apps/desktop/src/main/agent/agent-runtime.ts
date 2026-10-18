@@ -94,6 +94,7 @@ import { ThreadLog, type ThreadLogEventInput } from "../storage/thread-log.js";
 import { ThreadLogLegacyImporter } from "../storage/thread-log-legacy-importer.js";
 import { RunCoordinator } from "./run-coordinator.js";
 import { ModelGateway } from "./model-gateway.js";
+import type { ConversationTitleGenerator } from "./conversation-title-generator.js";
 import { TaskListTool } from "../tasks/task-list-tool.js";
 import { ConversationAttachmentTool } from "../tools/conversation-attachment-tool.js";
 import { WebSearchTool } from "../tools/web-search-tool.js";
@@ -1072,6 +1073,7 @@ export class AgentRuntime {
   private readonly browserToolPlugin: BrowserToolPlugin | null;
 
   private readonly generateTurnSummaries: boolean;
+  private readonly titleJobs = new Map<string, { controller: AbortController; finished: Promise<void> }>();
 
   private readonly toolHandlers: ToolHandlerRegistry<RuntimeToolContext>;
 
@@ -1101,6 +1103,7 @@ export class AgentRuntime {
     features: { generateTurnSummaries?: boolean } = {},
     private readonly conversationLifecycle: ConversationLifecycleService | null = null,
     private readonly computerUseTool: ComputerUseTool | null = null,
+    private readonly titleGenerator: Pick<ConversationTitleGenerator, "generate"> | null = null,
   ) {
     this.modelGateway = new ModelGateway(model);
     this.userQuestions = new UserQuestionService({
@@ -2192,6 +2195,11 @@ export class AgentRuntime {
   ): RunAccepted {
     if (this.stoppingRuns) throw new Error("Agent execution is stopping.");
     const { configuration, input } = prepared;
+    const original = this.titleGenerator === null ? null : this.database.getConversation(input.conversationId);
+    const shouldName = original !== null && original.threadKind === "agent" && original.parentConversationId === null
+      && original.teamId === null && original.coordinationTeamInstanceId === undefined && titleOverride === undefined
+      && pendingMessageId === undefined && input.content.trim().length > 0 && /^新会话(?: \d+)?$/u.test(original.title)
+      && this.database.countUserMessages(original.id) === 0;
     const executionSnapshot = createRunExecutionSnapshot({
       configuration,
       contextCompressionConfiguration: prepared.contextCompressionConfiguration,
@@ -2299,7 +2307,27 @@ export class AgentRuntime {
       this.database.finishRun(creation.runId, "cancelled", "Run scheduling was rejected.");
       throw error;
     }
-    return this.schedulePreparedRun(creation, prepared, emit);
+    const scheduled = this.schedulePreparedRun(creation, prepared, emit);
+    if (shouldName) this.generateConversationTitle(creation.conversation, prepared, emit);
+    return scheduled;
+  }
+
+  private generateConversationTitle(conversation: ConversationSummary, prepared: PreparedConversationMessage, emit: RunEventEmitter): void {
+    const generator = this.titleGenerator;
+    if (generator === null) return;
+    const controller = new AbortController();
+    const finished = Promise.resolve().then(() => generator.generate({ conversationId: conversation.id,
+      content: prepared.input.content, configuration: prepared.configuration, signal: controller.signal,
+    })).then(title => {
+      if (controller.signal.aborted || this.stoppingRuns || !this.database.hasConversation(conversation.id)) return;
+      const current = this.database.getConversation(conversation.id);
+      if (current.isArchived || current.title !== conversation.title) return;
+      const updated = (this.conversationLifecycle ?? this.database).renameConversation(conversation.id, title);
+      this.emit(emit, { type: "conversation.updated", conversation: updated });
+    }).catch(error => {
+      if (!controller.signal.aborted) reportMainError(toMainAgentError(error, { operation: "conversation.title.generate" }), error);
+    }).finally(() => { this.titleJobs.delete(conversation.id); });
+    this.titleJobs.set(conversation.id, { controller, finished });
   }
 
   private schedulePreparedRun(
@@ -2532,6 +2560,8 @@ export class AgentRuntime {
   public stopAllRuns(): Promise<void> {
     if (this.stopRunsPromise !== null) return this.stopRunsPromise;
     this.stoppingRuns = true;
+    const titleJobs = [...this.titleJobs.values()];
+    for (const job of titleJobs) job.controller.abort();
     for (const wake of this.pendingAgentWakes.values()) clearTimeout(wake.timer);
     this.pendingAgentWakes.clear();
     const errors: unknown[] = [];
@@ -2544,7 +2574,7 @@ export class AgentRuntime {
     } catch (error) {
       errors.push(error);
     }
-    this.stopRunsPromise = Promise.allSettled([this.runCoordinator.cancelAll()])
+    this.stopRunsPromise = Promise.allSettled([this.runCoordinator.cancelAll(), ...titleJobs.map(job => job.finished)])
       .then(results => { for (const result of results) if (result.status === "rejected") errors.push(result.reason); })
       .then(() => { if (errors.length > 0) throw new AggregateError(errors, "Run shutdown persistence failed."); })
       .finally(() => { this.stopRunsPromise = null; });
@@ -2573,6 +2603,7 @@ export class AgentRuntime {
     }
     // Fence all owned conversations before aborting: receipts may arrive during cancellation.
     for (const id of ids) {
+      this.titleJobs.get(id)?.controller.abort();
       this.setExecutionPaused(id, true);
       this.database.collaboration.cancelPending(id);
     }

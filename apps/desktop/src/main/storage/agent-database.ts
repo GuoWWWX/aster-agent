@@ -6752,7 +6752,7 @@ export class AgentDatabase {
       status: "completed"
     });
     const userMessageCount = this.countUserMessages(record.message.conversationId);
-    const nextTitle = userMessageCount === 0 && !this.hasStableTeamParticipantTitle(conversation)
+    const nextTitle = userMessageCount === 0 && !this.hasStableTeamParticipantTitle(conversation) && /^新会话(?: \d+)?$/u.test(conversation.title)
       ? this.createTitleFromMessage(
           record.message.content || attachments[0]?.name || "新会话"
         )
@@ -6890,7 +6890,7 @@ export class AgentDatabase {
     const userMessageCount = this.countUserMessages(conversationId);
     const nextTitle = this.hasStableTeamParticipantTitle(conversation)
       ? conversation.title
-      : titleOverride ?? (userMessageCount === 0
+      : titleOverride ?? (userMessageCount === 0 && /^新会话(?: \d+)?$/u.test(conversation.title)
           ? this.createTitleFromMessage(content || attachments[0]?.name || "新会话")
           : conversation.title);
 
@@ -11741,7 +11741,7 @@ export class AgentDatabase {
     return attachments;
   }
 
-  private countUserMessages(conversationId: string): number {
+  public countUserMessages(conversationId: string): number {
     const row = this.database
       .prepare(
         `SELECT COUNT(*) AS count FROM model_messages
@@ -11833,7 +11833,7 @@ export class AgentDatabase {
 
   private createTitleFromMessage(content: string): string {
     const normalized = content.replace(/\s+/g, " ").trim();
-    return normalized.length <= 32 ? normalized : `${normalized.slice(0, 32)}...`;
+    return Array.from(normalized.slice(0, 40)).slice(0, 20).join("");
   }
 
   private insertTimelineItem(item: ConversationTimelineItem): void {
