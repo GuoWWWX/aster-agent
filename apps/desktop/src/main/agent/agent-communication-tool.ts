@@ -59,7 +59,7 @@ const sendMessageArgumentsSchema = z.object({
   content: z.string().trim().min(1).max(20_000).describe("Message body to send to the target Agent."),
   conversationId: z.string().uuid().describe("Target Agent conversation UUID."),
   expectReply: z.boolean().default(true)
-    .describe("Whether the target Agent should automatically return a bounded completion receipt to this conversation."),
+    .describe("Use true only for an assignment or question requiring a response. Use false for completion results, progress and notifications; true would create another return receipt."),
   replyInstruction: z.string().trim().min(1).max(1_000).optional()
     .describe("Optional guidance for the concise completion receipt, such as required conclusions, evidence, or risks. Full details remain in the target conversation."),
 }).strict();
@@ -121,7 +121,7 @@ export class AgentCommunicationTool {
         parameters: modelToolParameters(readConversationArgumentsSchema),
       },
       {
-        description: "Send a persistent message to another Agent conversation or to a reusable completed Subagent. A running recipient receives it before the next model turn; an idle recipient starts automatically. An explicitly ended Subagent is read-only. With expectReply=true, the recipient returns only a bounded completion receipt and keeps its full answer in its own conversation; use replyInstruction to request receipt focus. Use expectReply=false for progress updates or notifications.",
+        description: "Send a persistent message to another Agent conversation or to a reusable completed Subagent. A running recipient receives it before the next model turn; an idle recipient starts automatically. An explicitly ended Subagent is read-only. With expectReply=true, the recipient returns only a bounded completion receipt and keeps its full answer in its own conversation; use replyInstruction to request receipt focus. Use expectReply=false for completion results, progress updates and notifications that ask for no further work. Do not send routine receipt acknowledgements or request another receipt for a completion result; use the incoming request's automatic receipt instead when applicable.",
         name: SEND_AGENT_MESSAGE_TOOL_NAME,
         parameters: modelToolParameters(sendMessageArgumentsSchema),
       },

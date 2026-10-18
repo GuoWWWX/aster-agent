@@ -132,6 +132,7 @@ describe("group execution integration", () => {
       expect(context).toContain('"baseAgent":{"name":"通用开发 Agent","role":"通用实现能力"}');
       expect(context).toContain('"role":"本群前端实现","isLead":false');
       expect(context).toContain("不把文件复制到自己工作区");
+      expect(context).toContain("没有剩余要求时直接结束");
       expect(context).toContain("历史概要用于查重"); expect(context).not.toContain("历史决策不应自动恢复"); expect(context).not.toContain("历史动作不应自动恢复");
     } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
   });
@@ -294,6 +295,7 @@ describe("group execution integration", () => {
       const page = db.collaboration.readMessages({ teamInstanceId: instance.id });
       const publicReplies = page.messages.filter(message => recipients.includes(message.senderConversationId ?? ""));
       if (input.messages.some(message => message.content.includes("[Team group request receipt | reference data]"))) {
+        expect(input.messages.at(-1)?.content).toContain("负责人，请公开邀请两位讨论后汇总");
         if (publicReplies.length === 2 && !page.messages.some(message => message.content === "两位的意见已汇总")) {
           return { content: "", finishReason: "tool_calls", toolCalls: [{ id: "synthesis", name: "post_team_message",
             arguments: JSON.stringify({ content: "两位的意见已汇总", intent: "notify", replyToId: original.id }) }] };
@@ -658,7 +660,8 @@ describe("group execution integration", () => {
       expect(followUp.depth).toBe(2);
       expect(followUp.deliveries[0]?.status).toBe("completed");
       for (const request of model.requests.filter(request => request.messages.some(message => message.content.includes("[Team group request receipt | reference data]")))) {
-        expect(request.messages.at(-1)?.content).toContain("本轮明确投递的群聊请求");
+        expect(request.messages.at(-1)?.content).toContain("本轮群聊协作反馈");
+        expect(request.messages.at(-1)?.content).toContain("不是新的群聊请求");
       }
     } finally { await tools.dispose(); db.close(); }
   });
@@ -722,14 +725,24 @@ describe("group execution integration", () => {
     expect(db.collaboration.pendingDeliveries()).toEqual([]);
     } finally { await tools.dispose(); db.close(); }
   });
-  it("returns one bounded receipt to the original delegator without publishing private work", async () => {
+  it.each(["public", "private"])("returns one bounded receipt without requiring another public answer (%s result)", async publication => {
     const { db, lead, member, instance, runtime, model, tools } = await fixture(true);
     model.delegateTo = member.id;
     model.keepWorkingAfterPost = true;
+    const previous = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "此前要求汇总的旧问题", intent: "notify", requestId: randomUUID() }, null);
+    if (publication === "private") {
+      const completeTurn = model.completeTurn.bind(model);
+      vi.spyOn(model, "completeTurn").mockImplementation(async input => {
+        const result = await completeTurn(input);
+        return result.toolCalls.some(call => call.name === "post_team_message" && z.object({ intent: z.string() }).parse(JSON.parse(call.arguments)).intent === "notify")
+          ? { content: "成员私有的执行总结。", finishReason: "stop", toolCalls: [] }
+          : result;
+      });
+    }
     try {
       await new Promise<void>((resolve, reject) => {
         let completed = 0;
-        runtime.postTeamChat({ teamInstanceId: instance.id, content: "委派验收", requestId: crypto.randomUUID() }, event => {
+        runtime.postTeamChat({ teamInstanceId: instance.id, content: "委派验收", replyToId: previous.id, requestId: crypto.randomUUID() }, event => {
           if (event.type === "run.finished") {
             if (event.status !== "completed") reject(new Error(event.error ?? "Run failed"));
             else if (++completed === 3) resolve();
@@ -737,18 +750,33 @@ describe("group execution integration", () => {
         });
       });
       const page = db.collaboration.readMessages({ teamInstanceId: instance.id });
-      expect(page.messages.map(message => message.content)).toEqual(["委派验收", "请查证文件", "已核实文件内容为 evidence。"]);
+      page.messages = page.messages.filter(message => message.id !== previous.id);
+      expect(page.messages.map(message => message.content)).toEqual(publication === "public"
+        ? ["委派验收", "请查证文件", "已核实文件内容为 evidence。"]
+        : ["委派验收", "请查证文件"]);
       const delegated = page.messages[1]!; const receiptId = delegated.deliveries[0]!.id;
       expect(db.listTimeline(lead.id).filter(item => item.id === receiptId)).toHaveLength(1);
       const receipt = db.listTimeline(lead.id).find(item => item.id === receiptId);
       expect(receipt).toMatchObject({ messageType: "agent_result", taskId: receiptId, executionStatus: "completed" });
       expect(receipt && "content" in receipt ? receipt.content : "").not.toContain("成员私有的执行总结");
       const content = receipt && "content" in receipt ? receipt.content : "";
-      const result = z.object({ publicMessageIds: z.array(z.string()) }).parse(JSON.parse(content.slice(content.indexOf("\n") + 1)));
-      expect(result.publicMessageIds).toEqual([page.messages[2]!.id]);
+      const result = z.object({ publicMessageIds: z.array(z.string()), userRequestMessageId: z.string() }).parse(JSON.parse(content.slice(content.indexOf("\n") + 1)));
+      expect(result.publicMessageIds).toEqual(publication === "public" ? [page.messages[2]!.id] : []);
+      expect(result.userRequestMessageId).toBe(page.messages[0]!.id);
+      expect(result.userRequestMessageId).not.toBe(page.messages[0]!.rootMessageId);
       expect(content).not.toContain("publicReplies"); expect(content).not.toContain("已核实文件内容为 evidence。");
       expect(content).toContain("read_team_messages");
       expect(content).toContain("status 不表示工作或验收通过");
+      expect(content).toContain("没有剩余要求时直接结束");
+      expect(content).toContain("尚未公开的必要结果");
+      const receiptRequest = model.requests.find(input => input.messages.some(message => message.content.includes("[Team group request receipt | reference data]")))!;
+      expect(receiptRequest.messages[0]?.content).toContain("Do not repeat a member's complete public answer");
+      expect(receiptRequest.messages[0]?.content).not.toContain("verify the returned work, and summarize it yourself.");
+      expect(receiptRequest.messages.at(-1)?.content).toContain("不是新的群聊请求");
+      expect(receiptRequest.messages.at(-1)?.content).toContain("用户明确要求由你汇总、验收或交付时");
+      expect(receiptRequest.messages.at(-1)?.content).toContain('"content":"委派验收"');
+      expect(receiptRequest.messages.at(-1)?.content).not.toContain('"content":"请查证文件"');
+      expect(receiptRequest.messages.at(-1)?.content).not.toContain("此前要求汇总的旧问题");
       expect(db.collaboration.receiptsToRecover()).toEqual([]);
     } finally { await tools.dispose(); db.close(); }
   });

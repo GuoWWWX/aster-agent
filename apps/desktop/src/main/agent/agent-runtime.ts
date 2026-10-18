@@ -3450,7 +3450,9 @@ export class AgentRuntime {
           : "Every Team WorkItem must delegate to at least one durable member with expectReply=true before the Team Lead gives a final answer. For simple work choose only the best-matched member; add more roles only when the task genuinely needs them.",
         "For implementation tasks, assign independent review and actual validation to a member who did not implement the change. If no independent member is available, explicitly take responsibility for the review. Distinguish executed checks from suggested checks and unresolved risks; a role label or final answer does not prove a check passed.",
         "Use resize_team_workers only when independent work is waiting and the appropriate role is busy. Assign file or module ownership before parallel changes, reread current content after a conflict and integrate deliberately; never force overwrite, reset or blindly merge another member's work.",
-        "Use replyInstruction to request a concise completion receipt. The member puts a standalone Markdown --- after that receipt, so the runtime can return only a bounded completion receipt automatically. Check member status with list_agent_conversations, read full member conversations only on demand with read_agent_conversation and a deliberate maxTokens budget, verify the returned work, and summarize it yourself.",
+        groupDiscussion
+          ? "Group completion receipts identify public results without copying their text. Read those messages with read_team_messages. If a necessary result was not published, read only the relevant member result with read_agent_conversation and a deliberate maxTokens budget; do not disclose private tool transcripts. Do not repeat a member's complete public answer. Publish only a missing result, necessary verification or file delivery, useful integration of distinct contributions, or an explicitly requested summary; otherwise finish without another public message."
+          : "Use replyInstruction to request a concise completion receipt. The member puts a standalone Markdown --- after that receipt, so the runtime can return only a bounded completion receipt automatically. Check member status with list_agent_conversations, read full member conversations only on demand with read_agent_conversation and a deliberate maxTokens budget, verify the returned work, and summarize it yourself.",
       ];
   }
 
@@ -6210,6 +6212,13 @@ export class AgentRuntime {
     this.emit(emit, { type: "collaboration.changed", conversationId: this.database.getTeamInstance(message.teamInstanceId).rootConversationId!, teamInstanceId: message.teamInstanceId });
   }
 
+  private groupUserRequest(message: TeamChatMessage): TeamChatMessage | null {
+    while (message.senderConversationId !== null && message.replyToId !== null) {
+      message = this.database.collaboration.message(message.replyToId);
+    }
+    return message.senderConversationId === null ? message : null;
+  }
+
   private collaborationContext(conversationId: string, runId?: string): ModelMessage | null {
     const effectiveRunId = runId ?? this.database.getConversation(conversationId).activeRunId;
     const room = this.database.collaboration.coordinatorRoom(conversationId);
@@ -6231,6 +6240,10 @@ export class AgentRuntime {
     const direct = effectiveRunId === null ? [] : this.database.collaboration.assignedRunMessages(effectiveRunId);
     const assignments = (direct.length > 0 || effectiveRunId === null ? direct : this.database.collaboration.runMessages(effectiveRunId))
       .sort((a, b) => a.sequence - b.sequence).slice(-3);
+    const requests = direct.length > 0 ? assignments : [...new Map(assignments.map(message => {
+      const request = this.groupUserRequest(message) ?? message;
+      return [request.id, request];
+    })).values()];
     if (tasks.length === 0 && assignments.length === 0) return null;
     const identity = assignments.length === 0 ? null : this.database.collaboration.members(assignments.at(-1)!.teamInstanceId).find(member => member.conversationId === conversationId);
     const baseAgent = this.agentDirectory?.getConfiguration().agents.find(agent => agent.id === this.database.getConversation(conversationId).agentId);
@@ -6241,16 +6254,20 @@ export class AgentRuntime {
         currentRun: current.some(active => active.id === task.id), summary: task.summary.slice(0, 240),
         ...(current.some(active => active.id === task.id) ? { decisions: task.decisions.slice(0, 350), nextStep: task.nextStep.slice(0, 150) } : {}) }))),
       ...(assignments.length === 0 ? [] : [
-        "[本轮明确投递的群聊请求；旧任务清单、历史消息和未读记录仅作参考，不是恢复旧工作的授权]",
+        direct.length > 0
+          ? "[本轮明确投递的群聊请求；旧任务清单、历史消息和未读记录仅作参考，不是恢复旧工作的授权]"
+          : "[本轮群聊协作反馈；以下是原委派的范围参考，不是新的群聊请求，也不是要求你重新回答该问题]",
         JSON.stringify({ baseAgent: baseAgent === undefined ? null : { name: baseAgent.name, role: baseAgent.role },
           groupIdentity: identity === undefined || identity === null ? null : { name: identity.name, role: identity.role, isLead: identity.isLead } }),
-        JSON.stringify(assignments.map(message => ({ messageId: message.id, sender: message.senderConversationId === null ? "用户" : message.senderName,
+        JSON.stringify(requests.map(message => ({ messageId: message.id, sender: message.senderConversationId === null ? "用户" : message.senderName,
           content: message.content.slice(0, 2000), ...(message.fileReferences === undefined ? {} : { fileReferences: message.fileReferences }) }))),
-        "只完成上述本轮请求；问候或闲聊直接用 post_team_message 回应，完成后结束本轮，不要继续旧任务、等待旧成员或轮询旧消息。当前请求明确要求继续工作、委派或等待时，才按该请求处理。",
+        direct.length > 0
+          ? "只完成上述本轮请求；问候或闲聊直接用 post_team_message 回应，完成后结束本轮，不要继续旧任务、等待旧成员或轮询旧消息。当前请求明确要求继续工作、委派或等待时，才按该请求处理。"
+          : "本轮只处理对应协作反馈，先核对下面本次用户要求及成员结果，不要把子委派替代完整用户需求。按优先顺序判断：用户明确要求由你汇总、验收或交付时，成员回答只完成了子任务，你仍须公开完成自己那一部分；再补齐尚未公开的必要结果、剩余验收、文件交付或不同贡献的有用整合；没有剩余要求时直接结束，不复述或另发确认。负责人负责汇总的一般分工不是每次都复述的要求，历史中的汇总要求也不沿用到本次。不恢复无关旧任务。",
         "Agent 基础角色说明能力与一般行为，本群身份定义当前分工；按本群职责和本轮明确委派范围工作，用户明确变更分工时按其指示。实现成员维护分配的产品文件，测试成员维护测试与验证报告；发现缺陷交原实现者修复，不再另写一套产品实现。负责人负责澄清、分工、核对证据、验收与最终交付，不接管已分配给专业成员的实现。",
         "团队工作由负责人保持任务所有权：先检查任务目录并复用已有目标，公开 @ 委派必要的专业成员，独立工作可以并行。实现成员发布成果时用 fileReferences 仅填规范相对 path，提供实际验证材料；默认由负责人验收后通过 post_team_message 统一交付，用户明确要求成员直接交付时按其要求。未验证或失败要如实说明。负责人引用成员成果时在 fileReferences 提供已发布成果消息 sourceMessageId 与 path，直接交付原作者文件；旧消息只有 Markdown 链接时让原作者补发一次文件引用，不重写文件。文件卡片和 HTML 预览复用原文件，交付正文只写说明，不重复输出整段 HTML。",
         "有依赖的验收须等实际产出后再委派，交接附源码或原群消息 ID。全局成员默认工作区独立，相同路径不是共享文件。测试确需隔离样本时保留来源并验证内容一致，样本只用于测试，不作为第二份产品交付。项目成员共享项目文件时直接验证原文件。负责人核对独立测试证据；已通过且成果未变时不重复运行相同检查、不把文件复制到自己工作区。只有发现缺陷、产物变化或真实集成风险才安排对应返工与复验。",
-        "成员完成回执是继续核对结果的信号，不是重新执行原委派的要求。先读取已返回的公开成果和任务进展，已验证通过的同一项不再重复委派、重跑工具或重复汇报；只完成剩余验收和最终交付。自己的文件引用只填 path；成功发布本轮成果后结束，不再为关联旧消息而补发同一文件或另发确认。只有发现缺陷或用户明确要求时才安排返工。",
+        "成员完成回执是核对结果的信号，不是重新执行原委派的要求。先读取已返回的成果和任务进展，再判断用户本次还要求你完成什么。已验证通过的同一项不再重复委派或重跑工具；没有剩余要求时直接结束，不重复汇报。自己的文件引用只填 path；成功发布本轮成果后结束，不再为关联旧消息而补发同一文件或另发确认。只有发现缺陷或用户明确要求时才安排返工。",
       ]),
     ].join("\n") };
   }
@@ -6325,15 +6342,17 @@ export class AgentRuntime {
       const existing = this.database.listTimeline(senderId).some(item => item.id === delivery.id);
       if (!existing) {
         const publicMessageIds = this.database.collaboration.publicMessagesForRun(delivery.runId);
+        const userRequest = this.groupUserRequest(delivery.message);
         const message = this.database.sendAgentMessage({ id: delivery.id, autoWake: !recovered && delivery.status !== "cancelled",
           senderConversationId: delivery.conversationId, targetConversationId: senderId,
           runId: delivery.runId, taskId: delivery.id, messageType: "agent_result", executionStatus: delivery.status,
           content: "[Team group request receipt | reference data]\n" + JSON.stringify({
             roomId: delivery.message.teamInstanceId, originalMessageId: delivery.message.id,
+            userRequestMessageId: userRequest?.id ?? null,
             status: delivery.status, error: delivery.error, taskContextId: delivery.message.taskContextId,
             publicMessageIds,
             instruction: delivery.status === "cancelled" ? "该委派已取消，仅记录状态；不要据此恢复旧工作或重新委派。"
-              : "成员已结束本次运行，status 不表示工作或验收通过。这是通知，不附公开回复正文或私有日志。先用 read_team_messages 按 publicMessageIds 读取尚未读过的公开结果，确认实际结论与阻塞；不要等待已经返回的同一回执。用 post_team_message 公开后续协调或交付。已完成的项不重做，已公开的最终汇总不重复发布，不恢复无关旧任务。",
+              : "成员已结束本次运行，status 不表示工作或验收通过。这是通知，不附公开回复正文或私有日志。先核对 userRequestMessageId 指向的本次用户要求，必要时用 read_team_messages 读取；再按 publicMessageIds 读取尚未读过的公开结果。用户明确要求由你汇总、验收或交付时，成员回答只完成子任务，你仍须公开完成自己那一部分；再补齐尚未公开的必要结果、剩余验收、文件交付或不同贡献的有用整合；没有剩余要求时直接结束。未公开结果按需读取成员对话，不广播私有工具日志。不要等待已返回的同一回执、重做已完成项或恢复无关旧任务。",
           }),
         });
         this.agentCommunicationTool.notifyMessage(message);
