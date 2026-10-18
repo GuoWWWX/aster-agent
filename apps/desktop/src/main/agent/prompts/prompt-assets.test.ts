@@ -64,67 +64,35 @@ describe("prompt assets", () => {
   it("bundles distinct, valid system skills", () => {
     const names = SYSTEM_SKILLS.map((content) => parseSkillMarkdown(content).metadata.name);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toEqual(["browser-use", "image-view", "code-review", "debugging"]);
+    expect(names).toEqual(["browser-use", "image-view", "code-review", "debugging", "terminal-use", "ui-verification"]);
   });
-  it("loads the stable base prompt from bundled Markdown", () => {
-    expect(BASE_SYSTEM_PROMPT).toContain("You are a local coding Agent.");
-    expect(BASE_SYSTEM_PROMPT).toContain("# Response Language");
-    expect(BASE_SYSTEM_PROMPT).toContain("# Commands and Task Management");
-    expect(BASE_SYSTEM_PROMPT).toContain("# Command and Terminal Choice");
-    expect(BASE_SYSTEM_PROMPT).toContain("# Browser Choice");
-    expect(BASE_SYSTEM_PROMPT).toContain("# HTML Presentations");
-    expect(BASE_SYSTEM_PROMPT).toContain("call `present_html` with the existing entry file's workspace-relative `path`");
-    expect(BASE_SYSTEM_PROMPT).toContain("File-edit tool records show only their diffs");
-    expect(BASE_SYSTEM_PROMPT).toContain("Once the HTML code block is complete, it displays a preview by default");
-    expect(BASE_SYSTEM_PROMPT).toContain("preview/source panel before the final explanation");
-    expect(BASE_SYSTEM_PROMPT).toContain("Place final inline HTML deliverables before their explanatory text");
-    expect(BASE_SYSTEM_PROMPT).toContain("# Conflict Recovery");
-    expect(BASE_SYSTEM_PROMPT).toContain(
-      "The application language is Simplified Chinese (zh-CN).",
-    );
-    expect(BASE_SYSTEM_PROMPT).toContain(
-      "Use `run_command` with its default `batch` mode for every finite non-interactive command",
-    );
-    expect(BASE_SYSTEM_PROMPT).toContain("Use `run_command` with `mode=service` only");
-    expect(BASE_SYSTEM_PROMPT).toContain("may return `running` with a `commandId`");
-    expect(BASE_SYSTEM_PROMPT).toContain("call `read_command_output` with that same ID");
-    expect(BASE_SYSTEM_PROMPT).toContain("Reuse the returned output offsets");
-    expect(BASE_SYSTEM_PROMPT).not.toContain("tool returns to you only after the process really exits");
-    expect(BASE_SYSTEM_PROMPT).not.toContain("all results return before you continue analysis");
-    expect(BASE_SYSTEM_PROMPT).toContain("do not wait for a service to exit");
-    expect(BASE_SYSTEM_PROMPT).toContain(
-      "A terminal tab opened manually by the user is not automatically owned by this conversation",
-    );
-    expect(BASE_SYSTEM_PROMPT).toContain("Pass `expectedContext=ssh` with every later remote command");
-    expect(BASE_SYSTEM_PROMPT).toContain("successful empty result when nothing matches");
-    expect(BASE_SYSTEM_PROMPT).toContain("prefer `replace_in_file`");
-    expect(BASE_SYSTEM_PROMPT).toContain("standard `---/+++` unified diff");
-    expect(BASE_SYSTEM_PROMPT).toContain("`*** Update File: <path>`");
-    expect(BASE_SYSTEM_PROMPT).toContain("successful build alone does not verify functional behavior");
-    expect(BASE_SYSTEM_PROMPT).toContain("combining changes into one call");
-    expect(BASE_SYSTEM_PROMPT).toContain("`update_task_list` creates or updates");
-    expect(BASE_SYSTEM_PROMPT).not.toContain("create_task_list");
+  it("keeps concise core safety and execution contracts without duplicating specialist manuals", () => {
+    for (const text of ["You are a local coding Agent.", "# Response Language", "# Work Progress", "# Quality and Verification",
+      "# Commands and Task Management", "# Command and Terminal Choice", "# Browser Choice", "# File Changes", "# Conflict Recovery",
+      "newest user request", "default batch mode", "running with a commandId", "same ID", "mode=service", "do not wait for a service to exit",
+      "expectedContext=ssh", "prefer replace_in_file", "one existing file", "combining changes into one call",
+      "load the browser-use Skill", "The application language is Simplified Chinese (zh-CN)."]) expect(BASE_SYSTEM_PROMPT).toContain(text);
+    expect(BASE_SYSTEM_PROMPT).not.toMatch(/\p{Script=Han}|\r/u);
     expect(BASE_SYSTEM_PROMPT).not.toContain("at most one running");
-    expect(BASE_SYSTEM_PROMPT).toContain("returns only a bounded completion receipt");
-    expect(BASE_SYSTEM_PROMPT).toContain("load the `browser-use` Skill when it is present");
-    expect(BASE_SYSTEM_PROMPT).not.toMatch(/\p{Script=Han}/u);
-    expect(BASE_SYSTEM_PROMPT).not.toMatch(/\r/u);
+    expect(BASE_SYSTEM_PROMPT).toContain("Reuse images already visible");
+    expect(BASE_SYSTEM_PROMPT).toContain("terminal-use");
+    expect(BASE_SYSTEM_PROMPT).toContain("Do not repeat unchanged searches or reads");
+    expect(BASE_SYSTEM_PROMPT).toContain("Animation needs multiple phases");
+    expect(BASE_SYSTEM_PROMPT).toContain("A successful build alone does not verify functional behavior");
   });
-
-  it("allows inline HTML fragments without requiring files or document wrappers", () => {
-    expect(BASE_SYSTEM_PROMPT).toContain("output an `html` fenced code block directly");
-    expect(BASE_SYSTEM_PROMPT).toContain("even a single `<div>`");
-    expect(BASE_SYSTEM_PROMPT).toContain("`<!DOCTYPE html>`, `<html>`, `<head>`, and `<body>` wrappers are not required");
-    expect(BASE_SYSTEM_PROMPT).toContain("Create or edit files according to the user's needs and task; inline rendering does not require an HTML file");
-    expect(BASE_SYSTEM_PROMPT).not.toContain("one complete `html` fenced code block");
-    expect(BASE_SYSTEM_PROMPT).not.toContain("finish creating and verifying its files first");
-    expect(BASE_SYSTEM_PROMPT).toContain("multiple page or component designs to compare and choose");
-    expect(BASE_SYSTEM_PROMPT).toContain("prefer one paginated `present_html` delivery with `pages`");
-    expect(BASE_SYSTEM_PROMPT).toContain('each `{title, kind:"code", html}`');
-    expect(BASE_SYSTEM_PROMPT).toContain("automatically group unrelated pages");
-    expect(BASE_SYSTEM_PROMPT).toContain("Keep all options in a comparison at the same intended preview height");
+  it("supports self-contained framework snippets and inspection before a single final delivery", () => {
+    for (const text of ["html, react/jsx/tsx or vue", "HTML/SVG fragments", "no document wrappers or file",
+      "default-exported component", "Vue uses a self-contained SFC", "existing HTML file", "workspace-relative path",
+      "requested alternatives", "one delivery channel", "rendered pixels"]) expect(BASE_SYSTEM_PROMPT).toContain(text);
+    const visualSkill = SYSTEM_SKILLS.find(source => parseSkillMarkdown(source).metadata.name === "ui-verification")!;
+    expect(visualSkill).toContain("recognizable silhouette");
+    expect(visualSkill).toContain("feet contacting opposite pedals");
+    expect(visualSkill).toContain("two distinct phases");
+    expect(visualSkill).toContain("not a fixed requirement");
+    const terminalSkill = SYSTEM_SKILLS.find(source => parseSkillMarkdown(source).metadata.name === "terminal-use")!;
+    expect(terminalSkill).toContain("expectedContext=ssh");
+    expect(terminalSkill).toContain("NOT completion");
   });
-
   it("loads the bundled browser Skill", () => {
     expect(BROWSER_USE_SKILL).toContain("name: browser-use");
     expect(BROWSER_USE_SKILL).toContain("single `browser_control` tool");
@@ -133,18 +101,17 @@ describe("prompt assets", () => {
     expect(BROWSER_USE_SKILL).not.toMatch(/\r/u);
   });
 
-  it("limits workspace discovery and uses the built-in static HTML preview", () => {
-    expect(BASE_SYSTEM_PROMPT).toContain("Do not routinely inspect the workspace for ordinary questions");
+  it("limits discovery and keeps isolated previews separate from an application's dev service", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain("Do not routinely inspect the workspace");
     expect(BASE_SYSTEM_PROMPT).toContain("The authorized workspace root is already supplied");
-    expect(BASE_SYSTEM_PROMPT).toContain("Get-ChildItem -LiteralPath src -Name");
-    expect(BASE_SYSTEM_PROMPT).toContain("`ls -A`");
-    expect(BASE_SYSTEM_PROMPT).toContain("`rg --files -g");
-    expect(BASE_SYSTEM_PROMPT).toContain("`rg -n");
-    expect(BASE_SYSTEM_PROMPT).toContain("Do not start Python, http.server, or another ad hoc server just to display static HTML");
-    expect(BASE_SYSTEM_PROMPT).toContain("application's own isolated preview server");
-    expect(BASE_SYSTEM_PROMPT).not.toContain("list_directory");
+    expect(BASE_SYSTEM_PROMPT).toContain("Scope find_files/search_text");
+    expect(BASE_SYSTEM_PROMPT).toContain("one-time approval outside the workspace");
+    expect(BASE_SYSTEM_PROMPT).toContain("isolated preview server");
+    expect(BASE_SYSTEM_PROMPT).toContain("not an ad hoc static server");
+    const ordinary = baseSystemPromptForTools(new Set(["run_command", "write_file", "present_html", "load_skill", "spawn_subagent", "send_agent_message", "read_file", "update_task_context", "update_task_list", "browser_control"]));
+    expect(ordinary.length).toBeLessThan(16000);
+    expect(ordinary).not.toContain("# Group Collaboration");
   });
-
   it("loads the strict context compaction prompt from bundled Markdown", () => {
     expect(CONTEXT_COMPACTION_PROMPT).toContain("Return strict JSON");
     expect(CONTEXT_COMPACTION_PROMPT).toContain("# Output Contract");

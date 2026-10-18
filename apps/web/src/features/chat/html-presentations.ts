@@ -7,7 +7,7 @@ type DeliveryAnchor = {
   continuationMessages?: readonly { runId: string | null }[];
 };
 
-type HtmlDelivery = { id: string } & ({ path: string } | { pages: HtmlPresentationPage[] });
+type HtmlDelivery = { id: string } & ({ path: string } | { pages: HtmlPresentationPage[] } | { code: string; language: "html" | "react" | "vue" });
 
 export function htmlPresentationDeliveries(timeline: readonly ConversationTimelineItem[], anchors: readonly DeliveryAnchor[], activeRunId: string | null): ReadonlyMap<string, HtmlDelivery[]> {
   const deliveries = new Map<string, HtmlDelivery[]>();
@@ -21,6 +21,7 @@ export function htmlPresentationDeliveries(timeline: readonly ConversationTimeli
     if (!parsed.success) continue;
     const presentation = parsed.data.value.presentation;
     if (presentation.kind === "html") latestByPath.set(JSON.stringify(["file", presentation.path]), { id: item.id, path: presentation.path, runId: item.runId });
+    else if (presentation.kind === "code") latestByPath.set(JSON.stringify(["code", item.runId]), { id: item.id, code: presentation.html, language: presentation.language, runId: item.runId });
     else latestByPath.set(JSON.stringify(["gallery", item.id]), { id: item.id, pages: presentation.pages, runId: item.runId });
   }
   for (const { runId, ...delivery } of latestByPath.values()) {

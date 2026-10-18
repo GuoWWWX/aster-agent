@@ -73,10 +73,13 @@ describe("WorkspaceTerminalTool", () => {
       tool.getDefinitions().map((definition) => [definition.name, definition.description]),
     );
     expect(definitions.get(TERMINAL_CONTROL_TOOL_NAME)).toContain(
-      "explicitly asks for a visible, right-side, or interactive terminal",
+      "visible persistent PTY only when requested or genuinely interactive",
     );
     expect(definitions.get(TERMINAL_CONTROL_TOOL_NAME)).toContain("use run_command");
-    expect(definitions.get(TERMINAL_CONTROL_TOOL_NAME)).toContain("action=list");
+    expect(definitions.get(TERMINAL_CONTROL_TOOL_NAME)).toContain("list only to recover unknown IDs/context");
+    expect(tool.getDefinitions()[0]?.parameters).not.toHaveProperty("properties.columns");
+    expect(tool.getDefinitions()[0]?.parameters).not.toHaveProperty("properties.rows");
+    expect(tool.getDefinitions()[0]?.parameters).not.toHaveProperty("properties.yieldTimeMs");
 
     const proposal = await tool.execute({
       conversationId: CONVERSATION_ID,

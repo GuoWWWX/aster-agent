@@ -1104,6 +1104,7 @@ export class AgentRuntime {
     private readonly conversationLifecycle: ConversationLifecycleService | null = null,
     private readonly computerUseTool: ComputerUseTool | null = null,
     private readonly titleGenerator: Pick<ConversationTitleGenerator, "generate"> | null = null,
+    private readonly presentationTool: HtmlPresentationTool | null = null,
   ) {
     this.modelGateway = new ModelGateway(model);
     this.userQuestions = new UserQuestionService({
@@ -1256,7 +1257,7 @@ export class AgentRuntime {
   }
 
   private createToolHandlerRegistry(): ToolHandlerRegistry<RuntimeToolContext> {
-    const htmlPresentationTool = new HtmlPresentationTool(async conversationId => {
+    const htmlPresentationTool = this.presentationTool ?? new HtmlPresentationTool(async conversationId => {
       const conversation = this.database.getConversation(conversationId);
       return (await this.projects.ensureWorkspaceRoot(conversation.projectId ?? conversation.id)).rootPath;
     });
@@ -1301,8 +1302,10 @@ export class AgentRuntime {
         isAvailable: ({ conversationId }) => conversationId !== undefined && this.database.getTeamInstanceForConversation(conversationId) !== null,
       },
       {
-        execute: ({ context, rawArguments }) => htmlPresentationTool.execute(context.conversationId, rawArguments, context.signal),
-        getDefinitions: () => htmlPresentationTool.getDefinitions(),
+        execute: ({ context, rawArguments }) => htmlPresentationTool.execute(context.conversationId, rawArguments, context.signal,
+          ["conversation", "subagent", "team_member"].includes(this.toolRole(this.database.getConversation(context.conversationId)))),
+        getDefinitions: ({ conversationId }) => htmlPresentationTool.getDefinitions(conversationId !== undefined
+          && ["conversation", "subagent", "team_member"].includes(this.toolRole(this.database.getConversation(conversationId)))),
         getExecutionPolicy: () => ({ kind: "serial" }),
         isAvailable: () => true,
       },
@@ -4558,7 +4561,7 @@ export class AgentRuntime {
               attachments: modelAttachments.slice(-4),
               content: [
                 modelAttachments.some((attachment) => attachment.source === "browser")
-                  ? "Browser screenshots returned by browser_control. Use screenshot pixel coordinates for pointer actions."
+                  ? "Rendered page screenshots. Use screenshot pixel coordinates for pointer actions."
                   : null,
                 modelAttachments.some((attachment) => attachment.source === "computer")
                   ? "Authorized application window screenshots returned by computer_use. Coordinates are physical pixels relative to that window; reobserve after UI changes."
@@ -4855,13 +4858,15 @@ export class AgentRuntime {
               })
           : proposal;
       }
-      if (!execution.isError && this.attachments !== null && (input.toolCall.name === "browser_control" || input.toolCall.name === "computer_use")) {
-        const screenshot = execution.modelAttachments?.find((image) => (image.source === "browser" || image.source === "computer") && image.kind === "image");
-        if (screenshot?.kind === "image" && screenshot.data !== null) {
+      if (!execution.isError && this.attachments !== null && ["browser_control", "computer_use", "present_html"].includes(input.toolCall.name)) {
+        const screenshots = execution.modelAttachments?.filter((image) => (image.source === "browser" || image.source === "computer") && image.kind === "image") ?? [];
+        for (const screenshot of screenshots) if (screenshot.kind === "image" && screenshot.data !== null) {
           const image = await this.attachments.saveToolScreenshot(input.conversationId, startedTool.id, { ...screenshot, data: screenshot.data });
           toolImageRefs.push(image);
+        }
+        if (toolImageRefs.length > 0) {
           const result = z.object({ ok: z.literal(true), value: z.record(z.string(), z.unknown()) }).parse(JSON.parse(execution.content));
-          execution = { ...execution, content: JSON.stringify({ ...result, value: { ...result.value, image } }) };
+          execution = { ...execution, content: JSON.stringify({ ...result, value: { ...result.value, image: toolImageRefs[0], ...(toolImageRefs.length > 1 ? { images: toolImageRefs } : {}) } }) };
         }
       }
     } catch (error) {

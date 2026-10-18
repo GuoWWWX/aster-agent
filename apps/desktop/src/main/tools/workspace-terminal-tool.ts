@@ -62,7 +62,7 @@ const terminalReferenceArgumentsSchema = z.object({
 
 const terminalControlArgumentsSchema = z.object({
   action: z.enum(["create", "list", "write", "read", "close"])
-    .describe("Side-terminal action. create accepts only name/columns/rows; list has no parameters; write requires terminalId/command, optionally expectedContext/afterCursor/maxChars/yieldTimeMs; read requires terminalId, optionally afterCursor/maxChars; close requires terminalId. Omit unused fields or set them to null; never invent placeholder values."),
+    .describe("create: optional name; list: no fields; write: terminalId and command; read/close: terminalId. Omit unrelated fields or use null."),
   afterCursor: z.number().int().nonnegative().nullable().optional()
     .describe("For write/read, return output after this cursor. Reuse nextCursor to avoid duplicate output."),
   columns: z.number().int().min(2).max(500).nullable().optional()
@@ -126,9 +126,9 @@ export class WorkspaceTerminalTool {
   public getDefinitions(): readonly ModelToolDefinition[] {
     return [
       {
-        description: "Control AI-managed, user-visible right-side persistent PTY terminals for the current project. Use this only when the user explicitly asks for a visible, right-side, or interactive terminal, or the task genuinely needs a persistent PTY the user can inspect or take over; use run_command for ordinary commands, builds, checks and tests. Use action=create before write when no live terminalId is available, action=list to recover active IDs and their current local/SSH context, action=write to send one command and sample immediate output, action=read with nextCursor for later incremental output, and action=close to close the PTY and its tab. For a reusable SSH shell, send an interactive `ssh [options] user@host` command without a trailing remote command, complete authentication, then read until terminalContext.kind is ssh_connected. For every later command intended for that remote shell, pass expectedContext=ssh; the tool refuses delivery after SSH disconnects instead of running it in the local shell. A one-shot `ssh host command` exits back to local and must not be treated as reusable. IDs are scoped to this conversation and current app session; never guess an ID or use a terminal opened manually by the user.",
+        description: "Use a visible persistent PTY only when requested or genuinely interactive; use run_command for ordinary commands/builds/tests. Load terminal-use for PTY/SSH procedures. Reuse live terminalId and nextCursor; list only to recover unknown IDs/context. write samples immediate output, not completion. Pass expectedContext=ssh for every remote-shell command; disconnection must never fall back to local execution. IDs belong to this conversation/app session, not manually opened user tabs.",
         name: TERMINAL_CONTROL_TOOL_NAME,
-        parameters: modelToolParameters(terminalControlArgumentsSchema),
+        parameters: modelToolParameters(terminalControlArgumentsSchema.omit({ columns: true, rows: true, yieldTimeMs: true })),
       },
     ];
   }

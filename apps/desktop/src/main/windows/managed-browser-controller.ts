@@ -212,7 +212,7 @@ type ManagedBrowserPage = {
 };
 
 type BrowserViewport = { width: number; height: number };
-type BackgroundBrowserOptions = { background?: BrowserViewport; signal?: AbortSignal };
+type BackgroundBrowserOptions = { background?: BrowserViewport; isolated?: boolean; signal?: AbortSignal };
 type BrowserPageFactory = (window: BrowserWindow, shortcuts: BrowserPageShortcuts, passwords?: BrowserPasswordStore, isolated?: boolean, background?: BrowserViewport) => ManagedBrowserPage;
 
 type ActiveBrowserSession = {
@@ -260,7 +260,7 @@ export class ManagedBrowserController {
     };
   }
 
-  public async open(input: ManagedBrowserOpenInput, options: BackgroundBrowserOptions & { isolated?: boolean; onClose?: () => void } = {}): Promise<ManagedBrowserSession> {
+  public async open(input: ManagedBrowserOpenInput, options: BackgroundBrowserOptions & { onClose?: () => void } = {}): Promise<ManagedBrowserSession> {
     options.signal?.throwIfAborted();
     const window = this.requireWindow();
     const sessionId = randomUUID();

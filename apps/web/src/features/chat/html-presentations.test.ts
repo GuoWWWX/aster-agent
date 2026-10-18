@@ -7,6 +7,13 @@ const tool: ConversationToolItem = { id: "delivery", kind: "tool", conversationI
   result: '{"ok":true,"value":{"presentation":{"kind":"html","path":"demo.html"}}}', createdAt: "2026-10-15T00:00:00Z" };
 
 describe("HTML delivery projection", () => {
+  it("keeps inspection out of final delivery and selects the latest component source after a fix", () => {
+    const inspect = { ...tool, id: "inspect", result: '{"ok":true,"value":{"inspected":true,"frames":2}}' };
+    const source = (html: string) => JSON.stringify({ ok: true, value: { presentation: { kind: "code", html, language: "react" } } });
+    expect(htmlPresentationDeliveries([inspect], [{ id: "answer", runId: "run" }], null).size).toBe(0);
+    expect(htmlPresentationDeliveries([inspect, { ...tool, result: source("old") }, { ...tool, id: "fixed", result: source("final") }], [{ id: "answer", runId: "run" }], null).get("answer"))
+      .toEqual([{ id: "fixed", code: "final", language: "react" }]);
+  });
   it("attaches a recorded tool reference after the last visible item of its own run", () => {
     const anchors = [{ id: "process", runId: "run" }, { id: "answer", runId: "run" }, { id: "next", runId: "other" }];
     expect([...htmlPresentationDeliveries([tool], anchors, null)]).toEqual([["answer", [{ id: "delivery", path: "demo.html" }]]]);

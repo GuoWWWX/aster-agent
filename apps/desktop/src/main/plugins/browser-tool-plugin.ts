@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import type { ModelToolDefinition } from "../model/model-contracts.js";
 import { toolErrorContent } from "../errors/tool-error.js";
 import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
+import { browserScreenshotAttachment } from "../tools/browser-screenshot-attachment.js";
 import type { ToolExecution, ToolExecutionResult } from "../tools/project-tool-registry.js";
 import type { WorkspaceBrowserTabPort } from "../tools/workspace-browser-tab-controller.js";
 import type {
@@ -218,7 +218,7 @@ export class BrowserToolPlugin {
   public getDefinitions(): readonly ModelToolDefinition[] {
     return [
       {
-        description: "Control current-conversation browser tabs through one bounded action surface. For page verification prefer open with background=true: it registers a sidebar tab silently without opening the sidebar, selecting a tab or stealing focus; the user can inspect the same live page. Background sessions are temporary and released when this Run ends. Set background=false when the user requests a visible browser. Reuse a known browserId from open/list. Use list only when IDs are unknown or the tab set needs reconciliation, including manually opened sidebar tabs; do not list before every action or to acknowledge completion. For visual-only inspection call screenshot directly; it never requires a preliminary observe. Use observe with browserId when DOM text or semantic element references are needed: it returns DOM text, element references and a screenshot together, displayed in the same tool record. Do not call screenshot after observe for an unchanged page; screenshot is only for a fresh image without DOM information. Use show with browserId only when the user requests viewing the existing sidebar tab. Screenshots are model vision input and saved in the tool details for the user. Use close for one tab; close_tabs with browserIds closes a selection, with exceptBrowserIds keeps that selection, and with neither closes all tabs in this conversation. Load browser-use before non-trivial browser work. Prefer fresh observe elementId references; use screenshot CSS pixel coordinates for canvas and visual checks. Supports navigation, pointer/keyboard input, scrolling and forms. HTTP/HTTPS only; permission prompts and arbitrary page JavaScript are blocked.",
+        description: "Operate this conversation's HTTP/HTTPS browser. Load browser-use for action details. For checks use open with background=true; show only when the user requests a visible tab. Reuse browserId; list only to recover unknown IDs. observe returns DOM references AND screenshot; screenshot returns pixels alone, without a preliminary observe or duplicate image. Use fresh elementId references or screenshot CSS-pixel coordinates. Close temporary tabs when done. Page JavaScript evaluation and permission prompts are blocked.",
         name: BROWSER_TOOL_NAMES.control,
         parameters: modelToolParameters(browserControlArgumentsSchema),
       },
@@ -473,8 +473,6 @@ export class BrowserToolPlugin {
     const arguments_ = browserReferenceArgumentsSchema.parse(parseToolArguments(input.rawArguments));
     this.requireOwnedBrowser(input.conversationId, input.projectId, arguments_.browserId);
     const snapshot = await this.browser.capture({ sessionId: arguments_.browserId });
-    const attachmentId = randomUUID();
-    const sizeBytes = Math.ceil(snapshot.data.length * 0.75);
     return {
       content: JSON.stringify({
         ok: true,
@@ -489,18 +487,7 @@ export class BrowserToolPlugin {
       }),
       isError: false,
       kind: "completed",
-      modelAttachments: [{
-        contextTokens: Math.min(8_192, Math.max(1_024, Math.ceil(sizeBytes / 2_048))),
-        data: snapshot.data,
-        id: attachmentId,
-        kind: "image",
-        mimeType: snapshot.mimeType,
-        name: `browser-${arguments_.browserId}.jpg`,
-        projectPath: null,
-        readState: "full",
-        source: "browser",
-        truncated: false,
-      }],
+      modelAttachments: [browserScreenshotAttachment(snapshot, `browser-${arguments_.browserId}.jpg`)],
     };
   }
 

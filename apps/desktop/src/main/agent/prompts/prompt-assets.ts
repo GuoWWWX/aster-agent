@@ -5,6 +5,8 @@ import teamChatCoordinatorSource from "./team-chat-coordinator.md";
 import imageViewSkillSource from "./skills/image-view/SKILL.md";
 import codeReviewSkillSource from "./skills/code-review/SKILL.md";
 import debuggingSkillSource from "./skills/debugging/SKILL.md";
+import terminalUseSkillSource from "./skills/terminal-use/SKILL.md";
+import uiVerificationSkillSource from "./skills/ui-verification/SKILL.md";
 
 function normalizePrompt(source: string): string {
   return source.trim().replace(/\r\n/gu, "\n");
@@ -13,6 +15,7 @@ function normalizePrompt(source: string): string {
 export const BASE_SYSTEM_PROMPT = normalizePrompt(baseSystemPromptSource);
 const sectionTools: Record<string, readonly string[]> = {
   "# HTML Presentations": ["present_html"],
+  "# Quality and Verification": ["present_html", "write_file", "run_command"],
   "# Collaboration": ["send_agent_message"],
   "# Subagent Collaboration": ["spawn_subagent"],
   "# Queued Subagent Followups": ["send_agent_message"],
@@ -37,6 +40,6 @@ export function baseSystemPromptForTools(names: ReadonlySet<string>): string {
   }).join("").trim();
 }
 export const BROWSER_USE_SKILL = normalizePrompt(browserUseSkillSource);
-export const SYSTEM_SKILLS = [BROWSER_USE_SKILL, imageViewSkillSource, codeReviewSkillSource, debuggingSkillSource].map(normalizePrompt);
+export const SYSTEM_SKILLS = [BROWSER_USE_SKILL, imageViewSkillSource, codeReviewSkillSource, debuggingSkillSource, terminalUseSkillSource, uiVerificationSkillSource].map(normalizePrompt);
 export const CONTEXT_COMPACTION_PROMPT = normalizePrompt(contextCompactionPromptSource);
 export const TEAM_CHAT_COORDINATOR_PROMPT = normalizePrompt(teamChatCoordinatorSource);
