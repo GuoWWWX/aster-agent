@@ -60,7 +60,9 @@ describe("quick coordination request queue", () => {
         }
       }
       switch (++parentTurn) {
-        case 1: await start.promise; return tool("list_task_contexts", {});
+        case 1:
+          expect(input.messages.some(message => message.role === "system" && message.content.includes("If the queue is empty, do not claim or invent placeholder IDs"))).toBe(true);
+          await start.promise; return tool("list_task_contexts", {});
         case 2: return tool("update_task_context", { title: "D", goal: "处理 D" });
         case 3: return tool("spawn_subagent", { name: "执行者", task: "只处理 D" });
         case 4: return tool("claim_pending_messages", { pendingMessageIds: [queuedId] });

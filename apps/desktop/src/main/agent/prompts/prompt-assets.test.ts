@@ -54,6 +54,13 @@ describe("prompt assets", () => {
     expect(prompt).not.toContain("# Files and Search");
     expect(prompt).not.toContain("# Queued Subagent Followups");
   });
+  it("lets the runtime bind the current task source instead of asking the model to invent IDs", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain("create one by omitting id and expectedRevision");
+    expect(BASE_SYSTEM_PROMPT).toContain("omit source so the runtime binds its real original message");
+    expect(BASE_SYSTEM_PROMPT).toContain("never invent conversation/message IDs or use placeholders");
+    expect(BASE_SYSTEM_PROMPT).toContain("Explicitly select an actual source when distinguishing earlier or independent requests");
+    expect(BASE_SYSTEM_PROMPT).toContain("correct the arguments and retry before delegating that goal");
+  });
   it("bundles distinct, valid system skills", () => {
     const names = SYSTEM_SKILLS.map((content) => parseSkillMarkdown(content).metadata.name);
     expect(new Set(names).size).toBe(names.length);

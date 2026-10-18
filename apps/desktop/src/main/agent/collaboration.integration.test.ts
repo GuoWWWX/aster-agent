@@ -98,6 +98,39 @@ async function fixture(withThreadLog = false, withCoordinator = false, graphChec
   return { db, lead, member, instance, runtime, model, tools, log };
 }
 describe("group execution integration", () => {
+  it("lets the model correct a rejected source and bind the original request without a partial or duplicate task", async () => {
+    const { db, lead, runtime, model, tools } = await fixture(true);
+    let step = 0;
+    vi.spyOn(model, "completeTurn").mockImplementation(input => {
+      const calls = [
+        { name: "list_task_contexts", arguments: { limit: 10 } },
+        { name: "update_task_context", arguments: { title: "简单计算", goal: "计算 13+24", source: {
+          kind: "conversation", containerId: "ffffffff-ffff-ffff-ffff-ffffffffffff", messageId: "00000000-0000-0000-0000-000000000000", purpose: "request",
+        } } },
+        { name: "update_task_context", arguments: { title: "简单计算", goal: "计算 13+24" } },
+      ];
+      if (step === 2) {
+        const failed = input.messages.find(message => message.toolCallId === "source-1" && message.role === "tool");
+        expect(JSON.parse(failed!.content)).toMatchObject({ recovery: { action: "fix_arguments", issues: [{ path: ["source", "containerId"] }] } });
+      }
+      const call = calls[step++];
+      return Promise.resolve(call === undefined ? { content: "13+24=37", finishReason: "stop", toolCalls: [] }
+        : { content: "", finishReason: "tool_calls", toolCalls: [{ id: `source-${step - 1}`, name: call.name, arguments: JSON.stringify(call.arguments) }] });
+    });
+    try {
+      const started = runtime.sendMessage({ conversationId: lead.id, content: "计算 13+24", permissionMode: "full_access" }, () => undefined);
+      if (started.kind !== "started") throw new Error("Expected a new Run.");
+      await vi.waitFor(() => expect(db.getConversation(lead.id).activeRunId).toBeNull());
+      expect(db.getConversation(lead.id).lastRunStatus).toBe("completed");
+      const tasks = db.collaboration.listTasks({ teamInstanceId: db.getTeamInstanceForConversation(lead.id)!.id });
+      expect(tasks.total).toBe(1);
+      expect(db.collaboration.getTask(tasks.items[0]!.id).sources.filter(source => source.purpose === "request")).toEqual([expect.objectContaining({
+        containerId: lead.id, messageId: started.userMessage.id, runId: started.runId,
+      })]);
+      expect(db.listTimeline(lead.id).filter(item => item.kind === "tool" && item.name === "update_task_context").map(item => item.status)).toEqual(["failed", "completed"]);
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
+
   it("ends the routing turn after a successful selection without another model call", async () => {
     const { db, instance, member, runtime, model, tools } = await fixture(true, true);
     let selections = 0;

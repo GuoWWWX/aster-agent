@@ -99,6 +99,51 @@ it("explains that a queued preview must be claimed before it can be a task sourc
   expect(database.collaboration.listTasks({ conversationId: lead.id }).items).toHaveLength(0);
 });
 
+it.each(["id", "expectedRevision"] as const)("rejects an incomplete task update missing %s without creating or changing a record", async missing => {
+  const { database, lead, tool } = fixture();
+  const run = database.createRunWithUserMessage(lead.id, "制定验收清单", "fixture");
+  const task = database.collaboration.updateTask({ conversationId: lead.id, requestId: randomUUID(), title: "验收清单", goal: "制定验收清单" });
+  const changed = vi.fn();
+  const execute = (args: unknown) => tool.execute({ name: "update_task_context", arguments: JSON.stringify(args), conversationId: lead.id,
+    runId: run.runId, toolCallId: randomUUID(), changed, post: vi.fn() });
+  const update = { title: task.title, goal: task.goal, status: "completed" };
+  const result = await execute({ ...update, ...(missing === "id" ? { expectedRevision: task.revision } : { id: task.id }) });
+  if (result.kind !== "completed") throw new Error("Expected a validation result.");
+  expect(result.isError).toBe(true);
+  expect(JSON.parse(result.content)).toMatchObject({ recovery: { action: "fix_arguments", issues: [{ path: [missing] }] } });
+  expect(database.collaboration.listTasks({ conversationId: lead.id }).total).toBe(1);
+  expect(database.collaboration.getTask(task.id).task.revision).toBe(1);
+  expect(changed).not.toHaveBeenCalled();
+  expect(await execute({ ...update, id: task.id, expectedRevision: task.revision })).toMatchObject({ isError: false });
+  expect(database.collaboration.listTasks({ conversationId: lead.id }).total).toBe(1);
+  expect(database.collaboration.getTask(task.id).task.revision).toBe(2);
+});
+
+it.each(["conversation", "message"] as const)("explains an unavailable task source %s and permits a corrected retry without duplicating the task", async missing => {
+  const { database, lead, tool } = fixture();
+  const run = database.createRunWithUserMessage(lead.id, "计算 13+24", "fixture");
+  const changed = vi.fn();
+  const execute = (args: unknown) => tool.execute({ name: "update_task_context", arguments: JSON.stringify(args), conversationId: lead.id,
+    runId: run.runId, toolCallId: randomUUID(), changed, post: vi.fn() });
+  const args = { title: "简单计算", goal: "计算 13+24", source: { kind: "conversation", containerId: missing === "conversation"
+    ? "ffffffff-ffff-ffff-ffff-ffffffffffff" : lead.id, messageId: "00000000-0000-0000-0000-000000000000", purpose: "request" } };
+  const result = await execute(args);
+  expect(result).toMatchObject({ kind: "completed", isError: true });
+  if (result.kind !== "completed") throw new Error("Expected a validation result.");
+  expect(JSON.parse(result.content)).toMatchObject({ recovery: { action: "fix_arguments", issues: [{
+    path: ["source", missing === "conversation" ? "containerId" : "messageId"],
+  }] } });
+  expect(result.content).toContain("omit source");
+  expect(changed).not.toHaveBeenCalled();
+  expect(database.collaboration.listTasks({ conversationId: lead.id }).total).toBe(0);
+  expect(await execute({ title: args.title, goal: args.goal })).toMatchObject({ isError: false });
+  const tasks = database.collaboration.listTasks({ conversationId: lead.id }); expect(tasks.total).toBe(1);
+  expect(database.collaboration.getTask(tasks.items[0]!.id).sources).toEqual([expect.objectContaining({
+    containerId: lead.id, messageId: run.userMessage.id, runId: run.runId,
+  })]);
+  expect(changed).toHaveBeenCalledTimes(1);
+});
+
 it.each([true, false])("reads only this coordinator's group task details (same group: %s)", async sameGroup => {
   const { database, lead, instance, tool } = fixture();
   const coordinator = database.createConversation(null);

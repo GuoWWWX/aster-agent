@@ -3,18 +3,21 @@ import { z } from "zod";
 import {
   listTaskContextsInputSchema, getTaskContextInputSchema, updateTaskContextInputSchema,
   linkTaskContextInputSchema, postTeamChatInputSchema, readTeamChatInputSchema,
-  type PostTeamChatInput, type TeamChatMessage,
+  type PostTeamChatInput, type TeamChatMessage, type TaskContext,
 } from "@agent/protocol";
 import type { AgentDatabase } from "../storage/agent-database.js";
 import { modelToolParameters, parseToolArguments, ToolArgumentsError } from "../model/tool-arguments.js";
 import { toolErrorContent } from "../errors/tool-error.js";
+import { CollaborationError } from "../errors/collaboration-error.js";
 import type { ModelToolDefinition } from "../model/model-contracts.js";
 import type { ToolExecution } from "../tools/project-tool-registry.js";
 import type { ToolExecutionPolicy } from "../tools/tool-execution-policy.js";
 
 const listSchema = listTaskContextsInputSchema.omit({ conversationId: true, projectId: true, teamInstanceId: true });
 const updateSchema = z.object(updateTaskContextInputSchema.shape).omit({ conversationId: true, requestId: true }).extend({
-  source: updateTaskContextInputSchema.shape.source.describe("The actual source for this task. When several independent requests share a Run, explicitly select the matching original message; do not attach another task's latest input. Read get_task_context to recover an earlier task's original source."),
+  id: updateTaskContextInputSchema.shape.id.describe("For progress or completion, use the exact task id returned when creating or listing the task, together with expectedRevision. Omit both only when creating a new task; never omit id on an update."),
+  expectedRevision: updateTaskContextInputSchema.shape.expectedRevision.describe("Use the existing task revision together with its id. Omit both only for a new task. If either field is missing, read the existing task; do not create another record for the same goal."),
+  source: updateTaskContextInputSchema.shape.source.describe("Optional. For the current accepted request, omit source: the runtime binds its real original message. Never invent conversation/message IDs or use placeholders. When several independent requests share a Run or you select an earlier request, use its exact source from list_task_contexts/get_task_context; do not attach another task's latest input."),
 }).strict();
 const postSchema = z.object(postTeamChatInputSchema.shape).omit({ teamInstanceId: true, requestId: true, coordinator: true, supersedesId: true }).extend({
   continueWork: z.boolean().optional().describe("Omit or use false for a finished public reply or delegation handoff: this ends the current group turn after the tool batch succeeds. Use true only for an interim progress update when you still need tools in this same turn. Complete intended local updates before the final publication; task completion and acceptance are separate."),
@@ -106,7 +109,13 @@ export class CollaborationTool {
           result = detail; break;
         }
         case "update_task_context": {
-          const parsed = updateSchema.parse(args);
+          const parsed = updateTaskContextInputSchema.parse({ ...updateSchema.parse(args), conversationId: conversation.id, requestId });
+          if (parsed.source?.kind === "conversation" && !this.database.hasConversation(parsed.source.containerId)) {
+            throw new ToolArgumentsError("任务来源对话不存在，请修正 source.containerId；记录当前请求时可省略 source，由后台绑定原消息。", [{
+              code: "source_conversation_not_found", path: ["source", "containerId"],
+              message: "Use an existing conversation ID, never a placeholder. For the current request, omit source; for an earlier or independent request, use its exact source.",
+            }]);
+          }
           if (parsed.source?.kind === "conversation" && parsed.source.containerId === conversation.id
             && this.database.listPendingMessages(conversation.id).some(message => message.id === parsed.source?.messageId)) {
             throw new ToolArgumentsError("Queued input has not been consumed as a conversation message.", [{
@@ -120,8 +129,17 @@ export class CollaborationTool {
             .findLast(item => item.kind === "message" && item.role === "user") : undefined;
           const groupSource = store.runMessages(input.runId)[0];
           const managed = this.database.getRunningTeamWorkItemByExecutionTreeConversation(conversation.id);
-          const task = parsed.id === undefined && managed !== null ? store.getTask(managed.id).task : store.updateTask({ ...parsed, conversationId: conversation.id, requestId,
-            ...(parsed.source !== undefined ? {} : groupSource !== undefined ? { source: { kind: "group", containerId: groupSource.teamInstanceId, messageId: groupSource.id, runId: input.runId, purpose: "request" } } : source === undefined ? {} : { source: { kind: "conversation", containerId: conversation.id, messageId: source.id, runId: input.runId, purpose: "request" } }) }, "agent");
+          let task: TaskContext;
+          try {
+            task = parsed.id === undefined && managed !== null ? store.getTask(managed.id).task : store.updateTask({ ...parsed, conversationId: conversation.id, requestId,
+              ...(parsed.source !== undefined ? {} : groupSource !== undefined ? { source: { kind: "group", containerId: groupSource.teamInstanceId, messageId: groupSource.id, runId: input.runId, purpose: "request" } } : source === undefined ? {} : { source: { kind: "conversation", containerId: conversation.id, messageId: source.id, runId: input.runId, purpose: "request" } }) }, "agent");
+          } catch (error) {
+            if (!(error instanceof CollaborationError) || error.details.reason !== "TASK_SOURCE_NOT_FOUND") throw error;
+            throw new ToolArgumentsError("任务来源消息不存在，请修正 source.messageId；不要把占位 ID 当作真实消息。", [{
+              code: "source_message_not_found", path: ["source", "messageId"],
+              message: "Use the exact original message ID. For the current request, omit source; for an earlier or independent request, read its actual source first. Never substitute another task's message.",
+            }]);
+          }
           result = task;
           store.bindTask(input.runId, task.id, conversation.id);
           for (const message of store.runMessages(input.runId)) store.linkTask({ id: task.id, source: {
