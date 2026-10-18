@@ -6,6 +6,64 @@ import { agentMessageModelContent } from "../storage/agent-database.js";
 import { AgentCommunicationTool } from "./agent-communication-tool.js";
 
 describe("AgentCommunicationTool", () => {
+  it("advertises one array-based sending tool for both one and many recipients", () => {
+    const database = new AgentDatabase(":memory:");
+    const definitions = new AgentCommunicationTool(database).getDefinitions().filter(tool => tool.name === "send_agent_message");
+    expect(definitions).toHaveLength(1);
+    expect(definitions[0]?.parameters.properties).toHaveProperty("conversationIds");
+    expect(definitions[0]?.parameters.properties).not.toHaveProperty("conversationId");
+    database.close();
+  });
+
+  it("commits every recipient before notification and sends duplicates only once", async () => {
+    const database = new AgentDatabase(":memory:");
+    const sender = database.createConversation(null);
+    const targets = [database.createConversation(null), database.createConversation(null)];
+    const sent = vi.fn(() => {
+      for (const target of targets) expect(database.listUnreadAgentMessages(target.id)).toHaveLength(1);
+    });
+    const result = await new AgentCommunicationTool(database).execute({
+      arguments: JSON.stringify({ conversationIds: [targets[0]!.id, targets[1]!.id, targets[0]!.id], content: "接口已确认", expectReply: false }),
+      conversationId: sender.id, runId: crypto.randomUUID(), signal: new AbortController().signal,
+      toolName: "send_agent_message", onMessageSent: sent,
+    });
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content).value.messages).toHaveLength(2);
+    expect(sent).toHaveBeenCalledTimes(2);
+    for (const target of targets) expect(database.listUnreadAgentMessages(target.id)[0]?.messageType).toBe("notification");
+    database.close();
+  });
+
+  it.each(["empty", "missing", "self", "archived"])("rejects an invalid batch without partial delivery (%s)", async mode => {
+    const database = new AgentDatabase(":memory:");
+    const sender = database.createConversation(null);
+    const target = database.createConversation(null);
+    const bad = database.createConversation(null);
+    if (mode === "archived") database.setConversationArchived(bad.id, true);
+    const ids = mode === "empty" ? [] : [target.id, mode === "missing" ? crypto.randomUUID() : mode === "self" ? sender.id : bad.id];
+    const sent = vi.fn();
+    const result = await new AgentCommunicationTool(database).execute({ arguments: JSON.stringify({ conversationIds: ids, content: "不要部分发送" }),
+      conversationId: sender.id, runId: crypto.randomUUID(), signal: new AbortController().signal, toolName: "send_agent_message", onMessageSent: sent });
+    expect(result.isError).toBe(true);
+    expect(database.listUnreadAgentMessages(target.id)).toEqual([]);
+    expect(sent).not.toHaveBeenCalled();
+    database.close();
+  });
+
+  it("rolls back the complete persisted batch when a later insert fails", () => {
+    const database = new AgentDatabase(":memory:");
+    const sender = database.createConversation(null);
+    const targets = [database.createConversation(null), database.createConversation(null)];
+    const id = crypto.randomUUID();
+    expect(() => database.sendAgentMessages(targets.map(target => ({ id, content: "事务回滚", runId: crypto.randomUUID(),
+      senderConversationId: sender.id, targetConversationId: target.id })))).toThrow();
+    for (const target of targets) {
+      expect(database.listUnreadAgentMessages(target.id)).toEqual([]);
+      expect(database.listTimeline(target.id)).toEqual([]);
+    }
+    database.close();
+  });
+
   it("permits role resizing only for the full-access leader and honors the frozen Run permission", async () => {
     const database = new AgentDatabase(":memory:");
     const lead = database.createConversation(null, { threadKind: "team_lead", teamId: "default-team" });

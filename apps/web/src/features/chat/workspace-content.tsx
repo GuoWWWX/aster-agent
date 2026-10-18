@@ -193,7 +193,7 @@ import { ModelProfilePicker } from "../settings/model-profile-picker.js";
 import { SettingsWorkspace } from "../settings/settings-workspace.js";
 import { reasoningOptionDisplayName } from "../settings/model-reasoning-options.js";
 import { AgentAvatar, SubagentAvatar } from "../team/agent-avatar.js";
-import { ToolConversationContext, ToolConversationIdentity, toolConversationTarget } from "./tool-conversation-identity.js";
+import { ToolConversationContext, ToolConversationIdentity, toolConversationTargets } from "./tool-conversation-identity.js";
 import { TeamWorkspace } from "../team/team-workspace.js";
 import { CollaborationProjectionGraph } from "../team/collaboration/collaboration-graph.js";
 import { CONVERSATION_WORKSPACE_CACHE_TTL_MS, useConversationWorkspaceCache } from "./conversation-workspace-cache.js";
@@ -7753,18 +7753,18 @@ function ToolActivityLabel({
 }): ReactElement {
   const summary = fileChangeSummary(item);
   const label = toolActivityLabel(item, teamManaged);
-  const target = toolConversationTarget(item);
+  const targets = toolConversationTargets(item);
   const toggleLabel = isExpanded ? "收起调用详情" : "展开调用详情";
   const toggleClassName = "min-w-0 flex-[0_1_auto] cursor-pointer overflow-hidden border-0 bg-transparent p-0 text-left text-ellipsis whitespace-nowrap text-[var(--app-muted-foreground)] transition-colors hover:text-[var(--app-foreground)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1 [font:inherit]";
   const fileLinkClassName = "inline-flex min-w-0 cursor-pointer items-center gap-1 overflow-hidden border-0 bg-transparent p-0 text-inherit transition-colors hover:text-[var(--app-accent)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-2 [font:inherit]";
-  if (target !== null) {
+  if (targets.length > 0) {
     const completed = effectiveStatus === "completed";
     const action = item.name === "send_agent_message"
       ? completed ? "消息已发送" : "发送消息"
       : item.name === "read_agent_conversation"
         ? completed ? "已读取对话" : "读取对话"
         : completed ? "消息等待结束" : "等待消息";
-    return <ToolConversationIdentity target={target} action={action} />;
+    return <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-[5px]">{targets.map(target => <ToolConversationIdentity key={target.id} target={target} action={action} />)}</span>;
   }
   const spawnedSubagent = spawnSubagentActivity(item, effectiveStatus);
   if (spawnedSubagent !== null) {
@@ -8651,7 +8651,7 @@ function AgentConversationReadResult({
 }): ReactElement {
   const result = payload === null ? null : parseAgentConversationReadResult(payload);
   if (result === null) return <ToolResultNotice result={payload} status={status} />;
-  const target = toolConversationTarget(item);
+  const target = toolConversationTargets(item)[0] ?? null;
 
   return (
     <StructuredToolResult summary={`对话上下文 · 约 ${result.estimatedTokens} tokens`}>
@@ -8673,12 +8673,12 @@ function AgentMessageToolResult({
   status: ConversationToolItem["status"];
 }): ReactElement {
   const result = payload === null ? null : parseAgentMessageToolResult(payload);
-  const target = toolConversationTarget(item);
+  const targets = toolConversationTargets(item);
   if (result === null) return <ToolResultNotice result={payload} status={status} />;
-  if (result.message === null) {
+  if (result.messages.length === 0) {
     return (
       <StructuredToolResult summary="消息等待结束">
-        {target === null ? null : <ToolConversationIdentity target={target} />}
+        {targets.map(target => <ToolConversationIdentity key={target.id} target={target} />)}
         <p className="tool-directory-listing__empty">等待期间没有收到新消息</p>
       </StructuredToolResult>
     );
@@ -8689,11 +8689,11 @@ function AgentMessageToolResult({
       <dl className="tool-read-facts">
         <div>
           <dt>{mode === "sent" ? "目标对话" : "发送方"}</dt>
-          <dd>{target === null ? "对话不可用" : <ToolConversationIdentity target={target} />}</dd>
+          <dd className="flex min-w-0 flex-wrap gap-[5px]">{targets.length === 0 ? "对话不可用" : targets.map(target => <ToolConversationIdentity key={target.id} target={target} />)}</dd>
         </div>
         <div>
           <dt>消息内容</dt>
-          <dd>{result.message.content}</dd>
+          <dd>{result.messages[0]?.content}</dd>
         </div>
       </dl>
     </StructuredToolResult>
@@ -9308,26 +9308,24 @@ type AgentMessageResultPayload = {
 };
 
 function parseAgentMessageToolResult(payload: string): {
-  message: AgentMessageResultPayload | null;
+  messages: AgentMessageResultPayload[];
 } | null {
   const result = parseToolValue(payload);
   if (result === null) return null;
-  if (result.message === null && result.status === "timeout") return { message: null };
-  if (result.message === null || typeof result.message !== "object") return null;
-  const message = result.message as Record<string, unknown>;
-  return typeof message.content === "string" &&
-    typeof message.conversationId === "string" &&
-    typeof message.senderConversationId === "string" &&
-    typeof message.senderTitle === "string"
-    ? {
-      message: {
-        content: message.content,
-        conversationId: message.conversationId,
-        senderConversationId: message.senderConversationId,
-        senderTitle: message.senderTitle,
-      },
-    }
-    : null;
+  if (result.message === null && result.status === "timeout") return { messages: [] };
+  const values = Array.isArray(result.messages) ? result.messages : [result.message];
+  const messages: AgentMessageResultPayload[] = [];
+  for (const value of values) {
+    if (value === null || typeof value !== "object") return null;
+    const message = value as Record<string, unknown>;
+    if (typeof message.content !== "string" ||
+    typeof message.conversationId !== "string" ||
+    typeof message.senderConversationId !== "string" ||
+    typeof message.senderTitle !== "string") return null;
+    messages.push({ content: message.content, conversationId: message.conversationId,
+      senderConversationId: message.senderConversationId, senderTitle: message.senderTitle });
+  }
+  return { messages };
 }
 
 type SubagentToolTaskPayload = {

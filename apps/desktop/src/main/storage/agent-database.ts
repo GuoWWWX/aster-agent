@@ -5966,6 +5966,18 @@ export class AgentDatabase {
   }
 
   public sendAgentMessage(input: SendAgentMessageInput): ConversationAgentMessageItem {
+    return this.sendAgentMessages([input])[0]!;
+  }
+
+  public sendAgentMessages(inputs: SendAgentMessageInput[]): ConversationAgentMessageItem[] {
+    const messages = inputs.map(input => this.createAgentMessage(input));
+    this.withTransaction(() => {
+      for (const message of messages) this.persistAgentMessage(message);
+    });
+    return messages;
+  }
+
+  private createAgentMessage(input: SendAgentMessageInput): ConversationAgentMessageItem {
     const sender = this.getConversation(input.senderConversationId);
     const target = this.getConversation(input.targetConversationId);
     if (sender.id === target.id) {
@@ -5999,7 +6011,6 @@ export class AgentDatabase {
       taskId: input.taskId ?? null
     });
 
-    this.withTransaction(() => this.persistAgentMessage(message));
     return message;
   }
 
