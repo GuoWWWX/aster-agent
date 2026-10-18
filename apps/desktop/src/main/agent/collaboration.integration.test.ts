@@ -22,7 +22,7 @@ import { ModelRequestError } from "../model/model-request-error.js";
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { force: true, recursive: true }); });
 function isCoordinationInput(input: CompleteTurnInput): boolean { return input.tools.some(tool => tool.name === "select_team_chat_members"); }
-function routingResult(input: CompleteTurnInput, recipients: string[], extras: { decisionSummary?: string; contextSummary?: string } = {}): ModelTurnResult {
+function routingResult(input: CompleteTurnInput, recipients: string[], extras: { decisionSummary?: string; contextSummary?: string; audience?: "continue" | "replace" } = {}): ModelTurnResult {
   const reference = input.messages.findLast(message => message.content.startsWith("[群聊协调参考上下文"));
   if (reference === undefined) throw new Error("Missing coordinator context");
   const source = z.object({ message: z.object({ id: z.string() }).nullable() }).parse(JSON.parse(reference.content.slice(reference.content.indexOf("\n") + 1)));
@@ -30,7 +30,7 @@ function routingResult(input: CompleteTurnInput, recipients: string[], extras: {
   const id = `route-${source.message.id}`;
   if (input.messages.some(message => message.role === "tool" && message.toolCallId === id)) return { content: "已完成本轮协调。", finishReason: "stop", toolCalls: [] };
   return { content: "", finishReason: "tool_calls", toolCalls: [{ id, name: "select_team_chat_members", arguments: JSON.stringify({
-    messageId: source.message.id, recipientConversationIds: recipients, decisionSummary: "由指定成员接着回答。", ...extras,
+    messageId: source.message.id, recipientConversationIds: recipients, audience: "replace", decisionSummary: "由指定成员接着回答。", ...extras,
   }) }] };
 }
 class GroupFixture implements ModelProviderAdapter {
@@ -98,6 +98,81 @@ async function fixture(withThreadLog = false, withCoordinator = false, graphChec
   return { db, lead, member, instance, runtime, model, tools, log };
 }
 describe("group execution integration", () => {
+  it("ends the routing turn after a successful selection without another model call", async () => {
+    const { db, instance, member, runtime, model, tools } = await fixture(true, true);
+    let selections = 0;
+    vi.spyOn(model, "completeTurn").mockImplementation(input => {
+      if (!isCoordinationInput(input)) return Promise.resolve({ content: "已完成", finishReason: "stop", toolCalls: [] });
+      selections++;
+      return Promise.resolve(routingResult(input, [member.id]));
+    });
+    try {
+      const source = runtime.postTeamChat({ teamInstanceId: instance.id, content: "这个问题谁适合回答？", requestId: randomUUID() }, () => undefined);
+      await vi.waitFor(() => expect(db.collaboration.message(source.id).coordinator?.status).toBe("completed"));
+      const coordinator = db.collaboration.message(source.id).coordinator!.conversationId!;
+      await vi.waitFor(() => expect(db.getConversation(coordinator).activeRunId).toBeNull());
+      expect(selections).toBe(1);
+      expect(db.collaboration.message(source.id).deliveries).toHaveLength(1);
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
+
+  it.each([
+    { audience: "continue", everyone: false, retained: true },
+    { audience: "replace", everyone: false, retained: false },
+    { audience: "continue", everyone: true, retained: false },
+  ] as const)("preserves a preceding exchange without making collective greetings sticky (%j)", async ({ audience, everyone, retained }) => {
+    const { db, instance, lead, member, runtime, model, tools } = await fixture(true, true);
+    vi.spyOn(model, "completeTurn").mockImplementation(input => Promise.resolve(isCoordinationInput(input)
+      ? routingResult(input, [lead.id], { audience })
+      : { content: "你好", finishReason: "stop", toolCalls: [] }));
+    try {
+      const greeting = runtime.postTeamChat({ teamInstanceId: instance.id, content: everyone ? "大家好" : "开发你好",
+        recipientConversationIds: everyone ? [lead.id, member.id] : [member.id], requestId: randomUUID() }, () => undefined);
+      await vi.waitFor(() => expect(db.collaboration.message(greeting.id).deliveries.every(delivery => delivery.status === "completed")).toBe(true));
+      const next = runtime.postTeamChat({ teamInstanceId: instance.id, content: "这个问题怎么看？", requestId: randomUUID() }, () => undefined);
+      await vi.waitFor(() => expect(db.collaboration.message(next.id).coordinator?.status).toBe("completed"));
+      const recipients = db.collaboration.message(next.id).recipientConversationIds;
+      expect(recipients).toContain(lead.id);
+      expect(recipients.includes(member.id)).toBe(retained);
+      expect(new Set(recipients).size).toBe(recipients.length);
+      expect(db.collaboration.message(next.id).deliveries).toHaveLength(retained ? 2 : 1);
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
+
+  it("exposes the latest addressed exchange to routing independently of an older summary", async () => {
+    const { db, instance, lead, member, runtime, model, tools } = await fixture(true, true);
+    const routingRequests: CompleteTurnInput[] = [];
+    vi.spyOn(model, "completeTurn").mockImplementation(input => {
+      if (isCoordinationInput(input)) {
+        routingRequests.push(input);
+        return Promise.resolve(routingResult(input, [member.id]));
+      }
+      return Promise.resolve({ content: "你好", finishReason: "stop", toolCalls: [] });
+    });
+    const emit = () => undefined;
+    const reference = () => {
+      const input = routingRequests.at(-1)!;
+      expect(input.messages[0]?.content).toContain("Preserve the active conversational addressee");
+      const message = input.messages.findLast(message => message.content.startsWith("[群聊协调参考上下文"))!;
+      return z.object({ previousUserExchange: z.unknown().optional() }).parse(JSON.parse(message.content.slice(message.content.indexOf("\n") + 1)));
+    };
+    try {
+      const greeting = runtime.postTeamChat({ teamInstanceId: instance.id, content: "开发你好", recipientConversationIds: [member.id], requestId: randomUUID() }, emit);
+      await vi.waitFor(() => expect(db.collaboration.message(greeting.id).deliveries[0]?.status).toBe("completed"));
+      const reply = runtime.postTeamChat({ teamInstanceId: instance.id, content: "你好", intent: "notify", replyToId: greeting.id, requestId: randomUUID() }, emit, member.id);
+      runtime.postTeamChat({ teamInstanceId: instance.id, content: "另一条业务通知", intent: "notify", requestId: randomUUID() }, emit, lead.id);
+      const followUp = runtime.postTeamChat({ teamInstanceId: instance.id, content: "那这个业务细节你怎么看？", requestId: randomUUID() }, emit);
+      await vi.waitFor(() => expect(db.collaboration.message(followUp.id).deliveries[0]?.status).toBe("completed"));
+      expect(reference().previousUserExchange).toMatchObject({ messageId: greeting.id, content: "开发你好", recipientConversationIds: [member.id],
+        replies: [{ messageId: reply.id, senderConversationId: member.id, content: "你好" }] });
+      const switched = runtime.postTeamChat({ teamInstanceId: instance.id, content: "负责人你好", recipientConversationIds: [lead.id], requestId: randomUUID() }, emit);
+      await vi.waitFor(() => expect(db.collaboration.message(switched.id).deliveries[0]?.status).toBe("completed"));
+      const next = runtime.postTeamChat({ teamInstanceId: instance.id, content: "继续说说边界", requestId: randomUUID() }, emit);
+      await vi.waitFor(() => expect(db.collaboration.message(next.id).deliveries[0]?.status).toBe("completed"));
+      expect(reference().previousUserExchange).toMatchObject({ messageId: switched.id, recipientConversationIds: [lead.id] });
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
+
   it("returns a seven-hop private task exchange to the lead without public relay messages", async () => {
     const { db, instance, lead, member, runtime, model, tools } = await fixture();
     let reachedEnd = false;
@@ -266,8 +341,9 @@ describe("group execution integration", () => {
       const readId = `read-${context.messageId}`;
       if (!input.messages.some(message => message.toolCallId === readId)) {
         received.push(source.content);
+        expect(input.messages.some(message => message.content.includes("用户以新消息再次提问时") && message.content.includes("不能仅因历史问题相似就判断本轮已经答复"))).toBe(true);
         expect(db.collaboration.readMessages({ teamInstanceId: instance.id, limit: 1 }, member.id).memberReadSequence).toBe(context.messageId === first.id ? 0 : first.sequence);
-        return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id: readId, name: "read_team_messages", arguments: JSON.stringify({ messageId: context.messageId, contentLimit: 16000 }) }] });
+        return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id: readId, name: "read_team_messages", arguments: JSON.stringify({ messageId: "current", contentLimit: 16000 }) }] });
       }
       return Promise.resolve({ content: "已读取本次请求。", finishReason: "stop", toolCalls: [] });
     });
@@ -354,7 +430,8 @@ describe("group execution integration", () => {
       expect(history.some(item => item.kind === "model_retry")).toBe(true);
       expect(history.find(item => item.kind === "tool" && item.name === "select_team_chat_members")).toMatchObject({ status: "completed", runId: coordinator.runId });
       expect(history.flatMap(item => item.kind === "message" && item.role === "user" ? [item.content] : [])).toContain("继续这个问题");
-      expect(history.some(item => item.kind === "message" && item.role === "assistant" && item.content === "已完成本轮协调。")).toBe(true);
+      expect(history.some(item => item.kind === "message" && item.role === "assistant" && item.content === "已完成本轮协调。")).toBe(false);
+      expect(requests).toBe(2);
       expect(db.listTimeline(lead.id)).toEqual([]);
       const shared = await new CollaborationTool(db).execute({ name: "read_team_messages", arguments: "{}", conversationId: member.id,
         runId: randomUUID(), toolCallId: randomUUID(), changed: () => undefined, post: () => { throw new Error("Read must not post"); } });

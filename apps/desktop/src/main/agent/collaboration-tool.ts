@@ -24,11 +24,13 @@ const postSchema = z.object(postTeamChatInputSchema.shape).omit({ teamInstanceId
 });
 const readSchema = z.object(readTeamChatInputSchema.shape).omit({ teamInstanceId: true }).extend({
   limit: z.number().int().min(1).max(5).default(3),
-  messageId: z.string().uuid().optional(), contentOffset: z.number().int().nonnegative().default(0),
+  messageId: z.union([z.string().uuid(), z.literal("current")]).optional().describe("Use current to read the single original group message assigned to this Run without copying a UUID. If this Run has multiple assignments, use an exact messageId instead."), contentOffset: z.number().int().nonnegative().default(0),
   contentLimit: z.number().int().min(1).max(16000).default(2000),
 });
+const audienceSchema = z.enum(["continue", "replace"]).describe("continue preserves the preceding user exchange's active recipients and adds the selected specialists. replace clears previous recipients only for an explicit audience change or a clearly independent new request.");
 const selectMembersSchema = z.object({
   messageId: z.string().uuid(), recipientConversationIds: z.array(z.string().uuid()).min(1).max(32),
+  audience: audienceSchema,
   decisionSummary: z.string().min(1).max(500), contextSummary: z.string().max(2000).optional(),
 }).strict();
 
@@ -37,7 +39,7 @@ export class CollaborationTool {
   public coordinatorDefinitions(): ModelToolDefinition[] {
     return [...this.definitions(true).filter(tool => tool.name === "read_team_messages"), {
       name: "select_team_chat_members", parameters: modelToolParameters(selectMembersSchema),
-      description: "Select the active group members who should answer this original user message. This delivers the original request and attributed public context through the existing group queue. Use the exact supplied messageId and member conversation IDs. Explain the choice briefly in the user's language. Repeating an already completed selection does not redeliver it.",
+      description: "Select the active group members who should answer this original user message. Explicitly choose audience=continue for an ongoing exchange, including a question immediately after greeting a named member; the tool preserves the preceding exchange's active recipients and adds selected specialists. Use audience=replace only when the user changes audience or starts a clearly independent request. Collective greetings do not make everyone permanent recipients; explicit quoted replies take priority. This delivers through the existing group queue. Use the exact supplied messageId and member conversation IDs, and briefly explain the choice in the user's language. The result contains the actual recipients. Repeating a completed selection does not redeliver it.",
     }];
   }
   public definitions(team: boolean): ModelToolDefinition[] {
@@ -76,8 +78,18 @@ export class CollaborationTool {
           if (coordinatorRoom?.teamInstanceId !== message.teamInstanceId || message.coordinator?.conversationId !== conversation.id
             || message.coordinator.runId !== input.runId) throw new Error("TEAM_SCOPE: This Run cannot route another request.");
           if (message.coordinator.status === "paused" || message.coordinator.status === "cancelled") throw new Error("群聊协调已暂停或取消。");
-          result = store.finishCoordination(message.id, parsed.recipientConversationIds, null, parsed.contextSummary, parsed.decisionSummary);
-          input.routed?.(); input.changed(); break;
+          const active = store.members(message.teamInstanceId).filter(member => !member.isArchived);
+          const previous = store.readMessages({ teamInstanceId: message.teamInstanceId, beforeSequence: message.sequence,
+            senderConversationId: null, limit: 1 }).messages[0];
+          const previousRecipients = (previous?.recipientConversationIds ?? []).filter(id => active.some(member => member.conversationId === id));
+          const continued = parsed.audience === "continue" && message.replyToId === null && previousRecipients.length < active.length
+            ? previousRecipients : [];
+          const recipients = [...new Set([...continued, ...parsed.recipientConversationIds])];
+          const decision = continued.some(id => !parsed.recipientConversationIds.includes(id))
+            ? `保留最近的交流对象；${parsed.decisionSummary}`.slice(0, 500) : parsed.decisionSummary;
+          result = store.finishCoordination(message.id, recipients, null, parsed.contextSummary, decision);
+          input.routed?.(); input.changed();
+          return Promise.resolve({ kind: "completed", content: JSON.stringify({ ok: true, value: result, turnComplete: true }), isError: false });
         }
         case "list_task_contexts": {
           const scope = instance !== null ? { teamInstanceId: instance.id } : conversation.projectId !== null
@@ -124,7 +136,16 @@ export class CollaborationTool {
         }
         case "read_team_messages": {
           if (instance === null) throw new Error("TEAM_MEMBER: Conversation is not in a team.");
-          const { messageId, contentOffset, contentLimit, ...paging } = readSchema.parse(args);
+          const { messageId: requestedId, contentOffset, contentLimit, ...paging } = readSchema.parse(args);
+          let messageId = requestedId;
+          if (requestedId === "current") {
+            const coordination = coordinatorRoom === null ? null : store.coordinationForRun(input.runId);
+            const assigned = coordinatorRoom === null ? store.assignedRunMessages(input.runId) : coordination === null ? [] : [coordination];
+            if (assigned.length !== 1) throw new ToolArgumentsError("当前运行没有唯一的群消息，请使用通知中的确切 messageId。", [{
+              code: "ambiguous_current_message", message: "Use an exact messageId from this Run's notifications.", path: ["messageId"],
+            }]);
+            messageId = assigned[0]!.id;
+          }
           const readerId = coordinatorRoom === null ? conversation.id : null;
           const marker = coordinatorRoom === null ? store.readMessages({ teamInstanceId: instance.id, limit: 1 }, readerId).memberReadSequence : 0;
           const filtered = paging.query !== undefined || paging.senderConversationId !== undefined || paging.createdAfter !== undefined || paging.createdBefore !== undefined;

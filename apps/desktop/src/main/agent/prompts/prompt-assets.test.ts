@@ -20,6 +20,14 @@ describe("prompt assets", () => {
     expect(TEAM_CHAT_COORDINATOR_PROMPT).not.toContain("Choose multiple members only when their distinct contributions are requested");
   });
 
+  it("preserves a recent addressee on follow-ups and uses the lead only for unresolved routing", () => {
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("Preserve the active conversational addressee");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("A different technical subject or an additional specialist perspective alone does not clear that addressee");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("An explicit change of audience or a clearly independent new request resets the previous addressee");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("only if responsibility remains genuinely unclear");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("Keep the current addressee and topic in contextSummary");
+  });
+
   it("keeps delegation constraints and repository-aware command guidance available with skills enabled", () => {
     const prompt = baseSystemPromptForTools(new Set(["spawn_subagent", "run_command", "load_skill"]));
     expect(prompt).toContain("does not inherit the parent conversation's history");

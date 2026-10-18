@@ -19,6 +19,37 @@ function fixture() {
   return { database, instance, lead, tool: new CollaborationTool(database) };
 }
 
+it("requires an explicit audience choice before routing any members", async () => {
+  const { database, lead, tool } = fixture();
+  const finish = vi.spyOn(database.collaboration, "finishCoordination");
+  const changed = vi.fn(); const routed = vi.fn(); const post = vi.fn();
+  expect(tool.coordinatorDefinitions().find(definition => definition.name === "select_team_chat_members")?.parameters.required).toContain("audience");
+  const result = await tool.execute({ name: "select_team_chat_members", arguments: JSON.stringify({ messageId: randomUUID(),
+    recipientConversationIds: [lead.id], decisionSummary: "另起独立问题。" }), conversationId: lead.id,
+    runId: randomUUID(), toolCallId: randomUUID(), changed, routed, post });
+  expect(result).toMatchObject({ kind: "completed", isError: true });
+  if (result.kind !== "completed") throw new Error("Expected a validation result.");
+  expect(result.content).toContain("audience");
+  expect(finish).not.toHaveBeenCalled(); expect(changed).not.toHaveBeenCalled();
+  expect(routed).not.toHaveBeenCalled(); expect(post).not.toHaveBeenCalled();
+});
+
+it.each([0, 1, 2])("resolves current only for a unique assignment in the calling Run (%i assignments)", async count => {
+  const { database, instance, lead, tool } = fixture();
+  const run = database.createRunWithUserMessage(lead.id, "本轮委派", "test-model");
+  for (let index = 0; index < count; index++) {
+    const message = database.collaboration.postMessage({ teamInstanceId: instance.id, content: `当前请求 ${index}`,
+      recipientConversationIds: [lead.id], requestId: randomUUID() }, null);
+    database.collaboration.consumeDelivery(message.deliveries[0]!.id, run.runId);
+  }
+  const result = await tool.execute({ name: "read_team_messages", arguments: JSON.stringify({ messageId: "current" }),
+    conversationId: lead.id, runId: run.runId, toolCallId: randomUUID(), changed: vi.fn(), post: vi.fn() });
+  expect(result).toMatchObject({ kind: "completed", isError: count !== 1 });
+  if (result.kind !== "completed") throw new Error("Expected a read result.");
+  if (count === 1) expect(JSON.parse(result.content)).toMatchObject({ value: { messages: [{ content: "当前请求 0" }] } });
+  else expect(result.content).toContain("ambiguous_current_message");
+});
+
 it.each(["read_team_messages", "post_team_message"])("does not scan or synchronize the board for %s", async (name) => {
   const { database, lead, tool } = fixture();
   const list = vi.spyOn(database, "listTeamWorkItems");
