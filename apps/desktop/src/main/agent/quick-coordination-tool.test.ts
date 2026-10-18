@@ -1,8 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { AgentDatabase } from "../storage/agent-database.js";
 import { QuickCoordinationTool } from "./quick-coordination-tool.js";
 
 describe("quick coordination queue tools", () => {
+  it("reports a paused queue as an expected state without claiming or suggesting a polling loop", () => {
+    const db = new AgentDatabase(":memory:");
+    try {
+      const conversation = db.createConversation(null);
+      const run = db.createRunWithUserMessage(conversation.id, "current", "test");
+      const claim = vi.fn(() => []);
+      const result = new QuickCoordinationTool(db).execute({ conversationId: conversation.id, runId: run.runId,
+        toolName: "claim_pending_messages", arguments: JSON.stringify({ pendingMessageIds: [crypto.randomUUID()] }),
+        signal: new AbortController().signal, queuePaused: true, claim });
+      expect(JSON.parse(result.content)).toMatchObject({ ok: false, value: { status: "queue_paused", action: "user_resume_required" } });
+      expect(result.content).not.toContain("INTERNAL_ERROR");
+      expect(claim).not.toHaveBeenCalled();
+    } finally { db.close(); }
+  });
   it("previews paged requests without consuming them or exposing unlimited message bodies", () => {
     const db = new AgentDatabase(":memory:");
     try {
@@ -12,8 +27,12 @@ describe("quick coordination queue tools", () => {
       const claim = vi.fn(() => []);
       const result = new QuickCoordinationTool(db).execute({ conversationId: conversation.id, runId: run.runId,
         toolName: "list_pending_messages", arguments: JSON.stringify({ offset: 1, limit: 1 }), signal: new AbortController().signal, claim });
-      expect(JSON.parse(result.content)).toMatchObject({ ok: true, value: { total: 3, nextOffset: 2, messages: [{ truncated: true }] } });
-      expect(JSON.parse(result.content)).toHaveProperty("value.messages.0.content.length", 1_000);
+      const response = z.object({ value: z.object({ messages: z.array(z.object({ pendingMessageId: z.string(), contentPreview: z.string() }).passthrough()), instruction: z.string() }) }).parse(JSON.parse(result.content));
+      expect(JSON.parse(result.content)).toMatchObject({ ok: true, value: { state: "preview_only", total: 3, nextOffset: 2, messages: [{ truncated: true }] } });
+      expect(response.value.messages[0]?.contentPreview).toHaveLength(1_000);
+      expect(response.value.messages[0]).not.toHaveProperty("content");
+      expect(response.value.messages[0]).not.toHaveProperty("id");
+      expect(response.value.instruction).toContain("claim_pending_messages");
       expect(db.listPendingMessages(conversation.id)).toHaveLength(3);
       expect(claim).not.toHaveBeenCalled();
     } finally { db.close(); }

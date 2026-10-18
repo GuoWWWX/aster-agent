@@ -3,12 +3,30 @@ import { parseSkillMarkdown } from "@agent/protocol";
 
 import {
   BASE_SYSTEM_PROMPT,
+  baseSystemPromptForTools,
   BROWSER_USE_SKILL,
   CONTEXT_COMPACTION_PROMPT,
   SYSTEM_SKILLS,
 } from "./prompt-assets.js";
 
 describe("prompt assets", () => {
+  it("omits unavailable execution, task-ownership and group instructions from routing prompts", () => {
+    const prompt = baseSystemPromptForTools(new Set(["select_team_chat_members", "read_team_messages"]));
+    expect(prompt).toContain("# Response Language");
+    expect(prompt).not.toContain("post_team_message");
+    for (const heading of ["# Persistent Tasks", "# Group Collaboration", "# Command and Terminal Choice", "# Files and Search", "# File Changes", "# Subagent Collaboration", "# Browser Choice"]) {
+      expect(prompt).not.toContain(heading);
+    }
+  });
+
+  it("keeps read and delivery guidance without shell or child-queue instructions for a team lead", () => {
+    const prompt = baseSystemPromptForTools(new Set(["read_file", "present_html", "send_agent_message", "post_team_message", "update_task_context"]));
+    expect(prompt).toContain("# Workspace Context");
+    expect(prompt).toContain("# HTML Presentations");
+    expect(prompt).toContain("# Group Collaboration");
+    expect(prompt).not.toContain("# Files and Search");
+    expect(prompt).not.toContain("# Queued Subagent Followups");
+  });
   it("bundles distinct, valid system skills", () => {
     const names = SYSTEM_SKILLS.map((content) => parseSkillMarkdown(content).metadata.name);
     expect(new Set(names).size).toBe(names.length);

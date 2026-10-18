@@ -22,26 +22,30 @@ export class QuickCoordinationTool {
   public getDefinitions(): ModelToolDefinition[] {
     return [
       { name: "list_pending_messages", parameters: modelToolParameters(listSchema),
-        description: "Preview the durable request queue without consuming it. Page through all requests when useful; content previews are bounded. Arrange the current request before claiming another." },
+        description: "Preview the durable request queue without consuming it. This is selection data, not accepted task input: use pendingMessageId only in claim_pending_messages, never as source.messageId. First hand off the current request, then claim a selected request and wait for its original user input before registering or delegating it. Do not perform work from contentPreview. Page only when selection needs more candidates." },
       { name: "claim_pending_messages", parameters: modelToolParameters(claimSchema),
-        description: "Claim selected independent requests after a successful spawn_subagent or queued send_agent_message to your own child has accepted the current request. It is enough to hand off; do not wait for completion. Related requests can share an assignment. Every selected source ID is retained. Claim again only after arranging this batch." },
+        description: "Claim selected independent requests after a successful spawn_subagent or queued send_agent_message to your own child has accepted the current request. It is enough to hand off; do not wait for completion. Related requests can share an assignment. Every selected source ID is retained. Claim again only after arranging this batch. If queue_paused is returned, complete current accepted work and report that the user must resume the queue; do not poll or wait for Agent messages to unpause it." },
     ];
   }
 
   public execute(input: { toolName: string; arguments: string; conversationId: string; runId: string;
-    signal: AbortSignal; claim: (ids: string[]) => ConversationPendingMessage[] }) {
+    signal: AbortSignal; queuePaused?: boolean; claim: (ids: string[]) => ConversationPendingMessage[] }) {
     try {
       input.signal.throwIfAborted();
       const args = parseToolArguments(input.arguments);
       if (input.toolName === "list_pending_messages") {
         const { offset, limit } = listSchema.parse(args);
         const queue = this.database.listPendingMessages(input.conversationId).filter(message => message.deliveryMode === "queue");
-        return this.success({ total: queue.length, nextOffset: offset + limit < queue.length ? offset + limit : null,
-          messages: queue.slice(offset, offset + limit).map(message => ({ id: message.id, content: message.content.slice(0, 1_000),
+        return this.success({ state: "preview_only", instruction: "After handing off the current request, call claim_pending_messages with the selected pendingMessageId values. Wait for the original user input at the next model turn before registering tasks or delegating work. Do not use preview IDs as source.messageId or omit a source to work around this boundary.", total: queue.length, nextOffset: offset + limit < queue.length ? offset + limit : null,
+          messages: queue.slice(offset, offset + limit).map(message => ({ pendingMessageId: message.id, contentPreview: message.content.slice(0, 1_000),
             truncated: message.content.length > 1_000, attachmentIds: message.attachmentIds })) });
       }
       if (input.toolName !== "claim_pending_messages") throw new Error(`Unknown queue tool: ${input.toolName}`);
       const { pendingMessageIds } = claimSchema.parse(args);
+      if (input.queuePaused) return { kind: "completed" as const, isError: true, content: JSON.stringify({
+        ok: false, error: "任务队列已暂停，需要用户恢复后才能继续领取。",
+        value: { status: "queue_paused", action: "user_resume_required", instruction: "Finish current accepted work and report the pending queue. Do not retry claims, poll or wait for Agent messages to resume a paused queue." },
+      }) };
       this.requireHandoff(input.conversationId, input.runId);
       const selected = input.claim(pendingMessageIds);
       return this.success({ pendingMessageIds: selected.map(message => message.id), status: "claimed" });

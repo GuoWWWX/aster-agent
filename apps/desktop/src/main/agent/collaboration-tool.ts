@@ -6,7 +6,7 @@ import {
   type PostTeamChatInput, type TeamChatMessage,
 } from "@agent/protocol";
 import type { AgentDatabase } from "../storage/agent-database.js";
-import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
+import { modelToolParameters, parseToolArguments, ToolArgumentsError } from "../model/tool-arguments.js";
 import { toolErrorContent } from "../errors/tool-error.js";
 import type { ModelToolDefinition } from "../model/model-contracts.js";
 import type { ToolExecution } from "../tools/project-tool-registry.js";
@@ -87,11 +87,21 @@ export class CollaborationTool {
             decisions: task.decisions.slice(0, 200), nextStep: task.nextStep.slice(0, 150), excerpted: task.goal.length > 500 || task.summary.length > 240 || task.decisions.length > 200 || task.nextStep.length > 150 })) }; break;
         }
         case "get_task_context": {
-          const parsed = getTaskContextInputSchema.parse(args); store.assertTaskAccess(parsed.id, conversation.id);
-          result = store.getTask(parsed.id, parsed); break;
+          const parsed = getTaskContextInputSchema.parse(args);
+          if (coordinatorRoom === null) store.assertTaskAccess(parsed.id, conversation.id);
+          const detail = store.getTask(parsed.id, parsed);
+          if (coordinatorRoom !== null && detail.task.teamInstanceId !== coordinatorRoom.teamInstanceId) throw new Error("TEAM_SCOPE: Task belongs to another scope.");
+          result = detail; break;
         }
         case "update_task_context": {
           const parsed = updateSchema.parse(args);
+          if (parsed.source?.kind === "conversation" && parsed.source.containerId === conversation.id
+            && this.database.listPendingMessages(conversation.id).some(message => message.id === parsed.source?.messageId)) {
+            throw new ToolArgumentsError("Queued input has not been consumed as a conversation message.", [{
+              code: "pending_input", path: ["source", "messageId"],
+              message: "Call claim_pending_messages, then wait for the original user input before updating this task. Do not omit the source or substitute another message.",
+            }]);
+          }
           const boundTasks = parsed.id === undefined ? [] : store.runTasks(input.runId);
           const ambiguousInput = boundTasks.length > 1 && boundTasks.some(task => task.id === parsed.id);
           const source = parsed.source === undefined && !ambiguousInput ? this.database.listTimeline(conversation.id, input.runId)

@@ -55,6 +55,33 @@ it("records Agent completion as awaiting user confirmation and rejects self-gran
   expect(database.collaboration.listTasks({ conversationId: lead.id }).items).toEqual([expect.objectContaining({ status: "running", completionRequested: true })]);
 });
 
+it("explains that a queued preview must be claimed before it can be a task source", async () => {
+  const { database, lead, tool } = fixture();
+  const pending = database.enqueuePendingMessage({ conversationId: lead.id, content: "尚未领取的任务" });
+  const result = await tool.execute({ name: "update_task_context", arguments: JSON.stringify({ title: "新目标", goal: "不要提前登记", source: {
+    kind: "conversation", containerId: lead.id, messageId: pending.id, purpose: "request",
+  } }), conversationId: lead.id, runId: randomUUID(), toolCallId: randomUUID(), changed: vi.fn(), post: input => database.collaboration.postMessage(input, lead.id) });
+  expect(result).toMatchObject({ isError: true });
+  if (result.kind !== "completed") throw new Error("Expected a validation failure");
+  expect(JSON.parse(result.content)).toMatchObject({ recovery: { action: "fix_arguments", issues: [{ path: ["source", "messageId"] }] } });
+  expect(result.content).toContain("claim_pending_messages");
+  expect(database.collaboration.listTasks({ conversationId: lead.id }).items).toHaveLength(0);
+});
+
+it.each([true, false])("reads only this coordinator's group task details (same group: %s)", async sameGroup => {
+  const { database, lead, instance, tool } = fixture();
+  const coordinator = database.createConversation(null);
+  database.collaboration.bindCoordinatorConversation(instance.id, "default-agent", coordinator.id);
+  const owner = sameGroup ? lead : database.createConversation(null);
+  const task = database.collaboration.updateTask({ conversationId: owner.id, title: "参考目标", goal: "只允许读取本群目标", requestId: randomUUID() });
+  const result = await tool.execute({ name: "get_task_context", arguments: JSON.stringify({ id: task.id }), conversationId: coordinator.id,
+    runId: randomUUID(), toolCallId: randomUUID(), changed: vi.fn(), post: input => database.collaboration.postMessage(input, coordinator.id) });
+  expect(result).toMatchObject({ isError: !sameGroup });
+  if (result.kind !== "completed") throw new Error("Expected a completed read");
+  if (sameGroup) expect(JSON.parse(result.content)).toMatchObject({ value: { task: { id: task.id } } });
+  else expect(JSON.parse(result.content)).not.toHaveProperty("value.task");
+});
+
 it.each([true, false])("keeps independent task sources separate when updating with an explicit source: %s", async explicit => {
   const { database, lead, tool } = fixture();
   const run = database.createRunWithUserMessage(lead.id, "任务 D", "test-model");

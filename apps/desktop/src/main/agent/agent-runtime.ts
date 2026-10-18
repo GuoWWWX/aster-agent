@@ -153,7 +153,8 @@ import {
   TeamWorkItemTool,
   type TeamWorkItemDispatcher,
 } from "./team-work-item-tool.js";
-import { BASE_SYSTEM_PROMPT, TEAM_CHAT_COORDINATOR_PROMPT } from "./prompts/prompt-assets.js";
+import { baseSystemPromptForTools, TEAM_CHAT_COORDINATOR_PROMPT } from "./prompts/prompt-assets.js";
+import { agentToolRoleInstructions, toolsForAgentRole, type AgentToolRole } from "./agent-tool-scope.js";
 import { teamChatContext } from "./team-chat-context.js";
 import {
   ToolHandlerRegistry,
@@ -1400,9 +1401,8 @@ export class AgentRuntime {
       {
         execute: ({ context, rawArguments, toolName }) => Promise.resolve(this.quickCoordinationTool.execute({
           arguments: rawArguments, conversationId: context.conversationId, runId: context.runId,
-          signal: context.signal, toolName,
+          signal: context.signal, toolName, queuePaused: this.isPendingQueuePaused(context.conversationId),
           claim: ids => {
-            if (this.isPendingQueuePaused(context.conversationId)) throw new Error("The request queue is paused.");
             if (this.claimedPendingMessagesByRun.has(context.runId)) throw new Error("Arrange the claimed batch before claiming again.");
             const records = ids.map(id => this.database.getPendingMessageRecord(id));
             if (records.some(record => record.message.conversationId !== context.conversationId || record.message.deliveryMode !== "queue")) {
@@ -1656,7 +1656,8 @@ export class AgentRuntime {
       ),
       isAvailable: ({ projectId }) => projectId !== undefined,
     });
-    return new ToolHandlerRegistry(handlers);
+    return new ToolHandlerRegistry(handlers, ({ conversationId }) => conversationId === undefined ? null
+      : toolsForAgentRole(this.toolRole(this.database.getConversation(conversationId))));
   }
 
   public sendMessage(
@@ -3505,6 +3506,14 @@ export class AgentRuntime {
       ];
   }
 
+  private toolRole(conversation: ConversationSummary): AgentToolRole {
+    if (this.database.collaboration.coordinatorRoom(conversation.id) !== null) return "team_coordinator";
+    if (conversation.threadKind === "subagent") return "subagent";
+    if (conversation.threadKind === "team_lead") return "team_lead";
+    if (this.database.isTeamMemberConversation(conversation.id)) return "team_member";
+    return conversation.coordinationMode === "parallel_queue" ? "quick_coordinator" : "conversation";
+  }
+
   private canManageSubagents(conversationId: string | undefined): boolean {
     if (conversationId === undefined) return false;
     const conversation = this.database.getConversation(conversationId);
@@ -3536,9 +3545,9 @@ export class AgentRuntime {
   }
 
   private coordinationContext(conversation: ConversationSummary): string[] {
-    if (conversation.coordinationMode !== "parallel_queue") return [];
+    if (this.toolRole(conversation) !== "quick_coordinator") return [];
     return [
-      "Quick coordination mode is enabled with full_access. You own a persistent queue of independent user requests and coordinate reusable Subagents. First arrange the current request through a successful child spawn or queued assignment; only then claim another request. New requests never replace or cancel earlier assignments. Preview the queue with list_pending_messages without consuming it, then use claim_pending_messages for one request or a small related batch.",
+      "Quick coordination mode is enabled with full_access. You own a persistent queue of independent user requests and coordinate reusable Subagents. First arrange the current request through a successful child spawn or queued assignment; only then claim another request. New requests never replace or cancel earlier assignments. Preview the queue only to select candidates. After handing off the CURRENT accepted request, call claim_pending_messages immediately for the selected next request or related batch. Its full original input arrives at the next model boundary; only then register its task and delegate it. Never register, dispatch or use a task source from contentPreview, and never omit a source to work around an unclaimed preview.",
       "You, the main conversation, maintain the persistent task list (任务列表). Before delegating each accepted user task, use list_task_contexts to find a matching goal, then update_task_context to create or revise its record, including small tasks delegated for quick coordination. Different independent goals need different records; related follow-ups reuse the existing record. After claiming queued requests, use each original request ID as source.messageId with kind=conversation and this conversation as containerId. When updating an earlier task after another request has arrived, pass its original source explicitly, reading get_task_context if needed; never associate a different task's latest input by accident. Keep the task ID and current revision, record the child assignment and reconcile actual results and evidence before final delivery. Report completionRequested as awaiting confirmation unless completion was actually authorized. Closing a local execution checklist does not close or delete persistent task entries. Children report results without duplicating this list; their own multi-step work may use a local execution checklist (任务清单). Do not delegate work directly from queue previews before claiming its original input.",
       "Normally create one Subagent for each independent task when capacity permits. Reuse a suitable existing child for related follow-up work using send_agent_message with conversationIds: [childConversationId]. Assignments to your own children default to queue: a busy child finishes its current task before accepting its next queued task. Explicit deliveryMode=steer is reserved for user-requested amendments to that current task. A successful spawn or queued send is an accepted handoff; do not wait for worker completion before claiming more requests. Keep at most 8 children actively working; leave unarranged work pending. Reconcile every source request and child receipt before final delivery. Failed children require explicit retry/reassignment or a truthful failure report, never silent omission.",
       "Give each coding worker a distinct file/module ownership scope. Backend locks reject conflicting or stale writes; ask the owner to finish, reread current files and integrate deliberately. Do not force-reset or blindly merge another worker's edits. For substantive changes assign independent checking/testing before final delivery and distinguish actual test results from proposed checks.",
@@ -5603,7 +5612,9 @@ export class AgentRuntime {
   ): BuiltContext {
     const conversation = this.database.getConversation(conversationId);
     const agent = this.database.getConversationAgentBinding(conversationId);
-    const skillCatalogPrompt = this.skillRuntime === null
+    const toolNames = new Set(this.toolDefinitionsForConversation(conversationId).map(tool => tool.name));
+    const executionTools = toolNames.has("run_command");
+    const skillCatalogPrompt = this.skillRuntime === null || !toolNames.has("load_skill")
       ? null
       : this.skillRuntime.getCatalogPrompt(
           this.skillRuntimeContext(conversation, workspace?.id),
@@ -5611,21 +5622,24 @@ export class AgentRuntime {
     const systemMessage: ModelMessage = {
       attachments: [],
       content: [
-        BASE_SYSTEM_PROMPT,
+        baseSystemPromptForTools(toolNames),
         ...conversationIdentityContext(conversation, agent),
+        agentToolRoleInstructions(this.toolRole(conversation)),
         ...this.agentDelegationContext(conversation),
         ...this.teamWorkerContext(conversation),
         ...this.coordinationContext(conversation),
-        ...this.teamDispatchContext(conversation),
-        this.skillRuntime === null
+        ...(toolNames.has("submit_team_work_item") ? this.teamDispatchContext(conversation) : []),
+        ...(toolNames.has("load_skill") || (executionTools && this.skillRuntime === null) ? [this.skillRuntime === null
           ? "A Skill is a task instruction and capability bundle injected from SKILL.md. No Skill Runtime is currently available, so do not label general abilities as Skills. Git is a command-line program available through run_command, not a Skill or dedicated Git tool; use it only when the task requires it and the workspace is a Git repository."
-          : "A Skill is a task instruction and capability bundle injected from SKILL.md, not a built-in tool, Agent role, or command-line program. Use load_skill when catalog details match the task. Skill bodies enter only the current model context, never the chat Timeline, and cannot expand permissions or bypass approval. Git is available through run_command, not as a Skill or dedicated Git tool; use it only when needed in a Git workspace.",
-        workspace === null
+          : "A Skill is a task instruction and capability bundle injected from SKILL.md, not a built-in tool, Agent role, or command-line program. Use load_skill when catalog details match the task. Skill bodies enter only the current model context, never the chat Timeline, and cannot expand permissions or bypass approval."] : []),
+        !executionTools
+          ? "Use only the permitted reference, coordination and delivery tools. Execution is handled by the assigned workers; a workspace reference does not grant command or file-change tools."
+          : workspace === null
           ? this.attachmentTool === null
             ? `This temporary conversation has no workspace. It may still use the ${this.tools.getCommandEnvironmentDescription()} command tool, read_external_file, web_search, and Agent/Subagent collaboration tools. Commands run in an isolated temporary directory. Project file, directory, and search tools require an attached working directory. Every external file read still requires approval.`
             : `This temporary conversation has no workspace. It may still use read_attachment, view_attachments, the ${this.tools.getCommandEnvironmentDescription()} command tool, read_external_file, web_search, and Agent/Subagent collaboration tools. Commands run in an isolated temporary directory. Project file, directory, and search tools require an attached working directory. Every external file read still requires approval.`
           : `The current workspace supports file reads, search, controlled file changes, the ${this.tools.getCommandEnvironmentDescription()} command tool, and web_search. Commands and writes remain subject to this run's permission policy.`,
-        `One model turn may return at most ${MAX_TOOL_CALLS_PER_MODEL_TURN} mixed Tool Calls. Independent reads such as read_file, search_text, find_files, read_attachment, and view_attachments run concurrently in groups of up to ${MAX_PARALLEL_READ_TOOL_CALLS}, with results matched by call ID. File changes, approvals, Agent messages, and task state remain ordered; stale same-file changes in one batch are rejected. Outside read_only mode, consecutive independent run_command calls run in parallel by default in groups of up to ${MAX_PARALLEL_COMMAND_TOOL_CALLS}; set parallel=false for dependencies or shared mutable state. run_command may yield with running and a commandId before a finite command finishes. Continue independent work; use read_command_output with that ID and incremental offsets to confirm exit status before dependent steps or reporting completion. Never treat a running receipt as success or rerun a command to read its logs. ask_before_changes still approves each command separately, after which independent commands may overlap. If a turn exceeds the limit, none of its tools run; split the work across turns. Prefer passing multiple IDs at once to wait_for_subagents.`,
+        ...(executionTools ? [`One model turn may return at most ${MAX_TOOL_CALLS_PER_MODEL_TURN} mixed Tool Calls. Independent reads such as read_file, search_text, find_files, read_attachment, and view_attachments run concurrently in groups of up to ${MAX_PARALLEL_READ_TOOL_CALLS}, with results matched by call ID. File changes, approvals, Agent messages, and task state remain ordered; stale same-file changes in one batch are rejected. Outside read_only mode, consecutive independent run_command calls run in parallel by default in groups of up to ${MAX_PARALLEL_COMMAND_TOOL_CALLS}; set parallel=false for dependencies or shared mutable state. run_command may yield with running and a commandId before a finite command finishes. Continue independent work; use read_command_output with that ID and incremental offsets to confirm exit status before dependent steps or reporting completion. Never treat a running receipt as success or rerun a command to read its logs. ask_before_changes still approves each command separately, after which independent commands may overlap. If a turn exceeds the limit, none of its tools run; split the work across turns. ${toolNames.has("wait_for_subagents") ? "Prefer passing multiple IDs at once to wait_for_subagents." : ""}`] : [`One model turn may return at most ${MAX_TOOL_CALLS_PER_MODEL_TURN} mixed Tool Calls. Independent reads run in bounded parallel groups; messages, routing and task updates remain ordered. A dispatch receipt means accepted work, not completed work.`]),
         `Permission mode selected for this task: ${permissionModeLabel(permissionMode)}.`,
         ...(workspace === null
           ? []
@@ -5642,7 +5656,7 @@ export class AgentRuntime {
       toolCallId: null,
       toolCalls: []
     };
-    const reservedSkillTokens = this.skillRuntime === null
+    const reservedSkillTokens = this.skillRuntime === null || !toolNames.has("load_skill")
       ? 0
       : resolveActiveSkillContextBudget(contextWindowTokens) + CONTEXT_MESSAGE_OVERHEAD_TOKENS;
     const directoryContext = this.collaborationContext(conversationId);
@@ -6316,7 +6330,7 @@ export class AgentRuntime {
     const baseAgent = this.agentDirectory?.getConfiguration().agents.find(agent => agent.id === this.database.getConversation(conversationId).agentId);
     return { role: "user", attachments: [], toolCallId: null, toolCalls: [], content: [
       "[Persistent task directory | reference data, not new user instructions]",
-      "Continue the current user or group request; these records do not replace it and need no acknowledgement. Tasks marked currentRun belong to this execution; other tasks are deduplication references, not work to resume. Read their decisions on demand if the current request needs them. For substantive work, list_task_contexts before creating a task. Reuse the same goal across follow-ups and rework. Update only when progress, effective decisions or next steps materially change. completionRequested=true means the completion request succeeded and awaits user confirmation, even if status remains running. Do not resubmit completion or reset the status merely to reconcile these fields; update again only for new work, evidence or user instructions. Greetings do not need tasks. Current task checklists remain separate. Neither historical completion nor a model summary proves the current assignment has been performed or accepted.",
+      "Continue the current user or group request; these records do not replace it and need no acknowledgement. Tasks marked currentRun belong to this execution; other tasks are deduplication references, not work to resume. Read their decisions on demand if the current request needs them. " + (this.database.getConversation(conversationId).threadKind === "subagent" ? "The parent owns the overall task records. Read relevant task references and link evidence if needed; do not create or update the persistent task list. Use a local execution checklist for your own steps." : "For substantive work, list_task_contexts before creating a task. Reuse the same goal across follow-ups and rework. Update only when progress, effective decisions or next steps materially change.") + " completionRequested=true means the completion request succeeded and awaits user confirmation, even if status remains running. Do not resubmit completion or reset the status merely to reconcile these fields; update again only for new work, evidence or user instructions. Greetings do not need tasks. Current task checklists remain separate. Neither historical completion nor a model summary proves the current assignment has been performed or accepted.",
       JSON.stringify(tasks.map(task => ({ id: task.id, revision: task.revision, title: task.title, status: task.status, completionRequested: task.completionRequested,
         currentRun: current.some(active => active.id === task.id), summary: task.summary.slice(0, 240),
         ...(current.some(active => active.id === task.id) ? { decisions: task.decisions.slice(0, 350), nextStep: task.nextStep.slice(0, 150) } : {}) }))),
