@@ -52,6 +52,77 @@ it("shows original user messages by conversation, excludes Agent work logs, and 
   expect(node.textContent).not.toContain(task.id); expect(node.textContent).not.toContain(messageId);
 });
 
+it.each(["conversation", "group"] as const)("confirms a task directly in the %s dropdown once without opening its detail", async kind => {
+  const client = new MockAgentClient();
+  const instance = kind === "group" ? await client.createTeamInstance({ teamId: "default-team", scope: "global" }) : null;
+  const owner = instance ? (await client.listConversationHierarchy()).find(item => item.id === instance.rootConversationId)! : await client.createConversation({});
+  const scope = instance ? { teamInstanceId: instance.id } : { conversationId: owner.id };
+  const task = await client.updateTaskContext({ conversationId: owner.id, title: "直接确认任务", goal: "保持任务与完成权限", status: "running", requestId: crypto.randomUUID() });
+  const list = client.listTaskContexts.bind(client);
+  vi.spyOn(client, "listTaskContexts").mockImplementation(async input => {
+    const page = await list(input);
+    return { ...page, items: page.items.map(item => ({ ...item, completionRequested: item.status !== "completed" })) };
+  });
+  const persist = client.updateTaskContext.bind(client);
+  let release: () => void = () => {};
+  const update = vi.spyOn(client, "updateTaskContext").mockImplementationOnce(input => new Promise((resolve, reject) => {
+    release = () => { void persist(input).then(resolve, reject); };
+  }));
+  const node = mount();
+  await act(async () => { root?.render(<TooltipProvider><TaskListLauncher agentClient={client} scope={scope} workspaceId={owner.id} /></TooltipProvider>); await flush(); });
+  await act(async () => { node.querySelector<HTMLButtonElement>('[aria-label="查看任务列表"]')!.click(); await flush(); });
+  const confirm = document.querySelector<HTMLButtonElement>('[aria-label="确认完成任务：直接确认任务"]')!;
+  expect(confirm).not.toBeNull(); expect(confirm.textContent).toContain("待验收");
+  await act(async () => { confirm.click(); confirm.click(); await flush(); });
+  expect(update).toHaveBeenCalledTimes(1); expect(confirm.disabled).toBe(true);
+  expect(document.querySelector('[aria-label="任务"]')?.textContent).not.toContain("已完成");
+  await act(async () => { release(); await flush(); });
+  expect(update.mock.calls[0]?.[0]).toMatchObject({ id: task.id, conversationId: owner.id, expectedRevision: task.revision, status: "completed" });
+  expect((await client.getTaskContext({ id: task.id })).task).toMatchObject({ status: "completed", completedBy: "user", completionRequested: false });
+  expect(document.querySelector('[aria-label="任务"]')?.textContent).toContain("已完成");
+  expect(document.querySelector<HTMLButtonElement>('[aria-label="确认完成任务：直接确认任务"]')!.disabled).toBe(true);
+  expect(useWorkbenchUiStore.getState().taskListViewRequest).toBeNull();
+  expect(document.querySelector('[aria-label="搜索任务或用户消息"]')).not.toBeNull();
+  expect(await client.getTaskCompletionPolicy(scope)).toEqual({ allowAgentCompletion: false });
+});
+
+it("keeps a failed confirmation unfinished and permits an explicit retry", async () => {
+  const client = new MockAgentClient(); const owner = await client.createConversation({});
+  const task = await client.updateTaskContext({ conversationId: owner.id, title: "保存失败任务", goal: "不能虚假完成", status: "running", requestId: crypto.randomUUID() });
+  const update = vi.spyOn(client, "updateTaskContext").mockRejectedValueOnce(new Error("状态保存失败"));
+  const node = mount();
+  await act(async () => { root?.render(<TooltipProvider><TaskListLauncher agentClient={client} scope={{ conversationId: owner.id }} workspaceId={owner.id} /></TooltipProvider>); await flush(); });
+  await act(async () => { node.querySelector<HTMLButtonElement>('[aria-label="查看任务列表"]')!.click(); await flush(); });
+  const confirm = () => document.querySelector<HTMLButtonElement>('[aria-label="确认完成任务：保存失败任务"]')!;
+  await act(async () => { confirm().click(); await flush(); });
+  expect(document.querySelector('[role="alert"]')?.textContent).toContain("状态保存失败");
+  expect(update).toHaveBeenCalledTimes(1);
+  expect((await client.getTaskContext({ id: task.id })).task.status).toBe("running");
+  await act(async () => { confirm().click(); await flush(); });
+  expect(update).toHaveBeenCalledTimes(2);
+  expect((await client.getTaskContext({ id: task.id })).task.status).toBe("completed");
+  expect(document.querySelector('[role="alert"]')).toBeNull();
+});
+
+it("keeps managed work-item acceptance in its existing workflow", async () => {
+  const client = new MockAgentClient(); const owner = await client.createConversation({});
+  const task = await client.updateTaskContext({ conversationId: owner.id, title: "受管团队任务", goal: "保留原验收约束", status: "running", requestId: crypto.randomUUID() });
+  const list = client.listTaskContexts.bind(client);
+  vi.spyOn(client, "listTaskContexts").mockImplementation(async input => {
+    const page = await list(input);
+    return { ...page, items: page.items.map(item => ({ ...item, workItemId: crypto.randomUUID(), workItemStatus: "reviewing" as const })) };
+  });
+  const update = vi.spyOn(client, "updateTaskContext"); const node = mount();
+  await act(async () => { root?.render(<TooltipProvider><TaskListLauncher agentClient={client} scope={{ conversationId: owner.id }} workspaceId={owner.id} /></TooltipProvider>); await flush(); });
+  await act(async () => { node.querySelector<HTMLButtonElement>('[aria-label="查看任务列表"]')!.click(); await flush(); });
+  const confirm = document.querySelector<HTMLButtonElement>('[aria-label="确认完成任务：受管团队任务"]')!;
+  expect(confirm.textContent).toBe("待验收"); expect(confirm.disabled).toBe(true);
+  expect(confirm.title).toContain("团队任务的验收流程");
+  act(() => confirm.click()); expect(update).not.toHaveBeenCalled();
+  await act(async () => { document.querySelector<HTMLButtonElement>('[aria-label="任务"] button')!.click(); await flush(); });
+  expect(useWorkbenchUiStore.getState().taskListViewRequest?.taskId).toBe(task.id);
+});
+
 it("refreshes new group tasks, defers hidden changes, and reuses a clean cached page", async () => {
   const client = new MockAgentClient(); const instance = await client.createTeamInstance({ teamId: "default-team", scope: "global" });
   const read = vi.spyOn(client, "listTaskContexts"); const node = mount();

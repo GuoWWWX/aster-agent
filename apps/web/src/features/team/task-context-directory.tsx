@@ -1,6 +1,6 @@
 import { taskContextStatusSchema, type ConversationSummary, type TaskContext, type TaskContextDetail, type TaskContextPage, type TaskContextScope } from "@agent/protocol";
 import { useEffect, useRef, useState, type ReactElement } from "react";
-import { ArrowLeft, ArrowUpRight, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleHelp, ListTodo, MessageSquare, PanelRightOpen, Search } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleHelp, ListTodo, LoaderCircle, MessageSquare, PanelRightOpen, Search } from "lucide-react";
 import { IconButton } from "../../components/ui/icon-button.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover.js";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select.js";
@@ -75,21 +75,44 @@ function useTaskPage({ agentClient, scope, active = true }: DirectoryProps) {
 }
 type TaskPage = ReturnType<typeof useTaskPage>;
 
+function updateTaskStatus(agentClient: AgentClient, task: TaskContext, status: TaskContext["status"]): Promise<TaskContext> {
+  if (task.workItemId !== null) return Promise.reject(new Error("请在团队任务的验收流程中确认此任务"));
+  return agentClient.updateTaskContext({ id: task.id, conversationId: task.ownerConversationId, expectedRevision: task.revision,
+    title: task.title, goal: task.goal, summary: task.summary, decisions: task.decisions, nextStep: task.nextStep, status, requestId: crypto.randomUUID() });
+}
+
 function TaskStatus({ task }: { task: TaskContext }): ReactElement {
-  const label = task.completionRequested || task.workItemStatus === "reviewing" ? "待确认" : taskContextStatusLabels[task.status];
+  const label = task.completionRequested || task.workItemStatus === "reviewing" ? "待验收" : taskContextStatusLabels[task.status];
   return <span className={task.status === "completed" ? "text-[var(--app-status-success-fg)]" : task.completionRequested ? "text-[var(--app-status-warning-fg)]" : task.status === "running" ? "text-[var(--app-accent)]" : "text-[var(--app-muted-foreground)]"}>{label}</span>;
 }
-function TaskRows({ data, selectedId, onSelect }: { data: TaskPage; selectedId?: string | null; onSelect: (task: TaskContext) => void }): ReactElement {
+function TaskRows({ agentClient, data, selectedId, onSelect }: { agentClient: AgentClient; data: TaskPage; selectedId?: string | null; onSelect: (task: TaskContext) => void }): ReactElement {
+  const saving = useRef(false);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const complete = async (task: TaskContext): Promise<void> => {
+    if (saving.current || task.status === "completed" || task.workItemId !== null) return;
+    saving.current = true; setSavingId(task.id); setSaveError(null);
+    try { await updateTaskStatus(agentClient, task, "completed"); }
+    catch (reason) { setSaveError(getUserErrorMessage(reason, "任务状态更新失败，请重新读取后重试")); }
+    finally { saving.current = false; setSavingId(null); data.reload(); }
+  };
   return <><div className="relative m-3 shrink-0"><Search size={15} aria-hidden="true" className="absolute left-2 top-2 text-[var(--app-muted-foreground)]" />
     <input aria-label="搜索任务或用户消息" placeholder="搜索任务或用户消息" value={data.query} onChange={event => data.setQuery(event.target.value)} className="h-8 w-full min-w-0 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] pl-8 pr-2 outline-none focus:border-[var(--app-focus-ring)]" /></div>
     {data.error ? <p role="alert" className="mx-3 text-[var(--app-destructive)]">{data.error}<button type="button" onClick={data.reload} className="ml-2 underline">重试</button></p> : null}
+    {saveError ? <p role="alert" className="mx-3 text-[var(--app-destructive)]">{saveError}</p> : null}
     {data.page === null && !data.error ? <LoadingState label="正在读取任务列表" /> : null}
     <ul aria-label="任务" aria-busy={data.loading} className="m-0 min-h-0 flex-1 list-none overflow-y-auto p-0">{data.page?.items.map(task => <li key={task.id}>
-      <button type="button" aria-pressed={selectedId === task.id} onClick={() => onSelect(task)} className={`flex w-full min-w-0 items-start gap-2 border-l-2 px-3 py-3 text-left hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] ${selectedId === task.id ? "border-[var(--app-accent)] bg-[var(--app-selection)]" : "border-transparent"}`}>
+      <div className={`flex min-w-0 items-start gap-2 border-l-2 px-3 py-3 hover:bg-[var(--app-hover)] ${selectedId === task.id ? "border-[var(--app-accent)] bg-[var(--app-selection)]" : "border-transparent"}`}>
+      <button type="button" aria-pressed={selectedId === task.id} onClick={() => onSelect(task)} className="flex min-w-0 flex-1 items-start gap-2 text-left focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)]">
         {task.status === "completed" ? <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-[var(--app-status-success-fg)]" /> : task.completionRequested ? <CircleHelp size={16} className="mt-0.5 shrink-0 text-[var(--app-status-warning-fg)]" /> : <Circle size={16} className="mt-0.5 shrink-0 text-[var(--app-muted-foreground)]" />}
-        <span className="min-w-0 flex-1"><span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"><strong className="min-w-0 flex-1 break-words font-medium">{task.title}</strong><span className="shrink-0 text-[length:var(--app-font-size-caption)]"><TaskStatus task={task} /></span></span>
+        <span className="min-w-0 flex-1"><strong className="block min-w-0 break-words font-medium">{task.title}</strong>
           <span className="mt-1 block text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">{task.userMessageCount ?? 0} 条用户消息 · {formatConversationTime(task.updatedAt)}</span></span>
-      </button></li>)}</ul>
+      </button>
+      <button type="button" aria-label={`确认完成任务：${task.title}`} title={task.workItemId !== null ? "请在团队任务的验收流程中确认此任务" : task.status === "completed" ? "已完成" : "点击确认完成"}
+        disabled={savingId !== null || data.loading || task.status === "completed" || task.workItemId !== null} aria-busy={savingId === task.id}
+        onClick={() => void complete(task)} className="inline-flex shrink-0 items-center gap-[5px] rounded-[var(--app-radius-small)] text-[length:var(--app-font-size-caption)] hover:underline focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] disabled:cursor-default disabled:no-underline">
+        {savingId === task.id ? <LoaderCircle size={12} className="animate-spin motion-reduce:animate-none" /> : null}<TaskStatus task={task} />
+      </button></div></li>)}</ul>
     {data.page?.items.length === 0 ? <p className="px-3 text-[var(--app-muted-foreground)]">{data.query ? "没有匹配的任务" : "暂无任务"}</p> : null}
     <footer className="flex shrink-0 items-center gap-1 border-t border-[var(--app-border)] px-3 py-[5px] text-[var(--app-muted-foreground)]">
       <span className="min-w-0 flex-1">共 {data.page?.total ?? data.page?.items.length ?? 0} 项</span>
@@ -107,7 +130,7 @@ export function TaskListLauncher({ agentClient, scope, workspaceId, active = tru
     <PopoverTrigger asChild><button type="button" aria-label="查看任务列表" className="inline-flex shrink-0 items-center gap-[5px] rounded-[var(--app-radius)] px-2 py-1 text-[length:var(--app-font-size-control)] hover:bg-[var(--app-hover)]"><ListTodo size={14} />任务列表<ChevronDown size={12} /></button></PopoverTrigger>
     <PopoverContent side="bottom" align="end" className="flex w-[400px] max-w-[calc(100vw-20px)] flex-col overflow-hidden rounded-[var(--app-radius-large)] border border-[var(--app-border)] bg-[var(--app-panel)] text-[length:var(--app-font-size-control)] text-[var(--app-foreground)] shadow-lg">
       <header className="flex items-center gap-2 border-b border-[var(--app-border)] px-3 py-2"><strong className="flex-1 font-medium">任务列表</strong><button type="button" className={linkClass} onClick={() => openSidebar()}><PanelRightOpen size={14} />在侧边打开</button></header>
-      <div className="flex max-h-[min(480px,65vh)] min-h-0 flex-col"><TaskRows data={data} onSelect={task => openSidebar(task.id)} /></div>
+      <div className="flex max-h-[min(480px,65vh)] min-h-0 flex-col"><TaskRows agentClient={agentClient} data={data} onSelect={task => openSidebar(task.id)} /></div>
     </PopoverContent>
   </Popover>;
 }
@@ -149,9 +172,7 @@ export function TaskListWorkspace({ agentClient, scope, active = true, requested
     if (task === null || busy) return;
     setBusy(true);
     try {
-      if (task.workItemId !== null) throw new Error("请在团队任务的验收流程中确认此任务");
-      await agentClient.updateTaskContext({ id: task.id, conversationId: task.ownerConversationId, expectedRevision: task.revision,
-        title: task.title, goal: task.goal, summary: task.summary, decisions: task.decisions, nextStep: task.nextStep, status, requestId: crypto.randomUUID() });
+      await updateTaskStatus(agentClient, task, status);
       data.reload(); reloadDetail(value => value + 1);
     } catch (reason) { setError(getUserErrorMessage(reason, "任务状态更新失败，请重新读取后重试")); }
     finally { setBusy(false); }
@@ -176,7 +197,7 @@ export function TaskListWorkspace({ agentClient, scope, active = true, requested
     </header>
     {error ? <p role="alert" className="m-0 flex shrink-0 gap-2 px-4 py-2 text-[var(--app-destructive)]">{error}<button type="button" className="shrink-0 underline" onClick={() => { data.reload(); reloadDetail(value => value + 1); }}>重新读取</button></p> : null}
     <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 @min-[640px]:grid-cols-[minmax(220px,30%)_minmax(0,1fr)]">
-      <nav aria-label="选择任务" className={`${showDetail ? "hidden @min-[640px]:flex" : "flex"} min-h-0 min-w-0 flex-col border-r border-[var(--app-border)]`}><TaskRows data={data} selectedId={selectedId} onSelect={item => { setSelectedId(item.id); setShowDetail(true); }} /></nav>
+      <nav aria-label="选择任务" className={`${showDetail ? "hidden @min-[640px]:flex" : "flex"} min-h-0 min-w-0 flex-col border-r border-[var(--app-border)]`}><TaskRows agentClient={agentClient} data={data} selectedId={selectedId} onSelect={item => { setSelectedId(item.id); setShowDetail(true); }} /></nav>
       <article aria-label="任务详情" className={`${showDetail ? "flex" : "hidden @min-[640px]:flex"} min-h-0 min-w-0 flex-col overflow-y-auto p-4 @min-[800px]:p-5`}>
         <button type="button" className={`${linkClass} mb-3 shrink-0 self-start @min-[640px]:hidden`} onClick={() => setShowDetail(false)}><ArrowLeft size={14} />返回任务列表</button>
         {task === null ? <p className="text-[var(--app-muted-foreground)]">{selectedId === null ? "选择一个任务，查看目标、进展和关联消息" : error ? "任务暂时无法读取" : "正在读取任务…"}</p> : <>
