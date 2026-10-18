@@ -60,6 +60,10 @@ describe("prompt assets", () => {
     expect(BASE_SYSTEM_PROMPT).toContain("never invent conversation/message IDs or use placeholders");
     expect(BASE_SYSTEM_PROMPT).toContain("Explicitly select an actual source when distinguishing earlier or independent requests");
     expect(BASE_SYSTEM_PROMPT).toContain("correct the arguments and retry before delegating that goal");
+    expect(BASE_SYSTEM_PROMPT).toContain("updates:[{...}]");
+    expect(BASE_SYSTEM_PROMPT).toContain("status, summary, decisions and nextStep belong in the same entry");
+    expect(BASE_SYSTEM_PROMPT).toContain("Set close=true");
+    expect(BASE_SYSTEM_PROMPT).toContain("A handoff that proceeds as planned needs no extra status-only update");
   });
   it("bundles distinct, valid system skills", () => {
     const names = SYSTEM_SKILLS.map((content) => parseSkillMarkdown(content).metadata.name);
@@ -70,7 +74,7 @@ describe("prompt assets", () => {
     for (const text of ["You are a local coding Agent.", "# Response Language", "# Work Progress", "# Quality and Verification",
       "# Commands and Task Management", "# Command and Terminal Choice", "# Browser Choice", "# File Changes", "# Conflict Recovery",
       "newest user request", "default batch mode", "running with a commandId", "same ID", "mode=service", "do not wait for a service to exit",
-      "expectedContext=ssh", "prefer replace_in_file", "one existing file", "combining changes into one call",
+      "expectedContext=ssh", "prefer replace_in_file", "one existing file", "Combine all known step changes in one update_task_list call",
       "load the browser-use Skill", "The application language is Simplified Chinese (zh-CN)."]) expect(BASE_SYSTEM_PROMPT).toContain(text);
     expect(BASE_SYSTEM_PROMPT).not.toMatch(/\p{Script=Han}|\r/u);
     expect(BASE_SYSTEM_PROMPT).not.toContain("at most one running");

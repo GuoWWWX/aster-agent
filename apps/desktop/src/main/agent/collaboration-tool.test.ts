@@ -19,6 +19,130 @@ function fixture() {
   return { database, instance, lead, tool: new CollaborationTool(database) };
 }
 
+it("updates several persistent tasks in one call with one change notification", async () => {
+  const { database, lead, tool } = fixture();
+  const run = database.createRunWithUserMessage(lead.id, "完成两项独立验收", "fixture");
+  const changed = vi.fn();
+  const execute = (updates: unknown[]) => tool.execute({ name: "update_task_context", arguments: JSON.stringify({ updates }),
+    conversationId: lead.id, runId: run.runId, toolCallId: randomUUID(), changed, post: vi.fn() });
+  const created = await execute([{ title: "目标 A", goal: "验证 A" }, { title: "目标 B", goal: "验证 B" }]);
+  expect(created).toMatchObject({ isError: false });
+  expect(changed).toHaveBeenCalledOnce();
+  const tasks = database.collaboration.runTasks(run.runId);
+  expect(tasks).toHaveLength(2);
+  changed.mockClear();
+  const completed = await execute(tasks.map(task => ({ id: task.id, expectedRevision: task.revision,
+    title: task.title, goal: task.goal, summary: "验证通过", decisions: "保留原产物", nextStep: "等待用户确认", status: "completed" })));
+  expect(completed).toMatchObject({ isError: false });
+  if (completed.kind !== "completed") throw new Error("Expected completion");
+  expect(JSON.parse(completed.content)).toMatchObject({ value: { tasks: [
+    { revision: 2, summary: "验证通过", completionRequested: true }, { revision: 2, summary: "验证通过", completionRequested: true },
+  ] } });
+  expect(changed).toHaveBeenCalledOnce();
+});
+
+it("rolls back all task changes and bindings when a later batch entry fails", async () => {
+  const { database, lead, tool } = fixture();
+  const task = database.collaboration.updateTask({ conversationId: lead.id, title: "原目标", goal: "保持修订", requestId: randomUUID() });
+  const runId = randomUUID(), toolCallId = randomUUID(), changed = vi.fn();
+  const updates = [{ title: "新目标", goal: "不能部分创建" },
+    { id: task.id, expectedRevision: task.revision + 1, title: task.title, goal: task.goal, summary: "不能部分更新" }];
+  const execute = () => tool.execute({ name: "update_task_context", arguments: JSON.stringify({ updates }),
+    conversationId: lead.id, runId, toolCallId, changed, post: vi.fn() });
+  expect(await execute()).toMatchObject({ isError: true });
+  expect(database.collaboration.listTasks({ conversationId: lead.id }).total).toBe(1);
+  expect(database.collaboration.getTask(task.id).task.revision).toBe(1);
+  expect(database.collaboration.runTasks(runId)).toHaveLength(0);
+  expect(changed).not.toHaveBeenCalled();
+  updates[1]!.expectedRevision = task.revision;
+  expect(await execute()).toMatchObject({ isError: false });
+  expect(database.collaboration.runTasks(runId)).toHaveLength(2);
+  expect(changed).toHaveBeenCalledOnce();
+});
+
+it("replays a batch idempotently and preserves each earlier task's original source", async () => {
+  const { database, lead, tool } = fixture();
+  const first = database.createRunWithUserMessage(lead.id, "目标 A", "fixture");
+  database.finishRun(first.runId, "completed", null);
+  const second = database.createRunWithUserMessage(lead.id, "目标 B", "fixture");
+  database.finishRun(second.runId, "completed", null);
+  const tasks = [first, second].map((run, index) => database.collaboration.updateTask({ conversationId: lead.id,
+    requestId: randomUUID(), title: `目标 ${index}`, goal: `完成 ${index}`, source: { kind: "conversation", containerId: lead.id,
+      messageId: run.userMessage.id, runId: run.runId, purpose: "request" } }));
+  const current = database.createRunWithUserMessage(lead.id, "另一项独立输入", "fixture");
+  const updates = tasks.map(task => ({ id: task.id, expectedRevision: task.revision, title: task.title, goal: task.goal, summary: "成员验证已通过" }));
+  const input = { name: "update_task_context", arguments: JSON.stringify({ updates }), conversationId: lead.id,
+    runId: current.runId, toolCallId: randomUUID(), changed: vi.fn(), post: vi.fn() };
+  const result = await tool.execute(input);
+  expect(result).toMatchObject({ isError: false });
+  expect(await tool.execute(input)).toEqual(result);
+  tasks.forEach((task, index) => {
+    const detail = database.collaboration.getTask(task.id);
+    expect(detail.task.revision).toBe(2);
+    expect(detail.sources.map(source => source.messageId)).toEqual([[first, second][index]!.userMessage.id]);
+  });
+});
+
+it("does not attach unrelated group inputs to every existing task in a batch", async () => {
+  const { database, instance, lead, tool } = fixture();
+  const tasks = ["A", "B"].map(title => database.collaboration.updateTask({ conversationId: lead.id,
+    requestId: randomUUID(), title, goal: `完成 ${title}` }));
+  const run = database.createRunWithUserMessage(lead.id, "汇总现有任务状态", "fixture");
+  const message = database.collaboration.postMessage({ teamInstanceId: instance.id, content: "另一项独立请求",
+    recipientConversationIds: [lead.id], requestId: randomUUID() }, null);
+  database.collaboration.consumeDelivery(message.deliveries[0]!.id, run.runId);
+  const result = await tool.execute({ name: "update_task_context", arguments: JSON.stringify({ updates: tasks.map(task => ({
+    id: task.id, expectedRevision: task.revision, title: task.title, goal: task.goal, summary: "已有验证结果",
+  })) }), conversationId: lead.id, runId: run.runId, toolCallId: randomUUID(), changed: vi.fn(), post: vi.fn() });
+  expect(result).toMatchObject({ isError: false });
+  for (const task of tasks) expect(database.collaboration.getTask(task.id).sources).toEqual([]);
+});
+
+it.each([0, 21])("rejects a batch of %i tasks before changing any records", async count => {
+  const { database, lead, tool } = fixture();
+  const definition = tool.definitions(false).find(item => item.name === "update_task_context")!;
+  expect(definition.parameters.required).toContain("updates");
+  const changed = vi.fn();
+  const result = await tool.execute({ name: definition.name, arguments: JSON.stringify({ updates: Array.from({ length: count },
+    (_, index) => ({ title: `目标 ${index}`, goal: "不应保存" })) }), conversationId: lead.id,
+    runId: randomUUID(), toolCallId: randomUUID(), changed, post: vi.fn() });
+  expect(result).toMatchObject({ isError: true });
+  expect(database.collaboration.listTasks({ conversationId: lead.id }).total).toBe(0);
+  expect(changed).not.toHaveBeenCalled();
+});
+
+it("rejects duplicate task IDs in a batch and reports a bad source at its batch index", async () => {
+  const { database, lead, tool } = fixture();
+  const task = database.collaboration.updateTask({ conversationId: lead.id, title: "原任务", goal: "保持完整", requestId: randomUUID() });
+  const changed = vi.fn();
+  const execute = (updates: unknown[]) => tool.execute({ name: "update_task_context", arguments: JSON.stringify({ updates }),
+    conversationId: lead.id, runId: randomUUID(), toolCallId: randomUUID(), changed, post: vi.fn() });
+  const update = { id: task.id, expectedRevision: task.revision, title: task.title, goal: task.goal, summary: "不能重复写" };
+  expect(await execute([update, update])).toMatchObject({ isError: true });
+  const result = await execute([{ title: "新目标", goal: "不能留下半个批次" }, { title: "坏来源", goal: "应回滚", source: {
+    kind: "conversation", containerId: lead.id, messageId: randomUUID(), purpose: "request",
+  } }]);
+  expect(result).toMatchObject({ isError: true });
+  if (result.kind !== "completed") throw new Error("Expected validation failure");
+  expect(JSON.parse(result.content)).toMatchObject({ recovery: { issues: [{ path: ["updates", 1, "source", "messageId"] }] } });
+  expect(database.collaboration.listTasks({ conversationId: lead.id }).total).toBe(1);
+  expect(database.collaboration.getTask(task.id).task.revision).toBe(1);
+  expect(changed).not.toHaveBeenCalled();
+});
+
+it("does not create revisions for identical persistent task updates, including pending confirmation", async () => {
+  const { database, lead, tool } = fixture();
+  const runId = randomUUID();
+  const execute = (updates: unknown[]) => tool.execute({ name: "update_task_context", arguments: JSON.stringify({ updates }),
+    conversationId: lead.id, runId, toolCallId: randomUUID(), changed: vi.fn(), post: vi.fn() });
+  await execute([{ title: "最终结果", goal: "已有完整结果", summary: "通过", status: "completed" }]);
+  const task = database.collaboration.runTasks(runId)[0]!;
+  expect(task).toMatchObject({ revision: 1, completionRequested: true });
+  const update = { id: task.id, expectedRevision: task.revision, title: task.title, goal: task.goal, summary: task.summary, status: "completed" };
+  expect(await execute([update])).toMatchObject({ isError: false });
+  expect(database.collaboration.getTask(task.id).task).toMatchObject({ revision: 1, completionRequested: true });
+});
+
 it("requires an explicit audience choice before routing any members", async () => {
   const { database, lead, tool } = fixture();
   const finish = vi.spyOn(database.collaboration, "finishCoordination");

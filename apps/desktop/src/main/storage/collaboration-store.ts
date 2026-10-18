@@ -327,6 +327,28 @@ export class CollaborationStore {
     }
   }
 
+  public updateTasks(inputs: readonly UpdateTaskContextInput[], actor: "user" | "agent",
+    binding: { runId: string; sources: readonly TaskSource[]; managedTaskId?: string }): TaskContext[] {
+    return this.write(() => inputs.map((input, index) => {
+      try {
+        // WorkItem task records are projections: bind evidence without changing their lifecycle.
+        const projected = binding.managedTaskId !== undefined && input.id === undefined;
+        const task = projected ? this.assertTaskAccess(binding.managedTaskId!, input.conversationId) : this.updateTask(input, actor);
+        if (projected && input.source !== undefined) this.linkTask({ id: task.id, source: input.source });
+        this.bindTask(binding.runId, task.id, input.conversationId);
+        // Existing tasks in a batch retain their own sources unless explicitly linked.
+        for (const source of inputs.length > 1 && input.id !== undefined ? [] : binding.sources) {
+          if (source.kind === input.source?.kind && source.containerId === input.source.containerId && source.messageId === input.source.messageId) continue;
+          this.linkTask({ id: task.id, source });
+        }
+        return task;
+      } catch (error) {
+        if (error instanceof CollaborationError) error.details.updateIndex = index;
+        throw error;
+      }
+    }));
+  }
+
   public updateTask(raw: UpdateTaskContextInput, actor: "user" | "agent" = "user"): TaskContext {
     const input = updateTaskContextInputSchema.parse(raw); const fingerprint = JSON.stringify(input);
     return this.write(() => {
@@ -356,10 +378,12 @@ export class CollaborationStore {
         workItemId: previous?.workItemId ?? null, createdAt: previous?.createdAt ?? now, updatedAt: now,
         revision: (previous?.revision ?? 0) + 1, mergedIntoId: null,
       });
-      this.saveTask(task);
+      const unchanged = previous !== null && (["title", "goal", "summary", "decisions", "nextStep", "status", "completionRequested", "completedBy"] as const)
+        .every(key => previous[key] === task[key]);
+      if (!unchanged) this.saveTask(task);
       if (input.source !== undefined) this.linkTask({ id: task.id, source: input.source });
       this.db.prepare("INSERT INTO collaboration_requests VALUES (?, ?, ?)").run(`task:${input.requestId}`, fingerprint, task.id);
-      return task;
+      return unchanged ? previous : task;
     });
   }
 

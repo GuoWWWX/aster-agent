@@ -20,6 +20,7 @@ const taskListToolNames = new Set([
 
 const taskListUpdateSchema = z
   .object({
+    close: z.boolean().optional().describe("When all steps are completed, set true in this final update to close the checklist in the same call. Omit while work remains."),
     tasks: z.array(
       z.object({
         reason: z.string().trim().min(1).max(600).nullable().optional().describe(
@@ -33,6 +34,9 @@ const taskListUpdateSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (value.close && value.tasks.some(task => task.status !== "completed")) context.addIssue({
+      code: "custom", path: ["close"], message: "Only close a checklist when every submitted step is completed.",
+    });
     value.tasks.forEach((task, index) => {
       const requiresReason = task.status === "blocked" || task.status === "failed";
       if (requiresReason && task.reason == null) {
@@ -91,7 +95,7 @@ export class TaskListTool {
       {
         description: [
           "Create or update this conversation's local execution checklist above its input for multi-step work. This does not create or update persistent task records in the conversation header.",
-          "Send the complete list of titles and statuses. Multiple tasks may be running at once. Blocked and failed tasks require a short reason."
+          "Send one complete list combining every currently known step change (for example, finish the previous step and start the next together). Do not submit separate updates per step or bookkeeping-only transitions. Set close=true with all steps completed to finish and close in one call; no separate close_task_list is needed. Multiple tasks may be running at once. Blocked and failed tasks require a short reason."
         ].join(" "),
         name: UPDATE_TASK_LIST_TOOL_NAME,
         parameters: taskListParameters
@@ -138,6 +142,10 @@ export class TaskListTool {
       case UPDATE_TASK_LIST_TOOL_NAME: {
         const input = taskListUpdateSchema.parse(rawArguments);
         const previous = this.database.getTaskList(conversationId);
+        if (input.close) {
+          if (previous !== null) this.database.closeTaskList(conversationId);
+          return { taskList: null, changed: previous !== null };
+        }
         if (previous?.tasks.length === input.tasks.length && input.tasks.every((task, index) => {
           const old = previous.tasks[index]!;
           return old.title === task.title && old.status === task.status && old.reason === (task.reason ?? null);

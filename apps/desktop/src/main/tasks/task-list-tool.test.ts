@@ -14,6 +14,32 @@ afterEach(() => {
 });
 
 describe("TaskListTool", () => {
+  it("closes the finished checklist in its final update without persisting an intermediate list", () => {
+    const database = new AgentDatabase(":memory:"); databases.push(database);
+    const conversation = database.createConversation(null), tool = new TaskListTool(database);
+    tool.execute(UPDATE_TASK_LIST_TOOL_NAME, JSON.stringify({ tasks: [
+      { title: "实现", status: "running" }, { title: "验证", status: "pending" },
+    ] }), conversation.id);
+    const update = vi.spyOn(database, "updateTaskList"), close = vi.spyOn(database, "closeTaskList");
+    const result = tool.execute(UPDATE_TASK_LIST_TOOL_NAME, JSON.stringify({ close: true, tasks: [
+      { title: "实现", status: "completed" }, { title: "验证", status: "completed" },
+    ] }), conversation.id);
+    expect(result).toMatchObject({ changed: true, isError: false, taskList: null });
+    expect(JSON.parse(result.content)).toEqual({ ok: true, value: { status: "closed" } });
+    expect(close).toHaveBeenCalledOnce(); expect(update).not.toHaveBeenCalled();
+    expect(database.getTaskList(conversation.id)).toBeNull();
+  });
+
+  it("rejects finishing an incomplete checklist without losing its state", () => {
+    const database = new AgentDatabase(":memory:"); databases.push(database);
+    const conversation = database.createConversation(null), tool = new TaskListTool(database);
+    const tasks = [{ title: "实现", status: "completed" }, { title: "验证", status: "running" }];
+    tool.execute(UPDATE_TASK_LIST_TOOL_NAME, JSON.stringify({ tasks }), conversation.id);
+    const before = database.getTaskList(conversation.id);
+    expect(tool.execute(UPDATE_TASK_LIST_TOOL_NAME, JSON.stringify({ tasks, close: true }), conversation.id).isError).toBe(true);
+    expect(database.getTaskList(conversation.id)).toEqual(before);
+  });
+
   it("does not persist or report progress for an identical task list", () => {
     const database = new AgentDatabase(":memory:");
     databases.push(database);

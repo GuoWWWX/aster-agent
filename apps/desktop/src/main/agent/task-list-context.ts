@@ -14,7 +14,7 @@ const TASK_LIST_CONTEXT_HEADER = [
   "This is the only authoritative task state for this conversation and is refreshed before every model call. Do not replace it with task state from older tool results, chat history, or compression summaries.",
   "This list is progress metadata, not authorization to resume work. It may contain unfinished steps from a different request. Follow the current message and its assigned scope; do not add casual discussion or acknowledgements to an unrelated list, or update/close that list just to finish the current turn. Pending steps can remain while you await input or another member.",
   "Update only when a step actually changes; repeating an identical list does not advance work. A completed public answer or internal receipt can end this turn without touching unrelated steps.",
-  "Call update_task_list with the complete list to create or update it. Multiple tasks may be running at once. A blocked or failed task requires a short reason. Call close_task_list after all tasks finish.",
+  "Call update_task_list once with the complete list and all currently known step changes, including completing one step and starting the next. Multiple tasks may be running at once. A blocked or failed task requires a short reason. In the final update set close=true with every step completed, avoiding a separate close_task_list call.",
 ].join("\n");
 
 function contextTaskTitle(title: string): string {
