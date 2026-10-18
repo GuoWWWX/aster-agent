@@ -139,6 +139,23 @@ function successChunks(apiFormat: ModelApiFormat): string[] {
 }
 
 describe("LangChainModelAdapter", () => {
+  it.each(["openai-chat-completions", "openai-responses"] as const)(
+    "keeps the conversation cache key across appended turns for %s", async (apiFormat) => {
+      const request = vi.fn<typeof fetch>().mockImplementation(() => Promise.resolve(createStreamResponse(successChunks(apiFormat))));
+      const adapter = new LangChainModelAdapter(apiFormat, request);
+      const first = { ...inputFor(apiFormat), cacheKey: "aster:conversation-one" };
+      await adapter.completeTurn(first);
+      await adapter.completeTurn({ ...first, messages: [...first.messages,
+        { attachments: [], content: "hello again", role: "user", toolCallId: null, toolCalls: [] }] });
+      await adapter.completeTurn({ ...first, cacheKey: "aster:conversation-two" });
+      expect(recordBody(request, 0).prompt_cache_key).toBe("aster:conversation-one");
+      expect(recordBody(request, 1).prompt_cache_key).toBe("aster:conversation-one");
+      expect(recordBody(request, 2).prompt_cache_key).toBe("aster:conversation-two");
+      expect(recordBody(request, 0).prompt_cache_retention).toBeUndefined();
+      expect(recordBody(request, 0).prompt_cache_options).toBeUndefined();
+    },
+  );
+
   it("uses the provider-neutral OpenAI tool envelope accepted by all LangChain providers", () => {
     const definitions = toolDefinitions([{
       description: "Read a file",

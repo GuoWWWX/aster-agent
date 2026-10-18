@@ -102,6 +102,8 @@ export type ModelReasoningDelta = {
 };
 
 export type CompleteTurnInput = {
+  /** Stable opaque conversation scope; never a per-request or Run identifier. */
+  cacheKey?: string;
   configuration: ModelConfiguration;
   maxOutputTokens: number;
   messages: ModelMessage[];

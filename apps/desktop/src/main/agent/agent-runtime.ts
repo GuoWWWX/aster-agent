@@ -4330,6 +4330,7 @@ export class AgentRuntime {
       type: "model.request_started"
     });
     const result = await this.modelGateway.completeTurn({
+      cacheKey: `aster:${input.conversationId}`,
       onFirstToken: (latencyMs) => {
         this.emit(input.emit, {
           conversationId: input.conversationId,

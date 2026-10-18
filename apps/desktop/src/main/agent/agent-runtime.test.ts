@@ -3687,11 +3687,13 @@ describe("AgentRuntime", () => {
     const conversation = database.createConversation(null);
     let calls = 0;
     const inputEstimates: number[] = [];
+    const cacheKeys: unknown[] = [];
     let started: (() => void) | undefined;
     const waiting = new Promise<void>((resolve) => { started = resolve; });
     const model: ModelProviderAdapter = {
       completeTurn: async (input) => {
         calls += 1;
+        cacheKeys.push(Reflect.get(input, "cacheKey"));
         if (calls === 2) {
           input.onFirstToken?.(900);
           started?.();
@@ -3736,6 +3738,7 @@ describe("AgentRuntime", () => {
     await send("real zero");
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(usage()).toMatchObject({ latest: { hitRate: 0 }, cumulative: { hitRate: 0.4, requestCount: 2 } });
+    expect(cacheKeys).toEqual(Array(3).fill(`aster:${conversation.id}`));
     database.close();
   });
 

@@ -124,6 +124,8 @@ Queue/Steer 在模型已经返回无工具结果后到达时，Executor 会在�
 
 保留中立的 `ModelProviderAdapter` 作为应用端口，但实现改为 LangChain-backed adapter。这样上下文压缩、连接测试和现有测试调用方不需要同时改变，Provider 协议解析不再由项目手写。
 
+对话请求可通过 `CompleteTurnInput.cacheKey` 提供稳定、不含正文的会话范围；OpenAI Chat／Responses 工厂将其传入 LangChain `promptCacheKey`，复用 SDK 的请求映射。Runtime 主链按会话而非 Run 生成范围，未提供范围的独立调用和其他 Provider 保持原行为，不新增手写协议层。
+
 ```text
 ModelConfiguration
   -> LangChainModelFactory
