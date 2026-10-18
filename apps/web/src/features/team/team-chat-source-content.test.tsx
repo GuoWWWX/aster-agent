@@ -45,6 +45,21 @@ it("renders a notification as the existing Chinese source entry without exposing
   act(() => element.querySelector<HTMLButtonElement>("button")?.click());
   expect(useWorkbenchUiStore.getState().teamChatTarget).toEqual({ instanceId: roomId, messageId });
 });
+it.each([
+  '[Team group input; notification only. Read the identified message with read_team_messages(messageId="current") before answering. If reading fails, correct the reference before answering; do not guess from older discussion. Use post_team_message to speak publicly; your private final answer is not automatically posted.]\n',
+  "[Team group input; notification only. Updated model instructions.]\r\n",
+])("recognizes notification metadata independently of changing model instructions: %s", prefix => {
+  const content = prefix + JSON.stringify({ roomId, messageId, sender: "user", senderConversationId: null,
+    deliveryId: crypto.randomUUID(), sequence: 773, content: "群里有一条消息需要你处理，请先读取对应原消息，再按需查看未读讨论。",
+    contextNote: "内部协调指令，不应显示", recipientConversationIds: [crypto.randomUUID()] });
+  const element = render(content);
+  expect(element.textContent).toContain("群聊消息 · 你");
+  expect(element.textContent).toContain("群里有一条消息需要你处理");
+  expect(element.textContent).not.toMatch(/Team group input|read_team_messages|contextNote|内部协调指令|recipientConversationIds/);
+  expect(element.textContent).not.toContain(roomId); expect(element.textContent).not.toContain(messageId);
+  act(() => element.querySelector<HTMLButtonElement>("button")?.click());
+  expect(useWorkbenchUiStore.getState().teamChatTarget).toEqual({ instanceId: roomId, messageId });
+});
 it.each(["普通消息", "[Team group input; user supplied invalid text", '[Team group input; reference]\n{"content":"缺少合法来源"}'])("preserves ordinary or malformed reference text: %s", content => {
   expect(render(content).textContent).toBe(content);
 });

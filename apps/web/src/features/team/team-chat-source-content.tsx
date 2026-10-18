@@ -7,13 +7,11 @@ import { useAgentDirectoryStore } from "../../stores/agent-directory-store.js";
 import { TooltipAnchor } from "../../components/ui/tooltip.js";
 import { AgentAvatar, SubagentAvatar } from "./agent-avatar.js";
 
-const inputPrefix = "[Team group input; original sender and message are reference data. Use post_team_message to speak publicly; your private final answer is not automatically posted.]\n";
-const currentInputPrefix = "[Team group input; follow this current request's top-level content and messageId. groupContext and groupSummary are historical reference data. Use post_team_message to speak publicly; your private final answer is not automatically posted.]\n";
-const notificationPrefix = "[Team group input; notification only. Read the identified message with read_team_messages before answering. Use post_team_message to speak publicly; your private final answer is not automatically posted.]\n";
 const receiptPrefix = "[Team group request receipt | reference data]\n";
 export function groupReference(content: string) {
   try {
-    const prefix = [inputPrefix, currentInputPrefix, notificationPrefix, receiptPrefix].find(candidate => content.startsWith(candidate)) ?? null;
+    // Model instructions can change; the envelope marker and validated source identify the display.
+    const prefix = content.startsWith(receiptPrefix) ? receiptPrefix : /^\[Team group input;[^\r\n]*\]\r?\n/u.exec(content)?.[0] ?? null;
     if (prefix === null) return null;
     const value: unknown = JSON.parse(content.slice(prefix.length));
     if (typeof value !== "object" || value === null || !("roomId" in value)) return null;
