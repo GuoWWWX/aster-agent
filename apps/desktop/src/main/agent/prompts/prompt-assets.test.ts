@@ -6,10 +6,20 @@ import {
   baseSystemPromptForTools,
   BROWSER_USE_SKILL,
   CONTEXT_COMPACTION_PROMPT,
+  TEAM_CHAT_COORDINATOR_PROMPT,
   SYSTEM_SKILLS,
 } from "./prompt-assets.js";
 
 describe("prompt assets", () => {
+  it("routes collective greetings to everyone and discussions to relevant members without making the lead the default speaker", () => {
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("select ALL active members");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("Do not use the leader as the default spokesperson");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("Select multiple relevant members");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("select ONLY the active team leader by default");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).not.toContain("Greetings and casual discussion need one relevant responder");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).not.toContain("Choose multiple members only when their distinct contributions are requested");
+  });
+
   it("keeps delegation constraints and repository-aware command guidance available with skills enabled", () => {
     const prompt = baseSystemPromptForTools(new Set(["spawn_subagent", "run_command", "load_skill"]));
     expect(prompt).toContain("does not inherit the parent conversation's history");
