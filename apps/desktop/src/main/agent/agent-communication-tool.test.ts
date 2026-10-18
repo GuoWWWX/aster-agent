@@ -6,6 +6,37 @@ import { agentMessageModelContent } from "../storage/agent-database.js";
 import { AgentCommunicationTool } from "./agent-communication-tool.js";
 
 describe("AgentCommunicationTool", () => {
+  it.each(["default", "steer", "notification"])("preserves independent child queue and explicit immediate delivery (%s)", async mode => {
+    const database = new AgentDatabase(":memory:");
+    try {
+      const parent = database.createConversation(null);
+      const child = database.forkConversation(parent.id, "subagent");
+      const result = await new AgentCommunicationTool(database).execute({ conversationId: parent.id,
+        arguments: JSON.stringify({ conversationIds: [child.id], content: "follow-up", ...(mode === "steer" ? { deliveryMode: "steer" } : {}),
+          ...(mode === "notification" ? { expectReply: false } : {}) }), runId: crypto.randomUUID(), signal: new AbortController().signal,
+        toolName: "send_agent_message" });
+      expect(result.isError).toBe(false);
+      expect(database.listUnreadAgentMessages(child.id)[0]?.deliveryMode).toBe(mode === "default" ? "queue" : undefined);
+      expect(database.listContextMessages(child.id)).toHaveLength(mode === "default" ? 0 : 1);
+    } finally { database.close(); }
+  });
+
+  it("rejects an explicitly queued batch containing an unrelated recipient without partial delivery", async () => {
+    const database = new AgentDatabase(":memory:");
+    try {
+      const parent = database.createConversation(null);
+      const child = database.forkConversation(parent.id, "subagent");
+      const unrelated = database.createConversation(null);
+      const sent = vi.fn();
+      const result = await new AgentCommunicationTool(database).execute({ conversationId: parent.id,
+        arguments: JSON.stringify({ conversationIds: [child.id, unrelated.id], content: "independent task", deliveryMode: "queue" }),
+        runId: crypto.randomUUID(), signal: new AbortController().signal, toolName: "send_agent_message", onMessageSent: sent });
+      expect(result.isError).toBe(true);
+      expect(database.listUnreadAgentMessages(child.id)).toEqual([]);
+      expect(database.listUnreadAgentMessages(unrelated.id)).toEqual([]);
+      expect(sent).not.toHaveBeenCalled();
+    } finally { database.close(); }
+  });
   it("advertises one array-based sending tool for both one and many recipients", () => {
     const database = new AgentDatabase(":memory:");
     const definitions = new AgentCommunicationTool(database).getDefinitions().filter(tool => tool.name === "send_agent_message");

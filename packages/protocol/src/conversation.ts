@@ -476,6 +476,7 @@ export const conversationRunFileChangeSchema = z.object({
 export const conversationAgentMessageItemSchema = z
   .object({
     autoWake: z.boolean().optional(),
+    deliveryMode: z.enum(["queue", "steer"]).optional(),
     consumedByRunId: runIdSchema.optional(),
     executionStatus: z.enum(["completed", "failed", "cancelled"]).optional(),
     summaryStatus: z.enum(["provided", "missing"]).optional(),

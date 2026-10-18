@@ -296,6 +296,7 @@ export type ConversationDeletionTask = {
 export type SendAgentMessageInput = {
   id?: string;
   autoWake?: boolean;
+  deliveryMode?: "queue" | "steer";
   content: string;
   executionStatus?: "completed" | "failed" | "cancelled";
   summaryStatus?: "provided" | "missing";
@@ -5059,7 +5060,9 @@ export class AgentDatabase {
       return true;
     }
     if (event.type === "agent_messages_consumed") {
-      const payload = z.object({ runId: z.string().uuid(), messageIds: z.array(z.string().uuid()).max(50) }).strict().parse(event.payload);
+      const payload = z.object({ runId: z.string().uuid(), messageIds: z.array(z.string().uuid()).max(50),
+        queuedMessages: z.array(z.object({ messageId: z.string().uuid(), modelContent: z.string() }).strict()).max(50).optional(),
+      }).strict().parse(event.payload);
       if (this.getRunConversationId(payload.runId) !== conversationId) throw new Error("Result batch Run does not belong to the conversation.");
       for (const id of payload.messageIds) this.markThreadLogAgentMessageRead(conversationId, id, event.createdAt, payload.runId);
       return true;
@@ -5687,6 +5690,10 @@ export class AgentDatabase {
       if (child.activeRunId !== null || current.status === "queued" || current.status === "running") {
         throw new Error("A running Subagent cannot be ended.");
       }
+      if (this.listPendingMessages(childConversationId).length > 0
+        || this.listUnreadAgentMessages(childConversationId).some(message => message.deliveryMode === "queue")) {
+        throw new Error("A Subagent with pending assignments cannot be ended.");
+      }
       const now = new Date().toISOString();
       const update = this.database.prepare(
         `UPDATE subagent_tasks SET status = 'ended', updated_at = ?
@@ -5882,7 +5889,7 @@ export class AgentDatabase {
     return row === undefined ? null : this.toConversationTimelineItem(row);
   }
 
-  public listTimeline(conversationId: string): ConversationTimelineItem[] {
+  public listTimeline(conversationId: string, runId?: string): ConversationTimelineItem[] {
     this.getConversation(conversationId);
     const rows = this.database
       .prepare(
@@ -5893,9 +5900,10 @@ export class AgentDatabase {
          FROM conversation_timeline
          LEFT JOIN runs ON runs.id = conversation_timeline.run_id
          WHERE conversation_timeline.conversation_id = ?
+           AND (? IS NULL OR conversation_timeline.run_id = ?)
          ORDER BY conversation_timeline.sequence ASC`
       )
-      .all(conversationId) as DatabaseRow[];
+      .all(conversationId, runId ?? null, runId ?? null) as DatabaseRow[];
     return rows.map((row) => this.toConversationTimelineItem(row));
   }
 
@@ -6001,6 +6009,7 @@ export class AgentDatabase {
       id: input.id ?? randomUUID(),
       kind: "agent_message",
       ...(input.autoWake === false ? { autoWake: false } : {}),
+      ...(input.deliveryMode === undefined ? {} : { deliveryMode: input.deliveryMode }),
       messageType: input.messageType ?? "message",
       readAt: null,
       replyInstruction: input.replyInstruction ?? null,
@@ -6033,14 +6042,10 @@ export class AgentDatabase {
         message.createdAt
       );
     if (includeInTimeline) this.insertTimelineItem(message);
-    this.insertModelMessage({
-      attachmentIds: [],
-      content: agentMessageModelContent(message),
-      conversationId: message.conversationId,
-      role: "user",
-      runId: null,
-      toolCallId: null,
-      toolCalls: []
+    if (message.deliveryMode !== "queue") this.insertModelMessage({
+      attachmentIds: [], content: agentMessageModelContent(message),
+      conversationId: message.conversationId, role: "user", runId: null,
+      toolCallId: null, toolCalls: [],
     });
     this.database
       .prepare(
@@ -6137,6 +6142,11 @@ export class AgentDatabase {
         });
         updateStoredMessage.run(JSON.stringify(read), now, messageId);
         updateTimeline.run(JSON.stringify(read), messageId);
+        if (current.deliveryMode === "queue") this.insertModelMessage({
+          attachmentIds: [], content: agentMessageModelContent(read),
+          conversationId: read.conversationId, role: "user", runId: consumedByRunId ?? null,
+          toolCallId: null, toolCalls: [],
+        });
       }
     });
   }
@@ -8488,7 +8498,7 @@ export class AgentDatabase {
             this.persistAgentMessage(message);
           } else {
             this.insertThreadLogTimeline(message);
-            this.insertThreadLogModelMessage({
+            if (message.deliveryMode !== "queue") this.insertThreadLogModelMessage({
               attachmentIds: [],
               content: agentMessageModelContent(message),
               conversationId,
@@ -9465,6 +9475,11 @@ export class AgentDatabase {
         "UPDATE conversation_timeline SET payload_json = ? WHERE id = ? AND kind = 'agent_message'",
       )
       .run(JSON.stringify(read), messageId);
+    if (current.deliveryMode === "queue") this.insertModelMessage({
+      attachmentIds: [], content: agentMessageModelContent(read),
+      conversationId, role: "user", runId: consumedByRunId ?? null,
+      toolCallId: null, toolCalls: [],
+    });
   }
 
   private markThreadLogToolAwaitingApproval(

@@ -148,6 +148,7 @@ import {
   type SkillSnapshotRef,
 } from "./skill-runtime.js";
 import { SubagentTool } from "./subagent-tool.js";
+import { QuickCoordinationTool } from "./quick-coordination-tool.js";
 import {
   TeamWorkItemTool,
   type TeamWorkItemDispatcher,
@@ -1055,6 +1056,8 @@ export class AgentRuntime {
   private readonly referenceHistory: ConversationReferenceHistory;
 
   private readonly subagentTool: SubagentTool;
+  private readonly quickCoordinationTool: QuickCoordinationTool;
+  private readonly claimedPendingMessagesByRun = new Map<string, string[]>();
   public readonly userQuestions: UserQuestionService;
   private readonly userQuestionTool: UserQuestionTool;
 
@@ -1134,6 +1137,7 @@ export class AgentRuntime {
     });
     this.userQuestionTool = new UserQuestionTool(this.userQuestions);
     this.taskListTool = new TaskListTool(database);
+    this.quickCoordinationTool = new QuickCoordinationTool(database);
     this.referenceHistory = threadLog === null ? database : new ThreadLogReferenceReader(database, threadLog);
     this.agentCommunicationTool = new AgentCommunicationTool(database, this.referenceHistory, input => {
       if (this.teamWorkItemDispatcher?.resizeWorkers === undefined) throw new Error("团队扩缩容服务尚不可用。");
@@ -1392,6 +1396,30 @@ export class AgentRuntime {
         isAvailable: ({ conversationId }) => conversationId !== undefined
           && this.database.getConversation(conversationId).threadKind === "team_lead"
           && this.database.getTeamInstanceForConversation(conversationId) !== null,
+      },
+      {
+        execute: ({ context, rawArguments, toolName }) => Promise.resolve(this.quickCoordinationTool.execute({
+          arguments: rawArguments, conversationId: context.conversationId, runId: context.runId,
+          signal: context.signal, toolName,
+          claim: ids => {
+            if (this.isPendingQueuePaused(context.conversationId)) throw new Error("The request queue is paused.");
+            if (this.claimedPendingMessagesByRun.has(context.runId)) throw new Error("Arrange the claimed batch before claiming again.");
+            const records = ids.map(id => this.database.getPendingMessageRecord(id));
+            if (records.some(record => record.message.conversationId !== context.conversationId || record.message.deliveryMode !== "queue")) {
+              throw new Error("Only pending Queue requests from this conversation can be claimed.");
+            }
+            // Validate every input before any of this batch can be consumed.
+            for (const record of records) this.prepareConversationMessage(record.input);
+            this.claimedPendingMessagesByRun.set(context.runId, ids);
+            return records.map(record => record.message);
+          },
+        })),
+        getDefinitions: () => this.quickCoordinationTool.getDefinitions(),
+        getExecutionPolicy: ({ toolName }) => toolName === "list_pending_messages"
+          ? { group: "read", kind: "parallel" } : { kind: "serial" },
+        isAvailable: ({ conversationId }) => conversationId !== undefined
+          && this.database.getConversation(conversationId).coordinationMode === "parallel_queue"
+          && this.canManageSubagents(conversationId),
       },
       {
         execute: ({ context, rawArguments, toolName }) => this.subagentTool.execute({
@@ -2348,17 +2376,19 @@ export class AgentRuntime {
     emit: RunEventEmitter
   ): boolean {
     const coordinating = this.database.getConversation(conversationId).coordinationMode === "parallel_queue";
+    const claimedIds = new Set(this.claimedPendingMessagesByRun.get(runId) ?? []);
+    this.claimedPendingMessagesByRun.delete(runId);
     const records = [
       ...this.database.listPendingMessageRecords(conversationId, "steer"),
       ...(coordinating && !this.isPendingQueuePaused(conversationId)
-        ? this.database.listPendingMessageRecords(conversationId, "queue").slice(0, 5) : []),
+        ? this.database.listPendingMessageRecords(conversationId, "queue").filter(record => claimedIds.has(record.message.id)) : []),
     ];
     if (records.length === 0) return false;
     const consumedMessages: ConversationMessageItem[] = [];
     for (const record of records) {
       const prepared = this.prepareConversationMessage(record.input);
       const modelInputContent = record.message.deliveryMode === "queue"
-        ? `[Independent queued request ${record.message.id}]\nKeep earlier assignments and their results. Register this request in the task list, delegate independent work to a reusable or new Subagent, and track its completion without waiting before accepting more queued requests.\n${prepared.modelInputContent}\n[End queued request]`
+        ? `[Independent queued request ${record.message.id}]\nKeep earlier assignments and their results. Arrange this request with a new or reusable Subagent before claiming another batch. Preserve every source request ID when related requests share an assignment. Do not wait for worker completion to claim more work after a successful handoff.\n${prepared.modelInputContent}\n[End queued request]`
         : steerModelContent(prepared.modelInputContent);
       const userMessage = this.threadLog !== null && this.eventProjector !== null
         ? (() => {
@@ -2904,7 +2934,8 @@ export class AgentRuntime {
       const graphResult = await this.graphExecutor.invoke({
         callbacks: {
           beforeAgent: async () => {
-            const unreadAgentMessages = this.database.listUnreadAgentMessages(conversationId);
+            const unreadAgentMessages = this.database.listUnreadAgentMessages(conversationId)
+              .filter(message => message.deliveryMode !== "queue");
             const preparedContext = await this.prepareContext(
               conversationId,
               workspace,
@@ -2937,7 +2968,8 @@ export class AgentRuntime {
           },
           beforeModel: async (state) => {
             const additions: ModelMessage[] = [];
-            const incomingAgentMessages = this.database.listUnreadAgentMessages(conversationId);
+            const incomingAgentMessages = this.database.listUnreadAgentMessages(conversationId)
+              .filter(message => message.deliveryMode !== "queue");
             if (incomingAgentMessages.length > 0) {
               this.trackAgentMessagesForReply(runId, incomingAgentMessages);
               additions.push(...incomingAgentMessages
@@ -2967,7 +2999,11 @@ export class AgentRuntime {
               this.database.getTaskList(conversationId),
             );
             const directoryContext = this.collaborationContext(conversationId, runId);
+            const pendingCount = conversation.coordinationMode === "parallel_queue"
+              ? this.database.listPendingMessages(conversationId).filter(message => message.deliveryMode === "queue").length : 0;
             const contextMessages = [
+                ...(pendingCount === 0 ? [] : [{ attachments: [], role: "user" as const, toolCallId: null, toolCalls: [],
+                  content: `[Queue status] ${pendingCount} independent requests remain pending. Preview with list_pending_messages; arrange the current request first, then use claim_pending_messages to select the next request or related batch. Queue status is metadata, not a new user request.` }]),
                 ...(activeSkillContext === null || activeSkillContext === undefined
                   ? []
                   : [activeSkillContext]),
@@ -3101,7 +3137,7 @@ export class AgentRuntime {
               throw new ToolCallLimitError(toolCalls.length, MAX_TOOL_CALLS_PER_MODEL_TURN);
             }
             followUpInputForGraph = toolCalls.length === 0 && (
-              this.database.listUnreadAgentMessages(conversationId).length > 0
+              this.database.listUnreadAgentMessages(conversationId).some(message => message.deliveryMode !== "queue")
               || this.database.listPendingMessageRecords(conversationId, "steer").length > 0
             );
             if (toolCalls.length === 0 && result.content.trim().length === 0) {
@@ -3194,7 +3230,7 @@ export class AgentRuntime {
             });
             return { ...execution, finishRun };
           },
-          hasFollowUpInput: () => followUpInputForGraph || this.database.listUnreadAgentMessages(conversationId).length > 0
+          hasFollowUpInput: () => followUpInputForGraph || this.database.listUnreadAgentMessages(conversationId).some(message => message.deliveryMode !== "queue")
             || this.database.listPendingMessageRecords(conversationId, "steer").length > 0,
         },
         initialMessages: [],
@@ -3346,6 +3382,7 @@ export class AgentRuntime {
       this.agentMessageDepthByRun.delete(runId);
       this.agentMessagesToReplyByRun.delete(runId);
       this.agentInputsForSummaryByRun.delete(runId);
+      this.claimedPendingMessagesByRun.delete(runId);
       this.activeSkillRefsByRun.delete(runId);
       for (const key of this.startedToolsByRunCall.keys()) {
         if (key.startsWith(`${runId}:`)) this.startedToolsByRunCall.delete(key);
@@ -3501,8 +3538,8 @@ export class AgentRuntime {
   private coordinationContext(conversation: ConversationSummary): string[] {
     if (conversation.coordinationMode !== "parallel_queue") return [];
     return [
-      "Quick coordination mode is enabled with full_access. You own a persistent queue of independent user requests and coordinate reusable Subagents. Record each request and its assigned child IDs in the durable task list; accept new queued requests at runtime-safe model boundaries instead of polling the inbox. New requests do not replace or cancel earlier assignments.",
-      "Delegate independent work promptly and continue accepting requests while workers run. Reuse an idle suitable child and its context; create another only when independent parallel work justifies it. Keep at most 8 children actively working; leave remaining work pending in the task list. Use the existing list_subagents, send_agent_message, wait_for_subagents and end_subagent tools, and reconcile every request and child result before declaring the whole batch complete. Failed children require explicit retry/reassignment or a truthful failure report, never silent omission.",
+      "Quick coordination mode is enabled with full_access. You own a persistent queue of independent user requests and coordinate reusable Subagents. First arrange the current request through a successful child spawn or queued assignment; only then claim another request. New requests never replace or cancel earlier assignments. Preview the queue with list_pending_messages without consuming it, then use claim_pending_messages for one request or a small related batch. Record each source request and child assignment in the durable task list; preserve existing unfinished entries when updating it.",
+      "Normally create one Subagent for each independent task when capacity permits. Reuse a suitable existing child for related follow-up work using send_agent_message with conversationIds: [childConversationId]. Assignments to your own children default to queue: a busy child finishes its current task before accepting its next queued task. Explicit deliveryMode=steer is reserved for user-requested amendments to that current task. A successful spawn or queued send is an accepted handoff; do not wait for worker completion before claiming more requests. Keep at most 8 children actively working; leave unarranged work pending. Reconcile every source request and child receipt before final delivery. Failed children require explicit retry/reassignment or a truthful failure report, never silent omission.",
       "Give each coding worker a distinct file/module ownership scope. Backend locks reject conflicting or stale writes; ask the owner to finish, reread current files and integrate deliberately. Do not force-reset or blindly merge another worker's edits. For substantive changes assign independent checking/testing before final delivery and distinguish actual test results from proposed checks.",
     ];
   }
@@ -3943,7 +3980,7 @@ export class AgentRuntime {
     const sourceDepth = message.runId === null
       ? 0
       : this.agentMessageDepthByRun.get(message.runId) ?? 0;
-    this.startUnreadAgentMessageRun(message.conversationId, sourceDepth + 1, emit);
+    this.startUnreadAgentMessageRun(message.conversationId, message.deliveryMode === "queue" ? 0 : sourceDepth + 1, emit);
   }
 
   private appendAgentMessageThreadLog(message: ConversationAgentMessageItem): void {
@@ -3975,12 +4012,16 @@ export class AgentRuntime {
   }
 
   private consumeAgentResultBatch(conversationId: string, runId: string, messageIds: string[]): void {
+    const queuedMessages = this.database.listUnreadAgentMessages(conversationId)
+      .filter(message => message.deliveryMode === "queue" && messageIds.includes(message.id))
+      .map(message => ({ messageId: message.id, modelContent: agentMessageModelContent(message) }));
+    const payload = { runId, messageIds, ...(queuedMessages.length === 0 ? {} : { queuedMessages }) };
     if (this.threadLog !== null && this.eventProjector !== null) {
       this.appendWriteAheadThreadLog(conversationId, {
-        type: "agent_messages_consumed", payload: { runId, messageIds },
+        type: "agent_messages_consumed", payload,
       });
     } else {
-      this.appendShadowThreadLog(conversationId, { type: "agent_messages_consumed", payload: { runId, messageIds } });
+      this.appendShadowThreadLog(conversationId, { type: "agent_messages_consumed", payload });
       this.database.markAgentMessagesRead(messageIds, runId);
     }
   }
@@ -4005,7 +4046,7 @@ export class AgentRuntime {
     const targetConversation = this.database.getConversation(conversationId);
     if (targetConversation.isArchived) return;
     if (targetConversation.activeRunId !== null) {
-      this.trackAgentMessagesForReply(targetConversation.activeRunId, unreadMessages);
+      this.trackAgentMessagesForReply(targetConversation.activeRunId, unreadMessages.filter(message => message.deliveryMode !== "queue"));
       const currentDepth = this.agentMessageDepthByRun.get(targetConversation.activeRunId) ?? 0;
       this.agentMessageDepthByRun.set(
         targetConversation.activeRunId,
@@ -4114,7 +4155,9 @@ export class AgentRuntime {
         type: "run_created",
       });
       this.agentMessageDepthByRun.set(creation.runId, targetDepth);
-      this.trackAgentMessagesForReply(creation.runId, unreadMessages);
+      const queuedAssignment = unreadMessages.find(message => message.deliveryMode === "queue");
+      if (queuedAssignment !== undefined) this.consumeAgentResultBatch(conversationId, creation.runId, [queuedAssignment.id]);
+      this.trackAgentMessagesForReply(creation.runId, unreadMessages.filter(message => message.deliveryMode !== "queue" || message.id === queuedAssignment?.id));
       if (!this.database.isConversationFork(conversationId)) {
         this.emit(emit, {
           conversation: creation.conversation,

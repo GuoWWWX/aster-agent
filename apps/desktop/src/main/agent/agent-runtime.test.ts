@@ -4749,7 +4749,7 @@ describe("AgentRuntime", () => {
     await tools.dispose(); database.close();
   });
 
-  it.each([false, true])("consumes independent quick-mode input at a safe boundary (queue paused: %s)", async (paused) => {
+  it.each([false, true])("starts unclaimed quick-mode input after the current run (queue paused: %s)", async (paused) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-quick-queue-"));
     temporaryDirectories.push(root);
     const database = new AgentDatabase(":memory:");
@@ -4778,16 +4778,14 @@ describe("AgentRuntime", () => {
     await model.firstRequestStarted;
     model.continueWithToolBatch();
     await finished;
-    expect(model.requests).toHaveLength(2);
+    await vi.waitFor(() => expect(database.getConversation(conversation.id).activeRunId).toBeNull());
+    expect(model.requests).toHaveLength(paused ? 2 : 3);
     const messages = model.requests[1]!.messages;
     const requests = messages.filter(message => message.role === "user" && message.content.includes("独立请求："));
-    expect(requests).toHaveLength(paused ? 0 : 1);
+    expect(requests).toHaveLength(0);
     if (!paused) {
-      expect(requests[0]?.content).toContain(pendingId);
-      expect(requests[0]?.content).toContain("Keep earlier assignments");
-      const index = messages.indexOf(requests[0]!);
-      expect(messages.slice(0, index).filter(message => message.role === "tool")).toHaveLength(2);
-      expect(database.listTimeline(conversation.id).filter(item => item.kind === "message" && item.role === "user" && item.content.includes("独立请求："))).toHaveLength(1);
+      expect(model.requests[2]?.messages.some(message => message.content.includes("独立请求："))).toBe(true);
+      expect(database.listTimeline(conversation.id).filter(item => item.kind === "message" && item.role === "user" && item.id === pendingId)).toHaveLength(1);
     }
     expect(database.listPendingMessages(conversation.id)).toHaveLength(paused ? 1 : 0);
     database.close();

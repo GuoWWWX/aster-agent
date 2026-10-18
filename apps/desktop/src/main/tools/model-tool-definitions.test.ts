@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { AgentCommunicationTool } from "../agent/agent-communication-tool.js";
 import { SubagentTool } from "../agent/subagent-tool.js";
+import { QuickCoordinationTool } from "../agent/quick-coordination-tool.js";
 import type { ModelToolDefinition } from "../model/model-contracts.js";
 import { modelToolParameters } from "../model/tool-arguments.js";
 import { AgentDatabase } from "../storage/agent-database.js";
@@ -59,6 +60,7 @@ describe("model tool definitions", () => {
     const definitions = [
       ...new AgentCommunicationTool(database).getDefinitions(),
       ...new SubagentTool(database).getDefinitions(),
+      ...new QuickCoordinationTool(database).getDefinitions(),
       ...new ProjectToolRegistry(new ProjectRegistry()).getDefinitions(),
     ];
 
@@ -85,6 +87,11 @@ describe("model tool definitions", () => {
     expect(property(definitions, "wait_for_subagents", "taskIds")).toMatchObject({
       items: { format: "uuid", type: "string" },
     });
+    for (const [toolName, propertyName] of [["send_agent_message", "conversationIds"], ["claim_pending_messages", "pendingMessageIds"]]) {
+      expect(property(definitions, toolName!, propertyName!)).toMatchObject({
+        type: "array", minItems: 1, items: { format: "uuid", type: "string" },
+      });
+    }
     database.close();
   });
 

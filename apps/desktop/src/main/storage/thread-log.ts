@@ -598,6 +598,7 @@ export class ThreadLog {
           const event = this.readRecordFromDescriptor(descriptor, conversationId, location.record);
           const message = contextMessageForEvent(event, 1);
           recordMessages = event.type === "legacy_snapshot_imported" ? readLegacyContextMessages(event.payload)
+            : event.type === "agent_messages_consumed" ? readQueuedAgentContext(event)
             : message === null ? [] : [message];
           previousOffset = location.record.offset;
         }
@@ -801,6 +802,10 @@ function retainedContextBytes(context: ThreadLogContext): number {
 }
 
 function applyContextEvent(context: ThreadLogContext, event: ThreadLogEvent): void {
+  if (event.type === "agent_messages_consumed") {
+    for (const message of readQueuedAgentContext(event)) context.messages.push({ ...message, sequence: context.messages.length + 1 });
+    return;
+  }
   if (event.type === "legacy_snapshot_imported") {
     const legacyMessages = readLegacyContextMessages(event.payload);
     const sequenceOffset = context.messages.length;
@@ -892,6 +897,7 @@ function contextMessageForEvent(
     return { attachmentIds: [], content: message.content, role: message.role, runId: null, sequence, toolCallId: null, toolCalls: [] };
   }
   if (event.type === "agent_message") {
+    if (isRecord(event.payload.message) && event.payload.message.deliveryMode === "queue") return null;
     const content = typeof event.payload.modelContent === "string"
       ? event.payload.modelContent
       : event.payload.content;
@@ -980,6 +986,17 @@ function contextMessageForEvent(
   }
 
   return null;
+}
+
+function readQueuedAgentContext(event: ThreadLogEvent): ThreadLogContextMessage[] {
+  if (event.payload.queuedMessages === undefined) return [];
+  const queued = z.array(z.object({ messageId: z.string().uuid(), modelContent: z.string() }).strict()).max(50).parse(event.payload.queuedMessages);
+  const ids = readStringArray(event.payload.messageIds);
+  return queued.map((message, index) => {
+    if (!ids.includes(message.messageId)) throw new Error("Queued context must belong to the consumed message batch.");
+    return { attachmentIds: [], content: message.modelContent, role: "user", runId: readNullableString(event.payload.runId),
+      sequence: index + 1, toolCallId: null, toolCalls: [] };
+  });
 }
 
 function readLegacyContextMessages(payload: Record<string, unknown>): ThreadLogContextMessage[] {
