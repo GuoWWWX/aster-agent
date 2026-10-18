@@ -425,6 +425,25 @@ describe("ThreadLog", () => {
     ]);
   });
 
+  it("exposes queued Agent input only at consumption, including cold and indexed context reads", async () => {
+    const log = await createThreadLog();
+    const ids = [crypto.randomUUID(), crypto.randomUUID()];
+    const runId = crypto.randomUUID();
+    for (const [index, id] of ids.entries()) log.append(conversationId, { type: "agent_message", payload: {
+      messageId: id, message: { deliveryMode: "queue" }, content: `next-${index}`, modelContent: `queued-${index}`,
+    } });
+    expect(log.readContext(conversationId)?.messages).toEqual([]);
+    expect(log.readUncoveredContext(conversationId)?.messages).toEqual([]);
+    log.append(conversationId, { type: "user_message", payload: { content: "current", runId } });
+    log.append(conversationId, { type: "agent_messages_consumed", payload: { runId, messageIds: [ids[0]],
+      queuedMessages: [{ messageId: ids[0], modelContent: "queued-0" }] } });
+    for (const reader of [log, new ThreadLog(path.dirname(path.dirname(log.getPath(conversationId))))]) {
+      expect(reader.readContext(conversationId)?.messages.map(message => message.content)).toEqual(["current", "queued-0"]);
+      expect(reader.readUncoveredContext(conversationId)?.messages.map(message => message.content)).toEqual(["current", "queued-0"]);
+      expect(reader.readRunContext(conversationId, runId).map(message => message.content)).toEqual(["current", "queued-0"]);
+    }
+  });
+
   it("removes a superseded Run from model context but preserves its raw events", async () => {
     const log = await createThreadLog();
     log.append(conversationId, {

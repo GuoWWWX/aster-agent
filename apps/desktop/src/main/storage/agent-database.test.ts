@@ -3999,11 +3999,13 @@ describe("AgentDatabase", () => {
     )).toBe(false);
     const followUp = database.sendAgentMessage({
       content: "继续处理",
+      deliveryMode: "queue",
       runId: parentRun.runId,
       senderConversationId: parent.id,
       targetConversationId: child.id,
     });
     expect(followUp.conversationId).toBe(child.id);
+    expect(() => database.endSubagent(parent.id, child.id)).toThrow("pending assignments");
     database.markAgentMessagesRead([followUp.id]);
     expect(database.endSubagent(parent.id, child.id)).toMatchObject({ status: "ended" });
     expect(database.endSubagent(parent.id, child.id)).toMatchObject({ status: "ended" });

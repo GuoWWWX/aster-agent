@@ -56,6 +56,8 @@ const readConversationArgumentsSchema = z.object({
     .describe("Optional topic to retrieve from the target conversation. Relevant historical turns are prioritized while recent context remains bounded."),
 }).strict();
 const sendMessageArgumentsSchema = z.object({
+  deliveryMode: z.enum(["queue", "steer"]).optional()
+    .describe("For assignments to your own reusable Subagent, default queue keeps independent work out of its active task and starts it after completion. Use steer only to explicitly amend the current task. Other Agent messages retain their normal delivery."),
   content: z.string().trim().min(1).max(20_000).describe("Message body to send to the target Agent."),
   conversationIds: z.array(z.string().uuid()).min(1).max(32)
     .describe("Target Agent conversation UUIDs. Use a one-element array for one recipient; duplicates are delivered once. All targets must be valid before anything is sent."),
@@ -276,8 +278,17 @@ export class AgentCommunicationTool {
             throw new Error("A Team participant may send messages only to members of the same persistent Team.");
           }
           input.signal.throwIfAborted();
+          const queuedTargets = new Set(targets.filter(id => {
+            const target = this.database.getConversation(id);
+            return parsed.deliveryMode !== "steer" && parsed.expectReply
+              && target.threadKind === "subagent" && target.parentConversationId === input.conversationId;
+          }));
+          if (parsed.deliveryMode === "queue" && queuedTargets.size !== targets.length) {
+            throw new Error("Independent queued assignments require expectReply=true and your own Subagent recipients.");
+          }
           const messages = this.database.sendAgentMessages(targets.map(targetConversationId => ({
             content: parsed.content,
+            ...(queuedTargets.has(targetConversationId) ? { deliveryMode: "queue" as const } : {}),
             messageType: parsed.expectReply ? "message" : "notification",
             replyInstruction: parsed.expectReply ? parsed.replyInstruction ?? null : null,
             runId: input.runId,

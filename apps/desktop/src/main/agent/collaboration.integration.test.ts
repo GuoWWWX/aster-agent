@@ -125,7 +125,8 @@ describe("group execution integration", () => {
       await vi.waitFor(() => { expect(entered).toBe(2); expect([lead.id, member.id, reviewer.id].every(id => db.getConversation(id).activeRunId === null)).toBe(true); });
       const firstFinished = events.findIndex(event => event.type === "run.finished" && event.conversationId !== lead.id);
       for (const id of [member.id, reviewer.id]) {
-        const started = events.find(event => event.type === "run.started" && event.conversationId === id)!;
+        const started = events.find(event => event.type === "run.started" && event.conversationId === id);
+        if (started?.type !== "run.started") throw new Error("Expected member run to start");
         expect(events.indexOf(started)).toBeLessThan(firstFinished);
         expect(db.collaboration.runMessages(started.runId).map(message => message.id)).toContain(original.id);
       }
