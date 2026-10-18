@@ -59,7 +59,7 @@ describe("AgentCommunicationTool", () => {
       toolName: "send_agent_message", onMessageSent: sent,
     });
     expect(result.isError).toBe(false);
-    expect(JSON.parse(result.content)).toHaveProperty("value.messages.length", 2);
+    expect(JSON.parse(result.content)).toMatchObject({ value: { messages: targets.map(target => ({ conversationId: target.id })) } });
     expect(sent).toHaveBeenCalledTimes(2);
     for (const target of targets) expect(database.listUnreadAgentMessages(target.id)[0]?.messageType).toBe("notification");
     database.close();

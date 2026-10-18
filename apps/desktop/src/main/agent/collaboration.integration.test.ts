@@ -98,6 +98,58 @@ async function fixture(withThreadLog = false, withCoordinator = false, graphChec
   return { db, lead, member, instance, runtime, model, tools, log };
 }
 describe("group execution integration", () => {
+  it("returns a seven-hop private task exchange to the lead without public relay messages", async () => {
+    const { db, instance, lead, member, runtime, model, tools } = await fixture();
+    let reachedEnd = false;
+    vi.spyOn(model, "completeTurn").mockImplementation(input => {
+      const privateInput = input.messages.findLast(message => message.role === "user" && message.content.includes("PRIVATE-HOP:"));
+      const step = privateInput === undefined ? 0 : Number(/PRIVATE-HOP:(\d+)/.exec(privateInput.content)?.[1]);
+      if (step === 7) { reachedEnd = true; return Promise.resolve({ content: "负责人已收到完整结果。", finishReason: "stop", toolCalls: [] }); }
+      const id = `hop-${step}`;
+      if (input.messages.some(message => message.toolCallId === id)) return Promise.resolve({ content: "交接已发送。", finishReason: "stop", toolCalls: [] });
+      return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id, name: "send_agent_message",
+        arguments: JSON.stringify({ conversationIds: [step % 2 === 0 ? lead.id : member.id], content: `PRIVATE-HOP:${step + 1}`, expectReply: false }) }] });
+    });
+    try {
+      const task = db.collaboration.updateTask({ conversationId: lead.id, title: "多轮交接", goal: "七次私下交接后交负责人", status: "running", requestId: randomUUID() });
+      runtime.postTeamChat({ teamInstanceId: instance.id, content: "按当前分工交接", recipientConversationIds: [member.id],
+        taskContextId: task.id, requestId: randomUUID() }, () => undefined);
+      // Each private notification uses the existing 200 ms coalescing window.
+      await vi.waitFor(() => expect(reachedEnd).toBe(true), { timeout: 5000 });
+      expect(db.collaboration.readMessages({ teamInstanceId: instance.id }).messages).toHaveLength(1);
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
+
+  it.each([{ task: false, depth: 4, wakes: false }, { task: true, depth: 4, wakes: true }, { task: true, depth: 12, wakes: false }])(
+    "shares the bounded group task budget with private handoffs ($task / $depth)",
+    async ({ task, depth, wakes }) => {
+      const { db, instance, lead, member, runtime, model, tools } = await fixture();
+      let privateTurns = 0;
+      vi.spyOn(model, "completeTurn").mockImplementation(input => {
+        if (input.messages.some(message => message.role === "user" && message.content.includes("BUDGET-PRIVATE"))) {
+          privateTurns++;
+          return Promise.resolve({ content: "已核对私下反馈。", finishReason: "stop", toolCalls: [] });
+        }
+        return Promise.resolve(input.messages.some(message => message.toolCallId === "budget-send")
+          ? { content: "已完成本轮交接。", finishReason: "stop", toolCalls: [] }
+          : { content: "", finishReason: "tool_calls", toolCalls: [{ id: "budget-send", name: "send_agent_message",
+            arguments: JSON.stringify({ conversationIds: [lead.id], content: "BUDGET-PRIVATE 已完成当前分工", expectReply: false }) }] });
+      });
+      try {
+        const goal = task ? db.collaboration.updateTask({ conversationId: lead.id, title: "交接验收", goal: "保持有界任务协作", status: "running", requestId: randomUUID() }) : null;
+        let source = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "当前任务", intent: "notify",
+          requestId: randomUUID(), ...(goal === null ? {} : { taskContextId: goal.id }) }, null);
+        for (let i = 1; i < depth; i++) source = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "阶段交接",
+          intent: "notify", replyToId: source.id, requestId: randomUUID() }, lead.id);
+        const delivery = runtime.postTeamChat({ teamInstanceId: instance.id, content: "完成本轮分工",
+          recipientConversationIds: [member.id], replyToId: source.id, requestId: randomUUID() }, () => undefined, lead.id);
+        await vi.waitFor(() => expect(db.collaboration.message(delivery.id).deliveries[0]?.status).toBe("completed"));
+        if (wakes) await vi.waitFor(() => expect(privateTurns).toBeGreaterThan(0));
+        else { await new Promise(resolve => setTimeout(resolve, 300)); expect(privateTurns).toBe(0); }
+      } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+    },
+  );
+
   it("runs a private recipient array concurrently while retaining the original group scope", async () => {
     const { db, instance, lead, member, runtime, model, tools } = await fixture(true, true);
     const reviewer = db.createConversation(lead.projectId, { teamId: instance.teamId, parentConversationId: lead.id, threadKind: "agent",
@@ -107,6 +159,7 @@ describe("group execution integration", () => {
     let entered = 0; let release!: () => void;
     const together = new Promise<void>(resolve => { release = resolve; });
     vi.spyOn(model, "completeTurn").mockImplementation(async input => {
+      expect(input.tools.map(tool => tool.name)).not.toContain("set_team_collaboration_plan");
       const privateRequest = input.messages.some(message => message.role === "user" && message.content.includes("BATCH-PRIVATE"));
       if (privateRequest) {
         expect(input.messages[0]?.content).toContain("An @ does not require an acknowledgement");
@@ -125,8 +178,7 @@ describe("group execution integration", () => {
       await vi.waitFor(() => { expect(entered).toBe(2); expect([lead.id, member.id, reviewer.id].every(id => db.getConversation(id).activeRunId === null)).toBe(true); });
       const firstFinished = events.findIndex(event => event.type === "run.finished" && event.conversationId !== lead.id);
       for (const id of [member.id, reviewer.id]) {
-        const started = events.find(event => event.type === "run.started" && event.conversationId === id);
-        if (started?.type !== "run.started") throw new Error("Expected member run to start");
+        const started = events.filter(event => event.type === "run.started").find(event => event.conversationId === id)!;
         expect(events.indexOf(started)).toBeLessThan(firstFinished);
         expect(db.collaboration.runMessages(started.runId).map(message => message.id)).toContain(original.id);
       }
@@ -152,6 +204,10 @@ describe("group execution integration", () => {
     vi.spyOn(model, "completeTurn").mockImplementation(input => {
       expect(input.messages[0]?.content).toContain("not a requirement to publish an acknowledgement");
       expect(input.messages[0]?.content).toContain("milestones, blockers");
+      expect(input.messages[0]?.content).toContain("rather than an empty model response");
+      expect(input.tools.map(tool => tool.name)).not.toContain("set_team_collaboration_plan");
+      expect(input.messages[0]?.content).not.toContain("简单确认直接自然回应");
+      expect(input.messages.at(-1)?.content).toContain("纯信息同步且没有待回答问题或新动作时直接结束");
       return Promise.resolve({ content: "无需新动作，结束本轮。", finishReason: "stop", toolCalls: [] });
     });
     try {
@@ -580,7 +636,7 @@ describe("group execution integration", () => {
     const events: ConversationRunEvent[] = [];
     vi.spyOn(model, "completeTurn").mockImplementation((input): Promise<ModelTurnResult> => {
       expect(input.messages[0]?.content).toContain("完成当前请求后结束本轮");
-      expect(input.messages.at(-1)?.content).toContain("本轮明确投递的群聊请求");
+      expect(input.messages.at(-1)?.content).toContain("本轮明确投递的群聊消息");
       expect(input.messages.at(-1)?.content).toContain("开发你好");
       return Promise.resolve(input.messages.some(message => message.role === "tool" && message.toolCallId === "greeting")
         ? { content: "好。", finishReason: "stop", toolCalls: [] }

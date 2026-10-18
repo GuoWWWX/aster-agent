@@ -12,6 +12,8 @@ const MAX_CONTEXT_TASK_REASON_CHARACTERS = 240;
 const TASK_LIST_CONTEXT_HEADER = [
   "[Current task list | live state]",
   "This is the only authoritative task state for this conversation and is refreshed before every model call. Do not replace it with task state from older tool results, chat history, or compression summaries.",
+  "This list is progress metadata, not authorization to resume work. It may contain unfinished steps from a different request. Follow the current message and its assigned scope; do not add casual discussion or acknowledgements to an unrelated list, or update/close that list just to finish the current turn. Pending steps can remain while you await input or another member.",
+  "Update only when a step actually changes; repeating an identical list does not advance work. A completed public answer or internal receipt can end this turn without touching unrelated steps.",
   "Call update_task_list with the complete list to create or update it. Multiple tasks may be running at once. A blocked or failed task requires a short reason. Call close_task_list after all tasks finish.",
 ].join("\n");
 

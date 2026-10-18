@@ -1161,6 +1161,35 @@ describe("Communication tool identities", () => {
       expect(container.textContent).not.toContain(PARENT_ID);
     },
   );
+
+  it("shows every batch recipient through the existing conversation links and the shared message only once", async () => {
+    const client = new MockAgentClient();
+    const parent = session({ id: PARENT_ID, title: "主对话" });
+    const targets = [session({ id: CHILD_ID, title: "接口分析师", teamId: "default-team" }),
+      session({ id: WORK_ITEM_ID, title: "接口测试员", teamId: "default-team" })];
+    const tool: ConversationToolItem = { arguments: JSON.stringify({ conversationIds: targets.map(target => target.id), content: "共同接口确认" }), batchId: null,
+      conversationId: PARENT_ID, createdAt: "2026-10-18T00:00:00Z", diff: null, id: TOOL_ID, kind: "tool", name: "send_agent_message", runId: RUN_ID, status: "completed",
+      result: JSON.stringify({ ok: true, value: { messages: targets.map(target => ({ content: "共同接口确认", conversationId: target.id,
+        senderConversationId: PARENT_ID, senderTitle: "主对话" })) } }) };
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool]);
+    const onOpenTeamConversation = vi.fn();
+    const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => { root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      relatedSessions={[parent, ...targets]} session={parent} onOpenTeamConversation={onOpenTeamConversation} /></TooltipProvider>);
+      await flushConversationWorkspace(); });
+    expandWorkProcess(container);
+    for (const target of targets) {
+      const link = container.querySelector<HTMLButtonElement>(`button[aria-label="在侧边打开 团队成员：${target.title}"]`);
+      expect(link).not.toBeNull(); act(() => link?.click());
+      expect(onOpenTeamConversation).toHaveBeenCalledWith(target, PARENT_ID);
+    }
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="展开调用详情"]')?.click());
+    expect(container.textContent?.match(/共同接口确认/g)).toHaveLength(1);
+    for (const target of targets) {
+      expect(container.querySelectorAll(`button[aria-label="在侧边打开 团队成员：${target.title}"]`)).toHaveLength(2);
+      expect(container.textContent).not.toContain(target.id);
+    }
+  });
 });
 
 describe("Conversation scroll navigation", () => {

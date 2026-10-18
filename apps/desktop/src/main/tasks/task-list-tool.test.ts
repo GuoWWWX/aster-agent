@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AgentDatabase } from "../storage/agent-database.js";
 import {
@@ -14,6 +14,20 @@ afterEach(() => {
 });
 
 describe("TaskListTool", () => {
+  it("does not persist or report progress for an identical task list", () => {
+    const database = new AgentDatabase(":memory:");
+    databases.push(database);
+    const conversation = database.createConversation(null);
+    const tool = new TaskListTool(database);
+    const args = JSON.stringify({ tasks: [{ title: "等待材料", status: "blocked", reason: "尚未提供" }, { title: "验收", status: "pending" }] });
+    const first = tool.execute(UPDATE_TASK_LIST_TOOL_NAME, args, conversation.id);
+    const write = vi.spyOn(database, "updateTaskList");
+    const repeated = tool.execute(UPDATE_TASK_LIST_TOOL_NAME, args, conversation.id);
+    expect(repeated).toMatchObject({ changed: false, isError: false, taskList: first.taskList });
+    expect(JSON.parse(repeated.content)).toMatchObject({ value: { status: "unchanged", taskCount: 2 } });
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it("creates, updates and recreates a list through the same update tool", () => {
     const database = new AgentDatabase(":memory:");
     databases.push(database);
