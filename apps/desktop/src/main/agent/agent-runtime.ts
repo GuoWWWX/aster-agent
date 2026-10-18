@@ -64,7 +64,6 @@ import type {
   ModelConfiguration,
   ModelContextConfiguration,
   ModelMessageAttachment,
-  ModelProviderTokenUsage,
 } from "../model/model-contracts.js";
 import {
   type CompleteTurnInput,
@@ -996,8 +995,6 @@ export class AgentRuntime {
   private stopRunsPromise: Promise<void> | null = null;
   private readonly pendingAgentWakes = new Map<string, { timer: ReturnType<typeof setTimeout>; depth: number }>();
   private readonly pendingQueuePaused = new Map<string, boolean>();
-  private readonly latestRequestUsage = new Map<string, ModelProviderTokenUsage | null>();
-  private readonly firstTokenLatencies = new Map<string, number | null>();
 
   private readonly graphExecutor = new LangGraphExecutor();
 
@@ -2283,8 +2280,6 @@ export class AgentRuntime {
         type: "run_created",
       });
     }
-    this.latestRequestUsage.set(input.conversationId, null);
-    this.firstTokenLatencies.set(input.conversationId, null);
     const accepted = { runId: creation.runId, userMessage: creation.userMessage };
     try {
       beforeRunScheduled?.(accepted);
@@ -2669,15 +2664,13 @@ export class AgentRuntime {
         }
         return [state.usage];
       });
-    const latestProviderUsage = this.latestRequestUsage.has(input.conversationId)
-      ? this.latestRequestUsage.get(input.conversationId) ?? null
-      : providerUsages.at(-1) ?? null;
-    const latestProviderState = providerStates.at(-1);
-    const generationDurationMs = latestProviderState?.generationDurationMs;
+    // Display one completed, provider-reported request atomically. Waiting,
+    // cancellation, or a later response without usage cannot erase that fact.
+    const latestProviderUsage = latestUsageState?.usage ?? null;
+    const generationDurationMs = latestUsageState?.generationDurationMs;
     const outputTokensPerSecond = latestProviderUsage === null
-      || latestProviderState?.usage === undefined
       || generationDurationMs === undefined || generationDurationMs <= 0
-      ? null : latestProviderState.usage.outputTokens * 1_000 / generationDurationMs;
+      ? null : latestProviderUsage.outputTokens * 1_000 / generationDurationMs;
     const cacheReportedUsages = providerUsages.filter(
       (usage) => usage.cachedInputTokens !== undefined,
     );
@@ -2728,9 +2721,7 @@ export class AgentRuntime {
         + projectFileReferenceTokens,
       providerCache: {
         outputTokensPerSecond,
-        firstTokenLatencyMs: this.firstTokenLatencies.has(input.conversationId)
-          ? this.firstTokenLatencies.get(input.conversationId) ?? null
-          : providerStates.at(-1)?.firstTokenLatencyMs ?? null,
+        firstTokenLatencyMs: latestUsageState?.firstTokenLatencyMs ?? null,
         ...(lastReportedUsage === undefined ? {} : {
           lastReportedHitRate: Math.min(lastReportedUsage.cachedInputTokens ?? 0,
             lastReportedUsage.inputTokens) / lastReportedUsage.inputTokens,
@@ -4326,9 +4317,6 @@ export class AgentRuntime {
 
   private async completeModelTurn(input: ModelTurnRequest): Promise<ModelTurnResult> {
     input.signal.throwIfAborted();
-    // Missing or cancelled usage is unknown, never the previous request's value.
-    this.latestRequestUsage.set(input.conversationId, null);
-    this.firstTokenLatencies.set(input.conversationId, null);
     const teamWorkItemId = this.database.getRunningTeamWorkItemByExecutionTreeConversation(
       input.conversationId,
     )?.id;
@@ -4343,7 +4331,6 @@ export class AgentRuntime {
     });
     const result = await this.modelGateway.completeTurn({
       onFirstToken: (latencyMs) => {
-        this.firstTokenLatencies.set(input.conversationId, latencyMs);
         this.emit(input.emit, {
           conversationId: input.conversationId,
           runId: input.runId,
@@ -4382,7 +4369,6 @@ export class AgentRuntime {
       signal: input.signal,
       tools: input.tools
     });
-    this.latestRequestUsage.set(input.conversationId, result.providerState?.usage ?? null);
     return result;
   }
 

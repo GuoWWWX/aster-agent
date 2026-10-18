@@ -144,6 +144,44 @@ describe("providerCacheLabel", () => {
 });
 
 describe("providerCacheInlineMetrics", () => {
+  it("shows exact reported token counts and preserves a small nonzero cache rate", () => {
+    const current = usage({ providerCache: {
+      cumulative: { cacheCreationInputTokens: 0, cachedInputTokens: 2, hitRate: 2 / 123_456,
+        inputTokens: 123_456, reportedRequestCount: 1, requestCount: 1 },
+      latest: { cacheCreationInputTokens: 0, cachedInputTokens: 2, hitRate: 2 / 123_456,
+        inputTokens: 123_456, outputTokens: 9_876, trendDelta: null },
+    } });
+    const metrics = providerCacheInlineMetrics(current);
+    expect(metrics.find(metric => metric.kind === "input")?.value).toBe("123,456");
+    expect(metrics.find(metric => metric.kind === "output")?.value).toBe("9,876");
+    expect(metrics.find(metric => metric.label === "本次命中率")?.value).toBe("<0.1%");
+  });
+
+  it.each([[0, "0%"], [0.0005, "<0.1%"], [0.001, "0.1%"], [0.14256, "14.3%"], [0.8, "80%"], [0.9992, "99.9%"]] as const)(
+    "limits cache hit rates to one decimal place (%s)", (hitRate, value) => {
+      const current = usage({ providerCache: {
+        cumulative: { cacheCreationInputTokens: 0, cachedInputTokens: 0, hitRate,
+          inputTokens: 100, reportedRequestCount: 1, requestCount: 1 },
+        latest: { cacheCreationInputTokens: 0, cachedInputTokens: 0, hitRate,
+          inputTokens: 100, outputTokens: 20, trendDelta: null },
+      } });
+      const metrics = providerCacheInlineMetrics(current);
+      expect(metrics.find(metric => metric.label === "本次命中率")?.value).toBe(value);
+      expect(metrics.find(metric => metric.label === "平均命中率")?.value).toBe(value);
+    },
+  );
+
+  it("distinguishes missing cache details from a reported zero hit rate", () => {
+    const current = usage({ providerCache: {
+      cumulative: { cacheCreationInputTokens: 0, cachedInputTokens: 0, hitRate: null,
+        inputTokens: 0, reportedRequestCount: 0, requestCount: 1 },
+      latest: { cacheCreationInputTokens: null, cachedInputTokens: null, hitRate: null,
+        inputTokens: 2_000, outputTokens: 200, trendDelta: null },
+    } });
+    expect(providerCacheInlineMetrics(current).find(metric => metric.label === "本次命中率")?.value).toBe("未上报");
+    expect(providerCacheInlineMetrics(current).find(metric => metric.label === "平均命中率")?.value).toBe("未上报");
+  });
+
   it.each([[undefined, "-- tok/s"], [null, "-- tok/s"], [0, "0.0 tok/s"], [12.34, "12.3 tok/s"]] as const)(
     "formats server output throughput without substituting missing values: %s", (speed, value) => {
       const current = usage({ providerCache: {
@@ -175,7 +213,7 @@ describe("providerCacheInlineMetrics", () => {
     expect(providerCacheInlineMetrics(current)).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: "发送", value: "200" }),
       expect.objectContaining({ label: "返回", value: "69" }),
-      expect.objectContaining({ label: "本次命中率", value: "--" }),
+      expect.objectContaining({ label: "本次命中率", value: "未上报" }),
     ]));
     if (current.providerCache?.latest) current.providerCache.latest.hitRate = 0.54;
     expect(providerCacheInlineMetrics(current).find((metric) => metric.label === "本次命中率")).toMatchObject({ value: "54%" });
@@ -205,7 +243,7 @@ describe("providerCacheInlineMetrics", () => {
       },
     }))).toEqual([
       { kind: "latency", label: "首字", shortLabel: "首字", tone: "neutral", value: "--" },
-      { kind: "input", label: "发送", shortLabel: "发送", tone: "success", value: "1.0K" },
+      { kind: "input", label: "发送", shortLabel: "发送", tone: "success", value: "1,000" },
       { kind: "output", label: "返回", shortLabel: "返回", tone: "danger", value: "120" },
       { kind: "throughput", label: "速度", shortLabel: "速度", tone: "neutral", value: "-- tok/s" },
       { kind: "cache", label: "本次命中率", shortLabel: "本次", tone: "good", value: "80%" },
@@ -253,7 +291,7 @@ describe("providerCacheInlineMetrics", () => {
     expect(trigger?.className).toContain("text-[length:var(--app-font-size-body)]");
     expect(trigger?.className).toContain("font-normal");
     expect(trigger?.className).not.toContain("bg-[var(--app-status-success-bg)]");
-    expect(trigger?.getAttribute("aria-label")).toContain("发送 1.0K");
+    expect(trigger?.getAttribute("aria-label")).toContain("发送 1,000");
     expect(trigger?.getAttribute("aria-label")).toContain("返回 120");
     expect(trigger?.textContent).not.toContain("本次发送");
     expect(trigger?.textContent).not.toContain("模型返回");
@@ -262,7 +300,7 @@ describe("providerCacheInlineMetrics", () => {
     expect(trigger?.querySelector('[data-label-variant="short"]')?.textContent).toBe("首字");
     expect(trigger?.querySelectorAll('[data-label-variant="full"]')).toHaveLength(4);
     expect(trigger?.querySelectorAll('[data-label-variant="short"]')).toHaveLength(4);
-    expect(trigger?.textContent).toContain("1.0K");
+    expect(trigger?.textContent).toContain("1,000");
     expect(trigger?.textContent).toContain("120");
     expect(trigger?.textContent).toContain("96%");
     expect(trigger?.textContent).toContain("85%");
@@ -322,7 +360,7 @@ describe("providerCacheInlineMetrics", () => {
       },
     }))).toEqual([
       { kind: "latency", label: "首字", shortLabel: "首字", tone: "neutral", value: "--" },
-      { kind: "input", label: "发送", shortLabel: "发送", tone: "success", value: "1.0K" },
+      { kind: "input", label: "发送", shortLabel: "发送", tone: "success", value: "1,000" },
       { kind: "output", label: "返回", shortLabel: "返回", tone: "danger", value: "120" },
       { kind: "throughput", label: "速度", shortLabel: "速度", tone: "neutral", value: "-- tok/s" },
       { kind: "cache", label: "本次命中率", shortLabel: "本次", tone: "caution", value: "79%" },

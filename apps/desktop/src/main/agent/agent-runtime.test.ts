@@ -3681,7 +3681,7 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
-  it("keeps current usage unknown while waiting and after cancellation without lowering the average", async () => {
+  it("keeps the last actual request snapshot while waiting and after cancellation", async () => {
     const database = new AgentDatabase(":memory:");
     const projects = new ProjectRegistry(database);
     const conversation = database.createConversation(null);
@@ -3693,6 +3693,7 @@ describe("AgentRuntime", () => {
       completeTurn: async (input) => {
         calls += 1;
         if (calls === 2) {
+          input.onFirstToken?.(900);
           started?.();
           await new Promise<void>((_, reject) => {
             input.signal.addEventListener("abort", () => reject(new DOMException("Cancelled", "AbortError")), { once: true });
@@ -3701,7 +3702,7 @@ describe("AgentRuntime", () => {
         input.onFirstToken?.(250);
         return { content: "done", finishReason: "stop", toolCalls: [], providerState: {
           apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
-          modelId: "test-model", payload: {}, generationDurationMs: 500, usage: {
+          modelId: "test-model", payload: {}, firstTokenLatencyMs: 250, generationDurationMs: 500, usage: {
             inputTokens: 100, outputTokens: 10, totalTokens: 110, cachedInputTokens: calls === 1 ? 80 : 0,
           },
         } };
@@ -3725,11 +3726,13 @@ describe("AgentRuntime", () => {
     expect(usage()).toMatchObject({ firstTokenLatencyMs: 250, outputTokensPerSecond: 20, latest: { hitRate: 0.8 }, cumulative: { hitRate: 0.8 } });
     const second = send("cancel this request");
     await waiting;
-    expect(usage()).toMatchObject({ firstTokenLatencyMs: null, outputTokensPerSecond: null, latest: null, cumulative: { hitRate: 0.8 } });
+    expect(usage()).toMatchObject({ firstTokenLatencyMs: 250, outputTokensPerSecond: 20,
+      latest: { inputTokens: 100, outputTokens: 10, hitRate: 0.8 }, cumulative: { hitRate: 0.8 } });
     runtime.cancelRun(database.getConversation(conversation.id).activeRunId!);
     await second;
     await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(usage()).toMatchObject({ outputTokensPerSecond: null, latest: null, cumulative: { hitRate: 0.8, requestCount: 1 } });
+    expect(usage()).toMatchObject({ firstTokenLatencyMs: 250, outputTokensPerSecond: 20,
+      latest: { inputTokens: 100, outputTokens: 10, hitRate: 0.8 }, cumulative: { hitRate: 0.8, requestCount: 1 } });
     await send("real zero");
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(usage()).toMatchObject({ latest: { hitRate: 0 }, cumulative: { hitRate: 0.4, requestCount: 2 } });
@@ -3887,6 +3890,54 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
+  it("keeps timings with their actual usage and never borrows missing cache details", async () => {
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const conversation = database.createConversation(null);
+    let calls = 0;
+    const model: ModelProviderAdapter = {
+      completeTurn: () => {
+        calls += 1;
+        return Promise.resolve({ content: "done", finishReason: "stop", toolCalls: [], providerState: {
+          apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+          modelId: "test-model", payload: {},
+          ...(calls === 1 ? { firstTokenLatencyMs: 250, generationDurationMs: 500,
+            usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110, cachedInputTokens: 80 } }
+            : calls === 2 ? { firstTokenLatencyMs: 900, generationDurationMs: 9_000 }
+            : { usage: { inputTokens: 200, outputTokens: 20, totalTokens: 220 } }),
+        } });
+      },
+    };
+    const runtime = new AgentRuntime(database, {
+      getConfiguration: () => ({ apiKey: "secret", apiFormat: "openai-chat-completions",
+        baseUrl: "https://example.test/v1", modelId: "test-model", reasoningOptions: [] }),
+    }, projects, new ProjectToolRegistry(projects), model);
+    const usage = () => runtime.getContextUsage({ conversationId: conversation.id,
+      permissionMode: "read_only" }).providerCache;
+    const send = async (content: string) => {
+      await new Promise<void>((resolve) => {
+        runtime.sendMessage({ content, conversationId: conversation.id }, (event) => {
+          if (event.type === "run.finished") resolve();
+        });
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    };
+    try {
+      await send("first");
+      const first = usage();
+      expect(first).toMatchObject({ firstTokenLatencyMs: 250, outputTokensPerSecond: 20,
+        latest: { inputTokens: 100, outputTokens: 10, hitRate: 0.8 } });
+      await send("response without usage");
+      expect(usage()).toEqual(first);
+      await send("reported usage without cache or timing");
+      expect(usage()).toMatchObject({ firstTokenLatencyMs: null, outputTokensPerSecond: null,
+        latest: { inputTokens: 200, outputTokens: 20, cachedInputTokens: null, hitRate: null },
+        cumulative: { hitRate: 0.8, reportedRequestCount: 1, requestCount: 2 } });
+    } finally {
+      database.close();
+    }
+  });
+
   it("recovers the last reported cache rate from JSONL after reopening", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-cache-reopen-"));
     temporaryDirectories.push(directory);
@@ -3898,10 +3949,15 @@ describe("AgentRuntime", () => {
         log.append(conversation.id, { type: "assistant_message", payload: {
           content: "answer", runId: crypto.randomUUID(), modelId: "test-model",
           providerState: { apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
-            modelId: "test-model", payload: {}, generationDurationMs: 2000, usage: { inputTokens: 100, outputTokens: 10,
+            modelId: "test-model", payload: {}, firstTokenLatencyMs: 250, generationDurationMs: 2000, usage: { inputTokens: 100, outputTokens: 10,
               totalTokens: 110, ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }) } },
         } });
       }
+      log.append(conversation.id, { type: "assistant_message", payload: {
+        content: "answer without usage", runId: crypto.randomUUID(), modelId: "test-model",
+        providerState: { apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1",
+          modelId: "test-model", payload: {}, firstTokenLatencyMs: 900, generationDurationMs: 1000 },
+      } });
       const projects = new ProjectRegistry(database);
       const runtime = new AgentRuntime(database, {
         getConfiguration: () => ({ apiKey: "secret", apiFormat: "openai-chat-completions",
@@ -3911,6 +3967,7 @@ describe("AgentRuntime", () => {
       expect(runtime.getContextUsage({ conversationId: conversation.id, permissionMode: "read_only" })
         .providerCache).toMatchObject({
           lastReportedHitRate: 0.8,
+          firstTokenLatencyMs: 250,
           outputTokensPerSecond: 5,
           latest: { inputTokens: 100, outputTokens: 10, hitRate: null },
           cumulative: { hitRate: 0.8, reportedRequestCount: 1, requestCount: 2 },

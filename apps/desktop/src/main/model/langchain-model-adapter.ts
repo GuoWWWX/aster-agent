@@ -779,18 +779,29 @@ function nonNegativeTokenCount(value: unknown): number | undefined {
 
 function providerTokenUsage(
   message: LangChainAssistantMessage,
+  apiFormat: ModelApiFormat,
 ): ModelProviderTokenUsage | undefined {
-  const metadata = isRecord(message) ? message.usage_metadata : undefined;
-  if (!isRecord(metadata)) return undefined;
-  const inputTokens = nonNegativeTokenCount(metadata.input_tokens);
-  if (inputTokens === undefined) return undefined;
-  const outputTokens = nonNegativeTokenCount(metadata.output_tokens) ?? 0;
-  const totalTokens = nonNegativeTokenCount(metadata.total_tokens)
+  const normalized = isRecord(message) ? message.usage_metadata : undefined;
+  const metadata = isRecord(normalized) ? normalized : null;
+  // Compatible Chat streams may omit delta.role. LangChain then aggregates a
+  // generic ChatMessageChunk and drops normalized usage, but retains raw usage.
+  const response = message.response_metadata;
+  const raw = apiFormat === "openai-chat-completions" && isRecord(response.usage)
+    ? response.usage : null;
+  const inputTokens = nonNegativeTokenCount(metadata?.input_tokens)
+    ?? nonNegativeTokenCount(raw?.prompt_tokens);
+  const outputTokens = nonNegativeTokenCount(metadata?.output_tokens)
+    ?? nonNegativeTokenCount(raw?.completion_tokens);
+  if (inputTokens === undefined || outputTokens === undefined) return undefined;
+  const totalTokens = nonNegativeTokenCount(metadata?.total_tokens)
+    ?? nonNegativeTokenCount(raw?.total_tokens)
     ?? inputTokens + outputTokens;
-  const inputDetails = isRecord(metadata.input_token_details)
+  const inputDetails = isRecord(metadata?.input_token_details)
     ? metadata.input_token_details
     : null;
-  const cachedInputTokens = nonNegativeTokenCount(inputDetails?.cache_read);
+  const rawInputDetails = isRecord(raw?.prompt_tokens_details) ? raw.prompt_tokens_details : null;
+  const cachedInputTokens = nonNegativeTokenCount(inputDetails?.cache_read)
+    ?? nonNegativeTokenCount(rawInputDetails?.cached_tokens);
   const cacheCreationInputTokens = nonNegativeTokenCount(inputDetails?.cache_creation);
   return {
     ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
@@ -809,7 +820,7 @@ function providerState(
   const additionalKwargs = jsonSnapshot(message.additional_kwargs);
   const content = jsonSnapshot(message.content);
   const responseMetadata = jsonSnapshot(message.response_metadata);
-  const usage = providerTokenUsage(message);
+  const usage = providerTokenUsage(message, input.configuration.apiFormat);
   if (
     content === undefined
     && additionalKwargs === undefined

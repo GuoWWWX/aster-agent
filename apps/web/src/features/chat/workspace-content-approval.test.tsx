@@ -846,13 +846,15 @@ describe("Conversation cache status", () => {
         await flushConversationWorkspace();
       });
       expect(metric()?.textContent).toContain("80%");
-      expect(container.querySelector('[data-token-direction="up"]')?.textContent).toContain("≈1.2K");
+      expect(container.querySelector('[data-token-direction="up"]')?.textContent).toContain("100");
+      expect(container.querySelector('[data-token-direction="down"]')?.textContent).toContain("10");
+      expect(container.querySelector('[data-token-direction="up"]')?.textContent).not.toContain("≈");
       pending.providerCache!.firstTokenLatencyMs = 1200;
       await act(async () => {
         listener({ type: "model.first_token_received", conversationId: PARENT_ID, runId: RUN_ID, latencyMs: 1200 });
         await flushConversationWorkspace();
       });
-      expect(container.querySelector('[data-cache-metric="首字"]')?.textContent).toContain("1.20s");
+      expect(container.querySelector('[data-cache-metric="首字"]')?.textContent).toContain("250ms");
       expect(metric()?.textContent).toContain("80%");
       load.mockRejectedValue(new Error("IPC unavailable"));
       await finish("failed");

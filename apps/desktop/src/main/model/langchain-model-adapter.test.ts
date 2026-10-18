@@ -442,6 +442,37 @@ describe("LangChainModelAdapter", () => {
     });
   });
 
+  it.each([
+    ["openai-chat-completions", undefined, undefined], ["openai-chat-completions", 0, undefined],
+    ["openai-chat-completions", 54, undefined], ["openai-chat-completions", undefined, "assistant"],
+    ["openai-chat-completions", 0, "assistant"], ["openai-chat-completions", 54, "assistant"],
+    ["openai-responses", undefined, undefined], ["openai-responses", 0, undefined],
+    ["openai-responses", 54, undefined],
+  ] as const)("preserves actual cache reporting through %s SSE (cache=%s, role=%s)", async (apiFormat, cached, role) => {
+    const usage = apiFormat === "openai-responses"
+      ? { input_tokens: 100, output_tokens: 10, total_tokens: 110,
+          ...(cached === undefined ? {} : { input_tokens_details: { cached_tokens: cached } }) }
+      : { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110,
+          ...(cached === undefined ? {} : { prompt_tokens_details: { cached_tokens: cached } }) };
+    const chunks = apiFormat === "openai-responses"
+      ? [
+          'data: {"type":"response.output_text.delta","delta":"ok"}\n\n',
+          `data: ${JSON.stringify({ type: "response.completed", response: { id: "resp-cache",
+            model: "test-model", status: "completed", output: [], usage } })}\n\n`,
+        ]
+      : [
+          `data: ${JSON.stringify({ choices: [{ delta: { content: "ok", role }, finish_reason: "stop" }] })}\n\n`,
+          `data: ${JSON.stringify({ choices: [], usage })}\n\n`,
+          "data: [DONE]\n\n",
+        ];
+    const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse(chunks));
+    const result = await new LangChainModelAdapter(apiFormat, request).completeTurn(inputFor(apiFormat));
+    expect(result.providerState?.usage).toEqual({
+      inputTokens: 100, outputTokens: 10, totalTokens: 110,
+      ...(cached === undefined ? {} : { cachedInputTokens: cached }),
+    });
+  });
+
   it("normalizes LangChain tool calls to the neutral model contract", async () => {
     const model = new FakeStreamingChatModel({
       sleep: 0,
