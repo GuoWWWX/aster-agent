@@ -31,7 +31,7 @@ const DEFAULT_ERRORS: Record<AgentErrorCode, Omit<ErrorClassification, "code">> 
   MODEL_PROVIDER_UNAVAILABLE: { message: "模型服务暂时不可用，自动重试仍未成功，请稍后再试。", retryable: true },
   MODEL_RATE_LIMITED: { message: "模型额度不足或请求过于频繁，请检查余额后重试。", retryable: true },
   MODEL_RESPONSE_INVALID: { message: "模型返回了无法处理的响应，请重试或切换模型。", retryable: true },
-  MODEL_RUN_LIMIT_REACHED: { message: "模型长时间没有自行结束，已在最终保护边界停止。当前结果已保留，可发送“继续”接着处理。", retryable: false },
+  MODEL_RUN_LIMIT_REACHED: { message: "已达到本轮运行保护上限，自动继续已暂停。当前结果和未处理的消息已保留，可发送“继续”接着处理。", retryable: false },
   MODEL_TIMEOUT: { message: "模型请求超时，请检查网络后重试。", retryable: true },
   NETWORK_UNAVAILABLE: { message: "网络连接失败，请检查网络和模型服务地址。", retryable: true },
   PATH_OUTSIDE_WORKSPACE: { message: "目标路径超出了当前项目目录。", retryable: false },

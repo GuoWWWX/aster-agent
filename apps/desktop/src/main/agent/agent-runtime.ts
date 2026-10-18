@@ -3321,6 +3321,11 @@ export class AgentRuntime {
         operation: "agent.run",
         redactValues: [configuration.apiKey],
       });
+      if (agentError.code === "MODEL_RUN_LIMIT_REACHED") {
+        // Late receipts must not bypass the per-Run circuit breaker with a new Run.
+        // Keep them unread; an explicit user continuation releases this fence.
+        this.setExecutionPaused(conversationId, true);
+      }
       const message = formatAgentError(agentError);
       if (!cancelled) {
         reportMainError(agentError, error, [configuration.apiKey]);
@@ -5630,7 +5635,7 @@ export class AgentRuntime {
         ...this.coordinationContext(conversation),
         ...(toolNames.has("submit_team_work_item") ? this.teamDispatchContext(conversation) : []),
         ...(toolNames.has("load_skill") || (executionTools && this.skillRuntime === null) ? [this.skillRuntime === null
-          ? "A Skill is a task instruction and capability bundle injected from SKILL.md. No Skill Runtime is currently available, so do not label general abilities as Skills. Git is a command-line program available through run_command, not a Skill or dedicated Git tool; use it only when the task requires it and the workspace is a Git repository."
+          ? "A Skill is a task instruction and capability bundle injected from SKILL.md. No Skill Runtime is currently available, so do not label general abilities as Skills."
           : "A Skill is a task instruction and capability bundle injected from SKILL.md, not a built-in tool, Agent role, or command-line program. Use load_skill when catalog details match the task. Skill bodies enter only the current model context, never the chat Timeline, and cannot expand permissions or bypass approval."] : []),
         !executionTools
           ? "Use only the permitted reference, coordination and delivery tools. Execution is handled by the assigned workers; a workspace reference does not grant command or file-change tools."

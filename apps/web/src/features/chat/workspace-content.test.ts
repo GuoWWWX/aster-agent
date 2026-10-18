@@ -580,6 +580,22 @@ describe("run activity projection", () => {
     expect(projected[1]).toMatchObject({ content: "检查完成。", kind: "message" });
   });
 
+  it.each(["failed", "cancelled"] as const)("keeps the final summary outside the process before a %s terminal notice", (status) => {
+    const summary = assistantMessage("summary", "已落地修复，120 项通过、1 项失败，尚未完成验收。");
+    const notice = assistantMessage("terminal", "当前结果已保留。", { status, durationMs: 12_000 });
+    const projected = groupRunActivities([tool("write_file"), summary, notice]);
+    expect(projected.map(item => item.kind)).toEqual(["run_activity", "message", "message"]);
+    expect(projected[0]?.kind === "run_activity" ? projected[0].items.map(item => item.kind) : []).toEqual(["tool"]);
+    expect(projected[1]).toMatchObject({ id: summary.id, content: summary.content });
+    expect(projected[2]).toMatchObject({ id: notice.id, status });
+  });
+
+  it("does not fold a final summary when a task checklist is closed afterward", () => {
+    const summary = assistantMessage("summary", "验证完成。");
+    expect(groupRunActivities([tool("write_file"), summary, tool("close_task_list")]))
+      .toMatchObject([{ kind: "run_activity", items: [{ kind: "tool" }] }, { kind: "message", id: summary.id }]);
+  });
+
   it("preserves progress between batches in one foldable process after history reload", () => {
     const timeline = [
       assistantMessage("start", "先复现重复值问题。"),

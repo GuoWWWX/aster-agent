@@ -5387,9 +5387,15 @@ export function groupRunActivities(
 function groupRunActivitySegment(
   timeline: ConversationTimelineItem[],
 ): TimelineDisplayItem[] {
-  const lastRunItemIndex = new Map<string, number>();
+  const lastRunWorkIndex = new Map<string, number>();
   for (const [index, item] of timeline.entries()) {
-    if (item.runId !== null) lastRunItemIndex.set(item.runId, index);
+    const isWork = item.kind === "model_retry"
+      || (item.kind === "tool" && !isTaskListManagementTool(item.name))
+      || (item.kind === "message" && item.role === "assistant"
+        && (item.status === "completed" || item.status === "streaming"));
+    // Terminal notices and checklist bookkeeping do not turn a final answer
+    // into progress. They can be appended after the model has already replied.
+    if (item.runId !== null && isWork) lastRunWorkIndex.set(item.runId, index);
   }
 
   const activities = new Map<string, RunActivityTimelineItem & { firstIndex: number }>();
@@ -5430,7 +5436,8 @@ function groupRunActivitySegment(
 
     const reasoningContent = item.reasoningContent?.trim();
     const visibleContent = stripLeadingThinkingSummary(item.content);
-    const isIntermediate = index < (lastRunItemIndex.get(item.runId) ?? index);
+    const isIntermediate = (item.status === "completed" || item.status === "streaming")
+      && index < (lastRunWorkIndex.get(item.runId) ?? index);
     const hasReasoning = reasoningContent !== undefined
       && reasoningContent.length > 0
       && (item.modelId === null || !isGptReasoningSummaryModel(item.modelId));
@@ -5511,7 +5518,8 @@ function groupRunActivitySegment(
       continue;
     }
 
-    const isIntermediate = index < (lastRunItemIndex.get(item.runId ?? "") ?? index);
+    const isIntermediate = (item.status === "completed" || item.status === "streaming")
+      && index < (lastRunWorkIndex.get(item.runId ?? "") ?? index);
     if (isIntermediate) {
       if (item.attachments.length > 0) {
         projected.push({

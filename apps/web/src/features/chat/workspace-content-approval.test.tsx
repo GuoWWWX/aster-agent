@@ -542,6 +542,38 @@ it("shows merged file changes without a task list, then keeps the review card af
   expect(useWorkbenchUiStore.getState().conversationReviewViewRequest).toMatchObject({ conversationId: PARENT_ID, runId: RUN_ID, path: "src/app.ts" });
 });
 
+it("keeps a final summary visible before a failure notice and file changes below a cancelled continuation", async () => {
+  const client = new MockAgentClient();
+  const edit: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID,
+    batchId: null, name: "write_file", status: "completed", arguments: '{"path":"src/app.ts"}',
+    result: "{}", diff: "--- a/src/app.ts\n+++ b/src/app.ts\n+fixed\n", createdAt: "2026-10-18T00:00:00Z" };
+  const summary: ConversationTimelineItem = { id: MESSAGE_ID, kind: "message", conversationId: PARENT_ID,
+    runId: RUN_ID, attachments: [], modelId: null, role: "assistant", status: "completed",
+    content: "已落地核心修复，但本轮尚未完成稳定性验收。120 项通过、1 项失败。", createdAt: "2026-10-18T00:00:01Z" };
+  const failure = { ...summary, id: WORK_ITEM_ID, status: "failed" as const, content: "模型长时间没有自行结束，已在最终保护边界停止。", createdAt: "2026-10-18T00:00:02Z" };
+  const cancelled = { ...summary, id: CHILD_ID, runId: CHILD_ID, status: "cancelled" as const,
+    content: "我会从上轮失败的断言继续，先修正并重跑。", createdAt: "2026-10-18T00:00:03Z" };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([edit, summary, failure, cancelled]);
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      session={session({ id: PARENT_ID, title: "终态总结回归" })} /></TooltipProvider>);
+    await flushConversationWorkspace();
+  });
+  const summaryElement = container.querySelector(`[data-conversation-timeline-item="${MESSAGE_ID}"]`);
+  const failureElement = container.querySelector(`[data-conversation-timeline-item="${WORK_ITEM_ID}"]`);
+  const cancelledElement = container.querySelector(`[data-conversation-timeline-item="${CHILD_ID}"]`);
+  const changes = container.querySelector('[data-run-file-changes]');
+  if (summaryElement === null || failureElement === null || cancelledElement === null || changes === null) throw new Error("Missing final summary, terminal notices or changes.");
+  expect(summaryElement.textContent).toContain(summary.content);
+  expect(summaryElement.closest(".conversation-run-activity")).toBeNull();
+  expect(container.querySelector(".conversation-run-activity")?.textContent).not.toContain(summary.content);
+  expect(summaryElement.compareDocumentPosition(failureElement) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(failureElement.compareDocumentPosition(cancelledElement) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(cancelledElement.compareDocumentPosition(changes) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(container.querySelectorAll('[data-run-file-changes]')).toHaveLength(1);
+});
+
 it.each([
   { name: "final code", content: "```html\n<h1>动画</h1>\n```", status: "completed" as const, intermediate: false, shouldPreview: true },
   { name: "final file", content: "```html-preview\nexamples/demo.html\n```", status: "completed" as const, intermediate: false, shouldPreview: false },

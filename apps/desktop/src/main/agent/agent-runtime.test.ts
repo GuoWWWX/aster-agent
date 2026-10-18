@@ -4047,6 +4047,84 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
+  it("holds a late child receipt after the model limit until the user explicitly continues", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-limit-late-receipt-"));
+    temporaryDirectories.push(root);
+    const database = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(database);
+    const project = await projects.registerDirectory(root);
+    const conversation = database.createConversation(project.id);
+    const child = database.forkConversation(conversation.id, "subagent");
+    const childRun = database.createRunWithUserMessage(child.id, "独立检查", "test-model");
+    database.finishRun(childRun.runId, "completed", null);
+    const model = new ExhaustToolBudgetFixtureModel();
+    const completeTurn = model.completeTurn.bind(model);
+    let receipt: ConversationAgentMessageItem | null = null;
+    vi.spyOn(model, "completeTurn").mockImplementation(input => {
+      if (model.requests.length >= 64) {
+        model.requests.push({ ...input, messages: [...input.messages], tools: [...input.tools] });
+        input.onTextDelta("已读取保留的子代理结果");
+        return Promise.resolve({ content: "已读取保留的子代理结果", finishReason: "stop", toolCalls: [] });
+      }
+      if (input.tools.length === 0) {
+        receipt = database.sendAgentMessage({
+          content: "最后一轮调用期间到达的子代理结果",
+          executionStatus: "completed",
+          messageType: "agent_result",
+          runId: childRun.runId,
+          senderConversationId: child.id,
+          targetConversationId: conversation.id,
+        });
+      }
+      return completeTurn(input);
+    });
+    const tools = new ProjectToolRegistry(projects);
+    vi.spyOn(tools, "execute").mockResolvedValue({
+      kind: "completed", isError: false, content: JSON.stringify({ ok: true, value: { paths: [], truncated: false } }),
+    });
+    const runtime = new AgentRuntime(database, {
+      getConfiguration: () => ({ apiKey: "secret", apiFormat: "openai-chat-completions",
+        baseUrl: "https://example.test/v1", modelId: "test-model", reasoningOptions: [] }),
+    }, projects, tools, model);
+
+    try {
+      const finished = await new Promise<Extract<ConversationRunEvent, { type: "run.finished" }>>(resolve => {
+        runtime.sendMessage({ content: "检查最后一轮回执边界", conversationId: conversation.id, permissionMode: "full_access" }, event => {
+          if (event.type === "run.finished") resolve(event);
+        });
+      });
+      expect(finished).toMatchObject({ status: "failed", agentError: { code: "MODEL_RUN_LIMIT_REACHED" } });
+      expect(finished.error).toContain("自动继续已暂停");
+      expect(finished.error).toContain("未处理的消息已保留");
+      await new Promise(resolve => setTimeout(resolve, 250));
+      expect(model.requests).toHaveLength(64);
+      expect(database.isConversationExecutionPaused(conversation.id)).toBe(true);
+      expect(database.getConversation(conversation.id).activeRunId).toBeNull();
+      expect(database.listUnreadAgentMessages(conversation.id)).toEqual([receipt]);
+      expect(database.listTimeline(conversation.id)).toContainEqual(expect.objectContaining({
+        content: "已根据现有证据完成回答", role: "assistant",
+      }));
+
+      runtime.resumePendingMessages(() => undefined);
+      await new Promise(resolve => setTimeout(resolve, 250));
+      expect(model.requests).toHaveLength(64);
+      await new Promise<void>(resolve => {
+        runtime.sendMessage({ content: "继续", conversationId: conversation.id, permissionMode: "full_access" }, event => {
+          if (event.type === "run.finished") resolve();
+        });
+      });
+      expect(model.requests).toHaveLength(65);
+      expect(model.requests.at(-1)?.messages.some(message => message.content.includes("最后一轮调用期间到达的子代理结果"))).toBe(true);
+      expect(database.listUnreadAgentMessages(conversation.id)).toEqual([]);
+      expect(database.isConversationExecutionPaused(conversation.id)).toBe(false);
+      expect(database.getLatestRunExecutionSnapshot(conversation.id)?.permissionMode).toBe("full_access");
+    } finally {
+      await runtime.stopAllRuns();
+      await tools.dispose();
+      database.close();
+    }
+  });
+
   it("uses the current request to retrieve older matching turns from a referenced conversation", async () => {
     const database = new AgentDatabase(":memory:");
     const projects = new ProjectRegistry(database);

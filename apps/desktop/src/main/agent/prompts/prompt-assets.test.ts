@@ -10,6 +10,15 @@ import {
 } from "./prompt-assets.js";
 
 describe("prompt assets", () => {
+  it("keeps delegation constraints and repository-aware command guidance available with skills enabled", () => {
+    const prompt = baseSystemPromptForTools(new Set(["spawn_subagent", "run_command", "load_skill"]));
+    expect(prompt).toContain("does not inherit the parent conversation's history");
+    expect(prompt).toContain("relevant user constraints");
+    expect(prompt).toContain("workspace is a Git repository");
+    expect(prompt).toContain("Do not use repeated Git flags");
+    expect(prompt).toContain("A running batch command holds the project mutation lock");
+  });
+
   it("omits unavailable execution, task-ownership and group instructions from routing prompts", () => {
     const prompt = baseSystemPromptForTools(new Set(["select_team_chat_members", "read_team_messages"]));
     expect(prompt).toContain("# Response Language");
