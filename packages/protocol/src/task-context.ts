@@ -46,7 +46,9 @@ export const updateTaskContextInputSchema = z.object({
   status: taskContextStatusSchema.default("running"), source: taskSourceSchema.optional(),
   requestId: z.string().min(1).max(200),
 }).strict().refine(input => input.id === undefined || input.expectedRevision !== undefined,
-  { message: "Updating a task requires expectedRevision.", path: ["expectedRevision"] });
+  { message: "Updating a task requires expectedRevision.", path: ["expectedRevision"] })
+  .refine(input => input.expectedRevision === undefined || input.id !== undefined,
+    { message: "Updating a task requires its actual id together with expectedRevision. Read the existing task ID; do not create a duplicate by removing expectedRevision.", path: ["id"] });
 export const taskContextReferenceSchema = z.object({ id: z.string().uuid() }).strict();
 export const getTaskContextInputSchema = taskContextReferenceSchema.extend({
   beforeSourceSequence: z.number().int().positive().optional(),
