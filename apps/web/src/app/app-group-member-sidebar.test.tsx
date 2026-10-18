@@ -43,7 +43,7 @@ it("opens a routing result in the ordinary coordination sidebar while keeping th
   });
   const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   await act(async () => { root?.render(<TooltipProvider><App /></TooltipProvider>); await flush(); });
-  await act(async () => { useWorkbenchUiStore.getState().openTeamChat({ instanceId: instance.id }); await flush(); });
+  await act(async () => { container.querySelector<HTMLButtonElement>(`[aria-label="打开团队 ${instance.name} 群聊"]`)!.click(); await flush(); });
   const group = container.querySelector('.workbench-main [aria-label="团队群聊"]')!;
   const composer = group.closest('.conversation-workspace')!.querySelector<HTMLTextAreaElement>('[aria-label="输入任务"]')!;
   act(() => {
