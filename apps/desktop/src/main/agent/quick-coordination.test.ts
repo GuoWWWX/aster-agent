@@ -39,6 +39,81 @@ function runtimeFor(database: AgentDatabase, projects: ProjectRegistry, model: M
 }
 
 describe("quick coordination request queue", () => {
+  it("retains two parent-owned task records and their exact inputs after a reused child closes its local checklist", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "quick-task-directory-"));
+    const db = new AgentDatabase(":memory:");
+    const projects = new ProjectRegistry(db);
+    const project = await projects.registerDirectory(directory);
+    const parent = db.createConversation(project.id);
+    db.setConversationPermissionMode(parent.id, "full_access", "parallel_queue");
+    const start = deferred(), releaseWorker = deferred(), releaseDelivery = deferred();
+    let parentTurn = 0, childTurn = 0, queuedId = "";
+    const taskFor = (title: string) => db.collaboration.listTasks({ conversationId: parent.id }).items.find(task => task.title === title)!;
+    const source = (messageId: string) => ({ kind: "conversation", containerId: parent.id, messageId, purpose: "request" });
+    const runtime = runtimeFor(db, projects, { completeTurn: async input => {
+      if (input.messages.some(message => message.content.includes("You are a reusable Subagent"))) {
+        switch (++childTurn) {
+          case 1: return tool("update_task_list", { tasks: [{ title: "检查当前分工", status: "completed" }] });
+          case 2: await releaseWorker.promise; return tool("close_task_list", {});
+          default: return { content: childTurn === 3 ? "result-D" : "result-E", finishReason: "stop", toolCalls: [] };
+        }
+      }
+      switch (++parentTurn) {
+        case 1: await start.promise; return tool("list_task_contexts", {});
+        case 2: return tool("update_task_context", { title: "D", goal: "处理 D" });
+        case 3: return tool("spawn_subagent", { name: "执行者", task: "只处理 D" });
+        case 4: return tool("claim_pending_messages", { pendingMessageIds: [queuedId] });
+        case 5: return tool("list_task_contexts", {});
+        case 6: return tool("update_task_context", { title: "E", goal: "处理 E", source: source(queuedId) });
+        case 7: return tool("send_agent_message", { conversationIds: [db.listSubagentTasks(parent.id)[0]!.childConversationId], content: "只处理 E" });
+        case 8: await releaseDelivery.promise; return tool("find_files", { pattern: "*" });
+        case 9: {
+          expect(JSON.stringify(input.messages)).toContain("result-D");
+          expect(JSON.stringify(input.messages)).toContain("result-E");
+          const task = taskFor("D");
+          return tool("update_task_context", { id: task.id, expectedRevision: task.revision, title: "D", goal: "处理 D", summary: "result-D", status: "completed" });
+        }
+        case 10: {
+          const task = taskFor("E");
+          return tool("update_task_context", { id: task.id, expectedRevision: task.revision, title: "E", goal: "处理 E", summary: "result-E", status: "completed", source: source(queuedId) });
+        }
+        default: return { content: "两项结果均已交付，任务列表待用户确认。", finishReason: "stop", toolCalls: [] };
+      }
+    } });
+    try {
+      runtime.sendMessage({ conversationId: parent.id, content: "处理 D", permissionMode: "full_access" }, () => undefined);
+      await vi.waitFor(() => expect(parentTurn).toBe(1));
+      const queued = runtime.sendMessage({ conversationId: parent.id, content: "独立处理 E", permissionMode: "full_access", deliveryMode: "queue" }, () => undefined);
+      if (queued.kind !== "pending") throw new Error("Expected queued input");
+      queuedId = queued.pendingMessage.id;
+      const firstId = db.listTimeline(parent.id).find(item => item.kind === "message" && item.role === "user")!.id;
+      start.resolve();
+      await vi.waitFor(() => expect(parentTurn).toBe(8));
+      const child = db.listSubagentTasks(parent.id)[0]!.childConversationId;
+      expect(db.listUnreadAgentMessages(child)).toMatchObject([{ deliveryMode: "queue" }]);
+      releaseWorker.resolve();
+      await vi.waitFor(() => expect(db.listUnreadAgentMessages(parent.id)).toHaveLength(2));
+      releaseDelivery.resolve();
+      await vi.waitFor(() => expect(db.getConversation(parent.id).activeRunId).toBeNull());
+      expect(parentTurn).toBe(11);
+      expect(db.getConversation(parent.id).lastRunStatus).toBe("completed");
+      expect(db.listSubagentTasks(parent.id)).toHaveLength(1);
+      expect(db.getTaskList(child)).toBeNull();
+      const page = db.collaboration.listTasks({ conversationId: parent.id });
+      expect(page.total).toBe(2);
+      expect(page.items).toEqual(expect.arrayContaining([expect.objectContaining({ title: "D", ownerConversationId: parent.id, summary: "result-D", completionRequested: true }),
+        expect.objectContaining({ title: "E", ownerConversationId: parent.id, summary: "result-E", completionRequested: true })]));
+      for (const [title, messageId] of [["D", firstId], ["E", queuedId]]) {
+        const detail = db.collaboration.getTask(taskFor(title!).id);
+        expect(detail.sources.every(item => item.available)).toBe(true);
+        expect(detail.sources.filter(item => item.containerId === parent.id && item.purpose === "request").map(item => item.messageId)).toEqual([messageId]);
+      }
+    } finally {
+      start.resolve(); releaseWorker.resolve(); releaseDelivery.resolve(); runtime.cancelConversation(parent.id);
+      await runtime.stopAllRuns(); db.close(); await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each(["paused", "foreign", "missing"])("retains the whole batch after a rejected %s claim and cancellation", async mode => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "quick-queue-guard-"));
     const db = new AgentDatabase(":memory:");

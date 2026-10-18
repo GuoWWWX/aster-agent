@@ -13,7 +13,9 @@ import type { ToolExecution } from "../tools/project-tool-registry.js";
 import type { ToolExecutionPolicy } from "../tools/tool-execution-policy.js";
 
 const listSchema = listTaskContextsInputSchema.omit({ conversationId: true, projectId: true, teamInstanceId: true });
-const updateSchema = z.object(updateTaskContextInputSchema.shape).omit({ conversationId: true, requestId: true }).strict();
+const updateSchema = z.object(updateTaskContextInputSchema.shape).omit({ conversationId: true, requestId: true }).extend({
+  source: updateTaskContextInputSchema.shape.source.describe("The actual source for this task. When several independent requests share a Run, explicitly select the matching original message; do not attach another task's latest input. Read get_task_context to recover an earlier task's original source."),
+}).strict();
 const postSchema = z.object(postTeamChatInputSchema.shape).omit({ teamInstanceId: true, requestId: true, coordinator: true, supersedesId: true }).extend({
   continueWork: z.boolean().optional().describe("Omit or use false for a finished public reply or delegation handoff: this ends the current group turn after the tool batch succeeds. Use true only for an interim progress update when you still need tools in this same turn. Complete intended local updates before the final publication; task completion and acceptance are separate."),
   fileReferences: postTeamChatInputSchema.shape.fileReferences.describe("Publish your own completed file with {path}, omitting sourceMessageId; forward another member's already-published file with {sourceMessageId,path}. The runtime preserves the original member's workspace, including repeated forwarding, and creates clickable file cards. The Team Lead delivers original member files after checking verification evidence, without copying, rewriting or rerunning completed checks. A legacy message containing only a Markdown link needs the original author to publish its file reference once; this requires no file edit. After a successful publication, do not publish the same result again to attach it to an older message: replyToId only identifies the discussion being answered."),
@@ -90,7 +92,10 @@ export class CollaborationTool {
         }
         case "update_task_context": {
           const parsed = updateSchema.parse(args);
-          const source = this.database.listTimeline(conversation.id).findLast(item => item.kind === "message" && item.role === "user" && item.runId === input.runId);
+          const boundTasks = parsed.id === undefined ? [] : store.runTasks(input.runId);
+          const ambiguousInput = boundTasks.length > 1 && boundTasks.some(task => task.id === parsed.id);
+          const source = parsed.source === undefined && !ambiguousInput ? this.database.listTimeline(conversation.id, input.runId)
+            .findLast(item => item.kind === "message" && item.role === "user") : undefined;
           const groupSource = store.runMessages(input.runId)[0];
           const managed = this.database.getRunningTeamWorkItemByExecutionTreeConversation(conversation.id);
           const task = parsed.id === undefined && managed !== null ? store.getTask(managed.id).task : store.updateTask({ ...parsed, conversationId: conversation.id, requestId,

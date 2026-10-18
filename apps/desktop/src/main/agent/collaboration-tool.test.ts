@@ -55,6 +55,27 @@ it("records Agent completion as awaiting user confirmation and rejects self-gran
   expect(database.collaboration.listTasks({ conversationId: lead.id }).items).toEqual([expect.objectContaining({ status: "running", completionRequested: true })]);
 });
 
+it.each([true, false])("keeps independent task sources separate when updating with an explicit source: %s", async explicit => {
+  const { database, lead, tool } = fixture();
+  const run = database.createRunWithUserMessage(lead.id, "任务 D", "test-model");
+  const queued = database.enqueuePendingMessage({ conversationId: lead.id, content: "独立任务 E" });
+  const second = database.consumePendingMessageIntoRun(queued.id, run.runId, "独立任务 E");
+  const execute = (args: unknown) => tool.execute({ name: "update_task_context", arguments: JSON.stringify(args),
+    conversationId: lead.id, runId: run.runId, toolCallId: randomUUID(), changed: vi.fn(),
+    post: input => database.collaboration.postMessage(input, lead.id) });
+  const source = { kind: "conversation", containerId: lead.id, messageId: run.userMessage.id, purpose: "request" };
+  expect(await execute({ title: "D", goal: "完成 D", source })).toMatchObject({ isError: false });
+  const first = database.collaboration.listTasks({ conversationId: lead.id }).items[0]!;
+  expect(database.collaboration.getTask(first.id).sources.map(item => item.messageId)).toEqual([run.userMessage.id]);
+  expect(await execute({ title: "E", goal: "完成 E", source: { ...source, messageId: second.id } })).toMatchObject({ isError: false });
+  expect(await execute({ id: first.id, expectedRevision: first.revision, title: "D", goal: "完成 D", status: "completed", ...(explicit ? { source } : {}) })).toMatchObject({ isError: false });
+  const tasks = database.collaboration.listTasks({ conversationId: lead.id });
+  expect(tasks.total).toBe(2);
+  expect(tasks.items.find(task => task.id === first.id)).toMatchObject({ completionRequested: true });
+  expect(database.collaboration.getTask(first.id).sources.map(item => item.messageId)).toEqual([run.userMessage.id]);
+  expect(database.collaboration.getTask(tasks.items.find(task => task.id !== first.id)!.id).sources.map(item => item.messageId)).toEqual([second.id]);
+});
+
 it("searches already-read history on explicit filters and still validates the full date range", async () => {
   const { database, instance, lead, tool } = fixture();
   const message = database.collaboration.postMessage({ teamInstanceId: instance.id, content: "已读的 HTML 交付", intent: "notify", requestId: randomUUID() }, null);
