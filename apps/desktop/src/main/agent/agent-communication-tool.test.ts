@@ -43,6 +43,8 @@ describe("AgentCommunicationTool", () => {
     expect(definitions).toHaveLength(1);
     expect(definitions[0]?.parameters.properties).toHaveProperty("conversationIds");
     expect(definitions[0]?.parameters.properties).not.toHaveProperty("conversationId");
+    expect(definitions[0]?.description).toContain("Own-Subagent assignments default to queue");
+    expect(definitions[0]?.description).toContain("amend the active task");
     database.close();
   });
 

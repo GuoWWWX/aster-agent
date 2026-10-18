@@ -90,14 +90,14 @@ export class TaskListTool {
     return [
       {
         description: [
-          "Create or update this conversation's task list for multi-step work. Creates the list if none exists.",
+          "Create or update this conversation's local execution checklist above its input for multi-step work. This does not create or update persistent task records in the conversation header.",
           "Send the complete list of titles and statuses. Multiple tasks may be running at once. Blocked and failed tasks require a short reason."
         ].join(" "),
         name: UPDATE_TASK_LIST_TOOL_NAME,
         parameters: taskListParameters
       },
       {
-        description: "Close and remove the active task list after every task is completed and before giving the final answer.",
+        description: "Close the local execution checklist after all its steps are completed and before giving the final answer. This does not remove or complete persistent task records in the conversation header.",
         name: CLOSE_TASK_LIST_TOOL_NAME,
         parameters: modelToolParameters(closeTaskListSchema)
       }

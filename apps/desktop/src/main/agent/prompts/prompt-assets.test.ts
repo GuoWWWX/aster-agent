@@ -34,7 +34,11 @@ describe("prompt assets", () => {
       "Use `run_command` with its default `batch` mode for every finite non-interactive command",
     );
     expect(BASE_SYSTEM_PROMPT).toContain("Use `run_command` with `mode=service` only");
-    expect(BASE_SYSTEM_PROMPT).toContain("all results return before you continue analysis");
+    expect(BASE_SYSTEM_PROMPT).toContain("may return `running` with a `commandId`");
+    expect(BASE_SYSTEM_PROMPT).toContain("call `read_command_output` with that same ID");
+    expect(BASE_SYSTEM_PROMPT).toContain("Reuse the returned output offsets");
+    expect(BASE_SYSTEM_PROMPT).not.toContain("tool returns to you only after the process really exits");
+    expect(BASE_SYSTEM_PROMPT).not.toContain("all results return before you continue analysis");
     expect(BASE_SYSTEM_PROMPT).toContain("do not wait for a service to exit");
     expect(BASE_SYSTEM_PROMPT).toContain(
       "A terminal tab opened manually by the user is not automatically owned by this conversation",

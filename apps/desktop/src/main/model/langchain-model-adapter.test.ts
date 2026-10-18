@@ -904,6 +904,54 @@ describe("LangChainModelAdapter", () => {
     }]);
   });
 
+  it.each([false, true])("uses completed Responses arguments for two calls to the same tool when argument deltas are missing or partial (%s)", async partial => {
+    const calls = [
+      { id: "fc_first", type: "function_call", call_id: "call_first", name: "update_task_context", arguments: '{"title":"First","goal":"Verify first"}', status: "completed" },
+      { id: "fc_second", type: "function_call", call_id: "call_second", name: "update_task_context", arguments: '{"title":"Second","goal":"Verify second"}', status: "completed" },
+    ];
+    const event = (value: object) => `data: ${JSON.stringify(value)}\n\n`;
+    const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse([
+      ...calls.flatMap((call, index) => [
+        event({ type: "response.output_item.added", output_index: index, item: { ...call, status: "in_progress", arguments: "" } }),
+        ...(partial ? [event({ type: "response.function_call_arguments.delta", item_id: call.id, output_index: index, delta: '{"title":' })] : []),
+        event({ type: "response.function_call_arguments.done", item_id: call.id, output_index: index, arguments: call.arguments }),
+        event({ type: "response.output_item.done", output_index: index, item: call }),
+      ]),
+      event({ type: "response.completed", response: { id: "resp_complete", model: "test-model", status: "completed", output: calls, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }),
+    ]));
+    const result = await new LangChainModelAdapter("openai-responses", request).completeTurn(inputFor("openai-responses"));
+    expect(result.toolCalls).toEqual(calls.map(call => ({ id: call.call_id, name: call.name, arguments: call.arguments })));
+  });
+
+  it("uses the completed Responses snapshot without appending or duplicating streamed calls", async () => {
+    const call = { id: "fc_final", type: "function_call", call_id: "call_final", name: "run_command", arguments: '{"command":"echo final"}' };
+    const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse([
+      `data: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { ...call, arguments: '{"command":"echo stale"}' } })}\n\n`,
+      `data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", output: [call] } })}\n\n`,
+    ]));
+    const result = await new LangChainModelAdapter("openai-responses", request).completeTurn(inputFor("openai-responses"));
+    expect(result.toolCalls).toEqual([{ id: call.call_id, name: call.name, arguments: call.arguments }]);
+  });
+
+  it.each(["{broken", "[]", "null"])("rejects invalid completed Responses arguments instead of using empty streamed arguments (%s)", async argumentsValue => {
+    const call = { id: "fc_invalid", type: "function_call", call_id: "call_invalid", name: "write_file", arguments: argumentsValue };
+    const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse([
+      `data: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { ...call, arguments: "" } })}\n\n`,
+      `data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", output: [call] } })}\n\n`,
+    ]));
+    await expect(new LangChainModelAdapter("openai-responses", request).completeTurn(inputFor("openai-responses")))
+      .rejects.toThrow(/Tool arguments/u);
+  });
+
+  it("preserves genuine empty arguments for the tool's own schema validation", async () => {
+    const call = { id: "fc_empty", type: "function_call", call_id: "call_empty", name: "update_task_context", arguments: "{}" };
+    const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse([
+      `data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", output: [call] } })}\n\n`,
+    ]));
+    const result = await new LangChainModelAdapter("openai-responses", request).completeTurn(inputFor("openai-responses"));
+    expect(result.toolCalls).toEqual([{ id: call.call_id, name: call.name, arguments: "{}" }]);
+  });
+
   it.each([
     {
       body: "<!doctype html><html><head><title>proxy.test | 502: Bad gateway</title></head><body>secret gateway body</body></html>",

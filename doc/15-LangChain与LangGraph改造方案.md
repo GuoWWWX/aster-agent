@@ -120,6 +120,8 @@ Queue/Steer 在模型已经返回无工具结果后到达时，Executor 会在�
 
 ## 5. 模型适配方向
 
+〔FACT｜apps/desktop/src/main/model/langchain-model-adapter.ts:848〕Responses 工具参数以 completed 最终响应的 function_call 输出为准，修复 SDK 增量未拼齐时把完整参数变成空对象的问题。仍复用 LangChain 响应元数据及原 JSON/Schema 校验，不增加 SSE 解析器或第二套工具循环；无最终快照时沿用原流式调用，其他 Provider 不变。回归覆盖同名多调用、缺失／部分 delta、最终快照替换、非法 JSON／非对象拒绝及真实空对象不补猜字段。
+
 保留中立的 `ModelProviderAdapter` 作为应用端口，但实现改为 LangChain-backed adapter。这样上下文压缩、连接测试和现有测试调用方不需要同时改变，Provider 协议解析不再由项目手写。
 
 ```text

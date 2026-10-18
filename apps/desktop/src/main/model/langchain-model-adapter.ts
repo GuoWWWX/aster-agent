@@ -845,7 +845,15 @@ function mergeMessageChunks(
   return next;
 }
 
-function assistantToolCalls(message: BaseMessage): unknown[] {
+function assistantToolCalls(message: BaseMessage, apiFormat: ModelApiFormat): unknown[] {
+  const metadata = message.response_metadata;
+  if (apiFormat === "openai-responses" && isRecord(metadata)
+    && metadata.status === "completed" && Array.isArray(metadata.output)) {
+    // The SDK's streamed calls can retain partial/empty args even though the
+    // completed response contains the full arguments. Use that final snapshot.
+    return metadata.output.flatMap((item: unknown) => isRecord(item) && item.type === "function_call"
+      ? [{ id: item.call_id, name: item.name, args: item.arguments }] : []);
+  }
   const calls = isRecord(message) ? message.tool_calls : undefined;
   return Array.isArray(calls) ? calls : [];
 }
@@ -1037,7 +1045,7 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
       if (latest === null) {
         throw new ModelResponseError("LangChain model returned no response chunks.");
       }
-      const toolCalls = assistantToolCalls(latest).map(normalizeToolCall);
+      const toolCalls = assistantToolCalls(latest, this.apiFormat).map(normalizeToolCall);
       const savedProviderState = providerState(input, latest, fingerprint);
       if (savedProviderState !== undefined) {
         if (firstTokenLatencyMs !== undefined) savedProviderState.firstTokenLatencyMs = firstTokenLatencyMs;

@@ -48,6 +48,7 @@ describe("quick coordination request queue", () => {
     db.setConversationPermissionMode(parent.id, "full_access", "parallel_queue");
     const start = deferred(), releaseWorker = deferred(), releaseDelivery = deferred();
     let parentTurn = 0, childTurn = 0, queuedId = "";
+    const completionViews: string[] = [];
     const taskFor = (title: string) => db.collaboration.listTasks({ conversationId: parent.id }).items.find(task => task.title === title)!;
     const source = (messageId: string) => ({ kind: "conversation", containerId: parent.id, messageId, purpose: "request" });
     const runtime = runtimeFor(db, projects, { completeTurn: async input => {
@@ -74,10 +75,13 @@ describe("quick coordination request queue", () => {
           return tool("update_task_context", { id: task.id, expectedRevision: task.revision, title: "D", goal: "处理 D", summary: "result-D", status: "completed" });
         }
         case 10: {
+          completionViews.push(input.messages.find(message => message.content.startsWith("[Persistent task directory"))?.content ?? "");
           const task = taskFor("E");
           return tool("update_task_context", { id: task.id, expectedRevision: task.revision, title: "E", goal: "处理 E", summary: "result-E", status: "completed", source: source(queuedId) });
         }
-        default: return { content: "两项结果均已交付，任务列表待用户确认。", finishReason: "stop", toolCalls: [] };
+        default:
+          completionViews.push(input.messages.find(message => message.content.startsWith("[Persistent task directory"))?.content ?? "");
+          return { content: "两项结果均已交付，任务列表待用户确认。", finishReason: "stop", toolCalls: [] };
       }
     } });
     try {
@@ -96,6 +100,14 @@ describe("quick coordination request queue", () => {
       releaseDelivery.resolve();
       await vi.waitFor(() => expect(db.getConversation(parent.id).activeRunId).toBeNull());
       expect(parentTurn).toBe(11);
+      const directoryState = (content: string) => z.array(z.object({ title: z.string(), status: z.string(), completionRequested: z.boolean() }))
+        .parse(JSON.parse(content.split("\n")[2] ?? "[]"));
+      expect(directoryState(completionViews[0]!)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ title: "D", status: "running", completionRequested: true }),
+        expect.objectContaining({ title: "E", status: "running", completionRequested: false }),
+      ]));
+      expect(directoryState(completionViews[1]!).every(task => task.completionRequested)).toBe(true);
+      expect(completionViews[1]).toContain("Do not resubmit completion or reset the status");
       expect(db.getConversation(parent.id).lastRunStatus).toBe("completed");
       expect(db.listSubagentTasks(parent.id)).toHaveLength(1);
       expect(db.getTaskList(child)).toBeNull();

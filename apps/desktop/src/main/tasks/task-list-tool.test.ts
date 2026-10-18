@@ -48,6 +48,10 @@ describe("TaskListTool", () => {
 
     expect(tool.getDefinitions().map((definition) => definition.name))
       .toEqual([UPDATE_TASK_LIST_TOOL_NAME, CLOSE_TASK_LIST_TOOL_NAME]);
+    for (const definition of tool.getDefinitions()) {
+      expect(definition.description).toContain("local execution checklist");
+      expect(definition.description).toContain("persistent task");
+    }
     const created = tool.execute(UPDATE_TASK_LIST_TOOL_NAME, firstTasks, conversation.id);
     expect(created.isError).toBe(false);
     expect(JSON.parse(created.content)).toEqual({
