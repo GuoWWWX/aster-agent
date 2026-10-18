@@ -12,7 +12,8 @@ export default defineConfig({
   external: ["electron", "node:sqlite"],
   format: ["cjs"],
   loader: {
-    ".md": "text"
+    ".md": "text",
+    ".ps1": "text"
   },
   minify: false,
   noExternal: ["@agent/protocol", "zod"],

@@ -236,6 +236,12 @@ export interface AgentClient {
   resetApplicationStorageLocation(): Promise<ApplicationStorageLocation>;
   getIntegrationConfiguration(): Promise<IntegrationConfiguration>;
   getBrowserConfiguration(): Promise<BrowserConfiguration>;
+  getComputerUseConfiguration(): Promise<ComputerUseConfiguration>;
+  saveComputerUseConfiguration(input: ComputerUseConfiguration): Promise<ComputerUseConfiguration>;
+  chooseComputerApplication(): Promise<ComputerApplication | null>;
+  getComputerUseStatus(): Promise<ComputerUseStatus>;
+  startComputerUse(): Promise<ComputerUseStatus>;
+  stopComputerUse(): Promise<void>;
   clearBrowserData(): Promise<void>;
   chooseBrowserDownloadDirectory(): Promise<string | null>;
   getBrowserDefaultDownloadDirectory(): Promise<string>;
@@ -400,3 +406,4 @@ export interface AgentClient {
   ): Promise<ConfigurationWorkspaceFile>;
   toggleMaximizeWindow(): Promise<void>;
 }
+import type { ComputerApplication, ComputerUseConfiguration, ComputerUseStatus } from "@agent/protocol";

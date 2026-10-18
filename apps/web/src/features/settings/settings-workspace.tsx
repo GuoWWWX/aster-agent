@@ -37,6 +37,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { ModelReasoningCatalogSettings } from "./model-reasoning-catalog-settings.js";
+import { ComputerUseSettings } from "./computer-use-settings.js";
+import { SettingsSectionHeader } from "./settings-section-header.js";
 
 import {
   useCallback,
@@ -189,6 +191,7 @@ const SETTINGS_NAVIGATION: readonly SettingsNavItem[] = [
   { id: "mcp", label: "MCP", icon: PlugZap, group: "集成" },
   { id: "skills", label: "Skill", icon: Sparkles, group: "集成" },
   { id: "browser", label: "浏览器", icon: Globe2, group: "工作区" },
+  { id: "computer-use", label: "电脑控制", icon: MonitorCog, group: "工作区" },
   { id: "terminal", label: "终端", icon: Terminal, group: "工作区" },
   { id: "archived", label: "已归档对话", icon: Archive, group: "数据" },
 ];
@@ -421,6 +424,7 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
             <SkillsSettings agentClient={agentClient} />
           ) : null}
           {activeSection === "permissions" ? <PermissionsSettings /> : null}
+          {activeSection === "computer-use" ? <ComputerUseSettings agentClient={agentClient} /> : null}
           {activeSection === "browser" ? (
             <BrowserSettings agentClient={agentClient} />
           ) : null}
@@ -3736,6 +3740,7 @@ function PermissionsSettings(): ReactElement {
             { id: "patch-write", label: "文件修改", description: "写入、修改或删除工作区文件。", icon: FileCode2 },
             { id: "command-run", label: "命令与终端", description: "执行命令、创建和操作侧边终端。", icon: Terminal },
             { id: "browser-control", label: "浏览器操作", description: "打开页面、导航与浏览器交互。", icon: Globe2 },
+            { id: "computer-control", label: "电脑控制", description: "仅操作电脑控制设置中授权的软件。", icon: MonitorCog },
           ] as const).map(({ id, label, description, icon: Icon }) => (
             <article key={id} className="settings-general-row">
               <div>
@@ -4527,34 +4532,5 @@ function ThemeButton({
       </span>
       {label}
     </button>
-  );
-}
-
-function SettingsSectionHeader({
-  action,
-  bodyClassName,
-  children,
-  eyebrow,
-  title,
-}: {
-  action?: ReactNode;
-  bodyClassName?: string;
-  children: ReactNode;
-  eyebrow: string;
-  title: string;
-}): ReactElement {
-  return (
-    <section className="settings-section" aria-labelledby={`settings-${title}`}>
-      <header className="settings-section__header">
-        <div className="settings-section__title-row">
-          <h2 id={`settings-${title}`}>{title}</h2>
-          <p className="settings-section__description">{eyebrow}</p>
-        </div>
-        {action ?? null}
-      </header>
-      <div className={`settings-section__body${bodyClassName ? ` ${bodyClassName}` : ""}`}>
-        {children}
-      </div>
-    </section>
   );
 }

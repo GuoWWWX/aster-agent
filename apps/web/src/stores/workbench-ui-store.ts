@@ -20,6 +20,7 @@ export type SettingsSection =
   | "skills"
   | "permissions"
   | "browser"
+  | "computer-use"
   | "terminal"
   | "archived"
   | "appearance";

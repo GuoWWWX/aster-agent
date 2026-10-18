@@ -864,6 +864,7 @@ function CapabilityGroup({
 
 const PERMISSION_TOOL_OPTIONS: readonly { label: string; value: AgentPermissionTool }[] = [
   { label: "执行命令", value: "run_command" },
+  { label: "电脑控制", value: "computer_use" },
   { label: "写入文件", value: "write_file" },
   { label: "删除文件", value: "delete_file" },
   { label: "替换文件内容", value: "replace_in_file" },

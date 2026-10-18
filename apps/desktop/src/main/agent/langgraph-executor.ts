@@ -204,7 +204,7 @@ function isModelMessageAttachment(value: unknown): value is ModelMessageAttachme
     || (value.projectPath !== null && typeof value.projectPath !== "string")
     || (value.readState !== "full" && value.readState !== "metadata_only" && value.readState !== "preview")
     || typeof value.truncated !== "boolean"
-    || (value.source !== "browser" && value.source !== "project" && value.source !== "upload")
+    || (value.source !== "browser" && value.source !== "project" && value.source !== "upload" && value.source !== "computer")
   ) return false;
   if (value.kind === "text") return typeof value.content === "string";
   return value.kind === "image" && (value.data === null || typeof value.data === "string");

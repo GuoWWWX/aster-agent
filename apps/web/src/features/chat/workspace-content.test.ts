@@ -58,6 +58,11 @@ import {
 } from "./workspace-content.js";
 
 describe("tool details visibility", () => {
+  it("reuses screenshot details for physical-pixel computer windows", () => {
+    expect(toolHasDisplayableDetails({ id: "computer", kind: "tool", conversationId: "conversation", runId: "run", batchId: null,
+      createdAt: "2026-10-19T00:00:00Z", name: "computer_use", arguments: '{"action":"screenshot","windowId":"123"}', diff: null, status: "completed",
+      result: '{"ok":true,"value":{"coordinateSpace":"window_physical_pixels","width":800,"height":600,"mimeType":"image/png"}}' })).toBe(true);
+  });
   it("omits legacy command waits from the work process while retaining the command and final answer", () => {
     const projected = groupRunActivities([{ ...tool, name: "run_command" }, { ...tool, id: "wait", name: "wait_for_commands" }, { ...tool, id: "read", name: "read_command_output" }, assistantMessage("answer", "已完成")]);
     expect(JSON.stringify(projected)).not.toContain("wait_for_commands");

@@ -685,3 +685,4 @@ export * from "./user-question.js";
 export * from "./background-command.js";
 export * from "./task-context.js";
 export * from "./team-chat.js";
+export * from "./computer-use.js";

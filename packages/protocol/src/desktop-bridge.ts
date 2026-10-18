@@ -275,6 +275,12 @@ export interface DesktopBridge {
   resetApplicationStorageLocation(): Promise<ApplicationStorageLocation>;
   getIntegrationConfiguration(): Promise<IntegrationConfiguration>;
   getBrowserConfiguration(): Promise<BrowserConfiguration>;
+  getComputerUseConfiguration(): Promise<ComputerUseConfiguration>;
+  saveComputerUseConfiguration(input: ComputerUseConfiguration): Promise<ComputerUseConfiguration>;
+  chooseComputerApplication(): Promise<ComputerApplication | null>;
+  getComputerUseStatus(): Promise<ComputerUseStatus>;
+  startComputerUse(): Promise<ComputerUseStatus>;
+  stopComputerUse(): Promise<void>;
   clearBrowserData(): Promise<void>;
   chooseBrowserDownloadDirectory(): Promise<string | null>;
   getBrowserDefaultDownloadDirectory(): Promise<string>;
@@ -416,3 +422,4 @@ export interface DesktopBridge {
   ): Promise<ConfigurationWorkspaceFile>;
   onWindowStateChanged(listener: (state: WindowState) => void): () => void;
 }
+import type { ComputerApplication, ComputerUseConfiguration, ComputerUseStatus } from "./computer-use.js";

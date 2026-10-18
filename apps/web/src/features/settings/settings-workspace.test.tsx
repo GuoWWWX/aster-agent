@@ -179,7 +179,7 @@ describe("SettingsWorkspace", () => {
     const container = await renderSettings(new MockAgentClient());
     const trigger = container.querySelector<HTMLButtonElement>('[aria-label="命令与终端权限"]');
     expect(trigger).not.toBeNull();
-    expect(container.querySelectorAll('button[aria-label$="权限"]')).toHaveLength(5);
+    expect(container.querySelectorAll('button[aria-label$="权限"]')).toHaveLength(6);
     const previous = useApplicationSettingsStore.getState().permissionPolicies["command-run"];
     const scrollIntoView = vi.fn();
     vi.stubGlobal("ResizeObserver", class { observe(): void {} disconnect(): void {} });
@@ -214,7 +214,7 @@ describe("SettingsWorkspace", () => {
     searchFor("没有此分区");
     expect(container.querySelector('.settings-navigation [role="status"]')?.textContent).toBe("无匹配的设置");
     searchFor("");
-    expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(11);
+    expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(12);
     expect(useWorkbenchUiStore.getState().settingsSection).toBe("general");
   });
 
@@ -245,7 +245,7 @@ describe("SettingsWorkspace", () => {
       searchFor("API KEY");
       expect(container.querySelector('[aria-label="模型配置：API Key"]')).not.toBeNull();
       searchFor("");
-      expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(11);
+      expect(container.querySelectorAll(".settings-navigation__item")).toHaveLength(12);
     } finally {
       Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
     }

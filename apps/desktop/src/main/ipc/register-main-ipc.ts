@@ -282,6 +282,8 @@ type MainIpcDependencies = {
   applicationStorageLocation: ApplicationStorageLocationStore;
   applicationSettings: ApplicationSettingsStore;
   browserConfiguration: BrowserConfigurationStore;
+  computerUseConfiguration: ComputerUseConfigurationStore;
+  computerUse: WindowsComputerController;
   attachments: ConversationAttachmentStore;
   conversationDeletion: ConversationDeletionService;
   conversationLifecycle: ConversationLifecycleService;
@@ -332,6 +334,8 @@ export function registerMainIpcHandlers(
     applicationStorageLocation,
     applicationSettings,
     browserConfiguration,
+    computerUseConfiguration,
+    computerUse,
     attachments,
     conversationDeletion,
     conversationLifecycle,
@@ -1657,6 +1661,37 @@ export function registerMainIpcHandlers(
     }
   );
 
+  ipcMain.handle(IPC_CHANNELS.computerUseGetConfiguration, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow); parseNoArguments(args);
+    return computerUseConfigurationSchema.parse(computerUseConfiguration.getConfiguration());
+  });
+  ipcMain.handle(IPC_CHANNELS.computerUseSaveConfiguration, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([computerUseConfigurationSchema]).parse(args);
+    const saved = computerUseConfiguration.saveConfiguration(input);
+    computerUse.stop();
+    return computerUseConfigurationSchema.parse(saved);
+  });
+  ipcMain.handle(IPC_CHANNELS.computerUseGetStatus, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow); parseNoArguments(args);
+    return computerUseStatusSchema.parse(computerUse.getStatus());
+  });
+  ipcMain.handle(IPC_CHANNELS.computerUseStart, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow); parseNoArguments(args);
+    return computerUseStatusSchema.parse(await computerUse.start());
+  });
+  ipcMain.handle(IPC_CHANNELS.computerUseStop, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow); parseNoArguments(args); computerUse.stop();
+  });
+  ipcMain.handle(IPC_CHANNELS.computerUseChooseApplication, async (event, ...args: unknown[]) => {
+    const window = getTrustedWindow(event, getMainWindow); parseNoArguments(args);
+    const result = await dialog.showOpenDialog(window, { title: "选择允许控制的软件", properties: ["openFile"], filters: [{ name: "Windows 软件", extensions: ["exe"] }] });
+    const selected = result.filePaths[0];
+    if (result.canceled || selected === undefined) return null;
+    const executablePath = realpathSync(selected);
+    return computerApplicationSchema.parse({ id: randomUUID(), name: path.basename(executablePath, path.extname(executablePath)), executablePath, enabled: true });
+  });
+
   ipcMain.handle(
     IPC_CHANNELS.browserGetConfiguration,
     (event, ...args: unknown[]) => {
@@ -2033,3 +2068,9 @@ export function registerMainIpcHandlers(
     ipcMain.dispose();
   };
 }
+import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { realpathSync } from "node:fs";
+import { computerApplicationSchema, computerUseConfigurationSchema, computerUseStatusSchema } from "@agent/protocol";
+import type { ComputerUseConfigurationStore } from "../settings/computer-use-configuration-store.js";
+import type { WindowsComputerController } from "../computer-use/windows-computer-controller.js";

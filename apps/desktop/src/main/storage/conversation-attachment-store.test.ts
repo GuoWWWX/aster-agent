@@ -71,6 +71,18 @@ function createPdfFixture(): Buffer {
 }
 
 describe("ConversationAttachmentStore", () => {
+  it("stores a computer screenshot in the existing tool attachment path", async () => {
+    const { conversation, database, store } = await createFixture();
+    const run = database.createRunWithUserMessage(conversation.id, "inspect", "demo");
+    const toolId = "11111111-1111-4111-8111-111111111111";
+    database.upsertRuntimeActivity({ id: toolId, kind: "tool", conversationId: conversation.id, runId: run.runId, batchId: null,
+      createdAt: new Date().toISOString(), name: "computer_use", arguments: '{"action":"screenshot","windowId":"123"}', result: null, diff: null, status: "running" });
+    const image = await store.saveToolScreenshot(conversation.id, toolId, { source: "computer", mimeType: "image/png", contextTokens: 2048,
+      data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nksAAAAASUVORK5CYII=" });
+    expect(image).toMatchObject({ source: "computer", messageId: toolId, mimeType: "image/png", kind: "image" });
+    expect(image.name).toMatch(/\.png$/u);
+    expect(store.listDrafts(conversation.id)).toEqual([]);
+  });
   it("rejects screenshot owners from another conversation and removes the rejected file", async () => {
     const { conversation, database, managedRoot, store } = await createFixture();
     const other = database.createConversation(null);

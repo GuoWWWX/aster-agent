@@ -274,7 +274,7 @@ describe("LangChainModelAdapter", () => {
     ]);
   });
 
-  it("sends only the latest browser screenshot bytes to the model", async () => {
+  it.each(["browser", "computer"] as const)("sends only the latest %s screenshot bytes to the model", async (source) => {
     const request = vi.fn<typeof fetch>()
       .mockResolvedValue(createStreamResponse(successChunks("openai-chat-completions")));
     const input = inputFor("openai-chat-completions");
@@ -287,7 +287,7 @@ describe("LangChainModelAdapter", () => {
       name: `${id}.jpg`,
       projectPath: null,
       readState: "full" as const,
-      source: "browser" as const,
+      source,
       truncated: false,
     });
     input.messages = [{
@@ -314,7 +314,7 @@ describe("LangChainModelAdapter", () => {
 
     const serialized = JSON.stringify(recordBody(request));
     expect(serialized).not.toContain("data:image/jpeg;base64,b2xk");
-    expect(serialized).toContain("Earlier browser screenshot superseded");
+    expect(serialized).toContain(`Earlier ${source} screenshot superseded`);
     expect(serialized).toContain("data:image/jpeg;base64,bmV3");
   });
 
@@ -1081,7 +1081,7 @@ describe("LangChainModelAdapter", () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 
-  it("continues without browser screenshot bytes when the selected model has no vision support", async () => {
+  it.each(["browser", "computer"] as const)("continues without %s screenshot bytes when the selected model has no vision support", async (source) => {
     const request = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({
         error: { message: "This model does not support image" },
@@ -1093,13 +1093,13 @@ describe("LangChainModelAdapter", () => {
     const input = multimodalInput("openai-chat-completions");
     const image = input.messages[0]?.attachments[1];
     if (image === undefined) throw new Error("Expected an image attachment.");
-    image.source = "browser";
+    image.source = source;
 
     await new LangChainModelAdapter("openai-chat-completions", request).completeTurn(input);
 
     expect(request).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(recordBody(request, 1))).not.toContain("image_url");
-    expect(JSON.stringify(recordBody(request, 1))).toContain("浏览器截图字节已省略");
+    expect(JSON.stringify(recordBody(request, 1))).toContain(source === "browser" ? "浏览器截图字节已省略" : "窗口截图字节已省略");
   });
 
   it("passes cancellation to the LangChain stream without remapping it", async () => {

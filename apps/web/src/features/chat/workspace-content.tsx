@@ -7477,6 +7477,7 @@ function ToolTypeIcon({ name }: { name: string }): ReactElement {
       return <Search aria-hidden="true" size={15} />;
     case "find_files":
       return <FileSearch aria-hidden="true" size={15} />;
+    case "computer_use":
     case "browser_control":
     case "present_html":
       return <Globe2 aria-hidden="true" size={15} />;
@@ -7656,6 +7657,11 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
     case "find_files": {
       const pattern = typeof argumentsValue?.pattern === "string" ? argumentsValue.pattern : null;
       return pattern === null ? "查找文件" : `查找 ${pattern}`;
+    }
+    case "computer_use": {
+      const action = typeof argumentsValue?.action === "string" ? argumentsValue.action : "";
+      const labels: Record<string, string> = { list: "查看授权软件", launch: "启动软件", observe: "查看窗口", screenshot: "截取窗口", click: "点击窗口", type: "输入文字", key: "按键", scroll: "滚动窗口" };
+      return labels[action] ?? "电脑控制";
     }
     case "browser_control": {
       const action = typeof argumentsValue?.action === "string" ? argumentsValue.action : null;
@@ -8059,8 +8065,8 @@ function ToolDetail({
   onOpenSubagent: ((conversationId: string) => void) | undefined;
   onOpenProjectFile: ((path: string) => void) | undefined;
 }): ReactElement {
-  const screenshot = item.name === "browser_control" && item.result !== null ? parseBrowserScreenshot(item.result) : null;
-  if (screenshot !== null) return <StructuredToolResult summary="网页截图">
+  const screenshot = (item.name === "browser_control" || item.name === "computer_use") && item.result !== null ? parseBrowserScreenshot(item.result) : null;
+  if (screenshot !== null) return <StructuredToolResult summary={item.name === "computer_use" ? "窗口截图" : "网页截图"}>
     {screenshot.image === null ? null : <BrowserScreenshotResult agentClient={agentClient} image={screenshot.image} />}
     <p className="m-0">{screenshot.width} × {screenshot.height} · {screenshot.mimeType}</p>
   </StructuredToolResult>;
@@ -8210,7 +8216,7 @@ function ToolDetail({
 function parseBrowserScreenshot(payload: string): { width: number; height: number; mimeType: string; image: ConversationAttachment | null } | null {
   const result = parseToolValue(payload);
   const image = conversationAttachmentListSchema.safeParse([result?.image]);
-  return result?.coordinateSpace === "screenshot_css_pixels" && typeof result.width === "number"
+  return (result?.coordinateSpace === "screenshot_css_pixels" || result?.coordinateSpace === "window_physical_pixels") && typeof result.width === "number"
     && typeof result.height === "number" && typeof result.mimeType === "string"
     ? { width: result.width, height: result.height, mimeType: result.mimeType, image: image.success ? image.data[0] ?? null : null } : null;
 }
@@ -8248,6 +8254,7 @@ export function toolHasDisplayableDetails(item: ConversationToolItem): boolean {
     case "spawn_subagent":
     case "list_subagents":
     case "wait_for_subagents": return parseSubagentToolResult(payload) !== null;
+    case "computer_use":
     case "browser_control": return parseBrowserScreenshot(payload) !== null;
     default: return false;
   }

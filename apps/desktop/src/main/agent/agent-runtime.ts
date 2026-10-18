@@ -101,6 +101,7 @@ import { WorkspaceTerminalTool } from "../tools/workspace-terminal-tool.js";
 import type { WorkspaceTerminalTabPort } from "../tools/workspace-terminal-tab-controller.js";
 import type { TerminalSessionPort } from "../tools/terminal-session-controller.js";
 import { BrowserToolPlugin } from "../plugins/browser-tool-plugin.js";
+import type { ComputerUseTool } from "../computer-use/computer-use-tool.js";
 import {
   ProjectToolRegistry,
   type PreparedApprovedAction,
@@ -614,6 +615,7 @@ function requiresManualApprovalReview(
 
 const DEFAULT_APPLICATION_PERMISSION_POLICIES: ApplicationPermissionPolicies = {
   "browser-control": "ask",
+  "computer-control": "ask",
   "command-run": "ask",
   "git-write": "unavailable",
   "patch-write": "ask",
@@ -835,7 +837,7 @@ const langChainToolResultEnvelopeSchema = z
       name: z.string().min(1),
       projectPath: z.string().nullable(),
       readState: z.enum(["full", "metadata_only", "preview"]),
-      source: z.enum(["browser", "project", "upload"]),
+      source: z.enum(["browser", "project", "upload", "computer"]),
       truncated: z.boolean(),
     }).strict()).max(4).optional(),
     status: z.literal("rejected").optional(),
@@ -1098,6 +1100,7 @@ export class AgentRuntime {
     browserToolPlugin: BrowserToolPlugin | null = null,
     features: { generateTurnSummaries?: boolean } = {},
     private readonly conversationLifecycle: ConversationLifecycleService | null = null,
+    private readonly computerUseTool: ComputerUseTool | null = null,
   ) {
     this.modelGateway = new ModelGateway(model);
     this.userQuestions = new UserQuestionService({
@@ -1572,6 +1575,15 @@ export class AgentRuntime {
         getDefinitions: () => this.workspaceTerminalTool?.getDefinitions() ?? [],
         getExecutionPolicy: () => ({ kind: "serial" }),
         isAvailable: ({ projectId }) => projectId !== undefined,
+      });
+    }
+    const computerUseTool = this.computerUseTool;
+    if (computerUseTool !== null) {
+      handlers.push({
+        execute: ({ context, rawArguments }) => computerUseTool.execute(rawArguments, context.signal),
+        getDefinitions: () => computerUseTool.getDefinitions(),
+        getExecutionPolicy: () => ({ kind: "serial" }),
+        isAvailable: () => true,
       });
     }
     if (this.browserToolPlugin !== null) {
@@ -4517,7 +4529,10 @@ export class AgentRuntime {
                 modelAttachments.some((attachment) => attachment.source === "browser")
                   ? "Browser screenshots returned by browser_control. Use screenshot pixel coordinates for pointer actions."
                   : null,
-                modelAttachments.some((attachment) => attachment.source !== "browser")
+                modelAttachments.some((attachment) => attachment.source === "computer")
+                  ? "Authorized application window screenshots returned by computer_use. Coordinates are physical pixels relative to that window; reobserve after UI changes."
+                  : null,
+                modelAttachments.some((attachment) => attachment.source !== "browser" && attachment.source !== "computer")
                   ? "Images returned by view_attachments. Re-read images using their paths, not attachment IDs."
                   : null,
               ].filter((value): value is string => value !== null).join("\n"),
@@ -4809,8 +4824,8 @@ export class AgentRuntime {
               })
           : proposal;
       }
-      if (!execution.isError && this.attachments !== null && input.toolCall.name === "browser_control") {
-        const screenshot = execution.modelAttachments?.find((image) => image.source === "browser" && image.kind === "image");
+      if (!execution.isError && this.attachments !== null && (input.toolCall.name === "browser_control" || input.toolCall.name === "computer_use")) {
+        const screenshot = execution.modelAttachments?.find((image) => (image.source === "browser" || image.source === "computer") && image.kind === "image");
         if (screenshot?.kind === "image" && screenshot.data !== null) {
           const image = await this.attachments.saveToolScreenshot(input.conversationId, startedTool.id, { ...screenshot, data: screenshot.data });
           toolImageRefs.push(image);
@@ -4947,6 +4962,7 @@ export class AgentRuntime {
   private permissionPolicyFor(toolName: string): PermissionPolicy {
     const policies = this.applicationSettings?.getConfiguration().permissionPolicies
       ?? DEFAULT_APPLICATION_PERMISSION_POLICIES;
+    if (toolName === "computer_use") return policies["computer-control"];
     if (
       toolName === "run_command"
       || toolName === "terminal_control"

@@ -424,6 +424,12 @@ export function createDesktopBridge(): DesktopBridge {
         IPC_CHANNELS.browserGetConfiguration
       );
     },
+    getComputerUseConfiguration() { return invoke<BridgeResult<"getComputerUseConfiguration">>(IPC_CHANNELS.computerUseGetConfiguration); },
+    saveComputerUseConfiguration(input: ComputerUseConfiguration) { return invoke<BridgeResult<"saveComputerUseConfiguration">>(IPC_CHANNELS.computerUseSaveConfiguration, input); },
+    chooseComputerApplication() { return invoke<BridgeResult<"chooseComputerApplication">>(IPC_CHANNELS.computerUseChooseApplication); },
+    getComputerUseStatus() { return invoke<BridgeResult<"getComputerUseStatus">>(IPC_CHANNELS.computerUseGetStatus); },
+    startComputerUse() { return invoke<BridgeResult<"startComputerUse">>(IPC_CHANNELS.computerUseStart); },
+    stopComputerUse() { return invoke<BridgeResult<"stopComputerUse">>(IPC_CHANNELS.computerUseStop); },
     clearBrowserData() {
       return invoke<BridgeResult<"clearBrowserData">>(IPC_CHANNELS.browserClearData);
     },
@@ -879,3 +885,4 @@ export function createDesktopBridge(): DesktopBridge {
     },
   };
 }
+import type { ComputerUseConfiguration } from "@agent/protocol";

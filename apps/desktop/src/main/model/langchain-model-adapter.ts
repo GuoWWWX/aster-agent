@@ -438,28 +438,23 @@ function orderToolResultsBeforeInterleavedMessages(
   return ordered;
 }
 
-function withoutSupersededBrowserScreenshots(messages: readonly ModelMessage[]): ModelMessage[] {
-  let latestBrowserImageIndex = -1;
+function withoutSupersededToolScreenshots(messages: readonly ModelMessage[]): ModelMessage[] {
+  const latestImageIndexes = new Map<string, number>();
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index]?.attachments.some(
-      (attachment) => attachment.kind === "image" && attachment.source === "browser",
-    )) {
-      latestBrowserImageIndex = index;
-      break;
+    for (const attachment of messages[index]?.attachments ?? []) {
+      if (attachment.kind === "image" && (attachment.source === "browser" || attachment.source === "computer") && !latestImageIndexes.has(attachment.source)) {
+        latestImageIndexes.set(attachment.source, index);
+      }
     }
   }
-  if (latestBrowserImageIndex < 0) return [...messages];
+  if (latestImageIndexes.size === 0) return [...messages];
   return messages.map((message, messageIndex) => {
-    if (messageIndex >= latestBrowserImageIndex) return message;
-    if (!message.attachments.some(
-      (attachment) => attachment.kind === "image" && attachment.source === "browser",
-    )) return message;
     return {
       ...message,
       attachments: message.attachments.map((attachment) => {
-        if (attachment.kind !== "image" || attachment.source !== "browser") return attachment;
+        if (attachment.kind !== "image" || messageIndex >= (latestImageIndexes.get(attachment.source) ?? -1)) return attachment;
         return {
-          content: `[Earlier browser screenshot superseded by a newer capture]\n${modelImageAttachmentCaption(attachment)}`,
+          content: `[Earlier ${attachment.source} screenshot superseded by a newer capture]\n${modelImageAttachmentCaption(attachment)}`,
           contextTokens: attachment.contextTokens,
           id: attachment.id,
           kind: "text" as const,
@@ -479,7 +474,7 @@ function toLangChainMessages(
   messages: readonly ModelMessage[],
   input: CompleteTurnInput,
 ): BaseMessage[] {
-  const boundedMessages = withoutSupersededBrowserScreenshots(messages);
+  const boundedMessages = withoutSupersededToolScreenshots(messages);
   const orderedMessages = input.configuration.apiFormat === "openai-chat-completions"
     || input.configuration.apiFormat === "openai-responses"
     ? orderToolResultsBeforeInterleavedMessages(boundedMessages)
@@ -926,7 +921,7 @@ function withoutHistoricalImageData(messages: ModelMessage[]): ModelMessage[] | 
   }
   if (latestUserIndex < 0) return null;
   if (messages[latestUserIndex]?.attachments.some(
-    (attachment) => attachment.kind === "image" && attachment.source !== "browser",
+    (attachment) => attachment.kind === "image" && attachment.source !== "browser" && attachment.source !== "computer",
   )) {
     return null;
   }
@@ -935,17 +930,18 @@ function withoutHistoricalImageData(messages: ModelMessage[]): ModelMessage[] | 
   const result = messages.map((message, messageIndex) => {
     if (!message.attachments.some((attachment) => (
       attachment.kind === "image"
-      && (messageIndex < latestUserIndex || attachment.source === "browser")
+      && (messageIndex < latestUserIndex || attachment.source === "browser" || attachment.source === "computer")
     ))) return message;
     changed = true;
     const attachments = message.attachments.map((attachment) => {
       if (
         attachment.kind !== "image"
-        || (messageIndex >= latestUserIndex && attachment.source !== "browser")
+        || (messageIndex >= latestUserIndex && attachment.source !== "browser" && attachment.source !== "computer")
       ) return attachment;
       return {
         content: `${attachment.source === "browser"
           ? "[当前模型不支持视觉输入，浏览器截图字节已省略]"
+          : attachment.source === "computer" ? "[当前模型不支持视觉输入，窗口截图字节已省略；请使用 observe 读取控件]"
           : "[历史图片未发送给当前模型]"}\n${modelImageAttachmentCaption(attachment)}`,
         contextTokens: attachment.contextTokens,
         id: attachment.id,

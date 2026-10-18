@@ -3,6 +3,9 @@ import { ScheduledTaskController } from "../schedules/scheduled-task-controller.
 import { ScheduledTaskStore } from "../schedules/scheduled-task-store.js";
 import { AgentScheduledTaskRunner } from "../schedules/agent-scheduled-task-runner.js";
 import { app, BrowserWindow, nativeTheme } from "electron";
+import { ComputerUseConfigurationStore } from "../settings/computer-use-configuration-store.js";
+import { WindowsComputerController } from "../computer-use/windows-computer-controller.js";
+import { ComputerUseTool } from "../computer-use/computer-use-tool.js";
 import { BrowserPasswordStore } from "../settings/browser-password-store.js";
 import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
@@ -77,6 +80,8 @@ type DesktopServices = {
   applicationStorageLocation: ApplicationStorageLocationStore;
   applicationSettings: ApplicationSettingsStore;
   browserConfiguration: BrowserConfigurationStore;
+  computerUseConfiguration: ComputerUseConfigurationStore;
+  computerUse: WindowsComputerController;
   attachments: ConversationAttachmentStore;
   conversationDeletion: ConversationDeletionService;
   conversationLifecycle: ConversationLifecycleService;
@@ -139,6 +144,7 @@ async function shutdownDesktop(): Promise<void> {
   }
   services?.graphCheckpointer.close();
   services?.htmlPreviews.dispose();
+  services?.computerUse.stop();
   services?.database.close();
   services = undefined;
 }
@@ -408,6 +414,8 @@ async function initializeServices(): Promise<DesktopServices> {
     new BrowserPasswordStore(path.join(agentHome.paths.rootPath, "browser-passwords.json")),
   );
   const browserToolPlugin = new BrowserToolPlugin(managedBrowser, workspaceBrowserTabs);
+  const computerUseConfiguration = new ComputerUseConfigurationStore(settings);
+  const computerUse = new WindowsComputerController(computerUseConfiguration);
   await attachments.resumeCancelledPendingMessageAttachmentCleanup();
   eventProjector.releaseInactiveConversationHistories();
 
@@ -437,6 +445,7 @@ async function initializeServices(): Promise<DesktopServices> {
     browserToolPlugin,
     { generateTurnSummaries: true },
     conversationLifecycle,
+    new ComputerUseTool(computerUse, computerUseConfiguration),
   );
   const teamWorkItems = new TeamWorkItemRuntime(
     database,
@@ -463,6 +472,8 @@ async function initializeServices(): Promise<DesktopServices> {
     applicationStorageLocation,
     applicationSettings,
     browserConfiguration,
+    computerUseConfiguration,
+    computerUse,
     attachments,
     conversationDeletion,
     conversationLifecycle,

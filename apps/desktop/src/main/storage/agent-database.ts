@@ -136,12 +136,13 @@ export type CancelledPendingMessageAttachmentCleanup = {
 const toolScreenshotPayloadSchema = z.object({ ok: z.literal(true), value: z.object({ image: conversationAttachmentSchema }).passthrough() });
 
 function toolScreenshotImage(item: ConversationTimelineItem): ConversationAttachment | null {
-  if (item.kind !== "tool" || item.name !== "browser_control" || item.result === null) return null;
+  if (item.kind !== "tool" || (item.name !== "browser_control" && item.name !== "computer_use") || item.result === null) return null;
   try {
     const result = toolScreenshotPayloadSchema.safeParse(JSON.parse(item.result));
     if (!result.success) return null;
     const image = result.data.value.image;
-    return image.source === "browser" && image.conversationId === item.conversationId && image.messageId === item.id ? image : null;
+    const source = item.name === "computer_use" ? "computer" : "browser";
+    return image.source === source && image.conversationId === item.conversationId && image.messageId === item.id ? image : null;
   } catch { return null; }
 }
 

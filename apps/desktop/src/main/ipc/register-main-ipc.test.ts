@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserWindow, IpcMainInvokeEvent } from "electron";
-import { DEFAULT_BROWSER_CONFIGURATION, DEFAULT_MODEL_CATALOG, IPC_CHANNELS, type ConversationSummary } from "@agent/protocol";
+import { DEFAULT_BROWSER_CONFIGURATION, DEFAULT_COMPUTER_USE_CONFIGURATION, DEFAULT_MODEL_CATALOG, IPC_CHANNELS, type ConversationSummary } from "@agent/protocol";
 import { WorkspaceBrowserTabController } from "../tools/workspace-browser-tab-controller.js";
 import { registerMainIpcHandlers } from "./register-main-ipc.js";
 
@@ -16,6 +16,26 @@ vi.mock("electron", () => ({
 }));
 
 describe("result viewed IPC notification", () => {
+  it("validates and revokes computer grants through trusted settings IPC, with symmetric disposal", async () => {
+    const save = vi.fn((input: unknown) => input);
+    const controller = { getStatus: vi.fn(() => ({ supported: true, running: false, elevated: false })), start: vi.fn(() => ({ supported: true, running: true, elevated: true })), stop: vi.fn() };
+    Object.assign(dependencies, { computerUseConfiguration: { getConfiguration: () => DEFAULT_COMPUTER_USE_CONFIGURATION, saveConfiguration: save }, computerUse: controller });
+    dispose?.();
+    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send, isDestroyed: () => false } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(window);
+    dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
+    const handler = (channel: string) => electron.handle.mock.calls.filter(([name]) => name === channel).at(-1)![1];
+    expect(await handler(IPC_CHANNELS.computerUseGetConfiguration)(event)).toEqual(DEFAULT_COMPUTER_USE_CONFIGURATION);
+    expect(await handler(IPC_CHANNELS.computerUseSaveConfiguration)(event, { ...DEFAULT_COMPUTER_USE_CONFIGURATION, enabled: true })).toMatchObject({ enabled: true });
+    expect(save).toHaveBeenCalledOnce(); expect(controller.stop).toHaveBeenCalledOnce();
+    await expect(handler(IPC_CHANNELS.computerUseSaveConfiguration)(event, { ...DEFAULT_COMPUTER_USE_CONFIGURATION, shell: "whoami" })).rejects.toThrow();
+    await expect(handler(IPC_CHANNELS.computerUseStart)(event, { administrator: true })).rejects.toThrow();
+    expect(controller.start).not.toHaveBeenCalled();
+    electron.fromWebContents.mockReturnValue(null);
+    await expect(handler(IPC_CHANNELS.computerUseStart)(event)).rejects.toThrow(); expect(controller.start).not.toHaveBeenCalled();
+    dispose?.(); dispose = undefined;
+    for (const channel of [IPC_CHANNELS.computerUseGetConfiguration, IPC_CHANNELS.computerUseSaveConfiguration, IPC_CHANNELS.computerUseChooseApplication, IPC_CHANNELS.computerUseGetStatus, IPC_CHANNELS.computerUseStart, IPC_CHANNELS.computerUseStop]) expect(electron.removeHandler).toHaveBeenCalledWith(channel);
+  });
   let dispose: (() => void) | undefined;
   const send = vi.fn();
   const markViewed = vi.fn();
