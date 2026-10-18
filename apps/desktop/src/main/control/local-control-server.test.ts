@@ -51,6 +51,15 @@ describe("LocalControlServer", () => {
     expect(status).toBe(403);
     expect(execute).not.toHaveBeenCalled();
   });
+  it("protects control startup with authentication, origin and strict input checks", async () => {
+    const command = { command: "computer_control.start", input: {} };
+    expect((await request(command, { Authorization: "Bearer invalid" })).status).toBe(403);
+    expect((await request(command, { Origin: "http://127.0.0.1" })).status).toBe(403);
+    expect((await request({ ...command, input: { administrator: true } })).status).toBe(400);
+    expect(execute).not.toHaveBeenCalled();
+    expect((await request(command)).status).toBe(200);
+    expect(execute).toHaveBeenCalledExactlyOnceWith(command);
+  });
   it("rejects malformed JSON, invalid commands and oversized bodies", async () => {
     const headers = { Authorization: `Bearer ${connection.token}`, "Content-Type": "application/json" };
     expect((await fetch(`${connection.url}/v1/commands`, { method: "POST", headers, body: "{" })).status).toBe(400);

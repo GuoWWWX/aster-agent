@@ -6,6 +6,9 @@ import { postTeamChatInputSchema, readTeamChatInputSchema } from "./team-chat.js
 import { teamInstanceReferenceInputSchema } from "./team-instance.js";
 
 export const localControlCommandSchema = z.discriminatedUnion("command", [
+  z.object({ command: z.literal("computer_control.status"), input: z.object({}).strict() }).strict(),
+  z.object({ command: z.literal("computer_control.start"), input: z.object({}).strict() }).strict(),
+  z.object({ command: z.literal("computer_control.stop"), input: z.object({}).strict() }).strict(),
   z.object({ command: z.literal("projects.list"), input: z.object({}).strict() }).strict(),
   z.object({ command: z.literal("conversations.list"), input: z.object({}).strict() }).strict(),
   z.object({ command: z.literal("models.configure"), input: saveModelConfigurationInputSchema }).strict(),

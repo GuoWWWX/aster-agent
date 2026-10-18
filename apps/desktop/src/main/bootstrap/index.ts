@@ -652,7 +652,7 @@ async function bootstrap(): Promise<void> {
   if (process.env.ASTER_CONTROL_ENABLED === "1") {
     const control = new ConversationControl(services.database, services.conversationLifecycle,
       services.agentRuntime, services.eventProjector, services.applicationSettings,
-      services.teamWorkItems, sendConversationRunEvent, services.credentials);
+      services.teamWorkItems, sendConversationRunEvent, services.credentials, services.computerUse);
     localControl = new LocalControlServer((command) => control.execute(command),
       (error) => reportUnhandledError(error, "local_control.command"));
     const connectionPath = path.join(app.getPath("userData"), "local-control.json");

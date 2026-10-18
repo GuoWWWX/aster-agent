@@ -1,7 +1,7 @@
 import {
   backgroundCommandSchema, backgroundCommandOutputSchema, userQuestionSchema,
   conversationListResponseSchema, conversationMessageSubmissionSchema,
-  conversationSummarySchema, conversationTimelinePageSchema, projectListResponseSchema, modelRuntimeStatusSchema,
+  conversationSummarySchema, conversationTimelinePageSchema, projectListResponseSchema, modelRuntimeStatusSchema, computerUseStatusSchema,
   teamChatMessageSchema, teamChatPageSchema, teamChatMemberSchema,
   type ConversationRunEvent, type LocalControlCommand,
 } from "@agent/protocol";
@@ -13,6 +13,7 @@ import type { ConversationLifecycleService } from "../storage/conversation-lifec
 import type { EventProjector } from "../storage/event-projector.js";
 import type { TeamWorkItemRuntime } from "../teams/team-work-item-runtime.js";
 import type { ModelCredentialStore } from "../model/model-credential-store.js";
+import type { ComputerControlPort } from "../computer-use/windows-computer-controller.js";
 
 /** Local clients use the same lifecycle, permissions and execution core as IPC. */
 export class ConversationControl {
@@ -25,10 +26,20 @@ export class ConversationControl {
     private readonly teams: Pick<TeamWorkItemRuntime, "sendExecutionGuidance">,
     private readonly emit: (event: ConversationRunEvent) => void,
     private readonly models: Pick<ModelCredentialStore, "saveConfiguration" | "resolveSelection" | "getStatus">,
+    private readonly computer: Pick<ComputerControlPort, "getStatus" | "start" | "stop"> | null = null,
   ) {}
 
   public async execute(command: LocalControlCommand): Promise<unknown> {
     switch (command.command) {
+      case "computer_control.status":
+      case "computer_control.start":
+      case "computer_control.stop": {
+        const computer = this.computer;
+        if (computer === null) throw Object.assign(new Error("当前应用没有电脑控制服务。"), { code: "CAPABILITY_UNAVAILABLE" });
+        if (command.command === "computer_control.start") return computerUseStatusSchema.parse(await computer.start());
+        if (command.command === "computer_control.stop") computer.stop();
+        return computerUseStatusSchema.parse(computer.getStatus());
+      }
       case "projects.list": return projectListResponseSchema.parse(this.database.listProjects());
       case "conversations.list": return conversationListResponseSchema.parse(this.database.listConversationHierarchy());
       case "models.configure": return modelRuntimeStatusSchema.parse(this.models.saveConfiguration(command.input));

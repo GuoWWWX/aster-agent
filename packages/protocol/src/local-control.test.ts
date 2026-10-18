@@ -4,6 +4,12 @@ import { localControlCommandSchema } from "./local-control.js";
 const conversationId = "00000000-0000-4000-8000-000000000001";
 
 describe("local control commands", () => {
+  it.each(["computer_control.status", "computer_control.start", "computer_control.stop"])("accepts operator command %s without permission overrides", (command) => {
+    expect(localControlCommandSchema.parse({ command, input: {} })).toEqual({ command, input: {} });
+    expect(localControlCommandSchema.safeParse({ command, input: { administrator: true } }).success).toBe(false);
+    expect(localControlCommandSchema.safeParse({ command, input: { action: "click", windowId: "123" } }).success).toBe(false);
+  });
+
   it("accepts creation, bounded history and Queue/Steer using existing contracts", () => {
     expect(localControlCommandSchema.parse({ command: "conversations.create", input: {} }))
       .toEqual({ command: "conversations.create", input: {} });

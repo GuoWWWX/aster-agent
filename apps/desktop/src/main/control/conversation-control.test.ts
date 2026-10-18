@@ -28,6 +28,11 @@ describe("ConversationControl", () => {
   const settings = { getConfiguration: () => DEFAULT_APPLICATION_SETTINGS };
   const teams = { sendExecutionGuidance: vi.fn(sendMessage) };
   const models = { resolveSelection: vi.fn((selection: ConversationModelSelection) => selection), saveConfiguration: vi.fn(), getStatus: vi.fn() };
+  const computer = {
+    getStatus: vi.fn(() => ({ supported: true, running: false, elevated: false })),
+    start: vi.fn(() => Promise.resolve({ supported: true, running: true, elevated: true })),
+    stop: vi.fn(),
+  };
   const interactions = { listUserQuestions: vi.fn(() => []), answerUserQuestion: vi.fn(), approveToolChange: vi.fn(), listBackgroundCommands: vi.fn(() => []), readBackgroundCommand: vi.fn(), stopBackgroundCommand: vi.fn() };
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -37,10 +42,26 @@ describe("ConversationControl", () => {
     projector = new EventProjector(database, log);
     lifecycle = new ConversationLifecycleService(database, log, projector);
     control = new ConversationControl(database, lifecycle, { sendMessage, cancelConversation, postTeamChat, pauseTeamChat, ...interactions }, projector, settings, teams, emit,
-      models);
+      models, computer);
   });
   afterEach(async () => { database.close(); await rm(directory, { force: true, recursive: true }); });
   const execute = (command: unknown) => control.execute(localControlCommandSchema.parse(command));
+  it("reuses the settings controller and reports its actual handshake status", async () => {
+    expect(await execute({ command: "computer_control.status", input: {} })).toEqual({ supported: true, running: false, elevated: false });
+    expect(computer.start).not.toHaveBeenCalled();
+    expect(await execute({ command: "computer_control.start", input: {} })).toEqual({ supported: true, running: true, elevated: true });
+    expect(computer.start).toHaveBeenCalledExactlyOnceWith();
+    expect(await execute({ command: "computer_control.stop", input: {} })).toEqual({ supported: true, running: false, elevated: false });
+    expect(computer.stop).toHaveBeenCalledExactlyOnceWith();
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+  });
+  it("preserves startup rejection without retries or changing permissions", async () => {
+    computer.start.mockRejectedValueOnce(Object.assign(new Error("UAC was declined"), { code: "PERMISSION_DENIED" }));
+    await expect(execute({ command: "computer_control.start", input: {} })).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    expect(computer.start).toHaveBeenCalledOnce();
+    expect(computer.stop).not.toHaveBeenCalled();
+  });
   it("routes group posts through Runtime and reads the same durable room and member facts", async () => {
     database.syncTeamDirectory(DEFAULT_APPLICATION_SETTINGS.agentDirectory);
     const instance = database.createTeamInstance({ teamId: "default-team", scope: "global" });

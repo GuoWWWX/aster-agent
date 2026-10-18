@@ -16,6 +16,28 @@ async function fixture(run) {
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
 
+test("CLI dispatches explicit computer operator commands once through authenticated local control", async () => fixture(async (connection) => {
+  for (const action of ["status", "start", "stop"]) {
+    const calls = [];
+    const output = [];
+    const fetchControl = async (url, options) => {
+      calls.push({ url, options });
+      return new Response(JSON.stringify({ supported: true, running: action === "start", elevated: false }));
+    };
+    assert.equal(await runControl(["--connection", connection, `computer-${action}`], { fetchControl, out: (value) => output.push(value) }), 0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.headers.Authorization, `Bearer ${"a".repeat(64)}`);
+    assert.deepEqual(JSON.parse(calls[0].options.body), { command: `computer_control.${action}`, input: {} });
+    assert.equal(output[0].running, action === "start");
+  }
+  let attempts = 0;
+  await assert.rejects(runControl(["--connection", connection, "computer-start"], { fetchControl: async () => {
+    attempts++;
+    return new Response('{"error":{"code":"PERMISSION_DENIED","message":"UAC was declined"}}', { status: 500 });
+  } }), /PERMISSION_DENIED/);
+  assert.equal(attempts, 1);
+}));
+
 test("CLI waits with a subscription established before send and matches only the accepted Run", async () => fixture(async (connection) => {
   const calls = [];
   const output = [];
