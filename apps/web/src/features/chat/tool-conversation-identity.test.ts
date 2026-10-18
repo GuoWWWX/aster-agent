@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { conversationTypeLabel, toolConversationTarget } from "./tool-conversation-identity.js";
+import { conversationTypeLabel, toolConversationTargets } from "./tool-conversation-identity.js";
 
 describe("collaboration tool targets", () => {
   const base = { arguments: "{}", conversationId: "current", result: null };
@@ -8,27 +8,36 @@ describe("collaboration tool targets", () => {
   } } });
 
   it("uses the recipient for send and the sender for receive", () => {
-    expect(toolConversationTarget({ ...base, name: "send_agent_message", result })).toEqual({ id: "recipient" });
-    expect(toolConversationTarget({ ...base, name: "wait_for_agent_message", result })).toEqual({ id: "sender", title: "审查助手" });
+    expect(toolConversationTargets({ ...base, name: "send_agent_message", result })).toEqual([{ id: "recipient" }]);
+    expect(toolConversationTargets({ ...base, name: "wait_for_agent_message", result })).toEqual([{ id: "sender", title: "审查助手" }]);
+  });
+
+  it("retains every recipient before and after a batch result without duplicating identities", () => {
+    const argumentsValue = JSON.stringify({ conversationIds: ["alpha", "beta", "alpha"] });
+    const batch = JSON.stringify({ ok: true, value: { messages: [{ conversationId: "alpha" }, { conversationId: "beta" }] } });
+    for (const payload of [null, '{"ok":false}', batch]) {
+      expect(toolConversationTargets({ ...base, name: "send_agent_message", arguments: argumentsValue, result: payload }))
+        .toEqual([{ id: "alpha" }, { id: "beta" }]);
+    }
   });
 
   it.each(["send_agent_message", "read_agent_conversation", "wait_for_agent_message"])(
     "resolves %s before a result exists or after a failure", (name) => {
-      expect(toolConversationTarget({ ...base, name, arguments: '{"conversationId":"child"}', result: '{"ok":false}' })).toEqual({ id: "child" });
+      expect(toolConversationTargets({ ...base, name, arguments: '{"conversationId":"child"}', result: '{"ok":false}' })).toEqual([{ id: "child" }]);
     },
   );
 
   it("reads the current conversation only when the read target is omitted", () => {
-    expect(toolConversationTarget({ ...base, name: "read_agent_conversation" })).toEqual({ id: "current" });
-    expect(toolConversationTarget({ ...base, name: "wait_for_agent_message" })).toBeNull();
-    expect(toolConversationTarget({ ...base, name: "send_agent_message", arguments: "invalid" })).toBeNull();
-    expect(toolConversationTarget({ ...base, name: "read_file" })).toBeNull();
+    expect(toolConversationTargets({ ...base, name: "read_agent_conversation" })).toEqual([{ id: "current" }]);
+    expect(toolConversationTargets({ ...base, name: "wait_for_agent_message" })).toEqual([]);
+    expect(toolConversationTargets({ ...base, name: "send_agent_message", arguments: "invalid" })).toEqual([]);
+    expect(toolConversationTargets({ ...base, name: "read_file" })).toEqual([]);
   });
 
   it("retains the filtered target on timeout without inventing an unfiltered sender", () => {
     const timeout = JSON.stringify({ ok: true, value: { message: null, status: "timeout" } });
-    expect(toolConversationTarget({ ...base, name: "wait_for_agent_message", result: timeout })).toBeNull();
-    expect(toolConversationTarget({ ...base, name: "wait_for_agent_message", arguments: '{"conversationId":"child"}', result: timeout })).toEqual({ id: "child" });
+    expect(toolConversationTargets({ ...base, name: "wait_for_agent_message", result: timeout })).toEqual([]);
+    expect(toolConversationTargets({ ...base, name: "wait_for_agent_message", arguments: '{"conversationId":"child"}', result: timeout })).toEqual([{ id: "child" }]);
   });
 });
 

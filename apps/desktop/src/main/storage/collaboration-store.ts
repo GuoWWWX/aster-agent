@@ -15,6 +15,9 @@ import {
   type TaskContextScope, type TaskCompletionPolicy, type SetTaskCompletionPolicyInput, type ResolveChatReferencesInput, type ChatReference,
 } from "@agent/protocol";
 
+const DISCUSSION_AUTO_DEPTH_LIMIT = 4;
+const TASK_AUTO_DEPTH_LIMIT = 12;
+
 /** Recognize a direct opening address, not an arbitrary mention of a member. */
 function addressedUserRecipients(content: string, members: readonly TeamChatMember[]): string[] {
   const names = [...members].sort((left, right) => right.name.length - left.name.length);
@@ -529,8 +532,8 @@ export class CollaborationStore {
         supersedesId: input.supersedesId,
       });
       message.deliveries = recipients.map(conversationId => ({ id: randomUUID(), conversationId, runId: null,
-        status: message.depth > (message.taskContextId === null ? 4 : 12) ? "failed" : "pending",
-        error: message.depth > (message.taskContextId === null ? 4 : 12) ? "讨论已暂停：达到自动协作深度上限。" : null }));
+        status: message.depth > (message.taskContextId === null ? DISCUSSION_AUTO_DEPTH_LIMIT : TASK_AUTO_DEPTH_LIMIT) ? "failed" : "pending",
+        error: message.depth > (message.taskContextId === null ? DISCUSSION_AUTO_DEPTH_LIMIT : TASK_AUTO_DEPTH_LIMIT) ? "讨论已暂停：达到自动协作深度上限。" : null }));
       this.journal.appendMessage(message, { id: input.requestId, fingerprint });
       return this.write(() => {
       this.projectMessage(message);
@@ -692,6 +695,16 @@ export class CollaborationStore {
   }
   public runMessages(runId: string): TeamChatMessage[] {
     return this.db.prepare("SELECT message_id FROM team_chat_run_sources WHERE run_id = ? UNION SELECT message_id FROM team_chat_deliveries WHERE run_id = ?").all(runId, runId).map(row => this.message(String(row.message_id)));
+  }
+  public autoMessageDepthLimit(conversationId: string, sourceRunIds: readonly string[]): number {
+    const team = this.context.teamForConversation(conversationId);
+    if (team === null) return DISCUSSION_AUTO_DEPTH_LIMIT;
+    for (const runId of new Set(sourceRunIds)) {
+      const sources = this.runMessages(runId).filter(message => message.teamInstanceId === team.id);
+      if (sources.some(message => message.taskContextId !== null)
+        || (sources.length > 0 && this.runTasks(runId).some(task => task.teamInstanceId === team.id))) return TASK_AUTO_DEPTH_LIMIT;
+    }
+    return DISCUSSION_AUTO_DEPTH_LIMIT;
   }
   public assignedRunMessages(runId: string): TeamChatMessage[] {
     return this.db.prepare("SELECT message_id FROM team_chat_deliveries WHERE run_id = ? ORDER BY rowid").all(runId).map(row => this.message(String(row.message_id)));

@@ -57,12 +57,16 @@ const readConversationArgumentsSchema = z.object({
 }).strict();
 const sendMessageArgumentsSchema = z.object({
   content: z.string().trim().min(1).max(20_000).describe("Message body to send to the target Agent."),
-  conversationId: z.string().uuid().describe("Target Agent conversation UUID."),
+  conversationIds: z.array(z.string().uuid()).min(1).max(32)
+    .describe("Target Agent conversation UUIDs. Use a one-element array for one recipient; duplicates are delivered once. All targets must be valid before anything is sent."),
   expectReply: z.boolean().default(true)
     .describe("Use true only for an assignment or question requiring a response. Use false for completion results, progress and notifications; true would create another return receipt."),
   replyInstruction: z.string().trim().min(1).max(1_000).optional()
     .describe("Optional guidance for the concise completion receipt, such as required conclusions, evidence, or risks. Full details remain in the target conversation."),
 }).strict();
+// Stored tool calls from existing checkpoints still use the former single-recipient field.
+const legacySendMessageArgumentsSchema = sendMessageArgumentsSchema.omit({ conversationIds: true })
+  .extend({ conversationId: z.string().uuid() }).strict();
 const setTeamCollaborationPlanArgumentsSchema = z.object({
   reason: z.string().trim().min(1).max(2_000)
     .describe("Why this complete plan is appropriate, or what changed since the previous revision."),
@@ -121,7 +125,7 @@ export class AgentCommunicationTool {
         parameters: modelToolParameters(readConversationArgumentsSchema),
       },
       {
-        description: "Send a persistent message to another Agent conversation or to a reusable completed Subagent. A running recipient receives it before the next model turn; an idle recipient starts automatically. An explicitly ended Subagent is read-only. With expectReply=true, the recipient returns only a bounded completion receipt and keeps its full answer in its own conversation; use replyInstruction to request receipt focus. Use expectReply=false for completion results, progress updates and notifications that ask for no further work. Do not send routine receipt acknowledgements or request another receipt for a completion result; use the incoming request's automatic receipt instead when applicable.",
+        description: "Send the same persistent message to 1–32 conversationIds, using one array element for a single recipient. Use one call for several recipients sharing this message, separate calls for different assignments. Each recipient runs independently; this returns dispatch facts without waiting for their answers. All targets are validated and persisted before any is notified. A running recipient receives it before the next model turn; an idle recipient starts automatically. An ended Subagent is read-only. With expectReply=true each recipient returns a bounded completion receipt; replyInstruction specifies its focus. Use expectReply=false for completion results, progress and notifications that ask for no further work. Do not send routine receipt acknowledgements; use an incoming request's automatic receipt instead when applicable.",
         name: SEND_AGENT_MESSAGE_TOOL_NAME,
         parameters: modelToolParameters(sendMessageArgumentsSchema),
       },
@@ -131,7 +135,7 @@ export class AgentCommunicationTool {
         parameters: modelToolParameters(setTeamCollaborationPlanArgumentsSchema),
       },
       {
-        description: "Wait for the next Agent message, optionally from one conversation. The returned message includes senderConversationId and senderTitle; reply by passing senderConversationId as send_agent_message.conversationId. Use this after asking a conflicting Agent to notify you. The wait is cancellable and bounded by timeoutMs.",
+        description: "Wait for the next Agent message, optionally from one conversation. The returned message includes senderConversationId and senderTitle; reply when needed by including senderConversationId in send_agent_message.conversationIds. Use this after asking a conflicting Agent to notify you. The wait is cancellable and bounded by timeoutMs.",
         name: WAIT_FOR_AGENT_MESSAGE_TOOL_NAME,
         parameters: modelToolParameters(waitForMessageArgumentsSchema),
       },
@@ -258,26 +262,33 @@ export class AgentCommunicationTool {
           });
         }
         case SEND_AGENT_MESSAGE_TOOL_NAME: {
-          const parsed = sendMessageArgumentsSchema.parse(argumentsValue);
+          const legacy = legacySendMessageArgumentsSchema.safeParse(argumentsValue);
+          const parsed = legacy.success
+            ? { ...legacy.data, conversationIds: [legacy.data.conversationId] }
+            : sendMessageArgumentsSchema.parse(argumentsValue);
+          const targets = [...new Set(parsed.conversationIds)];
           const teamExecutionConversationId = this.database
             .getTeamExecutionConversationIdForParticipant(input.conversationId);
           if (
             teamExecutionConversationId !== null
-            && !this.database.areTeamExecutionParticipants(input.conversationId, parsed.conversationId)
+            && targets.some(id => !this.database.areTeamExecutionParticipants(input.conversationId, id))
           ) {
             throw new Error("A Team participant may send messages only to members of the same persistent Team.");
           }
-          const message = this.database.sendAgentMessage({
+          input.signal.throwIfAborted();
+          const messages = this.database.sendAgentMessages(targets.map(targetConversationId => ({
             content: parsed.content,
             messageType: parsed.expectReply ? "message" : "notification",
             replyInstruction: parsed.expectReply ? parsed.replyInstruction ?? null : null,
             runId: input.runId,
             senderConversationId: input.conversationId,
-            targetConversationId: parsed.conversationId,
-          });
-          this.notifyMessage(message);
-          input.onMessageSent?.(message);
-          return success({ message });
+            targetConversationId,
+          })));
+          for (const message of messages) {
+            this.notifyMessage(message);
+            input.onMessageSent?.(message);
+          }
+          return success(legacy.success ? { message: messages[0] } : { messages });
         }
         case SET_TEAM_COLLABORATION_PLAN_TOOL_NAME: {
           const parsed = setTeamCollaborationPlanArgumentsSchema.parse(argumentsValue);

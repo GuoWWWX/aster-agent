@@ -7,6 +7,7 @@ import { z } from "zod";
 import { DEFAULT_AGENT_DIRECTORY_CONFIGURATION, type ConversationRunEvent, type TeamChatMessage } from "@agent/protocol";
 import { CollaborationTool } from "./collaboration-tool.js";
 import { AgentRuntime } from "./agent-runtime.js";
+import { AgentCommunicationTool } from "./agent-communication-tool.js";
 import { AgentDatabase } from "../storage/agent-database.js";
 import { ThreadLogTimeline } from "../storage/thread-log-timeline.js";
 import { ConversationLifecycleService } from "../storage/conversation-lifecycle-service.js";
@@ -97,6 +98,126 @@ async function fixture(withThreadLog = false, withCoordinator = false, graphChec
   return { db, lead, member, instance, runtime, model, tools, log };
 }
 describe("group execution integration", () => {
+  it("returns a seven-hop private task exchange to the lead without public relay messages", async () => {
+    const { db, instance, lead, member, runtime, model, tools } = await fixture();
+    let reachedEnd = false;
+    vi.spyOn(model, "completeTurn").mockImplementation(input => {
+      const privateInput = input.messages.findLast(message => message.role === "user" && message.content.includes("PRIVATE-HOP:"));
+      const step = privateInput === undefined ? 0 : Number(/PRIVATE-HOP:(\d+)/.exec(privateInput.content)?.[1]);
+      if (step === 7) { reachedEnd = true; return Promise.resolve({ content: "负责人已收到完整结果。", finishReason: "stop", toolCalls: [] }); }
+      const id = `hop-${step}`;
+      if (input.messages.some(message => message.toolCallId === id)) return Promise.resolve({ content: "交接已发送。", finishReason: "stop", toolCalls: [] });
+      return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [{ id, name: "send_agent_message",
+        arguments: JSON.stringify({ conversationIds: [step % 2 === 0 ? lead.id : member.id], content: `PRIVATE-HOP:${step + 1}`, expectReply: false }) }] });
+    });
+    try {
+      const task = db.collaboration.updateTask({ conversationId: lead.id, title: "多轮交接", goal: "七次私下交接后交负责人", status: "running", requestId: randomUUID() });
+      runtime.postTeamChat({ teamInstanceId: instance.id, content: "按当前分工交接", recipientConversationIds: [member.id],
+        taskContextId: task.id, requestId: randomUUID() }, () => undefined);
+      // Each private notification uses the existing 200 ms coalescing window.
+      await vi.waitFor(() => expect(reachedEnd).toBe(true), { timeout: 5000 });
+      expect(db.collaboration.readMessages({ teamInstanceId: instance.id }).messages).toHaveLength(1);
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
+
+  it.each([{ task: false, depth: 4, wakes: false }, { task: true, depth: 4, wakes: true }, { task: true, depth: 12, wakes: false }])(
+    "shares the bounded group task budget with private handoffs ($task / $depth)",
+    async ({ task, depth, wakes }) => {
+      const { db, instance, lead, member, runtime, model, tools } = await fixture();
+      let privateTurns = 0;
+      vi.spyOn(model, "completeTurn").mockImplementation(input => {
+        if (input.messages.some(message => message.role === "user" && message.content.includes("BUDGET-PRIVATE"))) {
+          privateTurns++;
+          return Promise.resolve({ content: "已核对私下反馈。", finishReason: "stop", toolCalls: [] });
+        }
+        return Promise.resolve(input.messages.some(message => message.toolCallId === "budget-send")
+          ? { content: "已完成本轮交接。", finishReason: "stop", toolCalls: [] }
+          : { content: "", finishReason: "tool_calls", toolCalls: [{ id: "budget-send", name: "send_agent_message",
+            arguments: JSON.stringify({ conversationIds: [lead.id], content: "BUDGET-PRIVATE 已完成当前分工", expectReply: false }) }] });
+      });
+      try {
+        const goal = task ? db.collaboration.updateTask({ conversationId: lead.id, title: "交接验收", goal: "保持有界任务协作", status: "running", requestId: randomUUID() }) : null;
+        let source = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "当前任务", intent: "notify",
+          requestId: randomUUID(), ...(goal === null ? {} : { taskContextId: goal.id }) }, null);
+        for (let i = 1; i < depth; i++) source = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "阶段交接",
+          intent: "notify", replyToId: source.id, requestId: randomUUID() }, lead.id);
+        const delivery = runtime.postTeamChat({ teamInstanceId: instance.id, content: "完成本轮分工",
+          recipientConversationIds: [member.id], replyToId: source.id, requestId: randomUUID() }, () => undefined, lead.id);
+        await vi.waitFor(() => expect(db.collaboration.message(delivery.id).deliveries[0]?.status).toBe("completed"));
+        if (wakes) await vi.waitFor(() => expect(privateTurns).toBeGreaterThan(0));
+        else { await new Promise(resolve => setTimeout(resolve, 300)); expect(privateTurns).toBe(0); }
+      } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+    },
+  );
+
+  it("runs a private recipient array concurrently while retaining the original group scope", async () => {
+    const { db, instance, lead, member, runtime, model, tools } = await fixture(true, true);
+    const reviewer = db.createConversation(lead.projectId, { teamId: instance.teamId, parentConversationId: lead.id, threadKind: "agent",
+      agent: { id: "qa-engineer", name: "测试", role: "测试", instructions: "", isDefault: false } });
+    db.bindTeamMemberConversation({ conversationId: reviewer.id, agentId: "qa-engineer", teamExecutionConversationId: lead.id });
+    const events: ConversationRunEvent[] = [];
+    let entered = 0; let release!: () => void;
+    const together = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(model, "completeTurn").mockImplementation(async input => {
+      expect(input.tools.map(tool => tool.name)).not.toContain("set_team_collaboration_plan");
+      const privateRequest = input.messages.some(message => message.role === "user" && message.content.includes("BATCH-PRIVATE"));
+      if (privateRequest) {
+        expect(input.messages[0]?.content).toContain("An @ does not require an acknowledgement");
+        expect(input.messages.at(-1)?.content).toContain("本轮团队私下协作");
+        expect(input.messages.at(-1)?.content).not.toContain('"content":"只测试并行交接"');
+        if (++entered === 2) release();
+        await together;
+        return { content: "各自核对完成", finishReason: "stop", toolCalls: [] };
+      }
+      if (input.messages.some(message => message.toolCallId === "private-batch")) return { content: "分派已完成，按回执继续核对。", finishReason: "stop", toolCalls: [] };
+      return { content: "", finishReason: "tool_calls", toolCalls: [{ id: "private-batch", name: "send_agent_message",
+        arguments: JSON.stringify({ conversationIds: [member.id, reviewer.id], content: "BATCH-PRIVATE 各自核对一项接口约束", expectReply: true }) }] };
+    });
+    try {
+      const original = runtime.postTeamChat({ teamInstanceId: instance.id, recipientConversationIds: [lead.id], content: "只测试并行交接", requestId: randomUUID() }, event => { events.push(event); });
+      await vi.waitFor(() => { expect(entered).toBe(2); expect([lead.id, member.id, reviewer.id].every(id => db.getConversation(id).activeRunId === null)).toBe(true); });
+      const firstFinished = events.findIndex(event => event.type === "run.finished" && event.conversationId !== lead.id);
+      for (const id of [member.id, reviewer.id]) {
+        const started = events.filter(event => event.type === "run.started").find(event => event.conversationId === id)!;
+        expect(events.indexOf(started)).toBeLessThan(firstFinished);
+        expect(db.collaboration.runMessages(started.runId).map(message => message.id)).toContain(original.id);
+      }
+      expect(db.collaboration.readMessages({ teamInstanceId: instance.id }).messages).toHaveLength(1);
+    } finally { release(); await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
+
+  it("rejects a mixed-team recipient array before delivering to any member", async () => {
+    const { db, lead, member, runtime, tools } = await fixture(true);
+    const outsider = db.createConversation(null);
+    try {
+      const result = await new AgentCommunicationTool(db).execute({ arguments: JSON.stringify({
+        conversationIds: [member.id, outsider.id], content: "同一团队内协作", expectReply: false,
+      }), conversationId: lead.id, runId: randomUUID(), signal: new AbortController().signal, toolName: "send_agent_message" });
+      expect(result.isError).toBe(true);
+      expect(db.listUnreadAgentMessages(member.id)).toEqual([]);
+      expect(db.listUnreadAgentMessages(outsider.id)).toEqual([]);
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
+
+  it("allows an addressed informational group message to finish without a public acknowledgement", async () => {
+    const { db, member, instance, runtime, model, tools } = await fixture(true);
+    vi.spyOn(model, "completeTurn").mockImplementation(input => {
+      expect(input.messages[0]?.content).toContain("not a requirement to publish an acknowledgement");
+      expect(input.messages[0]?.content).toContain("milestones, blockers");
+      expect(input.messages[0]?.content).toContain("rather than an empty model response");
+      expect(input.tools.map(tool => tool.name)).not.toContain("set_team_collaboration_plan");
+      expect(input.messages[0]?.content).not.toContain("简单确认直接自然回应");
+      expect(input.messages.at(-1)?.content).toContain("纯信息同步且没有待回答问题或新动作时直接结束");
+      return Promise.resolve({ content: "无需新动作，结束本轮。", finishReason: "stop", toolCalls: [] });
+    });
+    try {
+      const message = runtime.postTeamChat({ teamInstanceId: instance.id, recipientConversationIds: [member.id], content: "仅供知悉，已经完整交付，没有新问题或工作。", requestId: randomUUID() }, () => undefined);
+      await vi.waitFor(() => expect(db.collaboration.message(message.id).deliveries[0]?.status).toBe("completed"));
+      expect(db.collaboration.readMessages({ teamInstanceId: instance.id }).messages).toHaveLength(1);
+      expect(db.collaboration.listTasks({ teamInstanceId: instance.id }).items).toEqual([]);
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
+
   it.each(["final", "progress", "retry"])("finishes a successful public reply without repeating it (%s)", async mode => {
     const { db, instance, member, runtime, model, tools } = await fixture(true, true);
     let calls = 0; let original!: TeamChatMessage;
@@ -303,8 +424,8 @@ describe("group execution integration", () => {
         return { content: "已收取公开回复回执", finishReason: "stop", toolCalls: [] };
       }
       if (db.collaboration.message(context.messageId).content === "负责人，请公开邀请两位讨论后汇总") {
-        expect(input.messages[0]?.content).toContain("Delegate through post_team_message");
-        expect(input.messages[0]?.content).toContain("the runtime resumes you when member completion receipts arrive");
+        expect(input.messages[0]?.content).toContain("Publicly state ownership");
+        expect(input.messages[0]?.content).toContain("the runtime resumes you on completion receipts");
         expect(input.messages[0]?.content).toContain("完成当前请求后结束本轮");
         if (page.messages.some(message => message.intent === "request" && message.senderConversationId === lead.id)) return { content: "已公开邀请", finishReason: "stop", toolCalls: [] };
         return { content: "", finishReason: "tool_calls", toolCalls: [{ id: "invitation", name: "post_team_message",
@@ -515,7 +636,7 @@ describe("group execution integration", () => {
     const events: ConversationRunEvent[] = [];
     vi.spyOn(model, "completeTurn").mockImplementation((input): Promise<ModelTurnResult> => {
       expect(input.messages[0]?.content).toContain("完成当前请求后结束本轮");
-      expect(input.messages.at(-1)?.content).toContain("本轮明确投递的群聊请求");
+      expect(input.messages.at(-1)?.content).toContain("本轮明确投递的群聊消息");
       expect(input.messages.at(-1)?.content).toContain("开发你好");
       return Promise.resolve(input.messages.some(message => message.role === "tool" && message.toolCallId === "greeting")
         ? { content: "好。", finishReason: "stop", toolCalls: [] }

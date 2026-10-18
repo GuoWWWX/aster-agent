@@ -64,7 +64,6 @@ describe("model tool definitions", () => {
 
     const uuidParameters: Array<[string, string]> = [
       ["read_agent_conversation", "conversationId"],
-      ["send_agent_message", "conversationId"],
       ["wait_for_agent_message", "conversationId"],
       ["wait_for_project_operation", "operationId"],
       ["stop_command", "commandId"],
@@ -78,6 +77,11 @@ describe("model tool definitions", () => {
     }
 
     expect(definitions.some((tool) => tool.name === "wait_for_commands")).toBe(false);
+    expect(property(definitions, "send_agent_message", "conversationIds")).toMatchObject({
+      items: { format: "uuid", type: "string" },
+      minItems: 1,
+      maxItems: 32,
+    });
     expect(property(definitions, "wait_for_subagents", "taskIds")).toMatchObject({
       items: { format: "uuid", type: "string" },
     });

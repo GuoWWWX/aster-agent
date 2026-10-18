@@ -3021,7 +3021,6 @@ describe("AgentRuntime", () => {
       "request_user_input",
       "run_command",
       "send_agent_message",
-      "set_team_collaboration_plan",
       "spawn_subagent",
       "stop_command",
       "update_task_context",

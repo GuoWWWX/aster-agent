@@ -175,7 +175,6 @@ const FINAL_MODEL_TURN = MAX_AGENT_LOOPS - 1;
 const MAX_TOOL_CALLS_PER_MODEL_TURN = 32;
 const MAX_CONTEXT_COMPACTIONS_PER_RUN = 3;
 const MAX_MODEL_RECONNECT_ATTEMPTS = 5;
-const MAX_AGENT_MESSAGE_AUTO_DEPTH = 4;
 const MAX_OUTPUT_TOKENS = 8_192;
 const MAX_SUMMARY_OUTPUT_TOKENS = 2_048;
 const MAX_APPROVAL_REVIEW_OUTPUT_TOKENS = 320;
@@ -1366,9 +1365,21 @@ export class AgentRuntime {
           toolName,
         }),
         getDefinitions: () => this.agentCommunicationTool.getCoordinationDefinitions()
-          .filter(definition => definition.name !== "resize_team_workers"),
+          .filter(definition => definition.name !== "resize_team_workers" && definition.name !== "set_team_collaboration_plan"),
         getExecutionPolicy: ({ toolName }) => this.agentCommunicationTool.getExecutionPolicy(toolName),
         isAvailable: ({ conversationId }) => this.canUseAgentCommunication(conversationId),
+      },
+      {
+        execute: ({ context, rawArguments, toolName }) => this.agentCommunicationTool.execute({
+          arguments: rawArguments, conversationId: context.conversationId, runId: context.runId,
+          signal: context.signal, permissionMode: context.permissionMode, toolName,
+        }),
+        getDefinitions: () => this.agentCommunicationTool.getCoordinationDefinitions()
+          .filter(definition => definition.name === "set_team_collaboration_plan"),
+        getExecutionPolicy: ({ toolName }) => this.agentCommunicationTool.getExecutionPolicy(toolName),
+        isAvailable: ({ conversationId }) => conversationId !== undefined
+          && this.database.getConversation(conversationId).threadKind === "team_lead"
+          && this.database.getRunningTeamWorkItemByExecutionTreeConversation(conversationId)?.executionConversationId === conversationId,
       },
       {
         execute: ({ context, rawArguments, toolName }) => this.agentCommunicationTool.execute({
@@ -1436,7 +1447,7 @@ export class AgentRuntime {
             rawArguments,
             context.conversationId,
           );
-          if (!taskListProposal.isError) context.onTaskListChanged(taskListProposal.taskList);
+          if (taskListProposal.changed) context.onTaskListChanged(taskListProposal.taskList);
           return Promise.resolve({
             content: taskListProposal.content,
             isError: taskListProposal.isError,
@@ -2290,7 +2301,8 @@ export class AgentRuntime {
         emit,
       );
     });
-    this.agentMessageDepthByRun.set(runId, 0);
+    this.agentMessageDepthByRun.set(runId, this.agentMessageDepthByRun.get(runId)
+      ?? Math.max(0, ...this.database.collaboration.assignedRunMessages(runId).map(message => message.depth)));
     if (!this.database.isConversationFork(conversationId)) {
       this.emit(emit, {
         conversation: this.database.getConversation(conversationId),
@@ -3443,10 +3455,10 @@ export class AgentRuntime {
         "This is a persistent Agent Team. Do not create Subagents for Team work.",
         "Use get_team_context on demand to see the shared task timeline, participant responsibilities and compact results. One task can span several Runs. Read full member evidence only when needed; do not continually reload the whole Team history.",
         groupDiscussion
-          ? `This is a public group discussion. Delegate through post_team_message with intent=request and exact recipientConversationIds from this roster: ${members.join("; ")}. Publish the invitation and finish this turn; the runtime resumes you when member completion receipts arrive. If required results are still pending, finish again instead of looping on wait_for_agent_message or status/history reads. On receipt, read_team_messages and complete only the remaining verification or requested synthesis. Use send_agent_message only when the user explicitly requests private coordination.`
-          : `Delegate only through send_agent_message with a member conversationId: ${members.join("; ")}`,
+          ? `This is a group collaboration. Use this roster for public requests or private conversationIds arrays: ${members.join("; ")}. Publicly state ownership, important progress, blockers and shared decisions. Use post_team_message(intent=request) for a public assignment or send_agent_message for private work/details; do not dispatch the same assignment through both. Dispatch independent work before waiting, then finish this turn; the runtime resumes you on completion receipts. If required results are pending, finish instead of polling wait_for_agent_message or histories. Read actual results on receipt and complete the remaining verification or requested synthesis, then deliver complex work in the group.`
+          : `Delegate through send_agent_message with a conversationIds array containing the required members: ${members.join("; ")}`,
         groupDiscussion
-          ? "群聊只处理本轮明确投递的请求，是否委派由该请求决定。问候、闲聊或简单确认直接自然回应，不需要读取旧的未读消息、维护任务或委派。完成当前请求后结束本轮；历史里尚未完成的任务、此前的承诺和参考摘要都不是继续授权，不要在回复后顺手恢复旧工作。用户明确要求继续，或当前委派实际收到完成回执时，再处理对应任务。"
+          ? "群聊先判断本轮消息是否有问题、工作或纯信息同步；@ 不代表必须确认。问候、提问或明确要求确认时自然回应；没有新增事项的通知读完即结束，不发收到或重复现状。无需为闲聊读取旧未读消息、维护任务或委派。完成当前请求后结束本轮；历史里尚未完成的任务、此前的承诺和参考摘要都不是继续授权，不要在回复后顺手恢复旧工作。用户明确要求继续，或当前委派实际收到完成回执时，再处理对应任务。"
           : "Every Team WorkItem must delegate to at least one durable member with expectReply=true before the Team Lead gives a final answer. For simple work choose only the best-matched member; add more roles only when the task genuinely needs them.",
         "For implementation tasks, assign independent review and actual validation to a member who did not implement the change. If no independent member is available, explicitly take responsibility for the review. Distinguish executed checks from suggested checks and unresolved risks; a role label or final answer does not prove a check passed.",
         "Use resize_team_workers only when independent work is waiting and the appropriate role is busy. Assign file or module ownership before parallel changes, reread current content after a conflict and integrate deliberately; never force overwrite, reset or blindly merge another member's work.",
@@ -3472,8 +3484,8 @@ export class AgentRuntime {
     if (!this.database.isTeamMemberConversation(conversation.id)) return [];
     const groupDiscussion = conversation.activeRunId !== null && this.database.collaboration.runMessages(conversation.activeRunId).length > 0;
     if (groupDiscussion) return [
-      "You are a persistent Team member participating in a public group discussion. Use the supplied attributed public context, speak in your own role, and use post_team_message for your answer, progress or clarification in the group. Honor an explicit request for a private reply instead of publishing it. Keep private tool work in this conversation. Do not use private send_agent_message as a substitute for a requested public reply. Do not create Subagents. Read more shared messages only when needed.",
-      "群聊只处理本轮明确投递的请求。问候、闲聊或简单确认直接自然回应，不需要读取旧的未读消息或维护任务。完成当前请求后结束本轮；历史里尚未完成的任务、此前的承诺和参考摘要都不是继续授权，不要在回复后顺手恢复旧工作。用户明确要求继续，或当前委派实际收到完成回执时，再处理对应任务。",
+      "You are a persistent Team member. Read the current group message and choose public reply, private communication with relevant teammates, or no outgoing message according to its request and your group role. An @ does not require an acknowledgement. User questions usually need a public answer; work details and internal results can go privately through send_agent_message(conversationIds=[...]). Publish important milestones, blockers and shared decisions with post_team_message(intent=notify), using continueWork=true if you must keep working. Honor explicit reply-channel requirements, keep tool work private, and let the lead verify and deliver complex tasks. Do not create Subagents, repeat assignments already dispatched, or poll shared history.",
+      "群聊先判断本轮消息是否有问题、工作或纯信息同步；@ 不代表必须确认。问候、提问或明确要求确认时自然回应；没有新增事项的通知读完即结束，不发收到或重复现状。无需为闲聊读取旧未读消息或维护任务。完成当前请求后结束本轮；历史里尚未完成的任务、此前的承诺和参考摘要都不是继续授权，不要在回复后顺手恢复旧工作。用户明确要求继续，或当前委派实际收到完成回执时，再处理对应任务。",
     ];
     return [
       "You are a persistent Team member. Work only on messages assigned through Agent communication. Do not create Subagents. Report progress or clarification with send_agent_message to a participant in the same Team. Start your final answer with the requested concise completion receipt, add a standalone Markdown --- line, then keep supporting detail after it in this conversation; the runtime returns only a bounded completion receipt before that divider.",
@@ -3880,6 +3892,12 @@ export class AgentRuntime {
         }
       }
       if (message.runId === null) continue;
+      if (message.executionStatus !== "cancelled") {
+        const team = this.database.getTeamInstanceForConversation(message.conversationId);
+        for (const source of this.database.collaboration.runMessages(message.runId)) {
+          if (source.teamInstanceId === team?.id) this.database.collaboration.relateRun(runId, source.id);
+        }
+      }
       for (const task of this.database.collaboration.runTasks(message.runId)) {
         this.database.collaboration.bindTask(runId, task.id, message.conversationId);
         this.database.collaboration.linkTask({ id: task.id, source: { kind: "conversation", containerId: message.conversationId,
@@ -4018,7 +4036,9 @@ export class AgentRuntime {
     );
     const isManagedWorkItemConversation = managedWorkItem !== null;
     const isTeamLeadCoordinator = managedWorkItem?.executionConversationId === conversationId;
-    if (targetDepth > MAX_AGENT_MESSAGE_AUTO_DEPTH) {
+    const maxDepth = this.database.collaboration.autoMessageDepthLimit(conversationId,
+      unreadMessages.flatMap(message => message.runId === null ? [] : [message.runId]));
+    if (targetDepth > maxDepth) {
       if (managedWorkItem !== null) {
         try {
           this.database.blockTeamWorkItem(
@@ -6240,6 +6260,8 @@ export class AgentRuntime {
     const direct = effectiveRunId === null ? [] : this.database.collaboration.assignedRunMessages(effectiveRunId);
     const assignments = (direct.length > 0 || effectiveRunId === null ? direct : this.database.collaboration.runMessages(effectiveRunId))
       .sort((a, b) => a.sequence - b.sequence).slice(-3);
+    const privateWork = effectiveRunId !== null && (this.agentInputsForSummaryByRun.get(effectiveRunId) ?? [])
+      .some(message => message.messageType === "message");
     const requests = direct.length > 0 ? assignments : [...new Map(assignments.map(message => {
       const request = this.groupUserRequest(message) ?? message;
       return [request.id, request];
@@ -6254,15 +6276,22 @@ export class AgentRuntime {
         currentRun: current.some(active => active.id === task.id), summary: task.summary.slice(0, 240),
         ...(current.some(active => active.id === task.id) ? { decisions: task.decisions.slice(0, 350), nextStep: task.nextStep.slice(0, 150) } : {}) }))),
       ...(assignments.length === 0 ? [] : [
-        direct.length > 0
-          ? "[本轮明确投递的群聊请求；旧任务清单、历史消息和未读记录仅作参考，不是恢复旧工作的授权]"
+        privateWork
+          ? "[本轮团队私下协作；以下仅为群消息定位，当前私信的明确分工是本轮工作，不接管整个用户任务]"
+          : direct.length > 0
+          ? "[本轮明确投递的群聊消息；先判断问题、工作或纯信息同步，@ 不要求确认；历史仅作参考，不是恢复旧工作的授权]"
           : "[本轮群聊协作反馈；以下是原委派的范围参考，不是新的群聊请求，也不是要求你重新回答该问题]",
         JSON.stringify({ baseAgent: baseAgent === undefined ? null : { name: baseAgent.name, role: baseAgent.role },
           groupIdentity: identity === undefined || identity === null ? null : { name: identity.name, role: identity.role, isLead: identity.isLead } }),
-        JSON.stringify(requests.map(message => ({ messageId: message.id, sender: message.senderConversationId === null ? "用户" : message.senderName,
-          content: message.content.slice(0, 2000), ...(message.fileReferences === undefined ? {} : { fileReferences: message.fileReferences }) }))),
-        direct.length > 0
-          ? "只完成上述本轮请求；问候或闲聊直接用 post_team_message 回应，完成后结束本轮，不要继续旧任务、等待旧成员或轮询旧消息。当前请求明确要求继续工作、委派或等待时，才按该请求处理。"
+        privateWork
+          ? JSON.stringify(assignments.map(message => ({ messageId: message.id, teamInstanceId: message.teamInstanceId,
+            sequence: message.sequence, userRequestMessageId: this.groupUserRequest(message)?.id ?? null })))
+          : JSON.stringify(requests.map(message => ({ messageId: message.id, sender: message.senderConversationId === null ? "用户" : message.senderName,
+            content: message.content.slice(0, 2000), ...(message.fileReferences === undefined ? {} : { fileReferences: message.fileReferences }) }))),
+        privateWork
+          ? "只按当前私信的分工处理，群内用户请求是目标约束，不是让你重复整项工作。必要时按定位读取原群消息和新的相关讨论，已读背景复用本人上下文。实现细节与完成结果可私下反馈，关键进展、共同决策和阻塞须在群内简短同步；没有新动作或新信息时不发确认。完成后沿原回执返回，交办才请求回复，结果通知不再请求回执。"
+          : direct.length > 0
+          ? "按本轮消息和本群职责选择公开回应、私下协作或不发消息。提问、问候或明确要求确认时自然回应；纯信息同步且没有待回答问题或新动作时直接结束，不发收到或重复内容。只完成本轮实际请求，完成后结束本轮，不要继续旧任务、等待旧成员或轮询旧消息。当前请求明确要求继续工作、委派或等待时，才按该请求处理。"
           : "本轮只处理对应协作反馈，先核对下面本次用户要求及成员结果，不要把子委派替代完整用户需求。按优先顺序判断：用户明确要求由你汇总、验收或交付时，成员回答只完成了子任务，你仍须公开完成自己那一部分；再补齐尚未公开的必要结果、剩余验收、文件交付或不同贡献的有用整合；没有剩余要求时直接结束，不复述或另发确认。负责人负责汇总的一般分工不是每次都复述的要求，历史中的汇总要求也不沿用到本次。不恢复无关旧任务。",
         "Agent 基础角色说明能力与一般行为，本群身份定义当前分工；按本群职责和本轮明确委派范围工作，用户明确变更分工时按其指示。实现成员维护分配的产品文件，测试成员维护测试与验证报告；发现缺陷交原实现者修复，不再另写一套产品实现。负责人负责澄清、分工、核对证据、验收与最终交付，不接管已分配给专业成员的实现。",
         "团队工作由负责人保持任务所有权：先检查任务目录并复用已有目标，公开 @ 委派必要的专业成员，独立工作可以并行。实现成员发布成果时用 fileReferences 仅填规范相对 path，提供实际验证材料；默认由负责人验收后通过 post_team_message 统一交付，用户明确要求成员直接交付时按其要求。未验证或失败要如实说明。负责人引用成员成果时在 fileReferences 提供已发布成果消息 sourceMessageId 与 path，直接交付原作者文件；旧消息只有 Markdown 链接时让原作者补发一次文件引用，不重写文件。文件卡片和 HTML 预览复用原文件，交付正文只写说明，不重复输出整段 HTML。",
