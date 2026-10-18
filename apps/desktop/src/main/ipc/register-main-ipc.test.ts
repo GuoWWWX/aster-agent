@@ -9,9 +9,10 @@ const electron = vi.hoisted(() => ({
   removeHandler: vi.fn<(channel: string) => void>(), on: vi.fn(), removeListener: vi.fn(),
   fromWebContents: vi.fn(),
   showOpenDialog: vi.fn(() => Promise.resolve({ canceled: false, filePaths: ["D:\\Downloads"] })),
+  getFileIcon: vi.fn(() => Promise.resolve({ isEmpty: () => false, resize: () => ({ toDataURL: () => "data:image/png;base64,aGVsbG8=" }) })),
 }));
 vi.mock("electron", () => ({
-  app: { getPath: () => "C:\\Downloads" }, clipboard: {}, dialog: { showOpenDialog: electron.showOpenDialog }, shell: {}, ipcMain: electron,
+  app: { getPath: () => "C:\\Downloads", getFileIcon: electron.getFileIcon }, clipboard: {}, dialog: { showOpenDialog: electron.showOpenDialog }, shell: {}, ipcMain: electron,
   BrowserWindow: { fromWebContents: electron.fromWebContents },
 }));
 
@@ -26,15 +27,30 @@ describe("result viewed IPC notification", () => {
     dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
     const handler = (channel: string) => electron.handle.mock.calls.filter(([name]) => name === channel).at(-1)![1];
     expect(await handler(IPC_CHANNELS.computerUseGetConfiguration)(event)).toEqual(DEFAULT_COMPUTER_USE_CONFIGURATION);
+    expect(await handler(IPC_CHANNELS.computerUseGetApplicationIcons)(event)).toEqual({});
+    await expect(handler(IPC_CHANNELS.computerUseGetApplicationIcons)(event, { executablePath: "C:\\other.exe" })).rejects.toThrow();
     expect(await handler(IPC_CHANNELS.computerUseSaveConfiguration)(event, { ...DEFAULT_COMPUTER_USE_CONFIGURATION, enabled: true })).toMatchObject({ enabled: true });
     expect(save).toHaveBeenCalledOnce(); expect(controller.stop).toHaveBeenCalledOnce();
+    await handler(IPC_CHANNELS.computerUseSaveConfiguration)(event, { configuration: DEFAULT_COMPUTER_USE_CONFIGURATION, baselineApplications: [] });
+    expect(save).toHaveBeenLastCalledWith(DEFAULT_COMPUTER_USE_CONFIGURATION, []);
     await expect(handler(IPC_CHANNELS.computerUseSaveConfiguration)(event, { ...DEFAULT_COMPUTER_USE_CONFIGURATION, shell: "whoami" })).rejects.toThrow();
     await expect(handler(IPC_CHANNELS.computerUseStart)(event, { administrator: true })).rejects.toThrow();
     expect(controller.start).not.toHaveBeenCalled();
     electron.fromWebContents.mockReturnValue(null);
     await expect(handler(IPC_CHANNELS.computerUseStart)(event)).rejects.toThrow(); expect(controller.start).not.toHaveBeenCalled();
     dispose?.(); dispose = undefined;
-    for (const channel of [IPC_CHANNELS.computerUseGetConfiguration, IPC_CHANNELS.computerUseSaveConfiguration, IPC_CHANNELS.computerUseChooseApplication, IPC_CHANNELS.computerUseGetStatus, IPC_CHANNELS.computerUseStart, IPC_CHANNELS.computerUseStop]) expect(electron.removeHandler).toHaveBeenCalledWith(channel);
+    for (const channel of [IPC_CHANNELS.computerUseGetConfiguration, IPC_CHANNELS.computerUseSaveConfiguration, IPC_CHANNELS.computerUseChooseApplication, IPC_CHANNELS.computerUseGetApplicationIcons, IPC_CHANNELS.computerUseGetStatus, IPC_CHANNELS.computerUseStart, IPC_CHANNELS.computerUseStop]) expect(electron.removeHandler).toHaveBeenCalledWith(channel);
+  });
+  it("loads executable icons only for configured permanent grants and blacklisted software", async () => {
+    const application = { id: "11111111-1111-4111-8111-111111111111", name: "Editor", executablePath: "C:\\Editor.exe", enabled: true };
+    const blocked = { ...application, id: "22222222-2222-4222-8222-222222222222", name: "Blocked", executablePath: "C:\\Blocked.exe" };
+    Object.assign(dependencies, { computerUseConfiguration: { getConfiguration: () => ({ ...DEFAULT_COMPUTER_USE_CONFIGURATION, applications: [application], blockedApplications: [blocked] }) } });
+    dispose?.(); const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send, isDestroyed: () => false } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(window); dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
+    const handler = electron.handle.mock.calls.filter(([name]) => name === IPC_CHANNELS.computerUseGetApplicationIcons).at(-1)![1];
+    expect(await handler(event)).toEqual({ [application.id]: "data:image/png;base64,aGVsbG8=", [blocked.id]: "data:image/png;base64,aGVsbG8=" });
+    expect(electron.getFileIcon).toHaveBeenCalledWith(application.executablePath, { size: "normal" });
+    expect(electron.getFileIcon).toHaveBeenCalledWith(blocked.executablePath, { size: "normal" });
   });
   let dispose: (() => void) | undefined;
   const send = vi.fn();

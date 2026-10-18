@@ -276,8 +276,9 @@ export interface DesktopBridge {
   getIntegrationConfiguration(): Promise<IntegrationConfiguration>;
   getBrowserConfiguration(): Promise<BrowserConfiguration>;
   getComputerUseConfiguration(): Promise<ComputerUseConfiguration>;
-  saveComputerUseConfiguration(input: ComputerUseConfiguration): Promise<ComputerUseConfiguration>;
+  saveComputerUseConfiguration(input: ComputerUseConfiguration, baselineApplications?: ComputerApplication[]): Promise<ComputerUseConfiguration>;
   chooseComputerApplication(): Promise<ComputerApplication | null>;
+  getComputerUseApplicationIcons(): Promise<ComputerApplicationIcons>;
   getComputerUseStatus(): Promise<ComputerUseStatus>;
   startComputerUse(): Promise<ComputerUseStatus>;
   stopComputerUse(): Promise<void>;
@@ -422,4 +423,4 @@ export interface DesktopBridge {
   ): Promise<ConfigurationWorkspaceFile>;
   onWindowStateChanged(listener: (state: WindowState) => void): () => void;
 }
-import type { ComputerApplication, ComputerUseConfiguration, ComputerUseStatus } from "./computer-use.js";
+import type { ComputerApplication, ComputerApplicationIcons, ComputerUseConfiguration, ComputerUseStatus } from "./computer-use.js";

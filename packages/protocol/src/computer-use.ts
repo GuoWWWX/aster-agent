@@ -11,23 +11,48 @@ export const computerUseConfigurationSchema = z.object({
   version: z.literal(1),
   enabled: z.boolean(),
   administrator: z.boolean(),
+  accessMode: z.enum(["ask", "all"]).default("ask"),
   applications: z.array(computerApplicationSchema).max(100),
+  blockedApplications: z.array(computerApplicationSchema).max(100).default([]),
 }).strict().superRefine((value, context) => {
-  const ids = new Set<string>();
-  const paths = new Set<string>();
-  for (const application of value.applications) {
-    const canonical = application.executablePath.toLowerCase();
-    if (ids.has(application.id) || paths.has(canonical)) {
-      context.addIssue({ code: "custom", path: ["applications"], message: "软件不可重复授权。" });
+  for (const list of ["applications", "blockedApplications"] as const) {
+    const ids = new Set<string>();
+    const paths = new Set<string>();
+    for (const application of value[list]) {
+      const canonical = application.executablePath.toLowerCase();
+      if (ids.has(application.id) || paths.has(canonical)) {
+        context.addIssue({ code: "custom", path: [list], message: "软件不可重复添加。" });
+      }
+      ids.add(application.id); paths.add(canonical);
     }
-    ids.add(application.id); paths.add(canonical);
   }
 });
 export type ComputerUseConfiguration = z.infer<typeof computerUseConfigurationSchema>;
 export type ComputerApplication = z.infer<typeof computerApplicationSchema>;
+/** Preserve host-approved grants while applying explicit edits from a settings snapshot. */
+export function mergeComputerApplicationGrants(baseline: ComputerApplication[], requested: ComputerApplication[], latest: ComputerApplication[]): ComputerApplication[] {
+  const original = new Map(baseline.map((application) => [application.id, application]));
+  const server = new Map(latest.map((application) => [application.id, application]));
+  const merged = requested.flatMap((application) => {
+    if (original.has(application.id) && JSON.stringify(original.get(application.id)) === JSON.stringify(application)) {
+      const saved = server.get(application.id); return saved === undefined ? [] : [saved];
+    }
+    return [application];
+  });
+  for (const application of latest) {
+    if (!original.has(application.id) && !merged.some((value) => value.id === application.id || value.executablePath.toLowerCase() === application.executablePath.toLowerCase())) merged.push(application);
+  }
+  return merged;
+}
+export const saveComputerUseConfigurationArgumentsSchema = z.tuple([z.union([
+  computerUseConfigurationSchema,
+  z.object({ configuration: computerUseConfigurationSchema, baselineApplications: z.array(computerApplicationSchema).max(100) }).strict(),
+])]).transform(([value]) => "configuration" in value ? [value.configuration, value.baselineApplications] as const : [value, undefined] as const);
 export const DEFAULT_COMPUTER_USE_CONFIGURATION: ComputerUseConfiguration = {
-  version: 1, enabled: false, administrator: false, applications: [],
+  version: 1, enabled: false, administrator: false, accessMode: "ask", applications: [], blockedApplications: [],
 };
+export const computerApplicationIconsSchema = z.record(z.uuid(), z.string().max(300_000).regex(/^data:image\/png;base64,[A-Za-z0-9+/=]+$/u).nullable());
+export type ComputerApplicationIcons = z.infer<typeof computerApplicationIconsSchema>;
 export const computerUseStatusSchema = z.object({
   supported: z.boolean(),
   running: z.boolean(),

@@ -22,4 +22,15 @@ describe.runIf(process.platform === "win32")("ComputerUseConfigurationStore", ()
     expect(() => store.saveConfiguration({ ...saved, applications: [{ ...saved.applications[0]!, executablePath: path.join(directory, "missing.exe") }] })).toThrow();
     expect(store.getConfiguration()).toEqual(saved);
   });
+  it("retains a grant approved after the settings snapshot and applies an explicit later revocation", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-computer-settings-")); roots.push(directory);
+    const file = path.join(directory, "settings.jsonc"); const executablePath = path.join(directory, "editor.exe"); await writeFile(executablePath, "fixture");
+    const store = new ComputerUseConfigurationStore(new SettingsJsoncFile(file)); const baseline = store.getConfiguration();
+    const grant = { id: "11111111-1111-4111-8111-111111111111", name: "Editor", executablePath, enabled: true };
+    const approved = store.saveConfiguration({ ...baseline, applications: [grant] });
+    const merged = store.saveConfiguration({ ...baseline, administrator: true }, baseline.applications);
+    expect(merged.applications).toEqual(approved.applications); expect(merged.administrator).toBe(true);
+    expect(new ComputerUseConfigurationStore(new SettingsJsoncFile(file)).getConfiguration()).toEqual(merged);
+    expect(store.saveConfiguration({ ...merged, applications: [] }, merged.applications).applications).toEqual([]);
+  });
 });

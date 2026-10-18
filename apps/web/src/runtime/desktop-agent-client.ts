@@ -386,8 +386,9 @@ export class DesktopAgentClientAdapter implements AgentClient {
   }
 
   public getComputerUseConfiguration() { return this.desktopBridge.getComputerUseConfiguration(); }
-  public saveComputerUseConfiguration(input: ComputerUseConfiguration) { return this.desktopBridge.saveComputerUseConfiguration(input); }
+  public saveComputerUseConfiguration(input: ComputerUseConfiguration, baselineApplications?: ComputerApplication[]) { return this.desktopBridge.saveComputerUseConfiguration(input, baselineApplications); }
   public chooseComputerApplication() { return this.desktopBridge.chooseComputerApplication(); }
+  public getComputerUseApplicationIcons() { return this.desktopBridge.getComputerUseApplicationIcons(); }
   public getComputerUseStatus() { return this.desktopBridge.getComputerUseStatus(); }
   public startComputerUse() { return this.desktopBridge.startComputerUse(); }
   public stopComputerUse() { return this.desktopBridge.stopComputerUse(); }
@@ -908,4 +909,4 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.toggleMaximizeWindow();
   }
 }
-import type { ComputerUseConfiguration } from "@agent/protocol";
+import type { ComputerApplication, ComputerUseConfiguration } from "@agent/protocol";

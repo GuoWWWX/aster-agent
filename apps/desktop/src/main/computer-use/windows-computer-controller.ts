@@ -5,7 +5,8 @@ import { createServer, type Server, type Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { computerUseArgumentsSchema, type AgentErrorCode, type ComputerUseArguments, type ComputerUseConfiguration, type ComputerUseStatus } from "@agent/protocol";
+import { computerApplicationSchema, computerUseArgumentsSchema, type ComputerApplication, type AgentErrorCode, type ComputerUseArguments, type ComputerUseConfiguration, type ComputerUseStatus } from "@agent/protocol";
+import type { ComputerApplicationPermissions } from "./computer-application-permissions.js";
 import driverSource from "./windows-driver.ps1";
 
 export type ComputerResponse = { ok: true; value: Record<string, unknown> } | { ok: false; code: string };
@@ -21,6 +22,7 @@ const responseSchema = z.discriminatedUnion("ok", [
 ]);
 const readySchema = z.object({ token: z.string().regex(/^[a-f0-9]{64}$/u), elevated: z.boolean() }).strict();
 const psQuote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
+const windowMetadataSchema = z.object({ windowId: z.string().regex(/^\d{1,20}$/u), title: z.string().max(512), executablePath: computerApplicationSchema.shape.executablePath }).strict();
 function controlError(code: AgentErrorCode, message: string): Error {
   return Object.assign(new Error(message), { code, id: randomUUID(), retryable: false });
 }
@@ -35,7 +37,9 @@ export class WindowsComputerController implements ComputerControlPort {
   private queue: Promise<unknown> = Promise.resolve();
   private rejectPending: ((error: Error) => void) | null = null;
   private generation = 0;
-  public constructor(private readonly configuration: { getConfiguration(): ComputerUseConfiguration }) {}
+  private sessionAbort = new AbortController();
+  private readonly catalog = new Map<string, ComputerApplication>();
+  public constructor(private readonly configuration: { getConfiguration(): ComputerUseConfiguration }, private readonly permissions: Pick<ComputerApplicationPermissions, "describe" | "state" | "authorize" | "grants" | "clearSession"> | null = null) {}
   public getStatus(): ComputerUseStatus {
     return { supported: process.platform === "win32", running: this.socket !== null && !this.socket.destroyed, elevated: this.elevated };
   }
@@ -49,6 +53,8 @@ export class WindowsComputerController implements ComputerControlPort {
     this.generation++;
     const reject = this.rejectPending; this.rejectPending = null;
     reject?.(controlError("PROCESS_CANCELLED", "电脑控制已停止。"));
+    this.sessionAbort.abort(); this.sessionAbort = new AbortController();
+    this.permissions?.clearSession(); this.catalog.clear();
     this.socket?.destroy(); this.socket = null;
     this.server?.close(); this.server = null;
     const child = this.process; this.process = null; child?.kill();
@@ -57,7 +63,7 @@ export class WindowsComputerController implements ComputerControlPort {
   public execute(input: ComputerUseArguments, signal: AbortSignal): Promise<ComputerResponse> {
     const command = computerUseArgumentsSchema.parse(input);
     const generation = this.generation;
-    const result = this.queue.catch(() => undefined).then(() => {
+    const result = this.queue.catch(() => undefined).then(async () => {
       signal.throwIfAborted();
       if (generation !== this.generation) throw controlError("PROCESS_CANCELLED", "电脑控制已停止；旧操作不会在重新启动后执行。");
       const configuration = this.configuration.getConfiguration();
@@ -65,10 +71,59 @@ export class WindowsComputerController implements ComputerControlPort {
       if (configuration.administrator && !this.getStatus().running) return { ok: false as const, code: "ADMINISTRATOR_START_REQUIRED" };
       if (!this.getStatus().running) return { ok: false as const, code: "COMPUTER_START_REQUIRED" };
       if (configuration.administrator !== this.elevated) return { ok: false as const, code: "COMPUTER_PERMISSION_CHANGED" };
-      return this.request(command, configuration, signal);
+      if (command.action === "list") return this.list(configuration, signal);
+      let application: ComputerApplication | undefined;
+      let expectedExecutablePath: string | undefined;
+      if (command.action === "launch") application = configuration.applications.find((value) => value.id === command.applicationId) ?? this.catalog.get(command.applicationId);
+      else {
+        const identity = await this.request({ action: "identify", windowId: command.windowId }, configuration, signal);
+        if (!identity.ok) return identity;
+        const executablePath = z.object({ executablePath: computerApplicationSchema.shape.executablePath }).strict().parse(identity.value).executablePath;
+        expectedExecutablePath = executablePath;
+        application = this.describe(executablePath);
+      }
+      if (application === undefined) return { ok: false as const, code: "APPLICATION_NOT_ALLOWED" };
+      const access = this.access(application, this.configuration.getConfiguration());
+      if (access === "blocked") return { ok: false as const, code: "APPLICATION_BLOCKED" };
+      if (access !== "allowed" && !(await this.permissions?.authorize(application, AbortSignal.any([signal, this.sessionAbort.signal])))) return { ok: false as const, code: "APPLICATION_ACCESS_DENIED" };
+      signal.throwIfAborted();
+      if (generation !== this.generation) throw controlError("PROCESS_CANCELLED", "电脑控制已停止。");
+      this.catalog.set(application.id, { ...application, enabled: true });
+      return this.request(command, this.configuration.getConfiguration(), signal, expectedExecutablePath);
     });
     this.queue = result;
     return result;
+  }
+  private describe(executablePath: string): ComputerApplication {
+    const resolved = this.permissions?.describe(executablePath) ?? computerApplicationSchema.parse({ id: randomUUID(), name: path.win32.basename(executablePath, ".exe"), executablePath, enabled: true });
+    const existing = [...this.configuration.getConfiguration().applications, ...this.catalog.values()].find((value) => value.executablePath.toLowerCase() === resolved.executablePath.toLowerCase());
+    const application = existing === undefined ? resolved : { ...existing, enabled: true };
+    this.catalog.set(application.id, application); return application;
+  }
+  private access(application: ComputerApplication, configuration: ComputerUseConfiguration): "allowed" | "blocked" | "ask" {
+    if (this.permissions !== null) return this.permissions.state(application);
+    const matches = (value: ComputerApplication): boolean => value.enabled && value.executablePath.toLowerCase() === application.executablePath.toLowerCase();
+    return configuration.blockedApplications.some(matches) ? "blocked" : configuration.accessMode === "all" || configuration.applications.some(matches) ? "allowed" : "ask";
+  }
+  private async list(configuration: ComputerUseConfiguration, signal: AbortSignal): Promise<ComputerResponse> {
+    const response = await this.request({ action: "list" }, configuration, signal);
+    if (!response.ok) return response;
+    const metadata = z.object({ windows: z.array(windowMetadataSchema).max(1000) }).strict().parse(response.value);
+    const windows = [];
+    for (const window of metadata.windows) {
+      let application: ComputerApplication;
+      try { application = this.describe(window.executablePath); } catch (error) {
+        if (error instanceof Error && "code" in error && ["ENOENT", "EACCES", "EPERM"].includes(String(error.code))) continue;
+        throw error;
+      }
+      const access = this.access(application, this.configuration.getConfiguration());
+      if (access === "blocked") continue;
+      windows.push({ windowId: window.windowId, applicationId: application.id, name: application.name, title: access === "allowed" ? window.title : "", authorized: access === "allowed" });
+    }
+    for (const application of configuration.applications) this.catalog.set(application.id, application);
+    const applications = [...this.catalog.values()].filter((value) => this.access(value, this.configuration.getConfiguration()) !== "blocked")
+      .map((value) => ({ id: value.id, name: value.name, authorized: this.access(value, this.configuration.getConfiguration()) === "allowed" }));
+    return { ok: true, value: { windows, applications } };
   }
   private async launch(): Promise<ComputerUseStatus> {
     const generation = this.generation;
@@ -139,8 +194,10 @@ export class WindowsComputerController implements ComputerControlPort {
       await rm(directory, { recursive: true, force: true });
     }
   }
-  private request(command: ComputerUseArguments, configuration: ComputerUseConfiguration, signal: AbortSignal): Promise<ComputerResponse> {
+  private request(command: ComputerUseArguments | { action: "identify"; windowId: string }, configuration: ComputerUseConfiguration, signal: AbortSignal, expectedExecutablePath?: string): Promise<ComputerResponse> {
     return new Promise((resolve, reject) => {
+      if (!configuration.enabled) { resolve({ ok: false, code: "COMPUTER_USE_DISABLED" }); return; }
+      if (configuration.administrator !== this.elevated) { resolve({ ok: false, code: "COMPUTER_PERMISSION_CHANGED" }); return; }
       const socket = this.socket;
       if (socket === null) { reject(controlError("CONFLICT", "电脑控制未启动。")); return; }
       const id = randomUUID(); let buffer = "";
@@ -161,7 +218,8 @@ export class WindowsComputerController implements ComputerControlPort {
       this.rejectPending = fail;
       socket.on("data", receive); signal.addEventListener("abort", abort, { once: true });
       if (signal.aborted) { abort(); return; }
-      socket.write(`${JSON.stringify({ id, command, applications: configuration.applications })}\n`);
+      const applications = [...(this.permissions?.grants() ?? configuration.applications), ...[...this.catalog.values()].filter((value) => this.access(value, configuration) === "allowed").map((value) => ({ ...value, enabled: true }))];
+      socket.write(`${JSON.stringify({ id, command, applications, accessMode: configuration.accessMode, blockedApplications: configuration.blockedApplications, ...(expectedExecutablePath === undefined ? {} : { expectedExecutablePath }) })}\n`);
     });
   }
 }

@@ -6,6 +6,8 @@ import { app, BrowserWindow, nativeTheme } from "electron";
 import { ComputerUseConfigurationStore } from "../settings/computer-use-configuration-store.js";
 import { WindowsComputerController } from "../computer-use/windows-computer-controller.js";
 import { ComputerUseTool } from "../computer-use/computer-use-tool.js";
+import { ComputerApplicationPermissions } from "../computer-use/computer-application-permissions.js";
+import { requestComputerApplicationAccess } from "../computer-use/computer-application-dialog.js";
 import { BrowserPasswordStore } from "../settings/browser-password-store.js";
 import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
@@ -415,7 +417,9 @@ async function initializeServices(): Promise<DesktopServices> {
   );
   const browserToolPlugin = new BrowserToolPlugin(managedBrowser, workspaceBrowserTabs);
   const computerUseConfiguration = new ComputerUseConfigurationStore(settings);
-  const computerUse = new WindowsComputerController(computerUseConfiguration);
+  const computerPermissions = new ComputerApplicationPermissions(computerUseConfiguration,
+    (application, signal) => requestComputerApplicationAccess(() => mainWindow ?? null, application, signal));
+  const computerUse = new WindowsComputerController(computerUseConfiguration, computerPermissions);
   await attachments.resumeCancelledPendingMessageAttachmentCleanup();
   eventProjector.releaseInactiveConversationHistories();
 

@@ -11,10 +11,11 @@ import { toMainAgentError } from "../errors/agent-error.js";
 const controllers: WindowsComputerController[] = [];
 const sockets: Socket[] = [];
 afterEach(() => { controllers.splice(0).forEach((value) => value.stop()); sockets.splice(0).forEach((value) => value.destroy()); vi.restoreAllMocks(); });
-function fixture() {
+function fixture(permissions: ConstructorParameters<typeof WindowsComputerController>[1] = null) {
   native.spawn.mockReset();
-  let configuration: ComputerUseConfiguration = { ...structuredClone(DEFAULT_COMPUTER_USE_CONFIGURATION), enabled: true };
-  const requests: { id: string; command: unknown; applications: unknown }[] = [];
+  let configuration: ComputerUseConfiguration = { ...structuredClone(DEFAULT_COMPUTER_USE_CONFIGURATION), enabled: true,
+    applications: [{ id: "11111111-1111-4111-8111-111111111111", name: "Editor", executablePath: "C:\\Editor.exe", enabled: true }] };
+  const requests: { id: string; command: unknown; applications: unknown; expectedExecutablePath?: string | undefined }[] = [];
   let peer: Socket | undefined;
   native.spawn.mockImplementation((_file: string, args: string[]) => {
     const child = new EventEmitter(); Object.assign(child, { kill: vi.fn(() => { child.emit("exit", 0); return true; }) });
@@ -22,11 +23,15 @@ function fixture() {
     peer = createConnection(`\\\\.\\pipe\\${pipe}`); sockets.push(peer); peer.setEncoding("utf8");
     peer.once("connect", () => peer?.write(`${JSON.stringify({ token, elevated: false })}\n`));
     let buffer = "";
-    peer.on("data", (chunk: string) => { buffer += chunk; while (buffer.includes("\n")) { const index = buffer.indexOf("\n"); requests.push(z.object({ id: z.string(), command: z.unknown(), applications: z.unknown() }).parse(JSON.parse(buffer.slice(0, index)))); buffer = buffer.slice(index + 1); } });
+    peer.on("data", (chunk: string) => { buffer += chunk; while (buffer.includes("\n")) {
+      const index = buffer.indexOf("\n"); const request = z.object({ id: z.string(), command: z.object({ action: z.string() }).passthrough(), applications: z.unknown(), expectedExecutablePath: z.string().optional() }).parse(JSON.parse(buffer.slice(0, index))); buffer = buffer.slice(index + 1);
+      if (request.command.action === "identify") peer?.write(`${JSON.stringify({ id: request.id, ok: true, value: { executablePath: "C:\\Editor.exe" } })}\n`);
+      else requests.push(request);
+    } });
     return child;
   });
-  const controller = new WindowsComputerController({ getConfiguration: () => configuration }); controllers.push(controller);
-  return { controller, requests, disconnect: () => peer?.destroy(), failOperation: (index: number, code: string) => peer?.write(`${JSON.stringify({ id: requests[index]?.id, ok: false, code })}\n`), reply: (index: number) => peer?.write(`${JSON.stringify({ id: requests[index]?.id, ok: true, value: { windows: [] } })}\n`), set: (value: Partial<ComputerUseConfiguration>) => { configuration = { ...configuration, ...value }; } };
+  const controller = new WindowsComputerController({ getConfiguration: () => configuration }, permissions); controllers.push(controller);
+  return { controller, requests, disconnect: () => peer?.destroy(), failOperation: (index: number, code: string) => peer?.write(`${JSON.stringify({ id: requests[index]?.id, ok: false, code })}\n`), reply: (index: number, value: unknown = { windows: [] }) => peer?.write(`${JSON.stringify({ id: requests[index]?.id, ok: true, value })}\n`), set: (value: Partial<ComputerUseConfiguration>) => { configuration = { ...configuration, ...value }; } };
 }
 describe.runIf(process.platform === "win32")("Windows computer transport", () => {
   it("serializes all callers and transfers only current allowlist facts", async () => {
@@ -35,7 +40,7 @@ describe.runIf(process.platform === "win32")("Windows computer transport", () =>
     const first = f.controller.execute({ action: "list" }, new AbortController().signal);
     const second = f.controller.execute({ action: "observe", windowId: "123" }, new AbortController().signal);
     await vi.waitFor(() => expect(f.requests).toHaveLength(1));
-    expect(f.requests[0]?.applications).toEqual([]); f.reply(0); await first;
+    expect(f.requests[0]?.applications).toEqual([expect.objectContaining({ executablePath: "C:\\Editor.exe" })]); f.reply(0); await first;
     await vi.waitFor(() => expect(f.requests).toHaveLength(2)); f.reply(1); await second;
     f.controller.stop(); expect(f.controller.getStatus().running).toBe(false);
     expect(await f.controller.execute({ action: "list" }, new AbortController().signal)).toEqual({ ok: false, code: "COMPUTER_START_REQUIRED" });
@@ -90,5 +95,52 @@ describe.runIf(process.platform === "win32")("Windows computer transport", () =>
     const resumed = f.controller.execute({ action: "list" }, new AbortController().signal);
     await vi.waitFor(() => expect(f.requests).toHaveLength(4)); f.reply(3); expect(await resumed).toMatchObject({ ok: true });
     expect(native.spawn).toHaveBeenCalledOnce();
+  });
+  it("lists stable software identities without leaking unapproved window titles or executable paths", async () => {
+    const f = fixture(); f.set({ applications: [] }); await f.controller.start();
+    let applicationId = "";
+    for (let index = 0; index < 2; index++) {
+      const listing = f.controller.execute({ action: "list" }, new AbortController().signal);
+      await vi.waitFor(() => expect(f.requests).toHaveLength(index + 1));
+      f.reply(index, { windows: [{ windowId: "123", title: "private contents", executablePath: "C:\\Editor.exe" }] });
+      const result = await listing; expect(JSON.stringify(result)).not.toContain("private contents"); expect(JSON.stringify(result)).not.toContain("Editor.exe");
+      if (!result.ok) throw new Error(result.code);
+      const windows = z.object({ windows: z.array(z.object({ applicationId: z.string(), authorized: z.boolean() })) }).parse(result.value).windows;
+      expect(windows[0]?.authorized).toBe(false);
+      if (index === 0) applicationId = windows[0]!.applicationId; else expect(windows[0]?.applicationId).toBe(applicationId);
+    }
+    expect(await f.controller.execute({ action: "observe", windowId: "123" }, new AbortController().signal)).toMatchObject({ ok: false, code: "APPLICATION_ACCESS_DENIED" });
+    expect(f.requests).toHaveLength(2);
+  });
+  it("asks software permission before reading and checks it even when tool approval has already passed", async () => {
+    const application = { id: "11111111-1111-4111-8111-111111111111", name: "Editor", executablePath: "C:\\Editor.exe", enabled: true };
+    let allowed = false;
+    const authorize = vi.fn(() => { allowed = true; return Promise.resolve(true); });
+    const f = fixture({ describe: () => application, state: () => allowed ? "allowed" : "ask", authorize, grants: () => allowed ? [application] : [], clearSession: vi.fn() });
+    f.set({ applications: [] }); await f.controller.start();
+    const reading = f.controller.execute({ action: "observe", windowId: "123" }, new AbortController().signal);
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1)); expect(authorize).toHaveBeenCalledOnce();
+    expect(f.requests[0]?.expectedExecutablePath).toBe(application.executablePath);
+    expect(f.requests[0]?.applications).toEqual(expect.arrayContaining([application])); f.reply(0, { elements: [] });
+    expect(await reading).toMatchObject({ ok: true });
+  });
+  it("aborts software authorization on Escape/stop without dispatching the waiting operation", async () => {
+    const application = { id: "11111111-1111-4111-8111-111111111111", name: "Editor", executablePath: "C:\\Editor.exe", enabled: true };
+    const authorize = vi.fn((_application: unknown, signal: AbortSignal) => new Promise<boolean>((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("授权已取消")), { once: true })));
+    const clearSession = vi.fn();
+    const f = fixture({ describe: () => application, state: () => "ask", authorize, grants: () => [], clearSession });
+    f.set({ applications: [] }); await f.controller.start();
+    const operation = f.controller.execute({ action: "observe", windowId: "123" }, new AbortController().signal);
+    const rejected = expect(operation).rejects.toThrow("取消");
+    await vi.waitFor(() => expect(authorize).toHaveBeenCalledOnce()); f.controller.stop(); await rejected;
+    expect(clearSession).toHaveBeenCalled(); expect(f.requests).toHaveLength(0);
+  });
+  it("allows all-software mode to launch a known app even when its individual permanent grant is disabled", async () => {
+    const application = { id: "11111111-1111-4111-8111-111111111111", name: "Editor", executablePath: "C:\\Editor.exe", enabled: false };
+    const f = fixture(); f.set({ accessMode: "all", applications: [application] }); await f.controller.start();
+    const launching = f.controller.execute({ action: "launch", applicationId: application.id }, new AbortController().signal);
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+    expect(f.requests[0]?.applications).toEqual(expect.arrayContaining([{ ...application, enabled: true }]));
+    f.reply(0, { launched: true }); expect(await launching).toMatchObject({ ok: true });
   });
 });

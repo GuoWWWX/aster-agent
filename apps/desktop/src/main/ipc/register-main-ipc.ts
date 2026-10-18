@@ -18,6 +18,7 @@ import {
   type IpcMainInvokeEvent
 } from "electron";
 import { openProjectDirectory } from "../projects/open-project-directory.js";
+import { reportMainError, toMainAgentError } from "../errors/agent-error.js";
 import { z } from "zod";
 import { publishConversationAttentionEvent } from "../windows/conversation-attention.js";
 import {
@@ -1667,8 +1668,8 @@ export function registerMainIpcHandlers(
   });
   ipcMain.handle(IPC_CHANNELS.computerUseSaveConfiguration, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
-    const [input] = z.tuple([computerUseConfigurationSchema]).parse(args);
-    const saved = computerUseConfiguration.saveConfiguration(input);
+    const [input, baselineApplications] = saveComputerUseConfigurationArgumentsSchema.parse(args);
+    const saved = computerUseConfiguration.saveConfiguration(input, baselineApplications);
     computerUse.stop();
     return computerUseConfigurationSchema.parse(saved);
   });
@@ -1685,11 +1686,25 @@ export function registerMainIpcHandlers(
   });
   ipcMain.handle(IPC_CHANNELS.computerUseChooseApplication, async (event, ...args: unknown[]) => {
     const window = getTrustedWindow(event, getMainWindow); parseNoArguments(args);
-    const result = await dialog.showOpenDialog(window, { title: "选择允许控制的软件", properties: ["openFile"], filters: [{ name: "Windows 软件", extensions: ["exe"] }] });
+    const result = await dialog.showOpenDialog(window, { title: "选择软件", properties: ["openFile"], filters: [{ name: "Windows 软件", extensions: ["exe"] }] });
     const selected = result.filePaths[0];
     if (result.canceled || selected === undefined) return null;
     const executablePath = realpathSync(selected);
     return computerApplicationSchema.parse({ id: randomUUID(), name: path.basename(executablePath, path.extname(executablePath)), executablePath, enabled: true });
+  });
+  ipcMain.handle(IPC_CHANNELS.computerUseGetApplicationIcons, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow); parseNoArguments(args);
+    const configuration = computerUseConfiguration.getConfiguration();
+    const icons = await Promise.all([...configuration.applications, ...configuration.blockedApplications].map(async (application) => {
+      try {
+        const icon = await app.getFileIcon(application.executablePath, { size: "normal" });
+        return [application.id, icon.isEmpty() ? null : icon.resize({ width: 32, height: 32 }).toDataURL()] as const;
+      } catch (error) {
+        reportMainError(toMainAgentError(error, { operation: "computer_use.application_icon" }), error, [application.executablePath]);
+        return [application.id, null] as const;
+      }
+    }));
+    return computerApplicationIconsSchema.parse(Object.fromEntries(icons));
   });
 
   ipcMain.handle(
@@ -2071,6 +2086,6 @@ export function registerMainIpcHandlers(
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { realpathSync } from "node:fs";
-import { computerApplicationSchema, computerUseConfigurationSchema, computerUseStatusSchema } from "@agent/protocol";
+import { computerApplicationIconsSchema, computerApplicationSchema, computerUseConfigurationSchema, computerUseStatusSchema, saveComputerUseConfigurationArgumentsSchema } from "@agent/protocol";
 import type { ComputerUseConfigurationStore } from "../settings/computer-use-configuration-store.js";
 import type { WindowsComputerController } from "../computer-use/windows-computer-controller.js";

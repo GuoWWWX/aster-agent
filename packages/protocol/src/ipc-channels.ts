@@ -131,6 +131,7 @@ export const IPC_CHANNELS = {
   computerUseGetConfiguration: "computer_use.get_configuration",
   computerUseSaveConfiguration: "computer_use.save_configuration",
   computerUseChooseApplication: "computer_use.choose_application",
+  computerUseGetApplicationIcons: "computer_use.get_application_icons",
   computerUseGetStatus: "computer_use.get_status",
   computerUseStart: "computer_use.start",
   computerUseStop: "computer_use.stop",

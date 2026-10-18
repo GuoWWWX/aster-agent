@@ -1326,8 +1326,10 @@ export class MockAgentClient implements AgentClient {
 
   private computerUseConfiguration = structuredClone(DEFAULT_COMPUTER_USE_CONFIGURATION);
   public getComputerUseConfiguration(): Promise<ComputerUseConfiguration> { return Promise.resolve(structuredClone(this.computerUseConfiguration)); }
-  public saveComputerUseConfiguration(input: ComputerUseConfiguration): Promise<ComputerUseConfiguration> { this.computerUseConfiguration = computerUseConfigurationSchema.parse(input); return this.getComputerUseConfiguration(); }
+  public saveComputerUseConfiguration(input: ComputerUseConfiguration, baselineApplications?: ComputerApplication[]): Promise<ComputerUseConfiguration> { this.computerUseConfiguration = computerUseConfigurationSchema.parse(baselineApplications === undefined ? input : { ...input,
+    applications: mergeComputerApplicationGrants(baselineApplications, input.applications, this.computerUseConfiguration.applications) }); return this.getComputerUseConfiguration(); }
   public chooseComputerApplication(): Promise<ComputerApplication | null> { return Promise.resolve(null); }
+  public getComputerUseApplicationIcons(): Promise<Record<string, string | null>> { return Promise.resolve({}); }
   public getComputerUseStatus(): Promise<ComputerUseStatus> { return Promise.resolve({ supported: false, running: false, elevated: false }); }
   public startComputerUse(): Promise<ComputerUseStatus> { return Promise.reject(new Error("请在 Windows 桌面版使用电脑控制。")); }
   public stopComputerUse(): Promise<void> { return Promise.resolve(); }
@@ -3070,4 +3072,4 @@ export class MockAgentClient implements AgentClient {
     }
   }
 }
-import { DEFAULT_COMPUTER_USE_CONFIGURATION, computerUseConfigurationSchema, type ComputerApplication, type ComputerUseConfiguration, type ComputerUseStatus } from "@agent/protocol";
+import { DEFAULT_COMPUTER_USE_CONFIGURATION, computerUseConfigurationSchema, mergeComputerApplicationGrants, type ComputerApplication, type ComputerUseConfiguration, type ComputerUseStatus } from "@agent/protocol";

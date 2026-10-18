@@ -237,8 +237,9 @@ export interface AgentClient {
   getIntegrationConfiguration(): Promise<IntegrationConfiguration>;
   getBrowserConfiguration(): Promise<BrowserConfiguration>;
   getComputerUseConfiguration(): Promise<ComputerUseConfiguration>;
-  saveComputerUseConfiguration(input: ComputerUseConfiguration): Promise<ComputerUseConfiguration>;
+  saveComputerUseConfiguration(input: ComputerUseConfiguration, baselineApplications?: ComputerApplication[]): Promise<ComputerUseConfiguration>;
   chooseComputerApplication(): Promise<ComputerApplication | null>;
+  getComputerUseApplicationIcons(): Promise<ComputerApplicationIcons>;
   getComputerUseStatus(): Promise<ComputerUseStatus>;
   startComputerUse(): Promise<ComputerUseStatus>;
   stopComputerUse(): Promise<void>;
@@ -406,4 +407,4 @@ export interface AgentClient {
   ): Promise<ConfigurationWorkspaceFile>;
   toggleMaximizeWindow(): Promise<void>;
 }
-import type { ComputerApplication, ComputerUseConfiguration, ComputerUseStatus } from "@agent/protocol";
+import type { ComputerApplication, ComputerApplicationIcons, ComputerUseConfiguration, ComputerUseStatus } from "@agent/protocol";

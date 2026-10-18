@@ -259,22 +259,34 @@ try {
       $request = $line | ConvertFrom-Json
       $command = $request.command
       $allowed = @($request.applications | Where-Object { $_.enabled })
+      $blocked = @($request.blockedApplications | Where-Object { $_.enabled })
       if ($command.action -eq 'list') {
-        $windows = @([AsterComputer]::Windows() | Where-Object { $candidate=$_; $allowed | Where-Object { [String]::Equals($_.executablePath,$candidate.executablePath,[StringComparison]::OrdinalIgnoreCase) } } | ForEach-Object {
-          $window=$_; $application=$allowed | Where-Object { [String]::Equals($_.executablePath,$window.executablePath,[StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
-          @{ windowId=$window.windowId; title=$window.title; applicationId=$application.id; name=$application.name }
+        $windows = @([AsterComputer]::Windows() | Where-Object { $_.executablePath -match '^[a-z]:\\.*\.exe$' } | Select-Object -First 1000 | ForEach-Object {
+          $window=$_
+          if (-not ($blocked | Where-Object { [String]::Equals($_.executablePath,$window.executablePath,[StringComparison]::OrdinalIgnoreCase) })) {
+            $readable = $request.accessMode -eq 'all' -or ($allowed | Where-Object { [String]::Equals($_.executablePath,$window.executablePath,[StringComparison]::OrdinalIgnoreCase) })
+            @{ windowId=$window.windowId; title=$(if($readable){$window.title}else{''}); executablePath=$window.executablePath }
+          }
         })
         $value = @{ windows=$windows }
+      } elseif ($command.action -eq 'identify') {
+        $path = [AsterComputer]::PathOf([IntPtr]::new([long]$command.windowId))
+        if ([String]::IsNullOrEmpty($path)) { throw 'WINDOW_UNAVAILABLE' }
+        if ($blocked | Where-Object { [String]::Equals($_.executablePath,$path,[StringComparison]::OrdinalIgnoreCase) }) { throw 'APPLICATION_BLOCKED' }
+        $value = @{ executablePath=$path }
       } elseif ($command.action -eq 'launch') {
         $application = $allowed | Where-Object { $_.id -eq $command.applicationId } | Select-Object -First 1
         if ($null -eq $application) { throw 'APPLICATION_NOT_ALLOWED' }
+        if ($blocked | Where-Object { [String]::Equals($_.executablePath,$application.executablePath,[StringComparison]::OrdinalIgnoreCase) }) { throw 'APPLICATION_BLOCKED' }
         $start = [Diagnostics.ProcessStartInfo]::new($application.executablePath); $start.UseShellExecute=$false
         $process = [Diagnostics.Process]::Start($start)
         $value = @{ launched=$true; processId=$process.Id }
       } else {
         $window = [IntPtr]::new([long]$command.windowId)
         $path = [AsterComputer]::PathOf($window)
-        if (-not ($allowed | Where-Object { [String]::Equals($_.executablePath,$path,[StringComparison]::OrdinalIgnoreCase) })) { throw 'APPLICATION_NOT_ALLOWED' }
+        if (-not [String]::Equals($path,$request.expectedExecutablePath,[StringComparison]::OrdinalIgnoreCase)) { throw 'WINDOW_CHANGED' }
+        if ($blocked | Where-Object { [String]::Equals($_.executablePath,$path,[StringComparison]::OrdinalIgnoreCase) }) { throw 'APPLICATION_BLOCKED' }
+        if ($request.accessMode -ne 'all' -and -not ($allowed | Where-Object { [String]::Equals($_.executablePath,$path,[StringComparison]::OrdinalIgnoreCase) })) { throw 'APPLICATION_NOT_ALLOWED' }
         switch ($command.action) {
           'observe' { $value = [AsterComputer]::Observe($window) }
           'screenshot' { $value = [AsterComputer]::Capture($window) }
@@ -292,7 +304,7 @@ try {
       }
       $response=@{ id=$request.id; ok=$true; value=$value }
     } catch {
-      $codes=@('APPLICATION_NOT_ALLOWED','WINDOW_UNAVAILABLE','FOCUS_REQUIRED','USER_INPUT_ACTIVE','FOCUS_CHANGED','INPUT_BLOCKED','POINT_OUTSIDE_WINDOW','WINDOW_OCCLUDED','WINDOW_TOO_LARGE','CAPTURE_UNAVAILABLE','INVALID_KEY','INVALID_ACTION')
+      $codes=@('APPLICATION_BLOCKED','APPLICATION_NOT_ALLOWED','WINDOW_CHANGED','WINDOW_UNAVAILABLE','FOCUS_REQUIRED','USER_INPUT_ACTIVE','FOCUS_CHANGED','INPUT_BLOCKED','POINT_OUTSIDE_WINDOW','WINDOW_OCCLUDED','WINDOW_TOO_LARGE','CAPTURE_UNAVAILABLE','INVALID_KEY','INVALID_ACTION')
       $code='COMPUTER_OPERATION_FAILED'
       foreach ($candidate in $codes) { if ($_.Exception.ToString().Contains($candidate)) { $code=$candidate; break } }
       $response=@{ id=$request.id; ok=$false; code=$code }

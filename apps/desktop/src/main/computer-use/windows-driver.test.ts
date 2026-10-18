@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { DEFAULT_COMPUTER_USE_CONFIGURATION, type ComputerUseConfiguration } from "@agent/protocol";
 import { WindowsComputerController } from "./windows-computer-controller.js";
+import { ComputerApplicationPermissions, type ComputerAccessDecision } from "./computer-application-permissions.js";
 import source from "./windows-driver.ps1";
 const exec = promisify(execFile);
 async function nativeSession(script: string) {
@@ -79,8 +80,11 @@ try {
     try {
       expect(await controller.start()).toMatchObject({ running: true, elevated: false });
       const signal = new AbortController().signal;
-      expect(await controller.execute({ action: "list" }, signal)).toEqual(expect.objectContaining({ ok: true, value: { windows: [] } }));
-      expect(await controller.execute({ action: "observe", windowId: "1" }, signal)).toMatchObject({ ok: false, code: "APPLICATION_NOT_ALLOWED" });
+      const listed = await controller.execute({ action: "list" }, signal);
+      if (!listed.ok) throw new Error(listed.code);
+      const windows = z.object({ windows: z.array(z.object({ title: z.string(), authorized: z.boolean() })) }).parse(listed.value).windows;
+      expect(windows.every((value) => value.title === "" && !value.authorized)).toBe(true);
+      expect(await controller.execute({ action: "observe", windowId: "1" }, signal)).toMatchObject({ ok: false, code: "WINDOW_UNAVAILABLE" });
     } finally { controller.stop(); }
   }, 30_000);
   it.runIf(process.platform === "win32")("observes and captures only an authorized test window, then applies revocation", async () => {
@@ -98,23 +102,39 @@ public class TestWindow:Form {
     const host = spawn(executable, [], { windowsHide: true, stdio: "ignore" });
     const configuration: ComputerUseConfiguration = { ...DEFAULT_COMPUTER_USE_CONFIGURATION, enabled: true,
       applications: [{ id: "11111111-1111-4111-8111-111111111111", name: "Fixture", executablePath: executable, enabled: true }] };
-    const controller = new WindowsComputerController({ getConfiguration: () => configuration });
+    const prompt = vi.fn<() => Promise<ComputerAccessDecision>>().mockResolvedValue("session");
+    const store = { getConfiguration: () => configuration, saveConfiguration: (value: ComputerUseConfiguration) => Object.assign(configuration, value) };
+    const controller = new WindowsComputerController(store, new ComputerApplicationPermissions(store, prompt));
     try {
       await controller.start(); const signal = new AbortController().signal;
       let windowId = "";
       await vi.waitFor(async () => {
         const result = await controller.execute({ action: "list" }, signal);
         if (!result.ok) throw new Error(result.code);
-        const windows = z.object({ windows: z.array(z.object({ windowId: z.string(), title: z.string() })) }).parse(result.value).windows;
-        expect(windows).toHaveLength(1); windowId = windows[0]!.windowId;
+        const windows = z.object({ windows: z.array(z.object({ windowId: z.string(), title: z.string(), authorized: z.boolean() })) }).parse(result.value).windows;
+        const authorized = windows.filter((value) => value.authorized);
+        expect(authorized).toHaveLength(1); windowId = authorized[0]!.windowId;
       }, { timeout: 5000, interval: 100 });
       const observed = await controller.execute({ action: "observe", windowId }, signal);
       expect(observed.ok).toBe(true); expect(JSON.stringify(observed)).toContain("authorized content");
       const screenshot = await controller.execute({ action: "screenshot", windowId }, signal);
       if (!screenshot.ok) throw new Error(screenshot.code);
       expect(z.object({ data: z.string() }).parse(screenshot.value).data).toMatch(/^iVBOR/u);
-      configuration.applications = [];
-      expect(await controller.execute({ action: "screenshot", windowId }, signal)).toMatchObject({ ok: false, code: "APPLICATION_NOT_ALLOWED" });
+      configuration.accessMode = "all"; configuration.blockedApplications = [...configuration.applications];
+      expect(await controller.execute({ action: "screenshot", windowId }, signal)).toMatchObject({ ok: false, code: "APPLICATION_BLOCKED" });
+      configuration.accessMode = "ask"; configuration.blockedApplications = []; configuration.applications = [];
+      expect(await controller.execute({ action: "screenshot", windowId }, signal)).toMatchObject({ ok: true });
+      expect(await controller.execute({ action: "screenshot", windowId }, signal)).toMatchObject({ ok: true });
+      expect(prompt).toHaveBeenCalledOnce(); expect(configuration.applications).toEqual([]);
+      controller.stop(); await controller.start(); prompt.mockResolvedValue("deny");
+      expect(await controller.execute({ action: "screenshot", windowId }, signal)).toMatchObject({ ok: false, code: "APPLICATION_ACCESS_DENIED" });
+      expect(prompt).toHaveBeenCalledTimes(2);
+      controller.stop(); await controller.start(); prompt.mockResolvedValue("permanent");
+      expect(await controller.execute({ action: "screenshot", windowId }, signal)).toMatchObject({ ok: true });
+      expect(configuration.applications).toHaveLength(1);
+      controller.stop(); await controller.start();
+      expect(await controller.execute({ action: "screenshot", windowId }, signal)).toMatchObject({ ok: true });
+      expect(prompt).toHaveBeenCalledTimes(3);
     } finally {
       controller.stop();
       const stopped = new Promise<void>((resolve) => host.once("exit", () => resolve())); host.kill(); await stopped;

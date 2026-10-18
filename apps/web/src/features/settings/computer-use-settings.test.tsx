@@ -32,7 +32,7 @@ describe("ComputerUseSettings", () => {
     await act(async () => { f.button("添加软件").click(); await Promise.resolve(); });
     expect(f.container.textContent).toContain("C:\\Windows\\notepad.exe");
     await act(async () => { f.button("启动控制").click(); await Promise.resolve(); });
-    expect(f.save).toHaveBeenCalledWith(expect.objectContaining({ enabled: true, applications: [expect.objectContaining({ name: "记事本" })] }));
+    expect(f.save).toHaveBeenCalledWith(expect.objectContaining({ enabled: true, applications: [expect.objectContaining({ name: "记事本" })] }), expect.any(Array));
     expect(f.start).toHaveBeenCalledOnce(); expect(f.container.textContent).toContain("运行中 · 普通权限");
     await act(async () => { f.button("移除 记事本 的授权").click(); await new Promise((resolve) => setTimeout(resolve, 500)); });
     expect((await f.client.getComputerUseConfiguration()).applications).toEqual([]);
@@ -43,7 +43,42 @@ describe("ComputerUseSettings", () => {
     await act(async () => { f.checkbox("管理员模式").click(); await Promise.resolve(); });
     expect(f.start).not.toHaveBeenCalled();
     await act(async () => { f.button("启动控制").click(); await Promise.resolve(); });
-    expect(f.save).toHaveBeenCalledWith({ ...DEFAULT_COMPUTER_USE_CONFIGURATION, enabled: true, administrator: true });
+    expect(f.save).toHaveBeenCalledWith({ ...DEFAULT_COMPUTER_USE_CONFIGURATION, enabled: true, administrator: true }, expect.any(Array));
     expect(f.container.textContent).toContain("管理员启动被取消"); expect(f.container.textContent).toContain("未启动");
+  });
+  it("manages a blacklist independently of administrator mode and displays the executable icon", async () => {
+    const f = await fixture();
+    const application = { id: "11111111-1111-4111-8111-111111111111", name: "记事本", executablePath: "C:\\Windows\\notepad.exe", enabled: true };
+    vi.spyOn(f.client, "chooseComputerApplication").mockResolvedValue(application);
+    vi.spyOn(f.client, "getComputerUseApplicationIcons").mockResolvedValue({ [application.id]: "data:image/png;base64,aGVsbG8=" });
+    await act(async () => { f.button("添加黑名单").click(); await Promise.resolve(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 500)); });
+    expect((await f.client.getComputerUseConfiguration()).blockedApplications).toEqual([application]);
+    expect(f.container.querySelector('img[src="data:image/png;base64,aGVsbG8="]')).not.toBeNull();
+    expect(f.checkbox("禁止控制 记事本").checked).toBe(true); expect(f.checkbox("管理员模式").checked).toBe(false);
+    await act(async () => { f.button("从黑名单移除 记事本").click(); await Promise.resolve(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 500)); });
+    expect((await f.client.getComputerUseConfiguration()).blockedApplications).toEqual([]);
+  });
+  it("refreshes grants approved during control without overwriting an unsaved local edit", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = await fixture();
+      const application = { id: "11111111-1111-4111-8111-111111111111", name: "永久批准的软件", executablePath: "C:\\Editor.exe", enabled: true };
+      vi.spyOn(f.client, "getComputerUseConfiguration").mockResolvedValue({ ...DEFAULT_COMPUTER_USE_CONFIGURATION, accessMode: "all", applications: [application] });
+      await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
+      expect(f.container.textContent).toContain("永久批准的软件"); expect(f.container.textContent).toContain("允许所有软件"); expect(f.save).not.toHaveBeenCalled();
+      await act(async () => { f.checkbox("管理员模式").click(); await vi.advanceTimersByTimeAsync(300); });
+      expect(f.checkbox("管理员模式").checked).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+  it("preserves a newly approved permanent grant when the user edits settings before the next refresh", async () => {
+    const f = await fixture();
+    const application = { id: "11111111-1111-4111-8111-111111111111", name: "刚批准的软件", executablePath: "C:\\Editor.exe", enabled: true };
+    await f.client.saveComputerUseConfiguration({ ...DEFAULT_COMPUTER_USE_CONFIGURATION, applications: [application] });
+    await act(async () => { f.checkbox("管理员模式").click(); await Promise.resolve(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 500)); });
+    expect((await f.client.getComputerUseConfiguration()).applications).toEqual([application]);
+    expect(f.container.textContent).toContain("刚批准的软件");
   });
 });
