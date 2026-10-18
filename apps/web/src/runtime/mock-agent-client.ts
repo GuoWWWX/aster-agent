@@ -1827,7 +1827,16 @@ export class MockAgentClient implements AgentClient {
     if (root) this.emitConversationRunEvent({ type: "collaboration.changed", conversationId: root.conversationId, teamInstanceId: input.teamInstanceId });
     return structuredClone(message);
   }
-  public markTeamChatRead(input: MarkTeamChatReadInput): Promise<void> { this.groupRead.set(input.teamInstanceId, input.throughSequence); return Promise.resolve(); }
+  public markTeamChatRead(input: MarkTeamChatReadInput): Promise<void> {
+    const before = this.groupRead.get(input.teamInstanceId) ?? -1;
+    if (input.throughSequence > before) {
+      this.groupRead.set(input.teamInstanceId, input.throughSequence);
+      const instance = this.teamInstances.find(item => item.id === input.teamInstanceId);
+      if (input.throughSequence > 0 && instance?.rootConversationId != null) this.emitConversationRunEvent({ type: "collaboration.changed",
+        conversationId: instance.rootConversationId, teamInstanceId: instance.id, reason: "read" });
+    }
+    return Promise.resolve();
+  }
   public resumeTeamChatDelivery(input: { id: string }): Promise<void> {
     for (const message of this.groupMessages) for (const delivery of message.deliveries) if (delivery.id === input.id && delivery.status === "pending") delivery.error = null;
     return Promise.resolve();

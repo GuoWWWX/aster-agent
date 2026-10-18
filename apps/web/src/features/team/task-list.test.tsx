@@ -23,6 +23,8 @@ it("loads the header dropdown on demand, searches, paginates, and opens a task i
   await act(async () => { document.querySelector<HTMLButtonElement>('[aria-label="下一页任务"]')!.click(); await flush(); });
   expect(document.querySelectorAll('[aria-label="任务"] li')).toHaveLength(2);
   expect(document.body.textContent).toContain("2 / 2");
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 240)); await flush(); });
+  expect(document.querySelectorAll('[aria-label="任务"] li')).toHaveLength(2);
   const search = document.querySelector<HTMLInputElement>('[aria-label="搜索任务或用户消息"]')!;
   act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "验收任务 2"); search.dispatchEvent(new Event("input", { bubbles: true })); });
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 240)); await flush(); });

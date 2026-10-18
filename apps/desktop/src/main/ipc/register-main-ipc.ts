@@ -1227,8 +1227,12 @@ export function registerMainIpcHandlers(
   ipcMain.handle(IPC_CHANNELS.teamChatMarkRead, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
     const [input] = z.tuple([markTeamChatReadInputSchema]).parse(args);
-    const result = database.collaboration.markRead(input, null);
-    return result;
+    const instance = database.getTeamInstance(input.teamInstanceId);
+    const changed = database.collaboration.markRead(input, null);
+    if (changed && instance.rootConversationId !== null) emitConversationRunEvent({
+      type: "collaboration.changed", conversationId: instance.rootConversationId, teamInstanceId: instance.id, reason: "read",
+    });
+    return undefined;
   });
   ipcMain.handle(IPC_CHANNELS.teamChatResume, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);

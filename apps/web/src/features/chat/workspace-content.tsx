@@ -61,11 +61,9 @@ import {
   Pause,
   Play,
   RefreshCw,
-  Scale,
   Search,
   Send,
   SendHorizontal,
-  ShieldCheck,
   Images,
   Sparkles,
   SlidersHorizontal,
@@ -74,6 +72,7 @@ import {
   Terminal,
   Trash2,
   UsersRound,
+  Workflow,
   Wrench,
   X,
 } from "lucide-react";
@@ -199,6 +198,8 @@ import { CONVERSATION_WORKSPACE_CACHE_TTL_MS, useConversationWorkspaceCache } fr
 import { formatConversationRunMarkdown } from "./conversation-copy.js";
 import { TerminalText } from "../../components/ui/terminal-text.js";
 import { ConversationFindBar } from "./conversation-find-bar.js";
+import { ConversationPath } from "./conversation-path.js";
+import { ConversationPermissionSelect } from "./conversation-permission-select.js";
 import { ConversationHeaderControls } from "./conversation-header-controls.js";
 import { UserQuestionPanel } from "./user-question-panel.js";
 import { questionForAnswer, questionToolForAnswer } from "./question-answer-reference.js";
@@ -266,42 +267,6 @@ type WorkspaceContentProps = {
   onSessionUpdated: (conversation: ConversationSummary) => void;
   onSessionViewed: (sessionId: string) => void;
 };
-
-type ConversationPathScope = {
-  kind: "project" | "team" | "temporary";
-  label: string;
-};
-
-export function resolveConversationPathScope(
-  project: Pick<ProjectSummary, "name"> | null,
-  session: Pick<ProjectSession, "teamId" | "teamWorkItemId">,
-  teams: readonly Pick<AgentTeam, "id" | "name">[],
-): ConversationPathScope {
-  if (project !== null) return { kind: "project", label: project.name };
-  if (session.teamId !== null && session.teamWorkItemId == null) {
-    return {
-      kind: "team",
-      label: teams.find((team) => team.id === session.teamId)?.name ?? "团队会话",
-    };
-  }
-  return { kind: "temporary", label: "临时对话" };
-}
-
-export type ConversationPathIconKind = "agent" | "conversation" | "subagent" | "team_lead";
-
-export function resolveConversationPathIconKind(
-  scope: ConversationPathScope["kind"],
-  session: Pick<ProjectSession, "avatarIcon" | "parentConversationId" | "threadKind">,
-): ConversationPathIconKind {
-  if (scope === "team") return "agent";
-  if (session.parentConversationId === null) {
-    return session.threadKind === "team_lead" ? "team_lead" : "conversation";
-  }
-  if (session.threadKind === "team_lead") return "team_lead";
-  return session.avatarIcon === null || session.avatarIcon === undefined
-    ? "subagent"
-    : "agent";
-}
 
 type ToolBatchTimelineItem = {
   batchId: string;
@@ -3347,11 +3312,6 @@ export function ConversationWorkspace({
         else onSessionSelected?.(target.id);
       },
   }), [conversationAgentAvatars, onOpenTeamConversation, onSessionSelected, relatedSessions, session]);
-  const pathScope = resolveConversationPathScope(project, session, teams);
-  const pathAgent = session.agentId === null
-    ? undefined
-    : agentProfiles.find((agent) => agent.id === session.agentId);
-  const pathIconKind = resolveConversationPathIconKind(pathScope.kind, session);
 
   const referenceTeamId = groupChat?.instanceId;
   const richReferenceWorkspaceId = referenceTeamId === undefined ? session.id : teamChatTabId(referenceTeamId);
@@ -3386,65 +3346,8 @@ export function ConversationWorkspace({
       onWheelCapture={markVisibleResult}
     >
       {groupChat !== null ? null : <header className="conversation-workspace__header">
-        <div className="conversation-workspace__path" aria-label="对话路径">
-          {pathScope.kind === "project" && project !== null ? (
-            <button
-              aria-label={`在左侧定位项目 ${project.name}`}
-              className="conversation-workspace__path-link conversation-workspace__path-link--project"
-              title={project.name}
-              type="button"
-              onClick={() => onLocateProject?.(project.id)}
-            >
-              <Folder aria-hidden="true" size={14} strokeWidth={1.75} />
-              <span>{project.name}</span>
-            </button>
-          ) : pathScope.kind === "team" ? (
-            <>
-              <span className="conversation-workspace__path-temporary whitespace-nowrap">
-                <UsersRound aria-hidden="true" size={16} />
-                团队
-              </span>
-              <ChevronRight aria-hidden="true" size={12} strokeWidth={1.75} />
-              <span
-                className="conversation-workspace__path-temporary conversation-workspace__path-team"
-                title={pathScope.label}
-              >
-                <span>{pathScope.label}</span>
-              </span>
-            </>
-          ) : (
-            <span className="conversation-workspace__path-temporary whitespace-nowrap">
-              <MessageSquareText aria-hidden="true" size={16} />
-              {pathScope.label}
-            </span>
-          )}
-          <ChevronRight aria-hidden="true" size={12} strokeWidth={1.75} />
-          <button
-            aria-label={`在左侧定位对话 ${session.title}`}
-            className="conversation-workspace__path-link conversation-workspace__path-link--conversation"
-            title={session.title}
-            type="button"
-            onClick={() => onLocateSession?.(session.id)}
-          >
-            {pathIconKind === "conversation" ? (
-              <MessageSquareText aria-hidden="true" size={14} strokeWidth={1.75} />
-            ) : pathIconKind === "team_lead" ? (
-              <Scale aria-label="Team Lead 对话" size={14} />
-            ) : pathIconKind === "agent" && pathAgent !== undefined ? (
-              <AgentAvatar avatar={pathAgent.avatar} size="compact" />
-            ) : pathIconKind === "agent"
-              && session.avatarIcon !== null
-              && session.avatarIcon !== undefined ? (
-              <AgentAvatar
-                avatar={{ icon: session.avatarIcon, kind: "icon" }}
-                size="compact"
-              />
-            ) : (
-              <SubagentAvatar icon={session.avatarIcon} seed={session.id} size="compact" />
-            )}
-            <h1 id={headingId}>{session.title}</h1>
-          </button>
-        </div>
+        <ConversationPath session={session} sessions={relatedSessions} project={project} agents={agentProfiles}
+          teams={teams} instances={teamInstances} headingId={headingId} onLocateProject={onLocateProject} onLocateSession={onLocateSession} />
         <TaskListLauncher agentClient={agentClient} scope={{ conversationId: session.id }} workspaceId={session.id} active={active} />
         {compact ? null : (
           <ConversationHeaderControls
@@ -4172,31 +4075,9 @@ export function ConversationWorkspace({
                     </SelectContent>
                   </Select>
                 )}
-                <Select
+                <ConversationPermissionSelect value={permissionMode}
                   disabled={isEndedSubagent || isSavingTeamPermission || isSavingCoordinationMode}
-                  value={permissionMode}
-                  onValueChange={selectPermissionMode}
-                >
-                  <SelectTrigger
-                    aria-label="权限模式"
-                    className="conversation-workspace__composer-select conversation-workspace__composer-select--permission"
-                    title={teamManaged && activeRunId !== null
-                      ? "已保存到团队工作项；将在下一次团队执行时生效"
-                      : undefined}
-                  >
-                    <ShieldCheck aria-hidden="true" size={14} />
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent
-                    align="start"
-                    className="conversation-workspace__permission-select-content"
-                    side="top"
-                  >
-                    <SelectItem value="read_only">规划</SelectItem>
-                    <SelectItem value="ask_before_changes">请求审批</SelectItem>
-                    <SelectItem value="full_access">完全访问</SelectItem>
-                  </SelectContent>
-                </Select>
+                  deferred={teamManaged && activeRunId !== null} onChange={selectPermissionMode} />
                 {!teamManaged && session.parentConversationId == null && session.teamId == null ? (
                   <button
                     type="button"
@@ -4206,7 +4087,7 @@ export function ConversationWorkspace({
                     className="inline-flex items-center gap-1 rounded-[var(--app-radius)] px-2 py-1 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)] aria-pressed:bg-[var(--app-hover)] aria-pressed:text-[var(--app-foreground)] disabled:opacity-50"
                     onClick={() => void toggleCoordinationMode()}
                   >
-                    <UsersRound aria-hidden="true" size={14} />
+                    <Workflow aria-hidden="true" size={14} />
                     快速协作
                   </button>
                 ) : null}

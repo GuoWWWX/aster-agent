@@ -1,4 +1,4 @@
-import { Scale, CalendarClock, PanelsTopLeft, Settings, UsersRound } from "lucide-react";
+import { CalendarClock, PanelsTopLeft, Settings, UsersRound } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
 import type {
@@ -16,8 +16,6 @@ import { moveTabId } from "../components/ui/tab-order.js";
 import { MediaPreviewDialogHost } from "../components/media/image-viewer.js";
 import { GlobalConversationSearchDialog } from "../features/chat/global-conversation-search-dialog.js";
 import {
-  resolveConversationPathIconKind,
-  resolveConversationPathScope,
   WorkspaceContent,
 } from "../features/chat/workspace-content.js";
 import {
@@ -32,7 +30,7 @@ import {
 } from "../features/projects/project-navigator.js";
 import { useProjectSessions } from "../features/projects/use-project-sessions.js";
 import { useProjectTree } from "../features/projects/use-project-tree.js";
-import { AgentAvatar, SubagentAvatar } from "../features/team/agent-avatar.js";
+import { conversationIdentity, ConversationIdentityIcon } from "../features/chat/conversation-identity.js";
 import {
   RightSidebarWorkspace,
   type GitReviewOpenRequest,
@@ -230,8 +228,6 @@ export function App(): ReactElement {
   }, [agentClient]);
 
   const conversationTabs = useMemo(() => {
-    const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
-    const projectsById = new Map(projectTree.projects.map((project) => [project.id, project]));
     return tabState.ids.flatMap<AppTitlebarConversationTab>((id) => {
       if (isFunctionTab(id)) return [{ id, isRunning: false, title: FUNCTION_TABS[id],
         icon: id === "page:schedules" ? <CalendarClock size={14} /> : id === "page:team" ? <PanelsTopLeft size={14} /> : <Settings size={14} />,
@@ -246,33 +242,20 @@ export function App(): ReactElement {
       if (session === undefined || session.isArchived) return [];
 
       const isRunning = isProjectSessionRunning(session);
-      const project = session.projectId === null
-        ? null
-        : projectsById.get(session.projectId) ?? null;
-      const scope = resolveConversationPathScope(project, session, teams);
-      const iconKind = resolveConversationPathIconKind(scope.kind, session);
-      const agent = session.agentId === null ? undefined : agentsById.get(session.agentId);
-      const icon = iconKind === "team_lead"
-        ? <Scale aria-label="Team Lead 对话" size={14} />
-        : iconKind === "agent" && agent !== undefined
-          ? <AgentAvatar avatar={agent.avatar} size="compact" status={isRunning ? "running" : "standby"} />
-          : iconKind === "agent" && session.avatarIcon !== null && session.avatarIcon !== undefined
-            ? <AgentAvatar avatar={{ icon: session.avatarIcon, kind: "icon" }} size="compact" status={isRunning ? "running" : "standby"} />
-            : iconKind === "subagent"
-              ? <SubagentAvatar icon={session.avatarIcon} seed={session.id} size="compact" status={isRunning ? "running" : "standby"} />
-              : undefined;
+      const identity = conversationIdentity(session, agents, teamInstances, projectSessions.sessions);
+      const icon = <ConversationIdentityIcon session={session} identity={identity} />;
 
       return [{
         id: session.id,
-        ...(icon === undefined ? {} : { icon }),
+        icon,
         isRunning,
         activeRunId: session.activeRunId,
-        title: session.title,
+        title: identity.title,
         kind: "conversation" as const,
         isPreview: tabState.previewId === session.id,
       }];
     });
-  }, [agents, tabState, projectSessions.sessions, projectTree.projects, teams, teamInstances]);
+  }, [agents, tabState, projectSessions.sessions, teamInstances]);
 
   useEffect(() => {
     let disposed = false;
@@ -711,7 +694,7 @@ export function App(): ReactElement {
         activeConversationId={teamChatTarget === null ? projectSessions.activeSessionId : teamChatTabId(teamChatTarget.instanceId)}
         activeTabId={activeTabId}
         titlebarActivity={<ConversationActivity agentClient={agentClient} sessions={projectSessions.sessions}
-          projects={projectTree.projects} onSelect={(id, timelineItemId, ownerConversationId) => {
+          projects={projectTree.projects} teamInstances={teamInstances} onSelect={(id, timelineItemId, ownerConversationId) => {
             const sideSession = ownerConversationId === undefined ? undefined
               : projectSessions.sessions.find((candidate) => candidate.id === id);
             if (sideSession !== undefined) {
@@ -856,6 +839,8 @@ export function App(): ReactElement {
           activeProject={sidebarProject}
           activeSession={sidebarSession}
           teamChat={activeTeamChat}
+          sessions={projectSessions.sessions}
+          teamInstances={teamInstances}
           agentClient={agentClient}
           fileOpenRequest={fileOpenRequest}
           gitReviewOpenRequest={gitReviewOpenRequest}

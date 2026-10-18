@@ -42,8 +42,6 @@ import {
   representativeToolName,
   reasoningEndpointColor,
   shouldShowFlagshipReasoningEnergy,
-  resolveConversationPathIconKind,
-  resolveConversationPathScope,
   resolveInitialConversationModelSelection,
   resolveSubmittedTeamGraphTitle,
   spawnSubagentActivity,
@@ -185,52 +183,6 @@ describe("Team WorkItem collaboration graph placement", () => {
     expect(resolveSubmittedTeamGraphTitle(workItem, [], [
       { id: workItem.teamId, name: "默认团队模板" },
     ])).toBe("默认团队模板 · Agent 协作图");
-  });
-});
-
-describe("conversation path scope", () => {
-  it("shows a shared team member conversation under the team hierarchy", () => {
-    expect(resolveConversationPathScope(
-      null,
-      { teamId: "team-default", teamWorkItemId: null },
-      [{ id: "team-default", name: "默认团队" }],
-    )).toEqual({ kind: "team", label: "默认团队" });
-  });
-
-  it("keeps ordinary project and temporary conversation paths unchanged", () => {
-    expect(resolveConversationPathScope(
-      { name: "Demo" },
-      { teamId: "team-default", teamWorkItemId: null },
-      [{ id: "team-default", name: "默认团队" }],
-    )).toEqual({ kind: "project", label: "Demo" });
-    expect(resolveConversationPathScope(
-      null,
-      { teamId: null, teamWorkItemId: null },
-      [],
-    )).toEqual({ kind: "temporary", label: "临时对话" });
-  });
-
-  it("uses the same icon categories as the conversation tree", () => {
-    expect(resolveConversationPathIconKind("project", {
-      avatarIcon: "sparkles",
-      parentConversationId: null,
-      threadKind: "agent",
-    })).toBe("conversation");
-    expect(resolveConversationPathIconKind("team", {
-      avatarIcon: "sparkles",
-      parentConversationId: null,
-      threadKind: "agent",
-    })).toBe("agent");
-    expect(resolveConversationPathIconKind("project", {
-      avatarIcon: "sparkles",
-      parentConversationId: "source",
-      threadKind: "agent",
-    })).toBe("agent");
-    expect(resolveConversationPathIconKind("project", {
-      avatarIcon: null,
-      parentConversationId: "source",
-      threadKind: "team_lead",
-    })).toBe("team_lead");
   });
 });
 

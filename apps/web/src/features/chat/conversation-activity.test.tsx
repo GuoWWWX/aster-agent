@@ -33,6 +33,28 @@ it("prioritizes approval and does not duplicate aggregate parent activity", () =
   expect(rows.map(({ session: item, group }) => [item.id, group])).toEqual([["a", "待处理"], ["b", "未读"], ["c", "进行中"]]);
 });
 
+it("counts multiple pending subagent tools as one blue parent activity row", async () => {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  const client = new MockAgentClient();
+  let listener: ((event: ConversationRunEvent) => void) | undefined;
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { listener = callback; return () => {}; });
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => { root?.render(<ConversationActivity agentClient={client} projects={[]} sessions={[
+    session("main"), session("worker", { parentConversationId: "main", threadKind: "subagent" }),
+  ]} onSelect={vi.fn()} />); await Promise.resolve(); });
+  act(() => {
+    for (const id of ["first", "second"]) listener?.({ type: "tool.approval_requested", conversationId: "worker", runId: "run", tool: {
+      ...tool, id, conversationId: "worker", runId: "run", status: "awaiting_approval",
+    } });
+  });
+  expect(container.querySelector("button")?.getAttribute("aria-label")).toContain("1 个待处理，其中 1 个审批");
+  act(() => container.querySelector<HTMLButtonElement>("button")?.click());
+  const row = document.querySelector('[aria-label="main，等待审批"]');
+  expect(row).not.toBeNull();
+  expect(row?.querySelector('[aria-label="等待审批"]')?.className).toContain("--app-accent");
+  expect(document.querySelectorAll('section[aria-label="待处理"] > div')).toHaveLength(1);
+});
+
 it("clears approval when tool resumes and removes finished runs", () => {
   const running = updateActivityTools({ tool }, { type: "tool.started", conversationId: "a", runId: "run", tool: { ...tool, status: "running" } });
   expect(conversationActivityRows([session("a", { activeRunId: "run" })], running)[0]?.status).toBe("执行工具");
@@ -77,7 +99,8 @@ it("opening/searching the list never marks results read; selection only navigate
   act(() => container.querySelector<HTMLButtonElement>("button")?.click());
   expect(document.body.textContent).toContain("未读示例");
   expect(container.querySelector("button")?.getAttribute("aria-label")).toBe("对话动态，1 个未读");
-  expect(document.body.textContent).toContain("侧边未读 · 有新回复");
+  expect(document.body.textContent).not.toContain("临时对话 · 有新回复");
+  expect(document.querySelector('[aria-label="未读示例，有新回复"]')).not.toBeNull();
   expect(document.body.textContent).not.toContain("自动子代理");
   expect(mark).not.toHaveBeenCalled();
   const row = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("未读示例"));
@@ -107,10 +130,10 @@ it("hydrates existing approvals without losing events arriving during the read",
   act(() => listener?.({ type: "tool.completed", conversationId: "a", runId: "run", tool: { ...tool, status: "completed" } }));
   await act(async () => { resolvePage?.({ hasMore: false, nextBeforeSequence: null, items: [tool, { ...tool, id: "still-pending" }] }); await Promise.resolve(); });
   act(() => container.querySelector<HTMLButtonElement>("button")?.click());
-  expect(document.body.textContent).toContain("等待审批");
+  expect(document.querySelector('[aria-label$="，等待审批"]') ?? document.querySelector('[aria-label="待处理"]')).not.toBeNull();
   act(() => listener?.({ type: "tool.started", conversationId: "a", runId: "run", tool: { ...tool, id: "still-pending", status: "running" } }));
-  expect(document.body.textContent).not.toContain("等待审批");
-  expect(document.body.textContent).toContain("执行工具");
+  expect(document.querySelector('[aria-label$="，等待审批"]')).toBeNull();
+  expect(document.querySelector('[aria-label$="，执行工具"]')).not.toBeNull();
 });
 
 it("shows a live subagent approval before its session loads, then routes to its root", async () => {
@@ -140,7 +163,7 @@ it("shows a live subagent approval before its session loads, then routes to its 
   select.mockClear();
   act(() => trigger?.click());
   expect(document.body.textContent).toContain("待处理 · 1");
-  expect(document.body.textContent).toContain("等待审批");
+  expect(document.querySelector('[aria-label$="，等待审批"]') ?? document.querySelector('[aria-label="待处理"]')).not.toBeNull();
   expect(document.body.textContent).toContain("审批");
   expect(document.body.textContent).toContain("正在同步对话");
   act(() => trigger?.click());

@@ -58,7 +58,7 @@ it("opens a routing result in the ordinary coordination sidebar while keeping th
   await act(async () => { document.querySelector<HTMLButtonElement>('[aria-label="查看这条消息的完整协调对话"]')!.click(); await flush(); });
   expect(container.querySelector('.workbench-main [aria-label="团队群聊"]')).toBe(group);
   expect(composer.value).toBe("保留群聊草稿");
-  expect(container.querySelectorAll(`.right-sidebar-workspace [role="tab"][title="${coordinator.title}"]`)).toHaveLength(1);
+  expect(container.querySelectorAll(`.right-sidebar-workspace [role="tab"][aria-label="${coordinator.title}"]`)).toHaveLength(1);
   await act(async () => { container.querySelector<HTMLButtonElement>('.right-sidebar-workspace .conversation-run-activity > button')!.click(); await flush(); });
   expect(container.querySelector('.right-sidebar-workspace .tool-activity-row')?.textContent).toContain(tool.name);
   expect(container.querySelectorAll('[aria-label="输入任务"]')).toHaveLength(2);
@@ -161,7 +161,7 @@ it.each([true, false])("opens a group member's process only beside the group and
     expect(useWorkbenchUiStore.getState().filePanelOpenByConversationId[teamChatTabId(instance.id)]).toBe(true);
     expect(container.querySelector('.workbench-main [aria-label="团队群聊"]')).toBe(group);
     expect(composer.value).toBe("尚未发送的群消息");
-    expect(container.querySelectorAll(`.right-sidebar-workspace [role="tab"][title="${conversation.title}"]`)).toHaveLength(1);
+    expect(container.querySelectorAll(`.right-sidebar-workspace [role="tab"][aria-label="${conversation.title}"]`)).toHaveLength(1);
     expect(container.querySelector('.right-sidebar-workspace')?.textContent).toContain(source.content);
     expect(container.querySelectorAll(`[data-conversation-timeline-item="${source.id}"]`)).toHaveLength(1);
   }

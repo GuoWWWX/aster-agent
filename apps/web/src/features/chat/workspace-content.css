@@ -1159,7 +1159,7 @@
 }
 
 .tool-activity-batch__execution--approval {
-  color: var(--app-status-danger-fg);
+  color: var(--app-accent);
 }
 
 .tool-activity-batch__toggle {
@@ -2966,11 +2966,6 @@ button.tool-file-change__path:hover {
 .conversation-workspace__reasoning-option-list button:focus-visible {
   outline: 2px solid var(--app-focus-ring);
   outline-offset: -2px;
-}
-
-.conversation-workspace__permission-select-content {
-  width: max(132px, var(--radix-select-trigger-width));
-  max-width: min(180px, calc(100vw - 16px));
 }
 
 .conversation-workspace__agent-select-content {

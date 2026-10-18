@@ -702,7 +702,8 @@ describe("Automatic continuation answer", () => {
     await act(async () => { toggle?.click(); await flushConversationWorkspace(); });
     expect(save).toHaveBeenLastCalledWith({ conversationId: conversation.id, permissionMode: "full_access", coordinationMode: "parallel_queue" });
     expect(toggle?.getAttribute("aria-pressed")).toBe("true");
-    expect(container.querySelector('[aria-label="权限模式"]')?.textContent).toContain("完全访问");
+    expect(container.querySelector('[aria-label="权限模式"]')?.textContent).toBe("");
+    expect(container.querySelector('[aria-label="权限模式"]')?.getAttribute("data-permission-mode")).toBe("full_access");
     await act(async () => { toggle?.click(); await flushConversationWorkspace(); });
     expect(save).toHaveBeenLastCalledWith({ conversationId: conversation.id, permissionMode: "full_access", coordinationMode: "direct" });
     expect(toggle?.getAttribute("aria-pressed")).toBe("false");
