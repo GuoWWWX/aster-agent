@@ -19,7 +19,6 @@ const prepared: ToolExecution = { content: "prepared", isError: false, kind: "co
 
 function deferred<T>() {
   let resolve: (value: T) => void = () => undefined;
-  let reject: (reason: unknown) => void = () => undefined;
   const promise = new Promise<T>(done => { resolve = done; });
   return { promise, resolve };
 }
