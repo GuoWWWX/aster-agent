@@ -182,6 +182,8 @@ export class AgentDatabase {
   private readonly terminalResults = new Map<string, string | null>();
   private readonly taskLists = new Map<string, ConversationTaskList>();
   private taskListRollback: Map<string, ConversationTaskList | undefined> | null = null;
+  private executionPausedRollback: Map<string, boolean> | null = null;
+  private terminalResultRollback: Map<string, string | null | undefined> | null = null;
   private readonly projectionEvents = new Map<string, ThreadLogProjectionEvent[]>();
   private readonly projectionEventOwners = new Map<string, string>();
   private readonly database: SqliteDatabase;
@@ -3666,8 +3668,7 @@ export class AgentDatabase {
 
   public setConversationExecutionPaused(conversationId: string, paused: boolean): void {
     this.getConversation(conversationId);
-    if (paused) this.executionPaused.add(conversationId);
-    else this.executionPaused.delete(conversationId);
+    this.writeExecutionPaused(conversationId, paused);
   }
 
   public getRunConversationId(runId: string): string | null {
@@ -4019,9 +4020,9 @@ export class AgentDatabase {
       this.database.prepare("DELETE FROM conversation_deletion_tasks WHERE id = ?")
         .run(task.id);
     });
-    for (const runId of runIds) this.terminalResults.delete(runId);
+    for (const runId of runIds) this.writeTerminalResult(runId, undefined);
     for (const id of task.conversationIds) {
-      this.executionPaused.delete(id);
+      this.writeExecutionPaused(id, false);
       this.clearThreadLogProjection(id);
     }
   }
@@ -5752,7 +5753,7 @@ export class AgentDatabase {
       if (runConversationId !== input.conversationId) {
         throw new Error("The Run does not belong to the conversation.");
       }
-      this.terminalResults.set(input.runId, terminalReceiptSummary(input.result));
+      this.writeTerminalResult(input.runId, terminalReceiptSummary(input.result));
 
       const assistantMessage = this.runEvents.appendTerminalAssistant(input);
 
@@ -6822,7 +6823,7 @@ export class AgentDatabase {
           if (runId === null || !status.success || status.data === "queued" || status.data === "running") {
             continue;
           }
-          this.terminalResults.set(runId, terminalReceiptSummary(readProjectionString(payload, "result")));
+          this.writeTerminalResult(runId, terminalReceiptSummary(readProjectionString(payload, "result")));
           this.database
             .prepare("UPDATE runs SET status = ?, error = ?, updated_at = ? WHERE id = ?")
             .run(status.data, readProjectionString(payload, "error"), event.createdAt, runId);
@@ -7313,7 +7314,7 @@ export class AgentDatabase {
     if (row === undefined || asString(row, "conversation_id") !== conversationId) {
       throw new Error("ThreadLog terminal Run does not belong to the conversation.");
     }
-    this.terminalResults.set(runId, terminalReceiptSummary(readProjectionString(payload, "result")));
+    this.writeTerminalResult(runId, terminalReceiptSummary(readProjectionString(payload, "result")));
     const currentStatus = conversationRunStatusSchema.parse(asString(row, "status"));
     if (currentStatus !== status.data) {
       if (!RUN_STATUS_TRANSITIONS[currentStatus].includes(status.data)) {
@@ -7598,7 +7599,7 @@ export class AgentDatabase {
     for (const questionAnswerId of state.deliveredQuestionIds) this.userQuestions.apply(conversationId, { type: "run_queued", payload: { questionAnswerId } });
     for (const result of state.terminalResults) {
       if (this.getRunConversationId(result.runId) !== conversationId) throw new Error("Terminal result belongs to another conversation.");
-      this.terminalResults.set(result.runId, result.result);
+      this.writeTerminalResult(result.runId, result.result);
     }
     this.setConversationExecutionPaused(conversationId, state.executionPaused);
     this.restoreConversationPropertySnapshot(conversationId, conversationPropertiesChangedPayloadSchema.parse({
@@ -8054,22 +8055,53 @@ export class AgentDatabase {
   }
 
 
+  private writeExecutionPaused(conversationId: string, paused: boolean): void {
+    if (this.executionPausedRollback !== null && !this.executionPausedRollback.has(conversationId)) {
+      this.executionPausedRollback.set(conversationId, this.executionPaused.has(conversationId));
+    }
+    if (paused) this.executionPaused.add(conversationId);
+    else this.executionPaused.delete(conversationId);
+  }
+
+  private writeTerminalResult(runId: string, result: string | null | undefined): void {
+    if (this.terminalResultRollback !== null && !this.terminalResultRollback.has(runId)) {
+      this.terminalResultRollback.set(runId, this.terminalResults.get(runId));
+    }
+    if (result === undefined) this.terminalResults.delete(runId);
+    else this.terminalResults.set(runId, result);
+  }
+
   private withTransaction<T>(operation: () => T): T {
     this.database.exec("BEGIN IMMEDIATE;");
     this.taskListRollback = this.volatileConversationProjectionActive ? new Map() : null;
+    this.executionPausedRollback = new Map();
+    this.terminalResultRollback = new Map();
     try {
       const result = operation();
       this.database.exec("COMMIT;");
       return result;
     } catch (error) {
-      this.database.exec("ROLLBACK;");
-      for (const [id, previous] of this.taskListRollback ?? []) {
-        if (previous === undefined) this.taskLists.delete(id);
-        else this.taskLists.set(id, previous);
+      try {
+        this.database.exec("ROLLBACK;");
+      } finally {
+        for (const [id, previous] of this.taskListRollback ?? []) {
+          if (previous === undefined) this.taskLists.delete(id);
+          else this.taskLists.set(id, previous);
+        }
+        for (const [id, paused] of this.executionPausedRollback ?? []) {
+          if (paused) this.executionPaused.add(id);
+          else this.executionPaused.delete(id);
+        }
+        for (const [id, previous] of this.terminalResultRollback ?? []) {
+          if (previous === undefined) this.terminalResults.delete(id);
+          else this.terminalResults.set(id, previous);
+        }
       }
       throw error;
     } finally {
       this.taskListRollback = null;
+      this.executionPausedRollback = null;
+      this.terminalResultRollback = null;
     }
   }
 }
