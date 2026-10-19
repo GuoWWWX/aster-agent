@@ -29,6 +29,7 @@ export const agentPermissionToolSchema = z.enum([
   "run_command",
   "write_file",
   "web_search",
+  "generate_images",
 ]);
 
 export const agentPermissionRuleSchema = z

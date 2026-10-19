@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { imageGenerationResultSchema } from "@agent/protocol";
 import { UserQuestionProjection } from "./user-question-projection.js";
 import { userQuestionSchema, type UserQuestion } from "@agent/protocol";
 import { existsSync } from "node:fs";
@@ -134,6 +135,14 @@ export type CancelledPendingMessageAttachmentCleanup = {
 };
 
 const toolScreenshotPayloadSchema = z.object({ ok: z.literal(true), value: z.object({ image: conversationAttachmentSchema }).passthrough() });
+
+function toolGeneratedImages(item: ConversationTimelineItem): ConversationAttachment[] {
+  if (item.kind !== "tool" || item.name !== "generate_images" || item.result === null) return [];
+  try {
+    const result = imageGenerationResultSchema.safeParse(JSON.parse(item.result));
+    return result.success ? result.data.value.images.filter(image => image.source === "generated" && image.conversationId === item.conversationId && image.messageId === item.id) : [];
+  } catch { return []; }
+}
 
 function toolScreenshotImage(item: ConversationTimelineItem): ConversationAttachment | null {
   if (item.kind !== "tool" || (item.name !== "browser_control" && item.name !== "computer_use") || item.result === null) return null;
@@ -4505,7 +4514,7 @@ export class AgentDatabase {
       );
       const screenshotIds = new Set(sourceTimelineItems.flatMap((item) => {
         const image = toolScreenshotImage(item);
-        return image === null ? [] : [image.id];
+        return [...(image === null ? [] : [image.id]), ...toolGeneratedImages(item).map(image => image.id)];
       }));
       const sourceAttachments = this.listStoredAttachments(
         "conversation_id = ? AND message_id IS NOT NULL",
@@ -4544,6 +4553,7 @@ export class AgentDatabase {
 
       // Visible fork history is an independent snapshot. IDs are remapped so later
       // edits and forks operate only on the new conversation.
+      const generatedToolResults = new Map<string, string>();
       for (const sourceItem of sourceTimelineItems) {
         const copiedId = timelineItemIdMap.get(sourceItem.id);
         if (copiedId === undefined) {
@@ -4588,6 +4598,12 @@ export class AgentDatabase {
           ...sourceItem,
           conversationId: conversation.id,
           id: copiedId,
+          ...(sourceItem.kind === "tool" && toolGeneratedImages(sourceItem).length > 0 ? { result: (() => {
+            const result = imageGenerationResultSchema.parse(JSON.parse(sourceItem.result!));
+            const content = JSON.stringify({ ...result, value: { ...result.value, images: result.value.images.map(image => ({ ...image, id: attachmentIdMap.get(image.id), conversationId: conversation.id, messageId: copiedId })) } });
+            generatedToolResults.set(sourceItem.result!, content);
+            return content;
+          })() } : {}),
           ...(sourceItem.kind === "tool" && toolScreenshotImage(sourceItem) !== null ? {
             result: remapToolScreenshot(sourceItem, conversation.id, copiedId, attachmentIdMap),
           } : {}),
@@ -4608,7 +4624,7 @@ export class AgentDatabase {
           conversation.id,
           forkedRunId(asNullableString(message, "run_id")),
           asString(message, "role"),
-          asString(message, "content"),
+          generatedToolResults.get(asString(message, "content")) ?? asString(message, "content"),
           asString(message, "tool_calls_json"),
           asNullableString(message, "tool_call_id"),
           JSON.stringify(
@@ -8026,6 +8042,7 @@ export class AgentDatabase {
         for (const item of event.payload.timeline) {
           const tool = conversationToolItemSchema.safeParse(item);
           const image = tool.success ? toolScreenshotImage(tool.data) : null;
+          for (const generated of tool.success ? toolGeneratedImages(tool.data) : []) if (generated.conversationId === conversationId) byId.set(generated.id, generated);
           if (image !== null && image.conversationId === conversationId) byId.set(image.id, image);
           const message = conversationMessageItemSchema.safeParse(item);
           if (!message.success) continue;

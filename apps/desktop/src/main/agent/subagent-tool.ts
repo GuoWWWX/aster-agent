@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   agentAvatarIconSchema,
   isReasoningOptionEnabled,
+  isImageGenerationModel,
   modelReasoningOptionSchema,
   type AgentAvatarIcon,
   type ConversationModelSelection,
@@ -249,7 +250,7 @@ export class SubagentTool {
           emptyArgumentsSchema.parse(argumentsValue);
           const status = this.getModelStatus?.();
           if (status === undefined) throw new Error("The model catalog is unavailable.");
-          const models = [...status.models].sort((left, right) => {
+          const models = status.models.filter(model => !isImageGenerationModel(model)).sort((left, right) => {
             const statusOrder = { healthy: 0, unknown: 1, error: 2 } as const;
             const byStatus = statusOrder[left.connectionStatus] - statusOrder[right.connectionStatus];
             if (byStatus !== 0) return byStatus;

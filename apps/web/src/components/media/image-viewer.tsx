@@ -112,7 +112,11 @@ export function MediaPreviewDialog({ open, onOpenChange, src, alt, title }: { op
       <DialogContent
         aria-describedby={undefined}
         className="left-0 top-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col overflow-hidden rounded-none bg-transparent p-0 shadow-none sm:max-w-none [&_[data-slot=dialog-close]]:right-4 [&_[data-slot=dialog-close]]:top-4 [&_[data-slot=dialog-close]]:z-30 [&_[data-slot=dialog-close]]:size-10 [&_[data-slot=dialog-close]]:rounded-full [&_[data-slot=dialog-close]]:bg-black/60 [&_[data-slot=dialog-close]]:text-zinc-200 [&_[data-slot=dialog-close]]:backdrop-blur-md [&_[data-slot=dialog-close]]:hover:bg-black/80 [&_[data-slot=dialog-close]]:hover:text-white"
-        overlayClassName="bg-black/85 backdrop-blur-[2px]"
+        overlayClassName="bg-transparent"
+        onClickCapture={event => {
+          const target = event.target;
+          if (target instanceof HTMLElement && target.closest("img, button, input, select, textarea") === null) onOpenChange(false);
+        }}
       >
         <DialogTitle className="sr-only">{title ?? alt ?? "图片预览"}</DialogTitle>
         <DialogDescription className="sr-only">可缩放的图片预览</DialogDescription>

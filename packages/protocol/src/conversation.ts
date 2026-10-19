@@ -122,7 +122,7 @@ export const conversationAttachmentSchema = z
     name: z.string().trim().min(1).max(255),
     projectPath: z.string().trim().min(1).max(4_096).nullable(),
     sizeBytes: z.number().int().nonnegative().max(MAX_ATTACHMENT_BYTES),
-    source: z.enum(["project", "upload", "browser", "computer"]),
+    source: z.enum(["project", "upload", "browser", "computer", "generated"]),
     truncated: z.boolean()
   })
   .strict();
@@ -738,6 +738,7 @@ export const modelConnectionStatusSchema = z.enum(["unknown", "healthy", "error"
 
 export const modelProfileSchema = z
   .object({
+    modelType: z.enum(["chat", "image"]).optional(),
     connectionStatus: modelConnectionStatusSchema.default("unknown"),
     connectionStatusUpdatedAt: isoTimestampSchema.nullable().default(null),
     contextCompression: contextCompressionThresholdSchema.optional(),
@@ -758,6 +759,7 @@ export const modelProfileSchema = z
 
 export const discoveredModelSchema = z
   .object({
+    modelType: z.enum(["chat", "image"]).optional(),
     modelId: z.string().trim().min(1).max(200),
     ownedBy: z.string().trim().min(1).max(200).nullable()
   })
@@ -793,6 +795,7 @@ export const saveModelConfigurationInputSchema = z
     models: z
       .array(
         modelProfileSchema.pick({
+          modelType: true,
           contextCompression: true,
           contextWindow: true,
           displayName: true,

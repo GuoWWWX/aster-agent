@@ -1,3 +1,6 @@
+import { imageGenerationResultSchema, isImageGenerationModel } from "@agent/protocol";
+import { ImageGenerationTool } from "../tools/image-generation-tool.js";
+import path from "node:path";
 import type { PostTeamChatInput, TeamChatMessage } from "@agent/protocol";
 import { CollaborationTool } from "./collaboration-tool.js";
 import { HtmlPresentationTool } from "../tools/html-presentation-tool.js";
@@ -838,7 +841,7 @@ const langChainToolResultEnvelopeSchema = z
       name: z.string().min(1),
       projectPath: z.string().nullable(),
       readState: z.enum(["full", "metadata_only", "preview"]),
-      source: z.enum(["browser", "project", "upload", "computer"]),
+      source: z.enum(["browser", "project", "upload", "computer", "generated"]),
       truncated: z.boolean(),
     }).strict()).max(4).optional(),
     status: z.literal("rejected").optional(),
@@ -1052,6 +1055,7 @@ export class AgentRuntime {
   private readonly taskListTool: TaskListTool;
 
   private readonly attachmentTool: ConversationAttachmentTool | null;
+  private readonly imageGenerationTool: ImageGenerationTool | null;
 
   private readonly agentCommunicationTool: AgentCommunicationTool;
   private readonly referenceHistory: ConversationReferenceHistory;
@@ -1149,6 +1153,10 @@ export class AgentRuntime {
       return this.teamWorkItemDispatcher.resizeWorkers(input);
     });
     const getModelStatus = credentials.getStatus;
+    this.imageGenerationTool = attachments === null || getModelStatus === undefined ? null : new ImageGenerationTool({
+      getStatus: () => getModelStatus.call(credentials),
+      getConfiguration: (providerId, modelId) => credentials.getConfiguration(providerId, modelId),
+    }, attachments);
     this.subagentTool = new SubagentTool(
       database,
       getModelStatus === undefined ? undefined : () => getModelStatus.call(credentials),
@@ -1554,6 +1562,33 @@ export class AgentRuntime {
           return this.skillRuntime.getExecutionPolicy(toolName);
         },
         isAvailable: () => true,
+      });
+    }
+    if (this.imageGenerationTool !== null) {
+      handlers.push({
+        getDefinitions: () => this.imageGenerationTool?.getDefinitions() ?? [],
+        isAvailable: () => true,
+        getExecutionPolicy: () => ({ kind: "serial" }),
+        execute: ({ context, rawArguments }) => {
+          const skillContext = this.skillRuntimeContext(this.database.getConversation(context.conversationId), context.projectId);
+          const skill = this.skillRuntime?.getCatalog(skillContext).find(entry => entry.name === "imagegen");
+          if (skill === undefined || !this.activeSkillRefsByRun.get(context.runId)?.has(skill.id)) throw new Error("请先加载当前可用的 imagegen Skill，再生成图片。");
+          const images: ConversationAttachment[] = [];
+          const result = this.imageGenerationTool?.prepare(rawArguments, context.conversationId, context.providerId ?? null, context.signal, async (image, metadata) => {
+            const key = `${context.runId}:${context.toolCallId}`;
+            const tool = this.startedToolsByRunCall.get(key);
+            if (tool === undefined || this.attachments === null) throw new Error("生图调用已失效。");
+            const attachment = await this.attachments.saveGeneratedImage(context.conversationId, tool.id, image);
+            images.push(attachment);
+            const progress = { ...tool, result: JSON.stringify({ ok: true, value: { ...metadata, images, count: images.length,
+              readPaths: images.map(saved => `attachments/${path.basename(this.attachments!.resolveThreadLogPaths(saved).storedPath)}`) } }) };
+            this.startedToolsByRunCall.set(key, progress);
+            this.persistRuntimeActivity(progress, context.emit);
+            return attachment;
+          });
+          if (result === undefined) throw new Error("生图工具不可用。");
+          return Promise.resolve(result);
+        },
       });
     }
     handlers.push({
@@ -2140,6 +2175,7 @@ export class AgentRuntime {
       input.providerId,
       input.modelId
     );
+    if (isImageGenerationModel(storedConfiguration)) throw new Error("生图模型不能作为对话模型，请选用对话模型并通过 imagegen 技能生成图片。");
     const configuration = {
       ...storedConfiguration,
       modelId: input.modelId ?? storedConfiguration.modelId
@@ -4860,10 +4896,14 @@ export class AgentRuntime {
               })
           : proposal;
       }
+      if (input.toolCall.name === "generate_images") {
+        const result = imageGenerationResultSchema.safeParse(JSON.parse(execution.content));
+        if (result.success) toolImageRefs.push(...result.data.value.images);
+      }
       if (!execution.isError && this.attachments !== null && ["browser_control", "computer_use", "present_html"].includes(input.toolCall.name)) {
         const screenshots = execution.modelAttachments?.filter((image) => (image.source === "browser" || image.source === "computer") && image.kind === "image") ?? [];
         for (const screenshot of screenshots) if (screenshot.kind === "image" && screenshot.data !== null) {
-          const image = await this.attachments.saveToolScreenshot(input.conversationId, startedTool.id, { ...screenshot, data: screenshot.data });
+          const image = await this.attachments.saveToolScreenshot(input.conversationId, startedTool.id, { ...screenshot, source: screenshot.source === "computer" ? "computer" : "browser", data: screenshot.data });
           toolImageRefs.push(image);
         }
         if (toolImageRefs.length > 0) {
@@ -4876,6 +4916,9 @@ export class AgentRuntime {
       // suspend/resume or terminate the run. Other tool failures are turned
       // into a bounded ToolMessage and persisted as a failed tool row.
       if (input.controller.signal.aborted || isAbortError(error) || isGraphInterrupt(error)) {
+        if (input.toolCall.name === "generate_images" && !isGraphInterrupt(error)) {
+          this.persistRuntimeActivity({ ...(this.startedToolsByRunCall.get(key) ?? startedTool), status: "cancelled" }, input.emit);
+        }
         throw error;
       }
       execution = {
@@ -4998,6 +5041,7 @@ export class AgentRuntime {
   }
 
   private permissionPolicyFor(toolName: string): PermissionPolicy {
+    if (toolName === "generate_images") return "ask";
     if (toolName === "web_search") return "ask";
     const policies = this.applicationSettings?.getConfiguration().permissionPolicies
       ?? DEFAULT_APPLICATION_PERMISSION_POLICIES;
@@ -5937,8 +5981,9 @@ export class AgentRuntime {
     tool: ConversationToolItem,
     emit: RunEventEmitter,
   ): void {
+    const generated = tool.name === "generate_images" && tool.result !== null ? imageGenerationResultSchema.safeParse(JSON.parse(tool.result)) : null;
     const event = {
-      payload: { runId: tool.runId, tool, toolId: tool.id },
+      payload: { runId: tool.runId, tool, toolId: tool.id, ...(generated?.success ? { attachmentRefs: generated.data.value.images } : {}) },
       type: "runtime_activity_updated" as const,
     };
     if (this.threadLog !== null && this.eventProjector !== null) {

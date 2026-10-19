@@ -686,3 +686,6 @@ export * from "./background-command.js";
 export * from "./task-context.js";
 export * from "./team-chat.js";
 export * from "./computer-use.js";
+export { isImageGenerationModel } from "./model-purpose.js";
+
+export { imageGenerationResultSchema } from "./image-generation.js";
