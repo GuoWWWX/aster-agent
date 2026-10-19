@@ -32,6 +32,7 @@ import {
 } from "../settings/json-configuration-file.js";
 import { SettingsJsoncFile } from "../settings/settings-jsonc-file.js";
 import { ModelAdapterRegistry } from "./model-adapter-registry.js";
+import { ModelGateway } from "./model-gateway.js";
 import type { ModelConfiguration, ModelContextConfiguration } from "./model-contracts.js";
 import { ModelResponseError } from "./model-request-error.js";
 
@@ -595,9 +596,9 @@ export class ModelCredentialStore {
         return { modelId, content: "已在供应商模型列表中找到此生图模型；未执行付费生成。请在对话中生成图片验证实际生图能力。" };
       }
       let receivedReasoning = false;
-      const result = await new ModelAdapterRegistry().completeTurn({
+      const result = await new ModelGateway(new ModelAdapterRegistry()).completeBackgroundTurn({
+        purpose: "connection_test",
         configuration,
-        maxOutputTokens: 64,
         messages: [{
           attachments: [],
           content: "hi!",
@@ -609,9 +610,7 @@ export class ModelCredentialStore {
           if (delta.trim().length > 0) receivedReasoning = true;
         },
         onTextDelta: () => undefined,
-        reasoning: undefined,
         signal: AbortSignal.timeout(20_000),
-        tools: [],
       });
       const content = result.content.trim();
       if (content.length === 0 && !receivedReasoning) {

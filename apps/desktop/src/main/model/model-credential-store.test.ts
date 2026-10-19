@@ -296,6 +296,25 @@ describe("ModelCredentialStore", () => {
     expect(requestCall?.[1]?.body).toContain(requestBodyFragment);
   });
 
+  it("tests the chosen configured model using its lowest enabled reasoning", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-credentials-"));
+    temporaryDirectories.push(directory);
+    const store = new ModelCredentialStore(path.join(directory, "model-credentials.json"));
+    const status = store.saveConfiguration({ apiKey: "test-key", apiFormat: "openai-responses", baseUrl: "https://selected.invalid/v1", providerName: "selected",
+      models: [{ modelId: "chosen-model", displayName: "chosen", contextWindow: 128000,
+        reasoningOptions: [{ kind: "effort", value: "none", enabled: false }, { kind: "effort", value: "medium" }, { kind: "effort", value: "low" }] }] });
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(CONNECTION_TEST_CASES.find(item => item.apiFormat === "openai-responses")!.responseBody,
+      { headers: { "Content-Type": "text/event-stream" }, status: 200 }));
+    vi.stubGlobal("fetch", request);
+    await store.testModelConnection(status.providerId!, "chosen-model");
+    expect(request.mock.calls[0]?.[0]).toBe("https://selected.invalid/v1/responses");
+    const body = request.mock.calls[0]?.[1]?.body;
+    expect(body).toContain('"model":"chosen-model"');
+    expect(body).toContain('"effort":"low"');
+    expect(body).toContain('"max_output_tokens":1024');
+    expect(request).toHaveBeenCalledOnce();
+  });
+
   it("marks an empty model reply as a model-response failure", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-model-credentials-"));
     temporaryDirectories.push(directory);

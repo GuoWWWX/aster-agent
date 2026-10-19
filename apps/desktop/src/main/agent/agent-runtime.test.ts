@@ -1617,6 +1617,7 @@ class FixtureContextCompactor implements ContextCompactor {
 
 class AutoReviewCommandFixtureModel implements ModelProviderAdapter {
   public reviewRequests = 0;
+  public readonly requests: CompleteTurnInput[] = [];
   private mainTurns = 0;
 
   public constructor(
@@ -1625,6 +1626,7 @@ class AutoReviewCommandFixtureModel implements ModelProviderAdapter {
   ) {}
 
   public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.requests.push(input);
     if (input.messages[0]?.content.includes("security reviewer for a local coding Agent")) {
       this.reviewRequests += 1;
       return Promise.resolve({
@@ -8292,7 +8294,7 @@ describe("AgentRuntime", () => {
           apiFormat: "openai-chat-completions",
           baseUrl: "https://example.test/v1",
           modelId: "test-model",
-          reasoningOptions: [],
+          reasoningOptions: [{ kind: "effort", value: "low" }, { kind: "effort", value: "medium" }],
         }),
       },
       projects,
@@ -8314,6 +8316,7 @@ describe("AgentRuntime", () => {
         content: "在本地输出测试文字",
         conversationId: conversation.id,
         permissionMode: "ask_before_changes",
+        reasoning: { kind: "effort", value: "medium" },
       }, (event) => {
         events.push(event);
         if (event.type === "run.finished") resolve();
@@ -8321,6 +8324,9 @@ describe("AgentRuntime", () => {
     });
 
     expect(model.reviewRequests).toBe(1);
+    const review = model.requests.find(input => input.messages[0]?.content.includes("security reviewer for a local coding Agent"));
+    expect(review).toMatchObject({ reasoning: { kind: "effort", value: "low" }, tools: [], maxOutputTokens: 1024 });
+    expect(model.requests[0]?.reasoning).toEqual({ kind: "effort", value: "medium" });
     expect(events.filter((event) => event.type === "tool.approval_requested")).toHaveLength(0);
     expect(database.listTimeline(conversation.id).find(
       (item) => item.kind === "tool" && item.name === "run_command",

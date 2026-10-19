@@ -24,8 +24,6 @@ import {
   conversationToolItemSchema,
   estimateContextTokens,
   formatAgentError,
-  isReasoningOptionEnabled,
-  modelReasoningOptionKey,
   resolveContextCompressionThresholdTokens,
   type ContextCompressionConfiguration,
   type ContextCompressionThreshold,
@@ -76,7 +74,7 @@ import {
   type ModelTurnResult
 } from "../model/model-contracts.js";
 import { ModelAdapterRegistry } from "../model/model-adapter-registry.js";
-import { lowestConfiguredReasoning } from "../model/lowest-configured-reasoning.js";
+import { resolveConfiguredReasoning } from "../model/model-reasoning.js";
 import { ModelRequestError, ModelResponseError } from "../model/model-request-error.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
 import {
@@ -96,7 +94,7 @@ import { EventProjector } from "../storage/event-projector.js";
 import { ThreadLog, skillSnapshotFromResult, type ThreadLogEventInput } from "../storage/thread-log.js";
 import { ThreadLogLegacyImporter } from "../storage/thread-log-legacy-importer.js";
 import { RunCoordinator } from "./run-coordinator.js";
-import { ModelGateway } from "./model-gateway.js";
+import { ModelGateway } from "../model/model-gateway.js";
 import type { ConversationTitleGenerator } from "./conversation-title-generator.js";
 import { TaskListTool } from "../tasks/task-list-tool.js";
 import { ConversationAttachmentTool } from "../tools/conversation-attachment-tool.js";
@@ -183,8 +181,6 @@ const MAX_TOOL_CALLS_PER_MODEL_TURN = 32;
 const MAX_CONTEXT_COMPACTIONS_PER_RUN = 3;
 const MAX_MODEL_RECONNECT_ATTEMPTS = 5;
 const MAX_OUTPUT_TOKENS = 8_192;
-const MAX_SUMMARY_OUTPUT_TOKENS = 2_048;
-const MAX_APPROVAL_REVIEW_OUTPUT_TOKENS = 320;
 const MAX_APPROVAL_REVIEW_REQUEST_CHARACTERS = 4_000;
 const TURN_SUMMARY_COMPONENT_BASE_TOKENS = 448;
 const TURN_SUMMARY_COMPONENT_MIN_TOKENS = 320;
@@ -877,31 +873,6 @@ function waitForRetryDelay(delayMs: number, signal: AbortSignal): Promise<void> 
     const timeout = setTimeout(complete, delayMs);
     signal.addEventListener("abort", onAbort, { once: true });
   });
-}
-
-function resolveReasoning(
-  input: SendConversationMessageInput,
-  configuration: ModelConfiguration
-): ModelReasoningOption | undefined {
-  return resolveConfiguredReasoning(input.reasoning, configuration);
-}
-
-function resolveConfiguredReasoning(
-  reasoning: ModelReasoningOption | undefined,
-  configuration: ModelConfiguration,
-): ModelReasoningOption | undefined {
-  if (reasoning === undefined) return undefined;
-  const key = modelReasoningOptionKey(reasoning);
-  const option = configuration.reasoningOptions.find(
-    (candidate) => modelReasoningOptionKey(candidate) === key
-  );
-  if (option === undefined) {
-    throw new Error("The selected reasoning option is not configured for this model.");
-  }
-  if (!isReasoningOptionEnabled(option)) {
-    throw new Error("The selected reasoning option is disabled for this model.");
-  }
-  return option;
 }
 
 function replaceStoredVisibleMessageContent(
@@ -2154,6 +2125,12 @@ export class AgentRuntime {
   private prepareConversationMessage(
     input: SendConversationMessageInput
   ): PreparedConversationMessage {
+    const conversation = this.database.getConversation(input.conversationId);
+    const selection = conversation.modelSelection;
+    if (input.providerId === undefined && input.modelId === undefined && selection !== null) {
+      input = { ...input, providerId: selection.providerId, modelId: selection.modelId,
+        ...(input.reasoning === undefined && selection.reasoning !== null ? { reasoning: selection.reasoning } : {}) };
+    }
     const storedConfiguration = this.credentials.getConfiguration(
       input.providerId,
       input.modelId
@@ -2163,8 +2140,8 @@ export class AgentRuntime {
       ...storedConfiguration,
       modelId: input.modelId ?? storedConfiguration.modelId
     };
-    const permissionMode = input.permissionMode ?? this.database.getConversation(input.conversationId).permissionMode ?? DEFAULT_PERMISSION_MODE;
-    const reasoning = resolveReasoning(input, configuration);
+    const permissionMode = input.permissionMode ?? conversation.permissionMode ?? DEFAULT_PERMISSION_MODE;
+    const reasoning = resolveConfiguredReasoning(input.reasoning, configuration);
     const contextCompressionConfiguration = structuredClone(
       resolveContextCompressionConfiguration(
         configuration,
@@ -5222,9 +5199,9 @@ export class AgentRuntime {
 
     try {
       input.signal.throwIfAborted();
-      const result = await this.modelGateway.completeTurn({
+      const result = await this.modelGateway.completeBackgroundTurn({
+        purpose: "approval",
         configuration: input.configuration,
-        maxOutputTokens: MAX_APPROVAL_REVIEW_OUTPUT_TOKENS,
         messages: [
           {
             attachments: [],
@@ -5249,9 +5226,7 @@ export class AgentRuntime {
           },
         ],
         onTextDelta: () => undefined,
-        reasoning: undefined,
         signal: input.signal,
-        tools: [],
       });
       const review = parseAutomaticApprovalReview(result.content);
       if (review === null || result.toolCalls.length > 0) {
@@ -6015,22 +5990,18 @@ export class AgentRuntime {
     maxReconnectAttempts = MAX_MODEL_RECONNECT_ATTEMPTS,
   ): Promise<string> {
     let reconnectAttempt = 0;
-    const reasoning = lowestConfiguredReasoning(input.configuration);
     while (true) {
       input.signal.throwIfAborted();
       let receivedTextDelta = false;
       try {
-        const result = await this.modelGateway.completeTurn({
+        const result = await this.modelGateway.completeBackgroundTurn({
+          purpose: "summary",
           configuration: input.configuration,
-          maxOutputTokens: reasoning?.kind === "token_budget" && reasoning.value > 0
-            ? Math.max(MAX_SUMMARY_OUTPUT_TOKENS, reasoning.value + 128) : MAX_SUMMARY_OUTPUT_TOKENS,
           messages: createContextCompactionMessages(input.previousSummary, input.messages),
           onTextDelta: () => {
             receivedTextDelta = true;
           },
-          reasoning,
           signal: input.signal,
-          tools: []
         });
         if (result.toolCalls.length > 0 || result.content.trim().length === 0) {
           throw new Error("Context compaction returned an invalid response.");
