@@ -16,7 +16,7 @@ import { z } from "zod";
 import { approveToolChangeInputSchema, CONTEXT_MESSAGE_OVERHEAD_TOKENS, DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION, conversationContextUsageInputSchema, conversationContextUsageSchema, conversationRunEventSchema, conversationToolItemSchema, estimateContextTokens, formatAgentError, resolveContextCompressionThresholdTokens, type ContextCompressionConfiguration, type ContextCompressionThreshold, type AgentDirectoryConfiguration, type AgentAvatarIcon, type AgentPermissionRule, type AgentPermissionTool, type ApplicationSettings, type PermissionPolicy, type ConversationAgentBinding, type ConversationAgentMessageItem, type ConversationAttachment, type ConversationMessageItem, type ConversationMessageSubmission, type ConversationModelSelection, type ConversationModelRetryItem, type ConversationPendingMessage, type ConversationContextUsage, sendConversationMessageInputSchema, type ConversationPermissionMode, type ConversationRunEvent, type ConversationSummary, type ConversationToolExecutionMode, type ConversationToolItem, type ModelReasoningOption, type ModelRuntimeStatus, replaceLatestConversationMessageInputSchema, type ReplaceLatestConversationMessageInput, type RunAccepted, type SendConversationMessageInput } from "@agent/protocol";
 import { reportMainError, toMainAgentError } from "../errors/agent-error.js";
 import { toolErrorContent } from "../errors/tool-error.js";
-import type { ModelConfiguration, ModelContextConfiguration, ModelMessageAttachment } from "../model/model-contracts.js";
+import type { ModelConfiguration, ModelContextConfiguration } from "../model/model-contracts.js";
 import { type CompleteTurnInput, type ModelMessage, type ModelProviderAdapter, type ModelToolCall, type ModelToolDefinition, type ModelTurnResult } from "../model/model-contracts.js";
 import { ModelAdapterRegistry } from "../model/model-adapter-registry.js";
 import { resolveConfiguredReasoning } from "../model/model-reasoning.js";
@@ -56,17 +56,18 @@ import { TeamWorkItemTool, type TeamWorkItemDispatcher } from "./team-work-item-
 import { baseSystemPromptForTools, TEAM_CHAT_COORDINATOR_PROMPT } from "./prompts/prompt-assets.js";
 import { agentToolRoleInstructions, toolsForAgentRole, type AgentToolRole } from "./agent-tool-scope.js";
 import { teamChatContext } from "./team-chat-context.js";
-import { ToolHandlerRegistry, type ToolExecutionPolicy, type ToolHandler } from "../tools/tool-handler-registry.js";
+import { ToolHandlerRegistry, type ToolHandler } from "../tools/tool-handler-registry.js";
 import { MAX_PARALLEL_COMMAND_TOOL_CALLS, MAX_PARALLEL_READ_TOOL_CALLS } from "../tools/tool-execution-policy.js";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { isManualContextCompactionCommand, createTurnSummarySourceMessages, createLocalTurnSummary, shouldGenerateModelTurnSummary } from "./runtime-turn-summary.js";
-import { ToolCallLimitError, ModelToolCallValidationError, ToolApprovalExpiredError, chunkToolCalls, type ToolApprovalInterrupt, type ToolApprovalResume, type LangChainToolResultEnvelope, isToolApprovalInterrupt, hasToolNodeMessages, toolCallIdFromConfig, parseToolArgumentsOrEmpty, parseLangChainToolResult } from "./runtime-tool-results.js";
+import { ToolCallLimitError, ModelToolCallValidationError, ToolApprovalExpiredError, type ToolApprovalInterrupt, type ToolApprovalResume, type LangChainToolResultEnvelope, isToolApprovalInterrupt, hasToolNodeMessages, toolCallIdFromConfig, parseToolArgumentsOrEmpty, parseLangChainToolResult } from "./runtime-tool-results.js";
 import { createRunExecutionSnapshot, assertRunToolManifestMatchesSnapshot, assertRunConfigurationMatchesSnapshot } from "./runtime-execution-snapshot.js";
 import { type PermissionDecision, type SessionPermissionGrant, type AutomaticApprovalReview, AUTOMATIC_APPROVAL_REVIEW_PROMPT, parseAutomaticApprovalReview, requiresManualApprovalReview, DEFAULT_APPLICATION_PERMISSION_POLICIES, runtimeToolPermissionCategory, unavailableRuntimeToolReason, normalizePermissionCandidate, permissionRuleMatches, sessionPermissionGrantMatches, permissionModeLabel } from "./runtime-permission-policy.js";
 import { isAbortError, waitForRetryDelay } from "./runtime-model-retry.js";
 import { createRuntimeModelRetryPolicy } from "./runtime-model-retry-policy.js";
 import { RuntimeContextCompactor, type ContextCompactor } from "./runtime-context-compactor.js";
 import { RuntimeToolCallLedger } from "./runtime-tool-call-ledger.js";
+import { executeRuntimeToolBatch } from "./runtime-tool-batch-executor.js";
 import { agentResultReceiptContent } from "./runtime-agent-receipts.js";
 import type { RuntimeToolContext } from "./runtime-tool-context.js";
 import { createAttachmentToolHandler, createHtmlPresentationToolHandler, createWorkspaceToolHandlers } from "./runtime-workspace-tool-handlers.js";
@@ -3532,159 +3533,34 @@ export class AgentRuntime {
   private async executeGraphTools(
     input: GraphToolExecutionInput & { toolCalls: readonly ModelToolCall[] },
   ): Promise<{ activeSkills: SkillSnapshotRef[]; messages: ModelMessage[]; successful: boolean }> {
-    const messages = Array<ModelMessage | undefined>(input.toolCalls.length);
-    const modelAttachments: ModelMessageAttachment[] = [];
-    const policies = new Map<number, ToolExecutionPolicy>();
-    let hasSuccessfulToolExecution = false;
-    const batchCallIds = input.toolCalls.map(toolCall => toolCall.id);
-    const toolBatchId = this.toolCallLedger.batchId(input.runId, batchCallIds);
-
-    for (let index = 0; index < input.toolCalls.length; index += 1) {
-      input.controller.signal.throwIfAborted();
-      const toolCall = input.toolCalls[index];
-      if (toolCall === undefined) continue;
-      const identity = { runId: input.runId, callId: toolCall.id };
-      const cached = this.toolCallLedger.getCompleted(identity);
-      if (cached !== undefined) {
-        messages[index] = cached.message;
-        modelAttachments.push(...(cached.envelope.modelAttachments ?? []));
-        hasSuccessfulToolExecution ||= cached.envelope.successful;
-        continue;
-      }
-      try {
-        policies.set(index, this.toolHandlers.getExecutionPolicy({
+    const execution = await executeRuntimeToolBatch({
+      ledger: this.toolCallLedger,
+      operations: {
+        getPolicy: toolCall => this.toolHandlers.getExecutionPolicy({
           context: this.runtimeToolContext(input),
           rawArguments: toolCall.arguments,
           toolName: toolCall.name,
-        }));
-      } catch (error) {
-        if (input.controller.signal.aborted || isAbortError(error) || isGraphInterrupt(error)) {
-          throw error;
-        }
-        this.toolCallLedger.rememberPrepared(identity, {
-          content: toolErrorContent(error, `tool:${toolCall.name}`),
-          isError: true,
-          kind: "completed",
-        });
-        policies.set(index, { kind: "serial" });
-      }
-    }
-
-    // Prepare every file change from this model turn before applying the first
-    // one. A later call targeting the same file therefore keeps the original
-    // expectedContent and becomes FILE_CHANGED instead of being re-based.
-    for (let index = 0; index < input.toolCalls.length; index += 1) {
-      const toolCall = input.toolCalls[index];
-      const policy = policies.get(index);
-      if (
-        toolCall !== undefined
-        && policy?.kind === "serial"
-        && policy.prepareBeforeBatch === true
-      ) {
-        await this.prepareGraphToolCall({
+        }),
+        prepare: (toolCall, toolBatchId) => this.prepareGraphToolCall({
           ...input,
           executionMode: "serial",
           toolBatchId,
           toolCall,
-        });
-      }
-    }
-
-    let index = 0;
-    while (index < input.toolCalls.length) {
-      input.controller.signal.throwIfAborted();
-      const toolCall = input.toolCalls[index];
-      if (toolCall === undefined) {
-        index += 1;
-        continue;
-      }
-      const identity = { runId: input.runId, callId: toolCall.id };
-      if (this.toolCallLedger.getCompleted(identity) !== undefined) {
-        index += 1;
-        continue;
-      }
-      const policy = policies.get(index) ?? { kind: "serial" as const };
-      const group: ModelToolCall[] = [toolCall];
-      let nextIndex = index + 1;
-      if (policy.kind === "parallel") {
-        while (nextIndex < input.toolCalls.length) {
-          const nextCall = input.toolCalls[nextIndex];
-          const nextPolicy = policies.get(nextIndex);
-          if (
-            nextCall === undefined
-            || this.toolCallLedger.getCompleted({ runId: input.runId, callId: nextCall.id }) !== undefined
-            || nextPolicy?.kind !== "parallel"
-            || nextPolicy.group !== policy.group
-          ) {
-            break;
-          }
-          group.push(nextCall);
-          nextIndex += 1;
-        }
-      }
-
-      const maxConcurrency = policy.kind === "parallel"
-        ? policy.group === "read"
-          ? MAX_PARALLEL_READ_TOOL_CALLS
-          : MAX_PARALLEL_COMMAND_TOOL_CALLS
-        : 1;
-      const envelopes = new Map<string, LangChainToolResultEnvelope>();
-      for (const chunk of chunkToolCalls(group, maxConcurrency)) {
-        const chunkResults = await this.invokeGraphToolNode({
+        }),
+        invokeToolNode: (toolCalls, executionMode, toolBatchId) => this.invokeGraphToolNode({
           ...input,
-          executionMode: policy.kind === "parallel" ? "parallel" : "serial",
+          executionMode,
           toolBatchId,
-          toolCalls: chunk,
-        });
-        for (const [callId, result] of chunkResults) envelopes.set(callId, result);
-      }
-      for (const [offset, call] of group.entries()) {
-        const result = envelopes.get(call.id);
-        if (result === undefined) {
-          throw new Error(`ToolNode did not return a result for ${call.name}.`);
-        }
-        const resultIndex = index + offset;
-        const message: ModelMessage = {
-          attachments: [],
-          content: result.content,
-          role: "tool",
-          toolCallId: call.id,
-          toolCalls: [],
-        };
-        messages[resultIndex] = message;
-        modelAttachments.push(...(result.modelAttachments ?? []));
-        hasSuccessfulToolExecution ||= result.successful;
-        this.toolCallLedger.rememberCompleted({ runId: input.runId, callId: call.id }, { envelope: result, message });
-      }
-      index = nextIndex;
-    }
-
-    this.toolCallLedger.releaseBatch(input.runId, batchCallIds);
+          toolCalls,
+        }),
+      },
+      runId: input.runId,
+      signal: input.controller.signal,
+      toolCalls: input.toolCalls,
+    });
     return {
       activeSkills: [...(this.activeSkillRefsByRun.get(input.runId)?.values() ?? [])],
-      messages: [
-        ...messages.filter((message): message is ModelMessage => message !== undefined),
-        ...(modelAttachments.length === 0
-          ? []
-          : [{
-              attachments: modelAttachments.slice(-4),
-              content: [
-                modelAttachments.some((attachment) => attachment.source === "browser")
-                  ? "Rendered page screenshots. Use screenshot pixel coordinates for pointer actions."
-                  : null,
-                modelAttachments.some((attachment) => attachment.source === "computer")
-                  ? "Authorized application window screenshots returned by computer_use. Coordinates are physical pixels relative to that window; reobserve after UI changes."
-                  : null,
-                modelAttachments.some((attachment) => attachment.source !== "browser" && attachment.source !== "computer")
-                  ? "Images returned by view_attachments. Re-read images using their paths, not attachment IDs."
-                  : null,
-              ].filter((value): value is string => value !== null).join("\n"),
-              role: "user" as const,
-              toolCallId: null,
-              toolCalls: [],
-            }]),
-      ],
-      successful: hasSuccessfulToolExecution,
+      ...execution,
     };
   }
 
