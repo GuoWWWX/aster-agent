@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { backgroundCommandSchema, type BackgroundCommand, type BackgroundCommandOutput } from "@agent/protocol";
 import { sanitizeSensitiveText } from "../errors/agent-error.js";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { TextDecoder, stripVTControlCharacters } from "node:util";
@@ -577,7 +577,7 @@ export class ProjectToolRegistry {
       },
       {
         description:
-          "Use this tool, not apply_patch, to create any new UTF-8 text file. It can replace an existing file only when overwrite=true; read it first when changing existing content. This produces a reviewable diff before writing.",
+          "Use this tool, not apply_patch, to create any new UTF-8 text file. Missing parent directories are created only after the file change is approved. It can replace an existing file only when overwrite=true; read it first when changing existing content. This produces a reviewable diff before writing.",
         name: "write_file",
         parameters: modelToolParameters(writeFileArgumentsSchema)
       },
@@ -905,7 +905,6 @@ export class ProjectToolRegistry {
     signal: AbortSignal,
     owner: ProjectOperationOwner = unknownOperationOwner(),
   ): Promise<ToolExecutionResult> {
-    const filePath = await this.projects.resolveWritableProjectPath(projectId, change.path);
     try {
       return await this.runProjectMutation(
         projectId,
@@ -913,6 +912,13 @@ export class ProjectToolRegistry {
         owner,
         signal,
         async () => {
+          throwIfAborted(signal);
+          const filePath = await this.projects.resolveWritableProjectPath(projectId, change.path);
+          if (change.operation === "write_file" && change.expectedContent === null) {
+            await mkdir(path.dirname(filePath), { recursive: true });
+            await this.projects.resolveWritableProjectPath(projectId, change.path);
+            throwIfAborted(signal);
+          }
           const existing = await this.readEditableFile(filePath, true);
           if (existing !== change.expectedContent) {
             throw new PreparedFileChangeStaleError(

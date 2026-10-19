@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -204,6 +204,35 @@ describe("ProjectToolRegistry", () => {
     }
   }, 20_000);
 
+  it("creates nested parents only when a prepared new-file change is applied", async () => {
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    try {
+      const proposal = await tools.execute("write_file", JSON.stringify({ path: "new/deeper/note.txt", content: "中文内容\n" }), project.id, signal);
+      expect(proposal.kind).toBe("change");
+      if (proposal.kind !== "change") throw new Error(proposal.content);
+      await expect(lstat(path.join(project.rootPath, "new"))).rejects.toMatchObject({ code: "ENOENT" });
+      const aborted = new AbortController(); aborted.abort();
+      await expect(tools.applyPreparedChange(proposal.change, project.id, aborted.signal)).rejects.toThrow();
+      await expect(lstat(path.join(project.rootPath, "new"))).rejects.toMatchObject({ code: "ENOENT" });
+      const applied = await tools.applyPreparedChange(proposal.change, project.id, signal);
+      expect(applied.isError).toBe(false);
+      expect(await readFile(path.join(project.rootPath, "new", "deeper", "note.txt"), "utf8")).toBe("中文内容\n");
+      expect((await tools.execute("write_file", JSON.stringify({ path: "new/deeper/note.txt", content: "overwrite" }), project.id, signal)).isError).toBe(true);
+    } finally { await tools.dispose(); }
+  });
+  it("rejects a parent replaced with an outside symlink after new-file approval is prepared", async () => {
+    const { project, tools } = await createFixture(); const signal = new AbortController().signal;
+    const outside = await mkdtemp(path.join(os.tmpdir(), "agent-write-outside-")); temporaryDirectories.push(outside);
+    try {
+      const proposal = await tools.execute("write_file", JSON.stringify({ path: "new/deeper/note.txt", content: "must stay inside" }), project.id, signal);
+      expect(proposal.kind).toBe("change"); if (proposal.kind !== "change") throw new Error(proposal.content);
+      try { await symlink(outside, path.join(project.rootPath, "new"), "junction"); }
+      catch (error) { expect((error as NodeJS.ErrnoException).code).toMatch(/EPERM|EACCES/); return; }
+      await expect(tools.applyPreparedChange(proposal.change, project.id, signal)).rejects.toThrow(/outside .*root/i);
+      await expect(lstat(path.join(outside, "deeper"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await tools.dispose(); }
+  });
   it("reads completed output with Unicode, stderr, failure status and a bounded recent tail", async () => {
     const { project, tools } = await createFixture(); const conversationId = crypto.randomUUID();
     const owner = { conversationId, conversationTitle: "输出检查", runId: crypto.randomUUID() };
