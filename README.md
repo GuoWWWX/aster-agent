@@ -6,11 +6,15 @@ Aster 的目标不是把模型回复停留在聊天窗口，而是形成一条�
 
 ## 当前能力
 
-- 项目对话与临时对话；对话、运行过程和任务清单可持久化。
-- 本地文件读取、搜索、Patch、命令执行和 Web 搜索等受控工具能力。
-- 文件写入、Patch、命令等副作用遵循权限与用户审批。
-- 多模型 Provider 与模型配置；支持 MCP、Skill、Agent、Subagent 和长期团队工作流。
-- React 工作台既可在浏览器预览，也可作为 Electron Renderer 运行。
+- 项目与临时对话、快速协作、Subagent 和团队群聊；可查看成员执行过程、任务与交付。
+- 本地文件读取、搜索、Patch、命令、终端、Web 搜索及受管浏览器等工具；文件、Diff 与执行结果可在工作区查看。
+- 请求批准、帮我批准、完全访问三种权限模式，工具执行保留审批、取消、错误与恢复过程。
+- 多供应商和模型配置、可用思考档位、MCP 与按需加载的 Skill；后台命名、摘要、审批及协调复用模型配置。
+- 持久任务目录与对话执行清单；JSONL 历史、上下文压缩和实际请求用量／缓存统计。
+- HTML、Vue、React 代码预览与截图检查；配置生图模型后支持文生图、参考图和多图生成，图片可放大及整段对话翻找。
+- 同一 React 工作台作为 Electron Renderer 或浏览器 Mock 预览运行；浏览器预览不提供完整本机执行能力。
+
+能力与限制以当前合同为准：权限见[业务上下文](./doc/14-业务上下文.md)，工具与 Skill 见[工具体系](./doc/11-AI工具体系与生命周期设计.md)，片段和生图见[普通对话工具与可视化验收](./doc/30-普通对话工具与可视化验收.md)。生图依赖供应商对当前凭证启用对应能力，模型出现在目录中不等于已有调用权限。
 
 详细产品与架构事实见 [文档索引](./doc/文档索引.md)。规划中的能力会在设计文档中明确标注，不能视为已发布功能。
 
@@ -20,20 +24,59 @@ Aster 的目标不是把模型回复停留在聊天窗口，而是形成一条�
 - React 19 + Vite 8：工作台界面。
 - LangChain / LangGraph：Agent 执行编排。
 - Zod 4：跨进程与外部输入合同校验。
-- SQLite：会话、运行和业务事实的本地持久化。
+- JSONL：对话属性、消息和完整事件历史；SQLite：项目、团队等业务事实与执行检查点。
 - pnpm 10：Monorepo 工作区管理。
+
+## 架构与数据流
+
+```mermaid
+flowchart TD
+  UI[React 工作台] --> Client[AgentClient]
+  Client --> Bridge[Preload contextBridge]
+  Bridge --> IPC[Main IPC 校验与用例入口]
+  IPC --> Runtime[AgentRuntime]
+  Runtime --> Graph[LangChain / LangGraph 执行循环]
+  Graph --> Gateway[ModelGateway 与模型 Adapter]
+  Graph --> Tools[工具注册与权限策略]
+  Runtime --> Storage[对话日志与业务存储]
+  Tools --> Storage
+  Storage --> Events[结构化事件与查询投影]
+  Events --> UI
+```
+
+Renderer 只通过 AgentClient 访问类型化宿主能力；Preload 暴露具名 API，Main 校验输入并编排模型、工具和持久化。模型适配、路径权限、事务与窗口生命周期由各自模块负责，React 不直接访问 Node 或数据库。〔FACT｜`apps/desktop/src/preload/index.ts:5`、`apps/desktop/src/main/agent/agent-runtime.ts:954`、`apps/desktop/src/main/agent/langgraph-executor.ts:753`〕
+
+对话完整历史追加到 JSONL，SQLite 的会话查询临时投影可以重建，不是第二份持久历史；配置统一保存在 `settings.jsonc`，密钥不进入模型上下文。产物与附件保存在应用管理目录或已授权工作区，通过受控引用读取。具体目录与备份边界见 [Aster 目录结构与 JSONC 配置](./doc/24-Aster目录结构与JSONC配置.md)。〔FACT｜`apps/desktop/src/main/storage/thread-log.ts:156`〕
 
 ## 仓库结构
 
+以下为当前源码组织，规划中的独立 Runtime／Storage 包尚未建立；当前共享包只有 `protocol`。〔FACT｜`pnpm-workspace.yaml:1`；目录核对：2026-10-19〕
+
 ```text
 apps/
-  desktop/       Electron Main、Preload、本地 Runtime 与存储
-  web/           React 工作台
-packages/
-  protocol/      跨进程 Schema、DTO 与共享合同
-doc/             产品、架构、接口和工程规范
-.github/         GitHub CI 与 PR 模板
+  desktop/src/
+    main/
+      bootstrap/ ipc/           装配、生命周期与 IPC 边界
+      agent/ model/            Agent 循环、上下文、模型网关与适配
+      storage/                 SQLite、JSONL、附件与清理
+      tools/ security/         本机工具、路径和权限原语
+      teams/ tasks/ projects/ schedules/  业务域
+      plugins/ settings/ preview/         扩展、配置与片段预览
+      windows/ computer-use/ control/ errors/  宿主能力与控制接口
+    preload/                   Renderer 的受控桥接 API
+  web/src/
+    app/                       应用装配与 Provider
+    features/                  chat、projects、schedules、settings、tasks、team、workspace
+    components/                ui、layout 及 editor、markdown、media、html-preview、diff
+    runtime/                   AgentClient 与 Desktop/Mock Adapter
+    stores/ lib/ styles/       UI 状态、共享纯函数、主题 Token 与基础样式
+packages/protocol/src/         跨进程 Schema、DTO 与共享合同
+scripts/                       开发启动、控制 CLI、原生依赖与打包校验
+doc/                           产品、架构、接口和工程规范
+.github/                       手动 CI 与 PR 模板
 ```
+
+测试与实现共置为 `*.test.ts`／`*.test.tsx`。页面私有实现留在所属 Feature，跨 Feature 共用组件放入 `components/<capability>`；后端方法先在所属业务域复用，满足实际条件后再拆独立包。新建目录、文件命名和文件规模要求见[模块与编码规范](./doc/06-前后端模块与编码规范.md)。
 
 ## 开始开发
 
@@ -71,7 +114,7 @@ pnpm dev
 | 命令 | 用途 | 热更新／产物 |
 | --- | --- | --- |
 | `pnpm dev` / `pnpm start` | 日常开发和桌面 UI 验收 | Vite HMR；Main/Preload 自动重启 |
-| `pnpm build` | 类型检查及生产编译 | `apps/web/dist`、`apps/desktop/dist`；不启动、不打安装包 |
+| `pnpm build` | 生产编译，完整类型检查另跑 `pnpm typecheck` | `apps/web/dist`、`apps/desktop/dist`；不启动、不打安装包 |
 | `pnpm preview` | 构建后启动本地生产产物 | 静态文件；明确无热更新 |
 | `pnpm package:dir` | 构建并生成 Windows x64 解包目录 | `release/win-unpacked/Aster.exe` |
 | `pnpm package:win` | 构建并生成 Windows x64 NSIS 安装包 | `release/Aster-<version>-x64-setup.exe` |
@@ -104,14 +147,19 @@ git diff --check
 git status --short
 ```
 
+当前 CI 仅支持维护者手动触发，PR／推送不会自动运行这些检查。只修改 Markdown 时检查文档链接、事实与目录一致性及 `git diff --check`；源码变更按影响范围完成测试和根级门禁。详见[贡献指南](./CONTRIBUTING.md)。〔FACT｜`.github/workflows/ci.yml:1`〕
+
 ## 贡献与协作
 
 本仓库使用 Git Flow：`main` 是已发布基线，`develop` 是下一版本集成线，日常工作从 `feature/*` 或 `fix/*` 分支通过 PR 合入。完整约定见：
 
 - [贡献指南](./CONTRIBUTING.md)
 - [Git 与 GitHub 协作规范](./doc/18-Git与GitHub协作规范.md)
+- [前后端模块与编码规范](./doc/06-前后端模块与编码规范.md)：目录、命名、组件归属与文件规模。
 - [后端编码规范](./doc/13-后端编码规范.md)
 - [界面迁移与设计系统规范](./doc/07-界面迁移与设计系统规范.md)
+
+先读总规范，再按改动范围读 UI／后端规范。手写业务源码新增或重构后必须少于 1,000 行，达到组件约 250 行、普通 TS 约 400 行时即评估职责拆分；现有超限文件不代表允许继续堆积。配色、布局和控件复用已有设计系统，性能优化须有对应场景的测量与回归证据。
 
 请不要直接向 `main` 或 `develop` 推送，也不要在公共分支上改写历史。
 

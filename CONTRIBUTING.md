@@ -6,6 +6,7 @@
 
 1. 阅读 [README](./README.md) 并准备 Node.js 24 与 pnpm 10。
 2. 阅读 [Git 与 GitHub 协作规范](./doc/18-Git与GitHub协作规范.md)。
+   实现前阅读[前后端模块与编码规范](./doc/06-前后端模块与编码规范.md)，UI 改动再读[界面规范](./doc/07-界面迁移与设计系统规范.md)，Main／Preload／存储／工具改动再读[后端规范](./doc/13-后端编码规范.md)。
 3. 先检查已有 Issue 与 PR；重大功能先在 Issue 或 Discussion 对齐目标、范围和验收方式。
 4. 不在公开内容中提交密钥、令牌、真实用户数据或本机绝对路径。
 
@@ -43,6 +44,9 @@ git push -u origin feature/short-description
 - Renderer 不能绕过 Preload/IPC 访问 Node、本地文件或数据库。
 - 不接受降低 Schema 校验、使用 `any`、跳过测试或吞掉异常来换取 CI 通过。
 - 只在自己独占的功能分支上使用 rebase 和 `git push --force-with-lease`；不得对公共分支强推。
+- 页面私有组件、hook 和函数留在页面／Feature 内，真正跨 Feature 复用的组件放到对应共享能力目录；新增文件遵循总规范的命名、依赖方向和规模要求，不继续堆积千行、万行业务文件。
+- 性能修改须保留同规模场景的测量与回归证据，覆盖取消、资源释放及长内容；不得仅凭增加缓存、memo 或并发宣称优化完成。
+- 仅修改 Markdown 时，检查本地链接／锚点、源码事实与目录一致性，并执行 `git diff --check`，不要求为纯文字变更重跑应用测试或重启桌面窗口。涉及代码／配置／协议时继续执行对应门禁。
 
 ## 提交信息
 
