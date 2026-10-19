@@ -1,52 +1,36 @@
-import { LoadingState, Spinner } from "../../components/ui/loading.js";
-import { ConversationWorkIndicator } from "../chat/conversation-work-state.js";
+import { useNavigatorExpansion } from "./use-navigator-expansion.js";
+import { useNavigatorDrag } from "./use-navigator-drag.js";
+import { Spinner } from "../../components/ui/loading.js";
+import { hasUnreadSessionResult } from "./navigator-session-status.js";
 import {
-  Archive,
-  ArchiveRestore,
-  ArrowDownAZ,
   ArrowDownUp,
-  ArrowDownZA,
   Check,
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
   Clock3,
-  Copy,
-  Eye,
-  EyeOff,
   Folder,
   FolderOpen,
   FolderPlus,
   Folders,
-  MessageSquareText,
   MoreHorizontal,
-  Pencil,
   Pin,
-  PinOff,
   Plus,
   Search,
-  Send,
-  Settings2,
-  Scale,
   SquarePen,
-  Trash2,
   UsersRound,
   X,
 } from "lucide-react";
 import {
-  useEffect,
   useMemo,
-  useRef,
   useState,
   type CSSProperties,
-  type DragEvent,
   type MouseEvent,
   type ReactElement,
 } from "react";
 import { createPortal } from "react-dom";
 import { useNativeOverlayContainer } from "../../components/ui/native-overlay-provider.js";
-import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 
 import type {
   AgentProfile,
@@ -67,23 +51,14 @@ import {
   PopoverTrigger,
 } from "../../components/ui/popover.js";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../../components/ui/select.js";
-import {
   getTeamInstanceNavigatorGroups,
   getProjectSessions,
   getPinnedSessions,
   getTemporarySessions,
   isProjectSessionRunning as isSessionRunning,
   type ProjectSession,
-  type TeamInstanceNavigatorGroup,
 } from "./project-session-model.js";
 import type { ProjectTreeController } from "./use-project-tree.js";
-import { AgentAvatar } from "../team/agent-avatar.js";
 import "./project-navigator.css";
 
 type ProjectNavigatorProps = {
@@ -133,208 +108,28 @@ type ProjectNavigatorProps = {
   ) => Promise<boolean>;
 };
 
-type NavigatorMenuTarget =
-  | { kind: "project"; project: ProjectSummary }
-  | { kind: "session"; session: ProjectSession }
-  | { kind: "team-instance"; instance: TeamInstanceView };
+import { NavigatorGroupHeader, NavigatorSortIcon } from "./navigator-group-header.js";
+import { TeamInstanceTreeItem } from "./navigator-team-tree-item.js";
+import { SessionTreeItem } from "./navigator-session-tree-item.js";
+import { NavigatorContextMenuView } from "./navigator-context-menu.js";
+import { NavigatorManagementDialog } from "./navigator-management-dialog.js";
+import { NavigatorEmpty } from "./navigator-empty.js";
+import {
+  NAVIGATOR_SORT_OPTIONS,
+  navigatorLabelCollator,
+  sessionTreeMatchesQuery,
+  sortNavigatorItems,
+  teamGroupMatchesQuery,
+} from "./navigator-model.js";
+import type {
+  NavigatorContextMenu,
+  NavigatorDialog,
+  NavigatorMenuTarget,
+  NavigatorSortOption,
+  ProjectNavigatorLocateRequest,
+} from "./navigator-types.js";
 
-type NavigatorContextMenu = {
-  target: NavigatorMenuTarget;
-  x: number;
-  y: number;
-};
-
-type NavigatorDialog =
-  | {
-      kind: "create-team-instance";
-      projectId: string | null;
-      scope: TeamInstanceScope;
-      sourceConversationId: string | null;
-    }
-  | { kind: "delete-team-instance"; instance: TeamInstanceView }
-  | { kind: "delete-session"; session: ProjectSession }
-  | { kind: "edit-team-instance"; instance: TeamInstanceView }
-  | { kind: "remove-project"; project: ProjectSummary }
-  | { kind: "rename-project"; project: ProjectSummary }
-  | { kind: "rename-session"; session: ProjectSession }
-  | { kind: "rename-team-instance"; instance: TeamInstanceView };
-
-type NavigatorExpansionState = {
-  collapsedProjectIds: string[];
-  expandedProjectIds: string[];
-  expandedSessionIds: string[];
-  expandedTeamIds: string[];
-  pinnedGroupExpanded: boolean;
-  projectsGroupExpanded: boolean;
-  teamsGroupExpanded: boolean;
-  temporaryGroupExpanded: boolean;
-};
-
-const NAVIGATOR_EXPANSION_STORAGE_KEY = "agent-workbench.project-navigator-expansion.v1";
-const DEFAULT_NAVIGATOR_EXPANSION_STATE: NavigatorExpansionState = {
-  collapsedProjectIds: [],
-  expandedProjectIds: [],
-  expandedSessionIds: [],
-  expandedTeamIds: [],
-  pinnedGroupExpanded: true,
-  projectsGroupExpanded: true,
-  teamsGroupExpanded: true,
-  temporaryGroupExpanded: false,
-};
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function readBoolean(
-  record: Record<string, unknown>,
-  key: string,
-  fallback: boolean,
-): boolean {
-  const value = record[key];
-  return typeof value === "boolean" ? value : fallback;
-}
-
-function readStringArray(record: Record<string, unknown>, key: string): string[] {
-  const value = record[key];
-  return Array.isArray(value) && value.every((item) => typeof item === "string")
-    ? value
-    : [];
-}
-
-function loadNavigatorExpansionState(): NavigatorExpansionState {
-  try {
-    const value: unknown = JSON.parse(
-      window.localStorage.getItem(NAVIGATOR_EXPANSION_STORAGE_KEY) ?? "null",
-    );
-    if (!isRecord(value)) return DEFAULT_NAVIGATOR_EXPANSION_STATE;
-    return {
-      collapsedProjectIds: readStringArray(value, "collapsedProjectIds"),
-      expandedProjectIds: readStringArray(value, "expandedProjectIds"),
-      expandedSessionIds: readStringArray(value, "expandedSessionIds"),
-      expandedTeamIds: readStringArray(value, "expandedTeamIds"),
-      pinnedGroupExpanded: readBoolean(value, "pinnedGroupExpanded", true),
-      projectsGroupExpanded: readBoolean(value, "projectsGroupExpanded", true),
-      teamsGroupExpanded: readBoolean(value, "teamsGroupExpanded", true),
-      temporaryGroupExpanded: readBoolean(value, "temporaryGroupExpanded", false),
-    };
-  } catch {
-    return DEFAULT_NAVIGATOR_EXPANSION_STATE;
-  }
-}
-
-function saveNavigatorExpansionState(state: NavigatorExpansionState): void {
-  try {
-    window.localStorage.setItem(NAVIGATOR_EXPANSION_STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // Keep tree disclosure usable when renderer storage is unavailable.
-  }
-}
-
-type NavigatorDragItem = {
-  groupKey: string;
-  id: string;
-  kind: "project" | "session" | "team-instance";
-};
-
-type NavigatorDropIndicator = {
-  id: string;
-  kind: "project" | "session" | "team-instance";
-  position: "after" | "before";
-};
-
-type NavigatorSortOption = "custom" | "name-ascending" | "name-descending";
-
-const NAVIGATOR_SORT_OPTIONS: readonly {
-  label: string;
-  value: NavigatorSortOption;
-}[] = [
-  { label: "自定义顺序", value: "custom" },
-  { label: "名称 A-Z", value: "name-ascending" },
-  { label: "名称 Z-A", value: "name-descending" },
-];
-
-const UNASSOCIATED_PROJECT_SELECT_VALUE = "__unassociated_project__";
-
-const navigatorLabelCollator = new Intl.Collator("zh-CN", {
-  numeric: true,
-  sensitivity: "base",
-});
-
-function sortNavigatorItems<Item>(
-  items: readonly Item[],
-  option: NavigatorSortOption,
-  getLabel: (item: Item) => string,
-): Item[] {
-  if (option === "custom") return [...items];
-  return [...items].sort((left, right) => {
-    const comparison = navigatorLabelCollator.compare(getLabel(left), getLabel(right));
-    return option === "name-descending" ? -comparison : comparison;
-  });
-}
-
-function sessionTreeMatchesQuery(
-  session: ProjectSession,
-  normalizedQuery: string,
-): boolean {
-  return session.title.toLocaleLowerCase().includes(normalizedQuery);
-}
-
-function teamGroupMatchesQuery(
-  group: TeamInstanceNavigatorGroup,
-  normalizedQuery: string,
-): boolean {
-  if (normalizedQuery.length === 0) return true;
-  return group.instance.name.toLocaleLowerCase().includes(normalizedQuery)
-    || group.team.name.toLocaleLowerCase().includes(normalizedQuery)
-    || group.team.description.toLocaleLowerCase().includes(normalizedQuery)
-    || group.members.some(({ profile }) =>
-      profile.name.toLocaleLowerCase().includes(normalizedQuery)
-      || profile.role.toLocaleLowerCase().includes(normalizedQuery)
-      || group.team.memberConfigurations[profile.id]?.role
-        .toLocaleLowerCase().includes(normalizedQuery) === true
-    );
-}
-
-function NavigatorSortIcon({ option }: { option: NavigatorSortOption }): ReactElement {
-  if (option === "name-ascending") return <ArrowDownAZ aria-hidden="true" size={15} />;
-  if (option === "name-descending") return <ArrowDownZA aria-hidden="true" size={15} />;
-  return <ArrowDownUp aria-hidden="true" size={15} />;
-}
-
-function reorderIdentifiers(
-  identifiers: readonly string[],
-  sourceId: string,
-  targetId: string,
-  position: "after" | "before",
-): string[] {
-  const reordered = identifiers.filter((identifier) => identifier !== sourceId);
-  const targetIndex = reordered.indexOf(targetId);
-  if (targetIndex < 0) return [...identifiers];
-  reordered.splice(position === "before" ? targetIndex : targetIndex + 1, 0, sourceId);
-  return reordered;
-}
-
-function setDragPreview(event: DragEvent<HTMLElement>): void {
-  const bounds = event.currentTarget.getBoundingClientRect();
-  const preview = event.currentTarget.cloneNode(true) as HTMLElement;
-  preview.classList.add("project-navigator__drag-preview");
-  preview.style.width = `${bounds.width}px`;
-  preview.style.height = `${bounds.height}px`;
-  document.body.append(preview);
-  event.dataTransfer.setDragImage(
-    preview,
-    Math.max(0, event.clientX - bounds.left),
-    Math.max(0, event.clientY - bounds.top),
-  );
-  window.setTimeout(() => preview.remove(), 0);
-}
-
-export type ProjectNavigatorLocateRequest = {
-  id: string;
-  kind: "project" | "session";
-  requestId: number;
-};
+export type { ProjectNavigatorLocateRequest } from "./navigator-types.js";
 
 export function ProjectNavigator({
   onOpenGlobalSearch,
@@ -373,33 +168,24 @@ export function ProjectNavigator({
 }: ProjectNavigatorProps): ReactElement {
   const nativeOverlayContainer = useNativeOverlayContainer();
   const activeProjectId = tree.activeProject?.id ?? null;
-  const bodyRef = useRef<HTMLDivElement | null>(null);
-  const [initialExpansionState] = useState(loadNavigatorExpansionState);
-  const [projectSessionLimits, setProjectSessionLimits] = useState<Record<string, number>>({});
-  const [expandedProjectIds, setExpandedProjectIds] = useState<ReadonlySet<string>>(
-    () => new Set(initialExpansionState.expandedProjectIds),
-  );
-  const [expandedSessionIds, setExpandedSessionIds] = useState<ReadonlySet<string>>(
-    () => new Set(initialExpansionState.expandedSessionIds),
-  );
-  const [collapsedProjectIds, setCollapsedProjectIds] = useState<ReadonlySet<string>>(
-    () => new Set(initialExpansionState.collapsedProjectIds),
-  );
-  const [isProjectsGroupExpanded, setIsProjectsGroupExpanded] = useState(
-    initialExpansionState.projectsGroupExpanded,
-  );
-  const [isTeamsGroupExpanded, setIsTeamsGroupExpanded] = useState(
-    initialExpansionState.teamsGroupExpanded,
-  );
-  const [isPinnedGroupExpanded, setIsPinnedGroupExpanded] = useState(
-    initialExpansionState.pinnedGroupExpanded,
-  );
-  const [isTemporaryGroupExpanded, setIsTemporaryGroupExpanded] = useState(
-    initialExpansionState.temporaryGroupExpanded,
-  );
-  const [expandedTeamIds, setExpandedTeamIds] = useState<ReadonlySet<string>>(
-    () => new Set(initialExpansionState.expandedTeamIds),
-  );
+  const {
+    bodyRef,
+    projectSessionLimits,
+    expandedSessionIds,
+    expandedTeamIds,
+    isProjectsGroupExpanded,
+    isTeamsGroupExpanded,
+    isPinnedGroupExpanded,
+    isTemporaryGroupExpanded,
+    isProjectExpanded,
+    toggleProjectExpansion,
+    toggleSessionExpansion,
+    toggleTeamExpansion,
+    toggleGroup,
+    setAllExpanded,
+    revealProject,
+    showMoreProjectSessions,
+  } = useNavigatorExpansion({ activeProjectId, locateRequest, sessions });
   const [query, setQuery] = useState("");
   const [sortOpen, setSortOpen] = useState(false);
   const [sortOption, setSortOption] = useState<NavigatorSortOption>("custom");
@@ -410,10 +196,18 @@ export function ProjectNavigator({
   const [draftProjectId, setDraftProjectId] = useState("");
   const [draftTeamId, setDraftTeamId] = useState(teams[0]?.id ?? "");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [dragItem, setDragItem] = useState<NavigatorDragItem | null>(null);
-  const [dropIndicator, setDropIndicator] = useState<NavigatorDropIndicator | null>(null);
-  const [dropProjectId, setDropProjectId] = useState<string | null | undefined>(undefined);
   const normalizedQuery = query.trim().toLocaleLowerCase();
+  const {
+    dragItem,
+    dropIndicator,
+    dropProjectId,
+    startDrag,
+    updateDropIndicator,
+    finishDrag,
+    updateProjectDrop,
+    moveSessionToProject,
+    dropItem,
+  } = useNavigatorDrag({ normalizedQuery, sessions, onSetSessionProject, onReorderProjects: projectIds => tree.reorderProjects(projectIds), onReorderSessions, onReorderTeamInstances, onSessionMoved: revealProject });
   const sortLabel = NAVIGATOR_SORT_OPTIONS.find(
     (option) => option.value === sortOption,
   )?.label ?? "自定义顺序";
@@ -421,249 +215,6 @@ export function ProjectNavigator({
     () => new Map(tree.projects.map((project) => [project.id, project.name])),
     [tree.projects],
   );
-
-  useEffect(() => {
-    saveNavigatorExpansionState({
-      collapsedProjectIds: [...collapsedProjectIds],
-      expandedProjectIds: [...expandedProjectIds],
-      expandedSessionIds: [...expandedSessionIds],
-      expandedTeamIds: [...expandedTeamIds],
-      pinnedGroupExpanded: isPinnedGroupExpanded,
-      projectsGroupExpanded: isProjectsGroupExpanded,
-      teamsGroupExpanded: isTeamsGroupExpanded,
-      temporaryGroupExpanded: isTemporaryGroupExpanded,
-    });
-  }, [
-    collapsedProjectIds,
-    expandedProjectIds,
-    expandedSessionIds,
-    expandedTeamIds,
-    isPinnedGroupExpanded,
-    isProjectsGroupExpanded,
-    isTeamsGroupExpanded,
-    isTemporaryGroupExpanded,
-  ]);
-
-  function startDrag(
-    event: DragEvent<HTMLElement>,
-    item: NavigatorDragItem,
-    actionsSelector: string,
-  ): void {
-    if (
-      normalizedQuery.length > 0
-      || (event.target as Element).closest(actionsSelector) !== null
-    ) {
-      event.preventDefault();
-      return;
-    }
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", `${item.kind}:${item.id}`);
-    setDragPreview(event);
-    setDragItem(item);
-    setDropIndicator(null);
-    setDropProjectId(undefined);
-  }
-
-  function updateDropIndicator(
-    event: DragEvent<HTMLElement>,
-    target: NavigatorDragItem,
-  ): void {
-    if (dragItem?.kind === "session" && target.kind === "session"
-      && dragItem.groupKey !== target.groupKey) {
-      const projectId = target.groupKey === "session:temporary"
-        ? null
-        : target.groupKey.startsWith("session:project:")
-          ? target.groupKey.slice("session:project:".length)
-          : undefined;
-      if (projectId !== undefined && updateProjectDrop(event, projectId)) return;
-    }
-    setDropProjectId(undefined);
-    if (
-      dragItem === null
-      || dragItem.kind !== target.kind
-      || dragItem.groupKey !== target.groupKey
-      || dragItem.id === target.id
-    ) {
-      setDropIndicator(null);
-      return;
-    }
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-    const bounds = event.currentTarget.getBoundingClientRect();
-    setDropIndicator({
-      id: target.id,
-      kind: target.kind,
-      position: event.clientY < bounds.top + bounds.height / 2 ? "before" : "after",
-    });
-  }
-
-  function finishDrag(): void {
-    setDragItem(null);
-    setDropIndicator(null);
-    setDropProjectId(undefined);
-  }
-
-  function updateProjectDrop(event: DragEvent<HTMLElement>, projectId: string | null): boolean {
-    if (dragItem?.kind !== "session") return false;
-    const source = sessions.find((session) => session.id === dragItem.id);
-    if (source === undefined || source.projectId === projectId) return false;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-    setDropIndicator(null);
-    setDropProjectId(projectId);
-    return true;
-  }
-
-  function moveSessionToProject(event: DragEvent<HTMLElement>, projectId: string | null): boolean {
-    if (dragItem?.kind !== "session") return false;
-    event.preventDefault();
-    event.stopPropagation();
-    const session = sessions.find((candidate) => candidate.id === dragItem.id);
-    finishDrag();
-    if (session === undefined || session.projectId === projectId) return true;
-    void onSetSessionProject(session.id, projectId).then((moved) => {
-      if (!moved) return;
-      if (projectId === null) setIsTemporaryGroupExpanded(true);
-      else {
-        setIsProjectsGroupExpanded(true);
-        setExpandedProjectIds((current) => new Set(current).add(projectId));
-        setCollapsedProjectIds((current) => {
-          const next = new Set(current);
-          next.delete(projectId);
-          return next;
-        });
-      }
-    });
-    return true;
-  }
-
-  function dropItem(
-    event: DragEvent<HTMLElement>,
-    target: NavigatorDragItem,
-    groupIds: readonly string[],
-  ): void {
-    event.preventDefault();
-    event.stopPropagation();
-    if (dragItem?.kind === "session" && target.kind === "session"
-      && dragItem.groupKey !== target.groupKey) {
-      const projectId = target.groupKey === "session:temporary"
-        ? null
-        : target.groupKey.startsWith("session:project:")
-          ? target.groupKey.slice("session:project:".length)
-          : undefined;
-      if (projectId !== undefined) {
-        moveSessionToProject(event, projectId);
-        return;
-      }
-    }
-    if (
-      dragItem === null
-      || dropIndicator === null
-      || dragItem.kind !== target.kind
-      || dragItem.groupKey !== target.groupKey
-    ) {
-      finishDrag();
-      return;
-    }
-    const reordered = reorderIdentifiers(
-      groupIds,
-      dragItem.id,
-      target.id,
-      dropIndicator.position,
-    );
-    finishDrag();
-    if (reordered.every((identifier, index) => identifier === groupIds[index])) return;
-    if (target.kind === "project") {
-      void tree.reorderProjects(reordered);
-    } else if (target.kind === "session") {
-      void onReorderSessions(reordered);
-    } else {
-      void onReorderTeamInstances(reordered);
-    }
-  }
-
-  useEffect(() => {
-    if (locateRequest === null) return undefined;
-
-    const locatedSession = locateRequest.kind === "session"
-      ? sessions.find((session) => session.id === locateRequest.id)
-      : undefined;
-    const locatedProjectId =
-      locateRequest.kind === "project"
-        ? locateRequest.id
-        : locatedSession?.projectId ?? null;
-
-    const targetKey = `${locateRequest.kind}:${locateRequest.id}`;
-    let secondFrame = 0;
-    let cancelled = false;
-    queueMicrotask(() => {
-      if (cancelled) return;
-      if (locatedSession?.isPinned === true) {
-        setIsPinnedGroupExpanded(true);
-      } else if (locatedSession?.projectId === null) {
-        setIsTemporaryGroupExpanded(true);
-      } else if (locatedProjectId !== null) {
-        setIsProjectsGroupExpanded(true);
-        setExpandedProjectIds((current) => new Set(current).add(locatedProjectId));
-        setCollapsedProjectIds((current) => {
-          const next = new Set(current);
-          next.delete(locatedProjectId);
-          return next;
-        });
-      }
-      const locatedParentId = locatedSession?.parentConversationId ?? null;
-      if (locatedParentId !== null) {
-        setExpandedSessionIds((current) =>
-          new Set(current).add(locatedParentId),
-        );
-      } else if (locatedSession?.threadKind === "team_lead") {
-        setExpandedSessionIds((current) =>
-          new Set(current).add(locatedSession.id),
-        );
-      }
-    });
-    const firstFrame = window.requestAnimationFrame(() => {
-      secondFrame = window.requestAnimationFrame(() => {
-        const target = Array.from(
-          bodyRef.current?.querySelectorAll<HTMLElement>("[data-navigator-key]") ?? [],
-        ).find((element) => element.dataset.navigatorKey === targetKey);
-        target?.scrollIntoView({ behavior: "smooth", block: "center" });
-      });
-    });
-
-    return () => {
-      cancelled = true;
-      window.cancelAnimationFrame(firstFrame);
-      window.cancelAnimationFrame(secondFrame);
-    };
-  }, [locateRequest, sessions]);
-
-  const toggleProjectExpansion = (projectId: string, isExpanded: boolean) => {
-    if (isExpanded) setProjectSessionLimits((current) => ({ ...current, [projectId]: 5 }));
-    setExpandedProjectIds((current) => {
-      const next = new Set(current);
-      if (isExpanded) {
-        next.delete(projectId);
-      } else {
-        next.add(projectId);
-      }
-      return next;
-    });
-    setCollapsedProjectIds((current) => {
-      const next = new Set(current);
-      if (isExpanded) {
-        next.add(projectId);
-      } else {
-        next.delete(projectId);
-      }
-      return next;
-    });
-  };
-
-  function isProjectExpanded(projectId: string): boolean {
-    return expandedProjectIds.has(projectId)
-      || (projectId === activeProjectId && !collapsedProjectIds.has(projectId));
-  }
 
   const teamInstanceGroups = useMemo(
     () => getTeamInstanceNavigatorGroups(
@@ -675,15 +226,6 @@ export function ProjectNavigator({
     ),
     [agents, sessions, teamInstances, teamWorkItems, teams],
   );
-
-  function toggleSessionExpansion(sessionId: string): void {
-    setExpandedSessionIds((current) => {
-      const next = new Set(current);
-      if (next.has(sessionId)) next.delete(sessionId);
-      else next.add(sessionId);
-      return next;
-    });
-  }
 
   const visiblePinnedSessions = useMemo(
     () =>
@@ -985,30 +527,7 @@ export function ProjectNavigator({
             size="compact"
             variant="quiet"
             onClick={() => {
-              if (allNavigatorGroupsCollapsed) {
-                setIsProjectsGroupExpanded(true);
-                setIsTeamsGroupExpanded(true);
-                setExpandedProjectIds(new Set(tree.projects.map((project) => project.id)));
-                setExpandedSessionIds(new Set(teamInstanceGroups.flatMap((group) =>
-                  group.instance.scope === "conversation"
-                    && group.instance.sourceConversationId !== null
-                    ? [group.instance.sourceConversationId]
-                    : [])));
-                setExpandedTeamIds(new Set(teamInstanceGroups.map((group) => group.instance.id)));
-                setCollapsedProjectIds(new Set());
-                setIsPinnedGroupExpanded(true);
-                setIsTemporaryGroupExpanded(true);
-              } else {
-                setIsProjectsGroupExpanded(false);
-                setIsTeamsGroupExpanded(false);
-                setExpandedProjectIds(new Set());
-                setExpandedSessionIds(new Set());
-                setExpandedTeamIds(new Set());
-                setCollapsedProjectIds(new Set(tree.projects.map((project) => project.id)));
-                setProjectSessionLimits({});
-                setIsPinnedGroupExpanded(false);
-                setIsTemporaryGroupExpanded(false);
-              }
+              setAllExpanded(allNavigatorGroupsCollapsed, tree.projects.map(project => project.id), teamInstanceGroups);
             }}
           >
             {allNavigatorGroupsCollapsed ? (
@@ -1075,7 +594,7 @@ export function ProjectNavigator({
                   expanded={isPinnedGroupExpanded}
                   icon={<Pin aria-hidden="true" size={15} />}
                   label="置顶"
-                  onToggle={() => setIsPinnedGroupExpanded((current) => !current)}
+                  onToggle={() => toggleGroup("pinned")}
                 />
                 {isPinnedGroupExpanded ? (
                   <div className="project-navigator__sessions">
@@ -1166,7 +685,7 @@ export function ProjectNavigator({
                   expanded={isProjectsGroupExpanded}
                   icon={<Folders aria-hidden="true" size={15} />}
                   label="项目"
-                  onToggle={() => setIsProjectsGroupExpanded((current) => !current)}
+                  onToggle={() => toggleGroup("projects")}
                 />
                 {isProjectsGroupExpanded ? (
                   <ul className="project-navigator__projects" aria-label="项目列表">
@@ -1328,12 +847,7 @@ export function ProjectNavigator({
                               })}
                               onOpenMember={(agentId, session) =>
                                 onOpenTeamMember(group.instance.id, agentId, session)}
-                              onToggle={() => setExpandedTeamIds((current) => {
-                                const next = new Set(current);
-                                if (next.has(group.instance.id)) next.delete(group.instance.id);
-                                else next.add(group.instance.id);
-                                return next;
-                              })}
+                              onToggle={() => toggleTeamExpansion(group.instance.id)}
                             />
                           ))}
                           {visibleSessions.length === 0
@@ -1415,12 +929,7 @@ export function ProjectNavigator({
                                   instance,
                                   kind: "team-instance",
                                 })}
-                                onToggleTeam={(instanceId) => setExpandedTeamIds((current) => {
-                                  const next = new Set(current);
-                                  if (next.has(instanceId)) next.delete(instanceId);
-                                  else next.add(instanceId);
-                                  return next;
-                                })}
+                                onToggleTeam={(instanceId) => toggleTeamExpansion(instanceId)}
                                 expandedTeamIds={expandedTeamIds}
                                 onToggleSubagents={() => toggleSessionExpansion(session.id)}
                               />
@@ -1430,7 +939,7 @@ export function ProjectNavigator({
                             <button
                               type="button"
                               className="project-navigator__start-session"
-                              onClick={() => setProjectSessionLimits((current) => ({ ...current, [project.id]: sessionLimit * 2 }))}
+                              onClick={() => showMoreProjectSessions(project.id, sessionLimit * 2)}
                             >
                               <ChevronDown aria-hidden="true" size={14} />
                               <span>显示更多（还有 {hiddenSessionCount} 条）</span>
@@ -1460,7 +969,7 @@ export function ProjectNavigator({
                   expanded={isTeamsGroupExpanded}
                   icon={<UsersRound aria-hidden="true" size={15} />}
                   label="团队"
-                  onToggle={() => setIsTeamsGroupExpanded((current) => !current)}
+                  onToggle={() => toggleGroup("teams")}
                 />
                 {isTeamsGroupExpanded ? (
                   <div className="project-navigator__sessions" aria-label="团队列表">
@@ -1519,12 +1028,7 @@ export function ProjectNavigator({
                           id: group.instance.id,
                           kind: "team-instance",
                         }, visibleTeamGroups.map((candidate) => candidate.instance.id))}
-                        onToggle={() => setExpandedTeamIds((current) => {
-                          const next = new Set(current);
-                          if (next.has(group.instance.id)) next.delete(group.instance.id);
-                          else next.add(group.instance.id);
-                          return next;
-                        })}
+                        onToggle={() => toggleTeamExpansion(group.instance.id)}
                       />
                     ))}
                   </div>
@@ -1553,7 +1057,7 @@ export function ProjectNavigator({
                   expanded={isTemporaryGroupExpanded}
                   icon={<Clock3 aria-hidden="true" size={15} />}
                   label="临时"
-                  onToggle={() => setIsTemporaryGroupExpanded((current) => !current)}
+                  onToggle={() => toggleGroup("temporary")}
                 />
                 {isTemporaryGroupExpanded && visibleTemporarySessions.length > 0 ? (
                   <div className="project-navigator__sessions">
@@ -1684,886 +1188,5 @@ export function ProjectNavigator({
         nativeOverlayContainer ?? document.body,
       ) : null}
     </WorkbenchPanel>
-  );
-}
-
-function NavigatorGroupHeader({
-  action,
-  expanded,
-  icon,
-  label,
-  onToggle,
-}: {
-  action?: {
-    disabled?: boolean;
-    icon: ReactElement;
-    label: string;
-    onClick: () => void;
-  };
-  expanded: boolean;
-  icon: ReactElement;
-  label: string;
-  onToggle: () => void;
-}): ReactElement {
-  return (
-    <div className="project-navigator__project-row">
-      <button
-        aria-expanded={expanded}
-        aria-label={expanded ? `收起 ${label}` : `展开 ${label}`}
-        className="project-navigator__project-button project-navigator__group-button"
-        title={expanded ? "收起对话" : "展开对话"}
-        type="button"
-        onClick={onToggle}
-      >
-        {icon}
-        <span>{label}</span>
-        {expanded ? (
-          <ChevronDown
-            aria-hidden="true"
-            className="project-navigator__group-chevron"
-            size={14}
-          />
-        ) : (
-          <ChevronRight
-            aria-hidden="true"
-            className="project-navigator__group-chevron"
-            size={14}
-          />
-        )}
-      </button>
-      {action === undefined ? null : (
-        <div className="project-navigator__project-actions">
-          <button
-            aria-label={action.label}
-            disabled={action.disabled}
-            title={action.label}
-            type="button"
-            onClick={action.onClick}
-          >
-            {action.icon}
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TeamInstanceTreeItem({
-  activeSessionId,
-  draggable,
-  dragging,
-  dropPosition,
-  expanded,
-  group,
-  onArchive,
-  onContextMenu,
-  onDragEnd,
-  onDragOver,
-  onDragStart,
-  onDrop,
-  onOpenMember,
-  onToggle,
-  projectName = null,
-}: {
-  activeSessionId: string | null;
-  draggable?: boolean;
-  dragging?: boolean;
-  dropPosition?: "after" | "before" | null;
-  expanded: boolean;
-  group: TeamInstanceNavigatorGroup;
-  onArchive?: () => void;
-  onContextMenu: (event: MouseEvent) => void;
-  onDragEnd?: () => void;
-  onDragOver?: (event: DragEvent<HTMLDivElement>) => void;
-  onDragStart?: (event: DragEvent<HTMLButtonElement>) => void;
-  onDrop?: (event: DragEvent<HTMLDivElement>) => void;
-  onOpenMember: (agentId: string, session: ProjectSession | null) => void;
-  onToggle: () => void;
-  projectName?: string | null;
-}): ReactElement {
-  const runningMemberCount = group.members.filter(({ session }) =>
-    session !== null && isSessionRunning(session),
-  ).length;
-  return (
-    <div className="project-navigator__session-branch">
-      <div
-        className="project-navigator__session-branch-row"
-        data-dragging={dragging === true}
-        data-drop-position={dropPosition ?? undefined}
-        onContextMenu={onContextMenu}
-        onDragOver={onDragOver}
-        onDrop={onDrop}
-      >
-        <button
-          aria-expanded={expanded}
-          aria-label={`${expanded ? "收起" : "展开"} ${group.instance.name}`}
-          className="project-navigator__session-toggle"
-          type="button"
-          onClick={onToggle}
-        >
-          {expanded ? <ChevronDown aria-hidden="true" size={13} /> : <ChevronRight aria-hidden="true" size={13} />}
-        </button>
-        <div className="project-navigator__session-shell">
-          <button
-            aria-label={`打开团队 ${group.instance.name} 群聊`}
-            className="project-navigator__session project-navigator__team-instance-session"
-            data-enabled={group.team.enabled}
-            draggable={draggable === true}
-            title={`${group.instance.name}${projectName === null ? "" : ` · ${projectName}`} · ${group.team.name}`}
-            type="button"
-            onClick={() => useWorkbenchUiStore.getState().openTeamChat({ instanceId: group.instance.id })}
-            onDragEnd={onDragEnd}
-            onDragStart={onDragStart}
-          >
-            <UsersRound aria-hidden="true" size={14} />
-            <span className="project-navigator__session-title">
-              {group.instance.name}{projectName === null ? "" : ` · ${projectName}`}
-            </span>
-            <span className="project-navigator__subagent-count" data-running={runningMemberCount > 0}>
-              {group.members.length}
-            </span>
-          </button>
-          <div className="project-navigator__session-actions">
-            <button aria-label={`给团队 ${group.instance.name} 发任务`} title="打开团队任务看板" type="button" onClick={event => {
-              event.stopPropagation();
-              useWorkbenchUiStore.getState().openTeamWorkspace({ teamId: group.instance.teamId, instanceId: group.instance.id });
-            }}><Send aria-hidden="true" size={13} /></button>
-            {onArchive === undefined ? null : (
-              <button
-                aria-label={`归档团队 ${group.instance.name}`}
-                title="归档团队"
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onArchive();
-                }}
-              >
-                <Archive aria-hidden="true" size={13} />
-              </button>
-            )}
-            <button aria-label={`更多 ${group.instance.name}`} title="更多" type="button" onClick={(event) => {
-              event.stopPropagation();
-              onContextMenu(event);
-            }}>
-              <MoreHorizontal aria-hidden="true" size={13} />
-            </button>
-          </div>
-        </div>
-      </div>
-      {expanded ? (
-        <div className="project-navigator__subagents project-navigator__team-members">
-          {group.members.length === 0 ? (
-            <p className="project-navigator__team-empty">
-              {group.instance.scope === "conversation" ? "尚未启用成员" : "暂无成员"}
-            </p>
-          ) : group.members.map(({ profile, session }) => {
-            const configuredRole = group.team.memberConfigurations[profile.id]?.role.trim();
-            const role = configuredRole === undefined || configuredRole.length === 0
-              ? profile.role
-              : configuredRole;
-            return (
-              <button
-                aria-current={session?.id === activeSessionId ? "page" : undefined}
-                aria-label={`打开 ${profile.name} 的团队对话`}
-                className="project-navigator__team-member"
-                data-active={session?.id === activeSessionId}
-                data-navigator-key={session === null ? undefined : `session:${session.id}`}
-                key={session?.id ?? profile.id}
-                title={`打开 ${profile.name} 的团队对话`}
-                type="button"
-                onClick={() => onOpenMember(profile.id, session)}
-              >
-                <AgentAvatar avatar={profile.avatar} size="compact" status={profile.status} />
-                <span className="project-navigator__team-member-copy">
-                  <span className="project-navigator__team-member-name">{profile.name}</span>
-                  <span className="project-navigator__team-member-role">
-                    {profile.id === group.team.leadAgentId ? `负责人 · ${role}` : role}
-                  </span>
-                </span>
-                {session === null ? null : <SessionStatusIndicator session={session} />}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-type SessionButtonProps = {
-  menuOpen?: boolean;
-  active: boolean;
-  archived?: boolean;
-  draggable: boolean;
-  dragging: boolean;
-  dropPosition: "after" | "before" | null;
-  located: boolean;
-  session: ProjectSession;
-  onArchive: (archived: boolean) => void;
-  onContextMenu: (event: MouseEvent) => void;
-  onDragEnd: () => void;
-  onDragOver: (event: DragEvent<HTMLDivElement>) => void;
-  onDragStart: (event: DragEvent<HTMLDivElement>) => void;
-  onDrop: (event: DragEvent<HTMLDivElement>) => void;
-  onPin: (pinned: boolean) => void;
-  onSelect: (sessionId: string) => void;
-  onKeep?: (sessionId: string) => void;
-};
-
-function hasUnreadSessionResult(session: ProjectSession): boolean {
-  return session.hasUnreadSideConversationResult === true
-    || (session.hasUnreadResult
-      && (session.lastRunStatus === "completed" || session.lastRunStatus === "failed"));
-}
-
-function hasFailedUnreadSessionResult(session: ProjectSession): boolean {
-  return session.hasFailedUnreadSideConversationResult === true
-    || (session.hasUnreadResult && session.lastRunStatus === "failed");
-}
-
-function sessionStatusLabel(session: ProjectSession): string | null {
-  if (isSessionRunning(session)) return "正在运行";
-  if (!hasUnreadSessionResult(session)) return null;
-  return hasFailedUnreadSessionResult(session) ? "上次运行失败" : "上次运行完成";
-}
-
-function SessionStatusIndicator({ session }: { session: ProjectSession }): ReactElement | null {
-  if (isSessionRunning(session)) {
-    return (
-      <ConversationWorkIndicator runId={session.activeRunId} aria-label="正在运行" className="project-navigator__session-status project-navigator__session-status--running" size={14} />
-    );
-  }
-  if (hasFailedUnreadSessionResult(session)) {
-    return (
-      <span
-        aria-label="上次运行失败"
-        title="有未读的失败结果"
-        className="project-navigator__session-status project-navigator__session-status--failed"
-        role="img"
-      />
-    );
-  }
-  if (hasUnreadSessionResult(session)) {
-    return (
-      <span
-        aria-label="上次运行完成"
-        title="有未读回复"
-        className="project-navigator__session-status project-navigator__session-status--completed"
-        role="img"
-      />
-    );
-  }
-  return null;
-}
-
-function SessionTreeItem({
-  activeSessionId,
-  expandedTeamIds = new Set<string>(),
-  subagentsExpanded,
-  teamGroups = [],
-  onArchiveTeam,
-  onCreateTeam,
-  onOpenTeamMember,
-  onOpenTeamMenu,
-  onToggleTeam,
-  onToggleSubagents,
-  ...buttonProps
-}: SessionButtonProps & {
-  activeSessionId: string | null;
-  expandedTeamIds?: ReadonlySet<string>;
-  subagentsExpanded: boolean;
-  teamGroups?: readonly TeamInstanceNavigatorGroup[];
-  onArchiveTeam?: (instance: TeamInstanceView) => void;
-  onCreateTeam?: () => void;
-  onOpenTeamMember?: (
-    teamInstanceId: string,
-    agentId: string,
-    session: ProjectSession | null,
-  ) => void;
-  onOpenTeamMenu?: (event: MouseEvent, instance: TeamInstanceView) => void;
-  onToggleTeam?: (instanceId: string) => void;
-  onToggleSubagents: () => void;
-}): ReactElement {
-  const hasExpandableContent = teamGroups.length > 0;
-  return (
-    <div className="project-navigator__session-branch">
-      <div className="project-navigator__session-branch-row">
-        {hasExpandableContent ? (
-          <button
-            aria-expanded={subagentsExpanded}
-            aria-label={`${subagentsExpanded ? "收起" : "展开"} ${buttonProps.session.title} 的对话团队`}
-            className="project-navigator__session-toggle"
-            title={`${teamGroups.length} 个对话团队`}
-            type="button"
-            onClick={onToggleSubagents}
-          >
-            {subagentsExpanded ? (
-              <ChevronDown aria-hidden="true" size={13} />
-            ) : (
-              <ChevronRight aria-hidden="true" size={13} />
-            )}
-          </button>
-        ) : (
-          <span aria-hidden="true" className="project-navigator__session-toggle-spacer" />
-        )}
-        <SessionButton
-          {...buttonProps}
-          {...(onCreateTeam === undefined ? {} : { onCreateTeam })}
-        />
-      </div>
-      {subagentsExpanded && hasExpandableContent ? (
-        <div className="project-navigator__subagents" role="group" aria-label="对话团队">
-          {onCreateTeam === undefined
-            || onOpenTeamMember === undefined
-            || onOpenTeamMenu === undefined
-            || onToggleTeam === undefined
-            ? null
-            : (
-              <>
-                {teamGroups.map((group) => (
-                  <TeamInstanceTreeItem
-                    activeSessionId={activeSessionId}
-                    expanded={expandedTeamIds.has(group.instance.id)}
-                    group={group}
-                    key={group.instance.id}
-                    {...(onArchiveTeam === undefined
-                      ? {}
-                      : { onArchive: () => onArchiveTeam(group.instance) })}
-                    onContextMenu={(event) => onOpenTeamMenu(event, group.instance)}
-                    onOpenMember={(agentId, session) =>
-                      onOpenTeamMember(group.instance.id, agentId, session)}
-                    onToggle={() => onToggleTeam(group.instance.id)}
-                  />
-                ))}
-              </>
-            )}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function SessionButton({
-  active,
-  menuOpen = false,
-  archived = false,
-  draggable,
-  dragging,
-  dropPosition,
-  located,
-  session,
-  onArchive,
-  onContextMenu,
-  onDragEnd,
-  onDragOver,
-  onDragStart,
-  onDrop,
-  onSelect,
-  onKeep,
-}: SessionButtonProps & {
-  onCreateTeam?: () => void;
-}): ReactElement {
-  const statusLabel = sessionStatusLabel(session);
-  const archiveDisabled = isSessionRunning(session) || (!!session.teamWorkItemId && !archived);
-
-  return (
-    <div
-      className="project-navigator__session-shell"
-      data-menu-open={menuOpen}
-      data-dragging={dragging}
-      data-drop-position={dropPosition ?? undefined}
-      data-pinned={session.isPinned}
-      draggable={draggable}
-      onDragEnd={onDragEnd}
-      onDragOver={onDragOver}
-      onDragStart={onDragStart}
-      onDrop={onDrop}
-    >
-      <button
-        aria-current={active ? "page" : undefined}
-        className="project-navigator__session"
-        data-active={active}
-        data-located={located}
-        data-navigator-key={`session:${session.id}`}
-        data-run-status={session.lastRunStatus ?? "idle"}
-        title={statusLabel === null ? session.title : `${session.title} · ${statusLabel}`}
-        type="button"
-        onClick={() => onSelect(session.id)}
-        onDoubleClick={() => onKeep?.(session.id)}
-        onContextMenu={onContextMenu}
-      >
-        {session.threadKind === "team_lead" ? (
-          <Scale aria-label="Team Lead 对话" size={14} />
-        ) : (
-          <MessageSquareText aria-hidden="true" size={14} />
-        )}
-        <span className="project-navigator__session-title">{session.title}</span>
-        <SessionStatusIndicator session={session} />
-      </button>
-      <div className="project-navigator__session-actions">
-        <IconButton
-          label={`${archived ? "取消归档" : "归档"} ${session.title}`}
-          tooltip={archived ? "取消归档" : "归档"}
-          disabled={archiveDisabled}
-          onClick={(event) => {
-            event.stopPropagation();
-            onArchive(!archived);
-          }}
-        >
-          {archived ? <ArchiveRestore aria-hidden="true" size={15} /> : <Archive aria-hidden="true" size={15} />}
-        </IconButton>
-        <IconButton label={`更多 ${session.title}`} tooltip="更多" aria-haspopup="menu" aria-expanded={menuOpen} onClick={(event) => {
-          event.stopPropagation();
-          onContextMenu(event);
-        }}>
-          <MoreHorizontal aria-hidden="true" size={15} />
-        </IconButton>
-      </div>
-    </div>
-  );
-}
-
-function NavigatorContextMenuView({
-  menu,
-  canCreateTeam,
-  canOpenDirectory,
-  onCreateTeam,
-  onProjectPathAction,
-  projectHasRunningSession,
-  onClose,
-  onDeleteSession,
-  onDeleteTeamInstance,
-  onEditTeamInstance,
-  onRemoveProject,
-  onRename,
-  onSetArchived,
-  onSetPinned,
-  onSetProjectPinned,
-  onSetProjectTeamsInNavigator,
-  onSetTeamInstanceArchived,
-}: {
-  menu: NavigatorContextMenu;
-  canCreateTeam: boolean;
-  canOpenDirectory: boolean;
-  onCreateTeam: (target: NavigatorMenuTarget) => void;
-  onProjectPathAction: (project: ProjectSummary, action: "copy" | "open") => void;
-  projectHasRunningSession: boolean;
-  onClose: () => void;
-  onDeleteSession: (session: ProjectSession) => void;
-  onDeleteTeamInstance: (instance: TeamInstanceView) => void;
-  onEditTeamInstance: (instance: TeamInstanceView) => void;
-  onRemoveProject: (project: ProjectSummary) => void;
-  onRename: (target: NavigatorMenuTarget) => void;
-  onSetArchived: (session: ProjectSession, archived: boolean) => void;
-  onSetPinned: (session: ProjectSession, pinned: boolean) => void;
-  onSetProjectPinned: (project: ProjectSummary, pinned: boolean) => void;
-  onSetProjectTeamsInNavigator: (
-    project: ProjectSummary,
-    showTeamsInNavigator: boolean,
-  ) => void;
-  onSetTeamInstanceArchived: (instance: TeamInstanceView, archived: boolean) => void;
-}): ReactElement {
-  const target = menu.target;
-  useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
-  const sessionIsRunning = target.kind === "session" && (
-    isSessionRunning(target.session)
-  );
-  const sessionIsManagedTeamWorkItem = target.kind === "session"
-    && target.session.teamWorkItemId !== null
-    && target.session.teamWorkItemId !== undefined
-    && !target.session.isArchived;
-
-  return (
-    <>
-      <div
-        aria-hidden="true"
-        className="project-navigator__context-menu-backdrop"
-        data-native-view-overlay=""
-        onMouseDown={onClose}
-      />
-      <div
-        className="project-navigator__context-menu"
-        role="menu"
-        style={{ left: menu.x, top: menu.y, maxHeight: `calc(100vh - ${menu.y + 8}px)`, overflowY: "auto" }}
-      >
-        {target.kind !== "team-instance" && (target.kind === "project" || (!target.session.isArchived && !target.session.teamWorkItemId)) ? (
-          <button role="menuitem" type="button" disabled={!canCreateTeam}
-            title={!canCreateTeam ? "请先在设置中配置团队模板" : undefined}
-            onClick={() => onCreateTeam(target)}>
-            <UsersRound aria-hidden="true" size={15} />创建团队
-          </button>
-        ) : null}
-        {target.kind === "team-instance" ? (
-          <>
-            <button role="menuitem" type="button" onClick={() => onRename(target)}>
-              <Pencil aria-hidden="true" size={15} />
-              重命名团队
-            </button>
-            <button
-              disabled={target.instance.scope === "conversation"}
-              role="menuitem"
-              title={target.instance.scope === "conversation"
-                ? "对话团队保留原对话的项目归属"
-                : undefined}
-              type="button"
-              onClick={() => onEditTeamInstance(target.instance)}
-            >
-              <Settings2 aria-hidden="true" size={15} />
-              编辑团队
-            </button>
-            <button
-              role="menuitem"
-              type="button"
-              onClick={() => onSetTeamInstanceArchived(target.instance, true)}
-            >
-              <Archive aria-hidden="true" size={15} />
-              归档团队
-            </button>
-            <div className="project-navigator__context-menu-separator" role="separator" />
-            <button
-              className="project-navigator__context-menu-danger"
-              role="menuitem"
-              type="button"
-              onClick={() => onDeleteTeamInstance(target.instance)}
-            >
-              <Trash2 aria-hidden="true" size={15} />
-              删除团队
-            </button>
-          </>
-        ) : target.kind === "session" ? (
-          <>
-            <button role="menuitem" type="button" onClick={() => onRename(target)}>
-              <Pencil aria-hidden="true" size={15} />
-              重命名
-            </button>
-            <button
-              role="menuitem"
-              type="button"
-              onClick={() => onSetPinned(target.session, !target.session.isPinned)}
-            >
-              {target.session.isPinned ? (
-                <PinOff aria-hidden="true" size={15} />
-              ) : (
-                <Pin aria-hidden="true" size={15} />
-              )}
-              {target.session.isPinned ? "取消置顶" : "置顶"}
-            </button>
-            <button
-              disabled={sessionIsRunning || sessionIsManagedTeamWorkItem}
-              role="menuitem"
-              title={sessionIsManagedTeamWorkItem
-                ? "团队执行对话由 WorkItem 生命周期保留"
-                : sessionIsRunning ? "运行中的对话不能归档" : undefined}
-              type="button"
-              onClick={() =>
-                onSetArchived(target.session, !target.session.isArchived)
-              }
-            >
-              {target.session.isArchived ? (
-                <ArchiveRestore aria-hidden="true" size={15} />
-              ) : (
-                <Archive aria-hidden="true" size={15} />
-              )}
-              {target.session.isArchived ? "取消归档" : "归档"}
-            </button>
-            <div className="project-navigator__context-menu-separator" role="separator" />
-            <button
-              className="project-navigator__context-menu-danger"
-              disabled={sessionIsRunning || sessionIsManagedTeamWorkItem}
-              role="menuitem"
-              title={sessionIsManagedTeamWorkItem
-                ? "团队执行对话由 WorkItem 生命周期保留"
-                : sessionIsRunning ? "运行中的对话不能删除" : undefined}
-              type="button"
-              onClick={() => onDeleteSession(target.session)}
-            >
-              <Trash2 aria-hidden="true" size={15} />
-              删除对话
-            </button>
-          </>
-        ) : (
-          <>
-            <button
-              role="menuitem"
-              type="button"
-              onClick={() => onSetProjectPinned(target.project, target.project.isPinned !== true)}
-            >
-              {target.project.isPinned === true ? (
-                <PinOff aria-hidden="true" size={15} />
-              ) : (
-                <Pin aria-hidden="true" size={15} />
-              )}
-              {target.project.isPinned === true ? "取消置顶项目" : "置顶项目"}
-            </button>
-            <button role="menuitem" type="button" onClick={() => onRename(target)}>
-              <Pencil aria-hidden="true" size={15} />
-              重命名
-            </button>
-            <button
-              aria-checked={target.project.showTeamsInNavigator === true}
-              role="menuitemcheckbox"
-              type="button"
-              onClick={() => onSetProjectTeamsInNavigator(
-                target.project,
-                target.project.showTeamsInNavigator !== true,
-              )}
-            >
-              {target.project.showTeamsInNavigator === true ? (
-                <Eye aria-hidden="true" size={15} />
-              ) : (
-                <EyeOff aria-hidden="true" size={15} />
-              )}
-              在项目中显示团队
-            </button>
-            <div className="project-navigator__context-menu-separator" role="separator" />
-            <button role="menuitem" type="button" onClick={() => onProjectPathAction(target.project, "copy")}>
-              <Copy aria-hidden="true" size={15} />复制项目路径
-            </button>
-            <button role="menuitem" type="button" disabled={!canOpenDirectory} onClick={() => onProjectPathAction(target.project, "open")}>
-              <FolderOpen aria-hidden="true" size={15} />在资源管理器打开
-            </button>
-            <div className="project-navigator__context-menu-separator" role="separator" />
-            <button
-              className="project-navigator__context-menu-danger"
-              disabled={projectHasRunningSession}
-              role="menuitem"
-              title={projectHasRunningSession ? "项目中有正在运行的对话" : undefined}
-              type="button"
-              onClick={() => onRemoveProject(target.project)}
-            >
-              <Trash2 aria-hidden="true" size={15} />
-              移除项目
-            </button>
-          </>
-        )}
-      </div>
-    </>
-  );
-}
-
-function NavigatorManagementDialog({
-  dialog,
-  draftName,
-  draftProjectId,
-  draftTeamId,
-  isSubmitting,
-  onCancel,
-  onDraftNameChange,
-  onDraftProjectIdChange,
-  onDraftTeamIdChange,
-  onSubmit,
-  teams,
-  projects,
-}: {
-  dialog: NavigatorDialog;
-  draftName: string;
-  draftProjectId: string;
-  draftTeamId: string;
-  isSubmitting: boolean;
-  onCancel: () => void;
-  onDraftNameChange: (value: string) => void;
-  onDraftProjectIdChange: (value: string) => void;
-  onDraftTeamIdChange: (value: string) => void;
-  onSubmit: () => void;
-  teams: readonly AgentTeam[];
-  projects: readonly ProjectSummary[];
-}): ReactElement {
-  const isCreate = dialog.kind === "create-team-instance";
-  const isEditTeam = dialog.kind === "edit-team-instance";
-  const isRename = dialog.kind === "rename-project"
-    || dialog.kind === "rename-session"
-    || dialog.kind === "rename-team-instance";
-  const title = dialog.kind === "rename-project"
-    ? "重命名项目"
-    : dialog.kind === "rename-session"
-      ? "重命名对话"
-      : dialog.kind === "rename-team-instance"
-        ? "重命名团队"
-        : dialog.kind === "edit-team-instance"
-          ? "编辑团队"
-        : dialog.kind === "create-team-instance"
-          ? dialog.scope === "global"
-            ? "创建团队"
-            : dialog.scope === "project"
-              ? "创建项目团队"
-              : "创建对话团队"
-      : dialog.kind === "remove-project"
-        ? "移除项目"
-        : dialog.kind === "delete-team-instance"
-          ? "删除团队"
-          : "删除对话";
-  const description = dialog.kind === "remove-project"
-    ? `将从工作区移除“${dialog.project.name}”，并删除本软件中的相关对话记录。磁盘文件不会被删除。`
-    : dialog.kind === "delete-session"
-      ? `将删除“${dialog.session.title}”及其对话记录。本次软件运行期间可通过左上角撤销；关闭软件后无法撤销。`
-      : dialog.kind === "delete-team-instance"
-        ? `将删除团队“${dialog.instance.name}”。现有对话与执行记录会保留用于审计。`
-      : null;
-
-  return (
-    <div className="project-navigator__dialog-backdrop" data-native-view-overlay="">
-      <form
-        aria-labelledby="navigator-management-dialog-title"
-        aria-modal="true"
-        className="project-navigator__dialog"
-        role="dialog"
-        onSubmit={(event) => {
-          event.preventDefault();
-          onSubmit();
-        }}
-      >
-        <div className="project-navigator__dialog-header">
-          <h2 id="navigator-management-dialog-title">{title}</h2>
-          <button aria-label="关闭" disabled={isSubmitting} type="button" onClick={onCancel}>
-            <X aria-hidden="true" size={15} />
-          </button>
-        </div>
-        {isCreate ? (
-          <>
-            {dialog.kind === "create-team-instance" && dialog.scope !== "conversation" ? (
-              <div className="project-navigator__dialog-field">
-                <span id="navigator-team-project-label">关联项目</span>
-                <Select
-                  value={draftProjectId || UNASSOCIATED_PROJECT_SELECT_VALUE}
-                  onValueChange={(value) => onDraftProjectIdChange(
-                    value === UNASSOCIATED_PROJECT_SELECT_VALUE ? "" : value,
-                  )}
-                >
-                  <SelectTrigger
-                    aria-labelledby="navigator-team-project-label"
-                    autoFocus
-                    className="w-full"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent align="start">
-                    <SelectItem value={UNASSOCIATED_PROJECT_SELECT_VALUE}>不关联项目</SelectItem>
-                    {projects.map((project) => (
-                      <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            ) : null}
-            <div className="project-navigator__dialog-field">
-              <span id="navigator-team-template-label">团队模板</span>
-              <Select
-                value={draftTeamId}
-                onValueChange={onDraftTeamIdChange}
-              >
-                <SelectTrigger
-                  aria-labelledby="navigator-team-template-label"
-                  autoFocus={dialog.kind !== "create-team-instance" || dialog.scope === "conversation"}
-                  className="w-full"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent align="start">
-                  {teams.map((team) => (
-                    <SelectItem key={team.id} value={team.id}>
-                      {team.name}{team.enabled ? "" : "（已暂停）"}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <label className="project-navigator__dialog-field">
-              <span>团队名（可选）</span>
-              <input
-                maxLength={120}
-                placeholder="留空时使用模板名称，重名会自动编号"
-                value={draftName}
-                onChange={(event) => onDraftNameChange(event.target.value)}
-              />
-            </label>
-          </>
-        ) : isEditTeam ? (
-          <div className="project-navigator__dialog-field">
-            <span id="navigator-edit-team-project-label">关联项目</span>
-            <Select
-              value={draftProjectId || UNASSOCIATED_PROJECT_SELECT_VALUE}
-              onValueChange={(value) => onDraftProjectIdChange(
-                value === UNASSOCIATED_PROJECT_SELECT_VALUE ? "" : value,
-              )}
-            >
-              <SelectTrigger
-                aria-labelledby="navigator-edit-team-project-label"
-                autoFocus
-                className="w-full"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent align="start">
-                <SelectItem value={UNASSOCIATED_PROJECT_SELECT_VALUE}>不关联项目</SelectItem>
-                {projects.map((project) => (
-                  <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        ) : isRename ? (
-          <label className="project-navigator__dialog-field">
-            <span>名称</span>
-            <input
-              autoFocus
-              maxLength={dialog.kind === "rename-team-instance" ? 120 : 200}
-              value={draftName}
-              onChange={(event) => onDraftNameChange(event.target.value)}
-            />
-          </label>
-        ) : (
-          <p>{description}</p>
-        )}
-        <div className="project-navigator__dialog-actions">
-          <button disabled={isSubmitting} type="button" onClick={onCancel}>
-            取消
-          </button>
-          <button
-            className={isCreate || isRename || isEditTeam
-              ? "project-navigator__dialog-primary"
-              : "project-navigator__dialog-danger"}
-            disabled={isSubmitting
-              || (isRename && draftName.trim().length === 0)
-              || (isCreate && draftTeamId.length === 0)}
-            type="submit"
-          >
-            {isSubmitting
-              ? <><Spinner size={14} className="mr-[5px]" />处理中…</>
-              : isCreate ? "创建" : isRename || isEditTeam ? "保存" : "确认"}
-          </button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-function NavigatorEmpty({
-  actionLabel,
-  label,
-  loading = false,
-  onAction,
-}: {
-  actionLabel?: string;
-  label: string;
-  loading?: boolean;
-  onAction?: () => void;
-}): ReactElement {
-  if (loading) return <LoadingState label={label} compact className="w-full" />;
-  return (
-    <div className="project-navigator__empty" data-loading={String(loading)}>
-      <Folder aria-hidden="true" size={19} />
-      <p>{label}</p>
-      {actionLabel && onAction ? (
-        <button type="button" onClick={onAction}>
-          {actionLabel}
-        </button>
-      ) : null}
-    </div>
   );
 }
