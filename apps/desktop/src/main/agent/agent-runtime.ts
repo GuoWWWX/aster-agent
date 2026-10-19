@@ -346,6 +346,9 @@ export class AgentRuntime {
 
   private readonly generateTurnSummaries: boolean;
   private readonly titleJobs = new Map<string, { controller: AbortController; finished: Promise<void> }>();
+  private readonly turnSummaryJobs = new Map<string, {
+    conversationId: string; controller: AbortController; finished: Promise<void>;
+  }>();
 
   private readonly toolHandlers: ToolHandlerRegistry<RuntimeToolContext>;
 
@@ -1735,7 +1738,9 @@ export class AgentRuntime {
     if (this.stopRunsPromise !== null) return this.stopRunsPromise;
     this.stoppingRuns = true;
     const titleJobs = [...this.titleJobs.values()];
+    const summaryJobs = [...this.turnSummaryJobs.values()];
     for (const job of titleJobs) job.controller.abort();
+    for (const job of summaryJobs) job.controller.abort();
     for (const wake of this.pendingAgentWakes.values()) clearTimeout(wake.timer);
     this.pendingAgentWakes.clear();
     const errors: unknown[] = [];
@@ -1748,7 +1753,9 @@ export class AgentRuntime {
     } catch (error) {
       errors.push(error);
     }
-    this.stopRunsPromise = Promise.allSettled([this.runCoordinator.cancelAll(), ...titleJobs.map(job => job.finished)])
+    this.stopRunsPromise = Promise.allSettled([
+      this.runCoordinator.cancelAll(), ...titleJobs.map(job => job.finished), ...summaryJobs.map(job => job.finished),
+    ])
       .then(results => { for (const result of results) if (result.status === "rejected") errors.push(result.reason); })
       .then(() => { if (errors.length > 0) throw new AggregateError(errors, "Run shutdown persistence failed."); })
       .finally(() => { this.stopRunsPromise = null; });
@@ -1776,6 +1783,9 @@ export class AgentRuntime {
       }
     }
     // Fence all owned conversations before aborting: receipts may arrive during cancellation.
+    for (const job of this.turnSummaryJobs.values()) {
+      if (ids.has(job.conversationId)) job.controller.abort();
+    }
     for (const id of ids) {
       this.titleJobs.get(id)?.controller.abort();
       this.setExecutionPaused(id, true);
@@ -1803,6 +1813,7 @@ export class AgentRuntime {
   }
 
   private cancelSingleRun(runId: string): void {
+    this.turnSummaryJobs.get(runId)?.controller.abort();
     this.clearPendingChangeApprovals(runId);
     this.runCoordinator.cancel(runId);
     if (this.runCoordinator.get(runId) === undefined) {
@@ -4901,7 +4912,12 @@ export class AgentRuntime {
     runId: string;
     signal: AbortSignal;
   }): Promise<void> {
-    if (!this.generateTurnSummaries) return;
+    if (!this.generateTurnSummaries || this.stoppingRuns || input.signal.aborted) return;
+    const controller = new AbortController();
+    const signal = AbortSignal.any([input.signal, controller.signal]);
+    let resolveFinished = (): void => undefined;
+    const finished = new Promise<void>(resolve => { resolveFinished = resolve; });
+    this.turnSummaryJobs.set(input.runId, { conversationId: input.conversationId, controller, finished });
     try {
       const messages = this.database.listContextMessagesForRun(input.runId);
       const boundary = messages.at(-1);
@@ -4917,8 +4933,9 @@ export class AgentRuntime {
             configuration: input.configuration,
             messages: summaryMessages,
             previousSummary: null,
-            signal: input.signal,
+            signal,
           }, 0));
+      if (signal.aborted || this.stoppingRuns || !this.database.isConversationProjectable(input.conversationId)) return;
       const turnSummary = this.database.saveConversationTurnSummary({
         conversationId: input.conversationId,
         coveredThroughSequence: boundary.sequence,
@@ -4930,11 +4947,15 @@ export class AgentRuntime {
         type: "turn_summary_updated",
       });
     } catch (error) {
+      if (signal.aborted || isAbortError(error)) return;
       const agentError = toMainAgentError(error, {
         operation: "context.turn_summary",
         redactValues: [input.configuration.apiKey],
       });
       reportMainError(agentError, error, [input.configuration.apiKey]);
+    } finally {
+      this.turnSummaryJobs.delete(input.runId);
+      resolveFinished();
     }
   }
 

@@ -2708,7 +2708,7 @@ export class AgentDatabase {
     });
   }
 
-  private isConversationProjectable(conversationId: string): boolean {
+  public isConversationProjectable(conversationId: string): boolean {
     return this.database
       .prepare(
         "SELECT 1 AS present FROM conversations WHERE id = ? AND deletion_pending = 0 LIMIT 1",
