@@ -45,6 +45,14 @@ export class IntegrationConfigurationStore {
 
   public saveConfiguration(input: IntegrationConfiguration): IntegrationConfiguration {
     const parsed = integrationConfigurationSchema.parse(input);
+    const previous = this.configuration instanceof SettingsJsoncFile && !this.configuration.has("integrations")
+      ? EMPTY_CONFIGURATION : this.getConfiguration();
+    for (const skill of previous.skills.filter(skill => skill.origin === "system")) {
+      const next = parsed.skills.find(candidate => candidate.id === skill.id);
+      if (next === undefined || JSON.stringify({ ...next, enabled: false }) !== JSON.stringify({ ...skill, enabled: false })) {
+        throw new Error("系统 Skill 只读，只能启用或停用，不能修改或移除配置。");
+      }
+    }
     if (this.configuration instanceof SettingsJsoncFile) {
       const stored = Object.fromEntries(
         Object.entries(parsed).filter(([key]) => key !== "version"),

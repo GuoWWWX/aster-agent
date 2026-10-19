@@ -58,6 +58,22 @@ function clickButton(container: HTMLElement, label: string): void {
 }
 
 describe("SettingsWorkspace", () => {
+  it("shows system skills as read-only while retaining their preview and enablement", async () => {
+    useWorkbenchUiStore.setState({ settingsSection: "skills" });
+    const client = new MockAgentClient();
+    await client.createSkillDocument();
+    const configuration = await client.getIntegrationConfiguration();
+    await client.saveIntegrationConfiguration({ ...configuration, skills: configuration.skills.map(skill => ({ ...skill, origin: "system" })) });
+    const container = await renderSettings(client);
+    expect(container.textContent).toContain("系统技能 · 只读");
+    expect(container.querySelector('section[aria-label="Skill 文档预览"]')?.textContent).toContain("Agent 应遵循");
+    expect(container.querySelector('.settings-skill-fields [role="combobox"]')).toBeNull();
+    expect([...container.querySelectorAll<HTMLInputElement>('.settings-skill-fields input')].every(input => input.readOnly)).toBe(true);
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="停用配置"]')).not.toBeNull();
+    await act(async () => { clickButton(container, "查看文档"); await Promise.resolve(); });
+    expect(useWorkbenchUiStore.getState().isSettingsFilePanelOpen).toBe(true);
+  });
+
   it("deletes a provider through its directory row and resets the empty editor", async () => {
     useWorkbenchUiStore.setState({ settingsSection: "models" });
     const client = new MockAgentClient();

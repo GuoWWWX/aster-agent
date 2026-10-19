@@ -3403,14 +3403,15 @@ function ConfigurationFilePreview({
   const canEdit = file !== null
     && file.content !== null
     && !file.isBinary
-    && !file.truncated;
+    && !file.truncated
+    && file.readOnly !== true;
   const status = state === undefined || state.isLoading
     ? "正在读取文件"
     : state.isSaving
       ? "正在保存"
       : state.isDirty
         ? "有未保存改动"
-        : "已保存";
+        : file?.readOnly === true ? "系统技能 · 只读" : "已保存";
   return (
     <section className="right-sidebar-file right-sidebar-config-file" aria-label={tab.name}>
       <header className="right-sidebar-file__header">

@@ -66,6 +66,24 @@ async function createStores() {
 }
 
 describe("ConfigurationWorkspaceStore", () => {
+  it("keeps the whole system skill workspace readable but rejects every mutation", async () => {
+    const { integrations, workspaces } = await createStores();
+    const configuration = integrations.getConfiguration();
+    integrations.saveConfiguration({ ...configuration, skills: configuration.skills.map(skill => ({ ...skill, origin: "system" })) });
+    const system = integrations.getConfiguration();
+    expect(() => integrations.saveConfiguration({ ...system, skills: [] })).toThrow(/只读/);
+    expect(() => integrations.saveConfiguration({ ...system, skills: system.skills.map(skill => ({ ...skill, origin: "personal" })) })).toThrow(/只读/);
+    integrations.saveConfiguration({ ...system, skills: system.skills.map(skill => ({ ...skill, enabled: false })) });
+    const reference = { configurationId: "review", kind: "skill" as const };
+    expect(await workspaces.listEntries({ ...reference, directoryPath: "" })).toMatchObject({ readOnly: true });
+    const original = await workspaces.readFile({ ...reference, path: "SKILL.md" });
+    expect(original).toMatchObject({ readOnly: true });
+    await expect(workspaces.writeFile({ ...reference, path: "SKILL.md", content: original.content! })).rejects.toThrow(/只读/);
+    await expect(workspaces.createEntry({ ...reference, path: "scripts/new.txt", entryKind: "file" })).rejects.toThrow(/只读/);
+    await expect(workspaces.deleteEntry({ ...reference, path: "scripts" })).rejects.toThrow(/只读/);
+    expect((await workspaces.readFile({ ...reference, path: "SKILL.md" })).content).toBe(original.content);
+  });
+
   it("limits Skill files to a registered Skill and manages child files", async () => {
     const { workspaces } = await createStores();
 

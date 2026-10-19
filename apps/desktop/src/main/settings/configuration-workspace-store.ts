@@ -52,6 +52,7 @@ type ResolvedWorkspace = {
   configurationId: string;
   kind: ConfigurationWorkspaceKind;
   protectedPath: string;
+  readOnly: boolean;
   rootPath: string;
 };
 
@@ -109,6 +110,7 @@ export class ConfigurationWorkspaceStore {
       entries: entries.sort(compareEntries),
       kind: workspace.kind,
       rootPath: workspace.rootPath,
+      readOnly: workspace.readOnly,
       truncated,
     });
   }
@@ -126,6 +128,7 @@ export class ConfigurationWorkspaceStore {
 
     return configurationWorkspaceFileSchema.parse({
       byteLength: preview.byteLength,
+      readOnly: workspace.readOnly,
       configurationId: workspace.configurationId,
       content: preview.content,
       isBinary: preview.isBinary,
@@ -142,6 +145,7 @@ export class ConfigurationWorkspaceStore {
   ): Promise<ConfigurationWorkspaceEntry> {
     const parsedInput = createConfigurationWorkspaceEntryInputSchema.parse(input);
     const workspace = await this.resolveWorkspace(parsedInput.kind, parsedInput.configurationId);
+    if (workspace.readOnly) throw new Error("系统 Skill 只读，不能创建文件。");
     if (isProtectedPath(workspace, parsedInput.path)) {
       throw new Error("The required configuration entry cannot be replaced.");
     }
@@ -164,6 +168,7 @@ export class ConfigurationWorkspaceStore {
   ): Promise<ConfigurationWorkspaceFile> {
     const parsedInput = writeConfigurationWorkspaceFileInputSchema.parse(input);
     const workspace = await this.resolveWorkspace(parsedInput.kind, parsedInput.configurationId);
+    if (workspace.readOnly) throw new Error("系统 Skill 只读，不能修改文件。");
 
     if (workspace.kind === "mcp" && parsedInput.path === workspace.protectedPath) {
       const content = await this.saveMcpDocument(workspace.configurationId, parsedInput.content);
@@ -192,6 +197,7 @@ export class ConfigurationWorkspaceStore {
   public async deleteEntry(input: DeleteConfigurationWorkspaceEntryInput): Promise<void> {
     const parsedInput = deleteConfigurationWorkspaceEntryInputSchema.parse(input);
     const workspace = await this.resolveWorkspace(parsedInput.kind, parsedInput.configurationId);
+    if (workspace.readOnly) throw new Error("系统 Skill 只读，不能删除文件。");
     if (isProtectedPath(workspace, parsedInput.path)) {
       throw new Error("The required configuration entry cannot be deleted.");
     }
@@ -224,6 +230,8 @@ export class ConfigurationWorkspaceStore {
         configurationId,
         kind,
         protectedPath: "SKILL.md",
+        readOnly: skill.origin === "system" || configuration.skills.some(candidate => candidate.origin === "system"
+          && isPathInsideRoot(path.dirname(path.resolve(candidate.entryPath)), canonicalRoot)),
         rootPath: canonicalRoot,
       };
     }
@@ -236,6 +244,7 @@ export class ConfigurationWorkspaceStore {
       configurationId,
       kind,
       protectedPath: "mcp.json",
+      readOnly: false,
       rootPath: path.resolve(await realpath(rootPath)),
     };
   }

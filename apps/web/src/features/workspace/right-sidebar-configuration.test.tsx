@@ -12,8 +12,8 @@ import { useProjectTree } from "../projects/use-project-tree.js";
 import { RightSidebarWorkspace } from "./right-sidebar-workspace.js";
 
 vi.mock("../../components/editor/document-code-editor.js", () => ({
-  DocumentCodeEditor: ({ ariaLabel, onChange, value }: ComponentProps<typeof DocumentCodeEditor>) => (
-    <textarea aria-label={ariaLabel} value={value} onChange={(event) => onChange(event.target.value)} />
+  DocumentCodeEditor: ({ ariaLabel, onChange, value, readOnly }: ComponentProps<typeof DocumentCodeEditor>) => (
+    <textarea readOnly={readOnly} aria-label={ariaLabel} value={value} onChange={(event) => onChange(event.target.value)} />
   ),
 }));
 
@@ -79,6 +79,23 @@ it("saves a Skill draft when another settings entry is opened before autosave fi
   expect(saved.content).toBe(content);
   await openSkill(first!.id);
   expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(content);
+});
+
+it("opens a system skill in the existing sidebar with read-only editor and tree actions", async () => {
+  const client = new MockAgentClient();
+  await client.createSkillDocument();
+  const skill = (await client.getIntegrationConfiguration()).skills[0]!;
+  const readFile = client.readConfigurationWorkspaceFile.bind(client);
+  const list = client.listConfigurationWorkspaceEntries.bind(client);
+  vi.spyOn(client, "readConfigurationWorkspaceFile").mockImplementation(async input => ({ ...await readFile(input), readOnly: true }));
+  vi.spyOn(client, "listConfigurationWorkspaceEntries").mockImplementation(async input => ({ ...await list(input), readOnly: true }));
+  const container = await renderSidebar(client);
+  await openSkill(skill.id);
+  expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="SKILL.md 文件编辑器"]')?.readOnly).toBe(true);
+  expect(container.textContent).toContain("系统技能 · 只读");
+  for (const label of ["新建文件", "新建文件夹"]) {
+    expect(container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)?.disabled).toBe(true);
+  }
 });
 
 it("keeps a failed Skill draft when the same entry is opened again", async () => {
