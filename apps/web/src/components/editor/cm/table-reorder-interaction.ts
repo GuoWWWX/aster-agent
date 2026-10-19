@@ -69,6 +69,7 @@ export function createTableReorderInteraction({ table, wrapper, getTable, isDirt
         setDragSource(reorderDrag.kind, reorderDrag.source, false);
         reorderDrag.ghost.remove();
       }
+      clearDropIndicator();
     };
     const clearDropIndicator = () => {
       dropIndicator?.remove();
