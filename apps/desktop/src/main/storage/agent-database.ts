@@ -1,3 +1,5 @@
+import { ContextSummaryRepository } from "./context-summary-repository.js";
+import { ConversationHistoryRepository } from "./conversation-history-repository.js";
 import { migrateAgentDatabaseSchema } from "./agent-schema-migrations.js";
 import { quoteSqliteIdentifier } from "./sqlite-schema-identifiers.js";
 import { createVolatileConversationProjectionSchema } from "./conversation-projection-schema.js";
@@ -18,7 +20,7 @@ import { type StoredModelMessage, type StoredConversationAttachment, type Conver
 import { runFileChangesFromTool, agentMessageModelContent, subagentResultSummaryContent } from "./agent-message-content.js";
 import { type DatabaseRow, asString, asNullableString, asBoolean, asNumber, parseJson, parseStoredStringArray } from "./database-row.js";
 import { collaborationRunStatus, collaborationOutputExcerpt, collaborationEdgeView, isTerminalTeamWorkItemStatus } from "./collaboration-row-mappers.js";
-import { contextSearchTerms, distinctiveContextTerms, likePattern, conversationSearchSnippet, rankStrongContextMatches } from "./context-search.js";
+import { likePattern, conversationSearchSnippet } from "./context-search.js";
 import { readProjectionString, readProjectionIsoDate, readProjectionTimelineMessage, readProjectionTool, readProjectionAgentMessage, readProjectionToolCalls, readProjectionProviderState, threadLogUserMessage, threadLogTerminalAssistant } from "./thread-log-projection-readers.js";
 import { toConversationDeletionTask, toConversation, toSubagentTask, toProject, toConversationAttachment, toStoredPendingMessage, toPublicConversationAttachment } from "./conversation-row-mappers.js";
 
@@ -191,6 +193,8 @@ export class AgentDatabase {
   private readonly projectionEvents = new Map<string, ThreadLogProjectionEvent[]>();
   private readonly projectionEventOwners = new Map<string, string>();
   private readonly database: SqliteDatabase;
+  private readonly history: ConversationHistoryRepository;
+  private readonly contextSummaries: ContextSummaryRepository;
   private readonly databasePath: string;
   private volatileConversationProjectionActive = false;
   public readonly collaboration: CollaborationStore;
@@ -198,6 +202,8 @@ export class AgentDatabase {
   public constructor(databasePath: string, teamChatJournal?: TeamChatJournal) {
     this.databasePath = databasePath;
     this.database = new DatabaseSync(databasePath);
+    this.history = new ConversationHistoryRepository(this.database);
+    this.contextSummaries = new ContextSummaryRepository(this.database);
     this.database.exec("PRAGMA foreign_keys = ON;");
     if (databasePath !== ":memory:") {
       this.database.exec("PRAGMA journal_mode = WAL;");
@@ -6348,93 +6354,28 @@ export class AgentDatabase {
   }
 
   public listContextMessages(conversationId: string): StoredContextMessage[] {
-    const rows = this.database
-      .prepare(
-        `SELECT sequence, run_id, role, content, tool_calls_json, tool_call_id,
-                attachment_ids_json, provider_state_json
-         FROM model_messages
-         WHERE conversation_id = ?
-         ORDER BY sequence ASC`
-      )
-      .all(conversationId) as DatabaseRow[];
-    return rows.map((row) => this.toStoredContextMessage(row));
+    return this.history.listContextMessages(conversationId);
   }
 
   /** Provider usage UI does not need message bodies or tool payloads. */
   public listAssistantProviderStates(conversationId: string): ModelProviderState[] {
     this.getConversation(conversationId);
-    const rows = this.database
-      .prepare(
-        `SELECT provider_state_json
-         FROM model_messages
-         WHERE conversation_id = ?
-           AND role = 'assistant'
-           AND provider_state_json IS NOT NULL
-         ORDER BY sequence ASC`,
-      )
-      .all(conversationId) as DatabaseRow[];
-    return rows.map((row) => parseJson<ModelProviderState>(
-      asString(row, "provider_state_json"),
-      "assistant provider state",
-    ));
+    return this.history.listAssistantProviderStates(conversationId);
   }
 
   public listContextAttachmentIds(conversationId: string): string[] {
     this.getConversation(conversationId);
-    const rows = this.database
-      .prepare(
-        `SELECT attachment_ids_json
-         FROM model_messages
-         WHERE conversation_id = ? AND attachment_ids_json <> '[]'`,
-      )
-      .all(conversationId) as DatabaseRow[];
-    return [...new Set(rows.flatMap((row) =>
-      parseJson<unknown[]>(asString(row, "attachment_ids_json"), "context attachment ids")
-        .filter((value): value is string => typeof value === "string")
-    ))];
+    return this.history.listContextAttachmentIds(conversationId);
   }
 
   public getLatestConversationRequestContent(conversationId: string): string | null {
     this.getConversation(conversationId);
-    const row = this.database
-      .prepare(
-        `SELECT payload_json
-         FROM conversation_timeline
-         WHERE conversation_id = ?
-           AND (
-             kind = 'agent_message'
-             OR (kind = 'message' AND json_extract(payload_json, '$.role') = 'user')
-           )
-         ORDER BY sequence DESC
-         LIMIT 1`,
-      )
-      .get(conversationId) as DatabaseRow | undefined;
-    if (row === undefined) return null;
-    const item = conversationTimelineItemSchema.parse(
-      parseJson(asString(row, "payload_json"), "latest conversation request"),
-    );
-    return item.kind === "message" || item.kind === "agent_message" ? item.content : null;
+    return this.history.getLatestConversationRequestContent(conversationId);
   }
 
   public getLatestCompletedAssistantContent(conversationId: string): string | null {
     this.getConversation(conversationId);
-    const row = this.database
-      .prepare(
-        `SELECT payload_json
-         FROM conversation_timeline
-         WHERE conversation_id = ?
-           AND kind = 'message'
-           AND json_extract(payload_json, '$.role') = 'assistant'
-           AND json_extract(payload_json, '$.status') = 'completed'
-         ORDER BY sequence DESC
-         LIMIT 1`,
-      )
-      .get(conversationId) as DatabaseRow | undefined;
-    if (row === undefined) return null;
-    const item = conversationTimelineItemSchema.parse(
-      parseJson(asString(row, "payload_json"), "latest assistant result"),
-    );
-    return item.kind === "message" && item.role === "assistant" ? item.content : null;
+    return this.history.getLatestCompletedAssistantContent(conversationId);
   }
 
   /**
@@ -6449,41 +6390,7 @@ export class AgentDatabase {
     limit: number;
   }): StoredContextMessage[] {
     this.getConversation(input.conversationId);
-    if (!Number.isSafeInteger(input.limit) || input.limit <= 0 || input.limit > 1_000) {
-      throw new Error("Context message page limit must be between 1 and 1000.");
-    }
-    const afterSequence = input.afterSequence;
-    const beforeSequence = input.beforeSequence;
-    if (
-      afterSequence !== undefined
-      && (!Number.isSafeInteger(afterSequence) || afterSequence < 0)
-    ) {
-      throw new Error("Context message afterSequence must be a non-negative safe integer.");
-    }
-    if (
-      beforeSequence !== undefined
-      && (!Number.isSafeInteger(beforeSequence) || beforeSequence <= 0)
-    ) {
-      throw new Error("Context message beforeSequence must be a positive safe integer.");
-    }
-    const afterSql = afterSequence === undefined ? "" : " AND sequence > ?";
-    const beforeSql = beforeSequence === undefined ? "" : " AND sequence < ?";
-    const rows = this.database
-      .prepare(
-        `SELECT sequence, run_id, role, content, tool_calls_json, tool_call_id,
-                attachment_ids_json, provider_state_json
-         FROM model_messages
-         WHERE conversation_id = ?${afterSql}${beforeSql}
-         ORDER BY sequence DESC
-         LIMIT ?`,
-      )
-      .all(
-        input.conversationId,
-        ...(afterSequence === undefined ? [] : [afterSequence]),
-        ...(beforeSequence === undefined ? [] : [beforeSequence]),
-        input.limit,
-      ) as DatabaseRow[];
-    return rows.reverse().map((row) => this.toStoredContextMessage(row));
+    return this.history.listContextMessagesPage(input);
   }
 
   public countContextMessages(input: {
@@ -6492,20 +6399,7 @@ export class AgentDatabase {
     conversationId: string;
   }): number {
     this.getConversation(input.conversationId);
-    const afterSql = input.afterSequence === undefined ? "" : " AND sequence > ?";
-    const beforeSql = input.beforeSequence === undefined ? "" : " AND sequence < ?";
-    const row = this.database
-      .prepare(
-        `SELECT COUNT(*) AS message_count
-         FROM model_messages
-         WHERE conversation_id = ?${afterSql}${beforeSql}`,
-      )
-      .get(
-        input.conversationId,
-        ...(input.afterSequence === undefined ? [] : [input.afterSequence]),
-        ...(input.beforeSequence === undefined ? [] : [input.beforeSequence]),
-      ) as DatabaseRow;
-    return asNumber(row, "message_count");
+    return this.history.countContextMessages(input);
   }
 
   /**
@@ -6514,16 +6408,7 @@ export class AgentDatabase {
    * query without loading the whole materialized history on every model turn.
    */
   public getLatestContextUserMessage(conversationId: string): StoredContextMessage | null {
-    const row = this.database
-      .prepare(
-        `SELECT sequence, run_id, role, content, tool_calls_json, tool_call_id,
-                attachment_ids_json, provider_state_json
-         FROM model_messages
-         WHERE conversation_id = ? AND role = 'user'
-         ORDER BY sequence DESC LIMIT 1`,
-      )
-      .get(conversationId) as DatabaseRow | undefined;
-    return row === undefined ? null : this.toStoredContextMessage(row);
+    return this.history.getLatestContextUserMessage(conversationId);
   }
 
   /** Translate a ThreadLog-local message position to the volatile timeline sequence. */
@@ -6532,21 +6417,7 @@ export class AgentDatabase {
     contextSequence: number,
   ): number {
     this.getConversation(conversationId);
-    if (!Number.isSafeInteger(contextSequence) || contextSequence <= 0) {
-      throw new Error("Context message sequence must be a positive integer.");
-    }
-    const row = this.database
-      .prepare(
-        `SELECT sequence FROM model_messages
-         WHERE conversation_id = ?
-         ORDER BY sequence ASC
-         LIMIT 1 OFFSET ?`,
-      )
-      .get(conversationId, contextSequence - 1) as DatabaseRow | undefined;
-    if (row === undefined) {
-      throw new Error("ThreadLog checkpoint boundary has no stored database message.");
-    }
-    return asNumber(row, "sequence");
+    return this.history.resolveContextCheckpointSequence(conversationId, contextSequence);
   }
 
   public searchContextMessages(input: {
@@ -6557,78 +6428,11 @@ export class AgentDatabase {
     query: string;
   }): StoredContextMessage[] {
     this.getConversation(input.conversationId);
-    const terms = contextSearchTerms(input.query);
-    const distinctiveTerms = distinctiveContextTerms(input.query);
-    if (terms.length === 0) return [];
-    const limit = input.limit ?? 24;
-    if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 100) {
-      throw new Error("Context search limit must be between 1 and 100.");
-    }
-    const beforeSequence = input.beforeSequence;
-    if (
-      beforeSequence !== undefined
-      && (!Number.isSafeInteger(beforeSequence) || beforeSequence <= 0)
-    ) {
-      throw new Error("Context search beforeSequence must be a positive safe integer.");
-    }
-    const excluded = [...new Set(input.excludeSequences ?? [])].filter(
-      (sequence) => Number.isSafeInteger(sequence) && sequence > 0,
-    );
-    const exclusionSql = excluded.length === 0
-      ? ""
-      : ` AND model_messages.sequence NOT IN (${excluded.map(() => "?").join(", ")})`;
-    const beforeSql = beforeSequence === undefined
-      ? ""
-      : " AND model_messages.sequence < ?";
-    const beforeParameters = beforeSequence === undefined ? [] : [beforeSequence];
-    const candidateLimit = Math.min(100, Math.max(limit, limit * 4));
-    const columns = `model_messages.sequence, model_messages.run_id, model_messages.role,
-      model_messages.content, model_messages.tool_calls_json, model_messages.tool_call_id,
-      model_messages.attachment_ids_json, model_messages.provider_state_json`;
-    const searchableText = "(model_messages.content || char(10) || model_messages.tool_calls_json)";
-    const likeConditions = terms.map(() => `${searchableText} LIKE ? ESCAPE '\\'`);
-    const rows = this.database
-      .prepare(
-        `SELECT ${columns}
-         FROM model_messages
-         WHERE model_messages.conversation_id = ?
-           AND (${likeConditions.join(" OR ")})
-           ${beforeSql}
-           ${exclusionSql}
-         ORDER BY model_messages.sequence DESC
-         LIMIT ?`,
-      )
-      .all(
-        input.conversationId,
-        ...terms.map(likePattern),
-        ...beforeParameters,
-        ...excluded,
-        candidateLimit,
-      ) as DatabaseRow[];
-    return rankStrongContextMatches(
-      rows.map((row) => this.toStoredContextMessage(row)),
-      distinctiveTerms,
-      terms,
-      limit,
-    );
+    return this.history.searchContextMessages(input);
   }
 
   public getContextCheckpoint(conversationId: string): ConversationContextCheckpoint | null {
-    const row = this.database
-      .prepare(
-        `SELECT conversation_id, covered_through_sequence, summary, created_at, updated_at
-         FROM conversation_context_checkpoints
-         WHERE conversation_id = ?`
-      )
-      .get(conversationId) as DatabaseRow | undefined;
-    if (row === undefined) return null;
-    return {
-      conversationId: asString(row, "conversation_id"),
-      coveredThroughSequence: asNumber(row, "covered_through_sequence"),
-      createdAt: asString(row, "created_at"),
-      summary: asString(row, "summary"),
-      updatedAt: asString(row, "updated_at")
-    };
+    return this.contextSummaries.getContextCheckpoint(conversationId);
   }
 
   public saveContextCheckpoint(
@@ -6648,37 +6452,7 @@ export class AgentDatabase {
     summary: string,
   ): ConversationContextCheckpoint {
     this.getConversation(conversationId);
-    const normalizedSummary = summary.trim();
-    if (!Number.isSafeInteger(coveredThroughSequence) || coveredThroughSequence <= 0) {
-      throw new Error("Context checkpoint sequence must be a positive integer.");
-    }
-    if (normalizedSummary.length === 0 || normalizedSummary.length > 200_000) {
-      throw new Error("Context checkpoint summary has an invalid length.");
-    }
-    const coveredMessage = this.database
-      .prepare(
-        "SELECT sequence FROM model_messages WHERE conversation_id = ? AND sequence = ?"
-      )
-      .get(conversationId, coveredThroughSequence) as DatabaseRow | undefined;
-    if (coveredMessage === undefined) {
-      throw new Error("Context checkpoint must end at a stored conversation message.");
-    }
-    const existing = this.getContextCheckpoint(conversationId);
-    if (
-      existing !== null &&
-      coveredThroughSequence < existing.coveredThroughSequence
-    ) {
-      throw new Error("Context checkpoint coverage cannot move backwards.");
-    }
-
-    const now = new Date().toISOString();
-    return {
-      conversationId,
-      coveredThroughSequence,
-      createdAt: existing?.createdAt ?? now,
-      summary: normalizedSummary,
-      updatedAt: now,
-    };
+    return this.contextSummaries.prepareContextCheckpoint(conversationId, coveredThroughSequence, summary);
   }
 
   /** Materialize a previously validated checkpoint using its durable times. */
@@ -6686,48 +6460,7 @@ export class AgentDatabase {
     checkpoint: ConversationContextCheckpoint,
   ): ConversationContextCheckpoint {
     this.getConversation(checkpoint.conversationId);
-    const normalizedSummary = checkpoint.summary.trim();
-    if (!Number.isSafeInteger(checkpoint.coveredThroughSequence) || checkpoint.coveredThroughSequence <= 0) {
-      throw new Error("Context checkpoint sequence must be a positive integer.");
-    }
-    if (normalizedSummary.length === 0 || normalizedSummary.length > 200_000) {
-      throw new Error("Context checkpoint summary has an invalid length.");
-    }
-    const coveredMessage = this.database
-      .prepare(
-        "SELECT sequence FROM model_messages WHERE conversation_id = ? AND sequence = ?"
-      )
-      .get(checkpoint.conversationId, checkpoint.coveredThroughSequence) as DatabaseRow | undefined;
-    if (coveredMessage === undefined) {
-      throw new Error("Context checkpoint must end at a stored conversation message.");
-    }
-    const existing = this.getContextCheckpoint(checkpoint.conversationId);
-    if (
-      existing !== null
-      && checkpoint.coveredThroughSequence < existing.coveredThroughSequence
-    ) {
-      throw new Error("Context checkpoint coverage cannot move backwards.");
-    }
-    this.database
-      .prepare(
-        `INSERT INTO conversation_context_checkpoints
-           (conversation_id, covered_through_sequence, summary, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(conversation_id) DO UPDATE SET
-           covered_through_sequence = excluded.covered_through_sequence,
-           summary = excluded.summary,
-           updated_at = excluded.updated_at`
-      )
-      .run(
-        checkpoint.conversationId,
-        checkpoint.coveredThroughSequence,
-        normalizedSummary,
-        checkpoint.createdAt,
-        checkpoint.updatedAt,
-      );
-    return this.getContextCheckpoint(checkpoint.conversationId) ?? (() => {
-      throw new Error("Context checkpoint could not be persisted.");
-    })();
+    return this.contextSummaries.projectPreparedContextCheckpoint(checkpoint);
   }
 
   public getThreadLogProjectionCursor(
@@ -7883,16 +7616,7 @@ export class AgentDatabase {
 
   public listContextMessagesForRun(runId: string, conversationId?: string): StoredContextMessage[] {
     if (conversationId !== undefined && this.getRunConversationId(runId) !== conversationId) return [];
-    const rows = this.database
-      .prepare(
-        `SELECT sequence, run_id, role, content, tool_calls_json, tool_call_id,
-                attachment_ids_json, provider_state_json
-         FROM model_messages
-         WHERE run_id = ?
-         ORDER BY sequence ASC`,
-      )
-      .all(runId) as DatabaseRow[];
-    return rows.map((row) => this.toStoredContextMessage(row));
+    return this.history.listContextMessagesForRun(runId);
   }
 
   public getLatestConversationTurnSummary(
@@ -7900,44 +7624,11 @@ export class AgentDatabase {
     coveredThroughSequence: number,
   ): ConversationTurnSummary | null {
     this.getConversation(conversationId);
-    if (!Number.isSafeInteger(coveredThroughSequence) || coveredThroughSequence <= 0) {
-      throw new Error("Turn summary boundary must be a positive safe integer.");
-    }
-    const row = this.database
-      .prepare(
-        `SELECT conversation_id, run_id, covered_through_sequence, summary, created_at
-         FROM conversation_turn_summaries
-         WHERE conversation_id = ? AND covered_through_sequence <= ?
-         ORDER BY covered_through_sequence DESC
-         LIMIT 1`,
-      )
-      .get(conversationId, coveredThroughSequence) as DatabaseRow | undefined;
-    if (row === undefined) return null;
-    return {
-      conversationId: asString(row, "conversation_id"),
-      coveredThroughSequence: asNumber(row, "covered_through_sequence"),
-      createdAt: asString(row, "created_at"),
-      runId: asString(row, "run_id"),
-      summary: asString(row, "summary"),
-    };
+    return this.contextSummaries.getLatestConversationTurnSummary(conversationId, coveredThroughSequence);
   }
 
   public getConversationTurnSummary(runId: string): ConversationTurnSummary | null {
-    const row = this.database
-      .prepare(
-        `SELECT conversation_id, run_id, covered_through_sequence, summary, created_at
-         FROM conversation_turn_summaries
-         WHERE run_id = ?`,
-      )
-      .get(runId) as DatabaseRow | undefined;
-    if (row === undefined) return null;
-    return {
-      conversationId: asString(row, "conversation_id"),
-      coveredThroughSequence: asNumber(row, "covered_through_sequence"),
-      createdAt: asString(row, "created_at"),
-      runId: asString(row, "run_id"),
-      summary: asString(row, "summary"),
-    };
+    return this.contextSummaries.getConversationTurnSummary(runId);
   }
 
   public saveConversationTurnSummary(input: {
@@ -7947,49 +7638,7 @@ export class AgentDatabase {
     summary: string;
   }): ConversationTurnSummary {
     this.getConversation(input.conversationId);
-    const summary = input.summary.trim();
-    if (!Number.isSafeInteger(input.coveredThroughSequence) || input.coveredThroughSequence <= 0) {
-      throw new Error("Turn summary boundary must be a positive safe integer.");
-    }
-    if (summary.length === 0 || summary.length > 100_000) {
-      throw new Error("Turn summary has an invalid length.");
-    }
-    const boundary = this.database
-      .prepare(
-        `SELECT sequence FROM model_messages
-         WHERE conversation_id = ? AND run_id = ? AND sequence = ?`,
-      )
-      .get(
-        input.conversationId,
-        input.runId,
-        input.coveredThroughSequence,
-      ) as DatabaseRow | undefined;
-    if (boundary === undefined) {
-      throw new Error("Turn summary boundary must belong to its Run.");
-    }
-    const createdAt = new Date().toISOString();
-    this.database
-      .prepare(
-        `INSERT INTO conversation_turn_summaries
-           (run_id, conversation_id, covered_through_sequence, summary, created_at)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(run_id) DO UPDATE SET
-           covered_through_sequence = excluded.covered_through_sequence,
-           summary = excluded.summary`,
-      )
-      .run(
-        input.runId,
-        input.conversationId,
-        input.coveredThroughSequence,
-        summary,
-        createdAt,
-      );
-    return this.getLatestConversationTurnSummary(
-      input.conversationId,
-      input.coveredThroughSequence,
-    ) ?? (() => {
-      throw new Error("Turn summary could not be persisted.");
-    })();
+    return this.contextSummaries.saveConversationTurnSummary(input);
   }
 
   /** Runtime activities are durable UI audit rows, never model-context messages. */
@@ -8793,36 +8442,6 @@ export class AgentDatabase {
         }
       }
     });
-  }
-
-  private toStoredContextMessage(row: DatabaseRow): StoredContextMessage {
-    const role = asString(row, "role");
-    if (role !== "user" && role !== "assistant" && role !== "tool") {
-      throw new Error("Stored model message role is invalid.");
-    }
-    return {
-      attachmentIds: parseJson<string[]>(
-        asString(row, "attachment_ids_json"),
-        "model message attachment identifiers"
-      ),
-      content: asString(row, "content"),
-      ...(asNullableString(row, "provider_state_json") === null
-        ? {}
-        : {
-            providerState: parseJson<ModelProviderState>(
-              asString(row, "provider_state_json"),
-              "model provider state"
-            )
-          }),
-      role,
-      runId: asNullableString(row, "run_id"),
-      sequence: asNumber(row, "sequence"),
-      toolCallId: asNullableString(row, "tool_call_id"),
-      toolCalls: parseJson<ModelToolCall[]>(
-        asString(row, "tool_calls_json"),
-        "model tool calls"
-      )
-    };
   }
 
   private listThreadLogLegacyRuns(conversationId: string): ThreadLogLegacyRun[] {
