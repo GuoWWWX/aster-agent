@@ -346,17 +346,22 @@ it("shows only the latest batch status until assistant text closes the group", a
   expandWorkProcess(container);
   const batch = () => container.querySelector(".tool-activity-batch__header");
   expect(batch()?.textContent).toContain("check-page");
+  expect(batch()?.querySelector(".tool-activity-batch__identity > button")?.querySelector("svg")).not.toBeNull();
+  expect(batch()?.querySelector("button")?.getAttribute("aria-expanded")).toBe("false");
   expect(batch()?.textContent).not.toContain("运行 1 条命令");
   act(() => listener({ type: "tool.completed", conversationId: PARENT_ID, runId: RUN_ID, tool: { ...command, status: "completed" } }));
   expect(batch()?.textContent).toContain("check-page");
   act(() => listener({ type: "assistant.reasoning_delta", conversationId: PARENT_ID, runId: RUN_ID,
     messageId: MESSAGE_ID, modelId: "gpt-6.1-sol", kind: "summary", reset: true, delta: "Reviewing page layout" }));
   expect(batch()?.textContent).toContain("Reviewing page layout");
+  expect(batch()?.querySelector(".tool-activity-batch__identity > button")?.querySelector("svg")).toBeNull();
+  expect(batch()?.querySelector("button")?.getAttribute("aria-expanded")).toBe("false");
   act(() => listener({ type: "assistant.delta", conversationId: PARENT_ID, runId: RUN_ID,
     messageId: MESSAGE_ID, modelId: "gpt-6.1-sol", delta: "页面检查完毕。" }));
   expect(batch()?.textContent).toContain("运行 1 条命令，读取 1 个文件");
   expect(batch()?.textContent).not.toContain("Reviewing page layout");
   expect(batch()?.textContent).not.toContain("check-page");
+  expect(batch()?.querySelector(".tool-activity-batch__identity > button")?.querySelector("svg")).not.toBeNull();
   act(() => listener({ type: "tool.started", conversationId: PARENT_ID, runId: RUN_ID,
     tool: { ...read, id: "00000000-0000-4000-8000-000000000015", status: "running", arguments: '{"path":"next.html"}' } }));
   expect(batch()?.textContent).toContain("运行 1 条命令，读取 1 个文件");
@@ -386,7 +391,7 @@ it.each(["assistant text", "run finished"])("keeps a manually opened tool batch 
   const batchToggle = () => container.querySelector<HTMLButtonElement>(".tool-activity-batch__identity > button");
   act(() => container.querySelector<HTMLButtonElement>('button[title="收起工作过程"]')?.click());
   expandWorkProcess(container);
-  if (batchToggle()?.getAttribute("aria-expanded") === "true") act(() => batchToggle()?.click());
+  expect(batchToggle()?.getAttribute("aria-expanded")).toBe("false");
   act(() => batchToggle()?.click());
   expect(batchToggle()?.getAttribute("aria-expanded")).toBe("true");
 
@@ -414,6 +419,41 @@ it.each(["assistant text", "run finished"])("keeps a manually opened tool batch 
   expect(batchToggle()?.getAttribute("aria-expanded")).toBe("true");
   expect(batchToggle()?.textContent).toContain("读取 3 个文件");
   expect(container.querySelector(".conversation-run-activity > button")?.getAttribute("aria-expanded")).toBe("true");
+});
+
+it("keeps a collapsed tool batch closed through reasoning, tools and completion", async () => {
+  const client = new MockAgentClient();
+  let listener: (event: ConversationRunEvent) => void = () => {};
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { listener = callback; return () => {}; });
+  const first: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID, batchId: null,
+    createdAt: new Date().toISOString(), name: "read_file", arguments: '{"path":"first.txt"}', result: null, diff: null, status: "running" };
+  const second = { ...first, id: "00000000-0000-4000-8000-000000000014", arguments: '{"path":"second.txt"}' };
+  const history = vi.spyOn(client, "listConversationTimeline").mockResolvedValue([first, second]);
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      session={session({ id: PARENT_ID, title: "保留工具收起选择", activeRunId: RUN_ID })} /></TooltipProvider>);
+    await flushConversationWorkspace();
+  });
+  const toggle = () => container.querySelector<HTMLButtonElement>(".tool-activity-batch__identity > button");
+  expect(toggle()?.getAttribute("aria-expanded")).toBe("false");
+  const reasoning: ConversationRunEvent = { type: "assistant.reasoning_delta", conversationId: PARENT_ID, runId: RUN_ID,
+    messageId: MESSAGE_ID, modelId: "gpt-6.1-sol", kind: "summary", reset: true, delta: "Reviewing the files" };
+  act(() => listener(reasoning));
+  expect(toggle()?.getAttribute("aria-expanded")).toBe("false");
+  act(() => toggle()?.click());
+  expect(toggle()?.getAttribute("aria-expanded")).toBe("true");
+  act(() => toggle()?.click());
+  expect(toggle()?.getAttribute("aria-expanded")).toBe("false");
+  act(() => listener({ type: "tool.completed", conversationId: PARENT_ID, runId: RUN_ID, tool: { ...second, status: "completed" } }));
+  const third = { ...first, id: "00000000-0000-4000-8000-000000000015" };
+  act(() => listener({ type: "tool.started", conversationId: PARENT_ID, runId: RUN_ID, tool: third }));
+  act(() => listener(reasoning));
+  expect(toggle()?.getAttribute("aria-expanded")).toBe("false");
+  history.mockImplementation(() => new Promise(() => {}));
+  act(() => listener({ type: "run.finished", conversationId: PARENT_ID, runId: RUN_ID, status: "completed", error: null }));
+  expandWorkProcess(container);
+  expect(toggle()?.getAttribute("aria-expanded")).toBe("false");
 });
 
 it("holds the latest tool or reasoning summary between new activity events", async () => {

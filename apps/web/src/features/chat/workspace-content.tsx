@@ -6914,21 +6914,17 @@ function ToolBatchTimelineItem({
   ) => Promise<void>;
   liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
 }): ReactElement {
-  const [isExpanded, setIsExpanded] = useToolDisclosure(item.id, item.tools.map((tool) => tool.id), item.tools.some((tool) => tool.status === "running" || tool.status === "awaiting_approval"));
+  const [isExpanded, setIsExpanded] = useToolDisclosure(item.id, item.tools.map((tool) => tool.id));
   const reveal = useContext(ToolRevealContext);
-  const disclosureChoices = useContext(ToolDisclosureContext);
   const revealThisBatch = item.tools.some((tool) => tool.id === reveal?.id);
   useEffect(() => { if (revealThisBatch) setIsExpanded(true); }, [reveal?.requestId, revealThisBatch, setIsExpanded]);
-  const hasActiveTool = item.tools.some((tool) => tool.status === "running" || tool.status === "awaiting_approval");
-  useEffect(() => {
-    if (!hasActiveTool && !revealThisBatch && !disclosureChoices?.has(item.id)) setIsExpanded(false);
-  }, [hasActiveTool, revealThisBatch, disclosureChoices, item.id, setIsExpanded]);
   const hasFailure = item.tools.some((tool) =>
     toolItemHasFailure(tool) || approvalErrors[tool.id] !== undefined
   );
   const currentTool = item.tools.find((tool) => tool.id === currentToolId);
   const isCurrentBatch = currentTool !== undefined && currentTool.runId === activeRunId;
-  const label = modelActivity?.preview?.trim() ? modelActivityLabel(modelActivity)
+  const hasReasoningSummary = Boolean(modelActivity?.preview?.trim());
+  const label = hasReasoningSummary && modelActivity !== null ? modelActivityLabel(modelActivity)
     : isCurrentBatch ? (toolBatchCurrentToolLabel([currentTool], teamManaged) ?? toolActivityLabel(currentTool, teamManaged))
     : toolBatchLabel(item.tools, teamManaged);
   const toggleLabel = isExpanded ? "收起本轮工具调用" : "展开本轮工具调用";
@@ -6946,7 +6942,7 @@ function ToolBatchTimelineItem({
             type="button"
             onClick={() => setIsExpanded((current) => !current)}
           >
-            <ToolTypeIcon name={representativeToolName(item.tools)} />
+            {hasReasoningSummary ? null : <ToolTypeIcon name={representativeToolName(item.tools)} />}
             <span className="min-w-0 truncate" aria-live={isCurrentBatch || modelActivity !== null ? "polite" : undefined}>{label}</span>
           </button>
           {hasFailure ? <span className="tool-activity-batch__status">有失败项</span> : null}
