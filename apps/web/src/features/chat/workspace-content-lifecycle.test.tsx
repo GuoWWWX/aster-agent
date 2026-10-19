@@ -36,6 +36,22 @@ async function render(client: MockAgentClient, activeRunId: string | null): Prom
 }
 const header = (): HTMLButtonElement => container.querySelector<HTMLButtonElement>(".conversation-run-activity > button")!;
 
+it("restores all inspection images in tool details without creating a final presentation", async () => {
+  const client = new MockAgentClient();
+  const images = Array.from({ length: 3 }, (_, index) => ({ id: crypto.randomUUID(), conversationId, messageId: tool.id,
+    contextTokens: 1024, createdAt: tool.createdAt, kind: "image", mimeType: "image/jpeg", name: `phase-${index}.jpg`, projectPath: null, sizeBytes: 3, source: "browser", truncated: false }));
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([{ ...tool, name: "present_html", arguments: '{"action":"inspect","language":"react","code":"example"}',
+    result: JSON.stringify({ ok: true, value: { coordinateSpace: "screenshot_css_pixels", width: 800, height: 600, mimeType: "image/jpeg", images } }) }, { ...answer, status: "completed" }]);
+  const read = vi.spyOn(client, "readConversationAttachmentPreview").mockResolvedValue({ data: "AQID", mimeType: "image/jpeg" });
+  await render(client, null);
+  act(() => header().click());
+  expect(container.textContent).toContain("已检查 React 预览");
+  await act(async () => { container.querySelector<HTMLButtonElement>(".tool-timeline-item__toggle")!.click(); await flush(); });
+  expect(read).toHaveBeenCalledTimes(3);
+  expect(container.querySelectorAll('img[src="data:image/jpeg;base64,AQID"]')).toHaveLength(3);
+  expect(container.querySelector("[data-html-delivery]")).toBeNull();
+});
+
 it("animates only the latest work segment across compaction and a new input, including after reopening", async () => {
   const client = new MockAgentClient();
   const user: ConversationMessageItem = { ...answer, id: crypto.randomUUID(), role: "user", content: "当前任务", status: "completed" };

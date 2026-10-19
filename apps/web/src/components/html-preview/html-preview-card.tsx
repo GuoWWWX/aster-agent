@@ -1,7 +1,7 @@
 import { LoadingState, Spinner } from "../ui/loading.js";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { CircleAlert, CodeXml, Copy, ExternalLink, Play } from "lucide-react";
-import { htmlPreviewResizeMessageSchema, type HtmlPreview } from "@agent/protocol";
+import { htmlPreviewResizeMessageSchema, type HtmlPreview, type CodePreviewLanguage } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import { IconButton } from "../ui/icon-button.js";
 import { CodeSourceView } from "../markdown/code-source-view.js";
@@ -9,7 +9,7 @@ import { CodeSourceView } from "../markdown/code-source-view.js";
 const HTML_PREVIEW_BASE_HEIGHT = 520;
 
 export const HtmlPreviewContext = createContext<{ client: AgentClient; conversationId: string } | null>(null);
-export type HtmlPreviewSource = { kind: "code"; html: string } | { kind: "file"; path: string };
+export type HtmlPreviewSource = { kind: "code"; html: string; language?: CodePreviewLanguage } | { kind: "file"; path: string };
 export function HtmlPreviewScope({ client, conversationId, children }: { client: AgentClient; conversationId: string; children: ReactNode }): ReactElement {
   const value = useMemo(() => ({ client, conversationId }), [client, conversationId]);
   return <HtmlPreviewContext.Provider value={value}>{children}</HtmlPreviewContext.Provider>;
@@ -24,7 +24,7 @@ export function HtmlPreviewCard({ source, embedded = false, initialMode = "previ
   const [mode, setMode] = useState(initialMode);
   const [requested, setRequested] = useState(initialMode === "preview" || source.kind === "file");
   const value = source.kind === "code" ? source.html : source.path;
-  return <HtmlPreviewContent key={`${context?.conversationId}:${source.kind}:${value}:${revision}:${requested}:${suspended}`} source={source} embedded={embedded} mode={mode} requested={requested && !suspended} initialHeight={initialHeight} onPreviewHeight={onPreviewHeight}
+  return <HtmlPreviewContent key={`${context?.conversationId}:${source.kind}:${source.kind === "code" ? source.language : "html"}:${value}:${revision}:${requested}:${suspended}`} source={source} embedded={embedded} mode={mode} requested={requested && !suspended} initialHeight={initialHeight} onPreviewHeight={onPreviewHeight}
     onModeChange={next => { setMode(next); if (next === "preview") { setRequested(true); setRevision(current => current + 1); } }} />;
 }
 
@@ -41,19 +41,21 @@ function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange, i
   const [height, setHeight] = useState(initialHeight ?? 320);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const kind = source.kind;
+  const language = source.kind === "code" ? source.language ?? "html" : "html";
+  const languageLabel = language === "react" ? "React" : language === "vue" ? "Vue" : "HTML";
   const value = source.kind === "code" ? source.html : source.path;
   useEffect(() => {
     if (context === null || !requested) return;
     let alive = true;
     let owned: string | undefined;
     const release = (id: string): void => { void context.client.htmlPreview({ kind: "release", id, conversationId: context.conversationId }).catch(() => undefined); };
-    void context.client.htmlPreview({ conversationId: context.conversationId, ...(kind === "code" ? { kind, html: value } : { kind, path: value }) }).then(result => {
-      if (result === null) throw new Error("无法创建 HTML 预览。");
+    void context.client.htmlPreview({ conversationId: context.conversationId, ...(kind === "code" ? { kind, html: value, ...(language === "html" ? {} : { language }) } : { kind, path: value }) }).then(result => {
+      if (result === null) throw new Error("无法创建代码预览。");
       if (!alive) { release(result.id); return; }
       owned = result.id; setPreview(result);
-    }).catch(reason => { if (alive) setError(reason instanceof Error ? reason.message : "HTML 预览加载失败。"); });
+    }).catch(reason => { if (alive) setError(reason instanceof Error ? reason.message : "代码预览加载失败。"); });
     return () => { alive = false; if (owned !== undefined) release(owned); };
-  }, [context, kind, value, requested]);
+  }, [context, kind, language, value, requested]);
   useEffect(() => {
     if (preview === null || mode !== "preview") return;
     const frame = frameRef.current;
@@ -78,18 +80,18 @@ function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange, i
     return () => { observer.disconnect(); window.removeEventListener("message", resize); };
   }, [preview, mode, onPreviewHeight]);
   const sourceText = source.kind === "code" ? source.html : preview?.source;
-  const title = source.kind === "file" ? source.path.split(/[\\/]/u).at(-1) : "html";
+  const title = source.kind === "file" ? source.path.split(/[\\/]/u).at(-1) : language;
   const loading = mode === "preview" && error === null && (preview === null || loadingFrame);
-  return <section aria-label="HTML 页面预览" className={embedded
+  return <section aria-label={`${languageLabel} 页面预览`} className={embedded
     ? "min-w-0 overflow-hidden bg-[var(--app-panel)] text-[var(--app-foreground)]"
     : "my-[5px] min-w-0 overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-foreground)]"}>
     <header className="flex min-w-0 flex-wrap items-center gap-[5px] border-b border-[var(--app-border)] px-2 py-1">
-      <CodeXml size={15} className="shrink-0" /><span className="min-w-0 flex-1 truncate text-[length:var(--app-font-size-control)]" title={source.kind === "file" ? source.path : "HTML 代码块"}>{title}</span>
-      {error !== null ? <IconButton label="HTML 预览错误" tooltip={error} size="compact" className="text-[var(--app-destructive)]"><CircleAlert size={14} /></IconButton> : null}
-      <IconButton label={mode === "source" ? "预览 HTML" : "显示源码"} aria-busy={loading} size="compact" onClick={() => onModeChange(mode === "source" ? "preview" : "source")}>
+      <CodeXml size={15} className="shrink-0" /><span className="min-w-0 flex-1 truncate text-[length:var(--app-font-size-control)]" title={source.kind === "file" ? source.path : `${languageLabel} 代码块`}>{title}</span>
+      {error !== null ? <IconButton label={`${languageLabel} 预览错误`} tooltip={error} size="compact" className="text-[var(--app-destructive)]"><CircleAlert size={14} /></IconButton> : null}
+      <IconButton label={mode === "source" ? `预览 ${languageLabel}` : "显示源码"} aria-busy={loading} size="compact" onClick={() => onModeChange(mode === "source" ? "preview" : "source")}>
         {mode === "source" ? <Play size={14} /> : loading ? <Spinner size={14} /> : <CodeXml size={14} />}
       </IconButton>
-      <IconButton label="在侧边浏览器打开 HTML" tooltip={openingBrowser ? "正在打开侧边浏览器…" : "在侧边浏览器打开 HTML"} size="compact" disabled={preview === null || openingBrowser} aria-busy={openingBrowser} onClick={() => {
+      <IconButton label={`在侧边浏览器打开 ${languageLabel}`} tooltip={openingBrowser ? "正在打开侧边浏览器…" : `在侧边浏览器打开 ${languageLabel}`} size="compact" disabled={preview === null || openingBrowser} aria-busy={openingBrowser} onClick={() => {
         if (preview === null || context === null || openingBrowser) return;
         setOpeningBrowser(true);
         void context.client.htmlPreview({ kind: "browser", id: preview.id, conversationId: context.conversationId }).then(() => setError(null))
@@ -100,7 +102,7 @@ function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange, i
       }}><Copy size={14} /></IconButton>
     </header>
     {mode === "source" && sourceText !== undefined
-      ? <CodeSourceView source={sourceText} language="html" />
+      ? <CodeSourceView source={sourceText} language={language === "react" ? "tsx" : "html"} />
       : preview === null ? error === null ? <div style={{ height }}><LoadingState label="正在加载页面…" className="h-full" /></div>
         : null
       : <div className="relative">

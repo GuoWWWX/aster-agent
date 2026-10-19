@@ -4,6 +4,7 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import path from "node:path";
 import { htmlPreviewRequestSchema, htmlPreviewSchema, type HtmlPreview, type HtmlPreviewRequest } from "@agent/protocol";
 import { htmlPreviewDocument } from "./html-preview-document.js";
+import { compilePreviewSource } from "./code-preview-compiler.js";
 
 import { containedPreviewPath, readHtmlPreviewFile, HTML_PREVIEW_MAX_BYTES as MAX_BYTES } from "./html-preview-file.js";
 const TYPES: Record<string, string> = { ".css": "text/css", ".js": "text/javascript", ".mjs": "text/javascript", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf" };
@@ -37,7 +38,8 @@ export class HtmlPreviewServer {
       const relativeEntry = root === null || entryPath === null ? "index.html" : path.relative(root, entryPath).split(path.sep).join("/");
       const id = randomUUID();
       const token = randomUUID();
-      const document = htmlPreviewDocument(source, id);
+      const rendered = input.kind === "code" ? await compilePreviewSource(source, input.language ?? "html") : source;
+      const document = htmlPreviewDocument(rendered, id);
       let port = 0;
       const server = createServer((req, res) => { void this.serve(req, res, { root, relativeEntry, source: document, token, port }).catch(() => { if (!res.headersSent) res.writeHead(404); res.end("Preview resource unavailable."); }); });
       await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
@@ -45,7 +47,7 @@ export class HtmlPreviewServer {
       const address = server.address();
       if (address === null || typeof address === "string") { server.close(); throw new Error("无法启动 HTML 预览。"); }
       port = address.port;
-      const preview = htmlPreviewSchema.parse({ id, title: entryPath === null ? "HTML 示例" : path.basename(entryPath),
+      const preview = htmlPreviewSchema.parse({ id, title: entryPath === null ? `${input.kind === "code" && input.language !== undefined ? input.language.toUpperCase() : "HTML"} 示例` : path.basename(entryPath),
         url: `http://127.0.0.1:${port}/${token}/${relativeEntry.split("/").map(encodeURIComponent).join("/")}`, source });
       this.entries.set(id, { owner: input.conversationId, preview, server, references: 1 });
       server.unref();

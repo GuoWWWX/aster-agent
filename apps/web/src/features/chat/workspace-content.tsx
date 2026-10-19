@@ -3534,7 +3534,7 @@ export function ConversationWorkspace({
                   <div className="chat-message-group gap-[5px]" data-role="assistant">
                     {deliveries.map(delivery => (
                       <div data-html-delivery={delivery.id} key={delivery.id}>
-                        {"pages" in delivery ? <HtmlPreviewGallery pages={delivery.pages} cacheTtlMs={CONVERSATION_WORKSPACE_CACHE_TTL_MS} onResize={handleHtmlGalleryResize} /> : <HtmlPreviewCard source={{ kind: "file", path: delivery.path }} />}
+                        {"pages" in delivery ? <HtmlPreviewGallery pages={delivery.pages} cacheTtlMs={CONVERSATION_WORKSPACE_CACHE_TTL_MS} onResize={handleHtmlGalleryResize} /> : "code" in delivery ? <HtmlPreviewCard source={{ kind: "code", html: delivery.code, language: delivery.language }} /> : <HtmlPreviewCard source={{ kind: "file", path: delivery.path }} />}
                       </div>
                     ))}
                   </div>
@@ -7634,9 +7634,12 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
       return completed ? "已读取附件" : "读取附件";
     case "view_image":
       return `${completed ? "已查看图片" : "查看图片"} ${path === null ? "" : fileNameFromPath(path)}`.trim();
-    case "present_html":
+    case "present_html": {
+      const language = argumentsValue?.language === "react" ? "React" : argumentsValue?.language === "vue" ? "Vue" : "HTML";
+      if (argumentsValue?.action === "inspect") return `${completed ? "已检查" : "检查"} ${language} 预览`;
       if (Array.isArray(argumentsValue?.pages)) return `${completed ? "已展示" : "展示"} ${argumentsValue.pages.length} 个 HTML 方案`;
-      return `${completed ? "已展示" : "展示"} HTML${path === null ? "" : ` · ${path}`}`;
+      return `${completed ? "已展示" : "展示"} ${language}${path === null ? "" : ` · ${path}`}`;
+    }
     case "view_attachments": {
       if (Array.isArray(argumentsValue?.paths)) return `${completed ? "已查看" : "查看"} ${argumentsValue.paths.length} 张图片`;
       const attachmentIds = Array.isArray(argumentsValue?.attachment_ids)
@@ -8065,9 +8068,9 @@ function ToolDetail({
   onOpenSubagent: ((conversationId: string) => void) | undefined;
   onOpenProjectFile: ((path: string) => void) | undefined;
 }): ReactElement {
-  const screenshot = (item.name === "browser_control" || item.name === "computer_use") && item.result !== null ? parseBrowserScreenshot(item.result) : null;
+  const screenshot = ["browser_control", "computer_use", "present_html"].includes(item.name) && item.result !== null ? parseBrowserScreenshot(item.result) : null;
   if (screenshot !== null) return <StructuredToolResult summary={item.name === "computer_use" ? "窗口截图" : "网页截图"}>
-    {screenshot.image === null ? null : <BrowserScreenshotResult agentClient={agentClient} image={screenshot.image} />}
+    <div className="grid gap-[5px]">{screenshot.images.map(image => <BrowserScreenshotResult key={image.id} agentClient={agentClient} image={image} />)}</div>
     <p className="m-0">{screenshot.width} × {screenshot.height} · {screenshot.mimeType}</p>
   </StructuredToolResult>;
   if (item.name === "request_user_input") {
@@ -8213,12 +8216,12 @@ function ToolDetail({
   return <ToolResultNotice result={item.result} status={item.status} />;
 }
 
-function parseBrowserScreenshot(payload: string): { width: number; height: number; mimeType: string; image: ConversationAttachment | null } | null {
+function parseBrowserScreenshot(payload: string): { width: number; height: number; mimeType: string; images: ConversationAttachment[] } | null {
   const result = parseToolValue(payload);
-  const image = conversationAttachmentListSchema.safeParse([result?.image]);
+  const images = conversationAttachmentListSchema.safeParse(result?.images ?? [result?.image]);
   return (result?.coordinateSpace === "screenshot_css_pixels" || result?.coordinateSpace === "window_physical_pixels") && typeof result.width === "number"
     && typeof result.height === "number" && typeof result.mimeType === "string"
-    ? { width: result.width, height: result.height, mimeType: result.mimeType, image: image.success ? image.data[0] ?? null : null } : null;
+    ? { width: result.width, height: result.height, mimeType: result.mimeType, images: images.success ? images.data.slice(0, 3) : [] } : null;
 }
 
 export function toolHasDisplayableDetails(item: ConversationToolItem): boolean {
@@ -8255,6 +8258,7 @@ export function toolHasDisplayableDetails(item: ConversationToolItem): boolean {
     case "list_subagents":
     case "wait_for_subagents": return parseSubagentToolResult(payload) !== null;
     case "computer_use":
+    case "present_html":
     case "browser_control": return parseBrowserScreenshot(payload) !== null;
     default: return false;
   }

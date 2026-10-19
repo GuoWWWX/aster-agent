@@ -69,6 +69,19 @@ describe("conversation HTML previews", () => {
     expect(request.mock.calls.filter(([input]) => input.kind === "release")).toHaveLength(1);
   });
 
+  it.each(["react", "jsx", "tsx", "vue"])("reuses the isolated preview for a closed %s fence and retains its original source", async tag => {
+    const source = tag === "vue" ? '<template><button>Vue</button></template>' : 'export default function App(){return <button>React</button>}';
+    await render(<AgentMarkdown content={`\`\`\`${tag}\n${source}`} />);
+    expect(request).not.toHaveBeenCalled(); expect(node.querySelector("iframe")).toBeNull();
+    await render(<AgentMarkdown content={`\`\`\`${tag}\n${source}\n\`\`\``} />);
+    expect(request).toHaveBeenCalledWith({ kind: "code", conversationId, html: source + "\n", language: tag === "vue" ? "vue" : "react" });
+    expect(node.querySelectorAll("iframe")).toHaveLength(1);
+    expect(node.querySelector("iframe")?.getAttribute("sandbox")).toBe("allow-scripts");
+    await click("显示源码");
+    expect(node.textContent).toContain(source);
+    expect(node.querySelector("iframe")).toBeNull();
+  });
+
   it("does not treat a Markdown file marker as a presentation tool call", async () => {
     const content = "页面已保存。\n\n```html-preview\npages/demo.html\n```";
     await render(<AgentMarkdown content={content} />);

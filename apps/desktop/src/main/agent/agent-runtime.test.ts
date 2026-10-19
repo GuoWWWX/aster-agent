@@ -2509,7 +2509,7 @@ describe("AgentRuntime", () => {
     expect(model.requests[0]?.messages[0]?.content).toContain(`Authorized root: ${project.rootPath}`);
     expect(model.requests[0]?.messages[0]?.content).toContain("No Skill Runtime is currently available");
     expect(model.requests[0]?.messages[0]?.content).toContain(
-      "Git is a command-line program available through run_command, not a Skill"
+      "Git is an ordinary command, not a Skill"
     );
     expect(model.requests[0]?.messages[0]?.content).toContain(
       "One model turn may return at most 32 mixed Tool Calls"
@@ -2517,7 +2517,7 @@ describe("AgentRuntime", () => {
     expect(model.requests[0]?.messages[0]?.content).toContain("groups of up to 8");
     expect(model.requests[0]?.messages[0]?.content).toContain("groups of up to 4");
     expect(model.requests[0]?.messages[0]?.content).toContain(
-      "The application language is Simplified Chinese (zh-CN). Reply in Simplified Chinese unless the user explicitly requests another language."
+      "The application language is Simplified Chinese (zh-CN). Reply in Simplified Chinese unless the user requests another language."
     );
     expect(JSON.stringify(model.requests[0]?.tools)).not.toMatch(/\p{Script=Han}/u);
     database.close();
@@ -3670,7 +3670,7 @@ describe("AgentRuntime", () => {
     expect(requestMessages.at(-1)?.content).toContain("[Referenced project files]");
     expect(requestMessages.at(-1)?.content).toContain("src/feature.ts");
     expect(requestMessages.at(-1)?.content).toContain("read_file");
-    expect(requestMessages[0]?.content).toContain("`/review` means review the relevant implementation");
+    expect(requestMessages[0]?.content).toContain("/review means report grounded findings first");
     expect(referencedUsage.estimatedReferenceTokens).toBeGreaterThan(
       baseUsage.estimatedReferenceTokens,
     );
@@ -4312,7 +4312,7 @@ describe("AgentRuntime", () => {
       "runtime can return only a bounded completion receipt",
     );
     expect(model.requests[1]?.messages[0]?.content).toContain(
-      "runtime returns only a bounded completion receipt",
+      "returns only a bounded completion receipt",
     );
     expect(database.listUnreadAgentMessages(target.id)).toEqual([]);
     expect(database.listTimeline(sender.id)).toEqual(expect.arrayContaining([

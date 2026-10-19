@@ -221,7 +221,7 @@ renderer.renderer.rules.fence = (tokens, index, _options, environment: unknown) 
   }
   const label = /^(powershell|pwsh|ps1|ps)$/iu.test(language) ? "PowerShell"
     : language.toLowerCase() === "bash" ? "Bash" : language;
-  const htmlPreview = /^html?$/iu.test(language) && typeof environment === "object" && environment !== null && "htmlPreview" in environment && environment.htmlPreview === true
+  const htmlPreview = /^(html?|react|jsx|tsx|vue)$/iu.test(language) && typeof environment === "object" && environment !== null && "htmlPreview" in environment && environment.htmlPreview === true
     && token?.map != null && "markdown" in environment && typeof environment.markdown === "string"
     && isClosedFence(environment.markdown.split("\n")[token.map[1] - 1] ?? "", token.markup);
   if (htmlPreview) return `<div class="agent-markdown__code-block" data-language="${renderer.utils.escapeHtml(language)}"><template data-html-code-source>${renderer.utils.escapeHtml(source)}</template><div data-html-code-preview-slot></div></div>\n`;
@@ -262,7 +262,7 @@ export const AgentMarkdown = memo(function AgentMarkdown({ content, streaming = 
 
 function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferences }: { content: string; streaming: boolean; scrollHostRef: RefObject<HTMLDivElement | null>; inlineReferences: readonly InlineReference[] }): ReactElement {
   const hostRef = useRef<HTMLDivElement>(null);
-  const [codePreviews, setCodePreviews] = useState<Array<{ source: string; mount: Element }>>([]);
+  const [codePreviews, setCodePreviews] = useState<Array<{ source: string; mount: Element; language: "html" | "react" | "vue" }>>([]);
   const [sourceViews, setSourceViews] = useState<Array<{ source: string; language: string; mount: Element }>>([]);
   const [referenceMounts, setReferenceMounts] = useState<Array<{ index: number; mount: Element }>>([]);
   const referenceKey = JSON.stringify(inlineReferences.map(reference => reference.label));
@@ -288,7 +288,9 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferen
     setReferenceMounts(mounts);
     const previews = [...host.querySelectorAll<HTMLTemplateElement>("[data-html-code-source]")].flatMap(template => {
       const mount = template.parentElement?.querySelector("[data-html-code-preview-slot]");
-      return mount == null ? [] : [{ source: template.content.textContent ?? "", mount }];
+      const tag = template.parentElement?.getAttribute("data-language")?.toLowerCase();
+      const language: "html" | "react" | "vue" = tag === "vue" ? "vue" : /^(react|jsx|tsx)$/u.test(tag ?? "") ? "react" : "html";
+      return mount == null ? [] : [{ source: template.content.textContent ?? "", mount, language }];
     });
     if (previews.length > 0) setCodePreviews(previews);
     const sources = [...host.querySelectorAll<HTMLTemplateElement>("[data-code-source]")].flatMap(template => {
@@ -426,7 +428,7 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferen
       onKeyDown={handleKeyDown}
       onContextMenu={handleDiagramContextMenu}
     />
-    {codePreviews.map((preview, index) => createPortal(<HtmlPreviewCard source={{ kind: "code", html: preview.source }} embedded />, preview.mount, String(index)))}
+    {codePreviews.map((preview, index) => createPortal(<HtmlPreviewCard source={{ kind: "code", html: preview.source, language: preview.language }} embedded />, preview.mount, String(index)))}
     {sourceViews.map((view, index) => createPortal(<CodeSourceView source={view.source} language={view.language} />, view.mount, `source:${index}`))}
     {referenceMounts.map((reference, index) => createPortal(inlineReferences[reference.index]?.content, reference.mount, `reference:${index}`))}
     {activePreview !== null ? createPortal(<HtmlPreviewCard key={activePreview.source.kind === "file" ? activePreview.source.path : activePreview.source.html} source={activePreview.source} />, activePreview.mount) : null}
