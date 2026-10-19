@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { ConversationAgentMessageItem, ConversationSummary } from "@agent/protocol";
+import type { ConversationAgentMessageItem, ConversationSummary, ConversationPermissionMode } from "@agent/protocol";
 
 import { toolErrorContent } from "../errors/tool-error.js";
 import type { ModelToolDefinition } from "../model/model-contracts.js";
@@ -187,7 +187,7 @@ export class AgentCommunicationTool {
     conversationId: string;
     onMessagesRead?: (messageIds: readonly string[]) => void;
     onMessageSent?: (message: ConversationAgentMessageItem) => void;
-    permissionMode?: "read_only" | "ask_before_changes" | "full_access";
+    permissionMode?: ConversationPermissionMode;
     runId: string;
     signal: AbortSignal;
     toolName: string;

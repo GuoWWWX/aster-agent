@@ -147,7 +147,7 @@ export class TeamWorkItemTool {
         acceptanceCriteria: argumentsValue.acceptanceCriteria,
         executionScope,
         ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
-        permissionMode: input.permissionMode === "read_only" ? "read_only" : "full_access",
+        permissionMode: input.permissionMode === "ask_before_changes" ? "full_access" : input.permissionMode,
         priority: argumentsValue.priority,
         projectId: conversation.projectId,
         requirement: argumentsValue.requirement,

@@ -94,6 +94,8 @@ export const conversationThreadKindSchema = z.enum([
 export const conversationPermissionModeSchema = z.enum([
   "read_only",
   "ask_before_changes",
+  "request_approval",
+  "auto_review",
   "full_access"
 ]);
 

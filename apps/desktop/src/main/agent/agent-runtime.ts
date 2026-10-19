@@ -1557,12 +1557,12 @@ export class AgentRuntime {
       });
     }
     handlers.push({
-      execute: ({ context, rawArguments }) => this.webSearchTool.execute(
-        rawArguments,
-        context.signal,
-      ),
+      execute: ({ context, rawArguments }) => context.permissionMode !== "full_access" && context.permissionMode !== "read_only"
+        ? Promise.resolve(this.webSearchTool.prepareApproval(rawArguments, context.signal))
+        : this.webSearchTool.execute(rawArguments, context.signal),
       getDefinitions: () => this.webSearchTool.getDefinitions(),
-      getExecutionPolicy: () => this.webSearchTool.getExecutionPolicy(),
+      getExecutionPolicy: ({ context }) => context.permissionMode !== "full_access" && context.permissionMode !== "read_only"
+        ? { kind: "serial" } : this.webSearchTool.getExecutionPolicy(),
       isAvailable: () => true,
     });
     if (this.workspaceTerminalTool !== null) {
@@ -1699,7 +1699,7 @@ export class AgentRuntime {
         .bindConversationAgent(input.conversationId, input.agent);
     }
     (this.conversationLifecycle ?? this.database)
-      .setConversationPermissionMode(input.conversationId, input.permissionMode ?? DEFAULT_PERMISSION_MODE);
+      .setConversationPermissionMode(input.conversationId, input.permissionMode ?? conversation.permissionMode ?? DEFAULT_PERMISSION_MODE);
     const preparedBase = this.prepareConversationMessage(input);
     const prepared = conversation.lastRunStatus === "failed" || conversation.lastRunStatus === "cancelled"
       ? { ...preparedBase, modelInputContent: supersedeFailedRunModelContent(preparedBase.modelInputContent) }
@@ -2144,7 +2144,7 @@ export class AgentRuntime {
       ...storedConfiguration,
       modelId: input.modelId ?? storedConfiguration.modelId
     };
-    const permissionMode = input.permissionMode ?? DEFAULT_PERMISSION_MODE;
+    const permissionMode = input.permissionMode ?? this.database.getConversation(input.conversationId).permissionMode ?? DEFAULT_PERMISSION_MODE;
     const reasoning = resolveReasoning(input, configuration);
     const contextCompressionConfiguration = structuredClone(
       resolveContextCompressionConfiguration(
@@ -4163,9 +4163,10 @@ export class AgentRuntime {
         ? this.database.getLatestRunExecutionSnapshot(conversationId)
         : null;
       const permissionMode = managedWorkItem?.permissionMode
+        ?? (targetConversation.permissionMode === "request_approval" || targetConversation.permissionMode === "auto_review"
+          ? targetConversation.permissionMode : undefined)
         ?? previousSubagentSnapshot?.permissionMode
-        ?? (targetConversation.coordinationMode === "parallel_queue" && targetConversation.permissionMode === "full_access"
-          ? "full_access" : undefined)
+        ?? targetConversation.permissionMode
         ?? DEFAULT_PERMISSION_MODE;
       if (managedWorkItem !== null) {
         (this.conversationLifecycle ?? this.database).setConversationPermissionMode(conversationId, permissionMode);
@@ -4997,6 +4998,7 @@ export class AgentRuntime {
   }
 
   private permissionPolicyFor(toolName: string): PermissionPolicy {
+    if (toolName === "web_search") return "ask";
     const policies = this.applicationSettings?.getConfiguration().permissionPolicies
       ?? DEFAULT_APPLICATION_PERMISSION_POLICIES;
     if (toolName === "computer_use") return policies["computer-control"];
@@ -5103,7 +5105,7 @@ export class AgentRuntime {
     // just created a matching session or Agent rule.
     if (this.resumedApprovalDecisions.has(input.toolId)) return "ask";
     if (input.externalRead !== true && input.permissionMode === "read_only") return "deny";
-    if (input.externalRead === true) return "ask";
+    if (input.externalRead === true) return input.permissionMode === "full_access" ? "allow" : "ask";
     if (this.permissionPolicyFor(input.permissionTool) === "unavailable") {
       return "deny";
     }
@@ -5150,7 +5152,7 @@ export class AgentRuntime {
     if (
       decision !== "ask"
       || this.resumedApprovalDecisions.has(input.toolId)
-      || this.approvalReviewer() !== "auto_review"
+      || (input.permissionMode === "request_approval" ? "user" : input.permissionMode === "auto_review" ? "auto_review" : this.approvalReviewer()) !== "auto_review"
     ) {
       return decision;
     }
@@ -5682,10 +5684,10 @@ export class AgentRuntime {
           ? "Use only the permitted reference, coordination and delivery tools. Execution is handled by the assigned workers; a workspace reference does not grant command or file-change tools."
           : workspace === null
           ? this.attachmentTool === null
-            ? `This temporary conversation has no workspace. It may still use the ${this.tools.getCommandEnvironmentDescription()} command tool, read_external_file, web_search, and Agent/Subagent collaboration tools. Commands run in an isolated temporary directory. Project file, directory, and search tools require an attached working directory. Every external file read still requires approval.`
-            : `This temporary conversation has no workspace. It may still use read_attachment, view_attachments, the ${this.tools.getCommandEnvironmentDescription()} command tool, read_external_file, web_search, and Agent/Subagent collaboration tools. Commands run in an isolated temporary directory. Project file, directory, and search tools require an attached working directory. Every external file read still requires approval.`
+            ? `This temporary conversation has no workspace. It may still use the ${this.tools.getCommandEnvironmentDescription()} command tool, read_external_file, web_search, and Agent/Subagent collaboration tools. Commands run in an isolated temporary directory. Project file, directory, and search tools require an attached working directory. External file reads require approval except in full_access mode.`
+            : `This temporary conversation has no workspace. It may still use read_attachment, view_attachments, the ${this.tools.getCommandEnvironmentDescription()} command tool, read_external_file, web_search, and Agent/Subagent collaboration tools. Commands run in an isolated temporary directory. Project file, directory, and search tools require an attached working directory. External file reads require approval except in full_access mode.`
           : `The current workspace supports file reads, search, controlled file changes, the ${this.tools.getCommandEnvironmentDescription()} command tool, and web_search. Commands and writes remain subject to this run's permission policy.`,
-        ...(executionTools ? [`One model turn may return at most ${MAX_TOOL_CALLS_PER_MODEL_TURN} mixed Tool Calls. Independent reads such as read_file, search_text, find_files, read_attachment, and view_attachments run concurrently in groups of up to ${MAX_PARALLEL_READ_TOOL_CALLS}, with results matched by call ID. File changes, approvals, Agent messages, and task state remain ordered; stale same-file changes in one batch are rejected. Outside read_only mode, consecutive independent run_command calls run in parallel by default in groups of up to ${MAX_PARALLEL_COMMAND_TOOL_CALLS}; set parallel=false for dependencies or shared mutable state. run_command may yield with running and a commandId before a finite command finishes. Continue independent work; use read_command_output with that ID and incremental offsets to confirm exit status before dependent steps or reporting completion. Never treat a running receipt as success or rerun a command to read its logs. ask_before_changes still approves each command separately, after which independent commands may overlap. If a turn exceeds the limit, none of its tools run; split the work across turns. ${toolNames.has("wait_for_subagents") ? "Prefer passing multiple IDs at once to wait_for_subagents." : ""}`] : [`One model turn may return at most ${MAX_TOOL_CALLS_PER_MODEL_TURN} mixed Tool Calls. Independent reads run in bounded parallel groups; messages, routing and task updates remain ordered. A dispatch receipt means accepted work, not completed work.`]),
+        ...(executionTools ? [`One model turn may return at most ${MAX_TOOL_CALLS_PER_MODEL_TURN} mixed Tool Calls. Independent reads such as read_file, search_text, find_files, read_attachment, and view_attachments run concurrently in groups of up to ${MAX_PARALLEL_READ_TOOL_CALLS}, with results matched by call ID. File changes, approvals, Agent messages, and task state remain ordered; stale same-file changes in one batch are rejected. Outside read_only mode, consecutive independent run_command calls run in parallel by default in groups of up to ${MAX_PARALLEL_COMMAND_TOOL_CALLS}; set parallel=false for dependencies or shared mutable state. run_command may yield with running and a commandId before a finite command finishes. Continue independent work; use read_command_output with that ID and incremental offsets to confirm exit status before dependent steps or reporting completion. Never treat a running receipt as success or rerun a command to read its logs. Operations requiring approval are reviewed separately under the selected permission mode; approved independent commands may overlap. If a turn exceeds the limit, none of its tools run; split the work across turns. ${toolNames.has("wait_for_subagents") ? "Prefer passing multiple IDs at once to wait_for_subagents." : ""}`] : [`One model turn may return at most ${MAX_TOOL_CALLS_PER_MODEL_TURN} mixed Tool Calls. Independent reads run in bounded parallel groups; messages, routing and task updates remain ordered. A dispatch receipt means accepted work, not completed work.`]),
         `Permission mode selected for this task: ${permissionModeLabel(permissionMode)}.`,
         ...(workspace === null
           ? []
@@ -6642,6 +6644,10 @@ function permissionModeLabel(mode: ConversationPermissionMode): string {
       return "read_only";
     case "ask_before_changes":
       return "ask_before_changes";
+    case "request_approval":
+      return "request_approval (ask the user for operations requiring approval; never assume an approval)";
+    case "auto_review":
+      return "auto_review (the runtime reviews operation risk; high or uncertain risk requires user confirmation)";
     case "full_access":
       return "full_access";
   }
