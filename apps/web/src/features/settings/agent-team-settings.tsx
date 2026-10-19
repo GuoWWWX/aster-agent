@@ -343,13 +343,15 @@ function AgentManagementView({
   );
 }
 
-function TeamConfigurationPane({
+export function TeamConfigurationPane({
+  compact = false,
   agent,
   agents,
   onOpenAgent,
   onSelectMember,
   team,
 }: {
+  compact?: boolean;
   agent: AgentProfile | undefined;
   agents: AgentProfile[];
   onOpenAgent: (agentId: string) => void;
@@ -369,7 +371,7 @@ function TeamConfigurationPane({
     : team.memberConfigurations[agent.id];
 
   return (
-    <aside className="team-configuration-pane" aria-label={`${team.name} 配置`}>
+    <aside className={`team-configuration-pane${compact ? " px-0!" : ""}`} aria-label={`${team.name} 配置`}>
       <div className="management-detail-body">
       <SettingsConfigurationGroup cardAriaLabel="团队基本配置" cardClassName="management-profile-card p-0" icon={Settings2} title="基本配置">
       <div className="management-detail-heading">
@@ -411,7 +413,7 @@ function TeamConfigurationPane({
         <label>
           <span className="management-field-label">
             团队指令
-            <small>所有成员继承</small>
+            <small>协调 Agent 与所有成员共用</small>
           </span>
           <textarea
             aria-label="团队指令"
@@ -421,7 +423,7 @@ function TeamConfigurationPane({
             onChange={(event) => updateTeam(team.id, { instructions: event.target.value })}
           />
           <small className="management-field-hint">
-            团队名称、成员清单、规模和当前工作项由系统按运行状态自动注入。
+            可在这里编辑群聊分流、委派和交付规则。默认未点名的新工作交给负责人，负责人委派、验收并在群里交付；明确 @ 或引用成员消息优先。团队结构和当前任务由系统自动注入。
           </small>
         </label>
         </div>
@@ -753,6 +755,10 @@ function AvatarEditor({
           setError(null);
           onUpdate({ avatar: { icon, kind: "icon" } });
         }}
+        onPresetChange={(preset) => {
+          setError(null);
+          onUpdate({ avatar: { kind: "preset", preset } });
+        }}
         onFileChange={handleFileChange}
       />
       {agent.avatar.kind === "image" ? (
@@ -858,6 +864,7 @@ function CapabilityGroup({
 
 const PERMISSION_TOOL_OPTIONS: readonly { label: string; value: AgentPermissionTool }[] = [
   { label: "执行命令", value: "run_command" },
+  { label: "电脑控制", value: "computer_use" },
   { label: "写入文件", value: "write_file" },
   { label: "删除文件", value: "delete_file" },
   { label: "替换文件内容", value: "replace_in_file" },

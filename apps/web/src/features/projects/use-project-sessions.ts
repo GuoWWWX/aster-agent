@@ -70,7 +70,7 @@ function toProjectSession(conversation: ConversationSummary): ProjectSession {
 }
 
 async function listSessionHierarchy(agentClient: AgentClient): Promise<ProjectSession[]> {
-  return (await agentClient.listConversationHierarchy()).map(toProjectSession);
+  return (await agentClient.listConversationHierarchy()).filter(conversation => conversation.coordinationTeamInstanceId === undefined).map(toProjectSession);
 }
 
 export function useProjectSessions(
@@ -185,6 +185,7 @@ export function useProjectSessions(
         return;
       }
       if (event.type !== "conversation.updated" && event.type !== "conversation.open_requested") return;
+      if (event.conversation.coordinationTeamInstanceId !== undefined) return;
 
       if (event.type === "conversation.open_requested") {
         activeSessionIdRef.current = event.conversation.id;
@@ -235,6 +236,7 @@ export function useProjectSessions(
   }, [agentClient, isCreatingSession]);
 
   const updateSession = useCallback((conversation: ConversationSummary): void => {
+    if (conversation.coordinationTeamInstanceId !== undefined) return;
     const session = toProjectSession(conversation);
     setSessions((current) => current.some((candidate) => candidate.id === session.id)
       ? current.map((candidate) => candidate.id === session.id ? session : candidate)

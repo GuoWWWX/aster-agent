@@ -18,6 +18,8 @@ describe("requestFingerprint", () => {
       .not.toEqual(first?.messageHashes[0]);
     expect(requestFingerprint(JSON.stringify({ ...body, tools: [] }))?.toolsHash).not.toEqual(first?.toolsHash);
     expect(requestFingerprint(JSON.stringify({ ...body, reasoning_effort: "high" }))?.settingsHash).not.toEqual(first?.settingsHash);
+    expect(requestFingerprint(JSON.stringify({ ...body, prompt_cache_key: "scope-one" }))?.settingsHash).not.toEqual(first?.settingsHash);
+    expect(requestFingerprint(JSON.stringify({ ...body, prompt_cache_options: { ttl: "30m" } }))?.settingsHash).not.toEqual(first?.settingsHash);
     expect(JSON.stringify(first)).not.toContain("private prompt");
     expect(JSON.stringify(first)).not.toContain("rules");
   });

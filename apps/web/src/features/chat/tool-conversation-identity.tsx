@@ -14,11 +14,11 @@ export const ToolConversationContext = createContext<{
 }>({ sessions: new Map(), avatars: new Map(), open: undefined });
 
 /** Sending targets the recipient; receiving targets the sender, never the inbox owner. */
-export function toolConversationTarget(
+export function toolConversationTargets(
   item: Pick<ConversationToolItem, "name" | "arguments" | "result" | "conversationId">,
-): ConversationTarget | null {
+): ConversationTarget[] {
   if (!["send_agent_message", "wait_for_agent_message", "read_agent_conversation"].includes(item.name)) {
-    return null;
+    return [];
   }
   const args = parseRecord(item.arguments);
   const result = record(parseRecord(item.result)?.value);
@@ -26,16 +26,22 @@ export function toolConversationTarget(
   const requestedId = typeof args?.conversationId === "string" ? args.conversationId : null;
   if (item.name === "wait_for_agent_message") {
     const id = typeof message?.senderConversationId === "string" ? message.senderConversationId : requestedId;
-    return id === null ? null : {
+    return id === null ? [] : [{
       id,
       ...(typeof message?.senderTitle === "string" ? { title: message.senderTitle } : {}),
-    };
+    }];
   }
   if (item.name === "send_agent_message") {
-    const id = typeof message?.conversationId === "string" ? message.conversationId : requestedId;
-    return id === null ? null : { id };
+    const messages = Array.isArray(result?.messages) ? result.messages : [message];
+    const delivered = messages.flatMap(value => {
+      const id = record(value)?.conversationId;
+      return typeof id === "string" ? [id] : [];
+    });
+    const requested = Array.isArray(args?.conversationIds) ? args.conversationIds.filter((id): id is string => typeof id === "string")
+      : requestedId === null ? [] : [requestedId];
+    return [...new Set(delivered.length > 0 ? delivered : requested)].map(id => ({ id }));
   }
-  return { id: requestedId ?? item.conversationId };
+  return [{ id: requestedId ?? item.conversationId }];
 }
 
 export function conversationTypeLabel(session: Pick<ProjectSession, "threadKind" | "teamId" | "parentConversationId" | "projectId">): string {

@@ -36,11 +36,11 @@ describe("summarizeTaskFileChanges", () => {
     const summaries = conversationChangeSummaries(timeline);
     expect(summaries.get(first.runId!)?.files).toHaveLength(1);
     expect(summaries.get(first.runId!)?.additions).toBe(2);
-    const anchors = [{ id: "work", runIds: [first.runId!] }, { id: "reply", runId: first.runId }, { id: "live", runId: "next-run" }];
+    const anchors = [{ id: "work", kind: "run_activity", runIds: [first.runId!] }, { id: "reply", kind: "message", role: "assistant", runId: first.runId }, { id: "live", kind: "message", role: "user", runId: "next-run" }];
     const cards = conversationChangeAnchors(summaries, anchors, "next-run");
     expect([...cards.keys()]).toEqual(["reply"]);
     expect(conversationChangeAnchors(summaries, [anchors[0]!], null).get("work")).toHaveLength(1);
-    expect(conversationChangeAnchors(summaries, [{ id: "continued", continuationMessages: [{ runId: first.runId }] }], null).get("continued")).toHaveLength(1);
+    expect(conversationChangeAnchors(summaries, [{ id: "continued", kind: "message", continuationMessages: [{ runId: first.runId }] }], null).get("continued")).toHaveLength(1);
   });
 
   it("counts successful file diffs created during the current task list", () => {
@@ -90,5 +90,20 @@ describe("summarizeTaskFileChanges", () => {
         { additions: 2, deletions: 0, path: "notes.md" },
       ],
     });
+  });
+
+  it("places file changes after terminal notices and a cancelled continuation, stopping at the next user turn", () => {
+    const edit = tool("edit", "2026-10-18T00:00:00Z", "--- a/app.ts\n+++ b/app.ts\n+fixed\n");
+    const summaries = conversationChangeSummaries([edit]);
+    const anchors = [
+      { id: "work", kind: "run_activity", runIds: [edit.runId!] },
+      { id: "summary", kind: "message", role: "assistant", runId: edit.runId },
+      { id: "failure", kind: "message", role: "assistant", runId: edit.runId },
+      { id: "cancelled-continuation", kind: "message", role: "assistant", runId: "continuation" },
+      { id: "next-user", kind: "message", role: "user", runId: "new-request" },
+      { id: "next-answer", kind: "message", role: "assistant", runId: "new-request" },
+    ];
+    expect([...conversationChangeAnchors(summaries, anchors, null).keys()]).toEqual(["cancelled-continuation"]);
+    expect(conversationChangeAnchors(summaries, anchors, "continuation").size).toBe(0);
   });
 });

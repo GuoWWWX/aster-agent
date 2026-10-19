@@ -7,6 +7,12 @@ import {
 } from "./workbench-ui-store.js";
 
 describe("workbench prompt workspace", () => {
+  it("opens group coordination in its own sidebar without changing ordinary conversation panels", () => {
+    useWorkbenchUiStore.setState({ filePanelOpenByConversationId: { ordinary: true } });
+    useWorkbenchUiStore.getState().openTeamChatCoordination({ instanceId: "group", messageId: "message", sequence: 12 });
+    expect(useWorkbenchUiStore.getState().filePanelOpenByConversationId).toEqual({ ordinary: true, "team-chat:group": true });
+    expect(useWorkbenchUiStore.getState().teamChatCoordinationTarget).toMatchObject({ instanceId: "group", messageId: "message", sequence: 12 });
+  });
   it("restores the settings menu width and clamps later edits without resizing other panels", () => {
     const store = useWorkbenchUiStore.getState();
     store.hydrateAppearance({ ...DEFAULT_APPLICATION_SETTINGS.appearance, settingsNavigationWidth: 310 });

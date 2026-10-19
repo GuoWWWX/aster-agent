@@ -33,7 +33,7 @@ it("yields between bounded index batches", async () => {
   expect(scan).toHaveBeenCalledTimes(3);
 });
 
-it("finishes simultaneous cold loads even when they exceed the index cache limit", async () => {
+it("finishes six simultaneous cold loads and reuses each member's timeline index", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "timeline-concurrent-"));
   directories.push(directory);
   const log = new ThreadLog(directory);
@@ -45,6 +45,9 @@ it("finishes simultaneous cold loads even when they exceed the index cache limit
   const timeline = new ThreadLogTimeline(log);
   await Promise.all(ids.map((id) => timeline.warm(id)));
   expect(scan).toHaveBeenCalledTimes(18);
+  scan.mockClear();
+  for (const conversationId of ids) expect(timeline.page({ conversationId, limit: 20 }).items).toHaveLength(20);
+  expect(scan).not.toHaveBeenCalled();
 });
 
 it("updates the approved tool in place and only expires approvals at run completion", async () => {

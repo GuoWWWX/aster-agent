@@ -1,3 +1,5 @@
+import type { TaskContextScope, TaskCompletionPolicy, SetTaskCompletionPolicyInput, ResolveChatReferencesInput, ChatReference, ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput } from "./task-context.js";
+import type { ReadTeamChatInput, TeamChatPage, PostTeamChatInput, TeamChatMessage, TeamChatMember, MarkTeamChatReadInput } from "./team-chat.js";
 import type { HtmlPreview, HtmlPreviewRequest } from "./html-preview.js";
 import type { AnswerUserQuestionInput, UserQuestion } from "./user-question.js";
 import type { BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "./background-command.js";
@@ -212,6 +214,22 @@ export interface DesktopBridge {
     input: EnsureTeamInstanceMemberConversationInput,
   ): Promise<TeamMemberConversationView>;
   sendTeamMessage(input: SendTeamMessageInput): Promise<ConversationMessageSubmission>;
+  getTaskCompletionPolicy(input: TaskContextScope): Promise<TaskCompletionPolicy>;
+  setTaskCompletionPolicy(input: SetTaskCompletionPolicyInput): Promise<TaskCompletionPolicy>;
+  resolveChatReferences(input: ResolveChatReferencesInput): Promise<ChatReference[]>;
+  listTaskContexts(input: ListTaskContextsInput): Promise<TaskContextPage>;
+  getTaskContext(input: { id: string; beforeSourceSequence?: number; limit?: number }): Promise<TaskContextDetail>;
+  updateTaskContext(input: UpdateTaskContextInput): Promise<TaskContext>;
+  linkTaskContext(input: LinkTaskContextInput): Promise<void>;
+  mergeTaskContexts(input: MergeTaskContextsInput): Promise<TaskContext>;
+  readTeamChat(input: ReadTeamChatInput): Promise<TeamChatPage>;
+  postTeamChat(input: PostTeamChatInput): Promise<TeamChatMessage>;
+  getTeamChatMembers(input: { teamInstanceId: string }): Promise<TeamChatMember[]>;
+  getTeamChatCoordinationConversation(input: { teamInstanceId: string; agentId?: string }): Promise<ConversationSummary>;
+  markTeamChatRead(input: MarkTeamChatReadInput): Promise<void>;
+  resumeTeamChatDelivery(input: { id: string }): Promise<void>;
+  cancelTeamChatDelivery(input: { id: string }): Promise<void>;
+  pauseTeamChat(input: { teamInstanceId: string }): Promise<void>;
   listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]>;
   getTeamWorkItemExecution(
     input: GetTeamWorkItemExecutionInput,
@@ -257,6 +275,13 @@ export interface DesktopBridge {
   resetApplicationStorageLocation(): Promise<ApplicationStorageLocation>;
   getIntegrationConfiguration(): Promise<IntegrationConfiguration>;
   getBrowserConfiguration(): Promise<BrowserConfiguration>;
+  getComputerUseConfiguration(): Promise<ComputerUseConfiguration>;
+  saveComputerUseConfiguration(input: ComputerUseConfiguration, baselineApplications?: ComputerApplication[]): Promise<ComputerUseConfiguration>;
+  chooseComputerApplication(): Promise<ComputerApplication | null>;
+  getComputerUseApplicationIcons(): Promise<ComputerApplicationIcons>;
+  getComputerUseStatus(): Promise<ComputerUseStatus>;
+  startComputerUse(): Promise<ComputerUseStatus>;
+  stopComputerUse(): Promise<void>;
   clearBrowserData(): Promise<void>;
   chooseBrowserDownloadDirectory(): Promise<string | null>;
   getBrowserDefaultDownloadDirectory(): Promise<string>;
@@ -328,6 +353,7 @@ export interface DesktopBridge {
   openProjectDirectory(input: ProjectReferenceInput): Promise<void>;
   minimizeWindow(): Promise<void>;
   onConversationRunEvent(listener: (event: ConversationRunEvent) => void): () => void;
+  setConversationStreamSubscriptions(conversationIds: readonly string[]): Promise<void>;
   onApplicationSettingsChanged(listener: (settings: ApplicationSettings) => void): () => void;
   toggleMaximizeWindow(): Promise<void>;
   closeWindow(): Promise<void>;
@@ -397,3 +423,4 @@ export interface DesktopBridge {
   ): Promise<ConfigurationWorkspaceFile>;
   onWindowStateChanged(listener: (state: WindowState) => void): () => void;
 }
+import type { ComputerApplication, ComputerApplicationIcons, ComputerUseConfiguration, ComputerUseStatus } from "./computer-use.js";

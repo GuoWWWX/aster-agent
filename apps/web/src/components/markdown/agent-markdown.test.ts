@@ -10,6 +10,17 @@ import { AgentMarkdown, AgentMarkdownWorkspaceScope, renderAgentMarkdown } from 
 import agentMarkdownStyles from "./agent-markdown.css?inline";
 
 describe("AgentMarkdown", () => {
+  it("renders active references as inline controls while preserving code and existing links", () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div"); document.body.append(container); const root = createRoot(container); const open = vi.fn();
+    const content = "@测试工程师 请验收 **这份代码**。`@测试工程师` [@测试工程师](https://example.test)\n\n```text\n@测试工程师\n```";
+    act(() => root.render(createElement(AgentMarkdown, { content, inlineReferences: [{ label: "@测试工程师", content: createElement("button", { onClick: open }, "头像 测试工程师") }] })));
+    expect(container.querySelectorAll('[data-message-reference]')).toHaveLength(1);
+    expect(container.querySelector("strong")?.textContent).toBe("这份代码");
+    expect(container.querySelector("code")?.textContent).toBe("@测试工程师");
+    act(() => container.querySelector<HTMLButtonElement>('[data-message-reference] button')!.click()); expect(open).toHaveBeenCalledOnce();
+    act(() => root.unmount()); container.remove(); vi.unstubAllGlobals();
+  });
   it("opens workspace file links through the editor callback while preserving external navigation", () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     const onOpenFile = vi.fn();

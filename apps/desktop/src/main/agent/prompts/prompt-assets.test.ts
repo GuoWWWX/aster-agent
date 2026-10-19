@@ -3,12 +3,64 @@ import { parseSkillMarkdown } from "@agent/protocol";
 
 import {
   BASE_SYSTEM_PROMPT,
+  baseSystemPromptForTools,
   BROWSER_USE_SKILL,
   CONTEXT_COMPACTION_PROMPT,
+  TEAM_CHAT_COORDINATOR_PROMPT,
   SYSTEM_SKILLS,
 } from "./prompt-assets.js";
 
 describe("prompt assets", () => {
+  it("routes collective greetings to everyone and discussions to relevant members without making the lead the default speaker", () => {
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("select ALL active members");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("Do not use the leader as the default spokesperson");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("Select multiple relevant members");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("select ONLY the active team leader by default");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).not.toContain("Greetings and casual discussion need one relevant responder");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).not.toContain("Choose multiple members only when their distinct contributions are requested");
+  });
+
+  it("preserves a recent addressee on follow-ups and uses the lead only for unresolved routing", () => {
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("Preserve the active conversational addressee");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("A different technical subject or an additional specialist perspective alone does not clear that addressee");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("An explicit change of audience or a clearly independent new request resets the previous addressee");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("only if responsibility remains genuinely unclear");
+    expect(TEAM_CHAT_COORDINATOR_PROMPT).toContain("Keep the current addressee and topic in contextSummary");
+  });
+
+  it("keeps delegation constraints and repository-aware command guidance available with skills enabled", () => {
+    const prompt = baseSystemPromptForTools(new Set(["spawn_subagent", "run_command", "load_skill"]));
+    expect(prompt).toContain("does not inherit the parent conversation's history");
+    expect(prompt).toContain("relevant user constraints");
+    expect(prompt).toContain("workspace is a Git repository");
+    expect(prompt).toContain("Do not use repeated Git flags");
+    expect(prompt).toContain("A running batch command holds the project mutation lock");
+  });
+
+  it("omits unavailable execution, task-ownership and group instructions from routing prompts", () => {
+    const prompt = baseSystemPromptForTools(new Set(["select_team_chat_members", "read_team_messages"]));
+    expect(prompt).toContain("# Response Language");
+    expect(prompt).not.toContain("post_team_message");
+    for (const heading of ["# Persistent Tasks", "# Group Collaboration", "# Command and Terminal Choice", "# Files and Search", "# File Changes", "# Subagent Collaboration", "# Browser Choice"]) {
+      expect(prompt).not.toContain(heading);
+    }
+  });
+
+  it("keeps read and delivery guidance without shell or child-queue instructions for a team lead", () => {
+    const prompt = baseSystemPromptForTools(new Set(["read_file", "present_html", "send_agent_message", "post_team_message", "update_task_context"]));
+    expect(prompt).toContain("# Workspace Context");
+    expect(prompt).toContain("# HTML Presentations");
+    expect(prompt).toContain("# Group Collaboration");
+    expect(prompt).not.toContain("# Files and Search");
+    expect(prompt).not.toContain("# Queued Subagent Followups");
+  });
+  it("lets the runtime bind the current task source instead of asking the model to invent IDs", () => {
+    expect(BASE_SYSTEM_PROMPT).toContain("create one by omitting id and expectedRevision");
+    expect(BASE_SYSTEM_PROMPT).toContain("omit source so the runtime binds its real original message");
+    expect(BASE_SYSTEM_PROMPT).toContain("never invent conversation/message IDs or use placeholders");
+    expect(BASE_SYSTEM_PROMPT).toContain("Explicitly select an actual source when distinguishing earlier or independent requests");
+    expect(BASE_SYSTEM_PROMPT).toContain("correct the arguments and retry before delegating that goal");
+  });
   it("bundles distinct, valid system skills", () => {
     const names = SYSTEM_SKILLS.map((content) => parseSkillMarkdown(content).metadata.name);
     expect(new Set(names).size).toBe(names.length);
@@ -34,7 +86,11 @@ describe("prompt assets", () => {
       "Use `run_command` with its default `batch` mode for every finite non-interactive command",
     );
     expect(BASE_SYSTEM_PROMPT).toContain("Use `run_command` with `mode=service` only");
-    expect(BASE_SYSTEM_PROMPT).toContain("all results return before you continue analysis");
+    expect(BASE_SYSTEM_PROMPT).toContain("may return `running` with a `commandId`");
+    expect(BASE_SYSTEM_PROMPT).toContain("call `read_command_output` with that same ID");
+    expect(BASE_SYSTEM_PROMPT).toContain("Reuse the returned output offsets");
+    expect(BASE_SYSTEM_PROMPT).not.toContain("tool returns to you only after the process really exits");
+    expect(BASE_SYSTEM_PROMPT).not.toContain("all results return before you continue analysis");
     expect(BASE_SYSTEM_PROMPT).toContain("do not wait for a service to exit");
     expect(BASE_SYSTEM_PROMPT).toContain(
       "A terminal tab opened manually by the user is not automatically owned by this conversation",

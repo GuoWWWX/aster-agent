@@ -3,6 +3,11 @@ import { ScheduledTaskController } from "../schedules/scheduled-task-controller.
 import { ScheduledTaskStore } from "../schedules/scheduled-task-store.js";
 import { AgentScheduledTaskRunner } from "../schedules/agent-scheduled-task-runner.js";
 import { app, BrowserWindow, nativeTheme } from "electron";
+import { ComputerUseConfigurationStore } from "../settings/computer-use-configuration-store.js";
+import { WindowsComputerController } from "../computer-use/windows-computer-controller.js";
+import { ComputerUseTool } from "../computer-use/computer-use-tool.js";
+import { ComputerApplicationPermissions } from "../computer-use/computer-application-permissions.js";
+import { requestComputerApplicationAccess } from "../computer-use/computer-application-dialog.js";
 import { BrowserPasswordStore } from "../settings/browser-password-store.js";
 import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
@@ -14,14 +19,17 @@ import {
   ARCHIVED_CONVERSATION_RETENTION_DAYS,
   LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
   conversationRunEventSchema,
-  IPC_CHANNELS,
 } from "@agent/protocol";
 
 import { AgentRuntime } from "../agent/agent-runtime.js";
+import { ConversationTitleGenerator } from "../agent/conversation-title-generator.js";
+import { ModelAdapterRegistry } from "../model/model-adapter-registry.js";
+import { backupLegacyTeamChatDatabase, TeamChatJournal } from "../storage/team-chat-journal.js";
 import { SkillRuntime } from "../agent/skill-runtime.js";
 import { SYSTEM_SKILLS } from "../agent/prompts/prompt-assets.js";
 import { reportMainError, toMainAgentError } from "../errors/agent-error.js";
 import { registerMainIpcHandlers } from "../ipc/register-main-ipc.js";
+import { ConversationStreamSubscriptions } from "../ipc/conversation-stream-subscriptions.js";
 import { ModelCatalogStore } from "../model/model-catalog-store.js";
 import { ModelCredentialStore } from "../model/model-credential-store.js";
 import {
@@ -76,6 +84,8 @@ type DesktopServices = {
   applicationStorageLocation: ApplicationStorageLocationStore;
   applicationSettings: ApplicationSettingsStore;
   browserConfiguration: BrowserConfigurationStore;
+  computerUseConfiguration: ComputerUseConfigurationStore;
+  computerUse: WindowsComputerController;
   attachments: ConversationAttachmentStore;
   conversationDeletion: ConversationDeletionService;
   conversationLifecycle: ConversationLifecycleService;
@@ -138,6 +148,7 @@ async function shutdownDesktop(): Promise<void> {
   }
   services?.graphCheckpointer.close();
   services?.htmlPreviews.dispose();
+  services?.computerUse.stop();
   services?.database.close();
   services = undefined;
 }
@@ -178,6 +189,7 @@ function parseLocalEnvironmentFile(contents: string): Map<string, string> {
     "AGENT_MODEL_BASE_URL",
     "AGENT_MODEL_API_KEY",
     "AGENT_MODEL_ID",
+    "ASTER_CONTROL_ENABLED",
     LEGACY_APPLICATION_HOME_ENVIRONMENT_VARIABLE,
     APPLICATION_HOME_ENVIRONMENT_VARIABLE,
   ]);
@@ -239,7 +251,9 @@ async function initializeServices(): Promise<DesktopServices> {
   const settings = new SettingsJsoncFile(agentHome.paths.settingsPath);
   settings.ensureFile();
   migrateLegacyPluginSettings(settings, agentHome.paths.databasePath);
-  const database = new AgentDatabase(agentHome.paths.databasePath);
+  await backupLegacyTeamChatDatabase(agentHome.paths.databasePath);
+  const database = new AgentDatabase(agentHome.paths.databasePath,
+    new TeamChatJournal(path.join(agentHome.paths.rootPath, "team-chats")));
   database.importLegacyCheckpointDatabases(agentHome.legacyCheckpointDatabasePaths);
   const pluginCatalog = new PluginCatalog(settings, agentHome.paths.pluginsPath);
   await pluginCatalog.synchronize();
@@ -292,6 +306,13 @@ async function initializeServices(): Promise<DesktopServices> {
       database.activateVolatileConversationProjection();
     }
     eventProjector.projectAllConversationLogs({ releaseHistory: true });
+    // Public file links retain the publishing member's default workspace across restarts.
+    // Registration only restores authorization metadata; it does not create or copy files.
+    for (const conversation of database.listConversationHierarchy()) {
+      if (conversation.teamId !== null && conversation.projectId === null && conversation.workspaceRootPath === null) {
+        projectRegistry.registerDefaultConversationWorkspace(conversation.id);
+      }
+    }
     if (!alreadyFinalized) database.finalizeJsonlConversationStorage();
     for (const recovered of database.interruptRecoveredThreadLogRuns()) {
       eventProjector.projectEvent(recovered.conversationId,
@@ -397,6 +418,10 @@ async function initializeServices(): Promise<DesktopServices> {
     new BrowserPasswordStore(path.join(agentHome.paths.rootPath, "browser-passwords.json")),
   );
   const browserToolPlugin = new BrowserToolPlugin(managedBrowser, workspaceBrowserTabs);
+  const computerUseConfiguration = new ComputerUseConfigurationStore(settings);
+  const computerPermissions = new ComputerApplicationPermissions(computerUseConfiguration,
+    (application, signal) => requestComputerApplicationAccess(() => mainWindow ?? null, application, signal));
+  const computerUse = new WindowsComputerController(computerUseConfiguration, computerPermissions);
   await attachments.resumeCancelledPendingMessageAttachmentCleanup();
   eventProjector.releaseInactiveConversationHistories();
 
@@ -426,6 +451,8 @@ async function initializeServices(): Promise<DesktopServices> {
     browserToolPlugin,
     { generateTurnSummaries: true },
     conversationLifecycle,
+    new ComputerUseTool(computerUse, computerUseConfiguration),
+    new ConversationTitleGenerator(new ModelAdapterRegistry()),
   );
   const teamWorkItems = new TeamWorkItemRuntime(
     database,
@@ -452,6 +479,8 @@ async function initializeServices(): Promise<DesktopServices> {
     applicationStorageLocation,
     applicationSettings,
     browserConfiguration,
+    computerUseConfiguration,
+    computerUse,
     attachments,
     conversationDeletion,
     conversationLifecycle,
@@ -487,16 +516,15 @@ function getServices(): DesktopServices {
   return services;
 }
 
+const conversationEventStreams = new ConversationStreamSubscriptions();
+
 function sendConversationRunEvent(event: unknown): void {
   const validated = conversationRunEventSchema.parse(event);
   localControl?.publish(validated);
   publishConversationAttentionEvent(validated);
   const window = mainWindow;
+  conversationEventStreams.publish(window === undefined || window.isDestroyed() ? undefined : window.webContents, validated);
   if (window === undefined || window.isDestroyed()) return;
-  window.webContents.send(
-    IPC_CHANNELS.conversationRunEvent,
-    validated,
-  );
   if (validated.type === "conversation.open_requested") {
     if (window.isMinimized()) window.restore();
     window.show();
@@ -517,6 +545,7 @@ async function openMainWindow(): Promise<void> {
   disposeIpcHandlers = registerMainIpcHandlers(() => mainWindow, getServices(), {
     resumePendingMessages: process.env.AGENT_SKIP_PENDING_RUN_RESUMPTION !== "1",
     emitConversationRunEvent: sendConversationRunEvent,
+    eventStreams: conversationEventStreams,
   });
   const nativeOverlay = new NativeOverlayController(window);
   const rendererTarget = applyRendererSecurityPolicy(window, nativeOverlay);
@@ -623,7 +652,7 @@ async function bootstrap(): Promise<void> {
   if (process.env.ASTER_CONTROL_ENABLED === "1") {
     const control = new ConversationControl(services.database, services.conversationLifecycle,
       services.agentRuntime, services.eventProjector, services.applicationSettings,
-      services.teamWorkItems, sendConversationRunEvent, services.credentials);
+      services.teamWorkItems, sendConversationRunEvent, services.credentials, services.computerUse);
     localControl = new LocalControlServer((command) => control.execute(command),
       (error) => reportUnhandledError(error, "local_control.command"));
     const connectionPath = path.join(app.getPath("userData"), "local-control.json");
@@ -671,6 +700,7 @@ async function bootstrap(): Promise<void> {
 
   app.on("before-quit", (event) => {
     if (shutdownComplete) return;
+    conversationEventStreams.dispose();
     event.preventDefault();
     shutdownPromise ??= shutdownDesktop()
       .catch((error: unknown) => reportUnhandledError(error, "desktop.shutdown"))

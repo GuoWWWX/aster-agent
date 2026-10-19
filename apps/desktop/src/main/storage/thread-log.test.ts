@@ -1,14 +1,18 @@
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import * as fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ThreadLog } from "./thread-log.js";
 
+vi.mock("node:fs", async (importOriginal) => ({ ...await importOriginal<typeof import("node:fs")>() }));
+
 const temporaryDirectories: string[] = [];
 const conversationId = "00000000-0000-4000-8000-000000000001";
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) => rm(directory, { force: true, recursive: true })),
   );
@@ -21,6 +25,59 @@ async function createThreadLog(): Promise<ThreadLog> {
 }
 
 describe("ThreadLog", () => {
+  it("uses provider usage only from requests after the last compaction, including after restart", async () => {
+    const log = await createThreadLog();
+    const providerState = { apiFormat: "openai-responses", baseUrl: "https://example.test/v1", modelId: "test-model", payload: { opaque: "large" },
+      usage: { inputTokens: 290_000, outputTokens: 100, totalTokens: 290_100 } };
+    log.append(conversationId, { type: "assistant_message", payload: { content: "reply", providerState } });
+    expect(log.readUncompactedProviderState(conversationId)).toMatchObject({ ...providerState, payload: null });
+    log.append(conversationId, { type: "context_checkpoint", payload: { summary: "summary", coveredThroughContextSequence: 1 } });
+    expect(log.readUncompactedProviderState(conversationId)).toBeNull();
+    const restored = new ThreadLog(path.dirname(path.dirname(log.getPath(conversationId))));
+    expect(restored.readUncompactedProviderState(conversationId)).toBeNull();
+    restored.append(conversationId, { type: "assistant_message", payload: { content: "reply after compaction", providerState } });
+    expect(restored.readUncompactedProviderState(conversationId)?.usage?.inputTokens).toBe(290_000);
+  });
+  it("opens one record reader for a context batch and closes it when a search stops early", async () => {
+    const log = await createThreadLog();
+    for (let index = 0; index < 60; index += 1) {
+      log.append(conversationId, { type: "user_message", payload: { content: `matching history ${index}` } });
+    }
+    const open = vi.spyOn(fs, "openSync");
+    const close = vi.spyOn(fs, "closeSync");
+    log.readProviderUsageStates(conversationId);
+    open.mockClear(); close.mockClear();
+    log.readProviderUsageStates(conversationId);
+    const indexReads = open.mock.calls.length;
+    open.mockClear(); close.mockClear();
+    expect(log.readUncoveredContext(conversationId)?.messages).toHaveLength(60);
+    expect(open).toHaveBeenCalledTimes(indexReads + 1);
+    expect(close).toHaveBeenCalledTimes(open.mock.calls.length);
+    log.append(conversationId, { type: "context_checkpoint", payload: { summary: "summary", coveredThroughContextSequence: 60 } });
+    log.readProviderUsageStates(conversationId);
+    open.mockClear(); close.mockClear();
+    expect(log.searchCoveredContext(conversationId, "matching")).toHaveLength(24);
+    expect(open).toHaveBeenCalledTimes(indexReads + 1);
+    expect(close).toHaveBeenCalledTimes(open.mock.calls.length);
+  });
+  it("keeps six concurrent histories and delivery indexes incremental without rescanning their prefixes", async () => {
+    const log = await createThreadLog();
+    const members = Array.from({ length: 6 }, (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`);
+    const event = { type: "agent_message" as const, payload: { content: "group request", messageId: "delivery-1", runId: "run-1" } };
+    for (const id of members) {
+      log.append(id, { type: "user_message", payload: { content: "older history".repeat(1_000) } });
+      log.appendIfMissing(id, event, "messageId");
+      log.readProviderUsageStates(id);
+    }
+    const scan = vi.spyOn(log, "scan");
+    for (const id of members) {
+      expect(log.appendIfMissing(id, event, "messageId")).toBeNull();
+      expect(log.readProviderUsageStates(id)).toEqual([]);
+    }
+    expect(scan.mock.calls).toHaveLength(12);
+    expect(scan.mock.calls.filter(([, , after]) => after === undefined)).toHaveLength(0);
+  });
+
   it("restores first-token timing even when the provider omitted usage", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-first-token-"));
     temporaryDirectories.push(directory);
@@ -42,13 +99,18 @@ describe("ThreadLog", () => {
         usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110, cachedInputTokens: 80 } } } });
     log.append(conversationId, { type: "context_checkpoint", payload: { summary: "summary", coveredThroughContextSequence: 2 } });
     log.append(conversationId, { type: "user_message", payload: { content: "recent", runId: "new" } });
-    const read = vi.spyOn(log, "readRecord");
+    const read = vi.spyOn(fs, "readSync");
+    log.readProviderUsageStates(conversationId);
+    read.mockClear();
+    log.readProviderUsageStates(conversationId);
+    const indexReads = read.mock.calls.length;
+    read.mockClear();
     vi.spyOn(log, "readContext").mockImplementation(() => { throw new Error("full context must not be read"); });
     expect(log.readUncoveredContext(conversationId)?.messages.map((message) => [message.sequence, message.content])).toEqual([[3, "recent"]]);
-    expect(read).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(indexReads + 1);
     read.mockClear();
     expect(log.readProviderUsageStates(conversationId)?.[0]).toMatchObject({ payload: null, usage: { cachedInputTokens: 80 } });
-    expect(read).not.toHaveBeenCalled();
+    expect(read).toHaveBeenCalledTimes(indexReads);
     log.append(conversationId, { type: "run_superseded", payload: { runId: "old" } });
     expect(log.readUncoveredContext(conversationId)).toMatchObject({ checkpoint: null, messages: [{ sequence: 1, content: "recent" }] });
     expect(log.readProviderUsageStates(conversationId)).toEqual([]);
@@ -75,11 +137,15 @@ describe("ThreadLog", () => {
         role: "user", sequence: index + 1, content: `登录问题 ${index}`, runId: null,
       })), checkpoint: { coveredThroughSequence: 100, summary: "summary" },
     } });
-    const read = vi.spyOn(log, "readRecord");
+    log.readProviderUsageStates(conversationId);
+    const read = vi.spyOn(fs, "readSync");
+    log.readProviderUsageStates(conversationId);
+    const indexReads = read.mock.calls.length;
+    read.mockClear();
     const matches = log.searchCoveredContext(conversationId, "之前登录怎么修复的");
     expect(matches).toHaveLength(24);
     expect(matches[0]?.content).toContain("登录");
-    expect(read).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(indexReads + 1);
   });
 
   it("finds a complete state checkpoint across UTF-8 chunks and scans its tail", async () => {
@@ -357,6 +423,25 @@ describe("ThreadLog", () => {
         sequence: 1,
       }),
     ]);
+  });
+
+  it("exposes queued Agent input only at consumption, including cold and indexed context reads", async () => {
+    const log = await createThreadLog();
+    const ids = [crypto.randomUUID(), crypto.randomUUID()];
+    const runId = crypto.randomUUID();
+    for (const [index, id] of ids.entries()) log.append(conversationId, { type: "agent_message", payload: {
+      messageId: id, message: { deliveryMode: "queue" }, content: `next-${index}`, modelContent: `queued-${index}`,
+    } });
+    expect(log.readContext(conversationId)?.messages).toEqual([]);
+    expect(log.readUncoveredContext(conversationId)?.messages).toEqual([]);
+    log.append(conversationId, { type: "user_message", payload: { content: "current", runId } });
+    log.append(conversationId, { type: "agent_messages_consumed", payload: { runId, messageIds: [ids[0]],
+      queuedMessages: [{ messageId: ids[0], modelContent: "queued-0" }] } });
+    for (const reader of [log, new ThreadLog(path.dirname(path.dirname(log.getPath(conversationId))))]) {
+      expect(reader.readContext(conversationId)?.messages.map(message => message.content)).toEqual(["current", "queued-0"]);
+      expect(reader.readUncoveredContext(conversationId)?.messages.map(message => message.content)).toEqual(["current", "queued-0"]);
+      expect(reader.readRunContext(conversationId, runId).map(message => message.content)).toEqual(["current", "queued-0"]);
+    }
   });
 
   it("removes a superseded Run from model context but preserves its raw events", async () => {

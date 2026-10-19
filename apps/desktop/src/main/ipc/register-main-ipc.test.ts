@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserWindow, IpcMainInvokeEvent } from "electron";
-import { DEFAULT_BROWSER_CONFIGURATION, DEFAULT_MODEL_CATALOG, IPC_CHANNELS, type ConversationSummary } from "@agent/protocol";
+import { DEFAULT_BROWSER_CONFIGURATION, DEFAULT_COMPUTER_USE_CONFIGURATION, DEFAULT_MODEL_CATALOG, IPC_CHANNELS, type ConversationSummary } from "@agent/protocol";
 import { WorkspaceBrowserTabController } from "../tools/workspace-browser-tab-controller.js";
 import { registerMainIpcHandlers } from "./register-main-ipc.js";
 
@@ -9,13 +9,49 @@ const electron = vi.hoisted(() => ({
   removeHandler: vi.fn<(channel: string) => void>(), on: vi.fn(), removeListener: vi.fn(),
   fromWebContents: vi.fn(),
   showOpenDialog: vi.fn(() => Promise.resolve({ canceled: false, filePaths: ["D:\\Downloads"] })),
+  getFileIcon: vi.fn(() => Promise.resolve({ isEmpty: () => false, resize: () => ({ toDataURL: () => "data:image/png;base64,aGVsbG8=" }) })),
 }));
 vi.mock("electron", () => ({
-  app: { getPath: () => "C:\\Downloads" }, clipboard: {}, dialog: { showOpenDialog: electron.showOpenDialog }, shell: {}, ipcMain: electron,
+  app: { getPath: () => "C:\\Downloads", getFileIcon: electron.getFileIcon }, clipboard: {}, dialog: { showOpenDialog: electron.showOpenDialog }, shell: {}, ipcMain: electron,
   BrowserWindow: { fromWebContents: electron.fromWebContents },
 }));
 
 describe("result viewed IPC notification", () => {
+  it("validates and revokes computer grants through trusted settings IPC, with symmetric disposal", async () => {
+    const save = vi.fn((input: unknown) => input);
+    const controller = { getStatus: vi.fn(() => ({ supported: true, running: false, elevated: false })), start: vi.fn(() => ({ supported: true, running: true, elevated: true })), stop: vi.fn() };
+    Object.assign(dependencies, { computerUseConfiguration: { getConfiguration: () => DEFAULT_COMPUTER_USE_CONFIGURATION, saveConfiguration: save }, computerUse: controller });
+    dispose?.();
+    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send, isDestroyed: () => false } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(window);
+    dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
+    const handler = (channel: string) => electron.handle.mock.calls.filter(([name]) => name === channel).at(-1)![1];
+    expect(await handler(IPC_CHANNELS.computerUseGetConfiguration)(event)).toEqual(DEFAULT_COMPUTER_USE_CONFIGURATION);
+    expect(await handler(IPC_CHANNELS.computerUseGetApplicationIcons)(event)).toEqual({});
+    await expect(handler(IPC_CHANNELS.computerUseGetApplicationIcons)(event, { executablePath: "C:\\other.exe" })).rejects.toThrow();
+    expect(await handler(IPC_CHANNELS.computerUseSaveConfiguration)(event, { ...DEFAULT_COMPUTER_USE_CONFIGURATION, enabled: true })).toMatchObject({ enabled: true });
+    expect(save).toHaveBeenCalledOnce(); expect(controller.stop).toHaveBeenCalledOnce();
+    await handler(IPC_CHANNELS.computerUseSaveConfiguration)(event, { configuration: DEFAULT_COMPUTER_USE_CONFIGURATION, baselineApplications: [] });
+    expect(save).toHaveBeenLastCalledWith(DEFAULT_COMPUTER_USE_CONFIGURATION, []);
+    await expect(handler(IPC_CHANNELS.computerUseSaveConfiguration)(event, { ...DEFAULT_COMPUTER_USE_CONFIGURATION, shell: "whoami" })).rejects.toThrow();
+    await expect(handler(IPC_CHANNELS.computerUseStart)(event, { administrator: true })).rejects.toThrow();
+    expect(controller.start).not.toHaveBeenCalled();
+    electron.fromWebContents.mockReturnValue(null);
+    await expect(handler(IPC_CHANNELS.computerUseStart)(event)).rejects.toThrow(); expect(controller.start).not.toHaveBeenCalled();
+    dispose?.(); dispose = undefined;
+    for (const channel of [IPC_CHANNELS.computerUseGetConfiguration, IPC_CHANNELS.computerUseSaveConfiguration, IPC_CHANNELS.computerUseChooseApplication, IPC_CHANNELS.computerUseGetApplicationIcons, IPC_CHANNELS.computerUseGetStatus, IPC_CHANNELS.computerUseStart, IPC_CHANNELS.computerUseStop]) expect(electron.removeHandler).toHaveBeenCalledWith(channel);
+  });
+  it("loads executable icons only for configured permanent grants and blacklisted software", async () => {
+    const application = { id: "11111111-1111-4111-8111-111111111111", name: "Editor", executablePath: "C:\\Editor.exe", enabled: true };
+    const blocked = { ...application, id: "22222222-2222-4222-8222-222222222222", name: "Blocked", executablePath: "C:\\Blocked.exe" };
+    Object.assign(dependencies, { computerUseConfiguration: { getConfiguration: () => ({ ...DEFAULT_COMPUTER_USE_CONFIGURATION, applications: [application], blockedApplications: [blocked] }) } });
+    dispose?.(); const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send, isDestroyed: () => false } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(window); dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
+    const handler = electron.handle.mock.calls.filter(([name]) => name === IPC_CHANNELS.computerUseGetApplicationIcons).at(-1)![1];
+    expect(await handler(event)).toEqual({ [application.id]: "data:image/png;base64,aGVsbG8=", [blocked.id]: "data:image/png;base64,aGVsbG8=" });
+    expect(electron.getFileIcon).toHaveBeenCalledWith(application.executablePath, { size: "normal" });
+    expect(electron.getFileIcon).toHaveBeenCalledWith(blocked.executablePath, { size: "normal" });
+  });
   let dispose: (() => void) | undefined;
   const send = vi.fn();
   const markViewed = vi.fn();
@@ -45,7 +81,7 @@ describe("result viewed IPC notification", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send } } as unknown as BrowserWindow;
+    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send, isDestroyed: () => false } } as unknown as BrowserWindow;
     electron.fromWebContents.mockReturnValue(window);
     markViewed.mockReturnValue(conversation);
     const unsubscribe = () => undefined;
@@ -66,6 +102,70 @@ describe("result viewed IPC notification", () => {
     invoke = electron.handle.mock.calls.find(([channel]) => channel === IPC_CHANNELS.conversationMarkResultViewed)![1];
   });
   afterEach(() => { dispose?.(); dispose = undefined; });
+
+  it("validates user completion grants and bounded reference lookups from the trusted window only", async () => {
+    const collaboration = { getCompletionPolicy: vi.fn(() => ({ allowAgentCompletion: false })),
+      setCompletionPolicy: vi.fn(() => ({ allowAgentCompletion: true })), resolveReferences: vi.fn(() => []) };
+    Object.assign(dependencies, { database: { collaboration } }); dispose?.();
+    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send, isDestroyed: () => false } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(window);
+    dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
+    const trusted = { sender: window.webContents } as IpcMainInvokeEvent;
+    const handler = (channel: string) => electron.handle.mock.calls.filter(([name]) => name === channel).at(-1)![1];
+    expect(await handler(IPC_CHANNELS.taskCompletionPolicyGet)(trusted, { conversationId: conversation.id })).toEqual({ allowAgentCompletion: false });
+    expect(await handler(IPC_CHANNELS.taskCompletionPolicySet)(trusted, { teamInstanceId: conversation.id, allowAgentCompletion: true })).toEqual({ allowAgentCompletion: true });
+    expect(await handler(IPC_CHANNELS.chatReferencesResolve)(trusted, { conversationId: conversation.id, ids: [conversation.id] })).toEqual([]);
+    await expect(handler(IPC_CHANNELS.taskCompletionPolicyGet)(trusted, { conversationId: conversation.id, teamInstanceId: conversation.id })).rejects.toThrow();
+    await expect(handler(IPC_CHANNELS.taskCompletionPolicySet)(trusted, { conversationId: conversation.id, allowAgentCompletion: true, extra: true })).rejects.toThrow();
+    await expect(handler(IPC_CHANNELS.chatReferencesResolve)(trusted, { conversationId: conversation.id, ids: Array.from({ length: 21 }, () => conversation.id) })).rejects.toThrow();
+    electron.fromWebContents.mockReturnValue(null);
+    await expect(handler(IPC_CHANNELS.taskCompletionPolicySet)(trusted, { conversationId: conversation.id, allowAgentCompletion: true })).rejects.toThrow();
+    expect(collaboration.setCompletionPolicy).toHaveBeenCalledTimes(1);
+    dispose?.(); dispose = undefined;
+    for (const channel of [IPC_CHANNELS.taskCompletionPolicyGet, IPC_CHANNELS.taskCompletionPolicySet, IPC_CHANNELS.chatReferencesResolve]) expect(electron.removeHandler).toHaveBeenCalledWith(channel);
+  });
+
+  it("validates the real coordination conversation lookup and disposes its IPC handler", async () => {
+    const result = { ...conversation, threadKind: "agent", coordinationTeamInstanceId: conversation.id };
+    const getTeamChatCoordinationConversation = vi.fn(() => result);
+    Object.assign(dependencies, { agentRuntime: { getTeamChatCoordinationConversation } });
+    dispose?.();
+    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send, isDestroyed: () => false } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(window);
+    dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
+    const handler = electron.handle.mock.calls.filter(([channel]) => channel === IPC_CHANNELS.teamChatCoordinationConversation).at(-1)![1];
+    const trusted = { sender: window.webContents } as IpcMainInvokeEvent;
+    const input = { teamInstanceId: conversation.id, agentId: "default-agent" };
+    await expect(handler(trusted, input)).resolves.toEqual(result);
+    expect(getTeamChatCoordinationConversation).toHaveBeenCalledExactlyOnceWith(input);
+    await expect(handler(trusted, { teamInstanceId: "invalid" })).rejects.toThrow();
+    await expect(handler(trusted, { ...input, conversationId: conversation.id })).rejects.toThrow();
+    electron.fromWebContents.mockReturnValue(null);
+    await expect(handler(trusted, input)).rejects.toThrow();
+    expect(getTeamChatCoordinationConversation).toHaveBeenCalledTimes(1);
+    dispose?.(); dispose = undefined;
+    expect(electron.removeHandler).toHaveBeenCalledWith(IPC_CHANNELS.teamChatCoordinationConversation);
+  });
+  it("validates and scopes group pause requests and disposes the channel", async () => {
+    const pauseTeamChat = vi.fn(() => Promise.resolve());
+    Object.assign(dependencies, { agentRuntime: { pauseTeamChat } });
+    dispose?.();
+    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send, isDestroyed: () => false } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(window);
+    dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
+    const handler = electron.handle.mock.calls.filter(([channel]) => channel === IPC_CHANNELS.teamChatPause).at(-1)![1];
+    const trusted = { sender: window.webContents } as IpcMainInvokeEvent;
+    const teamInstanceId = conversation.id;
+    await expect(handler(trusted, { teamInstanceId })).resolves.toBeNull();
+    expect(pauseTeamChat).toHaveBeenCalledExactlyOnceWith(teamInstanceId, expect.any(Function));
+    await expect(handler(trusted, { teamInstanceId: "invalid" })).rejects.toThrow();
+    await expect(handler(trusted, { teamInstanceId, extra: true })).rejects.toThrow();
+    electron.fromWebContents.mockReturnValue(null);
+    await expect(handler(trusted, { teamInstanceId })).rejects.toThrow();
+    expect(pauseTeamChat).toHaveBeenCalledTimes(1);
+    dispose?.(); dispose = undefined;
+    expect(electron.removeHandler).toHaveBeenCalledWith(IPC_CHANNELS.teamChatPause);
+  });
 
   it("shows the HTML browser tab before waiting for page resources to finish loading", async () => {
     const preview = { id: conversation.id, title: "demo.html", url: "http://127.0.0.1:1234/token/demo.html", source: "<p>demo</p>" };
@@ -346,6 +446,16 @@ describe("result viewed IPC notification", () => {
       type: "conversation.updated", conversation,
     });
     expect(markViewed.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]!);
+  });
+
+  it("validates conversation stream subscriptions and rejects untrusted senders", async () => {
+    const subscribe = electron.handle.mock.calls.find(([channel]) => channel === IPC_CHANNELS.conversationSetStreamSubscriptions)![1];
+    await expect(subscribe(event, [conversation.id])).resolves.toBeUndefined();
+    await expect(subscribe({ ...event, senderFrame: {} } as IpcMainInvokeEvent, [])).rejects.toThrow();
+    await expect(subscribe(event, ["invalid"])).rejects.toThrow();
+    await expect(subscribe(event, [], "extra")).rejects.toThrow();
+    electron.fromWebContents.mockReturnValueOnce(undefined);
+    await expect(subscribe(event, [])).rejects.toThrow();
   });
 
   it("does not broadcast a viewed result when persistence fails", async () => {

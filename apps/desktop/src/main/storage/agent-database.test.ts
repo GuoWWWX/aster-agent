@@ -18,6 +18,23 @@ afterEach(async () => {
 });
 
 describe("AgentDatabase", () => {
+  it("keeps a manual title set before the first message", () => {
+    const database = new AgentDatabase(":memory:");
+    try {
+      const conversation = database.createConversation(null);
+      database.renameConversation(conversation.id, "手动命名");
+      expect(database.createRunWithUserMessage(conversation.id, "这是首条消息", "fixture").conversation.title).toBe("手动命名");
+    } finally { database.close(); }
+  });
+  it.each(["请帮我设计一个支持团队并行协作和消息查询的项目管理页面", "😀".repeat(24)])("uses at most twenty characters without appending an ellipsis for the first-message title: %s", content => {
+    const database = new AgentDatabase(":memory:");
+    try {
+      const conversation = database.createConversation(null);
+      const run = database.createRunWithUserMessage(conversation.id, content, "fixture");
+      expect(run.conversation.title).toBe(Array.from(content).slice(0, 20).join(""));
+      expect(run.conversation.title).not.toMatch(/\.\.\.|…/u);
+    } finally { database.close(); }
+  });
   it("interrupts yielded command receipts after restart without discarding logs or changing confirmed results", () => {
     const database = new AgentDatabase(":memory:");
     const conversation = database.createConversation(null);
@@ -120,6 +137,36 @@ describe("AgentDatabase", () => {
     reopened.close();
   });
 
+  it.each([29, 31])("upgrades post-cutover storage with migrations from version %i pending", async (pendingVersion) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "agent-post-cutover-upgrade-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "db.sqlite");
+    const original = new AgentDatabase(databasePath);
+    const project = { id: crypto.randomUUID(), name: "Retained project", rootPath: "D:\\workspace\\retained", isPinned: false };
+    original.saveProject(project);
+    original.activateVolatileConversationProjection();
+    original.finalizeJsonlConversationStorage();
+    original.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(pendingVersion);
+    legacy.close();
+
+    const upgraded = new AgentDatabase(databasePath);
+    expect(upgraded.isJsonlConversationStorageFinalized()).toBe(true);
+    expect(upgraded.listProjects()).toEqual([project]);
+    expect(upgraded.createConversation(null).coordinationMode).toBe("direct");
+    upgraded.close();
+
+    const persisted = new DatabaseSync(databasePath);
+    expect(persisted.prepare("SELECT name FROM sqlite_master WHERE name = 'conversations'").get()).toBeUndefined();
+    expect(persisted.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(35);
+    persisted.close();
+    const reopened = new AgentDatabase(databasePath);
+    expect(reopened.listProjects()).toEqual([project]);
+    reopened.close();
+  });
+
   it("records the current schema version and keeps it stable across restarts", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-database-"));
     temporaryDirectories.push(directory);
@@ -163,10 +210,10 @@ describe("AgentDatabase", () => {
       .all() as Array<Record<string, unknown>>;
     secondMetadata.close();
 
-    expect(firstRow.version).toBe(31);
-    expect(firstRow.name).toBe("conversation-parallel-queue-mode");
+    expect(firstRow.version).toBe(35);
+    expect(firstRow.name).toBe("task-completion-policies");
     expect(secondRow).toEqual(firstRow);
-    expect(migrationCount.count).toBe(31);
+    expect(migrationCount.count).toBe(35);
     expect(historyIndexes.map((row) => row.name)).toEqual([
       "conversation_timeline_conversation_sequence",
       "model_messages_conversation_sequence",
@@ -294,7 +341,7 @@ describe("AgentDatabase", () => {
     migrated.close();
 
     expect(checkpointCount.count).toBe(0);
-    expect(migrationCount.count).toBe(31);
+    expect(migrationCount.count).toBe(35);
   });
 
   it("adds hidden turn summaries when upgrading an existing version 19 database", async () => {
@@ -752,7 +799,7 @@ describe("AgentDatabase", () => {
     futureDatabase.close();
 
     expect(() => new AgentDatabase(databasePath)).toThrow(
-      "newer than supported version 31",
+      "newer than supported version 35",
     );
   });
 
@@ -1601,6 +1648,9 @@ describe("AgentDatabase", () => {
     expect(database.getConversation(recursive.id).teamWorkItemId).toBe(workItem.id);
     expect(database.getConversation(sideChat.id).teamWorkItemId).toBeNull();
     expect(database.getConversation(sideChatSubagent.id).teamWorkItemId).toBeNull();
+    for (const conversation of database.listConversationHierarchy()) {
+      expect(database.getConversation(conversation.id).teamWorkItemId).toBe(conversation.teamWorkItemId);
+    }
     expect(database.isTeamWorkItemExecutionTreeConversation(execution.id)).toBe(true);
     expect(database.isTeamWorkItemExecutionTreeConversation(direct.id)).toBe(true);
     expect(database.isTeamWorkItemExecutionTreeConversation(sideChat.id)).toBe(false);
@@ -2089,6 +2139,10 @@ describe("AgentDatabase", () => {
       { version: 29 },
       { version: 30 },
       { version: 31 },
+      { version: 32 },
+      { version: 33 },
+      { version: 34 },
+      { version: 35 },
     ]);
     metadata.close();
   });
@@ -3962,11 +4016,13 @@ describe("AgentDatabase", () => {
     )).toBe(false);
     const followUp = database.sendAgentMessage({
       content: "继续处理",
+      deliveryMode: "queue",
       runId: parentRun.runId,
       senderConversationId: parent.id,
       targetConversationId: child.id,
     });
     expect(followUp.conversationId).toBe(child.id);
+    expect(() => database.endSubagent(parent.id, child.id)).toThrow("pending assignments");
     database.markAgentMessagesRead([followUp.id]);
     expect(database.endSubagent(parent.id, child.id)).toMatchObject({ status: "ended" });
     expect(database.endSubagent(parent.id, child.id)).toMatchObject({ status: "ended" });

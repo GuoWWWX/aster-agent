@@ -1,3 +1,4 @@
+import { taskContextSchema, updateTaskContextInputSchema, listTaskContextsInputSchema, postTeamChatInputSchema, type TaskContextScope, type TaskCompletionPolicy, type SetTaskCompletionPolicyInput, type ResolveChatReferencesInput, type ChatReference, type ListTaskContextsInput, type TaskContextPage, type TaskContextDetail, type UpdateTaskContextInput, type TaskContext, type LinkTaskContextInput, type MergeTaskContextsInput, type ReadTeamChatInput, type TeamChatPage, type PostTeamChatInput, type TeamChatMessage, type TeamChatMember, type MarkTeamChatReadInput } from "@agent/protocol";
 import type { HtmlPreview, HtmlPreviewRequest } from "@agent/protocol";
 import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
 import { saveScheduledTaskInputSchema, type ScheduledTask, type SaveScheduledTaskInput, type ScheduledTaskReference } from "@agent/protocol";
@@ -239,7 +240,7 @@ function createMockUuid(sequence: number): string {
 }
 
 function createConversationTitle(content: string): string {
-  const title = content.trim().replaceAll(/\s+/g, " ").slice(0, 36);
+  const title = Array.from(content.trim().replaceAll(/\s+/g, " ")).slice(0, 20).join("");
   return title.length > 0 ? title : "新会话";
 }
 
@@ -1323,6 +1324,15 @@ export class MockAgentClient implements AgentClient {
     return Promise.resolve(structuredClone(this.integrationConfiguration));
   }
 
+  private computerUseConfiguration = structuredClone(DEFAULT_COMPUTER_USE_CONFIGURATION);
+  public getComputerUseConfiguration(): Promise<ComputerUseConfiguration> { return Promise.resolve(structuredClone(this.computerUseConfiguration)); }
+  public saveComputerUseConfiguration(input: ComputerUseConfiguration, baselineApplications?: ComputerApplication[]): Promise<ComputerUseConfiguration> { this.computerUseConfiguration = computerUseConfigurationSchema.parse(baselineApplications === undefined ? input : { ...input,
+    applications: mergeComputerApplicationGrants(baselineApplications, input.applications, this.computerUseConfiguration.applications) }); return this.getComputerUseConfiguration(); }
+  public chooseComputerApplication(): Promise<ComputerApplication | null> { return Promise.resolve(null); }
+  public getComputerUseApplicationIcons(): Promise<Record<string, string | null>> { return Promise.resolve({}); }
+  public getComputerUseStatus(): Promise<ComputerUseStatus> { return Promise.resolve({ supported: false, running: false, elevated: false }); }
+  public startComputerUse(): Promise<ComputerUseStatus> { return Promise.reject(new Error("请在 Windows 桌面版使用电脑控制。")); }
+  public stopComputerUse(): Promise<void> { return Promise.resolve(); }
   public getBrowserConfiguration(): Promise<BrowserConfiguration> {
     return Promise.resolve(structuredClone(this.browserConfiguration));
   }
@@ -1665,6 +1675,176 @@ export class MockAgentClient implements AgentClient {
 
   public listProjects(): Promise<ProjectSummary[]> {
     return Promise.resolve(this.project === null ? [] : [{ ...this.project }]);
+  }
+
+  private directoryTasks: TaskContext[] = [];
+  private directorySources = new Map<string, TaskContextDetail["sources"]>();
+  private groupMessages: TeamChatMessage[] = [];
+  private readonly pausedGroupIds = new Set<string>();
+  private groupRead = new Map<string, number>();
+  private readonly taskCompletionPolicies = new Map<string, boolean>();
+  public getTaskCompletionPolicy(input: TaskContextScope): Promise<TaskCompletionPolicy> {
+    return Promise.resolve({ allowAgentCompletion: this.taskCompletionPolicies.get(input.teamInstanceId ?? input.conversationId!) ?? false });
+  }
+  public setTaskCompletionPolicy(input: SetTaskCompletionPolicyInput): Promise<TaskCompletionPolicy> {
+    this.taskCompletionPolicies.set(input.teamInstanceId ?? input.conversationId!, input.allowAgentCompletion);
+    return Promise.resolve({ allowAgentCompletion: input.allowAgentCompletion });
+  }
+  public resolveChatReferences(input: ResolveChatReferencesInput): Promise<ChatReference[]> {
+    const result: ChatReference[] = [];
+    for (const id of new Set(input.ids)) {
+      const task = this.directoryTasks.find(item => item.id === id && (input.teamInstanceId !== undefined
+        ? item.teamInstanceId === input.teamInstanceId : item.ownerConversationId === input.conversationId
+          || this.directorySources.get(item.id)?.some(source => source.containerId === input.conversationId)));
+      if (task) { result.push({ kind: "task", id, title: task.title, ownerConversationId: task.ownerConversationId, teamInstanceId: task.teamInstanceId }); continue; }
+      const group = this.groupMessages.find(item => item.id === id && item.teamInstanceId === input.teamInstanceId);
+      if (group) { result.push({ kind: "message", id, sourceKind: "group", containerId: group.teamInstanceId, senderName: group.senderName, senderConversationId: group.senderConversationId, content: group.content.slice(0, 2000), createdAt: group.createdAt }); continue; }
+      const message = input.conversationId === undefined ? undefined : this.timelines.get(input.conversationId)?.find(item => item.kind === "message" && item.id === id);
+      if (message?.kind === "message") result.push({ kind: "message", id, sourceKind: "conversation", containerId: input.conversationId!, senderName: message.role === "user" ? "你" : "Agent", senderConversationId: message.role === "user" ? null : input.conversationId!, content: message.content.slice(0, 2000), createdAt: message.createdAt });
+    }
+    return Promise.resolve(result);
+  }
+  public listTaskContexts(raw: ListTaskContextsInput): Promise<TaskContextPage> {
+    const input = listTaskContextsInputSchema.parse(raw);
+    let items = this.directoryTasks.filter(task => task.mergedIntoId === null
+      && (input.conversationId === undefined || task.ownerConversationId === input.conversationId || this.directorySources.get(task.id)?.some(source => source.containerId === input.conversationId))
+      && (input.teamInstanceId === undefined || task.teamInstanceId === input.teamInstanceId)
+      && (input.projectId === undefined || task.projectId === input.projectId)
+      && (input.status === undefined || task.status === input.status)
+      && (!input.query || task.title.includes(input.query) || task.goal.includes(input.query) || this.directorySources.get(task.id)?.some(source => source.role === "user" && source.content?.includes(input.query!)))).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
+    const total = items.length;
+    if (input.beforeId) items = items.slice(items.findIndex(task => task.id === input.beforeId) + 1);
+    return Promise.resolve({ total, items: structuredClone(items.slice(0, input.limit).map(task => ({ ...task, userMessageCount: this.directorySources.get(task.id)?.filter(source => source.role === "user").length ?? 0 }))), unclassified: [], nextBeforeId: items.length > input.limit ? items[input.limit - 1]!.id : null });
+  }
+  public getTaskContext(input: { id: string; beforeSourceSequence?: number; limit?: number }): Promise<TaskContextDetail> {
+    const task = this.directoryTasks.find(task => task.id === input.id);
+    if (!task) return Promise.reject(new Error("任务不存在"));
+    const sources = [...(this.directorySources.get(task.id) ?? [])].reverse().filter(source => input.beforeSourceSequence === undefined || source.sequence < input.beforeSourceSequence);
+    const limit = input.limit ?? 20;
+    return Promise.resolve(structuredClone({ task, sources: sources.slice(0, limit), nextBeforeSourceSequence: sources.length > limit ? sources[limit - 1]!.sequence : null }));
+  }
+  public async updateTaskContext(raw: UpdateTaskContextInput): Promise<TaskContext> {
+    const input = updateTaskContextInputSchema.parse(raw);
+    const previous = this.directoryTasks.find(task => task.id === input.id);
+    if (input.id && (!previous || input.expectedRevision !== previous.revision)) throw new Error("任务已更新，请重新读取");
+    const conversation = this.conversations.find(item => item.id === input.conversationId);
+    if (!conversation) throw new Error("对话不存在");
+    const instance = this.teamInstances.find(item => item.rootConversationId === conversation.id || item.rootConversationId === conversation.parentConversationId);
+    const now = new Date().toISOString();
+    const { requestId: _requestId, expectedRevision: _expectedRevision, source: _source, conversationId: _conversationId, ...fields } = input;
+    void _requestId; void _expectedRevision; void _source; void _conversationId;
+    const task = taskContextSchema.parse({ ...fields, id: previous?.id ?? crypto.randomUUID(),
+      ownerConversationId: previous?.ownerConversationId ?? input.conversationId, projectId: conversation.projectId,
+      teamInstanceId: instance?.id ?? null, workItemId: null, revision: (previous?.revision ?? 0) + 1,
+      createdAt: previous?.createdAt ?? now, updatedAt: now, mergedIntoId: null, completionRequested: false, completedBy: input.status === "completed" ? "user" : null,
+    });
+    this.directoryTasks = [...this.directoryTasks.filter(item => item.id !== task.id), task];
+    if (input.source) await this.linkTaskContext({ id: task.id, source: input.source });
+    this.emitConversationRunEvent({ type: "collaboration.changed", conversationId: input.conversationId,
+      ...(task.teamInstanceId === null ? {} : { teamInstanceId: task.teamInstanceId }) });
+    return structuredClone(task);
+  }
+  public linkTaskContext(input: LinkTaskContextInput): Promise<void> {
+    const sources = (this.directorySources.get(input.id) ?? []).filter(source => !(source.containerId === input.source.containerId && source.messageId === input.source.messageId));
+    const original = input.source.kind === "group" ? this.groupMessages.find(item => item.id === input.source.messageId)
+      : this.timelines.get(input.source.containerId)?.find(item => item.id === input.source.messageId && item.kind === "message");
+    if (!input.remove) sources.push({ content: original && "content" in original ? original.content : null,
+      role: original && "role" in original ? original.role : original && "senderConversationId" in original ? original.senderConversationId === null ? "user" : "assistant" : null,
+      createdAt: original?.createdAt ?? null, sequence: Math.max(0, ...sources.map(source => source.sequence)) + 1, ...input.source, runId: input.source.runId ?? null, purpose: input.source.purpose ?? "progress", available: true, title: this.conversations.find(item => item.id === input.source.containerId)?.title ?? "团队群聊" });
+    this.directorySources.set(input.id, sources); return Promise.resolve();
+  }
+  public async mergeTaskContexts(input: MergeTaskContextsInput): Promise<TaskContext> {
+    const source = (await this.getTaskContext({ id: input.id })).task;
+    const target = (await this.getTaskContext({ id: input.intoId })).task;
+    if (source.revision !== input.expectedRevision || source.id === target.id) throw new Error("任务版本或归并目标不正确");
+    source.mergedIntoId = target.id; this.directoryTasks = this.directoryTasks.map(task => task.id === source.id ? source : task);
+    this.directorySources.set(target.id, [...(this.directorySources.get(target.id) ?? []), ...(this.directorySources.get(source.id) ?? [])]);
+    return target;
+  }
+  private readonly coordinationConversations = new Map<string, string>();
+  public async getTeamChatCoordinationConversation(input: { teamInstanceId: string; agentId?: string }): Promise<ConversationSummary> {
+    const instance = this.teamInstances.find(candidate => candidate.id === input.teamInstanceId);
+    if (instance === undefined || instance.isArchived) throw new Error("团队不可用");
+    const owner = this.applicationSettings.agentDirectory.agents.find(agent => agent.id === (input.agentId ?? "default-agent"));
+    if (owner === undefined) throw new Error("Agent 不可用");
+    const key = instance.id;
+    const existing = this.conversations.find(conversation => conversation.id === this.coordinationConversations.get(key));
+    if (existing !== undefined) { existing.agentId = owner.id; existing.title = `${owner.name} · 后台协调`; return structuredClone(existing); }
+    const created = await this.createConversation({ projectId: instance.projectId,
+      agent: { id: owner.id, name: owner.name, role: owner.role, instructions: owner.instructions, isDefault: owner.isDefault } });
+    const conversation = this.conversations.find(candidate => candidate.id === created.id)!;
+    conversation.title = `${owner.name} · 后台协调`; conversation.coordinationTeamInstanceId = instance.id;
+    this.coordinationConversations.set(key, conversation.id);
+    return structuredClone(conversation);
+  }
+  public getTeamChatMembers(input: { teamInstanceId: string }): Promise<TeamChatMember[]> {
+    const instance = this.teamInstances.find(item => item.id === input.teamInstanceId);
+    return Promise.resolve(this.conversations.filter(item => instance && (item.id === instance.rootConversationId || item.parentConversationId === instance.rootConversationId)).map(item => ({
+      conversationId: item.id, name: item.title, role: item.id === instance?.rootConversationId ? "负责人" : "成员", isLead: item.id === instance?.rootConversationId, isArchived: item.isArchived,
+    })));
+  }
+  public readTeamChat(input: ReadTeamChatInput): Promise<TeamChatPage> {
+    const roomMessages = this.groupMessages.filter(message => message.teamInstanceId === input.teamInstanceId);
+    const all = roomMessages.filter(message => (input.beforeSequence === undefined || message.sequence < input.beforeSequence)
+      && (input.afterSequence === undefined || message.sequence > input.afterSequence)
+      && (input.query === undefined || message.content.toLocaleLowerCase().includes(input.query.toLocaleLowerCase()))
+      && (input.senderConversationId === undefined || message.senderConversationId === input.senderConversationId)
+      && (input.createdAfter === undefined || message.createdAt >= input.createdAfter)
+      && (input.createdBefore === undefined || message.createdAt <= input.createdBefore));
+    const messages = all.slice(-(input.limit ?? 30));
+    return Promise.resolve(structuredClone({ messages, nextBeforeSequence: all.length > messages.length ? messages[0]!.sequence : null, userReadSequence: this.groupRead.get(input.teamInstanceId) ?? 0, memberReadSequence: 0,
+      coordinator: this.groupMessages.findLast(message => message.teamInstanceId === input.teamInstanceId && message.coordinator != null)?.coordinator ?? null,
+      activity: { status: this.pausedGroupIds.has(input.teamInstanceId) ? "paused" : roomMessages.some(message => message.coordinator?.status === "pending") ? "coordinating"
+        : roomMessages.some(message => message.deliveries.some(delivery => ["pending", "consumed", "delivered"].includes(delivery.status))) ? "working" : "idle",
+        activeMemberCount: 0, pendingDeliveryCount: roomMessages.flatMap(message => message.deliveries).filter(delivery => delivery.status === "pending").length } }));
+  }
+  public async postTeamChat(raw: PostTeamChatInput): Promise<TeamChatMessage> {
+    const input = postTeamChatInputSchema.parse(raw); const members = await this.getTeamChatMembers(input);
+    this.pausedGroupIds.delete(input.teamInstanceId);
+    const id = crypto.randomUUID();
+    let recipients = input.intent === "notify" ? [] : input.allMembers ? members.filter(member => !member.isArchived).map(member => member.conversationId)
+      : input.recipientConversationIds.length ? input.recipientConversationIds : members.filter(member => member.isLead).map(member => member.conversationId);
+    const quoted = input.replyToId === null ? undefined : this.groupMessages.find(message => message.id === input.replyToId);
+    if (quoted !== undefined && quoted.teamInstanceId !== input.teamInstanceId) throw new Error("Reply belongs to another room.");
+    if (input.intent === "request" && !input.allMembers && quoted?.senderConversationId != null) recipients = [...new Set([quoted.senderConversationId, ...input.recipientConversationIds])];
+    const message: TeamChatMessage = { id, teamInstanceId: input.teamInstanceId,
+      sequence: this.groupMessages.filter(item => item.teamInstanceId === input.teamInstanceId).length + 1,
+      content: input.content, senderConversationId: null, senderName: "你", intent: input.intent,
+      recipientConversationIds: recipients, allMembers: input.allMembers,
+      ...(input.fileReferences === undefined ? {} : { fileReferences: input.fileReferences.map(file => {
+        if (file.sourceMessageId === undefined) throw new Error("A user must reference an already-published member file.");
+        const source = this.groupMessages.find(message => message.id === file.sourceMessageId);
+        const original = source?.fileReferences?.find(item => item.path === file.path);
+        if (source?.teamInstanceId !== input.teamInstanceId || original === undefined) throw new Error("Invalid public file source.");
+        return { ...file, sourceMessageId: file.sourceMessageId, conversationId: original.conversationId };
+      }) }), taskContextId: input.taskContextId, replyToId: input.replyToId,
+      createdAt: new Date().toISOString(), sourceRunId: null, rootMessageId: quoted?.rootMessageId ?? id, depth: 0,
+      supersedesId: input.supersedesId, coordinator: input.coordinator === undefined ? null : { ...input.coordinator, modelSelection: input.coordinator.modelSelection ?? null, status: "completed", error: null },
+      deliveries: recipients.map(conversationId => ({ id: crypto.randomUUID(), conversationId, status: "pending", runId: null, error: null })),
+    };
+    this.groupMessages.push(message);
+    const root = members.find(member => member.isLead);
+    if (root) this.emitConversationRunEvent({ type: "collaboration.changed", conversationId: root.conversationId, teamInstanceId: input.teamInstanceId });
+    return structuredClone(message);
+  }
+  public markTeamChatRead(input: MarkTeamChatReadInput): Promise<void> { this.groupRead.set(input.teamInstanceId, input.throughSequence); return Promise.resolve(); }
+  public resumeTeamChatDelivery(input: { id: string }): Promise<void> {
+    for (const message of this.groupMessages) for (const delivery of message.deliveries) if (delivery.id === input.id && delivery.status === "pending") delivery.error = null;
+    return Promise.resolve();
+  }
+  public cancelTeamChatDelivery(input: { id: string }): Promise<void> {
+    for (const message of this.groupMessages) for (const delivery of message.deliveries) if (delivery.id === input.id && delivery.status === "pending") delivery.status = "cancelled";
+    return Promise.resolve();
+  }
+  public async pauseTeamChat(input: { teamInstanceId: string }): Promise<void> {
+    const members = await this.getTeamChatMembers(input);
+    this.pausedGroupIds.add(input.teamInstanceId);
+    for (const message of this.groupMessages.filter(message => message.teamInstanceId === input.teamInstanceId)) {
+      if (message.coordinator?.status === "pending") message.coordinator = { ...message.coordinator, status: "paused", error: null };
+      for (const delivery of message.deliveries) if (["pending", "consumed", "delivered"].includes(delivery.status)) delivery.status = "cancelled";
+    }
+    const root = members.find(member => member.isLead);
+    if (root) this.emitConversationRunEvent({ type: "collaboration.changed", conversationId: root.conversationId, teamInstanceId: input.teamInstanceId });
   }
 
   public listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]> {
@@ -2311,6 +2491,7 @@ export class MockAgentClient implements AgentClient {
     if (
       !this.conversationParents.has(conversation.id) &&
       !this.inheritedTimelines.has(conversation.id) &&
+      /^新会话(?: \d+)?$/u.test(conversation.title) &&
       !timeline.some(
         (item) => item.kind === "message" && item.role === "user" && item.id !== userMessage.id,
       )
@@ -2892,3 +3073,4 @@ export class MockAgentClient implements AgentClient {
     }
   }
 }
+import { DEFAULT_COMPUTER_USE_CONFIGURATION, computerUseConfigurationSchema, mergeComputerApplicationGrants, type ComputerApplication, type ComputerUseConfiguration, type ComputerUseStatus } from "@agent/protocol";

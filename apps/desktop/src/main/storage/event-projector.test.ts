@@ -24,6 +24,34 @@ afterEach(async () => {
 });
 
 describe("EventProjector", () => {
+  it.each([{ count: 6, active: false }, { count: 10, active: true }])("keeps warm team histories and active ownership during eviction ($count histories, active=$active)", async ({ count, active }) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-team-cache-"));
+    temporaryDirectories.push(directory);
+    const source = new AgentDatabase(":memory:");
+    const ids = Array.from({ length: count }, (_, index) => {
+      const conversation = source.createConversation(null);
+      const run = source.createRunWithUserMessage(conversation.id, `history ${index}`, "test-model");
+      if (!active || index > 0) source.finishRun(run.runId, "completed", null);
+      return { id: conversation.id, runId: run.runId };
+    });
+    const log = new ThreadLog(directory);
+    new ThreadLogLegacyImporter(source, log, new EventProjector(source, log)).importMissingConversationLogs();
+    const database = new AgentDatabase(":memory:");
+    try {
+      const projector = new EventProjector(database, log);
+      projector.projectAllConversationLogs();
+      projector.releaseInactiveConversationHistories();
+      for (const { id } of ids) projector.ensureConversationHistoryProjected(id);
+      if (active) database.finishRun(ids[0]!.runId, "completed", null);
+      const read = vi.spyOn(log, "read");
+      for (const { id } of active ? ids.slice(0, 1) : ids) {
+        projector.ensureConversationHistoryProjected(id);
+        expect(database.listTimeline(id)).toHaveLength(1);
+      }
+      expect(read).not.toHaveBeenCalled();
+    } finally { source.close(); database.close(); }
+  });
+
   it.each(["event", "snapshot"] as const)("recovers tool screenshot bytes from %s references without creating drafts", async (mode) => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "event-projector-browser-image-"));
     temporaryDirectories.push(directory);

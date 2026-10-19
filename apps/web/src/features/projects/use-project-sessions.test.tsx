@@ -23,6 +23,20 @@ afterEach(() => {
 });
 
 describe("useProjectSessions", () => {
+  it("keeps the group's actual coordinator out of ordinary navigator roots across loads, live events and callbacks", async () => {
+    const ordinary = createConversation();
+    const coordinator = { ...createConversation(crypto.randomUUID()), coordinationTeamInstanceId: crypto.randomUUID() };
+    let emit: ((event: ConversationRunEvent) => void) | undefined;
+    const client = { listConversationHierarchy: () => Promise.resolve([ordinary, coordinator]),
+      onConversationRunEvent: (listener: (event: ConversationRunEvent) => void) => { emit = listener; return () => {}; } } as unknown as AgentClient;
+    let controller!: ReturnType<typeof useProjectSessions>;
+    function Harness(): null { controller = useProjectSessions(client, null); return null; }
+    const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => { root?.render(<Harness />); await Promise.resolve(); });
+    expect(controller.sessions.map(session => session.id)).toEqual([ordinary.id]);
+    act(() => { emit?.({ type: "conversation.updated", conversation: coordinator }); controller.updateSession(coordinator); });
+    expect(controller.sessions.map(session => session.id)).toEqual([ordinary.id]);
+  });
   it("updates the visible conversation when its project changes", async () => {
     const conversation = createConversation();
     const projectId = "00000000-0000-4000-8000-000000000002";

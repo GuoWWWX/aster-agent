@@ -19,6 +19,17 @@ import {
 } from "./project-session-model.js";
 
 describe("project session model", () => {
+  it("keeps persistent team members' activity and unread results off the leader row", () => {
+    const lead = { ...createProjectSession("project-a", [], "lead"), teamId: "default-team", threadKind: "team_lead" as const };
+    const member = { ...createProjectSession("project-a", [lead], "member"), teamId: "default-team", threadKind: "agent" as const,
+      parentConversationId: lead.id, activeRunId: "member-run", lastRunStatus: "running" as const, hasUnreadResult: true };
+    expect(aggregateSideConversationState([lead, member])[0]).toMatchObject({ activeSideConversationCount: 0,
+      hasUnreadSideConversationResult: false, hasFailedUnreadSideConversationResult: false });
+    expect(aggregateSideConversationState([lead, { ...member, activeRunId: null, lastRunStatus: "failed" }])[0]).toMatchObject({
+      activeSideConversationCount: 0, hasUnreadSideConversationResult: false, hasFailedUnreadSideConversationResult: false });
+    expect(getSessionFamilyResultIds([lead, member], lead.id)).toEqual([lead.id]);
+    expect(getSessionFamilyResultIds([lead, member], member.id)).toEqual([member.id]);
+  });
   it("aggregates side conversation running and unread state into its parent", () => {
     const parent = createProjectSession("project-a", [], "parent");
     const runningSide: ProjectSession = {

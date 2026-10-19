@@ -120,7 +120,7 @@ export const conversationAttachmentSchema = z
     name: z.string().trim().min(1).max(255),
     projectPath: z.string().trim().min(1).max(4_096).nullable(),
     sizeBytes: z.number().int().nonnegative().max(MAX_ATTACHMENT_BYTES),
-    source: z.enum(["project", "upload", "browser"]),
+    source: z.enum(["project", "upload", "browser", "computer"]),
     truncated: z.boolean()
   })
   .strict();
@@ -176,6 +176,7 @@ export const importConversationAttachmentBytesInputSchema = z
 
 export const conversationSummarySchema = z
   .object({
+    coordinationTeamInstanceId: z.string().uuid().optional(),
     activeSubagentCount: z.number().int().nonnegative().default(0),
     activeRunId: runIdSchema.nullable(),
     agentId: z.string().trim().min(1).max(200).nullable().default(null),
@@ -393,6 +394,10 @@ export const conversationMessageItemSchema = z
     durationMs: z.number().int().nonnegative().nullable().optional(),
     id: timelineItemIdSchema,
     kind: z.literal("message"),
+    groupSource: z.object({
+      teamInstanceId: z.string().uuid(), messageId: z.string().uuid(),
+      senderConversationId: z.string().uuid().nullable(), senderName: z.string(),
+    }).strict().optional(),
     modelId: z.string().min(1).max(200).nullable(),
     reasoningContent: z.string().max(MAX_MESSAGE_LENGTH).nullable().optional(),
     role: conversationMessageRoleSchema,
@@ -471,6 +476,7 @@ export const conversationRunFileChangeSchema = z.object({
 export const conversationAgentMessageItemSchema = z
   .object({
     autoWake: z.boolean().optional(),
+    deliveryMode: z.enum(["queue", "steer"]).optional(),
     consumedByRunId: runIdSchema.optional(),
     executionStatus: z.enum(["completed", "failed", "cancelled"]).optional(),
     summaryStatus: z.enum(["provided", "missing"]).optional(),
@@ -1063,6 +1069,8 @@ const modelRetryUpdatedEventSchema = z
   })
   .strict();
 
+export const conversationStreamSubscriptionSchema = z.array(conversationIdSchema).max(1_000);
+
 const assistantDeltaEventSchema = z
   .object({
     conversationId: conversationIdSchema,
@@ -1071,6 +1079,7 @@ const assistantDeltaEventSchema = z
     modelId: z.string().min(1).max(200),
     runId: runIdSchema,
     teamWorkItemId: z.string().uuid().optional(),
+    reset: z.boolean().optional(),
     type: z.literal("assistant.delta")
   })
   .strict();
@@ -1126,6 +1135,7 @@ const toolStartedEventSchema = z
 
 const toolOutputDeltaEventSchema = z
   .object({
+    reset: z.boolean().optional(),
     startedAt: z.string().datetime().optional(),
     completedAt: z.string().datetime().nullable().optional(),
     commandId: z.string().uuid(),
@@ -1189,6 +1199,7 @@ const runFinishedEventSchema = z
   .strict();
 
 export const conversationRunEventSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("collaboration.changed"), conversationId: conversationIdSchema, teamInstanceId: z.string().uuid().optional() }).strict(),
   z.object({ type: z.literal("user_question.updated"), conversationId: conversationIdSchema, question: userQuestionSchema,
     reason: z.enum(["created", "answered", "viewed", "cancelled"]) }).strict(),
   z.object({ type: z.literal("notification.activated"), conversationId: conversationIdSchema }).strict(),

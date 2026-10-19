@@ -23,6 +23,9 @@ describe("task-list context", () => {
 
     expect(context).toMatchObject({ role: "user", toolCalls: [] });
     expect(context?.content).toContain("[Current task list | live state]");
+    expect(context?.content).toContain("not authorization to resume work");
+    expect(context?.content).toContain("repeating an identical list does not advance work");
+    expect(context?.content).toContain("without touching unrelated steps");
     expect(context?.content).toContain("[blocked]");
     expect(context?.content).toContain("Reason:");
     expect(context?.content).toContain("…");

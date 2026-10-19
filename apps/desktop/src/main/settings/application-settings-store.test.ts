@@ -19,6 +19,22 @@ afterEach(async () => {
 });
 
 describe("ApplicationSettingsStore", () => {
+  it("persists character presets alongside existing icons and uploaded avatars", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "aster-agent-avatars-"));
+    temporaryDirectories.push(directory);
+    const configurationPath = path.join(directory, "settings.jsonc");
+    const store = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    store.ensureFile();
+    const current = store.getConfiguration();
+    const agents = current.agentDirectory.agents.map((agent, index) => index === 0
+      ? { ...agent, avatar: { kind: "preset" as const, preset: "fox" as const } }
+      : index === 1 ? { ...agent, avatar: { kind: "image" as const, dataUrl: "data:image/png;base64,fixture", fileName: "mine.png" } }
+      : agent);
+    store.saveConfiguration({ ...current, agentDirectory: { ...current.agentDirectory, agents } });
+    const reopened = new ApplicationSettingsStore(new SettingsJsoncFile(configurationPath));
+    expect(reopened.getConfiguration().agentDirectory.agents).toEqual(agents);
+    expect(reopened.getConfiguration().appearance).toEqual(current.appearance);
+  });
   it("persists typography through a fresh JSONC store without changing other preferences", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "aster-typography-"));
     temporaryDirectories.push(directory);

@@ -23,8 +23,10 @@ import type { ModelProviderState, ModelToolCall } from "../model/model-contracts
 const THREAD_LOG_READ_CHUNK_BYTES = 256 * 1_024;
 const THREAD_LOG_CONTEXT_CACHE_LIMIT = 4;
 const THREAD_LOG_CONTEXT_CACHE_BYTES = 16 * 1_024 * 1_024;
+const THREAD_LOG_METADATA_CACHE_LIMIT = 64;
 
 const threadLogEventTypeSchema = z.enum([
+  "group_message",
   "user_question_updated",
  "agent_message",
   "agent_message_read",
@@ -133,6 +135,7 @@ export type ThreadLogContext = {
 type ContextLocation = { record: ThreadLogRecordLocation; legacyIndex: number };
 type ContextIndex = {
   context: ThreadLogContext;
+  checkpointOffset: number;
   locations: ContextLocation[];
   cursor: ThreadLogScanCursor | null;
 };
@@ -225,7 +228,7 @@ export class ThreadLog {
       const value = event.payload[uniquePayloadField];
       if (event.type === input.type && typeof value === "string") values.add(value);
     }, after);
-    setBoundedCacheEntry(this.uniqueEventCache, key, { cursor, values }, THREAD_LOG_CONTEXT_CACHE_LIMIT);
+    setBoundedCacheEntry(this.uniqueEventCache, key, { cursor, values }, THREAD_LOG_METADATA_CACHE_LIMIT);
     if (values.has(uniqueValue)) return null;
     return this.append(conversationId, input);
   }
@@ -431,19 +434,23 @@ export class ThreadLog {
     }
     const descriptor = openSync(this.getPath(conversationId), "r");
     try {
-      const bytes = Buffer.allocUnsafe(location.length);
-      let consumed = 0;
-      while (consumed < bytes.length) {
-        const count = readSync(descriptor, bytes, consumed, bytes.length - consumed, location.offset + consumed);
-        if (count === 0) throw new Error("ThreadLog record is no longer available.");
-        consumed += count;
-      }
-      const event = threadLogEventSchema.parse(JSON.parse(bytes.toString("utf8")));
-      if (event.conversationId !== conversationId) throw new Error("ThreadLog record belongs to another conversation.");
-      return event;
+      return this.readRecordFromDescriptor(descriptor, conversationId, location);
     } finally {
       closeSync(descriptor);
     }
+  }
+
+  private readRecordFromDescriptor(descriptor: number, conversationId: string, location: ThreadLogRecordLocation): ThreadLogEvent {
+    const bytes = Buffer.allocUnsafe(location.length);
+    let consumed = 0;
+    while (consumed < bytes.length) {
+      const count = readSync(descriptor, bytes, consumed, bytes.length - consumed, location.offset + consumed);
+      if (count === 0) throw new Error("ThreadLog record is no longer available.");
+      consumed += count;
+    }
+    const event = threadLogEventSchema.parse(JSON.parse(bytes.toString("utf8")));
+    if (event.conversationId !== conversationId) throw new Error("ThreadLog record belongs to another conversation.");
+    return event;
   }
 
   /**
@@ -502,6 +509,15 @@ export class ThreadLog {
       message.providerState === undefined ? [] : [message.providerState]));
   }
 
+  /** Older request usage no longer describes the input after a successful compaction. */
+  public readUncompactedProviderState(conversationId: string): ModelProviderState | null {
+    const index = this.contextIndex(conversationId);
+    if (index === null) return null;
+    const position = index.context.messages.findLastIndex(message => message.providerState?.usage !== undefined);
+    if (position < 0 || index.locations[position]!.record.offset <= index.checkpointOffset) return null;
+    return structuredClone(index.context.messages[position]!.providerState ?? null);
+  }
+
   public searchCoveredContext(conversationId: string, query: string): ThreadLogContextMessage[] {
     const words = query.toLowerCase().match(/[\p{L}\p{N}_./-]{2,}/gu) ?? [];
     const terms = [...new Set(words.flatMap((word) => /^[\p{Script=Han}]+$/u.test(word)
@@ -533,7 +549,7 @@ export class ThreadLog {
     if (!this.hasConversation(id)) return null;
     let index = this.contextIndexes.get(id);
     if (index === undefined || index.cursor === null || !this.canContinueScan(id, index.cursor)) {
-      index = { context: { checkpoint: null, messages: [] }, locations: [], cursor: null };
+      index = { context: { checkpoint: null, messages: [] }, checkpointOffset: -1, locations: [], cursor: null };
     }
     const target = index;
     try {
@@ -544,7 +560,11 @@ export class ThreadLog {
           target.locations = target.locations.filter((_, position) => target.context.messages[position]?.runId !== replaced);
         }
         const oldLength = target.locations.length;
+        const checkpoint = target.context.checkpoint;
         applyContextEvent(target.context, event);
+        if (target.context.checkpoint !== checkpoint) {
+          target.checkpointOffset = target.context.checkpoint === null ? -1 : record.offset;
+        }
         for (let position = oldLength; position < target.context.messages.length; position += 1) {
           const message = target.context.messages[position]!;
           target.locations.push({ record, legacyIndex: position - oldLength });
@@ -562,25 +582,32 @@ export class ThreadLog {
       this.contextIndexes.delete(id);
       throw error;
     }
-    setBoundedCacheEntry(this.contextIndexes, id, target, THREAD_LOG_CONTEXT_CACHE_LIMIT);
+    setBoundedCacheEntry(this.contextIndexes, id, target, THREAD_LOG_METADATA_CACHE_LIMIT);
     return target;
   }
 
   private *readContextLocations(conversationId: string, index: ContextIndex, positions: readonly number[]): IterableIterator<ThreadLogContextMessage> {
+    if (positions.length === 0) return;
+    const descriptor = openSync(this.getPath(conversationId), "r");
     let previousOffset = -1;
     let recordMessages: ThreadLogContextMessage[] = [];
-    for (const position of positions) {
-      const location = index.locations[position]!;
-      if (location.record.offset !== previousOffset) {
-        const event = this.readRecord(conversationId, location.record);
-        const message = contextMessageForEvent(event, 1);
-        recordMessages = event.type === "legacy_snapshot_imported" ? readLegacyContextMessages(event.payload)
-          : message === null ? [] : [message];
-        previousOffset = location.record.offset;
+    try {
+      for (const position of positions) {
+        const location = index.locations[position]!;
+        if (location.record.offset !== previousOffset) {
+          const event = this.readRecordFromDescriptor(descriptor, conversationId, location.record);
+          const message = contextMessageForEvent(event, 1);
+          recordMessages = event.type === "legacy_snapshot_imported" ? readLegacyContextMessages(event.payload)
+            : event.type === "agent_messages_consumed" ? readQueuedAgentContext(event)
+            : message === null ? [] : [message];
+          previousOffset = location.record.offset;
+        }
+        const message = recordMessages[location.legacyIndex];
+        if (message === undefined) throw new Error("ThreadLog context location is no longer available.");
+        yield { ...message, sequence: index.context.messages[position]!.sequence };
       }
-      const message = recordMessages[location.legacyIndex];
-      if (message === undefined) throw new Error("ThreadLog context location is no longer available.");
-      yield { ...message, sequence: index.context.messages[position]!.sequence };
+    } finally {
+      closeSync(descriptor);
     }
   }
 
@@ -775,6 +802,10 @@ function retainedContextBytes(context: ThreadLogContext): number {
 }
 
 function applyContextEvent(context: ThreadLogContext, event: ThreadLogEvent): void {
+  if (event.type === "agent_messages_consumed") {
+    for (const message of readQueuedAgentContext(event)) context.messages.push({ ...message, sequence: context.messages.length + 1 });
+    return;
+  }
   if (event.type === "legacy_snapshot_imported") {
     const legacyMessages = readLegacyContextMessages(event.payload);
     const sequenceOffset = context.messages.length;
@@ -861,7 +892,12 @@ function contextMessageForEvent(
   event: ThreadLogEvent,
   sequence: number,
 ): ThreadLogContextMessage | null {
+  if (event.type === "group_message") {
+    const message = z.object({ role: z.enum(["user", "assistant"]), content: z.string() }).parse(event.payload.message);
+    return { attachmentIds: [], content: message.content, role: message.role, runId: null, sequence, toolCallId: null, toolCalls: [] };
+  }
   if (event.type === "agent_message") {
+    if (isRecord(event.payload.message) && event.payload.message.deliveryMode === "queue") return null;
     const content = typeof event.payload.modelContent === "string"
       ? event.payload.modelContent
       : event.payload.content;
@@ -950,6 +986,17 @@ function contextMessageForEvent(
   }
 
   return null;
+}
+
+function readQueuedAgentContext(event: ThreadLogEvent): ThreadLogContextMessage[] {
+  if (event.payload.queuedMessages === undefined) return [];
+  const queued = z.array(z.object({ messageId: z.string().uuid(), modelContent: z.string() }).strict()).max(50).parse(event.payload.queuedMessages);
+  const ids = readStringArray(event.payload.messageIds);
+  return queued.map((message, index) => {
+    if (!ids.includes(message.messageId)) throw new Error("Queued context must belong to the consumed message batch.");
+    return { attachmentIds: [], content: message.modelContent, role: "user", runId: readNullableString(event.payload.runId),
+      sequence: index + 1, toolCallId: null, toolCalls: [] };
+  });
 }
 
 function readLegacyContextMessages(payload: Record<string, unknown>): ThreadLogContextMessage[] {

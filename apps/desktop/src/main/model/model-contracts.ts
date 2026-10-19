@@ -58,7 +58,7 @@ export type ModelMessageAttachment = {
   name: string;
   projectPath: string | null;
   readState: "full" | "metadata_only" | "preview";
-  source: "browser" | "project" | "upload";
+  source: "browser" | "project" | "upload" | "computer";
   truncated: boolean;
 } & (
   | { content: string; kind: "text" }
@@ -70,6 +70,7 @@ export function modelImageAttachmentCaption(
 ): string {
   const location = attachment.source === "browser"
     ? "浏览器工具截图"
+    : attachment.source === "computer" ? "电脑控制窗口截图"
     : attachment.projectPath === null
       ? "用户上传图片"
       : `项目图片 ${attachment.projectPath}`;
@@ -102,6 +103,8 @@ export type ModelReasoningDelta = {
 };
 
 export type CompleteTurnInput = {
+  /** Stable opaque conversation scope; never a per-request or Run identifier. */
+  cacheKey?: string;
   configuration: ModelConfiguration;
   maxOutputTokens: number;
   messages: ModelMessage[];

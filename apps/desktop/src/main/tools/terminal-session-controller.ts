@@ -105,7 +105,8 @@ export class TerminalSessionController {
 
   public open(input: TerminalSessionOpenInput): TerminalSession {
     const project = this.projects.getProject(input.projectId);
-    const launch = resolveInteractiveShell(this.terminalConfiguration.getConfiguration());
+    const configuration = this.terminalConfiguration.getConfiguration();
+    const launch = resolveInteractiveShell(configuration);
     const sessionId = randomUUID();
     let process: PtyProcess;
     try {
@@ -113,7 +114,7 @@ export class TerminalSessionController {
         cols: input.columns,
         cwd: project.rootPath,
         env: interactiveTerminalEnvironment(
-          commandEnvironmentWithBundledRipgrep(globalThis.process.env),
+          commandEnvironmentWithBundledRipgrep(globalThis.process.env, resolveShell(configuration.shell)),
         ),
         name: "xterm-256color",
         rows: input.rows,

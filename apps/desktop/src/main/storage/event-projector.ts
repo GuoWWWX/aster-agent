@@ -27,7 +27,7 @@ const conversationCreatedPayloadSchema = z.object({
   conversation: conversationSummarySchema,
 }).strict();
 
-const HYDRATED_CONVERSATION_HISTORY_LIMIT = 4;
+const HYDRATED_CONVERSATION_HISTORY_LIMIT = 8;
 
 export type ThreadLogProjectionResult = {
   cursor: ThreadLogProjectionCursor | null;
@@ -53,7 +53,11 @@ export class EventProjector {
     private readonly database: AgentDatabase,
     private readonly threadLog: ThreadLog,
     private readonly attachmentPathResolver: ThreadLogAttachmentPathResolver | null = null,
-  ) { this.timeline = new ThreadLogTimeline(threadLog); }
+  ) {
+    this.timeline = new ThreadLogTimeline(threadLog);
+    database.collaboration.setSourceResolver(source => database.hasConversation(source.containerId)
+      && this.timeline.page({ conversationId: source.containerId, aroundItemId: source.messageId, limit: 20 }).items.some(item => item.id === source.messageId));
+  }
 
   public listTimelinePage(input: ConversationTimelinePageInput): ConversationTimelinePage {
     this.database.getConversation(input.conversationId);
@@ -229,6 +233,12 @@ export class EventProjector {
       return this.projectConversation(conversationId);
     }
     const cursor = this.database.getThreadLogProjectionCursor(conversationId);
+    if (event.type === "conversation_result_viewed" && !this.hydratedConversationIds.has(conversationId)) {
+      // A read receipt only changes compact state. Leave the history cursor
+      // untouched so a later execution still replays its complete prefix.
+      this.database.projectThreadLogBusinessEvents(conversationId, [event]);
+      return { cursor, projectedEventCount: 1 };
+    }
     if (event.sequence !== (cursor?.lastSequence ?? 0) + 1) {
       return this.projectConversation(conversationId);
     }
@@ -420,15 +430,11 @@ export class EventProjector {
   }
 
   private evictExcessConversationHistories(protectedConversationId: string): void {
-    while (this.hydratedConversationIds.size > HYDRATED_CONVERSATION_HISTORY_LIMIT) {
-      const candidate = this.hydratedConversationIds.keys().next().value;
-      if (candidate === undefined) return;
-      this.hydratedConversationIds.delete(candidate);
-      if (candidate === protectedConversationId) {
-        this.touchHydratedConversation(candidate);
-        continue;
-      }
+    for (const candidate of this.hydratedConversationIds.keys()) {
+      if (this.hydratedConversationIds.size <= HYDRATED_CONVERSATION_HISTORY_LIMIT) break;
+      if (candidate === protectedConversationId) continue;
       if (this.database.getConversation(candidate).activeRunId !== null) continue;
+      this.hydratedConversationIds.delete(candidate);
       this.database.clearVolatileConversationHistory(candidate);
     }
   }

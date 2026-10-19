@@ -1,3 +1,7 @@
+import { taskContextScopeSchema, taskCompletionPolicySchema, setTaskCompletionPolicyInputSchema, resolveChatReferencesInputSchema, chatReferencesSchema } from "@agent/protocol";
+import { teamInstanceReferenceInputSchema } from "@agent/protocol";
+import { ConversationStreamSubscriptions } from "./conversation-stream-subscriptions.js";
+import { getTaskContextInputSchema, linkTaskContextInputSchema, listTaskContextsInputSchema, markTeamChatReadInputSchema, mergeTaskContextsInputSchema, postTeamChatInputSchema, readTeamChatInputSchema, teamChatCoordinationConversationInputSchema, taskContextDetailSchema, taskContextPageSchema, taskContextReferenceSchema, taskContextSchema, teamChatMessageSchema, teamChatPageSchema, updateTaskContextInputSchema, teamChatMemberSchema } from "@agent/protocol";
 import { htmlPreviewRequestSchema, htmlPreviewResponseSchema } from "@agent/protocol";
 import type { HtmlPreviewServer } from "../preview/html-preview-server.js";
 import { scheduledTaskListSchema, scheduledTaskSchema, saveScheduledTaskIpcArgumentsSchema, scheduledTaskReferenceIpcArgumentsSchema } from "@agent/protocol";
@@ -14,6 +18,7 @@ import {
   type IpcMainInvokeEvent
 } from "electron";
 import { openProjectDirectory } from "../projects/open-project-directory.js";
+import { reportMainError, toMainAgentError } from "../errors/agent-error.js";
 import { z } from "zod";
 import { publishConversationAttentionEvent } from "../windows/conversation-attention.js";
 import {
@@ -52,6 +57,7 @@ import {
   conversationSearchResponseSchema,
   forkConversationIpcArgumentsSchema,
   conversationRunEventSchema,
+  conversationStreamSubscriptionSchema,
   conversationSummarySchema,
   conversationTaskListResponseSchema,
   conversationTimelineResponseSchema,
@@ -277,6 +283,8 @@ type MainIpcDependencies = {
   applicationStorageLocation: ApplicationStorageLocationStore;
   applicationSettings: ApplicationSettingsStore;
   browserConfiguration: BrowserConfigurationStore;
+  computerUseConfiguration: ComputerUseConfigurationStore;
+  computerUse: WindowsComputerController;
   attachments: ConversationAttachmentStore;
   conversationDeletion: ConversationDeletionService;
   conversationLifecycle: ConversationLifecycleService;
@@ -303,22 +311,20 @@ type MainIpcDependencies = {
 };
 
 type MainIpcRegistrationOptions = {
+  eventStreams?: ConversationStreamSubscriptions;
   resumePendingMessages?: boolean;
   emitConversationRunEvent?: (event: unknown) => void;
 };
 
 function sendWindowConversationRunEvent(
   getMainWindow: () => BrowserWindow | undefined,
-  event: unknown
+  event: unknown,
+  eventStreams: ConversationStreamSubscriptions,
 ): void {
   const parsed = conversationRunEventSchema.parse(event);
   publishConversationAttentionEvent(parsed);
   const window = getMainWindow();
-  if (window === undefined || window.isDestroyed()) return;
-  window.webContents.send(
-    IPC_CHANNELS.conversationRunEvent,
-    parsed
-  );
+  eventStreams.publish(window === undefined || window.isDestroyed() ? undefined : window.webContents, parsed);
 }
 
 export function registerMainIpcHandlers(
@@ -329,6 +335,8 @@ export function registerMainIpcHandlers(
     applicationStorageLocation,
     applicationSettings,
     browserConfiguration,
+    computerUseConfiguration,
+    computerUse,
     attachments,
     conversationDeletion,
     conversationLifecycle,
@@ -353,9 +361,11 @@ export function registerMainIpcHandlers(
     workspaceBrowserTabs,
     tools,
   }: MainIpcDependencies,
-  { resumePendingMessages = true, emitConversationRunEvent = (event) =>
-    sendWindowConversationRunEvent(getMainWindow, event) }: MainIpcRegistrationOptions = {},
+  { resumePendingMessages = true, eventStreams: configuredStreams, emitConversationRunEvent: configuredEmitter }: MainIpcRegistrationOptions = {},
 ): () => void {
+  const eventStreams = configuredStreams ?? new ConversationStreamSubscriptions();
+  const emitConversationRunEvent = configuredEmitter ?? ((event: unknown) =>
+    sendWindowConversationRunEvent(getMainWindow, event, eventStreams));
   const ipcMain = createIpcHandlerRegistrar<IpcHandler>({
     handle(channel, handler): void {
       electronIpcMain.handle(channel, (event, ...args: unknown[]) =>
@@ -365,6 +375,13 @@ export function registerMainIpcHandlers(
     removeHandler(channel): void {
       electronIpcMain.removeHandler(channel);
     },
+  });
+  ipcMain.handle(IPC_CHANNELS.conversationSetStreamSubscriptions, (event, ...args: unknown[]) => {
+    const window = getTrustedWindow(event, getMainWindow);
+    if (event.senderFrame !== event.sender.mainFrame) throw new Error("Rejected stream subscription from a subframe.");
+    const [ids] = z.tuple([conversationStreamSubscriptionSchema]).parse(args);
+    eventStreams.subscribe(window.webContents, ids);
+    return voidIpcResponseSchema.parse(undefined);
   });
   ipcMain.handle(IPC_CHANNELS.scheduledTaskList, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow); emptyIpcArgumentsSchema.parse(args);
@@ -1128,6 +1145,109 @@ export function registerMainIpcHandlers(
     },
   );
 
+  ipcMain.handle(IPC_CHANNELS.taskCompletionPolicyGet, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([taskContextScopeSchema]).parse(args);
+    return taskCompletionPolicySchema.parse(database.collaboration.getCompletionPolicy(input));
+  });
+  ipcMain.handle(IPC_CHANNELS.taskCompletionPolicySet, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([setTaskCompletionPolicyInputSchema]).parse(args);
+    return taskCompletionPolicySchema.parse(database.collaboration.setCompletionPolicy(input));
+  });
+  ipcMain.handle(IPC_CHANNELS.chatReferencesResolve, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([resolveChatReferencesInputSchema]).parse(args);
+    return chatReferencesSchema.parse(database.collaboration.resolveReferences(input));
+  });
+  ipcMain.handle(IPC_CHANNELS.taskContextList, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    database.collaboration.syncWorkItems(database.listTeamWorkItems({}));
+    const [input] = z.tuple([listTaskContextsInputSchema]).parse(args);
+    const result = taskContextPageSchema.parse(database.collaboration.listTasks(input));
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.taskContextGet, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    database.collaboration.syncWorkItems(database.listTeamWorkItems({}));
+    const [input] = z.tuple([getTaskContextInputSchema]).parse(args);
+    const result = taskContextDetailSchema.parse(database.collaboration.getTask(input.id, input));
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.taskContextUpdate, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([updateTaskContextInputSchema]).parse(args);
+    const result = taskContextSchema.parse(database.collaboration.updateTask(input));
+    emitConversationRunEvent({ type: "collaboration.changed", conversationId: input.conversationId,
+      ...(result.teamInstanceId === null ? {} : { teamInstanceId: result.teamInstanceId }) });
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.taskContextLink, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([linkTaskContextInputSchema]).parse(args);
+    const result = database.collaboration.linkTask(input);
+    const task = database.collaboration.getTask(input.id).task;
+    emitConversationRunEvent({ type: "collaboration.changed", conversationId: task.ownerConversationId,
+      ...(task.teamInstanceId === null ? {} : { teamInstanceId: task.teamInstanceId }) });
+    if (input.source.kind === "conversation" && input.source.containerId !== task.ownerConversationId)
+      emitConversationRunEvent({ type: "collaboration.changed", conversationId: input.source.containerId });
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.taskContextMerge, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([mergeTaskContextsInputSchema]).parse(args);
+    const result = taskContextSchema.parse(database.collaboration.mergeTasks(input));
+    emitConversationRunEvent({ type: "collaboration.changed", conversationId: result.ownerConversationId,
+      ...(result.teamInstanceId === null ? {} : { teamInstanceId: result.teamInstanceId }) });
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.teamChatRead, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([readTeamChatInputSchema]).parse(args);
+    const result = teamChatPageSchema.parse(database.collaboration.readMessages(input));
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.teamChatPost, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([postTeamChatInputSchema]).parse(args);
+    const result = teamChatMessageSchema.parse(agentRuntime.postTeamChat(input, emitConversationRunEvent));
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.teamChatCoordinationConversation, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([teamChatCoordinationConversationInputSchema]).parse(args);
+    return conversationSummarySchema.parse(agentRuntime.getTeamChatCoordinationConversation(input));
+  });
+  ipcMain.handle(IPC_CHANNELS.teamChatMembers, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([teamInstanceReferenceInputSchema]).parse(args);
+    const result = z.array(teamChatMemberSchema).parse(database.collaboration.members(input.teamInstanceId));
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.teamChatMarkRead, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([markTeamChatReadInputSchema]).parse(args);
+    const result = database.collaboration.markRead(input, null);
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.teamChatResume, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([taskContextReferenceSchema]).parse(args);
+    agentRuntime.resumeTeamChatDelivery(input.id, emitConversationRunEvent);
+    return null;
+  });
+  ipcMain.handle(IPC_CHANNELS.teamChatCancel, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([taskContextReferenceSchema]).parse(args);
+    const result = database.collaboration.cancelDelivery(input.id);
+    return result;
+  });
+  ipcMain.handle(IPC_CHANNELS.teamChatPause, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input] = z.tuple([teamInstanceReferenceInputSchema]).parse(args);
+    await agentRuntime.pauseTeamChat(input.teamInstanceId, emitConversationRunEvent);
+    return null;
+  });
   ipcMain.handle(
     IPC_CHANNELS.teamWorkItemList,
     (event, ...args: unknown[]) => {
@@ -1542,6 +1662,51 @@ export function registerMainIpcHandlers(
     }
   );
 
+  ipcMain.handle(IPC_CHANNELS.computerUseGetConfiguration, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow); parseNoArguments(args);
+    return computerUseConfigurationSchema.parse(computerUseConfiguration.getConfiguration());
+  });
+  ipcMain.handle(IPC_CHANNELS.computerUseSaveConfiguration, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow);
+    const [input, baselineApplications] = saveComputerUseConfigurationArgumentsSchema.parse(args);
+    const saved = computerUseConfiguration.saveConfiguration(input, baselineApplications);
+    computerUse.stop();
+    return computerUseConfigurationSchema.parse(saved);
+  });
+  ipcMain.handle(IPC_CHANNELS.computerUseGetStatus, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow); parseNoArguments(args);
+    return computerUseStatusSchema.parse(computerUse.getStatus());
+  });
+  ipcMain.handle(IPC_CHANNELS.computerUseStart, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow); parseNoArguments(args);
+    return computerUseStatusSchema.parse(await computerUse.start());
+  });
+  ipcMain.handle(IPC_CHANNELS.computerUseStop, (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow); parseNoArguments(args); computerUse.stop();
+  });
+  ipcMain.handle(IPC_CHANNELS.computerUseChooseApplication, async (event, ...args: unknown[]) => {
+    const window = getTrustedWindow(event, getMainWindow); parseNoArguments(args);
+    const result = await dialog.showOpenDialog(window, { title: "选择软件", properties: ["openFile"], filters: [{ name: "Windows 软件", extensions: ["exe"] }] });
+    const selected = result.filePaths[0];
+    if (result.canceled || selected === undefined) return null;
+    const executablePath = realpathSync(selected);
+    return computerApplicationSchema.parse({ id: randomUUID(), name: path.basename(executablePath, path.extname(executablePath)), executablePath, enabled: true });
+  });
+  ipcMain.handle(IPC_CHANNELS.computerUseGetApplicationIcons, async (event, ...args: unknown[]) => {
+    getTrustedWindow(event, getMainWindow); parseNoArguments(args);
+    const configuration = computerUseConfiguration.getConfiguration();
+    const icons = await Promise.all([...configuration.applications, ...configuration.blockedApplications].map(async (application) => {
+      try {
+        const icon = await app.getFileIcon(application.executablePath, { size: "normal" });
+        return [application.id, icon.isEmpty() ? null : icon.resize({ width: 32, height: 32 }).toDataURL()] as const;
+      } catch (error) {
+        reportMainError(toMainAgentError(error, { operation: "computer_use.application_icon" }), error, [application.executablePath]);
+        return [application.id, null] as const;
+      }
+    }));
+    return computerApplicationIconsSchema.parse(Object.fromEntries(icons));
+  });
+
   ipcMain.handle(
     IPC_CHANNELS.browserGetConfiguration,
     (event, ...args: unknown[]) => {
@@ -1878,6 +2043,7 @@ export function registerMainIpcHandlers(
   try {
     ipcMain.assertRegisteredChannels(DESKTOP_IPC_HANDLER_CHANNELS);
   } catch (error) {
+    if (configuredStreams === undefined) eventStreams.dispose();
     disposeApplicationSettingsListener();
     disposeTerminalSessionListener();
     disposeWorkspaceTerminalTabListener();
@@ -1903,6 +2069,7 @@ export function registerMainIpcHandlers(
   }
 
   return () => {
+    if (configuredStreams === undefined) eventStreams.dispose();
     disposeApplicationSettingsListener();
     disposeTerminalSessionListener();
     disposeWorkspaceTerminalTabListener();
@@ -1916,3 +2083,9 @@ export function registerMainIpcHandlers(
     ipcMain.dispose();
   };
 }
+import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { realpathSync } from "node:fs";
+import { computerApplicationIconsSchema, computerApplicationSchema, computerUseConfigurationSchema, computerUseStatusSchema, saveComputerUseConfigurationArgumentsSchema } from "@agent/protocol";
+import type { ComputerUseConfigurationStore } from "../settings/computer-use-configuration-store.js";
+import type { WindowsComputerController } from "../computer-use/windows-computer-controller.js";

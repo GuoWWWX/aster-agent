@@ -5,6 +5,17 @@ import { updateSideSessionsForRunEvent, upsertSideSession } from "../features/wo
 import { conversationActivityRows } from "../features/chat/conversation-activity.js";
 
 describe("MockAgentClient", () => {
+  it.each([false, true])("keeps the first-message title short without ellipses and preserves a manual title (%s)", async manual => {
+    vi.useFakeTimers();
+    const client = new MockAgentClient();
+    const conversation = await client.createConversation({ projectId: null });
+    if (manual) await client.renameConversation({ conversationId: conversation.id, title: "手动命名" });
+    const content = "请帮我设计一个支持团队并行协作和消息查询的项目管理页面";
+    await client.sendConversationMessage({ conversationId: conversation.id, content });
+    expect((await client.listConversations()).find(item => item.id === conversation.id)?.title)
+      .toBe(manual ? "手动命名" : Array.from(content).slice(0, 20).join(""));
+    await vi.advanceTimersByTimeAsync(800);
+  });
   afterEach(() => {
     vi.useRealTimers();
   });

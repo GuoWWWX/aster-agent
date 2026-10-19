@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_TERMINAL_CONFIGURATION } from "@agent/protocol";
 
 import { ProjectRegistry } from "../projects/project-registry.js";
-import { decodeTerminalOutput, ProjectToolRegistry } from "./project-tool-registry.js";
+import { commandEnvironmentWithBundledRipgrep, decodeTerminalOutput, ProjectToolRegistry } from "./project-tool-registry.js";
 import type { CommandOutputEvent } from "./project-tool-registry.js";
 
 const temporaryDirectories: string[] = [];
@@ -51,6 +51,102 @@ async function createLargeFixture(fileCount = 400) {
 }
 
 describe("ProjectToolRegistry", () => {
+  it("loads Windows PowerShell built-ins when launched from a PowerShell 7 environment", async () => {
+    if (process.platform !== "win32") return;
+    const { project, tools } = await createFixture();
+    const signal = new AbortController().signal;
+    vi.stubEnv("PSModulePath", path.join(process.env.ProgramFiles ?? "C:/Program Files", "PowerShell", "7", "Modules"));
+    try {
+      const proposal = await tools.execute("run_command", JSON.stringify({
+        command: "Get-FileHash -Algorithm SHA256 -LiteralPath src/index.ts | Select-Object -ExpandProperty Hash",
+      }), project.id, signal);
+      if (proposal.kind !== "command") throw new Error(proposal.content);
+      const result = await tools.executePreparedCommand(proposal.command, project.id, signal);
+      expect(result.isError).toBe(false);
+      expect(JSON.parse(result.content)).toMatchObject({ value: { exitCode: 0 } });
+      expect(result.content).toMatch(/[A-F0-9]{64}/u);
+    } finally {
+      vi.unstubAllEnvs();
+      await tools.dispose();
+    }
+  });
+
+  it("preserves inherited module paths and only prioritizes built-ins for Windows PowerShell", () => {
+    if (process.platform !== "win32") return;
+    const environment = { SystemRoot: "C:\\Windows", PSModulePath: "C:\\PowerShell7\\Modules;D:\\CustomModules" };
+    const expected = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules";
+    expect(commandEnvironmentWithBundledRipgrep(environment, "powershell").PSModulePath)
+      .toBe(`${expected};${environment.PSModulePath}`);
+    expect(commandEnvironmentWithBundledRipgrep(environment, "pwsh").PSModulePath).toBe(environment.PSModulePath);
+    expect(commandEnvironmentWithBundledRipgrep(environment, "cmd").PSModulePath).toBe(environment.PSModulePath);
+    expect(environment.PSModulePath).toBe("C:\\PowerShell7\\Modules;D:\\CustomModules");
+    const alreadyConfigured = { SystemRoot: "C:\\Windows", PSMODULEPATH: `${expected.toLowerCase()};D:\\CustomModules` };
+    const result = commandEnvironmentWithBundledRipgrep(alreadyConfigured, "powershell");
+    expect(result.PSMODULEPATH?.split(";")).toHaveLength(2);
+    expect(result.PSModulePath).toBeUndefined();
+  });
+
+  it.each(["replace_in_file", "apply_patch"])("edits a bounded large source file through %s with a reviewable diff", async (toolName) => {
+    const { project, tools } = await createFixture();
+    const content = `${"// existing source\n".repeat(18_000)}const marker = 1;\n`;
+    const filePath = path.join(project.rootPath, "src", "large.ts");
+    await writeFile(filePath, content, "utf8");
+    const signal = new AbortController().signal;
+    const argumentsValue = toolName === "replace_in_file"
+      ? { path: "src/large.ts", oldText: "const marker = 1;", newText: "const marker = 2;" }
+      : { patch: "*** Begin Patch\n*** Update File: src/large.ts\n@@\n-const marker = 1;\n+const marker = 2;\n*** End Patch" };
+    const result = await tools.execute(toolName, JSON.stringify(argumentsValue), project.id, signal);
+    expect(result.kind).toBe("change");
+    if (result.kind !== "change") throw new Error(result.content);
+    expect(result.change.diff).toContain("-const marker = 1;");
+    expect(result.change.diff).toContain("+const marker = 2;");
+    expect(await readFile(filePath, "utf8")).toBe(content);
+    await tools.applyPreparedChange(result.change, project.id, signal);
+    expect(await readFile(filePath, "utf8")).toBe(content.replace("const marker = 1;", "const marker = 2;"));
+  });
+
+  it("explains an unsupported source file size instead of returning empty validation issues", async () => {
+    const { project, tools } = await createFixture();
+    const content = "x".repeat(2 * 1024 * 1024 + 1);
+    await writeFile(path.join(project.rootPath, "oversize.txt"), content, "utf8");
+    const result = await tools.execute("replace_in_file", JSON.stringify({
+      path: "oversize.txt", oldText: "x", newText: "y",
+    }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content)).toMatchObject({
+      agentError: { code: "VALIDATION_FAILED" },
+      recovery: { issues: [expect.objectContaining({ path: ["path"] })] },
+    });
+    expect(result.content).toContain("2097152");
+    expect(await readFile(path.join(project.rootPath, "oversize.txt"), "utf8")).toBe(content);
+  });
+
+  it("keeps the model edit payload bounded even when the existing file can be larger", async () => {
+    const { project, tools } = await createFixture();
+    const result = await tools.execute("write_file", JSON.stringify({
+      path: "oversize-input.txt", content: "x".repeat(200_001),
+    }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content)).toMatchObject({
+      recovery: { issues: [expect.objectContaining({ path: ["content"] })] },
+    });
+  });
+
+  it("rejects a localized replacement that would grow the resulting file past the editable bound", async () => {
+    const { project, tools } = await createFixture();
+    const content = `${"x".repeat(2 * 1024 * 1024 - 10)}marker`;
+    await writeFile(path.join(project.rootPath, "near-limit.txt"), content, "utf8");
+    const result = await tools.execute("replace_in_file", JSON.stringify({
+      path: "near-limit.txt", oldText: "marker", newText: "y".repeat(100),
+    }), project.id, new AbortController().signal);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content)).toMatchObject({
+      recovery: { issues: [expect.objectContaining({ path: ["path"] })] },
+    });
+    expect(result.content).toContain("2097152");
+    expect(await readFile(path.join(project.rootPath, "near-limit.txt"), "utf8")).toBe(content);
+  });
+
   it("retires list_directory from the manifest and rejects stale model calls", async () => {
     const { project, projects, tools } = await createFixture();
     expect(tools.getDefinitions().map((tool) => tool.name)).not.toContain("list_directory");

@@ -51,6 +51,15 @@ describe("LocalControlServer", () => {
     expect(status).toBe(403);
     expect(execute).not.toHaveBeenCalled();
   });
+  it("protects control startup with authentication, origin and strict input checks", async () => {
+    const command = { command: "computer_control.start", input: {} };
+    expect((await request(command, { Authorization: "Bearer invalid" })).status).toBe(403);
+    expect((await request(command, { Origin: "http://127.0.0.1" })).status).toBe(403);
+    expect((await request({ ...command, input: { administrator: true } })).status).toBe(400);
+    expect(execute).not.toHaveBeenCalled();
+    expect((await request(command)).status).toBe(200);
+    expect(execute).toHaveBeenCalledExactlyOnceWith(command);
+  });
   it("rejects malformed JSON, invalid commands and oversized bodies", async () => {
     const headers = { Authorization: `Bearer ${connection.token}`, "Content-Type": "application/json" };
     expect((await fetch(`${connection.url}/v1/commands`, { method: "POST", headers, body: "{" })).status).toBe(400);
@@ -77,5 +86,20 @@ describe("LocalControlServer", () => {
     expect(response.status).toBe(500);
     expect(JSON.stringify(await response.json())).not.toContain("secret internal detail");
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+  it("keeps a reading subscriber connected when a single valid event exceeds the socket high-water mark", async () => {
+    const response = await fetch(`${connection.url}/v1/events`, { headers: { Authorization: `Bearer ${connection.token}` } });
+    const reader = response.body!.getReader();
+    await reader.read();
+    const event = { type: "assistant.delta", conversationId: "00000000-0000-4000-8000-000000000001",
+      runId: "00000000-0000-4000-8000-000000000002", messageId: "00000000-0000-4000-8000-000000000003", modelId: "fixture", delta: "large output ".repeat(10_000) };
+    server.publish(event);
+    let frame = "";
+    while (!frame.includes("\n\n")) {
+      const chunk = await reader.read(); expect(chunk.done).toBe(false);
+      frame += new TextDecoder().decode(chunk.value);
+    }
+    expect(JSON.parse(frame.split("\n").find(line => line.startsWith("data: "))!.slice(6))).toEqual(event);
+    await server.close(); await reader.cancel();
   });
 });

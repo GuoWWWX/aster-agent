@@ -7,7 +7,7 @@ export default defineConfig({
     enforce: "pre",
     name: "raw-markdown",
     transform(source, id) {
-      if (!id.endsWith(".md")) return null;
+      if (!id.endsWith(".md") && !id.endsWith(".ps1")) return null;
       return {
         code: `export default ${JSON.stringify(source)};`,
         map: null

@@ -5,6 +5,9 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { DatabaseMigrationRunner } from "./database-migration-runner.js";
+import { LANGGRAPH_CHECKPOINT_BLOBS_SCHEMA } from "./langgraph-checkpoint-schema.js";
+import { CollaborationStore, COLLABORATION_SCHEMA } from "./collaboration-store.js";
+import { TeamChatJournal } from "./team-chat-journal.js";
 import { z } from "zod";
 import {
   MAX_TEAM_COLLABORATION_OUTPUT_LENGTH,
@@ -133,12 +136,13 @@ export type CancelledPendingMessageAttachmentCleanup = {
 const toolScreenshotPayloadSchema = z.object({ ok: z.literal(true), value: z.object({ image: conversationAttachmentSchema }).passthrough() });
 
 function toolScreenshotImage(item: ConversationTimelineItem): ConversationAttachment | null {
-  if (item.kind !== "tool" || item.name !== "browser_control" || item.result === null) return null;
+  if (item.kind !== "tool" || (item.name !== "browser_control" && item.name !== "computer_use") || item.result === null) return null;
   try {
     const result = toolScreenshotPayloadSchema.safeParse(JSON.parse(item.result));
     if (!result.success) return null;
     const image = result.data.value.image;
-    return image.source === "browser" && image.conversationId === item.conversationId && image.messageId === item.id ? image : null;
+    const source = item.name === "computer_use" ? "computer" : "browser";
+    return image.source === source && image.conversationId === item.conversationId && image.messageId === item.id ? image : null;
   } catch { return null; }
 }
 
@@ -291,6 +295,9 @@ export type ConversationDeletionTask = {
 };
 
 export type SendAgentMessageInput = {
+  id?: string;
+  autoWake?: boolean;
+  deliveryMode?: "queue" | "steer";
   content: string;
   executionStatus?: "completed" | "failed" | "cancelled";
   summaryStatus?: "provided" | "missing";
@@ -1338,8 +1345,9 @@ export class AgentDatabase {
   private readonly database: SqliteDatabase;
   private readonly databasePath: string;
   private volatileConversationProjectionActive = false;
+  public readonly collaboration: CollaborationStore;
 
-  public constructor(databasePath: string) {
+  public constructor(databasePath: string, teamChatJournal?: TeamChatJournal) {
     this.databasePath = databasePath;
     this.database = new DatabaseSync(databasePath);
     this.database.exec("PRAGMA foreign_keys = ON;");
@@ -1348,6 +1356,23 @@ export class AgentDatabase {
     }
     try {
       this.migrate();
+      this.collaboration = new CollaborationStore(this.database, {
+        conversation: id => this.getConversation(id), team: id => this.getTeamInstance(id),
+        teamForConversation: id => this.getTeamInstanceForConversation(id),
+        members: id => {
+          const roots = this.database.prepare("SELECT conversation_id FROM team_execution_conversations WHERE team_instance_id = ?").all(id);
+          const ids = new Set(roots.map(row => String(row.conversation_id)));
+          const main = this.getTeamInstance(id).rootConversationId; if (main !== null) ids.add(main);
+          return [...ids].flatMap(root => [this.getConversation(root), ...this.listTeamMemberConversations(root)]);
+        }, binding: id => this.getConversationAgentBinding(id),
+        sourceExists: source => this.listTimeline(source.containerId).some(item => item.id === source.messageId),
+        message: (conversationId, messageId) => {
+          const message = this.getTimelineItem(conversationId, messageId);
+          return message?.kind === "message" ? { content: message.content, role: message.role, createdAt: message.createdAt } : null;
+        },
+        outcome: (id, runId) => this.getConversationRunOutcome(id, runId),
+        isExecutionPaused: id => this.isConversationExecutionPaused(id),
+      }, teamChatJournal ?? new TeamChatJournal(databasePath === ":memory:" ? null : path.join(path.dirname(databasePath), "team-chats")));
       if (this.isJsonlConversationStorageFinalized()) {
         this.activateVolatileConversationProjection();
       }
@@ -1541,7 +1566,7 @@ export class AgentDatabase {
         const rows = this.database.prepare(
           `SELECT name FROM legacy_checkpoints.sqlite_master
            WHERE type = 'table' AND name IN (
-             'langgraph_checkpoints', 'langgraph_checkpoint_writes'
+             'langgraph_checkpoints', 'langgraph_checkpoint_writes', 'langgraph_checkpoint_blobs'
            )`,
         ).all() as DatabaseRow[];
         const tableNames = new Set(rows.map((row) => asString(row, "name")));
@@ -1572,6 +1597,14 @@ export class AgentDatabase {
               channel, value_type, value_blob, created_at
             FROM legacy_checkpoints.langgraph_checkpoint_writes;
           `);
+          if (tableNames.has("langgraph_checkpoint_blobs")) {
+            this.database.exec(`
+              INSERT OR IGNORE INTO langgraph_checkpoint_blobs
+                (thread_id, checkpoint_ns, channel, version, value_type, value_blob)
+              SELECT thread_id, checkpoint_ns, channel, version, value_type, value_blob
+              FROM legacy_checkpoints.langgraph_checkpoint_blobs;
+            `);
+          }
           this.database.prepare(
             `INSERT INTO storage_imports (source_kind, source_identity, completed_at)
              VALUES ('langgraph-checkpoints', ?, ?)`,
@@ -1847,7 +1880,11 @@ export class AgentDatabase {
                   conversations.updated_at DESC, conversations.created_at ASC`
       )
       .all() as DatabaseRow[];
-    return rows.map(toConversation);
+    return rows.map(row => {
+      const conversation = toConversation(row);
+      const room = this.collaboration?.coordinatorRoom(conversation.id);
+      return { ...conversation, ...(room == null ? {} : { coordinationTeamInstanceId: room.teamInstanceId }) };
+    });
   }
 
   public listAgentConversations(): ConversationSummary[] {
@@ -1885,7 +1922,19 @@ export class AgentDatabase {
   public getConversation(conversationId: string): ConversationSummary {
     const row = this.database
       .prepare(
-        `${teamWorkItemExecutionTreeCte}
+        `WITH RECURSIVE execution_ancestors(conversation_id) AS (
+           SELECT ?
+           UNION
+           SELECT members.team_execution_conversation_id
+           FROM execution_ancestors
+           JOIN team_member_conversations AS members
+             ON members.conversation_id = execution_ancestors.conversation_id
+           UNION
+           SELECT tasks.parent_conversation_id
+           FROM execution_ancestors
+           JOIN subagent_tasks AS tasks
+             ON tasks.child_conversation_id = execution_ancestors.conversation_id
+         )
          SELECT conversations.id, project_id, parent_conversation_id, workspace_root_path,
             selected_provider_id, selected_model_id, selected_reasoning_json, permission_mode, coordination_mode,
             thread_kind, agent_id, avatar_icon, team_id, title, created_at, conversations.updated_at,
@@ -1911,17 +1960,22 @@ export class AgentDatabase {
               )) AS active_subagent_count
            ,(SELECT status FROM subagent_tasks
              WHERE child_conversation_id = conversations.id LIMIT 1) AS subagent_task_status
-           ,team_execution_tree_projection.work_item_id AS team_work_item_id
+           ,(SELECT id FROM team_work_items
+             WHERE execution_conversation_id IN (SELECT conversation_id FROM execution_ancestors)
+             ORDER BY CASE status
+               WHEN 'running' THEN 0 WHEN 'reviewing' THEN 1 WHEN 'waiting_user' THEN 2
+               WHEN 'planned' THEN 3 WHEN 'queued' THEN 4 ELSE 5
+             END, updated_at DESC, rowid DESC
+             LIMIT 1) AS team_work_item_id
          FROM conversations
-         LEFT JOIN team_execution_tree_projection
-           ON team_execution_tree_projection.conversation_id = conversations.id
          WHERE conversations.id = ? AND deletion_pending = 0`
       )
-      .get(conversationId) as DatabaseRow | undefined;
+      .get(conversationId, conversationId) as DatabaseRow | undefined;
     if (row === undefined) {
       throw new Error("Conversation was not found.");
     }
-    return toConversation(row);
+    const room = this.collaboration?.coordinatorRoom(conversationId);
+    return { ...toConversation(row), ...(room == null ? {} : { coordinationTeamInstanceId: room.teamInstanceId }) };
   }
 
   /**
@@ -2267,6 +2321,7 @@ export class AgentDatabase {
     if (this.hasActiveTeamInstanceWork(current.id)) {
       throw new Error("A Team instance with active work cannot be deleted.");
     }
+    this.collaboration.cancelRoom(current.id);
     const now = new Date().toISOString();
     this.database.prepare(
       `UPDATE team_instances SET archived_at = COALESCE(archived_at, ?), deleted_at = ?, updated_at = ?
@@ -4132,7 +4187,7 @@ export class AgentDatabase {
   ): ConversationSummary {
     const agent = conversationAgentBindingSchema.parse(rawAgent);
     const conversation = this.getConversation(conversationId);
-    if (conversation.agentId !== null && conversation.agentId !== agent.id) {
+    if (conversation.agentId !== null && conversation.agentId !== agent.id && conversation.coordinationTeamInstanceId === undefined) {
       throw new Error("This conversation is already bound to another Agent.");
     }
     this.database
@@ -5006,7 +5061,9 @@ export class AgentDatabase {
       return true;
     }
     if (event.type === "agent_messages_consumed") {
-      const payload = z.object({ runId: z.string().uuid(), messageIds: z.array(z.string().uuid()).max(50) }).strict().parse(event.payload);
+      const payload = z.object({ runId: z.string().uuid(), messageIds: z.array(z.string().uuid()).max(50),
+        queuedMessages: z.array(z.object({ messageId: z.string().uuid(), modelContent: z.string() }).strict()).max(50).optional(),
+      }).strict().parse(event.payload);
       if (this.getRunConversationId(payload.runId) !== conversationId) throw new Error("Result batch Run does not belong to the conversation.");
       for (const id of payload.messageIds) this.markThreadLogAgentMessageRead(conversationId, id, event.createdAt, payload.runId);
       return true;
@@ -5023,6 +5080,9 @@ export class AgentDatabase {
     const conversation = this.getConversation(conversationId);
     if (conversation.teamWorkItemId !== null) {
       throw new Error("Managed Team WorkItem conversations are retained by their WorkItem lifecycle.");
+    }
+    if (this.isTeamMemberConversation(conversationId)) {
+      throw new Error("Team member conversations are retained by their Team lifecycle.");
     }
     const conversationRows = this.database
       .prepare(
@@ -5290,7 +5350,7 @@ export class AgentDatabase {
          WHERE parent_conversation_id IN (${placeholders})
             OR child_conversation_id IN (${placeholders})`,
       ).run(...task.conversationIds, ...task.conversationIds);
-      for (const id of task.conversationIds) this.writeTaskListProjection(id, null);
+      for (const id of task.conversationIds) { this.collaboration.cancelPending(id); this.writeTaskListProjection(id, null); }
       for (const tableName of [
         "conversation_timeline",
         "model_messages",
@@ -5631,6 +5691,10 @@ export class AgentDatabase {
       if (child.activeRunId !== null || current.status === "queued" || current.status === "running") {
         throw new Error("A running Subagent cannot be ended.");
       }
+      if (this.listPendingMessages(childConversationId).length > 0
+        || this.listUnreadAgentMessages(childConversationId).some(message => message.deliveryMode === "queue")) {
+        throw new Error("A Subagent with pending assignments cannot be ended.");
+      }
       const now = new Date().toISOString();
       const update = this.database.prepare(
         `UPDATE subagent_tasks SET status = 'ended', updated_at = ?
@@ -5818,7 +5882,15 @@ export class AgentDatabase {
     return message;
   }
 
-  public listTimeline(conversationId: string): ConversationTimelineItem[] {
+  public getTimelineItem(conversationId: string, id: string): ConversationTimelineItem | null {
+    this.getConversation(conversationId);
+    const row = this.database.prepare(`SELECT t.payload_json, r.created_at AS run_created_at,
+      r.status AS run_status, r.updated_at AS run_completed_at FROM conversation_timeline t
+      LEFT JOIN runs r ON r.id = t.run_id WHERE t.conversation_id = ? AND t.id = ?`).get(conversationId, id);
+    return row === undefined ? null : this.toConversationTimelineItem(row);
+  }
+
+  public listTimeline(conversationId: string, runId?: string): ConversationTimelineItem[] {
     this.getConversation(conversationId);
     const rows = this.database
       .prepare(
@@ -5829,9 +5901,10 @@ export class AgentDatabase {
          FROM conversation_timeline
          LEFT JOIN runs ON runs.id = conversation_timeline.run_id
          WHERE conversation_timeline.conversation_id = ?
+           AND (? IS NULL OR conversation_timeline.run_id = ?)
          ORDER BY conversation_timeline.sequence ASC`
       )
-      .all(conversationId) as DatabaseRow[];
+      .all(conversationId, runId ?? null, runId ?? null) as DatabaseRow[];
     return rows.map((row) => this.toConversationTimelineItem(row));
   }
 
@@ -5902,6 +5975,18 @@ export class AgentDatabase {
   }
 
   public sendAgentMessage(input: SendAgentMessageInput): ConversationAgentMessageItem {
+    return this.sendAgentMessages([input])[0]!;
+  }
+
+  public sendAgentMessages(inputs: SendAgentMessageInput[]): ConversationAgentMessageItem[] {
+    const messages = inputs.map(input => this.createAgentMessage(input));
+    this.withTransaction(() => {
+      for (const message of messages) this.persistAgentMessage(message);
+    });
+    return messages;
+  }
+
+  private createAgentMessage(input: SendAgentMessageInput): ConversationAgentMessageItem {
     const sender = this.getConversation(input.senderConversationId);
     const target = this.getConversation(input.targetConversationId);
     if (sender.id === target.id) {
@@ -5922,8 +6007,10 @@ export class AgentDatabase {
       ...(input.executionError === undefined ? {} : { executionError: input.executionError }),
       createdAt: now,
       fileChanges: input.fileChanges ?? [],
-      id: randomUUID(),
+      id: input.id ?? randomUUID(),
       kind: "agent_message",
+      ...(input.autoWake === false ? { autoWake: false } : {}),
+      ...(input.deliveryMode === undefined ? {} : { deliveryMode: input.deliveryMode }),
       messageType: input.messageType ?? "message",
       readAt: null,
       replyInstruction: input.replyInstruction ?? null,
@@ -5934,7 +6021,6 @@ export class AgentDatabase {
       taskId: input.taskId ?? null
     });
 
-    this.withTransaction(() => this.persistAgentMessage(message));
     return message;
   }
 
@@ -5957,14 +6043,10 @@ export class AgentDatabase {
         message.createdAt
       );
     if (includeInTimeline) this.insertTimelineItem(message);
-    this.insertModelMessage({
-      attachmentIds: [],
-      content: agentMessageModelContent(message),
-      conversationId: message.conversationId,
-      role: "user",
-      runId: null,
-      toolCallId: null,
-      toolCalls: []
+    if (message.deliveryMode !== "queue") this.insertModelMessage({
+      attachmentIds: [], content: agentMessageModelContent(message),
+      conversationId: message.conversationId, role: "user", runId: null,
+      toolCallId: null, toolCalls: [],
     });
     this.database
       .prepare(
@@ -6061,6 +6143,11 @@ export class AgentDatabase {
         });
         updateStoredMessage.run(JSON.stringify(read), now, messageId);
         updateTimeline.run(JSON.stringify(read), messageId);
+        if (current.deliveryMode === "queue") this.insertModelMessage({
+          attachmentIds: [], content: agentMessageModelContent(read),
+          conversationId: read.conversationId, role: "user", runId: consumedByRunId ?? null,
+          toolCallId: null, toolCalls: [],
+        });
       }
     });
   }
@@ -6665,7 +6752,7 @@ export class AgentDatabase {
       status: "completed"
     });
     const userMessageCount = this.countUserMessages(record.message.conversationId);
-    const nextTitle = userMessageCount === 0 && !this.hasStableTeamParticipantTitle(conversation)
+    const nextTitle = userMessageCount === 0 && !this.hasStableTeamParticipantTitle(conversation) && /^新会话(?: \d+)?$/u.test(conversation.title)
       ? this.createTitleFromMessage(
           record.message.content || attachments[0]?.name || "新会话"
         )
@@ -6803,7 +6890,7 @@ export class AgentDatabase {
     const userMessageCount = this.countUserMessages(conversationId);
     const nextTitle = this.hasStableTeamParticipantTitle(conversation)
       ? conversation.title
-      : titleOverride ?? (userMessageCount === 0
+      : titleOverride ?? (userMessageCount === 0 && /^新会话(?: \d+)?$/u.test(conversation.title)
           ? this.createTitleFromMessage(content || attachments[0]?.name || "新会话")
           : conversation.title);
 
@@ -8282,6 +8369,16 @@ export class AgentDatabase {
           continue;
         }
 
+        if (event.type === "group_message") {
+          const message = conversationMessageItemSchema.parse(payload.message);
+          if (message.conversationId !== conversationId || message.runId !== null) throw new Error("Group context belongs to another conversation.");
+          message.groupSource = conversationMessageItemSchema.shape.groupSource.parse({ teamInstanceId: payload.teamInstanceId,
+            messageId: payload.groupMessageId, senderConversationId: payload.senderConversationId ?? null, senderName: payload.senderName ?? "用户" });
+          this.insertThreadLogTimeline(message);
+          this.insertThreadLogModelMessage({ attachmentIds: [], content: message.content, conversationId, eventId: event.eventId,
+            role: message.role, runId: null, toolCallId: null, toolCalls: [], createdAt: message.createdAt });
+          continue;
+        }
         if (
           (event.type === "user_message" || event.type === "user_message_replaced")
           && event.payload.writeAhead !== true
@@ -8402,7 +8499,7 @@ export class AgentDatabase {
             this.persistAgentMessage(message);
           } else {
             this.insertThreadLogTimeline(message);
-            this.insertThreadLogModelMessage({
+            if (message.deliveryMode !== "queue") this.insertThreadLogModelMessage({
               attachmentIds: [],
               content: agentMessageModelContent(message),
               conversationId,
@@ -9379,6 +9476,11 @@ export class AgentDatabase {
         "UPDATE conversation_timeline SET payload_json = ? WHERE id = ? AND kind = 'agent_message'",
       )
       .run(JSON.stringify(read), messageId);
+    if (current.deliveryMode === "queue") this.insertModelMessage({
+      attachmentIds: [], content: agentMessageModelContent(read),
+      conversationId, role: "user", runId: consumedByRunId ?? null,
+      toolCallId: null, toolCalls: [],
+    });
   }
 
   private markThreadLogToolAwaitingApproval(
@@ -11004,6 +11106,8 @@ export class AgentDatabase {
       {
         name: "conversation-parallel-queue-mode",
         up: (database) => {
+          // JSONL storage recreates this column in the TEMP projection at startup.
+          if (this.isJsonlConversationStorageFinalized()) return;
           const columns = database.prepare("PRAGMA table_info(conversations)").all() as DatabaseRow[];
           if (!columns.some(column => column.name === "coordination_mode")) {
             database.exec("ALTER TABLE conversations ADD COLUMN coordination_mode TEXT NOT NULL DEFAULT 'direct' CHECK(coordination_mode IN ('direct','parallel_queue'));");
@@ -11011,6 +11115,18 @@ export class AgentDatabase {
         },
         version: 31,
       },
+      { name: "task-context-directory-and-team-chat", version: 32,
+        up: database => { database.exec(COLLABORATION_SCHEMA); } },
+      { name: "team-chat-run-provenance-and-receipts", version: 33, up: database => {
+        database.exec("CREATE TABLE IF NOT EXISTS team_chat_run_sources (run_id TEXT NOT NULL, message_id TEXT NOT NULL, PRIMARY KEY(run_id, message_id))");
+        const columns = database.prepare("PRAGMA table_info(team_chat_deliveries)").all() as DatabaseRow[];
+        if (!columns.some(column => column.name === "receipt_recorded")) database.exec("ALTER TABLE team_chat_deliveries ADD COLUMN receipt_recorded INTEGER NOT NULL DEFAULT 0");
+      } },
+      { name: "langgraph-versioned-channel-blobs", version: 34,
+        up: database => { database.exec(LANGGRAPH_CHECKPOINT_BLOBS_SCHEMA); } },
+      { name: "task-completion-policies", version: 35, up: database => {
+        database.exec("CREATE TABLE IF NOT EXISTS task_completion_policies (scope_key TEXT PRIMARY KEY, allow_agent_completion INTEGER NOT NULL CHECK(allow_agent_completion IN (0,1)))");
+      } },
     ]);
   }
 
@@ -11625,7 +11741,7 @@ export class AgentDatabase {
     return attachments;
   }
 
-  private countUserMessages(conversationId: string): number {
+  public countUserMessages(conversationId: string): number {
     const row = this.database
       .prepare(
         `SELECT COUNT(*) AS count FROM model_messages
@@ -11717,7 +11833,7 @@ export class AgentDatabase {
 
   private createTitleFromMessage(content: string): string {
     const normalized = content.replace(/\s+/g, " ").trim();
-    return normalized.length <= 32 ? normalized : `${normalized.slice(0, 32)}...`;
+    return Array.from(normalized.slice(0, 40)).slice(0, 20).join("");
   }
 
   private insertTimelineItem(item: ConversationTimelineItem): void {

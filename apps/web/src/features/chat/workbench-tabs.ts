@@ -7,6 +7,8 @@ export const FUNCTION_TABS = {
 export function isFunctionTab(id: string): id is keyof typeof FUNCTION_TABS {
   return Object.hasOwn(FUNCTION_TABS, id);
 }
+export function teamChatTabId(instanceId: string): string { return `team-chat:${instanceId}`; }
+export function teamChatInstanceId(tabId: string): string | null { return tabId.startsWith("team-chat:") ? tabId.slice("team-chat:".length) : null; }
 
 export type WorkbenchTabs = { ids: string[]; previewId: string | null };
 

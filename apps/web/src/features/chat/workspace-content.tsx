@@ -1,3 +1,7 @@
+import type { ChatReference } from "@agent/protocol";
+import { ChatReferenceScope } from "../../components/markdown/chat-reference-scope.js";
+import { MessageReferenceQuote } from "../../components/markdown/message-reference-quote.js";
+import { TaskListLauncher } from "../team/task-context-directory.js";
 import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import { ConversationWorkIndicator, toolWorkPhase } from "./conversation-work-state.js";
 import { ConversationChangesBadge, ConversationChangesCard } from "./conversation-file-changes.js";
@@ -6,13 +10,21 @@ import { HtmlPreviewCard, HtmlPreviewScope } from "../../components/html-preview
 import { HtmlPreviewGallery } from "../../components/html-preview/html-preview-gallery.js";
 import { QueryTextarea } from "./query-textarea.js";
 import { UserMessageContent } from "./user-message-content.js";
+import { TeamChatSourceContent, TeamChatSourceHeader } from "../team/team-chat-source-content.js";
+import { ChatMessageBubble } from "./chat-message-bubble.js";
+import { TeamChatWorkspace } from "../team/team-chat-workspace.js";
+import { teamChatTabId } from "./workbench-tabs.js";
+import { ChatMessageMeta, formatConversationTime, formatConversationDateTime } from "./chat-message-meta.js";
+import type { PostTeamChatInput, TeamChatActivity, TeamChatMessage } from "@agent/protocol";
+export { formatConversationTime } from "./chat-message-meta.js";
+import { TeamChatPanel } from "../team/team-chat-panel.js";
+import { TeamChatCoordinatorControl } from "../team/team-chat-coordinator-control.js";
 import { createPastedTextAttachment } from "./pasted-text-attachment.js";
 import { MAX_DRAFT_ATTACHMENTS, MAX_DRAFT_ATTACHMENT_BYTES, getClipboardAttachmentFiles, pastedAttachmentName, readAttachmentFileAsBase64 } from "./clipboard-attachments.js";
 import { ScheduledTasksWorkspace } from "../schedules/scheduled-tasks-workspace.js";
 import { useComposerHistory } from "./use-composer-history.js";
 import { ProjectImageResult } from "./project-image-result.js";
 import { BrowserScreenshotResult } from "./browser-screenshot-result.js";
-import { LiveProviderCacheStatus } from "./live-provider-cache-status.js";
 import { ToolDisclosureContext, ToolRevealContext, useToolDisclosure } from "./tool-disclosure-state.js";
 import { CommandExecutionStatus, type CommandExecutionState } from "./command-execution-status.js";
 import { findComposerReferenceRanges } from "./composer-reference-ranges.js";
@@ -115,6 +127,7 @@ import type {
   ProjectEntry,
   ProjectSummary,
   SkillConfiguration,
+  TeamChatMember,
   TeamInstanceScope,
   TeamInstanceView,
 } from "@agent/protocol";
@@ -179,7 +192,7 @@ import { ModelProfilePicker } from "../settings/model-profile-picker.js";
 import { SettingsWorkspace } from "../settings/settings-workspace.js";
 import { reasoningOptionDisplayName } from "../settings/model-reasoning-options.js";
 import { AgentAvatar, SubagentAvatar } from "../team/agent-avatar.js";
-import { ToolConversationContext, ToolConversationIdentity, toolConversationTarget } from "./tool-conversation-identity.js";
+import { ToolConversationContext, ToolConversationIdentity, toolConversationTargets } from "./tool-conversation-identity.js";
 import { TeamWorkspace } from "../team/team-workspace.js";
 import { CollaborationProjectionGraph } from "../team/collaboration/collaboration-graph.js";
 import { CONVERSATION_WORKSPACE_CACHE_TTL_MS, useConversationWorkspaceCache } from "./conversation-workspace-cache.js";
@@ -192,6 +205,7 @@ import { questionForAnswer, questionToolForAnswer } from "./question-answer-refe
 import { ConversationTurnNavigator } from "./conversation-turn-navigator.js";
 import {
   ContextUsageIndicator,
+  ProviderCacheStatus,
 } from "./context-usage-indicator.js";
 import { ReasoningEnergyField } from "./reasoning-energy-field.js";
 import {
@@ -214,6 +228,8 @@ import "./workspace-content.css";
 
 const DEFAULT_COMPOSER_CLEARANCE_PX = 120;
 const TIMELINE_PAGE_SIZE = 120;
+const EMPTY_TEAM_INSTANCES: readonly TeamInstanceView[] = [];
+const EMPTY_TEAM_CHAT_IDS: readonly string[] = [];
 const TIMELINE_PREFETCH_VIEWPORTS = 1.5;
 
 type WorkspaceContentProps = {
@@ -226,6 +242,7 @@ type WorkspaceContentProps = {
   locateTimelineItem?: { conversationId: string; id: string; requestId: number } | null;
   projects: readonly ProjectSummary[];
   protectedSessionIds?: readonly string[];
+  openTeamChatInstanceIds?: readonly string[];
   sessions: readonly ProjectSession[];
   teamInstances?: readonly TeamInstanceView[];
   onAddProject: () => Promise<ProjectSummary | null>;
@@ -486,12 +503,13 @@ type TeamMention = {
 };
 
 type MentionOption =
-  | { kind: "conversation"; value: ConversationMention }
+  | { kind: "all"; value: { id: string; name: string } }
+  | { kind: "conversation"; value: ConversationMention; member?: TeamChatMember }
   | { kind: "directory"; value: ProjectFileMention }
   | { kind: "file"; value: ProjectFileMention }
   | { kind: "team"; value: TeamMention };
 
-const MENTION_GROUPS = { conversation: "对话", team: "团队", directory: "文件夹", file: "文件" };
+const MENTION_GROUPS = { all: "群成员", conversation: "对话", team: "团队", directory: "文件夹", file: "文件" };
 
 type MentionQuery = {
   end: number;
@@ -761,14 +779,21 @@ export function WorkspaceContent({
   onSessionUpdated,
   onSessionViewed,
   protectedSessionIds,
+  openTeamChatInstanceIds = EMPTY_TEAM_CHAT_IDS,
   sessions,
-  teamInstances = [],
+  teamInstances = EMPTY_TEAM_INSTANCES,
 }: WorkspaceContentProps): ReactElement {
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
+  const teamChatTarget = useWorkbenchUiStore((state) => state.teamChatTarget);
   const retainedSessions = useConversationWorkspaceCache(
-    activeActivity === "conversations" ? activeSession : null,
+    activeActivity === "conversations" && teamChatTarget === null ? activeSession : null,
     sessions,
     protectedSessionIds,
+  );
+  const retainedTeamChats = useConversationWorkspaceCache(
+    activeActivity === "conversations" ? teamInstances.find(instance => !instance.isArchived && instance.id === teamChatTarget?.instanceId) ?? null : null,
+    teamInstances,
+    openTeamChatInstanceIds,
   );
 
   return <>
@@ -788,7 +813,7 @@ export function WorkspaceContent({
           useWorkbenchUiStore.getState().setActiveActivity("conversations");
           onSessionSelected(id);
         });
-      }} /> : activeActivity === "settings" ? <SettingsWorkspace agentClient={agentClient} /> : activeSession === null ? (
+      }} /> : activeActivity === "settings" ? <SettingsWorkspace agentClient={agentClient} /> : activeSession === null && teamChatTarget === null ? (
       <ProjectConversationEmpty
         activeProject={activeProject}
         isCreatingSession={isCreatingSession}
@@ -796,9 +821,20 @@ export function WorkspaceContent({
         onCreateTemporarySession={onCreateTemporarySession}
       />
     ) : null}
-    <div className={activeActivity === "conversations" && activeSession !== null ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"}>
+    {retainedTeamChats.map(instance => {
+      const active = activeActivity === "conversations" && teamChatTarget?.instanceId === instance.id;
+      return <div key={instance.id} className={active ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"} aria-hidden={!active}>
+        <TeamChatWorkspace agentClient={agentClient} instance={instance} active={active} sessions={sessions} projects={projects} onSessionUpdated={onSessionUpdated}
+          {...(onOpenProjectFile === undefined ? {} : { onOpenFile: (conversationId: string, path: string) => onOpenProjectFile(instance.projectId ?? conversationId, path) })}
+          {...(active && teamChatTarget?.messageId !== undefined ? { focusMessageId: teamChatTarget.messageId } : {})}
+          onOpenConversation={(conversation, messageId) => {
+            onOpenTeamConversation({ ...conversation, pinOrder: conversation.pinOrder ?? null }, teamChatTabId(instance.id), messageId);
+          }} />
+      </div>;
+    })}
+    <div className={activeActivity === "conversations" && teamChatTarget === null && activeSession !== null ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"}>
       {retainedSessions.map((session) => {
-        const isActive = activeActivity === "conversations" && session.id === activeSession?.id;
+        const isActive = activeActivity === "conversations" && teamChatTarget === null && session.id === activeSession?.id;
         const conversationProject = session.projectId === null
           ? null
           : projects.find((project) => project.id === session.projectId) ?? null;
@@ -880,6 +916,7 @@ export function ConversationWorkspace({
   session,
   teamInstances = [],
   teamManaged = false,
+  groupChat = null,
 }: {
   active?: boolean;
   agentClient: AgentClient;
@@ -912,6 +949,7 @@ export function ConversationWorkspace({
   teamInstances?: readonly TeamInstanceView[];
   /** A Team WorkItem owns execution policy; its Timeline still supports controlled user input. */
   teamManaged?: boolean;
+  groupChat?: { instanceId: string; focusMessageId?: string; initialAgentId?: string; onOpenFile?: (conversationId: string, path: string) => void } | null;
 }): ReactElement {
   const headingId = useId();
   const agentProfiles = useAgentDirectoryStore((state) => state.agents);
@@ -934,12 +972,13 @@ export function ConversationWorkspace({
   );
   const [selectedAgentId, setSelectedAgentId] = useState(() =>
     readConversationAgentSelection(
-      session.id,
-      session.agentId ?? defaultAgent?.id ?? "",
+      groupChat?.instanceId ?? session.id,
+      (groupChat === null ? session.agentId : groupChat.initialAgentId) ?? defaultAgent?.id ?? "",
     ),
   );
   const [composerValue, setComposerValue] = useState("");
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const groupRequestRef = useRef<{ fingerprint: string; id: string } | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [forkingMessageId, setForkingMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -956,6 +995,12 @@ export function ConversationWorkspace({
   const [selectedProjectFileMentions, setSelectedProjectFileMentions] =
     useState<ProjectFileMention[]>([]);
   const [mentionQuery, setMentionQuery] = useState<MentionQuery | null>(null);
+  const groupInstanceId = groupChat?.instanceId;
+  const [groupUsageConversation, setGroupUsageConversation] = useState<{ instanceId: string; conversationId: string } | null>(null);
+  const usageConversationId = groupInstanceId === undefined ? session.id
+    : groupUsageConversation?.instanceId === groupInstanceId ? groupUsageConversation.conversationId : null;
+  const isGroupMentionOpen = groupChat !== null && mentionQuery !== null;
+  const [groupMentionRoster, setGroupMentionRoster] = useState<{ instanceId: string; members: TeamChatMember[] } | null>(null);
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0);
   const [projectMentionListing, setProjectMentionListing] = useState<{
     directoryPath: string;
@@ -994,8 +1039,10 @@ export function ConversationWorkspace({
   const draftAttachmentPreviewUrlsRef = useRef<Record<string, string>>({});
   const [contextCompressionConfiguration, setContextCompressionConfiguration] =
     useState<ContextCompressionConfiguration>(DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION);
-  const [contextUsage, setContextUsage] =
-    useState<ConversationContextUsage | null>(null);
+  const [contextUsageMeasurement, setContextUsageMeasurement] = useState<{
+    conversationId: string; usage: ConversationContextUsage;
+  } | null>(null);
+  const contextUsage = contextUsageMeasurement?.conversationId === usageConversationId ? contextUsageMeasurement.usage : null;
   const [lastProviderUsage, setLastProviderUsage] = useState<{
     conversationId: string;
     usage: ConversationContextUsage;
@@ -1042,12 +1089,25 @@ export function ConversationWorkspace({
       ? "auto"
       : modelReasoningOptionKey(initialModelSelection.reasoning)
   ));
+  const groupOwnerRef = useRef<PostTeamChatInput["coordinator"] | null>(null);
+  const [groupActivity, setGroupActivity] = useState<TeamChatActivity | null>(null);
+  const [groupReply, setGroupReply] = useState<TeamChatMessage | null>(null);
+  const loadGroupOwner = useCallback((owner: PostTeamChatInput["coordinator"] | null): void => {
+    if (owner == null) return;
+    groupOwnerRef.current = owner;
+    setSelectedAgentId(owner.agentId);
+    if (owner.modelSelection != null) {
+      setSelectedModelKey(modelKey(owner.modelSelection));
+      setSelectedReasoningOptionKey(owner.modelSelection.reasoning == null ? "auto" : modelReasoningOptionKey(owner.modelSelection.reasoning));
+    }
+  }, []);
   const [taskListAction, setTaskListAction] = useState<"closing" | null>(null);
   const [taskList, setTaskList] = useState<ConversationTaskList | null>(null);
   const [timeline, setTimeline] = useState<ConversationTimelineItem[]>([]);
   const [timelineHasMore, setTimelineHasMore] = useState(false);
   const [isLoadingOlderTimeline, setIsLoadingOlderTimeline] = useState(false);
   const timelineRef = useRef<ConversationTimelineItem[]>([]);
+  const inactiveTimelineDirtyRef = useRef(false);
   const timelineBeforeSequenceRef = useRef<number | null>(null);
   const timelineAfterSequenceRef = useRef<number | null>(null);
   const timelineRevealRequestRef = useRef(0);
@@ -1066,6 +1126,8 @@ export function ConversationWorkspace({
     [relatedSessions, session.id],
   );
   const contextUsageRequestRef = useRef(0);
+  const contextUsageInputKeyRef = useRef<string | null>(null);
+  const contextUsageDirtyRef = useRef(true);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const composerOverlayRef = useRef<HTMLDivElement | null>(null);
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(
@@ -1125,9 +1187,9 @@ export function ConversationWorkspace({
         }]
         : [];
   const enabledAgentProfiles = agentProfiles.filter((agent) => agent.enabled);
-  const selectedAgent = enabledAgentProfiles.find((agent) => agent.id === selectedAgentId)
-    ?? defaultAgent
-    ?? enabledAgentProfiles[0];
+  const selectedAgent = groupChat !== null || session.agentId === null
+    ? enabledAgentProfiles.find((agent) => agent.id === selectedAgentId) ?? defaultAgent ?? enabledAgentProfiles[0]
+    : agentProfiles.find((agent) => agent.id === session.agentId);
   const slashMenuOpen = slashQuery !== null;
   useEffect(() => {
     if (!slashMenuOpen) return;
@@ -1165,7 +1227,8 @@ export function ConversationWorkspace({
   const modelDisplayName = activeModel?.displayName ?? session.modelSelection?.modelId ?? "未配置模型";
 
   useEffect(() => {
-    const selection = session.modelSelection ?? modelStatus?.recentSelection ?? null;
+    const selection = groupInstanceId !== undefined ? groupOwnerRef.current?.modelSelection ?? session.modelSelection ?? modelStatus?.recentSelection ?? null
+      : session.modelSelection ?? modelStatus?.recentSelection ?? null;
     setSelectedModelKey(selection === null
       ? ""
       : modelKey({ modelId: selection.modelId, providerId: selection.providerId }));
@@ -1174,6 +1237,7 @@ export function ConversationWorkspace({
       : modelReasoningOptionKey(selection.reasoning));
   }, [
     modelStatus?.recentSelection,
+    groupInstanceId,
     session.id,
     session.modelSelection,
   ]);
@@ -1310,40 +1374,47 @@ export function ConversationWorkspace({
   );
 
   const loadContextUsage = useCallback(async (): Promise<void> => {
-    const requestId = contextUsageRequestRef.current + 1;
-    contextUsageRequestRef.current = requestId;
-
+    if (!active || usageConversationId === null) return;
+    const input = {
+      conversationId: usageConversationId,
+      ...(usageModelId === undefined ? {} : { modelId: usageModelId }),
+      ...(usageProviderId === undefined ? {} : { providerId: usageProviderId }),
+      permissionMode,
+      ...(groupInstanceId === undefined ? { attachmentIds: draftAttachments.map((attachment) => attachment.id) } : {}),
+      ...(groupInstanceId !== undefined || selectedConversationMentions.length === 0
+        ? {}
+        : {
+          referencedConversationIds: selectedConversationMentions.map((mention) => mention.id),
+        }),
+      ...(groupInstanceId !== undefined || activeProjectFileMentions.length === 0
+        ? {}
+        : {
+          referencedProjectPaths: activeProjectFileMentions.map((mention) => mention.path),
+        }),
+    };
+    const inputKey = JSON.stringify(input);
+    if (!contextUsageDirtyRef.current && contextUsageInputKeyRef.current === inputKey) return;
+    contextUsageInputKeyRef.current = inputKey;
+    contextUsageDirtyRef.current = false;
+    const requestId = ++contextUsageRequestRef.current;
     try {
-      const nextUsage = await agentClient.getConversationContextUsage({
-        attachmentIds: draftAttachments.map((attachment) => attachment.id),
-        conversationId: session.id,
-        ...(usageModelId === undefined ? {} : { modelId: usageModelId }),
-        ...(usageProviderId === undefined ? {} : { providerId: usageProviderId }),
-        permissionMode,
-        ...(selectedConversationMentions.length === 0
-          ? {}
-          : {
-            referencedConversationIds: selectedConversationMentions.map((mention) => mention.id),
-          }),
-        ...(activeProjectFileMentions.length === 0
-          ? {}
-          : {
-            referencedProjectPaths: activeProjectFileMentions.map((mention) => mention.path),
-          }),
-      });
+      const nextUsage = await agentClient.getConversationContextUsage(input);
       if (contextUsageRequestRef.current === requestId) {
-        setContextUsage(nextUsage);
+        setContextUsageMeasurement({ conversationId: usageConversationId, usage: nextUsage });
         // Keep the entire last completed measurement stable while the next request streams.
         if (nextUsage.providerCache?.latest != null) {
-          setLastProviderUsage({ conversationId: session.id, usage: nextUsage });
+          setLastProviderUsage({ conversationId: usageConversationId, usage: nextUsage });
         }
       }
     } catch {
       if (contextUsageRequestRef.current === requestId) {
-        setContextUsage(null);
+        contextUsageDirtyRef.current = true;
+        setContextUsageMeasurement(null);
       }
     }
   }, [
+    active,
+    groupInstanceId,
     usageModelId,
     usageProviderId,
     activeProjectFileMentions,
@@ -1351,8 +1422,29 @@ export function ConversationWorkspace({
     draftAttachments,
     permissionMode,
     selectedConversationMentions,
-    session.id,
+    usageConversationId,
   ]);
+
+  useEffect(() => {
+    if (!active || groupInstanceId === undefined || groupUsageConversation?.instanceId === groupInstanceId) return;
+    let disposed = false;
+    void agentClient.getTeamChatCoordinationConversation({ teamInstanceId: groupInstanceId }).then(conversation => {
+      if (!disposed) setGroupUsageConversation({ instanceId: groupInstanceId, conversationId: conversation.id });
+    }).catch(reason => { if (!disposed) setOperationError(getUserErrorMessage(reason, "无法读取群聊协调对话")); });
+    return () => { disposed = true; };
+  }, [active, agentClient, groupInstanceId, groupUsageConversation?.instanceId]);
+
+  useEffect(() => {
+    if (groupInstanceId === undefined || usageConversationId === null) return;
+    return agentClient.onConversationRunEvent(event => {
+      const groupChanged = event.type === "collaboration.changed" && event.teamInstanceId === groupInstanceId;
+      const ownerChanged = "conversationId" in event && event.conversationId === usageConversationId
+        && (event.type === "run.finished" || event.type === "model.request_started" || event.type === "tool.completed");
+      if (!groupChanged && !ownerChanged) return;
+      contextUsageDirtyRef.current = true;
+      if (active) void Promise.resolve().then(loadContextUsage);
+    }, []);
+  }, [active, agentClient, groupInstanceId, usageConversationId, loadContextUsage]);
 
   const loadTimeline = useCallback(async (forceLatest = false): Promise<void> => {
     if (!forceLatest && timelineAfterSequenceRef.current !== null) return;
@@ -1375,9 +1467,7 @@ export function ConversationWorkspace({
         const resetsPaging = forceLatest || shouldResetTimelinePaging(timelineRef.current, page.items);
         timelineRevisionRef.current += 1;
         setTimeline((current) => {
-          const nextTimeline = resetsPaging
-            ? page.items
-            : mergeLatestTimelinePage(current, page.items);
+          const nextTimeline = mergeLatestTimelinePage(current, page.items, resetsPaging);
           timelineRef.current = nextTimeline;
           return nextTimeline;
         });
@@ -1550,6 +1640,7 @@ export function ConversationWorkspace({
   );
 
   useEffect(() => {
+    if (!active) return;
     let disposed = false;
     const activeSubagents = subagentSessions.filter((subagent) => subagent.activeRunId !== null);
     if (activeSubagents.length === 0) {
@@ -1580,17 +1671,19 @@ export function ConversationWorkspace({
     return () => {
       disposed = true;
     };
-  }, [agentClient, subagentSessions]);
+  }, [active, agentClient, subagentSessions]);
 
   const loadTaskList = useCallback(async (): Promise<void> => {
+    if (groupInstanceId !== undefined) return;
     try {
       setTaskList(await agentClient.getConversationTaskList({ conversationId: session.id }));
     } catch {
       setTaskList(null);
     }
-  }, [agentClient, session.id]);
+  }, [agentClient, session.id, groupInstanceId]);
 
   const loadPendingMessages = useCallback(async (): Promise<void> => {
+    if (groupInstanceId !== undefined) return;
     try {
       const [messages, paused] = await Promise.all([
         agentClient.listConversationPendingMessages({ conversationId: session.id }),
@@ -1601,7 +1694,7 @@ export function ConversationWorkspace({
     } catch {
       setPendingMessages([]);
     }
-  }, [agentClient, session.id]);
+  }, [agentClient, session.id, groupInstanceId]);
 
   const loadDraftAttachments = useCallback(async (): Promise<void> => {
     try {
@@ -1614,8 +1707,17 @@ export function ConversationWorkspace({
   }, [agentClient, session.id]);
 
   useEffect(() => {
-    void Promise.resolve().then(() => loadTimeline());
-  }, [loadTimeline]);
+    if (groupInstanceId === undefined) void Promise.resolve().then(() => loadTimeline());
+  }, [loadTimeline, groupInstanceId]);
+
+  useEffect(() => {
+    if (!active || groupInstanceId !== undefined || !inactiveTimelineDirtyRef.current) return;
+    inactiveTimelineDirtyRef.current = false;
+    void loadTimeline();
+    void loadTaskList();
+    void loadContextUsage();
+    void loadPendingMessages();
+  }, [active, groupInstanceId, loadTimeline, loadTaskList, loadContextUsage, loadPendingMessages]);
 
   useEffect(() => {
     void Promise.resolve().then(loadTaskList);
@@ -1679,17 +1781,19 @@ export function ConversationWorkspace({
 
   useEffect(() => {
     let disposed = false;
-    void agentClient.listConversations()
-      .then(async (conversations) => {
-        const forks = await Promise.all(
-          conversations.map((conversation) =>
-            agentClient.listConversationForks({ conversationId: conversation.id })
-              .catch(() => []),
-          ),
-        );
+    if (groupInstanceId !== undefined) {
+      void agentClient.getTeamChatMembers({ teamInstanceId: groupInstanceId }).then(members => {
+        if (!disposed) setGroupMentionRoster({ instanceId: groupInstanceId, members });
+      }).catch(() => {
+        if (!disposed) setGroupMentionRoster({ instanceId: groupInstanceId, members: [] });
+      });
+      return () => { disposed = true; };
+    }
+    void agentClient.listConversationHierarchy()
+      .then((conversations) => {
         if (disposed) return;
         setAvailableConversationMentions(
-          [...conversations, ...forks.flat()]
+          conversations
             .filter((conversation) =>
               conversation.id !== session.id
               && !conversation.isArchived
@@ -1710,7 +1814,7 @@ export function ConversationWorkspace({
     return () => {
       disposed = true;
     };
-  }, [agentClient, session.id]);
+  }, [agentClient, session.id, groupInstanceId, isGroupMentionOpen]);
 
   useEffect(() => {
     const directoryPath = projectMentionLocation?.directoryPath;
@@ -1797,7 +1901,15 @@ export function ConversationWorkspace({
   }, [session.activeRunId, timeline]);
 
   useEffect(() => {
+    if (groupInstanceId !== undefined) return;
     return agentClient.onConversationRunEvent((event) => {
+      if (!active) {
+        if ("conversationId" in event && (event.conversationId === session.id || subagentSessions.some(item => item.id === event.conversationId))) {
+          inactiveTimelineDirtyRef.current = true;
+          contextUsageDirtyRef.current = true;
+        }
+        return;
+      }
       const sourceSubagent = "conversationId" in event
         ? subagentSessions.find((candidate) => candidate.id === event.conversationId)
         : undefined;
@@ -1855,6 +1967,12 @@ export function ConversationWorkspace({
       if (event.type === "conversation.open_requested" || event.conversationId !== session.id) {
         return;
       }
+      if (event.type === "collaboration.changed" && session.coordinationTeamInstanceId !== undefined
+        && session.coordinationTeamInstanceId === event.teamInstanceId) {
+        timelineRevisionRef.current += 1;
+        void loadTimeline();
+        return;
+      }
 
       timelineRevisionRef.current += 1;
       handleRunEvent(
@@ -1880,15 +1998,19 @@ export function ConversationWorkspace({
         && event.type !== "tool.output_delta"
         && event.type !== "model.retry_updated"
       ) {
+        contextUsageDirtyRef.current = true;
         void loadContextUsage();
       }
-    });
+    }, active ? [session.id] : []);
   }, [
+    active,
+    groupInstanceId,
     agentClient,
     loadContextUsage,
     loadTaskList,
     loadTimeline,
     session.id,
+    session.coordinationTeamInstanceId,
     subagentSessions,
   ]);
 
@@ -2150,6 +2272,29 @@ export function ConversationWorkspace({
       return;
     }
 
+    if (groupChat !== null) {
+      setIsSending(true); setOperationError(null);
+      try {
+        if (draftAttachments.length > 0) throw new Error("群聊附件发送尚未接入，附件已保留。可先在成员对话中发送。");
+        const roster = await agentClient.getTeamChatMembers({ teamInstanceId: groupChat.instanceId });
+        const body = { teamInstanceId: groupChat.instanceId, content, intent: "request" as const,
+          allMembers: findComposerReferenceRanges(content, ["@全体成员"]).length > 0,
+          recipientConversationIds: selectedConversationMentions.map(item => item.id).filter(id => roster.some(member => member.conversationId === id)),
+          supersedesId: editingMessageId,
+          replyToId: groupReply?.id ?? null,
+          ...(selectedAgent === undefined ? {} : { coordinator: { agentId: selectedAgent.id,
+            modelSelection: activeModel === undefined ? null : { providerId: activeModel.providerId, modelId: activeModel.modelId, reasoning: selectedReasoningOption ?? null } } }) };
+        const fingerprint = JSON.stringify(body);
+        if (groupRequestRef.current?.fingerprint !== fingerprint) groupRequestRef.current = { fingerprint, id: crypto.randomUUID() };
+        await agentClient.postTeamChat({ ...body, requestId: groupRequestRef.current.id });
+        groupRequestRef.current = null;
+        setComposerValue(""); setGroupReply(null); setEditingMessageId(null); setEditingAttachments(null); setMentionQuery(null); setSlashQuery(null); setSelectedConversationMentions([]);
+        setSelectedTeamMentions([]); setSelectedProjectFileMentions([]);
+      } catch (error) { setOperationError(getUserErrorMessage(error, "群消息发送失败")); }
+      finally { setIsSending(false); refocusComposer(); }
+      return;
+    }
+
     if (editingPendingMessageId !== null) {
       setPendingMessageActionId(editingPendingMessageId);
       setOperationError(null);
@@ -2288,6 +2433,7 @@ export function ConversationWorkspace({
       setSelectedConversationMentions([]);
       setSelectedTeamMentions([]);
       setSelectedProjectFileMentions([]);
+      contextUsageDirtyRef.current = true;
       void loadContextUsage();
     } catch (error) {
       if (activeRunId === null) {
@@ -2350,6 +2496,7 @@ export function ConversationWorkspace({
           accepted.pendingMessage,
         ]);
       }
+      contextUsageDirtyRef.current = true;
       void loadContextUsage();
     } catch (error) {
       discardPendingRunProgress(setRunProgresses);
@@ -2536,6 +2683,20 @@ export function ConversationWorkspace({
     if (mentionQuery === null) return [];
     const options: MentionOption[] = [];
     const normalizedQuery = mentionQuery.query.toLocaleLowerCase();
+    if (groupChat !== null) {
+      if (groupMentionRoster?.instanceId !== groupChat.instanceId
+        || mentionQuery.query.includes("/")) return [];
+      if ("全体成员".includes(normalizedQuery) && findComposerReferenceRanges(composerValue, ["@全体成员"]).length === 0) options.push({ kind: "all", value: { id: "all-members", name: "全体成员" } });
+      if (selectedConversationMentions.length >= MAX_SELECTED_CONVERSATION_MENTIONS) return options;
+      return [...options, ...groupMentionRoster.members.filter(member => !member.isArchived
+        && member.name.toLocaleLowerCase().includes(normalizedQuery)
+        && !selectedConversationMentions.some(selected => selected.id === member.conversationId))
+        .flatMap((member): MentionOption[] => {
+          const conversation = relatedSessions.find(candidate => candidate.id === member.conversationId);
+          return conversation === undefined ? [] : [{ kind: "conversation", member,
+            value: { ...conversation, title: member.name } }];
+        })].slice(0, 12);
+    }
     const canMentionTeams = session.parentConversationId === null
       && session.threadKind === "agent"
       && !teamManaged;
@@ -2609,6 +2770,7 @@ export function ConversationWorkspace({
     const groupOrder = ["conversation", "team", "directory", "file"];
     return options.sort((a, b) => groupOrder.indexOf(a.kind) - groupOrder.indexOf(b.kind));
   }, [
+    composerValue,
     activeProjectFileMentions,
     availableConversationMentions,
     mentionQuery,
@@ -2624,6 +2786,8 @@ export function ConversationWorkspace({
     session.threadKind,
     teamManaged,
     teamInstances,
+    groupChat,
+    groupMentionRoster,
   ]);
 
   const slashOptions = useMemo(() => {
@@ -2657,6 +2821,7 @@ export function ConversationWorkspace({
   }, [selectedAgent, session.projectId, session.teamId, slashQuery, slashSkills]);
 
   const composerReferences = findComposerReferenceRanges(composerValue, [
+    ...(groupChat === null ? [] : ["@全体成员"]),
     ...selectedConversationMentions.map((mention) => `@${mention.title}`),
     ...selectedTeamMentions.map((mention) => `@${mention.name}`),
     ...activeProjectFileMentions.map((mention) => `@${mention.path}`),
@@ -2681,7 +2846,7 @@ export function ConversationWorkspace({
       ? `@${option.value.path}/`
       : `@${option.kind === "conversation"
         ? option.value.title
-        : option.kind === "team" ? option.value.name : option.value.path} `;
+        : option.kind === "team" || option.kind === "all" ? option.value.name : option.value.path} `;
     const nextValue = `${composerValue.slice(0, mentionQuery.start)}${insertedText}${composerValue.slice(mentionQuery.end)}`;
     const nextCaret = mentionQuery.start + insertedText.length;
     changeComposerValue(nextValue, nextCaret);
@@ -3010,7 +3175,7 @@ export function ConversationWorkspace({
   const isModelUnavailable = !isMockRuntime && modelStatus?.configured === false;
   const hasActiveModelRun = activeRunId !== null;
   const isRunning = hasActiveModelRun || activeSubagentCount > 0;
-  const shouldShowStopButton = isRunning && !isEditingComposerMessage;
+  const shouldShowStopButton = groupChat === null && isRunning && !isEditingComposerMessage;
   const subagentConversationIds = useMemo(
     () => new Set([session, ...relatedSessions]
       .filter((candidate) => candidate.threadKind === "subagent")
@@ -3029,8 +3194,6 @@ export function ConversationWorkspace({
     });
     displayTimeline = combineAutomaticContinuationDurations(displayTimeline);
   }
-  const activeRunActivityIndex = activeRunId === null ? -1 : displayTimeline.findLastIndex((item) =>
-    item.kind === "run_activity" && item.runIds.includes(activeRunId));
   const htmlDeliveries = htmlPresentationDeliveries(timeline, displayTimeline, activeRunId);
   const hasHtmlGallery = [...htmlDeliveries.values()].some(deliveries => deliveries.some(delivery => "pages" in delivery));
   const locateQuestion = async (question: UserQuestion): Promise<void> => {
@@ -3058,6 +3221,13 @@ export function ConversationWorkspace({
         : [],
     ),
   );
+  const latestInputIndex = getConversationRunProgressInsertIndex(displayTimeline,
+    displayRunProgresses.find(progress => progress.runId === activeRunId)?.anchorTimelineItemId ?? null);
+  const currentRunActivityIndex = activeRunId === null && displayRunProgresses.some(progress => progress.runId === null)
+    ? -1 : displayTimeline.findLastIndex((item, index) =>
+    index >= latestInputIndex && item.kind === "run_activity"
+    && (activeRunId === null ? item.streaming
+      : item.runIds.includes(activeRunId) && !runningContextCompactionRunIds.has(activeRunId)));
   useEffect(() => {
     if (locateTimelineItem === null || isLoadingTimeline
       || locatedTimelineLoadRequestRef.current === locateTimelineItem.requestId) return;
@@ -3104,25 +3274,34 @@ export function ConversationWorkspace({
   const runProgressesByInsertIndex = useMemo(() => {
     const progressByIndex = new Map<number, RunProgress[]>();
     for (const progress of displayRunProgresses) {
-      const insertIndex = getConversationRunProgressInsertIndex(
+      const inputIndex = getConversationRunProgressInsertIndex(
         displayTimeline,
         progress.anchorTimelineItemId,
       );
+      const insertIndex = progress.runId === activeRunId && currentRunActivityIndex >= inputIndex
+        ? currentRunActivityIndex
+        : progress.runId === null || !displayTimeline.some(item => "runId" in item && item.runId === progress.runId)
+          ? displayTimeline.length : inputIndex;
       const items = progressByIndex.get(insertIndex) ?? [];
       items.push(progress);
       progressByIndex.set(insertIndex, items);
     }
     return progressByIndex;
-  }, [displayTimeline, displayRunProgresses]);
+  }, [displayTimeline, displayRunProgresses, activeRunId, currentRunActivityIndex]);
   const modelActivityInsertIndex = modelActivity === null
     ? -1
-    : getModelActivityInsertIndex(
+    : Math.max(modelActivity.runId === activeRunId ? currentRunActivityIndex : -1, getModelActivityInsertIndex(
         displayTimeline,
         modelActivity.runId,
         displayRunProgresses.find((progress) => progress.runId === modelActivity.runId)
           ?.anchorTimelineItemId
           ?? modelActivity.anchorTimelineItemId,
-      );
+      ));
+  const showModelActivityIndicator = modelActivity !== null && (
+    (modelActivity.preview?.trim().length ?? 0) > 0
+    || !displayRunProgresses.some(progress => progress.runId === modelActivity.runId
+      || (modelActivity.runId === null && progress.runId === activeRunId))
+  );
   const canChangeProject =
     !compact
     && !isLoadingTimeline
@@ -3132,9 +3311,10 @@ export function ConversationWorkspace({
     && onAddProject !== undefined
     && onSessionUpdated !== undefined;
   const canChangeAgent =
-    !isLoadingTimeline
+    groupChat !== null || (!isLoadingTimeline
+    && session.agentId === null
     && !isEndedSubagent
-    && !teamManaged;
+    && !teamManaged);
   const changeSummaries = useMemo(() => conversationChangeSummaries(timeline), [timeline]);
   const activeFileChanges = activeRunId === null ? undefined : changeSummaries.get(activeRunId);
   const changeCards = conversationChangeAnchors(changeSummaries, displayTimeline, activeRunId);
@@ -3173,7 +3353,26 @@ export function ConversationWorkspace({
     : agentProfiles.find((agent) => agent.id === session.agentId);
   const pathIconKind = resolveConversationPathIconKind(pathScope.kind, session);
 
+  const referenceTeamId = groupChat?.instanceId;
+  const richReferenceWorkspaceId = referenceTeamId === undefined ? session.id : teamChatTabId(referenceTeamId);
+  const resolveReferences = useCallback((ids: string[]) => agentClient.resolveChatReferences(referenceTeamId === undefined
+    ? { conversationId: session.id, ids } : { teamInstanceId: referenceTeamId, ids }), [agentClient, referenceTeamId, session.id]);
+  const openReference = useCallback((reference: ChatReference): void => {
+    if (reference.kind === "task") {
+      useWorkbenchUiStore.getState().openTaskList({ workspaceId: richReferenceWorkspaceId, taskId: reference.id,
+        scope: reference.teamInstanceId === null ? { conversationId: reference.ownerConversationId } : { teamInstanceId: reference.teamInstanceId } });
+    } else if (reference.sourceKind === "group") useWorkbenchUiStore.getState().openTeamChat({ instanceId: reference.containerId, messageId: reference.id });
+    else onLocateConversationItem?.(reference.containerId, reference.id);
+  }, [onLocateConversationItem, richReferenceWorkspaceId]);
+  const renderReferenceAvatar = useCallback((reference: Extract<ChatReference, { kind: "message" }>): ReactNode => {
+    const id = reference.senderConversationId;
+    if (id == null) return undefined;
+    const avatar = conversationAgentAvatars.get(id);
+    return avatar === undefined ? <SubagentAvatar icon={null} seed={id} size="compact" /> : <AgentAvatar avatar={avatar} size="compact" />;
+  }, [conversationAgentAvatars]);
+
   return (
+    <ChatReferenceScope scopeKey={richReferenceWorkspaceId} resolve={resolveReferences} onOpen={openReference} renderMessageAvatar={renderReferenceAvatar}>
     <AgentMarkdownWorkspaceScope onOpenFile={onOpenProjectFile}>
     <HtmlPreviewScope client={agentClient} conversationId={session.id}>
     <ToolConversationContext.Provider value={toolConversations}>
@@ -3186,7 +3385,7 @@ export function ConversationWorkspace({
       onPointerDownCapture={markVisibleResult}
       onWheelCapture={markVisibleResult}
     >
-      <header className="conversation-workspace__header">
+      {groupChat !== null ? null : <header className="conversation-workspace__header">
         <div className="conversation-workspace__path" aria-label="对话路径">
           {pathScope.kind === "project" && project !== null ? (
             <button
@@ -3246,6 +3445,7 @@ export function ConversationWorkspace({
             <h1 id={headingId}>{session.title}</h1>
           </button>
         </div>
+        <TaskListLauncher agentClient={agentClient} scope={{ conversationId: session.id }} workspaceId={session.id} active={active} />
         {compact ? null : (
           <ConversationHeaderControls
             agentClient={agentClient}
@@ -3270,11 +3470,26 @@ export function ConversationWorkspace({
             onOpenSubagent={(subagent) => onOpenTeamConversation?.(subagent, session.id)}
           />
         )}
-      </header>
+      </header>}
 
       <div
         className="conversation-workspace__surface"
       >
+        {groupChat !== null ? <>
+          {selectedAgent === undefined ? null : <TeamChatCoordinatorControl agentClient={agentClient} teamInstanceId={groupChat.instanceId}
+            agent={selectedAgent} activity={groupActivity} active={active} />}
+          <TeamChatPanel agentClient={agentClient} teamInstanceId={groupChat.instanceId} active={active} composerClearance={composerOverlayHeight}
+          onCoordinatorLoaded={loadGroupOwner} onActivityLoaded={setGroupActivity} editingMessageId={editingMessageId}
+          {...(groupChat.onOpenFile === undefined ? {} : { onOpenFile: groupChat.onOpenFile })}
+          onReplyMessage={message => { setGroupReply(message); queueMicrotask(() => composerRef.current?.focus()); }}
+          onEditMessage={message => {
+            setGroupReply(null); setEditingMessageId(message.id); setEditingPendingMessageId(null); setEditingAttachments([]); setComposerValue(message.content);
+            setSelectedConversationMentions(relatedSessions.filter(item => message.recipientConversationIds.includes(item.id)));
+            setSelectedTeamMentions([]); setSelectedProjectFileMentions([]); setOperationError(null);
+            queueMicrotask(() => composerRef.current?.focus());
+          }}
+          {...(groupChat.focusMessageId === undefined ? {} : { focusMessageId: groupChat.focusMessageId })}
+          onOpenConversation={(conversation, messageId) => onOpenTeamConversation?.({ ...conversation, pinOrder: conversation.pinOrder ?? null }, undefined, messageId)} /></> : <>
         <ConversationFindBar
           active={active}
           containerRef={messagesRef}
@@ -3342,6 +3557,7 @@ export function ConversationWorkspace({
                   {(runProgressesByInsertIndex.get(index) ?? [])
                     .filter((progress) =>
                       (progress.runId === null || !runningContextCompactionRunIds.has(progress.runId))
+                      && (!showModelActivityIndicator || modelActivity?.runId !== progress.runId)
                       && (
                         item.kind !== "run_activity"
                         || progress.runId === null
@@ -3351,7 +3567,7 @@ export function ConversationWorkspace({
                     .map((progress) => (
                       <RunProgressIndicator key={progress.runId ?? "pending"} runId={progress.runId} />
                     ))}
-                  {modelActivity !== null
+                  {modelActivity !== null && showModelActivityIndicator
                     && modelActivityInsertIndex === index
                     && item.kind !== "tool_batch"
                     && item.kind !== "run_activity" ? (
@@ -3368,6 +3584,7 @@ export function ConversationWorkspace({
                         agentClient={agentClient}
                         afterMessage={item.kind === "message" ? afterMessage : null}
                         item={item}
+                        sourceConversations={relatedSessions}
                         questionAnswer={answerQuestion}
                         onLocateQuestion={locateQuestion}
                         agentAvatar={item.kind === "agent_message"
@@ -3383,7 +3600,8 @@ export function ConversationWorkspace({
                           ? item.senderConversationId
                           : null}
                         teamManaged={teamManaged}
-                        activeRunId={item.kind === "run_activity" && index !== activeRunActivityIndex ? null : activeRunId}
+                        activeRunId={activeRunId}
+                        isCurrentActivity={index === currentRunActivityIndex}
                         latestActiveToolId={latestActiveToolId}
                         currentToolId={currentToolId}
                         modelActivity={modelActivity !== null
@@ -3392,11 +3610,8 @@ export function ConversationWorkspace({
                           ? modelActivity
                           : null}
                         runProgress={item.kind === "run_activity"
-                          ? displayRunProgresses.find((progress) =>
+                          ? runProgressesByInsertIndex.get(index)?.find((progress) =>
                               progress.runId !== null && item.runIds.includes(progress.runId)
-                              && index >= getConversationRunProgressInsertIndex(
-                                displayTimeline, progress.anchorTimelineItemId,
-                              )
                             )
                             ?? null
                           : null}
@@ -3465,12 +3680,13 @@ export function ConversationWorkspace({
               ); })}
               {(runProgressesByInsertIndex.get(displayTimeline.length) ?? [])
                 .filter((progress) =>
-                  progress.runId === null || !runningContextCompactionRunIds.has(progress.runId)
+                  (progress.runId === null || !runningContextCompactionRunIds.has(progress.runId))
+                  && (!showModelActivityIndicator || modelActivity?.runId !== progress.runId)
                 )
                 .map((progress) => (
                   <RunProgressIndicator key={progress.runId ?? "pending"} runId={progress.runId} />
                 ))}
-              {modelActivity !== null && modelActivityInsertIndex === displayTimeline.length ? (
+              {modelActivity !== null && showModelActivityIndicator && modelActivityInsertIndex === displayTimeline.length ? (
                 <ModelActivityIndicator activity={modelActivity} />
               ) : null}
               </ToolRevealContext.Provider>
@@ -3502,7 +3718,8 @@ export function ConversationWorkspace({
           />
         </div>
 
-        {isScrolledAwayFromBottom ? (
+        </>}
+        {groupChat === null && isScrolledAwayFromBottom ? (
           <IconButton
             className="absolute left-1/2 z-[5] -translate-x-1/2 rounded-full border border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-foreground)] shadow-md hover:bg-[var(--app-hover)]"
             label="回到对话底部"
@@ -3516,7 +3733,8 @@ export function ConversationWorkspace({
         ) : null}
 
         <div ref={composerOverlayRef} className="conversation-workspace__composer-overlay">
-          {taskList !== null ? (
+
+          {groupChat !== null ? null : taskList !== null ? (
             <ConversationTaskListPanel
               active={active}
               allowClose={teamManaged || !isEndedSubagent}
@@ -3530,7 +3748,7 @@ export function ConversationWorkspace({
             />
           ) : activeFileChanges !== undefined ? <div className="mx-auto mb-[5px] max-w-full"><ConversationChangesBadge summary={activeFileChanges} onReview={path => openChangeReview(activeRunId, path)} /></div> : null}
 
-          {queuedMessages.length > 0 ? (
+          {groupChat === null && queuedMessages.length > 0 ? (
             <ConversationPendingMessageQueue
               agentClient={agentClient}
               actioningMessageId={pendingMessageActionId}
@@ -3555,7 +3773,7 @@ export function ConversationWorkspace({
             />
           ) : null}
 
-          {subagentApprovals.length > 0 ? (
+          {groupChat === null && subagentApprovals.length > 0 ? (
             <SubagentApprovalQueue
               approvalErrors={approvalErrors}
               approvals={subagentApprovals}
@@ -3578,9 +3796,18 @@ export function ConversationWorkspace({
             />
           ) : null}
 
-          <UserQuestionPanel key={session.id} agentClient={agentClient} conversationId={session.id} active={active} />
+          {groupChat === null ? <UserQuestionPanel key={session.id} agentClient={agentClient} conversationId={session.id} active={active} /> : null}
+          {groupChat !== null && operationError !== null ? <p role="alert" className="mx-auto mb-[5px] w-full max-w-[var(--conversation-content-max-width)] text-[var(--app-destructive)]">{operationError}</p> : null}
           <form className="conversation-workspace__composer" onSubmit={(event) => void handleSubmit(event)}>
           <div className="conversation-workspace__composer-surface">
+            {groupChat !== null && groupReply !== null ? <div className="flex min-w-0 items-center gap-[5px] border-b border-[var(--app-border)] px-2 py-[5px] text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]" role="status">
+              <MessageSquareText size={14} className="shrink-0" />
+              <div className="min-w-0 flex-1"><MessageReferenceQuote senderName={groupReply.senderName} content={groupReply.content}
+                avatar={groupReply.senderConversationId === null ? undefined : renderReferenceAvatar({ kind: "message", id: groupReply.id, sourceKind: "group", containerId: groupChat.instanceId,
+                  senderName: groupReply.senderName, senderConversationId: groupReply.senderConversationId, content: groupReply.content, createdAt: groupReply.createdAt })}
+                onOpen={() => useWorkbenchUiStore.getState().openTeamChat({ instanceId: groupChat.instanceId, messageId: groupReply.id })} /></div>
+              <IconButton label="取消引用回复" size="compact" onClick={() => setGroupReply(null)}><X size={14} /></IconButton>
+            </div> : null}
             {isEditingComposerMessage ? (
               <div className="conversation-workspace__editing" role="status">
                 <Pencil aria-hidden="true" size={14} />
@@ -3656,8 +3883,10 @@ export function ConversationWorkspace({
                 mentionQuery !== null
                 && mentionOptions.length > 0
               ? (
-                <div className="conversation-mention-menu" role="listbox" aria-label="引用对话或文件">
+                <div className="conversation-mention-menu" role="listbox" aria-label={groupChat === null ? "引用对话或文件" : "选择群成员"}>
                   {mentionOptions.map((option, index) => {
+                    const member = option.kind === "conversation" ? option.member : undefined;
+                    const memberAvatar = member === undefined ? undefined : conversationAgentAvatars.get(member.conversationId);
                     const child = option.kind === "conversation"
                       ? relatedSessions.find((candidate) => candidate.id === option.value.id)
                       : undefined;
@@ -3667,18 +3896,19 @@ export function ConversationWorkspace({
                       )?.name
                       : null;
                     return (
-                      <Fragment key={option.kind === "conversation" || option.kind === "team"
+                      <Fragment key={option.kind === "conversation" || option.kind === "team" || option.kind === "all"
                         ? `${option.kind}:${option.value.id}` : `${option.kind}:${option.value.path}`}>
-                      {mentionOptions[index - 1]?.kind === option.kind ? null : (
+                      {index > 0 && (groupChat !== null || mentionOptions[index - 1]?.kind === option.kind) ? null : (
                         <div role="presentation" className="px-2 py-1 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
-                          {MENTION_GROUPS[option.kind]}
+                          {member === undefined ? MENTION_GROUPS[option.kind] : "群成员"}
                         </div>
                       )}
                       <button
                         aria-selected={index === mentionSelectionIndex}
                         className={index === mentionSelectionIndex ? "is-selected" : undefined}
                         data-option-index={index}
-                        key={option.kind === "conversation" || option.kind === "team"
+                        data-group-member={member?.conversationId}
+                        key={option.kind === "conversation" || option.kind === "team" || option.kind === "all"
                           ? `${option.kind}:${option.value.id}`
                           : `${option.kind}:${option.value.path}`}
                         role="option"
@@ -3686,7 +3916,12 @@ export function ConversationWorkspace({
                         onMouseDown={(event) => event.preventDefault()}
                         onClick={handleMentionOptionClick}
                       >
-                        {option.kind === "team" ? (
+                        {member !== undefined ? (
+                          <div data-member-avatar className="flex h-5 w-5 items-center justify-center">
+                            {memberAvatar === undefined ? <SubagentAvatar icon={null} seed={member.conversationId} size="compact" />
+                              : <AgentAvatar avatar={memberAvatar} size="compact" />}
+                          </div>
+                        ) : option.kind === "team" || option.kind === "all" ? (
                           <UsersRound aria-hidden="true" size={15} />
                         ) : option.kind === "conversation" ? (
                           child?.parentConversationId != null ? (
@@ -3701,9 +3936,9 @@ export function ConversationWorkspace({
                           <strong title={option.kind === "conversation" ? option.value.title : option.value.name}>{option.kind === "conversation"
                             ? option.value.title
                             : option.kind === "team" ? option.value.name : option.value.name}</strong>
-                          <small>{option.kind === "conversation"
+                          <small>{member !== undefined ? member.role : option.kind === "conversation"
                             ? `${projectName ?? "临时对话"} · ${threadKindLabel(option.value.threadKind)}`
-                            : option.kind === "team"
+                            : option.kind === "all" ? "通知所有当前群成员并请求回复" : option.kind === "team"
                               ? option.value.scope === "global"
                                 ? "全局团队"
                                 : option.value.scope === "project"
@@ -3776,10 +4011,17 @@ export function ConversationWorkspace({
                   if (label === "/review") return <FileSearch size={12} aria-hidden="true" />;
                   if (label === "/test") return <Terminal size={12} aria-hidden="true" />;
                   if (label.startsWith("/")) return <Sparkles size={12} aria-hidden="true" />;
+                  if (groupChat !== null && label === "@全体成员") return <UsersRound size={12} aria-hidden="true" />;
                   if (selectedTeamMentions.some((item) => `@${item.name}` === label)) return <UsersRound size={12} aria-hidden="true" />;
                   const file = activeProjectFileMentions.find((item) => `@${item.path}` === label);
                   if (file !== undefined) return <FileTypeIcon path={file.path} size={12} />;
                   const reference = selectedConversationMentions.find((item) => `@${item.title}` === label);
+                  if (groupChat !== null && reference !== undefined) {
+                    const avatar = conversationAgentAvatars.get(reference.id);
+                    return <span className="inline-flex shrink-0 scale-[0.65]">{avatar === undefined
+                      ? <SubagentAvatar icon={null} seed={reference.id} size="compact" />
+                      : <AgentAvatar avatar={avatar} size="compact" />}</span>;
+                  }
                   const child = relatedSessions.find((item) => item.id === reference?.id && item.parentConversationId !== null);
                   if (child !== undefined) return <span className="inline-flex shrink-0 scale-[0.65]"><SubagentAvatar icon={child.avatarIcon} seed={child.id} size="compact" /></span>;
                   return <MessageSquareText size={12} aria-hidden="true" />;
@@ -3890,7 +4132,7 @@ export function ConversationWorkspace({
                     value={selectedAgent.id}
                     onValueChange={(agentId) => {
                       setSelectedAgentId(agentId);
-                      saveConversationAgentSelection(session.id, agentId);
+                      saveConversationAgentSelection(groupChat?.instanceId ?? session.id, agentId);
                     }}
                   >
                     <SelectTrigger
@@ -4064,12 +4306,10 @@ export function ConversationWorkspace({
               </div>
             </div>
           </div>
-          {showContextUsage ? (
-            <LiveProviderCacheStatus
-              key={session.id}
-              agentClient={agentClient}
-              conversationId={session.id}
-              usage={lastProviderUsage?.conversationId === session.id
+          {showContextUsage && active ? (
+            <ProviderCacheStatus
+              key={usageConversationId}
+              usage={lastProviderUsage?.conversationId === usageConversationId
                 ? lastProviderUsage.usage
                 : null}
             />
@@ -4081,6 +4321,7 @@ export function ConversationWorkspace({
     </ToolConversationContext.Provider>
     </HtmlPreviewScope>
     </AgentMarkdownWorkspaceScope>
+    </ChatReferenceScope>
   );
 }
 
@@ -4283,7 +4524,7 @@ function handleRunEvent(
           ...previous,
           ...(event.startedAt === undefined ? {} : { startedAt: event.startedAt }),
           ...(event.completedAt === undefined ? {} : { completedAt: event.completedAt }),
-          [event.stream]: `${previous[event.stream]}${event.delta}`,
+          [event.stream]: event.reset ? event.delta : `${previous[event.stream]}${event.delta}`,
           exitCode: event.exitCode,
           status: event.status,
           timedOut: event.timedOut,
@@ -5017,8 +5258,19 @@ function upsertTimelineItem(
 function mergeLatestTimelinePage(
   current: ConversationTimelineItem[],
   latest: ConversationTimelineItem[],
+  resetPaging = false,
 ): ConversationTimelineItem[] {
   if (current.length === 0) return latest;
+  const latestRuns = new Set(latest.map(item => item.runId));
+  const persisted = new Map(latest.map(item => [item.id, item]));
+  // Current output is volatile until the model turn is committed. A history
+  // refresh must not erase a snapshot already replayed by Main.
+  for (const item of current) {
+    if (item.kind !== "message" || item.role !== "assistant" || item.status !== "streaming" || !latestRuns.has(item.runId)) continue;
+    const stored = persisted.get(item.id);
+    if (stored === undefined || (stored.kind === "message" && stored.status === "streaming")) latest = upsertTimelineItem(latest, item);
+  }
+  if (resetPaging) return latest;
   const latestIds = new Set(latest.map((item) => item.id));
   const overlapIndex = current.findIndex((item) => latestIds.has(item.id));
   if (overlapIndex >= 0) return [...current.slice(0, overlapIndex), ...latest];
@@ -5090,38 +5342,6 @@ export function projectSubagentMessagesForParentTimeline(
   return projected;
 }
 
-export function formatConversationTime(createdAt: string, now = new Date()): string {
-  const timestamp = new Date(createdAt);
-  if (Number.isNaN(timestamp.getTime())) return "";
-
-  const isSameDay = timestamp.getFullYear() === now.getFullYear()
-    && timestamp.getMonth() === now.getMonth()
-    && timestamp.getDate() === now.getDate();
-  if (isSameDay) return formatLocalClock(timestamp);
-
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  const isYesterday = timestamp.getFullYear() === yesterday.getFullYear()
-    && timestamp.getMonth() === yesterday.getMonth()
-    && timestamp.getDate() === yesterday.getDate();
-  if (isYesterday) return `昨天 ${formatLocalClock(timestamp)}`;
-
-  if (timestamp.getFullYear() === now.getFullYear()) {
-    return `${timestamp.getMonth() + 1}月${timestamp.getDate()}日 ${formatLocalClock(timestamp)}`;
-  }
-  return `${timestamp.getFullYear()}年${timestamp.getMonth() + 1}月${timestamp.getDate()}日 ${formatLocalClock(timestamp)}`;
-}
-
-function formatConversationDateTime(createdAt: string): string {
-  const timestamp = new Date(createdAt);
-  if (Number.isNaN(timestamp.getTime())) return "";
-  return `${timestamp.getFullYear()}年${timestamp.getMonth() + 1}月${timestamp.getDate()}日 ${formatLocalClock(timestamp)}`;
-}
-
-function formatLocalClock(timestamp: Date): string {
-  return `${String(timestamp.getHours()).padStart(2, "0")}:${String(timestamp.getMinutes()).padStart(2, "0")}`;
-}
-
 export function groupRunActivities(
   timeline: ConversationTimelineItem[],
 ): TimelineDisplayItem[] {
@@ -5191,9 +5411,15 @@ export function groupRunActivities(
 function groupRunActivitySegment(
   timeline: ConversationTimelineItem[],
 ): TimelineDisplayItem[] {
-  const lastRunItemIndex = new Map<string, number>();
+  const lastRunWorkIndex = new Map<string, number>();
   for (const [index, item] of timeline.entries()) {
-    if (item.runId !== null) lastRunItemIndex.set(item.runId, index);
+    const isWork = item.kind === "model_retry"
+      || (item.kind === "tool" && !isTaskListManagementTool(item.name))
+      || (item.kind === "message" && item.role === "assistant"
+        && (item.status === "completed" || item.status === "streaming"));
+    // Terminal notices and checklist bookkeeping do not turn a final answer
+    // into progress. They can be appended after the model has already replied.
+    if (item.runId !== null && isWork) lastRunWorkIndex.set(item.runId, index);
   }
 
   const activities = new Map<string, RunActivityTimelineItem & { firstIndex: number }>();
@@ -5234,7 +5460,8 @@ function groupRunActivitySegment(
 
     const reasoningContent = item.reasoningContent?.trim();
     const visibleContent = stripLeadingThinkingSummary(item.content);
-    const isIntermediate = index < (lastRunItemIndex.get(item.runId) ?? index);
+    const isIntermediate = (item.status === "completed" || item.status === "streaming")
+      && index < (lastRunWorkIndex.get(item.runId) ?? index);
     const hasReasoning = reasoningContent !== undefined
       && reasoningContent.length > 0
       && (item.modelId === null || !isGptReasoningSummaryModel(item.modelId));
@@ -5315,7 +5542,8 @@ function groupRunActivitySegment(
       continue;
     }
 
-    const isIntermediate = index < (lastRunItemIndex.get(item.runId ?? "") ?? index);
+    const isIntermediate = (item.status === "completed" || item.status === "streaming")
+      && index < (lastRunWorkIndex.get(item.runId ?? "") ?? index);
     if (isIntermediate) {
       if (item.attachments.length > 0) {
         projected.push({
@@ -5869,12 +6097,14 @@ function TimelineItem({
   agentClient,
   afterMessage,
   item,
+  sourceConversations,
   questionAnswer,
   onLocateQuestion,
   agentAvatar,
   agentAvatarSeed,
   teamManaged,
   activeRunId,
+  isCurrentActivity,
   latestActiveToolId,
   currentToolId,
   modelActivity,
@@ -5902,12 +6132,14 @@ function TimelineItem({
   agentClient: AgentClient;
   afterMessage?: ReactNode;
   item: TimelineDisplayItem;
+  sourceConversations: readonly Pick<ConversationSummary, "id" | "title" | "agentId" | "avatarIcon">[];
   questionAnswer: UserQuestion | null;
   onLocateQuestion: (question: UserQuestion) => Promise<void>;
   agentAvatar: AgentProfile["avatar"] | null;
   agentAvatarSeed: string | null;
   teamManaged: boolean;
   activeRunId: string | null;
+  isCurrentActivity: boolean;
   latestActiveToolId: string | null;
   currentToolId: string | null;
   modelActivity: ModelActivity | null;
@@ -5948,6 +6180,7 @@ function TimelineItem({
         item={item}
         teamManaged={teamManaged}
         activeRunId={activeRunId}
+        isCurrentActivity={isCurrentActivity}
         latestActiveToolId={latestActiveToolId}
         currentToolId={currentToolId}
         modelActivity={modelActivity}
@@ -6042,7 +6275,7 @@ function TimelineItem({
           data-role="user"
           data-status={item.status}
         >
-          <p>{item.content}</p>
+          <TeamChatSourceContent content={item.content} />
         </article>
       </div>
     );
@@ -6055,7 +6288,7 @@ function TimelineItem({
   const renderedMessageContent = item.role === "assistant"
     ? stripLeadingThinkingSummary(item.content)
     : item.content;
-  const canEdit = item.role === "user" && questionAnswer === null && item.id === latestUserMessageId;
+  const canEdit = item.role === "user" && item.groupSource === undefined && questionAnswer === null && item.id === latestUserMessageId;
   const showMessageMeta = item.role === "user"
     || canShowCompletionTime
     || canCopyMessage
@@ -6078,9 +6311,10 @@ function TimelineItem({
 
   return (
     <div className="chat-message-group" data-role={item.role}>
+      {item.role === "user" ? <TeamChatSourceHeader content={item.content} source={item.groupSource} conversations={sourceConversations} onOpenConversation={onSessionSelected} /> : null}
       {item.role === "user" ? messageAttachments : null}
       {hasMessageBody ? (
-        <article className="chat-message" data-role={item.role} data-status={item.status}>
+        <ChatMessageBubble role={item.role} status={item.status}>
           {questionAnswer === null ? null : (
             <button type="button" onClick={() => void onLocateQuestion(questionAnswer)}
               title={`跳到提问：${questionAnswer.questions.map((prompt) => prompt.question).join("；")}`}
@@ -6117,71 +6351,21 @@ function TimelineItem({
                 : `${prompt.title}：${questionAnswer.answers?.[prompt.id] ?? ""}`,
             ).join("\n\n")} />
           ) : (
-            renderedMessageContent.length > 0 ? <UserMessageContent content={renderedMessageContent} /> : null
+            renderedMessageContent.length > 0 ? <TeamChatSourceContent content={renderedMessageContent} source={item.groupSource} /> : null
           )}
-        </article>
+        </ChatMessageBubble>
       ) : null}
       {item.role === "assistant" ? messageAttachments : null}
       {afterMessage}
-      {showMessageMeta ? <div className="chat-message__meta">
-        {item.role === "user" ? (
-          <time dateTime={item.createdAt} title={formatConversationDateTime(item.createdAt)}>
-            {formatConversationTime(item.createdAt)}
-          </time>
-        ) : null}
-        {canCopyMessage ? (
-          <IconButton
-            disabled={item.content.length === 0}
-            label={copied
-              ? item.role === "user" ? "已复制消息" : "已复制完整回复"
-              : item.role === "user" ? "复制消息" : "复制完整回复"}
-            size="compact"
-            type="button"
-            variant="quiet"
-            onClick={() => void onCopyMessage(item)}
-          >
-            {copied ? (
-              <Check aria-hidden="true" size={14} />
-            ) : (
-              <Copy aria-hidden="true" size={14} />
-            )}
-          </IconButton>
-        ) : null}
-        {item.role === "assistant" ? (
-          canForkMessage ? (
-            <IconButton
-              disabled={isForking}
-              label={isForking ? "正在创建分支对话" : "从此回复创建分支对话"}
-              size="compact"
-              type="button"
-              variant="quiet"
-              onClick={() => void onForkMessage(item)}
-            >
-              {isForking ? (
-                <Spinner aria-hidden="true" size={14} />
-              ) : (
-                <GitFork aria-hidden="true" size={14} />
-              )}
-            </IconButton>
-          ) : null
-        ) : canEdit ? (
-          <IconButton
-            disabled={editing}
-            label={editing ? "正在编辑" : "编辑并重新生成"}
-            size="compact"
-            type="button"
-            variant={editing ? "selected" : "quiet"}
-            onClick={() => onEditMessage(item)}
-          >
-            <Pencil aria-hidden="true" size={14} />
-          </IconButton>
-        ) : null}
-        {item.role === "assistant" && canShowCompletionTime && item.completedAt != null ? (
-          <time dateTime={item.completedAt} title={formatConversationDateTime(item.completedAt)}>
-            {formatConversationTime(item.completedAt)}
-          </time>
-        ) : null}
-      </div> : null}
+      {showMessageMeta ? <ChatMessageMeta role={item.role} content={item.content} createdAt={item.createdAt}
+        completedAt={canShowCompletionTime ? item.completedAt ?? null : null} copied={copied} editing={editing}
+        {...(canCopyMessage ? { onCopy: () => void onCopyMessage(item) } : {})}
+        {...(canEdit ? { onEdit: () => onEditMessage(item) } : {})}>
+        {item.role === "assistant" && canForkMessage ? <IconButton disabled={isForking}
+          label={isForking ? "正在创建分支对话" : "从此回复创建分支对话"} size="compact" type="button" variant="quiet" onClick={() => void onForkMessage(item)}>
+          {isForking ? <Spinner aria-hidden="true" size={14} /> : <GitFork aria-hidden="true" size={14} />}
+        </IconButton> : null}
+      </ChatMessageMeta> : null}
     </div>
   );
 }
@@ -6618,6 +6802,7 @@ function RunActivityTimelineItem({
   item,
   teamManaged,
   activeRunId,
+  isCurrentActivity,
   latestActiveToolId,
   currentToolId,
   modelActivity,
@@ -6633,6 +6818,7 @@ function RunActivityTimelineItem({
   item: RunActivityTimelineItem;
   teamManaged: boolean;
   activeRunId: string | null;
+  isCurrentActivity: boolean;
   latestActiveToolId: string | null;
   currentToolId: string | null;
   modelActivity: ModelActivity | null;
@@ -6649,7 +6835,7 @@ function RunActivityTimelineItem({
   liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
 }): ReactElement {
   const isActive = activeRunId !== null && item.runIds.includes(activeRunId);
-  const isInProgress = isActive || runProgress !== null || item.streaming;
+  const isInProgress = isCurrentActivity && (isActive || runProgress !== null || item.streaming);
   const reveal = useContext(ToolRevealContext);
   const disclosureChoices = useContext(ToolDisclosureContext);
   const revealThisRun = item.items.some((entry) => entry.kind === "tool" && entry.id === reveal?.id);
@@ -6689,7 +6875,7 @@ function RunActivityTimelineItem({
           className="min-w-0 py-[5px] text-[length:var(--app-font-size-body)] text-[var(--app-foreground)]"
           key={entry.id}
         >
-          <AgentMarkdown content={entry.content} streaming={entry.streaming} />
+          <AgentMarkdown content={entry.content} streaming={isInProgress && entry.streaming} />
         </div>
       );
     }
@@ -6699,7 +6885,7 @@ function RunActivityTimelineItem({
           className="py-[5px] text-[length:var(--app-font-size-body)] text-[var(--app-foreground)]"
           key={entry.id}
         >
-          <AgentMarkdown content={entry.content} streaming={entry.streaming} />
+          <AgentMarkdown content={entry.content} streaming={isInProgress && entry.streaming} />
         </div>
       );
     }
@@ -6708,6 +6894,7 @@ function RunActivityTimelineItem({
         <ToolBatchTimelineItem
           agentClient={agentClient}
           activeRunId={activeRunId}
+          showWorkIndicator={false}
           approvalErrors={approvalErrors}
           approvingToolId={approvingToolId}
           item={entry}
@@ -6766,7 +6953,7 @@ function RunActivityTimelineItem({
       {isExpanded ? (
         <div className="flex min-w-0 flex-col gap-[5px] pt-[5px]" id={contentId}>
           {hasReasoning ? (
-            <ReasoningDisclosure key={revealThisRun ? reveal?.requestId : "normal"} streaming={reasoningStreaming} reveal={revealThisRun}>
+            <ReasoningDisclosure key={revealThisRun ? reveal?.requestId : "normal"} streaming={isInProgress && reasoningStreaming} reveal={revealThisRun}>
               {activityContent}
             </ReasoningDisclosure>
           ) : (
@@ -6785,6 +6972,7 @@ function ToolBatchTimelineItem({
   item,
   teamManaged,
   activeRunId,
+  showWorkIndicator = true,
   latestActiveToolId,
   currentToolId,
   modelActivity,
@@ -6799,6 +6987,7 @@ function ToolBatchTimelineItem({
   item: Extract<TimelineDisplayItem, { kind: "tool_batch" }>;
   teamManaged: boolean;
   activeRunId: string | null;
+  showWorkIndicator?: boolean;
   latestActiveToolId: string | null;
   currentToolId: string | null;
   modelActivity: ModelActivity | null;
@@ -6845,7 +7034,7 @@ function ToolBatchTimelineItem({
             type="button"
             onClick={() => setIsExpanded((current) => !current)}
           >
-            {hasActiveTool || modelActivity !== null ? <ConversationWorkIndicator runId={currentTool?.runId ?? item.tools.find(tool => tool.status === "running" || tool.status === "awaiting_approval")?.runId ?? null}
+            {showWorkIndicator && ((isCurrentBatch && hasActiveTool) || modelActivity !== null) ? <ConversationWorkIndicator runId={currentTool?.runId ?? item.tools.find(tool => tool.status === "running" || tool.status === "awaiting_approval")?.runId ?? null}
               fallback={modelActivity !== null ? "thinking" : currentTool?.status === "awaiting_approval" ? "waiting" : toolWorkPhase(currentTool?.name ?? representativeToolName(item.tools))} size={15} />
               : <ToolTypeIcon name={representativeToolName(item.tools)} />}
             <span className="min-w-0 truncate" aria-live={isCurrentBatch || modelActivity !== null ? "polite" : undefined}>{label}</span>
@@ -7288,6 +7477,7 @@ function ToolTypeIcon({ name }: { name: string }): ReactElement {
       return <Search aria-hidden="true" size={15} />;
     case "find_files":
       return <FileSearch aria-hidden="true" size={15} />;
+    case "computer_use":
     case "browser_control":
     case "present_html":
       return <Globe2 aria-hidden="true" size={15} />;
@@ -7468,6 +7658,11 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
       const pattern = typeof argumentsValue?.pattern === "string" ? argumentsValue.pattern : null;
       return pattern === null ? "查找文件" : `查找 ${pattern}`;
     }
+    case "computer_use": {
+      const action = typeof argumentsValue?.action === "string" ? argumentsValue.action : "";
+      const labels: Record<string, string> = { list: "查看授权软件", launch: "启动软件", observe: "查看窗口", screenshot: "截取窗口", click: "点击窗口", type: "输入文字", key: "按键", scroll: "滚动窗口" };
+      return labels[action] ?? "电脑控制";
+    }
     case "browser_control": {
       const action = typeof argumentsValue?.action === "string" ? argumentsValue.action : null;
       switch (action) {
@@ -7596,18 +7791,18 @@ function ToolActivityLabel({
 }): ReactElement {
   const summary = fileChangeSummary(item);
   const label = toolActivityLabel(item, teamManaged);
-  const target = toolConversationTarget(item);
+  const targets = toolConversationTargets(item);
   const toggleLabel = isExpanded ? "收起调用详情" : "展开调用详情";
   const toggleClassName = "min-w-0 flex-[0_1_auto] cursor-pointer overflow-hidden border-0 bg-transparent p-0 text-left text-ellipsis whitespace-nowrap text-[var(--app-muted-foreground)] transition-colors hover:text-[var(--app-foreground)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-1 [font:inherit]";
   const fileLinkClassName = "inline-flex min-w-0 cursor-pointer items-center gap-1 overflow-hidden border-0 bg-transparent p-0 text-inherit transition-colors hover:text-[var(--app-accent)] focus-visible:rounded-[var(--app-radius-small)] focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)] focus-visible:outline-offset-2 [font:inherit]";
-  if (target !== null) {
+  if (targets.length > 0) {
     const completed = effectiveStatus === "completed";
     const action = item.name === "send_agent_message"
       ? completed ? "消息已发送" : "发送消息"
       : item.name === "read_agent_conversation"
         ? completed ? "已读取对话" : "读取对话"
         : completed ? "消息等待结束" : "等待消息";
-    return <ToolConversationIdentity target={target} action={action} />;
+    return <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-[5px]">{targets.map(target => <ToolConversationIdentity key={target.id} target={target} action={action} />)}</span>;
   }
   const spawnedSubagent = spawnSubagentActivity(item, effectiveStatus);
   if (spawnedSubagent !== null) {
@@ -7870,8 +8065,8 @@ function ToolDetail({
   onOpenSubagent: ((conversationId: string) => void) | undefined;
   onOpenProjectFile: ((path: string) => void) | undefined;
 }): ReactElement {
-  const screenshot = item.name === "browser_control" && item.result !== null ? parseBrowserScreenshot(item.result) : null;
-  if (screenshot !== null) return <StructuredToolResult summary="网页截图">
+  const screenshot = (item.name === "browser_control" || item.name === "computer_use") && item.result !== null ? parseBrowserScreenshot(item.result) : null;
+  if (screenshot !== null) return <StructuredToolResult summary={item.name === "computer_use" ? "窗口截图" : "网页截图"}>
     {screenshot.image === null ? null : <BrowserScreenshotResult agentClient={agentClient} image={screenshot.image} />}
     <p className="m-0">{screenshot.width} × {screenshot.height} · {screenshot.mimeType}</p>
   </StructuredToolResult>;
@@ -8021,7 +8216,7 @@ function ToolDetail({
 function parseBrowserScreenshot(payload: string): { width: number; height: number; mimeType: string; image: ConversationAttachment | null } | null {
   const result = parseToolValue(payload);
   const image = conversationAttachmentListSchema.safeParse([result?.image]);
-  return result?.coordinateSpace === "screenshot_css_pixels" && typeof result.width === "number"
+  return (result?.coordinateSpace === "screenshot_css_pixels" || result?.coordinateSpace === "window_physical_pixels") && typeof result.width === "number"
     && typeof result.height === "number" && typeof result.mimeType === "string"
     ? { width: result.width, height: result.height, mimeType: result.mimeType, image: image.success ? image.data[0] ?? null : null } : null;
 }
@@ -8059,6 +8254,7 @@ export function toolHasDisplayableDetails(item: ConversationToolItem): boolean {
     case "spawn_subagent":
     case "list_subagents":
     case "wait_for_subagents": return parseSubagentToolResult(payload) !== null;
+    case "computer_use":
     case "browser_control": return parseBrowserScreenshot(payload) !== null;
     default: return false;
   }
@@ -8494,7 +8690,7 @@ function AgentConversationReadResult({
 }): ReactElement {
   const result = payload === null ? null : parseAgentConversationReadResult(payload);
   if (result === null) return <ToolResultNotice result={payload} status={status} />;
-  const target = toolConversationTarget(item);
+  const target = toolConversationTargets(item)[0] ?? null;
 
   return (
     <StructuredToolResult summary={`对话上下文 · 约 ${result.estimatedTokens} tokens`}>
@@ -8516,12 +8712,12 @@ function AgentMessageToolResult({
   status: ConversationToolItem["status"];
 }): ReactElement {
   const result = payload === null ? null : parseAgentMessageToolResult(payload);
-  const target = toolConversationTarget(item);
+  const targets = toolConversationTargets(item);
   if (result === null) return <ToolResultNotice result={payload} status={status} />;
-  if (result.message === null) {
+  if (result.messages.length === 0) {
     return (
       <StructuredToolResult summary="消息等待结束">
-        {target === null ? null : <ToolConversationIdentity target={target} />}
+        {targets.map(target => <ToolConversationIdentity key={target.id} target={target} />)}
         <p className="tool-directory-listing__empty">等待期间没有收到新消息</p>
       </StructuredToolResult>
     );
@@ -8532,11 +8728,11 @@ function AgentMessageToolResult({
       <dl className="tool-read-facts">
         <div>
           <dt>{mode === "sent" ? "目标对话" : "发送方"}</dt>
-          <dd>{target === null ? "对话不可用" : <ToolConversationIdentity target={target} />}</dd>
+          <dd className="flex min-w-0 flex-wrap gap-[5px]">{targets.length === 0 ? "对话不可用" : targets.map(target => <ToolConversationIdentity key={target.id} target={target} />)}</dd>
         </div>
         <div>
           <dt>消息内容</dt>
-          <dd>{result.message.content}</dd>
+          <dd>{result.messages[0]?.content}</dd>
         </div>
       </dl>
     </StructuredToolResult>
@@ -9151,26 +9347,24 @@ type AgentMessageResultPayload = {
 };
 
 function parseAgentMessageToolResult(payload: string): {
-  message: AgentMessageResultPayload | null;
+  messages: AgentMessageResultPayload[];
 } | null {
   const result = parseToolValue(payload);
   if (result === null) return null;
-  if (result.message === null && result.status === "timeout") return { message: null };
-  if (result.message === null || typeof result.message !== "object") return null;
-  const message = result.message as Record<string, unknown>;
-  return typeof message.content === "string" &&
-    typeof message.conversationId === "string" &&
-    typeof message.senderConversationId === "string" &&
-    typeof message.senderTitle === "string"
-    ? {
-      message: {
-        content: message.content,
-        conversationId: message.conversationId,
-        senderConversationId: message.senderConversationId,
-        senderTitle: message.senderTitle,
-      },
-    }
-    : null;
+  if (result.message === null && result.status === "timeout") return { messages: [] };
+  const values = Array.isArray(result.messages) ? result.messages : [result.message];
+  const messages: AgentMessageResultPayload[] = [];
+  for (const value of values) {
+    if (value === null || typeof value !== "object") return null;
+    const message = value as Record<string, unknown>;
+    if (typeof message.content !== "string" ||
+    typeof message.conversationId !== "string" ||
+    typeof message.senderConversationId !== "string" ||
+    typeof message.senderTitle !== "string") return null;
+    messages.push({ content: message.content, conversationId: message.conversationId,
+      senderConversationId: message.senderConversationId, senderTitle: message.senderTitle });
+  }
+  return { messages };
 }
 
 type SubagentToolTaskPayload = {

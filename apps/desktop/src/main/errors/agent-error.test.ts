@@ -167,7 +167,7 @@ describe("main agent errors", () => {
 
     expect(toMainAgentError(error, { operation: "agent.run" })).toMatchObject({
       code: "MODEL_RUN_LIMIT_REACHED",
-      message: "模型长时间没有自行结束，已在最终保护边界停止。当前结果已保留，可发送“继续”接着处理。",
+      message: "已达到本轮运行保护上限，自动继续已暂停。当前结果和未处理的消息已保留，可发送“继续”接着处理。",
       retryable: false,
     });
   });

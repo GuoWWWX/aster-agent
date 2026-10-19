@@ -139,6 +139,23 @@ function successChunks(apiFormat: ModelApiFormat): string[] {
 }
 
 describe("LangChainModelAdapter", () => {
+  it.each(["openai-chat-completions", "openai-responses"] as const)(
+    "keeps the conversation cache key across appended turns for %s", async (apiFormat) => {
+      const request = vi.fn<typeof fetch>().mockImplementation(() => Promise.resolve(createStreamResponse(successChunks(apiFormat))));
+      const adapter = new LangChainModelAdapter(apiFormat, request);
+      const first = { ...inputFor(apiFormat), cacheKey: "aster:conversation-one" };
+      await adapter.completeTurn(first);
+      await adapter.completeTurn({ ...first, messages: [...first.messages,
+        { attachments: [], content: "hello again", role: "user", toolCallId: null, toolCalls: [] }] });
+      await adapter.completeTurn({ ...first, cacheKey: "aster:conversation-two" });
+      expect(recordBody(request, 0).prompt_cache_key).toBe("aster:conversation-one");
+      expect(recordBody(request, 1).prompt_cache_key).toBe("aster:conversation-one");
+      expect(recordBody(request, 2).prompt_cache_key).toBe("aster:conversation-two");
+      expect(recordBody(request, 0).prompt_cache_retention).toBeUndefined();
+      expect(recordBody(request, 0).prompt_cache_options).toBeUndefined();
+    },
+  );
+
   it("uses the provider-neutral OpenAI tool envelope accepted by all LangChain providers", () => {
     const definitions = toolDefinitions([{
       description: "Read a file",
@@ -257,7 +274,7 @@ describe("LangChainModelAdapter", () => {
     ]);
   });
 
-  it("sends only the latest browser screenshot bytes to the model", async () => {
+  it.each(["browser", "computer"] as const)("sends only the latest %s screenshot bytes to the model", async (source) => {
     const request = vi.fn<typeof fetch>()
       .mockResolvedValue(createStreamResponse(successChunks("openai-chat-completions")));
     const input = inputFor("openai-chat-completions");
@@ -270,7 +287,7 @@ describe("LangChainModelAdapter", () => {
       name: `${id}.jpg`,
       projectPath: null,
       readState: "full" as const,
-      source: "browser" as const,
+      source,
       truncated: false,
     });
     input.messages = [{
@@ -297,7 +314,7 @@ describe("LangChainModelAdapter", () => {
 
     const serialized = JSON.stringify(recordBody(request));
     expect(serialized).not.toContain("data:image/jpeg;base64,b2xk");
-    expect(serialized).toContain("Earlier browser screenshot superseded");
+    expect(serialized).toContain(`Earlier ${source} screenshot superseded`);
     expect(serialized).toContain("data:image/jpeg;base64,bmV3");
   });
 
@@ -385,6 +402,27 @@ describe("LangChainModelAdapter", () => {
     });
   });
 
+  it.each(["openai-chat-completions", "openai-responses", "anthropic-messages", "google-gemini"] as const)(
+    "keeps visible progress together with a streamed tool call (%s)", async (apiFormat) => {
+      const model = new FakeStreamingChatModel({ sleep: 0, chunks: [
+        new AIMessageChunk({ content: "已定位重复值丢失，" }),
+        new AIMessageChunk({ content: "接着验证修复。", tool_call_chunks: [{
+          name: "read_file", args: '{"path":"source.txt"}', id: "read-source", index: 0,
+        }] }),
+      ] });
+      const deltas: string[] = [];
+      const adapter = new LangChainModelAdapter(apiFormat, fetch, () => model);
+      const result = await adapter.completeTurn(inputFor(apiFormat, {
+        onTextDelta: (delta) => deltas.push(delta),
+      }));
+      expect(deltas).toEqual(["已定位重复值丢失，", "接着验证修复。"]);
+      expect(result.content).toBe(deltas.join(""));
+      expect(result.toolCalls).toEqual([{
+        name: "read_file", arguments: '{"path":"source.txt"}', id: "read-source",
+      }]);
+    },
+  );
+
   it.each([undefined, 0, 54, 80])("preserves normalized provider cache token usage (%s)", async (cached) => {
     const model = {
       async *stream() {
@@ -418,6 +456,37 @@ describe("LangChainModelAdapter", () => {
       inputTokens: 100,
       outputTokens: 10,
       totalTokens: 110,
+    });
+  });
+
+  it.each([
+    ["openai-chat-completions", undefined, undefined], ["openai-chat-completions", 0, undefined],
+    ["openai-chat-completions", 54, undefined], ["openai-chat-completions", undefined, "assistant"],
+    ["openai-chat-completions", 0, "assistant"], ["openai-chat-completions", 54, "assistant"],
+    ["openai-responses", undefined, undefined], ["openai-responses", 0, undefined],
+    ["openai-responses", 54, undefined],
+  ] as const)("preserves actual cache reporting through %s SSE (cache=%s, role=%s)", async (apiFormat, cached, role) => {
+    const usage = apiFormat === "openai-responses"
+      ? { input_tokens: 100, output_tokens: 10, total_tokens: 110,
+          ...(cached === undefined ? {} : { input_tokens_details: { cached_tokens: cached } }) }
+      : { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110,
+          ...(cached === undefined ? {} : { prompt_tokens_details: { cached_tokens: cached } }) };
+    const chunks = apiFormat === "openai-responses"
+      ? [
+          'data: {"type":"response.output_text.delta","delta":"ok"}\n\n',
+          `data: ${JSON.stringify({ type: "response.completed", response: { id: "resp-cache",
+            model: "test-model", status: "completed", output: [], usage } })}\n\n`,
+        ]
+      : [
+          `data: ${JSON.stringify({ choices: [{ delta: { content: "ok", role }, finish_reason: "stop" }] })}\n\n`,
+          `data: ${JSON.stringify({ choices: [], usage })}\n\n`,
+          "data: [DONE]\n\n",
+        ];
+    const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse(chunks));
+    const result = await new LangChainModelAdapter(apiFormat, request).completeTurn(inputFor(apiFormat));
+    expect(result.providerState?.usage).toEqual({
+      inputTokens: 100, outputTokens: 10, totalTokens: 110,
+      ...(cached === undefined ? {} : { cachedInputTokens: cached }),
     });
   });
 
@@ -818,7 +887,7 @@ describe("LangChainModelAdapter", () => {
         'data: {"type":"response.created","response":{"id":"resp_1","model":"test-model"}}\n\n',
         'data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","summary_index":0,"delta":"Checking files"}\n\n',
         'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"Checking files"}]}}\n\n',
-        'data: {"type":"response.completed","response":{"id":"resp_1","model":"test-model","output":[{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"Checking files"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n',
+        'data: {"type":"response.completed","response":{"id":"resp_1","model":"test-model","instructions":"echoed system rules","tools":[{"type":"function","name":"echoed_tool"}],"output":[{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"Checking files"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n',
       ]))
       .mockResolvedValueOnce(createStreamResponse([
         'data: {"type":"response.completed","response":{"id":"resp_2","model":"test-model","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n',
@@ -831,6 +900,8 @@ describe("LangChainModelAdapter", () => {
       onTextDelta: (delta) => textDeltas.push(delta),
     }));
     if (first.providerState === undefined) throw new Error("Expected Responses provider state.");
+    for (const field of ["instructions", "tools", "usage"]) expect(first.providerState.payload).not.toHaveProperty(`responseMetadata.${field}`);
+    expect(first.providerState.usage).toMatchObject({ inputTokens: 1, outputTokens: 1, totalTokens: 2 });
 
     expect(first.content).toBe("");
     expect(first).not.toHaveProperty("reasoningContent");
@@ -879,6 +950,54 @@ describe("LangChainModelAdapter", () => {
       id: "call_1",
       name: "apply_patch",
     }]);
+  });
+
+  it.each([false, true])("uses completed Responses arguments for two calls to the same tool when argument deltas are missing or partial (%s)", async partial => {
+    const calls = [
+      { id: "fc_first", type: "function_call", call_id: "call_first", name: "update_task_context", arguments: '{"title":"First","goal":"Verify first"}', status: "completed" },
+      { id: "fc_second", type: "function_call", call_id: "call_second", name: "update_task_context", arguments: '{"title":"Second","goal":"Verify second"}', status: "completed" },
+    ];
+    const event = (value: object) => `data: ${JSON.stringify(value)}\n\n`;
+    const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse([
+      ...calls.flatMap((call, index) => [
+        event({ type: "response.output_item.added", output_index: index, item: { ...call, status: "in_progress", arguments: "" } }),
+        ...(partial ? [event({ type: "response.function_call_arguments.delta", item_id: call.id, output_index: index, delta: '{"title":' })] : []),
+        event({ type: "response.function_call_arguments.done", item_id: call.id, output_index: index, arguments: call.arguments }),
+        event({ type: "response.output_item.done", output_index: index, item: call }),
+      ]),
+      event({ type: "response.completed", response: { id: "resp_complete", model: "test-model", status: "completed", output: calls, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }),
+    ]));
+    const result = await new LangChainModelAdapter("openai-responses", request).completeTurn(inputFor("openai-responses"));
+    expect(result.toolCalls).toEqual(calls.map(call => ({ id: call.call_id, name: call.name, arguments: call.arguments })));
+  });
+
+  it("uses the completed Responses snapshot without appending or duplicating streamed calls", async () => {
+    const call = { id: "fc_final", type: "function_call", call_id: "call_final", name: "run_command", arguments: '{"command":"echo final"}' };
+    const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse([
+      `data: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { ...call, arguments: '{"command":"echo stale"}' } })}\n\n`,
+      `data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", output: [call] } })}\n\n`,
+    ]));
+    const result = await new LangChainModelAdapter("openai-responses", request).completeTurn(inputFor("openai-responses"));
+    expect(result.toolCalls).toEqual([{ id: call.call_id, name: call.name, arguments: call.arguments }]);
+  });
+
+  it.each(["{broken", "[]", "null"])("rejects invalid completed Responses arguments instead of using empty streamed arguments (%s)", async argumentsValue => {
+    const call = { id: "fc_invalid", type: "function_call", call_id: "call_invalid", name: "write_file", arguments: argumentsValue };
+    const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse([
+      `data: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { ...call, arguments: "" } })}\n\n`,
+      `data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", output: [call] } })}\n\n`,
+    ]));
+    await expect(new LangChainModelAdapter("openai-responses", request).completeTurn(inputFor("openai-responses")))
+      .rejects.toThrow(/Tool arguments/u);
+  });
+
+  it("preserves genuine empty arguments for the tool's own schema validation", async () => {
+    const call = { id: "fc_empty", type: "function_call", call_id: "call_empty", name: "update_task_context", arguments: "{}" };
+    const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse([
+      `data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", output: [call] } })}\n\n`,
+    ]));
+    const result = await new LangChainModelAdapter("openai-responses", request).completeTurn(inputFor("openai-responses"));
+    expect(result.toolCalls).toEqual([{ id: call.call_id, name: call.name, arguments: "{}" }]);
   });
 
   it.each([
@@ -962,7 +1081,7 @@ describe("LangChainModelAdapter", () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 
-  it("continues without browser screenshot bytes when the selected model has no vision support", async () => {
+  it.each(["browser", "computer"] as const)("continues without %s screenshot bytes when the selected model has no vision support", async (source) => {
     const request = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({
         error: { message: "This model does not support image" },
@@ -974,13 +1093,13 @@ describe("LangChainModelAdapter", () => {
     const input = multimodalInput("openai-chat-completions");
     const image = input.messages[0]?.attachments[1];
     if (image === undefined) throw new Error("Expected an image attachment.");
-    image.source = "browser";
+    image.source = source;
 
     await new LangChainModelAdapter("openai-chat-completions", request).completeTurn(input);
 
     expect(request).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(recordBody(request, 1))).not.toContain("image_url");
-    expect(JSON.stringify(recordBody(request, 1))).toContain("浏览器截图字节已省略");
+    expect(JSON.stringify(recordBody(request, 1))).toContain(source === "browser" ? "浏览器截图字节已省略" : "窗口截图字节已省略");
   });
 
   it("passes cancellation to the LangChain stream without remapping it", async () => {

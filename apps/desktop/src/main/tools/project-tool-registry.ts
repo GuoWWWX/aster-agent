@@ -36,6 +36,7 @@ import { terminateProcessTree } from "./terminate-process-tree.js";
 const MAX_READ_FILE_BYTES = 250_000;
 // A full replacement can contain both the old and new text in the persisted diff.
 const MAX_EDIT_FILE_BYTES = 200_000;
+const MAX_EDITABLE_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_READ_LINES = 400;
 const MAX_FIND_RESULTS = 500;
 const MAX_COMMAND_LENGTH = 4_000;
@@ -970,11 +971,9 @@ export class ProjectToolRegistry {
    * recognized by `classifyError` as `CONFLICT`/`FILE_CHANGED` — instead of the
    * `ToolExecutionResult` JSON envelope `applyPreparedChange` uses for model consumption.
    *
-   * The stale-check reads through `ProjectRegistry.readFile()` (2 MB preview boundary)
-   * rather than this class's own `readEditableFile()` (200 KB model-tool boundary):
-   * the UI already let the user open and edit files up to the larger boundary, so the
-   * write path must honor the same limit or a mid-sized file would open editable and
-   * then inexplicably fail to save.
+   * The stale-check reads through `ProjectRegistry.readFile()` so user saves retain
+   * the same text/binary preview semantics as the UI. Model tools accept bounded
+   * localized edits to the same 2 MB source files while keeping input payloads small.
    */
   public async writeUserFile(
     input: WriteProjectFileInput,
@@ -1369,7 +1368,7 @@ export class ProjectToolRegistry {
       {
         cwd: workingDirectory,
         detached: process.platform !== "win32",
-        env: commandEnvironmentWithBundledRipgrep(process.env),
+        env: commandEnvironmentWithBundledRipgrep(process.env, terminal.shell),
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
       },
@@ -1715,8 +1714,12 @@ export class ProjectToolRegistry {
     try {
       const fileInfo = await stat(filePath);
       if (!fileInfo.isFile()) throw new Error("Requested path is not a file.");
-      if (fileInfo.size > MAX_EDIT_FILE_BYTES) {
-        throw new Error("Requested file exceeds the edit size limit.");
+      if (fileInfo.size > MAX_EDITABLE_FILE_BYTES) {
+        throw new ToolArgumentsError("文件超过可编辑大小上限。", [{
+          code: "too_big",
+          path: ["path"],
+          message: `目标文件为 ${fileInfo.size} 字节，可编辑上限为 ${MAX_EDITABLE_FILE_BYTES} 字节。不能通过缩小补丁解决；请说明限制，不要重复提交相同请求。`,
+        }]);
       }
       const contents = await readFile(filePath, "utf8");
       if (contents.includes("\u0000")) throw new Error("Requested file is not UTF-8 text.");
@@ -1735,6 +1738,13 @@ export class ProjectToolRegistry {
   }
 
   private change(input: Omit<PreparedFileChange, "diff">): ToolExecution {
+    if (input.content !== null && Buffer.byteLength(input.content, "utf8") > MAX_EDITABLE_FILE_BYTES) {
+      throw new ToolArgumentsError("修改后的文件超过可编辑大小上限。", [{
+        code: "too_big",
+        path: ["path"],
+        message: `修改后文件的 UTF-8 大小不能超过 ${MAX_EDITABLE_FILE_BYTES} 字节；请减少新增内容后重新生成变更。`,
+      }]);
+    }
     return {
       change: {
         ...input,
@@ -1999,8 +2009,22 @@ export class ProjectToolRegistry {
 
 export function commandEnvironmentWithBundledRipgrep(
   environment: NodeJS.ProcessEnv,
+  shell?: TerminalShell,
 ): NodeJS.ProcessEnv {
   const nextEnvironment = { ...environment };
+  if (process.platform === "win32" && shell === "powershell") {
+    // Electron may inherit PS7's module path, whose Utility module cannot load
+    // in Windows PowerShell. Prefer that shell's built-ins, preserving custom paths.
+    const systemRootKey = Object.keys(environment).find((key) => key.toLowerCase() === "systemroot");
+    const systemRoot = systemRootKey === undefined ? undefined : environment[systemRootKey];
+    if (systemRoot !== undefined && systemRoot.length > 0) {
+      const modulePathKey = Object.keys(nextEnvironment).find((key) => key.toLowerCase() === "psmodulepath") ?? "PSModulePath";
+      const coreModules = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");
+      const inheritedModules = (nextEnvironment[modulePathKey] ?? "").split(path.delimiter)
+        .filter((entry) => entry.length > 0 && entry.toLowerCase() !== coreModules.toLowerCase());
+      nextEnvironment[modulePathKey] = [coreModules, ...inheritedModules].join(path.delimiter);
+    }
+  }
   const pathKey = Object.keys(nextEnvironment).find((key) => key.toLowerCase() === "path") ?? "PATH";
   const currentPath = nextEnvironment[pathKey] ?? "";
   const ripgrepDirectory = path.dirname(rgPath);

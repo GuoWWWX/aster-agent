@@ -100,7 +100,7 @@ Queue/Steer 在模型已经返回无工具结果后到达时，Executor 会在�
 
 取消使用 Runtime 的 `AbortSignal` 传入 Graph、ChatModel 和工具；取消不会重放已经开始的副作用。Runtime 只提供上限配置和错误映射，不再维护第二个 Agent 工具循环。
 
-模型调用上限和图递归上限是两层不同的保护：`modelCallLimitMiddleware` 按同一 `thread_id` 统计真实模型调用，项目的 `MAX_AGENT_LOOPS` 映射为该限制；LangGraph 的 `recursionLimit` 统计 `createAgent` 内部所有图节点步数（包括 Middleware、模型和 ToolNode），不能直接把它当成模型轮数。该上限是异常失控保护，不是日常任务预算：普通 Run 最多允许 64 次模型调用，正常任务依靠模型自行结束。第 63 次是最后一个可使用工具的模型轮，要求把必要工具和任务清单收尾合并；第 64 次不再下发工具定义，只允许模型依据已有证据给出最终回答并如实说明未完成项。Executor 仍为每个 Run 设置 `max(25, maxSteps * 8 + 8)` 的图预算；只有模型长期不停止并违反最终回答边界，或图本身异常递归时，才映射为模型运行最终保护错误。
+模型调用上限和图递归上限是两层不同的保护：`modelCallLimitMiddleware` 按同一 `thread_id` 统计真实模型调用，项目的 `MAX_AGENT_LOOPS` 映射为该限制；LangGraph 的 `recursionLimit` 统计 `createAgent` 内部所有图节点步数（包括 Middleware、模型和 ToolNode），不能直接把它当成模型轮数。该上限是异常失控保护，不是日常任务预算：普通 Run 最多允许 64 次模型调用，正常任务依靠模型自行结束。第 63 次是最后一个可使用工具的模型轮，要求把必要工具和任务清单收尾合并；第 64 次不再下发工具定义，只允许模型依据已有证据给出最终回答并如实说明未完成项。Executor 仍为每个 Run 设置 `max(25, maxSteps * 8 + 8)` 的图预算。若达到上限后仍需调用模型（包括最后一次回答期间新到回执），或图本身异常递归，则映射为模型运行最终保护错误，沿既有执行暂停机制阻止未读回执自动另起 Run 绕过保护。已经生成的回答保留，尚未消费的消息保持未读；用户明确继续后才解除暂停并读取，权限沿原显式输入规则处理。正常子代理完成后的自动唤醒保持不变。
 
 ### 4.1 框架能力采用矩阵
 
@@ -120,7 +120,11 @@ Queue/Steer 在模型已经返回无工具结果后到达时，Executor 会在�
 
 ## 5. 模型适配方向
 
+〔FACT｜apps/desktop/src/main/model/langchain-model-adapter.ts:848〕Responses 工具参数以 completed 最终响应的 function_call 输出为准，修复 SDK 增量未拼齐时把完整参数变成空对象的问题。仍复用 LangChain 响应元数据及原 JSON/Schema 校验，不增加 SSE 解析器或第二套工具循环；无最终快照时沿用原流式调用，其他 Provider 不变。回归覆盖同名多调用、缺失／部分 delta、最终快照替换、非法 JSON／非对象拒绝及真实空对象不补猜字段。
+
 保留中立的 `ModelProviderAdapter` 作为应用端口，但实现改为 LangChain-backed adapter。这样上下文压缩、连接测试和现有测试调用方不需要同时改变，Provider 协议解析不再由项目手写。
+
+对话请求可通过 `CompleteTurnInput.cacheKey` 提供稳定、不含正文的会话范围；OpenAI Chat／Responses 工厂将其传入 LangChain `promptCacheKey`，复用 SDK 的请求映射。Runtime 主链按会话而非 Run 生成范围，未提供范围的独立调用和其他 Provider 保持原行为，不新增手写协议层。
 
 ```text
 ModelConfiguration
@@ -178,6 +182,9 @@ LangGraph 的 Checkpoint 只负责图恢复，不替代现有业务状态：
 
 - `thread_id` 使用稳定的 `runId`/图线程标识，不能使用模型提供的任意值。
 - `NodeSqliteCheckpointSaver` 实现 LangGraph `BaseCheckpointSaver` 的 `getTuple/list/put/putWrites/deleteThread` 合同。
+- 检查点按 `thread_id + checkpoint_ns + channel + channel_version` 复用已保存的通道值；每个检查点只保存恢复元数据和通道引用，同版本值不重复序列化。Middleware 可能为相同历史生成新版本；这类值及相同 pending writes 经序列化后用内容哈希识别，保存指向已有值的引用，避免重复压缩和落盘。通道数据与引用在同一个 SQLite 事务内提交，线程清理同时删除通道数据；独立旧库导入也携带通道表。旧完整检查点保持可读，不回写历史数据。
+- 64 KiB 以上的通道值及 pending writes 在 Node 工作线程池中异步 deflate 压缩，仅在体积缩小时采用；序列化类型保留原格式，读取时异步解压后交给原 serde。压缩不截断上下文、不减少安全边界，也不改变 interrupt/resume 的特殊写入语义。
+- Responses v2 的 Provider 回放状态不保存响应中回显的 `instructions/tools`，已有标准化 usage 时也移除重复原始 usage；响应 ID、输出、加密推理与其他 Provider 字段继续保留。新响应落盘和旧历史进入图状态时执行同一精简规则，不重写已有 JSONL，也不改变当前请求的系统提示或工具配置。
 - Checkpoint 表和 writes 表使用独立命名空间或独立数据库文件，迁移由项目 `DatabaseMigrationRunner` 管理。
 - `putWrites` 必须允许在对应 Checkpoint 行落库前保存 interrupt、resume 等中间写入；writes 表不能用指向 Checkpoint 表的数据库外键强制错误的调用顺序，二者由相同的 `thread_id + checkpoint_ns + checkpoint_id` 逻辑键关联，并由 `deleteThread` 同时清理。普通节点写入保持首次结果以避免重放副作用，`interrupt/resume/error/scheduled` 等负索引特殊写入必须按 LangGraph Checkpointer 合同覆盖旧值，否则新的审批决定会被旧恢复值吞掉并错误跳过原 Tool Call。
 - 业务数据库先提交可见事实，再发事件；图 Checkpoint 只在节点安全边界写入，恢复时重新读取并校验业务 Run 状态。
@@ -243,3 +250,5 @@ LangGraph 的 Checkpoint 只负责图恢复，不替代现有业务状态：
 ## 10. 当前未宣称的能力
 
 本方案本身不表示 MCP Runtime、Skill 脚本执行、running Run 自动恢复、完整长期团队 Supervisor、受管浏览器或远程 Agent Server 已实现。代码和 Capability 只有在对应测试与端到端证据齐备后才更新为已实现。
+
+群公开回复的完成边（2026-10-18）：Runtime 仅对本轮群请求、来自成功 post_team_message 的工具结果给出 finishRun；普通工具与私聊不受影响。现有 ToolNode 完成本工具批后保存 finishAfterTools，框架 beforeModel 完成门沿 jumpTo=end 收尾，位于模型调用上限检查之前，避免最后一次合法发布被误判为超限；不靠取消 Run，也不新增模型循环。新 Steer／成员输入优先消费，进展消息可显式继续。旧检查点缺少标记时默认 false；中断恢复仍走原幂等工具事实，成功发布不重放。

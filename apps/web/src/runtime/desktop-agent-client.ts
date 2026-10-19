@@ -1,3 +1,4 @@
+import type { TaskContextScope, TaskCompletionPolicy, SetTaskCompletionPolicyInput, ResolveChatReferencesInput, ChatReference, ListTaskContextsInput, TaskContextPage, TaskContextDetail, UpdateTaskContextInput, TaskContext, LinkTaskContextInput, MergeTaskContextsInput, ReadTeamChatInput, TeamChatPage, PostTeamChatInput, TeamChatMessage, TeamChatMember, MarkTeamChatReadInput } from "@agent/protocol";
 import type { HtmlPreview, HtmlPreviewRequest } from "@agent/protocol";
 import type { AnswerUserQuestionInput, UserQuestion, BackgroundCommand, StopBackgroundCommandInput, BackgroundCommandOutput, ReadBackgroundCommandInput } from "@agent/protocol";
 import type { ScheduledTask, SaveScheduledTaskInput, ScheduledTaskReference } from "@agent/protocol";
@@ -148,6 +149,10 @@ import type {
 export class DesktopAgentClientAdapter implements AgentClient {
   public htmlPreview(input: HtmlPreviewRequest): Promise<HtmlPreview | null> { return this.desktopBridge.htmlPreview(input); }
   private readonly conversationRunEventListeners = new Set<ConversationRunEventListener>();
+  private readonly conversationStreamScopes = new Map<ConversationRunEventListener, readonly string[]>();
+  private streamSubscriptionUpdatePending = false;
+  private requestedStreamScope: string | null = null;
+  private streamReplayRequested = false;
   private disposeConversationRunEventBridge: (() => void) | null = null;
 
   public constructor(private readonly desktopBridge: DesktopBridge) {}
@@ -380,6 +385,13 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.getIntegrationConfiguration();
   }
 
+  public getComputerUseConfiguration() { return this.desktopBridge.getComputerUseConfiguration(); }
+  public saveComputerUseConfiguration(input: ComputerUseConfiguration, baselineApplications?: ComputerApplication[]) { return this.desktopBridge.saveComputerUseConfiguration(input, baselineApplications); }
+  public chooseComputerApplication() { return this.desktopBridge.chooseComputerApplication(); }
+  public getComputerUseApplicationIcons() { return this.desktopBridge.getComputerUseApplicationIcons(); }
+  public getComputerUseStatus() { return this.desktopBridge.getComputerUseStatus(); }
+  public startComputerUse() { return this.desktopBridge.startComputerUse(); }
+  public stopComputerUse() { return this.desktopBridge.stopComputerUse(); }
   public getBrowserConfiguration(): Promise<BrowserConfiguration> {
     return this.desktopBridge.getBrowserConfiguration();
   }
@@ -588,6 +600,22 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.listProjects();
   }
 
+  public getTaskCompletionPolicy(input: TaskContextScope): Promise<TaskCompletionPolicy> { return this.desktopBridge.getTaskCompletionPolicy(input); }
+  public setTaskCompletionPolicy(input: SetTaskCompletionPolicyInput): Promise<TaskCompletionPolicy> { return this.desktopBridge.setTaskCompletionPolicy(input); }
+  public resolveChatReferences(input: ResolveChatReferencesInput): Promise<ChatReference[]> { return this.desktopBridge.resolveChatReferences(input); }
+  public listTaskContexts(input: ListTaskContextsInput): Promise<TaskContextPage> { return this.desktopBridge.listTaskContexts(input); }
+  public getTaskContext(input: { id: string; beforeSourceSequence?: number; limit?: number }): Promise<TaskContextDetail> { return this.desktopBridge.getTaskContext(input); }
+  public updateTaskContext(input: UpdateTaskContextInput): Promise<TaskContext> { return this.desktopBridge.updateTaskContext(input); }
+  public linkTaskContext(input: LinkTaskContextInput): Promise<void> { return this.desktopBridge.linkTaskContext(input); }
+  public mergeTaskContexts(input: MergeTaskContextsInput): Promise<TaskContext> { return this.desktopBridge.mergeTaskContexts(input); }
+  public readTeamChat(input: ReadTeamChatInput): Promise<TeamChatPage> { return this.desktopBridge.readTeamChat(input); }
+  public postTeamChat(input: PostTeamChatInput): Promise<TeamChatMessage> { return this.desktopBridge.postTeamChat(input); }
+  public getTeamChatCoordinationConversation(input: { teamInstanceId: string; agentId?: string }): Promise<ConversationSummary> { return this.desktopBridge.getTeamChatCoordinationConversation(input); }
+  public getTeamChatMembers(input: { teamInstanceId: string }): Promise<TeamChatMember[]> { return this.desktopBridge.getTeamChatMembers(input); }
+  public markTeamChatRead(input: MarkTeamChatReadInput): Promise<void> { return this.desktopBridge.markTeamChatRead(input); }
+  public resumeTeamChatDelivery(input: { id: string }): Promise<void> { return this.desktopBridge.resumeTeamChatDelivery(input); }
+  public cancelTeamChatDelivery(input: { id: string }): Promise<void> { return this.desktopBridge.cancelTeamChatDelivery(input); }
+  public pauseTeamChat(input: { teamInstanceId: string }): Promise<void> { return this.desktopBridge.pauseTeamChat(input); }
   public listTeamWorkItems(input: ListTeamWorkItemsInput): Promise<TeamWorkItemView[]> {
     return this.desktopBridge.listTeamWorkItems(input);
   }
@@ -671,7 +699,11 @@ export class DesktopAgentClientAdapter implements AgentClient {
 
   public onConversationRunEvent(
     listener: ConversationRunEventListener,
+    streamingConversationIds: readonly string[] = [],
   ): () => void {
+    this.conversationStreamScopes.set(listener, streamingConversationIds);
+    this.streamReplayRequested ||= streamingConversationIds.length > 0;
+    this.scheduleStreamSubscriptions();
     this.conversationRunEventListeners.add(listener);
     this.disposeConversationRunEventBridge ??= this.desktopBridge.onConversationRunEvent((event) => {
       for (const currentListener of [...this.conversationRunEventListeners]) {
@@ -684,11 +716,31 @@ export class DesktopAgentClientAdapter implements AgentClient {
       if (disposed) return;
       disposed = true;
       this.conversationRunEventListeners.delete(listener);
+      this.conversationStreamScopes.delete(listener);
+      this.scheduleStreamSubscriptions();
       if (this.conversationRunEventListeners.size === 0) {
         this.disposeConversationRunEventBridge?.();
         this.disposeConversationRunEventBridge = null;
       }
     };
+  }
+
+  private scheduleStreamSubscriptions(): void {
+    if (this.streamSubscriptionUpdatePending) return;
+    this.streamSubscriptionUpdatePending = true;
+    queueMicrotask(() => {
+      this.streamSubscriptionUpdatePending = false;
+      const ids = [...new Set([...this.conversationStreamScopes.values()].flat())].sort();
+      const key = ids.join(",");
+      const replay = this.streamReplayRequested;
+      this.streamReplayRequested = false;
+      if (key === this.requestedStreamScope && !replay) return;
+      this.requestedStreamScope = key;
+      void this.desktopBridge.setConversationStreamSubscriptions(ids).catch(error => {
+        this.requestedStreamScope = null;
+        console.error("Unable to update conversation stream subscriptions.", error);
+      });
+    });
   }
 
   public onApplicationSettingsChanged(
@@ -857,3 +909,4 @@ export class DesktopAgentClientAdapter implements AgentClient {
     return this.desktopBridge.toggleMaximizeWindow();
   }
 }
+import type { ComputerApplication, ComputerUseConfiguration } from "@agent/protocol";

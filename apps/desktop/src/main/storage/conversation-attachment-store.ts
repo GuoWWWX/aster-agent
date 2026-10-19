@@ -225,23 +225,26 @@ export class ConversationAttachmentStore {
 
   public async saveToolScreenshot(conversationId: string, toolId: string, image: {
     data: string; mimeType: string; contextTokens: number;
+    source?: "browser" | "computer" | "project" | "upload";
   }): Promise<ConversationAttachment> {
     this.database.getConversation(conversationId);
     const bytes = Buffer.from(image.data, "base64");
-    if (bytes.length === 0 || bytes.length > MAX_ATTACHMENT_BYTES || image.mimeType !== "image/jpeg") {
-      throw new Error("Invalid browser screenshot.");
+    const source = image.source === "computer" ? "computer" : "browser";
+    const extension = source === "computer" ? ".png" : ".jpg";
+    if (bytes.length === 0 || bytes.length > MAX_ATTACHMENT_BYTES || image.mimeType !== (source === "computer" ? "image/png" : "image/jpeg")) {
+      throw new Error(`Invalid ${source} screenshot.`);
     }
     const id = randomUUID();
     const directory = this.getAttachmentDirectory(conversationId);
     await mkdir(directory, { recursive: true });
-    const storedPath = path.join(directory, `${id}.jpg`);
+    const storedPath = path.join(directory, `${id}${extension}`);
     await writeFile(storedPath, bytes);
     try {
       return this.database.createToolImageAttachment({
         contextTokens: image.contextTokens, conversationId, createdAt: new Date().toISOString(),
         extractedTextPath: null, id, kind: "image", messageId: toolId, pendingMessageId: null,
-        mimeType: image.mimeType, name: `browser-${conversationId}-${id}.jpg`, projectPath: null, sizeBytes: bytes.length,
-        source: "browser", storedPath, truncated: false,
+        mimeType: image.mimeType, name: `${source}-${conversationId}-${id}${extension}`, projectPath: null, sizeBytes: bytes.length,
+        source, storedPath, truncated: false,
       });
     } catch (error) {
       await this.removeFile(storedPath);
@@ -272,10 +275,12 @@ export class ConversationAttachmentStore {
     extractedTextPath: string | null;
     storedPath: string;
   } {
-    if (attachment.source === "browser") {
-      const reference = /^browser-([0-9a-f-]{36})-([0-9a-f-]{36})\.jpg$/iu.exec(attachment.name);
-      if (reference === null) throw new Error("Invalid browser image storage reference.");
-      return { extractedTextPath: null, storedPath: path.join(this.getAttachmentDirectory(reference[1]!), `${reference[2]}.jpg`) };
+    if (attachment.source === "browser" || attachment.source === "computer") {
+      const pattern = attachment.source === "browser" ? /^browser-([0-9a-f-]{36})-([0-9a-f-]{36})\.jpg$/iu : /^computer-([0-9a-f-]{36})-([0-9a-f-]{36})\.png$/iu;
+      const reference = pattern.exec(attachment.name);
+      const extension = attachment.source === "browser" ? ".jpg" : ".png";
+      if (reference === null) throw new Error(`Invalid ${attachment.source} image storage reference.`);
+      return { extractedTextPath: null, storedPath: path.join(this.getAttachmentDirectory(reference[1]!), `${reference[2]}${extension}`) };
     }
     const directory = this.getAttachmentDirectory(attachment.conversationId);
     const extension = path.extname(attachment.name).toLowerCase();

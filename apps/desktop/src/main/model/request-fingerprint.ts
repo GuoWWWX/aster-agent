@@ -34,6 +34,7 @@ export function requestFingerprint(body: unknown): RequestFingerprint | undefine
   const settings = Object.fromEntries([
     "model", "reasoning", "reasoning_effort", "thinking", "temperature", "top_p",
     "max_tokens", "max_completion_tokens", "max_output_tokens", "tool_choice", "parallel_tool_calls",
+    "prompt_cache_key", "prompt_cache_retention", "prompt_cache_options", "service_tier",
   ].map((key) => [key, fields[key] ?? null]));
   return {
     version: 1,

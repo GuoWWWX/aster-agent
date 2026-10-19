@@ -79,7 +79,15 @@ export function summarizeTaskFileChanges(timeline: readonly ConversationTimeline
   };
 }
 
-type ChangeAnchor = { id: string; runId?: string | null; runIds?: readonly string[]; continuationMessages?: readonly { runId: string | null }[] };
+type ChangeAnchor = {
+  id: string;
+  kind: string;
+  role?: string;
+  messageType?: string;
+  runId?: string | null;
+  runIds?: readonly string[];
+  continuationMessages?: readonly { runId: string | null }[];
+};
 export function conversationChangeSummaries(timeline: readonly ConversationTimelineItem[]): ReadonlyMap<string, TaskFileChangeSummary> {
   const runs = new Map<string, ConversationTimelineItem[]>();
   for (const item of timeline) {
@@ -92,8 +100,19 @@ export function conversationChangeAnchors(summaries: ReadonlyMap<string, TaskFil
   const result = new Map<string, { runId: string; summary: TaskFileChangeSummary }[]>();
   for (const [runId, summary] of summaries) {
     if (runId === activeRunId || summary.files.length === 0) continue;
-    const anchor = anchors.findLast(item => item.runId === runId || item.runIds?.includes(runId) || item.continuationMessages?.some(message => message.runId === runId));
+    let anchorIndex = anchors.findLastIndex(item => item.runId === runId || item.runIds?.includes(runId) || item.continuationMessages?.some(message => message.runId === runId));
+    if (anchorIndex < 0) continue;
+    // Automatic continuations belong to the same visible turn, even when their
+    // final message has a different Run ID. Keep changes below all of its text.
+    while (anchorIndex + 1 < anchors.length) {
+      const next = anchors[anchorIndex + 1];
+      if ((next?.kind === "message" && next.role === "user")
+        || (next?.kind === "agent_message" && next.messageType !== "task_result")) break;
+      anchorIndex += 1;
+    }
+    const anchor = anchors[anchorIndex];
     if (anchor === undefined) continue;
+    if (activeRunId !== null && (anchor.runId === activeRunId || anchor.runIds?.includes(activeRunId))) continue;
     const items = result.get(anchor.id) ?? []; items.push({ runId, summary }); result.set(anchor.id, items);
   }
   return result;

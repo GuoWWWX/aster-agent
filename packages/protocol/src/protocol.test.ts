@@ -110,6 +110,9 @@ describe("protocol bootstrap contract", () => {
       status: "unread",
     });
     expect(message.fileChanges).toEqual([]);
+    expect(conversationAgentMessageItemSchema.parse({ ...message, deliveryMode: "queue" }).deliveryMode).toBe("queue");
+    expect(conversationAgentMessageItemSchema.parse({ ...message, deliveryMode: "steer" }).deliveryMode).toBe("steer");
+    expect(conversationAgentMessageItemSchema.safeParse({ ...message, deliveryMode: "replace" }).success).toBe(false);
     expect(conversationRunEventSchema.parse({
       conversationId: message.conversationId,
       message,

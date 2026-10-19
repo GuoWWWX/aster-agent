@@ -44,7 +44,7 @@ const spawnArgumentsSchema = z.object({
   reasoning: modelReasoningOptionSchema.optional()
     .describe("Optional enabled reasoning option. Use it only when providerId and modelId are selected explicitly."),
   task: z.string().trim().min(1).max(20_000)
-    .describe("Independent, bounded, and verifiable task for the Subagent."),
+    .describe("Independent, bounded, and verifiable task. The child does not inherit parent history: include relevant user constraints, environment facts, file ownership, dependencies, and acceptance criteria."),
 }).strict().superRefine((value, context) => {
   if ((value.providerId === undefined) !== (value.modelId === undefined)) {
     context.addIssue({

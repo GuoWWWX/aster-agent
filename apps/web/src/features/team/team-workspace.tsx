@@ -351,6 +351,12 @@ export function TeamWorkspace({
     return () => window.clearTimeout(timeout);
   }, [loadConversationActivities]);
 
+  const graphStreamScope = view === "board" ? "" : [
+    ...(selectedRuntimeWorkItem?.executionConversationId ? [selectedRuntimeWorkItem.executionConversationId] : []),
+    ...(selectedExecution?.agents.map(member => member.conversation.id) ?? []),
+  ].sort().join(",");
+  useEffect(() => agentClient.onConversationRunEvent(() => {}, graphStreamScope === "" ? [] : graphStreamScope.split(",")), [agentClient, graphStreamScope]);
+
   useEffect(() => agentClient.onConversationRunEvent((event) => {
     if (event.type === "assistant.delta") {
       if (view === "board" || selectedRuntimeWorkItem === null) return;

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { IPC_CHANNELS, DEFAULT_MODEL_CATALOG } from "@agent/protocol";
+import { IPC_CHANNELS, DEFAULT_MODEL_CATALOG, DEFAULT_COMPUTER_USE_CONFIGURATION } from "@agent/protocol";
 
 const electronMocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -16,6 +16,23 @@ vi.mock("electron", () => ({
 import { createDesktopBridge } from "./api.js";
 
 describe("Desktop preload bridge", () => {
+  it("sends computer settings and their grant snapshot as one scoped IPC payload", async () => {
+    const bridge = createDesktopBridge();
+    await bridge.saveComputerUseConfiguration(DEFAULT_COMPUTER_USE_CONFIGURATION, []);
+    expect(electronMocks.invoke).toHaveBeenLastCalledWith(IPC_CHANNELS.computerUseSaveConfiguration, { configuration: DEFAULT_COMPUTER_USE_CONFIGURATION, baselineApplications: [] });
+    await bridge.getComputerUseApplicationIcons();
+    expect(electronMocks.invoke).toHaveBeenLastCalledWith(IPC_CHANNELS.computerUseGetApplicationIcons);
+  });
+  it("opens the actual group coordination conversation through the scoped bridge", async () => {
+    const input = { teamInstanceId: "00000000-0000-4000-8000-000000000001", agentId: "default-agent" };
+    await createDesktopBridge().getTeamChatCoordinationConversation(input);
+    expect(electronMocks.invoke).toHaveBeenCalledWith(IPC_CHANNELS.teamChatCoordinationConversation, input);
+  });
+  it("pauses a group through its own scoped channel", async () => {
+    const input = { teamInstanceId: "00000000-0000-4000-8000-000000000001" };
+    await createDesktopBridge().pauseTeamChat(input);
+    expect(electronMocks.invoke).toHaveBeenCalledWith(IPC_CHANNELS.teamChatPause, input);
+  });
   it("sends model catalog updates through their dedicated IPC channel", async () => {
     await createDesktopBridge().saveModelCatalog(DEFAULT_MODEL_CATALOG);
     expect(electronMocks.invoke).toHaveBeenCalledWith(IPC_CHANNELS.modelSaveCatalog, DEFAULT_MODEL_CATALOG);

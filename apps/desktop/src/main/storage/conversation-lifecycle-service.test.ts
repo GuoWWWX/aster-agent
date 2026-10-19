@@ -19,6 +19,28 @@ afterEach(async () => {
 });
 
 describe("ConversationLifecycleService", () => {
+  it("acknowledges an unread result without rebuilding released history or skipping its future replay", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "conversation-viewed-cold-"));
+    temporaryDirectories.push(directory);
+    const database = new AgentDatabase(":memory:"); const log = new ThreadLog(directory);
+    const projector = new EventProjector(database, log);
+    const service = new ConversationLifecycleService(database, log, projector);
+    try {
+      const conversation = service.createConversation(null); const runId = crypto.randomUUID();
+      log.append(conversation.id, { type: "run_created", payload: { runId, modelId: "test-model" } });
+      log.append(conversation.id, { type: "run_finished", payload: { runId, status: "completed" } });
+      projector.projectConversation(conversation.id);
+      projector.releaseInactiveConversationHistories();
+      const read = vi.spyOn(log, "read");
+      expect(service.markConversationResultViewed(conversation.id).hasUnreadResult).toBe(false);
+      expect(read).not.toHaveBeenCalled();
+      expect(database.getThreadLogProjectionCursor(conversation.id)).toBeNull();
+      projector.ensureConversationHistoryProjected(conversation.id);
+      expect(read).toHaveBeenCalledOnce();
+      expect(database.getConversation(conversation.id).hasUnreadResult).toBe(false);
+      expect(projector.verifyConversation(conversation.id).isConsistent).toBe(true);
+    } finally { database.close(); }
+  });
   it.each(["completed", "failed"] as const)("persists viewed %s results through restart, checkpoints and lazy history reload", async (status) => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "conversation-viewed-"));
     temporaryDirectories.push(directory);

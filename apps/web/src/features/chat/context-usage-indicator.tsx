@@ -1,4 +1,3 @@
-import { LoadingState } from "../../components/ui/loading.js";
 import { type ConversationContextUsage } from "@agent/protocol";
 import { ArrowDown, ArrowUp, Gauge, Target, Timer } from "lucide-react";
 import { Fragment, type CSSProperties, type ReactElement } from "react";
@@ -30,13 +29,6 @@ type ProviderCacheInlineMetric = {
   shortLabel: string;
   tone: "caution" | "danger" | "good" | "neutral" | "success" | "warning";
   value: string;
-};
-
-export type LiveModelMetrics = {
-  estimatedInputTokens: number | null;
-  estimatedOutputTokens: number;
-  firstTokenLatencyMs: number | null;
-  outputTokensPerSecond: number | null;
 };
 
 export function ContextUsageIndicator({
@@ -164,12 +156,10 @@ export function ContextUsageIndicator({
 
 export function ProviderCacheStatus({
   usage,
-  live,
 }: {
   usage: ConversationContextUsage | null;
-  live?: LiveModelMetrics | null;
 }): ReactElement {
-  const metrics = providerCacheInlineMetrics(usage, live);
+  const metrics = providerCacheInlineMetrics(usage);
   const cacheMetrics = metrics.filter((metric) => metric.kind === "cache");
   const accessibleLabel = `${metrics.map((metric) => (
     `${metric.label} ${metric.value}`
@@ -243,11 +233,8 @@ export function ProviderCacheStatus({
         </button>
       </PopoverTrigger>
       <PopoverContent align="center" className="context-usage-indicator__content">
-        {live == null ? null : <p className="text-[var(--app-muted-foreground)]">
-          生成中约每秒更新。≈ 表示本地估算：发送量按本次消息、附件和工具定义计算，返回量与速度按已收到的正文和公开推理计算，不含隐藏推理；速度不含首字等待。缓存仍为最近完成请求的实际计量，结束后以服务端上报为准。
-        </p>}
         {usage === null ? (
-          live == null ? <LoadingState label="正在读取 Provider 缓存计量…" compact /> : null
+          <p className="text-[var(--app-muted-foreground)]">尚未收到服务端计量；完成一次模型请求后显示实际值。</p>
         ) : (
           <ProviderCacheDetails usage={usage} />
         )}
@@ -311,10 +298,11 @@ function ProviderCacheDetails({
         </strong>
       </div>
       <p className="my-1 text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">
-        本次指最近一次模型 API 请求，不是整轮任务。平均值按有缓存明细的输入 Token 加权。
+        本次指最近一次已上报实际用量的模型 API 请求，不是整轮任务。新请求等待、执行工具或取消时保留最近实际值，收到新计量后再更新。
+        平均值按有缓存明细的输入 Token 加权；未上报不算作零命中。
         速度为服务端输出 Token 数除以首个输出到响应结束的时长，不含首字等待；缺少计量时显示 --。
         {latest?.hitRate == null && cache?.lastReportedHitRate !== undefined
-          ? ` 本次暂无缓存明细，显示 --；上次有效命中率为 ${formatCachePercentage(cache.lastReportedHitRate)}，不作为本次值。`
+          ? ` 本次缓存明细未上报；上次有效命中率为 ${formatCachePercentage(cache.lastReportedHitRate)}，不作为本次值。`
           : null}
       </p>
       {latest === null ? (
@@ -325,17 +313,17 @@ function ProviderCacheDetails({
         <dl className="mb-0 mt-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[length:var(--app-font-size-auxiliary)] leading-5">
           <dt className="text-[var(--app-muted-foreground)]">最近输入</dt>
           <dd className="m-0 text-right tabular-nums text-[var(--app-foreground)]">
-            {formatTokenCount(latest.inputTokens)}
+            {formatReportedTokenCount(latest.inputTokens)} tokens
           </dd>
           <dt className="text-[var(--app-muted-foreground)]">最近输出</dt>
           <dd className="m-0 text-right tabular-nums text-[var(--app-foreground)]">
-            {formatTokenCount(latest.outputTokens)}
+            {formatReportedTokenCount(latest.outputTokens)} tokens
           </dd>
           <dt className="text-[var(--app-muted-foreground)]">最近缓存命中</dt>
           <dd className="m-0 text-right tabular-nums text-[var(--app-foreground)]">
             {latest.cachedInputTokens === null
               ? "Provider 未上报"
-              : formatTokenCount(latest.cachedInputTokens)}
+              : `${formatReportedTokenCount(latest.cachedInputTokens)} tokens`}
           </dd>
           <dt className="text-[var(--app-muted-foreground)]">最近命中率</dt>
           <dd className="m-0 text-right font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
@@ -354,7 +342,7 @@ function ProviderCacheDetails({
               <>
                 <dt className="text-[var(--app-muted-foreground)]">缓存写入</dt>
                 <dd className="m-0 text-right tabular-nums text-[var(--app-foreground)]">
-                  最近 {formatTokenCount(latest.cacheCreationInputTokens ?? 0)} · 累计 {formatTokenCount(cumulative?.cacheCreationInputTokens ?? 0)}
+                  最近 {formatReportedTokenCount(latest.cacheCreationInputTokens ?? 0)} tokens · 累计 {formatReportedTokenCount(cumulative?.cacheCreationInputTokens ?? 0)} tokens
                 </dd>
               </>
             ) : null}
@@ -492,16 +480,14 @@ export function providerCacheLabel(
 
 export function providerCacheInlineMetrics(
   usage: ConversationContextUsage | null,
-  live?: LiveModelMetrics | null,
 ): ProviderCacheInlineMetric[] {
   const latest = usage?.providerCache?.latest ?? null;
   const cumulative = usage?.providerCache?.cumulative;
   const hitRate = latest?.hitRate ?? null;
-  const latency = live == null ? usage?.providerCache?.firstTokenLatencyMs : live.firstTokenLatencyMs;
-  const speed = live == null ? usage?.providerCache?.outputTokensPerSecond : live.outputTokensPerSecond;
-  const inputTokens = live == null ? latest?.inputTokens : live.estimatedInputTokens;
-  const outputTokens = live == null ? latest?.outputTokens : live.estimatedOutputTokens;
-  const prefix = live == null ? "" : "≈";
+  const latency = usage?.providerCache?.firstTokenLatencyMs;
+  const speed = usage?.providerCache?.outputTokensPerSecond;
+  const inputTokens = latest?.inputTokens;
+  const outputTokens = latest?.outputTokens;
   return [
     {
       kind: "latency",
@@ -515,21 +501,21 @@ export function providerCacheInlineMetrics(
       label: "发送",
       shortLabel: "发送",
       tone: "success",
-      value: inputTokens == null ? "--" : `${prefix}${formatCompactTokenCount(inputTokens)}`,
+      value: inputTokens == null ? "--" : formatReportedTokenCount(inputTokens),
     },
     {
       kind: "output",
       label: "返回",
       shortLabel: "返回",
       tone: "danger",
-      value: outputTokens == null ? "--" : `${prefix}${formatCompactTokenCount(outputTokens)}`,
+      value: outputTokens == null ? "--" : formatReportedTokenCount(outputTokens),
     },
     {
       kind: "throughput",
       label: "速度",
       shortLabel: "速度",
       tone: "neutral",
-      value: `${speed == null ? "--" : `${prefix}${speed.toFixed(1)}`} tok/s`,
+      value: `${speed == null ? "--" : speed.toFixed(1)} tok/s`,
     },
     {
       kind: "cache",
@@ -537,7 +523,7 @@ export function providerCacheInlineMetrics(
       shortLabel: "本次",
       tone: providerCacheTone(hitRate),
       value: hitRate === null
-        ? "--"
+        ? latest === null ? "--" : "未上报"
         : formatCachePercentage(hitRate),
     },
     {
@@ -546,7 +532,7 @@ export function providerCacheInlineMetrics(
       shortLabel: "平均",
       tone: providerCacheTone(cumulative?.hitRate),
       value: cumulative?.hitRate === null || cumulative === undefined
-        ? "--"
+        ? (cumulative?.requestCount ?? 0) > 0 ? "未上报" : "--"
         : formatCachePercentage(cumulative.hitRate),
     },
   ];
@@ -575,13 +561,13 @@ function providerCacheToneTextClassName(
 }
 
 function formatCachePercentage(value: number): string {
-  return `${Math.round(Math.min(Math.max(value, 0), 1) * 100)}%`;
+  const percentage = Math.min(Math.max(value, 0), 1) * 100;
+  if (percentage > 0 && percentage < 0.1) return "<0.1%";
+  return `${percentage.toLocaleString("en-US", { maximumFractionDigits: 1 })}%`;
 }
 
-function formatCompactTokenCount(value: number): string {
-  if (value < 1_000) return `${value}`;
-  if (value < 10_000) return `${(value / 1_000).toFixed(1)}K`;
-  return `${Math.round(value / 1_000)}K`;
+function formatReportedTokenCount(value: number): string {
+  return value.toLocaleString("en-US");
 }
 
 function getContextPressure(

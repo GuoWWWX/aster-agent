@@ -33,6 +33,7 @@ import {
 } from "./model-request-error.js";
 import { parseToolArguments } from "./tool-arguments.js";
 import { requestFingerprint, type RequestFingerprint } from "./request-fingerprint.js";
+import { compactProviderReplayState } from "./provider-replay-state.js";
 
 const LANGCHAIN_PROVIDER_STATE_VERSION = 2;
 const AI_SDK_PROVIDER_STATE_VERSION = 1;
@@ -351,7 +352,7 @@ function matchingProviderState(
   return state?.apiFormat === input.configuration.apiFormat
     && state.baseUrl === input.configuration.baseUrl
     && state.modelId === input.configuration.modelId
-    ? state
+    ? compactProviderReplayState(state)
     : null;
 }
 
@@ -437,28 +438,23 @@ function orderToolResultsBeforeInterleavedMessages(
   return ordered;
 }
 
-function withoutSupersededBrowserScreenshots(messages: readonly ModelMessage[]): ModelMessage[] {
-  let latestBrowserImageIndex = -1;
+function withoutSupersededToolScreenshots(messages: readonly ModelMessage[]): ModelMessage[] {
+  const latestImageIndexes = new Map<string, number>();
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index]?.attachments.some(
-      (attachment) => attachment.kind === "image" && attachment.source === "browser",
-    )) {
-      latestBrowserImageIndex = index;
-      break;
+    for (const attachment of messages[index]?.attachments ?? []) {
+      if (attachment.kind === "image" && (attachment.source === "browser" || attachment.source === "computer") && !latestImageIndexes.has(attachment.source)) {
+        latestImageIndexes.set(attachment.source, index);
+      }
     }
   }
-  if (latestBrowserImageIndex < 0) return [...messages];
+  if (latestImageIndexes.size === 0) return [...messages];
   return messages.map((message, messageIndex) => {
-    if (messageIndex >= latestBrowserImageIndex) return message;
-    if (!message.attachments.some(
-      (attachment) => attachment.kind === "image" && attachment.source === "browser",
-    )) return message;
     return {
       ...message,
       attachments: message.attachments.map((attachment) => {
-        if (attachment.kind !== "image" || attachment.source !== "browser") return attachment;
+        if (attachment.kind !== "image" || messageIndex >= (latestImageIndexes.get(attachment.source) ?? -1)) return attachment;
         return {
-          content: `[Earlier browser screenshot superseded by a newer capture]\n${modelImageAttachmentCaption(attachment)}`,
+          content: `[Earlier ${attachment.source} screenshot superseded by a newer capture]\n${modelImageAttachmentCaption(attachment)}`,
           contextTokens: attachment.contextTokens,
           id: attachment.id,
           kind: "text" as const,
@@ -478,7 +474,7 @@ function toLangChainMessages(
   messages: readonly ModelMessage[],
   input: CompleteTurnInput,
 ): BaseMessage[] {
-  const boundedMessages = withoutSupersededBrowserScreenshots(messages);
+  const boundedMessages = withoutSupersededToolScreenshots(messages);
   const orderedMessages = input.configuration.apiFormat === "openai-chat-completions"
     || input.configuration.apiFormat === "openai-responses"
     ? orderToolResultsBeforeInterleavedMessages(boundedMessages)
@@ -712,6 +708,7 @@ function defaultFactory(input: CompleteTurnInput, request: typeof fetch): LangCh
       ...common,
       apiKey,
       configuration: { baseURL: baseUrl, fetch: openAiChatCompatibilityFetch(input, request) },
+      ...(input.cacheKey === undefined ? {} : { promptCacheKey: input.cacheKey }),
       model: modelId,
       maxTokens: input.maxOutputTokens,
       useResponsesApi: false,
@@ -722,6 +719,7 @@ function defaultFactory(input: CompleteTurnInput, request: typeof fetch): LangCh
       ...common,
       apiKey,
       configuration: { baseURL: baseUrl, fetch: openAiResponsesCompatibilityFetch(request) },
+      ...(input.cacheKey === undefined ? {} : { promptCacheKey: input.cacheKey }),
       model: modelId,
       maxTokens: input.maxOutputTokens,
       useResponsesApi: true,
@@ -778,18 +776,29 @@ function nonNegativeTokenCount(value: unknown): number | undefined {
 
 function providerTokenUsage(
   message: LangChainAssistantMessage,
+  apiFormat: ModelApiFormat,
 ): ModelProviderTokenUsage | undefined {
-  const metadata = isRecord(message) ? message.usage_metadata : undefined;
-  if (!isRecord(metadata)) return undefined;
-  const inputTokens = nonNegativeTokenCount(metadata.input_tokens);
-  if (inputTokens === undefined) return undefined;
-  const outputTokens = nonNegativeTokenCount(metadata.output_tokens) ?? 0;
-  const totalTokens = nonNegativeTokenCount(metadata.total_tokens)
+  const normalized = isRecord(message) ? message.usage_metadata : undefined;
+  const metadata = isRecord(normalized) ? normalized : null;
+  // Compatible Chat streams may omit delta.role. LangChain then aggregates a
+  // generic ChatMessageChunk and drops normalized usage, but retains raw usage.
+  const response = message.response_metadata;
+  const raw = apiFormat === "openai-chat-completions" && isRecord(response.usage)
+    ? response.usage : null;
+  const inputTokens = nonNegativeTokenCount(metadata?.input_tokens)
+    ?? nonNegativeTokenCount(raw?.prompt_tokens);
+  const outputTokens = nonNegativeTokenCount(metadata?.output_tokens)
+    ?? nonNegativeTokenCount(raw?.completion_tokens);
+  if (inputTokens === undefined || outputTokens === undefined) return undefined;
+  const totalTokens = nonNegativeTokenCount(metadata?.total_tokens)
+    ?? nonNegativeTokenCount(raw?.total_tokens)
     ?? inputTokens + outputTokens;
-  const inputDetails = isRecord(metadata.input_token_details)
+  const inputDetails = isRecord(metadata?.input_token_details)
     ? metadata.input_token_details
     : null;
-  const cachedInputTokens = nonNegativeTokenCount(inputDetails?.cache_read);
+  const rawInputDetails = isRecord(raw?.prompt_tokens_details) ? raw.prompt_tokens_details : null;
+  const cachedInputTokens = nonNegativeTokenCount(inputDetails?.cache_read)
+    ?? nonNegativeTokenCount(rawInputDetails?.cached_tokens);
   const cacheCreationInputTokens = nonNegativeTokenCount(inputDetails?.cache_creation);
   return {
     ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
@@ -808,7 +817,7 @@ function providerState(
   const additionalKwargs = jsonSnapshot(message.additional_kwargs);
   const content = jsonSnapshot(message.content);
   const responseMetadata = jsonSnapshot(message.response_metadata);
-  const usage = providerTokenUsage(message);
+  const usage = providerTokenUsage(message, input.configuration.apiFormat);
   if (
     content === undefined
     && additionalKwargs === undefined
@@ -817,7 +826,7 @@ function providerState(
   ) {
     return undefined;
   }
-  return {
+  return compactProviderReplayState({
     apiFormat: input.configuration.apiFormat,
     baseUrl: input.configuration.baseUrl,
     modelId: input.configuration.modelId,
@@ -829,7 +838,7 @@ function providerState(
       ...(fingerprint === undefined ? {} : { requestFingerprint: fingerprint }),
     },
     ...(usage === undefined ? {} : { usage }),
-  };
+  });
 }
 
 function mergeMessageChunks(
@@ -844,7 +853,15 @@ function mergeMessageChunks(
   return next;
 }
 
-function assistantToolCalls(message: BaseMessage): unknown[] {
+function assistantToolCalls(message: BaseMessage, apiFormat: ModelApiFormat): unknown[] {
+  const metadata = message.response_metadata;
+  if (apiFormat === "openai-responses" && isRecord(metadata)
+    && metadata.status === "completed" && Array.isArray(metadata.output)) {
+    // The SDK's streamed calls can retain partial/empty args even though the
+    // completed response contains the full arguments. Use that final snapshot.
+    return metadata.output.flatMap((item: unknown) => isRecord(item) && item.type === "function_call"
+      ? [{ id: item.call_id, name: item.name, args: item.arguments }] : []);
+  }
   const calls = isRecord(message) ? message.tool_calls : undefined;
   return Array.isArray(calls) ? calls : [];
 }
@@ -904,7 +921,7 @@ function withoutHistoricalImageData(messages: ModelMessage[]): ModelMessage[] | 
   }
   if (latestUserIndex < 0) return null;
   if (messages[latestUserIndex]?.attachments.some(
-    (attachment) => attachment.kind === "image" && attachment.source !== "browser",
+    (attachment) => attachment.kind === "image" && attachment.source !== "browser" && attachment.source !== "computer",
   )) {
     return null;
   }
@@ -913,17 +930,18 @@ function withoutHistoricalImageData(messages: ModelMessage[]): ModelMessage[] | 
   const result = messages.map((message, messageIndex) => {
     if (!message.attachments.some((attachment) => (
       attachment.kind === "image"
-      && (messageIndex < latestUserIndex || attachment.source === "browser")
+      && (messageIndex < latestUserIndex || attachment.source === "browser" || attachment.source === "computer")
     ))) return message;
     changed = true;
     const attachments = message.attachments.map((attachment) => {
       if (
         attachment.kind !== "image"
-        || (messageIndex >= latestUserIndex && attachment.source !== "browser")
+        || (messageIndex >= latestUserIndex && attachment.source !== "browser" && attachment.source !== "computer")
       ) return attachment;
       return {
         content: `${attachment.source === "browser"
           ? "[当前模型不支持视觉输入，浏览器截图字节已省略]"
+          : attachment.source === "computer" ? "[当前模型不支持视觉输入，窗口截图字节已省略；请使用 observe 读取控件]"
           : "[历史图片未发送给当前模型]"}\n${modelImageAttachmentCaption(attachment)}`,
         contextTokens: attachment.contextTokens,
         id: attachment.id,
@@ -1036,7 +1054,7 @@ export class LangChainModelAdapter implements ModelProviderAdapter {
       if (latest === null) {
         throw new ModelResponseError("LangChain model returned no response chunks.");
       }
-      const toolCalls = assistantToolCalls(latest).map(normalizeToolCall);
+      const toolCalls = assistantToolCalls(latest, this.apiFormat).map(normalizeToolCall);
       const savedProviderState = providerState(input, latest, fingerprint);
       if (savedProviderState !== undefined) {
         if (firstTokenLatencyMs !== undefined) savedProviderState.firstTokenLatencyMs = firstTokenLatencyMs;

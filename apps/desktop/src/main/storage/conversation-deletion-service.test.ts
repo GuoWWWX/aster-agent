@@ -2,6 +2,7 @@ import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { DEFAULT_AGENT_DIRECTORY_CONFIGURATION } from "@agent/protocol";
 
 import { ProjectRegistry } from "../projects/project-registry.js";
 import { AgentDatabase } from "./agent-database.js";
@@ -60,6 +61,25 @@ async function importTextAttachment(
 }
 
 describe("ConversationDeletionService", () => {
+  it("rejects deleting a bound team member before touching its history or membership", async () => {
+    const fixture = await createFixture();
+    fixture.database.syncTeamDirectory(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
+    const lead = fixture.database.createConversation(fixture.project.id, { teamId: "default-team", threadKind: "team_lead" });
+    const member = fixture.database.createConversation(fixture.project.id, {
+      agent: { id: "qa-engineer", name: "测试工程师", role: "验收", instructions: "执行验收", isDefault: false },
+      parentConversationId: lead.id, teamId: "default-team", threadKind: "agent",
+    });
+    fixture.database.bindTeamMemberConversation({ agentId: "qa-engineer", conversationId: member.id, teamExecutionConversationId: lead.id });
+    fixture.threadLog.append(member.id, { type: "conversation_created", payload: { conversation: member } });
+    const service = new ConversationDeletionService(fixture.database, fixture.attachments, fixture.projects, null, fixture.threadLog);
+
+    await expect(service.requestDeletion(member.id)).rejects.toThrow("Team member conversations are retained");
+    expect(() => service.requestUndoableDeletion(member.id)).toThrow("Team member conversations are retained");
+    expect(fixture.database.listIncompleteConversationDeletionTasks()).toEqual([]);
+    expect(fixture.database.listTeamMemberConversations(lead.id).map(item => item.id)).toEqual([member.id]);
+    expect(fixture.threadLog.read(member.id)?.events).toHaveLength(1);
+  });
+
   it("retains deleted conversations and attachments for undo only in the owning process", async () => {
     const fixture = await createFixture();
     const conversation = fixture.database.createConversation(fixture.project.id);

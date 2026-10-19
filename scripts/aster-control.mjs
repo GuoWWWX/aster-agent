@@ -6,7 +6,9 @@ const commands = { projects: "projects.list", list: "conversations.list", create
   read: "conversations.read", send: "messages.send", cancel: "runs.cancel", open: "conversations.open", "configure-model": "models.configure",
   models: "models.status", questions: "user_questions.list", answer: "user_questions.answer", approve: "approvals.resolve",
   programs: "background_commands.list", "program-output": "background_commands.read", "stop-program": "background_commands.stop", permission: "conversations.set_permission",
-  rename: "conversations.rename", archive: "conversations.archive" };
+  rename: "conversations.rename", archive: "conversations.archive",
+  "team-chat-send": "team_chat.post", "team-chat-read": "team_chat.read", "team-chat-members": "team_chat.members", "team-chat-pause": "team_chat.pause",
+  "computer-status": "computer_control.status", "computer-start": "computer_control.start", "computer-stop": "computer_control.stop" };
 
 export async function* controlEvents(response) {
   if (!response.ok || response.body === null) throw new Error(`Event subscription failed (${response.status}).`);
@@ -120,7 +122,7 @@ export async function runControl(argv, { out = (value) => console.log(JSON.strin
   let events;
   const request = async (command, commandInput) => {
     const response = await fetchControl(`${connection.url}/v1/commands`, {
-      method: "POST", headers, body: JSON.stringify({ command, input: commandInput }), signal: AbortSignal.any([abort.signal, AbortSignal.timeout(15_000)]),
+      method: "POST", headers, body: JSON.stringify({ command, input: commandInput }), signal: AbortSignal.any([abort.signal, AbortSignal.timeout(command === "computer_control.start" ? 125_000 : 15_000)]),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(`${result.error?.code ?? response.status}: ${result.error?.message ?? "Command failed."}`);

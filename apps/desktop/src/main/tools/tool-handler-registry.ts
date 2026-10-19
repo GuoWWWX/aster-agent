@@ -31,12 +31,17 @@ export type ToolHandler<TContext extends ToolHandlerExecutionContext> = {
 };
 
 export class ToolHandlerRegistry<TContext extends ToolHandlerExecutionContext> {
-  public constructor(private readonly handlers: readonly ToolHandler<TContext>[]) {}
+  public constructor(
+    private readonly handlers: readonly ToolHandler<TContext>[],
+    private readonly allowedTools: (context: ToolAvailabilityContext) => ReadonlySet<string> | null = () => null,
+  ) {}
 
   public getDefinitions(context: ToolAvailabilityContext): ModelToolDefinition[] {
+    const allowed = this.allowedTools(context);
     const definitions = this.handlers
       .filter((handler) => handler.isAvailable(context))
-      .flatMap((handler) => handler.getDefinitions());
+      .flatMap((handler) => handler.getDefinitions().filter(tool =>
+        (allowed === null || allowed.has(tool.name)) && handler.isAvailable({ ...context, toolName: tool.name })));
     const names = new Set<string>();
     for (const definition of definitions) {
       if (names.has(definition.name)) {
@@ -61,6 +66,8 @@ export class ToolHandlerRegistry<TContext extends ToolHandlerExecutionContext> {
   }
 
   private findHandler(input: ToolHandlerInput<TContext>): ToolHandler<TContext> {
+    const allowed = this.allowedTools(input.context);
+    if (allowed !== null && !allowed.has(input.toolName)) throw new Error(`Unknown tool: ${input.toolName}`);
     const availableHandlers = this.handlers.filter((handler) =>
       handler.isAvailable({
         conversationId: input.context.conversationId,

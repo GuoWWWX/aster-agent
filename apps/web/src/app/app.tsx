@@ -1,4 +1,4 @@
-import { Scale, CalendarClock, PanelsTopLeft, Settings } from "lucide-react";
+import { Scale, CalendarClock, PanelsTopLeft, Settings, UsersRound } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
 import type {
@@ -23,7 +23,7 @@ import {
 import {
   closeConversationTab,
 } from "../features/chat/conversation-tabs.js";
-import { FUNCTION_TABS, isFunctionTab, reconcileWorkbenchTabs, type WorkbenchTabs } from "../features/chat/workbench-tabs.js";
+import { FUNCTION_TABS, isFunctionTab, teamChatTabId, teamChatInstanceId, reconcileWorkbenchTabs, type WorkbenchTabs } from "../features/chat/workbench-tabs.js";
 import { ConversationActivity } from "../features/chat/conversation-activity.js";
 import { ConversationWorkProvider } from "../features/chat/conversation-work-state.js";
 import {
@@ -121,6 +121,7 @@ export function App(): ReactElement {
   );
   const setActiveActivity = useWorkbenchUiStore((state) => state.setActiveActivity);
   const activeActivity = useWorkbenchUiStore((state) => state.activeActivity);
+  const teamChatTarget = useWorkbenchUiStore((state) => state.teamChatTarget);
   const settingsSection = useWorkbenchUiStore((state) => state.settingsSection);
   const agents = useAgentDirectoryStore((state) => state.agents);
   const teams = useAgentDirectoryStore((state) => state.teams);
@@ -134,28 +135,41 @@ export function App(): ReactElement {
     projectTree.activeProject?.id ?? null,
   );
   const [tabState, setTabState] = useState<WorkbenchTabs>({ ids: [], previewId: null });
-  const openConversationIds = tabState.ids.filter((id) => !isFunctionTab(id));
+  const openConversationIds = tabState.ids.filter((id) => !isFunctionTab(id) && teamChatInstanceId(id) === null);
+  const openTeamChatInstanceIds = useMemo(() => tabState.ids.flatMap(id => { const instanceId = teamChatInstanceId(id); return instanceId === null ? [] : [instanceId]; }), [tabState.ids]);
+  const activeTeamChat = activeActivity === "conversations"
+    ? teamInstances.find(instance => !instance.isArchived && instance.id === teamChatTarget?.instanceId) ?? null : null;
+  const sidebarSession = activeTeamChat === null ? projectSessions.activeSession
+    : projectSessions.sessions.find(session => session.id === (activeTeamChat.sourceConversationId ?? activeTeamChat.rootConversationId)) ?? null;
+  const sidebarBaseProject = activeTeamChat === null ? projectTree.activeProject
+    : projectTree.projects.find(project => project.id === activeTeamChat.projectId) ?? null;
   const activeTabId = activeActivity === "settings" ? "page:settings"
     : activeActivity === "schedules" ? "page:schedules"
-    : activeActivity === "team" || activeActivity === "tasks" ? "page:team" : projectSessions.activeSessionId;
+    : activeActivity === "team" || activeActivity === "tasks" ? "page:team"
+    : teamChatTarget !== null ? teamChatTabId(teamChatTarget.instanceId) : projectSessions.activeSessionId;
   const navigation = useNavigationHistory({
     activity: activeActivity, settingsSection,
     projectId: projectTree.activeProject?.id ?? null,
-    conversationId: projectSessions.activeSessionId,
+    conversationId: teamChatTarget === null ? projectSessions.activeSessionId : null,
+    teamChatId: teamChatTarget?.instanceId ?? null,
   }, (entry) => JSON.stringify(entry), (entry) => {
     setActiveActivity(entry.activity);
     useWorkbenchUiStore.getState().setSettingsSection(entry.settingsSection);
     projectTree.selectProject(entry.projectId);
+    if (entry.activity === "conversations" && entry.teamChatId !== null) { useWorkbenchUiStore.getState().openTeamChat({ instanceId: entry.teamChatId }); return; }
+    useWorkbenchUiStore.getState().closeTeamChat();
     if (entry.conversationId === null) projectSessions.clearSessionSelection();
     else {
       projectSessions.selectSession(entry.conversationId);
     }
-  }, (entry) => (entry.projectId === null || projectTree.projects.some((project) => project.id === entry.projectId))
+  }, (entry) => (entry.teamChatId === null || teamInstances.some(instance => instance.id === entry.teamChatId && !instance.isArchived))
+    && (entry.projectId === null || projectTree.projects.some((project) => project.id === entry.projectId))
     && (entry.conversationId === null || projectSessions.sessions.some(
     (session) => session.id === entry.conversationId && !session.isArchived,
   )));
   const [previousTabSource, setPreviousTabSource] = useState<string | null>(null);
-  const availableConversationIds = projectSessions.sessions.filter((session) => !session.isArchived).map((session) => session.id);
+  const availableConversationIds = [...projectSessions.sessions.filter((session) => !session.isArchived).map((session) => session.id),
+    ...teamInstances.filter(instance => !instance.isArchived).map(instance => teamChatTabId(instance.id))];
   const tabSource = `${activeTabId ?? ""}:${availableConversationIds.join(",")}`;
   // Reconcile only selection/membership changes, before committing child panes.
   // Model deltas and status updates do not schedule a second effect render.
@@ -167,6 +181,11 @@ export function App(): ReactElement {
   const [navigatorLocateRequest, setNavigatorLocateRequest] =
     useState<ProjectNavigatorLocateRequest | null>(null);
   const [fileOpenRequest, setFileOpenRequest] = useState<ProjectFileOpenRequest | null>(null);
+  const groupFileConversation = activeTeamChat === null || activeTeamChat.projectId !== null ? undefined : projectSessions.sessions.find(session =>
+    session.id === fileOpenRequest?.projectId && (session.id === activeTeamChat.rootConversationId || session.parentConversationId === activeTeamChat.rootConversationId));
+  const sidebarProject = sidebarBaseProject ?? (groupFileConversation === undefined ? null : {
+    id: groupFileConversation.id, name: `${groupFileConversation.title} 工作区`, rootPath: groupFileConversation.workspaceRootPath ?? "", isPinned: false,
+  });
   const [gitReviewOpenRequest, setGitReviewOpenRequest] = useState<GitReviewOpenRequest | null>(null);
   const [teamMemberOpenRequest, setTeamMemberOpenRequest] =
     useState<TeamMemberOpenRequest | null>(null);
@@ -178,7 +197,8 @@ export function App(): ReactElement {
   } | null>(null);
   const requestOpenProjectFile = useCallback((projectId: string, path: string): void => {
     setFileOpenRequest({ path, projectId });
-    const conversationId = projectSessions.activeSessionId;
+    const group = useWorkbenchUiStore.getState().teamChatTarget;
+    const conversationId = group === null ? projectSessions.activeSessionId : teamChatTabId(group.instanceId);
     if (conversationId !== null) setFilePanelOpenForConversation(conversationId, true);
   }, [projectSessions.activeSessionId, setFilePanelOpenForConversation]);
   const requestOpenGitReview = useCallback((projectId: string, path?: string): void => {
@@ -216,6 +236,12 @@ export function App(): ReactElement {
       if (isFunctionTab(id)) return [{ id, isRunning: false, title: FUNCTION_TABS[id],
         icon: id === "page:schedules" ? <CalendarClock size={14} /> : id === "page:team" ? <PanelsTopLeft size={14} /> : <Settings size={14} />,
         kind: "page" as const, isPreview: false }];
+      const chatInstanceId = teamChatInstanceId(id);
+      if (chatInstanceId !== null) {
+        const instance = teamInstances.find(candidate => candidate.id === chatInstanceId);
+        return instance === undefined || instance.isArchived ? [] : [{ id, isRunning: false, title: `${instance.name} · 群聊`,
+          icon: <UsersRound size={14} />, kind: "conversation", isPreview: tabState.previewId === id }];
+      }
       const session = projectSessions.sessions.find((candidate) => candidate.id === id);
       if (session === undefined || session.isArchived) return [];
 
@@ -246,7 +272,7 @@ export function App(): ReactElement {
         isPreview: tabState.previewId === session.id,
       }];
     });
-  }, [agents, tabState, projectSessions.sessions, projectTree.projects, teams]);
+  }, [agents, tabState, projectSessions.sessions, projectTree.projects, teams, teamInstances]);
 
   useEffect(() => {
     let disposed = false;
@@ -501,6 +527,7 @@ export function App(): ReactElement {
     member: ProjectSession,
     requestedSourceConversationId?: string,
   ): void => {
+    useWorkbenchUiStore.getState().closeTeamChat();
     const sourceConversationId = requestedSourceConversationId
       ?? sourceConversationIdForMember(member, projectSessions.sessions);
     if (sourceConversationId === null) {
@@ -527,6 +554,9 @@ export function App(): ReactElement {
   }, [projectSessions, projectTree, setActiveActivity, setFilePanelOpenForConversation]);
 
   function selectSession(sessionId: string): void {
+    const chatInstanceId = teamChatInstanceId(sessionId);
+    if (chatInstanceId !== null) { useWorkbenchUiStore.getState().openTeamChat({ instanceId: chatInstanceId }); return; }
+    useWorkbenchUiStore.getState().closeTeamChat();
     if (isFunctionTab(sessionId)) {
       setActiveActivity(sessionId === "page:team" ? "team" : sessionId === "page:schedules" ? "schedules" : "settings");
       return;
@@ -557,6 +587,7 @@ export function App(): ReactElement {
     );
     setTabState({ ids: result.openIds, previewId: tabState.previewId === conversationId ? null : tabState.previewId });
     if (result.nextActiveId === null) {
+      useWorkbenchUiStore.getState().closeTeamChat();
       setActiveActivity("conversations");
       projectSessions.clearSessionSelection();
     } else if (result.nextActiveId !== activeTabId) {
@@ -573,6 +604,7 @@ export function App(): ReactElement {
   }
 
   function closeAllConversationTitlebarTabs(): void {
+    useWorkbenchUiStore.getState().closeTeamChat();
     setTabState({ ids: [], previewId: null });
     setActiveActivity("conversations");
     projectSessions.clearSessionSelection();
@@ -590,6 +622,7 @@ export function App(): ReactElement {
     conversationId: string,
     throughMessageId: string,
   ): Promise<void> => {
+    useWorkbenchUiStore.getState().closeTeamChat();
     const conversation = await agentClient.forkConversation({
       conversationId,
       throughMessageId,
@@ -607,11 +640,15 @@ export function App(): ReactElement {
     sourceConversationId?: string,
     timelineItemId?: string,
   ): void => {
+    setActiveActivity("conversations");
     const ownerConversationId = sourceConversationId
       ?? sourceConversationIdForMember(conversation, projectSessions.sessions)
       ?? conversation.id;
-    if (conversation.projectId !== null) projectTree.selectProject(conversation.projectId);
-    projectSessions.selectSession(ownerConversationId);
+    if (teamChatInstanceId(ownerConversationId) === null) {
+      useWorkbenchUiStore.getState().closeTeamChat();
+      if (conversation.projectId !== null) projectTree.selectProject(conversation.projectId);
+      projectSessions.selectSession(ownerConversationId);
+    }
     setFilePanelOpenForConversation(ownerConversationId, true);
     setTeamMemberOpenRequest((current) => ({
       conversation,
@@ -619,9 +656,10 @@ export function App(): ReactElement {
       sourceConversationId: ownerConversationId,
       timelineItemId: timelineItemId ?? null,
     }));
-  }, [projectSessions, projectTree, setFilePanelOpenForConversation]);
+  }, [projectSessions, projectTree, setFilePanelOpenForConversation, setActiveActivity]);
 
   const navigateToTeamConversation = useCallback((conversationId: string): void => {
+    useWorkbenchUiStore.getState().closeTeamChat();
     const session = projectSessions.sessions.find((candidate) => candidate.id === conversationId);
     if (session?.projectId !== null && session?.projectId !== undefined) {
       projectTree.selectProject(session.projectId);
@@ -670,7 +708,7 @@ export function App(): ReactElement {
         projects={projectTree.projects}
         onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
         navigation={navigation}
-        activeConversationId={projectSessions.activeSessionId}
+        activeConversationId={teamChatTarget === null ? projectSessions.activeSessionId : teamChatTabId(teamChatTarget.instanceId)}
         activeTabId={activeTabId}
         titlebarActivity={<ConversationActivity agentClient={agentClient} sessions={projectSessions.sessions}
           projects={projectTree.projects} onSelect={(id, timelineItemId, ownerConversationId) => {
@@ -704,7 +742,7 @@ export function App(): ReactElement {
           onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
           onCopyText={(text) => agentClient.writeClipboardText(text)}
           onOpenProjectDirectory={(projectId) => agentClient.openProjectDirectory({ projectId })}
-          activeSessionId={projectSessions.activeSessionId}
+          activeSessionId={teamChatTarget === null ? projectSessions.activeSessionId : null}
           agents={agents}
           isCreatingSession={projectSessions.isCreatingSession}
           isLoadingSessions={projectSessions.isLoadingSessions}
@@ -720,12 +758,13 @@ export function App(): ReactElement {
             projectSessions.clearOperationError();
           }}
           onCreateProjectSession={(projectId) => {
+            useWorkbenchUiStore.getState().closeTeamChat();
             setActiveActivity("conversations");
             setNavigatorLocateRequest(null);
             projectTree.selectProject(projectId);
             void projectSessions.createProjectSession(projectId);
           }}
-          onCreateTemporarySession={() => { setActiveActivity("conversations"); void projectSessions.createTemporarySession(); }}
+          onCreateTemporarySession={() => { useWorkbenchUiStore.getState().closeTeamChat(); setActiveActivity("conversations"); void projectSessions.createTemporarySession(); }}
           onCreateTeamInstance={createTeamInstance}
           onDeleteSession={(sessionId) => projectSessions.deleteSession(sessionId)}
           onDeleteTeamInstance={deleteTeamInstance}
@@ -782,16 +821,18 @@ export function App(): ReactElement {
           isCreatingSession={projectSessions.isCreatingSession}
           projects={projectTree.projects}
           protectedSessionIds={openConversationIds}
+          openTeamChatInstanceIds={openTeamChatInstanceIds}
           sessions={projectSessions.sessions}
           locateTimelineItem={conversationLocateRequest}
           teamInstances={teamInstances}
           onAddProject={() => projectTree.addProject()}
           onCreateProjectSession={(projectId) => {
+            useWorkbenchUiStore.getState().closeTeamChat();
             setNavigatorLocateRequest(null);
             projectTree.selectProject(projectId);
             void projectSessions.createProjectSession(projectId);
           }}
-          onCreateTemporarySession={() => void projectSessions.createTemporarySession()}
+          onCreateTemporarySession={() => { useWorkbenchUiStore.getState().closeTeamChat(); void projectSessions.createTemporarySession(); }}
           onForkConversation={forkConversationFromMessage}
           onLocateProject={(projectId) => locateInProjectNavigator("project", projectId)}
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}
@@ -812,12 +853,14 @@ export function App(): ReactElement {
       }
       filePanel={
         <RightSidebarWorkspace
-          activeProject={projectTree.activeProject}
-          activeSession={projectSessions.activeSession}
+          activeProject={sidebarProject}
+          activeSession={sidebarSession}
+          teamChat={activeTeamChat}
           agentClient={agentClient}
           fileOpenRequest={fileOpenRequest}
           gitReviewOpenRequest={gitReviewOpenRequest}
           teamMemberOpenRequest={teamMemberOpenRequest}
+          onRenameTeamInstance={renameTeamInstance}
           onLocateProject={(projectId) => locateInProjectNavigator("project", projectId)}
           onLocateSession={(sessionId) => locateInProjectNavigator("session", sessionId)}
           onLocateConversationItem={locateConversationItem}

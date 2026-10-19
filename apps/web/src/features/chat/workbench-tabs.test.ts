@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { reconcileWorkbenchTabs } from "./workbench-tabs.js";
+import { teamChatTabId, teamChatInstanceId, reconcileWorkbenchTabs } from "./workbench-tabs.js";
 
 describe("workbench preview tabs", () => {
+  it("reuses a team chat tab independently from member conversations and the board", () => {
+    const chatId = teamChatTabId("team-instance");
+    const first = reconcileWorkbenchTabs({ ids: ["member", "page:team"], previewId: null }, ["member", chatId], chatId);
+    expect(first.ids).toEqual(["member", "page:team", chatId]);
+    expect(reconcileWorkbenchTabs(first, ["member", chatId], chatId)).toBe(first);
+    expect(teamChatInstanceId(chatId)).toBe("team-instance"); expect(teamChatInstanceId("member")).toBeNull();
+    expect(reconcileWorkbenchTabs(first, ["member"], "member").ids).toEqual(["member", "page:team"]);
+  });
   it("keeps the scheduled task page separate from conversation previews and opens it once", () => {
     const first = reconcileWorkbenchTabs({ ids: ["a"], previewId: "a" }, ["a", "b"], "page:schedules");
     expect(first).toEqual({ ids: ["a", "page:schedules"], previewId: "a" });

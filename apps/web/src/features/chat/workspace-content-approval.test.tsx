@@ -542,6 +542,38 @@ it("shows merged file changes without a task list, then keeps the review card af
   expect(useWorkbenchUiStore.getState().conversationReviewViewRequest).toMatchObject({ conversationId: PARENT_ID, runId: RUN_ID, path: "src/app.ts" });
 });
 
+it("keeps a final summary visible before a failure notice and file changes below a cancelled continuation", async () => {
+  const client = new MockAgentClient();
+  const edit: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID,
+    batchId: null, name: "write_file", status: "completed", arguments: '{"path":"src/app.ts"}',
+    result: "{}", diff: "--- a/src/app.ts\n+++ b/src/app.ts\n+fixed\n", createdAt: "2026-10-18T00:00:00Z" };
+  const summary: ConversationTimelineItem = { id: MESSAGE_ID, kind: "message", conversationId: PARENT_ID,
+    runId: RUN_ID, attachments: [], modelId: null, role: "assistant", status: "completed",
+    content: "已落地核心修复，但本轮尚未完成稳定性验收。120 项通过、1 项失败。", createdAt: "2026-10-18T00:00:01Z" };
+  const failure = { ...summary, id: WORK_ITEM_ID, status: "failed" as const, content: "模型长时间没有自行结束，已在最终保护边界停止。", createdAt: "2026-10-18T00:00:02Z" };
+  const cancelled = { ...summary, id: CHILD_ID, runId: CHILD_ID, status: "cancelled" as const,
+    content: "我会从上轮失败的断言继续，先修正并重跑。", createdAt: "2026-10-18T00:00:03Z" };
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([edit, summary, failure, cancelled]);
+  const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  await act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      session={session({ id: PARENT_ID, title: "终态总结回归" })} /></TooltipProvider>);
+    await flushConversationWorkspace();
+  });
+  const summaryElement = container.querySelector(`[data-conversation-timeline-item="${MESSAGE_ID}"]`);
+  const failureElement = container.querySelector(`[data-conversation-timeline-item="${WORK_ITEM_ID}"]`);
+  const cancelledElement = container.querySelector(`[data-conversation-timeline-item="${CHILD_ID}"]`);
+  const changes = container.querySelector('[data-run-file-changes]');
+  if (summaryElement === null || failureElement === null || cancelledElement === null || changes === null) throw new Error("Missing final summary, terminal notices or changes.");
+  expect(summaryElement.textContent).toContain(summary.content);
+  expect(summaryElement.closest(".conversation-run-activity")).toBeNull();
+  expect(container.querySelector(".conversation-run-activity")?.textContent).not.toContain(summary.content);
+  expect(summaryElement.compareDocumentPosition(failureElement) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(failureElement.compareDocumentPosition(cancelledElement) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(cancelledElement.compareDocumentPosition(changes) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(container.querySelectorAll('[data-run-file-changes]')).toHaveLength(1);
+});
+
 it.each([
   { name: "final code", content: "```html\n<h1>动画</h1>\n```", status: "completed" as const, intermediate: false, shouldPreview: true },
   { name: "final file", content: "```html-preview\nexamples/demo.html\n```", status: "completed" as const, intermediate: false, shouldPreview: false },
@@ -814,13 +846,15 @@ describe("Conversation cache status", () => {
         await flushConversationWorkspace();
       });
       expect(metric()?.textContent).toContain("80%");
-      expect(container.querySelector('[data-token-direction="up"]')?.textContent).toContain("≈1.2K");
+      expect(container.querySelector('[data-token-direction="up"]')?.textContent).toContain("100");
+      expect(container.querySelector('[data-token-direction="down"]')?.textContent).toContain("10");
+      expect(container.querySelector('[data-token-direction="up"]')?.textContent).not.toContain("≈");
       pending.providerCache!.firstTokenLatencyMs = 1200;
       await act(async () => {
         listener({ type: "model.first_token_received", conversationId: PARENT_ID, runId: RUN_ID, latencyMs: 1200 });
         await flushConversationWorkspace();
       });
-      expect(container.querySelector('[data-cache-metric="首字"]')?.textContent).toContain("1.20s");
+      expect(container.querySelector('[data-cache-metric="首字"]')?.textContent).toContain("250ms");
       expect(metric()?.textContent).toContain("80%");
       load.mockRejectedValue(new Error("IPC unavailable"));
       await finish("failed");
@@ -1161,6 +1195,35 @@ describe("Communication tool identities", () => {
       expect(container.textContent).not.toContain(PARENT_ID);
     },
   );
+
+  it("shows every batch recipient through the existing conversation links and the shared message only once", async () => {
+    const client = new MockAgentClient();
+    const parent = session({ id: PARENT_ID, title: "主对话" });
+    const targets = [session({ id: CHILD_ID, title: "接口分析师", teamId: "default-team" }),
+      session({ id: WORK_ITEM_ID, title: "接口测试员", teamId: "default-team" })];
+    const tool: ConversationToolItem = { arguments: JSON.stringify({ conversationIds: targets.map(target => target.id), content: "共同接口确认" }), batchId: null,
+      conversationId: PARENT_ID, createdAt: "2026-10-18T00:00:00Z", diff: null, id: TOOL_ID, kind: "tool", name: "send_agent_message", runId: RUN_ID, status: "completed",
+      result: JSON.stringify({ ok: true, value: { messages: targets.map(target => ({ content: "共同接口确认", conversationId: target.id,
+        senderConversationId: PARENT_ID, senderTitle: "主对话" })) } }) };
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool]);
+    const onOpenTeamConversation = vi.fn();
+    const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => { root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+      relatedSessions={[parent, ...targets]} session={parent} onOpenTeamConversation={onOpenTeamConversation} /></TooltipProvider>);
+      await flushConversationWorkspace(); });
+    expandWorkProcess(container);
+    for (const target of targets) {
+      const link = container.querySelector<HTMLButtonElement>(`button[aria-label="在侧边打开 团队成员：${target.title}"]`);
+      expect(link).not.toBeNull(); act(() => link?.click());
+      expect(onOpenTeamConversation).toHaveBeenCalledWith(target, PARENT_ID);
+    }
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="展开调用详情"]')?.click());
+    expect(container.textContent?.match(/共同接口确认/g)).toHaveLength(1);
+    for (const target of targets) {
+      expect(container.querySelectorAll(`button[aria-label="在侧边打开 团队成员：${target.title}"]`)).toHaveLength(2);
+      expect(container.textContent).not.toContain(target.id);
+    }
+  });
 });
 
 describe("Conversation scroll navigation", () => {
@@ -1876,6 +1939,61 @@ describe("Model request retry timeline", () => {
     expect(terminalRetry?.className).not.toContain("bg-[var(--app-panel)]");
     expect(container.querySelector<HTMLElement>("[data-conversation-composer-clearance]")?.style.height)
       .toBe("196px");
+  });
+});
+
+describe("Conversation Agent identity after a failed Run", () => {
+  it("keeps Agent selection available before a conversation is bound", async () => {
+    const client = new MockAgentClient();
+    const target = session({ id: PARENT_ID, title: "新对话" });
+    vi.spyOn(client, "listConversationTimeline").mockResolvedValue([]);
+    const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => {
+      root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={target} /></TooltipProvider>);
+      await flushConversationWorkspace();
+    });
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="对话 Agent"]')?.disabled).toBe(false);
+  });
+  it.each(["cached", "late-binding"])("keeps the bound member when %s selection points at the default Agent", async (mode) => {
+    const lead = DEFAULT_AGENT_DIRECTORY_CONFIGURATION.agents.find(agent => agent.id === "team-lead")!;
+    const defaultAgent = DEFAULT_AGENT_DIRECTORY_CONFIGURATION.agents.find(agent => agent.isDefault)!;
+    const storageKey = `agent-workbench.conversation-agent.${PARENT_ID}`;
+    const previousSelection = window.localStorage.getItem(storageKey);
+    window.localStorage.setItem(storageKey, defaultAgent.id);
+    try {
+      const client = new MockAgentClient();
+      const target = session({ id: PARENT_ID, title: "Team Lead", agentId: lead.id, lastRunStatus: "failed" });
+      const retry: ConversationTimelineItem = { id: TOOL_ID, kind: "model_retry", conversationId: PARENT_ID,
+        runId: RUN_ID, attempt: 5, maxAttempts: 5, status: "failed", retryInMs: null,
+        reason: "HTTP 502: Upstream service temporarily unavailable", createdAt: "2026-10-17T00:00:00Z", updatedAt: "2026-10-17T00:00:31Z" };
+      vi.spyOn(client, "listConversationTimeline").mockResolvedValue([retry]);
+      const send = vi.spyOn(client, "sendConversationMessage").mockResolvedValue({ kind: "started", runId: CHILD_ID,
+        userMessage: { id: MESSAGE_ID, kind: "message", conversationId: PARENT_ID, runId: CHILD_ID, role: "user",
+          content: "继续", modelId: null, status: "completed", attachments: [], createdAt: "2026-10-17T00:01:00Z" } });
+      const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+      await act(async () => {
+        root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null}
+          session={mode === "late-binding" ? { ...target, agentId: null } : target} /></TooltipProvider>);
+        await flushConversationWorkspace();
+      });
+      if (mode === "late-binding") await act(async () => {
+        root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={target} /></TooltipProvider>);
+        await flushConversationWorkspace();
+      });
+      const selector = container.querySelector<HTMLButtonElement>('button[aria-label="对话 Agent"]');
+      expect(selector?.textContent).toContain(lead.name);
+      expect(selector?.disabled).toBe(true);
+      const composer = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入任务"]');
+      act(() => { setNativeTextValue(composer, "继续"); composer?.dispatchEvent(new InputEvent("input", { bubbles: true })); });
+      await act(async () => { container.querySelector<HTMLFormElement>("form")?.requestSubmit(); await flushConversationWorkspace(); });
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send.mock.calls[0]?.[0]).toMatchObject({ content: "继续", conversationId: PARENT_ID, agent: { id: lead.id } });
+      expect(container.textContent).not.toContain("操作失败");
+      expect(composer?.value).toBe("");
+    } finally {
+      if (previousSelection === null) window.localStorage.removeItem(storageKey);
+      else window.localStorage.setItem(storageKey, previousSelection);
+    }
   });
 });
 

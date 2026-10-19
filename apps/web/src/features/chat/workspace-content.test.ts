@@ -58,6 +58,11 @@ import {
 } from "./workspace-content.js";
 
 describe("tool details visibility", () => {
+  it("reuses screenshot details for physical-pixel computer windows", () => {
+    expect(toolHasDisplayableDetails({ id: "computer", kind: "tool", conversationId: "conversation", runId: "run", batchId: null,
+      createdAt: "2026-10-19T00:00:00Z", name: "computer_use", arguments: '{"action":"screenshot","windowId":"123"}', diff: null, status: "completed",
+      result: '{"ok":true,"value":{"coordinateSpace":"window_physical_pixels","width":800,"height":600,"mimeType":"image/png"}}' })).toBe(true);
+  });
   it("omits legacy command waits from the work process while retaining the command and final answer", () => {
     const projected = groupRunActivities([{ ...tool, name: "run_command" }, { ...tool, id: "wait", name: "wait_for_commands" }, { ...tool, id: "read", name: "read_command_output" }, assistantMessage("answer", "已完成")]);
     expect(JSON.stringify(projected)).not.toContain("wait_for_commands");
@@ -578,6 +583,44 @@ describe("run activity projection", () => {
       ? projected[0].items[1]
       : null).toMatchObject({ content: "我先检查一下项目。" });
     expect(projected[1]).toMatchObject({ content: "检查完成。", kind: "message" });
+  });
+
+  it.each(["failed", "cancelled"] as const)("keeps the final summary outside the process before a %s terminal notice", (status) => {
+    const summary = assistantMessage("summary", "已落地修复，120 项通过、1 项失败，尚未完成验收。");
+    const notice = assistantMessage("terminal", "当前结果已保留。", { status, durationMs: 12_000 });
+    const projected = groupRunActivities([tool("write_file"), summary, notice]);
+    expect(projected.map(item => item.kind)).toEqual(["run_activity", "message", "message"]);
+    expect(projected[0]?.kind === "run_activity" ? projected[0].items.map(item => item.kind) : []).toEqual(["tool"]);
+    expect(projected[1]).toMatchObject({ id: summary.id, content: summary.content });
+    expect(projected[2]).toMatchObject({ id: notice.id, status });
+  });
+
+  it("does not fold a final summary when a task checklist is closed afterward", () => {
+    const summary = assistantMessage("summary", "验证完成。");
+    expect(groupRunActivities([tool("write_file"), summary, tool("close_task_list")]))
+      .toMatchObject([{ kind: "run_activity", items: [{ kind: "tool" }] }, { kind: "message", id: summary.id }]);
+  });
+
+  it("preserves progress between batches in one foldable process after history reload", () => {
+    const timeline = [
+      assistantMessage("start", "先复现重复值问题。"),
+      { ...tool("run_command"), id: "reproduce" },
+      assistantMessage("finding", "已复现重复值丢失，接着验证修复。"),
+      { ...tool("run_command"), id: "verify" },
+      assistantMessage("final", "修复通过，随机对照 2000 组通过。", { durationMs: 12_000 }),
+    ];
+    const projected = groupRunActivities(JSON.parse(JSON.stringify(timeline)) as typeof timeline);
+    expect(projected).toHaveLength(2);
+    expect(projected[0]?.kind === "run_activity"
+      ? projected[0].items.map((item) => item.kind) : []).toEqual([
+      "activity_progress", "tool", "activity_progress", "tool",
+    ]);
+    expect(projected[0]?.kind === "run_activity"
+      ? projected[0].items.filter((item) => item.kind === "activity_progress")
+        .map((item) => item.content) : []).toEqual([
+      "先复现重复值问题。", "已复现重复值丢失，接着验证修复。",
+    ]);
+    expect(projected[1]).toMatchObject({ id: "final", kind: "message" });
   });
 
   it("hides a leading tagged thinking summary from completed work history", () => {
