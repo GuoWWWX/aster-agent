@@ -3333,6 +3333,7 @@ export function ConversationWorkspace({
         <TaskListLauncher agentClient={agentClient} scope={{ conversationId: session.id }} workspaceId={session.id} active={active} />
         {compact ? null : (
           <ConversationHeaderControls
+            active={active}
             agentClient={agentClient}
             conversationId={session.id}
             project={project}

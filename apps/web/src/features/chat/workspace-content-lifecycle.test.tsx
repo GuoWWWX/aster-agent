@@ -36,6 +36,22 @@ async function render(client: MockAgentClient, activeRunId: string | null): Prom
 }
 const header = (): HTMLButtonElement => container.querySelector<HTMLButtonElement>(".conversation-run-activity > button")!;
 
+it("keeps cached workspace background menus idle until the workspace becomes active", async () => {
+  const client = new MockAgentClient();
+  const list = vi.spyOn(client, "listBackgroundCommands").mockResolvedValue([]);
+  const show = async (active: boolean): Promise<void> => act(async () => {
+    root?.render(<TooltipProvider><ConversationWorkspace agentClient={client} project={null} session={session} active={active} /></TooltipProvider>);
+    await flush();
+  });
+  await show(false);
+  expect(list).not.toHaveBeenCalled();
+  await show(true);
+  expect(list).toHaveBeenCalledTimes(1);
+  await show(false); list.mockClear();
+  await show(true);
+  expect(list).toHaveBeenCalledTimes(1);
+});
+
 it("ticks the processing duration and freezes the completed total when the process collapses", async () => {
   vi.useFakeTimers();
   try {

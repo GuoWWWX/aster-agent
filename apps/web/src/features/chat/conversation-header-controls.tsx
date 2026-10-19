@@ -23,6 +23,7 @@ import { getGitReviewCache } from "../workspace/git-review-cache.js";
 import { BackgroundPrograms } from "./background-programs.js";
 
 type ConversationHeaderControlsProps = {
+  active?: boolean;
   agentClient: AgentClient;
   conversationId?: string;
   project: ProjectSummary | null;
@@ -35,6 +36,7 @@ type ConversationHeaderControlsProps = {
 const SUBAGENT_PREVIEW_CONCURRENCY = 2;
 
 export function ConversationHeaderControls({
+  active = true,
   agentClient,
   conversationId,
   project,
@@ -178,7 +180,7 @@ export function ConversationHeaderControls({
 
   return (
     <div className="conversation-header-controls">
-      {conversationId === undefined ? null : <BackgroundPrograms key={conversationId} agentClient={agentClient} conversationId={conversationId} />}
+      {conversationId === undefined ? null : <BackgroundPrograms key={conversationId} active={active} agentClient={agentClient} conversationId={conversationId} />}
       <Popover open={subagentOpen} onOpenChange={setSubagentOpen}>
         <PopoverTrigger asChild>
           <button
