@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { createDiffPresentation, DiffView } from "../../components/diff/diff-view.js";
 import { useNativeOverlayContainer } from "../../components/ui/native-overlay-provider.js";
 import { useStreamingScroll } from "../../components/ui/use-streaming-scroll.js";
+import { useWorkbenchModalBackdrop, WORKBENCH_MODAL_BACKDROP_CLASS } from "../../components/ui/use-workbench-modal-backdrop.js";
 import { formatToolPayload } from "./tool-result-payload.js";
 
 export function ToolRawCallDialog({
@@ -15,6 +16,7 @@ export function ToolRawCallDialog({
   onClose: () => void;
 }): ReactElement {
   const nativeOverlayContainer = useNativeOverlayContainer();
+  const bounds = useWorkbenchModalBackdrop();
   const scrollHost = useRef<HTMLDivElement>(null);
   useStreamingScroll(scrollHost, `${item.arguments}\n${item.result ?? ""}`, item.status === "running");
   useEffect(() => {
@@ -28,7 +30,8 @@ export function ToolRawCallDialog({
   return createPortal(
     <div
       ref={scrollHost}
-      className="tool-raw-dialog-backdrop"
+      className={`tool-raw-dialog-backdrop ${WORKBENCH_MODAL_BACKDROP_CLASS}`}
+      style={bounds}
       data-native-view-overlay=""
       role="presentation"
       onMouseDown={(event) => {

@@ -1686,14 +1686,13 @@ button.tool-file-change__path:hover {
   inset: 0;
   display: grid;
   place-items: center;
-  background: rgba(15, 23, 42, 0.42);
   padding: 18px;
 }
 
 .tool-raw-dialog {
   display: flex;
   width: min(760px, 100%);
-  max-height: min(780px, calc(100dvh - 36px));
+  max-height: min(780px, 100%);
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--app-border);

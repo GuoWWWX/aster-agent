@@ -4,6 +4,7 @@ import type { ComponentProps, CSSProperties, ReactElement, ReactNode } from "rea
 
 import { cn } from "../../lib/cn.js";
 import { useNativeOverlayContainer } from "./native-overlay-provider.js";
+import { useWorkbenchModalBackdrop, WORKBENCH_MODAL_BACKDROP_CLASS } from "./use-workbench-modal-backdrop.js";
 
 export const Dialog = DialogPrimitive.Root;
 export const DialogClose = DialogPrimitive.Close;
@@ -16,11 +17,14 @@ export function DialogPortal(props: ComponentProps<typeof DialogPrimitive.Portal
 
 export function DialogOverlay({
   className,
+  style,
   ...props
 }: ComponentProps<typeof DialogPrimitive.Overlay>): ReactElement {
+  const bounds = useWorkbenchModalBackdrop();
   return (
     <DialogPrimitive.Overlay
-      className={cn("fixed inset-0 z-[100] bg-black/45", className)}
+      className={cn("fixed inset-0 z-[100]", WORKBENCH_MODAL_BACKDROP_CLASS, className)}
+      style={{ ...bounds, ...style }}
       data-slot="dialog-overlay"
       data-native-view-overlay=""
       {...props}

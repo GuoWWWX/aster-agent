@@ -1,11 +1,11 @@
 import { LoadingState } from "../ui/loading.js";
 import { ImageIcon } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type WheelEvent } from "react";
+import { useEffect, useRef, useState, type WheelEvent } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog.js";
 import { cn } from "../../lib/cn.js";
 import { svgDataUrl } from "../../lib/svg-image.js";
 import { ImagePreviewViewer } from "./image-preview-viewer.js";
-import { useNativeOverlayContainer } from "../ui/native-overlay-provider.js";
+import { useWorkbenchOverlayBounds } from "../ui/use-workbench-modal-backdrop.js";
 import { mediaPreviewRequestEvent, type MediaPreviewImage, type MediaPreviewRequest } from "./media-preview-request.js";
 export { requestMediaPreview, useMediaPreview } from "./media-preview-request.js";
 
@@ -102,8 +102,7 @@ export function MediaPreviewDialog({ open, onOpenChange, src, alt, title, imageK
   open: boolean; onOpenChange: (open: boolean) => void; src?: string; alt?: string; title?: string;
   imageKey?: string; images?: readonly MediaPreviewImage[]; loadImages?: (signal?: AbortSignal) => Promise<readonly MediaPreviewImage[]>;
 }) {
-  const overlayContainer = useNativeOverlayContainer();
-  const [bounds, setBounds] = useState<CSSProperties>({ inset: 0 });
+  const bounds = useWorkbenchOverlayBounds(open);
   const [selected, setSelected] = useState(() => ({ key: imageKey ?? src ?? "", src: src ?? "",
     label: images?.find(image => image.key === imageKey)?.label ?? title ?? alt ?? "图片预览" }));
   const [gallery, setGallery] = useState<readonly MediaPreviewImage[]>(() => images ?? []);
@@ -130,40 +129,12 @@ export function MediaPreviewDialog({ open, onOpenChange, src, alt, title, imageK
       .catch(() => { if (alive.current) setError("图片无法读取，可能已移动或删除。可再次点击翻页重试。"); })
       .finally(() => { navigating.current = false; if (alive.current) setLoading(false); });
   };
-  useLayoutEffect(() => {
-    // A native overlay has a separate document: backdrop-filter cannot sample its parent window.
-    if (!open || !overlayContainer || overlayContainer.ownerDocument === document) return;
-    const surfaces = [...document.querySelectorAll<HTMLElement>(".workbench-grid > .workbench-main, .workbench-grid > .workbench-sidebar")];
-    const filters = surfaces.map(element => element.style.filter);
-    surfaces.forEach(element => { element.style.filter = `${element.style.filter} blur(3px)`.trim(); });
-    return () => { surfaces.forEach((element, index) => { element.style.filter = filters[index] ?? ""; }); };
-  }, [open, overlayContainer]);
-  useLayoutEffect(() => {
-    if (!open) return;
-    // Read the host document, even when Dialog portals into the native overlay window.
-    const workbench = document.querySelector(".workbench-grid");
-    const rail = workbench?.querySelector('[data-slot="activity-bar"]');
-    if (workbench === null) return;
-    const update = () => {
-      const area = workbench.getBoundingClientRect();
-      setBounds({ top: Math.max(0, area.top), left: Math.max(0, rail?.getBoundingClientRect().right ?? area.left),
-        right: Math.max(0, window.innerWidth - area.right), bottom: Math.max(0, window.innerHeight - area.bottom) });
-    };
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(workbench);
-    if (rail !== null && rail !== undefined) observer.observe(rail);
-    window.addEventListener("resize", update);
-    return () => { observer.disconnect(); window.removeEventListener("resize", update); };
-  }, [open]);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         aria-describedby={undefined}
         className="flex h-auto w-auto max-w-none translate-x-0 translate-y-0 flex-col overflow-hidden rounded-none bg-transparent p-0 shadow-none sm:max-w-none [&_[data-slot=dialog-close]]:right-4 [&_[data-slot=dialog-close]]:top-4 [&_[data-slot=dialog-close]]:z-30 [&_[data-slot=dialog-close]]:size-10 [&_[data-slot=dialog-close]]:rounded-full [&_[data-slot=dialog-close]]:bg-black/60 [&_[data-slot=dialog-close]]:text-zinc-200 [&_[data-slot=dialog-close]]:backdrop-blur-md [&_[data-slot=dialog-close]]:hover:bg-black/80 [&_[data-slot=dialog-close]]:hover:text-white"
         style={bounds}
-        overlayClassName="bg-black/10 backdrop-blur-[3px]"
-        overlayStyle={bounds}
         onKeyDown={event => {
           if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
           if (event.key === "ArrowLeft" && index > 0) { event.preventDefault(); navigate(index - 1); }
