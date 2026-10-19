@@ -1,4 +1,4 @@
-export { htmlPreviewRequestSchema, htmlPreviewSchema, htmlPreviewResponseSchema, htmlPreviewResizeMessageSchema, presentHtmlInputSchema, htmlPresentationResultSchema, htmlPresentationPageSchema, codePreviewLanguageSchema, HTML_PREVIEW_MAX_HEIGHT, type CodePreviewLanguage, type HtmlPreviewRequest, type HtmlPreview, type HtmlPresentationPage } from "./html-preview.js";
+export { htmlPreviewRequestSchema, htmlPreviewSchema, htmlPreviewResponseSchema, htmlPreviewResizeMessageSchema, presentHtmlInputSchema, presentHtmlToolInputSchema, htmlPresentationResultSchema, htmlPresentationPageSchema, codePreviewLanguageSchema, HTML_PREVIEW_MAX_HEIGHT, type CodePreviewLanguage, type HtmlPreviewRequest, type HtmlPreview, type HtmlPresentationPage } from "./html-preview.js";
 export { capabilitySetSchema } from "./capability.js";
 export type { CapabilitySet } from "./capability.js";
 export {
@@ -690,3 +690,6 @@ export { isImageGenerationModel } from "./model-purpose.js";
 
 export { imageGenerationResultSchema } from "./image-generation.js";
 export { artifactDisplayRefSchema } from "./artifact-reference.js";
+export { codeBlockReferenceSchema, previewCodeBlocks, resolveMessageCodeBlock } from "./code-block-reference.js";
+export { codeBlockPreviewReferenceSchema } from "./html-preview.js";
+export type { PreviewCodeBlock, MessageCodeBlock } from "./code-block-reference.js";

@@ -1763,6 +1763,7 @@ describe("AgentRuntime", () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-present-html-"));
     temporaryDirectories.push(directory);
     await writeFile(path.join(directory, "demo.html"), "<h1>交付</h1>");
+    await writeFile(path.join(directory, "alternative.html"), "<h1>备选</h1>");
     const databasePath = path.join(directory, "state.sqlite");
     const database = new AgentDatabase(databasePath);
     const projects = new ProjectRegistry(database);
@@ -1774,7 +1775,7 @@ describe("AgentRuntime", () => {
       requests.push({ ...input, messages: [...input.messages] });
       if (requests.length === 1) return Promise.resolve({ content: "", finishReason: "tool_calls", toolCalls: [
         { id: "present-page", name: "present_html", arguments: JSON.stringify(gallery
-          ? { pages: [{ title: "文件版", kind: "file", path: "demo.html" }, { title: "片段版", kind: "code", html: "<div>备选</div>" }] }
+          ? { pages: [{ title: "文件版", kind: "file", path: "demo.html" }, { title: "备选文件", kind: "file", path: "alternative.html" }] }
           : { path: "demo.html" }) },
       ] });
       input.onTextDelta("页面已交付");

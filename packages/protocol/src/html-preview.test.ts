@@ -1,7 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { htmlPreviewRequestSchema, htmlPreviewSchema, htmlPreviewResizeMessageSchema, presentHtmlInputSchema, htmlPresentationResultSchema } from "./html-preview.js";
+import { codeBlockPreviewReferenceSchema, htmlPreviewRequestSchema, htmlPreviewSchema, htmlPreviewResizeMessageSchema, presentHtmlInputSchema, presentHtmlToolInputSchema, htmlPresentationResultSchema } from "./html-preview.js";
 const id = "00000000-0000-4000-8000-000000000001";
 describe("HTML preview contracts", () => {
+  it("accepts reference-based inspection without source copies or mandatory viewport parameters", () => {
+    const input = { action: "inspect", sourceRef: "latest", frames: 3, intervalMs: 650 };
+    const parsed = presentHtmlToolInputSchema.parse(input);
+    expect(parsed.width).toBeUndefined();
+    expect(parsed.height).toBeUndefined();
+    expect(parsed.frames).toBe(3);
+    expect(parsed.intervalMs).toBe(650);
+    for (const extra of [{ code: "<p>copy</p>" }, { language: "react" }, { frames: 4 }, { intervalMs: 2001 }, { width: 0 }]) {
+      expect(presentHtmlToolInputSchema.safeParse({ ...input, ...extra }).success).toBe(false);
+    }
+    const pages = [{ title: "A", kind: "file", path: "a.html" }, { title: "B", kind: "file", path: "b.html" }];
+    expect(presentHtmlToolInputSchema.safeParse({ pages }).success).toBe(true);
+    expect(presentHtmlToolInputSchema.safeParse({ pages: [{ title: "A", kind: "code", html: "x" }, pages[1]] }).success).toBe(false);
+    expect(presentHtmlToolInputSchema.safeParse({ action: "inspect", pages }).success).toBe(false);
+  });
+  it("uses the same precise original fence identity for inspection and display", () => {
+    const sourceRef = `codeblock:${id}:2`;
+    const value = { sourceRef, displayRef: sourceRef, language: "react", inspected: true };
+    expect(codeBlockPreviewReferenceSchema.safeParse({ ok: true, value }).success).toBe(true);
+    expect(codeBlockPreviewReferenceSchema.safeParse({ ok: true, value: { ...value, displayRef: `codeblock:${id}:1` } }).success).toBe(false);
+    expect(htmlPreviewRequestSchema.safeParse({ kind: "reference", conversationId: id, sourceRef }).success).toBe(true);
+    expect(htmlPreviewRequestSchema.safeParse({ kind: "reference", conversationId: id, sourceRef: "latest" }).success).toBe(false);
+    expect(htmlPreviewRequestSchema.safeParse({ kind: "reference", conversationId: id, sourceRef, html: "copy" }).success).toBe(false);
+  });
   it("allows an opaque source reference as the only preview source", () => {
     expect(presentHtmlInputSchema.parse({ action: "inspect", sourceRef: `artifact:${id}`, frames: 3 })).toMatchObject({ sourceRef: `artifact:${id}`, frames: 3 });
     for (const input of [{ sourceRef: "file:///a.html" }, { sourceRef: `artifact:${id}`, code: "x" }, { sourceRef: `artifact:${id}`, path: "a.html" }]) {

@@ -543,7 +543,7 @@ export class AgentRuntime {
       const conversation = this.database.getConversation(conversationId);
       return (await this.projects.ensureWorkspaceRoot(conversation.projectId ?? conversation.id)).rootPath;
     }, null, (conversationId, reference) => resolveHtmlPresentationSource(
-      this.database.listTimeline(conversationId).filter(item => item.kind === "tool"), reference));
+      this.database.listTimeline(conversationId).filter(item => item.kind === "tool" || item.kind === "message"), reference));
     const collaborationTool = new CollaborationTool(this.database);
     const handlers: ToolHandler<RuntimeToolContext>[] = [
       {

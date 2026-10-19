@@ -6,6 +6,20 @@ import { HtmlPreviewServer } from "./html-preview-server.js";
 
 const conversationId = "00000000-0000-4000-8000-000000000001";
 describe("HTML preview server", () => {
+  it("reads a referenced original assistant fence within its conversation without requiring workspace files", async () => {
+    const code = "<h1>Original fence</h1>";
+    const ref = `codeblock:${conversationId}:1`;
+    const instance = new HtmlPreviewServer(() => Promise.reject(new Error("No workspace expected")), (owner, reference) =>
+      owner === conversationId && reference === ref ? { code, language: "html" } : null);
+    try {
+      const preview = await instance.create({ kind: "reference", conversationId, sourceRef: ref });
+      expect(preview.source).toBe(code);
+      expect(await (await fetch(preview.url)).text()).toContain("Original fence");
+      await expect(instance.create({ kind: "reference", conversationId: "00000000-0000-4000-8000-000000000002", sourceRef: ref })).rejects.toThrow("找不到");
+      instance.release(preview.id, conversationId);
+      await expect(fetch(preview.url)).rejects.toThrow();
+    } finally { instance.dispose(); }
+  });
   let root: string;
   let server: HtmlPreviewServer;
   beforeEach(async () => {

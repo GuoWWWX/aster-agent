@@ -14,6 +14,16 @@ const render = (content: string, streaming = false) => {
 };
 
 describe("paragraph artifact references", () => {
+  it("places an existing code fence in a standalone final paragraph without duplicating its source text", () => {
+    const codeRef = "codeblock:00000000-0000-4000-8000-000000000001:1";
+    const content = `完成。\n\n[React 作品](${codeRef})\n\n已检查。`;
+    const markup = renderAgentMarkdown(content, false, false, "[]", JSON.stringify([codeRef]));
+    expect(markup).toContain(`data-artifact-reference="${codeRef}"`);
+    expect([...standaloneArtifactReferences(content)]).toEqual([codeRef]);
+    const inline = renderAgentMarkdown(`查看 [作品](${codeRef}) 即可。`, false, false, "[]", JSON.stringify([codeRef]));
+    expect(inline).not.toContain("data-artifact-reference");
+    expect(inline).not.toContain('href="codeblock:');
+  });
   it("places one delivery between complete paragraphs, including reference-style Markdown links", () => {
     for (const content of [`说明。\n\n${link}\n\n验证通过。`, `说明。\n\n[作品][result]\n\n验证通过。\n\n[result]: ${ref}`]) {
       const node = render(content);
