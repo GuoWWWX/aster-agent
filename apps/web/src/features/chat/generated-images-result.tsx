@@ -3,6 +3,7 @@ import { ImageIcon } from "lucide-react";
 import { imageGenerationResultSchema, type ConversationAttachment, type ConversationToolItem } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/index.js";
 import { requestMediaPreview } from "../../components/media/image-viewer.js";
+import { ImagePreviewStrip } from "./image-preview-strip.js";
 
 const ImageDetailsContext = createContext<{ visible: ReadonlySet<string>; setVisible: (id: string, visible: boolean) => void } | null>(null);
 
@@ -40,12 +41,12 @@ export function GeneratedImagesResult({ agentClient, item, placement = "delivery
     : `已生成 ${images.length} 张图片`;
   return <div className="min-w-0 max-w-full">
     <p className="m-0 pb-[5px] text-[var(--app-muted-foreground)]" role="status">{status}</p>
-    <div className="flex max-w-full gap-[5px] overflow-x-auto pb-1" aria-label={pending ? "图片生成进度" : "生成的图片"}>
+    <ImagePreviewStrip label={pending ? "图片生成进度" : "生成的图片"}>
       {images.map(image => <GeneratedImage key={image.id} image={image} agentClient={agentClient} />)}
       {pending ? Array.from({ length: Math.max(0, count - images.length) }, (_, i) => <div key={i} className={`flex aspect-square w-48 shrink-0 flex-col items-center justify-center gap-2 rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] text-[var(--app-muted-foreground)] ${item.status === "running" ? "animate-pulse motion-reduce:animate-none" : ""}`}>
         <ImageIcon size={28} aria-hidden="true" /><span>{item.status === "awaiting_approval" ? "等待批准" : `正在生成 ${images.length + i + 1}/${count}`}</span>
       </div>) : null}
-    </div>
+    </ImagePreviewStrip>
     {result?.success && result.data.value.notice ? <p className="m-0 text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">{result.data.value.notice}</p> : null}
   </div>;
 }

@@ -53,12 +53,12 @@ it("keeps the working particles after the latest output instead of in the proces
   expect(container.querySelector(".conversation-work-tail")).toBeNull();
 });
 
-it("restores all inspection images in tool details without creating a final presentation", async () => {
+it.each([{ action: "inspect", language: "react", code: "example" }, { action: "inspect", sourceRef: "artifact:00000000-0000-4000-8000-000000000009" }])("restores all inspection images and their source language without creating a final presentation (%j)", async (argumentsValue) => {
   const client = new MockAgentClient();
   const images = Array.from({ length: 3 }, (_, index) => ({ id: crypto.randomUUID(), conversationId, messageId: tool.id,
     contextTokens: 1024, createdAt: tool.createdAt, kind: "image", mimeType: "image/jpeg", name: `phase-${index}.jpg`, projectPath: null, sizeBytes: 3, source: "browser", truncated: false }));
-  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([{ ...tool, name: "present_html", arguments: '{"action":"inspect","language":"react","code":"example"}',
-    result: JSON.stringify({ ok: true, value: { coordinateSpace: "screenshot_css_pixels", width: 800, height: 600, mimeType: "image/jpeg", images } }) }, { ...answer, status: "completed" }]);
+  vi.spyOn(client, "listConversationTimeline").mockResolvedValue([{ ...tool, name: "present_html", arguments: JSON.stringify(argumentsValue),
+    result: JSON.stringify({ ok: true, value: { coordinateSpace: "screenshot_css_pixels", language: "react", width: 800, height: 600, mimeType: "image/jpeg", images } }) }, { ...answer, status: "completed" }]);
   const read = vi.spyOn(client, "readConversationAttachmentPreview").mockResolvedValue({ data: "AQID", mimeType: "image/jpeg" });
   await render(client, null);
   act(() => header().click());

@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   CONTEXT_MESSAGE_OVERHEAD_TOKENS,
   estimateContextTokens,
+  htmlPresentationResultSchema,
   type ConversationContextUsage
 } from "@agent/protocol";
 
@@ -187,7 +188,7 @@ function boundedToolOutput(content: string): string {
 
 function pruneToolOutput(message: ManagedContextSourceMessage): ManagedContextSourceMessage {
   if (message.role !== "tool") return message;
-  const content = boundedToolOutput(message.content);
+  const content = modelFacingToolOutput(message.content);
   if (content === message.content) return message;
   return {
     ...message,
@@ -200,9 +201,25 @@ export function normalizeModelFacingToolOutputs(
 ): ModelMessage[] {
   return withoutCommandWaitMessages(messages).map((message) => {
     if (message.role !== "tool") return message;
-    const content = boundedToolOutput(message.content);
+    const content = modelFacingToolOutput(message.content);
     return content === message.content ? message : { ...message, content };
   });
+}
+
+function modelFacingToolOutput(content: string): string {
+  if (content.includes('"presentation"')) {
+    try {
+      const result = htmlPresentationResultSchema.safeParse(JSON.parse(content));
+      if (result.success) {
+        const { presentation, ...references } = result.data.value;
+        return JSON.stringify({ ok: true, value: { ...references, delivered: true, kind: presentation.kind,
+          ...(presentation.kind === "code" ? { language: presentation.language }
+            : presentation.kind === "html" ? { path: presentation.path }
+            : { titles: presentation.pages.map(page => page.title) }) } });
+      }
+    } catch { /* Malformed results retain the existing bounded-output handling. */ }
+  }
+  return boundedToolOutput(content);
 }
 
 function withoutCommandWaitMessages<T extends Pick<ModelMessage, "role" | "content" | "toolCallId" | "toolCalls"> & {

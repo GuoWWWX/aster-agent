@@ -3,7 +3,7 @@ import { ImageGenerationTool } from "../tools/image-generation-tool.js";
 import path from "node:path";
 import type { PostTeamChatInput, TeamChatMessage } from "@agent/protocol";
 import { CollaborationTool } from "./collaboration-tool.js";
-import { HtmlPresentationTool } from "../tools/html-presentation-tool.js";
+import { HtmlPresentationTool, resolveHtmlPresentationSource } from "../tools/html-presentation-tool.js";
 import { createHash, randomUUID } from "node:crypto";
 import { UserQuestionService } from "./user-question-service.js";
 import { UserQuestionTool } from "./user-question-tool.js";
@@ -1270,7 +1270,8 @@ export class AgentRuntime {
     const htmlPresentationTool = this.presentationTool ?? new HtmlPresentationTool(async conversationId => {
       const conversation = this.database.getConversation(conversationId);
       return (await this.projects.ensureWorkspaceRoot(conversation.projectId ?? conversation.id)).rootPath;
-    });
+    }, null, (conversationId, reference) => resolveHtmlPresentationSource(
+      this.database.listTimeline(conversationId).filter(item => item.kind === "tool"), reference));
     const collaborationTool = new CollaborationTool(this.database);
     const handlers: ToolHandler<RuntimeToolContext>[] = [
       {
