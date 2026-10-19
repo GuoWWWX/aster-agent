@@ -81,9 +81,9 @@
 
 | 编号 | 严重度／类别 | 定位与现象 | 处理状态 |
 | --- | --- | --- | --- |
-| S7 | 中／风险 | 〔OBSERVE｜风险｜中〕模型页 450ms 延时保存的 effect 在卸载时只清理 timer；编辑后立即切页可能取消尚未发出的最后一笔保存。原实现已有同一逻辑。 | 已确认代码路径，未混入结构重构；后续独立修复须覆盖编辑后立即离开、合并保存、失败恢复和卸载后结果归属 |
+| S7 | 中／风险 | 〔OBSERVE｜风险｜中〕模型页 450ms 延时保存的 effect 在卸载时只清理 timer；编辑后立即切页可能取消尚未发出的最后一笔保存。原实现已有同一逻辑。 | 已独立修复（`24b3950`）：离开前提交最后完整快照，写队列归同一 AgentClient，失败草稿仅存内存并可在重进时恢复；旧结果不串 Provider，新建 Provider 以创建前后 ID 差集定位，避免 URL 规范化导致重复创建 |
 
-〔FACT｜`apps/web/src/features/settings/models/use-model-settings-controller.ts:222`〕保留原保存策略是本批结构兼容范围；已有连续编辑测试覆盖当前页的合并保存，不代表已经覆盖或修复切页 flush。
+〔FACT｜`apps/web/src/features/settings/models/model-settings-save-queue.ts:11`、`apps/web/src/features/settings/models/use-model-settings-autosave.test.tsx:1`〕结构迁移时曾保留原保存策略；后续独立修复已通过模型／设置 3 文件 48 项回归，包含 11 项新增生命周期用例。450ms 连续编辑合并保留，密钥未写入浏览器持久存储。
 
 ## 第二批结构实施（2026-10-19）
 
@@ -108,3 +108,59 @@
 后续可独立改进测试：群聊用例改为事件驱动的终态等待，保留整体门限；64 轮用例补齐失败时的 Runtime／工具释放。现有证据说明负载敏感，不能据此认定群聊消息丢失。〔OBSERVE｜风险｜低｜`apps/desktop/src/main/agent/collaboration.integration.test.ts:571`、`apps/desktop/src/main/agent/agent-runtime.test.ts:4067`〕
 
 剩余边界：三个入口仍超过 1,000 行，本轮为渐进迁移，不宣称大文件已全部达标。聊天的请求／事件、输入、队列与审批，Runtime 的协作和执行包装，以及 Database 的领域事务／日志恢复仍需各自基线与分块验收；侧边工作区、项目导航等其他大文件未在本轮改动。
+
+## 第三批结构与行为复核（2026-10-19）
+
+本批继续审查前后端职责、事务与资源生命周期。下表是已提交边界；“审查覆盖”与“整改完成”分别记录，不以入口行数下降代替正确性验证。〔FACT｜`apps/desktop/src/main/agent/agent-runtime.ts:1`、`apps/desktop/src/main/storage/agent-database.ts:1`〕
+
+| 范围 | 已提交边界与定向证据 |
+| --- | --- |
+| Runtime | 摘要计算与持久化编排分开；统一工具权限分类但每次读取当前配置；六组工具回放状态按 Run 归属；批调度只接策略、准备和 ToolNode 三个动作。摘要、权限、回放、批调度先后通过 463／267／282／296 项相关回归。审批、事实提交、通知及 LangGraph 循环仍在原入口 |
+| SQLite | 历史、上下文摘要、团队协作只读投影、附件元数据、Run 事件写入各自归属；附件取消／删除与 completeRun 外层事务原位。Run 仓储最终 372 项串行回归通过，220 个 public 签名、379 条 SQL 字面量及终态顺序保持 |
+| IPC | 135 个 Handler 按领域迁出，所有 172 个 Handler 共用原注册器／错误边界；独立 AST 核对注册次序与回调一致。38 项 IPC 回归包含全部 invoke 通道的非可信来源拒绝与统一释放 |
+| 模型 | Provider 回放恢复、SDK 消息转换、版本配置 Schema／纯迁移分别迁出；计量、首字时间、流式、取消与错误仍归 Adapter，凭据解码与配置文件 IO 仍归 Store。Model／Graph／Runtime 311 项回归通过；V1–V6 与空 JSONC／无效引用另有 8 项边界测试 |
+| JSONL | 合同与纯上下文投影分开；整个 ThreadLog 类的追加、扫描、字节游标、恢复与缓存主体不变。356 项存储／上下文回归通过，独立投影新增 9 项 |
+| 命令工具 | 进程、输出解码、超时、取消和释放统一归 CommandSessionRunner；Registry 保留审批、工作目录解析和项目冲突锁。13 项新增特征回归及相关 22 文件 382 项通过；16 个公开入口、批任务持锁／服务启动后释放及原权限范围保持 |
+| 侧边工作区 | 文件／配置／提示词预览、标签菜单与会话选择归属分开，文件队列、迟到读取和冲突草稿保持。78 项 workspace 回归含 4 项新增生命周期测试 |
+| 项目导航 | 行、状态、菜单和管理弹窗局部组件化；展开／定位与拖放分别持有状态。50 项 projects 回归含 2 项定位和卸载取消 RAF 测试；21 个迁出函数 AST 等价 |
+| 编辑器 | 公式／列表、图片、Mermaid、行内 Widget 分模块；Effect 实例仍单一，表格阅读监听与拖动状态独立。图表主题与串行渲染缓存分开；Widget、预览与 Markdown 原 133 项回归通过，销毁清理修复后 136 项通过 |
+
+上述边界可直接从实现入口及相邻具名模块核对。〔FACT｜`apps/desktop/src/main/ipc/ipc-handler-context.ts:1`、`apps/desktop/src/main/storage/conversation-run-event-repository.ts:1`、`apps/desktop/src/main/model/langchain-model-messages.ts:1`、`apps/desktop/src/main/storage/thread-log-context-projection.ts:1`、`apps/web/src/features/workspace/use-project-file-previews.ts:1`、`apps/web/src/features/projects/use-navigator-expansion.ts:1`、`apps/web/src/components/editor/cm/widget-effects.ts:1`〕
+
+### 已复现并独立修复的行为问题
+
+| 编号 | 定位与现象 | 状态与证据 |
+| --- | --- | --- |
+| S8 | 〔OBSERVE｜缺陷｜中〕仅打开后台或隔离浏览页时，清理操作漏掉持久浏览分区 | 已修复（`2989e49`）；两例先失败，相关 40 项通过，保留打开会话 |
+| S9 | 〔OBSERVE｜缺陷｜低〕表格拖动中销毁 Widget，影像移除但落点提示仍留在 body | 已修复（`2c80b90`）；拖动、脏草稿与销毁三例中清理例先失败，修复后 136 项编辑器／Markdown 回归通过 |
+| S10 | 〔OBSERVE｜缺陷｜中〕Agent 自定义能力使用固定示例目录，真实 Skill／MCP 无法选择 | 已修复（`8719343`）；改读集成元数据，首次待定不误标缺失，失败不清选择，停用／已删除引用可移除，7 项新用例及相关 37 项通过 |
+| S11 | 〔OBSERVE｜缺陷｜中〕取消／重复审批或决定持久化失败后，旧审批仍可能留下会话授权；并行回放可能再次请求审批或跳过兄弟工具的拒绝 | 已修复（`495ca8e`）；每个 pending 保留原决定，仅成功持久化后授予权限。16 项新增回归与原并发峰值测试共 17 项定向通过，130 项按名称过滤；完整回归另记，过滤项不计入通过 |
+| S12 | 〔OBSERVE｜缺陷｜中〕恢复事件／COMMIT 失败后，SQL 回滚但暂停或结果内存投影残留 | 已修复（`b26ae4e`）；按修改 key 记录首个旧值并随事务恢复，9 项新增红绿测试含实际延迟外键 COMMIT 失败，相关 170 项通过 |
+| S13 | 〔OBSERVE｜缺陷｜中〕删除团队来源对话绕过活动任务保护，物理删除实例后留下无法启动的排队任务 | 已修复（`80a2574`）；新建与重试删除意图均在清理 IO 前检查，历史实例保留隐藏墓碑和原绑定，14 项新增回归及相关 164 项通过；保留原归档行为 |
+| S14 | 〔OBSERVE｜缺陷｜低〕自定义能力两列选项数量不同时，被同高 Grid 撑出首行错位 | 已修复（`a5653e3`）；内容顶部对齐，四组尺寸／主题的首项偏差从 30px 变为 0，相关 7 项通过 |
+| S15 | 〔OBSERVE｜缺陷｜中〕窄窗 Agent／团队目录按百分比分配高度，扣除标题与统计后只剩一行多；新建末项可能不在可视区 | 已修复（`9e6a6c0`）；窄容器上下自然布局、目录 280px 保留三完整行，条目内部滚动，选中项仅调整目录 scrollTop。37 项相关回归包含 3 项局部滚动测试，16 组真实浏览器场景通过 |
+
+〔FACT｜`apps/desktop/src/main/windows/managed-browser-controller.ts:474`、`apps/web/src/components/editor/cm/table-reorder-interaction.ts:66`、`apps/web/src/features/settings/agents/agent-capability-editor.tsx:17`〕S7 的模型页保存修复另见上表；以上行为修复与结构迁移分别提交。
+
+〔FACT｜`apps/desktop/src/main/agent/agent-runtime.ts:1971`、`apps/desktop/src/main/storage/agent-database.ts:1195`、`apps/desktop/src/main/storage/agent-database.ts:8108`、`apps/desktop/src/main/storage/conversation-deletion-service.ts:90`〕审批中间补丁曾使原 40ms 并发回归失败，独立复跑与调用轨迹确认是已决兄弟工具被重复通知，不能归因于负载；保留原断言，修正回放后原峰值 4 恢复。早期并行门禁另有旧 64 轮用例 5 秒超时，最终完整串行结果再单独记录，未放宽门限。
+
+可视化边界：Mock AppShell／设置主矩阵为两个尺寸、浅深主题、12 个设置分区与对话动态，共 52 个场景，额外 4 组自定义能力截图。该矩阵最初只看异常与横向溢出，不能证明目录可用；用户指出 S15 后补充四尺寸 × 两主题 × Agent／团队的 16 场景，核对完整可视行数、列表／页面滚动范围、新建与末项选中以及详情末尾可达。1024×680 的列表高度由约 86.8px 增至 184px，完整行 1→3；1024×600 为 0→3，宽屏几何保持。520px 探测低于原 Shell 600px 最小高度，原有整页纵向溢出单独保留，未改 Shell 或伪称通过系统缩放验收。〔FACT｜`apps/web/src/features/settings/agent-team-settings.css:1047`、`apps/web/src/features/settings/components/settings-directory-list.tsx:4`〕
+
+### 审查覆盖与继续整改边界
+
+Runtime 按 AST 逐项盘点 113 个构造器／方法；Database 在 Run 仓储拆分前的 8,585 行快照中盘点 297 个成员、220 个 public 方法、59 个 withTransaction 入口及独立手动事务，没有把未归类方法静默遗漏。此证据是职责／依赖／生命周期清单，不是所有业务路径都已证明，也不表示两个大入口达标。〔FACT｜`apps/desktop/src/main/agent/agent-runtime.ts:1`、`apps/desktop/src/main/storage/agent-database.ts:1`〕
+
+| 状态 | 剩余职责与保留原因 |
+| --- | --- |
+| 已审查、需继续分块 | 聊天工作区的请求／事件／输入／队列／审批；Runtime 的 Registry 装配、Queue／Steer、协作唤醒和审批恢复；Database 的团队／WorkItem、Fork、跨领域创建与 JSONL 恢复。跨事务与重放边界必须先有对应特征回归，不能整段搬进接受 Facade 的仓储 |
+| 已审查、需继续分块 | Git review 的分支／提交／差异／选区与 resize 生命周期，Team 工作区的任务／成员／协作数据刷新，Agent／Team 设置的剩余管理／头像／权限区域。尚未把这些仅审查部分标记为已整改 |
+| 已审查、保留当前实现 | Model Adapter 的流式／计量／Abort owner，ThreadLog 的字节扫描和恢复 owner，数据库终态与跨聚合事务，迁移版本与原子文件写入；拆成薄转发层不能提供额外安全性时不为行数拆分 |
+| 已确认的规划边界 | MCP 当前无执行接入，Capability 为 false，带 MCP 依赖的 Skill 不广告／加载；自定义 MCP ID 只保存配置，不视为已生效的执行过滤。4 文件 36 项相关回归通过，不在本批扩建 MCP Runtime |
+
+〔FACT｜`apps/web/src/features/workspace/git-review-workspace.tsx:209`、`apps/web/src/features/team/team-workspace.tsx:107`、`apps/web/src/features/settings/agent-team-settings.tsx:1`、`apps/desktop/src/main/ipc/desktop-capabilities.ts:1`、`apps/desktop/src/main/agent/skill-runtime.ts:73`〕Team 数据刷新可能重复请求、100ms 补读 timer 未集中持有，属于待复现的生命周期／性能观察，不据源码规模直接认定用户消息丢失。〔OBSERVE｜风险｜低〕
+
+### 本批最终验证
+
+冻结业务源码后，Desktop 使用 `vitest run --maxWorkers=1 --exclude src/main/computer-use/windows-driver.test.ts` 完整串行执行：154 文件、1,739 项通过，原 64 轮与并发审批用例均在原门限／断言下通过，无名称过滤；会操作真实桌面的 7 项 Windows native control 用例未运行，未计入通过数。Web 随后完整执行 163 文件、1,219 项通过；Protocol 26 文件 252 项、根脚本 19 项通过，合计 3,229 个不同用例。
+
+最后的根级 `pnpm lint`、`pnpm typecheck`、`pnpm build` 全部通过。构建保留既有大包体提示，不将结构拆分宣称为加载速度提升。94 个新增业务模块规模与依赖扫描通过，涉及新模块的运行时循环为零；变更 Markdown 的本地链接、锚点、围栏和七组目录清单检查通过。未验证安装包、真实供应商请求或完整历史用户库升级；Mock 浏览器场景与实际开发服务只读健康检查分别记录，不互相替代。

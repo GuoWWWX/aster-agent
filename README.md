@@ -80,6 +80,8 @@ doc/                           产品、架构、接口和工程规范
 
 全部功能页使用 `AppShell`／`WorkbenchLayout` 的共同外层；设置的菜单和内容属于内层，按 `general`、`models`、`permissions`、`mcp`、`skills` 等目录组织，设置内通用组件位于 `features/settings/components`。聊天的时间线投影、工具结果解析与展示、附件和错误展示留在 `features/chat` 的具名模块中，工作区继续管理状态与事件。Main 的 Runtime 和 Database 保留原业务入口；工作区工具装配、重连观察策略、数据库 schema／迁移与已有合同、映射、日志读取分别组织。实施范围与剩余大文件见[结构整理记录](./doc/OBSERVATIONS.md#第二批结构实施2026-10-19)。
 
+后续拆分将侧边预览／文件队列、导航交互、编辑器 Widget 分别留在所属功能目录；Main 的 IPC 按领域注册并共享来源／Schema／错误校验，模型回放／消息转换与配置迁移、日志上下文投影及具名仓储独立归属。模型页保存队列可跨页面生命周期保留最后修改，Agent 能力选择读取真实集成目录。当前进展与未完成边界见[第三批审查记录](./doc/OBSERVATIONS.md#第三批结构与行为复核2026-10-19)。〔FACT｜`apps/web/src/features/settings/models/model-settings-save-queue.ts:11`、`apps/desktop/src/main/ipc/register-main-ipc.ts:1`〕
+
 ## 开始开发
 
 ### 前置条件
