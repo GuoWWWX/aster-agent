@@ -22,20 +22,6 @@ export type {
   AgentTeamMemberConfiguration,
 } from "@agent/protocol";
 
-export const AVAILABLE_SKILLS = [
-  { id: "code-review", name: "代码审查" },
-  { id: "browser", name: "浏览器验证" },
-  { id: "documents", name: "文档处理" },
-  { id: "release", name: "发布检查" },
-] as const;
-
-export const AVAILABLE_MCP_SERVERS = [
-  { id: "openai-docs", name: "OpenAI Docs" },
-  { id: "browser-tools", name: "Browser Tools" },
-  { id: "figma", name: "Figma" },
-  { id: "project-knowledge", name: "项目知识库" },
-] as const;
-
 type AgentDirectoryState = AgentDirectoryConfiguration & {
   addAgent: () => string;
   addAgentToTeam: (teamId: string, agentId: string) => void;

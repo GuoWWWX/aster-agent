@@ -187,7 +187,7 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
             <ModelsSettings agentClient={agentClient} />
           ) : null}
           {activeSection === "reasoning" ? <ModelReasoningCatalogSettings agentClient={agentClient} /> : null}
-          {activeSection === "agents" ? <AgentTeamSettings searchTarget={searchTarget} /> : null}
+          {activeSection === "agents" ? <AgentTeamSettings agentClient={agentClient} searchTarget={searchTarget} /> : null}
           {activeSection === "mcp" ? (
             <McpSettings agentClient={agentClient} />
           ) : null}
