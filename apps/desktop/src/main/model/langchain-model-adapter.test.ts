@@ -139,6 +139,23 @@ function successChunks(apiFormat: ModelApiFormat): string[] {
 }
 
 describe("LangChainModelAdapter", () => {
+  it("does not assume newer cache extensions are supported from a Responses model name", async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(createStreamResponse(successChunks("openai-responses")));
+    const input = inputFor("openai-responses");
+    input.configuration.modelId = "gpt-6.1-sol";
+    input.messages.push(
+      { role: "assistant", content: "", attachments: [], toolCallId: null, toolCalls: [{ id: "cache-call", name: "read_file", arguments: "{}" }] },
+      { role: "tool", content: "stable result", attachments: [], toolCallId: "cache-call", toolCalls: [] },
+      { role: "user", content: "mutable skills", attachments: [], toolCallId: null, toolCalls: [] },
+    );
+    const result = await new LangChainModelAdapter("openai-responses", request).completeTurn(input);
+    const body = recordBody(request);
+    expect(body.prompt_cache_options).toBeUndefined();
+    expect(body.input).toEqual(expect.arrayContaining([expect.objectContaining({ type: "function_call_output", call_id: "cache-call",
+      output: "stable result",
+    })]));
+    expect(result.providerState?.payload).toMatchObject({ requestFingerprint: requestFingerprint(request.mock.calls[0]?.[1]?.body) });
+  });
   it.each(["openai-chat-completions", "openai-responses"] as const)(
     "keeps the conversation cache key across appended turns for %s", async (apiFormat) => {
       const request = vi.fn<typeof fetch>().mockImplementation(() => Promise.resolve(createStreamResponse(successChunks(apiFormat))));

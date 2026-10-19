@@ -2,7 +2,7 @@ import { LoadingState } from "../../components/ui/loading.js";
 import { useEffect, useState } from "react";
 import { readProjectPreviewImageInputSchema } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/index.js";
-import { requestMediaPreview } from "../../components/media/image-viewer.js";
+import { useMediaPreview } from "../../components/media/image-viewer.js";
 
 function parseImage(payload: string) {
   const result: unknown = JSON.parse(payload);
@@ -16,6 +16,7 @@ function parseImage(payload: string) {
 }
 
 export function ProjectImageResult({ agentClient, payload }: { agentClient: AgentClient; payload: string }) {
+  const openPreview = useMediaPreview();
   const [preview, setPreview] = useState<{ payload: string; url: string | null; error: boolean } | null>(null);
   useEffect(() => {
     let disposed = false;
@@ -41,7 +42,7 @@ export function ProjectImageResult({ agentClient, payload }: { agentClient: Agen
   return <div className="flex min-w-0 flex-col items-start gap-1">
     {url == null ? current?.error ? <p className="text-[var(--app-muted-foreground)]" role="alert">图片无法加载，文件可能已移动或删除</p> : <LoadingState label="正在读取图片…" compact className="w-full" /> : <span className="conversation-attachment conversation-attachment--image-preview"><button type="button" aria-label={`预览图片 ${imagePath}`} title="预览图片"
       className="conversation-attachment__image-button"
-      onClick={() => requestMediaPreview({ src: url, title: imagePath, alt: imagePath })}>
+      onClick={() => openPreview({ src: url, imageKey: `project:${parseImage(payload).projectId}:${imagePath}`, title: imagePath, alt: imagePath })}>
       <img src={url} alt={imagePath} />
     </button></span>}
   </div>;

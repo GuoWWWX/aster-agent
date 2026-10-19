@@ -219,6 +219,8 @@ function isModelMessage(value: unknown): value is ModelMessage {
     && (value.toolCallId === null || typeof value.toolCallId === "string")
     && Array.isArray(value.toolCalls)
     && value.toolCalls.every(isModelToolCall)
+    && (value.runtimeContext === undefined || (typeof value.runtimeContext === "string"
+      && ["queue", "skills", "checklist", "directory"].includes(value.runtimeContext)))
     && (value.providerState === undefined || isModelProviderState(value.providerState));
 }
 

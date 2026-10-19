@@ -77,12 +77,12 @@ describe("quick coordination request queue", () => {
           return tool("update_task_context", { id: task.id, expectedRevision: task.revision, title: "D", goal: "处理 D", summary: "result-D", status: "completed" });
         }
         case 10: {
-          completionViews.push(input.messages.find(message => message.content.startsWith("[Persistent task directory"))?.content ?? "");
+          completionViews.push(input.messages.findLast(message => message.content.startsWith("[Persistent task directory"))?.content ?? "");
           const task = taskFor("E");
           return tool("update_task_context", { id: task.id, expectedRevision: task.revision, title: "E", goal: "处理 E", summary: "result-E", status: "completed", source: source(queuedId) });
         }
         default:
-          completionViews.push(input.messages.find(message => message.content.startsWith("[Persistent task directory"))?.content ?? "");
+          completionViews.push(input.messages.findLast(message => message.content.startsWith("[Persistent task directory"))?.content ?? "");
           return { content: "两项结果均已交付，任务列表待用户确认。", finishReason: "stop", toolCalls: [] };
       }
     } });

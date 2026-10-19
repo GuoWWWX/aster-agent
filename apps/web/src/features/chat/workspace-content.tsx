@@ -151,7 +151,8 @@ import { TooltipAnchor } from "../../components/ui/tooltip.js";
 import { useStreamingScroll } from "../../components/ui/use-streaming-scroll.js";
 import { FileTypeIcon } from "../../components/ui/file-type-icon.js";
 import { AgentMarkdown, AgentMarkdownWorkspaceScope } from "../../components/markdown/agent-markdown.js";
-import { requestMediaPreview } from "../../components/media/image-viewer.js";
+import { useMediaPreview } from "../../components/media/image-viewer.js";
+import { ConversationImagePreviewScope, imageDisplayName } from "./conversation-image-preview.js";
 import {
   createDiffPresentation,
   DiffView,
@@ -3353,6 +3354,7 @@ export function ConversationWorkspace({
 
   return (
     <ChatReferenceScope scopeKey={richReferenceWorkspaceId} resolve={resolveReferences} onOpen={openReference} renderMessageAvatar={renderReferenceAvatar}>
+    <ConversationImagePreviewScope client={agentClient} conversationId={session.id} timeline={timeline} rootPath={project?.rootPath ?? session.workspaceRootPath}>
     <AgentMarkdownWorkspaceScope onOpenFile={onOpenProjectFile}>
     <HtmlPreviewScope client={agentClient} conversationId={session.id}>
     <ToolConversationContext.Provider value={toolConversations}>
@@ -3472,7 +3474,7 @@ export function ConversationWorkspace({
                       className="conversation-run-duration"
                       key={`${item.id}:duration:${durationIndex}`}
                     >
-                      <span>已处理 {formatRunDuration(0, durationMs)}</span>
+                      <span>用时 {formatRunDuration(0, durationMs)}</span>
                     </div>
                   ))}
                   {(runProgressesByInsertIndex.get(index) ?? [])
@@ -3486,7 +3488,7 @@ export function ConversationWorkspace({
                       )
                     )
                     .map((progress) => (
-                      <RunProgressIndicator key={progress.runId ?? "pending"} />
+                      <RunProgressIndicator key={progress.runId ?? "pending"} startedAt={progress.startedAt} />
                     ))}
                   {modelActivity !== null && showModelActivityIndicator
                     && modelActivityInsertIndex === index
@@ -3607,7 +3609,7 @@ export function ConversationWorkspace({
                   && (!showModelActivityIndicator || modelActivity?.runId !== progress.runId)
                 )
                 .map((progress) => (
-                  <RunProgressIndicator key={progress.runId ?? "pending"} />
+                  <RunProgressIndicator key={progress.runId ?? "pending"} startedAt={progress.startedAt} />
                 ))}
               {modelActivity !== null && showModelActivityIndicator && modelActivityInsertIndex === displayTimeline.length ? (
                 <ModelActivityIndicator activity={modelActivity} />
@@ -4225,6 +4227,7 @@ export function ConversationWorkspace({
     </ToolConversationContext.Provider>
     </HtmlPreviewScope>
     </AgentMarkdownWorkspaceScope>
+    </ConversationImagePreviewScope>
     </ChatReferenceScope>
   );
 }
@@ -4468,14 +4471,23 @@ function ModelActivityIndicator({ activity }: { activity: ModelActivity }): Reac
   );
 }
 
-function RunProgressIndicator(): ReactElement {
+function RunElapsedLabel({ startedAt, durationMs = 0 }: { startedAt: number; durationMs?: number }): ReactElement {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <span>已处理 {formatRunDuration(0, Math.max(0, now - startedAt) + durationMs)}</span>;
+}
+
+function RunProgressIndicator({ startedAt }: { startedAt: number }): ReactElement {
   return (
     <div
-      aria-label="推理中"
+      aria-label="正在处理"
       className="conversation-run-progress flex items-center gap-[5px]"
       role="status"
     >
-      <span className="conversation-run-progress__label">推理中</span>
+      <RunElapsedLabel startedAt={startedAt} />
     </div>
   );
 }
@@ -4642,6 +4654,7 @@ function PendingMessageAttachmentPreviews({
   conversationId: string;
   sent?: boolean;
 }): ReactElement | null {
+  const openPreview = useMediaPreview();
   const visibleAttachmentIds = useMemo(() => attachmentIds.slice(0, 3), [attachmentIds]);
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
 
@@ -4681,7 +4694,8 @@ function PendingMessageAttachmentPreviews({
             className="conversation-pending-queue__attachment-preview"
             key={attachmentId}
             type="button"
-            onClick={() => requestMediaPreview({
+            onClick={() => openPreview({
+              imageKey: attachmentId,
               alt: sent ? "图片" : "待发送图片",
               src: previewUrl,
               title: sent ? "图片" : "待发送图片",
@@ -6285,6 +6299,8 @@ function AttachmentChip({
   onRemove?: () => void;
   previewUrl?: string;
 }): ReactElement {
+  const openPreview = useMediaPreview();
+  const label = attachment.kind === "image" ? imageDisplayName(attachment) : attachment.name;
   const [storedPreviewUrl, setStoredPreviewUrl] = useState<string | null>(null);
   const sourceLabel = attachment.projectPath ?? "上传文件";
   const isDraft = onRemove !== undefined;
@@ -6316,20 +6332,21 @@ function AttachmentChip({
           ? "conversation-attachment--image-preview"
           : "conversation-attachment--file-card",
       ].filter(Boolean).join(" ")}
-      title={`${attachment.name} · ${sourceLabel} · ${formatFileSize(attachment.sizeBytes)}`}
+      title={`${label} · ${sourceLabel} · ${formatFileSize(attachment.sizeBytes)}`}
     >
       {showsImagePreview ? (
         <button
-          aria-label={`预览图片 ${attachment.name}`}
+          aria-label={`预览图片 ${label}`}
           className="conversation-attachment__image-button"
           type="button"
-          onClick={() => requestMediaPreview({
-            alt: attachment.name,
+          onClick={() => openPreview({
+            imageKey: attachment.id,
+            alt: label,
             src: resolvedPreviewUrl,
-            title: attachment.name,
+            title: label,
           })}
         >
-          <img alt={attachment.name} src={resolvedPreviewUrl} />
+          <img alt={label} src={resolvedPreviewUrl} />
         </button>
       ) : (
         <>
@@ -6337,7 +6354,7 @@ function AttachmentChip({
             <FileTypeIcon path={attachment.name} size={28} />
           </span>
           <span className="conversation-attachment__identity">
-            <strong>{attachment.name}</strong>
+            <strong>{label}</strong>
             <small>
               {attachmentTypeLabel(attachment)} · {formatFileSize(attachment.sizeBytes)}
               {!isDraft && attachment.truncated ? " · 已按预览注入" : ""}
@@ -6748,8 +6765,10 @@ function RunActivityTimelineItem({
     if (!isInProgress && !revealThisRun && !disclosureChoices?.has(item.id)) setIsExpanded(false);
   }, [isInProgress, revealThisRun, disclosureChoices, item.id, setIsExpanded]);
   const contentId = useId();
-  const label = isInProgress ? "推理中" : item.durationMs === null
-    ? "已处理" : `已处理 ${formatRunDuration(0, item.durationMs)}`;
+  const [fallbackStartedAt] = useState(() => Date.now());
+  const label = isInProgress
+    ? <RunElapsedLabel startedAt={runProgress?.startedAt ?? fallbackStartedAt} durationMs={item.durationMs ?? 0} />
+    : item.durationMs === null ? "已处理" : `用时 ${formatRunDuration(0, item.durationMs)}`;
   const displayItems = groupRunActivityItems(item.items);
   const hasReasoning = displayItems.some((entry) => entry.kind === "activity_reasoning");
   const reasoningStreaming = displayItems.some((entry) =>
@@ -6895,21 +6914,17 @@ function ToolBatchTimelineItem({
   ) => Promise<void>;
   liveToolOutputs: Readonly<Record<string, LiveToolOutput>>;
 }): ReactElement {
-  const [isExpanded, setIsExpanded] = useToolDisclosure(item.id, item.tools.map((tool) => tool.id), item.tools.some((tool) => tool.status === "running" || tool.status === "awaiting_approval"));
+  const [isExpanded, setIsExpanded] = useToolDisclosure(item.id, item.tools.map((tool) => tool.id));
   const reveal = useContext(ToolRevealContext);
-  const disclosureChoices = useContext(ToolDisclosureContext);
   const revealThisBatch = item.tools.some((tool) => tool.id === reveal?.id);
   useEffect(() => { if (revealThisBatch) setIsExpanded(true); }, [reveal?.requestId, revealThisBatch, setIsExpanded]);
-  const hasActiveTool = item.tools.some((tool) => tool.status === "running" || tool.status === "awaiting_approval");
-  useEffect(() => {
-    if (!hasActiveTool && !revealThisBatch && !disclosureChoices?.has(item.id)) setIsExpanded(false);
-  }, [hasActiveTool, revealThisBatch, disclosureChoices, item.id, setIsExpanded]);
   const hasFailure = item.tools.some((tool) =>
     toolItemHasFailure(tool) || approvalErrors[tool.id] !== undefined
   );
   const currentTool = item.tools.find((tool) => tool.id === currentToolId);
   const isCurrentBatch = currentTool !== undefined && currentTool.runId === activeRunId;
-  const label = modelActivity?.preview?.trim() ? modelActivityLabel(modelActivity)
+  const hasReasoningSummary = Boolean(modelActivity?.preview?.trim());
+  const label = hasReasoningSummary && modelActivity !== null ? modelActivityLabel(modelActivity)
     : isCurrentBatch ? (toolBatchCurrentToolLabel([currentTool], teamManaged) ?? toolActivityLabel(currentTool, teamManaged))
     : toolBatchLabel(item.tools, teamManaged);
   const toggleLabel = isExpanded ? "收起本轮工具调用" : "展开本轮工具调用";
@@ -6927,7 +6942,7 @@ function ToolBatchTimelineItem({
             type="button"
             onClick={() => setIsExpanded((current) => !current)}
           >
-            <ToolTypeIcon name={representativeToolName(item.tools)} />
+            {hasReasoningSummary ? null : <ToolTypeIcon name={representativeToolName(item.tools)} />}
             <span className="min-w-0 truncate" aria-live={isCurrentBatch || modelActivity !== null ? "polite" : undefined}>{label}</span>
           </button>
           {hasFailure ? <span className="tool-activity-batch__status">有失败项</span> : null}
@@ -7541,13 +7556,14 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
     case "present_html": {
       const value = item.result === null ? null : parseToolValue(item.result);
       const presentation = isRecord(value?.presentation) ? value.presentation : null;
+      const reuseLabel = typeof argumentsValue?.sourceRef === "string" ? " · 复用源码" : "";
       const sourceLanguage = argumentsValue?.language ?? value?.language ?? presentation?.language;
       const language = sourceLanguage === "react" ? "React" : sourceLanguage === "vue" ? "Vue" : "HTML";
-      if (argumentsValue?.action === "inspect") return `${completed ? "已检查" : "检查"} ${language} 预览`;
+      if (argumentsValue?.action === "inspect") return `${completed ? "已检查" : "检查"} ${language} 预览${reuseLabel}`;
       const pages = argumentsValue?.pages ?? presentation?.pages;
-      if (Array.isArray(pages)) return `${completed ? "已展示" : "展示"} ${pages.length} 个 HTML 方案`;
+      if (Array.isArray(pages)) return `${completed ? "已展示" : "展示"} ${pages.length} 个 HTML 方案${reuseLabel}`;
       const sourcePath = path ?? (typeof presentation?.path === "string" ? presentation.path : null);
-      return `${completed ? "已展示" : "展示"} ${language}${sourcePath === null ? "" : ` · ${sourcePath}`}`;
+      return `${completed ? "已展示" : "展示"} ${language}${sourcePath === null ? "" : ` · ${sourcePath}`}${reuseLabel}`;
     }
     case "view_attachments": {
       if (Array.isArray(argumentsValue?.paths)) return `${completed ? "已查看" : "查看"} ${argumentsValue.paths.length} 张图像`;

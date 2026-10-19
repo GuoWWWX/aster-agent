@@ -16,7 +16,7 @@ import { ThreadLog } from "../storage/thread-log.js";
 import { NodeSqliteCheckpointSaver } from "../storage/node-sqlite-checkpoint-saver.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
 import { ProjectToolRegistry } from "../tools/project-tool-registry.js";
-import type { CompleteTurnInput, ModelProviderAdapter, ModelTurnResult } from "../model/model-contracts.js";
+import type { CompleteTurnInput, ModelConfiguration, ModelProviderAdapter, ModelTurnResult } from "../model/model-contracts.js";
 import { ModelRequestError } from "../model/model-request-error.js";
 
 const roots: string[] = [];
@@ -25,7 +25,7 @@ function isCoordinationInput(input: CompleteTurnInput): boolean { return input.t
 function routingResult(input: CompleteTurnInput, recipients: string[], extras: { decisionSummary?: string; contextSummary?: string; audience?: "continue" | "replace" } = {}): ModelTurnResult {
   const reference = input.messages.findLast(message => message.content.startsWith("[群聊协调参考上下文"));
   if (reference === undefined) throw new Error("Missing coordinator context");
-  const source = z.object({ message: z.object({ id: z.string() }).nullable() }).parse(JSON.parse(reference.content.slice(reference.content.indexOf("\n") + 1)));
+  const source = z.object({ message: z.object({ id: z.string() }).nullable() }).parse(JSON.parse(reference.content.split("\n")[1] ?? "null"));
   if (source.message === null) return { content: "协调对话中的普通回答", finishReason: "stop", toolCalls: [] };
   const id = `route-${source.message.id}`;
   if (input.messages.some(message => message.role === "tool" && message.toolCallId === id)) return { content: "已完成本轮协调。", finishReason: "stop", toolCalls: [] };
@@ -92,12 +92,31 @@ async function fixture(withThreadLog = false, withCoordinator = false, graphChec
     agent: { id: "developer", name: "开发", role: "开发", instructions: "", isDefault: false } });
   db.bindTeamMemberConversation({ conversationId: member.id, agentId: "developer", teamExecutionConversationId: lead.id });
   const model = new GroupFixture(); const tools = new ProjectToolRegistry(projects);
-  const runtime = new AgentRuntime(db, { getConfiguration: () => ({ apiKey: "fixture", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1", modelId: "fixture", reasoningOptions: [] }) }, projects, tools, model,
+  const credentials = { getConfiguration: vi.fn<(providerId?: string, modelId?: string) => ModelConfiguration>(() => ({ apiKey: "fixture", apiFormat: "openai-chat-completions", baseUrl: "https://example.test/v1", modelId: "fixture", reasoningOptions: [] })) };
+  const runtime = new AgentRuntime(db, credentials, projects, tools, model,
     (_delay, signal) => { signal.throwIfAborted(); return Promise.resolve(); }, undefined, null, null,
     withCoordinator ? { getConfiguration: () => structuredClone(directory) } : null, null, graphCheckpointer, undefined, null, log, projector);
-  return { db, lead, member, instance, runtime, model, tools, log };
+  return { db, lead, member, instance, runtime, model, tools, log, credentials };
 }
 describe("group execution integration", () => {
+  it("keeps the coordinator's configured provider, model and reasoning when a background message omits a selection", async () => {
+    const { db, instance, member, runtime, model, tools, credentials } = await fixture(true, true);
+    const selection = { providerId: randomUUID(), modelId: "configured-router", reasoning: { kind: "effort" as const, value: "medium" as const } };
+    credentials.getConfiguration.mockImplementation((_providerId, modelId) => ({ apiKey: "fixture", apiFormat: "openai-responses", baseUrl: "https://router.invalid/v1",
+      modelId: modelId ?? "default-model", reasoningOptions: [{ kind: "effort", value: "low" }, { kind: "effort", value: "medium" }] }));
+    const coordinator = runtime.getTeamChatCoordinationConversation({ teamInstanceId: instance.id });
+    db.setConversationModelSelection(coordinator.id, selection);
+    const calls = vi.spyOn(model, "completeTurn").mockImplementation(input => Promise.resolve(isCoordinationInput(input)
+      ? routingResult(input, [member.id]) : { content: "成员完成", finishReason: "stop", toolCalls: [] }));
+    try {
+      const message = runtime.postTeamChat({ teamInstanceId: instance.id, content: "请协调成员回答", requestId: randomUUID() }, () => undefined);
+      await vi.waitFor(() => expect(db.collaboration.message(message.id).deliveries[0]?.status).toBe("completed"));
+      const routed = calls.mock.calls.find(([input]) => isCoordinationInput(input))?.[0];
+      expect(routed?.configuration.modelId).toBe(selection.modelId);
+      expect(routed?.reasoning).toEqual(selection.reasoning);
+      expect(credentials.getConfiguration).toHaveBeenCalledWith(selection.providerId, selection.modelId);
+    } finally { await runtime.stopAllRuns(); await tools.dispose(); db.close(); }
+  });
   it("lets the model correct a rejected source and bind the original request without a partial or duplicate task", async () => {
     const { db, lead, runtime, model, tools } = await fixture(true);
     let step = 0;
@@ -187,7 +206,7 @@ describe("group execution integration", () => {
       const input = routingRequests.at(-1)!;
       expect(input.messages[0]?.content).toContain("Preserve the active conversational addressee");
       const message = input.messages.findLast(message => message.content.startsWith("[群聊协调参考上下文"))!;
-      return z.object({ previousUserExchange: z.unknown().optional() }).parse(JSON.parse(message.content.slice(message.content.indexOf("\n") + 1)));
+      return z.object({ previousUserExchange: z.unknown().optional() }).parse(JSON.parse(message.content.split("\n")[1] ?? "null"));
     };
     try {
       const greeting = runtime.postTeamChat({ teamInstanceId: instance.id, content: "开发你好", recipientConversationIds: [member.id], requestId: randomUUID() }, emit);

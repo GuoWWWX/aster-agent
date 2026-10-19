@@ -331,4 +331,21 @@ describe("ProjectImageViewer", () => {
     expect(releasePointerCapture).toHaveBeenCalledWith(7);
     expect(image.className).not.toContain("cursor-grabbing");
   });
+
+  it("pans an overflowed overlay with both wheel axes and Shift-wheel without zooming", () => {
+    act(() => root.render(<TooltipProvider><ProjectImageViewer appearance="overlay" currentIndex={0} dataUrl="data:image/png;base64,AQID"
+      fileName="large.png" hasNext={false} hasPrevious={false} total={1} onNext={vi.fn()} onPrevious={vi.fn()} /></TooltipProvider>));
+    const viewport = container.querySelector<HTMLDivElement>('[role="group"]')!;
+    Object.defineProperties(viewport, { clientWidth: { configurable: true, value: 400 }, clientHeight: { configurable: true, value: 300 },
+      scrollWidth: { configurable: true, value: 1200 }, scrollHeight: { configurable: true, value: 900 },
+      scrollLeft: { configurable: true, writable: true, value: 200 }, scrollTop: { configurable: true, writable: true, value: 100 } });
+    const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaX: 30, deltaY: 70 });
+    act(() => { viewport.dispatchEvent(wheel); });
+    expect(wheel.defaultPrevented).toBe(true);
+    expect(viewport.scrollLeft).toBe(230); expect(viewport.scrollTop).toBe(170);
+    act(() => { viewport.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, shiftKey: true, deltaY: 50 })); });
+    expect(viewport.scrollLeft).toBe(280); expect(viewport.scrollTop).toBe(170);
+    expect(container.textContent).toContain("适应");
+    expect(viewport.className).toContain("overflow-hidden");
+  });
 });

@@ -135,6 +135,8 @@ it("releases an expired visible option only after it leaves the viewport and rel
 
 it("releases all visited options when the conversation page is removed", async () => {
   await render(); await click("下一个方案");
+  // Deliver the iframe appearance messages queued by jsdom before checking owned timers.
+  await elapse(0);
   await act(async () => { root.render(null); await Promise.resolve(); });
   expect(releases()).toBe(2);
   expect(vi.getTimerCount()).toBe(0);

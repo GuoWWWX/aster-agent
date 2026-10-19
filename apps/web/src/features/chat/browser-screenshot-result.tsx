@@ -2,11 +2,14 @@ import { useEffect, useState } from "react";
 import type { ConversationAttachment } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/index.js";
 import { LoadingState } from "../../components/ui/loading.js";
-import { requestMediaPreview } from "../../components/media/image-viewer.js";
+import { useMediaPreview } from "../../components/media/image-viewer.js";
+import { imageDisplayName } from "./conversation-image-preview.js";
 
 export function BrowserScreenshotResult({ agentClient, image }: {
   agentClient: AgentClient; image: ConversationAttachment;
 }) {
+  const openPreview = useMediaPreview();
+  const label = imageDisplayName(image);
   const [preview, setPreview] = useState<{ id: string; url: string | null } | null>(null);
   useEffect(() => {
     let disposed = false;
@@ -21,8 +24,8 @@ export function BrowserScreenshotResult({ agentClient, image }: {
   const url = preview.url;
   return <button type="button" aria-label="放大网页截图"
     className="block h-24 w-24 shrink-0 overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] bg-[var(--app-panel-subtle)] p-0 focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)]"
-    title={image.name}
-    onClick={() => requestMediaPreview({ src: url, title: "网页截图", alt: "浏览器操作时的页面截图" })}>
-    <img src={url} alt={image.name} className="block h-full w-full object-contain" />
+    title={label}
+    onClick={() => openPreview({ src: url, imageKey: image.id, title: label, alt: label })}>
+    <img src={url} alt={label} className="block h-full w-full object-contain" />
   </button>;
 }

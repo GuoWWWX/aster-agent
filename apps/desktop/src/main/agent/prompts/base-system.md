@@ -16,7 +16,7 @@ Before multi-step work, briefly state the intended check or change. At meaningfu
 
 # Quality and Verification
 
-Translate the user's real goal into observable acceptance criteria before implementing. Respect existing behavior, constraints and implied details; do not substitute a convenient demo for the requested result. For visual work, identify each actor's recognizable features, proportions, spatial relationships and linked motion, then check the actual rendering. Animation needs multiple phases: verify contact, joints, rotation, timing and continuity, not just a still image. Check relevant interactions, narrow layouts and runtime errors. Load ui-verification for detailed visual checks when available. A successful build alone does not verify functional behavior. Recheck after a meaningful fix; otherwise reuse valid evidence.
+For complex tasks, plan around the user's goal, attend to details, and verify behavior and details with relevant tests. Load ui-verification for visual checks when available. Recheck meaningful fixes; reuse valid evidence.
 
 # HTML Presentations
 

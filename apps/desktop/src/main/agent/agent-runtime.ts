@@ -24,9 +24,6 @@ import {
   conversationToolItemSchema,
   estimateContextTokens,
   formatAgentError,
-  isReasoningOptionSupportedByApiFormat,
-  isReasoningOptionEnabled,
-  modelReasoningOptionKey,
   resolveContextCompressionThresholdTokens,
   type ContextCompressionConfiguration,
   type ContextCompressionThreshold,
@@ -77,6 +74,7 @@ import {
   type ModelTurnResult
 } from "../model/model-contracts.js";
 import { ModelAdapterRegistry } from "../model/model-adapter-registry.js";
+import { resolveConfiguredReasoning } from "../model/model-reasoning.js";
 import { ModelRequestError, ModelResponseError } from "../model/model-request-error.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
 import {
@@ -96,7 +94,8 @@ import { EventProjector } from "../storage/event-projector.js";
 import { ThreadLog, skillSnapshotFromResult, type ThreadLogEventInput } from "../storage/thread-log.js";
 import { ThreadLogLegacyImporter } from "../storage/thread-log-legacy-importer.js";
 import { RunCoordinator } from "./run-coordinator.js";
-import { ModelGateway } from "./model-gateway.js";
+import { ModelGateway } from "../model/model-gateway.js";
+import { changedRuntimeContexts } from "./runtime-context-snapshots.js";
 import type { ConversationTitleGenerator } from "./conversation-title-generator.js";
 import { TaskListTool } from "../tasks/task-list-tool.js";
 import { ConversationAttachmentTool } from "../tools/conversation-attachment-tool.js";
@@ -183,8 +182,6 @@ const MAX_TOOL_CALLS_PER_MODEL_TURN = 32;
 const MAX_CONTEXT_COMPACTIONS_PER_RUN = 3;
 const MAX_MODEL_RECONNECT_ATTEMPTS = 5;
 const MAX_OUTPUT_TOKENS = 8_192;
-const MAX_SUMMARY_OUTPUT_TOKENS = 2_048;
-const MAX_APPROVAL_REVIEW_OUTPUT_TOKENS = 320;
 const MAX_APPROVAL_REVIEW_REQUEST_CHARACTERS = 4_000;
 const TURN_SUMMARY_COMPONENT_BASE_TOKENS = 448;
 const TURN_SUMMARY_COMPONENT_MIN_TOKENS = 320;
@@ -194,23 +191,6 @@ const MODEL_RETRY_INITIAL_DELAY_MS = 1_000;
 const MODEL_RETRY_MAX_DELAY_MS = 16_000;
 const DEFAULT_PERMISSION_MODE: ConversationPermissionMode = "ask_before_changes";
 const CONTEXT_COMPACTION_ACTIVITY_NAME = "compact_context";
-const CONTEXT_COMPACTION_REASONING: ModelReasoningOption = {
-  kind: "effort",
-  value: "none",
-};
-
-function contextCompactionReasoning(
-  configuration: ModelConfiguration,
-): ModelReasoningOption | undefined {
-  return isReasoningOptionSupportedByApiFormat(
-    configuration.apiFormat,
-    CONTEXT_COMPACTION_REASONING,
-    configuration.modelId,
-  )
-    ? CONTEXT_COMPACTION_REASONING
-    : undefined;
-}
-
 function isManualContextCompactionCommand(content: string): boolean {
   return content.trim().toLowerCase() === "/compact";
 }
@@ -894,31 +874,6 @@ function waitForRetryDelay(delayMs: number, signal: AbortSignal): Promise<void> 
     const timeout = setTimeout(complete, delayMs);
     signal.addEventListener("abort", onAbort, { once: true });
   });
-}
-
-function resolveReasoning(
-  input: SendConversationMessageInput,
-  configuration: ModelConfiguration
-): ModelReasoningOption | undefined {
-  return resolveConfiguredReasoning(input.reasoning, configuration);
-}
-
-function resolveConfiguredReasoning(
-  reasoning: ModelReasoningOption | undefined,
-  configuration: ModelConfiguration,
-): ModelReasoningOption | undefined {
-  if (reasoning === undefined) return undefined;
-  const key = modelReasoningOptionKey(reasoning);
-  const option = configuration.reasoningOptions.find(
-    (candidate) => modelReasoningOptionKey(candidate) === key
-  );
-  if (option === undefined) {
-    throw new Error("The selected reasoning option is not configured for this model.");
-  }
-  if (!isReasoningOptionEnabled(option)) {
-    throw new Error("The selected reasoning option is disabled for this model.");
-  }
-  return option;
 }
 
 function replaceStoredVisibleMessageContent(
@@ -2171,6 +2126,12 @@ export class AgentRuntime {
   private prepareConversationMessage(
     input: SendConversationMessageInput
   ): PreparedConversationMessage {
+    const conversation = this.database.getConversation(input.conversationId);
+    const selection = conversation.modelSelection;
+    if (input.providerId === undefined && input.modelId === undefined && selection !== null) {
+      input = { ...input, providerId: selection.providerId, modelId: selection.modelId,
+        ...(input.reasoning === undefined && selection.reasoning !== null ? { reasoning: selection.reasoning } : {}) };
+    }
     const storedConfiguration = this.credentials.getConfiguration(
       input.providerId,
       input.modelId
@@ -2180,8 +2141,8 @@ export class AgentRuntime {
       ...storedConfiguration,
       modelId: input.modelId ?? storedConfiguration.modelId
     };
-    const permissionMode = input.permissionMode ?? this.database.getConversation(input.conversationId).permissionMode ?? DEFAULT_PERMISSION_MODE;
-    const reasoning = resolveReasoning(input, configuration);
+    const permissionMode = input.permissionMode ?? conversation.permissionMode ?? DEFAULT_PERMISSION_MODE;
+    const reasoning = resolveConfiguredReasoning(input.reasoning, configuration);
     const contextCompressionConfiguration = structuredClone(
       resolveContextCompressionConfiguration(
         configuration,
@@ -3090,22 +3051,20 @@ export class AgentRuntime {
             const directoryContext = this.collaborationContext(conversationId, runId);
             const pendingCount = conversation.coordinationMode === "parallel_queue"
               ? this.database.listPendingMessages(conversationId).filter(message => message.deliveryMode === "queue").length : 0;
-            const contextMessages = [
-                ...(pendingCount === 0 ? [] : [{ attachments: [], role: "user" as const, toolCallId: null, toolCalls: [],
-                  content: `[Queue status] ${pendingCount} independent requests remain pending. Preview with list_pending_messages; arrange the current request first, then use claim_pending_messages to select the next request or related batch. Queue status is metadata, not a new user request.` }]),
-                ...(activeSkillContext === null || activeSkillContext === undefined
-                  ? []
-                  : [activeSkillContext]),
-                ...(taskListContext === null ? [] : [taskListContext]),
-                ...(directoryContext === null ? [] : [directoryContext]),
-                ...currentImageMessages,
-              ];
+            const runtimeContexts = {
+              queue: pendingCount === 0 ? null : { attachments: [], role: "user" as const, toolCallId: null, toolCalls: [],
+                content: `[Queue status] ${pendingCount} independent requests remain pending. Preview with list_pending_messages; arrange the current request first, then use claim_pending_messages to select the next request or related batch. Queue status is metadata, not a new user request.` },
+              skills: activeSkillContext, checklist: taskListContext, directory: directoryContext,
+            };
+            const runtimeChanges = changedRuntimeContexts([...state.messages, ...additions], runtimeContexts);
+            const contextMessages = currentImageMessages;
             const currentContext = preparedModelContext;
             if (currentContext !== null && state.turns > lastRuntimeContextRefreshTurn) {
               const modelMessageBudget = modelRequestMessageBudget(currentContext);
               const requestTokens = estimateModelMessagesTokens(normalizeModelFacingToolOutputs([
                 ...state.messages,
                 ...additions,
+                ...runtimeChanges,
                 ...contextMessages,
               ]));
               const reportedInputTokens = lastAssistantResult?.providerState?.usage?.inputTokens ?? 0;
@@ -3129,14 +3088,14 @@ export class AgentRuntime {
                   contextMessages,
                   hasFollowUpInput: false,
                   messages: [],
-                  replaceMessages: refreshedContext.messages,
+                  replaceMessages: [...refreshedContext.messages, ...changedRuntimeContexts(refreshedContext.messages, runtimeContexts)],
                 };
               }
             }
             return {
               contextMessages,
               hasFollowUpInput: false,
-              messages: additions,
+              messages: [...additions, ...runtimeChanges],
             };
           },
           callModel: async (modelMessages, turn, hooks?: AgentGraphModelCallHooks) => {
@@ -5239,9 +5198,9 @@ export class AgentRuntime {
 
     try {
       input.signal.throwIfAborted();
-      const result = await this.modelGateway.completeTurn({
+      const result = await this.modelGateway.completeBackgroundTurn({
+        purpose: "approval",
         configuration: input.configuration,
-        maxOutputTokens: MAX_APPROVAL_REVIEW_OUTPUT_TOKENS,
         messages: [
           {
             attachments: [],
@@ -5266,9 +5225,7 @@ export class AgentRuntime {
           },
         ],
         onTextDelta: () => undefined,
-        reasoning: undefined,
         signal: input.signal,
-        tools: [],
       });
       const review = parseAutomaticApprovalReview(result.content);
       if (review === null || result.toolCalls.length > 0) {
@@ -6036,16 +5993,14 @@ export class AgentRuntime {
       input.signal.throwIfAborted();
       let receivedTextDelta = false;
       try {
-        const result = await this.modelGateway.completeTurn({
+        const result = await this.modelGateway.completeBackgroundTurn({
+          purpose: "summary",
           configuration: input.configuration,
-          maxOutputTokens: MAX_SUMMARY_OUTPUT_TOKENS,
           messages: createContextCompactionMessages(input.previousSummary, input.messages),
           onTextDelta: () => {
             receivedTextDelta = true;
           },
-          reasoning: contextCompactionReasoning(input.configuration),
           signal: input.signal,
-          tools: []
         });
         if (result.toolCalls.length > 0 || result.content.trim().length === 0) {
           throw new Error("Context compaction returned an invalid response.");

@@ -8,33 +8,33 @@ export function htmlPreviewDocument(source: string, id: string): string {
     if (window.parent === window) return;
     const id = ${JSON.stringify(id)};
     const maxHeight = ${HTML_PREVIEW_MAX_HEIGHT};
-    let timer = 0, lastHeight = 0, viewportHeight = innerHeight, viewportWidth = innerWidth;
+    let timer = 0, lastHeight = 0, viewportHeight = innerHeight, viewportWidth = innerWidth, fittedOverflow = null;
     const schedule = () => { clearTimeout(timer); timer = setTimeout(measure, 50); };
     function measure() {
       const body = document.body, root = document.documentElement;
       if (!body || innerWidth === 0 || root.getBoundingClientRect().width === 0) return;
-      // Viewport-sized roots must not cause a height -> viewport -> height loop.
-      // Only override them while measuring natural content, then restore exactly.
-      const saved = [root, body].flatMap(node => ['height', 'min-height'].map(property => ({
-        node, property, value: node.style.getPropertyValue(property), priority: node.style.getPropertyPriority(property)
-      })));
-      for (const item of saved) item.node.style.setProperty(item.property, item.property === 'height' ? 'auto' : '0px', 'important');
+      // Read the rendered page without temporarily shrinking it, which can clamp its scroll position.
       const rect = body.getBoundingClientRect(), bodyStyle = getComputedStyle(body), rootStyle = getComputedStyle(root);
       const number = value => parseFloat(value) || 0;
       // Avoid an extra white pixel from zoom-related floating-point noise.
       const height = Math.min(maxHeight, Math.max(1, Math.ceil(Math.max(body.scrollHeight, body.offsetHeight, rect.height)
         + Math.max(0, rect.top + scrollY) + number(bodyStyle.marginBottom) + number(rootStyle.marginBottom)
         + number(rootStyle.paddingBottom) + number(rootStyle.borderBottomWidth) - 0.001)));
-      for (const item of saved) {
-        if (item.value) item.node.style.setProperty(item.property, item.value, item.priority);
-        else item.node.style.removeProperty(item.property);
+      // A rounded iframe height or changing button glyph must not create a one-pixel scrollbar.
+      if (height <= innerHeight + 1) {
+        if (fittedOverflow === null) fittedOverflow = { value: root.style.getPropertyValue('overflow-y'), priority: root.style.getPropertyPriority('overflow-y') };
+        root.style.setProperty('overflow-y', 'hidden', 'important');
+      } else if (fittedOverflow !== null) {
+        if (fittedOverflow.value) root.style.setProperty('overflow-y', fittedOverflow.value, fittedOverflow.priority);
+        else root.style.removeProperty('overflow-y');
+        fittedOverflow = null;
       }
       if (height !== lastHeight) { lastHeight = height; window.parent.postMessage({ type: 'html-preview.resize', id, height }, '*'); }
     }
     function start() {
       // CSS trigger #2: iframe documents cannot inherit the workbench scrollbar pseudo-elements.
       const scrollbar = document.createElement('style');
-      scrollbar.textContent = '@layer aster-preview-defaults { :where(body) { display: flow-root; margin: 0; } }'
+      scrollbar.textContent = '@layer aster-preview-defaults { :where(:root) { color-scheme: light dark; } :where(body) { display: flow-root; margin: 0; } }'
         + '* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--app-muted-foreground, currentColor) 30%, transparent) transparent; }'
         + '*::-webkit-scrollbar { width: 10px; height: 10px; }'
         + '*::-webkit-scrollbar-track, *::-webkit-scrollbar-corner { background: transparent; }'
@@ -58,7 +58,16 @@ export function htmlPreviewDocument(source: string, id: string): string {
       window.addEventListener('resize', () => { if (viewportWidth !== innerWidth) { viewportWidth = innerWidth; schedule(); } });
       window.addEventListener('load', schedule, true);
       window.addEventListener('message', event => {
-        if (event.source === window.parent && event.data?.type === 'html-preview.measure' && event.data.id === id) schedule();
+        if (event.source !== window.parent || event.data?.id !== id) return;
+        if (event.data.type === 'html-preview.measure') schedule();
+        if (event.data.type === 'html-preview.theme' && (event.data.theme === 'light' || event.data.theme === 'dark')) {
+          const root = document.documentElement;
+          root.style.colorScheme = event.data.theme;
+          for (const [key, property] of [['foreground', '--app-foreground'], ['mutedForeground', '--app-muted-foreground']]) {
+            if (typeof event.data[key] === 'string' && CSS.supports('color', event.data[key])) root.style.setProperty(property, event.data[key]);
+          }
+          schedule();
+        }
       });
       document.fonts.ready.then(schedule);
       document.fonts.addEventListener('loadingdone', schedule);

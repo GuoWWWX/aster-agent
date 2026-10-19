@@ -2,7 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import { ImageIcon } from "lucide-react";
 import { imageGenerationResultSchema, type ConversationAttachment, type ConversationToolItem } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/index.js";
-import { requestMediaPreview } from "../../components/media/image-viewer.js";
+import { useMediaPreview } from "../../components/media/image-viewer.js";
+import { imageDisplayName } from "./conversation-image-preview.js";
 import { ImagePreviewStrip } from "./image-preview-strip.js";
 
 const ImageDetailsContext = createContext<{ visible: ReadonlySet<string>; setVisible: (id: string, visible: boolean) => void } | null>(null);
@@ -52,6 +53,7 @@ export function GeneratedImagesResult({ agentClient, item, placement = "delivery
 }
 
 function GeneratedImage({ agentClient, image }: { agentClient: AgentClient; image: ConversationAttachment }) {
+  const openPreview = useMediaPreview(), label = imageDisplayName(image);
   const [preview, setPreview] = useState<{ id: string; url: string | null } | null>(null);
   useEffect(() => {
     let disposed = false;
@@ -63,6 +65,6 @@ function GeneratedImage({ agentClient, image }: { agentClient: AgentClient; imag
   if (preview?.id !== image.id) return <div className="aspect-square w-48 shrink-0 animate-pulse rounded-[var(--app-radius)] bg-[var(--app-panel-subtle)] motion-reduce:animate-none" aria-label="正在读取生成图片" />;
   if (preview.url === null) return <p role="status">生成图片无法读取</p>;
   const url = preview.url;
-  return <button type="button" className="block aspect-square w-48 shrink-0 overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] p-0 focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)]" aria-label={`放大生成图片 ${image.name}`}
-    onClick={() => requestMediaPreview({ src: url, title: image.name, alt: "生成图片" })}><img src={url} alt={image.name} className="block h-full w-full object-cover" /></button>;
+  return <button type="button" className="block aspect-square w-48 shrink-0 overflow-hidden rounded-[var(--app-radius)] border border-[var(--app-border)] p-0 focus-visible:outline-2 focus-visible:outline-[var(--app-focus-ring)]" aria-label={`放大生成图片 ${label}`}
+    onClick={() => openPreview({ src: url, imageKey: image.id, title: label, alt: label })}><img src={url} alt={label} className="block h-full w-full object-cover" /></button>;
 }

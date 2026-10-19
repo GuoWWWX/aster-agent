@@ -1617,6 +1617,7 @@ class FixtureContextCompactor implements ContextCompactor {
 
 class AutoReviewCommandFixtureModel implements ModelProviderAdapter {
   public reviewRequests = 0;
+  public readonly requests: CompleteTurnInput[] = [];
   private mainTurns = 0;
 
   public constructor(
@@ -1625,6 +1626,7 @@ class AutoReviewCommandFixtureModel implements ModelProviderAdapter {
   ) {}
 
   public completeTurn(input: CompleteTurnInput): Promise<ModelTurnResult> {
+    this.requests.push(input);
     if (input.messages[0]?.content.includes("security reviewer for a local coding Agent")) {
       this.reviewRequests += 1;
       return Promise.resolve({
@@ -3536,17 +3538,18 @@ describe("AgentRuntime", () => {
     ]);
     expect(database.getTaskList(conversation.id)).toBeNull();
     const taskContext = (requestIndex: number): string[] => (model.requests[requestIndex]?.messages ?? [])
-      .filter((message) => message.content.includes("[Current task list | live state]"))
+      .filter((message) => message.runtimeContext === "checklist").slice(-1)
       .map((message) => message.content);
-    // Task state is loaded before every model call, rather than being frozen
-    // into the first system prompt or accumulated in graph message state.
+    // The latest snapshot controls current state; earlier snapshots stay in
+    // place to preserve the request prefix instead of moving on every call.
     expect(taskContext(0)).toEqual([]);
     expect(taskContext(1)).toEqual([expect.stringContaining("1. [running] 分析需求")]);
     expect(taskContext(1)[0]).toContain("2. [pending] 完成实现");
     expect(taskContext(2)).toEqual([expect.stringContaining("1. [completed] 分析需求")]);
     expect(taskContext(2)[0]).toContain("2. [running] 完成实现");
     expect(taskContext(3)).toEqual([expect.stringContaining("2. [completed] 完成实现")]);
-    expect(taskContext(4)).toEqual([]);
+    expect(taskContext(4)).toEqual([expect.stringContaining("No active entries")]);
+    expect(model.requests[2]?.messages.slice(0, model.requests[1]?.messages.length)).toEqual(model.requests[1]?.messages);
     database.close();
   });
 
@@ -6796,7 +6799,7 @@ describe("AgentRuntime", () => {
     }]))).toBe(true);
   });
 
-  it("uses a short non-reasoning model request for context compaction", async () => {
+  it.each(["low", "none", "budget", null] as const)("uses the lowest configured reasoning for context compaction (%s)", async (level) => {
     const database = new AgentDatabase(":memory:");
     const projects = new ProjectRegistry(database);
     const conversation = database.createConversation(null);
@@ -6822,11 +6825,15 @@ describe("AgentRuntime", () => {
       {
         getConfiguration: () => ({
           apiKey: "secret",
-          apiFormat: "openai-responses",
+          apiFormat: level === "budget" ? "anthropic-messages" : "openai-responses",
           baseUrl: "https://example.test/v1",
           contextWindow: 200_000,
-          modelId: "gpt-5.6-terra",
-          reasoningOptions: [],
+          modelId: level === "none" ? "gpt-5.6-terra" : "gpt-6.1-sol",
+          reasoningOptions: level === null ? [] : level === "budget" ? [{ kind: "token_budget", value: 4096 }] : [
+            { kind: "effort", value: "high" },
+            { kind: "effort", value: level },
+            ...(level === "low" ? [{ kind: "effort" as const, value: "none" as const, enabled: false }] : []),
+          ],
         }),
       },
       projects,
@@ -6851,8 +6858,8 @@ describe("AgentRuntime", () => {
 
     expect(model.requests).toHaveLength(1);
     expect(model.requests[0]).toMatchObject({
-      maxOutputTokens: 2_048,
-      reasoning: { kind: "effort", value: "none" },
+      maxOutputTokens: level === "budget" ? 4224 : 2_048,
+      reasoning: level === null ? undefined : level === "budget" ? { kind: "token_budget", value: 4096 } : { kind: "effort", value: level },
       tools: [],
     });
     database.close();
@@ -8288,7 +8295,7 @@ describe("AgentRuntime", () => {
           apiFormat: "openai-chat-completions",
           baseUrl: "https://example.test/v1",
           modelId: "test-model",
-          reasoningOptions: [],
+          reasoningOptions: [{ kind: "effort", value: "low" }, { kind: "effort", value: "medium" }],
         }),
       },
       projects,
@@ -8310,6 +8317,7 @@ describe("AgentRuntime", () => {
         content: "在本地输出测试文字",
         conversationId: conversation.id,
         permissionMode: "ask_before_changes",
+        reasoning: { kind: "effort", value: "medium" },
       }, (event) => {
         events.push(event);
         if (event.type === "run.finished") resolve();
@@ -8317,6 +8325,9 @@ describe("AgentRuntime", () => {
     });
 
     expect(model.reviewRequests).toBe(1);
+    const review = model.requests.find(input => input.messages[0]?.content.includes("security reviewer for a local coding Agent"));
+    expect(review).toMatchObject({ reasoning: { kind: "effort", value: "low" }, tools: [], maxOutputTokens: 1024 });
+    expect(model.requests[0]?.reasoning).toEqual({ kind: "effort", value: "medium" });
     expect(events.filter((event) => event.type === "tool.approval_requested")).toHaveLength(0);
     expect(database.listTimeline(conversation.id).find(
       (item) => item.kind === "tool" && item.name === "run_command",

@@ -81,18 +81,18 @@ describe("prompt assets", () => {
     expect(BASE_SYSTEM_PROMPT).toContain("Reuse images already visible");
     expect(BASE_SYSTEM_PROMPT).toContain("terminal-use");
     expect(BASE_SYSTEM_PROMPT).toContain("Do not repeat unchanged searches or reads");
-    expect(BASE_SYSTEM_PROMPT).toContain("Animation needs multiple phases");
-    expect(BASE_SYSTEM_PROMPT).toContain("A successful build alone does not verify functional behavior");
+    expect(BASE_SYSTEM_PROMPT).toContain("For complex tasks, plan around the user's goal");
+    expect(BASE_SYSTEM_PROMPT).toContain("verify behavior and details with relevant tests");
   });
   it("supports self-contained framework snippets and inspection before a single final delivery", () => {
     for (const text of ["html, react/jsx/tsx or vue", "HTML/SVG fragments", "no document wrappers or file",
       "default-exported component", "Vue uses a self-contained SFC", "existing HTML file", "workspace-relative path",
       "requested alternatives", "one delivery channel", "rendered pixels"]) expect(BASE_SYSTEM_PROMPT).toContain(text);
     const visualSkill = SYSTEM_SKILLS.find(source => parseSkillMarkdown(source).metadata.name === "ui-verification")!;
-    expect(visualSkill).toContain("recognizable silhouette");
-    expect(visualSkill).toContain("feet contacting opposite pedals");
+    expect(visualSkill).toContain("Preserve the requested format and constraints");
+    expect(visualSkill).toContain("Source code and a successful build are not visual evidence");
     expect(visualSkill).toContain("two distinct phases");
-    expect(visualSkill).toContain("not a fixed requirement");
+    expect(visualSkill).toContain("sourceRef");
     const terminalSkill = SYSTEM_SKILLS.find(source => parseSkillMarkdown(source).metadata.name === "terminal-use")!;
     expect(terminalSkill).toContain("expectedContext=ssh");
     expect(terminalSkill).toContain("NOT completion");

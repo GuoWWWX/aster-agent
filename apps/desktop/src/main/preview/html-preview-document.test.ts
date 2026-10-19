@@ -51,8 +51,9 @@ describe("preview height instrumentation", () => {
     vi.useFakeTimers();
     try {
       let width = 0;
-      const events = new Map<string, () => void>();
+      const events = new Map<string, (event?: unknown) => void>();
       const postMessage = vi.fn();
+      const parent = { postMessage };
       const prependStyle = vi.fn<(style: { textContent: string }) => void>();
       const surface = () => {
         const properties = new Map<string, string>();
@@ -68,10 +69,11 @@ describe("preview height instrumentation", () => {
       const body = surface(), root = surface();
       runInNewContext(script!, {
         innerWidth: 720, innerHeight: 320, scrollY: 0, setTimeout, clearTimeout,
-        window: { parent: { postMessage }, addEventListener: (name: string, listener: () => void) => events.set(name, listener) },
+        window: { parent, addEventListener: (name: string, listener: (event?: unknown) => void) => events.set(name, listener) },
         document: { readyState: "complete", head: { prepend: prependStyle }, createElement: () => ({ textContent: "" }), body, documentElement: root, fonts: { ready: Promise.resolve(), addEventListener() {} } },
         getComputedStyle: (node: typeof root) => ({ marginBottom: node === root ? String(rootMargin) : "0", paddingBottom: "0", borderBottomWidth: "0" }),
         ResizeObserver: class { observe() {} }, MutationObserver: class { observe() {} },
+        CSS: { supports: (_property: string, value: string) => value.startsWith("#") },
       });
       await vi.advanceTimersByTimeAsync(60);
       expect(prependStyle.mock.calls[0]?.[0].textContent).toContain(":where(body) { display: flow-root; margin: 0; }");
@@ -81,6 +83,14 @@ describe("preview height instrumentation", () => {
       events.get("load")?.();
       await vi.advanceTimersByTimeAsync(60);
       expect(postMessage).toHaveBeenCalledWith({ type: "html-preview.resize", id: "preview-id", height: expectedHeight }, "*");
+      events.get("message")?.({ source: {}, data: { type: "html-preview.theme", id: "preview-id", theme: "dark", foreground: "#eee" } });
+      expect(root.style.getPropertyValue("--app-foreground")).toBe("");
+      events.get("message")?.({ source: parent, data: { type: "html-preview.theme", id: "wrong-id", theme: "dark", foreground: "#eee" } });
+      expect(root.style.getPropertyValue("--app-foreground")).toBe("");
+      events.get("message")?.({ source: parent, data: { type: "html-preview.theme", id: "preview-id", theme: "dark", foreground: "#eee", mutedForeground: "invalid" } });
+      expect(root.style).toHaveProperty("colorScheme", "dark");
+      expect(root.style.getPropertyValue("--app-foreground")).toBe("#eee");
+      expect(root.style.getPropertyValue("--app-muted-foreground")).toBe("");
       postMessage.mockClear();
       width = 0;
       events.get("load")?.();
