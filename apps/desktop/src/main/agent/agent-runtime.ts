@@ -95,6 +95,7 @@ import { ThreadLog, skillSnapshotFromResult, type ThreadLogEventInput } from "..
 import { ThreadLogLegacyImporter } from "../storage/thread-log-legacy-importer.js";
 import { RunCoordinator } from "./run-coordinator.js";
 import { ModelGateway } from "../model/model-gateway.js";
+import { changedRuntimeContexts } from "./runtime-context-snapshots.js";
 import type { ConversationTitleGenerator } from "./conversation-title-generator.js";
 import { TaskListTool } from "../tasks/task-list-tool.js";
 import { ConversationAttachmentTool } from "../tools/conversation-attachment-tool.js";
@@ -3050,22 +3051,20 @@ export class AgentRuntime {
             const directoryContext = this.collaborationContext(conversationId, runId);
             const pendingCount = conversation.coordinationMode === "parallel_queue"
               ? this.database.listPendingMessages(conversationId).filter(message => message.deliveryMode === "queue").length : 0;
-            const contextMessages = [
-                ...(pendingCount === 0 ? [] : [{ attachments: [], role: "user" as const, toolCallId: null, toolCalls: [],
-                  content: `[Queue status] ${pendingCount} independent requests remain pending. Preview with list_pending_messages; arrange the current request first, then use claim_pending_messages to select the next request or related batch. Queue status is metadata, not a new user request.` }]),
-                ...(activeSkillContext === null || activeSkillContext === undefined
-                  ? []
-                  : [activeSkillContext]),
-                ...(taskListContext === null ? [] : [taskListContext]),
-                ...(directoryContext === null ? [] : [directoryContext]),
-                ...currentImageMessages,
-              ];
+            const runtimeContexts = {
+              queue: pendingCount === 0 ? null : { attachments: [], role: "user" as const, toolCallId: null, toolCalls: [],
+                content: `[Queue status] ${pendingCount} independent requests remain pending. Preview with list_pending_messages; arrange the current request first, then use claim_pending_messages to select the next request or related batch. Queue status is metadata, not a new user request.` },
+              skills: activeSkillContext, checklist: taskListContext, directory: directoryContext,
+            };
+            const runtimeChanges = changedRuntimeContexts([...state.messages, ...additions], runtimeContexts);
+            const contextMessages = currentImageMessages;
             const currentContext = preparedModelContext;
             if (currentContext !== null && state.turns > lastRuntimeContextRefreshTurn) {
               const modelMessageBudget = modelRequestMessageBudget(currentContext);
               const requestTokens = estimateModelMessagesTokens(normalizeModelFacingToolOutputs([
                 ...state.messages,
                 ...additions,
+                ...runtimeChanges,
                 ...contextMessages,
               ]));
               const reportedInputTokens = lastAssistantResult?.providerState?.usage?.inputTokens ?? 0;
@@ -3089,14 +3088,14 @@ export class AgentRuntime {
                   contextMessages,
                   hasFollowUpInput: false,
                   messages: [],
-                  replaceMessages: refreshedContext.messages,
+                  replaceMessages: [...refreshedContext.messages, ...changedRuntimeContexts(refreshedContext.messages, runtimeContexts)],
                 };
               }
             }
             return {
               contextMessages,
               hasFollowUpInput: false,
-              messages: additions,
+              messages: [...additions, ...runtimeChanges],
             };
           },
           callModel: async (modelMessages, turn, hooks?: AgentGraphModelCallHooks) => {

@@ -25,7 +25,7 @@ function isCoordinationInput(input: CompleteTurnInput): boolean { return input.t
 function routingResult(input: CompleteTurnInput, recipients: string[], extras: { decisionSummary?: string; contextSummary?: string; audience?: "continue" | "replace" } = {}): ModelTurnResult {
   const reference = input.messages.findLast(message => message.content.startsWith("[群聊协调参考上下文"));
   if (reference === undefined) throw new Error("Missing coordinator context");
-  const source = z.object({ message: z.object({ id: z.string() }).nullable() }).parse(JSON.parse(reference.content.slice(reference.content.indexOf("\n") + 1)));
+  const source = z.object({ message: z.object({ id: z.string() }).nullable() }).parse(JSON.parse(reference.content.split("\n")[1] ?? "null"));
   if (source.message === null) return { content: "协调对话中的普通回答", finishReason: "stop", toolCalls: [] };
   const id = `route-${source.message.id}`;
   if (input.messages.some(message => message.role === "tool" && message.toolCallId === id)) return { content: "已完成本轮协调。", finishReason: "stop", toolCalls: [] };
@@ -206,7 +206,7 @@ describe("group execution integration", () => {
       const input = routingRequests.at(-1)!;
       expect(input.messages[0]?.content).toContain("Preserve the active conversational addressee");
       const message = input.messages.findLast(message => message.content.startsWith("[群聊协调参考上下文"))!;
-      return z.object({ previousUserExchange: z.unknown().optional() }).parse(JSON.parse(message.content.slice(message.content.indexOf("\n") + 1)));
+      return z.object({ previousUserExchange: z.unknown().optional() }).parse(JSON.parse(message.content.split("\n")[1] ?? "null"));
     };
     try {
       const greeting = runtime.postTeamChat({ teamInstanceId: instance.id, content: "开发你好", recipientConversationIds: [member.id], requestId: randomUUID() }, emit);

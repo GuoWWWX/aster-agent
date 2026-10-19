@@ -16,6 +16,7 @@ For complex work, plan around the user's goal and important details. Preserve th
 - Fix observed defects, then rerender the changed state. Reuse evidence for unchanged aspects. Do not inspect/list/search repeatedly without a new question or changed state.
 - Keep the sourceRef returned by the first inspection. Reuse it for other phases, viewport sizes, interaction checks and final present_html delivery; do not regenerate or resend unchanged code. Send new code only for an actual source change, then use the new reference.
 - Deliver one final preview or original file reference and concise verification. Do not duplicate the same design in a file delivery, full inline code and a second browser tab. If actual rendering is unavailable, say what was and was not checked.
+- If the user requests an inline code block, deliver that complete fence directly; the UI renders it. Inspection is a check, not another required delivery via action=present. Reuse sourceRef for further checks.
 
 # Component preview format
 

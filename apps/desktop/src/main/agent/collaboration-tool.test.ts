@@ -200,6 +200,49 @@ it("still imports existing board tasks when listing the task directory", async (
   expect(response.value.items).toContainEqual({ id: task.id });
 });
 
+it("bounds task discovery by default, preserves paging and keeps full records available on demand", async () => {
+  const { database, lead, tool } = fixture();
+  for (let index = 0; index < 7; index++) database.collaboration.updateTask({ conversationId: lead.id,
+    title: `Goal ${index}`, goal: "g".repeat(4000), summary: "s".repeat(4000), decisions: "d".repeat(4000),
+    nextStep: "n".repeat(2000), requestId: randomUUID() });
+  const execute = (name: string, args: unknown) => tool.execute({ name, arguments: JSON.stringify(args), conversationId: lead.id,
+    runId: randomUUID(), toolCallId: randomUUID(), changed: vi.fn(), post: vi.fn() });
+  const result = await execute("list_task_contexts", {});
+  if (result.kind !== "completed") throw new Error("Expected list result");
+  const pageSchema = z.object({ value: z.object({ items: z.array(z.object({ id: z.string(), revision: z.number(), excerpted: z.boolean() }).passthrough()),
+    total: z.number(), nextBeforeId: z.string().nullable() }) });
+  const page = pageSchema.parse(JSON.parse(result.content)).value;
+  expect(page.items).toHaveLength(5);
+  expect(page.total).toBe(7);
+  expect(result.content.length).toBeLessThan(7000);
+  expect(page.items[0]).not.toHaveProperty("decisions");
+  expect(page.items[0]).not.toHaveProperty("createdAt");
+  expect(page.items[0]).toMatchObject({ revision: 1, excerpted: true });
+  const next = await execute("list_task_contexts", { beforeId: page.nextBeforeId });
+  if (next.kind !== "completed") throw new Error("Expected next page");
+  expect(pageSchema.parse(JSON.parse(next.content)).value.items).toHaveLength(2);
+  const task = page.items[0];
+  if (task === undefined) throw new Error("Expected first task");
+  const detail = await execute("get_task_context", { id: task.id });
+  if (detail.kind !== "completed") throw new Error("Expected detail");
+  expect(z.object({ value: z.object({ task: z.object({ decisions: z.string() }) }) }).parse(JSON.parse(detail.content)).value.task.decisions).toBe("d".repeat(4000));
+});
+
+it("acknowledges batched updates without echoing full submitted task descriptions", async () => {
+  const { database, lead, tool } = fixture();
+  const result = await tool.execute({ name: "update_task_context", arguments: JSON.stringify({ updates: [{
+    title: "Bounded receipt", goal: "g".repeat(4000), summary: "s".repeat(4000), decisions: "d".repeat(4000), nextStep: "n".repeat(2000),
+  }] }), conversationId: lead.id, runId: randomUUID(), toolCallId: randomUUID(), changed: vi.fn(), post: vi.fn() });
+  if (result.kind !== "completed") throw new Error("Expected receipt");
+  expect(result.isError).toBe(false);
+  expect(result.content.length).toBeLessThan(800);
+  const receipt = z.object({ value: z.object({ tasks: z.array(z.object({ id: z.string(), revision: z.number() })) }) }).parse(JSON.parse(result.content));
+  const task = receipt.value.tasks[0];
+  if (task === undefined) throw new Error("Expected task reference");
+  expect(task.revision).toBe(1);
+  expect(database.collaboration.getTask(task.id).task.summary).toBe("s".repeat(4000));
+});
+
 it("records Agent completion as awaiting user confirmation and rejects self-granted permission", async () => {
   const { database, lead, tool } = fixture(); const runId = randomUUID();
   const execute = (args: unknown) => tool.execute({ name: "update_task_context", arguments: JSON.stringify(args), conversationId: lead.id,

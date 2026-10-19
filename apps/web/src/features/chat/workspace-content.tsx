@@ -3472,7 +3472,7 @@ export function ConversationWorkspace({
                       className="conversation-run-duration"
                       key={`${item.id}:duration:${durationIndex}`}
                     >
-                      <span>已处理 {formatRunDuration(0, durationMs)}</span>
+                      <span>用时 {formatRunDuration(0, durationMs)}</span>
                     </div>
                   ))}
                   {(runProgressesByInsertIndex.get(index) ?? [])
@@ -3486,7 +3486,7 @@ export function ConversationWorkspace({
                       )
                     )
                     .map((progress) => (
-                      <RunProgressIndicator key={progress.runId ?? "pending"} />
+                      <RunProgressIndicator key={progress.runId ?? "pending"} startedAt={progress.startedAt} />
                     ))}
                   {modelActivity !== null && showModelActivityIndicator
                     && modelActivityInsertIndex === index
@@ -3607,7 +3607,7 @@ export function ConversationWorkspace({
                   && (!showModelActivityIndicator || modelActivity?.runId !== progress.runId)
                 )
                 .map((progress) => (
-                  <RunProgressIndicator key={progress.runId ?? "pending"} />
+                  <RunProgressIndicator key={progress.runId ?? "pending"} startedAt={progress.startedAt} />
                 ))}
               {modelActivity !== null && showModelActivityIndicator && modelActivityInsertIndex === displayTimeline.length ? (
                 <ModelActivityIndicator activity={modelActivity} />
@@ -4468,14 +4468,23 @@ function ModelActivityIndicator({ activity }: { activity: ModelActivity }): Reac
   );
 }
 
-function RunProgressIndicator(): ReactElement {
+function RunElapsedLabel({ startedAt, durationMs = 0 }: { startedAt: number; durationMs?: number }): ReactElement {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <span>已处理 {formatRunDuration(0, Math.max(0, now - startedAt) + durationMs)}</span>;
+}
+
+function RunProgressIndicator({ startedAt }: { startedAt: number }): ReactElement {
   return (
     <div
-      aria-label="推理中"
+      aria-label="正在处理"
       className="conversation-run-progress flex items-center gap-[5px]"
       role="status"
     >
-      <span className="conversation-run-progress__label">推理中</span>
+      <RunElapsedLabel startedAt={startedAt} />
     </div>
   );
 }
@@ -6748,8 +6757,10 @@ function RunActivityTimelineItem({
     if (!isInProgress && !revealThisRun && !disclosureChoices?.has(item.id)) setIsExpanded(false);
   }, [isInProgress, revealThisRun, disclosureChoices, item.id, setIsExpanded]);
   const contentId = useId();
-  const label = isInProgress ? "推理中" : item.durationMs === null
-    ? "已处理" : `已处理 ${formatRunDuration(0, item.durationMs)}`;
+  const [fallbackStartedAt] = useState(() => Date.now());
+  const label = isInProgress
+    ? <RunElapsedLabel startedAt={runProgress?.startedAt ?? fallbackStartedAt} durationMs={item.durationMs ?? 0} />
+    : item.durationMs === null ? "已处理" : `用时 ${formatRunDuration(0, item.durationMs)}`;
   const displayItems = groupRunActivityItems(item.items);
   const hasReasoning = displayItems.some((entry) => entry.kind === "activity_reasoning");
   const reasoningStreaming = displayItems.some((entry) =>

@@ -36,6 +36,28 @@ async function render(client: MockAgentClient, activeRunId: string | null): Prom
 }
 const header = (): HTMLButtonElement => container.querySelector<HTMLButtonElement>(".conversation-run-activity > button")!;
 
+it("ticks the processing duration and freezes the completed total when the process collapses", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(new Date("2026-10-16T00:00:00Z"));
+    const client = new MockAgentClient();
+    let emit: (event: ConversationRunEvent) => void = () => {};
+    vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { emit = callback; return () => {}; });
+    const history = vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool, answer]);
+    await render(client, runId);
+    expect(header().textContent).toBe("已处理 0秒");
+    act(() => { vi.advanceTimersByTime(2100); });
+    expect(header().textContent).toBe("已处理 2秒");
+    history.mockResolvedValue([tool, { ...answer, status: "completed", durationMs: 2100 }]);
+    await act(async () => { emit({ type: "run.finished", conversationId, runId, status: "completed", error: null }); await flush(); });
+    expect(header().textContent).toBe("用时 2秒");
+    expect(header().getAttribute("aria-expanded")).toBe("false");
+    expect(container.textContent).toContain(answer.content);
+    act(() => { vi.advanceTimersByTime(3000); });
+    expect(header().textContent).toBe("用时 2秒");
+  } finally { vi.useRealTimers(); }
+});
+
 it("keeps the working particles after the latest output instead of in the process heading", async () => {
   const client = new MockAgentClient();
   let emit: (event: ConversationRunEvent) => void = () => {};
@@ -307,11 +329,11 @@ it("uses the running fallback before a model request and while a text-only final
   await render(client, null);
   await act(async () => { emit({ type: "run.started", conversationId, runId, modelId: "test-model" }); await flush(); });
   expect(container.querySelector(".conversation-run-activity")).toBeNull();
-  expect(container.querySelector(".conversation-run-progress")?.textContent).toBe("推理中");
+  expect(container.querySelector(".conversation-run-progress")?.textContent).toMatch(/^已处理 /u);
   await act(async () => { emit({ type: "assistant.delta", conversationId, runId, messageId: answer.id,
     modelId: "test-model", delta: "纯文本最终回答。" }); await flush(); });
-  expect(container.querySelector(".conversation-run-progress")?.textContent).toBe("推理中");
-  expect(container.textContent).not.toContain("已处理");
+  expect(container.querySelector(".conversation-run-progress")?.textContent).toMatch(/^已处理 /u);
+  expect(container.textContent).not.toContain("用时");
   expect(container.textContent).toContain("纯文本最终回答。");
 });
 
@@ -319,7 +341,7 @@ it.each([runId, null])("keeps the outer process expanded while final text is str
   const client = new MockAgentClient();
   vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool, answer]);
   await render(client, activeRunId);
-  expect(header().textContent).toBe("推理中");
+  expect(header().textContent).toMatch(/^已处理 /u);
   expect(header().getAttribute("aria-expanded")).toBe("true");
   act(() => header().click());
   expect(header().getAttribute("aria-expanded")).toBe("true");
@@ -339,12 +361,12 @@ it("does not treat a completed tool or request placeholder as the turn's end and
   ] satisfies ConversationRunEvent[]) {
     act(() => emit(event));
     act(() => header().click());
-    expect(header().textContent).toBe("推理中");
+    expect(header().textContent).toMatch(/^已处理 /u);
     expect(header().getAttribute("aria-expanded")).toBe("true");
   }
   history.mockResolvedValue([tool, { ...answer, status: "completed", durationMs: 12_000 }]);
   await act(async () => { emit({ type: "run.finished", conversationId, runId, status: "completed", error: null }); await flush(); });
-  expect(header().textContent).toBe("已处理 12秒");
+  expect(header().textContent).toBe("用时 12秒");
   expect(header().disabled).toBe(false);
   act(() => header().click());
   expect(header().getAttribute("aria-expanded")).toBe("true");
@@ -365,12 +387,12 @@ it.each([false, true])("locks an automatic Subagent continuation until its final
   const history = vi.spyOn(client, "listConversationTimeline").mockResolvedValue(timeline);
   await render(client, continuationId);
   expect(container.querySelectorAll(".conversation-run-activity")).toHaveLength(1);
-  expect(header().textContent).toBe("推理中");
+  expect(header().textContent).toMatch(/^已处理 /u);
   act(() => header().click());
   expect(header().getAttribute("aria-expanded")).toBe("true");
   history.mockResolvedValue([...timeline.slice(0, -1), { ...nextAnswer, status: "completed", durationMs: 4_000 }]);
   await act(async () => { emit({ type: "run.finished", conversationId, runId: continuationId, status: "completed", error: null }); await flush(); });
-  expect(header().textContent).toBe("已处理 13秒");
+  expect(header().textContent).toBe("用时 13秒");
 });
 
 it("keeps a continuation request placeholder in the same outer work process before its final answer arrives", async () => {
@@ -381,12 +403,12 @@ it("keeps a continuation request placeholder in the same outer work process befo
   await render(client, continuationId);
   await act(async () => { emit({ type: "model.request_started", conversationId, runId: continuationId }); await flush(); });
   expect(container.querySelectorAll(".conversation-run-activity")).toHaveLength(1);
-  expect(header().textContent).toBe("推理中");
+  expect(header().textContent).toMatch(/^已处理 /u);
   expect(header().disabled).toBe(true);
   await act(async () => { emit({ type: "assistant.delta", conversationId, runId: continuationId,
     messageId: "00000000-0000-4000-8000-000000000010", modelId: "test-model", delta: "自动续跑总结。" }); await flush(); });
   expect(container.querySelectorAll(".conversation-run-activity")).toHaveLength(1);
-  expect(header().textContent).toBe("推理中");
+  expect(header().textContent).toMatch(/^已处理 /u);
   expect(container.textContent?.match(/自动续跑总结。/gu)).toHaveLength(1);
 });
 

@@ -13,7 +13,8 @@ import type { ModelToolDefinition } from "../model/model-contracts.js";
 import type { ToolExecution } from "../tools/project-tool-registry.js";
 import type { ToolExecutionPolicy } from "../tools/tool-execution-policy.js";
 
-const listSchema = listTaskContextsInputSchema.omit({ conversationId: true, projectId: true, teamInstanceId: true });
+const listSchema = listTaskContextsInputSchema.omit({ conversationId: true, projectId: true, teamInstanceId: true })
+  .extend({ limit: listTaskContextsInputSchema.shape.limit.default(5) });
 const updateSchema = z.object(updateTaskContextInputSchema.shape).omit({ conversationId: true, requestId: true }).extend({
   id: updateTaskContextInputSchema.shape.id.describe("For progress or completion, use the exact task id returned when creating or listing the task, together with expectedRevision. Omit both only when creating a new task; never omit id on an update."),
   expectedRevision: updateTaskContextInputSchema.shape.expectedRevision.describe("Use the existing task revision together with its id. Omit both only for a new task. If either field is missing, read the existing task; do not create another record for the same goal."),
@@ -57,7 +58,7 @@ export class CollaborationTool {
   }
   public definitions(team: boolean): ModelToolDefinition[] {
     const result = [
-      { name: "list_task_contexts", parameters: modelToolParameters(listSchema), description: "Find persistent tasks before creating a new task. Compare goals and acceptance criteria, not only titles. Results are scoped to the current project/team or conversation and paginated." },
+      { name: "list_task_contexts", parameters: modelToolParameters(listSchema), description: "Find relevant persistent tasks before creating a new task; use query/status to narrow discovery. Compare goals and acceptance criteria, not only titles. Results are scoped to the current project/team or conversation: 5 brief records by default, at most 20 per page. Read full decisions/evidence with get_task_context only as needed. Reuse IDs/revisions already in context; do not relist after a successful update without a new question or conflict." },
       { name: "get_task_context", parameters: modelToolParameters(getTaskContextInputSchema), description: "Read a task's current summary, revision and paginated original message references. Continue with nextBeforeSourceSequence. Read full evidence with read_agent_conversation. A task can span several conversations and Runs." },
       { name: "update_task_context", parameters: modelToolParameters(updateBatchSchema), description: "Use updates:[{...}] to create or revise 1–20 persistent tasks atomically in one call. Combine all currently known changes to a task into one entry; never split status, summary, decisions and nextStep into separate calls or repeat an unchanged snapshot. If the result is already known, record it directly instead of creating a running placeholder then immediately completing it. Real later progress can be recorded in a later call. Include planned assignments in registration; after a handoff proceeds as planned, wait for a result instead of rewriting the same waiting status. When updating several existing tasks, omitted source preserves their existing references instead of binding the latest unrelated user input. One invalid/stale entry rolls back the whole batch; fix it and resubmit the intended batch. The result value.tasks returns every task ID/revision. Create a persistent task for a substantive new goal, or update the same task for progress/rework. List relevant tasks first. Existing tasks require id and expectedRevision; stale updates are rejected. Update only for material progress, decisions or next steps, not cosmetic summary rewrites. This binds subsequent work to the task; do not create tasks for greetings or acknowledgements. Preserve the original goal on follow-ups. Only the owner or Team Lead maintains the overall summary. completionRequested=true means the completion request succeeded and awaits user confirmation, even when status remains running. Do not resubmit completion or reset the status just to reconcile those fields. Report the returned state accurately. Never print internal task or message IDs in user-facing prose; use [Task name](task://id) or [Source message](message://id) so the UI renders the named task or original-message quote." },
       { name: "link_task_context", parameters: modelToolParameters(linkTaskContextInputSchema), description: "Associate a verified existing message with a task, including another conversation in the same project/team. Members link progress and verification evidence without overwriting the overall summary. Never fabricate message identifiers." },
@@ -108,8 +109,10 @@ export class CollaborationTool {
           const scope = instance !== null ? { teamInstanceId: instance.id } : conversation.projectId !== null
             ? { projectId: conversation.projectId } : { conversationId: conversation.id };
           const page = store.listTasks({ ...listSchema.parse(args), ...scope });
-          result = { ...page, items: page.items.map(task => ({ ...task, goal: task.goal.slice(0, 500), summary: task.summary.slice(0, 240),
-            decisions: task.decisions.slice(0, 200), nextStep: task.nextStep.slice(0, 150), excerpted: task.goal.length > 500 || task.summary.length > 240 || task.decisions.length > 200 || task.nextStep.length > 150 })) }; break;
+          result = { ...page, items: page.items.map(task => ({ id: task.id, revision: task.revision, title: task.title,
+            status: task.status, ownerConversationId: task.ownerConversationId, completionRequested: task.completionRequested,
+            goal: task.goal.slice(0, 500), summary: task.summary.slice(0, 240), nextStep: task.nextStep.slice(0, 150),
+            excerpted: task.goal.length > 500 || task.summary.length > 240 || task.decisions.length > 0 || task.nextStep.length > 150 })) }; break;
         }
         case "get_task_context": {
           const parsed = getTaskContextInputSchema.parse(args);
@@ -166,7 +169,9 @@ export class CollaborationTool {
               message: "Use the exact original message ID. For the current request, omit source; for an earlier or independent request, read its actual source first. Never substitute another task's message.",
             }]);
           }
-          result = batch ? { tasks } : tasks[0];
+          const receipts = tasks.map(task => ({ id: task.id, revision: task.revision, title: task.title, status: task.status,
+            completionRequested: task.completionRequested, completedBy: task.completedBy, summary: task.summary.slice(0, 240) }));
+          result = batch ? { tasks: receipts } : receipts[0];
           input.changed(); break;
         }
         case "link_task_context": {

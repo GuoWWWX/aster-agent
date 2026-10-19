@@ -43,6 +43,8 @@ export type ModelConfiguration = {
 export type ModelContextConfiguration = Omit<ModelConfiguration, "apiKey">;
 
 export type ModelMessage = {
+  /** Request state snapshot retained within the current execution graph, never a new user input. */
+  runtimeContext?: "queue" | "skills" | "checklist" | "directory";
   attachments: ModelMessageAttachment[];
   content: string;
   providerState?: ModelProviderState;

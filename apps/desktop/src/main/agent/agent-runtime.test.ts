@@ -3538,17 +3538,18 @@ describe("AgentRuntime", () => {
     ]);
     expect(database.getTaskList(conversation.id)).toBeNull();
     const taskContext = (requestIndex: number): string[] => (model.requests[requestIndex]?.messages ?? [])
-      .filter((message) => message.content.includes("[Current task list | live state]"))
+      .filter((message) => message.runtimeContext === "checklist").slice(-1)
       .map((message) => message.content);
-    // Task state is loaded before every model call, rather than being frozen
-    // into the first system prompt or accumulated in graph message state.
+    // The latest snapshot controls current state; earlier snapshots stay in
+    // place to preserve the request prefix instead of moving on every call.
     expect(taskContext(0)).toEqual([]);
     expect(taskContext(1)).toEqual([expect.stringContaining("1. [running] 分析需求")]);
     expect(taskContext(1)[0]).toContain("2. [pending] 完成实现");
     expect(taskContext(2)).toEqual([expect.stringContaining("1. [completed] 分析需求")]);
     expect(taskContext(2)[0]).toContain("2. [running] 完成实现");
     expect(taskContext(3)).toEqual([expect.stringContaining("2. [completed] 完成实现")]);
-    expect(taskContext(4)).toEqual([]);
+    expect(taskContext(4)).toEqual([expect.stringContaining("No active entries")]);
+    expect(model.requests[2]?.messages.slice(0, model.requests[1]?.messages.length)).toEqual(model.requests[1]?.messages);
     database.close();
   });
 
