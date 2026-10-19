@@ -13,6 +13,7 @@ describe("ProjectImageViewer", () => {
 
   beforeEach(() => {
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);

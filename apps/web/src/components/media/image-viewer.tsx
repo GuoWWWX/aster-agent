@@ -1,6 +1,6 @@
 import { LoadingState } from "../ui/loading.js";
 import { ImageIcon } from "lucide-react";
-import { useEffect, useRef, useState, type WheelEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type WheelEvent } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog.js";
 import { cn } from "../../lib/cn.js";
 import { svgDataUrl } from "../../lib/svg-image.js";
@@ -107,15 +107,36 @@ export function ImageDocumentViewer({ src, alt, path }: { src?: string; alt: str
 }
 
 export function MediaPreviewDialog({ open, onOpenChange, src, alt, title }: { open: boolean; onOpenChange: (open: boolean) => void; src?: string; alt?: string; title?: string }) {
+  const [bounds, setBounds] = useState<CSSProperties>({ inset: 0 });
+  useLayoutEffect(() => {
+    if (!open) return;
+    // Read the host document, even when Dialog portals into the native overlay window.
+    const workbench = document.querySelector(".workbench-grid");
+    const rail = workbench?.querySelector('[data-slot="activity-bar"]');
+    if (workbench === null) return;
+    const update = () => {
+      const area = workbench.getBoundingClientRect();
+      setBounds({ top: Math.max(0, area.top), left: Math.max(0, rail?.getBoundingClientRect().right ?? area.left),
+        right: Math.max(0, window.innerWidth - area.right), bottom: Math.max(0, window.innerHeight - area.bottom) });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(workbench);
+    if (rail !== null && rail !== undefined) observer.observe(rail);
+    window.addEventListener("resize", update);
+    return () => { observer.disconnect(); window.removeEventListener("resize", update); };
+  }, [open]);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         aria-describedby={undefined}
-        className="left-0 top-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col overflow-hidden rounded-none bg-transparent p-0 shadow-none sm:max-w-none [&_[data-slot=dialog-close]]:right-4 [&_[data-slot=dialog-close]]:top-4 [&_[data-slot=dialog-close]]:z-30 [&_[data-slot=dialog-close]]:size-10 [&_[data-slot=dialog-close]]:rounded-full [&_[data-slot=dialog-close]]:bg-black/60 [&_[data-slot=dialog-close]]:text-zinc-200 [&_[data-slot=dialog-close]]:backdrop-blur-md [&_[data-slot=dialog-close]]:hover:bg-black/80 [&_[data-slot=dialog-close]]:hover:text-white"
+        className="flex h-auto w-auto max-w-none translate-x-0 translate-y-0 flex-col overflow-hidden rounded-none bg-transparent p-0 shadow-none sm:max-w-none [&_[data-slot=dialog-close]]:right-4 [&_[data-slot=dialog-close]]:top-4 [&_[data-slot=dialog-close]]:z-30 [&_[data-slot=dialog-close]]:size-10 [&_[data-slot=dialog-close]]:rounded-full [&_[data-slot=dialog-close]]:bg-black/60 [&_[data-slot=dialog-close]]:text-zinc-200 [&_[data-slot=dialog-close]]:backdrop-blur-md [&_[data-slot=dialog-close]]:hover:bg-black/80 [&_[data-slot=dialog-close]]:hover:text-white"
+        style={bounds}
         overlayClassName="bg-transparent"
+        overlayStyle={bounds}
         onClickCapture={event => {
-          const target = event.target;
-          if (target instanceof HTMLElement && target.closest("img, button, input, select, textarea") === null) onOpenChange(false);
+          const target = event.target as Element;
+          if (typeof target.closest === "function" && target.closest("img, button, input, select, textarea") === null) onOpenChange(false);
         }}
       >
         <DialogTitle className="sr-only">{title ?? alt ?? "图片预览"}</DialogTitle>
