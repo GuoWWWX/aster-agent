@@ -173,6 +173,7 @@ type PendingChangeApproval = {
   permissionTool: AgentPermissionTool;
   promise: Promise<boolean>;
   resolve: (approved: boolean) => void;
+  decision: boolean | null;
   runId: string;
   tool: ReturnType<typeof conversationToolItemSchema.parse>;
 };
@@ -1802,9 +1803,7 @@ export class AgentRuntime {
   }
 
   private cancelSingleRun(runId: string): void {
-    for (const pending of this.pendingChangeApprovals.values()) {
-      if (pending.runId === runId) pending.resolve(false);
-    }
+    this.clearPendingChangeApprovals(runId);
     this.runCoordinator.cancel(runId);
     if (this.runCoordinator.get(runId) === undefined) {
       const conversationId = this.database.getRunConversationId(runId);
@@ -1973,10 +1972,14 @@ export class AgentRuntime {
     if (this.stoppingRuns) throw new ToolApprovalExpiredError();
     const input = approveToolChangeInputSchema.parse(rawInput);
     const pending = this.pendingChangeApprovals.get(input.toolId);
-    if (pending === undefined || pending.runId !== input.runId) {
+    const activeRun = this.runCoordinator.get(input.runId);
+    if (pending === undefined || pending.runId !== input.runId || pending.decision !== null
+      || activeRun === undefined || activeRun.controller.signal.aborted) {
       throw new ToolApprovalExpiredError();
     }
-    if (input.approved) this.grantPermission(pending, input.scope);
+    if (input.approved && input.scope === "session" && pending.permissionTool === "external_read") {
+      throw new Error("工作区外文件读取只能本次允许，不能保存为会话或 Agent 永久规则。");
+    }
     const resumedTool = input.approved
       ? conversationToolItemSchema.parse({ ...pending.tool, status: "running" })
       : null;
@@ -1990,10 +1993,12 @@ export class AgentRuntime {
       },
       type: "tool_approval_decided",
     });
+    if (resumedTool !== null && (this.threadLog === null || this.eventProjector === null)) {
+      this.database.updateTool(resumedTool);
+    }
+    if (input.approved) this.grantPermission(pending, input.scope);
+    pending.resolve(input.approved);
     if (resumedTool !== null) {
-      if (this.threadLog === null || this.eventProjector === null) {
-        this.database.updateTool(resumedTool);
-      }
       this.emit(pending.emit, {
         conversationId: pending.conversationId,
         runId: pending.runId,
@@ -2001,7 +2006,6 @@ export class AgentRuntime {
         type: "tool.started",
       });
     }
-    pending.resolve(input.approved);
   }
 
   private async resumeGraphInterrupts(
@@ -4029,9 +4033,8 @@ export class AgentRuntime {
     toolId: string;
     externalRead?: boolean;
   }): PermissionDecision {
-    // A resumed interrupt must be consumed even when the selected scope has
-    // just created a matching session or Agent rule.
-    if (this.resumedApprovalDecisions.has(input.toolId)) return "ask";
+    // Consume each original approval even if a sibling just created a matching grant.
+    if (this.resumedApprovalDecisions.has(input.toolId) || this.pendingChangeApprovals.has(input.toolId)) return "ask";
     if (input.externalRead !== true && input.permissionMode === "read_only") return "deny";
     if (input.externalRead === true) return input.permissionMode === "full_access" ? "allow" : "ask";
     if (this.permissionPolicyFor(input.permissionTool) === "unavailable") {
@@ -4080,6 +4083,7 @@ export class AgentRuntime {
     if (
       decision !== "ask"
       || this.resumedApprovalDecisions.has(input.toolId)
+      || this.pendingChangeApprovals.has(input.toolId)
       || (input.permissionMode === "request_approval" ? "user" : input.permissionMode === "auto_review" ? "auto_review" : this.approvalReviewer()) !== "auto_review"
     ) {
       return decision;
@@ -4183,9 +4187,6 @@ export class AgentRuntime {
     scope: "once" | "session",
   ): void {
     if (scope === "once") return;
-    if (pending.permissionTool === "external_read") {
-      throw new Error("工作区外文件读取只能本次允许，不能保存为会话或 Agent 永久规则。");
-    }
     const grant: SessionPermissionGrant = {
       candidate: normalizePermissionCandidate(pending.permissionTool, pending.pattern),
       tool: pending.permissionTool,
@@ -4225,6 +4226,11 @@ export class AgentRuntime {
       const { approved } = interrupt<ToolApprovalInterrupt, ToolApprovalResume>(interruptValue);
       this.resumedApprovalDecisions.delete(input.tool.id);
       return approved;
+    }
+    const pending = this.pendingChangeApprovals.get(input.tool.id);
+    // Replayed siblings keep their original approval without another notification.
+    if (pending?.runId === input.runId) {
+      return pending.decision ?? interrupt<ToolApprovalInterrupt, ToolApprovalResume>(interruptValue).approved;
     }
 
     this.appendShadowThreadLog(input.tool.conversationId, {
@@ -4563,9 +4569,12 @@ export class AgentRuntime {
       permissionTool: input.permissionTool,
       promise,
       resolve: (approved) => {
+        if (pending.decision !== null) return;
+        pending.decision = approved;
         input.signal.removeEventListener("abort", onAbort);
         resolvePromise(approved);
       },
+      decision: null,
       runId: input.runId,
       tool: input.tool,
     };
