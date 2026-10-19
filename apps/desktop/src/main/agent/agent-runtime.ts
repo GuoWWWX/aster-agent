@@ -42,7 +42,7 @@ import type { TerminalSessionPort } from "../tools/terminal-session-controller.j
 import { BrowserToolPlugin } from "../plugins/browser-tool-plugin.js";
 import type { ComputerUseTool } from "../computer-use/computer-use-tool.js";
 import { ProjectToolRegistry, type PreparedApprovedAction, type PreparedCommand, type PreparedExternalFileRead, type PreparedFileChange, type ProjectOperationOwner, type ToolExecution, type ToolExecutionResult } from "../tools/project-tool-registry.js";
-import { createContextCompactionMessages, estimateModelMessagesTokens, type ManagedContextSourceMessage, normalizeModelFacingToolOutputs, parseContextSummary, selectCompactionRetryBatch } from "./context-manager.js";
+import { estimateModelMessagesTokens, type ManagedContextSourceMessage, normalizeModelFacingToolOutputs, parseContextSummary } from "./context-manager.js";
 import { ContextCompiler, transientImageContextMessage } from "./context-compiler.js";
 import { activeTaskListContextMessage, activeTaskListContextTokens } from "./task-list-context.js";
 import { buildConversationReferenceBundle, resolveConversationReferenceBudget, type ConversationReferenceHistory } from "./conversation-reference.js";
@@ -63,8 +63,9 @@ import { isManualContextCompactionCommand, createTurnSummarySourceMessages, crea
 import { ToolCallLimitError, ModelToolCallValidationError, ToolApprovalExpiredError, chunkToolCalls, type ToolApprovalInterrupt, type ToolApprovalResume, type LangChainToolResultEnvelope, type CachedGraphToolResult, isToolApprovalInterrupt, hasToolNodeMessages, toolCallIdFromConfig, parseToolArgumentsOrEmpty, parseLangChainToolResult } from "./runtime-tool-results.js";
 import { createRunExecutionSnapshot, assertRunToolManifestMatchesSnapshot, assertRunConfigurationMatchesSnapshot } from "./runtime-execution-snapshot.js";
 import { type PermissionDecision, type SessionPermissionGrant, type AutomaticApprovalReview, AUTOMATIC_APPROVAL_REVIEW_PROMPT, parseAutomaticApprovalReview, requiresManualApprovalReview, DEFAULT_APPLICATION_PERMISSION_POLICIES, PROJECT_READ_TOOL_NAMES, PROJECT_SEARCH_TOOL_NAMES, normalizePermissionCandidate, permissionRuleMatches, sessionPermissionGrantMatches, permissionModeLabel } from "./runtime-permission-policy.js";
-import { isAbortError, isRetryableModelError, modelRetryDelay, waitForRetryDelay } from "./runtime-model-retry.js";
+import { isAbortError, waitForRetryDelay } from "./runtime-model-retry.js";
 import { createRuntimeModelRetryPolicy } from "./runtime-model-retry-policy.js";
+import { RuntimeContextCompactor, type ContextCompactor } from "./runtime-context-compactor.js";
 import { agentResultReceiptContent } from "./runtime-agent-receipts.js";
 import type { RuntimeToolContext } from "./runtime-tool-context.js";
 import { createAttachmentToolHandler, createHtmlPresentationToolHandler, createWorkspaceToolHandlers } from "./runtime-workspace-tool-handlers.js";
@@ -206,17 +207,6 @@ function modelRequestMessageBudget(context: BuiltContext): number {
     + unusedContextTokens;
 }
 
-export type ContextCompactionInput = {
-  configuration: ModelConfiguration;
-  messages: readonly ManagedContextSourceMessage[];
-  previousSummary: string | null;
-  signal: AbortSignal;
-};
-
-export type ContextCompactor = {
-  compact(input: ContextCompactionInput): Promise<string>;
-};
-
 type RuntimeWorkspace = {
   id: string;
   kind: "conversation" | "project";
@@ -303,6 +293,7 @@ export class AgentRuntime {
   private readonly modelGateway: ModelGateway;
 
   private readonly contextCompiler: ContextCompiler;
+  private readonly contextSummarizer: RuntimeContextCompactor;
 
   private readonly agentMessageDepthByRun = new Map<string, number>();
 
@@ -387,7 +378,7 @@ export class AgentRuntime {
     private readonly waitForRetry: RetryWaiter = waitForRetryDelay,
     private readonly contextCompression: ContextCompressionConfigurationProvider =
       defaultContextCompressionConfigurationProvider,
-    private readonly contextCompactor: ContextCompactor | null = null,
+    contextCompactor: ContextCompactor | null = null,
     private readonly attachments: ConversationAttachmentStore | null = null,
     private readonly agentDirectory: AgentDirectoryConfigurationProvider | null = null,
     private readonly skillRuntime: SkillRuntime | null = null,
@@ -408,6 +399,9 @@ export class AgentRuntime {
     private readonly presentationTool: HtmlPresentationTool | null = null,
   ) {
     this.modelGateway = new ModelGateway(model);
+    this.contextSummarizer = new RuntimeContextCompactor(
+      this.modelGateway, database, waitForRetry, contextCompactor, MAX_MODEL_RECONNECT_ATTEMPTS,
+    );
     this.userQuestions = new UserQuestionService({
       conversation: (id) => this.database.getConversation(id),
       list: (id) => this.database.listUserQuestions(id),
@@ -4988,7 +4982,7 @@ export class AgentRuntime {
       try {
         const lastCandidate = context.compactionCandidates.at(-1);
         if (lastCandidate === undefined) break;
-        const resolved = await this.resolveContextCompactionSummary({
+        const resolved = await this.contextSummarizer.resolve({
           configuration,
           conversationId,
           forceCompaction,
@@ -5127,124 +5121,6 @@ export class AgentRuntime {
     });
   }
 
-  private async compactContextWithModel(
-    input: ContextCompactionInput,
-    maxReconnectAttempts = MAX_MODEL_RECONNECT_ATTEMPTS,
-  ): Promise<string> {
-    let reconnectAttempt = 0;
-    while (true) {
-      input.signal.throwIfAborted();
-      let receivedTextDelta = false;
-      try {
-        const result = await this.modelGateway.completeBackgroundTurn({
-          purpose: "summary",
-          configuration: input.configuration,
-          messages: createContextCompactionMessages(input.previousSummary, input.messages),
-          onTextDelta: () => {
-            receivedTextDelta = true;
-          },
-          signal: input.signal,
-        });
-        if (result.toolCalls.length > 0 || result.content.trim().length === 0) {
-          throw new Error("Context compaction returned an invalid response.");
-        }
-        return result.content;
-      } catch (error) {
-        if (
-          receivedTextDelta ||
-          !isRetryableModelError(error) ||
-          reconnectAttempt >= maxReconnectAttempts
-        ) {
-          throw error;
-        }
-        reconnectAttempt += 1;
-        await this.waitForRetry(modelRetryDelay(reconnectAttempt), input.signal);
-      }
-    }
-  }
-
-  private async resolveContextCompactionSummary(input: ContextCompactionInput & {
-    conversationId: string;
-    forceCompaction: boolean;
-  }): Promise<{
-    compressedMessageCount: number;
-    coveredThroughSequence: number;
-    summary: string;
-  }> {
-    const lastCandidate = input.messages.at(-1);
-    if (lastCandidate === undefined) {
-      throw new Error("Context compaction requires at least one completed message.");
-    }
-    const summarizedMessages: ManagedContextSourceMessage[] = [];
-    for (let index = 0; index < input.messages.length;) {
-      const first = input.messages[index];
-      if (first === undefined) break;
-      let end = index + 1;
-      while (end < input.messages.length && input.messages[end]?.runId === first.runId) end += 1;
-      const turn = input.messages.slice(index, end);
-      const boundary = turn.at(-1);
-      const prepared = first.runId === null
-        ? null
-        : this.database.getConversationTurnSummary(first.runId);
-      if (prepared === null || boundary === undefined) {
-        summarizedMessages.push(...turn);
-      } else {
-        summarizedMessages.push({
-          attachmentIds: [],
-          attachments: [],
-          content: `[Completed turn summary]\n${prepared.summary}`,
-          role: "assistant",
-          runId: first.runId,
-          sequence: boundary.sequence,
-          toolCallId: null,
-          toolCalls: [],
-        });
-      }
-      index = end;
-    }
-
-    const compact = async (
-      messages: readonly ManagedContextSourceMessage[],
-    ): Promise<string> => {
-      const rawSummary = this.contextCompactor === null
-        ? await this.compactContextWithModel({ ...input, messages })
-        : await this.contextCompactor.compact({ ...input, messages });
-      input.signal.throwIfAborted();
-      return parseContextSummary(rawSummary);
-    };
-    let currentMessages = summarizedMessages;
-    let lastError: unknown = null;
-    while (currentMessages.length > 0) {
-      try {
-        const currentBoundary = currentMessages.at(-1) ?? lastCandidate;
-        return {
-          compressedMessageCount: input.messages.filter(
-            (message) => message.sequence <= currentBoundary.sequence,
-          ).length,
-          coveredThroughSequence: currentBoundary.sequence,
-          summary: await compact(currentMessages),
-        };
-      } catch (error) {
-        lastError = error;
-        const retryMessages = selectCompactionRetryBatch(currentMessages);
-        if (retryMessages.length === 0) break;
-        currentMessages = retryMessages;
-        if (!input.forceCompaction) {
-          const retryBoundary = currentMessages.at(-1);
-          if (retryBoundary === undefined) break;
-          return {
-            compressedMessageCount: input.messages.filter(
-              (message) => message.sequence <= retryBoundary.sequence,
-            ).length,
-            coveredThroughSequence: retryBoundary.sequence,
-            summary: await compact(currentMessages),
-          };
-        }
-      }
-    }
-    throw lastError;
-  }
-
   private async generateAndPersistTurnSummary(input: {
     agentInputs: readonly ConversationAgentMessageItem[];
     configuration: ModelConfiguration;
@@ -5264,19 +5140,12 @@ export class AgentRuntime {
       const requiresModelSummary = shouldGenerateModelTurnSummary(summaryMessages);
       const summary = !requiresModelSummary
         ? createLocalTurnSummary(summaryMessages)
-        : parseContextSummary(this.contextCompactor === null
-            ? await this.compactContextWithModel({
-                configuration: input.configuration,
-                messages: summaryMessages,
-                previousSummary: null,
-                signal: input.signal,
-              }, 0)
-            : await this.contextCompactor.compact({
-                configuration: input.configuration,
-                messages: summaryMessages,
-                previousSummary: null,
-                signal: input.signal,
-              }));
+        : parseContextSummary(await this.contextSummarizer.compact({
+            configuration: input.configuration,
+            messages: summaryMessages,
+            previousSummary: null,
+            signal: input.signal,
+          }, 0));
       const turnSummary = this.database.saveConversationTurnSummary({
         conversationId: input.conversationId,
         coveredThroughSequence: boundary.sequence,
@@ -5807,3 +5676,4 @@ function estimateModelMessageTokens(
 
 export { createTurnSummarySourceMessages } from "./runtime-turn-summary.js";
 export { shouldGenerateModelTurnSummary } from "./runtime-turn-summary.js";
+export type { ContextCompactionInput, ContextCompactor } from "./runtime-context-compactor.js";
