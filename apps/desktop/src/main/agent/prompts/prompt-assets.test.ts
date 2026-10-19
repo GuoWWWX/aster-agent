@@ -91,8 +91,11 @@ describe("prompt assets", () => {
     const visualSkill = SYSTEM_SKILLS.find(source => parseSkillMarkdown(source).metadata.name === "ui-verification")!;
     expect(visualSkill).toContain("Preserve the requested format and constraints");
     expect(visualSkill).toContain("Source code and a successful build are not visual evidence");
-    expect(visualSkill).toContain("two distinct phases");
+    expect(visualSkill).toContain("distinct phases");
     expect(visualSkill).toContain("sourceRef");
+    expect(visualSkill).toContain("Use the current client's viewport by default");
+    expect(visualSkill).toContain("do not resend its source or call present again");
+    expect(visualSkill).not.toContain("narrow viewport as well as desktop");
     const terminalSkill = SYSTEM_SKILLS.find(source => parseSkillMarkdown(source).metadata.name === "terminal-use")!;
     expect(terminalSkill).toContain("expectedContext=ssh");
     expect(terminalSkill).toContain("NOT completion");

@@ -160,13 +160,15 @@ AI Team Instance（用户显式创建、长期存在）
 
 ### 3.6 Agent 逻辑对话与模型
 
+群聊后台协调、成员和子代理共用 Runtime／ModelGateway 与请求投影，各自使用独立会话缓存范围。系统层以稳定条件规则描述群协作和独立私聊，本轮关联、有效成员名单及可派发团队目录放在运行尾部，不因切换工作来源或目录改名重写历史之前的系统提示。Graph 的变化快照供恢复使用，Provider 只接收每类最新版本；四种接口按各自缓存合同处理。详见[业务上下文第 12.5 节](./14-业务上下文.md#125-多会话与各模型接口的缓存边界)。〔FACT｜`apps/desktop/src/main/agent/runtime-cache-prefix.test.ts`、`apps/desktop/src/main/model/model-runtime-context.ts:9`〕
+
 每个 Team Lead、持久团队成员和临时 Subagent 都有独立的逻辑对话 Thread。它是 SQLite 中的对话与事件归属，不是独占的 OS 线程、Node `worker_threads` 或进程。创建 TeamInstance 时建立该实例自己的 `team_lead` 根 Thread 和配置成员的持久 `agent` Thread；全局实例可被任意项目主对话选择，项目实例只对同项目主对话可见，对话实例只对所属来源对话可见。后续 WorkItem 始终复用所选实例的身份与消息谱系。Team Lead 通过 `send_agent_message` 与 `wait_for_agent_message` 分派、等待和汇总，成员消息与任务分派记录共同构成可审计事实；团队内禁止把成员创建为 `subagent_tasks`。团队面板只读取这些持久关系和消息分派，不嵌入或复制成员 Timeline。用户点击成员时，成员消息、工具、审批、Artifact 和结果使用其原生 Conversation；运行中的输入只可作为同一 Run 的 `steer`，不能更换 Agent 或开启一个独立 Run。没有运行的成员要继续工作时使用 WorkItem 的返工/验收流程。临时 Subagent 每轮完成后 Thread 仍可查看和复用；后续消息创建新 Run，不修改历史 Run，并沿用上一轮冻结的权限模式。〔FACT｜`apps/desktop/src/main/teams/team-work-item-runtime.ts`；`apps/desktop/src/main/agent/agent-runtime.ts`；`apps/web/src/features/workspace/right-sidebar-workspace.tsx`〕
 
 持久 Agent 的“完整对话”和“跨 Agent 回执”是两个边界：成员在最终回答开头按 `replyInstruction` 写简述，以单独一行 Markdown `---` 分隔详细结果；完整回答只写入成员 Thread，`expectReply=true` 仅向发送方投递分隔线前最多 1000 字符的完成回执、终态和成员 Conversation ID。发送方可随时用 `list_agent_conversations` 查看成员状态，并按自己选择的 `maxTokens` 调用 `read_agent_conversation` 查询自己或运行中、已完成、已归档成员对话。默认范围是最新 Checkpoint 已覆盖的原始历史，没有 Checkpoint 时回退到全部历史；需要跨越 Checkpoint 时显式使用 `historyScope=all`。已知要核验的事实通过可选 `query` 关键词检索，命中后返回所属完整 Run，需要更早结果时将 `pagination.nextBeforeSequence` 作为 `beforeSequence` 继续读取。回执、状态查询和主动读取都不创建第二份成员 Timeline，也不把完整成员输出复制进 Team Lead 上下文。
 
 左侧“团队”分组统一列出用户创建的全局实例和项目实例；项目实例在团队名后显示其关联项目的当前名称。团队分组的创建入口允许选择“不关联项目”或一个已注册项目。项目三点菜单提供“在项目中显示团队”开关，默认关闭；开启后项目实例才会作为同一数据的快捷入口出现在该项目普通对话列表中。对话实例继续直接显示在来源对话展开后的协作树中，不增加“对话团队”中间目录。项目标题行和普通对话的悬浮操作仍可分别创建项目实例和对话实例。实例默认采用模板名，重名自动追加 `(1)`、`(2)`，并支持重命名、归档和删除；团队名行在悬停或键盘聚焦时直接显示归档入口。全局/项目实例的团队名行支持持久化自定义排序，单击团队名只展开或收起成员；选中态只属于实际打开的成员 Conversation。全局/项目实例直接展示模板中的全部成员；对话实例只展示已经被该实例 WorkItem 实际启用的成员。成员行打开实例自己的原生持久 Conversation，不创建 WorkItem 或 Run，也不复制 Timeline。`@实例名` 只列当前对话可见的真实实例；模板本身不出现在投递菜单，投递也绝不自动创建实例。
 
-空闲 Agent 不占用模型连接、执行线程或子进程。任务到来时才创建 Run，由共享异步调度器和受限 Worker/进程池执行；Agent 数量因此不直接受 CPU 线程数限制，活动 Run 数量则受内存、供应商限流、工具进程和用户预算共同约束。
+创建空闲 Agent 不会为它分配专属模型连接、执行线程或子进程。任务到来后创建 Run，各 Run 的状态和取消信号相互独立，在 Main 共享的 Node.js 事件循环中异步等待模型响应；同一 Conversation 仅有一个活动 Run，不同 Conversation 可同时执行。当前没有承载 Agent 的固定 Worker/进程池或统一的全局 Run 并发槽；命令按调用启动进程并沿工具生命周期管理。内存、供应商限流、工具冲突和用户预算仍约束实际负载，Agent 数量不等于 CPU 线程数；测量后引入 CPU 工作池是后续规划，Node 底层 libuv 线程池不承担业务 Agent 调度。〔FACT｜`apps/desktop/src/main/agent/run-coordinator.ts:55`、`apps/desktop/src/main/agent/langgraph-executor.ts:578`、`apps/desktop/src/main/model/model-gateway.ts:17`、`apps/desktop/src/main/tools/command-session-runner.ts:231`〕
 
 Agent 模型默认继承创建它的父对话当前模型，也可以由 Profile、创建请求、ModelRouter 或用户指定。当前 Main Agent 可先调用 `list_models` 获取不含凭据的已配置模型目录、已启用思考选项和带时间的健康状态，再向 `spawn_subagent` 显式传入 `providerId`、`modelId` 和可选思考选项；未传时保持继承。Subagent 的选择不反向更新“最近一次用户选择”。用户通过对话或模型选择器的明确设置具有最高优先级；自动路由不能解除用户锁定。完整规则见[模型接入、MCP、Skill 与 Agent 对话设计](./08-模型接入、MCP、Skill与Agent对话设计.md)。
 

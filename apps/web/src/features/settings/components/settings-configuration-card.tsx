@@ -1,7 +1,7 @@
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 
-import { cn } from "../../lib/cn.js";
+import { cn } from "../../../lib/cn.js";
 
 export function SettingsCategoryHeading({
   icon: Icon,

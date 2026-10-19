@@ -13,6 +13,7 @@ import {
 import { AppTitlebar } from "./app-titlebar.js";
 import type { AppTitlebarConversationTab } from "./app-titlebar.js";
 import { ResizableDivider } from "./resizable-divider.js";
+import { WorkbenchLayout } from "./workbench-layout.js";
 
 const TITLEBAR_CONTEXT = {
   conversations: "从左侧项目打开会话，或新建一个",
@@ -232,8 +233,13 @@ export function AppShell({
     "--app-project-accent-end": accent[1],
   } as CSSProperties;
   return (
-    <div className="app-shell" data-theme={themeMode} data-project-accent={accent !== null || undefined} style={accentStyle}>
-      <AppTitlebar
+    <WorkbenchLayout
+      activeActivity={activeActivity}
+      hasProjectAccent={accent !== null}
+      isConversationWorkspace={isConversationWorkspace}
+      projectAccentStyle={accentStyle}
+      themeMode={themeMode}
+      titlebar={<AppTitlebar
         {...(navigation === undefined ? {} : { navigation })}
         activeConversationId={activeTabId === undefined ? activeConversationId : activeTabId}
         activity={titlebarActivity}
@@ -261,12 +267,8 @@ export function AppShell({
         {...(onMoveConversationTab === undefined ? {} : { onMoveConversationTab })}
         canToggleFilePanel={canShowFileWorkspace}
         canToggleProjectNavigator={canShowProjectNavigator}
-      />
-      <div
-        className="workbench-grid relative"
-        data-active-activity={activeActivity}
-        data-full-page={String(!isConversationWorkspace)}
-      >
+      />}
+    >
         <ActivityBar
           {...(onOpenGlobalSearch === undefined ? {} : { onOpenGlobalSearch })}
           onConversationHoverChange={scheduleNavigatorPeek}
@@ -341,7 +343,6 @@ export function AppShell({
         >
           {filePanel}
         </div>
-      </div>
-    </div>
+    </WorkbenchLayout>
   );
 }

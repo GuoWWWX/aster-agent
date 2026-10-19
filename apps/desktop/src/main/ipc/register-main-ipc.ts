@@ -1,231 +1,97 @@
-import { taskContextScopeSchema, taskCompletionPolicySchema, setTaskCompletionPolicyInputSchema, resolveChatReferencesInputSchema, chatReferencesSchema } from "@agent/protocol";
-import { teamInstanceReferenceInputSchema } from "@agent/protocol";
 import { ConversationStreamSubscriptions } from "./conversation-stream-subscriptions.js";
-import { getTaskContextInputSchema, linkTaskContextInputSchema, listTaskContextsInputSchema, markTeamChatReadInputSchema, mergeTaskContextsInputSchema, postTeamChatInputSchema, readTeamChatInputSchema, teamChatCoordinationConversationInputSchema, taskContextDetailSchema, taskContextPageSchema, taskContextReferenceSchema, taskContextSchema, teamChatMessageSchema, teamChatPageSchema, updateTaskContextInputSchema, teamChatMemberSchema } from "@agent/protocol";
 import { htmlPreviewRequestSchema, htmlPreviewResponseSchema } from "@agent/protocol";
-import type { HtmlPreviewServer } from "../preview/html-preview-server.js";
-import { scheduledTaskListSchema, scheduledTaskSchema, saveScheduledTaskIpcArgumentsSchema, scheduledTaskReferenceIpcArgumentsSchema } from "@agent/protocol";
-import { userQuestionSchema, userQuestionReferenceSchema, answerUserQuestionInputSchema, backgroundCommandSchema, stopBackgroundCommandInputSchema, backgroundCommandOutputSchema, readBackgroundCommandInputSchema } from "@agent/protocol";
-import type { ScheduledTaskController } from "../schedules/scheduled-task-controller.js";
+import {
+  scheduledTaskListSchema,
+  scheduledTaskSchema,
+  saveScheduledTaskIpcArgumentsSchema,
+  scheduledTaskReferenceIpcArgumentsSchema,
+} from "@agent/protocol";
+import {
+  userQuestionSchema,
+  userQuestionReferenceSchema,
+  answerUserQuestionInputSchema,
+  backgroundCommandSchema,
+  stopBackgroundCommandInputSchema,
+  backgroundCommandOutputSchema,
+  readBackgroundCommandInputSchema,
+} from "@agent/protocol";
 import {
   app,
   BrowserWindow,
   clipboard,
-  dialog,
   shell,
   ipcMain as electronIpcMain,
   type IpcMainEvent,
-  type IpcMainInvokeEvent
 } from "electron";
 import { openProjectDirectory } from "../projects/open-project-directory.js";
-import { reportMainError, toMainAgentError } from "../errors/agent-error.js";
 import { z } from "zod";
 import { publishConversationAttentionEvent } from "../windows/conversation-attention.js";
 import {
-  acceptTeamWorkItemIpcArgumentsSchema,
-  addProjectResponseSchema,
   approveToolChangeIpcArgumentsSchema,
-  APPLICATION_DISPLAY_NAME,
-  applicationStorageLocationSchema,
-  applicationSettingsIpcArgumentsSchema,
   applicationSettingsSchema,
-  browserConfigurationIpcArgumentsSchema,
-  browserConfigurationSchema,
-  browserSavedPasswordListSchema,
-  browserPasswordReferenceIpcArgumentsSchema,
-  browserPasswordValueSchema,
   cancelRunIpcArgumentsSchema,
   clipboardWriteTextIpcArgumentsSchema,
-  configurationWorkspaceDirectoryListingSchema,
-  configurationWorkspaceEntrySchema,
-  configurationWorkspaceFileSchema,
-  contextCompressionConfigurationIpcArgumentsSchema,
-  contextCompressionConfigurationSchema,
-  conversationContextUsageIpcArgumentsSchema,
-  conversationContextUsageSchema,
-  conversationAttachmentListSchema,
-  conversationAttachmentPreviewSchema,
-  importConversationAttachmentBytesIpcArgumentsSchema,
-  conversationListResponseSchema,
   conversationMessageSubmissionSchema,
   conversationPendingMessageListSchema,
   pendingConversationMessageReferenceIpcArgumentsSchema,
   pluginCatalogEntrySchema,
   pluginCatalogListSchema,
   conversationReferenceIpcArgumentsSchema,
-  conversationSearchIpcArgumentsSchema,
-  conversationSearchResponseSchema,
-  forkConversationIpcArgumentsSchema,
   conversationRunEventSchema,
   conversationStreamSubscriptionSchema,
-  conversationSummarySchema,
-  conversationTaskListResponseSchema,
-  conversationTimelineResponseSchema,
   conversationTimelinePageIpcArgumentsSchema,
   conversationTimelinePageSchema,
-  conversationWorkspaceSelectionResponseSchema,
-  createConversationIpcArgumentsSchema,
-  createTeamInstanceIpcArgumentsSchema,
-  createConfigurationWorkspaceEntryIpcArgumentsSchema,
-  createSkillDocumentIpcArgumentsSchema,
-  createProjectEntryIpcArgumentsSchema,
-  discoverModelsIpcArgumentsSchema,
-  deleteConfigurationWorkspaceEntryIpcArgumentsSchema,
-  discoveredModelSchema,
   emptyIpcArgumentsSchema,
-  ensureTeamMemberConversationIpcArgumentsSchema,
-  ensureTeamInstanceMemberConversationIpcArgumentsSchema,
-  getTeamWorkItemExecutionIpcArgumentsSchema,
-  getTeamCollaborationProjectionIpcArgumentsSchema,
-  getModelApiKeyIpcArgumentsSchema,
-  deleteModelProviderIpcArgumentsSchema,
-  integrationConfigurationIpcArgumentsSchema,
-  integrationConfigurationSchema,
   gitFileDiffIpcArgumentsSchema,
   gitFileDiffSchema,
   gitOperationIpcArgumentsSchema,
   gitReviewIpcArgumentsSchema,
   gitReviewSnapshotSchema,
   IPC_CHANNELS,
-  listProjectEntriesIpcArgumentsSchema,
-  listConfigurationWorkspaceEntriesIpcArgumentsSchema,
-  listTeamWorkItemsIpcArgumentsSchema,
-  listTeamInstancesIpcArgumentsSchema,
-  modelCatalogSchema,
-  modelConnectionTestResultSchema,
-  modelRuntimeStatusSchema,
   managedBrowserBoundsIpcArgumentsSchema,
-  managedBrowserCommandIpcArgumentsSchema,
   managedBrowserEventSchema,
-  managedBrowserNavigateIpcArgumentsSchema,
-  managedBrowserOpenIpcArgumentsSchema,
-  managedBrowserReferenceIpcArgumentsSchema,
-  managedBrowserSessionSchema,
-  managedBrowserSnapshotSchema,
-  modelApiKeySchema,
-  projectDirectoryListingSchema,
-  projectEntrySchema,
-  projectFileSchema,
-  projectListResponseSchema,
-  projectPreviewImageSchema,
   projectReferenceIpcArgumentsSchema,
-  projectSummarySchema,
-  publishTeamWorkItemIpcArgumentsSchema,
-  readProjectFileIpcArgumentsSchema,
-  readProjectPreviewImageIpcArgumentsSchema,
-  readConversationAttachmentPreviewIpcArgumentsSchema,
-  readConfigurationWorkspaceFileIpcArgumentsSchema,
-  reorderConversationsIpcArgumentsSchema,
   reorderPendingConversationMessagesIpcArgumentsSchema,
   setPendingQueuePausedIpcArgumentsSchema,
   pendingQueuePausedResponseSchema,
-  addTeamWorkItemCommentIpcArgumentsSchema,
-  reorderProjectsIpcArgumentsSchema,
-  reorderTeamInstancesIpcArgumentsSchema,
-  removeConversationAttachmentIpcArgumentsSchema,
   replaceLatestConversationMessageIpcArgumentsSchema,
-  requestTeamWorkItemReworkIpcArgumentsSchema,
-  renameConversationIpcArgumentsSchema,
-  renameProjectIpcArgumentsSchema,
-  renameTeamInstanceIpcArgumentsSchema,
   runtimeInfoSchema,
   runtimePlatformSchema,
   runAcceptedSchema,
-  saveModelConfigurationIpcArgumentsSchema,
-  sendTeamMessageIpcArgumentsSchema,
-  setTeamCoordinatorIpcArgumentsSchema,
   setPluginEnabledIpcArgumentsSchema,
-  testModelConnectionIpcArgumentsSchema,
-  setDefaultModelIpcArgumentsSchema,
-  setConversationArchivedIpcArgumentsSchema,
-  setConversationModelSelectionIpcArgumentsSchema,
-  setConversationPermissionModeIpcArgumentsSchema,
-  setConversationProjectIpcArgumentsSchema,
-  setConversationPinnedIpcArgumentsSchema,
-  setProjectPinnedIpcArgumentsSchema,
-  setProjectTeamsInNavigatorIpcArgumentsSchema,
-  setTeamInstanceArchivedIpcArgumentsSchema,
-  terminalConfigurationIpcArgumentsSchema,
-  terminalConfigurationSchema,
-  teamWorkItemExecutionViewSchema,
-  teamCollaborationProjectionSchema,
-  teamMemberConversationViewSchema,
-  teamWorkItemListSchema,
-  teamWorkItemViewSchema,
-  teamInstanceListSchema,
-  teamInstanceViewSchema,
-  deleteTeamInstanceIpcArgumentsSchema,
   terminalSessionEventSchema,
-  terminalSessionOpenIpcArgumentsSchema,
-  terminalSessionOutputIpcArgumentsSchema,
-  terminalSessionOutputSchema,
   workspaceBrowserTabCloseRequestSchema,
   workspaceBrowserTabOpenedIpcArgumentsSchema,
   workspaceBrowserTabOpenRequestSchema,
-  terminalSessionReferenceIpcArgumentsSchema,
-  terminalSessionResizeIpcArgumentsSchema,
-  terminalSessionSchema,
-  terminalSessionWriteIpcArgumentsSchema,
-  workspaceTerminalTabOpenedIpcArgumentsSchema,
   workspaceTerminalTabCloseRequestSchema,
   workspaceTerminalTabOpenRequestSchema,
-  skillDocumentReferenceIpcArgumentsSchema,
-  skillDocumentSaveIpcArgumentsSchema,
-  submitTeamWorkItemIpcArgumentsSchema,
-  deleteTeamWorkItemIpcArgumentsSchema,
-  updateTeamWorkItemIpcArgumentsSchema,
-  updateTeamWorkItemPermissionIpcArgumentsSchema,
-  skillDiscoveryResultSchema,
-  skillDocumentSchema,
-  writeConfigurationWorkspaceFileIpcArgumentsSchema,
-  writeProjectFileIpcArgumentsSchema,
   sendConversationMessageIpcArgumentsSchema,
   updatePendingConversationMessageIpcArgumentsSchema,
   voidIpcResponseSchema,
-  windowStateSchema
+  windowStateSchema,
 } from "@agent/protocol";
-
-import { AgentRuntime } from "../agent/agent-runtime.js";
-import { ModelCatalogStore } from "../model/model-catalog-store.js";
-import { ModelCredentialStore } from "../model/model-credential-store.js";
-import { ProjectRegistry } from "../projects/project-registry.js";
-import { PluginCatalog } from "../plugins/plugin-catalog.js";
-import { ProjectToolRegistry } from "../tools/project-tool-registry.js";
-import { GitReviewReader } from "../tools/git-review-reader.js";
-import { TerminalSessionController } from "../tools/terminal-session-controller.js";
-import { WorkspaceTerminalTabController } from "../tools/workspace-terminal-tab-controller.js";
-import { WorkspaceBrowserTabController } from "../tools/workspace-browser-tab-controller.js";
-import { ManagedBrowserController } from "../windows/managed-browser-controller.js";
-import { AgentDatabase } from "../storage/agent-database.js";
-import { ApplicationStorageLocationStore } from "../storage/application-storage-location-store.js";
-import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
-import { ConversationLifecycleService } from "../storage/conversation-lifecycle-service.js";
-import { ConversationDeletionService } from "../storage/conversation-deletion-service.js";
-import { EventProjector } from "../storage/event-projector.js";
-import { ThreadLogLegacyImporter } from "../storage/thread-log-legacy-importer.js";
-import { IntegrationConfigurationStore } from "../settings/integration-configuration-store.js";
-import { ApplicationSettingsStore } from "../settings/application-settings-store.js";
-import { BrowserConfigurationStore } from "../settings/browser-configuration-store.js";
-import { ContextCompressionConfigurationStore } from "../settings/context-compression-configuration-store.js";
-import { SkillDocumentStore } from "../settings/skill-document-store.js";
-import { ConfigurationWorkspaceStore } from "../settings/configuration-workspace-store.js";
-import { TerminalConfigurationStore } from "../settings/terminal-configuration-store.js";
-import { TeamWorkItemRuntime } from "../teams/team-work-item-runtime.js";
 import { runIpcHandler } from "./ipc-error-boundary.js";
 import { DESKTOP_CAPABILITIES } from "./desktop-capabilities.js";
+import { createIpcHandlerRegistrar, DESKTOP_IPC_HANDLER_CHANNELS } from "./ipc-handler-registrar.js";
+import { getTrustedWindow, parseNoArguments, type IpcHandler } from "./ipc-handler-context.js";
+import type { MainIpcDependencies } from "./main-ipc-dependencies.js";
+import { registerProjectHandlers } from "./project-handlers.js";
+import { registerConversationCatalogHandlers } from "./conversation-catalog-handlers.js";
+import { registerAttachmentHandlers } from "./attachment-handlers.js";
+import { registerTeamHandlers } from "./team-handlers.js";
+import { registerTaskContextHandlers } from "./task-context-handlers.js";
+import { registerTeamChatHandlers } from "./team-chat-handlers.js";
+import { registerTeamWorkItemHandlers } from "./team-work-item-handlers.js";
+import { registerModelHandlers } from "./model-handlers.js";
 import {
-  createIpcHandlerRegistrar,
-  DESKTOP_IPC_HANDLER_CHANNELS,
-} from "./ipc-handler-registrar.js";
-
-type IpcHandler = (
-  event: IpcMainInvokeEvent,
-  ...args: unknown[]
-) => unknown;
-
-function parseNoArguments(args: unknown[]): void {
-  emptyIpcArgumentsSchema.parse(args);
-}
+  registerApplicationSettingsHandlers,
+  registerStorageAndIntegrationSettingsHandlers,
+} from "./settings-handlers.js";
+import { registerComputerUseHandlers } from "./computer-use-handlers.js";
+import { registerBrowserSettingsHandlers, registerManagedBrowserHandlers } from "./browser-handlers.js";
+import { registerTerminalSettingsHandlers, registerTerminalSessionHandlers } from "./terminal-handlers.js";
+import { registerSkillDocumentHandlers } from "./skill-document-handlers.js";
+import { registerConfigurationWorkspaceHandlers } from "./configuration-workspace-handlers.js";
 
 function getWindowState(window: BrowserWindow) {
   return windowStateSchema.parse({
@@ -243,25 +109,6 @@ function getRuntimeInfo() {
   });
 }
 
-function getTrustedWindow(
-  event: Pick<IpcMainInvokeEvent, "sender">,
-  getMainWindow: () => BrowserWindow | undefined
-): BrowserWindow {
-  const mainWindow = getMainWindow();
-  const senderWindow = BrowserWindow.fromWebContents(event.sender);
-
-  if (
-    mainWindow === undefined ||
-    mainWindow.isDestroyed() ||
-    senderWindow === null ||
-    senderWindow !== mainWindow
-  ) {
-    throw new Error("Rejected IPC request from an untrusted renderer.");
-  }
-
-  return mainWindow;
-}
-
 function sendWindowStateChanged(window: BrowserWindow): void {
   if (!window.isDestroyed()) {
     window.webContents.send(IPC_CHANNELS.windowStateChanged, getWindowState(window));
@@ -276,39 +123,6 @@ function subscribeToWindowState(window: BrowserWindow): void {
   window.on("enter-full-screen", () => sendWindowStateChanged(window));
   window.on("leave-full-screen", () => sendWindowStateChanged(window));
 }
-
-type MainIpcDependencies = {
-  scheduledTasks: ScheduledTaskController;
-  agentRuntime: AgentRuntime;
-  applicationStorageLocation: ApplicationStorageLocationStore;
-  applicationSettings: ApplicationSettingsStore;
-  browserConfiguration: BrowserConfigurationStore;
-  computerUseConfiguration: ComputerUseConfigurationStore;
-  computerUse: WindowsComputerController;
-  attachments: ConversationAttachmentStore;
-  conversationDeletion: ConversationDeletionService;
-  conversationLifecycle: ConversationLifecycleService;
-  credentials: ModelCredentialStore;
-  contextCompression: ContextCompressionConfigurationStore;
-  configurationWorkspaces: ConfigurationWorkspaceStore;
-  modelCatalog: ModelCatalogStore;
-  pluginCatalog: PluginCatalog;
-  database: AgentDatabase;
-  eventProjector: EventProjector;
-  integrationConfiguration: IntegrationConfigurationStore;
-  gitReview: GitReviewReader;
-  managedBrowser: ManagedBrowserController;
-  htmlPreviews: HtmlPreviewServer;
-  projectRegistry: ProjectRegistry;
-  threadLogLegacyImporter: ThreadLogLegacyImporter;
-  skillDocuments: SkillDocumentStore;
-  terminalConfiguration: TerminalConfigurationStore;
-  teamWorkItems: TeamWorkItemRuntime;
-  terminalSessions: TerminalSessionController;
-  workspaceTerminalTabs: WorkspaceTerminalTabController;
-  workspaceBrowserTabs: WorkspaceBrowserTabController;
-  tools: ProjectToolRegistry;
-};
 
 type MainIpcRegistrationOptions = {
   eventStreams?: ConversationStreamSubscriptions;
@@ -556,468 +370,11 @@ export function registerMainIpcHandlers(
     });
   });
 
-  ipcMain.handle(IPC_CHANNELS.projectList, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    parseNoArguments(args);
-    return projectListResponseSchema.parse(projectRegistry.listProjects());
-  });
+  registerProjectHandlers({ ipcMain, getMainWindow }, { projectRegistry, tools });
 
-  ipcMain.handle(IPC_CHANNELS.projectAdd, async (event, ...args: unknown[]) => {
-    const window = getTrustedWindow(event, getMainWindow);
-    parseNoArguments(args);
+  registerConversationCatalogHandlers({ ipcMain, getMainWindow }, { agentRuntime, conversationDeletion, conversationLifecycle, credentials, database, eventProjector, projectRegistry, threadLogLegacyImporter, teamWorkItems }, emitConversationRunEvent);
 
-    const selection = await dialog.showOpenDialog(window, {
-      properties: ["openDirectory"],
-      title: "添加项目"
-    });
-    const selectedDirectory = selection.filePaths[0];
-
-    if (selection.canceled || selectedDirectory === undefined) {
-      return addProjectResponseSchema.parse(null);
-    }
-
-    return addProjectResponseSchema.parse(
-      await projectRegistry.registerDirectory(selectedDirectory)
-    );
-  });
-
-  ipcMain.handle(IPC_CHANNELS.projectRename, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = renameProjectIpcArgumentsSchema.parse(args);
-    return projectSummarySchema.parse(
-      projectRegistry.renameProject(input.projectId, input.name)
-    );
-  });
-
-  ipcMain.handle(IPC_CHANNELS.projectReorder, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = reorderProjectsIpcArgumentsSchema.parse(args);
-    return projectListResponseSchema.parse(
-      projectRegistry.reorderProjects(input.projectIds)
-    );
-  });
-
-  ipcMain.handle(IPC_CHANNELS.projectSetPinned, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = setProjectPinnedIpcArgumentsSchema.parse(args);
-    return projectSummarySchema.parse(
-      projectRegistry.setProjectPinned(input.projectId, input.pinned)
-    );
-  });
-
-  ipcMain.handle(
-    IPC_CHANNELS.projectSetTeamsInNavigator,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = setProjectTeamsInNavigatorIpcArgumentsSchema.parse(args);
-      return projectSummarySchema.parse(
-        projectRegistry.setProjectTeamsInNavigator(
-          input.projectId,
-          input.showTeamsInNavigator
-        )
-      );
-    }
-  );
-
-  ipcMain.handle(IPC_CHANNELS.projectRemove, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = projectReferenceIpcArgumentsSchema.parse(args);
-    projectRegistry.removeProject(input.projectId);
-    return voidIpcResponseSchema.parse(undefined);
-  });
-
-  ipcMain.handle(
-    IPC_CHANNELS.projectListEntries,
-    async (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = listProjectEntriesIpcArgumentsSchema.parse(args);
-
-      return projectDirectoryListingSchema.parse(
-        await projectRegistry.listEntries(input)
-      );
-    }
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.projectReadFile,
-    async (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = readProjectFileIpcArgumentsSchema.parse(args);
-      return projectFileSchema.parse(await projectRegistry.readFile(input));
-    }
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.projectWriteFile,
-    async (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = writeProjectFileIpcArgumentsSchema.parse(args);
-      return projectFileSchema.parse(
-        await tools.writeUserFile(input, new AbortController().signal)
-      );
-    }
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.projectReadPreviewImage,
-    async (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = readProjectPreviewImageIpcArgumentsSchema.parse(args);
-      return projectPreviewImageSchema.parse(await projectRegistry.readPreviewImage(input));
-    }
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.projectCreateEntry,
-    async (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = createProjectEntryIpcArgumentsSchema.parse(args);
-      return projectEntrySchema.parse(await projectRegistry.createEntry(input));
-    }
-  );
-
-  ipcMain.handle(IPC_CHANNELS.conversationList, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    parseNoArguments(args);
-    return conversationListResponseSchema.parse(database.listConversations());
-  });
-
-  ipcMain.handle(IPC_CHANNELS.conversationListHierarchy, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    parseNoArguments(args);
-    return conversationListResponseSchema.parse(database.listConversationHierarchy());
-  });
-
-  ipcMain.handle(IPC_CHANNELS.conversationCreate, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = createConversationIpcArgumentsSchema.parse(args);
-    const modelSelection = input.modelSelection === undefined
-      ? undefined
-      : credentials.resolveSelection(input.modelSelection);
-    const conversation = conversationSummarySchema.parse(
-      conversationLifecycle.createConversation(input.projectId ?? null, {
-        ...(input.agent === undefined ? {} : { agent: input.agent }),
-        ...(modelSelection === undefined ? {} : { modelSelection }),
-        ...(input.teamId === undefined ? {} : { teamId: input.teamId }),
-        ...(input.threadKind === undefined ? {} : { threadKind: input.threadKind })
-      })
-    );
-    emitConversationRunEvent({ type: "conversation.updated", conversation });
-    return conversation;
-  });
-
-  ipcMain.handle(
-    IPC_CHANNELS.conversationSelectWorkspace,
-    async (event, ...args: unknown[]) => {
-      const window = getTrustedWindow(event, getMainWindow);
-      const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
-      const conversation = database.getConversation(input.conversationId);
-      if (conversation.projectId !== null) {
-        throw new Error("Project conversations already use their project root.");
-      }
-      if (conversation.activeRunId !== null) {
-        throw new Error("A running conversation cannot change its workspace.");
-      }
-      const selection = await dialog.showOpenDialog(window, {
-        properties: ["openDirectory"],
-        title: "添加对话工作目录"
-      });
-      const selectedDirectory = selection.filePaths[0];
-      if (selection.canceled || selectedDirectory === undefined) {
-        return conversationWorkspaceSelectionResponseSchema.parse(null);
-      }
-      const workspace = await projectRegistry.mountConversationWorkspace(
-        conversation.id,
-        selectedDirectory
-      );
-      return conversationWorkspaceSelectionResponseSchema.parse(
-        conversationLifecycle.setConversationWorkspaceRoot(conversation.id, workspace.rootPath)
-      );
-    }
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.conversationClearWorkspace,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
-      const conversation = conversationLifecycle.setConversationWorkspaceRoot(
-        input.conversationId,
-        null
-      );
-      projectRegistry.unmountConversationWorkspace(input.conversationId);
-      return conversationSummarySchema.parse(conversation);
-    }
-  );
-
-  ipcMain.handle(IPC_CHANNELS.conversationFork, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = forkConversationIpcArgumentsSchema.parse(args);
-    eventProjector.ensureConversationHistoryProjected(input.conversationId);
-    const conversation = database.forkConversation(
-      input.conversationId,
-      input.throughMessageId === undefined ? "side" : "sibling",
-      input.throughMessageId,
-    );
-    threadLogLegacyImporter.importConversationIfMissing(conversation.id);
-    if (conversation.workspaceRootPath !== null) {
-      projectRegistry.inheritConversationWorkspace(
-        input.conversationId,
-        conversation.id
-      );
-    }
-    return conversationSummarySchema.parse(conversation);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.conversationListForks, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
-    return conversationListResponseSchema.parse(
-      database.listConversationForks(input.conversationId)
-    );
-  });
-
-  ipcMain.handle(IPC_CHANNELS.conversationRename, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = renameConversationIpcArgumentsSchema.parse(args);
-    return conversationSummarySchema.parse(
-      conversationLifecycle.renameConversation(input.conversationId, input.title)
-    );
-  });
-
-  ipcMain.handle(IPC_CHANNELS.conversationReorder, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = reorderConversationsIpcArgumentsSchema.parse(args);
-    conversationLifecycle.reorderConversations(input.conversationIds);
-    return conversationListResponseSchema.parse(database.listConversations());
-  });
-
-  ipcMain.handle(IPC_CHANNELS.conversationSetProject, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = setConversationProjectIpcArgumentsSchema.parse(args);
-    const conversation = conversationLifecycle.setConversationProject(
-      input.conversationId,
-      input.projectId
-    );
-    if (input.projectId !== null) {
-      projectRegistry.unmountConversationWorkspace(input.conversationId);
-    }
-    return conversationSummarySchema.parse(conversation);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.conversationSetModelSelection, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = setConversationModelSelectionIpcArgumentsSchema.parse(args);
-    const selection = credentials.resolveSelection(input.modelSelection);
-    const current = database.getConversation(input.conversationId);
-    const conversation = current.teamWorkItemId === null
-      ? conversationLifecycle.setConversationModelSelection(input.conversationId, selection)
-      : teamWorkItems.updateModelSelection(input.conversationId, selection);
-    if (current.threadKind !== "subagent" && current.teamWorkItemId === null) {
-      credentials.setRecentSelection(selection);
-    }
-    return conversationSummarySchema.parse(conversation);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.conversationSetPermissionMode, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = setConversationPermissionModeIpcArgumentsSchema.parse(args);
-    return conversationSummarySchema.parse(
-      conversationLifecycle.setConversationPermissionMode(
-        input.conversationId,
-        input.permissionMode,
-        input.coordinationMode,
-      ),
-    );
-  });
-
-  ipcMain.handle(IPC_CHANNELS.conversationSetArchived, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = setConversationArchivedIpcArgumentsSchema.parse(args);
-    const conversation = conversationSummarySchema.parse(
-      conversationLifecycle.setConversationArchived(input.conversationId, input.archived)
-    );
-    emitConversationRunEvent({
-      conversation,
-      type: "conversation.updated"
-    });
-    return conversation;
-  });
-
-  ipcMain.handle(IPC_CHANNELS.conversationSetPinned, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = setConversationPinnedIpcArgumentsSchema.parse(args);
-    return conversationSummarySchema.parse(
-      conversationLifecycle.setConversationPinned(input.conversationId, input.pinned)
-    );
-  });
-
-  ipcMain.handle(IPC_CHANNELS.conversationDelete, async (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
-    await conversationDeletion.requestDeletion(input.conversationId);
-    publishConversationAttentionEvent();
-    return voidIpcResponseSchema.parse(undefined);
-  });
-  ipcMain.handle(IPC_CHANNELS.conversationDeleteUndoable, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
-    conversationDeletion.requestUndoableDeletion(input.conversationId);
-    publishConversationAttentionEvent();
-    return voidIpcResponseSchema.parse(undefined);
-  });
-  ipcMain.handle(IPC_CHANNELS.conversationRestoreDeleted, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
-    conversationDeletion.restoreDeletedConversation(input.conversationId);
-    publishConversationAttentionEvent();
-    return voidIpcResponseSchema.parse(undefined);
-  });
-
-  ipcMain.handle(
-    IPC_CHANNELS.conversationListTimeline,
-    async (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
-      await eventProjector.prepareTimeline(input.conversationId);
-      return conversationTimelineResponseSchema.parse(
-        eventProjector.listTimeline(input.conversationId)
-      );
-    }
-  );
-
-  ipcMain.handle(IPC_CHANNELS.conversationSearch, async (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = conversationSearchIpcArgumentsSchema.parse(args);
-    return conversationSearchResponseSchema.parse(await eventProjector.searchConversations(input));
-  });
-
-  ipcMain.handle(
-    IPC_CHANNELS.conversationGetTaskList,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
-      return conversationTaskListResponseSchema.parse(
-        database.getTaskList(input.conversationId)
-      );
-    }
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.conversationCloseTaskList,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
-      database.closeTaskList(input.conversationId);
-      return voidIpcResponseSchema.parse(undefined);
-    }
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.conversationDeleteTaskList,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
-      database.deleteTaskList(input.conversationId);
-      return voidIpcResponseSchema.parse(undefined);
-    }
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.conversationMarkResultViewed,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
-      const conversation = conversationSummarySchema.parse(
-        conversationLifecycle.markConversationResultViewed(input.conversationId)
-      );
-      emitConversationRunEvent({
-        conversation,
-        type: "conversation.updated"
-      });
-      return conversation;
-    }
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.conversationGetContextUsage,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = conversationContextUsageIpcArgumentsSchema.parse(args);
-      return conversationContextUsageSchema.parse(
-        agentRuntime.getContextUsage(input)
-      );
-    }
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.conversationChooseAttachments,
-    async (event, ...args: unknown[]) => {
-      const window = getTrustedWindow(event, getMainWindow);
-      const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
-      const selection = await dialog.showOpenDialog(window, {
-        properties: ["openFile", "multiSelections"],
-        title: "添加文件或图片"
-      });
-      if (selection.canceled || selection.filePaths.length === 0) {
-        return conversationAttachmentListSchema.parse(
-          attachments.listDrafts(input.conversationId)
-        );
-      }
-      await attachments.importFiles(input.conversationId, selection.filePaths);
-      return conversationAttachmentListSchema.parse(
-        attachments.listDrafts(input.conversationId)
-      );
-    }
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.conversationImportAttachmentBytes,
-    async (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = importConversationAttachmentBytesIpcArgumentsSchema.parse(args);
-      await attachments.importBytes(input.conversationId, {
-        bytes: Buffer.from(input.base64, "base64"),
-        name: input.name,
-        ...(input.mimeType === undefined ? {} : { mimeType: input.mimeType }),
-      });
-      return conversationAttachmentListSchema.parse(
-        attachments.listDrafts(input.conversationId),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.conversationReadAttachmentPreview,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = readConversationAttachmentPreviewIpcArgumentsSchema.parse(args);
-      return conversationAttachmentPreviewSchema.parse(
-        attachments.readImagePreview(input.conversationId, input.attachmentId),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.conversationListDraftAttachments,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = conversationReferenceIpcArgumentsSchema.parse(args);
-      return conversationAttachmentListSchema.parse(
-        attachments.listDrafts(input.conversationId)
-      );
-    }
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.conversationRemoveAttachment,
-    async (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = removeConversationAttachmentIpcArgumentsSchema.parse(args);
-      await attachments.removeDraft(input.conversationId, input.attachmentId);
-      return voidIpcResponseSchema.parse(undefined);
-    }
-  );
+  registerAttachmentHandlers({ ipcMain, getMainWindow }, { attachments });
 
   ipcMain.handle(
     IPC_CHANNELS.conversationSendMessage,
@@ -1035,337 +392,11 @@ export function registerMainIpcHandlers(
     }
   );
 
-  ipcMain.handle(
-    IPC_CHANNELS.teamSetCoordinator,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = setTeamCoordinatorIpcArgumentsSchema.parse(args);
-      database.setTeamCoordinatorConversation(input.teamId, input.conversationId);
-      return voidIpcResponseSchema.parse(undefined);
-    },
-  );
+  registerTeamHandlers({ ipcMain, getMainWindow }, { agentRuntime, database, teamWorkItems }, emitConversationRunEvent);
 
-  ipcMain.handle(
-    IPC_CHANNELS.teamEnsureMemberConversation,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = ensureTeamMemberConversationIpcArgumentsSchema.parse(args);
-      return teamMemberConversationViewSchema.parse(
-        teamWorkItems.ensureSharedMemberConversation(input),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamInstanceList,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = listTeamInstancesIpcArgumentsSchema.parse(args);
-      return teamInstanceListSchema.parse(
-        database.listTeamInstances(input),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamInstanceCreate,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = createTeamInstanceIpcArgumentsSchema.parse(args);
-      return teamInstanceViewSchema.parse(teamWorkItems.createInstance(input));
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamInstanceRename,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = renameTeamInstanceIpcArgumentsSchema.parse(args);
-      return teamInstanceViewSchema.parse(teamWorkItems.renameInstance(input));
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamInstanceReorder,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = reorderTeamInstancesIpcArgumentsSchema.parse(args);
-      return teamInstanceListSchema.parse(
-        database.reorderTeamInstances(input.teamInstanceIds),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamInstanceSetArchived,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = setTeamInstanceArchivedIpcArgumentsSchema.parse(args);
-      return teamInstanceViewSchema.parse(teamWorkItems.setInstanceArchived(input));
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamInstanceDelete,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = deleteTeamInstanceIpcArgumentsSchema.parse(args);
-      teamWorkItems.deleteInstance(input.teamInstanceId);
-      return voidIpcResponseSchema.parse(undefined);
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamInstanceEnsureMemberConversation,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = ensureTeamInstanceMemberConversationIpcArgumentsSchema.parse(args);
-      return teamMemberConversationViewSchema.parse(
-        teamWorkItems.ensureInstanceMemberConversation(input),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamSendMessage,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = sendTeamMessageIpcArgumentsSchema.parse(args);
-      const { teamId, ...conversationInput } = input;
-      const coordinatorConversationId = database.getTeamCoordinatorConversationId(teamId);
-      if (coordinatorConversationId === null) {
-        throw new Error("Team has no coordinator Conversation. Create and bind a Team Lead conversation first.");
-      }
-      return conversationMessageSubmissionSchema.parse(
-        agentRuntime.sendMessage({
-          ...conversationInput,
-          conversationId: coordinatorConversationId,
-        }, (runEvent) => emitConversationRunEvent(runEvent)),
-      );
-    },
-  );
-
-  ipcMain.handle(IPC_CHANNELS.taskCompletionPolicyGet, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = z.tuple([taskContextScopeSchema]).parse(args);
-    return taskCompletionPolicySchema.parse(database.collaboration.getCompletionPolicy(input));
-  });
-  ipcMain.handle(IPC_CHANNELS.taskCompletionPolicySet, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = z.tuple([setTaskCompletionPolicyInputSchema]).parse(args);
-    return taskCompletionPolicySchema.parse(database.collaboration.setCompletionPolicy(input));
-  });
-  ipcMain.handle(IPC_CHANNELS.chatReferencesResolve, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = z.tuple([resolveChatReferencesInputSchema]).parse(args);
-    return chatReferencesSchema.parse(database.collaboration.resolveReferences(input));
-  });
-  ipcMain.handle(IPC_CHANNELS.taskContextList, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    database.collaboration.syncWorkItems(database.listTeamWorkItems({}));
-    const [input] = z.tuple([listTaskContextsInputSchema]).parse(args);
-    const result = taskContextPageSchema.parse(database.collaboration.listTasks(input));
-    return result;
-  });
-  ipcMain.handle(IPC_CHANNELS.taskContextGet, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    database.collaboration.syncWorkItems(database.listTeamWorkItems({}));
-    const [input] = z.tuple([getTaskContextInputSchema]).parse(args);
-    const result = taskContextDetailSchema.parse(database.collaboration.getTask(input.id, input));
-    return result;
-  });
-  ipcMain.handle(IPC_CHANNELS.taskContextUpdate, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = z.tuple([updateTaskContextInputSchema]).parse(args);
-    const result = taskContextSchema.parse(database.collaboration.updateTask(input));
-    emitConversationRunEvent({ type: "collaboration.changed", conversationId: input.conversationId,
-      ...(result.teamInstanceId === null ? {} : { teamInstanceId: result.teamInstanceId }) });
-    return result;
-  });
-  ipcMain.handle(IPC_CHANNELS.taskContextLink, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = z.tuple([linkTaskContextInputSchema]).parse(args);
-    const result = database.collaboration.linkTask(input);
-    const task = database.collaboration.getTask(input.id).task;
-    emitConversationRunEvent({ type: "collaboration.changed", conversationId: task.ownerConversationId,
-      ...(task.teamInstanceId === null ? {} : { teamInstanceId: task.teamInstanceId }) });
-    if (input.source.kind === "conversation" && input.source.containerId !== task.ownerConversationId)
-      emitConversationRunEvent({ type: "collaboration.changed", conversationId: input.source.containerId });
-    return result;
-  });
-  ipcMain.handle(IPC_CHANNELS.taskContextMerge, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = z.tuple([mergeTaskContextsInputSchema]).parse(args);
-    const result = taskContextSchema.parse(database.collaboration.mergeTasks(input));
-    emitConversationRunEvent({ type: "collaboration.changed", conversationId: result.ownerConversationId,
-      ...(result.teamInstanceId === null ? {} : { teamInstanceId: result.teamInstanceId }) });
-    return result;
-  });
-  ipcMain.handle(IPC_CHANNELS.teamChatRead, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = z.tuple([readTeamChatInputSchema]).parse(args);
-    const result = teamChatPageSchema.parse(database.collaboration.readMessages(input));
-    return result;
-  });
-  ipcMain.handle(IPC_CHANNELS.teamChatPost, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = z.tuple([postTeamChatInputSchema]).parse(args);
-    const result = teamChatMessageSchema.parse(agentRuntime.postTeamChat(input, emitConversationRunEvent));
-    return result;
-  });
-  ipcMain.handle(IPC_CHANNELS.teamChatCoordinationConversation, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = z.tuple([teamChatCoordinationConversationInputSchema]).parse(args);
-    return conversationSummarySchema.parse(agentRuntime.getTeamChatCoordinationConversation(input));
-  });
-  ipcMain.handle(IPC_CHANNELS.teamChatMembers, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = z.tuple([teamInstanceReferenceInputSchema]).parse(args);
-    const result = z.array(teamChatMemberSchema).parse(database.collaboration.members(input.teamInstanceId));
-    return result;
-  });
-  ipcMain.handle(IPC_CHANNELS.teamChatMarkRead, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = z.tuple([markTeamChatReadInputSchema]).parse(args);
-    const instance = database.getTeamInstance(input.teamInstanceId);
-    const changed = database.collaboration.markRead(input, null);
-    if (changed && instance.rootConversationId !== null) emitConversationRunEvent({
-      type: "collaboration.changed", conversationId: instance.rootConversationId, teamInstanceId: instance.id, reason: "read",
-    });
-    return undefined;
-  });
-  ipcMain.handle(IPC_CHANNELS.teamChatResume, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = z.tuple([taskContextReferenceSchema]).parse(args);
-    agentRuntime.resumeTeamChatDelivery(input.id, emitConversationRunEvent);
-    return null;
-  });
-  ipcMain.handle(IPC_CHANNELS.teamChatCancel, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = z.tuple([taskContextReferenceSchema]).parse(args);
-    const result = database.collaboration.cancelDelivery(input.id);
-    return result;
-  });
-  ipcMain.handle(IPC_CHANNELS.teamChatPause, async (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = z.tuple([teamInstanceReferenceInputSchema]).parse(args);
-    await agentRuntime.pauseTeamChat(input.teamInstanceId, emitConversationRunEvent);
-    return null;
-  });
-  ipcMain.handle(
-    IPC_CHANNELS.teamWorkItemList,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = listTeamWorkItemsIpcArgumentsSchema.parse(args);
-      return teamWorkItemListSchema.parse(teamWorkItems.list(input));
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamWorkItemGetExecution,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = getTeamWorkItemExecutionIpcArgumentsSchema.parse(args);
-      return teamWorkItemExecutionViewSchema.parse(teamWorkItems.getExecution(input));
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamCollaborationGetProjection,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = getTeamCollaborationProjectionIpcArgumentsSchema.parse(args);
-      return teamCollaborationProjectionSchema.parse(
-        teamWorkItems.getCollaborationProjection(input),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamWorkItemSubmit,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = submitTeamWorkItemIpcArgumentsSchema.parse(args);
-      return teamWorkItemViewSchema.parse(
-        teamWorkItems.submit(input, (runEvent) =>
-          emitConversationRunEvent(runEvent)),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamWorkItemUpdate,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = updateTeamWorkItemIpcArgumentsSchema.parse(args);
-      return teamWorkItemViewSchema.parse(
-        teamWorkItems.update(input, (runEvent) =>
-          emitConversationRunEvent(runEvent)),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamWorkItemDelete,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = deleteTeamWorkItemIpcArgumentsSchema.parse(args);
-      teamWorkItems.delete(input, (runEvent) =>
-        emitConversationRunEvent(runEvent));
-      return voidIpcResponseSchema.parse(undefined);
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamWorkItemUpdatePermission,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = updateTeamWorkItemPermissionIpcArgumentsSchema.parse(args);
-      return teamWorkItemViewSchema.parse(teamWorkItems.updatePermission(input));
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamWorkItemPublish,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = publishTeamWorkItemIpcArgumentsSchema.parse(args);
-      return teamWorkItemViewSchema.parse(
-        teamWorkItems.publish(input, (runEvent) =>
-          emitConversationRunEvent(runEvent)),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamWorkItemRequestRework,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = requestTeamWorkItemReworkIpcArgumentsSchema.parse(args);
-      return teamWorkItemViewSchema.parse(
-        teamWorkItems.requestRework(input, (runEvent) =>
-          emitConversationRunEvent(runEvent)),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamWorkItemAddComment,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = addTeamWorkItemCommentIpcArgumentsSchema.parse(args);
-      return teamWorkItemViewSchema.parse(teamWorkItems.addComment(input));
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.teamWorkItemAccept,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = acceptTeamWorkItemIpcArgumentsSchema.parse(args);
-      return teamWorkItemViewSchema.parse(teamWorkItems.accept(input));
-    },
-  );
+  registerTaskContextHandlers({ ipcMain, getMainWindow }, { database }, emitConversationRunEvent);
+  registerTeamChatHandlers({ ipcMain, getMainWindow }, { agentRuntime, database }, emitConversationRunEvent);
+  registerTeamWorkItemHandlers({ ipcMain, getMainWindow }, { teamWorkItems }, emitConversationRunEvent);
 
   ipcMain.handle(
     IPC_CHANNELS.conversationReplaceLatestMessage,
@@ -1486,87 +517,9 @@ export function registerMainIpcHandlers(
     }
   );
 
-  ipcMain.handle(IPC_CHANNELS.modelGetStatus, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    parseNoArguments(args);
-    return modelRuntimeStatusSchema.parse(credentials.getStatus());
-  });
+  registerModelHandlers({ ipcMain, getMainWindow }, { credentials, modelCatalog });
 
-  ipcMain.handle(IPC_CHANNELS.modelGetCatalog, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    parseNoArguments(args);
-    return modelCatalogSchema.parse(modelCatalog.getCatalog());
-  });
-
-  ipcMain.handle(IPC_CHANNELS.modelSaveCatalog, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [catalog] = z.tuple([modelCatalogSchema]).parse(args);
-    return modelCatalogSchema.parse(modelCatalog.saveCatalog(catalog));
-  });
-
-  ipcMain.handle(IPC_CHANNELS.modelGetApiKey, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = getModelApiKeyIpcArgumentsSchema.parse(args);
-    return modelApiKeySchema.parse(credentials.getApiKey(input.providerId));
-  });
-
-  ipcMain.handle(IPC_CHANNELS.modelDeleteProvider, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = deleteModelProviderIpcArgumentsSchema.parse(args);
-    return modelRuntimeStatusSchema.parse(credentials.deleteProvider(input.providerId));
-  });
-
-  ipcMain.handle(IPC_CHANNELS.modelDiscover, async (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = discoverModelsIpcArgumentsSchema.parse(args);
-    return discoveredModelSchema.array().parse(
-      await credentials.discoverModels(input)
-    );
-  });
-
-  ipcMain.handle(IPC_CHANNELS.modelTestConnection, async (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = testModelConnectionIpcArgumentsSchema.parse(args);
-    return modelConnectionTestResultSchema.parse(
-      await credentials.testModelConnection(input.providerId, input.modelId)
-    );
-  });
-
-  ipcMain.handle(
-    IPC_CHANNELS.modelSaveConfiguration,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = saveModelConfigurationIpcArgumentsSchema.parse(args);
-      return modelRuntimeStatusSchema.parse(credentials.saveConfiguration(input));
-    }
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.modelSetDefault,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = setDefaultModelIpcArgumentsSchema.parse(args);
-      return modelRuntimeStatusSchema.parse(credentials.setDefaultModel(input));
-    }
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.applicationSettingsGetConfiguration,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      parseNoArguments(args);
-      return applicationSettingsSchema.parse(applicationSettings.getConfiguration());
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.applicationSettingsSaveConfiguration,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = applicationSettingsIpcArgumentsSchema.parse(args);
-      return applicationSettingsSchema.parse(applicationSettings.saveConfiguration(input));
-    },
-  );
+  registerApplicationSettingsHandlers({ ipcMain, getMainWindow }, { applicationSettings });
 
   ipcMain.handle(
     IPC_CHANNELS.conversationListTimelinePage,
@@ -1578,222 +531,13 @@ export function registerMainIpcHandlers(
     },
   );
 
-  ipcMain.handle(
-    IPC_CHANNELS.applicationSettingsGetStorageLocation,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      parseNoArguments(args);
-      return applicationStorageLocationSchema.parse(
-        applicationStorageLocation.getLocation(),
-      );
-    },
-  );
+  registerStorageAndIntegrationSettingsHandlers({ ipcMain, getMainWindow }, { applicationStorageLocation, contextCompression, configurationWorkspaces, integrationConfiguration });
 
-  ipcMain.handle(
-    IPC_CHANNELS.applicationSettingsChooseStorageLocation,
-    async (event, ...args: unknown[]) => {
-      const window = getTrustedWindow(event, getMainWindow);
-      parseNoArguments(args);
-      const current = applicationStorageLocation.getLocation();
-      if (!current.canChange) return current;
-      const selection = await dialog.showOpenDialog(window, {
-        defaultPath: current.configuredPath,
-        properties: ["openDirectory"],
-        title: `选择 ${APPLICATION_DISPLAY_NAME} 数据存储目录`,
-      });
-      const selectedPath = selection.filePaths[0];
-      if (selection.canceled || selectedPath === undefined) return null;
-      return applicationStorageLocationSchema.parse(
-        applicationStorageLocation.selectLocation(selectedPath),
-      );
-    },
-  );
+  registerComputerUseHandlers({ ipcMain, getMainWindow }, { computerUseConfiguration, computerUse });
 
-  ipcMain.handle(
-    IPC_CHANNELS.applicationSettingsResetStorageLocation,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      parseNoArguments(args);
-      return applicationStorageLocationSchema.parse(
-        applicationStorageLocation.resetLocation(),
-      );
-    },
-  );
+  registerBrowserSettingsHandlers({ ipcMain, getMainWindow }, { browserConfiguration, managedBrowser });
 
-  ipcMain.handle(
-    IPC_CHANNELS.contextCompressionGetConfiguration,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      parseNoArguments(args);
-      return contextCompressionConfigurationSchema.parse(
-        contextCompression.getConfiguration()
-      );
-    }
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.contextCompressionSaveConfiguration,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = contextCompressionConfigurationIpcArgumentsSchema.parse(args);
-      return contextCompressionConfigurationSchema.parse(
-        contextCompression.saveConfiguration(input)
-      );
-    }
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.integrationGetConfiguration,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      parseNoArguments(args);
-      return integrationConfigurationSchema.parse(
-        integrationConfiguration.getConfiguration()
-      );
-    }
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.integrationSaveConfiguration,
-    async (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = integrationConfigurationIpcArgumentsSchema.parse(args);
-      const saved = integrationConfiguration.saveConfiguration(input);
-      await configurationWorkspaces.synchronizeMcpDocuments(saved);
-      return integrationConfigurationSchema.parse(
-        saved
-      );
-    }
-  );
-
-  ipcMain.handle(IPC_CHANNELS.computerUseGetConfiguration, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow); parseNoArguments(args);
-    return computerUseConfigurationSchema.parse(computerUseConfiguration.getConfiguration());
-  });
-  ipcMain.handle(IPC_CHANNELS.computerUseSaveConfiguration, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input, baselineApplications] = saveComputerUseConfigurationArgumentsSchema.parse(args);
-    const saved = computerUseConfiguration.saveConfiguration(input, baselineApplications);
-    computerUse.stop();
-    return computerUseConfigurationSchema.parse(saved);
-  });
-  ipcMain.handle(IPC_CHANNELS.computerUseGetStatus, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow); parseNoArguments(args);
-    return computerUseStatusSchema.parse(computerUse.getStatus());
-  });
-  ipcMain.handle(IPC_CHANNELS.computerUseStart, async (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow); parseNoArguments(args);
-    return computerUseStatusSchema.parse(await computerUse.start());
-  });
-  ipcMain.handle(IPC_CHANNELS.computerUseStop, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow); parseNoArguments(args); computerUse.stop();
-  });
-  ipcMain.handle(IPC_CHANNELS.computerUseChooseApplication, async (event, ...args: unknown[]) => {
-    const window = getTrustedWindow(event, getMainWindow); parseNoArguments(args);
-    const result = await dialog.showOpenDialog(window, { title: "选择软件", properties: ["openFile"], filters: [{ name: "Windows 软件", extensions: ["exe"] }] });
-    const selected = result.filePaths[0];
-    if (result.canceled || selected === undefined) return null;
-    const executablePath = realpathSync(selected);
-    return computerApplicationSchema.parse({ id: randomUUID(), name: path.basename(executablePath, path.extname(executablePath)), executablePath, enabled: true });
-  });
-  ipcMain.handle(IPC_CHANNELS.computerUseGetApplicationIcons, async (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow); parseNoArguments(args);
-    const configuration = computerUseConfiguration.getConfiguration();
-    const icons = await Promise.all([...configuration.applications, ...configuration.blockedApplications].map(async (application) => {
-      try {
-        const icon = await app.getFileIcon(application.executablePath, { size: "normal" });
-        return [application.id, icon.isEmpty() ? null : icon.resize({ width: 32, height: 32 }).toDataURL()] as const;
-      } catch (error) {
-        reportMainError(toMainAgentError(error, { operation: "computer_use.application_icon" }), error, [application.executablePath]);
-        return [application.id, null] as const;
-      }
-    }));
-    return computerApplicationIconsSchema.parse(Object.fromEntries(icons));
-  });
-
-  ipcMain.handle(
-    IPC_CHANNELS.browserGetConfiguration,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      parseNoArguments(args);
-      return browserConfigurationSchema.parse(
-        browserConfiguration.getConfiguration(),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.browserSaveConfiguration,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = browserConfigurationIpcArgumentsSchema.parse(args);
-      const saved = browserConfigurationSchema.parse(
-        browserConfiguration.saveConfiguration(input),
-      );
-      managedBrowser.applyConfiguration(saved);
-      return saved;
-    },
-  );
-
-  ipcMain.handle(IPC_CHANNELS.browserChooseDownloadDirectory, async (event, ...args: unknown[]) => {
-    const window = getTrustedWindow(event, getMainWindow);
-    parseNoArguments(args);
-    const selection = await dialog.showOpenDialog(window, {
-      title: "选择下载目录",
-      defaultPath: browserConfiguration.getConfiguration().downloadDirectory || app.getPath("downloads"),
-      properties: ["openDirectory", "createDirectory"],
-    });
-    return z.string().max(4096).nullable().parse(selection.canceled ? null : selection.filePaths[0] ?? null);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.browserGetDefaultDownloadDirectory, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    parseNoArguments(args);
-    return z.string().min(1).max(4096).parse(app.getPath("downloads"));
-  });
-  ipcMain.handle(IPC_CHANNELS.browserGetSavedPasswords, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    if (event.senderFrame !== event.sender.mainFrame) throw new Error("Rejected password request from a subframe.");
-    parseNoArguments(args);
-    return browserSavedPasswordListSchema.parse(managedBrowser.getSavedPasswords());
-  });
-  ipcMain.handle(IPC_CHANNELS.browserRevealPassword, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    if (event.senderFrame !== event.sender.mainFrame) throw new Error("Rejected password request from a subframe.");
-    const [input] = browserPasswordReferenceIpcArgumentsSchema.parse(args);
-    return browserPasswordValueSchema.parse(managedBrowser.revealPassword(input));
-  });
-
-  ipcMain.handle(
-    IPC_CHANNELS.browserClearData,
-    async (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      parseNoArguments(args);
-      await managedBrowser.clearBrowsingData();
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.terminalGetConfiguration,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      parseNoArguments(args);
-      return terminalConfigurationSchema.parse(
-        terminalConfiguration.getConfiguration(),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.terminalSaveConfiguration,
-    (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = terminalConfigurationIpcArgumentsSchema.parse(args);
-      return terminalConfigurationSchema.parse(
-        terminalConfiguration.saveConfiguration(input),
-      );
-    },
-  );
+  registerTerminalSettingsHandlers({ ipcMain, getMainWindow }, { terminalConfiguration });
 
   ipcMain.handle(IPC_CHANNELS.gitReviewGetSnapshot, async (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
@@ -1813,45 +557,7 @@ export function registerMainIpcHandlers(
     return gitReviewSnapshotSchema.parse(await gitReview.runOperation(input));
   });
 
-  ipcMain.handle(IPC_CHANNELS.terminalSessionOpen, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = terminalSessionOpenIpcArgumentsSchema.parse(args);
-    return terminalSessionSchema.parse(terminalSessions.open(input));
-  });
-
-  ipcMain.handle(IPC_CHANNELS.terminalSessionReadOutput, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = terminalSessionOutputIpcArgumentsSchema.parse(args);
-    return terminalSessionOutputSchema.parse(terminalSessions.readOutput(input));
-  });
-
-  ipcMain.handle(IPC_CHANNELS.terminalSessionWrite, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = terminalSessionWriteIpcArgumentsSchema.parse(args);
-    terminalSessions.write(input);
-    return voidIpcResponseSchema.parse(undefined);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.terminalSessionResize, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = terminalSessionResizeIpcArgumentsSchema.parse(args);
-    terminalSessions.resize(input);
-    return voidIpcResponseSchema.parse(undefined);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.terminalSessionClose, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = terminalSessionReferenceIpcArgumentsSchema.parse(args);
-    terminalSessions.close(input);
-    return voidIpcResponseSchema.parse(undefined);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.workspaceTerminalOpened, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = workspaceTerminalTabOpenedIpcArgumentsSchema.parse(args);
-    workspaceTerminalTabs.confirmOpened(input);
-    return voidIpcResponseSchema.parse(undefined);
-  });
+  registerTerminalSessionHandlers({ ipcMain, getMainWindow }, { terminalSessions, workspaceTerminalTabs });
 
   ipcMain.handle(IPC_CHANNELS.workspaceBrowserOpened, (event, ...args: unknown[]) => {
     getTrustedWindow(event, getMainWindow);
@@ -1860,149 +566,11 @@ export function registerMainIpcHandlers(
     return voidIpcResponseSchema.parse(undefined);
   });
 
-  ipcMain.handle(IPC_CHANNELS.managedBrowserOpen, async (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = managedBrowserOpenIpcArgumentsSchema.parse(args);
-    if (input.conversationId !== undefined) database.getConversation(input.conversationId);
-    return managedBrowserSessionSchema.parse(await managedBrowser.open(input));
-  });
+  registerManagedBrowserHandlers({ ipcMain, getMainWindow }, { database, managedBrowser });
 
-  ipcMain.handle(IPC_CHANNELS.managedBrowserNavigate, async (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = managedBrowserNavigateIpcArgumentsSchema.parse(args);
-    await managedBrowser.navigate(input);
-    return voidIpcResponseSchema.parse(undefined);
-  });
+  registerSkillDocumentHandlers({ ipcMain, getMainWindow }, { skillDocuments });
 
-  ipcMain.handle(IPC_CHANNELS.managedBrowserCommand, async (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = managedBrowserCommandIpcArgumentsSchema.parse(args);
-    await managedBrowser.command(input);
-    return voidIpcResponseSchema.parse(undefined);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.managedBrowserCapture, async (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = managedBrowserReferenceIpcArgumentsSchema.parse(args);
-    return managedBrowserSnapshotSchema.parse(await managedBrowser.capture(input));
-  });
-
-  ipcMain.handle(IPC_CHANNELS.managedBrowserClose, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = managedBrowserReferenceIpcArgumentsSchema.parse(args);
-    managedBrowser.close(input);
-    return voidIpcResponseSchema.parse(undefined);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.skillCreateDocument, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = createSkillDocumentIpcArgumentsSchema.parse(args);
-    return skillDocumentSchema.parse(skillDocuments.createManagedDocument(input));
-  });
-
-  ipcMain.handle(IPC_CHANNELS.skillDiscoverDocuments, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    parseNoArguments(args);
-    return skillDiscoveryResultSchema.parse(skillDocuments.discoverDocuments());
-  });
-
-  ipcMain.handle(IPC_CHANNELS.skillChooseDirectory, async (event, ...args: unknown[]) => {
-    const window = getTrustedWindow(event, getMainWindow);
-    parseNoArguments(args);
-    const selection = await dialog.showOpenDialog(window, {
-      properties: ["openDirectory"],
-      title: "选择 Skill 目录",
-    });
-    const selectedPath = selection.filePaths[0];
-    if (selection.canceled || selectedPath === undefined) return null;
-    return skillDiscoveryResultSchema.parse(skillDocuments.chooseDirectory(selectedPath));
-  });
-
-  ipcMain.handle(IPC_CHANNELS.skillImportDocument, async (event, ...args: unknown[]) => {
-    const window = getTrustedWindow(event, getMainWindow);
-    parseNoArguments(args);
-    const selection = await dialog.showOpenDialog(window, {
-      filters: [{ name: "Skill 文档", extensions: ["md"] }],
-      properties: ["openFile"],
-      title: "导入 SKILL.md",
-    });
-    const selectedPath = selection.filePaths[0];
-    if (selection.canceled || selectedPath === undefined) return null;
-    return skillDocumentSchema.parse(skillDocuments.importDocument(selectedPath));
-  });
-
-  ipcMain.handle(IPC_CHANNELS.skillDeleteDocument, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = skillDocumentReferenceIpcArgumentsSchema.parse(args);
-    skillDocuments.deleteDocument(input.entryPath);
-    return voidIpcResponseSchema.parse(undefined);
-  });
-
-  ipcMain.handle(IPC_CHANNELS.skillReadDocument, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = skillDocumentReferenceIpcArgumentsSchema.parse(args);
-    return skillDocumentSchema.parse(skillDocuments.readDocument(input.entryPath));
-  });
-
-  ipcMain.handle(IPC_CHANNELS.skillSaveDocument, (event, ...args: unknown[]) => {
-    getTrustedWindow(event, getMainWindow);
-    const [input] = skillDocumentSaveIpcArgumentsSchema.parse(args);
-    return skillDocumentSchema.parse(skillDocuments.saveDocument(input));
-  });
-
-  ipcMain.handle(
-    IPC_CHANNELS.configurationWorkspaceListEntries,
-    async (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = listConfigurationWorkspaceEntriesIpcArgumentsSchema.parse(args);
-      return configurationWorkspaceDirectoryListingSchema.parse(
-        await configurationWorkspaces.listEntries(input),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.configurationWorkspaceReadFile,
-    async (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = readConfigurationWorkspaceFileIpcArgumentsSchema.parse(args);
-      return configurationWorkspaceFileSchema.parse(
-        await configurationWorkspaces.readFile(input),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.configurationWorkspaceCreateEntry,
-    async (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = createConfigurationWorkspaceEntryIpcArgumentsSchema.parse(args);
-      return configurationWorkspaceEntrySchema.parse(
-        await configurationWorkspaces.createEntry(input),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.configurationWorkspaceWriteFile,
-    async (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = writeConfigurationWorkspaceFileIpcArgumentsSchema.parse(args);
-      return configurationWorkspaceFileSchema.parse(
-        await configurationWorkspaces.writeFile(input),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.configurationWorkspaceDeleteEntry,
-    async (event, ...args: unknown[]) => {
-      getTrustedWindow(event, getMainWindow);
-      const [input] = deleteConfigurationWorkspaceEntryIpcArgumentsSchema.parse(args);
-      await configurationWorkspaces.deleteEntry(input);
-      return voidIpcResponseSchema.parse(undefined);
-    },
-  );
+  registerConfigurationWorkspaceHandlers({ ipcMain, getMainWindow }, { configurationWorkspaces });
 
   ipcMain.handle(IPC_CHANNELS.windowGetState, (event, ...args: unknown[]) => {
     const window = getTrustedWindow(event, getMainWindow);
@@ -2087,9 +655,3 @@ export function registerMainIpcHandlers(
     ipcMain.dispose();
   };
 }
-import { randomUUID } from "node:crypto";
-import path from "node:path";
-import { realpathSync } from "node:fs";
-import { computerApplicationIconsSchema, computerApplicationSchema, computerUseConfigurationSchema, computerUseStatusSchema, saveComputerUseConfigurationArgumentsSchema } from "@agent/protocol";
-import type { ComputerUseConfigurationStore } from "../settings/computer-use-configuration-store.js";
-import type { WindowsComputerController } from "../computer-use/windows-computer-controller.js";

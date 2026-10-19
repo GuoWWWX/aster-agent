@@ -25,6 +25,7 @@ import { AgentRuntime } from "../agent/agent-runtime.js";
 import { ConversationTitleGenerator } from "../agent/conversation-title-generator.js";
 import { PreviewInspector } from "../preview/preview-inspector.js";
 import { HtmlPresentationTool, resolveHtmlPresentationSource } from "../tools/html-presentation-tool.js";
+import { resolveMessageCodeBlock } from "@agent/protocol";
 import { ModelAdapterRegistry } from "../model/model-adapter-registry.js";
 import { backupLegacyTeamChatDatabase, TeamChatJournal } from "../storage/team-chat-journal.js";
 import { SkillRuntime } from "../agent/skill-runtime.js";
@@ -412,7 +413,8 @@ async function initializeServices(): Promise<DesktopServices> {
   const htmlPreviews = new HtmlPreviewServer(async (conversationId) => {
     const conversation = database.getConversation(conversationId);
     return (await projectRegistry.ensureWorkspaceRoot(conversation.projectId ?? conversation.id)).rootPath;
-  });
+  }, (conversationId, reference) => resolveMessageCodeBlock(database.listTimeline(conversationId)
+    .filter(item => item.kind === "message"), reference));
   const managedBrowser = new ManagedBrowserController(
     () => mainWindow,
     browserConfiguration,
@@ -459,7 +461,8 @@ async function initializeServices(): Promise<DesktopServices> {
       const conversation = database.getConversation(conversationId);
       return (await projectRegistry.ensureWorkspaceRoot(conversation.projectId ?? conversation.id)).rootPath;
     }, new PreviewInspector(htmlPreviews, managedBrowser), (conversationId, reference) => resolveHtmlPresentationSource(
-      database.listTimeline(conversationId).filter(item => item.kind === "tool"), reference)),
+      database.listTimeline(conversationId).filter(item => item.kind === "tool" || item.kind === "message"), reference),
+      () => mainWindow?.getContentBounds() ?? { width: 1280, height: 800 }),
   );
   const teamWorkItems = new TeamWorkItemRuntime(
     database,

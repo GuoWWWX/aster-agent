@@ -7,12 +7,10 @@ import {
   CirclePlus,
   Eye,
   FolderOpen,
-  Layers3,
   Plus,
   RotateCcw,
   Settings2,
   ShieldCheck,
-  Sparkles,
   Trash2,
   UsersRound,
 } from "lucide-react";
@@ -27,10 +25,7 @@ import {
   SelectValue,
 } from "../../components/ui/select.js";
 import {
-  AVAILABLE_MCP_SERVERS,
-  AVAILABLE_SKILLS,
   useAgentDirectoryStore,
-  type AgentCapabilityScope,
   type AgentPermissionRule,
   type AgentPermissionTool,
   type AgentModelStrategy,
@@ -38,10 +33,13 @@ import {
   type AgentTeam,
 } from "../../stores/agent-directory-store.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
-import { SettingsCategoryHeading, SettingsConfigurationGroup } from "./settings-configuration-card.js";
-import { SettingsDirectoryDeleteButton } from "./settings-directory-delete-button.js";
+import { SettingsCategoryHeading, SettingsConfigurationGroup } from "./components/settings-configuration-card.js";
+import { SettingsDirectoryDeleteButton } from "./components/settings-directory-delete-button.js";
+import { SettingsDirectoryList } from "./components/settings-directory-list.js";
 import { AgentAvatar } from "../team/agent-avatar.js";
 import { AgentAvatarPicker } from "./agent-avatar-picker.js";
+import type { AgentClient } from "../../runtime/index.js";
+import { AgentCapabilityEditor } from "./agents/agent-capability-editor.js";
 import "./agent-team-settings.css";
 
 type ManagementView = "agents" | "teams";
@@ -54,7 +52,7 @@ const MODEL_STRATEGY_LABEL: Record<AgentModelStrategy, string> = {
   inherit: "继承对话",
 };
 
-export function AgentTeamSettings({ searchTarget }: { searchTarget?: { agentView?: ManagementView } | null } = {}): ReactElement {
+export function AgentTeamSettings({ agentClient, searchTarget }: { agentClient: AgentClient; searchTarget?: { agentView?: ManagementView } | null }): ReactElement {
   const [activeView, setActiveView] = useState<ManagementView>(searchTarget?.agentView ?? "teams");
   const [previousSearchTarget, setPreviousSearchTarget] = useState(searchTarget);
   if (previousSearchTarget !== searchTarget) {
@@ -142,6 +140,7 @@ export function AgentTeamSettings({ searchTarget }: { searchTarget?: { agentView
           />
         ) : (
           <AgentManagementView
+            agentClient={agentClient}
             agents={agents}
             onCreateAgent={() => setSelectedAgentId(addAgent())}
             onDeleteAgent={(id) => {
@@ -209,7 +208,7 @@ function TeamManagementView({
           label="团队目录"
           action={<IconButton label="创建团队" size="compact" onClick={onCreateTeam}><CirclePlus aria-hidden="true" size={18} /></IconButton>}
         />
-        <div className="team-directory-list">
+        <SettingsDirectoryList className="team-directory-list" selectedId={selectedTeam?.id ?? null}>
           {pagedTeams.map((team) => (
             <div key={team.id} className="group/directory relative" data-active={team.id === selectedTeam?.id}>
             <button
@@ -231,7 +230,7 @@ function TeamManagementView({
             <SettingsDirectoryDeleteButton label={`删除团队 ${team.name}`} onDelete={() => onDeleteTeam(team.id)} />
             </div>
           ))}
-        </div>
+        </SettingsDirectoryList>
         <footer className="team-directory-footer">
           <span>共 {teams.length} 个团队</span>
           <div className="team-directory-pagination-controls" aria-label="团队分页">
@@ -276,6 +275,7 @@ function TeamManagementView({
 }
 
 function AgentManagementView({
+  agentClient,
   agents,
   onCreateAgent,
   onDeleteAgent,
@@ -283,6 +283,7 @@ function AgentManagementView({
   selectedAgentId,
   teams,
 }: {
+  agentClient: AgentClient;
   agents: AgentProfile[];
   onCreateAgent: () => void;
   onDeleteAgent: (id: string) => void;
@@ -300,7 +301,7 @@ function AgentManagementView({
           value={agents.length}
           action={<IconButton label="新建 Agent" size="compact" onClick={onCreateAgent}><CirclePlus aria-hidden="true" size={18} /></IconButton>}
         />
-        <div className="agent-directory-list">
+        <SettingsDirectoryList className="agent-directory-list" selectedId={selectedAgent?.id ?? null}>
           {agents.map((agent) => {
             const teamCount = teams.filter((team) => team.memberIds.includes(agent.id)).length;
             return (
@@ -331,13 +332,13 @@ function AgentManagementView({
               </div>
             );
           })}
-        </div>
+        </SettingsDirectoryList>
         <footer className="team-directory-footer">共 {agents.length} 个 Agent</footer>
       </section>
       {selectedAgent === undefined ? (
         <ManagementEmpty icon={BrainCircuit} label="还没有 Agent" />
       ) : (
-        <AgentConfigurationPane agent={selectedAgent} teams={teams} />
+        <AgentConfigurationPane agent={selectedAgent} agentClient={agentClient} teams={teams} />
       )}
     </div>
   );
@@ -570,9 +571,11 @@ export function TeamConfigurationPane({
 
 function AgentConfigurationPane({
   agent,
+  agentClient,
   teams,
 }: {
   agent: AgentProfile;
+  agentClient: AgentClient;
   teams: AgentTeam[];
 }): ReactElement {
   const updateAgent = useAgentDirectoryStore((state) => state.updateAgent);
@@ -684,7 +687,7 @@ function AgentConfigurationPane({
             </div>
       </SettingsConfigurationGroup>
 
-          <CapabilityEditor agent={agent} onUpdate={(patch) => updateAgent(agent.id, patch)} />
+          <AgentCapabilityEditor agent={agent} agentClient={agentClient} onUpdate={(patch) => updateAgent(agent.id, patch)} />
 
           <PermissionEditor agent={agent} onUpdate={(patch) => updateAgent(agent.id, patch)} />
 
@@ -774,91 +777,6 @@ function AvatarEditor({
         </div>
       ) : null}
     </section>
-  );
-}
-
-function CapabilityEditor({
-  agent,
-  onUpdate,
-}: {
-  agent: AgentProfile;
-  onUpdate: (patch: Partial<AgentProfile>) => void;
-}): ReactElement {
-  function toggleId(key: "mcpServerIds" | "skillIds", id: string): void {
-    const current = agent[key];
-    onUpdate({ [key]: current.includes(id)
-      ? current.filter((candidate) => candidate !== id)
-      : [...current, id] });
-  }
-
-  return (
-    <SettingsConfigurationGroup icon={Layers3} title="Skill 与 MCP">
-      <div className="management-policy-section__heading justify-end">
-        <Select
-          value={agent.capabilityScope}
-          onValueChange={(value) => onUpdate({ capabilityScope: value as AgentCapabilityScope })}
-        >
-          <SelectTrigger className="capability-scope-select"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="inherit_all">继承全部</SelectItem>
-            <SelectItem value="custom">自定义范围</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-      {agent.capabilityScope === "inherit_all" ? (
-        <div className="capability-inherited-note">
-          <Layers3 aria-hidden="true" size={15} />
-          默认可以发现并按需使用所有已启用的 Skill、插件和 MCP。
-        </div>
-      ) : (
-        <div className="capability-picker-grid">
-          <CapabilityGroup
-            icon={Sparkles}
-            items={AVAILABLE_SKILLS}
-            label="Skills"
-            selectedIds={agent.skillIds}
-            onToggle={(id) => toggleId("skillIds", id)}
-          />
-          <CapabilityGroup
-            icon={Boxes}
-            items={AVAILABLE_MCP_SERVERS}
-            label="MCP Servers"
-            selectedIds={agent.mcpServerIds}
-            onToggle={(id) => toggleId("mcpServerIds", id)}
-          />
-        </div>
-      )}
-    </SettingsConfigurationGroup>
-  );
-}
-
-function CapabilityGroup({
-  icon: Icon,
-  items,
-  label,
-  onToggle,
-  selectedIds,
-}: {
-  icon: typeof Sparkles;
-  items: readonly { id: string; name: string }[];
-  label: string;
-  onToggle: (id: string) => void;
-  selectedIds: string[];
-}): ReactElement {
-  return (
-    <fieldset className="capability-group">
-      <legend><Icon aria-hidden="true" size={13} />{label}</legend>
-      {items.map((item) => (
-        <label key={item.id}>
-          <input
-            checked={selectedIds.includes(item.id)}
-            type="checkbox"
-            onChange={() => onToggle(item.id)}
-          />
-          <span>{item.name}</span>
-        </label>
-      ))}
-    </fieldset>
   );
 }
 

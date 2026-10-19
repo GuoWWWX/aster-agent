@@ -254,7 +254,7 @@ export function AgentAvatar({
   status,
 }: {
   avatar: AgentAvatarValue;
-  size?: "compact" | "large" | "regular";
+  size?: "compact" | "large" | "regular" | "toolbar";
   status?: AgentStatus;
 }): ReactElement {
   const Icon = avatar.kind === "icon" ? ICONS[avatar.icon] : null;

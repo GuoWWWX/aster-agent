@@ -13,7 +13,11 @@ const electronMocks = vi.hoisted(() => {
     void url;
     return Promise.resolve();
   });
+  const clearBrowserData = vi.fn(() => Promise.resolve());
+  const fromPartition = vi.fn(() => ({ clearData: clearBrowserData }));
   return {
+    clearBrowserData,
+    fromPartition,
     backgroundWebContentsDestroyed: false,
     backgroundWindowOptions: [] as unknown[],
     backgroundContents: [] as unknown[],
@@ -86,7 +90,7 @@ vi.mock("electron", () => ({
   dialog: { showMessageBox: electronMocks.showMessageBox },
   Menu: { buildFromTemplate: electronMocks.buildFromTemplate },
   nativeTheme: electronMocks.nativeTheme,
-  session: { fromPartition: vi.fn(() => ({ clearData: vi.fn(() => Promise.resolve()) })) },
+  session: { fromPartition: electronMocks.fromPartition },
   shell: {
     openPath: electronMocks.openPath,
     showItemInFolder: electronMocks.showItemInFolder,
@@ -607,6 +611,28 @@ describe("ManagedBrowserController", () => {
     expect(secondPage.setAskForDownloadLocation).toHaveBeenLastCalledWith(true);
     expect(firstPage.clearBrowsingData).toHaveBeenCalledOnce();
     expect(secondPage.clearBrowsingData).toHaveBeenCalledOnce();
+  });
+
+  it.each(["background", "isolated"] as const)("clears the persistent browser partition when only a %s page exists", async (kind) => {
+    const page = createFakePage();
+    const controller = new ManagedBrowserController(
+      () => createFakeWindow(),
+      { getConfiguration: () => browserConfiguration() },
+      () => page,
+    );
+    electronMocks.fromPartition.mockClear();
+    electronMocks.clearBrowserData.mockClear();
+    try {
+      await controller.open({}, kind === "background"
+        ? { background: { width: 800, height: 600 } }
+        : { isolated: true });
+      await controller.clearBrowsingData();
+      expect(electronMocks.fromPartition).toHaveBeenCalledWith("persist:aster-managed-browser");
+      expect(electronMocks.clearBrowserData).toHaveBeenCalledOnce();
+      expect(page.clearBrowsingData).toHaveBeenCalledOnce();
+    } finally {
+      controller.dispose();
+    }
   });
 
   it("routes zoom and browser menu commands to the owned page", async () => {

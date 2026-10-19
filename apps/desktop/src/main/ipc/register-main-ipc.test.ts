@@ -501,6 +501,17 @@ describe("result viewed IPC notification", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("rejects every invoke channel from an untrusted renderer before parsing or accessing its owner", async () => {
+    electron.fromWebContents.mockReturnValue(null);
+    for (const [channel, handler] of electron.handle.mock.calls) {
+      await expect(handler(event), channel).rejects.toHaveProperty(
+        "cause.message", "Rejected IPC request from an untrusted renderer.",
+      );
+    }
+    expect(markViewed).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("disposes every registered handler and the bounds listener", () => {
     const registered = electron.handle.mock.calls.map(([channel]) => channel);
     dispose?.(); dispose = undefined;

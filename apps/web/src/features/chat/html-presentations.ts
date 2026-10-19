@@ -1,4 +1,4 @@
-import { htmlPresentationResultSchema, type ConversationTimelineItem, type HtmlPresentationPage } from "@agent/protocol";
+import { codeBlockPreviewReferenceSchema, htmlPresentationResultSchema, type ConversationTimelineItem, type HtmlPresentationPage } from "@agent/protocol";
 
 type DeliveryAnchor = {
   id: string;
@@ -7,12 +7,15 @@ type DeliveryAnchor = {
   continuationMessages?: readonly { runId: string | null }[];
 };
 
-export type HtmlDelivery = { id: string; displayRef?: string } & ({ path: string } | { pages: HtmlPresentationPage[] } | { code: string; language: "html" | "react" | "vue" });
+export type HtmlDelivery = { id: string; displayRef?: string } & ({ path: string } | { pages: HtmlPresentationPage[] } | { code: string; language: "html" | "react" | "vue" }
+  | { sourceRef: string; language: "html" | "react" | "vue" });
 
 export function htmlPresentationDelivery(item: ConversationTimelineItem): HtmlDelivery | null {
   if (item.kind !== "tool" || item.name !== "present_html" || item.status !== "completed" || item.result === null) return null;
   let value: unknown;
   try { value = JSON.parse(item.result); } catch { return null; }
+  const block = codeBlockPreviewReferenceSchema.safeParse(value);
+  if (block.success) return { id: item.id, displayRef: block.data.value.displayRef, sourceRef: block.data.value.sourceRef, language: block.data.value.language };
   const parsed = htmlPresentationResultSchema.safeParse(value);
   if (!parsed.success) return null;
   const { presentation, displayRef } = parsed.data.value;
@@ -30,7 +33,7 @@ export function htmlPresentationDeliveries(timeline: readonly ConversationTimeli
       || item.runId === null || item.runId === activeRunId) continue;
     const delivery = htmlPresentationDelivery(item);
     if (delivery === null) continue;
-    const key = "path" in delivery ? ["file", delivery.path] : "code" in delivery ? ["code", item.runId] : ["gallery", item.id];
+    const key = "path" in delivery ? ["file", delivery.path] : "sourceRef" in delivery ? ["reference", delivery.sourceRef] : "code" in delivery ? ["code", item.runId] : ["gallery", item.id];
     latestByPath.set(JSON.stringify(key), { ...delivery, runId: item.runId });
   }
   for (const { runId, ...delivery } of latestByPath.values()) {

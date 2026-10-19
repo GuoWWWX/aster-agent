@@ -208,3 +208,13 @@ HEAD：eaa5d562dc849b5a2887dc068af8d0df5f947aea
 - Web 104 个测试文件、661 项测试全部通过，覆盖 HTML 过滤、数学、引用代码、短表格、题注、Mermaid 并发、源码复制与编辑器保存/主题/文档切换。
 - 实际组件在 1440×900、1024×680 明暗主题检查；页面/编辑器无整体横向溢出，图表源码、放大及缩放交互可用。
 - 从本 worktree 根目录 `pnpm dev` 启动 HTTP Renderer；React/CSS 修改经 HMR 生效，Electron 主 PID 保持不变。
+
+### 8.5 Aster 内部分模块（2026-10-19）
+
+Mermaid 的静态字体、主题 CSS 与引擎配置归入 `apps/web/src/lib/mermaid-theme.ts`；`mermaid.ts` 继续拥有动态加载、串行渲染、并发去重和主题缓存。迁出函数体及 CSS 字面量保持一致，仍使用 `securityLevel: strict`，不修改上游源目录或生成的编辑器 CSS。Mermaid、围栏及 CodeMirror 预览原有 14 项回归、Web 类型检查与定向 lint 通过。
+
+CodeMirror Widget 的公式／列表、图表、图片和行内内容分别归入 `text-widgets.ts`、`mermaid-widget.ts`、`image-widget.ts`、`inline-widgets.ts`；共享的 DOM 呈现与 StateEffect 分别归 `widget-dom.ts`、`widget-effects.ts`。原 `widgets.ts` 保留表格 Widget 与兼容导出，原调用方继续引用同一个类和 Effect 实例。27 个声明／函数体保持一致；编辑器和 Markdown 共 19 文件 133 项回归、Web 类型检查与定向 lint 通过。
+
+表格阅读态的 DOM、选区和事件监听归 `table-readonly-view.ts`；返回的 disposer 由原 Widget 在 `destroy` 中执行，`updateDOM` 继续转移原清理归属。表格编辑态、草稿、提交与 CodeMirror 状态仍归原 Widget，主题、DOM 类名和键盘／复制行为不变，原有 133 项回归再次通过。
+
+表格行列拖动的临时状态、拖动影像和落点计算归 `table-reorder-interaction.ts`；Widget 保留文档监听注册、草稿提交和销毁时的释放调用。跨行列顺序仍通过原 Markdown 表格操作更新，编辑器和 Markdown 的 133 项回归、类型检查与定向 lint 通过。

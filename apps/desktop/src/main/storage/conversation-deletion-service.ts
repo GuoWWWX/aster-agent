@@ -88,10 +88,9 @@ export class ConversationDeletionService {
   }
 
   private async executeTask(taskId: string): Promise<ConversationDeletionOutcome> {
-    const task = this.database.beginConversationDeletionTask(taskId);
-    if (task === null) return "completed";
-
     try {
+      const task = this.database.beginConversationDeletionTask(taskId);
+      if (task === null) return "completed";
       await this.files.deleteUnreferencedConversationFiles(
         task.conversationIds,
         task.filePaths,
@@ -107,7 +106,7 @@ export class ConversationDeletionService {
       this.database.completeConversationDeletionTask(task.id);
       return "completed";
     } catch (error) {
-      this.database.failConversationDeletionTask(task.id, describeDeletionError(error));
+      this.database.failConversationDeletionTask(taskId, describeDeletionError(error));
       return "pending";
     }
   }

@@ -25,7 +25,7 @@ export function programPresentation(command: string, name: string | null): { lab
 }
 const statusLabels = { running: "运行中", completed: "已完成", failed: "失败", cancelled: "已停止" };
 
-export function BackgroundPrograms({ agentClient, conversationId }: { agentClient: AgentClient; conversationId: string }): ReactElement {
+export function BackgroundPrograms({ active = true, agentClient, conversationId }: { active?: boolean; agentClient: AgentClient; conversationId: string }): ReactElement {
   const [open, setOpen] = useState(false);
   const [commands, setCommands] = useState<BackgroundCommand[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +39,7 @@ export function BackgroundPrograms({ agentClient, conversationId }: { agentClien
     } catch (cause) { if (!signal.aborted) setError(cause instanceof Error ? cause.message : "无法读取后台程序。"); }
   }, [agentClient, conversationId]);
   useEffect(() => {
+    if (!active) return;
     const controller = new AbortController();
     void Promise.resolve().then(() => refresh(controller.signal));
     const unsubscribe = agentClient.onConversationRunEvent((event) => {
@@ -46,7 +47,7 @@ export function BackgroundPrograms({ agentClient, conversationId }: { agentClien
     });
     const timer = open || hasRunningCommands ? window.setInterval(() => void refresh(controller.signal), 2000) : undefined;
     return () => { controller.abort(); unsubscribe(); if (timer !== undefined) window.clearInterval(timer); };
-  }, [agentClient, open, hasRunningCommands, refresh]);
+  }, [active, agentClient, open, hasRunningCommands, refresh]);
   const stop = async (commandId: string): Promise<void> => {
     setStopping(commandId); setError(null);
     try {

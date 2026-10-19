@@ -9,7 +9,6 @@ import {
   parseSerializedAgentError,
   type ApproveToolChangeInput,
   type ConversationRunEvent,
-  type ConversationToolItem,
   type ProjectSummary,
   type TeamInstanceView,
 } from "@agent/protocol";
@@ -21,9 +20,9 @@ import { useTeamChatActivity } from "./use-team-chat-activity.js";
 import { formatConversationTime, formatConversationDateTime } from "./chat-message-meta.js";
 import type { ProjectSession } from "../projects/project-session-model.js";
 
-type LiveTool = Pick<ConversationToolItem, "conversationId" | "runId" | "status">
-  & Partial<Pick<ConversationToolItem, "name" | "createdAt">>;
-type LiveTools = Record<string, LiveTool>;
+import { ConversationActivityHydration, updateActivityTools, type LiveTool, type LiveTools } from "./conversation-activity-hydration.js";
+export { updateActivityTools } from "./conversation-activity-hydration.js";
+
 type ApprovalNotice = { conversationId: string; runId: string; toolId: string; tool: LiveTool };
 
 type ApprovalScope = ApproveToolChangeInput["scope"];
@@ -38,21 +37,6 @@ function toolApprovalLabel(tool: LiveTool | undefined): string {
   if (tool.name === "read_external_file") return "读取文件";
   if (tool.name === "delete_file") return "删除文件";
   return "文件变更";
-}
-
-export function updateActivityTools(tools: LiveTools, event: ConversationRunEvent): LiveTools {
-  if (event.type === "run.finished") return Object.fromEntries(Object.entries(tools).filter(([, tool]) => tool.runId !== event.runId));
-  if (event.type !== "tool.started" && event.type !== "tool.completed" && event.type !== "tool.approval_requested") return tools;
-  const next = { ...tools };
-  if (event.tool.status === "running" || event.tool.status === "awaiting_approval") next[event.tool.id] = {
-    conversationId: event.conversationId,
-    runId: event.runId,
-    status: event.tool.status,
-    name: event.tool.name,
-    createdAt: event.tool.createdAt,
-  };
-  else delete next[event.tool.id];
-  return next;
 }
 
 function resolveConversationRoot<T extends Pick<ProjectSession, "id" | "parentConversationId"> & Partial<Pick<ProjectSession, "teamId" | "teamWorkItemId" | "threadKind">>>(
@@ -171,49 +155,17 @@ export function ConversationActivity({ agentClient, sessions, projects, teamInst
     const timeout = window.setTimeout(() => setApprovalNotice(null), 10_000);
     return () => window.clearTimeout(timeout);
   }, [approvalNotice]);
+  const hydrationRef = useRef<ConversationActivityHydration | null>(null);
   useEffect(() => {
-    let disposed = false;
-    // Hydrate only live runs. Page backwards to their boundary; never download every conversation's history.
-    const runs: [string, string][] = JSON.parse(runKey) as [string, string][];
-    let nextIndex = 0;
-    const hydrate = async (): Promise<void> => {
-      while (nextIndex < runs.length && !disposed) {
-        const [conversationId, runId] = runs[nextIndex++]!;
-        const events: ConversationRunEvent[] = [];
-        pendingHydrations.current.set(conversationId, events);
-        let beforeSequence: number | undefined;
-        const found: LiveTools = {};
-        try {
-          while (!disposed) {
-            const page = await agentClient.listConversationTimelinePage({ conversationId, limit: 50,
-              ...(beforeSequence === undefined ? {} : { beforeSequence }) });
-            for (const item of page.items) {
-              if (item.kind === "tool" && item.runId === runId
-                && (item.status === "running" || item.status === "awaiting_approval")) found[item.id] = {
-                conversationId,
-                runId,
-                status: item.status,
-                name: item.name,
-                createdAt: item.createdAt,
-              };
-            }
-            if (!page.hasMore || page.nextBeforeSequence === null || page.nextBeforeSequence === beforeSequence
-              || page.items.some((item) => "runId" in item && item.runId !== null && item.runId !== runId)) break;
-            beforeSequence = page.nextBeforeSequence;
-          }
-          if (!disposed) {
-            const hydrated = events.reduce(updateActivityTools, found);
-            setTools((current) => ({ ...Object.fromEntries(Object.entries(current).filter(([, tool]) => tool.conversationId !== conversationId)), ...hydrated }));
-          }
-        } catch {
-          if (!disposed) setLoadError(true);
-        } finally {
-          if (pendingHydrations.current.get(conversationId) === events) pendingHydrations.current.delete(conversationId);
-        }
-      }
-    };
-    void Promise.all(Array.from({ length: Math.min(4, runs.length) }, hydrate));
-    return () => { disposed = true; };
+    const hydration = new ConversationActivityHydration(agentClient, pendingHydrations.current,
+      (conversationId, found) => setTools(current => ({
+        ...Object.fromEntries(Object.entries(current).filter(([, tool]) => tool.conversationId !== conversationId)), ...found,
+      })), () => setLoadError(true));
+    hydrationRef.current = hydration;
+    return () => { hydration.dispose(); hydrationRef.current = null; };
+  }, [agentClient]);
+  useEffect(() => {
+    hydrationRef.current?.update(JSON.parse(runKey) as [string, string][], retry);
   }, [agentClient, runKey, retry]);
   const rows = conversationActivityRows([...sessions, ...groupSessions], tools);
   const unreadCount = rows.filter((row) => row.group === "未读").length;
@@ -326,11 +278,11 @@ export function ConversationActivity({ agentClient, sessions, projects, teamInst
       <button type="button" title={approvalCount > 0 ? `有 ${approvalCount} 个审批待处理` : "对话动态"}
         aria-label={approvalCount > 0 ? `对话动态，${attentionCount} 个待处理，其中 ${approvalCount} 个审批` : `对话动态，${unreadCount} 个未读`} data-app-drag-region="false"
         className="flex h-8 shrink-0 items-center gap-1 rounded-[var(--app-radius)] px-2 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)]">
-        <MessageSquareText size={15} />{approvalCount > 0 ? <ShieldAlert size={14} aria-label="有待处理审批" className="text-[var(--app-accent)]" /> : null}<span className="max-[700px]:hidden">对话动态</span>
+        <MessageSquareText size={16} />{approvalCount > 0 ? <ShieldAlert size={16} aria-label="有待处理审批" className="text-[var(--app-accent)]" /> : null}<span className="max-[700px]:hidden">对话动态</span>
         {attentionCount > 0 ? <span className={approvalCount > 0
           ? "rounded-full bg-[var(--app-selection)] px-1.5 text-[var(--app-accent)]"
           : "rounded-full bg-[var(--app-accent)] px-1.5 text-[var(--app-accent-foreground)]"}>{attentionCount}</span> : null}
-        <ChevronDown size={12} />
+        <ChevronDown size={16} />
       </button>
     </PopoverTrigger>
     <PopoverContent side="bottom" align="end" sideOffset={5} aria-label="对话动态列表"
@@ -347,16 +299,16 @@ export function ConversationActivity({ agentClient, sessions, projects, teamInst
               const identity = conversationIdentity(session, agents, teamInstances, sessions);
               return (
               <div key={session.id} className="rounded-[var(--app-radius)] px-2 py-1 hover:bg-[var(--app-hover)]">
-                <div className="flex items-start gap-1">
+                <div className="flex items-center gap-1">
                   <button type="button" aria-label={`${identity.title}，${status}`} onClick={() => {
                     setOpen(false); setQuery("");
                     if (approvalToolId !== undefined) onSelect(session.id, approvalToolId);
                     else if (unreadSession !== undefined && unreadSession.id !== session.id) onSelect(unreadSession.id, undefined, session.id);
                     else onSelect(session.id);
                   }}
-                    className="flex min-w-0 flex-1 items-start gap-2 py-1 text-left">
-                    {group === "进行中" ? <ConversationWorkIndicator runId={session.activeRunId} size={14} className="mt-0.5" />
-                      : <span aria-label={status} className={`mt-1.5 size-1.5 shrink-0 rounded-full ${group === "待处理" ? "bg-[var(--app-accent)]"
+                    className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left">
+                    {group === "进行中" ? <ConversationWorkIndicator runId={session.activeRunId} size={14} />
+                      : <span aria-label={status} className={`size-1.5 shrink-0 rounded-full ${group === "待处理" ? "bg-[var(--app-accent)]"
                         : status === "运行失败，待查看" ? "bg-[var(--app-status-danger-fg)]" : "bg-[var(--app-status-success-fg)]"}`} />}
                     <ConversationIdentityIcon session={session} identity={identity} />
                     <span className="min-w-0 flex-1 truncate font-medium">{identity.title}</span>

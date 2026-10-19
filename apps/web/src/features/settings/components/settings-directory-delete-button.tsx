@@ -1,6 +1,6 @@
 import { Trash2 } from "lucide-react";
 import type { ReactElement } from "react";
-import { IconButton } from "../../components/ui/icon-button.js";
+import { IconButton } from "../../../components/ui/icon-button.js";
 
 export function SettingsDirectoryDeleteButton({
   disabled = false,
