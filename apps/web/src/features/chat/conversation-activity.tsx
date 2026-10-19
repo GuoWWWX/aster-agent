@@ -347,16 +347,16 @@ export function ConversationActivity({ agentClient, sessions, projects, teamInst
               const identity = conversationIdentity(session, agents, teamInstances, sessions);
               return (
               <div key={session.id} className="rounded-[var(--app-radius)] px-2 py-1 hover:bg-[var(--app-hover)]">
-                <div className="flex items-start gap-1">
+                <div className="flex items-center gap-1">
                   <button type="button" aria-label={`${identity.title}，${status}`} onClick={() => {
                     setOpen(false); setQuery("");
                     if (approvalToolId !== undefined) onSelect(session.id, approvalToolId);
                     else if (unreadSession !== undefined && unreadSession.id !== session.id) onSelect(unreadSession.id, undefined, session.id);
                     else onSelect(session.id);
                   }}
-                    className="flex min-w-0 flex-1 items-start gap-2 py-1 text-left">
-                    {group === "进行中" ? <ConversationWorkIndicator runId={session.activeRunId} size={14} className="mt-0.5" />
-                      : <span aria-label={status} className={`mt-1.5 size-1.5 shrink-0 rounded-full ${group === "待处理" ? "bg-[var(--app-accent)]"
+                    className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left">
+                    {group === "进行中" ? <ConversationWorkIndicator runId={session.activeRunId} size={14} />
+                      : <span aria-label={status} className={`size-1.5 shrink-0 rounded-full ${group === "待处理" ? "bg-[var(--app-accent)]"
                         : status === "运行失败，待查看" ? "bg-[var(--app-status-danger-fg)]" : "bg-[var(--app-status-success-fg)]"}`} />}
                     <ConversationIdentityIcon session={session} identity={identity} />
                     <span className="min-w-0 flex-1 truncate font-medium">{identity.title}</span>
