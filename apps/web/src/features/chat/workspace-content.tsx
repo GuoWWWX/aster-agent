@@ -583,7 +583,7 @@ function ConversationReasoningControl({
           type="button"
         >
           <span>{displayName}</span>
-          <ChevronDown aria-hidden="true" size={13} />
+          <ChevronDown aria-hidden="true" size={16} />
         </button>
       </PopoverTrigger>
       <PopoverContent
@@ -3999,7 +3999,7 @@ export function ConversationWorkspace({
                           type="button"
                           onClick={() => void handleSelectWorkspace()}
                         >
-                          <Folder aria-hidden="true" size={16} />
+                          <Folder aria-hidden="true" className="shrink-0" size={16} />
                           <span>{fileNameFromPath(session.workspaceRootPath)}</span>
                         </button>
                         <IconButton
@@ -4159,14 +4159,14 @@ export function ConversationWorkspace({
                 >
                   {shouldShowStopButton ? (
                     isCancelling ? (
-                      <Spinner aria-hidden="true" size={15} />
+                      <Spinner aria-hidden="true" size={16} />
                     ) : (
-                      <Square aria-hidden="true" size={14} />
+                      <Square aria-hidden="true" size={16} />
                     )
                   ) : isSending ? (
-                    <Spinner aria-hidden="true" size={15} />
+                    <Spinner aria-hidden="true" size={16} />
                   ) : (
-                    <ArrowUp aria-hidden="true" size={17} strokeWidth={2.25} />
+                    <ArrowUp aria-hidden="true" size={16} strokeWidth={2.25} />
                   )}
                 </IconButton>
               </div>

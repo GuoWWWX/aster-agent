@@ -326,11 +326,11 @@ export function ConversationActivity({ agentClient, sessions, projects, teamInst
       <button type="button" title={approvalCount > 0 ? `有 ${approvalCount} 个审批待处理` : "对话动态"}
         aria-label={approvalCount > 0 ? `对话动态，${attentionCount} 个待处理，其中 ${approvalCount} 个审批` : `对话动态，${unreadCount} 个未读`} data-app-drag-region="false"
         className="flex h-8 shrink-0 items-center gap-1 rounded-[var(--app-radius)] px-2 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)]">
-        <MessageSquareText size={15} />{approvalCount > 0 ? <ShieldAlert size={14} aria-label="有待处理审批" className="text-[var(--app-accent)]" /> : null}<span className="max-[700px]:hidden">对话动态</span>
+        <MessageSquareText size={16} />{approvalCount > 0 ? <ShieldAlert size={16} aria-label="有待处理审批" className="text-[var(--app-accent)]" /> : null}<span className="max-[700px]:hidden">对话动态</span>
         {attentionCount > 0 ? <span className={approvalCount > 0
           ? "rounded-full bg-[var(--app-selection)] px-1.5 text-[var(--app-accent)]"
           : "rounded-full bg-[var(--app-accent)] px-1.5 text-[var(--app-accent-foreground)]"}>{attentionCount}</span> : null}
-        <ChevronDown size={12} />
+        <ChevronDown size={16} />
       </button>
     </PopoverTrigger>
     <PopoverContent side="bottom" align="end" sideOffset={5} aria-label="对话动态列表"
