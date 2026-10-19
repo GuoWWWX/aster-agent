@@ -78,7 +78,7 @@ doc/                           产品、架构、接口和工程规范
 
 测试与实现共置为 `*.test.ts`／`*.test.tsx`。页面私有实现留在所属 Feature，跨 Feature 共用组件放入 `components/<capability>`；后端方法先在所属业务域复用，满足实际条件后再拆独立包。新建目录、文件命名和文件规模要求见[模块与编码规范](./doc/06-前后端模块与编码规范.md)。
 
-全部功能页使用 `AppShell`／`WorkbenchLayout` 的共同外层；设置的菜单和内容属于内层，按 `general`、`models`、`permissions`、`mcp`、`skills` 等目录组织，设置内通用组件位于 `features/settings/components`。Main 的 Runtime 和 Database 保留原业务入口，摘要、权限、重试、数据合同、行映射和日志投影读取按职责放入具名模块，见[结构整理记录](./doc/OBSERVATIONS.md#首批结构实施2026-10-19)。
+全部功能页使用 `AppShell`／`WorkbenchLayout` 的共同外层；设置的菜单和内容属于内层，按 `general`、`models`、`permissions`、`mcp`、`skills` 等目录组织，设置内通用组件位于 `features/settings/components`。聊天的时间线投影、工具结果解析与展示、附件和错误展示留在 `features/chat` 的具名模块中，工作区继续管理状态与事件。Main 的 Runtime 和 Database 保留原业务入口；工作区工具装配、重连观察策略、数据库 schema／迁移与已有合同、映射、日志读取分别组织。实施范围与剩余大文件见[结构整理记录](./doc/OBSERVATIONS.md#第二批结构实施2026-10-19)。
 
 ## 开始开发
 

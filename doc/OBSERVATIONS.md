@@ -29,12 +29,12 @@
 
 | 编号 | 严重度／类别 | 定位与现象 | 建议及处理状态 |
 | --- | --- | --- | --- |
-| S1 | 中／债务 | 〔OBSERVE｜债务｜中〕`apps/web/src/features/chat/workspace-content.tsx:1` 共 9,768 行。 | 按页面编排、消息展示、输入与生命周期分批迁出；已确认规模，未拆分 |
+| S1 | 中／债务 | 〔OBSERVE｜债务｜中〕`apps/web/src/features/chat/workspace-content.tsx:1` 原有 9,768 行。 | 第二批迁出时间线投影、工具结果解析／展示、附件与错误；现 6,573 行，输入与事件等生命周期尚未拆分 |
 | S2 | 中／债务 | 〔OBSERVE｜债务｜中〕`apps/web/src/features/settings/settings-workspace.tsx:1` 原有 4,552 行。 | 首批已按菜单页和局部职责迁出，总入口现 213 行；局部页面及共享组件继续按规则维护 |
-| S3 | 中／债务 | 〔OBSERVE｜债务｜中〕`apps/desktop/src/main/agent/agent-runtime.ts:1` 原有 6,678 行。 | 首批迁出摘要、快照、权限、重试、工具结果和回执；现 6,015 行，类内职责尚需后续分批整理 |
-| S4 | 中／债务 | 〔OBSERVE｜债务｜中〕`apps/desktop/src/main/storage/agent-database.ts:1` 原有 12,009 行。 | 首批迁出合同、行映射、日志投影与搜索；现 10,888 行，事务和领域方法仍需后续分批整理 |
+| S3 | 中／债务 | 〔OBSERVE｜债务｜中〕`apps/desktop/src/main/agent/agent-runtime.ts:1` 原有 6,678 行。 | 首批迁出辅助策略，第二批迁出工作区工具装配与重连观察；现 5,809 行，审批／协作及图执行包装仍需分批整理 |
+| S4 | 中／债务 | 〔OBSERVE｜债务｜中〕`apps/desktop/src/main/storage/agent-database.ts:1` 原有 12,009 行。 | 首批迁出合同／映射，第二批迁出建表与35版迁移；现 9,311 行，事务和领域方法仍需分批整理 |
 
-行数依据为上述文件在本轮起点的完整物理行计数，核对日期 2026-10-19。后续改动重新计数，不把本表当成持续更新的指标仪表盘。〔FACT｜`apps/web/src/features/chat/workspace-content.tsx:1`、`apps/web/src/features/settings/settings-workspace.tsx:1`、`apps/desktop/src/main/agent/agent-runtime.ts:1`、`apps/desktop/src/main/storage/agent-database.ts:1`〕
+行数依据为两批实施起点及当前源码的完整物理行计数，核对日期 2026-10-19。后续改动重新计数，不把本表当成持续更新的指标仪表盘。〔FACT｜`apps/web/src/features/chat/workspace-content.tsx:1`、`apps/web/src/features/settings/settings-workspace.tsx:1`、`apps/desktop/src/main/agent/agent-runtime.ts:1`、`apps/desktop/src/main/storage/agent-database.ts:1`〕
 
 ### 低等严重度：文档漂移
 
@@ -84,3 +84,27 @@
 | S7 | 中／风险 | 〔OBSERVE｜风险｜中〕模型页 450ms 延时保存的 effect 在卸载时只清理 timer；编辑后立即切页可能取消尚未发出的最后一笔保存。原实现已有同一逻辑。 | 已确认代码路径，未混入结构重构；后续独立修复须覆盖编辑后立即离开、合并保存、失败恢复和卸载后结果归属 |
 
 〔FACT｜`apps/web/src/features/settings/models/use-model-settings-controller.ts:222`〕保留原保存策略是本批结构兼容范围；已有连续编辑测试覆盖当前页的合并保存，不代表已经覆盖或修复切页 flush。
+
+## 第二批结构实施（2026-10-19）
+
+继续使用同一未合并的工程规范分支。三位执行代理分别独占聊天、存储和 Runtime，主代理复核后逐块提交；未修改协议、产品功能、模型请求内容、审批策略或已有迁移。每块先跑基线，阶段回归通过后才扩展。
+
+| 独立提交 | 边界与规模变化 | 定向验证 |
+| --- | --- | --- |
+| `f81d8d2` 存储 schema 生命周期 | Database 10,888 → 9,311 行；迁出 V1／旧库兼容、TEMP 投影和 35 版有序迁移，保留连接、事务及启动恢复 | 两阶段各 103 项；storage 全域 17 文件 302 项通过 |
+| `e57e36e` 工具装配与重连观察 | Runtime 6,015 → 5,809 行；装配依赖使用窄接口，重连通过持久化、事件和连接状态回调参与原 LangGraph 执行 | 原 260 项基线、工具块 271 项、含 LangGraph 的最终 294 项通过；新增 17 项 |
+| `a087e7b` 聊天投影与工具展示 | 工作区 9,768 → 6,573 行；提取 15 个 chat 内具名模块，不改变状态 owner、key、DOM 和展示分支 | 阶段 251／254 项；chat 最终 44 文件 482 项通过，含新增 12 项 |
+
+〔FACT｜`apps/desktop/src/main/storage/agent-schema-migrations.ts:9`、`apps/desktop/src/main/agent/runtime-workspace-tool-handlers.ts:69`、`apps/desktop/src/main/agent/runtime-model-retry-policy.ts:22`、`apps/web/src/features/chat/tool-detail.tsx:49`〕新增业务模块共 22 个，均少于 1,000 行，最大 963 行；依赖扫描未发现涉及新模块的运行时循环。数据库核对保留 222 个公开声明、297 个原方法体；15 个迁出方法经连接参数替换后 AST 和 SQL 字面量等价。聊天 166 个原顶层函数体均等价，独立复核覆盖工具分支、图片索引、复制和跳转回调。
+
+真实浏览器 Mock 夹具覆盖 1440×900／1024×680、浅深主题及完成／运行／审批共 12 个场景，4 张截图经检查；额外验证重新渲染后工具展开状态和输入草稿保留、命令输出可见，未发现脚本错误或页面横向溢出。该证据不替代安装包或真实模型验收。
+
+### 本批验证时发现的既有测试边界
+
+并行执行前后端测试与静态检查时，后端初次完整执行为 1,489 通过、3 失败：两个真实执行 64 轮的 Runtime 测试触发默认 5 秒门限，群聊集成测试在默认 1 秒 `vi.waitFor` 内未等到完整汇总。原用例及相应执行路径与本批起点一致；降低并发、保留原门限重跑两个文件，179 项全部通过。未修改测试超时、断言或业务核心来取得通过；最终整体结果见下文。
+
+最终自动化回归：Web 157 文件 1,189 项、Desktop 串行 136 文件 1,492 项、Protocol 26 文件 252 项、根脚本 19 项，合计 2,952 个不同用例通过。后端第二次完整执行使用 `--maxWorkers=1`，未调整时间限制，失败用例均在该次完整执行中通过；会操作真实桌面的 `windows-driver.test.ts` 7 项排除在运行范围外，未计入通过数。根级 Lint、Typecheck、Build 通过，仍有既有的大包体提示。当前同分支 `pnpm dev` 窗口、HTTP Renderer 和本机控制只读查询均响应正常。未验证安装包或真实供应商模型调用，也没有把纯结构整理宣称为性能提升。
+
+后续可独立改进测试：群聊用例改为事件驱动的终态等待，保留整体门限；64 轮用例补齐失败时的 Runtime／工具释放。现有证据说明负载敏感，不能据此认定群聊消息丢失。〔OBSERVE｜风险｜低｜`apps/desktop/src/main/agent/collaboration.integration.test.ts:571`、`apps/desktop/src/main/agent/agent-runtime.test.ts:4067`〕
+
+剩余边界：三个入口仍超过 1,000 行，本轮为渐进迁移，不宣称大文件已全部达标。聊天的请求／事件、输入、队列与审批，Runtime 的协作和执行包装，以及 Database 的领域事务／日志恢复仍需各自基线与分块验收；侧边工作区、项目导航等其他大文件未在本轮改动。
