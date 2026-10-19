@@ -29,6 +29,7 @@ import { ScheduledTasksWorkspace } from "../schedules/scheduled-tasks-workspace.
 import { useComposerHistory } from "./use-composer-history.js";
 import { ProjectImageResult } from "./project-image-result.js";
 import { BrowserScreenshotResult } from "./browser-screenshot-result.js";
+import { ImagePreviewStrip } from "./image-preview-strip.js";
 import { ToolDisclosureContext, ToolRevealContext, useToolDisclosure } from "./tool-disclosure-state.js";
 import { CommandExecutionStatus, type CommandExecutionState } from "./command-execution-status.js";
 import { findComposerReferenceRanges } from "./composer-reference-ranges.js";
@@ -3613,7 +3614,7 @@ export function ConversationWorkspace({
               ) : null}
               {showWorkTail ? (
                 <div className="conversation-work-tail chat-message-group text-[var(--app-muted-foreground)]" role="status" aria-label="正在处理">
-                  <ConversationWorkIndicator runId={tailRunId} fallback={tailWorkPhase} size={15} />
+                  <ConversationWorkIndicator runId={tailRunId} fallback={tailWorkPhase} size={15} showLabel />
                 </div>
               ) : null}
               </ToolRevealContext.Provider>
@@ -7524,7 +7525,7 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
     case "read_attachment":
       return completed ? "已读取附件" : "读取附件";
     case "view_image":
-      return `${completed ? "已查看图片" : "查看图片"} ${path === null ? "" : fileNameFromPath(path)}`.trim();
+      return `${completed ? "已查看" : "查看"} 1 张图像`;
     case "generate_images": {
       const result = item.result === null ? null : parseToolPayload(item.result);
       const value = isRecord(result?.value) ? result.value : null;
@@ -7538,13 +7539,18 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
       return `${completed ? "已加载技能" : "加载技能"}${typeof skill?.name === "string" ? ` · ${skill.name}` : ""}`;
     }
     case "present_html": {
-      const language = argumentsValue?.language === "react" ? "React" : argumentsValue?.language === "vue" ? "Vue" : "HTML";
+      const value = item.result === null ? null : parseToolValue(item.result);
+      const presentation = isRecord(value?.presentation) ? value.presentation : null;
+      const sourceLanguage = argumentsValue?.language ?? value?.language ?? presentation?.language;
+      const language = sourceLanguage === "react" ? "React" : sourceLanguage === "vue" ? "Vue" : "HTML";
       if (argumentsValue?.action === "inspect") return `${completed ? "已检查" : "检查"} ${language} 预览`;
-      if (Array.isArray(argumentsValue?.pages)) return `${completed ? "已展示" : "展示"} ${argumentsValue.pages.length} 个 HTML 方案`;
-      return `${completed ? "已展示" : "展示"} ${language}${path === null ? "" : ` · ${path}`}`;
+      const pages = argumentsValue?.pages ?? presentation?.pages;
+      if (Array.isArray(pages)) return `${completed ? "已展示" : "展示"} ${pages.length} 个 HTML 方案`;
+      const sourcePath = path ?? (typeof presentation?.path === "string" ? presentation.path : null);
+      return `${completed ? "已展示" : "展示"} ${language}${sourcePath === null ? "" : ` · ${sourcePath}`}`;
     }
     case "view_attachments": {
-      if (Array.isArray(argumentsValue?.paths)) return `${completed ? "已查看" : "查看"} ${argumentsValue.paths.length} 张图片`;
+      if (Array.isArray(argumentsValue?.paths)) return `${completed ? "已查看" : "查看"} ${argumentsValue.paths.length} 张图像`;
       const attachmentIds = Array.isArray(argumentsValue?.attachment_ids)
         ? argumentsValue.attachment_ids
         : [];
@@ -7978,10 +7984,9 @@ function ToolDetail({
     {item.status === "failed" ? <ToolResultNotice result={item.result} status={item.status} /> : <p className="m-0">{item.status === "completed" ? "技能使用说明已载入本轮对话。" : "正在读取技能使用说明。"}</p>}
   </StructuredToolResult>;
   const screenshot = ["browser_control", "computer_use", "present_html"].includes(item.name) && item.result !== null ? parseBrowserScreenshot(item.result) : null;
-  if (screenshot !== null) return <StructuredToolResult summary={item.name === "computer_use" ? "窗口截图" : "网页截图"}>
-    <div className="grid gap-[5px]">{screenshot.images.map(image => <BrowserScreenshotResult key={image.id} agentClient={agentClient} image={image} />)}</div>
-    <p className="m-0">{screenshot.width} × {screenshot.height} · {screenshot.mimeType}</p>
-  </StructuredToolResult>;
+  if (screenshot !== null) return <ImagePreviewStrip>
+    {screenshot.images.map(image => <BrowserScreenshotResult key={image.id} agentClient={agentClient} image={image} />)}
+  </ImagePreviewStrip>;
   if (item.name === "request_user_input") {
     const questions: unknown = parseToolPayload(item.arguments)?.questions;
     const prompts: unknown[] = Array.isArray(questions) ? questions : [];
@@ -8444,7 +8449,7 @@ function AttachmentViewResult({
   status: ConversationToolItem["status"];
 }): ReactElement {
   const items = payload === null ? null : parseToolValue(payload)?.items;
-  if (Array.isArray(items)) return <div className="flex max-w-full items-start gap-2 overflow-x-auto py-1">
+  if (Array.isArray(items)) return <ImagePreviewStrip label="查看的附件">
     {items.map((item: unknown, index: number) => {
       if (!isRecord(item)) return null;
       if (isRecord(item.image)) return <div className="shrink-0" key={index}><ProjectImageResult agentClient={agentClient} payload={JSON.stringify({ ok: true, value: { image: item.image } })} /></div>;
@@ -8452,7 +8457,7 @@ function AttachmentViewResult({
       const value = attachment.success ? attachment.data[0] : undefined;
       return value === undefined ? null : <AttachmentChip agentClient={agentClient} attachment={value} key={index} />;
     })}
-  </div>;
+  </ImagePreviewStrip>;
   const attachments = payload === null ? null : parseAttachmentViewResult(payload);
   if (attachments === null) return <ToolResultNotice result={payload} status={status} />;
 

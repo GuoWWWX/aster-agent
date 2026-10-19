@@ -40,6 +40,19 @@ function build(sourceMessages: StoredContextMessage[], threshold = 5_000) {
 }
 
 describe("context manager", () => {
+  it("keeps delivery references without echoing a second copy of generated source into model context", () => {
+    const displayRef = "artifact:00000000-0000-4000-8000-000000000001";
+    const code = `<main>${"content".repeat(4000)}</main>`;
+    const content = JSON.stringify({ ok: true, value: { displayRef, sourceRef: displayRef, presentation: { kind: "code", language: "html", html: code } } });
+    const source = [{ ...message(1, "tool", content, { toolCallId: "preview" }), attachments: [] }];
+    const normalized = normalizeModelFacingToolOutputs(source);
+    expect(normalized[0]?.content).toContain(displayRef);
+    expect(normalized[0]?.content).not.toContain(code);
+    expect(normalized[0]?.content.length).toBeLessThan(400);
+    expect(source[0]?.content).toBe(content);
+    expect(normalizeModelFacingToolOutputs(normalized)).toEqual(normalized);
+  });
+
   it("excludes legacy command waits from model history, recall and compaction while keeping other tool pairs", () => {
     const source = [
       message(1, "user", "检查命令结果"),

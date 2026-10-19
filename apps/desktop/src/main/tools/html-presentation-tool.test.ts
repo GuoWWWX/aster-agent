@@ -2,17 +2,44 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promis
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HtmlPresentationTool } from "./html-presentation-tool.js";
+import { z } from "zod";
+import { HtmlPresentationTool, resolveHtmlPresentationSource } from "./html-presentation-tool.js";
 import { ToolArgumentsError } from "../model/tool-arguments.js";
 import { htmlPresentationResultSchema } from "@agent/protocol";
 
 function deliveryValue(content: string) {
-  const { displayRef, ...value } = htmlPresentationResultSchema.parse(JSON.parse(content)).value;
+  const { displayRef, sourceRef, ...value } = htmlPresentationResultSchema.parse(JSON.parse(content)).value;
   expect(displayRef).toMatch(/^artifact:[0-9a-f-]{36}$/u);
+  expect(sourceRef).toMatch(/^artifact:[0-9a-f-]{36}$/u);
   return value;
 }
 
 describe("HTML presentation tool", () => {
+  it("reuses inspected source for another viewport and final delivery without resending code", async () => {
+    const cid = "00000000-0000-4000-8000-000000000001";
+    const code = "export default () => <button>Count</button>";
+    const inspect = vi.fn().mockResolvedValue({ kind: "completed", isError: false, content: '{"ok":true,"value":{"inspected":true}}' });
+    const history: { name: string; status: "completed"; arguments: string; result: string }[] = [];
+    const reader = vi.fn((owner: string, ref: string) => owner === cid ? resolveHtmlPresentationSource(history, ref) : null);
+    const presenter = new HtmlPresentationTool(() => Promise.reject(new Error("No workspace needed")), { inspect }, reader);
+    const argumentsValue = JSON.stringify({ action: "inspect", code, language: "react" });
+    const first = await presenter.execute(cid, argumentsValue, new AbortController().signal);
+    const { value: { sourceRef } } = z.object({ value: z.object({ sourceRef: z.string() }) }).parse(JSON.parse(first.content));
+    expect(sourceRef).toMatch(/^artifact:[0-9a-f-]{36}$/u);
+    history.push({ name: "present_html", status: "completed", arguments: argumentsValue, result: first.content });
+    const restored = new HtmlPresentationTool(() => Promise.reject(new Error("No workspace needed")), { inspect }, reader);
+    const next = await restored.execute(cid, JSON.stringify({ action: "inspect", sourceRef, width: 420, frames: 3 }), new AbortController().signal);
+    expect(next.isError).toBe(false);
+    expect(JSON.parse(next.content)).toMatchObject({ value: { sourceRef, language: "react" } });
+    expect(inspect.mock.calls[1]?.[0]).toMatchObject({ width: 420, frames: 3, source: { kind: "code", html: code, language: "react", conversationId: cid } });
+    const final = await restored.execute(cid, JSON.stringify({ sourceRef }), new AbortController().signal);
+    expect(JSON.parse(final.content)).toMatchObject({ value: { sourceRef, presentation: { kind: "code", html: code, language: "react" } } });
+    expect((await presenter.execute("00000000-0000-4000-8000-000000000002", JSON.stringify({ sourceRef }), new AbortController().signal)).isError).toBe(true);
+    expect((await presenter.execute(cid, JSON.stringify({ sourceRef, code }), new AbortController().signal)).isError).toBe(true);
+    expect((await restored.execute(cid, JSON.stringify({ action: "inspect", sourceRef }), new AbortController().signal, false)).isError).toBe(true);
+    expect(inspect).toHaveBeenCalledTimes(2);
+  });
+
   it("reports invalid component source as correctable arguments instead of an internal service failure", async () => {
     const presenter = new HtmlPresentationTool(() => Promise.resolve("unused"), { inspect: vi.fn().mockRejectedValue(new ToolArgumentsError("Invalid JSX", [{ code: "preview_compile", path: ["code"], message: "line 3: unexpected token" }])) });
     const result = await presenter.execute("00000000-0000-4000-8000-000000000001", JSON.stringify({ action: "inspect", language: "react", code: "invalid" }), new AbortController().signal);

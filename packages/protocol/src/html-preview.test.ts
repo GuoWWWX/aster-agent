@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { htmlPreviewRequestSchema, htmlPreviewSchema, htmlPreviewResizeMessageSchema, presentHtmlInputSchema, htmlPresentationResultSchema } from "./html-preview.js";
 const id = "00000000-0000-4000-8000-000000000001";
 describe("HTML preview contracts", () => {
+  it("allows an opaque source reference as the only preview source", () => {
+    expect(presentHtmlInputSchema.parse({ action: "inspect", sourceRef: `artifact:${id}`, frames: 3 })).toMatchObject({ sourceRef: `artifact:${id}`, frames: 3 });
+    for (const input of [{ sourceRef: "file:///a.html" }, { sourceRef: `artifact:${id}`, code: "x" }, { sourceRef: `artifact:${id}`, path: "a.html" }]) {
+      expect(presentHtmlInputSchema.safeParse(input).success).toBe(false);
+    }
+  });
   it("accepts only opaque optional artifact references without changing legacy payloads", () => {
     const presentation = { kind: "html", path: "demo.html" };
     expect(htmlPresentationResultSchema.parse({ ok: true, value: { presentation, displayRef: `artifact:${id}` } }).value.displayRef).toBe(`artifact:${id}`);

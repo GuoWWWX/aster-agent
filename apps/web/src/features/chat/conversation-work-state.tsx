@@ -53,10 +53,19 @@ export function ConversationWorkProvider({ agentClient, children }: { agentClien
   return <WorkContext.Provider value={states}>{children}</WorkContext.Provider>;
 }
 
-export function ConversationWorkIndicator({ runId, fallback = "thinking", ...props }: Omit<ComponentProps<typeof ModelWorkingIndicator>, "phase"> & {
+const workPhaseLabels: Record<ModelWorkPhase, string> = {
+  thinking: "正在思考", searching: "正在查阅", executing: "正在执行", writing: "正在输出", waiting: "正在等待", done: "处理完成",
+};
+
+export function ConversationWorkIndicator({ runId, fallback = "thinking", showLabel = false, ...props }: Omit<ComponentProps<typeof ModelWorkingIndicator>, "phase"> & {
   runId: string | null;
   fallback?: ModelWorkPhase;
+  showLabel?: boolean;
 }) {
   const states = useContext(WorkContext);
-  return <ModelWorkingIndicator {...props} phase={runId === null ? fallback : states[runId]?.phase ?? fallback} />;
+  const phase = runId === null ? fallback : states[runId]?.phase ?? fallback;
+  const indicator = <ModelWorkingIndicator {...props} phase={phase} />;
+  return showLabel ? <span className="inline-flex items-center gap-[5px]">
+    {indicator}<span aria-live="polite" className="text-[length:var(--app-font-size-body)]">{workPhaseLabels[phase]}</span>
+  </span> : indicator;
 }

@@ -22,6 +22,7 @@ const previewActionSchema = z.discriminatedUnion("action", [
 export const presentHtmlInputSchema = z.object({
   action: z.enum(["present", "inspect"]).default("present").describe("present delivers the final result; inspect returns rendered screenshot evidence without delivering it."),
   code: z.string().min(1).max(1_000_000).optional().describe("Self-contained HTML, a React default-exported component/JSX expression, or a Vue SFC."),
+  sourceRef: artifactDisplayRefSchema.optional().describe("Reuse an exact sourceRef returned by an earlier present_html in this conversation. Omit code/path/pages; only viewport, frames and actions may change. Send code again only when editing the source."),
   language: codePreviewLanguageSchema.default("html"),
   width: z.number().int().min(320).max(1920).default(1280),
   height: z.number().int().min(240).max(1440).default(800),
@@ -30,13 +31,13 @@ export const presentHtmlInputSchema = z.object({
   actions: z.array(previewActionSchema).max(12).default([]).describe("For inspect, replay optional click(x,y) or key(key) actions on a fresh page before capturing. Coordinates must come from a same-size screenshot; Tab/Enter can check buttons without guessing."),
   path: presentationPathSchema.optional(),
   pages: presentationPagesSchema.optional().describe("Related alternatives for the user to compare and choose, presented in one paginated card. Use instead of path only when multiple options are requested."),
-}).strict().refine(input => [input.path, input.pages, input.code].filter(value => value !== undefined).length === 1, "Provide exactly one of path, pages or code.")
+}).strict().refine(input => [input.path, input.pages, input.code, input.sourceRef].filter(value => value !== undefined).length === 1, "Provide exactly one of path, pages, code or sourceRef.")
   .refine(input => input.action !== "inspect" || input.pages === undefined, "Inspect one source at a time using code or path.")
   .refine(input => input.actions.length === 0 || input.action === "inspect", "Only inspect accepts actions.")
   .refine(input => input.actions.every(action => action.action !== "click" || (action.x < input.width && action.y < input.height)), "Click coordinates must be inside the inspection viewport.");
 export const htmlPresentationResultSchema = z.object({
   ok: z.literal(true),
-  value: z.object({ displayRef: artifactDisplayRefSchema.optional(), presentation: z.discriminatedUnion("kind", [
+  value: z.object({ displayRef: artifactDisplayRefSchema.optional(), sourceRef: artifactDisplayRefSchema.optional(), presentation: z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("html"), path: presentationPathSchema }).strict(),
     z.object({ kind: z.literal("code"), html: z.string().min(1).max(1_000_000), language: codePreviewLanguageSchema }).strict(),
     z.object({ kind: z.literal("html_gallery"), pages: presentationPagesSchema }).strict(),

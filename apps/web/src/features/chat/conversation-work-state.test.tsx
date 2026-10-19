@@ -62,11 +62,15 @@ describe("conversation work phases", () => {
       <ConversationWorkIndicator runId={runId} aria-label="工作过程" />
       <ConversationWorkIndicator runId={runId} aria-label="对话标签" />
       <ConversationWorkIndicator runId="other-run" aria-label="其他对话" />
+      <ConversationWorkIndicator runId={runId} showLabel />
     </ConversationWorkProvider>));
     act(() => emit({ type: "tool.started", conversationId, runId, tool: tool("search", "web_search") }));
     expect(node.querySelector('[aria-label="工作过程"]')?.getAttribute("data-phase")).toBe("searching");
     expect(node.querySelector('[aria-label="对话标签"]')?.getAttribute("data-phase")).toBe("searching");
     expect(node.querySelector('[aria-label="其他对话"]')?.getAttribute("data-phase")).toBe("thinking");
+    expect(node.textContent).toBe("正在查阅");
+    act(() => emit({ type: "assistant.delta", conversationId, runId, delta: "回复", messageId: "message", modelId: "model" }));
+    expect(node.textContent).toBe("正在输出");
     act(() => root.unmount()); node.remove();
     expect(unsubscribe).toHaveBeenCalledOnce();
   });

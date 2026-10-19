@@ -16,6 +16,7 @@ For a scene, identify each actor's recognizable silhouette, proportions, joints 
 - Snippet inspection closes its page after capture; it returns no reusable URL or browserId. For interaction, pass a bounded actions array to inspect: for example Tab then Enter activates the first native button. Click coordinates require a prior screenshot of the same source and viewport. Each inspection starts fresh; compare the observed state instead of assuming the actions succeeded. Use browser-use for an existing running project, not an expired snippet page.
 - For animation, inspect at least two distinct phases of the SAME source. Check contacts, joints, rotations, synchronized timing and loop continuity; a single still frame cannot establish correct motion. Use frames/intervalMs on inspection instead of reopening or rebuilding the same scene for each frame.
 - Fix observed defects, then rerender the changed state. Reuse evidence for unchanged aspects. Do not inspect/list/search repeatedly without a new question or changed state.
+- Keep the sourceRef returned by the first inspection. Reuse it for other phases, viewport sizes, interaction checks and final present_html delivery; do not regenerate or resend unchanged code. Send new code only for an actual source change, then use the new reference.
 - Deliver one final preview or original file reference and concise verification. Do not duplicate the same design in a file delivery, full inline code and a second browser tab. If actual rendering is unavailable, say what was and was not checked.
 
 # Component preview format
