@@ -6796,7 +6796,7 @@ describe("AgentRuntime", () => {
     }]))).toBe(true);
   });
 
-  it("uses a short non-reasoning model request for context compaction", async () => {
+  it.each(["low", "none", "budget", null] as const)("uses the lowest configured reasoning for context compaction (%s)", async (level) => {
     const database = new AgentDatabase(":memory:");
     const projects = new ProjectRegistry(database);
     const conversation = database.createConversation(null);
@@ -6822,11 +6822,15 @@ describe("AgentRuntime", () => {
       {
         getConfiguration: () => ({
           apiKey: "secret",
-          apiFormat: "openai-responses",
+          apiFormat: level === "budget" ? "anthropic-messages" : "openai-responses",
           baseUrl: "https://example.test/v1",
           contextWindow: 200_000,
-          modelId: "gpt-5.6-terra",
-          reasoningOptions: [],
+          modelId: level === "none" ? "gpt-5.6-terra" : "gpt-6.1-sol",
+          reasoningOptions: level === null ? [] : level === "budget" ? [{ kind: "token_budget", value: 4096 }] : [
+            { kind: "effort", value: "high" },
+            { kind: "effort", value: level },
+            ...(level === "low" ? [{ kind: "effort" as const, value: "none" as const, enabled: false }] : []),
+          ],
         }),
       },
       projects,
@@ -6851,8 +6855,8 @@ describe("AgentRuntime", () => {
 
     expect(model.requests).toHaveLength(1);
     expect(model.requests[0]).toMatchObject({
-      maxOutputTokens: 2_048,
-      reasoning: { kind: "effort", value: "none" },
+      maxOutputTokens: level === "budget" ? 4224 : 2_048,
+      reasoning: level === null ? undefined : level === "budget" ? { kind: "token_budget", value: 4096 } : { kind: "effort", value: level },
       tools: [],
     });
     database.close();

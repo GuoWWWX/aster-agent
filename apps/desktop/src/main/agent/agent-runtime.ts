@@ -24,7 +24,6 @@ import {
   conversationToolItemSchema,
   estimateContextTokens,
   formatAgentError,
-  isReasoningOptionSupportedByApiFormat,
   isReasoningOptionEnabled,
   modelReasoningOptionKey,
   resolveContextCompressionThresholdTokens,
@@ -77,6 +76,7 @@ import {
   type ModelTurnResult
 } from "../model/model-contracts.js";
 import { ModelAdapterRegistry } from "../model/model-adapter-registry.js";
+import { lowestConfiguredReasoning } from "../model/lowest-configured-reasoning.js";
 import { ModelRequestError, ModelResponseError } from "../model/model-request-error.js";
 import { ProjectRegistry } from "../projects/project-registry.js";
 import {
@@ -194,23 +194,6 @@ const MODEL_RETRY_INITIAL_DELAY_MS = 1_000;
 const MODEL_RETRY_MAX_DELAY_MS = 16_000;
 const DEFAULT_PERMISSION_MODE: ConversationPermissionMode = "ask_before_changes";
 const CONTEXT_COMPACTION_ACTIVITY_NAME = "compact_context";
-const CONTEXT_COMPACTION_REASONING: ModelReasoningOption = {
-  kind: "effort",
-  value: "none",
-};
-
-function contextCompactionReasoning(
-  configuration: ModelConfiguration,
-): ModelReasoningOption | undefined {
-  return isReasoningOptionSupportedByApiFormat(
-    configuration.apiFormat,
-    CONTEXT_COMPACTION_REASONING,
-    configuration.modelId,
-  )
-    ? CONTEXT_COMPACTION_REASONING
-    : undefined;
-}
-
 function isManualContextCompactionCommand(content: string): boolean {
   return content.trim().toLowerCase() === "/compact";
 }
@@ -6032,18 +6015,20 @@ export class AgentRuntime {
     maxReconnectAttempts = MAX_MODEL_RECONNECT_ATTEMPTS,
   ): Promise<string> {
     let reconnectAttempt = 0;
+    const reasoning = lowestConfiguredReasoning(input.configuration);
     while (true) {
       input.signal.throwIfAborted();
       let receivedTextDelta = false;
       try {
         const result = await this.modelGateway.completeTurn({
           configuration: input.configuration,
-          maxOutputTokens: MAX_SUMMARY_OUTPUT_TOKENS,
+          maxOutputTokens: reasoning?.kind === "token_budget" && reasoning.value > 0
+            ? Math.max(MAX_SUMMARY_OUTPUT_TOKENS, reasoning.value + 128) : MAX_SUMMARY_OUTPUT_TOKENS,
           messages: createContextCompactionMessages(input.previousSummary, input.messages),
           onTextDelta: () => {
             receivedTextDelta = true;
           },
-          reasoning: contextCompactionReasoning(input.configuration),
+          reasoning,
           signal: input.signal,
           tools: []
         });

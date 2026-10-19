@@ -1,26 +1,14 @@
-import { isReasoningOptionEnabled, isReasoningOptionSupportedByApiFormat, type ModelReasoningOption } from "@agent/protocol";
 import type { ModelConfiguration, ModelProviderAdapter } from "../model/model-contracts.js";
 import { ModelResponseError } from "../model/model-request-error.js";
+import { lowestConfiguredReasoning } from "../model/lowest-configured-reasoning.js";
 import titlePrompt from "./prompts/conversation-title.md";
-
-function lowestReasoning(configuration: ModelConfiguration): ModelReasoningOption | undefined {
-  const options = configuration.reasoningOptions.filter(option => isReasoningOptionEnabled(option)
-    && isReasoningOptionSupportedByApiFormat(configuration.apiFormat, option, configuration.modelId));
-  const levels = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
-  for (const level of levels) {
-    const option = options.find(option => option.kind !== "token_budget" && option.value === level);
-    if (option) return option;
-  }
-  const budgets = options.filter(option => option.kind === "token_budget" && option.value >= 0);
-  return budgets.toSorted((left, right) => Number(left.value) - Number(right.value))[0] ?? options[0];
-}
 
 /** One small, independent model request; it never runs tools or writes conversation history. */
 export class ConversationTitleGenerator {
   public constructor(private readonly model: ModelProviderAdapter) {}
 
   public async generate(input: { conversationId: string; content: string; configuration: ModelConfiguration; signal: AbortSignal }): Promise<string> {
-    const reasoning = lowestReasoning(input.configuration);
+    const reasoning = lowestConfiguredReasoning(input.configuration);
     const attempt = async (): Promise<string> => {
       input.signal.throwIfAborted();
       const result = await this.model.completeTurn({
