@@ -16,6 +16,23 @@ function image(id: string, source: ModelMessageAttachment["source"], data: strin
 }
 
 describe("LangChain model message conversion", () => {
+  it.each(["openai-responses", "openai-chat-completions", "anthropic-messages", "google-gemini"] as const)(
+    "keeps application state out of Responses user cache boundaries without changing %s input", apiFormat => {
+      const request = message("user", "real request");
+      const snapshots = (["queue", "skills", "checklist", "directory"] as const)
+        .map(runtimeContext => ({ ...message("user", `state ${runtimeContext}`), runtimeContext }));
+      const source = [request, ...snapshots];
+      const original = structuredClone(source);
+      const converted = toLangChainMessages(source, input(apiFormat));
+      expect(converted[0]).toBeInstanceOf(HumanMessage);
+      for (const snapshot of converted.slice(1)) {
+        expect(snapshot).toBeInstanceOf(apiFormat === "openai-responses" ? AIMessage : HumanMessage);
+      }
+      expect(converted.map(value => value.content)).toEqual(source.map(value => value.content));
+      expect(source).toEqual(original);
+    },
+  );
+
   it("maps all four roles and parses neutral tool arguments", () => {
     const assistant = message("assistant", "checking");
     assistant.toolCalls = [{ id: "call", name: "read_file", arguments: '{"path":"demo.txt"}' }];

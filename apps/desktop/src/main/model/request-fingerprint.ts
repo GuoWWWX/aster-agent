@@ -10,6 +10,8 @@ export type RequestFingerprint = {
   settingsHash: string;
   messageCount: number;
   messageHashes: string[];
+  /** Additive diagnostics for long histories; older saved fingerprints may omit this. */
+  messagePrefixHashes?: Record<string, string>;
 };
 
 function hash(value: unknown): string {
@@ -36,6 +38,15 @@ export function requestFingerprint(body: unknown): RequestFingerprint | undefine
     "max_tokens", "max_completion_tokens", "max_output_tokens", "tool_choice", "parallel_tool_calls",
     "prompt_cache_key", "prompt_cache_retention", "prompt_cache_options", "service_tier",
   ].map((key) => [key, fields[key] ?? null]));
+  const prefix = createHash("sha256");
+  const messagePrefixHashes: Record<string, string> = {};
+  for (const [index, message] of messages.slice(0, 256).entries()) {
+    prefix.update(JSON.stringify(message) ?? "null");
+    const count = index + 1;
+    if (count >= 40 && count % 8 === 0) {
+      messagePrefixHashes[String(count)] = prefix.copy().digest("hex").slice(0, 32);
+    }
+  }
   return {
     version: 1,
     bodyHash: createHash("sha256").update(body).digest("hex"),
@@ -45,5 +56,6 @@ export function requestFingerprint(body: unknown): RequestFingerprint | undefine
     settingsHash: hash(settings),
     messageCount: messages.length,
     messageHashes: messages.slice(0, 32).map(hash),
+    messagePrefixHashes,
   };
 }

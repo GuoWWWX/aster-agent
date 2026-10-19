@@ -30,6 +30,11 @@ function toLangChainMessage(
 ): BaseMessage {
   if (message.role === "system") return new SystemMessage(message.content);
   if (message.role === "user") {
+    // Responses writes implicit caches at eligible user/tool endings. A temporary
+    // app snapshot must not replace the real user's reusable boundary on each Run.
+    // Keep these facts below user/developer authority; other APIs retain their roles.
+    if (input.configuration.apiFormat === "openai-responses" && message.runtimeContext !== undefined
+      && message.attachments.length === 0) return new AIMessage(message.content);
     const content = attachmentContent(message);
     return typeof content === "string"
       ? new HumanMessage(content)

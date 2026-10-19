@@ -28,11 +28,28 @@ describe("requestFingerprint", () => {
     const result = requestFingerprint(JSON.stringify({ messages: Array.from({ length: 500 }, () => messages[0]) }));
     expect(result?.messageCount).toBe(500);
     expect(result?.messageHashes).toHaveLength(32);
-    expect(JSON.stringify(result).length).toBeLessThan(3_000);
+    expect(Object.keys(result?.messagePrefixHashes ?? {})).toHaveLength(28);
+    expect(result?.messagePrefixHashes?.["256"]).toBeDefined();
+    expect(result?.messagePrefixHashes?.["264"]).toBeUndefined();
+    expect(JSON.stringify(result).length).toBeLessThan(4_096);
     expect(requestFingerprint("x".repeat(4 * 1024 * 1024 + 1))).toBeUndefined();
     expect(requestFingerprint("not json")).toBeUndefined();
     expect(requestFingerprint("null")).toBeUndefined();
     expect(requestFingerprint(undefined)).toBeUndefined();
+  });
+
+  it("identifies prefix changes beyond the first 32 messages without retaining history", () => {
+    const history = Array.from({ length: 132 }, (_, index) => ({ role: "user", content: `private history ${index}` }));
+    const first = requestFingerprint(JSON.stringify({ input: history }));
+    const appended = requestFingerprint(JSON.stringify({ input: [...history, { role: "user", content: "next request" }] }));
+    const changed = requestFingerprint(JSON.stringify({ input: history.map((message, index) => index === 70 ? { ...message, content: "changed" } : message) }));
+    expect(first?.messagePrefixHashes?.["128"]).toBeDefined();
+    expect(appended?.messagePrefixHashes).toEqual(first?.messagePrefixHashes);
+    expect(changed?.messageHashes).toEqual(first?.messageHashes);
+    expect(changed?.messagePrefixHashes?.["64"]).toEqual(first?.messagePrefixHashes?.["64"]);
+    expect(changed?.messagePrefixHashes?.["72"]).not.toEqual(first?.messagePrefixHashes?.["72"]);
+    expect(changed?.messagePrefixHashes?.["128"]).not.toEqual(first?.messagePrefixHashes?.["128"]);
+    expect(JSON.stringify(first)).not.toContain("private history");
   });
 
   it("supports Responses and Anthropic system fields without storing their contents", () => {
