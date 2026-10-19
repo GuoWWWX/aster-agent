@@ -4,6 +4,7 @@ import {
   type AgentPermissionTool,
   type ApplicationPermissionPolicies,
   type ConversationPermissionMode,
+  type PermissionPolicy,
 } from "@agent/protocol";
 
 export type PermissionDecision = "allow" | "ask" | "deny";
@@ -81,6 +82,53 @@ export const PROJECT_SEARCH_TOOL_NAMES = new Set([
   "find_files",
   "search_text",
 ]);
+
+type RuntimeToolPermissionCategory = keyof ApplicationPermissionPolicies | "ask" | null;
+
+const COMMAND_PERMISSION_TOOL_NAMES = new Set([
+  "run_command", "terminal_control", "create_terminal", "open_terminal", "execute_terminal_command",
+]);
+
+const BROWSER_PERMISSION_TOOL_NAMES = new Set([
+  "browser_control", "browser_open", "browser_navigate", "browser_click", "browser_fill",
+  "browser_select_option", "browser_key", "browser_scroll", "browser_close",
+]);
+
+const FILE_CHANGE_PERMISSION_TOOL_NAMES = new Set([
+  "create_skill", "write_file", "delete_file", "replace_in_file", "apply_patch",
+]);
+
+/** Shares the tool families while leaving each Runtime lookup on the current configuration. */
+export function runtimeToolPermissionCategory(toolName: string): RuntimeToolPermissionCategory {
+  if (toolName === "generate_images" || toolName === "web_search") return "ask";
+  if (toolName === "computer_use") return "computer-control";
+  if (COMMAND_PERMISSION_TOOL_NAMES.has(toolName)) return "command-run";
+  if (BROWSER_PERMISSION_TOOL_NAMES.has(toolName)) return "browser-control";
+  if (FILE_CHANGE_PERMISSION_TOOL_NAMES.has(toolName)) return "patch-write";
+  if (PROJECT_READ_TOOL_NAMES.has(toolName)) return "workspace-read";
+  if (PROJECT_SEARCH_TOOL_NAMES.has(toolName)) return "workspace-search";
+  return null;
+}
+
+export function unavailableRuntimeToolReason(toolName: string, policy: PermissionPolicy): string | null {
+  if (policy !== "unavailable") return null;
+  const genericReason = "该工具已在应用权限设置中禁用。";
+  switch (runtimeToolPermissionCategory(toolName)) {
+    case "workspace-read":
+      return "工作区读取已在应用权限设置中禁用。";
+    case "workspace-search":
+      return "工作区搜索已在应用权限设置中禁用。";
+    case "command-run":
+      return "终端命令执行已在应用权限设置中禁用。";
+    case "browser-control":
+      return "浏览器模型操作已在应用权限设置中禁用。";
+    case "patch-write":
+      // Skill creation historically uses the generic disabled-tool explanation.
+      return toolName === "create_skill" ? genericReason : "文件变更已在应用权限设置中禁用。";
+    default:
+      return genericReason;
+  }
+}
 
 export function normalizePermissionCandidate(
   tool: AgentPermissionTool,

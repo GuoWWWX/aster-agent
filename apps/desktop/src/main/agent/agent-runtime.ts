@@ -62,7 +62,7 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { isManualContextCompactionCommand, createTurnSummarySourceMessages, createLocalTurnSummary, shouldGenerateModelTurnSummary } from "./runtime-turn-summary.js";
 import { ToolCallLimitError, ModelToolCallValidationError, ToolApprovalExpiredError, chunkToolCalls, type ToolApprovalInterrupt, type ToolApprovalResume, type LangChainToolResultEnvelope, type CachedGraphToolResult, isToolApprovalInterrupt, hasToolNodeMessages, toolCallIdFromConfig, parseToolArgumentsOrEmpty, parseLangChainToolResult } from "./runtime-tool-results.js";
 import { createRunExecutionSnapshot, assertRunToolManifestMatchesSnapshot, assertRunConfigurationMatchesSnapshot } from "./runtime-execution-snapshot.js";
-import { type PermissionDecision, type SessionPermissionGrant, type AutomaticApprovalReview, AUTOMATIC_APPROVAL_REVIEW_PROMPT, parseAutomaticApprovalReview, requiresManualApprovalReview, DEFAULT_APPLICATION_PERMISSION_POLICIES, PROJECT_READ_TOOL_NAMES, PROJECT_SEARCH_TOOL_NAMES, normalizePermissionCandidate, permissionRuleMatches, sessionPermissionGrantMatches, permissionModeLabel } from "./runtime-permission-policy.js";
+import { type PermissionDecision, type SessionPermissionGrant, type AutomaticApprovalReview, AUTOMATIC_APPROVAL_REVIEW_PROMPT, parseAutomaticApprovalReview, requiresManualApprovalReview, DEFAULT_APPLICATION_PERMISSION_POLICIES, runtimeToolPermissionCategory, unavailableRuntimeToolReason, normalizePermissionCandidate, permissionRuleMatches, sessionPermissionGrantMatches, permissionModeLabel } from "./runtime-permission-policy.js";
 import { isAbortError, waitForRetryDelay } from "./runtime-model-retry.js";
 import { createRuntimeModelRetryPolicy } from "./runtime-model-retry-policy.js";
 import { RuntimeContextCompactor, type ContextCompactor } from "./runtime-context-compactor.js";
@@ -4161,75 +4161,15 @@ export class AgentRuntime {
   }
 
   private permissionPolicyFor(toolName: string): PermissionPolicy {
-    if (toolName === "generate_images") return "ask";
-    if (toolName === "web_search") return "ask";
+    const category = runtimeToolPermissionCategory(toolName);
+    if (category === "ask") return "ask";
     const policies = this.applicationSettings?.getConfiguration().permissionPolicies
       ?? DEFAULT_APPLICATION_PERMISSION_POLICIES;
-    if (toolName === "computer_use") return policies["computer-control"];
-    if (
-      toolName === "run_command"
-      || toolName === "terminal_control"
-      || toolName === "create_terminal"
-      || toolName === "open_terminal"
-      || toolName === "execute_terminal_command"
-    ) return policies["command-run"];
-    if (
-      toolName === "browser_control"
-      || toolName === "browser_open"
-      || toolName === "browser_navigate"
-      || toolName === "browser_click"
-      || toolName === "browser_fill"
-      || toolName === "browser_select_option"
-      || toolName === "browser_key"
-      || toolName === "browser_scroll"
-      || toolName === "browser_close"
-    ) return policies["browser-control"];
-    if (
-      toolName === "create_skill"
-      || toolName === "write_file"
-      || toolName === "delete_file"
-      || toolName === "replace_in_file"
-      || toolName === "apply_patch"
-    ) {
-      return policies["patch-write"];
-    }
-    if (PROJECT_READ_TOOL_NAMES.has(toolName)) return policies["workspace-read"];
-    if (PROJECT_SEARCH_TOOL_NAMES.has(toolName)) return policies["workspace-search"];
-    return "allow";
+    return category === null ? "allow" : policies[category];
   }
 
   private unavailableToolReason(toolName: string): string | null {
-    const policy = this.permissionPolicyFor(toolName);
-    if (policy !== "unavailable") return null;
-    if (PROJECT_READ_TOOL_NAMES.has(toolName)) return "工作区读取已在应用权限设置中禁用。";
-    if (PROJECT_SEARCH_TOOL_NAMES.has(toolName)) return "工作区搜索已在应用权限设置中禁用。";
-    if (
-      toolName === "run_command"
-      || toolName === "terminal_control"
-      || toolName === "create_terminal"
-      || toolName === "open_terminal"
-      || toolName === "execute_terminal_command"
-    ) return "终端命令执行已在应用权限设置中禁用。";
-    if (
-      toolName === "browser_control"
-      || toolName === "browser_open"
-      || toolName === "browser_navigate"
-      || toolName === "browser_click"
-      || toolName === "browser_fill"
-      || toolName === "browser_select_option"
-      || toolName === "browser_key"
-      || toolName === "browser_scroll"
-      || toolName === "browser_close"
-    ) return "浏览器模型操作已在应用权限设置中禁用。";
-    if (
-      toolName === "write_file"
-      || toolName === "delete_file"
-      || toolName === "replace_in_file"
-      || toolName === "apply_patch"
-    ) {
-      return "文件变更已在应用权限设置中禁用。";
-    }
-    return "该工具已在应用权限设置中禁用。";
+    return unavailableRuntimeToolReason(toolName, this.permissionPolicyFor(toolName));
   }
 
   private agentForConversation(conversationId: string): {
