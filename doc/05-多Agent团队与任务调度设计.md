@@ -160,6 +160,8 @@ AI Team Instance（用户显式创建、长期存在）
 
 ### 3.6 Agent 逻辑对话与模型
 
+群聊后台协调、成员和子代理共用 Runtime／ModelGateway 与请求投影，各自使用独立会话缓存范围。系统层以稳定条件规则描述群协作和独立私聊，本轮关联、有效成员名单及可派发团队目录放在运行尾部，不因切换工作来源或目录改名重写历史之前的系统提示。Graph 的变化快照供恢复使用，Provider 只接收每类最新版本；四种接口按各自缓存合同处理。详见[业务上下文第 12.5 节](./14-业务上下文.md#125-多会话与各模型接口的缓存边界)。〔FACT｜`apps/desktop/src/main/agent/runtime-cache-prefix.test.ts`、`apps/desktop/src/main/model/model-runtime-context.ts:9`〕
+
 每个 Team Lead、持久团队成员和临时 Subagent 都有独立的逻辑对话 Thread。它是 SQLite 中的对话与事件归属，不是独占的 OS 线程、Node `worker_threads` 或进程。创建 TeamInstance 时建立该实例自己的 `team_lead` 根 Thread 和配置成员的持久 `agent` Thread；全局实例可被任意项目主对话选择，项目实例只对同项目主对话可见，对话实例只对所属来源对话可见。后续 WorkItem 始终复用所选实例的身份与消息谱系。Team Lead 通过 `send_agent_message` 与 `wait_for_agent_message` 分派、等待和汇总，成员消息与任务分派记录共同构成可审计事实；团队内禁止把成员创建为 `subagent_tasks`。团队面板只读取这些持久关系和消息分派，不嵌入或复制成员 Timeline。用户点击成员时，成员消息、工具、审批、Artifact 和结果使用其原生 Conversation；运行中的输入只可作为同一 Run 的 `steer`，不能更换 Agent 或开启一个独立 Run。没有运行的成员要继续工作时使用 WorkItem 的返工/验收流程。临时 Subagent 每轮完成后 Thread 仍可查看和复用；后续消息创建新 Run，不修改历史 Run，并沿用上一轮冻结的权限模式。〔FACT｜`apps/desktop/src/main/teams/team-work-item-runtime.ts`；`apps/desktop/src/main/agent/agent-runtime.ts`；`apps/web/src/features/workspace/right-sidebar-workspace.tsx`〕
 
 持久 Agent 的“完整对话”和“跨 Agent 回执”是两个边界：成员在最终回答开头按 `replyInstruction` 写简述，以单独一行 Markdown `---` 分隔详细结果；完整回答只写入成员 Thread，`expectReply=true` 仅向发送方投递分隔线前最多 1000 字符的完成回执、终态和成员 Conversation ID。发送方可随时用 `list_agent_conversations` 查看成员状态，并按自己选择的 `maxTokens` 调用 `read_agent_conversation` 查询自己或运行中、已完成、已归档成员对话。默认范围是最新 Checkpoint 已覆盖的原始历史，没有 Checkpoint 时回退到全部历史；需要跨越 Checkpoint 时显式使用 `historyScope=all`。已知要核验的事实通过可选 `query` 关键词检索，命中后返回所属完整 Run，需要更早结果时将 `pagination.nextBeforeSequence` 作为 `beforeSequence` 继续读取。回执、状态查询和主动读取都不创建第二份成员 Timeline，也不把完整成员输出复制进 Team Lead 上下文。

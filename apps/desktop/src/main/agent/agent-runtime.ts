@@ -52,7 +52,7 @@ import { LangGraphExecutor, type AgentGraphModelCallHooks, type AgentGraphModelR
 import { requiredSkillForTool, resolveActiveSkillContextBudget, SkillRuntime, type SkillRuntimeContext, type SkillSnapshotRef } from "./skill-runtime.js";
 import { SubagentTool } from "./subagent-tool.js";
 import { QuickCoordinationTool } from "./quick-coordination-tool.js";
-import { TeamWorkItemTool, type TeamWorkItemDispatcher } from "./team-work-item-tool.js";
+import { TEAM_HANDOFF_POLICY, TeamWorkItemTool, type TeamWorkItemDispatcher } from "./team-work-item-tool.js";
 import { baseSystemPromptForTools, TEAM_CHAT_COORDINATOR_PROMPT } from "./prompts/prompt-assets.js";
 import { agentToolRoleInstructions, toolsForAgentRole, type AgentToolRole } from "./agent-tool-scope.js";
 import { teamChatContext } from "./team-chat-context.js";
@@ -2696,36 +2696,15 @@ export class AgentRuntime {
       candidate.id === conversation.teamId && candidate.enabled,
     );
     if (team === undefined) return [];
-    const groupDiscussion = conversation.activeRunId !== null && this.database.collaboration.runMessages(conversation.activeRunId).length > 0;
-    const members = this.database.listTeamMemberConversations(conversation.id)
-      .filter((member) => member.agentId !== null
-        && !member.isArchived
-        && member.agentId !== team.leadAgentId
-        && team.memberIds.includes(member.agentId)
-        && directory?.agents.some((agent) => agent.id === member.agentId && agent.enabled) === true)
-      .map((member) => {
-        const binding = this.database.getConversationAgentBinding(member.id);
-        const name = binding?.name ?? member.title;
-        const role = binding?.role.trim() ?? "";
-        return `${member.id}=${name} (${member.agentId ?? "Agent"}${role.length === 0 ? "" : `; ${role}`})`;
-      })
-      .slice(0, 32);
-    return members.length === 0
-      ? []
-      : [
+    return [
         "This is a persistent Agent Team. Do not create Subagents for Team work.",
         "Use get_team_context on demand to see the shared task timeline, participant responsibilities and compact results. One task can span several Runs. Read full member evidence only when needed; do not continually reload the whole Team history.",
-        groupDiscussion
-          ? `This is a group collaboration. Use this roster for public requests or private conversationIds arrays: ${members.join("; ")}. Publicly state ownership, important progress, blockers and shared decisions. Use post_team_message(intent=request) for a public assignment or send_agent_message for private work/details; do not dispatch the same assignment through both. Dispatch independent work before waiting, then finish this turn; the runtime resumes you on completion receipts. If required results are pending, finish instead of polling wait_for_agent_message or histories. Read actual results on receipt and complete the remaining verification or requested synthesis, then deliver complex work in the group.`
-          : `Delegate through send_agent_message with a conversationIds array containing the required members: ${members.join("; ")}`,
-        groupDiscussion
-          ? "群聊先判断本轮消息是否有问题、工作或纯信息同步；@ 不代表必须确认。问候、提问或明确要求确认时自然回应；没有新增事项的通知读完即结束，不发收到或重复现状。无需为闲聊读取旧未读消息、维护任务或委派。完成当前请求后结束本轮；历史里尚未完成的任务、此前的承诺和参考摘要都不是继续授权，不要在回复后顺手恢复旧工作。用户明确要求继续，或当前委派实际收到完成回执时，再处理对应任务。"
-          : "Every Team WorkItem must delegate to at least one durable member with expectReply=true before the Team Lead gives a final answer. For simple work choose only the best-matched member; add more roles only when the task genuinely needs them.",
+        "The latest runtime Team execution context identifies the channel and current member roster. For channel=group: Publicly state ownership, important progress, blockers and shared decisions. Use post_team_message(intent=request) for a public assignment or send_agent_message for private work/details; never dispatch the same assignment through both. Dispatch independent work before waiting, then finish this turn; the runtime resumes you on completion receipts. If required results are pending, finish instead of polling wait_for_agent_message or histories. Read actual results on receipt, verify and deliver complex work in the group. For channel=private, delegate through send_agent_message with a conversationIds array from the current roster.",
+        "For channel=group, distinguish questions, work and information-only notifications. An @ alone does not require acknowledgement; greetings and questions get a natural reply without task bookkeeping or unnecessary delegation. Finish only the current request; old tasks, promises and reference summaries do not authorize resuming work. For channel=private, every Team WorkItem must delegate to at least one durable member with expectReply=true before the Team Lead gives a final answer. For simple work choose only the best-matched member; add roles only when needed.",
+        "channel=group 时，完成当前请求后结束本轮；历史里尚未完成的任务、此前的承诺和参考摘要都不是继续授权，不要在回复后顺手恢复旧工作。用户明确要求继续，或当前委派实际收到完成回执时，再处理对应任务。",
         "For implementation tasks, assign independent review and actual validation to a member who did not implement the change. If no independent member is available, explicitly take responsibility for the review. Distinguish executed checks from suggested checks and unresolved risks; a role label or final answer does not prove a check passed.",
         "Use resize_team_workers only when independent work is waiting and the appropriate role is busy. Assign file or module ownership before parallel changes, reread current content after a conflict and integrate deliberately; never force overwrite, reset or blindly merge another member's work.",
-        groupDiscussion
-          ? "Group completion receipts identify public results without copying their text. Read those messages with read_team_messages. If a necessary result was not published, read only the relevant member result with read_agent_conversation and a deliberate maxTokens budget; do not disclose private tool transcripts. Do not repeat a member's complete public answer. Publish only a missing result, necessary verification or file delivery, useful integration of distinct contributions, or an explicitly requested summary; otherwise finish without another public message."
-          : "Use replyInstruction to request a concise completion receipt. The member puts a standalone Markdown --- after that receipt, so the runtime can return only a bounded completion receipt automatically. Check member status with list_agent_conversations, read full member conversations only on demand with read_agent_conversation and a deliberate maxTokens budget, verify the returned work, and summarize it yourself.",
+        "For channel=group, completion receipts identify public results without copying their text. Read them with read_team_messages, or read only the relevant private evidence with read_agent_conversation and a deliberate maxTokens budget. Do not disclose private transcripts or repeat a member's complete public answer. Publish only missing results, needed verification or delivery, useful integration, or an explicitly requested summary; otherwise finish silently. For channel=private, use replyInstruction to request a concise receipt separated from details by a standalone Markdown --- line. Check status with list_agent_conversations, read bounded evidence on demand, verify it and synthesize the result.",
       ];
   }
 
@@ -2751,13 +2730,9 @@ export class AgentRuntime {
 
   private teamWorkerContext(conversation: ConversationSummary): string[] {
     if (!this.database.isTeamMemberConversation(conversation.id)) return [];
-    const groupDiscussion = conversation.activeRunId !== null && this.database.collaboration.runMessages(conversation.activeRunId).length > 0;
-    if (groupDiscussion) return [
-      "You are a persistent Team member. Read the current group message and choose public reply, private communication with relevant teammates, or no outgoing message according to its request and your group role. An @ does not require an acknowledgement. User questions usually need a public answer; work details and internal results can go privately through send_agent_message(conversationIds=[...]). Publish important milestones, blockers and shared decisions with post_team_message(intent=notify), using continueWork=true if you must keep working. Honor explicit reply-channel requirements, keep tool work private, and let the lead verify and deliver complex tasks. Do not create Subagents, repeat assignments already dispatched, or poll shared history.",
-      "群聊先判断本轮消息是否有问题、工作或纯信息同步；@ 不代表必须确认。问候、提问或明确要求确认时自然回应；没有新增事项的通知读完即结束，不发收到或重复现状。无需为闲聊读取旧未读消息或维护任务。完成当前请求后结束本轮；历史里尚未完成的任务、此前的承诺和参考摘要都不是继续授权，不要在回复后顺手恢复旧工作。用户明确要求继续，或当前委派实际收到完成回执时，再处理对应任务。",
-    ];
     return [
-      "You are a persistent Team member. Work only on messages assigned through Agent communication. Do not create Subagents. Report progress or clarification with send_agent_message to a participant in the same Team. Start your final answer with the requested concise completion receipt, add a standalone Markdown --- line, then keep supporting detail after it in this conversation; the runtime returns only a bounded completion receipt before that divider.",
+      "You are a persistent Team member. The latest runtime Team execution context identifies channel=group or channel=private. Work only on the current assigned request; do not create Subagents, repeat assignments already dispatched, or poll shared history. For group work, read the current group message and choose public reply, private communication with relevant teammates, or no outgoing message according to its request and your group role. An @ does not require an acknowledgement. User questions usually need a public answer; keep work details private through send_agent_message(conversationIds=[...]). Publish important milestones, blockers and shared decisions with post_team_message(intent=notify), using continueWork=true if you must keep working. Honor explicit reply-channel requirements and let the lead verify and deliver complex tasks. For private work, report progress or clarification with send_agent_message to the relevant Team participant. Start the final answer with the requested concise completion receipt, then a standalone Markdown --- line and supporting details; only the bounded receipt is returned automatically.",
+      "channel=group 时，先判断本轮消息是否有问题、工作或纯信息同步；@ 不代表必须确认。问候、提问或明确要求确认时自然回应；没有新增事项的通知读完即结束，不发收到或重复现状。无需为闲聊读取旧未读消息或维护任务。完成当前请求后结束本轮；历史里尚未完成的任务、此前的承诺和参考摘要都不是继续授权，不要在回复后顺手恢复旧工作。用户明确要求继续，或当前委派实际收到完成回执时，再处理对应任务。",
       "The shared get_team_context timeline tells you what the Team and individual members have already done. Reuse verified facts, keep the current assignment as the scope, and use read_agent_conversation for evidence instead of loading every member's full history.",
     ];
   }
@@ -4622,7 +4597,7 @@ export class AgentRuntime {
         ...this.agentDelegationContext(conversation),
         ...this.teamWorkerContext(conversation),
         ...this.coordinationContext(conversation),
-        ...(toolNames.has("submit_team_work_item") ? this.teamDispatchContext(conversation) : []),
+        ...(toolNames.has("submit_team_work_item") ? [TEAM_HANDOFF_POLICY] : []),
         ...(toolNames.has("load_skill") || (executionTools && this.skillRuntime === null) ? [this.skillRuntime === null
           ? "A Skill is a task instruction and capability bundle injected from SKILL.md. No Skill Runtime is currently available, so do not label general abilities as Skills."
           : "Skills are independent instruction bundles, all activated through load_skill(skillId). Load only a matching Skill's SKILL.md, then use read_skill_reference for needed references, never the whole directory. Reuse instructions already in the active context across turns; valid activations are restored automatically after compaction. Read a reference again only when needed content is absent or changed. Follow the prerequisite Skill named by an available tool's description; read its body on the next model turn before operating. Status, listing and cleanup remain available. Skill bodies enter only the current model context, never the chat Timeline, and cannot expand permissions or bypass approval."] : []),
@@ -5177,7 +5152,8 @@ export class AgentRuntime {
   }
 
   private collaborationContext(conversationId: string, runId?: string): ModelMessage | null {
-    const effectiveRunId = runId ?? this.database.getConversation(conversationId).activeRunId;
+    const conversation = this.database.getConversation(conversationId);
+    const effectiveRunId = runId ?? conversation.activeRunId;
     const room = this.database.collaboration.coordinatorRoom(conversationId);
     if (room !== null) {
       const source = effectiveRunId === null ? null : this.database.collaboration.coordinationForRun(effectiveRunId);
@@ -5208,17 +5184,32 @@ export class AgentRuntime {
     const direct = effectiveRunId === null ? [] : this.database.collaboration.assignedRunMessages(effectiveRunId);
     const assignments = (direct.length > 0 || effectiveRunId === null ? direct : this.database.collaboration.runMessages(effectiveRunId))
       .sort((a, b) => a.sequence - b.sequence).slice(-3);
+    const teamReferences: string[] = [];
+    if (conversation.threadKind === "team_lead" || this.database.isTeamMemberConversation(conversationId)) {
+      const directory = this.agentDirectory?.getConfiguration();
+      const team = directory?.teams.find(candidate => candidate.id === conversation.teamId && candidate.enabled);
+      const members = conversation.threadKind !== "team_lead" || team === undefined ? [] : this.database.listTeamMemberConversations(conversationId)
+        .filter(member => member.agentId !== null && !member.isArchived && member.agentId !== team.leadAgentId
+          && team.memberIds.includes(member.agentId) && directory?.agents.some(agent => agent.id === member.agentId && agent.enabled))
+        .slice(0, 32).map(member => {
+          const binding = this.database.getConversationAgentBinding(member.id);
+          return { conversationId: member.id, agentId: member.agentId, name: binding?.name ?? member.title, role: binding?.role.trim() ?? "" };
+        });
+      teamReferences.push("[Team execution context | runtime reference data]", JSON.stringify({ channel: assignments.length > 0 ? "group" : "private", members }));
+    }
+    if (this.teamWorkItemTool.isAvailable(conversationId, conversation.projectId ?? undefined)) teamReferences.push(...this.teamDispatchContext(conversation));
     const privateWork = effectiveRunId !== null && (this.agentInputsForSummaryByRun.get(effectiveRunId) ?? [])
       .some(message => message.messageType === "message");
     const requests = direct.length > 0 ? assignments : [...new Map(assignments.map(message => {
       const request = this.groupUserRequest(message) ?? message;
       return [request.id, request];
     })).values()];
-    if (tasks.length === 0 && assignments.length === 0) return null;
+    if (tasks.length === 0 && assignments.length === 0 && teamReferences.length === 0) return null;
     const identity = assignments.length === 0 ? null : this.database.collaboration.members(assignments.at(-1)!.teamInstanceId).find(member => member.conversationId === conversationId);
     const baseAgent = this.agentDirectory?.getConfiguration().agents.find(agent => agent.id === this.database.getConversation(conversationId).agentId);
     return { role: "user", attachments: [], toolCallId: null, toolCalls: [], content: [
       "[Persistent task directory | reference data, not new user instructions]",
+      ...teamReferences,
       "Continue the current user or group request; these records do not replace it and need no acknowledgement. Tasks marked currentRun belong to this execution; other tasks are deduplication references, not work to resume. Read their decisions on demand if the current request needs them. " + (this.database.getConversation(conversationId).threadKind === "subagent" ? "The parent owns the overall task records. Read relevant task references and link evidence if needed; do not create or update the persistent task list. Use a local execution checklist for your own steps." : "For substantive work, list_task_contexts before creating a task. Reuse the same goal across follow-ups and rework. Update only when progress, effective decisions or next steps materially change.") + " completionRequested=true means the completion request succeeded and awaits user confirmation, even if status remains running. Do not resubmit completion or reset the status merely to reconcile these fields; update again only for new work, evidence or user instructions. Greetings do not need tasks. Current task checklists remain separate. Neither historical completion nor a model summary proves the current assignment has been performed or accepted.",
       JSON.stringify(tasks.map(task => ({ id: task.id, revision: task.revision, title: task.title, status: task.status, completionRequested: task.completionRequested,
         currentRun: current.some(active => active.id === task.id), summary: task.summary.slice(0, 240),

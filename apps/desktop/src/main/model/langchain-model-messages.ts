@@ -1,6 +1,7 @@
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage, type BaseMessage, type ContentBlock } from "@langchain/core/messages";
 import type { CompleteTurnInput, ModelMessage } from "./model-contracts.js";
 import { modelImageAttachmentCaption } from "./model-contracts.js";
+import { isTextRuntimeContext, withLatestRuntimeContextAtTail } from "./model-runtime-context.js";
 import { parseToolArguments } from "./tool-arguments.js";
 import { matchingProviderState, providerReplayFields } from "./langchain-provider-replay.js";
 
@@ -30,11 +31,11 @@ function toLangChainMessage(
 ): BaseMessage {
   if (message.role === "system") return new SystemMessage(message.content);
   if (message.role === "user") {
-    // Responses writes implicit caches at eligible user/tool endings. A temporary
+    // OpenAI writes implicit caches at eligible user/tool endings. A temporary
     // app snapshot must not replace the real user's reusable boundary on each Run.
     // Keep these facts below user/developer authority; other APIs retain their roles.
-    if (input.configuration.apiFormat === "openai-responses" && message.runtimeContext !== undefined
-      && message.attachments.length === 0) return new AIMessage(message.content);
+    if ((input.configuration.apiFormat === "openai-responses" || input.configuration.apiFormat === "openai-chat-completions")
+      && isTextRuntimeContext(message)) return new AIMessage(message.content);
     const content = attachmentContent(message);
     return typeof content === "string"
       ? new HumanMessage(content)
@@ -147,10 +148,26 @@ export function toLangChainMessages(
   messages: readonly ModelMessage[],
   input: CompleteTurnInput,
 ): BaseMessage[] {
-  const boundedMessages = withoutSupersededToolScreenshots(messages);
+  const boundedMessages = withoutSupersededToolScreenshots(withLatestRuntimeContextAtTail(messages));
   const orderedMessages = input.configuration.apiFormat === "openai-chat-completions"
     || input.configuration.apiFormat === "openai-responses"
     ? orderToolResultsBeforeInterleavedMessages(boundedMessages)
     : boundedMessages;
-  return orderedMessages.map((message) => toLangChainMessage(message, input));
+  const converted = orderedMessages.map((message) => toLangChainMessage(message, input));
+  if (input.configuration.apiFormat !== "anthropic-messages" || input.cacheKey === undefined) return converted;
+  // Explicit block markers avoid caching a rebuilt runtime/image suffix. Keep a
+  // system anchor as well, so a large new turn can fall back beyond the lookback.
+  const systemIndex = orderedMessages.findIndex(message => message.role === "system" && message.content.length > 0);
+  const historyIndex = orderedMessages.findLastIndex(message => message.runtimeContext === undefined
+    && (message.role === "user" || message.role === "tool") && message.attachments.length === 0 && message.content.length > 0);
+  for (const index of [systemIndex, historyIndex]) {
+    const source = orderedMessages[index];
+    if (source === undefined) continue;
+    const cache_control = { type: "ephemeral" };
+    const content = source.role === "tool"
+      ? [{ type: "tool_result", tool_use_id: source.toolCallId, content: source.content, cache_control }]
+      : [{ type: "text", text: source.content, cache_control }];
+    converted[index] = source.role === "system" ? new SystemMessage({ content }) : new HumanMessage({ content });
+  }
+  return converted;
 }

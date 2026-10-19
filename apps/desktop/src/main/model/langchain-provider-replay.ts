@@ -1,6 +1,7 @@
 import type { ContentBlock } from "@langchain/core/messages";
 import type { ModelApiFormat } from "@agent/protocol";
 import type { CompleteTurnInput, ModelMessage, ModelProviderState } from "./model-contracts.js";
+import { isTextRuntimeContext, withLatestRuntimeContextAtTail } from "./model-runtime-context.js";
 import { compactProviderReplayState } from "./provider-replay-state.js";
 
 const AI_SDK_PROVIDER_STATE_VERSION = 1;
@@ -238,7 +239,10 @@ export function matchingProviderState(
 }
 
 export function openAiChatReasoningByAssistant(input: CompleteTurnInput): Array<string | null> {
-  return input.messages.flatMap((message) => {
+  return withLatestRuntimeContextAtTail(input.messages).flatMap((message) => {
+    // Text runtime snapshots are encoded as assistant references on the Chat wire.
+    // Reserve their slots in the projected wire order when restoring reasoning.
+    if (isTextRuntimeContext(message)) return [null];
     if (message.role !== "assistant") return [];
     const replay = providerReplayFields(
       matchingProviderState(message, input),

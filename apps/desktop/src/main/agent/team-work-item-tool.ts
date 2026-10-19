@@ -22,6 +22,13 @@ const MAX_STATUS_ITEMS = 20;
 const MAX_STATUS_SUMMARY_LENGTH = 2_000;
 const MAX_STATUS_REASON_LENGTH = 1_000;
 
+export const TEAM_HANDOFF_POLICY = [
+  "Team handoff is available in this main conversation. Only call submit_team_work_item when the user explicitly mentions a Team with @ or explicitly asks to send work to a Team; do not silently hand off ordinary requests.",
+  "Choose by the exact visible instance name and teamInstanceId in the latest runtime directory. Global instances are visible in every project; project instances are visible only in this project; conversation instances are visible only in this conversation.",
+  "The selected instance already determines scope. Never derive or create a different Team instance during handoff.",
+  "After a successful handoff, tell the user that the request was queued and that they can inspect the Team board or the member side tabs while the main conversation remains available.",
+].join("\n");
+
 const submitArgumentsSchema = z.object({
   acceptanceCriteria: z.array(z.string().trim().min(1).max(1_000)).max(20).default([])
     .describe("Optional concrete acceptance criteria for this work item."),
@@ -101,15 +108,11 @@ export class TeamWorkItemTool {
     if (instances.length === 0) return null;
     const teams = new Map((this.getDirectory()?.teams ?? []).map((team) => [team.id, team]));
     return [
-      "Team handoff is available in this main conversation. Only call submit_team_work_item when the user explicitly mentions a Team with @ or explicitly asks to send work to a Team; do not silently hand off ordinary requests.",
-      "Choose by the exact visible instance name and teamInstanceId below. Global instances are visible in every project; project instances are visible only in this project; conversation instances are visible only in this conversation.",
-      "The selected instance already determines scope. Never derive or create a different Team instance during handoff.",
       "Visible Team instances:",
       ...instances.map((instance) => {
         const team = teams.get(instance.teamId);
         return `- @${instance.name} (teamInstanceId: ${instance.id}; scope: ${instance.scope}; template: ${team?.name ?? instance.teamId}; ${team?.enabled === false ? "paused: accept and queue only" : "automatic dispatch enabled"})`;
       }),
-      "After a successful handoff, tell the user that the request was queued and that they can inspect the Team board or the member side tabs while the main conversation remains available.",
     ].join("\n");
   }
 

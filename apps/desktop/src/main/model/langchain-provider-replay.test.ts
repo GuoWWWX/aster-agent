@@ -117,5 +117,7 @@ describe("LangChain request-side provider replay", () => {
     const foreign = assistant({ ...state({ version: 2, additionalKwargs: { reasoning_content: "foreign" } }), modelId: "different" });
     const user: ModelMessage = { attachments: [], content: "next", role: "user", toolCallId: null, toolCalls: [] };
     expect(openAiChatReasoningByAssistant(input([first, user, empty, foreign]))).toEqual(["one", null, null]);
+    const snapshot = { ...user, runtimeContext: "skills" as const };
+    expect(openAiChatReasoningByAssistant(input([snapshot, first, user, snapshot, empty, foreign]))).toEqual(["one", null, null, null]);
   });
 });

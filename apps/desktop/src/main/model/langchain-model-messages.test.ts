@@ -17,7 +17,7 @@ function image(id: string, source: ModelMessageAttachment["source"], data: strin
 
 describe("LangChain model message conversion", () => {
   it.each(["openai-responses", "openai-chat-completions", "anthropic-messages", "google-gemini"] as const)(
-    "keeps application state out of Responses user cache boundaries without changing %s input", apiFormat => {
+    "keeps application state out of OpenAI user cache boundaries for %s", apiFormat => {
       const request = message("user", "real request");
       const snapshots = (["queue", "skills", "checklist", "directory"] as const)
         .map(runtimeContext => ({ ...message("user", `state ${runtimeContext}`), runtimeContext }));
@@ -26,7 +26,7 @@ describe("LangChain model message conversion", () => {
       const converted = toLangChainMessages(source, input(apiFormat));
       expect(converted[0]).toBeInstanceOf(HumanMessage);
       for (const snapshot of converted.slice(1)) {
-        expect(snapshot).toBeInstanceOf(apiFormat === "openai-responses" ? AIMessage : HumanMessage);
+        expect(snapshot).toBeInstanceOf(apiFormat.startsWith("openai-") ? AIMessage : HumanMessage);
       }
       expect(converted.map(value => value.content)).toEqual(source.map(value => value.content));
       expect(source).toEqual(original);

@@ -3315,8 +3315,8 @@ describe("AgentRuntime", () => {
 
     const request = model.requests[0];
     expect(request?.messages[0]?.content).toContain("persistent Agent Team");
-    expect(request?.messages[0]?.content).toContain(member.id);
-    expect(request?.messages[0]?.content).toContain("需求澄清与验收定义");
+    expect(request?.messages.findLast(message => message.runtimeContext === "directory")?.content).toContain(member.id);
+    expect(request?.messages.findLast(message => message.runtimeContext === "directory")?.content).toContain("需求澄清与验收定义");
     expect(request?.messages[0]?.content).toContain("must delegate to at least one durable member");
     expect(request?.tools.map((tool) => tool.name)).toContain("send_agent_message");
     expect(request?.tools.map((tool) => tool.name)).not.toContain("spawn_subagent");
