@@ -216,3 +216,5 @@ Mermaid 的静态字体、主题 CSS 与引擎配置归入 `apps/web/src/lib/mer
 CodeMirror Widget 的公式／列表、图表、图片和行内内容分别归入 `text-widgets.ts`、`mermaid-widget.ts`、`image-widget.ts`、`inline-widgets.ts`；共享的 DOM 呈现与 StateEffect 分别归 `widget-dom.ts`、`widget-effects.ts`。原 `widgets.ts` 保留表格 Widget 与兼容导出，原调用方继续引用同一个类和 Effect 实例。27 个声明／函数体保持一致；编辑器和 Markdown 共 19 文件 133 项回归、Web 类型检查与定向 lint 通过。
 
 表格阅读态的 DOM、选区和事件监听归 `table-readonly-view.ts`；返回的 disposer 由原 Widget 在 `destroy` 中执行，`updateDOM` 继续转移原清理归属。表格编辑态、草稿、提交与 CodeMirror 状态仍归原 Widget，主题、DOM 类名和键盘／复制行为不变，原有 133 项回归再次通过。
+
+表格行列拖动的临时状态、拖动影像和落点计算归 `table-reorder-interaction.ts`；Widget 保留文档监听注册、草稿提交和销毁时的释放调用。跨行列顺序仍通过原 Markdown 表格操作更新，编辑器和 Markdown 的 133 项回归、类型检查与定向 lint 通过。
