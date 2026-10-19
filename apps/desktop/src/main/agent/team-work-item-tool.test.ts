@@ -27,7 +27,11 @@ describe("TeamWorkItemTool", () => {
     });
   });
 
-  it("submits an explicitly selected Team from a main project conversation", async () => {
+  it.each([
+    ["ask_before_changes", "full_access"],
+    ["request_approval", "request_approval"],
+    ["auto_review", "auto_review"],
+  ] as const)("submits an explicitly selected Team preserving %s as %s", async (permissionMode, expectedMode) => {
     const database = new AgentDatabase(":memory:");
     databases.push(database);
     const directory = structuredClone(DEFAULT_AGENT_DIRECTORY_CONFIGURATION);
@@ -103,13 +107,14 @@ describe("TeamWorkItemTool", () => {
         providerId: "00000000-0000-4000-8000-000000000053",
         reasoning: null,
       },
-      permissionMode: "ask_before_changes",
+      permissionMode,
       signal: new AbortController().signal,
       toolName: "submit_team_work_item",
     });
 
     expect(result).toMatchObject({ isError: false });
     expect(submissions).toEqual([expect.objectContaining({
+      permissionMode: expectedMode,
       projectId: project.id,
       sourceConversationId: source.id,
       teamId: "default-team",

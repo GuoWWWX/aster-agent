@@ -28,6 +28,7 @@ export const agentPermissionToolSchema = z.enum([
   "replace_in_file",
   "run_command",
   "write_file",
+  "web_search",
 ]);
 
 export const agentPermissionRuleSchema = z

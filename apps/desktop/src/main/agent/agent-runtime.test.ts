@@ -8379,7 +8379,7 @@ describe("AgentRuntime", () => {
     database.close();
   });
 
-  it("requires approval before reading an absolute file outside the project", async () => {
+  it("requires approval before reading an absolute file outside the project in request approval mode", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-external-read-"));
     const externalRoot = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-external-file-"));
     temporaryDirectories.push(root, externalRoot);
@@ -8409,7 +8409,7 @@ describe("AgentRuntime", () => {
       runtime.sendMessage({
         content: "读取工作区外文件",
         conversationId: conversation.id,
-        permissionMode: "full_access",
+        permissionMode: "request_approval",
       }, (event) => {
         events.push(event);
         if (event.type === "tool.approval_requested") {

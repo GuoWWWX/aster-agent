@@ -3672,25 +3672,26 @@ function PermissionsSettings(): ReactElement {
               <h4>新对话权限模式</h4>
               <p>影响之后新建的对话；已有对话保留各自的权限模式。</p>
             </div>
-            <Select value={defaultPermissionMode} onValueChange={(value) => setDefaultPermissionMode(value as ConversationPermissionMode)}>
+            <Select value={defaultPermissionMode === "ask_before_changes" ? approvalReviewer === "auto_review" ? "auto_review" : "request_approval" : defaultPermissionMode} onValueChange={(value) => setDefaultPermissionMode(value as ConversationPermissionMode)}>
               <SelectTrigger aria-label="新对话权限模式" className="settings-general-select"><SelectValue /></SelectTrigger>
               <SelectContent align="end">
-                <SelectItem value="read_only">规划</SelectItem>
-                <SelectItem value="ask_before_changes">请求审批</SelectItem>
+                {defaultPermissionMode === "read_only" ? <SelectItem value="read_only" disabled>旧版只读</SelectItem> : null}
+                <SelectItem value="request_approval">请求批准</SelectItem>
+                <SelectItem value="auto_review">帮我批准</SelectItem>
                 <SelectItem value="full_access">完全访问</SelectItem>
               </SelectContent>
             </Select>
           </article>
           <article className="settings-general-row">
             <div>
-              <h4>规划</h4>
-              <p>允许读取和搜索，不执行命令或修改文件。</p>
+              <h4>请求批准</h4>
+              <p>文件、命令及联网操作按授权规则交给你确认，工作区外读取始终询问。</p>
             </div>
           </article>
           <article className="settings-general-row">
             <div>
-              <h4>请求审批</h4>
-              <p>读取和搜索直接进行；命令、文件修改和其他副作用操作进入审批。</p>
+              <h4>帮我批准</h4>
+              <p>自动审核原本需要审批的操作；高风险、判断不清或审核失败时仍交给你。</p>
             </div>
           </article>
           <article className="settings-general-row">
@@ -3703,15 +3704,15 @@ function PermissionsSettings(): ReactElement {
       </div>
 
       <div className="settings-general-category">
-        <SettingsCategoryHeading icon={Bot}>请求审批的处理方式</SettingsCategoryHeading>
+        <SettingsCategoryHeading icon={Bot}>默认审批处理方式</SettingsCategoryHeading>
         <div className="settings-general-card">
           <article className="settings-general-row">
             <div>
               <h4>{approvalReviewer === "user" ? "由我确认" : "AI 帮我审批"}</h4>
               <p>
                 {approvalReviewer === "user"
-                  ? "每个需要审批的操作都交给你决定。"
-                  : "AI 只审核原本需要审批的操作；高风险、判断不清或审核失败时仍交给你。"}
+                  ? "未单独选择对话审批模式时，需要审批的操作交给你决定。"
+                  : "未单独选择对话审批模式时，AI 审核原本需要审批的操作；高风险、判断不清或审核失败仍交给你。"}
               </p>
             </div>
             <div className="settings-segmented" role="group" aria-label="审批处理方式">
@@ -3762,7 +3763,7 @@ function PermissionsSettings(): ReactElement {
               </Select>
             </article>
           ))}
-          <p className="px-4 pb-4 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">工具权限与对话权限模式共同生效；规划模式仍禁止修改，工作区边界与危险操作保护始终保留。</p>
+          <p className="px-4 pb-4 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)]">工具权限与对话权限模式共同生效；旧版只读状态仍禁止修改，禁用项、角色和工作区边界继续生效。</p>
         </div>
       </section>
 
