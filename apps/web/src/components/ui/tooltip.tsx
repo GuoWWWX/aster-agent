@@ -1,5 +1,5 @@
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
-import { useCallback, useEffect, useRef, useState, type ComponentProps, type ReactElement, type ReactNode } from "react";
+import { createContext, useContext, useCallback, useEffect, useRef, useState, type ComponentProps, type ReactElement, type ReactNode } from "react";
 
 import { cn } from "../../lib/cn.js";
 import { NATIVE_TOOLTIP_POINTER } from "../../lib/native-overlay.js";
@@ -20,6 +20,8 @@ export function TooltipProvider({
   );
 }
 
+export const TooltipSideContext = createContext<ComponentProps<typeof TooltipPrimitive.Content>["side"]>("top");
+
 type TooltipAnchorProps = {
   children: ReactElement;
   content: ReactNode;
@@ -37,8 +39,9 @@ export function TooltipAnchor({
   disabled = false,
   open,
   onOpenChange,
-  side = "top",
+  side,
 }: TooltipAnchorProps): ReactElement {
+  const defaultSide = useContext(TooltipSideContext);
   const container = useNativeOverlayContainer();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -124,7 +127,7 @@ export function TooltipAnchor({
             contentClassName,
           )}
           collisionPadding={5}
-          side={side}
+          side={side ?? defaultSide ?? "top"}
           sideOffset={5}
         >
           {content}

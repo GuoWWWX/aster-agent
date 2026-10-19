@@ -385,6 +385,7 @@ export function AppTitlebar({
         onDoubleClick={(event) => event.stopPropagation()}
       >
         <IconButton
+          tooltipSide="left"
           aria-pressed={isFilePanelOpen}
           disabled={!canToggleFilePanel}
           label={isFilePanelOpen ? "收起右侧工作区" : "展开右侧工作区"}

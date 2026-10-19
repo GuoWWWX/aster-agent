@@ -45,6 +45,7 @@ type IconButtonProps = Omit<
     children: ReactNode;
     label: string;
     tooltip?: string;
+    tooltipSide?: "top" | "right" | "bottom" | "left";
   };
 
 export function IconButton({
@@ -52,13 +53,14 @@ export function IconButton({
   className,
   label,
   tooltip,
+  tooltipSide,
   size,
   type = "button",
   variant,
   ...buttonProps
 }: IconButtonProps): ReactElement {
   return (
-    <TooltipAnchor content={tooltip ?? label} disabled={buttonProps.disabled === true}>
+    <TooltipAnchor side={tooltipSide} content={tooltip ?? label} disabled={buttonProps.disabled === true}>
       <button
         {...buttonProps}
         aria-label={label}

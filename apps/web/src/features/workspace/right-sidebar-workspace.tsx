@@ -60,6 +60,8 @@ import { setImageSourceResolver } from "../../components/editor/cm/image-source-
 import { WorkbenchPanel } from "../../components/layout/panel.js";
 import { ResizableDivider } from "../../components/layout/resizable-divider.js";
 import { FileTypeIcon } from "../../components/ui/file-type-icon.js";
+import { TooltipAnchor, TooltipSideContext } from "../../components/ui/tooltip.js";
+import { conversationIdentity } from "../chat/conversation-identity.js";
 import { IconButton } from "../../components/ui/icon-button.js";
 import { appendNewTabIds, moveTabId } from "../../components/ui/tab-order.js";
 import { useTabReorder } from "../../components/ui/use-tab-reorder.js";
@@ -621,6 +623,8 @@ export function RightSidebarWorkspace({
   activeProject,
   activeSession,
   teamChat = null,
+  sessions = [],
+  teamInstances = [],
   agentClient,
   fileOpenRequest,
   gitReviewOpenRequest = null,
@@ -636,6 +640,8 @@ export function RightSidebarWorkspace({
   activeProject: ProjectSummary | null;
   activeSession: ProjectSession | null;
   teamChat?: TeamInstanceView | null;
+  sessions?: readonly ProjectSession[];
+  teamInstances?: readonly TeamInstanceView[];
   agentClient: AgentClient;
   fileOpenRequest: ProjectFileOpenRequest | null;
   gitReviewOpenRequest?: GitReviewOpenRequest | null;
@@ -753,6 +759,7 @@ export function RightSidebarWorkspace({
   openChatIdsRef.current = openChatIds;
   const [operationError, setOperationError] = useState<string | null>(null);
   const [sideSessions, setSideSessions] = useState<ProjectSession[]>([]);
+  const relatedSessions = useMemo(() => [...new Map([...sessions, ...sideSessions].map(item => [item.id, item])).values()], [sessions, sideSessions]);
   const [tabContextMenu, setTabContextMenu] = useState<TabContextMenuState | null>(null);
   const [isTreeCollapsed, setIsTreeCollapsed] = useState(false);
   const [fileTreeWidth, setFileTreeWidth] = useState<number | null>(null);
@@ -2414,6 +2421,7 @@ export function RightSidebarWorkspace({
   }, []);
 
   return (
+    <TooltipSideContext.Provider value="left">
     <WorkbenchPanel className="right-sidebar-workspace" aria-label="右侧工作区">
       <div className="right-sidebar-workspace__main">
         <div className="right-sidebar-workspace__tabs-row">
@@ -2436,11 +2444,12 @@ export function RightSidebarWorkspace({
                   data-active={String(activeTab?.id === tab.id)}
                   key={tab.id}
                 >
+                  <TooltipAnchor content={tab.kind === "file" || tab.kind === "configuration-file" ? tab.path : tab.name}>
                   <button
+                    aria-label={tab.name}
                     aria-selected={activeTab?.id === tab.id}
                     className="right-sidebar-workspace__tab"
                     role="tab"
-                    title={tab.kind === "file" || tab.kind === "configuration-file" ? tab.path : tab.name}
                     type="button"
                     onClick={(event) => {
                       if (event.button !== 0) return;
@@ -2490,9 +2499,11 @@ export function RightSidebarWorkspace({
                         size={14}
                       />
                     )}
-                    <span>{tab.name}</span>
+                    <span>{tab.kind === "chat" ? conversationIdentity(tab.session, agentProfiles, teamInstances, sessions).title : tab.name}</span>
                     {tab.kind === "managed-browser" && tab.background === true ? <small className="shrink-0 text-[length:var(--app-font-size-caption)] text-[var(--app-muted-foreground)]">后台</small> : null}
                   </button>
+                  </TooltipAnchor>
+                  <TooltipAnchor content={`关闭 ${tab.name}`}>
                   <button
                     aria-label={`关闭 ${tab.name}`}
                     className="right-sidebar-workspace__tab-close"
@@ -2504,6 +2515,7 @@ export function RightSidebarWorkspace({
                   >
                     <X aria-hidden="true" size={12} />
                   </button>
+                  </TooltipAnchor>
                 </div>
               );
             })}
@@ -2705,15 +2717,14 @@ export function RightSidebarWorkspace({
                         }
                       : null}
                     onLocateProject={onLocateProject}
-                    onLocateSession={() => {
-                      if (activeSession !== null) onLocateSession(activeSession.id);
-                    }}
+                    onLocateSession={onLocateSession}
                     {...(onLocateConversationItem === undefined ? {} : { onLocateConversationItem })}
                      onOpenProjectFile={(path) => void openProjectFilePath(path)}
                     onSessionUpdated={updateSideSession}
                     onViewed={() => onSessionViewed(session.id)}
                     project={session.projectId === null ? null : activeProject}
-                    relatedSessions={sideSessions}
+                    relatedSessions={relatedSessions}
+                    teamInstances={teamInstances}
                     session={session}
                     teamManaged={session.teamWorkItemId !== null && session.teamWorkItemId !== undefined}
                   />
@@ -2979,6 +2990,7 @@ export function RightSidebarWorkspace({
         nativeOverlayContainer ?? document.body,
       ) : null}
     </WorkbenchPanel>
+    </TooltipSideContext.Provider>
   );
 }
 

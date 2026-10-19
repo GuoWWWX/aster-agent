@@ -33,9 +33,10 @@ function useTaskPage({ agentClient, scope, active = true }: DirectoryProps) {
   const loadedRequest = useRef<string | null>(null);
   const conversationId = scope.conversationId; const teamInstanceId = scope.teamInstanceId;
   useEffect(() => {
+    if (query.trim() === search) return;
     const timer = window.setTimeout(() => { setSearch(query.trim()); setCursors([undefined]); }, 200);
     return () => window.clearTimeout(timer);
-  }, [query]);
+  }, [query, search]);
   useEffect(() => {
     if (!active) return;
     const key = JSON.stringify([conversationId, teamInstanceId, search, cursors, revision]);

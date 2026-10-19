@@ -657,12 +657,13 @@ export class CollaborationStore {
         : activeMemberCount > 0 || pendingDeliveryCount > 0 ? "working" : coordinator?.status === "failed" ? "failed" : "idle", activeMemberCount, pendingDeliveryCount },
       coordinator: coordinator === null ? null : { agentId: coordinator.agentId, modelSelection: coordinator.modelSelection } };
   }
-  public markRead(input: MarkTeamChatReadInput, memberId: string | null): void {
+  public markRead(input: MarkTeamChatReadInput, memberId: string | null): boolean {
     this.assertMember(input.teamInstanceId, memberId, true);
     const max = Number(this.db.prepare("SELECT COALESCE(MAX(sequence), 0) AS last FROM team_chat_messages WHERE team_instance_id = ?").get(input.teamInstanceId)?.last);
     if (input.throughSequence > max) throw new CollaborationError("READ_RANGE", "Cannot mark unseen future messages.");
-    this.db.prepare(`INSERT INTO team_chat_reads VALUES (?, ?, ?) ON CONFLICT(team_instance_id, reader_id)
-      DO UPDATE SET sequence = MAX(sequence, excluded.sequence)`).run(input.teamInstanceId, memberId ?? "user", input.throughSequence);
+    return this.db.prepare(`INSERT INTO team_chat_reads VALUES (?, ?, ?) ON CONFLICT(team_instance_id, reader_id)
+      DO UPDATE SET sequence = excluded.sequence WHERE sequence < excluded.sequence`)
+      .run(input.teamInstanceId, memberId ?? "user", input.throughSequence).changes > 0 && input.throughSequence > 0;
   }
   public pendingDeliveries(): { id: string; conversationId: string; message: TeamChatMessage }[] {
     return this.db.prepare("SELECT id, message_id, conversation_id FROM team_chat_deliveries WHERE status = 'pending' AND error IS NULL ORDER BY rowid LIMIT 100").all()

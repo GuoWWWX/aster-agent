@@ -44,6 +44,7 @@ export type ProjectSessionsController = {
 
 function toProjectSession(conversation: ConversationSummary): ProjectSession {
   return {
+    coordinationTeamInstanceId: conversation.coordinationTeamInstanceId,
     activeSubagentCount: conversation.activeSubagentCount,
     activeRunId: conversation.activeRunId,
     agentId: conversation.agentId,
@@ -185,7 +186,10 @@ export function useProjectSessions(
         return;
       }
       if (event.type !== "conversation.updated" && event.type !== "conversation.open_requested") return;
-      if (event.conversation.coordinationTeamInstanceId !== undefined) return;
+      if (event.conversation.coordinationTeamInstanceId !== undefined) {
+        setSessions(current => current.filter(session => session.id !== event.conversation.id));
+        return;
+      }
 
       if (event.type === "conversation.open_requested") {
         activeSessionIdRef.current = event.conversation.id;
@@ -236,7 +240,10 @@ export function useProjectSessions(
   }, [agentClient, isCreatingSession]);
 
   const updateSession = useCallback((conversation: ConversationSummary): void => {
-    if (conversation.coordinationTeamInstanceId !== undefined) return;
+    if (conversation.coordinationTeamInstanceId !== undefined) {
+      setSessions(current => current.filter(session => session.id !== conversation.id));
+      return;
+    }
     const session = toProjectSession(conversation);
     setSessions((current) => current.some((candidate) => candidate.id === session.id)
       ? current.map((candidate) => candidate.id === session.id ? session : candidate)

@@ -178,6 +178,7 @@ export function getProjectSessions(
     sessions.filter(
       (session) =>
         !session.isArchived
+        && session.coordinationTeamInstanceId === undefined
         && session.parentConversationId === null
         && session.threadKind === "agent"
         && session.projectId === projectId,
@@ -192,6 +193,7 @@ export function getTemporarySessions(
     sessions.filter(
       (session) =>
         !session.isArchived
+        && session.coordinationTeamInstanceId === undefined
         && session.parentConversationId === null
         && session.threadKind === "agent"
         && session.projectId === null,
@@ -206,6 +208,7 @@ export function getPinnedSessions(
     sessions.filter(
       (session) =>
         !session.isArchived
+        && session.coordinationTeamInstanceId === undefined
         && session.parentConversationId === null
         && session.threadKind === "agent"
         && session.isPinned,
@@ -408,7 +411,8 @@ export function getArchivedSessions(
 ): ProjectSession[] {
   return sortPinnedSessions(
     sessions.filter(
-      (session) => session.isArchived && session.parentConversationId === null,
+      (session) => session.isArchived && session.parentConversationId === null
+        && session.threadKind === "agent" && session.coordinationTeamInstanceId === undefined,
     ),
   );
 }

@@ -103,6 +103,28 @@ describe("result viewed IPC notification", () => {
   });
   afterEach(() => { dispose?.(); dispose = undefined; });
 
+  it("broadcasts group read changes only after persistence and never on unchanged cursors or failure", async () => {
+    const markRead = vi.fn(() => true);
+    const instance = { id: conversation.id, rootConversationId: conversation.id };
+    Object.assign(dependencies, { database: { collaboration: { markRead }, getTeamInstance: () => instance } });
+    dispose?.();
+    const window = { isDestroyed: () => false, on: vi.fn(), webContents: { send, isDestroyed: () => false } } as unknown as BrowserWindow;
+    electron.fromWebContents.mockReturnValue(window);
+    dispose = registerMainIpcHandlers(() => window, dependencies, { resumePendingMessages: false });
+    const read = electron.handle.mock.calls.filter(([channel]) => channel === IPC_CHANNELS.teamChatMarkRead).at(-1)![1];
+    await read(event, { teamInstanceId: instance.id, throughSequence: 3 });
+    expect(send).toHaveBeenCalledExactlyOnceWith(IPC_CHANNELS.conversationRunEvent, {
+      type: "collaboration.changed", conversationId: conversation.id, teamInstanceId: instance.id, reason: "read",
+    });
+    expect(markRead.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]!);
+    send.mockClear(); markRead.mockReturnValue(false);
+    await read(event, { teamInstanceId: instance.id, throughSequence: 3 });
+    expect(send).not.toHaveBeenCalled();
+    markRead.mockImplementation(() => { throw new Error("write failed"); });
+    await expect(read(event, { teamInstanceId: instance.id, throughSequence: 4 })).rejects.toThrow();
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("validates user completion grants and bounded reference lookups from the trusted window only", async () => {
     const collaboration = { getCompletionPolicy: vi.fn(() => ({ allowAgentCompletion: false })),
       setCompletionPolicy: vi.fn(() => ({ allowAgentCompletion: true })), resolveReferences: vi.fn(() => []) };

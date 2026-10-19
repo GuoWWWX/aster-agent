@@ -100,7 +100,7 @@ async function coordinationFixture() {
   return { client, instance, message, coordinator, owner, container, read, show, open };
 }
 function sidebarTab(container: HTMLElement) {
-  return container.querySelector<HTMLButtonElement>('[role="tab"][title="默认 Agent · 后台协调"]')!;
+  return container.querySelector<HTMLButtonElement>('[role="tab"][aria-label="默认 Agent · 后台协调"]')!;
 }
 it("opens coordination in the actual shared sidebar with the ordinary tab menu and closes without deleting its history", async () => {
   const f = await coordinationFixture();
@@ -196,7 +196,7 @@ it("opens task details as one ordinary sidebar tab without replacing the primary
   await act(async () => { useWorkbenchUiStore.getState().openTaskList({ workspaceId: teamChatTabId(f.instance.id), scope: { teamInstanceId: f.instance.id }, taskId: task.id }); for (let turn = 0; turn < 15; turn++) await Promise.resolve(); });
   const shell = f.container.querySelector('.right-sidebar-workspace');
   expect(f.container.querySelectorAll('.right-sidebar-workspace')).toHaveLength(1);
-  expect(shell?.querySelector('[role="tab"][title="任务列表"]')?.getAttribute("aria-selected")).toBe("true");
+  expect(shell?.querySelector('[role="tab"][aria-label="任务列表"]')?.getAttribute("aria-selected")).toBe("true");
   expect(shell?.querySelector('[aria-label="任务详情"]')?.textContent).toContain("侧边任务定位");
   expect(f.container.textContent).toContain("主对话");
   expect(shell?.querySelector(".right-sidebar-workspace__empty")).toBeNull();

@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { conversationRunEventSchema } from "./conversation.js";
 import { postTeamChatInputSchema, readTeamChatInputSchema, teamChatMessageSchema, teamChatPageSchema, teamChatCoordinationConversationInputSchema } from "./team-chat.js";
 
 let nextId = 0;
@@ -48,4 +49,11 @@ it("accepts only a scoped owner-conversation request and validates actual Run re
   expect(teamChatCoordinationConversationInputSchema.parse({ teamInstanceId, agentId: "default-agent" })).toEqual({ teamInstanceId, agentId: "default-agent" });
   expect(teamChatCoordinationConversationInputSchema.safeParse({ teamInstanceId: "invalid" }).success).toBe(false);
   expect(teamChatCoordinationConversationInputSchema.safeParse({ teamInstanceId, conversationId: teamInstanceId }).success).toBe(false);
+});
+
+it("accepts an optional group read invalidation without weakening other event validation", () => {
+  const event = { type: "collaboration.changed", conversationId: randomUUID(), teamInstanceId: randomUUID() };
+  expect(conversationRunEventSchema.parse(event)).toEqual(event);
+  expect(conversationRunEventSchema.parse({ ...event, reason: "read" })).toEqual({ ...event, reason: "read" });
+  expect(conversationRunEventSchema.safeParse({ ...event, reason: "unknown" }).success).toBe(false);
 });

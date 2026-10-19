@@ -37,6 +37,24 @@ describe("useProjectSessions", () => {
     act(() => { emit?.({ type: "conversation.updated", conversation: coordinator }); controller.updateSession(coordinator); });
     expect(controller.sessions.map(session => session.id)).toEqual([ordinary.id]);
   });
+  it("removes a provisional ordinary entry when it is identified as a background coordinator", async () => {
+    const provisional = createConversation();
+    const coordinator = { ...provisional, coordinationTeamInstanceId: crypto.randomUUID() };
+    let emit: ((event: ConversationRunEvent) => void) | undefined;
+    const client = { listConversationHierarchy: () => Promise.resolve([provisional]),
+      onConversationRunEvent: (listener: (event: ConversationRunEvent) => void) => { emit = listener; return () => {}; } } as unknown as AgentClient;
+    let controller!: ReturnType<typeof useProjectSessions>;
+    function Harness(): null { controller = useProjectSessions(client, null); return null; }
+    const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    await act(async () => { root?.render(<Harness />); await Promise.resolve(); });
+    expect(controller.sessions).toHaveLength(1);
+    act(() => emit?.({ type: "conversation.updated", conversation: coordinator }));
+    expect(controller.sessions).toHaveLength(0);
+    act(() => controller.updateSession(provisional));
+    expect(controller.sessions).toHaveLength(1);
+    act(() => controller.updateSession(coordinator));
+    expect(controller.sessions).toHaveLength(0);
+  });
   it("updates the visible conversation when its project changes", async () => {
     const conversation = createConversation();
     const projectId = "00000000-0000-4000-8000-000000000002";

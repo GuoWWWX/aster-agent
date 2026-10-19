@@ -72,6 +72,7 @@ export function TeamChatPanel({ agentClient, teamInstanceId, onOpenConversation,
     return () => { loadVersion.current += 1; };
   }, [load, active]);
   useEffect(() => agentClient.onConversationRunEvent(event => {
+    if (event.type === "collaboration.changed" && event.reason === "read") return;
     if (event.type !== "collaboration.changed" && event.type !== "run.finished" && event.type !== "run.started") return;
     const memberEvent = members.some(member => member.conversationId === event.conversationId);
     const relevant = event.type === "collaboration.changed"

@@ -293,7 +293,9 @@ describe("durable collaboration", () => {
     const reply = db.collaboration.postMessage({ teamInstanceId: instance.id, content: "Check", requestId: randomUUID(),
       replyToId: request.id, recipientConversationIds: [member.id] }, lead.id);
     expect(reply.rootMessageId).toBe(request.id); expect(reply.depth).toBe(1);
-    db.collaboration.markRead({ teamInstanceId: instance.id, throughSequence: reply.sequence }, null);
+    expect(db.collaboration.markRead({ teamInstanceId: instance.id, throughSequence: reply.sequence }, null)).toBe(true);
+    expect(db.collaboration.markRead({ teamInstanceId: instance.id, throughSequence: reply.sequence }, null)).toBe(false);
+    expect(db.collaboration.markRead({ teamInstanceId: instance.id, throughSequence: request.sequence }, null)).toBe(false);
     expect(db.collaboration.readMessages({ teamInstanceId: instance.id }).userReadSequence).toBe(reply.sequence);
   });
 });
