@@ -19,6 +19,16 @@ const updateSchema = z.object(updateTaskContextInputSchema.shape).omit({ convers
   expectedRevision: updateTaskContextInputSchema.shape.expectedRevision.describe("Use the existing task revision together with its id. Omit both only for a new task. If either field is missing, read the existing task; do not create another record for the same goal."),
   source: updateTaskContextInputSchema.shape.source.describe("Optional. For the current accepted request, omit source: the runtime binds its real original message. Never invent conversation/message IDs or use placeholders. When several independent requests share a Run or you select an earlier request, use its exact source from list_task_contexts/get_task_context; do not attach another task's latest input."),
 }).strict();
+const updateBatchSchema = z.object({ updates: z.array(updateSchema).min(1).max(20)
+  .describe("One entry per persistent task. Include every known field/status/evidence change for that task in the same entry. Use one entry for one task; batch independent tasks whose changes are already known.") }).strict().superRefine((input, context) => {
+  const seen = new Set<string>();
+  input.updates.forEach((update, index) => {
+    if (update.id === undefined) return;
+    if (seen.has(update.id)) context.addIssue({ code: "custom", path: ["updates", index, "id"],
+      message: "Combine all changes to the same task into one entry, with one expectedRevision." });
+    seen.add(update.id);
+  });
+});
 const postSchema = z.object(postTeamChatInputSchema.shape).omit({ teamInstanceId: true, requestId: true, coordinator: true, supersedesId: true }).extend({
   continueWork: z.boolean().optional().describe("Omit or use false for a finished public reply or delegation handoff: this ends the current group turn after the tool batch succeeds. Use true only for an interim progress update when you still need tools in this same turn. Complete intended local updates before the final publication; task completion and acceptance are separate."),
   fileReferences: postTeamChatInputSchema.shape.fileReferences.describe("Publish your own completed file with {path}, omitting sourceMessageId; forward another member's already-published file with {sourceMessageId,path}. The runtime preserves the original member's workspace, including repeated forwarding, and creates clickable file cards. The Team Lead delivers original member files after checking verification evidence, without copying, rewriting or rerunning completed checks. A legacy message containing only a Markdown link needs the original author to publish its file reference once; this requires no file edit. After a successful publication, do not publish the same result again to attach it to an older message: replyToId only identifies the discussion being answered."),
@@ -49,7 +59,7 @@ export class CollaborationTool {
     const result = [
       { name: "list_task_contexts", parameters: modelToolParameters(listSchema), description: "Find persistent tasks before creating a new task. Compare goals and acceptance criteria, not only titles. Results are scoped to the current project/team or conversation and paginated." },
       { name: "get_task_context", parameters: modelToolParameters(getTaskContextInputSchema), description: "Read a task's current summary, revision and paginated original message references. Continue with nextBeforeSourceSequence. Read full evidence with read_agent_conversation. A task can span several conversations and Runs." },
-      { name: "update_task_context", parameters: modelToolParameters(updateSchema), description: "Create a persistent task for a substantive new goal, or update the same task for progress/rework. List relevant tasks first. Existing tasks require id and expectedRevision; stale updates are rejected. Update only for material progress, decisions or next steps, not cosmetic summary rewrites. This binds subsequent work to the task; do not create tasks for greetings or acknowledgements. Preserve the original goal on follow-ups. Only the owner or Team Lead maintains the overall summary. completionRequested=true means the completion request succeeded and awaits user confirmation, even when status remains running. Do not resubmit completion or reset the status just to reconcile those fields. Report the returned state accurately. Never print internal task or message IDs in user-facing prose; use [Task name](task://id) or [Source message](message://id) so the UI renders the named task or original-message quote." },
+      { name: "update_task_context", parameters: modelToolParameters(updateBatchSchema), description: "Use updates:[{...}] to create or revise 1–20 persistent tasks atomically in one call. Combine all currently known changes to a task into one entry; never split status, summary, decisions and nextStep into separate calls or repeat an unchanged snapshot. If the result is already known, record it directly instead of creating a running placeholder then immediately completing it. Real later progress can be recorded in a later call. Include planned assignments in registration; after a handoff proceeds as planned, wait for a result instead of rewriting the same waiting status. When updating several existing tasks, omitted source preserves their existing references instead of binding the latest unrelated user input. One invalid/stale entry rolls back the whole batch; fix it and resubmit the intended batch. The result value.tasks returns every task ID/revision. Create a persistent task for a substantive new goal, or update the same task for progress/rework. List relevant tasks first. Existing tasks require id and expectedRevision; stale updates are rejected. Update only for material progress, decisions or next steps, not cosmetic summary rewrites. This binds subsequent work to the task; do not create tasks for greetings or acknowledgements. Preserve the original goal on follow-ups. Only the owner or Team Lead maintains the overall summary. completionRequested=true means the completion request succeeded and awaits user confirmation, even when status remains running. Do not resubmit completion or reset the status just to reconcile those fields. Report the returned state accurately. Never print internal task or message IDs in user-facing prose; use [Task name](task://id) or [Source message](message://id) so the UI renders the named task or original-message quote." },
       { name: "link_task_context", parameters: modelToolParameters(linkTaskContextInputSchema), description: "Associate a verified existing message with a task, including another conversation in the same project/team. Members link progress and verification evidence without overwriting the overall summary. Never fabricate message identifiers." },
     ];
     if (team) result.push(
@@ -109,43 +119,54 @@ export class CollaborationTool {
           result = detail; break;
         }
         case "update_task_context": {
-          const parsed = updateTaskContextInputSchema.parse({ ...updateSchema.parse(args), conversationId: conversation.id, requestId });
-          if (parsed.source?.kind === "conversation" && !this.database.hasConversation(parsed.source.containerId)) {
-            throw new ToolArgumentsError("任务来源对话不存在，请修正 source.containerId；记录当前请求时可省略 source，由后台绑定原消息。", [{
-              code: "source_conversation_not_found", path: ["source", "containerId"],
-              message: "Use an existing conversation ID, never a placeholder. For the current request, omit source; for an earlier or independent request, use its exact source.",
-            }]);
-          }
-          if (parsed.source?.kind === "conversation" && parsed.source.containerId === conversation.id
-            && this.database.listPendingMessages(conversation.id).some(message => message.id === parsed.source?.messageId)) {
-            throw new ToolArgumentsError("Queued input has not been consumed as a conversation message.", [{
-              code: "pending_input", path: ["source", "messageId"],
-              message: "Call claim_pending_messages, then wait for the original user input before updating this task. Do not omit the source or substitute another message.",
-            }]);
-          }
-          const boundTasks = parsed.id === undefined ? [] : store.runTasks(input.runId);
-          const ambiguousInput = boundTasks.length > 1 && boundTasks.some(task => task.id === parsed.id);
-          const source = parsed.source === undefined && !ambiguousInput ? this.database.listTimeline(conversation.id, input.runId)
-            .findLast(item => item.kind === "message" && item.role === "user") : undefined;
-          const groupSource = store.runMessages(input.runId)[0];
+          const batch = "updates" in args;
+          const updates = batch ? updateBatchSchema.parse(args).updates : [updateSchema.parse(args)];
+          const boundTasks = store.runTasks(input.runId);
+          const groupMessages = store.runMessages(input.runId);
           const managed = this.database.getRunningTeamWorkItemByExecutionTreeConversation(conversation.id);
-          let task: TaskContext;
+          if (managed !== null && updates.length > 1) throw new ToolArgumentsError("Managed WorkItems have their own lifecycle.", [{
+            code: "managed_task_batch", path: ["updates"], message: "Use the existing WorkItem lifecycle; do not create parallel persistent records for its steps.",
+          }]);
+          const prepared = updates.map((update, index) => {
+            const parsed = updateTaskContextInputSchema.parse({ ...update, conversationId: conversation.id,
+              requestId: batch ? `${requestId}:${index}` : requestId });
+            const prefix = batch ? ["updates", index] : [];
+            if (parsed.source?.kind === "conversation" && !this.database.hasConversation(parsed.source.containerId)) {
+              throw new ToolArgumentsError("任务来源对话不存在，请修正 source.containerId；记录当前请求时可省略 source，由后台绑定原消息。", [{
+                code: "source_conversation_not_found", path: [...prefix, "source", "containerId"],
+                message: "Use an existing conversation ID, never a placeholder. For the current request, omit source; for an earlier or independent request, use its exact source.",
+              }]);
+            }
+            if (parsed.source?.kind === "conversation" && parsed.source.containerId === conversation.id
+              && this.database.listPendingMessages(conversation.id).some(message => message.id === parsed.source?.messageId)) {
+              throw new ToolArgumentsError("Queued input has not been consumed as a conversation message.", [{
+                code: "pending_input", path: [...prefix, "source", "messageId"],
+                message: "Call claim_pending_messages, then wait for the original user input before updating this task. Do not omit the source or substitute another message.",
+              }]);
+            }
+            const ambiguousInput = (boundTasks.length > 1 && boundTasks.some(task => task.id === parsed.id))
+              || (batch && updates.length > 1 && parsed.id !== undefined);
+            const source = parsed.source === undefined && !ambiguousInput ? this.database.listTimeline(conversation.id, input.runId)
+              .findLast(item => item.kind === "message" && item.role === "user") : undefined;
+            const groupSource = batch && updates.length > 1 && parsed.id !== undefined ? undefined : groupMessages[0];
+            return { ...parsed, ...(parsed.source !== undefined ? {} : groupSource !== undefined ? {
+              source: { kind: "group" as const, containerId: groupSource.teamInstanceId, messageId: groupSource.id, runId: input.runId, purpose: "request" as const },
+            } : source === undefined ? {} : { source: { kind: "conversation" as const, containerId: conversation.id, messageId: source.id, runId: input.runId, purpose: "request" as const } }) };
+          });
+          let tasks: TaskContext[];
           try {
-            task = parsed.id === undefined && managed !== null ? store.getTask(managed.id).task : store.updateTask({ ...parsed, conversationId: conversation.id, requestId,
-              ...(parsed.source !== undefined ? {} : groupSource !== undefined ? { source: { kind: "group", containerId: groupSource.teamInstanceId, messageId: groupSource.id, runId: input.runId, purpose: "request" } } : source === undefined ? {} : { source: { kind: "conversation", containerId: conversation.id, messageId: source.id, runId: input.runId, purpose: "request" } }) }, "agent");
+            tasks = store.updateTasks(prepared, "agent", { runId: input.runId,
+              ...(managed === null ? {} : { managedTaskId: managed.id }), sources: groupMessages.map(message => ({
+                kind: "group", containerId: message.teamInstanceId, messageId: message.id, runId: input.runId, purpose: "request",
+              })) });
           } catch (error) {
             if (!(error instanceof CollaborationError) || error.details.reason !== "TASK_SOURCE_NOT_FOUND") throw error;
             throw new ToolArgumentsError("任务来源消息不存在，请修正 source.messageId；不要把占位 ID 当作真实消息。", [{
-              code: "source_message_not_found", path: ["source", "messageId"],
+              code: "source_message_not_found", path: [...(batch ? ["updates", error.details.updateIndex ?? 0] : []), "source", "messageId"],
               message: "Use the exact original message ID. For the current request, omit source; for an earlier or independent request, read its actual source first. Never substitute another task's message.",
             }]);
           }
-          result = task;
-          store.bindTask(input.runId, task.id, conversation.id);
-          for (const message of store.runMessages(input.runId)) store.linkTask({ id: task.id, source: {
-            kind: "group", containerId: message.teamInstanceId, messageId: message.id, runId: input.runId, purpose: "request",
-          } });
-          if (source !== undefined) store.linkTask({ id: task.id, source: { kind: "conversation", containerId: conversation.id, messageId: source.id, runId: input.runId, purpose: "request" } });
+          result = batch ? { tasks } : tasks[0];
           input.changed(); break;
         }
         case "link_task_context": {

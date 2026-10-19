@@ -6,7 +6,7 @@ export class CollaborationError extends Error {
   public readonly id = randomUUID();
   public readonly code: AgentErrorCode;
   public readonly retryable: boolean;
-  public readonly details: { operation: string; reason: string };
+  public readonly details: { operation: string; reason: string; updateIndex?: number };
   public constructor(reason: string, message: string) {
     super(`${reason}: ${message}`);
     this.code = reason.endsWith("NOT_FOUND") ? "ARTIFACT_NOT_FOUND"
