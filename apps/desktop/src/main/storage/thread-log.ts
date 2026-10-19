@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   closeSync,
@@ -59,6 +59,7 @@ type ContextIndex = {
   locations: ContextLocation[];
   cursor: ThreadLogScanCursor | null;
   skills: Map<string, ThreadLogSkillSnapshot & { runId: string | null }>;
+  coveredSearch?: { key: string; hits: { position: number; start: number }[] };
 };
 
 /**
@@ -453,20 +454,36 @@ export class ThreadLog {
     const index = this.contextIndex(conversationId);
     if (index === null) return [];
     const covered = index.context.checkpoint?.coveredThroughSequence ?? 0;
-    const positions = index.context.messages.flatMap((message, position) =>
-      message.sequence <= covered && message.role !== "tool" ? [position] : []).slice(-1_000).reverse();
+    const positions: number[] = [];
+    const fingerprint = createHash("sha256").update(JSON.stringify([terms, covered]));
+    for (let position = index.context.messages.length - 1; position >= 0 && positions.length < 1_000; position -= 1) {
+      const message = index.context.messages[position]!;
+      if (message.sequence > covered || message.role === "tool") continue;
+      positions.push(position);
+      const location = index.locations[position]!;
+      fingerprint.update(JSON.stringify([position, message.sequence, location.record.offset, location.record.length, location.legacyIndex]));
+    }
+    const key = fingerprint.digest("hex");
+    const previous = index.coveredSearch;
+    if (previous?.key === key) {
+      return [...this.readContextLocations(conversationId, index, previous.hits.map(hit => hit.position))]
+        .map((message, offset) => coveredContextExcerpt(message, previous.hits[offset]!.start)).reverse();
+    }
     const matches: ThreadLogContextMessage[] = [];
+    const hits: { position: number; start: number }[] = [];
+    let candidate = 0;
     for (const message of this.readContextLocations(conversationId, index, positions)) {
+      const position = positions[candidate++]!;
       const text = message.content.toLowerCase();
       const hit = terms.map((term) => text.indexOf(term)).find((offset) => offset >= 0) ?? -1;
       if (hit >= 0) {
         const start = Math.max(0, hit - 1_000);
-        const match = { ...message, content: `${start > 0 ? "…" : ""}${message.content.slice(start, start + 4_000)}${start + 4_000 < message.content.length ? "…" : ""}`, toolCalls: [] };
-        delete match.providerState;
-        matches.push(match);
+        hits.push({ position, start });
+        matches.push(coveredContextExcerpt(message, start));
         if (matches.length === 24) break;
       }
     }
+    index.coveredSearch = { key, hits };
     return matches.reverse();
   }
 
@@ -698,6 +715,12 @@ export class ThreadLog {
       }
     }
   }
+}
+
+function coveredContextExcerpt(message: ThreadLogContextMessage, start: number): ThreadLogContextMessage {
+  const match = { ...message, content: `${start > 0 ? "…" : ""}${message.content.slice(start, start + 4_000)}${start + 4_000 < message.content.length ? "…" : ""}`, toolCalls: [] };
+  delete match.providerState;
+  return match;
 }
 
 function touchCacheEntry<K, V>(cache: Map<K, V>, key: K, value: V): void {
