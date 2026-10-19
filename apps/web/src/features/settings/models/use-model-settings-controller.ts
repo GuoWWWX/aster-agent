@@ -1,3 +1,4 @@
+import { getModelSettingsSaveQueue } from "./model-settings-save-queue.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import {
   DEFAULT_MODEL_CATALOG,
@@ -30,6 +31,12 @@ import {
   isOptionalUrlValid,
 } from "./model-provider-state.js";
 import { errorMessage } from "../configuration-state.js";
+
+type PendingModelSave = {
+  input: SaveModelConfigurationInput | null;
+  revision: number;
+  creationOwner: object;
+};
 
 export function useModelSettingsController({ agentClient }: { agentClient: AgentClient }) {
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>([]);
@@ -69,7 +76,11 @@ export function useModelSettingsController({ agentClient }: { agentClient: Agent
   const handledSaveRevisionRef = useRef(0);
   const latestSaveRevisionRef = useRef(0);
   const selectedProviderIdRef = useRef<string | null>(null);
-  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const saveQueue = getModelSettingsSaveQueue(agentClient);
+  const mountedRef = useRef(false);
+  const pendingAutoSaveRef = useRef<PendingModelSave | null>(null);
+  const newProviderOwnerRef = useRef<object>({});
+  const autoSaveTimerRef = useRef<number | null>(null);
   const nextModelDraftIdRef = useRef(1);
   const newModelContextDefaultIdsRef = useRef(new Set<string>());
   const newModelReasoningDefaultIdsRef = useRef(new Set<string>());
@@ -92,12 +103,13 @@ export function useModelSettingsController({ agentClient }: { agentClient: Agent
 
   useEffect(() => {
     let disposed = false;
-    void loadModelStatus(agentClient)
+    void saveQueue.waitForIdle().then(() => loadModelStatus(agentClient))
       .then((nextStatus) => {
         if (disposed) return;
         setStatus(nextStatus);
+        const failedDraft = saveQueue.lastFailedDraft();
         setActiveProviderId((current) => current === undefined
-          ? nextStatus.providerId ?? getConfiguredProviders(nextStatus.models)[0]?.id ?? null
+          ? failedDraft === null ? nextStatus.providerId ?? getConfiguredProviders(nextStatus.models)[0]?.id ?? null : failedDraft.providerId ?? null
           : current);
       })
       .catch(() => {
@@ -106,7 +118,7 @@ export function useModelSettingsController({ agentClient }: { agentClient: Agent
     return () => {
       disposed = true;
     };
-  }, [agentClient]);
+  }, [agentClient, saveQueue]);
 
   useEffect(() => {
     let disposed = false;
@@ -219,52 +231,69 @@ export function useModelSettingsController({ agentClient }: { agentClient: Agent
     autoSaveInputRef.current = autoSaveInput;
   }, [autoSaveInput]);
 
-  useEffect(() => {
-    if (saveRevision === 0 || handledSaveRevisionRef.current === saveRevision) {
+  const saveSnapshot = useCallback((snapshot: PendingModelSave): void => {
+    if (snapshot.input === null) {
+      if (mountedRef.current) setProviderSaveState("incomplete");
       return;
     }
-    handledSaveRevisionRef.current = saveRevision;
-    const revision = saveRevision;
-    const input = autoSaveInputRef.current;
-    const timer = window.setTimeout(() => {
-      if (input === null) {
-        setProviderSaveState("incomplete");
-        return;
+    const input = snapshot.input;
+    const isCurrentEditor = (): boolean => mountedRef.current
+      && selectedProviderIdRef.current === (input.providerId ?? null)
+      && (input.providerId !== undefined || snapshot.creationOwner === newProviderOwnerRef.current);
+    if (isCurrentEditor()) setProviderSaveState("saving");
+    void saveQueue.saveProvider(input, snapshot.creationOwner).then(nextStatus => {
+      if (!mountedRef.current) return;
+      setStatus(nextStatus);
+      if (!isCurrentEditor()) return;
+      if (input.providerId === undefined && latestSaveRevisionRef.current === snapshot.revision) {
+        const savedProviderId = saveQueue.createdProviderFor(snapshot.creationOwner);
+        if (savedProviderId !== null) setActiveProviderId(savedProviderId);
       }
-      setProviderSaveState("saving");
-      saveQueueRef.current = saveQueueRef.current
-        .catch(() => undefined)
-        .then(async () => {
-          const nextStatus = await agentClient.saveModelConfiguration(input);
-          setStatus(rememberModelStatus(agentClient, nextStatus));
-          if (selectedProviderIdRef.current === null) {
-            const savedProviderId = nextStatus.models.find((model) =>
-              model.providerName === input.providerName &&
-              model.modelId === input.models[0]?.modelId
-            )?.providerId;
-            if (savedProviderId !== undefined) setActiveProviderId(savedProviderId);
-          }
-          if (latestSaveRevisionRef.current === revision) {
-            setOperationError(null);
-            setProviderSaveState("saved");
-          }
-        })
-        .catch(() => {
-          if (latestSaveRevisionRef.current === revision) {
-            setOperationError("模型配置更新失败");
-            setProviderSaveState("idle");
-          }
-        });
+      if (latestSaveRevisionRef.current === snapshot.revision) {
+        setOperationError(null);
+        setProviderSaveState("saved");
+      }
+    }).catch(() => {
+      if (isCurrentEditor() && latestSaveRevisionRef.current === snapshot.revision) {
+        setOperationError("模型配置更新失败");
+        setProviderSaveState("idle");
+      }
+    });
+  }, [saveQueue]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (autoSaveTimerRef.current !== null) window.clearTimeout(autoSaveTimerRef.current);
+      const pending = pendingAutoSaveRef.current;
+      pendingAutoSaveRef.current = null;
+      if (pending !== null) saveSnapshot(pending);
+    };
+  }, [saveSnapshot]);
+
+  useEffect(() => {
+    if (saveRevision === 0 || handledSaveRevisionRef.current === saveRevision) return;
+    handledSaveRevisionRef.current = saveRevision;
+    const snapshot = { input: autoSaveInputRef.current, revision: saveRevision, creationOwner: newProviderOwnerRef.current };
+    pendingAutoSaveRef.current = snapshot;
+    const timer = window.setTimeout(() => {
+      autoSaveTimerRef.current = null;
+      if (pendingAutoSaveRef.current !== snapshot) return;
+      pendingAutoSaveRef.current = null;
+      saveSnapshot(snapshot);
     }, 450);
+    autoSaveTimerRef.current = timer;
     return () => window.clearTimeout(timer);
-  }, [agentClient, saveRevision]);
+  }, [saveRevision, saveSnapshot]);
 
   useEffect(() => {
     if (!isGlobalContextCompressionLoaded) return;
     const provider = activeProviderRef.current;
-    if (provider === null) return;
+    const failedDraft = saveQueue.failedDraftFor(provider?.id ?? null);
+    if (provider === null && failedDraft === null) return;
     let disposed = false;
-    const providerModels = savedProviderModelsRef.current;
+    const providerModels = failedDraft?.models ?? savedProviderModelsRef.current;
     const modelDrafts = providerModels.map((model) => ({
       ...(model.modelType === undefined ? {} : { modelType: model.modelType }),
       contextCompression: model.contextCompression
@@ -276,17 +305,21 @@ export function useModelSettingsController({ agentClient }: { agentClient: Agent
       reasoningOptions: model.reasoningOptions,
     }));
     setDraft({
-      apiKey: "",
-      apiFormat: provider.apiFormat,
-      baseUrl: provider.baseUrl,
-      providerIcon: provider.icon,
-      providerName: provider.name,
-      providerNote: provider.note,
-      providerWebsiteUrl: provider.websiteUrl,
+      apiKey: failedDraft?.apiKey ?? "",
+      apiFormat: failedDraft?.apiFormat ?? provider!.apiFormat,
+      baseUrl: failedDraft?.baseUrl ?? provider!.baseUrl,
+      providerIcon: failedDraft?.providerIcon ?? provider?.icon ?? "auto",
+      providerName: failedDraft?.providerName ?? provider!.name,
+      providerNote: failedDraft?.providerNote ?? provider?.note ?? "",
+      providerWebsiteUrl: failedDraft?.providerWebsiteUrl ?? provider?.websiteUrl ?? "",
     });
     setConfiguredModelDrafts(modelDrafts);
     setEditingReasoningModelId(null);
     setModelTestResults({});
+
+    setOperationError(failedDraft === null ? null : "模型配置更新失败");
+    setProviderSaveState("idle");
+    if (failedDraft !== null || provider === null) return;
 
     void agentClient
       .getModelApiKey(provider.id)
@@ -303,7 +336,7 @@ export function useModelSettingsController({ agentClient }: { agentClient: Agent
     return () => {
       disposed = true;
     };
-  }, [activeProviderId, agentClient, isGlobalContextCompressionLoaded]);
+  }, [activeProviderId, agentClient, isGlobalContextCompressionLoaded, saveQueue]);
 
   function updateDraft(event: ChangeEvent<HTMLInputElement>): void {
     setDraft((current) => ({ ...current, [event.target.name]: event.target.value }));
@@ -409,6 +442,7 @@ export function useModelSettingsController({ agentClient }: { agentClient: Agent
   }
 
   function createProvider(): void {
+    newProviderOwnerRef.current = {};
     setActiveProviderId(null);
     setIsApiKeyVisible(false);
     setDiscoveredModels([]);
@@ -431,12 +465,16 @@ export function useModelSettingsController({ agentClient }: { agentClient: Agent
   }
 
   async function deleteProvider(providerId: string): Promise<void> {
+    if (pendingAutoSaveRef.current?.input?.providerId === providerId) {
+      pendingAutoSaveRef.current = null;
+      if (autoSaveTimerRef.current !== null) window.clearTimeout(autoSaveTimerRef.current);
+    }
     setDeletingProviderId(providerId);
     setOperationError(null);
     try {
-      await saveQueueRef.current.catch(() => undefined);
-      const nextStatus = await agentClient.deleteModelProvider(providerId);
-      setStatus(rememberModelStatus(agentClient, nextStatus));
+      const nextStatus = await saveQueue.deleteProvider(providerId);
+      if (!mountedRef.current) return;
+      setStatus(nextStatus);
       if (selectedProviderId === providerId) {
         setProviderPage(0);
         setProviderSearchQuery("");
@@ -445,9 +483,9 @@ export function useModelSettingsController({ agentClient }: { agentClient: Agent
         else setActiveProviderId(nextProvider);
       }
     } catch (reason) {
-      setOperationError(errorMessage(reason));
+      if (mountedRef.current) setOperationError(errorMessage(reason));
     } finally {
-      setDeletingProviderId(null);
+      if (mountedRef.current) setDeletingProviderId(null);
     }
   }
 
@@ -529,19 +567,18 @@ export function useModelSettingsController({ agentClient }: { agentClient: Agent
   async function setDefaultModel(model: ModelProfile): Promise<void> {
     setIsDefaultModelSaving(true);
     setOperationError(null);
-    const queuedSave = saveQueueRef.current
-      .catch(() => undefined)
-      .then(() => agentClient.setDefaultModel({
-        modelId: model.modelId,
-        providerId: model.providerId,
-      }));
-    saveQueueRef.current = queuedSave.then(() => undefined, () => undefined);
+    const pending = pendingAutoSaveRef.current;
+    pendingAutoSaveRef.current = null;
+    if (autoSaveTimerRef.current !== null) window.clearTimeout(autoSaveTimerRef.current);
+    if (pending !== null) saveSnapshot(pending);
+    const queuedSave = saveQueue.setDefaultModel({ modelId: model.modelId, providerId: model.providerId });
     try {
-      setStatus(rememberModelStatus(agentClient, await queuedSave));
+      const nextStatus = await queuedSave;
+      if (mountedRef.current) setStatus(nextStatus);
     } catch {
-      setOperationError("默认模型更新失败");
+      if (mountedRef.current) setOperationError("默认模型更新失败");
     } finally {
-      setIsDefaultModelSaving(false);
+      if (mountedRef.current) setIsDefaultModelSaving(false);
     }
   }
   return {
