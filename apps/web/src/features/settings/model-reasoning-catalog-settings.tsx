@@ -8,7 +8,7 @@ import { IconButton } from "../../components/ui/icon-button.js";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../components/ui/dialog.js";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "../../components/ui/select.js";
 import { ModelReasoningOptionsEditor } from "./model-reasoning-options-editor.js";
-import { SettingsConfigurationGroup } from "./settings-configuration-card.js";
+import { SettingsConfigurationGroup } from "./components/settings-configuration-card.js";
 import { createReasoningCatalogDraft, reasoningCatalogModels, reasoningCatalogModelMatchesSearch, REASONING_API_FORMATS, type ReasoningCatalogDraft, type ReasoningCatalogModel } from "./model-reasoning-catalog-draft.js";
 import { ReasoningProviderDialog, ReasoningProviderLogo } from "./reasoning-provider-dialog.js";
 

@@ -331,6 +331,46 @@ describe("SettingsWorkspace", () => {
     expect(save.mock.calls.at(-1)?.[0].models[0]?.contextWindow).toBe(tokens);
   });
 
+  it("shares the save queue across model regions without replacing focused fields or disclosure state", async () => {
+    const client = new MockAgentClient();
+    await client.saveModelConfiguration(saveModelConfigurationInputSchema.parse({
+      apiKey: "example-key", apiFormat: "openai-responses", baseUrl: "https://example.com/v1",
+      providerName: "Example", models: [{ modelId: "example-model", displayName: "Example model", contextWindow: 128000, reasoningOptions: [] }],
+    }));
+    const save = vi.spyOn(client, "saveModelConfiguration");
+    useWorkbenchUiStore.setState({ settingsSection: "models" });
+    const container = await renderSettings(client);
+    const providerName = container.querySelector<HTMLInputElement>('input[name="providerName"]')!;
+    const modelName = container.querySelector<HTMLInputElement>('input[aria-label="example-model的模型名称"]')!;
+    const disclosure = container.querySelector<HTMLDetailsElement>(".settings-model-disclosure")!;
+    act(() => {
+      disclosure.open = true;
+      disclosure.dispatchEvent(new Event("toggle"));
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(providerName, "Renamed provider");
+      providerName.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => {
+      modelName.focus();
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(modelName, "Renamed model");
+      modelName.dispatchEvent(new Event("input", { bubbles: true }));
+      useWorkbenchUiStore.setState({ settingsNavigationWidth: 260 });
+    });
+
+    expect(container.querySelector('input[aria-label="example-model的模型名称"]')).toBe(modelName);
+    expect(document.activeElement).toBe(modelName);
+    expect(disclosure.open).toBe(true);
+    await act(async () => {
+      await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1), { timeout: 2000 });
+    });
+    expect(save.mock.calls[0]?.[0]).toMatchObject({
+      providerName: "Renamed provider",
+      models: [{ modelId: "example-model", displayName: "Renamed model" }],
+    });
+    expect(container.querySelector('input[aria-label="example-model的模型名称"]')).toBe(modelName);
+    expect(document.activeElement).toBe(modelName);
+    expect(disclosure.open).toBe(true);
+  });
+
   it("keeps model connection status and actions in the collapsed title", async () => {
     const client = new MockAgentClient();
     await client.saveModelConfiguration(saveModelConfigurationInputSchema.parse({

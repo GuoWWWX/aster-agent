@@ -5,8 +5,8 @@ import { LoadingState } from "../../components/ui/loading.js";
 import { IconButton } from "../../components/ui/icon-button.js";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select.js";
 import { getUserErrorMessage, type AgentClient } from "../../runtime/index.js";
-import { SettingsConfigurationGroup } from "./settings-configuration-card.js";
-import { SettingsSectionHeader } from "./settings-section-header.js";
+import { SettingsConfigurationGroup } from "./components/settings-configuration-card.js";
+import { SettingsSectionHeader } from "./components/settings-section-header.js";
 import { useQueuedAutoSave } from "./use-queued-auto-save.js";
 const errorMessage = (reason: unknown): string => getUserErrorMessage(reason, "电脑控制操作失败。");
 

@@ -15,6 +15,8 @@ beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   useWorkbenchUiStore.setState({
     activeActivity: "conversations",
+    agentPromptWorkspaceTarget: null,
+    configurationWorkspaceTarget: null,
     filePanelOpenByConversationId: {},
     filePanelWidth: 520,
     filePanelWidthsByConversationId: {},
@@ -621,6 +623,96 @@ describe("AppShell", () => {
 
     act(() => renderShell("conversation-b"));
     expect(rightPanel()?.style.width).toBe("960px");
+  });
+
+  it("preserves the shared frame and independent sidebar preferences across workspace navigation", () => {
+    useWorkbenchUiStore.setState({
+      agentPromptWorkspaceTarget: { agentId: "agent-1", title: "Agent 提示词" },
+      filePanelOpenByConversationId: { "conversation-a": true },
+      filePanelWidthsByConversationId: { "conversation-a": 640 },
+      settingsSection: "agents",
+    });
+    const onPanelMount = vi.fn();
+    const onPanelUnmount = vi.fn();
+    function StatefulFilePanel(): ReactElement {
+      const [tab, setTab] = useState("终端");
+      useEffect(() => { onPanelMount(); return onPanelUnmount; }, []);
+      return <button type="button" onClick={() => setTab("README.md")}>{tab}</button>;
+    }
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() => root?.render(
+      <TooltipProvider>
+        <AppShell activeConversationId="conversation-a" agentClient={new MockAgentClient()}
+          filePanel={<StatefulFilePanel />} mainContent={<div>页面内容</div>}
+          projectNavigator={<input aria-label="搜索对话" defaultValue="保留搜索词" />} />
+      </TooltipProvider>,
+    ));
+    const shell = container.querySelector<HTMLElement>(".app-shell")!;
+    const titlebar = container.querySelector<HTMLElement>(".app-titlebar")!;
+    const activityBar = container.querySelector<HTMLElement>(".activity-bar")!;
+    const navigator = container.querySelector<HTMLElement>(".workbench-sidebar--left")!;
+    const rightPanel = container.querySelector<HTMLElement>(".workbench-sidebar--right")!;
+    const click = (label: string): void => {
+      const button = container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`);
+      expect(button).not.toBeNull();
+      act(() => button?.click());
+    };
+    const expectSharedFrame = (): void => {
+      expect(container.querySelector(".app-shell")).toBe(shell);
+      expect(container.querySelector(".app-titlebar")).toBe(titlebar);
+      expect(container.querySelector(".activity-bar")).toBe(activityBar);
+      expect(container.querySelector(".workbench-sidebar--left")).toBe(navigator);
+      expect(container.querySelector(".workbench-sidebar--right")).toBe(rightPanel);
+      expect(shell.dataset.theme).toBe("dark");
+      expect(document.documentElement.dataset.theme).toBe("dark");
+      expect(rightPanel.querySelector("button")?.textContent).toBe("README.md");
+      expect(container.querySelector<HTMLInputElement>('[aria-label="搜索对话"]')?.value).toBe("保留搜索词");
+      expect(onPanelMount).toHaveBeenCalledOnce();
+      expect(onPanelUnmount).not.toHaveBeenCalled();
+    };
+    act(() => rightPanel.querySelector("button")?.click());
+    click("切换为深色主题");
+    expect(rightPanel.style.width).toBe("640px");
+
+    click("设置");
+    expectSharedFrame();
+    expect(navigator.hidden).toBe(true);
+    expect(rightPanel.hidden).toBe(true);
+    click("展开右侧工作区");
+    expect(rightPanel.style.width).toBe("520px");
+    act(() => {
+      container.querySelector('[aria-label="调整右侧工作区宽度"]')?.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "End" }),
+      );
+    });
+    expect(rightPanel.style.width).toBe("960px");
+    expect(useWorkbenchUiStore.getState().filePanelWidthsByConversationId["conversation-a"]).toBe(640);
+
+    for (const activity of ["tasks", "schedules"] as const) {
+      act(() => useWorkbenchUiStore.getState().setActiveActivity(activity));
+      expectSharedFrame();
+      expect(navigator.hidden).toBe(true);
+      expect(rightPanel.hidden).toBe(true);
+      expect(container.querySelector('[aria-label="展开右侧工作区"]')?.hasAttribute("disabled")).toBe(true);
+    }
+    click("对话");
+    expectSharedFrame();
+    expect(navigator.hidden).toBe(false);
+    expect(rightPanel.hidden).toBe(false);
+    expect(rightPanel.style.width).toBe("640px");
+
+    click("设置");
+    expectSharedFrame();
+    expect(rightPanel.hidden).toBe(false);
+    expect(rightPanel.style.width).toBe("960px");
+    click("收起右侧工作区");
+    click("对话");
+    expectSharedFrame();
+    expect(rightPanel.hidden).toBe(false);
+    expect(rightPanel.style.width).toBe("640px");
+    expect(useWorkbenchUiStore.getState().isSettingsFilePanelOpen).toBe(false);
   });
 
   it.each(["settings", "team", "tasks", "schedules"] as const)("keeps the titlebar stable while hiding the navigator on %s", async (activity) => {

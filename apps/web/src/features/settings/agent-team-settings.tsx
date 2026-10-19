@@ -38,8 +38,8 @@ import {
   type AgentTeam,
 } from "../../stores/agent-directory-store.js";
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
-import { SettingsCategoryHeading, SettingsConfigurationGroup } from "./settings-configuration-card.js";
-import { SettingsDirectoryDeleteButton } from "./settings-directory-delete-button.js";
+import { SettingsCategoryHeading, SettingsConfigurationGroup } from "./components/settings-configuration-card.js";
+import { SettingsDirectoryDeleteButton } from "./components/settings-directory-delete-button.js";
 import { AgentAvatar } from "../team/agent-avatar.js";
 import { AgentAvatarPicker } from "./agent-avatar-picker.js";
 import "./agent-team-settings.css";
