@@ -250,4 +250,3 @@ export function openAiChatReasoningByAssistant(input: CompleteTurnInput): Array<
     return [reasoning === null || reasoning.length === 0 ? null : reasoning];
   });
 }
-
