@@ -306,7 +306,7 @@ it("switches particles on real events while preserving the work-process lifecycl
   });
   const emit = (event: ConversationRunEvent) => { act(() => { listeners.forEach(listener => listener(event)); }); };
   const header = () => container.querySelector<HTMLButtonElement>(".conversation-run-activity > button");
-  const phase = () => header()?.querySelector("[data-model-working]")?.getAttribute("data-phase");
+  const phase = () => container.querySelector(".conversation-work-tail [data-model-working]")?.getAttribute("data-phase");
   emit({ type: "model.request_started", conversationId: PARENT_ID, runId: RUN_ID });
   expect(phase()).toBe("thinking");
   const tool: ConversationToolItem = { id: TOOL_ID, kind: "tool", conversationId: PARENT_ID, runId: RUN_ID, batchId: null,

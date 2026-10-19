@@ -36,6 +36,23 @@ async function render(client: MockAgentClient, activeRunId: string | null): Prom
 }
 const header = (): HTMLButtonElement => container.querySelector<HTMLButtonElement>(".conversation-run-activity > button")!;
 
+it("keeps the working particles after the latest output instead of in the process heading", async () => {
+  const client = new MockAgentClient();
+  let emit: (event: ConversationRunEvent) => void = () => {};
+  vi.spyOn(client, "onConversationRunEvent").mockImplementation(callback => { emit = callback; return () => {}; });
+  const history = vi.spyOn(client, "listConversationTimeline").mockResolvedValue([tool, answer]);
+  await render(client, runId);
+  expect(header().querySelector("[data-model-working]")).toBeNull();
+  const tail = container.querySelector(".conversation-work-tail")!;
+  const output = container.querySelector('.chat-message-group[data-role="assistant"]')!;
+  expect(output.compareDocumentPosition(tail) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(container.querySelectorAll(".conversation-workspace__messages [data-model-working]")).toHaveLength(1);
+  expect(tail.querySelector('[data-model-working][data-phase="writing"]')).not.toBeNull();
+  history.mockResolvedValue([tool, { ...answer, status: "completed" }]);
+  await act(async () => { emit({ type: "run.finished", conversationId, runId, status: "completed", error: null }); await flush(); });
+  expect(container.querySelector(".conversation-work-tail")).toBeNull();
+});
+
 it("restores all inspection images in tool details without creating a final presentation", async () => {
   const client = new MockAgentClient();
   const images = Array.from({ length: 3 }, (_, index) => ({ id: crypto.randomUUID(), conversationId, messageId: tool.id,
@@ -71,7 +88,8 @@ it("animates only the latest work segment across compaction and a new input, inc
     expect(processes[0]!.querySelector("button")?.disabled).toBe(false);
     expect(processes[1]!.querySelector("button")?.disabled).toBe(true);
     expect(container.querySelectorAll(".conversation-workspace__messages [data-model-working]")).toHaveLength(1);
-    expect(processes[1]!.querySelector("[data-model-working]")).not.toBeNull();
+    expect(processes[1]!.querySelector("[data-model-working]")).toBeNull();
+    expect(container.querySelector(".conversation-work-tail [data-model-working]")).not.toBeNull();
   };
   assertLatestOnly();
   await act(async () => { emit({ type: "model.request_started", conversationId, runId }); await flush(); });
@@ -105,7 +123,7 @@ it("moves the only working indicator to a new input before that input has any to
   await act(async () => { emit({ type: "model.request_started", conversationId, runId }); await flush(); });
   expect(container.querySelector(".conversation-run-activity [data-model-working]")).toBeNull();
   expect(container.querySelectorAll(".conversation-workspace__messages [data-model-working]")).toHaveLength(1);
-  expect(container.querySelector(".conversation-run-progress [data-model-working]")).not.toBeNull();
+  expect(container.querySelector(".conversation-work-tail [data-model-working]")).not.toBeNull();
 });
 
 it("keeps an outstanding approval actionable when a later input owns the only working indicator", async () => {
@@ -120,6 +138,7 @@ it("keeps an outstanding approval actionable when a later input owns the only wo
   const allow = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(button => button.textContent?.includes("允许一次"));
   expect(allow).toBeDefined(); expect(allow?.disabled).toBe(false);
   expect(container.querySelectorAll(".conversation-workspace__messages [data-model-working]")).toHaveLength(1);
+  expect(container.querySelector('.conversation-work-tail [data-phase="thinking"]')).not.toBeNull();
 });
 
 it("keeps the only working indicator after an incoming group receipt while preserving earlier tools", async () => {
