@@ -43,6 +43,7 @@ export function ImagePreviewViewer({
   fileName,
   hasNext,
   hasPrevious,
+  navigationPending = false,
   total,
   onNext,
   onPrevious,
@@ -53,6 +54,7 @@ export function ImagePreviewViewer({
   fileName: string;
   hasNext: boolean;
   hasPrevious: boolean;
+  navigationPending?: boolean;
   total: number;
   onNext: () => void;
   onPrevious: () => void;
@@ -87,11 +89,19 @@ export function ImagePreviewViewer({
   };
 
   useEffect(() => {
-    const image = imageRef.current;
-    if (!image) return undefined;
+    const viewport = viewportRef.current;
+    if (!viewport) return undefined;
     const handleWheelZoom = (event: WheelEvent): void => {
-      const viewport = viewportRef.current;
-      if (!event.ctrlKey || !viewport || event.deltaY === 0) return;
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1;
+      if (!event.ctrlKey) {
+        if (viewport.scrollWidth <= viewport.clientWidth && viewport.scrollHeight <= viewport.clientHeight) return;
+        event.preventDefault();
+        viewport.scrollLeft += (event.shiftKey && event.deltaX === 0 ? event.deltaY : event.deltaX) * unit;
+        if (!event.shiftKey) viewport.scrollTop += event.deltaY * unit;
+        return;
+      }
+      const image = imageRef.current;
+      if (!image || event.deltaY === 0) return;
       const imageRect = image.getBoundingClientRect();
       if (image.naturalWidth <= 0 || imageRect.width <= 0 || imageRect.height <= 0) return;
 
@@ -120,8 +130,8 @@ export function ImagePreviewViewer({
       });
     };
 
-    image.addEventListener("wheel", handleWheelZoom, { passive: false });
-    return () => image.removeEventListener("wheel", handleWheelZoom);
+    viewport.addEventListener("wheel", handleWheelZoom, { passive: false });
+    return () => viewport.removeEventListener("wheel", handleWheelZoom);
   }, []);
 
   const adjustZoom = (direction: -1 | 1): void => {
@@ -245,7 +255,8 @@ export function ImagePreviewViewer({
   return (
     <section aria-label={`${fileName} 图片查看器`} className={cn("relative flex min-h-0 flex-1 flex-col", overlay ? "bg-transparent" : "bg-[var(--app-panel)]")}>
       {overlay ? (
-        <div className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex justify-center px-16">
+        <div className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex flex-col items-center justify-center gap-[5px] px-14">
+          <span className="max-w-full truncate rounded-full bg-black/65 px-3 py-1 text-[length:var(--app-font-size-caption)] text-zinc-200 backdrop-blur-md" title={fileName}>{fileName}</span>
           <div className="pointer-events-auto flex items-center gap-2">
             {total > 1 ? <span className="rounded-full bg-black/65 px-3 py-2 text-xs tabular-nums text-zinc-200 backdrop-blur-md">{currentIndex + 1} / {Math.max(1, total)}</span> : null}
             {controls}
@@ -299,28 +310,30 @@ export function ImagePreviewViewer({
             />
           </div>
         </div>
-        {hasPrevious ? (
+        {hasPrevious || (overlay && total > 1) ? (
           <IconButton
             className={cn(
-              "absolute left-3 top-1/2 z-10 size-10 -translate-y-1/2 rounded-full border border-white/15 bg-black/55 text-zinc-200 shadow-lg backdrop-blur-sm transition-opacity hover:bg-black/75 hover:text-white focus-visible:pointer-events-auto focus-visible:opacity-100",
-              revealedNavigation === "previous" ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
+              "absolute left-3 top-1/2 z-10 size-10 -translate-y-1/2 rounded-full border border-white/10 bg-black/20 text-zinc-200/80 shadow-sm backdrop-blur-md transition-colors hover:bg-black/55 hover:text-white focus-visible:pointer-events-auto focus-visible:opacity-100",
+              overlay || revealedNavigation === "previous" ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
             )}
             data-image-navigation="previous"
             label="上一张图片"
+            disabled={!hasPrevious || navigationPending}
             variant="quiet"
             onClick={onPrevious}
           >
             <ChevronLeft aria-hidden="true" size={20} />
           </IconButton>
         ) : null}
-        {hasNext ? (
+        {hasNext || (overlay && total > 1) ? (
           <IconButton
             className={cn(
-              "absolute right-3 top-1/2 z-10 size-10 -translate-y-1/2 rounded-full border border-white/15 bg-black/55 text-zinc-200 shadow-lg backdrop-blur-sm transition-opacity hover:bg-black/75 hover:text-white focus-visible:pointer-events-auto focus-visible:opacity-100",
-              revealedNavigation === "next" ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
+              "absolute right-3 top-1/2 z-10 size-10 -translate-y-1/2 rounded-full border border-white/10 bg-black/20 text-zinc-200/80 shadow-sm backdrop-blur-md transition-colors hover:bg-black/55 hover:text-white focus-visible:pointer-events-auto focus-visible:opacity-100",
+              overlay || revealedNavigation === "next" ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
             )}
             data-image-navigation="next"
             label="下一张图片"
+            disabled={!hasNext || navigationPending}
             variant="quiet"
             onClick={onNext}
           >

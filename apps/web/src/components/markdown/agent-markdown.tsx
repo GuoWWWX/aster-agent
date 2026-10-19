@@ -21,7 +21,7 @@ import { Check, Copy, Maximize2, CodeXml } from "lucide-react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactElement, type ReactNode, type RefObject } from "react";
 
-import { requestMediaPreview } from "../media/image-viewer.js";
+import { useMediaPreview } from "../media/image-viewer.js";
 import { fileTypeIconMarkup, isRecognizedFileTypePath } from "../ui/file-type-icon-data.js";
 import { highlightCode, isLargeCodeSource } from "./code-highlighter.js";
 import { CodeSourceView } from "./code-source-view.js";
@@ -264,6 +264,7 @@ export const AgentMarkdown = memo(function AgentMarkdown({ content, streaming = 
 });
 
 function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferences }: { content: string; streaming: boolean; scrollHostRef: RefObject<HTMLDivElement | null>; inlineReferences: readonly InlineReference[] }): ReactElement {
+  const openPreview = useMediaPreview();
   const hostRef = useRef<HTMLDivElement>(null);
   const [codePreviews, setCodePreviews] = useState<Array<{ source: string; mount: Element; language: "html" | "react" | "vue" }>>([]);
   const [sourceViews, setSourceViews] = useState<Array<{ source: string; language: string; mount: Element }>>([]);
@@ -338,7 +339,8 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferen
     }
     const image = event.target.closest<HTMLImageElement>("img[data-action='preview-image']");
     if (image !== null && event.currentTarget.contains(image)) {
-      requestMediaPreview({
+      openPreview({
+        imageKey: image.getAttribute("src") ?? image.src,
         alt: image.alt,
         src: image.currentSrc || image.src,
         title: image.alt || "图片预览",
@@ -361,7 +363,7 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferen
         return;
       }
       if (action.dataset.action === "copy-mermaid") { void navigator.clipboard.writeText(source?.textContent ?? "").catch(() => undefined); return; }
-      if (action.dataset.action === "preview-mermaid") { const svg = card.querySelector("[data-mermaid-canvas] svg"); if (svg !== null) requestMediaPreview({ src: svgDataUrl(svg.outerHTML), title: "Mermaid 图表" }); return; }
+      if (action.dataset.action === "preview-mermaid") { const svg = card.querySelector("[data-mermaid-canvas] svg"); if (svg !== null) openPreview({ src: svgDataUrl(svg.outerHTML), title: "Mermaid 图表" }); return; }
     }
     const button = event.target.closest<HTMLButtonElement>("[data-action='copy-code']");
     if (button === null || !event.currentTarget.contains(button)) return;
@@ -381,18 +383,19 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferen
         }
       }, 1_500);
     }).catch(() => undefined);
-  }, [previewContext, workspaceContext]);
+  }, [previewContext, workspaceContext, openPreview]);
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>): void => {
     if (event.key !== "Enter" && event.key !== " ") return;
     if (!(event.target instanceof HTMLImageElement) || event.target.dataset.action !== "preview-image") return;
     event.preventDefault();
-    requestMediaPreview({
+    openPreview({
+      imageKey: event.target.getAttribute("src") ?? event.target.src,
       alt: event.target.alt,
       src: event.target.currentSrc || event.target.src,
       title: event.target.alt || "图片预览",
     });
-  }, []);
+  }, [openPreview]);
 
   const handleDiagramContextMenu = (event: MouseEvent<HTMLDivElement>): void => {
     if (!(event.target instanceof Element)) return;

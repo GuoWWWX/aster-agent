@@ -151,7 +151,8 @@ import { TooltipAnchor } from "../../components/ui/tooltip.js";
 import { useStreamingScroll } from "../../components/ui/use-streaming-scroll.js";
 import { FileTypeIcon } from "../../components/ui/file-type-icon.js";
 import { AgentMarkdown, AgentMarkdownWorkspaceScope } from "../../components/markdown/agent-markdown.js";
-import { requestMediaPreview } from "../../components/media/image-viewer.js";
+import { useMediaPreview } from "../../components/media/image-viewer.js";
+import { ConversationImagePreviewScope, imageDisplayName } from "./conversation-image-preview.js";
 import {
   createDiffPresentation,
   DiffView,
@@ -3353,6 +3354,7 @@ export function ConversationWorkspace({
 
   return (
     <ChatReferenceScope scopeKey={richReferenceWorkspaceId} resolve={resolveReferences} onOpen={openReference} renderMessageAvatar={renderReferenceAvatar}>
+    <ConversationImagePreviewScope client={agentClient} conversationId={session.id} timeline={timeline} rootPath={project?.rootPath ?? session.workspaceRootPath}>
     <AgentMarkdownWorkspaceScope onOpenFile={onOpenProjectFile}>
     <HtmlPreviewScope client={agentClient} conversationId={session.id}>
     <ToolConversationContext.Provider value={toolConversations}>
@@ -4225,6 +4227,7 @@ export function ConversationWorkspace({
     </ToolConversationContext.Provider>
     </HtmlPreviewScope>
     </AgentMarkdownWorkspaceScope>
+    </ConversationImagePreviewScope>
     </ChatReferenceScope>
   );
 }
@@ -4651,6 +4654,7 @@ function PendingMessageAttachmentPreviews({
   conversationId: string;
   sent?: boolean;
 }): ReactElement | null {
+  const openPreview = useMediaPreview();
   const visibleAttachmentIds = useMemo(() => attachmentIds.slice(0, 3), [attachmentIds]);
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
 
@@ -4690,7 +4694,8 @@ function PendingMessageAttachmentPreviews({
             className="conversation-pending-queue__attachment-preview"
             key={attachmentId}
             type="button"
-            onClick={() => requestMediaPreview({
+            onClick={() => openPreview({
+              imageKey: attachmentId,
               alt: sent ? "图片" : "待发送图片",
               src: previewUrl,
               title: sent ? "图片" : "待发送图片",
@@ -6294,6 +6299,8 @@ function AttachmentChip({
   onRemove?: () => void;
   previewUrl?: string;
 }): ReactElement {
+  const openPreview = useMediaPreview();
+  const label = attachment.kind === "image" ? imageDisplayName(attachment) : attachment.name;
   const [storedPreviewUrl, setStoredPreviewUrl] = useState<string | null>(null);
   const sourceLabel = attachment.projectPath ?? "上传文件";
   const isDraft = onRemove !== undefined;
@@ -6325,20 +6332,21 @@ function AttachmentChip({
           ? "conversation-attachment--image-preview"
           : "conversation-attachment--file-card",
       ].filter(Boolean).join(" ")}
-      title={`${attachment.name} · ${sourceLabel} · ${formatFileSize(attachment.sizeBytes)}`}
+      title={`${label} · ${sourceLabel} · ${formatFileSize(attachment.sizeBytes)}`}
     >
       {showsImagePreview ? (
         <button
-          aria-label={`预览图片 ${attachment.name}`}
+          aria-label={`预览图片 ${label}`}
           className="conversation-attachment__image-button"
           type="button"
-          onClick={() => requestMediaPreview({
-            alt: attachment.name,
+          onClick={() => openPreview({
+            imageKey: attachment.id,
+            alt: label,
             src: resolvedPreviewUrl,
-            title: attachment.name,
+            title: label,
           })}
         >
-          <img alt={attachment.name} src={resolvedPreviewUrl} />
+          <img alt={label} src={resolvedPreviewUrl} />
         </button>
       ) : (
         <>
@@ -6346,7 +6354,7 @@ function AttachmentChip({
             <FileTypeIcon path={attachment.name} size={28} />
           </span>
           <span className="conversation-attachment__identity">
-            <strong>{attachment.name}</strong>
+            <strong>{label}</strong>
             <small>
               {attachmentTypeLabel(attachment)} · {formatFileSize(attachment.sizeBytes)}
               {!isDraft && attachment.truncated ? " · 已按预览注入" : ""}

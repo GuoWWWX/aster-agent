@@ -2469,8 +2469,9 @@ describe("Subagent approval queue", () => {
       alt?: string;
       src: string;
     }> | undefined;
-    expect(previewEvent?.detail).toEqual({
+    expect(previewEvent?.detail).toMatchObject({
       alt: "clipboard.png",
+      imageKey: pastedAttachment.id,
       src: "blob:clipboard-image-preview",
       title: "clipboard.png",
     });
