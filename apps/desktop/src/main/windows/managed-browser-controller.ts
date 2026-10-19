@@ -473,10 +473,8 @@ export class ManagedBrowserController {
 
   public async clearBrowsingData(): Promise<void> {
     this.passwords?.clear();
-    if (this.sessions.size === 0) {
-      await electronSession.fromPartition(MANAGED_BROWSER_PARTITION).clearData();
-      return;
-    }
+    // The persistent browser profile still exists when only isolated previews or Agent pages are open.
+    await electronSession.fromPartition(MANAGED_BROWSER_PARTITION).clearData();
     for (const session of this.sessions.values()) await session.page.clearBrowsingData();
   }
   public getSavedPasswords(): BrowserSavedPassword[] {
