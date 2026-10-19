@@ -71,6 +71,7 @@ export const configurationWorkspaceDirectoryListingSchema = z
     entries: z.array(configurationWorkspaceEntrySchema),
     kind: configurationWorkspaceKindSchema,
     rootPath: z.string().trim().min(1).max(MAX_PATH_LENGTH),
+    readOnly: z.boolean().optional(),
     truncated: z.boolean(),
   })
   .strict();
@@ -88,6 +89,7 @@ export const configurationWorkspaceFileSchema = z
     configurationId: configurationIdSchema,
     content: z.string().max(MAX_FILE_CONTENT_LENGTH).nullable(),
     isBinary: z.boolean(),
+    readOnly: z.boolean().optional(),
     isProtected: z.boolean(),
     kind: configurationWorkspaceKindSchema,
     name: z.string().trim().min(1).max(MAX_ENTRY_NAME_LENGTH),

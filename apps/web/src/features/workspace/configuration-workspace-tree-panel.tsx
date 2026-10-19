@@ -128,6 +128,7 @@ export function ConfigurationWorkspaceTreePanel({
   const [operationError, setOperationError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [rootPath, setRootPath] = useState("");
+  const [readOnly, setReadOnly] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [sortOpen, setSortOpen] = useState(false);
   const [sortOption, setSortOption] = useState<ConfigurationTreeSortOption>("name-ascending");
@@ -155,6 +156,7 @@ export function ConfigurationWorkspaceTreePanel({
       });
       setEntriesByDirectory((current) => ({ ...current, [directoryPath]: listing.entries }));
       setRootPath(listing.rootPath);
+      setReadOnly(listing.readOnly === true);
       setOperationError(null);
     } catch (reason) {
       setOperationError(getUserErrorMessage(reason, "无法读取配置文件树。"));
@@ -308,7 +310,7 @@ export function ConfigurationWorkspaceTreePanel({
   }
 
   async function deleteSelected(): Promise<void> {
-    if (selectedEntry === null || selectedEntry.isProtected) return;
+    if (readOnly || selectedEntry === null || selectedEntry.isProtected) return;
     if (!window.confirm(`确定删除 ${selectedEntry.name} 吗？`)) return;
     try {
       await agentClient.deleteConfigurationWorkspaceEntry({
@@ -356,6 +358,7 @@ export function ConfigurationWorkspaceTreePanel({
             <div className="project-tree-panel__toolbar-group">
               <IconButton
                 className="project-tree-panel__tool-button"
+                disabled={readOnly}
                 label="新建文件"
                 size="compact"
                 variant="quiet"
@@ -365,6 +368,7 @@ export function ConfigurationWorkspaceTreePanel({
               </IconButton>
               <IconButton
                 className="project-tree-panel__tool-button"
+                disabled={readOnly}
                 label="新建文件夹"
                 size="compact"
                 variant="quiet"
@@ -429,8 +433,8 @@ export function ConfigurationWorkspaceTreePanel({
               </IconButton>
               <IconButton
                 className="project-tree-panel__tool-button"
-                disabled={selectedEntry === null || selectedEntry.isProtected}
-                label={selectedEntry?.isProtected ? "入口文件不可删除" : "删除所选项目"}
+                disabled={readOnly || selectedEntry === null || selectedEntry.isProtected}
+                label={readOnly ? "系统技能只读" : selectedEntry?.isProtected ? "入口文件不可删除" : "删除所选项目"}
                 size="compact"
                 variant="quiet"
                 onClick={() => void deleteSelected()}

@@ -23,6 +23,29 @@ async function createStores() {
 }
 
 describe("SkillDocumentStore", () => {
+  it("creates a complete personal skill in one call and safely replays the same content", async () => {
+    const { documents, integrations } = await createStores();
+    const content = "---\nname: explain-sort\ndescription: Explain sorting examples.\n---\n\nUse a small trace and verify the sorted output.\n";
+    const input = { content };
+    const document = documents.createManagedDocument(input);
+    expect(document.metadata.name).toBe("explain-sort");
+    expect(documents.createManagedDocument(input)).toEqual(document);
+    expect(integrations.getConfiguration().skills).toEqual([expect.objectContaining({ origin: "personal", name: "explain-sort" })]);
+    expect(() => documents.createManagedDocument({ content: content.replace("small trace", "different trace") })).toThrow(/存在/);
+    expect(await readFile(document.entryPath, "utf8")).toBe(content);
+    const personalEdit = content.replace("small trace", "clear trace");
+    expect(documents.saveDocument({ entryPath: document.entryPath, content: personalEdit }).content).toBe(personalEdit);
+  });
+
+  it("rejects saving a system skill while retaining its readable content", async () => {
+    const { documents } = await createStores();
+    const content = "---\nname: builtin\ndescription: System workflow.\n---\n\nKeep original instructions.\n";
+    const document = documents.ensureManagedDocument(content);
+    expect(() => documents.saveDocument({ entryPath: document.entryPath, content: content.replace("original", "changed") })).toThrow(/只读/);
+    expect(documents.readDocument(document.entryPath).content).toBe(content);
+    expect(() => documents.createManagedDocument({ content })).toThrow(/系统|内置|存在/);
+  });
+
   it("does not follow links out of a deleted Skill package", async () => {
     const { directory, documents } = await createStores();
     const document = documents.createManagedDocument();

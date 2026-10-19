@@ -2985,7 +2985,7 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
               enabled: skill.enabled,
               id: skill.id,
               name: skill.name,
-              summary: skill.entryPath,
+              summary: `${skill.origin === "system" ? "系统 · 只读" : "个人"} · ${skill.entryPath}`,
             }))}
             selectedId={selected?.id ?? null}
             onAdd={() => void createSkill()}
@@ -3001,9 +3001,9 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
             <section className="settings-integration-editor settings-skill-metadata">
               <ConfigurationEditorHeader
                 enabled={selected.enabled}
-                fileActionLabel="编辑文档"
+                fileActionLabel={selected.origin === "system" ? "查看文档" : "编辑文档"}
                 icon={Sparkles}
-                name={selected.name}
+                name={`${selected.name} · ${selected.origin === "system" ? "系统技能 · 只读" : "个人技能"}`}
                 onOpenFile={() => void openFileWorkspace()}
                 onToggle={(enabled) => updateSkill({ enabled })}
               />
@@ -3012,9 +3012,12 @@ function SkillsSettings({ agentClient }: { agentClient: AgentClient }): ReactEle
                   <ConfigurationField className="settings-field--wide" label="SKILL.md 路径">
                     <input readOnly title={selected.entryPath} value={selected.entryPath} />
                   </ConfigurationField>
-                  <ScopeField scope={selected.scope} onChange={(scope) => updateSkill({ scope })} />
+                  {selected.origin === "system" ? (
+                    <ConfigurationField label="作用域"><input readOnly value={{ user: "用户", team: "团队", project: "项目" }[selected.scope]} /></ConfigurationField>
+                  ) : <ScopeField scope={selected.scope} onChange={(scope) => updateSkill({ scope })} />}
                   <ConfigurationField className="settings-field--wide" label="MCP 依赖">
                     <input
+                      readOnly={selected.origin === "system"}
                       value={selected.mcpDependencies.join(", ")}
                       onChange={(event) => updateSkill({
                         mcpDependencies: event.target.value.split(",").map((value) => value.trim()).filter(Boolean),

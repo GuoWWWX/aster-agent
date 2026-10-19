@@ -58,6 +58,22 @@ async function fixture(): Promise<{
 }
 
 describe("SkillRuntime", () => {
+  it("prepares user skill creation without writing before approval and then exposes the saved skill", async () => {
+    const { runtime, integrations } = await fixture();
+    const content = "---\nname: explain-sort\ndescription: Explain sorting examples.\n---\n\nTrace the array and verify the output.\n";
+    const result = runtime.execute({ toolName: "create_skill", arguments: JSON.stringify({ content }), context: { projectId: undefined } });
+    expect(result.kind).toBe("approved_action");
+    expect(integrations.getConfiguration().skills).toHaveLength(1);
+    if (result.kind !== "approved_action") throw new Error("Expected prepared creation");
+    expect(result.action.permissionTool).toBe("write_file");
+    const created = await result.action.execute();
+    expect(created).toMatchObject({ isError: false });
+    const skill = runtime.getCatalog().find(skill => skill.name === "explain-sort")!;
+    expect(skill).toBeDefined();
+    expect(runtime.loadSkill(skill.id).body).toContain("verify the output");
+    expect(integrations.getConfiguration().skills.find(item => item.id === skill.id)?.origin).toBe("personal");
+  });
+
   it("exposes a bounded catalog and returns only a load summary", async () => {
     const { runtime } = await fixture();
 

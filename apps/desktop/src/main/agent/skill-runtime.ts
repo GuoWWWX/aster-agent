@@ -22,6 +22,7 @@ import { toolErrorContent } from "../errors/tool-error.js";
 import type { ModelToolDefinition } from "../model/model-contracts.js";
 import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
 import type { ToolExecutionPolicy } from "../tools/tool-execution-policy.js";
+import type { ToolExecution } from "../tools/project-tool-registry.js";
 import { IntegrationConfigurationStore } from "../settings/integration-configuration-store.js";
 import { SkillDocumentStore } from "../settings/skill-document-store.js";
 
@@ -38,6 +39,11 @@ const MAX_REFERENCE_FILE_BYTES = MAX_REFERENCE_FILE_CHARACTERS * 4;
 const MAX_REFERENCE_ENTRIES = 100;
 const REFERENCE_ROOTS = ["references", "templates"] as const;
 const READ_SKILL_REFERENCE_TOOL_NAME = "read_skill_reference";
+const CREATE_SKILL_TOOL_NAME = "create_skill";
+const createSkillArgumentsSchema = z.object({
+  content: z.string().min(1).max(MAX_SKILL_FILE_CHARACTERS)
+    .describe("Complete SKILL.md with YAML name and description and actionable Markdown instructions. The name determines the new personal skill folder; no paths are accepted."),
+}).strict();
 
 /**
  * Keeps a predictable slice of every model context available for Skills that
@@ -95,10 +101,7 @@ export type LoadedSkillSnapshot = SkillSnapshotRef & {
   name: string;
 };
 
-export type SkillToolExecution = {
-  content: string;
-  isError: boolean;
-  kind: "completed";
+export type SkillToolExecution = ToolExecution & {
   snapshot?: SkillSnapshotRef;
 };
 
@@ -195,6 +198,11 @@ export class SkillRuntime {
   public getDefinitions(): ModelToolDefinition[] {
     return [
       {
+        name: CREATE_SKILL_TOOL_NAME,
+        description: "Save a new personal skill in the application's managed skill directory and register it for Settings and skill discovery. Load skill-creator first when authoring reusable instructions. Call only for a requested skill or a reusable workflow that supports the user's task. Submit the complete SKILL.md once; identical retries reuse the saved skill. Existing different content and system skills cannot be overwritten. This persists instructions, never runs them, and follows file-write permissions.",
+        parameters: modelToolParameters(createSkillArgumentsSchema),
+      },
+      {
         description: "Load the full instructions of an enabled Skill whose short description matches the current task. The instructions are injected into the next model context and are not written to chat history. Do not load unrelated Skills or reload one that is already active.",
         name: LOAD_SKILL_TOOL_NAME,
         parameters: modelToolParameters(loadSkillArgumentsSchema),
@@ -210,6 +218,7 @@ export class SkillRuntime {
   public getExecutionPolicy(toolName: string): ToolExecutionPolicy {
     switch (toolName) {
       case LOAD_SKILL_TOOL_NAME:
+      case CREATE_SKILL_TOOL_NAME:
         return { kind: "serial" };
       case READ_SKILL_REFERENCE_TOOL_NAME:
         return { group: "read", kind: "parallel" };
@@ -324,6 +333,26 @@ export class SkillRuntime {
     toolName: string;
   }): SkillToolExecution {
     try {
+      if (input.toolName === CREATE_SKILL_TOOL_NAME) {
+        const { content } = createSkillArgumentsSchema.parse(parseToolArguments(input.arguments));
+        const { metadata } = parseSkillMarkdown(content);
+        return {
+          kind: "approved_action", isError: false, content: jsonResult({ status: "awaiting_approval" }),
+          action: {
+            permissionTool: "write_file", pattern: `user-skills/${metadata.name}/SKILL.md`,
+            rejectionMessage: "用户拒绝了本次个人 Skill 创建。",
+            execute: () => {
+              try {
+                const document = this.documents.createManagedDocument({ content });
+                const skill = this.integrationConfiguration.getConfiguration().skills.find(skill => pathKey(skill.entryPath) === pathKey(document.entryPath))!;
+                return Promise.resolve({ kind: "completed", isError: false, content: jsonResult({ skill: { id: skill.id, name: skill.name, origin: "personal" }, saved: true }) });
+              } catch (error) {
+                return Promise.resolve({ kind: "completed", isError: true, content: toolErrorContent(error, "tool:create_skill") });
+              }
+            },
+          },
+        };
+      }
       if (input.toolName === LOAD_SKILL_TOOL_NAME) {
         const parsed = loadSkillArgumentsSchema.parse(parseToolArguments(input.arguments));
         const snapshot = this.loadSkill(parsed.skillId, input.context);

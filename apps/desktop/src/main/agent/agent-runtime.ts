@@ -1541,6 +1541,7 @@ export class AgentRuntime {
             active.set(result.snapshot.id, result.snapshot);
             this.activeSkillRefsByRun.set(context.runId, active);
           }
+          if (result?.kind === "approved_action") return Promise.resolve(result);
           return Promise.resolve({
             content: result?.content ?? "Skill Runtime is unavailable.",
             isError: result?.isError ?? true,
@@ -5018,7 +5019,8 @@ export class AgentRuntime {
       || toolName === "browser_close"
     ) return policies["browser-control"];
     if (
-      toolName === "write_file"
+      toolName === "create_skill"
+      || toolName === "write_file"
       || toolName === "delete_file"
       || toolName === "replace_in_file"
       || toolName === "apply_patch"

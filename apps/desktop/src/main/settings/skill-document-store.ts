@@ -89,6 +89,31 @@ export class SkillDocumentStore {
     const rootPath = parsedInput.directoryPath === undefined || parsedInput.directoryPath === null
       ? this.getManagedDirectoryPath()
       : this.resolveRegisteredDirectory(parsedInput.directoryPath);
+    if (parsedInput.content !== undefined) {
+      const metadata = parseSkillMarkdown(parsedInput.content).metadata;
+      const directory = path.join(rootPath, metadata.name);
+      const entryPath = path.join(directory, "SKILL.md");
+      if (!isPathInsideRoot(rootPath, directory) || samePath(rootPath, directory)) throw new Error("Skill 目录必须位于个人技能目录内。");
+      if (existsSync(directory)) {
+        const skill = this.integrationConfiguration.getConfiguration().skills.find(skill => samePath(skill.entryPath, entryPath));
+        if (skill?.origin !== "system" && !lstatSync(directory).isSymbolicLink() && this.readPath(entryPath).content === parsedInput.content) {
+          const document = this.readPath(entryPath);
+          this.synchronizeDocuments([document]);
+          return document;
+        }
+        throw new Error("同名 Skill 目录已存在；请在设置中编辑个人技能，或使用不同名称。系统技能只读。");
+      }
+      const document = this.toDocument(entryPath, parsedInput.content);
+      mkdirSync(directory, { recursive: false });
+      try {
+        writeFileSync(entryPath, parsedInput.content, { encoding: "utf8", flag: "wx", mode: 0o600 });
+        this.synchronizeDocuments([document]);
+      } catch (error) {
+        rmSync(directory, { recursive: true, force: true });
+        throw error;
+      }
+      return document;
+    }
     let suffix = 1;
     let name = "new-skill";
     let directory = path.join(rootPath, name);
@@ -223,6 +248,10 @@ export class SkillDocumentStore {
   public saveDocument(input: SkillDocumentSaveInput): SkillDocument {
     const parsedInput = skillDocumentSaveInputSchema.parse(input);
     this.assertRegistered(parsedInput.entryPath);
+    if (this.integrationConfiguration.getConfiguration().skills.some(skill => skill.origin === "system"
+      && isPathInsideRoot(path.dirname(path.resolve(skill.entryPath)), path.resolve(parsedInput.entryPath)))) {
+      throw new Error("系统 Skill 只读，不能修改。");
+    }
     this.assertSkillEntryPath(parsedInput.entryPath);
     const document = this.toDocument(parsedInput.entryPath, parsedInput.content);
 
@@ -348,6 +377,7 @@ export class SkillDocumentStore {
     for (const document of documents) {
       if (existingByPath.has(pathKey(document.entryPath))) continue;
       updatedSkills.push({
+        origin: "personal",
         description: document.metadata.description,
         enabled: true,
         entryPath: document.entryPath,
