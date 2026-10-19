@@ -35,6 +35,7 @@ import {
 import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 import { SettingsCategoryHeading, SettingsConfigurationGroup } from "./components/settings-configuration-card.js";
 import { SettingsDirectoryDeleteButton } from "./components/settings-directory-delete-button.js";
+import { SettingsDirectoryList } from "./components/settings-directory-list.js";
 import { AgentAvatar } from "../team/agent-avatar.js";
 import { AgentAvatarPicker } from "./agent-avatar-picker.js";
 import type { AgentClient } from "../../runtime/index.js";
@@ -207,7 +208,7 @@ function TeamManagementView({
           label="团队目录"
           action={<IconButton label="创建团队" size="compact" onClick={onCreateTeam}><CirclePlus aria-hidden="true" size={18} /></IconButton>}
         />
-        <div className="team-directory-list">
+        <SettingsDirectoryList className="team-directory-list" selectedId={selectedTeam?.id ?? null}>
           {pagedTeams.map((team) => (
             <div key={team.id} className="group/directory relative" data-active={team.id === selectedTeam?.id}>
             <button
@@ -229,7 +230,7 @@ function TeamManagementView({
             <SettingsDirectoryDeleteButton label={`删除团队 ${team.name}`} onDelete={() => onDeleteTeam(team.id)} />
             </div>
           ))}
-        </div>
+        </SettingsDirectoryList>
         <footer className="team-directory-footer">
           <span>共 {teams.length} 个团队</span>
           <div className="team-directory-pagination-controls" aria-label="团队分页">
@@ -300,7 +301,7 @@ function AgentManagementView({
           value={agents.length}
           action={<IconButton label="新建 Agent" size="compact" onClick={onCreateAgent}><CirclePlus aria-hidden="true" size={18} /></IconButton>}
         />
-        <div className="agent-directory-list">
+        <SettingsDirectoryList className="agent-directory-list" selectedId={selectedAgent?.id ?? null}>
           {agents.map((agent) => {
             const teamCount = teams.filter((team) => team.memberIds.includes(agent.id)).length;
             return (
@@ -331,7 +332,7 @@ function AgentManagementView({
               </div>
             );
           })}
-        </div>
+        </SettingsDirectoryList>
         <footer className="team-directory-footer">共 {agents.length} 个 Agent</footer>
       </section>
       {selectedAgent === undefined ? (

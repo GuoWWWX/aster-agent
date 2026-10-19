@@ -1,5 +1,6 @@
 /* CSS triggers: descendant selectors, shared descendant variables and responsive container queries. */
 .agent-team-settings {
+  --settings-directory-row-height: 58px;
   display: flex;
   min-height: 0;
   height: 100%;
@@ -330,7 +331,7 @@
 .agent-directory-row {
   display: grid;
   min-width: 0;
-  min-height: 58px;
+  min-height: var(--settings-directory-row-height);
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
@@ -1043,7 +1044,9 @@
   .team-management-layout,
   .agent-management-layout {
     grid-template-columns: 1fr;
-    grid-template-rows: min(220px, 35%) minmax(0, 1fr);
+    grid-template-rows: auto max-content;
+    align-content: start;
+    overflow-y: auto;
     row-gap: 20px;
   }
 
@@ -1053,6 +1056,7 @@
 
   .team-directory-pane,
   .agent-directory-pane {
+    height: calc(var(--settings-list-card-header-height, 50px) + var(--settings-list-card-footer-height, 44px) + 3 * var(--settings-directory-row-height) + 12px);
     border: 1px solid var(--app-border);
     margin-right: var(--settings-page-inset);
   }
@@ -1105,5 +1109,5 @@
 .team-configuration-pane > header, .agent-configuration-pane > header { border: 0; padding-left: 0; padding-right: 0; background: transparent; }
 .team-configuration-pane .management-detail-body, .agent-configuration-pane .management-detail-body { padding-left: 0; padding-right: 0; }
 @container agent-team-settings (max-width: 780px) {
-  .team-configuration-pane, .agent-configuration-pane { padding-left: 0; }
+  .team-configuration-pane, .agent-configuration-pane { overflow: visible; scrollbar-gutter: auto; padding-left: 0; }
 }
