@@ -125,7 +125,7 @@ function CapabilityGroup({ icon: Icon, items, kind, label, onToggle, selectedIds
     id, name: `未登记的 ${kind}（${id}）`, enabled: false, description: "目录中未找到，取消勾选可移除此引用。", detail: "不可用",
   }))];
   return (
-    <fieldset className="capability-group">
+    <fieldset className="capability-group content-start">
       <legend><Icon aria-hidden="true" size={13} />{label}</legend>
       {visibleItems.length === 0 ? <span className="text-[length:var(--app-font-size-auxiliary)] text-[var(--app-muted-foreground)]">暂无配置</span> : null}
       {visibleItems.map(item => (
