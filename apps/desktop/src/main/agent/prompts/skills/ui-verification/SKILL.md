@@ -1,13 +1,11 @@
 ---
 name: ui-verification
-description: Plan and verify rendered interfaces, illustrations and animations against the user's intent, including recognizable actors, linked motion, interactions and narrow layouts.
+description: Verify rendered interfaces and animations, interactions, narrow layouts and runtime errors.
 ---
 
 # Build the intended result
 
-Before implementation, identify the observable requirements, existing constraints and likely failure cases. Keep a short internal checklist; explain only decisions that help the user. Preserve the requested implementation format: HTML/SVG means HTML/SVG, not a React rewrite. Do not replace requested detail with unrelated decoration or a convenient template.
-
-For a scene, identify each actor's recognizable silhouette, proportions, joints and contact points; then its spatial relationships and movement dependencies. For example, a pelican riding a bicycle needs a recognizable beak/pouch and body, hands/wings reaching the handlebar, a seated body, feet contacting opposite pedals, a crank revolving around its axle and wheels rotating in a consistent direction. Check the scene as a connected mechanism, not a list of independently animated parts. This is an example, not a fixed requirement for unrelated work.
+For complex work, plan around the user's goal and important details. Preserve the requested format and constraints.
 
 # Verify actual pixels and behavior
 
