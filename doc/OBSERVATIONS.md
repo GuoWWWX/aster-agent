@@ -164,3 +164,44 @@ Runtime 按 AST 逐项盘点 113 个构造器／方法；Database 在 Run 仓储
 冻结业务源码后，Desktop 使用 `vitest run --maxWorkers=1 --exclude src/main/computer-use/windows-driver.test.ts` 完整串行执行：154 文件、1,739 项通过，原 64 轮与并发审批用例均在原门限／断言下通过，无名称过滤；会操作真实桌面的 7 项 Windows native control 用例未运行，未计入通过数。Web 随后完整执行 163 文件、1,219 项通过；Protocol 26 文件 252 项、根脚本 19 项通过，合计 3,229 个不同用例。
 
 最后的根级 `pnpm lint`、`pnpm typecheck`、`pnpm build` 全部通过。构建保留既有大包体提示，不将结构拆分宣称为加载速度提升。94 个新增业务模块规模与依赖扫描通过，涉及新模块的运行时循环为零；变更 Markdown 的本地链接、锚点、围栏和七组目录清单检查通过。未验证安装包、真实供应商请求或完整历史用户库升级；Mock 浏览器场景与实际开发服务只读健康检查分别记录，不互相替代。
+
+## 多对话并发专项复核（2026-10-19）
+
+本批在第三批之后继续逐项复现和整改，不覆盖旧批次的验证快照。统计为 **6 项代码问题、1 项文档漂移**；以下表格按独立修复边界计数，文档中的四处同源漂移合计一项。〔FACT｜`apps/desktop/src/main/agent/agent-runtime-summary-lifecycle.test.ts:90`、`apps/desktop/src/main/storage/agent-conversation-directory.test.ts:34`、`apps/web/src/features/chat/workspace-context-usage.test.tsx:49`〕
+
+| 编号 | 类别／程度 | 已复现的问题 | 修复和定向验证 |
+| --- | --- | --- | --- |
+| S16 | 〔OBSERVE｜缺陷｜中〕 | 可见 Run 已结束的摘要不受退出等待管理，迟到后可访问已关闭或删除的持久层 | 已修复 `32c6ef5`：按 Run 注册、abort、drain，写前核对可投影状态。11 项新回归；摘要／取消相关 47 项通过，名称过滤的其他用例不计入通过 |
+| S17 | 〔OBSERVE｜性能｜中〕 | Agent 目录逐个点查，取消前置亦调用全量 N+1 | 已修复 `8d7bc61`：复用现有批量目录投影，保留 DTO、谱系、过滤和两个入口不同排序；11 项新回归、相关 179 项通过 |
+| S18 | 〔OBSERVE｜性能｜中〕 | 隐藏工作区的后台程序菜单仍订阅、读取和轮询 | 已修复 `ca1fa13`：透传 active，隐藏停止，返回补读，迟到旧值丢弃。8 个隐藏菜单 × 10 次事件读取 80→0；相关 55 项通过，后代命令查询合同保留 |
+| S19 | 〔OBSERVE｜性能｜中〕 | 活动 Run 集合变化重读全部历史并重建四读者队列，实际峰值绕过限制 | 已修复 `c4420b7`：增量队列保留已完成 Run，旧请求收尾前占用名额；1→16 个 Run 的读取 136→16，慢响应峰值 58→4。9 项新回归，相关 20 项通过 |
+| S20 | 〔OBSERVE｜性能｜中〕 | 64 次工具事件产生 64 次相同上下文编译请求，隐藏／换参迟到结果可覆盖 | 已修复 `2d62609`：同作用域一个在途加一次最新待刷新，64→2 次、峰值 64→1。10 项新回归，相关 69 项通过；跨作用域保持立即读取，不声称全局串行 |
+| S21 | 〔OBSERVE｜性能｜中〕 | 同一关键词重复编译仍读取最近 1,000 条已覆盖历史正文 | 已修复 `30889ce`：每索引仅保留最近查询指纹和最多 24 个片段位置；6 项新回归及原 ThreadLog／ContextCompiler 共 35 项通过。查询／边界／替换／改写失效及返回值新鲜性有覆盖 |
+| S22 | 〔OBSERVE｜矛盾｜低〕 | 文档把固定 WorkerPool、有界子进程池和全局 Run 并发槽写为当前实现 | 已修正文档 00／05／08 的现状与验收描述；14 补摘要生命周期。代码没有新增线程池或更换执行循环 |
+
+〔FACT｜`apps/desktop/src/main/storage/agent-database.ts:698`、`apps/desktop/src/main/storage/thread-log.ts:448`、`apps/web/src/features/chat/background-programs.tsx:28`、`apps/web/src/features/chat/conversation-activity-hydration.ts:29`、`apps/web/src/features/chat/conversation-context-usage-refresh.ts:12`〕上述计数型测试使用受控 Promise／临时库，不依赖供应商，不将减少 IPC 数量等同于真实网络时延改善。
+
+### 同规模性能对照
+
+以下旧新版本交替运行，各暖读阶段 5 个样本，中位耗时仅代表本地夹具；计时期间不并行运行构建／类型检查。先前可能与编译重叠的一组目录数据单独保留，表内采用空闲复测。原返回的完整 DTO 逐组相等。〔FACT｜`apps/desktop/src/main/storage/agent-conversation-directory.test.ts:34`、`apps/desktop/src/main/storage/thread-log-covered-search.test.ts:34`〕
+
+| 规模与操作 | 旧→新中位耗时 | 工作量旧→新 |
+| --- | --- | --- |
+| 1,000 个无 Run／WorkItem 的会话，目录 | 119.20→8.01ms | prepare 1,001→1 |
+| 同规模，取消的同步前置 `getConversation + listAgentConversations` | 119.32→7.96ms | prepare 1,002→2；排队 abort 回调最长 134.06→9.10ms |
+| 1,000 covered + 8 tail、每条约 2KiB，无关键词命中，暖编译 | 61.29→5.10ms | 实际 readSync 字节 2,321,937→2,154 |
+| 同一历史，两条关键词命中，暖编译 | 51.11→4.01ms | 实际 readSync 字节 2,321,983→6,840 |
+
+覆盖检索对照含 88 个样本、12 组阶段；追加一个未覆盖尾消息后仍复用，首次冷检索仍约 4.64MB／1,011 次 readSync，没有将冷建计为改善。读取测试初版把大缓冲 EOF 探测算成正文读取，已改按实际返回字节计数，业务断言不变；类型门禁还发现新测试的 spy 泛型选错重载，改为 `MockInstance<typeof fs.readSync>` 后重跑。取消前置微基准不等于完整 UI 取消 SLO，旧版整批导入记录仍可能整体解析。〔FACT｜`apps/desktop/src/main/storage/thread-log-covered-search.test.ts:30`、`apps/desktop/src/main/storage/thread-log.ts:544`〕
+
+本地忽略目录 `.git/validation-concurrency-audit/` 保留红绿日志、原实现基准 bundle、前后 JSON、独立复核和最终门禁记录；计时数据来源分别为 `agent-directory-compare-idle-results.json` 与 `covered-search-compare-results.json`，不含真实对话或凭据。文档同步范围：00／05／08 为架构现状，12 为进度，13 为并发性能规范，14／16 为生命周期及上下文合同，本文件登记问题；README／索引的模块入口不变，不另建平行报告。无待裁决的删除文档实体。
+
+### 保留边界
+
+〔OBSERVE｜风险｜低〕全局模型／命令资源预算、真实长时高并发与低端机器容量仍需明确负载和策略后实测，不能因没有统一池就断定应加入。Gemini 的请求指纹未经过统一 fetch 采样入口，是已记录的诊断覆盖限制；本次没有更换 SDK 网络层。其他 Team／Review 刷新、隐藏计时器和历史回放重复读取仍是候选，需要分别复现；不把候选计入已修复数量，也不把本专项结束写成整个项目审查完成。〔FACT｜`apps/desktop/src/main/model/model-adapter-registry.ts:26`、`apps/web/src/features/team/team-workspace.tsx:107`、`apps/web/src/features/workspace/git-review-workspace.tsx:209`〕
+
+### 本专项最终门禁
+
+全部业务源码冻结后，Desktop `vitest run --maxWorkers=1 --exclude src/main/computer-use/windows-driver.test.ts` 为 157 文件／1,767 项通过，Web 串行为 165 文件／1,242 项通过，Protocol 为 26 文件／252 项通过，根脚本 19 项通过，合计 **3,280 个不同用例**。没有名称筛选，没有放宽原 64 轮或并发断言；7 项真实桌面控制用例未执行，未计入通过数。Web 日志保留 jsdom 未实现 Canvas 的既有诊断信息，测试结果仍通过。
+
+根级 lint、修正新测试类型后的根级 typecheck、最终两文件定向 lint、根级 build 均通过；构建仍有既有大包体提示。96 个新增业务模块、230 个可达模块的规模与运行时依赖扫描无错误。8 份变更文档的链接、锚点、围栏及目录清单检查通过。基准、门禁和独立代码复核分别保留，不以其证明安装包、真实供应商时延或长时容量；未生成安装包、未调用真实供应商、未切换用户数据目录。

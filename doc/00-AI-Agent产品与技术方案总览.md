@@ -394,7 +394,7 @@ Session（会话）
 
 `WorkItem` 是用户持续投递的一项需求或想法；`Task` 是可调度、可验收且绑定单一项目的执行单元。Team Lead Thread、常驻 Agent Thread 和临时 Agent Run 分别持久化，不能共享一段无限增长的原始上下文。
 
-这里的 `Thread` 表示逻辑对话链，不是操作系统线程。Agent 空闲时只保留数据库状态；产生 Run 后才由共享异步调度器、固定 Worker Pool 和受限子进程池执行，不为每个 Agent 常驻一个线程或进程。
+这里的 `Thread` 表示逻辑对话链，不是操作系统线程。当前各 Run 保存独立状态和取消信号，共享 Electron Main 的 Node.js 事件循环并异步等待模型网络响应；同一 Conversation 只允许一个活动 Run，不为每个 Agent 常驻一个线程或进程。命令按调用启动子进程，当前没有应用级固定 Worker Pool 或统一子进程池；CPU 工作池属于测量后的后续规划，不能与 Node 底层 libuv 线程池混为一谈。详见[运行与线程模型](./08-模型接入、MCP、Skill与Agent对话设计.md#64-运行与线程模型)。〔FACT｜`apps/desktop/src/main/agent/run-coordinator.ts:55`、`apps/desktop/src/main/agent/langgraph-executor.ts:578`、`apps/desktop/src/main/tools/command-session-runner.ts:231`〕
 
 当前会话的完整事实以 SQLite 事件和本地 Artifact 为准。Zustand 只保存当前页面需要的内存状态，不作为会话唯一数据源。
 

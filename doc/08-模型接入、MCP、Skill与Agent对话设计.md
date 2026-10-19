@@ -272,23 +272,24 @@ ModelRouter 先确定性过滤，再评分：
 
 ### 6.4 运行与线程模型
 
-Agent 使用逻辑状态和按需 Run，不采用“一个 Agent 一个 OS 线程/进程”：
+当前 Agent 使用逻辑状态和按需 Run，不采用“一个 Agent 一个 OS 线程/进程”：
 
 ```text
 Agent Profile + Conversation + 历史消息
   -> 空闲时只存在 SQLite/内存索引
   -> 收到任务后创建 Run
-  -> Scheduler 取得并发槽
-  -> 异步模型流 + 受限工具执行
-  -> Run 结束后释放运行资源
+  -> RunCoordinator 登记该 Conversation 的唯一活动 Run
+  -> setImmediate 调度 LangGraph，在共享 JS 事件循环中异步等待模型流
+  -> 工具按各自并发、审批及资源生命周期执行
+  -> Run 清理自身状态，其他资源由各自 owner 管理
 ```
 
-- 模型 HTTP 流、MCP 连接和事件写入优先使用 Node 异步 I/O，由共享事件循环处理。
-- CPU 密集解析、索引或压缩才进入固定大小的 `worker_threads` 池，池大小按机器能力和实测调整，不按 Agent 数量创建。
-- Shell、MCP `stdio` 和浏览器可以创建子进程，但由各自的并发池、超时和生命周期管理，不与常驻 Agent 数量绑定。
-- 默认同一 Agent Conversation 只有一个活动 Run，保证消息和副作用顺序；不同 Agent 的 Run 可以在全局并发上限内并行。
-- 常驻或临时 Agent 结束后不保留专属线程、进程、模型连接或浏览器页面；需要继续时从持久状态恢复。
-- 调度上限综合内存、活跃 Run、模型供应商限流、工具进程、浏览器页面和用户预算，不直接等于 CPU 逻辑线程数。
+- 各 Run 的 Graph 状态、回调和取消信号独立；同一 Main 的 JavaScript 事件循环处理异步模型请求，不为每条对话创建 OS 线程。〔FACT｜`apps/desktop/src/main/agent/run-coordinator.ts:87`、`apps/desktop/src/main/agent/langgraph-executor.ts:578`、`apps/desktop/src/main/agent/langgraph-executor.ts:769`〕
+- 同一 Conversation 只有一个活动 Run；不同 Conversation 可并发等待网络响应，当前没有统一的全局 Run 并发槽。团队的业务 Worker 数量限制不等于 CPU 线程池大小。〔FACT｜`apps/desktop/src/main/agent/run-coordinator.ts:55`、`apps/desktop/src/main/model/model-gateway.ts:17`〕
+- 命令按调用启动子进程，由命令会话管理超时、取消、日志和退出；浏览器由 Electron 的专用组件管理。当前没有统一的有界子进程池，MCP Runtime 也尚未接入，不能将 MCP 进程池写成已实现。〔FACT｜`apps/desktop/src/main/tools/command-session-runner.ts:231`、`apps/desktop/src/main/tools/command-session-runner.ts:348`、`apps/desktop/src/main/windows/managed-browser-controller.ts:538`、`apps/desktop/src/main/agent/skill-runtime.ts:73`〕
+- 当前 SQLite 和部分 JSONL 写入仍有同步路径，不能把所有事件写入视为非阻塞 I/O；同步计算或 I/O 可能占用共享事件循环，需要按实际耗时测量。〔FACT｜`apps/desktop/src/main/storage/agent-database.ts:202`、`apps/desktop/src/main/storage/thread-log.ts:100`〕
+- 当前没有应用级固定 `worker_threads`／CPU 工作池。Node 的 libuv 线程池服务底层异步 API，不是业务 Agent Worker 池，二者的区别见 [Node.js 线程池说明](https://nodejs.org/api/cli.html#uv_threadpool_sizesize)。是否引入 CPU 工作池，须先测量事件循环延迟与解析、索引、压缩等热点；这仍是后续规划，不是现有调度实现。〔FACT｜`apps/desktop/src/main/agent/run-coordinator.ts:87`；Main 源码核对：2026-10-19〕
+- Run 结束不保留其专属执行线程；工具临时资源、用户保留的终端和浏览器按各自 owner 清理。OpenAI／Anthropic Adapter 注入同一个运行时 `fetch`，底层连接可以复用，不按 Agent 单独常驻连接，也不要求每次 Run 结束销毁共享连接；Gemini 网络由 SDK 管理，当前没有接入该 fetch 包装及其请求指纹采样。实际负载受内存、供应商限流、工具资源和用户预算共同约束。〔FACT｜`apps/desktop/src/main/agent/agent-runtime.ts:2608`、`apps/desktop/src/main/model/model-adapter-registry.ts:26`、`apps/desktop/src/main/model/langchain-model-adapter.ts:310`、`apps/desktop/src/main/bootstrap/desktop-work-lifecycle.ts:13`〕
 
 ## 7. MCP 接入设计
 
@@ -398,7 +399,7 @@ Run 快照至少记录：`providerId`、`modelId`、`protocolAdapterId`、请求
 9. MCP 工具尝试越过项目边界时被拒绝，Skill 脚本请求命令时仍出现正常审批。
 10. 启用一个依赖 MCP 的 Skill，Run 快照记录 Skill 版本与 MCP 能力；禁用后新 Run 不再加载，历史 Run 不变化。
 11. 登记一个 embedding 模型和一个不支持 Tool Calling 的聊天模型；两者不会被错误分配给需要工具的编码任务，纯对话场景仍可按能力使用聊天模型。
-12. 创建大量空闲 Agent 后，OS 线程和子进程数不随 Agent 数量线性增长；启动超过并发上限的 Run 时多余任务排队，完成后运行资源释放。
+12. 当前实现核对：空闲 Agent 不分配专属线程／进程，同一 Conversation 的活动 Run 保持唯一，互不受属的 Conversation 可独立异步执行；取消其中一项不取消其他独立对话。若后续增加全局并发上限，再补验收超过该上限排队的行为，不能以此要求冒充现有全局调度器。〔FACT｜`apps/desktop/src/main/agent/run-coordinator.ts:20`、`apps/desktop/src/main/agent/run-coordinator.ts:55`、`apps/desktop/src/main/agent/run-coordinator.ts:87`〕
 
 ## 11. 实施顺序
 
