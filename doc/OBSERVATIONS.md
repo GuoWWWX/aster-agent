@@ -21,18 +21,18 @@
 
 ## 代码结构核对（2026-10-19）
 
-本轮仅梳理工程规范和 README，未改实现。下表为合并后的源码快照，行数包括空行和注释，只用于提示规模，不凭行数断言存在运行缺陷。新增规模要求是评审约束，尚未建立自动行数门禁。
+本节保留首次规范梳理时的源码快照（实施起点 `82a5aff`），行数包括空行和注释，只用于提示规模，不凭行数断言存在运行缺陷；之后的代码整理进展见下节。新增规模要求是评审约束，尚未建立自动行数门禁。
 
-本轮记录 4 项中等规模债务、2 项低等文档矛盾；文档矛盾已修正，4 项规模债务未改代码。
+初次记录 4 项中等规模债务、2 项低等文档矛盾；文档矛盾已修正，代码整改分批进行。
 
 ### 中等严重度：代码规模债务
 
 | 编号 | 严重度／类别 | 定位与现象 | 建议及处理状态 |
 | --- | --- | --- | --- |
 | S1 | 中／债务 | 〔OBSERVE｜债务｜中〕`apps/web/src/features/chat/workspace-content.tsx:1` 共 9,768 行。 | 按页面编排、消息展示、输入与生命周期分批迁出；已确认规模，未拆分 |
-| S2 | 中／债务 | 〔OBSERVE｜债务｜中〕`apps/web/src/features/settings/settings-workspace.tsx:1` 共 4,552 行。 | 按设置分区提取页面内组件与表单行为，通用控件沿共享层复用；已确认规模，未拆分 |
-| S3 | 中／债务 | 〔OBSERVE｜债务｜中〕`apps/desktop/src/main/agent/agent-runtime.ts:1` 共 6,678 行。 | 按上下文、协作、运行生命周期等现有职责逐项收口，保留单一编排入口；已确认规模，未拆分 |
-| S4 | 中／债务 | 〔OBSERVE｜债务｜中〕`apps/desktop/src/main/storage/agent-database.ts:1` 共 12,009 行。 | 按领域查询／写入与迁移职责渐进提取，保留事务、恢复和 JSONL 归属；已确认规模，未拆分 |
+| S2 | 中／债务 | 〔OBSERVE｜债务｜中〕`apps/web/src/features/settings/settings-workspace.tsx:1` 原有 4,552 行。 | 首批已按菜单页和局部职责迁出，总入口现 213 行；局部页面及共享组件继续按规则维护 |
+| S3 | 中／债务 | 〔OBSERVE｜债务｜中〕`apps/desktop/src/main/agent/agent-runtime.ts:1` 原有 6,678 行。 | 首批迁出摘要、快照、权限、重试、工具结果和回执；现 6,015 行，类内职责尚需后续分批整理 |
+| S4 | 中／债务 | 〔OBSERVE｜债务｜中〕`apps/desktop/src/main/storage/agent-database.ts:1` 原有 12,009 行。 | 首批迁出合同、行映射、日志投影与搜索；现 10,888 行，事务和领域方法仍需后续分批整理 |
 
 行数依据为上述文件在本轮起点的完整物理行计数，核对日期 2026-10-19。后续改动重新计数，不把本表当成持续更新的指标仪表盘。〔FACT｜`apps/web/src/features/chat/workspace-content.tsx:1`、`apps/web/src/features/settings/settings-workspace.tsx:1`、`apps/desktop/src/main/agent/agent-runtime.ts:1`、`apps/desktop/src/main/storage/agent-database.ts:1`〕
 
@@ -57,4 +57,30 @@
 
 2026-10-19 设置页示例补充：第 06 篇 §5.1.1 增加总入口、菜单页面、设置内共享布局和多文件局部功能的组织示例；第 07 篇提供对应入口。已核对现有 SettingsSectionHeader 与 SettingsConfigurationCard／Group，说明复用现有实现，目录图明确属于渐进拆分目标；本轮仍只改文档，没有迁移设置页源码，也未新增代码缺陷判断。
 
-本轮没有新增待裁决项。S1–S4 留作后续独立整改依据，不宣称已修复；原 T7 的既有待裁决状态保持不变。
+以上为仅更新规范时的记录，当时尚未开始代码拆分；后续实施与验收以下节为准。原 T7 的既有待裁决状态保持不变。
+
+## 首批结构实施（2026-10-19）
+
+本批在同一未合并的工程规范分支实施，目标是明确全局外壳、设置页和后端辅助模块的职责；未重写协议、数据库迁移、事务、审批策略或 Agent 执行循环。
+
+| 范围 | 实施与验证边界 |
+| --- | --- |
+| 全局 Layout | AppShell 管理交互，WorkbenchLayout 提供所有功能页共用的纯外框；新增跨页回归验证外壳／侧栏不重建，主题和面板偏好保留 |
+| 设置 | 入口缩至 213 行；菜单页分别归位，设置专用共享组件留在 settings/components；模型 controller 统一草稿、队列和异步请求，各局部展示通过窄合同组合 |
+| 设置依赖修正 | 阈值纯计算归入 model-provider-state，controller 不反向依赖展示 TSX；连续编辑回归确认合并保存、输入焦点和展开状态保持 |
+| 后端 | 原类主体与原调用 API 保留；类型、映射、纯策略按职责迁出，没有从小模块反向导入大入口造成运行时循环依赖 |
+| 验收方式 | 各块先跑专项回归，再做根级类型／Lint、扩大测试和构建；浏览器 fixture 使用当前 worktree 编译与 MockAgentClient，不打开另一个桌面窗口，也不读取／复制用户配置 |
+
+〔FACT｜`apps/web/src/features/settings/settings-workspace.tsx:43`、`apps/web/src/components/layout/workbench-layout.tsx:16`、`apps/desktop/src/main/agent/agent-runtime.ts:303`、`apps/desktop/src/main/storage/agent-database.ts:187`〕当前实施已落到上述模块；不能把辅助代码迁出等同于两个后端大类已达标。
+
+实施验收：前端 1,177、后端 1,475、Protocol 252、脚本 19 项，共 2,923 个不同测试用例通过；根级 Lint、Typecheck、Build 通过。后端首次完整执行有两个套件因本工作区缺 Electron 二进制而加载失败，旧下载镜像返回 404；补齐已安装的同版本依赖后，这两个文件的 11 项单独重跑通过，其余 1,464 项已通过。会操作真实桌面的 Windows native control 测试文件（7 项）未执行，不把它们计入通过数。构建仍有既有的大包体提示。
+
+全局 Layout 3 文件 26 项专项、设置 11 文件 98 项专项及后端 418 项专项均已先行验证，包含新增的跨页状态保留、跨区域合并保存／输入焦点回归。真实浏览器 fixture 覆盖 12 个设置菜单 × 两个窗口尺寸 × 浅深主题共 48 个场景，保留 4 张截图并检查页面脚本错误；本批未进行安装包和真实桌面窗口启停验收。
+
+### 本批旁路发现：既有保存边界
+
+| 编号 | 严重度／类别 | 定位与现象 | 处理状态 |
+| --- | --- | --- | --- |
+| S7 | 中／风险 | 〔OBSERVE｜风险｜中〕模型页 450ms 延时保存的 effect 在卸载时只清理 timer；编辑后立即切页可能取消尚未发出的最后一笔保存。原实现已有同一逻辑。 | 已确认代码路径，未混入结构重构；后续独立修复须覆盖编辑后立即离开、合并保存、失败恢复和卸载后结果归属 |
+
+〔FACT｜`apps/web/src/features/settings/models/use-model-settings-controller.ts:222`〕保留原保存策略是本批结构兼容范围；已有连续编辑测试覆盖当前页的合并保存，不代表已经覆盖或修复切页 flush。

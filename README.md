@@ -44,7 +44,7 @@ flowchart TD
   Events --> UI
 ```
 
-Renderer 只通过 AgentClient 访问类型化宿主能力；Preload 暴露具名 API，Main 校验输入并编排模型、工具和持久化。模型适配、路径权限、事务与窗口生命周期由各自模块负责，React 不直接访问 Node 或数据库。〔FACT｜`apps/desktop/src/preload/index.ts:5`、`apps/desktop/src/main/agent/agent-runtime.ts:954`、`apps/desktop/src/main/agent/langgraph-executor.ts:753`〕
+Renderer 只通过 AgentClient 访问类型化宿主能力；Preload 暴露具名 API，Main 校验输入并编排模型、工具和持久化。模型适配、路径权限、事务与窗口生命周期由各自模块负责，React 不直接访问 Node 或数据库。〔FACT｜`apps/desktop/src/preload/index.ts:5`、`apps/desktop/src/main/agent/agent-runtime.ts:303`、`apps/desktop/src/main/agent/langgraph-executor.ts:753`〕
 
 对话完整历史追加到 JSONL，SQLite 的会话查询临时投影可以重建，不是第二份持久历史；配置统一保存在 `settings.jsonc`，密钥不进入模型上下文。产物与附件保存在应用管理目录或已授权工作区，通过受控引用读取。具体目录与备份边界见 [Aster 目录结构与 JSONC 配置](./doc/24-Aster目录结构与JSONC配置.md)。〔FACT｜`apps/desktop/src/main/storage/thread-log.ts:156`〕
 
@@ -77,6 +77,8 @@ doc/                           产品、架构、接口和工程规范
 ```
 
 测试与实现共置为 `*.test.ts`／`*.test.tsx`。页面私有实现留在所属 Feature，跨 Feature 共用组件放入 `components/<capability>`；后端方法先在所属业务域复用，满足实际条件后再拆独立包。新建目录、文件命名和文件规模要求见[模块与编码规范](./doc/06-前后端模块与编码规范.md)。
+
+全部功能页使用 `AppShell`／`WorkbenchLayout` 的共同外层；设置的菜单和内容属于内层，按 `general`、`models`、`permissions`、`mcp`、`skills` 等目录组织，设置内通用组件位于 `features/settings/components`。Main 的 Runtime 和 Database 保留原业务入口，摘要、权限、重试、数据合同、行映射和日志投影读取按职责放入具名模块，见[结构整理记录](./doc/OBSERVATIONS.md#首批结构实施2026-10-19)。
 
 ## 开始开发
 
