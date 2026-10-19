@@ -62,6 +62,7 @@ type TaskListTaskInput = Pick<ConversationTask, "status" | "title"> & {
 };
 
 const RUNNING_STATUSES = ["queued", "running"] as const;
+const ACTIVE_TEAM_INSTANCE_WORK_STATUSES = ["queued", "planned", "running", "reviewing"] as const;
 
 type SqliteModule = typeof import("node:sqlite");
 
@@ -1186,9 +1187,22 @@ export class AgentDatabase {
   private hasActiveTeamInstanceWork(teamInstanceId: string): boolean {
     return this.database.prepare(
       `SELECT 1 FROM team_work_items
-       WHERE team_instance_id = ? AND status IN ('queued', 'planned', 'running', 'reviewing')
+       WHERE team_instance_id = ? AND status IN (${ACTIVE_TEAM_INSTANCE_WORK_STATUSES.map(() => "?").join(", ")})
        LIMIT 1`,
-    ).get(teamInstanceId) !== undefined;
+    ).get(teamInstanceId, ...ACTIVE_TEAM_INSTANCE_WORK_STATUSES) !== undefined;
+  }
+
+  private assertConversationTeamsCanBeDeleted(conversationIds: readonly string[]): void {
+    if (conversationIds.length === 0) return;
+    const placeholders = conversationIds.map(() => "?").join(", ");
+    const active = this.database.prepare(
+      `SELECT 1 FROM team_work_items AS work_item
+       JOIN team_instances AS instance ON instance.id = work_item.team_instance_id
+       WHERE instance.source_conversation_id IN (${placeholders})
+         AND work_item.status IN (${ACTIVE_TEAM_INSTANCE_WORK_STATUSES.map(() => "?").join(", ")})
+       LIMIT 1`,
+    ).get(...conversationIds, ...ACTIVE_TEAM_INSTANCE_WORK_STATUSES);
+    if (active !== undefined) throw new Error("A conversation Team instance with active work cannot be deleted.");
   }
 
   private allocateTeamInstanceName(input: {
@@ -1708,6 +1722,14 @@ export class AgentDatabase {
    */
   public publishTeamWorkItem(workItemId: string): TeamWorkItemView {
     const current = this.getTeamWorkItem(workItemId);
+    if (current.executionScope === "conversation") {
+      if (current.sourceConversationId === null) throw new Error("The conversation Team source is no longer available.");
+      const source = this.getConversation(current.sourceConversationId);
+      const instance = current.teamInstanceId === undefined ? null : this.getTeamInstance(current.teamInstanceId);
+      if (instance !== null && (instance.scope !== "conversation" || instance.sourceConversationId !== source.id)) {
+        throw new Error("The conversation Team or its source is unavailable.");
+      }
+    }
     if (current.status === "queued") return current;
     if (
       current.status !== "blocked"
@@ -3724,7 +3746,10 @@ export class AgentDatabase {
     const existingTask = this.listIncompleteConversationDeletionTasks().find((task) =>
       task.conversationIds.includes(conversationId)
     );
-    if (existingTask !== undefined) return existingTask;
+    if (existingTask !== undefined) {
+      this.assertConversationTeamsCanBeDeleted(existingTask.conversationIds);
+      return existingTask;
+    }
 
     const conversation = this.getConversation(conversationId);
     if (conversation.teamWorkItemId !== null) {
@@ -3793,6 +3818,7 @@ export class AgentDatabase {
     };
 
     return this.withTransaction(() => {
+      this.assertConversationTeamsCanBeDeleted(conversationIds);
       this.database.prepare(
         `INSERT INTO conversation_deletion_tasks
            (id, root_conversation_id, conversation_ids_json, file_paths_json,
@@ -3886,15 +3912,19 @@ export class AgentDatabase {
   }
 
   public beginConversationDeletionTask(taskId: string): ConversationDeletionTask | null {
-    const now = new Date().toISOString();
-    const result = this.database.prepare(
-      `UPDATE conversation_deletion_tasks
-       SET status = 'running', retry_count = retry_count + 1,
-           last_error = NULL, updated_at = ?
-       WHERE id = ?`,
-    ).run(now, taskId);
-    if (result.changes === 0) return null;
-    return this.getConversationDeletionTask(taskId);
+    return this.withTransaction(() => {
+      const task = this.getConversationDeletionTask(taskId);
+      if (task === null) return null;
+      this.assertConversationTeamsCanBeDeleted(task.conversationIds);
+      const now = new Date().toISOString();
+      const result = this.database.prepare(
+        `UPDATE conversation_deletion_tasks
+         SET status = 'running', retry_count = retry_count + 1,
+             last_error = NULL, updated_at = ?
+         WHERE id = ?`,
+      ).run(now, taskId);
+      return result.changes === 0 ? null : this.getConversationDeletionTask(taskId);
+    });
   }
 
   public failConversationDeletionTask(taskId: string, error: string): void {
@@ -3969,9 +3999,13 @@ export class AgentDatabase {
            WHERE message_id IN (${messagePlaceholders})`,
         ).run(...agentMessageIds);
       }
+      const instanceDeletedAt = new Date().toISOString();
       this.database.prepare(
-        `DELETE FROM team_instances WHERE source_conversation_id IN (${placeholders})`,
-      ).run(...task.conversationIds);
+        `UPDATE team_instances
+         SET source_conversation_id = NULL, root_conversation_id = NULL,
+             archived_at = COALESCE(archived_at, ?), deleted_at = COALESCE(deleted_at, ?), updated_at = ?
+         WHERE source_conversation_id IN (${placeholders})`,
+      ).run(instanceDeletedAt, instanceDeletedAt, instanceDeletedAt, ...task.conversationIds);
       this.database.prepare(
         `UPDATE team_instances SET root_conversation_id = NULL
          WHERE root_conversation_id IN (${placeholders})`,
