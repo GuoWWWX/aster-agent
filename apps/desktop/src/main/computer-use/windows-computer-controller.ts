@@ -39,6 +39,7 @@ export class WindowsComputerController implements ComputerControlPort {
   private generation = 0;
   private sessionAbort = new AbortController();
   private readonly catalog = new Map<string, ComputerApplication>();
+  private readonly participants = new WeakMap<AbortSignal, number>();
   public constructor(private readonly configuration: { getConfiguration(): ComputerUseConfiguration }, private readonly permissions: Pick<ComputerApplicationPermissions, "describe" | "state" | "authorize" | "grants" | "clearSession"> | null = null) {}
   public getStatus(): ComputerUseStatus {
     return { supported: process.platform === "win32", running: this.socket !== null && !this.socket.destroyed, elevated: this.elevated };
@@ -68,9 +69,22 @@ export class WindowsComputerController implements ComputerControlPort {
       if (generation !== this.generation) throw controlError("PROCESS_CANCELLED", "电脑控制已停止；旧操作不会在重新启动后执行。");
       const configuration = this.configuration.getConfiguration();
       if (!configuration.enabled) return { ok: false as const, code: "COMPUTER_USE_DISABLED" };
+      if (command.action === "status") return { ok: true as const, value: { ...this.getStatus() } };
+      if (command.action === "stop") { this.participants.set(signal, this.generation); this.stop(); return { ok: true as const, value: { ...this.getStatus() } }; }
+      const previous = this.participants.get(signal);
+      if (previous !== undefined && previous !== this.generation) return { ok: false as const, code: "COMPUTER_CONTROL_STOPPED" };
+      if (command.action === "start") {
+        if (this.getStatus().running && configuration.administrator !== this.elevated) return { ok: false as const, code: "COMPUTER_PERMISSION_CHANGED" };
+        this.participants.set(signal, this.generation);
+        const abort = (): void => this.stop();
+        signal.addEventListener("abort", abort, { once: true });
+        try { const status = await this.start(); signal.throwIfAborted(); return { ok: true as const, value: { ...status } }; }
+        finally { signal.removeEventListener("abort", abort); }
+      }
       if (configuration.administrator && !this.getStatus().running) return { ok: false as const, code: "ADMINISTRATOR_START_REQUIRED" };
       if (!this.getStatus().running) return { ok: false as const, code: "COMPUTER_START_REQUIRED" };
       if (configuration.administrator !== this.elevated) return { ok: false as const, code: "COMPUTER_PERMISSION_CHANGED" };
+      this.participants.set(signal, this.generation);
       if (command.action === "list") return this.list(configuration, signal);
       let application: ComputerApplication | undefined;
       let expectedExecutablePath: string | undefined;

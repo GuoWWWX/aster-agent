@@ -60,6 +60,9 @@ export const computerUseStatusSchema = z.object({
 }).strict();
 export type ComputerUseStatus = z.infer<typeof computerUseStatusSchema>;
 export const computerUseArgumentsSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("status") }).strict(),
+  z.object({ action: z.literal("start") }).strict(),
+  z.object({ action: z.literal("stop") }).strict(),
   z.object({ action: z.literal("list") }).strict(),
   z.object({ action: z.literal("launch"), applicationId: z.uuid() }).strict(),
   ...(["observe", "screenshot"] as const).map((action) => z.object({

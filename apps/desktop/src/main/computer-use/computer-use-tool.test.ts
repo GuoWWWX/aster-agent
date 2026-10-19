@@ -20,9 +20,9 @@ describe("computer use tool", () => {
     for (const role of ["quick_coordinator", "team_coordinator", "team_lead"] as const) expect(toolsForAgentRole(role)?.has("computer_use")).toBe(false);
     expect(toolsForAgentRole("subagent")?.has("computer_use")).toBe(true);
   });
-  it.each(["click", "type", "key", "scroll", "launch"])("prepares %s without any input before approval", async (action) => {
+  it.each(["click", "type", "key", "scroll", "launch", "start"])("prepares %s without any input before approval", async (action) => {
     const f = fixture();
-    const commands = { click: { windowId: "123", x: 1, y: 2 }, type: { windowId: "123", text: "a" }, key: { windowId: "123", key: "Tab" }, scroll: { windowId: "123", delta: -1 }, launch: { applicationId: id } };
+    const commands = { click: { windowId: "123", x: 1, y: 2 }, type: { windowId: "123", text: "a" }, key: { windowId: "123", key: "Tab" }, scroll: { windowId: "123", delta: -1 }, launch: { applicationId: id }, start: {} };
     const command = { action, ...commands[action as keyof typeof commands] };
     const prepared = await f.tool.execute(JSON.stringify(command), new AbortController().signal);
     expect(f.execute).not.toHaveBeenCalled();
@@ -30,6 +30,12 @@ describe("computer use tool", () => {
     if (prepared.kind !== "approved_action") throw new Error("Expected approval");
     expect(prepared.action.permissionTool).toBe("computer_use");
     await prepared.action.execute(); expect(f.execute).toHaveBeenCalledOnce();
+  });
+  it("offers startup and reuses run_command for opening software", async () => {
+    const f = fixture(); const description = f.tool.getDefinitions()[0]!.description;
+    expect(description).toContain("run_command"); expect(description).not.toContain("only be started by the user");
+    for (const action of ["status", "stop"]) expect(await f.tool.execute(JSON.stringify({ action }), new AbortController().signal)).toMatchObject({ kind: "completed", isError: false });
+    expect(f.execute).toHaveBeenCalledTimes(2);
   });
   it("rechecks revocation and cancellation after waiting for approval", async () => {
     const f = fixture(); const abort = new AbortController();

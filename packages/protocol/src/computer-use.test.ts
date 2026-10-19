@@ -32,4 +32,9 @@ describe("computer use boundary", () => {
       { action: "launch", applicationId: application.id, args: ["-Command", "whoami"] }, { action: "key", windowId: "123", key: "Enter", modifiers: ["meta"] },
       { action: "screenshot", windowId: "0x100" }, { action: "identify", windowId: "123" }, { action: "shell", command: "whoami" }]) expect(computerUseArgumentsSchema.safeParse(input).success).toBe(false);
   });
+  it("accepts agent lifecycle without configuration or command overrides", () => {
+    for (const action of ["status", "start", "stop"]) expect(computerUseArgumentsSchema.parse({ action })).toEqual({ action });
+    for (const input of [{ action: "start", administrator: true }, { action: "start", accessMode: "all" },
+      { action: "start", command: "calc.exe" }, { action: "stop", force: true }]) expect(computerUseArgumentsSchema.safeParse(input).success).toBe(false);
+  });
 });

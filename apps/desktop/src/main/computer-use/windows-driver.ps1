@@ -26,7 +26,7 @@ public sealed class AsterControlSession : IDisposable {
   [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr process,uint code);
   internal static void Terminate(uint code) { TerminateProcess(GetCurrentProcess(),code); }
   readonly ManualResetEventSlim ready=new ManualResetEventSlim(false);
-  readonly List<AsterControlCorner> overlays=new List<AsterControlCorner>();
+  readonly List<AsterControlOverlay> overlays=new List<AsterControlOverlay>();
   readonly Thread thread;
   Control dispatcher;
   KeyboardHook callback;
@@ -59,9 +59,12 @@ public sealed class AsterControlSession : IDisposable {
     return CallNextHookEx(hook,code,message,data);
   }
   void RebuildOverlays() {
-    foreach(AsterControlCorner overlay in overlays) overlay.Dispose(); overlays.Clear();
-    foreach(Screen screen in Screen.AllScreens) for(int corner=0;corner<4;corner++) {
-      AsterControlCorner overlay=new AsterControlCorner(screen.Bounds,corner); overlays.Add(overlay);overlay.Show();
+    foreach(AsterControlOverlay overlay in overlays) overlay.Dispose(); overlays.Clear();
+    foreach(Screen screen in Screen.AllScreens) {
+      for(int corner=0;corner<4;corner++) {
+        AsterControlOverlay overlay=new AsterControlCorner(screen.Bounds,corner); overlays.Add(overlay);overlay.Show();
+      }
+      AsterControlOverlay hint=new AsterControlHint(screen.Bounds);overlays.Add(hint);hint.Show();
     }
   }
   void DisplayChanged(object sender,EventArgs args) {
@@ -71,12 +74,19 @@ public sealed class AsterControlSession : IDisposable {
   }
   void Run() {
     try {
-      using(dispatcher=new Control()) {
+      using(dispatcher=new Control()) using(System.Windows.Forms.Timer visibility=new System.Windows.Forms.Timer()) {
         dispatcher.CreateControl();callback=OnKeyboard;
         hook=SetWindowsHookEx(13,callback,GetModuleHandle(null),0);
         if(hook==IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
         RebuildOverlays();
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged+=DisplayChanged;
+        // Reassert Z-order after taskbar/fullscreen activation without redrawing or taking focus.
+        visibility.Interval=1000;
+        visibility.Tick+=delegate {
+          if(Volatile.Read(ref active)==0) return;
+          try { foreach(AsterControlOverlay overlay in overlays) overlay.KeepOnTop(); } catch { Terminate(3); }
+        };
+        visibility.Start();
         dispatcher.BeginInvoke(new Action(delegate { Volatile.Write(ref active,1);ready.Set(); }));
         Application.Run();
       }
@@ -84,7 +94,7 @@ public sealed class AsterControlSession : IDisposable {
     finally {
       bool unexpected=Interlocked.Exchange(ref active,0)!=0;Microsoft.Win32.SystemEvents.DisplaySettingsChanged-=DisplayChanged;
       if(hook!=IntPtr.Zero) UnhookWindowsHookEx(hook);
-      foreach(AsterControlCorner overlay in overlays) overlay.Dispose();overlays.Clear();
+      foreach(AsterControlOverlay overlay in overlays) overlay.Dispose();overlays.Clear();
       if(unexpected) Terminate(3);
     }
   }
@@ -95,13 +105,30 @@ public sealed class AsterControlSession : IDisposable {
     if(thread!=Thread.CurrentThread) thread.Join(2000);
   }
 }
-sealed class AsterControlCorner : Form {
-  readonly int corner;
-  public AsterControlCorner(Rectangle screen,int corner) {
-    this.corner=corner;FormBorderStyle=FormBorderStyle.None;StartPosition=FormStartPosition.Manual;
+abstract class AsterControlOverlay : Form {
+  [StructLayout(LayoutKind.Sequential)] struct WindowRect { public int Left,Top,Right,Bottom; }
+  [DllImport("user32.dll",SetLastError=true)] static extern bool SetWindowDisplayAffinity(IntPtr window,uint affinity);
+  [DllImport("user32.dll")] static extern bool GetWindowDisplayAffinity(IntPtr window,out uint affinity);
+  [DllImport("user32.dll",SetLastError=true)] static extern bool SetWindowPos(IntPtr window,IntPtr after,int x,int y,int width,int height,uint flags);
+  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window,out WindowRect bounds);
+  readonly Rectangle placement;
+  protected AsterControlOverlay(Rectangle bounds) {
+    placement=bounds;FormBorderStyle=FormBorderStyle.None;StartPosition=FormStartPosition.Manual;
     ShowInTaskbar=false;TopMost=true;AutoScaleMode=AutoScaleMode.None;DoubleBuffered=true;
-    BackColor=Color.Black;TransparencyKey=Color.Black;
-    Bounds=new Rectangle(corner==1||corner==2 ? screen.Right-72 : screen.Left,corner>=2 ? screen.Bottom-72 : screen.Top,72,72);
+    BackColor=Color.Black;TransparencyKey=Color.Black;Bounds=bounds;
+  }
+  public bool CaptureExcluded { get { uint affinity;return IsHandleCreated && GetWindowDisplayAffinity(Handle,out affinity) && affinity==0x11; } }
+  protected override void OnHandleCreated(EventArgs e) {
+    base.OnHandleCreated(e);
+    if(!SetWindowDisplayAffinity(Handle,0x11) || !CaptureExcluded) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+  }
+  protected override void OnShown(EventArgs e) { base.OnShown(e);KeepOnTop(); }
+  public void KeepOnTop() {
+    if(IsDisposed) return;
+    if(!TopMost) TopMost=true;
+    WindowRect actual;uint flags=0x10|0x400;
+    if(GetWindowRect(Handle,out actual) && actual.Left==placement.Left && actual.Top==placement.Top && actual.Right==placement.Right && actual.Bottom==placement.Bottom) flags|=3;
+    if(!SetWindowPos(Handle,new IntPtr(-1),placement.X,placement.Y,placement.Width,placement.Height,flags)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
   }
   protected override bool ShowWithoutActivation { get { return true; } }
   protected override CreateParams CreateParams { get { CreateParams p=base.CreateParams;p.ExStyle|=0x080800a0;return p; } }
@@ -110,6 +137,10 @@ sealed class AsterControlCorner : Form {
     if(message.Msg==0x21) { message.Result=new IntPtr(3);return; } // MA_NOACTIVATE
     base.WndProc(ref message);
   }
+}
+sealed class AsterControlCorner : AsterControlOverlay {
+  readonly int corner;
+  public AsterControlCorner(Rectangle screen,int corner) : base(new Rectangle(corner==1||corner==2 ? screen.Right-72 : screen.Left,corner>=2 ? screen.Bottom-72 : screen.Top,72,72)) { this.corner=corner; }
   protected override void OnPaint(PaintEventArgs e) {
     e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;
     e.Graphics.TranslateTransform(36,36);e.Graphics.RotateTransform(corner*90);e.Graphics.TranslateTransform(-36,-36);
@@ -117,6 +148,25 @@ sealed class AsterControlCorner : Form {
       pen.StartCap=LineCap.Round;pen.EndCap=LineCap.Round;
       path.AddLine(6,64,6,18);path.AddArc(6,6,24,24,180,90);path.AddLine(18,6,64,6);e.Graphics.DrawPath(pen,path);
     }
+  }
+}
+sealed class AsterControlHint : AsterControlOverlay {
+  public const string HintText="电脑控制中 · ESC 退出";
+  static Rectangle Placement(Rectangle screen) {
+    Size text=TextRenderer.MeasureText(HintText,SystemFonts.MessageBoxFont,Size.Empty,TextFormatFlags.NoPadding|TextFormatFlags.SingleLine);
+    int width=Math.Min(screen.Width-16,text.Width+32),height=text.Height+16;
+    return new Rectangle(screen.Left+(screen.Width-width)/2,screen.Top+12,width,height);
+  }
+  public AsterControlHint(Rectangle screen) : base(Placement(screen)) {}
+  protected override void OnPaint(PaintEventArgs e) {
+    e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;
+    using(GraphicsPath path=new GraphicsPath()) using(Brush background=new SolidBrush(Color.FromArgb(45,105,218))) {
+      int right=ClientSize.Width-1,bottom=ClientSize.Height-1,radius=9;
+      path.AddArc(0,0,radius*2,radius*2,180,90);path.AddArc(right-radius*2,0,radius*2,radius*2,270,90);
+      path.AddArc(right-radius*2,bottom-radius*2,radius*2,radius*2,0,90);path.AddArc(0,bottom-radius*2,radius*2,radius*2,90,90);path.CloseFigure();
+      e.Graphics.FillPath(background,path);
+    }
+    TextRenderer.DrawText(e.Graphics,HintText,SystemFonts.MessageBoxFont,ClientRectangle,Color.White,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.SingleLine|TextFormatFlags.NoPrefix);
   }
 }
 public static class AsterComputer {
@@ -130,12 +180,14 @@ public static class AsterComputer {
   [StructLayout(LayoutKind.Explicit)] public struct Union { [FieldOffset(0)] public Mouse Mouse; [FieldOffset(0)] public Keyboard Key; }
   [StructLayout(LayoutKind.Sequential)] public struct Input { public uint Type; public Union Data; }
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr p);
+  [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumProc cb, IntPtr p);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern bool QueryFullProcessImageName(IntPtr p, int flags, StringBuilder path, ref int size);
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  [DllImport("kernel32.dll")] static extern uint GetCurrentProcessId();
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out Rect r);
   [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
@@ -146,18 +198,45 @@ public static class AsterComputer {
   [DllImport("user32.dll")] static extern uint SendInput(uint n, Input[] inputs, int size);
   [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
   public static void Init() { SetProcessDPIAware(); }
-  public static string PathOf(IntPtr h) {
+  public static string OwnerPathOf(IntPtr h) {
     uint pid; GetWindowThreadProcessId(h, out pid);
     IntPtr p=OpenProcess(0x1000,false,pid); if(p==IntPtr.Zero) return "";
     try { int size=4096; StringBuilder s=new StringBuilder(size); return QueryFullProcessImageName(p,0,s,ref size) ? s.ToString() : ""; }
     finally { CloseHandle(p); }
   }
+  static bool IsFrameHost(string path) {
+    return String.Equals(path,Path.Combine(Environment.SystemDirectory,"ApplicationFrameHost.exe"),StringComparison.OrdinalIgnoreCase);
+  }
+  public static string SelectApplicationPath(string owner,string[] children) {
+    if(!IsFrameHost(owner)) return owner;
+    HashSet<string> applications=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach(string child in children) if(!String.IsNullOrWhiteSpace(child) && !IsFrameHost(child)) applications.Add(child);
+    if(applications.Count==1) foreach(string application in applications) return application;
+    return ""; // Missing or ambiguous application identity must not grant access to the shared host.
+  }
+  static string ApplicationPathOf(IntPtr h,string owner) {
+    if(!IsFrameHost(owner)) return owner;
+    uint ownerPid; GetWindowThreadProcessId(h,out ownerPid);
+    HashSet<uint> processes=new HashSet<uint>();processes.Add(ownerPid);
+    List<string> children=new List<string>();
+    EnumChildWindows(h,delegate(IntPtr child,IntPtr _) {
+      uint pid; GetWindowThreadProcessId(child,out pid);
+      if(pid!=0 && processes.Add(pid)) children.Add(OwnerPathOf(child));
+      return true;
+    },IntPtr.Zero);
+    return SelectApplicationPath(owner,children.ToArray());
+  }
+  public static bool IsControlWindow(IntPtr h) { uint pid;GetWindowThreadProcessId(h,out pid);return pid!=0 && pid==GetCurrentProcessId(); }
+  public static string PathOf(IntPtr h) { return IsControlWindow(h) ? "" : ApplicationPathOf(h,OwnerPathOf(h)); }
   public static object[] Windows() {
     List<object> values=new List<object>();
     EnumWindows(delegate(IntPtr h, IntPtr _) {
-      if(IsWindowVisible(h)) {
+      if(IsWindowVisible(h) && !IsControlWindow(h)) {
         StringBuilder title=new StringBuilder(512); GetWindowText(h,title,512);
-        if(title.Length>0) values.Add(new { windowId=h.ToInt64().ToString(), title=title.ToString(), executablePath=PathOf(h) });
+        if(title.Length>0) {
+          string owner=OwnerPathOf(h);
+          values.Add(new { windowId=h.ToInt64().ToString(), title=title.ToString(), executablePath=ApplicationPathOf(h,owner), ownerExecutablePath=owner });
+        }
       }
       return true;
     },IntPtr.Zero); return values.ToArray();
@@ -213,7 +292,15 @@ public static class AsterComputer {
     Rect r=Bounds(h); Input move=At(h,(r.Right-r.Left)/2,(r.Bottom-r.Top)/2);
     Send(h,new Input[]{move,new Input { Type=0,Data=new Union { Mouse=new Mouse { Data=unchecked((uint)(delta*120)),Flags=0x0800 } } }});
   }
+  public static object ElementBounds(Rect window,System.Windows.Rect element) {
+    if(element.IsEmpty || element.Width<=0 || element.Height<=0) return null;
+    double left=element.Left-window.Left,top=element.Top-window.Top,right=element.Right-window.Left,bottom=element.Bottom-window.Top;
+    if(left<0 || top<0 || right>window.Right-window.Left || bottom>window.Bottom-window.Top) return null;
+    int x=(int)Math.Floor(left),y=(int)Math.Floor(top);
+    return new { x=x,y=y,width=(int)Math.Ceiling(right)-x,height=(int)Math.Ceiling(bottom)-y };
+  }
   public static object Observe(IntPtr h) {
+    Rect r=Bounds(h);
     List<object> elements=new List<object>();
     AutomationElement root=AutomationElement.FromHandle(h);
     Queue<AutomationElement> pending=new Queue<AutomationElement>(); pending.Enqueue(root);
@@ -223,12 +310,14 @@ public static class AsterComputer {
       AutomationElement current=pending.Dequeue();
       if(!current.Current.IsPassword) {
         string name=current.Current.Name ?? ""; if(name.Length>300) name=name.Substring(0,300); chars+=name.Length;
-        elements.Add(new { name=name, type=current.Current.ControlType.ProgrammaticName, enabled=current.Current.IsEnabled });
+        string automationId=current.Current.AutomationId ?? ""; if(automationId.Length>120) automationId=automationId.Substring(0,120);
+        elements.Add(new { name=name, type=current.Current.ControlType.ProgrammaticName, enabled=current.Current.IsEnabled,automationId=automationId,
+          bounds=current.Current.IsOffscreen ? null : ElementBounds(r,current.Current.BoundingRectangle) });
         AutomationElement child=walker.GetFirstChild(current);
         while(child!=null && pending.Count<200) { pending.Enqueue(child); child=walker.GetNextSibling(child); }
       }
     }
-    Rect r=Bounds(h); return new { windowId=h.ToInt64().ToString(),width=r.Right-r.Left,height=r.Bottom-r.Top,elements=elements, truncated=pending.Count>0, coordinateSpace="window_physical_pixels" };
+    return new { windowId=h.ToInt64().ToString(),width=r.Right-r.Left,height=r.Bottom-r.Top,elements=elements, truncated=pending.Count>0, coordinateSpace="window_physical_pixels" };
   }
   public static object Capture(IntPtr h) {
     Rect r=Bounds(h); int w=r.Right-r.Left, height=r.Bottom-r.Top;
@@ -263,7 +352,7 @@ try {
       if ($command.action -eq 'list') {
         $windows = @([AsterComputer]::Windows() | Where-Object { $_.executablePath -match '^[a-z]:\\.*\.exe$' } | Select-Object -First 1000 | ForEach-Object {
           $window=$_
-          if (-not ($blocked | Where-Object { [String]::Equals($_.executablePath,$window.executablePath,[StringComparison]::OrdinalIgnoreCase) })) {
+          if (-not ($blocked | Where-Object { [String]::Equals($_.executablePath,$window.executablePath,[StringComparison]::OrdinalIgnoreCase) -or [String]::Equals($_.executablePath,$window.ownerExecutablePath,[StringComparison]::OrdinalIgnoreCase) })) {
             $readable = $request.accessMode -eq 'all' -or ($allowed | Where-Object { [String]::Equals($_.executablePath,$window.executablePath,[StringComparison]::OrdinalIgnoreCase) })
             @{ windowId=$window.windowId; title=$(if($readable){$window.title}else{''}); executablePath=$window.executablePath }
           }
@@ -271,8 +360,9 @@ try {
         $value = @{ windows=$windows }
       } elseif ($command.action -eq 'identify') {
         $path = [AsterComputer]::PathOf([IntPtr]::new([long]$command.windowId))
+        $ownerPath = [AsterComputer]::OwnerPathOf([IntPtr]::new([long]$command.windowId))
         if ([String]::IsNullOrEmpty($path)) { throw 'WINDOW_UNAVAILABLE' }
-        if ($blocked | Where-Object { [String]::Equals($_.executablePath,$path,[StringComparison]::OrdinalIgnoreCase) }) { throw 'APPLICATION_BLOCKED' }
+        if ($blocked | Where-Object { [String]::Equals($_.executablePath,$path,[StringComparison]::OrdinalIgnoreCase) -or [String]::Equals($_.executablePath,$ownerPath,[StringComparison]::OrdinalIgnoreCase) }) { throw 'APPLICATION_BLOCKED' }
         $value = @{ executablePath=$path }
       } elseif ($command.action -eq 'launch') {
         $application = $allowed | Where-Object { $_.id -eq $command.applicationId } | Select-Object -First 1
@@ -284,8 +374,9 @@ try {
       } else {
         $window = [IntPtr]::new([long]$command.windowId)
         $path = [AsterComputer]::PathOf($window)
+        $ownerPath = [AsterComputer]::OwnerPathOf($window)
         if (-not [String]::Equals($path,$request.expectedExecutablePath,[StringComparison]::OrdinalIgnoreCase)) { throw 'WINDOW_CHANGED' }
-        if ($blocked | Where-Object { [String]::Equals($_.executablePath,$path,[StringComparison]::OrdinalIgnoreCase) }) { throw 'APPLICATION_BLOCKED' }
+        if ($blocked | Where-Object { [String]::Equals($_.executablePath,$path,[StringComparison]::OrdinalIgnoreCase) -or [String]::Equals($_.executablePath,$ownerPath,[StringComparison]::OrdinalIgnoreCase) }) { throw 'APPLICATION_BLOCKED' }
         if ($request.accessMode -ne 'all' -and -not ($allowed | Where-Object { [String]::Equals($_.executablePath,$path,[StringComparison]::OrdinalIgnoreCase) })) { throw 'APPLICATION_NOT_ALLOWED' }
         switch ($command.action) {
           'observe' { $value = [AsterComputer]::Observe($window) }
