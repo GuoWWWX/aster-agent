@@ -13,7 +13,7 @@ import { DynamicStructuredTool } from "@langchain/core/tools";
 import { interrupt, isGraphInterrupt } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { z } from "zod";
-import { approveToolChangeInputSchema, CONTEXT_MESSAGE_OVERHEAD_TOKENS, DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION, conversationContextUsageInputSchema, conversationContextUsageSchema, conversationRunEventSchema, conversationToolItemSchema, estimateContextTokens, formatAgentError, resolveContextCompressionThresholdTokens, type ContextCompressionConfiguration, type ContextCompressionThreshold, type AgentDirectoryConfiguration, type AgentAvatarIcon, type AgentPermissionRule, type AgentPermissionTool, type ApplicationSettings, type PermissionPolicy, type ConversationAgentBinding, type ConversationAgentMessageItem, type ConversationAttachment, type ConversationMessageItem, type ConversationMessageSubmission, type ConversationModelSelection, type ConversationModelRetryItem, type ConversationPendingMessage, type ConversationContextUsage, sendConversationMessageInputSchema, type ConversationPermissionMode, type ConversationRunEvent, type ConversationSummary, type ConversationTaskList, type ConversationToolExecutionMode, type ConversationToolItem, type ModelReasoningOption, type ModelRuntimeStatus, replaceLatestConversationMessageInputSchema, type ReplaceLatestConversationMessageInput, type RunAccepted, type SendConversationMessageInput } from "@agent/protocol";
+import { approveToolChangeInputSchema, CONTEXT_MESSAGE_OVERHEAD_TOKENS, DEFAULT_CONTEXT_COMPRESSION_CONFIGURATION, conversationContextUsageInputSchema, conversationContextUsageSchema, conversationRunEventSchema, conversationToolItemSchema, estimateContextTokens, formatAgentError, resolveContextCompressionThresholdTokens, type ContextCompressionConfiguration, type ContextCompressionThreshold, type AgentDirectoryConfiguration, type AgentAvatarIcon, type AgentPermissionRule, type AgentPermissionTool, type ApplicationSettings, type PermissionPolicy, type ConversationAgentBinding, type ConversationAgentMessageItem, type ConversationAttachment, type ConversationMessageItem, type ConversationMessageSubmission, type ConversationModelSelection, type ConversationModelRetryItem, type ConversationPendingMessage, type ConversationContextUsage, sendConversationMessageInputSchema, type ConversationPermissionMode, type ConversationRunEvent, type ConversationSummary, type ConversationToolExecutionMode, type ConversationToolItem, type ModelReasoningOption, type ModelRuntimeStatus, replaceLatestConversationMessageInputSchema, type ReplaceLatestConversationMessageInput, type RunAccepted, type SendConversationMessageInput } from "@agent/protocol";
 import { reportMainError, toMainAgentError } from "../errors/agent-error.js";
 import { toolErrorContent } from "../errors/tool-error.js";
 import type { ModelConfiguration, ModelContextConfiguration, ModelMessageAttachment } from "../model/model-contracts.js";
@@ -56,15 +56,18 @@ import { TeamWorkItemTool, type TeamWorkItemDispatcher } from "./team-work-item-
 import { baseSystemPromptForTools, TEAM_CHAT_COORDINATOR_PROMPT } from "./prompts/prompt-assets.js";
 import { agentToolRoleInstructions, toolsForAgentRole, type AgentToolRole } from "./agent-tool-scope.js";
 import { teamChatContext } from "./team-chat-context.js";
-import { ToolHandlerRegistry, type ToolExecutionPolicy, type ToolHandler, type ToolHandlerExecutionContext } from "../tools/tool-handler-registry.js";
+import { ToolHandlerRegistry, type ToolExecutionPolicy, type ToolHandler } from "../tools/tool-handler-registry.js";
 import { MAX_PARALLEL_COMMAND_TOOL_CALLS, MAX_PARALLEL_READ_TOOL_CALLS } from "../tools/tool-execution-policy.js";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { isManualContextCompactionCommand, createTurnSummarySourceMessages, createLocalTurnSummary, shouldGenerateModelTurnSummary } from "./runtime-turn-summary.js";
 import { ToolCallLimitError, ModelToolCallValidationError, ToolApprovalExpiredError, chunkToolCalls, type ToolApprovalInterrupt, type ToolApprovalResume, type LangChainToolResultEnvelope, type CachedGraphToolResult, isToolApprovalInterrupt, hasToolNodeMessages, toolCallIdFromConfig, parseToolArgumentsOrEmpty, parseLangChainToolResult } from "./runtime-tool-results.js";
 import { createRunExecutionSnapshot, assertRunToolManifestMatchesSnapshot, assertRunConfigurationMatchesSnapshot } from "./runtime-execution-snapshot.js";
 import { type PermissionDecision, type SessionPermissionGrant, type AutomaticApprovalReview, AUTOMATIC_APPROVAL_REVIEW_PROMPT, parseAutomaticApprovalReview, requiresManualApprovalReview, DEFAULT_APPLICATION_PERMISSION_POLICIES, PROJECT_READ_TOOL_NAMES, PROJECT_SEARCH_TOOL_NAMES, normalizePermissionCandidate, permissionRuleMatches, sessionPermissionGrantMatches, permissionModeLabel } from "./runtime-permission-policy.js";
-import { isAbortError, isRetryableModelError, modelRetryReason, modelRetryDelay, waitForRetryDelay } from "./runtime-model-retry.js";
+import { isAbortError, isRetryableModelError, modelRetryDelay, waitForRetryDelay } from "./runtime-model-retry.js";
+import { createRuntimeModelRetryPolicy } from "./runtime-model-retry-policy.js";
 import { agentResultReceiptContent } from "./runtime-agent-receipts.js";
+import type { RuntimeToolContext } from "./runtime-tool-context.js";
+import { createAttachmentToolHandler, createHtmlPresentationToolHandler, createWorkspaceToolHandlers } from "./runtime-workspace-tool-handlers.js";
 
 // This is an emergency circuit breaker, not a normal task budget. Ordinary
 // runs should stop because the model finishes, not because this limit is low.
@@ -138,18 +141,6 @@ type SendMessageOptions = {
   beforeRunScheduled?: (accepted: RunAccepted) => void;
   /** Keeps an internal execution prompt from replacing a user-facing Conversation title. */
   titleOverride?: string;
-};
-
-type RuntimeToolContext = ToolHandlerExecutionContext & {
-  toolCallId?: string;
-  configuration: ModelConfiguration;
-  contextCompressionConfiguration: ContextCompressionThreshold;
-  emit: RunEventEmitter;
-  onTaskListChanged: (taskList: ConversationTaskList | null) => void;
-  operationOwner: ProjectOperationOwner;
-  permissionMode: ConversationPermissionMode;
-  providerId: string | undefined;
-  reasoning: ModelReasoningOption | undefined;
 };
 
 type GraphToolExecutionInput = Omit<RuntimeToolContext, "onTaskListChanged" | "signal"> & {
@@ -616,14 +607,8 @@ export class AgentRuntime {
         getExecutionPolicy: ({ toolName }) => collaborationTool.policy(toolName),
         isAvailable: ({ conversationId }) => conversationId !== undefined && this.database.getTeamInstanceForConversation(conversationId) !== null,
       },
-      {
-        execute: ({ context, rawArguments }) => htmlPresentationTool.execute(context.conversationId, rawArguments, context.signal,
-          ["conversation", "subagent", "team_member"].includes(this.toolRole(this.database.getConversation(context.conversationId)))),
-        getDefinitions: ({ conversationId }) => htmlPresentationTool.getDefinitions(conversationId !== undefined
-          && ["conversation", "subagent", "team_member"].includes(this.toolRole(this.database.getConversation(conversationId)))),
-        getExecutionPolicy: () => ({ kind: "serial" }),
-        isAvailable: () => true,
-      },
+      createHtmlPresentationToolHandler(htmlPresentationTool, conversationId =>
+        ["conversation", "subagent", "team_member"].includes(this.toolRole(this.database.getConversation(conversationId)))),
       {
         execute: ({ context, rawArguments, toolName }) => this.userQuestionTool.execute({ toolName, rawArguments,
           conversationId: context.conversationId, runId: context.runId, toolCallId: context.toolCallId ?? context.runId, signal: context.signal, emit: context.emit }),
@@ -809,33 +794,7 @@ export class AgentRuntime {
       },
     ];
     if (this.attachmentTool !== null) {
-      handlers.push({
-        execute: async ({ context, rawArguments, toolName }) => {
-          const attachmentResult = toolName === "view_attachments"
-            ? await this.attachmentTool?.viewImages(context.conversationId, rawArguments,
-              async (imagePath) => this.tools.execute("view_image", JSON.stringify({ path: imagePath }), context.projectId, context.signal, context.operationOwner),
-              context.signal)
-            : this.attachmentTool?.execute(
-            toolName,
-            context.conversationId,
-            rawArguments,
-          );
-          return Promise.resolve({
-            content: attachmentResult?.content ?? "Attachment tool is unavailable.",
-            isError: attachmentResult?.isError ?? true,
-            kind: "completed" as const,
-            ...(attachmentResult?.modelAttachments === undefined
-              ? {}
-              : { modelAttachments: attachmentResult.modelAttachments }),
-          });
-        },
-        getDefinitions: () => this.attachmentTool?.getDefinitions() ?? [],
-        getExecutionPolicy: ({ toolName }) => {
-          if (this.attachmentTool === null) throw new Error("Attachment tool is unavailable.");
-          return this.attachmentTool.getExecutionPolicy(toolName);
-        },
-        isAvailable: () => true,
-      });
+      handlers.push(createAttachmentToolHandler(this.attachmentTool, this.tools));
     }
     if (this.skillRuntime !== null) {
       handlers.push({
@@ -895,122 +854,13 @@ export class AgentRuntime {
         },
       });
     }
-    handlers.push({
-      execute: ({ context, rawArguments }) => context.permissionMode !== "full_access" && context.permissionMode !== "read_only"
-        ? Promise.resolve(this.webSearchTool.prepareApproval(rawArguments, context.signal))
-        : this.webSearchTool.execute(rawArguments, context.signal),
-      getDefinitions: () => this.webSearchTool.getDefinitions(),
-      getExecutionPolicy: ({ context }) => context.permissionMode !== "full_access" && context.permissionMode !== "read_only"
-        ? { kind: "serial" } : this.webSearchTool.getExecutionPolicy(),
-      isAvailable: () => true,
-    });
-    if (this.workspaceTerminalTool !== null) {
-      handlers.push({
-        execute: ({ context, rawArguments, toolName }) => this.workspaceTerminalTool?.execute({
-          conversationId: context.conversationId,
-          operationOwner: context.operationOwner,
-          projectId: context.projectId,
-          rawArguments,
-          signal: context.signal,
-          toolName,
-        }) ?? Promise.resolve({
-          content: "Workspace terminal tool is unavailable.",
-          isError: true,
-          kind: "completed" as const,
-        }),
-        getDefinitions: () => this.workspaceTerminalTool?.getDefinitions() ?? [],
-        getExecutionPolicy: () => ({ kind: "serial" }),
-        isAvailable: ({ projectId }) => projectId !== undefined,
-      });
-    }
-    const computerUseTool = this.computerUseTool;
-    if (computerUseTool !== null) {
-      handlers.push({
-        execute: ({ context, rawArguments }) => computerUseTool.execute(rawArguments, context.signal),
-        getDefinitions: () => computerUseTool.getDefinitions(),
-        getExecutionPolicy: () => ({ kind: "serial" }),
-        isAvailable: () => true,
-      });
-    }
-    if (this.browserToolPlugin !== null) {
-      handlers.push({
-        execute: ({ context, rawArguments, toolName }) => this.browserToolPlugin?.execute({
-          conversationId: context.conversationId,
-          projectId: context.projectId,
-          rawArguments,
-          signal: context.signal,
-          toolName,
-        }) ?? Promise.resolve({
-          content: "Browser plugin is unavailable.",
-          isError: true,
-          kind: "completed" as const,
-        }),
-        getDefinitions: () => this.browserToolPlugin?.getDefinitions() ?? [],
-        getExecutionPolicy: () => ({ kind: "serial" }),
-        isAvailable: ({ projectId }) => projectId !== undefined,
-      });
-    }
-    handlers.push({
-      execute: ({ context, rawArguments, toolName }) => {
-        return this.tools.execute(
-          toolName,
-          rawArguments,
-          context.projectId,
-          context.signal,
-          context.operationOwner,
-        );
-      },
-      getDefinitions: () => this.tools.getCommandDefinitions(),
-      getExecutionPolicy: ({ context, rawArguments, toolName }) => this.tools.getExecutionPolicy(
-        toolName,
-        rawArguments,
-        context.permissionMode !== "read_only",
-      ),
-      isAvailable: () => true,
-    });
-    handlers.push({
-      execute: ({ context, rawArguments, toolName }) => {
-        return this.tools.execute(
-          toolName,
-          rawArguments,
-          context.projectId,
-          context.signal,
-          context.operationOwner,
-        );
-      },
-      getDefinitions: () => this.tools.getProjectDefinitions().filter(
-        (definition) => definition.name === "read_external_file",
-      ),
-      getExecutionPolicy: ({ context, rawArguments, toolName }) => this.tools.getExecutionPolicy(
-        toolName,
-        rawArguments,
-        context.permissionMode !== "read_only",
-      ),
-      isAvailable: () => true,
-    });
-    handlers.push({
-      execute: ({ context, rawArguments, toolName }) => {
-        if (context.projectId === undefined) {
-          throw new Error("A workspace is required for project tools.");
-        }
-        return this.tools.execute(
-          toolName,
-          rawArguments,
-          context.projectId,
-          context.signal,
-          context.operationOwner,
-        );
-      },
-      getDefinitions: () => this.tools.getProjectDefinitions().filter(
-        (definition) => definition.name !== "read_external_file" && definition.name !== "view_image",
-      ),
-      getExecutionPolicy: ({ context, rawArguments, toolName }) => this.tools.getExecutionPolicy(
-        toolName,
-        rawArguments,
-        context.permissionMode !== "read_only",
-      ),
-      isAvailable: ({ projectId }) => projectId !== undefined,
-    });
+    handlers.push(...createWorkspaceToolHandlers({
+      browserToolPlugin: this.browserToolPlugin,
+      computerUseTool: this.computerUseTool,
+      tools: this.tools,
+      webSearchTool: this.webSearchTool,
+      workspaceTerminalTool: this.workspaceTerminalTool,
+    }));
     return new ToolHandlerRegistry(handlers, ({ conversationId }) => conversationId === undefined ? null
       : toolsForAgentRole(this.toolRole(this.database.getConversation(conversationId))));
   }
@@ -3636,75 +3486,19 @@ export class AgentRuntime {
     runId: string;
     signal: AbortSignal;
   }): AgentGraphModelRetry {
-    const retries = new Map<string, ConversationModelRetryItem>();
-    const updateRetry = (
-      requestId: string,
-      update: Pick<ConversationModelRetryItem, "attempt" | "reason" | "retryInMs" | "status">,
-    ): ConversationModelRetryItem => {
-      const current = retries.get(requestId);
-      const now = new Date().toISOString();
-      const retry: ConversationModelRetryItem = {
-        ...update,
-        conversationId: input.conversationId,
-        createdAt: current?.createdAt ?? now,
-        id: current?.id ?? randomUUID(),
-        kind: "model_retry",
-        maxAttempts: MAX_MODEL_RECONNECT_ATTEMPTS,
-        runId: input.runId,
-        updatedAt: now,
-      };
-      this.persistModelRetry(retry);
-      retries.set(requestId, retry);
-      this.emit(input.emit, {
-        conversationId: input.conversationId,
-        retry,
-        runId: input.runId,
-        type: "model.retry_updated",
-      });
-      return retry;
-    };
-    return {
-      createEmptyResponseError: () => new Error("模型未返回可显示内容，请稍后重试或切换模型。"),
-      getDelay: modelRetryDelay,
+    return createRuntimeModelRetryPolicy({
+      apiKey: input.configuration.apiKey,
+      conversationId: input.conversationId,
+      emit: event => this.emit(input.emit, event),
+      hasSuccessfulToolExecution: input.hasSuccessfulToolExecution,
+      markConnectionError: () => this.updateModelConnectionStatus(input.providerId, input.configuration.modelId, "error"),
       maxRetries: MAX_MODEL_RECONNECT_ATTEMPTS,
-      onFailure: ({ attempt, error, requestId }) => {
-        if (!input.signal.aborted && !isAbortError(error)) {
-          this.updateModelConnectionStatus(input.providerId, input.configuration.modelId, "error");
-        }
-        const current = retries.get(requestId);
-        if (current === undefined) return;
-        updateRetry(requestId, {
-          attempt,
-          reason: modelRetryReason(error, input.configuration.apiKey),
-          retryInMs: null,
-          status: "failed",
-        });
-        input.onFinalFailurePersisted();
-      },
-      onRetry: ({ attempt, delayMs, error, requestId }) => {
-        updateRetry(requestId, {
-          attempt,
-          reason: error === null
-            ? "模型未返回可显示内容。"
-            : modelRetryReason(error, input.configuration.apiKey),
-          retryInMs: delayMs,
-          status: "retrying",
-        });
-      },
-      onSuccess: ({ attempt, requestId }) => {
-        const current = retries.get(requestId);
-        if (current === undefined) return;
-        updateRetry(requestId, {
-          attempt,
-          reason: current.reason,
-          retryInMs: null,
-          status: "completed",
-        });
-      },
-      shouldFailEmptyResponse: () => !input.hasSuccessfulToolExecution(),
-      shouldRetry: isRetryableModelError,
+      onFinalFailurePersisted: input.onFinalFailurePersisted,
+      persistRetry: retry => this.persistModelRetry(retry),
+      runId: input.runId,
+      signal: input.signal,
       wait: this.waitForRetry,
-    };
+    });
   }
 
   private persistModelRetry(retry: ConversationModelRetryItem): void {
