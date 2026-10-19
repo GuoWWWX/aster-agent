@@ -93,7 +93,7 @@ import type { PluginCatalogRecord } from "../plugins/plugin-catalog.js";
 import { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
 import { ConversationLifecycleService } from "../storage/conversation-lifecycle-service.js";
 import { EventProjector } from "../storage/event-projector.js";
-import { ThreadLog, type ThreadLogEventInput } from "../storage/thread-log.js";
+import { ThreadLog, skillSnapshotFromResult, type ThreadLogEventInput } from "../storage/thread-log.js";
 import { ThreadLogLegacyImporter } from "../storage/thread-log-legacy-importer.js";
 import { RunCoordinator } from "./run-coordinator.js";
 import { ModelGateway } from "./model-gateway.js";
@@ -146,6 +146,7 @@ import {
   type LangGraphInterrupt,
 } from "./langgraph-executor.js";
 import {
+  requiredSkillForTool,
   resolveActiveSkillContextBudget,
   SkillRuntime,
   type SkillRuntimeContext,
@@ -1018,6 +1019,7 @@ export class AgentRuntime {
   >();
 
   private readonly activeSkillRefsByRun = new Map<string, Map<string, SkillSnapshotRef>>();
+  private readonly modelVisibleSkillsByRun = new Map<string, SkillSnapshotRef[]>();
 
   /** Reused when ToolNode re-enters a tool after an interrupt resume. */
   private readonly startedToolsByRunCall = new Map<string, ConversationToolItem>();
@@ -1570,9 +1572,6 @@ export class AgentRuntime {
         isAvailable: () => true,
         getExecutionPolicy: () => ({ kind: "serial" }),
         execute: ({ context, rawArguments }) => {
-          const skillContext = this.skillRuntimeContext(this.database.getConversation(context.conversationId), context.projectId);
-          const skill = this.skillRuntime?.getCatalog(skillContext).find(entry => entry.name === "imagegen");
-          if (skill === undefined || !this.activeSkillRefsByRun.get(context.runId)?.has(skill.id)) throw new Error("请先加载当前可用的 imagegen Skill，再生成图片。");
           const images: ConversationAttachment[] = [];
           const result = this.imageGenerationTool?.prepare(rawArguments, context.conversationId, context.providerId ?? null, context.signal, async (image, metadata) => {
             const key = `${context.runId}:${context.toolCallId}`;
@@ -3009,6 +3008,18 @@ export class AgentRuntime {
       const graphResult = await this.graphExecutor.invoke({
         callbacks: {
           beforeAgent: async () => {
+            const previousSkills = this.skillRuntime === null ? [] : this.threadLog?.readSkillSnapshots(conversationId)
+              ?? this.database.listTimeline(conversationId).flatMap(item => {
+                if (item.kind !== "tool" || item.name !== "load_skill" || item.status !== "completed" || item.result === null) return [];
+                const snapshot = skillSnapshotFromResult(item.result);
+                return snapshot === null ? [] : [snapshot];
+              });
+            const activeSkills = this.skillRuntime?.restoreActiveSkills(
+              previousSkills,
+              this.skillRuntimeContext(conversation, workspace?.id),
+              resolveActiveSkillContextBudget(configuration.contextWindow ?? 0),
+            ) ?? [];
+            this.activeSkillRefsByRun.set(runId, new Map(activeSkills.map(snapshot => [snapshot.id, snapshot])));
             const unreadAgentMessages = this.database.listUnreadAgentMessages(conversationId)
               .filter(message => message.deliveryMode !== "queue");
             const preparedContext = await this.prepareContext(
@@ -3039,7 +3050,7 @@ export class AgentRuntime {
               agentMessageIdsPreparedInInitialContext.add(message.id);
               preparedUserMessageContents.set(content, count - 1);
             }
-            return { messages: preparedContext.messages };
+            return { messages: preparedContext.messages, activeSkills };
           },
           beforeModel: async (state) => {
             const additions: ModelMessage[] = [];
@@ -3070,6 +3081,8 @@ export class AgentRuntime {
               this.skillRuntimeContext(conversation, workspace?.id),
               resolveActiveSkillContextBudget(configuration.contextWindow ?? 0),
             );
+            // A load in this tool batch is not permission to act before the model has read the body.
+            this.modelVisibleSkillsByRun.set(runId, activeSkillContext == null ? [] : [...state.activeSkills]);
             const taskListContext = activeTaskListContextMessage(
               this.database.getTaskList(conversationId),
             );
@@ -3464,6 +3477,7 @@ export class AgentRuntime {
       this.agentInputsForSummaryByRun.delete(runId);
       this.claimedPendingMessagesByRun.delete(runId);
       this.activeSkillRefsByRun.delete(runId);
+      this.modelVisibleSkillsByRun.delete(runId);
       for (const key of this.startedToolsByRunCall.keys()) {
         if (key.startsWith(`${runId}:`)) this.startedToolsByRunCall.delete(key);
       }
@@ -4822,6 +4836,15 @@ export class AgentRuntime {
     const toolImageRefs: ConversationAttachment[] = [];
     try {
       const unavailableReason = this.unavailableToolReason(input.toolCall.name);
+      if (unavailableReason === null && requiredSkillForTool(input.toolCall.name, input.toolCall.arguments) !== null) {
+        if (this.skillRuntime === null) throw new Error("Skill Runtime 不可用，操作未执行。");
+        this.skillRuntime.requireActiveSkill(
+          input.toolCall.name,
+          input.toolCall.arguments,
+          this.modelVisibleSkillsByRun.get(input.runId) ?? [],
+          this.skillRuntimeContext(this.database.getConversation(input.conversationId), input.projectId),
+        );
+      }
       if (unavailableReason !== null) {
         execution = {
           content: JSON.stringify({ error: unavailableReason, ok: false }),
@@ -5723,7 +5746,7 @@ export class AgentRuntime {
         ...(toolNames.has("submit_team_work_item") ? this.teamDispatchContext(conversation) : []),
         ...(toolNames.has("load_skill") || (executionTools && this.skillRuntime === null) ? [this.skillRuntime === null
           ? "A Skill is a task instruction and capability bundle injected from SKILL.md. No Skill Runtime is currently available, so do not label general abilities as Skills."
-          : "A Skill is a task instruction and capability bundle injected from SKILL.md, not a built-in tool, Agent role, or command-line program. Use load_skill when catalog details match the task. Skill bodies enter only the current model context, never the chat Timeline, and cannot expand permissions or bypass approval."] : []),
+          : "Skills are independent instruction bundles, all activated through load_skill(skillId). Load only a matching Skill's SKILL.md, then use read_skill_reference for needed references, never the whole directory. Reuse instructions already in the active context across turns; valid activations are restored automatically after compaction. Read a reference again only when needed content is absent or changed. Follow the prerequisite Skill named by an available tool's description; read its body on the next model turn before operating. Status, listing and cleanup remain available. Skill bodies enter only the current model context, never the chat Timeline, and cannot expand permissions or bypass approval."] : []),
         !executionTools
           ? "Use only the permitted reference, coordination and delivery tools. Execution is handled by the assigned workers; a workspace reference does not grant command or file-change tools."
           : workspace === null

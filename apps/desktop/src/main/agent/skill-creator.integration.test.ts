@@ -26,12 +26,15 @@ it.each([
   for (const source of SYSTEM_SKILLS) documents.ensureManagedDocument(source);
   const skills = new SkillRuntime(documents, integrations);
   expect(skills.getCatalog().some(skill => skill.name === "skill-creator")).toBe(true);
+  const skillId = skills.getCatalog().find(skill => skill.name === "skill-creator")!.id;
   const projects = new ProjectRegistry(database);
   const content = "---\nname: review-numbers\ndescription: Verify arithmetic examples.\n---\n\nCheck the calculation with an independent decomposition.\n";
   let turns = 0;
   const runtime = new AgentRuntime(database, { getConfiguration: () => ({ apiKey: "fixture", apiFormat: "openai-chat-completions",
     baseUrl: "https://fixture.invalid", modelId: "fixture", reasoningOptions: [] }) }, projects, new ProjectToolRegistry(projects), {
     completeTurn: () => Promise.resolve(++turns === 1 ? { content: "", finishReason: "tool_calls", toolCalls: [
+      { id: "load-creator", name: "load_skill", arguments: JSON.stringify({ skillId }) },
+    ] } : turns === 2 ? { content: "", finishReason: "tool_calls", toolCalls: [
       { id: "create-personal-skill", name: "create_skill", arguments: JSON.stringify({ content }) },
     ] } : { content: "已处理本轮创建请求。", finishReason: "stop", toolCalls: [] }),
   }, undefined, undefined, null, null, null, skills);

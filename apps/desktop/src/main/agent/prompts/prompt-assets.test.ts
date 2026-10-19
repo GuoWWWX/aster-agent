@@ -68,7 +68,7 @@ describe("prompt assets", () => {
   it("bundles distinct, valid system skills", () => {
     const names = SYSTEM_SKILLS.map((content) => parseSkillMarkdown(content).metadata.name);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toEqual(["browser-use", "image-view", "code-review", "debugging", "terminal-use", "ui-verification", "skill-creator", "imagegen"]);
+    expect(names).toEqual(["browser-use", "image-view", "code-review", "debugging", "terminal-use", "ui-verification", "skill-creator", "imagegen", "computer-use"]);
   });
   it("keeps concise core safety and execution contracts without duplicating specialist manuals", () => {
     for (const text of ["You are a local coding Agent.", "# Response Language", "# Work Progress", "# Quality and Verification",
