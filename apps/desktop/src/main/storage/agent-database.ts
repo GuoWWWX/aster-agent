@@ -1,3 +1,4 @@
+import { ConversationRunEventRepository, RUN_STATUS_TRANSITIONS, prepareAssistantTurn, prepareAssistantFailure } from "./conversation-run-event-repository.js";
 import { ConversationAttachmentMetadataRepository } from "./conversation-attachment-metadata-repository.js";
 import { TeamCollaborationProjectionReader } from "./team-collaboration-projection-reader.js";
 import { ContextSummaryRepository } from "./context-summary-repository.js";
@@ -61,17 +62,6 @@ type TaskListTaskInput = Pick<ConversationTask, "status" | "title"> & {
 };
 
 const RUNNING_STATUSES = ["queued", "running"] as const;
-
-const RUN_STATUS_TRANSITIONS: Readonly<Record<
-  ConversationRunStatus,
-  readonly ConversationRunStatus[]
->> = {
-  cancelled: [],
-  completed: [],
-  failed: [],
-  queued: ["running", "completed", "failed", "cancelled"],
-  running: ["completed", "failed", "cancelled"],
-};
 
 type SqliteModule = typeof import("node:sqlite");
 
@@ -199,6 +189,7 @@ export class AgentDatabase {
   private readonly contextSummaries: ContextSummaryRepository;
   private readonly collaborationProjection: TeamCollaborationProjectionReader;
   private readonly attachmentMetadata: ConversationAttachmentMetadataRepository;
+  private readonly runEvents: ConversationRunEventRepository;
   private readonly databasePath: string;
   private volatileConversationProjectionActive = false;
   public readonly collaboration: CollaborationStore;
@@ -210,6 +201,7 @@ export class AgentDatabase {
     this.contextSummaries = new ContextSummaryRepository(this.database);
     this.collaborationProjection = new TeamCollaborationProjectionReader(this.database);
     this.attachmentMetadata = new ConversationAttachmentMetadataRepository(this.database);
+    this.runEvents = new ConversationRunEventRepository(this.database);
     this.database.exec("PRAGMA foreign_keys = ON;");
     if (databasePath !== ":memory:") {
       this.database.exec("PRAGMA journal_mode = WAL;");
@@ -3200,7 +3192,7 @@ export class AgentDatabase {
           throw new Error("Forked timeline item identifier could not be mapped.");
         }
         if (sourceItem.kind === "message") {
-          this.insertTimelineItem({
+          this.runEvents.insertTimelineItem({
             ...sourceItem,
             attachments: sourceItem.attachments.flatMap((attachment) => {
               const copiedAttachmentId = attachmentIdMap.get(attachment.id);
@@ -3219,7 +3211,7 @@ export class AgentDatabase {
           continue;
         }
         if (sourceItem.kind === "agent_message") {
-          this.insertTimelineItem({
+          this.runEvents.insertTimelineItem({
             ...sourceItem,
             conversationId: conversation.id,
             id: copiedId,
@@ -3234,7 +3226,7 @@ export class AgentDatabase {
         if (copiedRunId === null) {
           throw new Error("Forked tool Run identifier could not be mapped.");
         }
-        this.insertTimelineItem({
+        this.runEvents.insertTimelineItem({
           ...sourceItem,
           conversationId: conversation.id,
           id: copiedId,
@@ -4578,8 +4570,8 @@ export class AgentDatabase {
         JSON.stringify(message),
         message.createdAt
       );
-    if (includeInTimeline) this.insertTimelineItem(message);
-    if (message.deliveryMode !== "queue") this.insertModelMessage({
+    if (includeInTimeline) this.runEvents.insertTimelineItem(message);
+    if (message.deliveryMode !== "queue") this.runEvents.insertModelMessage({
       attachmentIds: [], content: agentMessageModelContent(message),
       conversationId: message.conversationId, role: "user", runId: null,
       toolCallId: null, toolCalls: [],
@@ -4679,7 +4671,7 @@ export class AgentDatabase {
         });
         updateStoredMessage.run(JSON.stringify(read), now, messageId);
         updateTimeline.run(JSON.stringify(read), messageId);
-        if (current.deliveryMode === "queue") this.insertModelMessage({
+        if (current.deliveryMode === "queue") this.runEvents.insertModelMessage({
           attachmentIds: [], content: agentMessageModelContent(read),
           conversationId: read.conversationId, role: "user", runId: consumedByRunId ?? null,
           toolCallId: null, toolCalls: [],
@@ -4745,7 +4737,7 @@ export class AgentDatabase {
         throw new Error("Task list was not found.");
       }
       this.writeTaskListProjection(conversationId, null);
-      this.touchConversation(conversationId, now);
+      this.runEvents.touchConversation(conversationId, now);
     });
   }
 
@@ -4778,7 +4770,7 @@ export class AgentDatabase {
   private persistTaskList(taskList: ConversationTaskList, now: string): void {
     this.withTransaction(() => {
       this.writeTaskListProjection(taskList.conversationId, taskList);
-      this.touchConversation(taskList.conversationId, now);
+      this.runEvents.touchConversation(taskList.conversationId, now);
     });
   }
 
@@ -4883,7 +4875,7 @@ export class AgentDatabase {
           throw new Error("One or more conversation attachments are no longer available.");
         }
       }
-      this.touchConversation(message.conversationId, message.createdAt);
+      this.runEvents.touchConversation(message.conversationId, message.createdAt);
     });
   }
 
@@ -5005,7 +4997,7 @@ export class AgentDatabase {
         )
         .run(now, now, pendingMessageId);
       if (result.changes !== 1) throw new Error("Pending conversation message was not found.");
-      this.touchConversation(record.message.conversationId, now);
+      this.runEvents.touchConversation(record.message.conversationId, now);
     });
     return this.listPendingMessages(record.message.conversationId);
   }
@@ -5196,14 +5188,14 @@ export class AgentDatabase {
       throw new Error("Pending message can only steer its active conversation run.");
     }
     this.consumePendingRecord(prepared.pendingMessageId);
-    this.insertTimelineItem(message);
+    this.runEvents.insertTimelineItem(message);
     this.bindPendingAttachmentsToMessage(
       prepared.pendingMessageId,
       message.id,
       message.attachments.length,
     );
     if (eventId === undefined) {
-      this.insertModelMessage({
+      this.runEvents.insertModelMessage({
         attachmentIds: record.message.attachmentIds,
         content: prepared.modelContent,
         conversationId: message.conversationId,
@@ -5213,7 +5205,7 @@ export class AgentDatabase {
         toolCalls: []
       });
     } else {
-      this.insertThreadLogModelMessage({
+      this.runEvents.insertThreadLogModelMessage({
         attachmentIds: record.message.attachmentIds,
         content: prepared.modelContent,
         conversationId: message.conversationId,
@@ -5225,7 +5217,7 @@ export class AgentDatabase {
         toolCalls: [],
       });
     }
-    this.touchConversation(message.conversationId, message.createdAt);
+    this.runEvents.touchConversation(message.conversationId, message.createdAt);
   }
 
   public createRunFromPendingMessage(
@@ -5472,7 +5464,7 @@ export class AgentDatabase {
         }
         this.consumePendingRecord(prepared.pendingMessageId);
       }
-      this.insertTimelineItem(prepared.userMessage);
+      this.runEvents.insertTimelineItem(prepared.userMessage);
       if (prepared.pendingMessageId !== null) {
         this.bindPendingAttachmentsToMessage(
           prepared.pendingMessageId,
@@ -5496,7 +5488,7 @@ export class AgentDatabase {
           throw new Error("One or more conversation attachments are no longer drafts.");
         }
       }
-      this.insertModelMessage({
+      this.runEvents.insertModelMessage({
         attachmentIds: prepared.attachmentIds,
         content: prepared.modelContent,
         conversationId: prepared.conversationId,
@@ -5752,7 +5744,7 @@ export class AgentDatabase {
     }
 
     return this.withTransaction(() => {
-      const runConversationId = this.updateRunInTransaction(
+      const runConversationId = this.runEvents.updateRunInTransaction(
         input.runId,
         input.status,
         input.error,
@@ -5762,89 +5754,7 @@ export class AgentDatabase {
       }
       this.terminalResults.set(input.runId, terminalReceiptSummary(input.result));
 
-      let assistantMessage: ConversationMessageItem | null = null;
-      if (input.assistant?.kind === "turn") {
-        const now = new Date().toISOString();
-        assistantMessage = input.assistant.content.length === 0
-          && (input.assistant.reasoningContent?.length ?? 0) === 0
-          ? null
-          : conversationMessageItemSchema.parse({
-              content: input.assistant.content,
-              conversationId: input.conversationId,
-              createdAt: now,
-              id: input.assistant.messageId,
-              kind: "message",
-              modelId: input.assistant.modelId,
-              ...(input.assistant.reasoningContent === undefined
-                ? {}
-                : { reasoningContent: input.assistant.reasoningContent }),
-              role: "assistant",
-              runId: input.runId,
-              status: "completed"
-            });
-        this.insertModelMessage({
-          attachmentIds: [],
-          content: input.assistant.content,
-          conversationId: input.conversationId,
-          ...(input.assistant.providerState === undefined
-            ? {}
-            : { providerState: input.assistant.providerState }),
-          role: "assistant",
-          runId: input.runId,
-          toolCallId: null,
-          toolCalls: []
-        });
-        if (assistantMessage !== null) this.insertTimelineItem(assistantMessage);
-        this.touchConversation(input.conversationId, now);
-      } else if (input.assistant?.kind === "failure") {
-        const now = new Date().toISOString();
-        assistantMessage = conversationMessageItemSchema.parse({
-          content: input.assistant.content,
-          conversationId: input.conversationId,
-          createdAt: now,
-          id: input.assistant.messageId,
-          kind: "message",
-          modelId: input.assistant.modelId,
-          role: "assistant",
-          runId: input.runId,
-          status: "failed"
-        });
-        this.insertTimelineItem(assistantMessage);
-        this.touchConversation(input.conversationId, now);
-      } else if (input.assistant?.kind === "cancelled") {
-        const now = new Date().toISOString();
-        assistantMessage = input.assistant.content.length === 0
-          && (input.assistant.reasoningContent?.length ?? 0) === 0
-          ? null
-          : conversationMessageItemSchema.parse({
-              content: input.assistant.content,
-              conversationId: input.conversationId,
-              createdAt: now,
-              id: input.assistant.messageId,
-              kind: "message",
-              modelId: input.assistant.modelId,
-              ...(input.assistant.reasoningContent === undefined
-                ? {}
-                : { reasoningContent: input.assistant.reasoningContent }),
-              role: "assistant",
-              runId: input.runId,
-              status: "cancelled"
-            });
-        this.insertModelMessage({
-          attachmentIds: [],
-          content: input.assistant.content,
-          conversationId: input.conversationId,
-          ...(input.assistant.providerState === undefined
-            ? {}
-            : { providerState: input.assistant.providerState }),
-          role: "assistant",
-          runId: input.runId,
-          toolCallId: null,
-          toolCalls: []
-        });
-        if (assistantMessage !== null) this.insertTimelineItem(assistantMessage);
-        this.touchConversation(input.conversationId, now);
-      }
+      const assistantMessage = this.runEvents.appendTerminalAssistant(input);
 
       const subagentTask = this.completeSubagentTaskByRunInTransaction({
         error: input.error,
@@ -5869,42 +5779,9 @@ export class AgentDatabase {
     runId: string;
     toolCalls: ModelToolCall[];
   }): ConversationMessageItem | null {
-    const now = new Date().toISOString();
-    const message =
-      input.content.length === 0 && (input.reasoningContent?.length ?? 0) === 0
-        ? null
-        : conversationMessageItemSchema.parse({
-            content: input.content,
-            conversationId: input.conversationId,
-            createdAt: now,
-            id: input.messageId,
-            kind: "message",
-            modelId: input.modelId,
-            ...(input.reasoningContent === undefined
-              ? {}
-              : { reasoningContent: input.reasoningContent }),
-            role: "assistant",
-            runId: input.runId,
-            status: "completed"
-          });
-
-    this.withTransaction(() => {
-      this.insertModelMessage({
-        attachmentIds: [],
-        content: input.content,
-        conversationId: input.conversationId,
-        ...(input.providerState === undefined ? {} : { providerState: input.providerState }),
-        role: "assistant",
-        runId: input.runId,
-        toolCallId: null,
-        toolCalls: input.toolCalls
-      });
-      if (message !== null) {
-        this.insertTimelineItem(message);
-      }
-      this.touchConversation(input.conversationId, now);
-    });
-    return message;
+    const prepared = prepareAssistantTurn(input);
+    this.withTransaction(() => this.runEvents.appendAssistantTurn(prepared));
+    return prepared.message;
   }
 
   public appendAssistantFailure(input: {
@@ -5914,73 +5791,33 @@ export class AgentDatabase {
     modelId: string;
     runId: string;
   }): ConversationMessageItem {
-    const now = new Date().toISOString();
-    const message = conversationMessageItemSchema.parse({
-      content: input.content,
-      conversationId: input.conversationId,
-      createdAt: now,
-      id: input.messageId,
-      kind: "message",
-      modelId: input.modelId,
-      role: "assistant",
-      runId: input.runId,
-      status: "failed"
-    });
-
-    this.withTransaction(() => {
-      this.insertTimelineItem(message);
-      this.touchConversation(input.conversationId, now);
-    });
-    return message;
+    const prepared = prepareAssistantFailure(input);
+    this.withTransaction(() => this.runEvents.appendAssistantFailure(prepared));
+    return prepared.message;
   }
 
   public appendToolStarted(tool: ConversationToolItem): void {
-    const validated = conversationToolItemSchema.parse(tool);
-    this.insertTimelineItem(validated);
+    this.runEvents.appendToolStarted(tool);
   }
 
   public upsertModelRetry(retry: ConversationModelRetryItem): void {
     const validated = conversationModelRetryItemSchema.parse(retry);
     this.getConversation(validated.conversationId);
     this.withTransaction(() => {
-      this.upsertModelRetryInTransaction(validated);
-      this.touchConversation(validated.conversationId, validated.updatedAt);
+      this.runEvents.upsertModelRetryInTransaction(validated);
+      this.runEvents.touchConversation(validated.conversationId, validated.updatedAt);
     });
   }
 
   public updateTool(tool: ConversationToolItem): void {
-    const validated = conversationToolItemSchema.parse(tool);
-    const update = this.database
-      .prepare(
-        `UPDATE conversation_timeline SET payload_json = ?
-         WHERE id = ? AND kind = 'tool'`
-      )
-      .run(JSON.stringify(validated), validated.id);
-    if (update.changes !== 1) {
-      throw new Error("Tool timeline item was not found.");
-    }
-    this.touchConversation(validated.conversationId, new Date().toISOString());
+    this.runEvents.updateTool(tool);
   }
 
   /** Persist a runtime-owned timeline activity without adding a model-visible ToolMessage. */
   public upsertRuntimeActivity(tool: ConversationToolItem): void {
     const validated = conversationToolItemSchema.parse(tool);
     this.getConversation(validated.conversationId);
-    this.withTransaction(() => {
-      this.insertThreadLogTimeline(validated);
-      this.database
-        .prepare(
-          `UPDATE conversation_timeline SET payload_json = ?, created_at = ?
-           WHERE id = ? AND conversation_id = ? AND kind = 'tool'`,
-        )
-        .run(
-          JSON.stringify(validated),
-          validated.createdAt,
-          validated.id,
-          validated.conversationId,
-        );
-      this.touchConversation(validated.conversationId, new Date().toISOString());
-    });
+    this.withTransaction(() => this.runEvents.upsertRuntimeActivity(validated));
   }
 
   /**
@@ -5989,7 +5826,7 @@ export class AgentDatabase {
    * same fact to ThreadLog for recovery.
    */
   public expirePendingToolApprovalsForRun(runId: string): ConversationToolItem[] {
-    return this.withTransaction(() => this.expirePendingToolApprovalsForRunInTransaction(runId));
+    return this.withTransaction(() => this.runEvents.expirePendingToolApprovalsForRunInTransaction(runId));
   }
 
   public completeTool(input: {
@@ -5998,19 +5835,7 @@ export class AgentDatabase {
     tool: ConversationToolItem;
   }): void {
     const tool = conversationToolItemSchema.parse(input.tool);
-    this.withTransaction(() => {
-      this.updateTool(tool);
-      this.insertModelMessage({
-        attachmentIds: [],
-        content: input.result,
-        conversationId: tool.conversationId,
-        role: "tool",
-        runId: tool.runId,
-        toolCallId: input.providerCallId,
-        toolCalls: []
-      });
-      this.touchConversation(tool.conversationId, new Date().toISOString());
-    });
+    this.withTransaction(() => this.runEvents.completeTool(input, tool));
   }
 
   public listModelMessages(conversationId: string): StoredModelMessage[] {
@@ -6634,8 +6459,8 @@ export class AgentDatabase {
           if (message.conversationId !== conversationId || message.runId !== null) throw new Error("Group context belongs to another conversation.");
           message.groupSource = conversationMessageItemSchema.shape.groupSource.parse({ teamInstanceId: payload.teamInstanceId,
             messageId: payload.groupMessageId, senderConversationId: payload.senderConversationId ?? null, senderName: payload.senderName ?? "用户" });
-          this.insertThreadLogTimeline(message);
-          this.insertThreadLogModelMessage({ attachmentIds: [], content: message.content, conversationId, eventId: event.eventId,
+          this.runEvents.insertThreadLogTimeline(message);
+          this.runEvents.insertThreadLogModelMessage({ attachmentIds: [], content: message.content, conversationId, eventId: event.eventId,
             role: message.role, runId: null, toolCallId: null, toolCalls: [], createdAt: message.createdAt });
           continue;
         }
@@ -6656,8 +6481,8 @@ export class AgentDatabase {
                 .run(conversationId, supersededRunId);
             }
           }
-          this.insertThreadLogTimeline(message);
-          this.insertThreadLogModelMessage({
+          this.runEvents.insertThreadLogTimeline(message);
+          this.runEvents.insertThreadLogModelMessage({
             attachmentIds: message.attachments.map((attachment) => attachment.id),
             content: readProjectionString(payload, "modelContent") ?? message.content,
             conversationId,
@@ -6668,7 +6493,7 @@ export class AgentDatabase {
             toolCalls: [],
             createdAt: message.createdAt,
           });
-          this.touchConversation(conversationId, message.createdAt);
+          this.runEvents.touchConversation(conversationId, message.createdAt);
           continue;
         }
 
@@ -6686,7 +6511,7 @@ export class AgentDatabase {
           const tool = readProjectionTool(payload, "tool");
           if (tool === null) continue;
           startedTools.set(tool.id, tool);
-          this.insertThreadLogTimeline(tool);
+          this.runEvents.insertThreadLogTimeline(tool);
           continue;
         }
 
@@ -6698,13 +6523,13 @@ export class AgentDatabase {
             this.database
               .prepare("UPDATE conversation_timeline SET payload_json = ?, created_at = ? WHERE id = ?")
               .run(JSON.stringify(tool), tool.createdAt, tool.id);
-            this.insertThreadLogTimeline(tool);
+            this.runEvents.insertThreadLogTimeline(tool);
           }
           const content = readProjectionString(payload, "content");
           const runId = readProjectionString(payload, "runId");
           const toolCallId = readProjectionString(payload, "toolCallId");
           if (content !== null && toolCallId !== null) {
-            this.insertThreadLogModelMessage({
+            this.runEvents.insertThreadLogModelMessage({
               attachmentIds: [],
               content,
               conversationId,
@@ -6721,14 +6546,14 @@ export class AgentDatabase {
 
         if (event.type === "tool_approval_requested") {
           const toolId = readProjectionString(payload, "toolId");
-          if (toolId !== null) this.markThreadLogToolAwaitingApproval(conversationId, toolId);
+          if (toolId !== null) this.runEvents.markThreadLogToolAwaitingApproval(conversationId, toolId);
           continue;
         }
 
         if (event.type === "tool_approval_decided") {
           const tool = readProjectionTool(payload, "tool");
           if (tool !== null && tool.status === "running") {
-            this.markThreadLogToolRunning(conversationId, tool);
+            this.runEvents.markThreadLogToolRunning(conversationId, tool);
           }
           continue;
         }
@@ -6736,7 +6561,7 @@ export class AgentDatabase {
         if (event.type === "tool_approval_expired") {
           const tool = readProjectionTool(payload, "tool");
           if (tool !== null && tool.status === "cancelled") {
-            this.expireThreadLogToolApproval(conversationId, tool);
+            this.runEvents.expireThreadLogToolApproval(conversationId, tool);
           }
           continue;
         }
@@ -6758,8 +6583,8 @@ export class AgentDatabase {
           if (storedMessage === undefined) {
             this.persistAgentMessage(message);
           } else {
-            this.insertThreadLogTimeline(message);
-            if (message.deliveryMode !== "queue") this.insertThreadLogModelMessage({
+            this.runEvents.insertThreadLogTimeline(message);
+            if (message.deliveryMode !== "queue") this.runEvents.insertThreadLogModelMessage({
               attachmentIds: [],
               content: agentMessageModelContent(message),
               conversationId,
@@ -7020,8 +6845,8 @@ export class AgentDatabase {
             );
         }
       }
-      this.expirePendingToolApprovalsForTerminalRunsInTransaction();
-      this.interruptRunningToolsForTerminalRunsInTransaction();
+      this.runEvents.expirePendingToolApprovalsForTerminalRunsInTransaction();
+      this.runEvents.interruptRunningToolsForTerminalRunsInTransaction();
     });
     return true;
   }
@@ -7055,7 +6880,7 @@ export class AgentDatabase {
         runCreatedAt,
         executionSnapshot.success ? serializeRunExecutionSnapshot(executionSnapshot.data) : null,
       );
-    this.insertThreadLogTimeline(message);
+    this.runEvents.insertThreadLogTimeline(message);
     const pendingMessageId = readProjectionString(payload, "pendingMessageId");
     if (pendingMessageId === null) {
       this.bindThreadLogMessageAttachments(message);
@@ -7063,7 +6888,7 @@ export class AgentDatabase {
       this.consumeThreadLogPendingRecord(pendingMessageId, event.createdAt);
       this.bindThreadLogPendingAttachmentsToMessage(pendingMessageId, message.id);
     }
-    this.insertThreadLogModelMessage({
+    this.runEvents.insertThreadLogModelMessage({
       attachmentIds: message.attachments.map((attachment) => attachment.id),
       content: readProjectionString(payload, "modelContent") ?? message.content,
       conversationId,
@@ -7076,7 +6901,7 @@ export class AgentDatabase {
     });
     const title = readProjectionString(payload, "title");
     if (title === null) {
-      this.touchConversation(conversationId, message.createdAt);
+      this.runEvents.touchConversation(conversationId, message.createdAt);
       return;
     }
     this.database
@@ -7131,9 +6956,9 @@ export class AgentDatabase {
         runCreatedAt,
         executionSnapshot.success ? serializeRunExecutionSnapshot(executionSnapshot.data) : null,
     );
-    this.insertThreadLogTimeline(message);
+    this.runEvents.insertThreadLogTimeline(message);
     this.bindThreadLogMessageAttachments(message);
-    this.insertThreadLogModelMessage({
+    this.runEvents.insertThreadLogModelMessage({
       attachmentIds: message.attachments.map((attachment) => attachment.id),
       content: readProjectionString(payload, "modelContent") ?? message.content,
       conversationId,
@@ -7146,7 +6971,7 @@ export class AgentDatabase {
     });
     const title = readProjectionString(payload, "title");
     if (title === null) {
-      this.touchConversation(conversationId, message.createdAt);
+      this.runEvents.touchConversation(conversationId, message.createdAt);
       return;
     }
     this.database
@@ -7230,7 +7055,7 @@ export class AgentDatabase {
     } else if (currentStatus !== "cancelled") {
       throw new Error("ThreadLog pending message cancellation state is invalid.");
     }
-    this.touchConversation(conversationId, event.createdAt);
+    this.runEvents.touchConversation(conversationId, event.createdAt);
   }
 
   /** Restore a committed Steer message without changing its Run's current state. */
@@ -7257,9 +7082,9 @@ export class AgentDatabase {
     // Startup/LRU hydration can retain the Run's terminal state while rebuilding
     // its messages; replay must neither require an active Run nor reactivate it.
     this.consumeThreadLogPendingRecord(pendingMessageId, message.createdAt);
-    this.insertThreadLogTimeline(message);
+    this.runEvents.insertThreadLogTimeline(message);
     this.bindThreadLogPendingAttachmentsToMessage(pendingMessageId, message.id);
-    this.insertThreadLogModelMessage({
+    this.runEvents.insertThreadLogModelMessage({
       attachmentIds: message.attachments.map((attachment) => attachment.id),
       content: modelContent,
       conversationId,
@@ -7270,7 +7095,7 @@ export class AgentDatabase {
       toolCallId: null,
       toolCalls: [],
     });
-    this.touchConversation(conversationId, message.createdAt);
+    this.runEvents.touchConversation(conversationId, message.createdAt);
   }
 
   private materializeThreadLogModelRetry(
@@ -7281,8 +7106,8 @@ export class AgentDatabase {
     if (!parsed.success || parsed.data.conversationId !== conversationId) {
       throw new Error("ThreadLog model retry update is invalid.");
     }
-    this.upsertModelRetryInTransaction(parsed.data);
-    this.touchConversation(conversationId, parsed.data.updatedAt);
+    this.runEvents.upsertModelRetryInTransaction(parsed.data);
+    this.runEvents.touchConversation(conversationId, parsed.data.updatedAt);
   }
 
   public listContextMessagesForRun(runId: string, conversationId?: string): StoredContextMessage[] {
@@ -7321,14 +7146,14 @@ export class AgentDatabase {
     if (tool === null || tool.conversationId !== conversationId) {
       throw new Error("ThreadLog runtime activity update is invalid.");
     }
-    this.insertThreadLogTimeline(tool);
+    this.runEvents.insertThreadLogTimeline(tool);
     this.database
       .prepare(
         `UPDATE conversation_timeline SET payload_json = ?, created_at = ?
          WHERE id = ? AND conversation_id = ? AND kind = 'tool'`,
       )
       .run(JSON.stringify(tool), tool.createdAt, tool.id, conversationId);
-    this.touchConversation(conversationId, event.createdAt);
+    this.runEvents.touchConversation(conversationId, event.createdAt);
   }
 
   /** Persist the Tool timeline item before its handler is allowed to run. */
@@ -7340,7 +7165,7 @@ export class AgentDatabase {
     if (tool === null || tool.conversationId !== conversationId) {
       throw new Error("ThreadLog write-ahead Tool start is invalid.");
     }
-    this.insertThreadLogTimeline(tool);
+    this.runEvents.insertThreadLogTimeline(tool);
   }
 
   /** Persist one completed Tool row and its model-visible result together. */
@@ -7359,11 +7184,11 @@ export class AgentDatabase {
     ) {
       throw new Error("ThreadLog write-ahead Tool result is invalid.");
     }
-    this.insertThreadLogTimeline(tool);
+    this.runEvents.insertThreadLogTimeline(tool);
     this.database
       .prepare("UPDATE conversation_timeline SET payload_json = ?, created_at = ? WHERE id = ? AND kind = 'tool'")
       .run(JSON.stringify(tool), tool.createdAt, tool.id);
-    this.insertThreadLogModelMessage({
+    this.runEvents.insertThreadLogModelMessage({
       attachmentIds: [],
       content,
       conversationId,
@@ -7374,7 +7199,7 @@ export class AgentDatabase {
       toolCallId,
       toolCalls: [],
     });
-    this.touchConversation(conversationId, tool.createdAt);
+    this.runEvents.touchConversation(conversationId, tool.createdAt);
   }
 
   /** Materialize an Assistant model turn before its tool calls can execute. */
@@ -7420,7 +7245,7 @@ export class AgentDatabase {
       throw new Error("ThreadLog write-ahead Assistant timeline message is invalid.");
     }
     const providerState = readProjectionProviderState(payload);
-    this.insertThreadLogModelMessage({
+    this.runEvents.insertThreadLogModelMessage({
       attachmentIds: [],
       content,
       conversationId,
@@ -7433,8 +7258,8 @@ export class AgentDatabase {
       toolCalls: readProjectionToolCalls(payload),
     });
     if (timelineMessage !== null) {
-      this.insertThreadLogTimeline(timelineMessage);
-      this.touchConversation(conversationId, timelineMessage.createdAt);
+      this.runEvents.insertThreadLogTimeline(timelineMessage);
+      this.runEvents.touchConversation(conversationId, timelineMessage.createdAt);
     }
   }
 
@@ -7530,7 +7355,7 @@ export class AgentDatabase {
             status: "failed",
           });
       if (assistant.kind !== "failure") {
-        this.insertThreadLogModelMessage({
+        this.runEvents.insertThreadLogModelMessage({
           attachmentIds: [],
           content: assistant.content,
           conversationId,
@@ -7543,30 +7368,13 @@ export class AgentDatabase {
           toolCalls: [],
         });
       }
-      if (timelineMessage !== null) this.insertThreadLogTimeline(timelineMessage);
+      if (timelineMessage !== null) this.runEvents.insertThreadLogTimeline(timelineMessage);
     }
     this.database
       .prepare("UPDATE conversations SET has_unread_result = ?, updated_at = ? WHERE id = ?")
       .run(Number(status.data === "completed" || status.data === "failed"), event.createdAt, conversationId);
   }
 
-  private insertThreadLogTimeline(item: ConversationTimelineItem): void {
-    const validated = conversationTimelineItemSchema.parse(item);
-    this.database
-      .prepare(
-        `INSERT OR IGNORE INTO conversation_timeline
-           (id, conversation_id, run_id, kind, payload_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        validated.id,
-        validated.conversationId,
-        validated.runId,
-        validated.kind,
-        JSON.stringify(validated),
-        validated.createdAt,
-      );
-  }
 
   /**
    * Existing attachment snapshots are already stored under ASTER_HOME. The
@@ -7652,150 +7460,11 @@ export class AgentDatabase {
         "UPDATE conversation_timeline SET payload_json = ? WHERE id = ? AND kind = 'agent_message'",
       )
       .run(JSON.stringify(read), messageId);
-    if (current.deliveryMode === "queue") this.insertModelMessage({
+    if (current.deliveryMode === "queue") this.runEvents.insertModelMessage({
       attachmentIds: [], content: agentMessageModelContent(read),
       conversationId, role: "user", runId: consumedByRunId ?? null,
       toolCallId: null, toolCalls: [],
     });
-  }
-
-  private markThreadLogToolAwaitingApproval(
-    conversationId: string,
-    toolId: string,
-  ): void {
-    const row = this.database
-      .prepare(
-        `SELECT payload_json FROM conversation_timeline
-         WHERE id = ? AND conversation_id = ? AND kind = 'tool'`,
-      )
-      .get(toolId, conversationId) as DatabaseRow | undefined;
-    if (row === undefined) {
-      throw new Error("ThreadLog tool approval has no matching Tool Call.");
-    }
-    const current = conversationToolItemSchema.parse(
-      parseJson(asString(row, "payload_json"), "tool"),
-    );
-    if (current.status === "awaiting_approval") return;
-    const awaiting = conversationToolItemSchema.parse({
-      ...current,
-      status: "awaiting_approval",
-    });
-    this.database
-      .prepare(
-        "UPDATE conversation_timeline SET payload_json = ? WHERE id = ?",
-      )
-      .run(JSON.stringify(awaiting), toolId);
-  }
-
-  private markThreadLogToolRunning(
-    conversationId: string,
-    tool: ConversationToolItem,
-  ): void {
-    if (tool.conversationId !== conversationId) {
-      throw new Error("ThreadLog approved Tool Call belongs to another Conversation.");
-    }
-    const row = this.database
-      .prepare(
-        `SELECT payload_json FROM conversation_timeline
-         WHERE id = ? AND conversation_id = ? AND kind = 'tool'`,
-      )
-      .get(tool.id, conversationId) as DatabaseRow | undefined;
-    if (row === undefined) {
-      throw new Error("ThreadLog tool approval decision has no matching Tool Call.");
-    }
-    const current = conversationToolItemSchema.parse(
-      parseJson(asString(row, "payload_json"), "tool"),
-    );
-    if (current.status !== "awaiting_approval") return;
-    this.database
-      .prepare("UPDATE conversation_timeline SET payload_json = ? WHERE id = ? AND kind = 'tool'")
-      .run(JSON.stringify(tool), tool.id);
-  }
-
-  private expireThreadLogToolApproval(
-    conversationId: string,
-    tool: ConversationToolItem,
-  ): void {
-    const current = this.database
-      .prepare(
-        `SELECT payload_json FROM conversation_timeline
-         WHERE id = ? AND conversation_id = ? AND kind = 'tool'`,
-      )
-      .get(tool.id, conversationId) as DatabaseRow | undefined;
-    if (current === undefined) return;
-    const currentTool = conversationToolItemSchema.parse(
-      parseJson(asString(current, "payload_json"), "tool"),
-    );
-    if (currentTool.status !== "awaiting_approval") return;
-    this.database
-      .prepare("UPDATE conversation_timeline SET payload_json = ? WHERE id = ? AND kind = 'tool'")
-      .run(JSON.stringify(tool), tool.id);
-  }
-
-  private expirePendingToolApprovalsForRunInTransaction(runId: string): ConversationToolItem[] {
-    const rows = this.database.prepare(
-      `SELECT payload_json FROM conversation_timeline
-       WHERE kind = 'tool'`,
-    ).all() as DatabaseRow[];
-    const expired = rows.flatMap((row) => {
-      const current = conversationToolItemSchema.parse(
-        parseJson(asString(row, "payload_json"), "tool"),
-      );
-      if (current.runId !== runId || current.status !== "awaiting_approval") return [];
-      const tool = conversationToolItemSchema.parse({
-        ...current,
-        result: "审批已失效：所属运行已经结束。",
-        status: "cancelled",
-      });
-      this.database
-        .prepare("UPDATE conversation_timeline SET payload_json = ? WHERE id = ? AND kind = 'tool'")
-        .run(JSON.stringify(tool), tool.id);
-      this.touchConversation(tool.conversationId, new Date().toISOString());
-      return [tool];
-    });
-    return expired;
-  }
-
-  private expirePendingToolApprovalsForTerminalRunsInTransaction(): void {
-    const rows = this.database.prepare(
-      `SELECT timeline.payload_json FROM conversation_timeline AS timeline
-       JOIN runs ON runs.id = timeline.run_id
-       WHERE timeline.kind = 'tool'
-         AND runs.status IN ('completed', 'failed', 'cancelled')
-         AND json_extract(timeline.payload_json, '$.status') = 'awaiting_approval'`,
-    ).all() as DatabaseRow[];
-    for (const row of rows) {
-      const current = conversationToolItemSchema.parse(
-        parseJson(asString(row, "payload_json"), "tool"),
-      );
-      const tool = conversationToolItemSchema.parse({
-        ...current,
-        result: "审批已失效：所属运行已经结束。",
-        status: "cancelled",
-      });
-      this.database
-        .prepare("UPDATE conversation_timeline SET payload_json = ? WHERE id = ? AND kind = 'tool'")
-        .run(JSON.stringify(tool), tool.id);
-      this.touchConversation(tool.conversationId, new Date().toISOString());
-    }
-  }
-
-  private interruptRunningToolsForTerminalRunsInTransaction(): void {
-    const rows = this.database.prepare(
-      `SELECT timeline.payload_json FROM conversation_timeline AS timeline
-       JOIN runs ON runs.id = timeline.run_id
-       WHERE timeline.kind = 'tool'
-         AND runs.status IN ('completed', 'failed', 'cancelled')
-         AND json_extract(timeline.payload_json, '$.status') = 'running'`,
-    ).all() as DatabaseRow[];
-    for (const row of rows) {
-      const current = conversationToolItemSchema.parse(parseJson(asString(row, "payload_json"), "tool"));
-      const tool = conversationToolItemSchema.parse({
-        ...current, status: "failed",
-        result: JSON.stringify({ ok: false, error: "执行已中断：所属运行已结束，未收到完成结果。不会在重启后自动重放。" }),
-      });
-      this.updateTool(tool);
-    }
   }
 
   private replaceThreadLogPendingMessages(
@@ -7861,38 +7530,6 @@ export class AgentDatabase {
     }
   }
 
-  private insertThreadLogModelMessage(input: {
-    attachmentIds: readonly string[];
-    content: string;
-    conversationId: string;
-    createdAt: string;
-    eventId: string;
-    providerState?: ModelProviderState;
-    role: StoredModelMessage["role"];
-    runId: string | null;
-    toolCallId: string | null;
-    toolCalls: ModelToolCall[];
-  }): void {
-    this.database
-      .prepare(
-        `INSERT OR IGNORE INTO model_messages
-           (id, conversation_id, run_id, role, content, tool_calls_json,
-            tool_call_id, attachment_ids_json, provider_state_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        input.eventId,
-        input.conversationId,
-        input.runId,
-        input.role,
-        input.content,
-        JSON.stringify(input.toolCalls),
-        input.toolCallId,
-        JSON.stringify(input.attachmentIds),
-        input.providerState === undefined ? null : JSON.stringify(input.providerState),
-        input.createdAt,
-      );
-  }
 
   public exportThreadLogLegacySnapshot(conversationId: string, includeHistory = true): ThreadLogLegacySnapshot {
     const attachmentIds = (this.database.prepare(
@@ -8019,7 +7656,7 @@ export class AgentDatabase {
           );
       }
       for (const message of snapshot.modelMessages) {
-        this.insertModelMessage({
+        this.runEvents.insertModelMessage({
           attachmentIds: message.attachmentIds,
           content: message.content,
           conversationId,
@@ -8030,7 +7667,7 @@ export class AgentDatabase {
           toolCalls: message.toolCalls,
         });
       }
-      for (const item of snapshot.timeline) this.insertTimelineItem(item);
+      for (const item of snapshot.timeline) this.runEvents.insertTimelineItem(item);
       this.replaceThreadLogPendingMessages(conversationId, snapshot.pendingMessages, true);
       this.writeTaskListProjection(conversationId, snapshot.taskList);
       for (const task of snapshot.subagentTasks) {
@@ -8214,7 +7851,7 @@ export class AgentDatabase {
             parseJson(asString(row, "payload_json"), "model retry timeline item"),
           );
           if (retry.status !== "retrying") continue;
-          this.upsertModelRetryInTransaction({
+          this.runEvents.upsertModelRetryInTransaction({
             ...retry,
             retryInMs: null,
             status: "failed",
@@ -8222,7 +7859,7 @@ export class AgentDatabase {
           });
         }
       }
-      this.expirePendingToolApprovalsForTerminalRunsInTransaction();
+      this.runEvents.expirePendingToolApprovalsForTerminalRunsInTransaction();
       this.database
         .prepare(
           `UPDATE subagent_tasks
@@ -8234,7 +7871,7 @@ export class AgentDatabase {
       for (const row of taskRows) {
         this.deliverSubagentTaskResultInTransaction(asString(row, "id"), false);
       }
-      this.interruptRunningToolsForTerminalRunsInTransaction();
+      this.runEvents.interruptRunningToolsForTerminalRunsInTransaction();
     });
   }
 
@@ -8408,124 +8045,14 @@ export class AgentDatabase {
     return Array.from(normalized.slice(0, 40)).slice(0, 20).join("");
   }
 
-  private insertTimelineItem(item: ConversationTimelineItem): void {
-    const validated = conversationTimelineItemSchema.parse(item);
-    this.database
-      .prepare(
-        `INSERT INTO conversation_timeline
-           (id, conversation_id, run_id, kind, payload_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        validated.id,
-        validated.conversationId,
-        validated.runId,
-        validated.kind,
-        JSON.stringify(validated),
-        validated.createdAt
-      );
-  }
-
-  private upsertModelRetryInTransaction(retry: ConversationModelRetryItem): void {
-    const result = this.database
-      .prepare(
-        `INSERT INTO conversation_timeline
-           (id, conversation_id, run_id, kind, payload_json, created_at)
-         VALUES (?, ?, ?, 'model_retry', ?, ?)
-         ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json
-         WHERE conversation_timeline.conversation_id = excluded.conversation_id
-           AND conversation_timeline.run_id = excluded.run_id
-           AND conversation_timeline.kind = 'model_retry'`,
-      )
-      .run(
-        retry.id,
-        retry.conversationId,
-        retry.runId,
-        JSON.stringify(retry),
-        retry.createdAt,
-      );
-    if (result.changes !== 1) {
-      throw new Error("Model retry timeline identity conflicts with an existing item.");
-    }
-  }
-
-  private insertModelMessage(input: {
-    attachmentIds: readonly string[];
-    content: string;
-    conversationId: string;
-    providerState?: ModelProviderState;
-    role: StoredModelMessage["role"];
-    runId: string | null;
-    toolCallId: string | null;
-    toolCalls: ModelToolCall[];
-  }): void {
-    this.database
-      .prepare(
-        `INSERT INTO model_messages
-           (id, conversation_id, run_id, role, content, tool_calls_json,
-            tool_call_id, attachment_ids_json, provider_state_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        randomUUID(),
-        input.conversationId,
-        input.runId,
-        input.role,
-        input.content,
-        JSON.stringify(input.toolCalls),
-        input.toolCallId,
-        JSON.stringify(input.attachmentIds),
-        input.providerState === undefined ? null : JSON.stringify(input.providerState),
-        new Date().toISOString()
-      );
-  }
-
-  private touchConversation(conversationId: string, timestamp: string): void {
-    this.database
-      .prepare("UPDATE conversations SET updated_at = ? WHERE id = ?")
-      .run(timestamp, conversationId);
-  }
-
   private updateRun(
     runId: string,
     status: ConversationRunStatus,
     error: string | null,
   ): void {
-    this.withTransaction(() => this.updateRunInTransaction(runId, status, error));
+    this.withTransaction(() => this.runEvents.updateRunInTransaction(runId, status, error));
   }
 
-  private updateRunInTransaction(
-    runId: string,
-    status: ConversationRunStatus,
-    error: string | null,
-  ): string {
-    const row = this.database
-      .prepare("SELECT conversation_id, status FROM runs WHERE id = ?")
-      .get(runId) as DatabaseRow | undefined;
-    if (row === undefined) throw new Error("Run was not found.");
-    const currentStatus = conversationRunStatusSchema.parse(asString(row, "status"));
-    const conversationId = asString(row, "conversation_id");
-    if (!RUN_STATUS_TRANSITIONS[currentStatus].includes(status)) {
-      throw new Error(
-        `Run state transition is not allowed: ${currentStatus} -> ${status}.`,
-      );
-    }
-    const now = new Date().toISOString();
-    const result = this.database
-      .prepare(
-        "UPDATE runs SET status = ?, error = ?, updated_at = ? WHERE id = ? AND status = ?",
-      )
-      .run(status, error, now, runId, currentStatus);
-    if (result.changes !== 1) {
-      throw new Error("Run state changed before the transition could be committed.");
-    }
-    this.database
-      .prepare(
-        "UPDATE conversations SET has_unread_result = ? WHERE id = (SELECT conversation_id FROM runs WHERE id = ?)"
-      )
-      .run(status === "completed" || status === "failed" ? 1 : 0, runId);
-    return conversationId;
-  }
 
   private withTransaction<T>(operation: () => T): T {
     this.database.exec("BEGIN IMMEDIATE;");
