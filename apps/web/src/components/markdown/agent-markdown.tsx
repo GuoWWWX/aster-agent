@@ -1,4 +1,5 @@
 import { useChatReferences, type InlineReference } from "./chat-reference-scope.js";
+import { markdownArtifactPlugin, standaloneArtifactReferences, useMarkdownArtifacts } from "./artifact-references.js";
 import { Spinner } from "../ui/loading.js";
 import { createPortal } from "react-dom";
 import { HtmlPreviewCard, HtmlPreviewContext, type HtmlPreviewSource } from "../html-preview/html-preview-card.js";
@@ -49,7 +50,7 @@ const renderer = new MarkdownIt({
   linkify: true,
   typographer: false
 }).use(safeMarkdownHtmlPlugin).use(markdownMathPlugin).use(relaxedStrongPlugin).use(relaxedEmphasisPlugin)
-  .use(markdownCalloutPlugin).use(markdownTablePlugin).use(markdownCaptionPlugin);
+  .use(markdownCalloutPlugin).use(markdownTablePlugin).use(markdownCaptionPlugin).use(markdownArtifactPlugin);
 
 renderer.block.ruler.before("hr", "agent_labeled_divider", (state, startLine, _endLine, silent) => {
   const lineStart = (state.bMarks[startLine] ?? 0) + (state.tShift[startLine] ?? 0);
@@ -154,6 +155,7 @@ renderer.core.ruler.after("inline", "message_references", state => {
 renderer.renderer.rules.message_reference = (tokens, index) => `<span data-message-reference="${renderer.utils.escapeHtml(tokens[index]?.content ?? "")}"></span>`;
 renderer.renderer.rules.link_open = (tokens, index, options, environment, self) => {
   const token = tokens[index];
+  if (String(token?.attrGet("href") ?? "").startsWith("artifact:")) return '<span title="交付引用须单独成段，且来自当前对话">';
   token?.attrSet("rel", "noreferrer noopener");
   token?.attrSet("target", "_blank");
   const hrefValue = token?.attrGet("href");
@@ -173,6 +175,7 @@ renderer.renderer.rules.link_close = (tokens, index, options, environment, self)
   const openingToken = tokens.slice(0, index).findLast((token) => token.type === "link_open");
   const hrefValue = openingToken?.attrGet("href");
   const href = hrefValue === null || hrefValue === undefined ? "" : String(hrefValue);
+  if (href.startsWith("artifact:")) return "</span>";
   const closingTag = defaultLinkClose === undefined
     ? self.renderToken(tokens, index, options)
     : defaultLinkClose(tokens, index, options, environment, self);
@@ -265,6 +268,9 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferen
   const [codePreviews, setCodePreviews] = useState<Array<{ source: string; mount: Element; language: "html" | "react" | "vue" }>>([]);
   const [sourceViews, setSourceViews] = useState<Array<{ source: string; language: string; mount: Element }>>([]);
   const [referenceMounts, setReferenceMounts] = useState<Array<{ index: number; mount: Element }>>([]);
+  const artifacts = useMarkdownArtifacts();
+  const artifactKey = JSON.stringify([...standaloneArtifactReferences(content, streaming)].filter(ref => artifacts.has(ref)));
+  const [artifactMounts, setArtifactMounts] = useState<Array<{ ref: string; mount: Element }>>([]);
   const referenceKey = JSON.stringify(inlineReferences.map(reference => reference.label));
   const theme = useWorkbenchUiStore((state) => state.themeMode);
   const previewContext = useContext(HtmlPreviewContext);
@@ -276,7 +282,7 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferen
   const canPreview = previewContext !== null;
   // Streaming replaces parser-owned DOM on each chunk. Mount the virtual editor
   // once the output settles, rather than repeatedly clearing its measured viewport.
-  const html = useMemo(() => renderAgentMarkdown(content, canPreview, !streaming, referenceKey), [content, canPreview, streaming, referenceKey]);
+  const html = useMemo(() => renderAgentMarkdown(content, canPreview, !streaming, referenceKey, artifactKey, streaming), [content, canPreview, streaming, referenceKey, artifactKey]);
   // Keep parser-owned DOM intact on theme changes: native details state, source
   // toggles and diagram height must survive while the next SVG is rendering.
   const markup = useMemo(() => ({ __html: html }), [html]);
@@ -286,6 +292,7 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferen
     if (host === null) return;
     const mounts = referenceKey === "[]" ? [] : [...host.querySelectorAll<HTMLElement>("[data-message-reference]")].map(mount => ({ index: Number(mount.dataset.messageReference), mount }));
     setReferenceMounts(mounts);
+    setArtifactMounts(artifactKey === "[]" ? [] : [...host.querySelectorAll<HTMLElement>("[data-artifact-reference]")].map(mount => ({ ref: mount.dataset.artifactReference ?? "", mount })));
     const previews = [...host.querySelectorAll<HTMLTemplateElement>("[data-html-code-source]")].flatMap(template => {
       const mount = template.parentElement?.querySelector("[data-html-code-preview-slot]");
       const tag = template.parentElement?.getAttribute("data-language")?.toLowerCase();
@@ -298,7 +305,7 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferen
       return mount == null ? [] : [{ source: template.content.textContent ?? "", language: template.dataset.language ?? "text", mount }];
     });
     if (sources.length > 0) setSourceViews(sources);
-  }, [scrollHostRef, referenceKey]);
+  }, [scrollHostRef, referenceKey, artifactKey]);
   useEffect(() => {
     let alive = true;
     for (const card of hostRef.current?.querySelectorAll<HTMLElement>(".agent-markdown__mermaid") ?? []) {
@@ -431,6 +438,7 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferen
     {codePreviews.map((preview, index) => createPortal(<HtmlPreviewCard source={{ kind: "code", html: preview.source, language: preview.language }} embedded />, preview.mount, String(index)))}
     {sourceViews.map((view, index) => createPortal(<CodeSourceView source={view.source} language={view.language} />, view.mount, `source:${index}`))}
     {referenceMounts.map((reference, index) => createPortal(inlineReferences[reference.index]?.content, reference.mount, `reference:${index}`))}
+    {artifactMounts.map(artifact => createPortal(artifacts.get(artifact.ref), artifact.mount, artifact.ref))}
     {activePreview !== null ? createPortal(<HtmlPreviewCard key={activePreview.source.kind === "file" ? activePreview.source.path : activePreview.source.html} source={activePreview.source} />, activePreview.mount) : null}
     <Popover open={diagramMenu !== null} onOpenChange={(open) => { if (!open) setDiagramMenu(null); }}>
       <PopoverAnchor asChild><span aria-hidden="true" className="pointer-events-none fixed size-0" style={{ left: diagramMenu?.x ?? 0, top: diagramMenu?.y ?? 0 }} /></PopoverAnchor>
@@ -451,8 +459,8 @@ function isClosedFence(line: string, opening: string): boolean {
   return closing !== undefined && closing[0] === opening[0] && closing.length >= opening.length;
 }
 
-export function renderAgentMarkdown(content: string, htmlPreview = false, virtualCodeSources = false, referenceKey = "[]"): string {
+export function renderAgentMarkdown(content: string, htmlPreview = false, virtualCodeSources = false, referenceKey = "[]", artifactKey = "[]", streaming = false): string {
   const extracted = extractExplicitImageCaptions(separateMarkdownCallouts(content));
   const markdown = normalizeAdjacentBoldTableCaptions(extracted.markdown);
-  return renderer.render(markdown, { markdown, htmlPreview, virtualCodeSources, referenceLabels: JSON.parse(referenceKey), imageCaptions: extracted.captionsByImageIndex }) + (htmlPreview ? '<div data-html-file-preview-slot></div>' : "");
+  return renderer.render(markdown, { markdown, streaming, htmlPreview, virtualCodeSources, referenceLabels: JSON.parse(referenceKey), artifactRefs: JSON.parse(artifactKey), imageCaptions: extracted.captionsByImageIndex }) + (htmlPreview ? '<div data-html-file-preview-slot></div>' : "");
 }

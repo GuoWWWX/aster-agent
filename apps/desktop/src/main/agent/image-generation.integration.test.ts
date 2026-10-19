@@ -87,16 +87,20 @@ it.each([
       expect(attachments.readImagePreview(conversation.id, image.id).data).toBe(png);
     }
     if (responseMode === "cancel") return;
+    expect(result.value.displayRef).toMatch(/^artifact:[0-9a-f-]{36}$/u);
     const lastMessage = database.listTimeline(conversation.id).findLast(item => item.kind === "message");
     if (lastMessage === undefined) throw new Error("Missing fork boundary");
     const fork = database.forkConversation(conversation.id, "sibling", lastMessage.id);
     const forkTool = database.listTimeline(fork.id).find(item => item.kind === "tool" && item.name === "generate_images");
     if (forkTool?.kind !== "tool") throw new Error("Missing forked images");
-    const forkImages = imageGenerationResultSchema.parse(JSON.parse(forkTool.result!)).value.images;
+    const forkValue = imageGenerationResultSchema.parse(JSON.parse(forkTool.result!)).value;
+    expect(forkValue.displayRef).toBe(result.value.displayRef);
+    const forkImages = forkValue.images;
     expect(forkImages).toHaveLength(responseMode === "partial" || responseMode === "network" ? 1 : 2);
     const forkedResult = database.listModelMessages(fork.id).filter(message => message.role === "tool")
       .map(message => imageGenerationResultSchema.safeParse(JSON.parse(message.content))).find(result => result.success);
     expect(forkedResult?.data?.value.images.map(image => image.id)).toEqual(forkImages.map(image => image.id));
+    expect(forkedResult?.data?.value.displayRef).toBe(result.value.displayRef);
     for (const image of forkImages) {
       expect(image.conversationId).toBe(fork.id);
       expect(attachments.readImagePreview(fork.id, image.id).data).toBe(png);

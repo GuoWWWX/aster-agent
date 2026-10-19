@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { htmlPreviewRequestSchema, htmlPreviewSchema, htmlPreviewResizeMessageSchema, presentHtmlInputSchema, htmlPresentationResultSchema } from "./html-preview.js";
 const id = "00000000-0000-4000-8000-000000000001";
 describe("HTML preview contracts", () => {
+  it("accepts only opaque optional artifact references without changing legacy payloads", () => {
+    const presentation = { kind: "html", path: "demo.html" };
+    expect(htmlPresentationResultSchema.parse({ ok: true, value: { presentation, displayRef: `artifact:${id}` } }).value.displayRef).toBe(`artifact:${id}`);
+    for (const displayRef of ["", "artifact:../demo.html", "file:///demo.html", "https://example.com"]) {
+      expect(htmlPresentationResultSchema.safeParse({ ok: true, value: { presentation, displayRef } }).success).toBe(false);
+    }
+  });
   it("accepts bounded component previews and multi-phase inspection without widening workspace paths", () => {
     for (const language of ["html", "react", "vue"]) {
       expect(htmlPreviewRequestSchema.safeParse({ kind: "code", conversationId: id, html: "example", language }).success).toBe(true);

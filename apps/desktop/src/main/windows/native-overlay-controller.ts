@@ -1,4 +1,5 @@
 import { app, ipcMain, screen, type BrowserWindow, type IpcMainEvent, type Rectangle, type WebContents, type WindowOpenHandlerResponse } from "electron";
+import { installTextContextMenu } from "./text-context-menu.js";
 import path from "node:path";
 import {
   NATIVE_OVERLAY_CHANNEL,
@@ -102,6 +103,7 @@ export class NativeOverlayController {
       return;
     }
     this.overlayWindow = window;
+    const removeContextMenu = installTextContextMenu(window);
     const contents = window.webContents;
     const denyNavigation = (event: Electron.Event, url: string): void => {
       if (url !== this.allowedUrl) event.preventDefault();
@@ -153,6 +155,7 @@ export class NativeOverlayController {
       window.removeListener("blur", blurred);
       window.removeListener("focus", focused);
       window.removeListener("closed", close);
+      removeContextMenu();
     };
     this.synchronize();
   };

@@ -4,6 +4,7 @@ import type { ModelConfiguration, ModelToolDefinition } from "../model/model-con
 import { modelToolParameters, parseToolArguments } from "../model/tool-arguments.js";
 import { ImageGenerationAdapter, ImageGenerationError, type GeneratedImage } from "../model/image-generation-adapter.js";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { ConversationAttachmentStore } from "../storage/conversation-attachment-store.js";
 import type { ToolExecution } from "./project-tool-registry.js";
 
@@ -26,7 +27,7 @@ export class ImageGenerationTool {
       modelId: z.enum([...new Set(models.map(model => model.modelId))]).optional().describe(argumentsSchema.shape.modelId.description ?? "Image model ID"),
       providerId: z.enum([...new Set(models.map(model => model.providerId))]).optional().describe(argumentsSchema.shape.providerId.description ?? "Provider UUID"),
     });
-    return [{ name: "generate_images", description: `Generate or edit raster images. Read the imagegen Skill first. Results are saved and displayed automatically. Use attachment IDs for reference images; no raw base64, URLs or filesystem paths. Available choices (providerId and modelId are SEPARATE fields): ${models.length === 0 ? "none configured; add an image model in Settings first" : JSON.stringify(models.map(model => ({ providerId: model.providerId, modelId: model.modelId })))}.`, parameters: modelToolParameters(schema) }];
+    return [{ name: "generate_images", description: `Generate or edit raster images. Read the imagegen Skill first. Results are saved automatically. Place [Images](EXACT_RETURNED_displayRef) alone in a final-answer paragraph to display the batch there; do not repeat image data or invent references. Use attachment IDs for reference images; no raw base64, URLs or filesystem paths. Available choices (providerId and modelId are SEPARATE fields): ${models.length === 0 ? "none configured; add an image model in Settings first" : JSON.stringify(models.map(model => ({ providerId: model.providerId, modelId: model.modelId })))}.`, parameters: modelToolParameters(schema) }];
   }
 
   public prepare(rawArguments: string, conversationId: string, preferredProviderId: string | null, signal: AbortSignal,
@@ -43,7 +44,8 @@ export class ImageGenerationTool {
         const configuration = this.credentials.getConfiguration(selected.providerId, selected.modelId);
         const metadata = { requestedCount: input.count, modelId: selected.modelId, providerId: selected.providerId };
         const images: ConversationAttachment[] = [];
-        const value = () => ({ ...metadata, count: images.length, images,
+        const displayRef = `artifact:${randomUUID()}`;
+        const value = () => ({ ...metadata, displayRef, count: images.length, images,
           readPaths: images.map(image => `attachments/${path.basename(this.attachments.resolveThreadLogPaths(image).storedPath)}`) });
         // Some compatible providers ignore n. Fulfill only the remaining requested variants;
         // never replay a failed request or discard completed images.

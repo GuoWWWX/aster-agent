@@ -1,6 +1,8 @@
 import { isImageGenerationModel } from "@agent/protocol";
 import { GeneratedImagesResult, ImageGenerationVisibilityProvider } from "./generated-images-result.js";
 import { imageGenerationDeliveries } from "./image-generation-deliveries.js";
+import { conversationArtifacts, HtmlDeliveryPreview } from "./conversation-artifacts.js";
+import { MarkdownArtifactScope, standaloneArtifactReferences } from "../../components/markdown/artifact-references.js";
 import type { ChatReference } from "@agent/protocol";
 import { ChatReferenceScope } from "../../components/markdown/chat-reference-scope.js";
 import { MessageReferenceQuote } from "../../components/markdown/message-reference-quote.js";
@@ -9,8 +11,7 @@ import { LoadingState, Spinner } from "../../components/ui/loading.js";
 import { ConversationWorkIndicator, toolWorkPhase } from "./conversation-work-state.js";
 import { ConversationChangesBadge, ConversationChangesCard } from "./conversation-file-changes.js";
 import { htmlPresentationDeliveries } from "./html-presentations.js";
-import { HtmlPreviewCard, HtmlPreviewScope } from "../../components/html-preview/html-preview-card.js";
-import { HtmlPreviewGallery } from "../../components/html-preview/html-preview-gallery.js";
+import { HtmlPreviewScope } from "../../components/html-preview/html-preview-card.js";
 import { QueryTextarea } from "./query-textarea.js";
 import { UserMessageContent } from "./user-message-content.js";
 import { TeamChatSourceContent, TeamChatSourceHeader } from "../team/team-chat-source-content.js";
@@ -3162,6 +3163,11 @@ export function ConversationWorkspace({
   }
   const htmlDeliveries = htmlPresentationDeliveries(timeline, displayTimeline, activeRunId);
   const imageDeliveries = imageGenerationDeliveries(timeline, displayTimeline);
+  const artifacts = useMemo(() => conversationArtifacts(timeline, agentClient, { cacheTtlMs: CONVERSATION_WORKSPACE_CACHE_TTL_MS, onResize: handleHtmlGalleryResize }), [timeline, agentClient, handleHtmlGalleryResize]);
+  const artifactContents = useMemo(() => new Map([...artifacts].map(([ref, artifact]) => [ref, artifact.content])), [artifacts]);
+  const referencedArtifactTools = new Set(displayTimeline.flatMap(item => item.kind !== "message" || item.role !== "assistant" ? []
+    : (item.continuationMessages ?? [item]).flatMap(message => [...standaloneArtifactReferences(message.content, message.status === "streaming")]
+      .flatMap(ref => artifacts.has(ref) ? [artifacts.get(ref)!.toolId] : []))));
   const hasHtmlGallery = [...htmlDeliveries.values()].some(deliveries => deliveries.some(delivery => "pages" in delivery));
   const locateQuestion = async (question: UserQuestion): Promise<void> => {
     try {
@@ -3433,17 +3439,13 @@ export function ConversationWorkspace({
               <ToolRevealContext.Provider value={locateTimelineItem}>
               {displayTimeline.map((item, index) => {
                 const answerQuestion = item.kind === "message" ? questionForAnswer(item, userQuestions) : null;
-                const deliveries = htmlDeliveries.get(item.id) ?? [];
-                const images = imageDeliveries.get(item.id) ?? [];
+                const deliveries = (htmlDeliveries.get(item.id) ?? []).filter(delivery => !referencedArtifactTools.has(delivery.id));
+                const images = (imageDeliveries.get(item.id) ?? []).filter(image => !referencedArtifactTools.has(image.id));
                 const changes = changeCards.get(item.id) ?? [];
                 const beforeMessage = deliveries.length === 0 && images.length === 0 ? null : (
                   <div className="chat-message-group gap-[5px]" data-role="assistant">
                     {images.map(image => <GeneratedImagesResult key={image.id} agentClient={agentClient} item={image} />)}
-                    {deliveries.map(delivery => (
-                      <div data-html-delivery={delivery.id} key={delivery.id}>
-                        {"pages" in delivery ? <HtmlPreviewGallery pages={delivery.pages} cacheTtlMs={CONVERSATION_WORKSPACE_CACHE_TTL_MS} onResize={handleHtmlGalleryResize} /> : "code" in delivery ? <HtmlPreviewCard source={{ kind: "code", html: delivery.code, language: delivery.language }} /> : <HtmlPreviewCard source={{ kind: "file", path: delivery.path }} />}
-                      </div>
-                    ))}
+                    {deliveries.map(delivery => <HtmlDeliveryPreview key={delivery.id} delivery={delivery} cacheTtlMs={CONVERSATION_WORKSPACE_CACHE_TTL_MS} onResize={handleHtmlGalleryResize} />)}
                   </div>
                 );
                 const afterMessage = changes.length === 0 ? null : (
@@ -3487,6 +3489,7 @@ export function ConversationWorkspace({
                         && item.continuationMessages !== undefined ? undefined : item.id}
                     >
                       {item.kind === "message" ? beforeMessage : null}
+                      <MarkdownArtifactScope artifacts={item.kind === "message" && item.role === "assistant" ? artifactContents : undefined}>
                       <TimelineItem
                         agentClient={agentClient}
                         afterMessage={item.kind === "message" ? afterMessage : null}
@@ -3560,6 +3563,7 @@ export function ConversationWorkspace({
                         onSessionSelected={onSessionSelected}
                         liveToolOutputs={liveToolOutputs}
                       />
+                      </MarkdownArtifactScope>
                     </div>
                   )}
                   {item.kind === "message" ? null : <>{beforeMessage}{afterMessage}</>}

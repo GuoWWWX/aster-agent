@@ -1,4 +1,5 @@
 import { htmlPresentationResultSchema, presentHtmlInputSchema } from "@agent/protocol";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { toolErrorContent } from "../errors/tool-error.js";
 import type { ModelToolDefinition } from "../model/model-contracts.js";
@@ -14,7 +15,7 @@ export class HtmlPresentationTool {
     return [{ name: "present_html", parameters: modelToolParameters(allowInspection ? presentHtmlInputSchema : presentHtmlInputSchema.safeExtend({ action: z.literal("present").default("present") })),
       description: "Preview or deliver self-contained UI. Use code with language=html/react/vue, an existing HTML path, or pages for requested alternatives. "
         + (allowInspection ? "action=inspect returns screenshot evidence; frames>1 checks animation phases. Optional actions replay click(x,y)/key(key) before capture; Tab/Enter checks keyboard buttons. Each inspection starts fresh and closes the page; do not reopen its temporary URL. Then use action=present (default) for final delivery. " : "Only action=present is available. Have an execution member verify the result, then deliver its original source/file. ")
-        + "React/Vue imports are bundled locally; arbitrary packages need a real project. No files, visible browser or ad hoc server are created. Load ui-verification for detailed checks." }];
+        + "Place [Preview](EXACT_RETURNED_displayRef) alone in a final-answer paragraph to display the delivered UI there; never inside a sentence or code fence. Do not repeat the source. React/Vue imports are bundled locally; arbitrary packages need a real project. No files, visible browser or ad hoc server are created. Load ui-verification for detailed checks." }];
   }
 
   public async execute(conversationId: string, rawArguments: string, signal: AbortSignal, allowInspection = true): Promise<ToolExecution> {
@@ -40,7 +41,7 @@ export class HtmlPresentationTool {
       }
       const presentation = input.path !== undefined ? { kind: "html", path: input.path } : input.code !== undefined
         ? { kind: "code", html: input.code, language: input.language } : { kind: "html_gallery", pages: input.pages };
-      const result = htmlPresentationResultSchema.parse({ ok: true, value: { presentation } });
+      const result = htmlPresentationResultSchema.parse({ ok: true, value: { presentation, displayRef: `artifact:${randomUUID()}` } });
       return { kind: "completed", isError: false, content: JSON.stringify(result) };
     } catch (error) {
       if (signal.aborted) throw error;

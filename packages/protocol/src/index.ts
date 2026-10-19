@@ -689,3 +689,4 @@ export * from "./computer-use.js";
 export { isImageGenerationModel } from "./model-purpose.js";
 
 export { imageGenerationResultSchema } from "./image-generation.js";
+export { artifactDisplayRefSchema } from "./artifact-reference.js";
