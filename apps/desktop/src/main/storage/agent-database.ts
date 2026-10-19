@@ -698,6 +698,15 @@ export class AgentDatabase {
    * of synchronous IPC/SQLite round trips and can delay live approval state.
    */
   public listConversationHierarchy(): ConversationSummary[] {
+    return this.listConversationDirectoryProjection("hierarchy");
+  }
+
+  public listAgentConversations(): ConversationSummary[] {
+    return this.listConversationDirectoryProjection("agent_directory");
+  }
+
+  private listConversationDirectoryProjection(kind: "hierarchy" | "agent_directory"): ConversationSummary[] {
+    const agentDirectory = kind === "agent_directory";
     const rows = this.database
       .prepare(
         `${teamWorkItemExecutionTreeCte}
@@ -730,9 +739,10 @@ export class AgentDatabase {
          FROM conversations
          LEFT JOIN team_execution_tree_projection
            ON team_execution_tree_projection.conversation_id = conversations.id
-         WHERE conversations.deletion_pending = 0
-         ORDER BY conversations.is_pinned DESC, conversations.sort_order ASC,
-                  conversations.updated_at DESC, conversations.created_at ASC`
+         WHERE conversations.deletion_pending = 0${agentDirectory ? " AND conversations.is_archived = 0" : ""}
+         ORDER BY ${agentDirectory
+          ? "conversations.updated_at DESC, conversations.rowid DESC"
+          : "conversations.is_pinned DESC, conversations.sort_order ASC, conversations.updated_at DESC, conversations.created_at ASC"}`
       )
       .all() as DatabaseRow[];
     return rows.map(row => {
@@ -740,17 +750,6 @@ export class AgentDatabase {
       const room = this.collaboration?.coordinatorRoom(conversation.id);
       return { ...conversation, ...(room == null ? {} : { coordinationTeamInstanceId: room.teamInstanceId }) };
     });
-  }
-
-  public listAgentConversations(): ConversationSummary[] {
-    const rows = this.database
-      .prepare(
-        `SELECT id FROM conversations
-         WHERE is_archived = 0 AND deletion_pending = 0
-         ORDER BY updated_at DESC, rowid DESC`
-      )
-      .all() as DatabaseRow[];
-    return rows.map((row) => this.getConversation(asString(row, "id")));
   }
 
   public listAllConversationIds(): string[] {
