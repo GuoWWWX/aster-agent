@@ -222,6 +222,7 @@ import { ConversationFindBar } from "./conversation-find-bar.js";
 import { ConversationPath } from "./conversation-path.js";
 import { ConversationPermissionSelect } from "./conversation-permission-select.js";
 import { ConversationHeaderControls } from "./conversation-header-controls.js";
+import { ConversationContextUsageRefresh } from "./conversation-context-usage-refresh.js";
 import { UserQuestionPanel } from "./user-question-panel.js";
 import { questionForAnswer, questionToolForAnswer } from "./question-answer-reference.js";
 import { ConversationTurnNavigator } from "./conversation-turn-navigator.js";
@@ -1054,9 +1055,21 @@ export function ConversationWorkspace({
     ),
     [relatedSessions, session.id],
   );
-  const contextUsageRequestRef = useRef(0);
+  const contextUsageRefreshRef = useRef<{ client: AgentClient; queue: ConversationContextUsageRefresh } | null>(null);
   const contextUsageInputKeyRef = useRef<string | null>(null);
   const contextUsageDirtyRef = useRef(true);
+  useEffect(() => {
+    const refresh = new ConversationContextUsageRefresh(agentClient);
+    contextUsageRefreshRef.current = { client: agentClient, queue: refresh };
+    contextUsageInputKeyRef.current = null;
+    contextUsageDirtyRef.current = true;
+    return () => { refresh.dispose(); contextUsageRefreshRef.current = null; };
+  }, [agentClient]);
+  useEffect(() => {
+    if ((!active || usageConversationId === null) && contextUsageRefreshRef.current?.queue.invalidate()) {
+      contextUsageDirtyRef.current = true;
+    }
+  }, [active, usageConversationId]);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const composerOverlayRef = useRef<HTMLDivElement | null>(null);
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(
@@ -1302,8 +1315,9 @@ export function ConversationWorkspace({
     [mentionQuery],
   );
 
-  const loadContextUsage = useCallback(async (): Promise<void> => {
-    if (!active || usageConversationId === null) return;
+  const loadContextUsage = useCallback((): void => {
+    const refresh = contextUsageRefreshRef.current;
+    if (!active || usageConversationId === null || refresh === null || refresh.client !== agentClient) return;
     const input = {
       conversationId: usageConversationId,
       ...(usageModelId === undefined ? {} : { modelId: usageModelId }),
@@ -1325,22 +1339,16 @@ export function ConversationWorkspace({
     if (!contextUsageDirtyRef.current && contextUsageInputKeyRef.current === inputKey) return;
     contextUsageInputKeyRef.current = inputKey;
     contextUsageDirtyRef.current = false;
-    const requestId = ++contextUsageRequestRef.current;
-    try {
-      const nextUsage = await agentClient.getConversationContextUsage(input);
-      if (contextUsageRequestRef.current === requestId) {
-        setContextUsageMeasurement({ conversationId: usageConversationId, usage: nextUsage });
-        // Keep the entire last completed measurement stable while the next request streams.
-        if (nextUsage.providerCache?.latest != null) {
-          setLastProviderUsage({ conversationId: usageConversationId, usage: nextUsage });
-        }
+    refresh.queue.request(input, nextUsage => {
+      setContextUsageMeasurement({ conversationId: usageConversationId, usage: nextUsage });
+      // Keep the entire last completed measurement stable while the next request streams.
+      if (nextUsage.providerCache?.latest != null) {
+        setLastProviderUsage({ conversationId: usageConversationId, usage: nextUsage });
       }
-    } catch {
-      if (contextUsageRequestRef.current === requestId) {
-        contextUsageDirtyRef.current = true;
-        setContextUsageMeasurement(null);
-      }
-    }
+    }, () => {
+      contextUsageDirtyRef.current = true;
+      setContextUsageMeasurement(null);
+    });
   }, [
     active,
     groupInstanceId,
