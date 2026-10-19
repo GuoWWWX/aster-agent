@@ -1,6 +1,5 @@
 import { isImageGenerationModel } from "@agent/protocol";
 import { GeneratedImagesResult, ImageGenerationVisibilityProvider } from "./generated-images-result.js";
-import { ImageGenerationComposer } from "./image-generation-composer.js";
 import { imageGenerationDeliveries } from "./image-generation-deliveries.js";
 import type { ChatReference } from "@agent/protocol";
 import { ChatReferenceScope } from "../../components/markdown/chat-reference-scope.js";
@@ -76,7 +75,6 @@ import {
   Terminal,
   Trash2,
   UsersRound,
-  Workflow,
   Wrench,
   X,
 } from "lucide-react";
@@ -174,7 +172,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "../../components/ui/select.js";
 import { getUserErrorMessage, type AgentClient } from "../../runtime/index.js";
 import {
@@ -3973,11 +3970,6 @@ export function ConversationWorkspace({
             </div>
             <div className="conversation-workspace__composer-toolbar">
               <div className="conversation-workspace__composer-options">
-                <ImageGenerationComposer disabled={isSending || isEndedSubagent} onChoose={count => {
-                  const description = composerValue.replace(/(?:\n|^)请使用 imagegen 技能生成 \d+ 张图片。$/u, "");
-                  const value = `${description}${description.trim() ? "\n" : ""}请使用 imagegen 技能生成 ${count} 张图片。`;
-                  changeComposerValue(value, value.length);
-                }} />
                 <IconButton
                   disabled={
                     isMockRuntime
@@ -4050,20 +4042,15 @@ export function ConversationWorkspace({
                       saveConversationAgentSelection(groupChat?.instanceId ?? session.id, agentId);
                     }}
                   >
-                    <SelectTrigger
-                      aria-label="对话 Agent"
-                      className="conversation-workspace__composer-select conversation-workspace__composer-select--agent"
-                      title={canChangeAgent
+                    <TooltipAnchor side="top" disabled={!canChangeAgent}
+                      content={canChangeAgent
                         ? `当前 Agent：${selectedAgent.name}`
-                        : `对话已由 ${selectedAgent.name} 接管`}
-                    >
-                      <AgentAvatar avatar={selectedAgent.avatar} size="compact" />
-                      <SelectValue>
-                        <span className="conversation-agent-select-value">
-                          {selectedAgent.name}
-                        </span>
-                      </SelectValue>
-                    </SelectTrigger>
+                        : `对话已由 ${selectedAgent.name} 接管`}>
+                      <SelectTrigger aria-label="对话 Agent" aria-description={`当前 Agent：${selectedAgent.name}`} showIndicator={false}
+                        className="conversation-workspace__composer-select conversation-workspace__composer-select--agent size-8! justify-center! px-0!">
+                        <AgentAvatar avatar={selectedAgent.avatar} size="compact" />
+                      </SelectTrigger>
+                    </TooltipAnchor>
                     <SelectContent
                       align="start"
                       className="conversation-workspace__agent-select-content"
@@ -4088,20 +4075,23 @@ export function ConversationWorkspace({
                   </Select>
                 )}
                 <ConversationPermissionSelect value={permissionMode}
-                  disabled={isEndedSubagent || isSavingTeamPermission || isSavingCoordinationMode}
+                  disabled={isEndedSubagent || isSavingTeamPermission} busy={isSavingCoordinationMode}
                   deferred={teamManaged && activeRunId !== null} onChange={selectPermissionMode} />
                 {!teamManaged && session.parentConversationId == null && session.teamId == null ? (
-                  <button
+                  <IconButton
                     type="button"
+                    label="快速协作"
+                    tooltipSide="top"
+                    size="compact"
+                    variant="quiet"
                     aria-pressed={coordinationMode === "parallel_queue"}
                     disabled={isSavingCoordinationMode || (coordinationMode === "direct" && activeRunId !== null)}
-                    title="快速协作使用完全访问权限；新消息进入持久队列，主对话协调子代理并跟踪结果。请在当前执行结束后开启。"
-                    className="inline-flex items-center gap-1 rounded-[var(--app-radius)] px-2 py-1 text-[length:var(--app-font-size-control)] text-[var(--app-muted-foreground)] hover:bg-[var(--app-hover)] aria-pressed:bg-[var(--app-hover)] aria-pressed:text-[var(--app-foreground)] disabled:opacity-50"
+                    tooltip={`快速协作（${coordinationMode === "parallel_queue" ? "已开启" : "已关闭"}）：使用完全访问权限；新消息进入持久队列，主对话协调子代理并跟踪结果。请在当前执行结束后开启。`}
+                    className="aria-pressed:bg-[var(--app-hover)] aria-pressed:text-[var(--app-foreground)]"
                     onClick={() => void toggleCoordinationMode()}
                   >
-                    <Workflow aria-hidden="true" size={14} />
-                    快速协作
-                  </button>
+                    <UsersRound aria-hidden="true" size={16} />
+                  </IconButton>
                 ) : null}
               </div>
               <div className="conversation-workspace__composer-actions">

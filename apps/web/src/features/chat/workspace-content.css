@@ -2527,11 +2527,6 @@ button.tool-file-change__path:hover {
   color: var(--app-muted-foreground);
 }
 
-.conversation-workspace__composer-surface:focus-within {
-  border-color: rgba(59, 130, 246, 0.68);
-  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.12);
-}
-
 .conversation-workspace__composer-toolbar {
   display: flex;
   min-height: 34px;
