@@ -118,7 +118,7 @@ describe.runIf(process.platform === "win32")("Windows computer transport", () =>
     const f = fixture(); await f.controller.start();
     for (const code of ["USER_INPUT_ACTIVE", "FOCUS_CHANGED", "WINDOW_OCCLUDED"]) {
       const index = f.requests.length;
-      const operation = f.controller.execute({ action: "click", windowId: "123", x: 12, y: 12, button: "left" }, new AbortController().signal);
+      const operation = f.controller.execute({ action: "click", windowId: "123", x: 12, y: 12, button: "left", count: 1 }, new AbortController().signal);
       await vi.waitFor(() => expect(f.requests).toHaveLength(index + 1)); f.failOperation(index, code);
       expect(await operation).toMatchObject({ ok: false, code }); expect(f.controller.getStatus().running).toBe(true);
     }

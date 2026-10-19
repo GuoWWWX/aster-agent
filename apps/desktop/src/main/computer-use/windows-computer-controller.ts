@@ -9,7 +9,7 @@ import { computerApplicationSchema, computerUseArgumentsSchema, type ComputerApp
 import type { ComputerApplicationPermissions } from "./computer-application-permissions.js";
 import driverSource from "./windows-driver.ps1";
 
-export type ComputerResponse = { ok: true; value: Record<string, unknown> } | { ok: false; code: string };
+export type ComputerResponse = { ok: true; value: Record<string, unknown> } | { ok: false; code: string; completedSteps?: number | undefined; failedStep?: number | undefined };
 export interface ComputerControlPort {
   getStatus(): ComputerUseStatus;
   start(): Promise<ComputerUseStatus>;
@@ -18,7 +18,7 @@ export interface ComputerControlPort {
 }
 const responseSchema = z.discriminatedUnion("ok", [
   z.object({ id: z.uuid(), ok: z.literal(true), value: z.record(z.string(), z.unknown()) }).strict(),
-  z.object({ id: z.uuid(), ok: z.literal(false), code: z.string().max(100) }).strict(),
+  z.object({ id: z.uuid(), ok: z.literal(false), code: z.string().max(100), completedSteps: z.number().int().min(0).max(30).optional(), failedStep: z.number().int().min(1).max(30).optional() }).strict(),
 ]);
 const readySchema = z.object({ token: z.string().regex(/^[a-f0-9]{64}$/u), elevated: z.boolean() }).strict();
 const psQuote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
@@ -56,9 +56,12 @@ export class WindowsComputerController implements ComputerControlPort {
     reject?.(controlError("PROCESS_CANCELLED", "电脑控制已停止。"));
     this.sessionAbort.abort(); this.sessionAbort = new AbortController();
     this.permissions?.clearSession(); this.catalog.clear();
+    const connected = this.socket !== null;
     this.socket?.destroy(); this.socket = null;
     this.server?.close(); this.server = null;
-    const child = this.process; this.process = null; child?.kill();
+    const child = this.process; this.process = null;
+    // EOF reaches the native reader concurrently with input, so it can release held buttons before exiting.
+    if (connected && child !== null) setTimeout(() => child.kill(), 1000).unref(); else child?.kill();
     this.elevated = false;
   }
   public execute(input: ComputerUseArguments, signal: AbortSignal): Promise<ComputerResponse> {

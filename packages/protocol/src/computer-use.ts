@@ -59,6 +59,32 @@ export const computerUseStatusSchema = z.object({
   elevated: z.boolean(),
 }).strict();
 export type ComputerUseStatus = z.infer<typeof computerUseStatusSchema>;
+const windowIdSchema = z.string().regex(/^\d{1,20}$/u);
+const coordinateSchema = z.number().int().min(0).max(32768);
+const pointSchema = z.object({ x: coordinateSchema, y: coordinateSchema }).strict();
+const buttonSchema = z.enum(["left", "right", "middle"]);
+const keySchema = z.enum([
+  "Enter", "Tab", "Escape", "Backspace", "Delete", "Insert", "Home", "End", "PageUp", "PageDown",
+  "Left", "Right", "Up", "Down", "Space", "CapsLock", "NumLock", "ScrollLock", "PrintScreen", "Pause",
+  "Semicolon", "Equal", "Comma", "Minus", "Period", "Slash", "Backquote", "BracketLeft", "Backslash", "BracketRight", "Quote",
+  ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", ...Array.from({ length: 24 }, (_, index) => `F${index + 1}`),
+]);
+const modifiersSchema = z.array(z.enum(["control", "shift", "alt", "win"])).max(4)
+  .refine((values) => new Set(values).size === values.length, "修饰键不能重复。").default([]);
+/** A bounded input operation; no held input state can escape an operation or sequence. */
+export const computerInputStepSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("focus") }).strict(),
+  z.object({ action: z.literal("move"), ...pointSchema.shape }).strict(),
+  z.object({ action: z.literal("click"), ...pointSchema.shape, button: buttonSchema.default("left"), count: z.number().int().min(1).max(3).default(1) }).strict(),
+  z.object({ action: z.literal("drag"), path: z.array(pointSchema).min(2).max(256),
+    button: buttonSchema.default("left"), durationMs: z.number().int().min(100).max(5000).default(500) }).strict(),
+  z.object({ action: z.literal("type"), text: z.string().min(1).max(4000) }).strict(),
+  z.object({ action: z.literal("paste"), text: z.string().min(1).max(4000) }).strict(),
+  z.object({ action: z.literal("key"), key: keySchema, modifiers: modifiersSchema }).strict(),
+  z.object({ action: z.literal("scroll"), x: coordinateSchema.optional(), y: coordinateSchema.optional(),
+    axis: z.enum(["vertical", "horizontal"]).default("vertical"), delta: z.number().int().min(-10).max(10).refine((value) => value !== 0) }).strict(),
+]);
+const inputActions = computerInputStepSchema.options.map((schema) => schema.extend({ windowId: windowIdSchema }));
 export const computerUseArgumentsSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("status") }).strict(),
   z.object({ action: z.literal("start") }).strict(),
@@ -66,17 +92,20 @@ export const computerUseArgumentsSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("list") }).strict(),
   z.object({ action: z.literal("launch"), applicationId: z.uuid() }).strict(),
   ...(["observe", "screenshot"] as const).map((action) => z.object({
-    action: z.literal(action), windowId: z.string().regex(/^\d{1,20}$/u),
+    action: z.literal(action), windowId: windowIdSchema,
   }).strict()),
-  z.object({ action: z.literal("click"), windowId: z.string().regex(/^\d{1,20}$/u),
-    x: z.number().int().min(0).max(32768), y: z.number().int().min(0).max(32768),
-    button: z.enum(["left", "right"]).default("left"),
-  }).strict(),
-  z.object({ action: z.literal("type"), windowId: z.string().regex(/^\d{1,20}$/u), text: z.string().min(1).max(4000) }).strict(),
-  z.object({ action: z.literal("key"), windowId: z.string().regex(/^\d{1,20}$/u),
-    key: z.enum(["Enter", "Tab", "Escape", "Backspace", "Delete", "Home", "End", "PageUp", "PageDown", "Left", "Right", "Up", "Down", "Space", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"]),
-    modifiers: z.array(z.enum(["control", "shift"])).max(2).default([]),
-  }).strict(),
-  z.object({ action: z.literal("scroll"), windowId: z.string().regex(/^\d{1,20}$/u), delta: z.number().int().min(-10).max(10) }).strict(),
-]);
+  ...inputActions,
+  z.object({ action: z.literal("sequence"), windowId: windowIdSchema, steps: z.array(computerInputStepSchema).min(1).max(30) }).strict(),
+]).superRefine((command, context) => {
+  const steps = command.action === "sequence" ? command.steps : [command];
+  let duration = 0, characters = 0;
+  for (const step of steps) {
+    if (step.action === "scroll" && ((step.x === undefined) !== (step.y === undefined))) {
+      context.addIssue({ code: "custom", message: "滚动位置必须同时提供 x 和 y，或都省略以使用鼠标当前位置。" });
+    }
+    if (step.action === "drag") duration += step.durationMs;
+    if (step.action === "type" || step.action === "paste") characters += step.text.length;
+  }
+  if (duration > 10_000 || characters > 8000) context.addIssue({ code: "custom", message: "动作序列最多拖动 10 秒、输入 8000 字符，请拆分执行。" });
+});
 export type ComputerUseArguments = z.infer<typeof computerUseArgumentsSchema>;

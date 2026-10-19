@@ -24,7 +24,7 @@ public sealed class AsterControlSession : IDisposable {
   [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern IntPtr GetModuleHandle(string module);
   [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
   [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr process,uint code);
-  internal static void Terminate(uint code) { TerminateProcess(GetCurrentProcess(),code); }
+  internal static void Terminate(uint code) { AsterComputer.ReleaseInputs();TerminateProcess(GetCurrentProcess(),code); }
   readonly ManualResetEventSlim ready=new ManualResetEventSlim(false);
   readonly List<AsterControlOverlay> overlays=new List<AsterControlOverlay>();
   readonly Thread thread;
@@ -99,8 +99,13 @@ public sealed class AsterControlSession : IDisposable {
     }
   }
   public void CheckActive() { if(Volatile.Read(ref active)==0) throw new OperationCanceledException("CONTROL_STOPPED"); }
+  public uint SetClipboardText(string text) {
+    CheckActive();
+    return (uint)dispatcher.Invoke(new Func<uint>(delegate { CheckActive();Clipboard.SetText(text,TextDataFormat.UnicodeText);return AsterComputer.ClipboardVersion(); }));
+  }
   public void Dispose() {
     Interlocked.Exchange(ref active,0);
+    AsterComputer.ReleaseInputs();
     if(dispatcher!=null && dispatcher.IsHandleCreated && !dispatcher.IsDisposed) dispatcher.BeginInvoke(new Action(Application.ExitThread));
     if(thread!=Thread.CurrentThread) thread.Join(2000);
   }
@@ -111,6 +116,10 @@ abstract class AsterControlOverlay : Form {
   [DllImport("user32.dll")] static extern bool GetWindowDisplayAffinity(IntPtr window,out uint affinity);
   [DllImport("user32.dll",SetLastError=true)] static extern bool SetWindowPos(IntPtr window,IntPtr after,int x,int y,int width,int height,uint flags);
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window,out WindowRect bounds);
+  [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr window,uint command);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window,out uint process);
+  [DllImport("kernel32.dll")] static extern uint GetCurrentProcessId();
   readonly Rectangle placement;
   protected AsterControlOverlay(Rectangle bounds) {
     placement=bounds;FormBorderStyle=FormBorderStyle.None;StartPosition=FormStartPosition.Manual;
@@ -125,10 +134,20 @@ abstract class AsterControlOverlay : Form {
   protected override void OnShown(EventArgs e) { base.OnShown(e);KeepOnTop(); }
   public void KeepOnTop() {
     if(IsDisposed) return;
-    if(!TopMost) TopMost=true;
+    bool wasTopMost=TopMost;if(!wasTopMost) TopMost=true;
     WindowRect actual;uint flags=0x10|0x400;
-    if(GetWindowRect(Handle,out actual) && actual.Left==placement.Left && actual.Top==placement.Top && actual.Right==placement.Right && actual.Bottom==placement.Bottom) flags|=3;
+    bool positioned=GetWindowRect(Handle,out actual) && actual.Left==placement.Left && actual.Top==placement.Top && actual.Right==placement.Right && actual.Bottom==placement.Bottom;
+    if(positioned && wasTopMost && !IsCovered()) return;
+    if(positioned) flags|=3;
     if(!SetWindowPos(Handle,new IntPtr(-1),placement.X,placement.Y,placement.Width,placement.Height,flags)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+  }
+  bool IsCovered() {
+    uint own=GetCurrentProcessId();
+    for(IntPtr above=GetWindow(Handle,3);above!=IntPtr.Zero;above=GetWindow(above,3)) {
+      uint process;GetWindowThreadProcessId(above,out process);if(process==own || !IsWindowVisible(above)) continue;
+      WindowRect bounds;if(GetWindowRect(above,out bounds) && bounds.Right>placement.Left && bounds.Left<placement.Right && bounds.Bottom>placement.Top && bounds.Top<placement.Bottom) return true;
+    }
+    return false;
   }
   protected override bool ShowWithoutActivation { get { return true; } }
   protected override CreateParams CreateParams { get { CreateParams p=base.CreateParams;p.ExStyle|=0x080800a0;return p; } }
@@ -171,6 +190,11 @@ sealed class AsterControlHint : AsterControlOverlay {
 }
 public static class AsterComputer {
   public static AsterControlSession Session;
+  public static void GuardConnection(System.Threading.Tasks.Task<string> read) {
+    read.ContinueWith(delegate(System.Threading.Tasks.Task<string> result) {
+      if(result.IsFaulted || result.IsCanceled || result.Result==null) AsterControlSession.Terminate(0);
+    },System.Threading.Tasks.TaskScheduler.Default);
+  }
   public static IDisposable Deadline() { return new System.Threading.Timer(delegate(object _) { AsterControlSession.Terminate(3); },null,20000,System.Threading.Timeout.Infinite); }
   public delegate bool EnumProc(IntPtr h, IntPtr p);
   [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left,Top,Right,Bottom; }
@@ -197,6 +221,12 @@ public static class AsterComputer {
   [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] static extern uint SendInput(uint n, Input[] inputs, int size);
   [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
+  [DllImport("user32.dll")] static extern bool GetCursorPos(out Point point);
+  [DllImport("user32.dll",SetLastError=true)] static extern bool PostMessage(IntPtr window,uint message,UIntPtr parameter,IntPtr position);
+  [DllImport("user32.dll")] static extern uint GetClipboardSequenceNumber();
+  static readonly object inputGate=new object();
+  static readonly List<Input> heldInputs=new List<Input>();
+  public static uint ClipboardVersion() { return GetClipboardSequenceNumber(); }
   public static void Init() { SetProcessDPIAware(); }
   public static string OwnerPathOf(IntPtr h) {
     uint pid; GetWindowThreadProcessId(h, out pid);
@@ -255,9 +285,24 @@ public static class AsterComputer {
     return new Input { Type=1, Data=new Union { Key=new Keyboard { Vk=unicode ? (ushort)0 : key, Scan=unicode ? key : (ushort)0, Flags=(uint)((unicode?4:0)|(up?2:0)) } } };
   }
   static void Send(IntPtr h, Input[] values) {
-    Session.CheckActive();
-    if(GetForegroundWindow()!=h) throw new Exception("FOCUS_CHANGED");
-    if(SendInput((uint)values.Length,values,Marshal.SizeOf(typeof(Input)))!=values.Length) throw new Exception("INPUT_BLOCKED");
+    lock(inputGate) {
+      Session.CheckActive();
+      if(GetForegroundWindow()!=h) throw new Exception("FOCUS_CHANGED");
+      if(SendInput((uint)values.Length,values,Marshal.SizeOf(typeof(Input)))!=values.Length) throw new Exception("INPUT_BLOCKED");
+    }
+  }
+  public static void ReleaseInputs() {
+    lock(inputGate) {
+      if(heldInputs.Count==0) return;
+      Input[] releases=heldInputs.ToArray();heldInputs.Clear();
+      SendInput((uint)releases.Length,releases,Marshal.SizeOf(typeof(Input)));
+    }
+  }
+  static void HoldAndSend(IntPtr h,Input[] values,Input[] releases,bool complete=false) {
+    lock(inputGate) {
+      Session.CheckActive();
+      heldInputs.AddRange(releases);Send(h,values);if(complete) heldInputs.Clear();
+    }
   }
   static Input At(IntPtr h, int x, int y) {
     Focus(h); Rect r=Bounds(h);
@@ -271,26 +316,76 @@ public static class AsterComputer {
     int height=System.Windows.Forms.SystemInformation.VirtualScreen.Height;
     return new Input { Type=0,Data=new Union { Mouse=new Mouse { X=(int)((long)(p.X-left)*65535/Math.Max(1,width-1)),Y=(int)((long)(p.Y-top)*65535/Math.Max(1,height-1)),Flags=0xC001 } } };
   }
-  public static void Click(IntPtr h, int x, int y, bool right) {
+  static uint ButtonDown(string button) { return button=="right"?8u:button=="middle"?32u:2u; }
+  static uint ButtonUp(string button) { return button=="right"?16u:button=="middle"?64u:4u; }
+  static void CheckButtonAvailable(string button) {if(GetAsyncKeyState(button=="right"?2:button=="middle"?4:1)<0) throw new Exception("USER_INPUT_ACTIVE");}
+  static Input MouseEvent(uint flags) { return new Input {Type=0,Data=new Union {Mouse=new Mouse {Flags=flags}}}; }
+  public static void Move(IntPtr h,int x,int y) { Send(h,new Input[]{At(h,x,y)}); }
+  public static void Click(IntPtr h, int x, int y, string button,int count) {
+    CheckButtonAvailable(button);
     Input move=At(h,x,y);
-    Input down=new Input { Type=0,Data=new Union { Mouse=new Mouse { Flags=right?8u:2u } } };
-    Input up=new Input { Type=0,Data=new Union { Mouse=new Mouse { Flags=right?16u:4u } } };
-    Send(h,new Input[]{move,down,up});
+    Input down=MouseEvent(ButtonDown(button)),up=MouseEvent(ButtonUp(button));
+    try {for(int i=0;i<count;i++) HoldAndSend(h,new Input[]{move,down,up},new Input[]{up},true);}
+    finally {ReleaseInputs();}
+  }
+  public static void Drag(IntPtr h,Point[] path,string button,int durationMs) {
+    CheckButtonAvailable(button);
+    Rect bounds=Bounds(h);
+    foreach(Point p in path) if(p.X<0||p.Y<0||p.X>=bounds.Right-bounds.Left||p.Y>=bounds.Bottom-bounds.Top) throw new Exception("POINT_OUTSIDE_WINDOW");
+    Input move=At(h,path[0].X,path[0].Y),up=MouseEvent(ButtonUp(button));
+    Stopwatch timer=Stopwatch.StartNew();
+    try {
+      HoldAndSend(h,new Input[]{move,MouseEvent(ButtonDown(button))},new Input[]{up});
+      int samples=Math.Max(path.Length-1,(durationMs+15)/16);
+      for(int i=1;i<=samples;i++) {
+        int due=(int)((long)durationMs*i/samples),remaining=due-(int)timer.ElapsedMilliseconds;
+        if(remaining>0) Thread.Sleep(remaining);
+        Session.CheckActive();
+        if(GetForegroundWindow()!=h) throw new Exception("FOCUS_CHANGED");
+        double position=(double)i*(path.Length-1)/samples;int segment=Math.Min(path.Length-2,(int)position);double fraction=position-segment;
+        int x=(int)Math.Round(path[segment].X+(path[segment+1].X-path[segment].X)*fraction);
+        int y=(int)Math.Round(path[segment].Y+(path[segment+1].Y-path[segment].Y)*fraction);
+        Send(h,new Input[]{At(h,x,y)});
+      }
+    } finally {ReleaseInputs();}
   }
   public static void Type(IntPtr h,string text) {
     Focus(h);
-    foreach(char c in text) Send(h,new Input[]{Key(c,false,true),Key(c,true,true)});
+    try {foreach(char c in text) HoldAndSend(h,new Input[]{Key(c,false,true),Key(c,true,true)},new Input[]{Key(c,true,true)},true);}
+    finally {ReleaseInputs();}
   }
-  public static void Press(IntPtr h,ushort key,bool control,bool shift) {
-    Focus(h); List<Input> keys=new List<Input>();
-    if(control) keys.Add(Key(0x11,false,false)); if(shift) keys.Add(Key(0x10,false,false));
-    keys.Add(Key(key,false,false)); keys.Add(Key(key,true,false));
-    if(shift) keys.Add(Key(0x10,true,false)); if(control) keys.Add(Key(0x11,true,false));
-    Send(h,keys.ToArray());
+  static bool ExtendedKey(ushort key) {return (key>=0x21 && key<=0x2e)||key==0x5b||key==0x5c||key==0x6f||key==0x90;}
+  static Input VirtualKey(ushort key,bool up) {Input value=Key(key,up,false);if(ExtendedKey(key)) value.Data.Key.Flags|=1;return value;}
+  public static void Press(IntPtr h,ushort key,ushort[] modifiers) {
+    Focus(h);List<Input> keys=new List<Input>(),releases=new List<Input>();
+    foreach(ushort modifier in modifiers) {keys.Add(VirtualKey(modifier,false));releases.Insert(0,VirtualKey(modifier,true));}
+    keys.Add(VirtualKey(key,false));
+    releases.Insert(0,VirtualKey(key,true));
+    foreach(Input release in releases) keys.Add(release);
+    try {HoldAndSend(h,keys.ToArray(),releases.ToArray(),true);} finally {ReleaseInputs();}
   }
-  public static void Scroll(IntPtr h,int delta) {
-    Rect r=Bounds(h); Input move=At(h,(r.Right-r.Left)/2,(r.Bottom-r.Top)/2);
-    Send(h,new Input[]{move,new Input { Type=0,Data=new Union { Mouse=new Mouse { Data=unchecked((uint)(delta*120)),Flags=0x0800 } } }});
+  public static void Paste(IntPtr h,string text) {
+    Focus(h);uint version;
+    try {version=Session.SetClipboardText(text);} catch(Exception error) {throw new Exception("CLIPBOARD_UNAVAILABLE",error);}
+    Session.CheckActive();
+    if(ClipboardVersion()!=version) throw new Exception("CLIPBOARD_CHANGED");
+    Press(h,0x56,new ushort[]{0x11});
+  }
+  public static void Scroll(IntPtr h,int delta,bool horizontal,int? x,int? y) {
+    Focus(h);Rect r=Bounds(h);Point cursor;
+    if(x.HasValue && y.HasValue) {cursor=new Point {X=x.Value,Y=y.Value};}
+    else {if(!GetCursorPos(out cursor)) throw new Exception("POINT_OUTSIDE_WINDOW");cursor.X-=r.Left;cursor.Y-=r.Top;}
+    Input move=At(h,cursor.X,cursor.Y);
+    Send(h,new Input[]{move});
+    // Hardware wheel routing can retain a different child focus (especially horizontal scrolling).
+    // Route the standard wheel message to the hovered child, without an accidental content click.
+    Point screen=new Point {X=r.Left+cursor.X,Y=r.Top+cursor.Y};
+    lock(inputGate) {
+      Session.CheckActive();if(GetForegroundWindow()!=h) throw new Exception("FOCUS_CHANGED");
+      IntPtr target=WindowFromPoint(screen);if(GetAncestor(target,2)!=h) throw new Exception("WINDOW_OCCLUDED");
+      uint location=(uint)(ushort)screen.X|((uint)(ushort)screen.Y<<16);
+      if(!PostMessage(target,horizontal?0x20eu:0x20au,new UIntPtr(unchecked((uint)(delta*120)<<16)),new IntPtr(unchecked((int)location)))) throw new Exception("INPUT_BLOCKED");
+    }
   }
   public static object ElementBounds(Rect window,System.Windows.Rect element) {
     if(element.IsEmpty || element.Width<=0 || element.Height<=0) return null;
@@ -330,8 +425,33 @@ public static class AsterComputer {
   }
 }
 '@
+function Invoke-AsterComputerInput($command, [IntPtr]$window) {
+  switch ($command.action) {
+    'focus' { [AsterComputer]::Focus($window) }
+    'move' { [AsterComputer]::Move($window,$command.x,$command.y) }
+    'click' { [AsterComputer]::Click($window,$command.x,$command.y,$command.button,$command.count) }
+    'drag' {
+      $points = @($command.path | ForEach-Object { $point=[AsterComputer+Point]::new();$point.X=$_.x;$point.Y=$_.y;$point })
+      [AsterComputer]::Drag($window,[AsterComputer+Point[]]$points,$command.button,$command.durationMs)
+    }
+    'type' { [AsterComputer]::Type($window,$command.text) }
+    'paste' { [AsterComputer]::Paste($window,$command.text) }
+    'key' {
+      $codes=@{ Enter=13;Tab=9;Escape=27;Backspace=8;Delete=46;Insert=45;Home=36;End=35;PageUp=33;PageDown=34;Left=37;Right=39;Up=38;Down=40;Space=32;CapsLock=20;NumLock=144;ScrollLock=145;PrintScreen=44;Pause=19;Semicolon=186;Equal=187;Comma=188;Minus=189;Period=190;Slash=191;Backquote=192;BracketLeft=219;Backslash=220;BracketRight=221;Quote=222 }
+      $code=$codes[$command.key]
+      if ($null -eq $code -and $command.key -cmatch '^[A-Z0-9]$') { $code=[int][char]$command.key }
+      if ($null -eq $code -and $command.key -cmatch '^F([1-9]|1[0-9]|2[0-4])$') { $code=111+[int]$Matches[1] }
+      if ($null -eq $code) { throw 'INVALID_KEY' }
+      $modifierCodes=@{ control=17;shift=16;alt=18;win=91 }
+      $modifiers=@($command.modifiers | ForEach-Object { $modifierCodes[$_] })
+      [AsterComputer]::Press($window,$code,[uint16[]]$modifiers)
+    }
+    'scroll' { [AsterComputer]::Scroll($window,$command.delta,($command.axis -eq 'horizontal'),$command.x,$command.y) }
+    default { throw 'INVALID_ACTION' }
+  }
+}
 [AsterComputer]::Init()
-$pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [IO.Pipes.PipeDirection]::InOut)
+$pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::Asynchronous)
 $session = $null
 try {
   $pipe.Connect(15000)
@@ -341,8 +461,14 @@ try {
   $writer = [IO.StreamWriter]::new($pipe, [Text.UTF8Encoding]::new($false)); $writer.AutoFlush = $true
   $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
   $writer.WriteLine((@{ token=$Token; elevated=$elevated } | ConvertTo-Json -Compress))
-  while ($null -ne ($line = $reader.ReadLine())) {
+  $nextLine = $reader.ReadLineAsync()
+  [AsterComputer]::GuardConnection($nextLine)
+  while ($null -ne ($line = $nextLine.GetAwaiter().GetResult())) {
+    # Read ahead so pipe closure can release held input even while a drag or clipboard operation is running.
+    $nextLine = $reader.ReadLineAsync()
+    [AsterComputer]::GuardConnection($nextLine)
     $timer = [AsterComputer]::Deadline()
+    $completedSteps = 0
     try {
       $session.CheckActive()
       $request = $line | ConvertFrom-Json
@@ -381,24 +507,27 @@ try {
         switch ($command.action) {
           'observe' { $value = [AsterComputer]::Observe($window) }
           'screenshot' { $value = [AsterComputer]::Capture($window) }
-          'click' { [AsterComputer]::Click($window,$command.x,$command.y,($command.button -eq 'right')); $value=@{ performed=$true } }
-          'type' { [AsterComputer]::Type($window,$command.text); $value=@{ performed=$true } }
-          'key' {
-            $codes=@{ Enter=13;Tab=9;Escape=27;Backspace=8;Delete=46;Home=36;End=35;PageUp=33;PageDown=34;Left=37;Right=39;Up=38;Down=40;Space=32 }
-            $code=$codes[$command.key]; if ($null -eq $code -and $command.key -cmatch '^[A-Z]$') { $code=[int][char]$command.key }
-            if ($null -eq $code) { throw 'INVALID_KEY' }
-            [AsterComputer]::Press($window,$code,($command.modifiers -contains 'control'),($command.modifiers -contains 'shift')); $value=@{ performed=$true }
+          'sequence' {
+            $sequenceTimer=[Diagnostics.Stopwatch]::StartNew()
+            foreach ($step in $command.steps) {
+              $session.CheckActive()
+              if ($sequenceTimer.ElapsedMilliseconds -gt 15000) { throw 'INPUT_SEQUENCE_LIMIT' }
+              if (-not [String]::Equals([AsterComputer]::PathOf($window),$request.expectedExecutablePath,[StringComparison]::OrdinalIgnoreCase)) { throw 'WINDOW_CHANGED' }
+              Invoke-AsterComputerInput $step $window
+              $completedSteps++
+            }
+            $value=@{ performed=$true; completedSteps=$completedSteps }
           }
-          'scroll' { [AsterComputer]::Scroll($window,$command.delta); $value=@{ performed=$true } }
-          default { throw 'INVALID_ACTION' }
+          default { Invoke-AsterComputerInput $command $window; $value=@{ performed=$true } }
         }
       }
       $response=@{ id=$request.id; ok=$true; value=$value }
     } catch {
-      $codes=@('APPLICATION_BLOCKED','APPLICATION_NOT_ALLOWED','WINDOW_CHANGED','WINDOW_UNAVAILABLE','FOCUS_REQUIRED','USER_INPUT_ACTIVE','FOCUS_CHANGED','INPUT_BLOCKED','POINT_OUTSIDE_WINDOW','WINDOW_OCCLUDED','WINDOW_TOO_LARGE','CAPTURE_UNAVAILABLE','INVALID_KEY','INVALID_ACTION')
+      $codes=@('APPLICATION_BLOCKED','APPLICATION_NOT_ALLOWED','WINDOW_CHANGED','WINDOW_UNAVAILABLE','FOCUS_REQUIRED','USER_INPUT_ACTIVE','FOCUS_CHANGED','INPUT_BLOCKED','POINT_OUTSIDE_WINDOW','WINDOW_OCCLUDED','WINDOW_TOO_LARGE','CAPTURE_UNAVAILABLE','INVALID_KEY','INVALID_ACTION','CLIPBOARD_UNAVAILABLE','CLIPBOARD_CHANGED','INPUT_SEQUENCE_LIMIT')
       $code='COMPUTER_OPERATION_FAILED'
       foreach ($candidate in $codes) { if ($_.Exception.ToString().Contains($candidate)) { $code=$candidate; break } }
       $response=@{ id=$request.id; ok=$false; code=$code }
+      if ($command.action -eq 'sequence') { $response.completedSteps=$completedSteps; $response.failedStep=$completedSteps+1 }
     } finally { $timer.Dispose() }
     $writer.WriteLine(($response | ConvertTo-Json -Compress -Depth 12))
   }
