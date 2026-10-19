@@ -3236,6 +3236,17 @@ export function ConversationWorkspace({
     && (item.kind === "tool" || (item.kind === "message" && item.role === "assistant"
       && stripLeadingThinkingSummary(item.content).trim().length > 0)));
   const currentToolId = latestRunItem?.kind === "tool" ? latestRunItem.id : null;
+  const tailRunId = activeRunId ?? modelActivity?.runId ?? null;
+  const tailActivity = displayTimeline[currentRunActivityIndex];
+  const tailTool = tailActivity?.kind === "run_activity" ? tailActivity.items.findLast(item =>
+    item.kind === "tool" && item.runId === tailRunId
+    && (item.status === "running" || item.status === "awaiting_approval")) : undefined;
+  const tailWorkPhase = tailTool?.kind === "tool"
+    ? tailTool.status === "awaiting_approval" ? "waiting" : toolWorkPhase(tailTool.name)
+    : latestRunItem?.kind === "message" && latestRunItem.status === "streaming"
+      ? "writing" : "thinking";
+  const showWorkTail = (displayRunProgresses.length > 0 || modelActivity !== null || currentRunActivityIndex >= 0)
+    && (tailRunId === null || !runningContextCompactionRunIds.has(tailRunId));
   const runDurationsByInsertIndex = useMemo(
     () => getConversationRunDurationInsertIndexes(displayTimeline),
     [displayTimeline],
@@ -3474,7 +3485,7 @@ export function ConversationWorkspace({
                       )
                     )
                     .map((progress) => (
-                      <RunProgressIndicator key={progress.runId ?? "pending"} runId={progress.runId} />
+                      <RunProgressIndicator key={progress.runId ?? "pending"} />
                     ))}
                   {modelActivity !== null && showModelActivityIndicator
                     && modelActivityInsertIndex === index
@@ -3595,10 +3606,15 @@ export function ConversationWorkspace({
                   && (!showModelActivityIndicator || modelActivity?.runId !== progress.runId)
                 )
                 .map((progress) => (
-                  <RunProgressIndicator key={progress.runId ?? "pending"} runId={progress.runId} />
+                  <RunProgressIndicator key={progress.runId ?? "pending"} />
                 ))}
               {modelActivity !== null && showModelActivityIndicator && modelActivityInsertIndex === displayTimeline.length ? (
                 <ModelActivityIndicator activity={modelActivity} />
+              ) : null}
+              {showWorkTail ? (
+                <div className="conversation-work-tail chat-message-group text-[var(--app-muted-foreground)]" role="status" aria-label="正在处理">
+                  <ConversationWorkIndicator runId={tailRunId} fallback={tailWorkPhase} size={15} />
+                </div>
               ) : null}
               </ToolRevealContext.Provider>
             </ToolDisclosureContext.Provider></ImageGenerationVisibilityProvider>
@@ -4446,20 +4462,18 @@ function ModelActivityIndicator({ activity }: { activity: ModelActivity }): Reac
       data-status={activity.status}
       role="status"
     >
-      <ConversationWorkIndicator runId={activity.runId} size={15} className="mt-0.5" />
       <span className="conversation-model-activity__label min-w-0" title={label}>{label}</span>
     </div>
   );
 }
 
-function RunProgressIndicator({ runId }: { runId: string | null }): ReactElement {
+function RunProgressIndicator(): ReactElement {
   return (
     <div
       aria-label="推理中"
       className="conversation-run-progress flex items-center gap-[5px]"
       role="status"
     >
-      <ConversationWorkIndicator runId={runId} size={15} />
       <span className="conversation-run-progress__label">推理中</span>
     </div>
   );
@@ -6735,11 +6749,6 @@ function RunActivityTimelineItem({
   const contentId = useId();
   const label = isInProgress ? "推理中" : item.durationMs === null
     ? "已处理" : `已处理 ${formatRunDuration(0, item.durationMs)}`;
-  const activeTool = item.items.findLast(entry => entry.kind === "tool" && entry.runId === activeRunId
-    && (entry.status === "running" || entry.status === "awaiting_approval"));
-  const workPhase = activeTool?.kind === "tool"
-    ? activeTool.status === "awaiting_approval" ? "waiting" : toolWorkPhase(activeTool.name)
-    : runProgress?.outputStartedAt != null ? "writing" : "thinking";
   const displayItems = groupRunActivityItems(item.items);
   const hasReasoning = displayItems.some((entry) => entry.kind === "activity_reasoning");
   const reasoningStreaming = displayItems.some((entry) =>
@@ -6781,7 +6790,6 @@ function RunActivityTimelineItem({
         <ToolBatchTimelineItem
           agentClient={agentClient}
           activeRunId={activeRunId}
-          showWorkIndicator={false}
           approvalErrors={approvalErrors}
           approvingToolId={approvingToolId}
           item={entry}
@@ -6829,7 +6837,6 @@ function RunActivityTimelineItem({
         type="button"
         onClick={() => setIsExpanded((current) => !current)}
       >
-        {isInProgress ? <ConversationWorkIndicator runId={isActive ? activeRunId : runProgress?.runId ?? null} fallback={workPhase} size={15} /> : null}
         <span className="min-w-0 truncate" aria-live={isInProgress ? "polite" : undefined}>{label}</span>
         <ChevronRight
           aria-hidden="true"
@@ -6859,7 +6866,6 @@ function ToolBatchTimelineItem({
   item,
   teamManaged,
   activeRunId,
-  showWorkIndicator = true,
   latestActiveToolId,
   currentToolId,
   modelActivity,
@@ -6874,7 +6880,6 @@ function ToolBatchTimelineItem({
   item: Extract<TimelineDisplayItem, { kind: "tool_batch" }>;
   teamManaged: boolean;
   activeRunId: string | null;
-  showWorkIndicator?: boolean;
   latestActiveToolId: string | null;
   currentToolId: string | null;
   modelActivity: ModelActivity | null;
@@ -6921,9 +6926,7 @@ function ToolBatchTimelineItem({
             type="button"
             onClick={() => setIsExpanded((current) => !current)}
           >
-            {showWorkIndicator && ((isCurrentBatch && hasActiveTool) || modelActivity !== null) ? <ConversationWorkIndicator runId={currentTool?.runId ?? item.tools.find(tool => tool.status === "running" || tool.status === "awaiting_approval")?.runId ?? null}
-              fallback={modelActivity !== null ? "thinking" : currentTool?.status === "awaiting_approval" ? "waiting" : toolWorkPhase(currentTool?.name ?? representativeToolName(item.tools))} size={15} />
-              : <ToolTypeIcon name={representativeToolName(item.tools)} />}
+            <ToolTypeIcon name={representativeToolName(item.tools)} />
             <span className="min-w-0 truncate" aria-live={isCurrentBatch || modelActivity !== null ? "polite" : undefined}>{label}</span>
           </button>
           {hasFailure ? <span className="tool-activity-batch__status">有失败项</span> : null}

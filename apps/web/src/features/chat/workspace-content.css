@@ -963,18 +963,6 @@
   }
 }
 
-.chat-message[data-status="streaming"]::after {
-  display: inline-block;
-  width: 5px;
-  height: 13px;
-  margin-left: 3px;
-  background: currentcolor;
-  content: "";
-  opacity: 0.55;
-  vertical-align: -2px;
-  animation: conversation-workspace-caret 0.8s step-end infinite;
-}
-
 .conversation-error-quote {
   display: flex;
   gap: 9px;
@@ -3025,12 +3013,6 @@ button.tool-file-change__path:hover {
 
 .conversation-workspace[data-compact="true"] .conversation-workspace__composer-select--model {
   max-width: 112px;
-}
-
-@keyframes conversation-workspace-caret {
-  50% {
-    opacity: 0;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
