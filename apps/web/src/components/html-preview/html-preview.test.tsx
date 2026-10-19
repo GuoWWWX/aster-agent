@@ -9,6 +9,7 @@ import { AgentMarkdown, renderAgentMarkdown } from "../markdown/agent-markdown.j
 import * as highlighter from "../markdown/code-highlighter.js";
 import { HtmlPreviewCard, HtmlPreviewScope } from "./html-preview-card.js";
 import { HtmlPreviewGallery } from "./html-preview-gallery.js";
+import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 
 const conversationId = "00000000-0000-4000-8000-000000000001";
 const result: HtmlPreview = { id: conversationId, title: "demo.html", url: "http://127.0.0.1:1234/token/demo.html", source: "<h1>页面</h1>" };
@@ -231,14 +232,16 @@ describe("conversation HTML previews", () => {
     expect(frame.style.height).toBe("24px");
     resize(360);
     expect(frame.style.height).toBe("360px");
-    for (const height of [520, 521, 600, 693]) {
+    resize(361);
+    expect(frame.style.height).toBe("360px");
+    for (const height of [520, 600, 693]) {
       resize(height);
       expect(frame.style.height).toBe(`${height}px`);
     }
     resize(694);
-    expect(frame.style.height).toBe("520px");
+    expect(frame.style.height).toBe("693px");
     resize(20_000);
-    expect(frame.style.height).toBe("520px");
+    expect(frame.style.height).toBe("693px");
     resize(360);
     bounds.mockReturnValue(new DOMRect());
     resize(1);
@@ -256,6 +259,21 @@ describe("conversation HTML previews", () => {
     await click("预览 HTML");
     resize(999);
     expect(node.querySelector("iframe")?.style.height).not.toBe("999px");
+  });
+
+  it("follows the workbench theme without recreating or reloading the preview", async () => {
+    const previousTheme = useWorkbenchUiStore.getState().themeMode;
+    useWorkbenchUiStore.setState({ themeMode: "light" });
+    await render(<HtmlPreviewCard source={{ kind: "code", html: "<p>theme</p>" }} />);
+    const frame = node.querySelector("iframe")!;
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    expect(frame.style.colorScheme).toBe("light");
+    act(() => useWorkbenchUiStore.setState({ themeMode: "dark" }));
+    expect(node.querySelector("iframe")).toBe(frame);
+    expect(frame.style.colorScheme).toBe("dark");
+    expect(post).toHaveBeenCalledWith(expect.objectContaining({ type: "html-preview.theme", id: result.id, theme: "dark" }), "*");
+    expect(request.mock.calls.filter(([input]) => input.kind === "code")).toHaveLength(1);
+    act(() => useWorkbenchUiStore.setState({ themeMode: previousTheme }));
   });
 
   it("remeasures a cached preview when its container becomes visible without recreating it", async () => {

@@ -1,10 +1,11 @@
 import { LoadingState, Spinner } from "../ui/loading.js";
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { CircleAlert, CodeXml, Copy, ExternalLink, Play } from "lucide-react";
 import { htmlPreviewResizeMessageSchema, type HtmlPreview, type CodePreviewLanguage } from "@agent/protocol";
 import type { AgentClient } from "../../runtime/agent-client.js";
 import { IconButton } from "../ui/icon-button.js";
 import { CodeSourceView } from "../markdown/code-source-view.js";
+import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 
 const HTML_PREVIEW_BASE_HEIGHT = 520;
 
@@ -34,16 +35,25 @@ function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange, i
   initialHeight: number | undefined; onPreviewHeight: ((height: number) => void) | undefined;
 }): ReactElement {
   const context = useContext(HtmlPreviewContext);
+  const themeMode = useWorkbenchUiStore(state => state.themeMode);
   const [preview, setPreview] = useState<HtmlPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openingBrowser, setOpeningBrowser] = useState(false);
   const [loadingFrame, setLoadingFrame] = useState(true);
   const [height, setHeight] = useState(initialHeight ?? 320);
+  const heightRef = useRef(height);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const kind = source.kind;
   const language = source.kind === "code" ? source.language ?? "html" : "html";
   const languageLabel = language === "react" ? "React" : language === "vue" ? "Vue" : "HTML";
   const value = source.kind === "code" ? source.html : source.path;
+  const syncAppearance = useCallback(() => {
+    if (preview === null) return;
+    const style = getComputedStyle(frameRef.current ?? document.documentElement);
+    frameRef.current?.contentWindow?.postMessage({ type: "html-preview.theme", id: preview.id, theme: themeMode,
+      foreground: style.getPropertyValue("--app-foreground").trim(), mutedForeground: style.getPropertyValue("--app-muted-foreground").trim() }, "*");
+  }, [preview, themeMode]);
+  useEffect(() => { if (mode === "preview") syncAppearance(); }, [syncAppearance, mode]);
   useEffect(() => {
     if (context === null || !requested) return;
     let alive = true;
@@ -72,8 +82,12 @@ function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange, i
       if (event.source !== frame.contentWindow || event.origin !== "null" || frame.getBoundingClientRect().width === 0) return;
       const message = htmlPreviewResizeMessageSchema.safeParse(event.data);
       if (message.success && message.data.id === preview.id) {
-        const measured = message.data.height <= HTML_PREVIEW_BASE_HEIGHT * 4 / 3 ? message.data.height : HTML_PREVIEW_BASE_HEIGHT;
-        setHeight(measured); onPreviewHeight?.(measured); setLoadingFrame(false);
+        const measured = Math.min(message.data.height, Math.floor(HTML_PREVIEW_BASE_HEIGHT * 4 / 3));
+        // Font fallback and fractional layout can alternate by one pixel during interaction.
+        if (Math.abs(measured - heightRef.current) > 1) {
+          heightRef.current = measured; setHeight(measured); onPreviewHeight?.(measured);
+        }
+        setLoadingFrame(false);
       }
     };
     window.addEventListener("message", resize);
@@ -108,8 +122,9 @@ function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange, i
       : <div className="relative">
         {loading ? <LoadingState label="正在加载页面…" className="pointer-events-none absolute inset-0 z-10 bg-[var(--app-panel)]" /> : null}
         <iframe ref={frameRef} title={`${preview.title} 页面效果`} src={preview.url} sandbox="allow-scripts" referrerPolicy="no-referrer"
-        className="block w-full border-0 bg-white" style={{ height }} onLoad={() => {
+        className="block w-full border-0 bg-[var(--app-panel)]" style={{ height, colorScheme: themeMode }} onLoad={() => {
           setLoadingFrame(false);
+          syncAppearance();
           frameRef.current?.contentWindow?.postMessage({ type: "html-preview.measure", id: preview.id }, "*");
         }} />
       </div>}
