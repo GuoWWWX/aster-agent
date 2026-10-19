@@ -63,6 +63,7 @@ it.each([{ action: "inspect", language: "react", code: "example" }, { action: "i
   await render(client, null);
   act(() => header().click());
   expect(container.textContent).toContain("已检查 React 预览");
+  expect(container.textContent?.includes("复用源码")).toBe("sourceRef" in argumentsValue);
   await act(async () => { container.querySelector<HTMLButtonElement>(".tool-timeline-item__toggle")!.click(); await flush(); });
   expect(read).toHaveBeenCalledTimes(3);
   expect(container.querySelectorAll('img[src="data:image/jpeg;base64,AQID"]')).toHaveLength(3);

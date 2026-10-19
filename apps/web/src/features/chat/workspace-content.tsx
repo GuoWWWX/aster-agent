@@ -7541,13 +7541,14 @@ function toolActivityLabel(item: ConversationToolItem, teamManaged = false): str
     case "present_html": {
       const value = item.result === null ? null : parseToolValue(item.result);
       const presentation = isRecord(value?.presentation) ? value.presentation : null;
+      const reuseLabel = typeof argumentsValue?.sourceRef === "string" ? " · 复用源码" : "";
       const sourceLanguage = argumentsValue?.language ?? value?.language ?? presentation?.language;
       const language = sourceLanguage === "react" ? "React" : sourceLanguage === "vue" ? "Vue" : "HTML";
-      if (argumentsValue?.action === "inspect") return `${completed ? "已检查" : "检查"} ${language} 预览`;
+      if (argumentsValue?.action === "inspect") return `${completed ? "已检查" : "检查"} ${language} 预览${reuseLabel}`;
       const pages = argumentsValue?.pages ?? presentation?.pages;
-      if (Array.isArray(pages)) return `${completed ? "已展示" : "展示"} ${pages.length} 个 HTML 方案`;
+      if (Array.isArray(pages)) return `${completed ? "已展示" : "展示"} ${pages.length} 个 HTML 方案${reuseLabel}`;
       const sourcePath = path ?? (typeof presentation?.path === "string" ? presentation.path : null);
-      return `${completed ? "已展示" : "展示"} ${language}${sourcePath === null ? "" : ` · ${sourcePath}`}`;
+      return `${completed ? "已展示" : "展示"} ${language}${sourcePath === null ? "" : ` · ${sourcePath}`}${reuseLabel}`;
     }
     case "view_attachments": {
       if (Array.isArray(argumentsValue?.paths)) return `${completed ? "已查看" : "查看"} ${argumentsValue.paths.length} 张图像`;
