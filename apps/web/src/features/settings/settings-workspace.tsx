@@ -333,7 +333,7 @@ export function SettingsWorkspace({ agentClient }: { agentClient: AgentClient })
   return (
     <section className="settings-workspace" aria-labelledby="settings-workspace-heading">
       <div ref={workspaceRef} className="settings-workspace__body" style={{ "--settings-navigation-width": `${displayedWidth}px` } as CSSProperties}>
-        <nav className="settings-navigation" aria-label="设置分区">
+        <nav className="settings-navigation rounded-[var(--app-radius)]" aria-label="设置分区">
           <h1 id="settings-workspace-heading" className="m-0 mb-4 px-2 text-[length:var(--app-font-size-display)] font-semibold text-[var(--app-foreground)]">设置</h1>
           <label className="settings-navigation__search app-search-field mx-2 mb-4 shrink-0">
             <Search aria-hidden="true" size={16} />
