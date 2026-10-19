@@ -34,6 +34,17 @@
   height: 12px;
 }
 
+.agent-profile-avatar[data-size="toolbar"] {
+  width: 16px;
+  height: 16px;
+  border: 0;
+}
+
+.agent-profile-avatar[data-size="toolbar"] svg {
+  width: 100%;
+  height: 100%;
+}
+
 .agent-profile-avatar[data-size="large"] svg {
   width: 20px;
   height: 20px;

@@ -3973,9 +3973,9 @@ export function ConversationWorkspace({
                   onClick={() => void handleChooseAttachments()}
                 >
                   {isAddingAttachments ? (
-                    <Spinner aria-hidden="true" size={15} />
+                    <Spinner aria-hidden="true" size={16} />
                   ) : (
-                    <Paperclip aria-hidden="true" size={15} />
+                    <Paperclip aria-hidden="true" size={16} />
                   )}
                 </IconButton>
                 {project === null && !isMockRuntime && onSessionUpdated !== undefined ? (
@@ -3988,7 +3988,7 @@ export function ConversationWorkspace({
                       variant="quiet"
                       onClick={() => void handleSelectWorkspace()}
                     >
-                      <FolderPlus aria-hidden="true" size={15} />
+                      <FolderPlus aria-hidden="true" size={16} />
                     </IconButton>
                     {session.workspaceRootPath === null ? null : (
                       <>
@@ -3999,7 +3999,7 @@ export function ConversationWorkspace({
                           type="button"
                           onClick={() => void handleSelectWorkspace()}
                         >
-                          <Folder aria-hidden="true" size={13} />
+                          <Folder aria-hidden="true" size={16} />
                           <span>{fileNameFromPath(session.workspaceRootPath)}</span>
                         </button>
                         <IconButton
@@ -4010,7 +4010,7 @@ export function ConversationWorkspace({
                           variant="quiet"
                           onClick={() => void handleClearWorkspace()}
                         >
-                          <X aria-hidden="true" size={14} />
+                          <X aria-hidden="true" size={16} />
                         </IconButton>
                       </>
                     )}
@@ -4031,7 +4031,7 @@ export function ConversationWorkspace({
                         : `对话已由 ${selectedAgent.name} 接管`}>
                       <SelectTrigger aria-label="对话 Agent" aria-description={`当前 Agent：${selectedAgent.name}`} showIndicator={false}
                         className="conversation-workspace__composer-select conversation-workspace__composer-select--agent size-8! justify-center! px-0!">
-                        <AgentAvatar avatar={selectedAgent.avatar} size="compact" />
+                        <AgentAvatar avatar={selectedAgent.avatar} size="toolbar" />
                       </SelectTrigger>
                     </TooltipAnchor>
                     <SelectContent

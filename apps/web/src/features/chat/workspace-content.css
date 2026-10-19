@@ -2620,7 +2620,6 @@ button.tool-file-change__path:hover {
 .conversation-workspace__composer-select--permission > svg:first-child {
   display: block;
   flex: 0 0 auto;
-  transform: translateY(-1px);
 }
 
 .conversation-workspace__composer-select--permission [data-slot="select-value"] {
