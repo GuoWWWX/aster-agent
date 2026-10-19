@@ -1,3 +1,4 @@
+import { ConversationAttachmentMetadataRepository } from "./conversation-attachment-metadata-repository.js";
 import { TeamCollaborationProjectionReader } from "./team-collaboration-projection-reader.js";
 import { ContextSummaryRepository } from "./context-summary-repository.js";
 import { ConversationHistoryRepository } from "./conversation-history-repository.js";
@@ -23,7 +24,7 @@ import { type DatabaseRow, asString, asNullableString, asBoolean, asNumber, pars
 import { collaborationOutputExcerpt } from "./collaboration-row-mappers.js";
 import { likePattern, conversationSearchSnippet } from "./context-search.js";
 import { readProjectionString, readProjectionIsoDate, readProjectionTimelineMessage, readProjectionTool, readProjectionAgentMessage, readProjectionToolCalls, readProjectionProviderState, threadLogUserMessage, threadLogTerminalAssistant } from "./thread-log-projection-readers.js";
-import { toConversationDeletionTask, toConversation, toSubagentTask, toProject, toConversationAttachment, toStoredPendingMessage, toPublicConversationAttachment } from "./conversation-row-mappers.js";
+import { toConversationDeletionTask, toConversation, toSubagentTask, toProject, toStoredPendingMessage, toPublicConversationAttachment } from "./conversation-row-mappers.js";
 
 export type { ModelProviderState, ModelToolCall } from "../model/model-contracts.js";
 
@@ -197,6 +198,7 @@ export class AgentDatabase {
   private readonly history: ConversationHistoryRepository;
   private readonly contextSummaries: ContextSummaryRepository;
   private readonly collaborationProjection: TeamCollaborationProjectionReader;
+  private readonly attachmentMetadata: ConversationAttachmentMetadataRepository;
   private readonly databasePath: string;
   private volatileConversationProjectionActive = false;
   public readonly collaboration: CollaborationStore;
@@ -207,6 +209,7 @@ export class AgentDatabase {
     this.history = new ConversationHistoryRepository(this.database);
     this.contextSummaries = new ContextSummaryRepository(this.database);
     this.collaborationProjection = new TeamCollaborationProjectionReader(this.database);
+    this.attachmentMetadata = new ConversationAttachmentMetadataRepository(this.database);
     this.database.exec("PRAGMA foreign_keys = ON;");
     if (databasePath !== ":memory:") {
       this.database.exec("PRAGMA journal_mode = WAL;");
@@ -3155,10 +3158,8 @@ export class AgentDatabase {
         const image = toolScreenshotImage(item);
         return [...(image === null ? [] : [image.id]), ...toolGeneratedImages(item).map(image => image.id)];
       }));
-      const sourceAttachments = this.listStoredAttachments(
-        "conversation_id = ? AND message_id IS NOT NULL",
-        [sourceConversationId]
-      ).filter((attachment) => inheritedAttachmentIds.has(attachment.id) || screenshotIds.has(attachment.id));
+      const sourceAttachments = this.attachmentMetadata.listSent(sourceConversationId)
+        .filter((attachment) => inheritedAttachmentIds.has(attachment.id) || screenshotIds.has(attachment.id));
       const attachmentIdMap = new Map<string, string>();
       const insertAttachment = this.database.prepare(
         `INSERT INTO conversation_attachments
@@ -4049,9 +4050,11 @@ export class AgentDatabase {
 
   /** Tool images use the existing timeline-owner column and never become user drafts. */
   public createToolImageAttachment(input: StoredConversationAttachment): ConversationAttachment {
-    if (input.kind !== "image" || input.messageId === null || this.database.prepare(
-      "SELECT 1 FROM conversation_timeline WHERE id = ? AND conversation_id = ? AND kind = 'tool'",
-    ).get(input.messageId, input.conversationId) === undefined) {
+    if (
+      input.kind !== "image"
+      || input.messageId === null
+      || !this.attachmentMetadata.hasToolImageOwner(input.conversationId, input.messageId)
+    ) {
       throw new Error("Image owner must be a tool in this conversation.");
     }
     return this.insertConversationAttachment(input);
@@ -4059,45 +4062,7 @@ export class AgentDatabase {
 
   private insertConversationAttachment(input: StoredConversationAttachment): ConversationAttachment {
     this.getConversation(input.conversationId);
-    const validated = conversationAttachmentSchema.parse({
-      contextTokens: input.contextTokens,
-      conversationId: input.conversationId,
-      createdAt: input.createdAt,
-      id: input.id,
-      kind: input.kind,
-      messageId: input.messageId,
-      mimeType: input.mimeType,
-      name: input.name,
-      projectPath: input.projectPath,
-      sizeBytes: input.sizeBytes,
-      source: input.source,
-      truncated: input.truncated
-    });
-    this.database
-      .prepare(
-        `INSERT INTO conversation_attachments
-           (id, conversation_id, message_id, source, kind, name, mime_type,
-            size_bytes, project_path, stored_path, extracted_text_path,
-            context_tokens, truncated, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        validated.id,
-        validated.conversationId,
-        validated.messageId,
-        validated.source,
-        validated.kind,
-        validated.name,
-        validated.mimeType,
-        validated.sizeBytes,
-        validated.projectPath,
-        input.storedPath,
-        input.extractedTextPath,
-        validated.contextTokens,
-        Number(validated.truncated),
-        validated.createdAt
-      );
-    return validated;
+    return this.attachmentMetadata.insertConversationAttachment(input);
   }
 
   public listDraftConversationAttachments(conversationId: string): ConversationAttachment[] {
@@ -4107,11 +4072,7 @@ export class AgentDatabase {
     );
     // Side forks inherit model context without copying the visible timeline. Their
     // copied attachments therefore have no message_id, but they are not drafts.
-    return this.listStoredAttachments(
-      `conversation_id = ? AND message_id IS NULL AND pending_message_id IS NULL
-       ORDER BY created_at ASC, rowid ASC`,
-      [conversationId]
-    )
+    return this.attachmentMetadata.listUnbound(conversationId)
       .filter((attachment) => !contextAttachmentIds.has(attachment.id))
       .map(toPublicConversationAttachment);
   }
@@ -4120,51 +4081,18 @@ export class AgentDatabase {
     conversationId: string,
     attachmentId: string
   ): StoredConversationAttachment {
-    const attachments = this.listStoredAttachments(
-      "conversation_id = ? AND id = ?",
-      [conversationId, attachmentId]
-    );
-    const attachment = attachments[0];
-    if (attachment === undefined) {
-      throw new Error("Conversation attachment was not found.");
-    }
-    return attachment;
+    return this.attachmentMetadata.getConversationAttachment(conversationId, attachmentId);
   }
 
   public listConversationAttachmentsByIds(
     conversationId: string,
     attachmentIds: readonly string[]
   ): StoredConversationAttachment[] {
-    if (attachmentIds.length === 0) return [];
-    if (new Set(attachmentIds).size !== attachmentIds.length) {
-      throw new Error("Conversation attachment list contains duplicates.");
-    }
-    const placeholders = attachmentIds.map(() => "?").join(", ");
-    const attachments = this.listStoredAttachments(
-      `conversation_id = ? AND id IN (${placeholders})`,
-      [conversationId, ...attachmentIds]
-    );
-    const byId = new Map(attachments.map((attachment) => [attachment.id, attachment]));
-    return attachmentIds.map((attachmentId) => {
-      const attachment = byId.get(attachmentId);
-      if (attachment === undefined) {
-        throw new Error("Conversation attachment was not found.");
-      }
-      return attachment;
-    });
+    return this.attachmentMetadata.listConversationAttachmentsByIds(conversationId, attachmentIds);
   }
 
   public listConversationAttachmentStoragePaths(): ConversationAttachmentStoragePaths[] {
-    const rows = this.database.prepare(
-      `SELECT id, stored_path, extracted_text_path
-       FROM conversation_attachments
-       ORDER BY created_at ASC, rowid ASC`,
-    ).all() as DatabaseRow[];
-    return rows.map((row) => ({
-      extractedTextPath: asNullableString(row, "extracted_text_path"),
-      id: asString(row, "id"),
-      storedPath: asString(row, "stored_path"),
-    }));
+    return this.attachmentMetadata.listConversationAttachmentStoragePaths();
   }
 
   public updateConversationAttachmentStoragePaths(input: {
@@ -4172,14 +4100,7 @@ export class AgentDatabase {
     id: string;
     storedPath: string;
   }): void {
-    const result = this.database.prepare(
-      `UPDATE conversation_attachments
-       SET stored_path = ?, extracted_text_path = ?
-       WHERE id = ?`,
-    ).run(input.storedPath, input.extractedTextPath, input.id);
-    if (result.changes !== 1) {
-      throw new Error("Conversation attachment storage path was not found.");
-    }
+    return this.attachmentMetadata.updateConversationAttachmentStoragePaths(input);
   }
 
   /** Returns renderer-safe immutable attachment references for ThreadLog events. */
@@ -4195,58 +4116,18 @@ export class AgentDatabase {
     conversationId: string,
     attachmentId: string
   ): StoredConversationAttachment {
-    const attachment = this.getConversationAttachment(conversationId, attachmentId);
-    if (attachment.messageId !== null || attachment.pendingMessageId !== null) {
-      throw new Error("A sent or queued conversation attachment cannot be removed.");
-    }
-    const result = this.database
-      .prepare(
-        `DELETE FROM conversation_attachments
-         WHERE conversation_id = ? AND id = ?
-           AND message_id IS NULL AND pending_message_id IS NULL`
-      )
-      .run(conversationId, attachmentId);
-    if (result.changes !== 1) {
-      throw new Error("Conversation attachment was not found.");
-    }
-    return attachment;
+    return this.attachmentMetadata.removeDraftConversationAttachment(conversationId, attachmentId);
   }
 
   public isConversationAttachmentFileReferencedByActiveConversation(filePath: string): boolean {
-    return this.database
-      .prepare(
-        `SELECT 1 AS present FROM conversation_attachments
-         JOIN conversations
-           ON conversations.id = conversation_attachments.conversation_id
-         WHERE conversations.deletion_pending = 0
-           AND (stored_path = ? OR extracted_text_path = ?)
-         LIMIT 1`
-      )
-      .get(filePath, filePath) !== undefined;
+    return this.attachmentMetadata.isConversationAttachmentFileReferencedByActiveConversation(filePath);
   }
 
   public isConversationAttachmentFileReferencedOutside(
     filePath: string,
     excludedAttachmentIds: readonly string[],
   ): boolean {
-    if (excludedAttachmentIds.length === 0) {
-      return this.database
-        .prepare(
-          `SELECT 1 AS present FROM conversation_attachments
-           WHERE stored_path = ? OR extracted_text_path = ?
-           LIMIT 1`,
-        )
-        .get(filePath, filePath) !== undefined;
-    }
-    const placeholders = excludedAttachmentIds.map(() => "?").join(", ");
-    return this.database
-      .prepare(
-        `SELECT 1 AS present FROM conversation_attachments
-         WHERE (stored_path = ? OR extracted_text_path = ?)
-           AND id NOT IN (${placeholders})
-         LIMIT 1`,
-      )
-      .get(filePath, filePath, ...excludedAttachmentIds) !== undefined;
+    return this.attachmentMetadata.isConversationAttachmentFileReferencedOutside(filePath, excludedAttachmentIds);
   }
 
   public createSubagentTask(input: {
@@ -5196,16 +5077,12 @@ export class AgentDatabase {
       );
       const attachmentIds = [...new Set(input.attachmentIds ?? [])];
       if (attachmentIds.length === 0) return [];
-      const placeholders = attachmentIds.map(() => "?").join(", ");
       const contextAttachmentIds = new Set(
         this.listContextAttachmentIds(conversationId),
       );
-      const attachments = this.listStoredAttachments(
-        `conversation_id = ? AND id IN (${placeholders})
-         AND message_id IS NULL
-         AND (pending_message_id = ? OR pending_message_id IS NULL)`,
-        [conversationId, ...attachmentIds, id],
-      ).filter((attachment) => !contextAttachmentIds.has(attachment.id));
+      const attachments = this.attachmentMetadata
+        .listCancelledPendingAttachments(conversationId, attachmentIds, id)
+        .filter((attachment) => !contextAttachmentIds.has(attachment.id));
       return attachments.length === 0
         ? []
         : [{ attachments, conversationId, pendingMessageId: id }];
@@ -8601,22 +8478,6 @@ export class AgentDatabase {
         input.providerState === undefined ? null : JSON.stringify(input.providerState),
         new Date().toISOString()
       );
-  }
-
-  private listStoredAttachments(
-    whereClause: string,
-    parameters: readonly (number | string | null)[]
-  ): StoredConversationAttachment[] {
-    const rows = this.database
-      .prepare(
-        `SELECT id, conversation_id, message_id, pending_message_id, source, kind, name, mime_type,
-                size_bytes, project_path, stored_path, extracted_text_path,
-                context_tokens, truncated, created_at
-         FROM conversation_attachments
-         WHERE ${whereClause}`
-      )
-      .all(...parameters) as DatabaseRow[];
-    return rows.map(toConversationAttachment);
   }
 
   private touchConversation(conversationId: string, timestamp: string): void {
