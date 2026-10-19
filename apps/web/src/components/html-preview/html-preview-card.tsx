@@ -10,7 +10,9 @@ import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 const HTML_PREVIEW_BASE_HEIGHT = 520;
 
 export const HtmlPreviewContext = createContext<{ client: AgentClient; conversationId: string } | null>(null);
-export type HtmlPreviewSource = { kind: "code"; html: string; language?: CodePreviewLanguage } | { kind: "file"; path: string };
+export type HtmlPreviewSource = { kind: "code"; html: string; language?: CodePreviewLanguage } | { kind: "file"; path: string }
+  | { kind: "reference"; sourceRef: string; language: CodePreviewLanguage };
+const sourceValue = (source: HtmlPreviewSource) => source.kind === "code" ? source.html : source.kind === "file" ? source.path : source.sourceRef;
 export function HtmlPreviewScope({ client, conversationId, children }: { client: AgentClient; conversationId: string; children: ReactNode }): ReactElement {
   const value = useMemo(() => ({ client, conversationId }), [client, conversationId]);
   return <HtmlPreviewContext.Provider value={value}>{children}</HtmlPreviewContext.Provider>;
@@ -24,8 +26,8 @@ export function HtmlPreviewCard({ source, embedded = false, initialMode = "previ
   const [revision, setRevision] = useState(0);
   const [mode, setMode] = useState(initialMode);
   const [requested, setRequested] = useState(initialMode === "preview" || source.kind === "file");
-  const value = source.kind === "code" ? source.html : source.path;
-  return <HtmlPreviewContent key={`${context?.conversationId}:${source.kind}:${source.kind === "code" ? source.language : "html"}:${value}:${revision}:${requested}:${suspended}`} source={source} embedded={embedded} mode={mode} requested={requested && !suspended} initialHeight={initialHeight} onPreviewHeight={onPreviewHeight}
+  const value = sourceValue(source);
+  return <HtmlPreviewContent key={`${context?.conversationId}:${source.kind}:${source.kind !== "file" ? source.language : "html"}:${value}:${revision}:${requested}:${suspended}`} source={source} embedded={embedded} mode={mode} requested={requested && !suspended} initialHeight={initialHeight} onPreviewHeight={onPreviewHeight}
     onModeChange={next => { setMode(next); if (next === "preview") { setRequested(true); setRevision(current => current + 1); } }} />;
 }
 
@@ -44,9 +46,9 @@ function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange, i
   const heightRef = useRef(height);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const kind = source.kind;
-  const language = source.kind === "code" ? source.language ?? "html" : "html";
+  const language = source.kind !== "file" ? source.language ?? "html" : "html";
   const languageLabel = language === "react" ? "React" : language === "vue" ? "Vue" : "HTML";
-  const value = source.kind === "code" ? source.html : source.path;
+  const value = sourceValue(source);
   const syncAppearance = useCallback(() => {
     if (preview === null) return;
     const style = getComputedStyle(frameRef.current ?? document.documentElement);
@@ -59,7 +61,8 @@ function HtmlPreviewContent({ source, embedded, mode, requested, onModeChange, i
     let alive = true;
     let owned: string | undefined;
     const release = (id: string): void => { void context.client.htmlPreview({ kind: "release", id, conversationId: context.conversationId }).catch(() => undefined); };
-    void context.client.htmlPreview({ conversationId: context.conversationId, ...(kind === "code" ? { kind, html: value, ...(language === "html" ? {} : { language }) } : { kind, path: value }) }).then(result => {
+    void context.client.htmlPreview({ conversationId: context.conversationId, ...(kind === "code" ? { kind, html: value, ...(language === "html" ? {} : { language }) }
+      : kind === "reference" ? { kind, sourceRef: value } : { kind, path: value }) }).then(result => {
       if (result === null) throw new Error("无法创建代码预览。");
       if (!alive) { release(result.id); return; }
       owned = result.id; setPreview(result);

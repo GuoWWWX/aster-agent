@@ -7,6 +7,13 @@ const tool: ConversationToolItem = { id: "delivery", kind: "tool", conversationI
   result: '{"ok":true,"value":{"presentation":{"kind":"html","path":"demo.html"}}}', createdAt: "2026-10-15T00:00:00Z" };
 
 describe("HTML delivery projection", () => {
+  it("keeps a source-free code fence reference available when final text omits its explicit placement", () => {
+    const reference = "codeblock:00000000-0000-4000-8000-000000000001:1";
+    const inspected = { ...tool, result: JSON.stringify({ ok: true, value: { inspected: true, displayRef: reference, sourceRef: reference, language: "vue" } }) };
+    expect(htmlPresentationDeliveries([inspected], [{ id: "answer", runId: "run" }], null).get("answer"))
+      .toEqual([{ id: tool.id, displayRef: reference, sourceRef: reference, language: "vue" }]);
+    expect(htmlPresentationDeliveries([inspected], [{ id: "answer", runId: "run" }], "run").size).toBe(0);
+  });
   it("keeps inspection out of final delivery and selects the latest component source after a fix", () => {
     const inspect = { ...tool, id: "inspect", result: '{"ok":true,"value":{"inspected":true,"frames":2}}' };
     const source = (html: string) => JSON.stringify({ ok: true, value: { presentation: { kind: "code", html, language: "react" } } });

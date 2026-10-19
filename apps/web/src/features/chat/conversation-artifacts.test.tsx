@@ -11,6 +11,14 @@ const image = { id, conversationId: id, messageId: id, source: "generated", name
   contextTokens: 1024, projectPath: null, truncated: false, createdAt: tool.createdAt };
 
 describe("conversation-owned artifact lookup", () => {
+  it("displays an inspected code fence by reference after reload without requiring source in the tool result", () => {
+    const reference = `codeblock:${id}:1`;
+    const entry = { ...tool, result: JSON.stringify({ ok: true, value: { inspected: true, displayRef: reference, sourceRef: reference, language: "react", frames: 3 } }) };
+    const found = conversationArtifacts([JSON.parse(JSON.stringify(entry))], client, options);
+    expect(found.get(reference)).toMatchObject({ toolId: id });
+    expect(entry.result).not.toContain("export default");
+    expect(conversationArtifacts([{ ...entry, status: "failed" }], client, options).size).toBe(0);
+  });
   it("reuses HTML, React, Vue, file and gallery outputs, preserving the reference across reloads", () => {
     for (const presentation of [
       ...["html", "react", "vue"].map(language => ({ kind: "code", html: "source", language })),

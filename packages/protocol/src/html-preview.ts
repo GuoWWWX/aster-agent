@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { artifactDisplayRefSchema } from "./artifact-reference.js";
+import { codeBlockReferenceSchema } from "./code-block-reference.js";
 import { relativeProjectPathSchema } from "./project.js";
 export const codePreviewLanguageSchema = z.enum(["html", "react", "vue"]);
 export type CodePreviewLanguage = z.infer<typeof codePreviewLanguageSchema>;
@@ -19,10 +20,10 @@ const previewActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("click"), x: z.number().int().nonnegative(), y: z.number().int().nonnegative() }).strict(),
   z.object({ action: z.literal("key"), key: z.enum(["Tab", "Enter", "Space", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Escape", "Home", "End"]) }).strict(),
 ]);
-export const presentHtmlInputSchema = z.object({
+const presentHtmlFields = z.object({
   action: z.enum(["present", "inspect"]).default("present").describe("present delivers the final result; inspect returns rendered screenshot evidence without delivering it."),
   code: z.string().min(1).max(1_000_000).optional().describe("Self-contained HTML, a React default-exported component/JSX expression, or a Vue SFC."),
-  sourceRef: artifactDisplayRefSchema.optional().describe("Reuse an exact sourceRef returned by an earlier present_html in this conversation. Omit code/path/pages; only viewport, frames and actions may change. Send code again only when editing the source."),
+  sourceRef: z.union([artifactDisplayRefSchema, codeBlockReferenceSchema, z.literal("latest")]).optional().describe("Use latest for the latest complete assistant HTML/React/Vue code fence, or an exact returned sourceRef. Never repeat the source in arguments."),
   language: codePreviewLanguageSchema.default("html"),
   width: z.number().int().min(320).max(1920).default(1280),
   height: z.number().int().min(240).max(1440).default(800),
@@ -31,10 +32,20 @@ export const presentHtmlInputSchema = z.object({
   actions: z.array(previewActionSchema).max(12).default([]).describe("For inspect, replay optional click(x,y) or key(key) actions on a fresh page before capturing. Coordinates must come from a same-size screenshot; Tab/Enter can check buttons without guessing."),
   path: presentationPathSchema.optional(),
   pages: presentationPagesSchema.optional().describe("Related alternatives for the user to compare and choose, presented in one paginated card. Use instead of path only when multiple options are requested."),
-}).strict().refine(input => [input.path, input.pages, input.code, input.sourceRef].filter(value => value !== undefined).length === 1, "Provide exactly one of path, pages, code or sourceRef.")
+}).strict();
+/** Historical tool records remain readable; new model calls use the reference-only schema below. */
+export const presentHtmlInputSchema = presentHtmlFields.refine(input => [input.path, input.pages, input.code, input.sourceRef].filter(value => value !== undefined).length === 1, "Provide exactly one of path, pages, code or sourceRef.")
   .refine(input => input.action !== "inspect" || input.pages === undefined, "Inspect one source at a time using code or path.")
   .refine(input => input.actions.length === 0 || input.action === "inspect", "Only inspect accepts actions.")
   .refine(input => input.actions.every(action => action.action !== "click" || (action.x < input.width && action.y < input.height)), "Click coordinates must be inside the inspection viewport.");
+export const presentHtmlToolInputSchema = presentHtmlFields.omit({ code: true, language: true }).extend({
+  action: z.enum(["present", "inspect"]).default("present").describe("inspect checks an existing code fence or HTML file; present delivers an existing file or source reference."),
+  width: z.number().int().min(320).max(1920).optional().describe("Optional inspection width. Omit to use the current application viewport; do not add mobile checks unless requested."),
+  height: z.number().int().min(240).max(1440).optional(),
+  pages: z.array(htmlPresentationPageSchema.options[0]).min(2).max(12).optional().describe("Existing HTML files for explicitly requested comparisons. Inline snippets belong in assistant code fences."),
+}).strict().refine(input => [input.path, input.pages, input.sourceRef].filter(value => value !== undefined).length === 1, "Provide exactly one of path, pages or sourceRef; output snippet source in a closed code fence first.")
+  .refine(input => input.action !== "inspect" || input.pages === undefined, "Inspect one source at a time.")
+  .refine(input => input.actions.length === 0 || input.action === "inspect", "Only inspect accepts actions.");
 export const htmlPresentationResultSchema = z.object({
   ok: z.literal(true),
   value: z.object({ displayRef: artifactDisplayRefSchema.optional(), sourceRef: artifactDisplayRefSchema.optional(), presentation: z.discriminatedUnion("kind", [
@@ -43,10 +54,14 @@ export const htmlPresentationResultSchema = z.object({
     z.object({ kind: z.literal("html_gallery"), pages: presentationPagesSchema }).strict(),
   ]) }).strict(),
 }).strict();
+export const codeBlockPreviewReferenceSchema = z.object({ ok: z.literal(true), value: z.object({
+  displayRef: codeBlockReferenceSchema, sourceRef: codeBlockReferenceSchema, language: codePreviewLanguageSchema,
+}).passthrough().refine(value => value.displayRef === value.sourceRef, "A code fence display must reference its original source.") }).strict();
 export type HtmlPresentationPage = z.infer<typeof htmlPresentationPageSchema>;
 
 const owner = { conversationId: z.string().uuid() };
 export const htmlPreviewRequestSchema = z.discriminatedUnion("kind", [
+  z.object({ ...owner, kind: z.literal("reference"), sourceRef: codeBlockReferenceSchema }).strict(),
   z.object({ ...owner, kind: z.literal("file"), path: z.string().trim().min(1).max(4096) }).strict(),
   z.object({ ...owner, kind: z.literal("code"), html: z.string().min(1).max(1_000_000), language: codePreviewLanguageSchema.optional() }).strict(),
   z.object({ ...owner, kind: z.literal("release"), id: z.string().uuid() }).strict(),

@@ -9,6 +9,7 @@ import { htmlPresentationDelivery, type HtmlDelivery } from "./html-presentation
 export function HtmlDeliveryPreview({ delivery, cacheTtlMs, onResize }: { delivery: HtmlDelivery; cacheTtlMs: number; onResize: () => void }) {
   return <div data-html-delivery={delivery.id}>
     {"pages" in delivery ? <HtmlPreviewGallery pages={delivery.pages} cacheTtlMs={cacheTtlMs} onResize={onResize} />
+      : "sourceRef" in delivery ? <HtmlPreviewCard source={{ kind: "reference", sourceRef: delivery.sourceRef, language: delivery.language }} />
       : "code" in delivery ? <HtmlPreviewCard source={{ kind: "code", html: delivery.code, language: delivery.language }} />
       : <HtmlPreviewCard source={{ kind: "file", path: delivery.path }} />}
   </div>;

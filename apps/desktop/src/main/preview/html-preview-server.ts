@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
-import { htmlPreviewRequestSchema, htmlPreviewSchema, type HtmlPreview, type HtmlPreviewRequest } from "@agent/protocol";
+import { htmlPreviewRequestSchema, htmlPreviewSchema, type CodePreviewLanguage, type HtmlPreview, type HtmlPreviewRequest } from "@agent/protocol";
 import { htmlPreviewDocument } from "./html-preview-document.js";
 import { compilePreviewSource } from "./code-preview-compiler.js";
 
@@ -19,10 +19,16 @@ export class HtmlPreviewServer {
   private disposed = false;
   private generation = 0;
   private pending = 0;
-  public constructor(private readonly workspaceRoot: (conversationId: string) => Promise<string>) {}
+  public constructor(private readonly workspaceRoot: (conversationId: string) => Promise<string>,
+    private readonly readCodeBlock?: (conversationId: string, reference: string) => { code: string; language: CodePreviewLanguage } | null) {}
 
   public async create(request: HtmlPreviewRequest): Promise<HtmlPreview> {
-    const input = htmlPreviewRequestSchema.parse(request);
+    let input = htmlPreviewRequestSchema.parse(request);
+    if (input.kind === "reference") {
+      const source = this.readCodeBlock?.(input.conversationId, input.sourceRef);
+      if (source == null) throw new Error("当前对话中找不到这个代码块。");
+      input = { kind: "code", conversationId: input.conversationId, html: source.code, language: source.language };
+    }
     if (input.kind !== "code" && input.kind !== "file") throw new Error("Invalid preview source.");
     if (this.disposed) throw new Error("HTML 预览服务已关闭。");
     if (this.entries.size + this.pending >= 64) throw new Error("预览数量已达上限，请关闭其他预览后重试。");

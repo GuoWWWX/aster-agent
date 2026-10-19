@@ -23,10 +23,11 @@ describe("HTML presentation tool", () => {
     const reader = vi.fn((owner: string, ref: string) => owner === cid ? resolveHtmlPresentationSource(history, ref) : null);
     const presenter = new HtmlPresentationTool(() => Promise.reject(new Error("No workspace needed")), { inspect }, reader);
     const argumentsValue = JSON.stringify({ action: "inspect", code, language: "react" });
-    const first = await presenter.execute(cid, argumentsValue, new AbortController().signal);
-    const { value: { sourceRef } } = z.object({ value: z.object({ sourceRef: z.string() }) }).parse(JSON.parse(first.content));
+    const sourceRef = "artifact:00000000-0000-4000-8000-000000000003";
+    history.push({ name: "present_html", status: "completed", arguments: argumentsValue, result: JSON.stringify({ ok: true, value: { inspected: true, sourceRef } }) });
+    const first = await presenter.execute(cid, JSON.stringify({ action: "inspect", sourceRef }), new AbortController().signal);
+    expect(z.object({ value: z.object({ sourceRef: z.string() }) }).parse(JSON.parse(first.content)).value.sourceRef).toBe(sourceRef);
     expect(sourceRef).toMatch(/^artifact:[0-9a-f-]{36}$/u);
-    history.push({ name: "present_html", status: "completed", arguments: argumentsValue, result: first.content });
     const restored = new HtmlPresentationTool(() => Promise.reject(new Error("No workspace needed")), { inspect }, reader);
     const next = await restored.execute(cid, JSON.stringify({ action: "inspect", sourceRef, width: 420, frames: 3 }), new AbortController().signal);
     expect(next.isError).toBe(false);
@@ -41,8 +42,9 @@ describe("HTML presentation tool", () => {
   });
 
   it("reports invalid component source as correctable arguments instead of an internal service failure", async () => {
-    const presenter = new HtmlPresentationTool(() => Promise.resolve("unused"), { inspect: vi.fn().mockRejectedValue(new ToolArgumentsError("Invalid JSX", [{ code: "preview_compile", path: ["code"], message: "line 3: unexpected token" }])) });
-    const result = await presenter.execute("00000000-0000-4000-8000-000000000001", JSON.stringify({ action: "inspect", language: "react", code: "invalid" }), new AbortController().signal);
+    const presenter = new HtmlPresentationTool(() => Promise.resolve("unused"), { inspect: vi.fn().mockRejectedValue(new ToolArgumentsError("Invalid JSX", [{ code: "preview_compile", path: ["code"], message: "line 3: unexpected token" }])) },
+      () => ({ code: "invalid", language: "react", sourceRef: "codeblock:00000000-0000-4000-8000-000000000001:1" }));
+    const result = await presenter.execute("00000000-0000-4000-8000-000000000001", JSON.stringify({ action: "inspect", sourceRef: "latest" }), new AbortController().signal);
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content)).toMatchObject({ agentError: { code: "VALIDATION_FAILED" }, recovery: { action: "fix_arguments", issues: [{ path: ["code"], message: "line 3: unexpected token" }] } });
     expect(result.content).not.toContain('"presentation"');
@@ -55,14 +57,17 @@ describe("HTML presentation tool", () => {
   });
   it("inspects through the existing preview port, restricts coordinator execution and delivers component source separately", async () => {
     const inspect = vi.fn().mockResolvedValue({ kind: "completed", isError: false, content: '{"ok":true,"value":{"inspected":true}}', modelAttachments: [] });
-    const presenter = new HtmlPresentationTool(() => Promise.reject(new Error("No workspace required")), { inspect });
-    const args = { action: "inspect", code: "export default ()=> <button>React</button>", language: "react", frames: 2 };
+    const code = "export default ()=> <button>React</button>";
+    const sourceRef = "codeblock:00000000-0000-4000-8000-000000000001:1";
+    const presenter = new HtmlPresentationTool(() => Promise.reject(new Error("No workspace required")), { inspect }, () => ({ code, language: "react", sourceRef }));
+    const args = { action: "inspect", sourceRef, frames: 2 };
     expect((await presenter.execute("00000000-0000-4000-8000-000000000001", JSON.stringify(args), new AbortController().signal)).content).not.toContain('"presentation"');
     expect(inspect).toHaveBeenCalledOnce(); expect(inspect.mock.calls[0]?.[0]).toMatchObject({ frames: 2, source: { kind: "code", language: "react" } });
     expect((await presenter.execute("00000000-0000-4000-8000-000000000001", JSON.stringify(args), new AbortController().signal, false)).isError).toBe(true);
     expect(inspect).toHaveBeenCalledOnce();
-    const result = await presenter.execute("00000000-0000-4000-8000-000000000001", JSON.stringify({ code: args.code, language: "react" }), new AbortController().signal);
-    expect(JSON.parse(result.content)).toMatchObject({ value: { presentation: { kind: "code", language: "react", html: args.code } } });
+    const result = await presenter.execute("00000000-0000-4000-8000-000000000001", JSON.stringify({ sourceRef }), new AbortController().signal);
+    expect(JSON.parse(result.content)).toMatchObject({ value: { displayRef: sourceRef, language: "react" } });
+    expect(result.content).not.toContain(code);
   });
   let root: string;
   let tool: HtmlPresentationTool;
@@ -71,6 +76,7 @@ describe("HTML presentation tool", () => {
     root = await mkdtemp(path.join(os.tmpdir(), "aster-html-presentation-"));
     await mkdir(path.join(root, "pages"));
     await writeFile(path.join(root, "pages/demo.html"), "<h1>最终交付</h1>");
+    await writeFile(path.join(root, "pages/demo2.html"), "<h1>第二方案</h1>");
     tool = new HtmlPresentationTool(() => Promise.resolve(root));
   });
   afterEach(async () => { await rm(root, { recursive: true, force: true }); });
@@ -95,18 +101,17 @@ describe("HTML presentation tool", () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
-  it("delivers named inline alternatives without resolving a workspace or creating files", async () => {
+  it("rejects redundant raw inline alternatives without resolving a workspace or creating files", async () => {
     const resolve = vi.fn(() => Promise.resolve(root));
     tool = new HtmlPresentationTool(resolve);
     const pages = [{ title: "A", kind: "code", html: "<div>A</div>" }, { title: "B", kind: "code", html: "<button>B</button>" }];
     const result = await tool.execute(conversationId, JSON.stringify({ pages }), signal());
-    expect(result.isError).toBe(false);
-    expect(deliveryValue(result.content)).toEqual({ presentation: { kind: "html_gallery", pages } });
+    expect(result.isError).toBe(true);
     expect(resolve).not.toHaveBeenCalled();
   });
 
-  it("validates every referenced file before delivering a mixed comparison", async () => {
-    const pages = [{ title: "文件方案", kind: "file", path: "pages/demo.html" }, { title: "片段方案", kind: "code", html: "<div>B</div>" }];
+  it("validates every referenced file before delivering a file comparison", async () => {
+    const pages = [{ title: "文件方案", kind: "file", path: "pages/demo.html" }, { title: "第二方案", kind: "file", path: "pages/demo2.html" }];
     const result = await tool.execute(conversationId, JSON.stringify({ pages }), signal());
     expect(result.isError).toBe(false);
     expect(deliveryValue(result.content)).toEqual({ presentation: { kind: "html_gallery", pages } });
@@ -117,11 +122,11 @@ describe("HTML presentation tool", () => {
     expect(escaped.isError).toBe(true);
   });
 
-  it("bounds combined inline UTF-8 bytes and checks cancellation for an inline delivery", async () => {
-    const pages = [{ title: "A", kind: "code", html: "汉".repeat(200_000) }, { title: "B", kind: "code", html: "字".repeat(200_000) }];
-    expect((await tool.execute(conversationId, JSON.stringify({ pages }), signal())).isError).toBe(true);
+  it("bounds referenced UTF-8 source bytes and checks cancellation", async () => {
+    tool = new HtmlPresentationTool(() => Promise.resolve(root), null, () => ({ code: "汉".repeat(400_000), language: "html", sourceRef: `codeblock:${conversationId}:1` }));
+    expect((await tool.execute(conversationId, JSON.stringify({ sourceRef: "latest" }), signal())).isError).toBe(true);
     const controller = new AbortController(); controller.abort();
-    await expect(tool.execute(conversationId, JSON.stringify({ pages: pages.map(page => ({ ...page, html: "<div>内容</div>" })) }), controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    await expect(tool.execute(conversationId, JSON.stringify({ sourceRef: "latest" }), controller.signal)).rejects.toMatchObject({ name: "AbortError" });
   });
 
   it("rejects missing, hidden, binary, oversized and symlink-escaped files", async () => {

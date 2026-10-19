@@ -155,7 +155,7 @@ renderer.core.ruler.after("inline", "message_references", state => {
 renderer.renderer.rules.message_reference = (tokens, index) => `<span data-message-reference="${renderer.utils.escapeHtml(tokens[index]?.content ?? "")}"></span>`;
 renderer.renderer.rules.link_open = (tokens, index, options, environment, self) => {
   const token = tokens[index];
-  if (String(token?.attrGet("href") ?? "").startsWith("artifact:")) return '<span title="交付引用须单独成段，且来自当前对话">';
+  if (/^(?:artifact|codeblock):/u.test(String(token?.attrGet("href") ?? ""))) return '<span title="交付引用须单独成段，且来自当前对话">';
   token?.attrSet("rel", "noreferrer noopener");
   token?.attrSet("target", "_blank");
   const hrefValue = token?.attrGet("href");
@@ -175,7 +175,7 @@ renderer.renderer.rules.link_close = (tokens, index, options, environment, self)
   const openingToken = tokens.slice(0, index).findLast((token) => token.type === "link_open");
   const hrefValue = openingToken?.attrGet("href");
   const href = hrefValue === null || hrefValue === undefined ? "" : String(hrefValue);
-  if (href.startsWith("artifact:")) return "</span>";
+  if (/^(?:artifact|codeblock):/u.test(href)) return "</span>";
   const closingTag = defaultLinkClose === undefined
     ? self.renderToken(tokens, index, options)
     : defaultLinkClose(tokens, index, options, environment, self);
@@ -442,7 +442,7 @@ function AgentMarkdownContent({ content, streaming, scrollHostRef, inlineReferen
     {sourceViews.map((view, index) => createPortal(<CodeSourceView source={view.source} language={view.language} />, view.mount, `source:${index}`))}
     {referenceMounts.map((reference, index) => createPortal(inlineReferences[reference.index]?.content, reference.mount, `reference:${index}`))}
     {artifactMounts.map(artifact => createPortal(artifacts.get(artifact.ref), artifact.mount, artifact.ref))}
-    {activePreview !== null ? createPortal(<HtmlPreviewCard key={activePreview.source.kind === "file" ? activePreview.source.path : activePreview.source.html} source={activePreview.source} />, activePreview.mount) : null}
+    {activePreview !== null ? createPortal(<HtmlPreviewCard key={activePreview.source.kind === "file" ? activePreview.source.path : activePreview.source.kind === "code" ? activePreview.source.html : activePreview.source.sourceRef} source={activePreview.source} />, activePreview.mount) : null}
     <Popover open={diagramMenu !== null} onOpenChange={(open) => { if (!open) setDiagramMenu(null); }}>
       <PopoverAnchor asChild><span aria-hidden="true" className="pointer-events-none fixed size-0" style={{ left: diagramMenu?.x ?? 0, top: diagramMenu?.y ?? 0 }} /></PopoverAnchor>
       <PopoverContent align="start" side="bottom" sideOffset={0} role="menu" aria-label="Mermaid 图表菜单"

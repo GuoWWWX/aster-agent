@@ -14,6 +14,16 @@ import { useWorkbenchUiStore } from "../../stores/workbench-ui-store.js";
 const conversationId = "00000000-0000-4000-8000-000000000001";
 const result: HtmlPreview = { id: conversationId, title: "demo.html", url: "http://127.0.0.1:1234/token/demo.html", source: "<h1>页面</h1>" };
 describe("conversation HTML previews", () => {
+  it("loads and copies the original code fence through a reference-only IPC request", async () => {
+    const sourceRef = `codeblock:${conversationId}:1`;
+    await render(<HtmlPreviewCard source={{ kind: "reference", sourceRef, language: "react" }} />);
+    expect(request).toHaveBeenCalledWith({ kind: "reference", conversationId, sourceRef });
+    expect(node.textContent).not.toContain(sourceRef);
+    expect(node.querySelectorAll("iframe")).toHaveLength(1);
+    await click("显示源码");
+    expect(node.textContent).toContain(result.source);
+    expect(request.mock.calls.filter(([input]) => input.kind === "code")).toHaveLength(0);
+  });
   let root: Root;
   let node: HTMLDivElement;
   let client: MockAgentClient;
@@ -23,7 +33,7 @@ describe("conversation HTML previews", () => {
     vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
     node = document.createElement("div"); document.body.append(node); root = createRoot(node);
     client = new MockAgentClient();
-    request = vi.spyOn(client, "htmlPreview").mockImplementation(input => Promise.resolve(input.kind === "code" ? { ...result, source: input.html } : input.kind === "file" ? result : null));
+    request = vi.spyOn(client, "htmlPreview").mockImplementation(input => Promise.resolve(input.kind === "code" ? { ...result, source: input.html } : input.kind === "file" || input.kind === "reference" ? result : null));
   });
   afterEach(() => { act(() => root.unmount()); node.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
   async function render(children: ReactNode): Promise<void> {
